@@ -106,7 +106,7 @@ _ADMITTED_RADIATION_PAIRS = frozenset({(0, 1), (4, 4)})
 #: mature".  Maturity and reachability are the registry's answer, and mp=28
 #: is registered as a per-domain component override with no template, so
 #: adding it here cannot make it a default anywhere.
-_SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 18, 28})
+_SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 16, 18, 28})
 _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "cu_physics", "cudt_minutes", "radt", "radt_minutes", "bldt",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",

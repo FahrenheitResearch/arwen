@@ -146,6 +146,7 @@ _REQUIRED_KEYS = (
 _OPTIONAL_KEYS = (
     "forcing_interval_s", "output_domain", "source_orography",
     "source_orography_variable", "co2_vmr", "water_temperature_overlay",
+    "water_temperature_policy",
 )
 _KNOWN_KEYS = frozenset(_REQUIRED_KEYS) | frozenset(_OPTIONAL_KEYS)
 _DOMAIN_SOURCE_KEY = re.compile(r"d([0-9]{2})")
@@ -284,6 +285,14 @@ class CaseDataConfig:
     #: when it is not declared; declared, it joins the InputCatalog and
     #: the run identity moves exactly when the data does.
     water_temperature_overlay: Path | None = None
+    #: Which provider decides the water-surface temperature.  Silence is
+    #: ``era5_class_coherent``: one provider per surface class and per
+    #: connected body of water, which is what makes a bare run's lakes
+    #: coherent.  ``wrf_compat`` restores the historical per-cell choice
+    #: between mapped SST and mapped SKINTEMP for stock-WRF certification,
+    #: and a declared overlay keeps its own precedence.  See
+    #: :mod:`gpuwm.ingest.water_temperature`.
+    water_temperature_policy: str | None = None
     #: Optional validated ``[static.highres]`` block
     #: (:class:`gpuwm.static.highres_production.HighresStaticConfig`).
     #: Absence (None) is the identity path: the 30-arc-second baseline
@@ -553,6 +562,17 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
             orog_path = _resolve_path(base_dir, raw_orography,
                                       "source_orography", source)
 
+    water_policy = None
+    if "water_temperature_policy" in raw:
+        from gpuwm.ingest.water_temperature import (
+            validate_water_temperature_policy)
+        raw_policy = raw["water_temperature_policy"]
+        if not isinstance(raw_policy, str):
+            raise ValueError(
+                "water_temperature_policy in [case_data] of "
+                f"{source} must be a policy name")
+        water_policy = validate_water_temperature_policy(raw_policy)
+
     overlay_path = None
     if "water_temperature_overlay" in raw:
         overlay_path = _resolve_path(
@@ -653,7 +673,8 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
             if orog_by_domain is not None else None),
         sfcp_to_sfcp=sfcp, co2_vmr=co2, output_title=title,
         output_domain=domain, forcing_interval_s=interval,
-        water_temperature_overlay=overlay_path)
+        water_temperature_overlay=overlay_path,
+        water_temperature_policy=water_policy)
 
 
 def load_case_data(path: str | Path) -> CaseDataConfig:

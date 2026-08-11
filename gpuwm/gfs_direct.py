@@ -51,6 +51,9 @@ from gpuwm.ingest.preprocess_backend import (
 )
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+from gpuwm.ingest.water_temperature import (
+    MODIS_LAKE_CATEGORY, WaterTemperatureStatics,
+    announce_water_temperature, assemble_for_route)
 from gpuwm.native_domain_artifacts import _atomic_staging_sibling
 from gpuwm.native_wrf_contract import (
     native_geometry_contract,
@@ -144,6 +147,11 @@ _IMPLEMENTATION_PATHS = (
     "tools/grib1_bridge/vendor/grib-core/src/grib2/search.rs",
     "tools/grib1_bridge/vendor/grib-core/src/grib2/unpack.rs",
 )
+
+
+#: The GFS adapter's name in every water-temperature refusal and
+#: receipt.
+_WATER_ROUTE = "the GFS direct route"
 
 
 def _sha256(path: Path) -> str:
@@ -1102,8 +1110,9 @@ def prepare_gfs_wrf(
             source_top_pressure_pa=source_top_pressure_pa,
         )
         grid = grids[0]
+    landuse_attrs = None
     if static_input is None:
-        static, root_static_receipt = _static_from_geog(
+        static, root_static_receipt, landuse_attrs = _static_from_geog(
             Path(wps_namelist), Path(geog_root), grid, cfg)
         root_static_provider = "native-wps-geog"
     else:
@@ -1111,6 +1120,16 @@ def prepare_gfs_wrf(
             Path(static_receipt), Path(static_input), grid, cfg)
         static = _load_static(Path(static_input), grid, cfg.ny, cfg.nx)
         root_static_provider = "prebuilt-hash-bound-cache"
+        if geog_root is not None:
+            # The prebuilt NPZ is numeric fields only, so the land-use
+            # table has to come from the GEOG index beside it.
+            from gpuwm.hrrr_native_static import verified_static_catalog
+            from gpuwm.static.build import geog_selection_from_catalog
+
+            catalog, _ = verified_static_catalog(
+                Path(wps_namelist), Path(geog_root), (1,))
+            landuse_attrs = geog_selection_from_catalog(
+                catalog, 1).landuse_global_attrs()
 
     # One descriptor per decoded array is held for the whole bundle
     # write, and the array count is forcing-times x fields-per-time --
@@ -1189,7 +1208,35 @@ def prepare_gfs_wrf(
         # exactly start_time + the model offset.
         snapshots = decoded_snapshots[initial_index:]
         decode_seconds = time.perf_counter() - decode_started
-        lake_mask = static["LU_INDEX"] == 21
+        # The land-use table's own ISLAKE, never a hard-coded 21: the
+        # category number is a property of the selected table, and a table
+        # without an inland-water class is a state the assembly declares
+        # rather than a silently empty mask.  lake_override=True because
+        # the soil call below hands the router a lake_mask/lake_skin pair,
+        # which makes every one of these cells water inside the router.
+        water_statics = (
+            None if landuse_attrs is None
+            else WaterTemperatureStatics.for_route(
+                route=_WATER_ROUTE, policy=None,
+                landmask=static["LANDMASK"], lu_index=static["LU_INDEX"],
+                landuse_attrs=landuse_attrs, lake_override=True))
+        if water_statics is None:
+            # LOUD, and no coherent receipt is printed below: with a
+            # prebuilt static cache and no geog root there is no
+            # land-use table to read ISLAKE from, so the shipped MODIS
+            # category is ASSUMED rather than resolved.  Say which
+            # number is being assumed and how to stop assuming it.
+            print(
+                "lake mask: the prebuilt static cache carries no "
+                "land-use metadata, so this run assumes the MODIS "
+                f"inland-water category {MODIS_LAKE_CATEGORY} instead "
+                "of reading ISLAKE, and keeps the historical per-cell "
+                "water temperature.  Pass --geog-root, which is read "
+                "only for the land-use index, to resolve it.",
+                file=sys.stderr)
+            lake_mask = static["LU_INDEX"] == MODIS_LAKE_CATEGORY
+        else:
+            lake_mask = water_statics.lake
         coverage_receipt = {
             f"f{hour:03d}": _source_coverage_receipt(snapshot, grid, lake_mask)
             for hour, snapshot in zip(source_hours, snapshots)
@@ -1244,13 +1291,43 @@ def prepare_gfs_wrf(
         attach_lateral_boundaries(initial_result.state, boundaries)
         lake_skin = interpolate_lake_skin_temperature(
             snapshots[0], grid, lake_mask)
+        # The assembly runs HERE and not inside the mapping, because this
+        # route's water surface is only settled now: the interpolation
+        # landmask deliberately calls GEOG lakes land (they are smaller
+        # than a 0.25 degree GFS cell), and their skin temperature is the
+        # separately selected nearest source water above.  Feeding the
+        # mapping's landmask to the assembly would have classed every lake
+        # as land and handed the soil router a land value on exactly the
+        # cells the lake override makes water.
+        water_temperature = None
+        if water_statics is not None:
+            from gpuwm.ingest.horiz import _as_host_float64
+
+            assembly_skin = _as_host_float64(
+                initial_met.fields["SKINTEMP"]).copy()
+            # Only the FINITE lake values are substituted.  A lake
+            # cell whose nearest-source-water search found nothing
+            # keeps the mapped skin here, so the refusal that reaches
+            # the reader is the router's own "lake_skin_temperature
+            # is non-finite" and not this assembly's less specific
+            # count of inadmissible water cells.
+            usable_lake = lake_mask & np.isfinite(lake_skin)
+            assembly_skin[usable_lake] = lake_skin[usable_lake]
+            assembly = assemble_for_route(
+                water_statics, mapped_sst=None, mapped_skin=assembly_skin)
+            water_temperature = assembly.values
+            # The receipt is printed only now that the field it describes
+            # is the one soil consumes, two statements below.
+            announce_water_temperature(assembly.receipt)
         soil = preprocess_land_surface_soil(
             initial_met.fields,
             sf_surface_physics=int(cfg.sf_surface_physics),
             num_soil_layers=int(cfg.num_soil_layers),
             soil_type=static["SCT_DOM"],
             deep_soil_temperature=static["TMN"], lake_mask=lake_mask,
-            lake_skin_temperature=lake_skin)
+            lake_skin_temperature=lake_skin,
+            water_temperature=water_temperature,
+            route=_WATER_ROUTE)
         initialize_seconds = time.perf_counter() - initialize_started
 
         native_source_identity = {

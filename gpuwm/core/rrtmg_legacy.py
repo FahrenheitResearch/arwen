@@ -231,7 +231,25 @@ _MP_DECLARES_RADII = {
     1: False,
     6: True,     # WSM6
     8: True,     # Thompson
+    # Milbrandt-Yau: NOT in WRF's use_mp_re list either
+    # (module_physics_init.F:1004-1023 names THOMPSON, THOMPSONAERO,
+    # NSSL_2MOM, the WSM/WDM family, nuwrf4ice, Jensen-Ishmael and the P3
+    # family, and no MILBRANDT2MOM), and the scheme's own effective-radius
+    # block is commented out (module_mp_milbrandt2mom.F:3362/:3364/
+    # :3372/:3374), so there is nothing to declare and RRTMG computes its
+    # own radii exactly as it does under any has_reqc=0 scheme.
+    9: False,
     10: False,   # Morrison two-moment: NOT in WRF's use_mp_re list
+    # WDM6.  WRF lists WDM6SCHEME explicitly in the use_mp_re disjunction
+    # (module_physics_init.F:1013, beside WSM6SCHEME at :1010) and the
+    # P3/Jensen-Ishmael has_reqs=0 override (:1027-1033) does not name it,
+    # so has_reqc = has_reqi = has_reqs = 1.  The radii themselves come from
+    # effectRad_wdm6 (module_mp_wdm6.F:3135-3234), which CLAMPS every one
+    # of them: cloud to [2.51, 50] um (:3212), ice to [10.01, 125] um
+    # (:3220), snow to [25, 999] um (:3229).  The ice bound is what matters
+    # here -- cldprmc's [5, 140] um fatal is the reason Morrison (EFFI to
+    # 525 um) is False above, and WDM6's 125 um cap sits inside it.
+    16: True,    # WDM6 (WDM6SCHEME)
     18: True,    # NSSL 2-moment (nssl_2moment_on=1)
     # Thompson aerosol-aware.  WRF lists it EXPLICITLY and SEPARATELY from
     # THOMPSON in the same disjunction:
@@ -273,8 +291,16 @@ def legacy_scheme_declares_radii(mp_physics, use_mp_re):
 #: ``Registry/Registry.EM_COMMON:3036`` declares
 #: ``package thompsonaero mp_physics==28 - moist:qv,qc,qr,qi,qs,qg;...``,
 #: character for character the same ``moist:qv,qc,qr,qi,qs,qg`` inventory
-#: line 3024's ``thompson`` (mp=8) carries.
-_LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 10, 18, 28))
+#: line 3024's ``thompson`` (mp=8) carries.  9 is a member for the same
+#: reason: ``Registry/Registry.EM_COMMON:3025`` declares ``package
+#: milbrandt2mom mp_physics==9 - moist:qv,qc,qr,qi,qs,qg,qh;scalar:qnc,
+#: qnr,qni,qns,qng,qnh``.  Membership here is about F_QI/F_QS and is
+#: INDEPENDENT of has_req*: mp=9 declares no radii and still gets ice
+#: cloud fraction, which is exactly WRF's pairing.
+#: 16 (WDM6) is a member on the same reading: ``package wdm6scheme`` at
+#: ``Registry/Registry.EM_COMMON:3031`` gives it
+#: ``moist:qv,qc,qr,qi,qs,qg``.
+_LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28))
 
 
 def legacy_ice_active(mp_physics: int) -> bool:

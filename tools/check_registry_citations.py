@@ -99,12 +99,19 @@ EXTERNAL: dict[str, str] = {
     "dyn_em/module_em.F": _WRF,
     "dyn_em/module_first_rk_step_part2.F": _WRF,
     "dyn_em/module_initialize_real.F": _WRF,
+    "phys/module_bl_myjpbl.F": _WRF,
+    "phys/module_bl_myjurb.F": _WRF,
     "phys/module_bl_mynn.F": _WRF,
+    "module_mp_p3.F": _WRF,
     "module_mp_thompson.F": _WRF,
+    "phys/module_mp_milbrandt2mom.F": _WRF,
     "phys/module_mp_thompson.F": _WRF,
+    "module_mp_wdm6.F": _WRF,
+    "phys/module_mp_wdm6.F": _WRF,
     "phys/module_pbl_driver.F": _WRF,
     "phys/module_physics_init.F": _WRF,
     "phys/module_radiation_driver.F": _WRF,
+    "phys/module_sf_myjsfc.F": _WRF,
     "module_sf_mynn.F": _WRF,
     "module_sf_noahdrv.F": _WRF,
     "module_sf_noahlsm.F": _WRF,
@@ -116,6 +123,9 @@ EXTERNAL: dict[str, str] = {
     "phys/module_surface_driver.F": _WRF,
     "share/module_soil_pre.F": _WRF,
     "share/module_check_a_mundo.F": _WRF,
+    "module_check_a_mundo.F": _WRF,
+    "module_mp_nssl_2mom.F": _WRF,
+    "share/module_model_constants.F": _WRF,
 }
 
 #: A bare filename that resolves to more than one file in this worktree, and
@@ -157,10 +167,10 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # so a citation that slides onto the other closure's launcher -- the
     # one drift these two are actually at risk of, since the bodies are
     # near-identical -- fails here instead of reading plausibly.
-    "gpuwm/core/dycore.py:853": (
+    "gpuwm/core/dycore.py:862": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=2:"),
-    "gpuwm/core/dycore.py:943": (
+    "gpuwm/core/dycore.py:952": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=3:"),
 }

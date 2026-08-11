@@ -97,6 +97,14 @@ _VAR_META = {
     # field is how two tables come to disagree about one field.
     "QVGRAUPEL": ("Graupel Particle Volume", "m(3) kg(-1)"),
     "QVHAIL": ("Hail Particle Volume", "m(3) kg(-1)"),
+    # P3 one-category (mp_physics=50).  Transcribed verbatim from
+    # Registry.EM_COMMON:555-558, whose IO string ``i0rhusdf`` carries the
+    # ``h`` that puts both in WRF's history stream.  They are what makes an
+    # mp=50 wrfout more than a one-moment ice field: without the rime pair a
+    # reader cannot recover rime fraction qir/qi or rime density qir/qib,
+    # which are the two indices P3's whole ice inventory is built on.
+    "QIR": ("Rime ice mass-1 mixing ratio", "kg kg(-1)"),
+    "QIB": ("Rime ice volume-1 mixing ratio", "m(3) kg(-1)"),
     # Registry.EM_COMMON:1596 (verified against the reference wrfout's
     # REFL_10CM attributes).  Opt-in: cases merge the field into their
     # frame dict (gpuwm.core.refl.compute_refl_10cm supplies the values).
@@ -626,7 +634,23 @@ def _live_state_history_fields(state) -> dict[str, object]:
             # landed; under mp=28 it simply starts carrying a PROGNOSTIC
             # droplet number instead of Morrison's diagnostic one, which is
             # a change in the values WRF also makes, not in the inventory.
-            ("QNWFA", "nwfa"), ("QNIFA", "nifa")):
+            ("QNWFA", "nwfa"), ("QNIFA", "nifa"),
+            # P3's rime mass and rime volume (mp_physics=50 only, and
+            # presence-guarded like every row above).  WRF gives both the
+            # history ``h`` in Registry.EM_COMMON:555-558.  th_old/qv_old
+            # are deliberately NOT here: their IO string is ``rusd``
+            # (:1598-1599) -- restart, no history -- so WRF does not
+            # publish them either, and gpuwm follows.
+            ("QIR", "qir"), ("QIB", "qib"),
+            # WDM6's CCN reservoir (Registry.EM_COMMON:3031 declares
+            # scalar:qnn,qnc,qnr for wdm6scheme).  It publishes under the
+            # same QNCCN name NSSL's qnn does further down, and that is
+            # safe rather than a collision: mp=16 allocates ``nn`` and mp=18
+            # allocates ``qnn``, never both, so at most one row can fire on
+            # any state.  QNCLOUD/QNRAIN need no new rows -- WDM6's nc/nr
+            # are already mapped above, and under mp=16 they simply carry a
+            # double-moment warm-rain pair instead of Morrison's.
+            ("QNCCN", "nn")):
         value = getattr(state, state_name, None)
         if value is not None:
             fields[output_name] = value
@@ -792,6 +816,28 @@ def _live_state_history_fields(state) -> dict[str, object]:
     return fields
 
 
+def _driver_refreshes_psfc(state) -> bool:
+    """Is ``state.physics.fields["psfc"]`` a computed surface pressure?
+
+    A physics driver allocates ``psfc`` unconditionally but refreshes it
+    from ``p_interface[0]`` only inside the surface/PBL cadence block
+    (``gpuwm/core/physics.py``, guarded by ``self.surface_enabled``).  A
+    microphysics-only or dycore-plus-radiation composition therefore
+    carries the allocation seed -- 100000 Pa -- for the whole forecast,
+    and publishing it wrote a 150 hPa fabrication into wrfout from the
+    most ordinary idealized run there is.  Asking whether the surface is
+    on, rather than whether a driver exists, hands those compositions to
+    the diagnostic extrapolation that already sits one branch below and
+    is the same answer WRF's ``phy_prep`` computes.
+
+    A driver-shaped object with no ``surface_enabled`` attribute reads as
+    "no refresh", which routes to the computed branch: the safe side.
+    """
+    physics = getattr(state, "physics", None)
+    return physics is not None and bool(
+        getattr(physics, "surface_enabled", False))
+
+
 def state_frame(
         state, *, include_diagnostic_pressure: bool = False
 ) -> dict[str, np.ndarray]:
@@ -833,7 +879,7 @@ def state_frame(
         pb3 = pb if pb.ndim == 3 else pb[:, None, None]
         fields["P"] = cp.asnumpy(state.p - pb3)
         fields["PB"] = cp.asnumpy(cp.broadcast_to(pb3, state.p.shape))
-        if getattr(state, "physics", None) is not None:
+        if _driver_refreshes_psfc(state):
             fields["PSFC"] = cp.asnumpy(state.physics.fields["psfc"])
         elif getattr(state, "p_top", None) is not None:
             # Without a physics driver, diagnose PSFC the way WRF's
@@ -1269,7 +1315,7 @@ def _device_state_frame(state, *, include_diagnostic_pressure: bool = True):
         pb3 = pb if pb.ndim == 3 else pb[:, None, None]
         fields["P"] = state.p - pb3
         fields["PB"] = cp.broadcast_to(pb3, state.p.shape)
-        if getattr(state, "physics", None) is not None:
+        if _driver_refreshes_psfc(state):
             fields["PSFC"] = state.physics.fields["psfc"]
         elif getattr(state, "p_top", None) is not None:
             from gpuwm.core import constants as c

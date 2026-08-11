@@ -1083,7 +1083,21 @@ def test_the_runtime_history_lane_admits_28_for_refl_10cm():
         "gpuwm/runtime.py no longer admits mp=28 for REFL_10CM; an mp=28 "
         "forecast writes history frames with no radar data and refl.py's "
         "consume-once contract reports an unconsumed stash")
-    assert set(runtime.REFL_10CM_MICROPHYSICS) == {1, 6, 8, 10, 18, 28}
+    # 16 (WDM6) joined with the WDM6 port: module_mp_wdm6.F reaches
+    # refl10cm_wdm6 from one site (:291) under the same
+    # ``diagflag .and. do_radar_ref == 1`` guard, so the history lane must
+    # admit it for the same reason it admits 28.
+    assert set(runtime.REFL_10CM_MICROPHYSICS) == {1, 6, 8, 10, 16, 18, 28}
+    # ... and the set is RE-DERIVED against the estimator's own admission
+    # set rather than left as one hand-typed tuple, which is how this pin
+    # went stale: preflight prices a reflectivity kernel for exactly the
+    # schemes that can launch one, so a scheme admitted on one side and not
+    # the other either strands a computed field at the next history frame
+    # or reserves local memory nothing launches.
+    from gpuwm.core import preflight as pf
+
+    assert (set(runtime.REFL_10CM_MICROPHYSICS)
+            == set(pf._REFLECTIVITY_MICROPHYSICS))
 
     runtime_source = (pathlib.Path(__file__).resolve().parent.parent
                       / "gpuwm" / "runtime.py").read_text(encoding="utf-8")

@@ -52,7 +52,19 @@ LEAKS: tuple[tuple[str, str], ...] = (
 
 #: Case identifiers must never reach a public document either.  Same rule the
 #: certification path already enforces on docs/public.
-CASE_TOKENS = ("real74", "1974", "ohio", "oklahoma", "may1999", "20cr")
+#:
+#: A forcing product is not a case identifier and is not listed here.  A
+#: release note is free to say ERA5, GFS, HRRR or 20CRv3, because each of
+#: those names a route a user selects, the same way the CLI does (owner
+#: ruling, 2026-08-10).  ``1974`` stays, and still guards the case that the
+#: 20CRv3 route was first driven for.
+CASE_TOKENS = ("real74", "1974", "ohio", "oklahoma", "may1999")
+
+#: Forcing routes a release note is free to name.  Listed here so the ruling
+#: above is enforced rather than only recorded, and re-adding one to
+#: CASE_TOKENS fails a test instead of silently blocking a release note from
+#: saying which source it is about.
+FORCING_ROUTES = ("era5", "gfs", "hrrr", "20cr")
 
 
 def _newest_section() -> tuple[str, str]:
@@ -91,6 +103,15 @@ def test_the_newest_release_note_leaks_no_internal_state(needle: str,
                 if needle in l.lower())
     pytest.fail(
         f"{heading} contains {needle!r} -- {what} -- in: {line[:160]!r}")
+
+
+@pytest.mark.parametrize("route", FORCING_ROUTES)
+def test_a_forcing_route_is_not_a_case_identifier(route: str) -> None:
+    assert route not in CASE_TOKENS, (
+        f"{route!r} names a forcing route a user selects on the command line, "
+        "so a release note is allowed to say it. This list guards case "
+        "identifiers, which name one experiment nobody outside the project "
+        "runs.")
 
 
 @pytest.mark.parametrize("token", CASE_TOKENS)

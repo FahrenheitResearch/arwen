@@ -130,14 +130,21 @@ def kernel_capacity(nz: int) -> int:
     return nz
 
 
-def _column_kernel(symbol: str, nz: int):
-    """One ``refl.cu`` column kernel, compiled at ``REFL_KMAX = nz``."""
+def _column_kernel(symbol: str, nz: int, module: str = "refl"):
+    """One reflectivity column kernel, compiled at ``REFL_KMAX = nz``.
+
+    ``module`` is the translation unit.  WDM6's kernel lives in its own
+    (``wdm6_refl.cu``) rather than in ``refl.cu``, because ``refl.cu`` is
+    byte-frozen -- see that file's header and
+    ``tests/test_mp8_frozen.py::test_every_frozen_kernel_module_is_unchanged``
+    -- so a new scheme may not be appended to it.
+    """
     from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 
     capacity = kernel_capacity(nz)
     if capacity == _KMAX:
-        return get_kernel("refl", symbol)
-    return get_kernel_int_defines("refl", symbol,
+        return get_kernel(module, symbol)
+    return get_kernel_int_defines(module, symbol,
                                   (("REFL_KMAX", capacity),))
 
 #: module_mp_radar.F:40/43/63-64: 50 size bins, 10 cm wavelength, and the
@@ -320,6 +327,30 @@ def radar_init_wsm6(hail_opt: int = 0) -> RadarInit:
         xoamg=1.0 / xam_g, xocmg=(1.0 / xam_g) ** (1.0 / 3.0))
 
 
+@lru_cache(maxsize=2)
+def radar_init_wdm6(hail_opt: int = 0) -> RadarInit:
+    """``radar_init`` products for WDM6's m(D) inputs (wdm6init:2196-2208).
+
+    Densities are WSM6's (rain 1000, snow 100, graupel 500 or 700 by
+    ``hail_opt``), but WDM6 sets ``xmu_r = 1`` before ``call radar_init``
+    while snow and graupel keep ``xmu = 0``.  So only the RAIN exponent and
+    gamma tuples move: ``xcre = (1+bm, 1+mu, 1+bm+mu, 1+2bm+mu)`` becomes
+    (4, 2, 5, 8) with ``xcrg = (6, 1, 24, 5040)`` and ``xorg2 = 1/G(2) = 1``.
+    Snow and graupel keep the mu = 0 tuples ``radar_init`` already returns.
+    """
+    rimed = wsm6_rimed(hail_opt)
+    xam_g = rimed.deng * _PI / 6.0
+    base = radar_init(0)
+    xbm, xmu_r = 3.0, 1.0
+    xcre = (1.0 + xbm, 1.0 + xmu_r, 1.0 + xbm + xmu_r,
+            1.0 + 2.0 * xbm + xmu_r)
+    xcrg = tuple(math.gamma(v) for v in xcre)
+    return replace(
+        base, xam_r=1000.0 * _PI / 6.0, xam_g=xam_g,
+        xcre=xcre, xcrg=xcrg, xorg2=1.0 / xcrg[1],
+        xoamg=1.0 / xam_g, xocmg=(1.0 / xam_g) ** (1.0 / 3.0))
+
+
 @lru_cache(maxsize=1)
 def _device_tables():
     """Packed float64 device copy of the radar_init bin/weight tables:
@@ -425,6 +456,50 @@ def launch_refl10cm_wsm6(qv, qr, qs, qg, t, p, refl, *,
          np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
+def launch_refl10cm_wdm6(qv, qr, nr, qs, qg, t, p, refl, *,
+                         hail_opt: int = 0) -> None:
+    """One CUDA thread per column: WRF ``refl10cm_wdm6`` into dBZ.
+
+    ``nr`` is WDM6's transported rain number moment.  Unlike Thompson's
+    diagnostic, it needs no private shadow: WDM6 predicts rain number as
+    state, and the driver hands the routine the same ``nr`` array the
+    scheme just updated (module_mp_wdm6.F:281-296).
+    """
+    shape = refl.shape
+    if len(shape) != 3:
+        raise ValueError(f"refl fields must be 3-D, got {shape}")
+    nz, ny, nx = shape
+    if nz > _KMAX:
+        raise ValueError(f"nz={nz} exceeds REFL_KMAX={_KMAX}")
+    _check_fields({"qv": qv, "qr": qr, "nr": nr, "qs": qs, "qg": qg,
+                   "t": t, "p": p, "refl": refl}, shape)
+    rc = radar_init_wdm6(hail_opt)
+    rimed = wsm6_rimed(hail_opt)
+    # ONE SOURCE OF TRUTH.  The rain moments below are the ONLY statement of
+    # these numbers: kernels/wdm6_refl.cu takes them as arguments rather
+    # than re-spelling them as literals.  Two exponents stay compile-time in
+    # the kernel -- xcre(2) = 2 as ``lam*lam`` and xcre(4) = 8 as
+    # ``pow(ilamr, 8.0)`` -- so a different xmu_r must not reach it silently.
+    if rc.xcre != (4.0, 2.0, 5.0, 8.0):
+        raise ValueError(
+            "kernels/wdm6_refl.cu hard-codes the rain PSD exponents "
+            f"xcre(2)=2 and xcre(4)=8; radar_init_wdm6 now derives "
+            f"xcre={rc.xcre}, so the kernel would silently use the old "
+            "exponents. Update the kernel with the derivation, do not "
+            "relax this check.")
+    blocks = (ny * nx + _COLUMN_TPB - 1) // _COLUMN_TPB
+    _column_kernel("refl10cm_wdm6_column", nz, module="wdm6_refl")(
+        (blocks,), (_COLUMN_TPB,),
+        (qv, qr, nr, qs, qg, t, p, _device_tables(),
+         np.float64(rc.k_w), np.float64(rc.m_w_0.real),
+         np.float64(rc.m_w_0.imag), np.float64(rc.m_i_0.real),
+         np.float64(rc.m_i_0.imag), np.float64(rc.xam_g),
+         np.float64(rimed.n0g),
+         np.float64(rc.xam_r), np.float64(rc.xcrg[2]),
+         np.float64(rc.xcrg[3]), np.float64(rc.xorg2), refl,
+         np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
 def launch_refl10cm_thompson(
         qv, qr, nr, qs, qg, graupel_number_shadow, t, p, refl) -> None:
     """One CUDA thread per column: classic Thompson ``calc_refl10cm``.
@@ -467,8 +542,10 @@ def compute_refl_10cm(
     standalone diagnostic over the current state, but production history
     output uses the explicit microphysics-time pair (PROVENANCE.md D2).
     Dispatches like ``microphysics.apply``: 1 = Kessler fallback, 6 =
-    WSM6 ``refl10cm_wsm6``, 8 and 28 = Thompson ``calc_refl10cm``, and
-    10 = Morrison ``refl10cm_hm``.  Thompson requires its output-due private
+    WSM6 ``refl10cm_wsm6``, 8 and 28 = Thompson ``calc_refl10cm``,
+    10 = Morrison ``refl10cm_hm``, and 16 = WDM6 ``refl10cm_wdm6``, whose
+    rain intercept is diagnosed from the scheme's own prognostic ``nr``
+    rather than fixed.  Thompson requires its output-due private
     graupel-number scratch through ``thompson_graupel_number``.  Results
     land in the persistent
     ``refl_10cm`` scratch slot and are returned.
@@ -498,9 +575,9 @@ def compute_refl_10cm(
     from gpuwm.core import constants as c
     from gpuwm.core.state import DTYPE
 
-    if cfg.mp_physics not in (1, 6, 8, 10, 28):
+    if cfg.mp_physics not in (1, 6, 8, 10, 16, 28):
         raise ValueError("do_radar_ref needs an active microphysics scheme "
-                         f"(mp_physics 1, 6, 8, 10, or 28), got "
+                         f"(mp_physics 1, 6, 8, 10, 16, or 28), got "
                          f"{cfg.mp_physics}")
     if state.qv is None:
         raise ValueError("reflectivity requires a moist state")
@@ -549,6 +626,15 @@ def compute_refl_10cm(
         launch_refl10cm_thompson(
             state.qv, state.qr, state.nr, state.qs, state.qg,
             thompson_graupel_number, t, p, refl)
+    elif cfg.mp_physics == 16:
+        missing = [name for name in ("qr", "nr", "qs", "qg")
+                   if getattr(state, name, None) is None]
+        if missing:
+            raise ValueError("mp_physics=16 reflectivity lacks WDM6 fields: "
+                             + ", ".join(missing))
+        launch_refl10cm_wdm6(state.qv, state.qr, state.nr, state.qs,
+                             state.qg, t, p, refl,
+                             hail_opt=cfg.wdm6_hail_opt)
     elif cfg.mp_physics == 6:
         missing = [name for name in ("qr", "qs", "qg")
                    if getattr(state, name, None) is None]

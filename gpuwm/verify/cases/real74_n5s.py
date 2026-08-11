@@ -51,7 +51,13 @@ N5S_SOIL_LAYERS = 4
 #: Leaving 28 out here would not skip a diagnostic -- it would leave a
 #: computed field unconsumed, which ``refl.py``'s consume-once contract then
 #: raises on at the NEXT history frame.
-REFLECTIVITY_MICROPHYSICS = frozenset((1, 6, 8, 10, 18, 28))
+#: 16 (WDM6) is admitted on the same grounds, re-derived on its own Fortran:
+#: ``refl10cm_wdm6`` is reached from the single site module_mp_wdm6.F:291
+#: under ``diagflag .and. do_radar_ref == 1`` (:279-280) and gpuwm's mp=16
+#: adapter stages the field through the identical seam.  It takes a rain
+#: NUMBER argument (nr1d, :2957) where Thompson's does not, which changes
+#: the producer kernel and nothing about admission.
+REFLECTIVITY_MICROPHYSICS = frozenset((1, 6, 8, 10, 16, 18, 28))
 
 # Every science-field entry below has one explicit gpuwm consumer.  The
 # importer is intentionally closed-world: variables outside these inventories
@@ -85,11 +91,17 @@ MOISTURE_MAP = {
     # mp_physics=28 (Thompson aerosol-aware).  QNCLOUD is already above --
     # Morrison declares the same Registry name -- but for mp=28 it stops
     # being an optional diagnosed field and becomes a REQUIRED prognostic
-    # (see MP28_REQUIRED_QNCLOUD below).  QNWFA/QNIFA are new here; WRF
+    # (see REQUIRED_QNCLOUD_MICROPHYSICS below).  QNWFA/QNIFA are new here; WRF
     # declares them as scalars with the input stream in their IO string
     # (Registry/registry.new3d_wif:87-90, ``i0rhusdf=(bdy_interp:dt)``), so
     # real.exe writes them into wrfinput exactly as it writes QNRAIN.
     "QNWFA": "nwfa", "QNIFA": "nifa",
+    # mp_physics=16 (WDM6).  QNCLOUD and QNRAIN are already above and carry
+    # WDM6's prognostic nc/nr unchanged; QNCCN is new here.  It maps to
+    # ``nn``, WDM6's own state name for the CCN reservoir -- NOT to NSSL's
+    # ``qnn``, which is the same WRF variable in a different scheme's state
+    # and is why the two maps stay separate rather than merging.
+    "QNCCN": "nn",
 }
 
 # NSSL reuses several WRF Registry names carried by Morrison, but the state
@@ -133,12 +145,27 @@ THOMPSON_NUMBER_WRFINPUT = ("QNRAIN", "QNICE")
 #: raising.  Required, not optional.
 THOMPSON_AEROSOL_NUMBER_WRFINPUT = ("QNRAIN", "QNICE", "QNCLOUD",
                                     "QNWFA", "QNIFA")
+#: mp_physics=16 (WDM6).  ``Registry.EM_COMMON:3031`` declares the package
+#: as ``moist:qv,qc,qr,qi,qs,qg;scalar:qnn,qnc,qnr``, so WDM6's wrfinput is
+#: WSM6's six masses plus exactly three transported numbers -- the CCN
+#: reservoir QNCCN (:539), the cloud droplet number QNCLOUD (:541) and the
+#: rain number QNRAIN (:533).  All three are prognostic, none is diagnosed,
+#: so all three are REQUIRED: a WDM6 wrfinput without QNCLOUD would start
+#: every column at nc = 0 and WDM6's own slope floor would hold it there,
+#: which is the mp=28 hazard in the note above, not Morrison's optional
+#: field.
+WDM6_NUMBER_WRFINPUT = ("QNCCN", "QNCLOUD", "QNRAIN")
 #: The schemes for which QNCLOUD is a required prognostic rather than the
 #: optional diagnosed Morrison field.  Consulted by
 #: :func:`_restore_active_moisture`, whose "missing is tolerated" branch
 #: keys on ``MORRISON_OPTIONAL_MOISTURE_WRFINPUT`` alone and would otherwise
-#: extend Morrison's exemption to mp=28.
-MP28_REQUIRED_QNCLOUD = frozenset({28})
+#: extend Morrison's exemption to mp=28.  16 belongs for the same reason:
+#: WDM6 PREDICTS the droplet number (Registry.EM_COMMON:3031's
+#: ``scalar:qnn,qnc,qnr``), so QNCLOUD is the prognostic its double-moment
+#: warm rain is built on, not Morrison's diagnosed convenience field.
+#: Renamed off the mp28 spelling when 16 joined -- a set with two members
+#: named for one of them is how the next scheme gets forgotten.
+REQUIRED_QNCLOUD_MICROPHYSICS = frozenset({16, 28})
 NSSL_MOISTURE_WRFINPUT = (
     "QHAIL", "QNDROP", "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL",
     "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL",
@@ -398,7 +425,7 @@ def _active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
         raise TypeError("cfg.mp_physics must be an integer")
     moist = bool(cfg.moist)
     mp_physics = int(cfg.mp_physics)
-    if mp_physics not in (0, 1, 6, 8, 10, 18, 28):
+    if mp_physics not in (0, 1, 6, 8, 10, 16, 18, 28):
         raise ValueError(
             f"unsupported active wrfinput mp_physics={mp_physics}")
     if not moist:
@@ -407,8 +434,13 @@ def _active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
                 f"mp_physics={mp_physics} requires cfg.moist=True")
         return frozenset(), frozenset()
     required = BASE_MOISTURE_WRFINPUT
-    if mp_physics in (6, 8, 10, 18, 28):
+    # 16 belongs with the ice-carrying set: wdm6scheme's moist inventory
+    # (Registry.EM_COMMON:3031) is qv,qc,qr,qi,qs,qg -- WSM6's, character
+    # for character.  WDM6 is double-moment in the WARM half only.
+    if mp_physics in (6, 8, 10, 16, 18, 28):
         required += ICE_MASS_WRFINPUT
+    if mp_physics == 16:
+        required += WDM6_NUMBER_WRFINPUT
     if mp_physics == 8:
         required += THOMPSON_NUMBER_WRFINPUT
     elif mp_physics == 28:
@@ -554,7 +586,8 @@ def _restore_active_moisture(state, raw: Mapping[str, np.ndarray], cfg,
     # start every column at WRF's 2/rho terminal clamp floor
     # (module_mp_thompson.F:3976), which is finite, bounded and wrong.
     optional_moisture = frozenset(MORRISON_OPTIONAL_MOISTURE_WRFINPUT)
-    if cfg is not None and int(cfg.mp_physics) in MP28_REQUIRED_QNCLOUD:
+    if (cfg is not None
+            and int(cfg.mp_physics) in REQUIRED_QNCLOUD_MICROPHYSICS):
         optional_moisture = frozenset()
     state_names = []
     for wrf_name, state_name in _active_moisture_map(cfg).items():

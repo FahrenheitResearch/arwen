@@ -5,15 +5,129 @@ water-temperature analysis replaces ERA5 SST and SKINTEMP over WATER
 source cells before horizontal interpolation. Configured on nothing,
 the ERA5 route is byte-identical to a tree without the feature.
 
+## The default: one provider per body of water
+
+`water_temperature_policy` in `[case_data]` names which provider decides the
+water-surface temperature. Silence selects `era5_class_coherent`, so a bare
+run gets coherent lakes with no declared file and no network access.
+
+| policy | what it does | when to declare it |
+|---|---|---|
+| `era5_class_coherent` (default) | Surface classes come from the target statics (land `LANDMASK >= 0.5`, lakes the MODIS inland-water category, ocean the rest). Each class is labelled into connected components and ONE provider is chosen per component: the ERA5 SST analysis, interpolated with a normalized masked bilinear over that component's own donors, where those donors cover at least half of it; otherwise the coherent SKINTEMP field for the whole body. | nothing to declare |
+| `wrf_compat` | The historical per-cell selector, byte-for-byte: mapped SST where it lies in 170..400 K, mapped SKINTEMP elsewhere. | stock-WRF certification, parity batteries, reproducing an archived run |
+| `external_overlay` | The overlay machinery below, unchanged. A declared `water_temperature_overlay` selects this on its own. | an observational analysis is available |
+
+Two properties are structural rather than checked after the fact. Donors are
+selected by component identity instead of by radius, so a lake cannot be
+handed ocean water and no water cell can be handed a land donor. A donorless
+body takes its component fallback rather than a global search, so a landlocked
+lake with no analysis of its own cannot import another basin's water. Every
+water cell carries a provider id in the diagnostic `WATER_TEMP_SOURCE`, and a
+water cell that reaches the end without a provider is a refusal, not a fill.
+
+### Which routes it covers, and how that stays true
+
+The guarantee is enforced at the soil preprocessing routers, which are the one
+seam every forcing route already crosses, and not route by route. A route that
+hands the router a raw `SST` beside its `SKINTEMP` with no assembled field is
+refused by name and told where the decision belongs; `water_temperature_policy
+= "wrf_compat"` is the one declaration that reopens the historical selector. A
+mapping that carries no `SST` passes, because the selector then reduces to
+`SKINTEMP` on every water cell, which is exactly what the assembly returns for
+a body with no donors: the two are the same array, and a test pins that.
+
+| route | water temperature | lake class |
+|---|---|---|
+| ERA5 (`gpuwm run` and the direct adapter) | assembled from the source SST analysis | the land-use table's `ISLAKE` |
+| nested children of either ERA5 route | assembled, under the parent's policy, on the child's own statics | the child's own `ISLAKE` |
+| mapped / rw-wps, 20CRv3 included | assembled; these compositions declare a skin temperature and no SST, so the assembled field equals the mapped skin | the land-use table's `ISLAKE` |
+| GFS | assembled after the lake skin is resolved, because GEOG lakes are smaller than a 0.25 degree GFS cell and this route classes them as land for the mapping | the land-use table's `ISLAKE` |
+| native HRRR | not assembled: no SST in the inventory, so the assembly is the identity | not applicable |
+
+One scope limit, stated because it is a real gap and not a rounding: the ERA5
+direct adapter run with `--static-input` and no `--geog-root` cannot resolve a
+land-use table at all, because the prebuilt static NPZ is numeric fields only.
+That run prints a line saying so and falls back to the historical per-cell
+selector, so its lakes stay blocky. Passing `--geog-root`, which is read only
+for the land-use index, restores the default treatment.
+
+A land-use table with no inland-water class at all (USGS 24-category, where
+WPS writes `ISLAKE = -1`) is a declared state, not an empty mask: the advisory
+says that inland water is classed with the ocean on that domain, so a lake
+joined to the sea by a coarse coastline can share its provider there.
+
+## What the ingest fixed first, and what is left for an overlay
+
+Most of the blockiness this document was written about was this project's own
+defect, not ERA5's content. Measured on the reproducing case (Lake Erie,
+1985-05-31 12Z, 3 km nest, 4195 water cells, 2684 of them in Erie itself),
+attributing every mechanism to the source or to the chain:
+
+| mechanism | source or ours | what it did | disposition |
+|---|---|---|---|
+| The water temperature was selected PER CELL between mapped SST and mapped SKINTEMP (`gpuwm/ingest/soil.py`) | **ours** | The two providers disagree by a mean of -5.47 K and up to 12.37 K on the cells where both exist, so switching between them mid-lake painted a seam of that amplitude. 257 of the 269 intra-lake adjacent steps above 1 K sat exactly on the switch boundary. | fixed: one provider per connected body, `gpuwm/ingest/water_temperature.py` |
+| WPS's SST operators quit at the coast (`sixteen_pt+four_pt`, both need a full stencil, SST is missing over land, `fill_missing=0.`) | shared with WPS | Only 46.6 % of the nest's water cells passed the validity test, which is what drove the switch above; the mapped SST field itself keeps this behaviour, because the reconciler and the parity batteries read it expecting METGRID.TBL. | no longer decides anything: the assembly reads the SOURCE analysis, not this field |
+| ERA5 SKINTEMP over lakes is the FLake model state | source | Warmer than the analysis and quantized on the 0.25 degree cell. | still the fallback for a body with no analysis of its own, and coherent across that whole body |
+| Mixed land/water source cells enter the water donor set (`LANDSEA` binarized at 0.5) | ours | SKINTEMP ramps toward the land mean near shore. | second order once the analysis reaches the lake. On its own it warms near-shore mapped SKINTEMP by a mean of 0.31 K and at most 2.59 K, and it does not build a shore-to-midlake gradient by itself: that gap is -0.18 K with the mixed donors and +0.14 K without. Isolated by remapping SKINTEMP twice on the same case, donors `LANDSEA <= 0.5` against donors `LANDSEA == 0.0`, and reading the near and far means defined below off the mapped field. |
+
+Measured before and after at the same 18Z valid time on the same case, with
+nothing declared:
+
+| statistic | shipped per-cell selector | `era5_class_coherent` | stock WRF v4.6.1 oracle |
+|---|---|---|---|
+| intra-lake adjacent-step P99 | 7.32 K | 0.13 K | 0.60 K (1 km, 1974 case) |
+| intra-lake steps above 1 K | 5.18 % | 0.00 % | 0.65 % |
+| shore-to-midlake TSK gap | +5.21 K | +0.46 K | -2.33 K (12 km, 1974 case) |
+| lake TSK range | 284.51..294.86 K | 284.49..289.41 K | 273..276 K coherent |
+
+The instrument behind those four rows, stated so that a re-measurement lands
+on the same numbers instead of on a neighbouring definition:
+
+* **The field is TSK in the 18Z forecast frame** of the two runs, not the
+  assembled water temperature at the 18Z forcing time. Those are two
+  instruments and they disagree: read the assembled field instead and the
+  shipped column becomes P99 5.36 K and 284.51..296.63 K, with the same
+  5.18 % above 1 K. Six hours of surface integration is the whole of the
+  difference, and the forecast frame is what a user sees.
+* **The lake is the largest connected component of `LAKEMASK`**, 2684 cells,
+  labelled 4-connected by `_label_components` in
+  `gpuwm/ingest/water_temperature.py`. It carries the two step rows and the
+  range row.
+* **An adjacent-cell step** is `abs(TSK[i,j] - TSK[i,j+1])` and
+  `abs(TSK[i,j] - TSK[i+1,j])` over pairs with both cells inside that
+  component. The P99 row is that set's 99th percentile and the row under it
+  is the fraction of the set above 1 K.
+* **The shore-to-midlake gap is measured on a box, not on the component**:
+  over water cells (`LANDMASK < 0.5`) inside 41.2 to 42.95 N and 83.6 to
+  78.6 W, it is the mean TSK at a 4-connected distance of 2 cells or less
+  from the nearest land cell, minus the mean at 9 cells or more. That is 673
+  near cells and 699 far cells out of the box's 2826 on this 3 km nest.
+* **The lake TSK range** is the minimum and the maximum over the component.
+
+ERA5 carries an SST analysis over the Great Lakes in every era sampled (1985,
+1995, 2000, 2010, 2020), so the default is not era-specific. A declared
+overlay remains the higher-accuracy option and is what to declare when the
+case turns on lake temperature.
+
+### Limitation of the overlay path
+
+The overlay is sampled onto the ERA5 SOURCE grid before horizontal
+interpolation, so a high-resolution analysis loses detail finer than 0.25
+degrees. Interpolating a declared analysis directly to the target is out of
+scope here and would change the overlay's identity payload.
+
 ## The problem it fixes
 
 ERA5's water-surface temperature is coarse structure at 0.25 degrees,
 and a convection-permitting nest inherits it as hard rectangular
 quantization of near-surface fields over lakes and coasts (2 m
-dewpoint is where users see it first). This is a documented stock
-WRF + ERA5 limitation, not something specific to this model's ingest;
-the WRF community threads below describe the same artifact and its two
-remedies:
+dewpoint is where it shows first). Stock WRF + ERA5 has the same
+artifact, for the reason in the table above: the SST operator chain is
+METGRID.TBL's, so metgrid abandons the same coastal cells to
+`fill_missing=0.` and real.exe falls back to the same FLake SKINTEMP.
+That shared inheritance is why the community threads below describe
+this artifact and its two remedies, and why this project stopped
+matching WPS on the cells WPS leaves undefined:
 
 - <https://forum.mmm.ucar.edu/threads/lake-sst.10558/>
 - <https://forum.mmm.ucar.edu/threads/issue-with-era5-sst-fields.12525/>
@@ -71,6 +185,18 @@ unchanged when it is absent (pinned by a golden-hash test in
 `tests/test_water_overlay.py`). Declared, the file joins the
 InputCatalog / input manifest and the supervisor's content-addressed
 snapshot set, so the run identity moves exactly when the data does.
+
+What the default DOES move, stated plainly: water-surface temperature.
+`era5_class_coherent` interpolates the source analysis itself rather than
+reading METGRID.TBL's mapped SST field, so ocean and other SST-valid cells
+are **not** bit-identical to the previous default. Measured on the
+reproducing case over the 1955 water cells where the mapped SST was valid,
+the assembled field differs from it by a mean of +0.002 K with a maximum of
+0.169 K, and 0 of the 1955 are bit-identical. That is the two mapping paths
+disagreeing at interpolation noise, not a physical change. It has NOT been
+verified on a real coastal ocean domain, where the SST-valid fraction and
+the component structure are both different; declare `wrf_compat` for a run
+that must reproduce an archived result byte for byte.
 
 ## Accepted files
 

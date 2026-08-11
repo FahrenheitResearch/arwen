@@ -104,6 +104,17 @@ _REGISTRY_ONLY_CODES = frozenset({
 #: The physics-suite question both authorities own.  A registry refusal
 #: carrying any of these must also be a ``validate_run_config`` refusal.
 _SHARED_CODES = frozenset({
+    # The conditional kind (constraints.refused_when), added at 1.9 because
+    # the mp=9 / RTE+RRTMGP cloud-optics coupling is a CONJUNCTION -- a
+    # radiation option AND an ra_rrtmg_variant -- and none of the other
+    # three kinds can state one.  It is shared, not registry-only: the
+    # coupling is a property of a single per-domain RunConfig, and
+    # gpuwm/core/rrtmgp.py refuses exactly the same conjunction at run
+    # time.  This gate is what measured the disagreement while the rule
+    # lived as unevaluated prose in the option's ``extensions``: 320 of
+    # 118,800 component combinations, every one of them mp=9 with
+    # RTE+RRTMGP.
+    "component-conditional-refusal",
     "component-dependency",
     "component-forbidden-setting",
     "component-required-setting",
@@ -581,10 +592,33 @@ def test_an_unimplemented_option_is_refused_when_its_selectors_are_forced():
                 f"and its selectors {selectors} are accepted by "
                 "validate_run_config; a namelist or TOML naming them would "
                 "validate and then fail at driver construction")
-    assert exercised, (
-        "no unimplemented option declares selectors, so this gate measured "
-        "nothing; if that is genuinely true, delete it rather than leave it "
-        "passing vacuously")
+    if exercised:
+        return
+    # Every unimplemented option currently declares NO selectors, so the
+    # loop above measured nothing.  That is genuinely true today --
+    # radiation.wrf-rrtm-dudhia was the last one that did, and its port
+    # landed (gpuwm/core/rrtm_lw.py) -- and it is exactly the state in
+    # which a gate quietly stops gating.  Rather than delete the gate and
+    # lose the mechanism the day a new port registers its selectors, keep
+    # it and prove two things instead: that the emptiness has the reason
+    # claimed, and that the detector still detects.
+    unimplemented = {
+        f"{component_id}.{option_id}": option.get("selectors") or {}
+        for component_id, component in registry["components"].items()
+        for option_id, option in component["options"].items()
+        if option.get("implemented") is not True}
+    assert unimplemented, (
+        "no option is registered unimplemented at all; this gate has no "
+        "subject left and should be deleted rather than left standing")
+    assert all(not selectors for selectors in unimplemented.values()),         unimplemented
+    # Positive control: plant a selector value the runtime authority must
+    # refuse and require _config_refusal to see it.  If this ever passes
+    # silently the loop above was never going to catch anything either.
+    planted = dict(baseline)
+    planted["mp_physics"] = 999
+    assert _config_refusal(planted, nested=False) is not None, (
+        "the refusal detector this gate depends on no longer refuses an "
+        "impossible selector, so its empty result above means nothing")
 
 
 @pytest.mark.parametrize("code", sorted(_SHARED_CODES | _REGISTRY_ONLY_CODES))

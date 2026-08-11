@@ -64,7 +64,8 @@ extern "C" __global__ void nssl2_driver_gather_initialize(
     float dt,
     int first_step,
     int cu_used,
-    int n)
+    int n,
+    int predicted_ccn)
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n) return;
@@ -91,7 +92,18 @@ extern "C" __global__ void nssl2_driver_gather_initialize(
     float snow_number = qns[idx] * rho;
     float graupel_number = qng[idx] * rho;
     float hail_number = qnh[idx] * rho;
-    float ccn_number = qnn[idx] * rho;
+    // module_mp_nssl_2mom.F:2719-2739 is the driver's CCN load.  With
+    // predicted CCN (nssl_ccn_on=1 -> Registry package nssl_ccn_opt, so
+    // f_qnn and therefore flag_ccn are true at :2464-2466) the prognostic
+    // qnn field is loaded at :2727.  With nssl_ccn_on=0 the field does not
+    // exist and WRF instead diagnoses the unactivated CCN every step from
+    // the constant base concentration at :2734, taking the lccna==0 branch
+    // because turn_on_ccna is gated on ccn_on==1 (:1403).  The subtraction
+    // happens in per-mass units and only then is the whole slot scaled by
+    // density at :2935-2944, so the product is formed after the difference.
+    float ccn_number = predicted_ccn
+        ? qnn[idx] * rho
+        : (408163264.0f - qndrop[idx]) * rho;
     float graupel_volume = qvolg[idx] * rho;
     float hail_volume = qvolh[idx] * rho;
 
@@ -1273,7 +1285,8 @@ extern "C" __global__ void nssl2_driver_scatter(
     float* __restrict__ qnn,
     float* __restrict__ qvolg,
     float* __restrict__ qvolh,
-    int n)
+    int n,
+    int predicted_ccn)
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n) return;
@@ -1291,7 +1304,15 @@ extern "C" __global__ void nssl2_driver_scatter(
     qns[idx] = state[(size_t)NSSL2_NS * n + idx] / air_density[idx];
     qng[idx] = state[(size_t)NSSL2_NG * n + idx] / air_density[idx];
     qnh[idx] = state[(size_t)NSSL2_NH * n + idx] / air_density[idx];
-    qnn[idx] = state[(size_t)NSSL2_NN * n + idx] / air_density[idx];
+    // module_mp_nssl_2mom.F:3283 writes the CCN field back only when
+    // flag_ccn is set.  With nssl_ccn_on=0 the Registry never allocated
+    // qnn, WRF's store is skipped, and the diagnostic value recomputed at
+    // the next load is the only CCN the scheme ever sees.  Leaving the
+    // caller's array untouched is what "the field does not exist" means at
+    // this seam; the resolved mode also pins it in pinned_zero_fields().
+    if (predicted_ccn) {
+        qnn[idx] = state[(size_t)NSSL2_NN * n + idx] / air_density[idx];
+    }
     qvolg[idx] = state[(size_t)NSSL2_VG * n + idx] / air_density[idx];
     qvolh[idx] = state[(size_t)NSSL2_VH * n + idx] / air_density[idx];
 }

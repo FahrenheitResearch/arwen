@@ -3028,7 +3028,8 @@ extern "C" __global__ void nssl2_fused_gs(
     float dt,
     int nz,
     int ncol,
-    int n)
+    int n,
+    int hail_on)
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n) return;
@@ -3133,8 +3134,17 @@ extern "C" __global__ void nssl2_fused_gs(
     diagnose_wet_growth_shedding(
         s, particles, rho, pressure_pa[idx], dt, &rates);
     diagnose_ice_snow_to_graupel(s, particles, rho, &rates);
-    diagnose_graupel_to_hail(
-        s, particles, rho, pressure_pa[idx], dt, &rates);
+    if (hail_on) {
+        // Every graupel<->hail conversion in WRF lives inside the single
+        // IF (lhl .gt. 1) block at module_mp_nssl_2mom.F:19860 with its
+        // rates zeroed just above (:19847-19858).  With the hail category
+        // absent (nssl_hail_on=0 -> lhab=7, lhl=0 at :1444-1451) the block
+        // never runs; skipping the call leaves the zero-initialized Rates
+        // members standing, and every other hail-indexed rate is already
+        // gated on the (identically zero) hail mass/number moments.
+        diagnose_graupel_to_hail(
+            s, particles, rho, pressure_pa[idx], dt, &rates);
+    }
     diagnose_hallett_mossop(s, rho, &rates);
 
     // Source-ordered cold diagnosis is inserted here.  It reads only `s` and

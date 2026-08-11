@@ -716,22 +716,21 @@ def test_target_thompson_mynn_ruc_suite_imports_without_substitution(tmp_path):
     ]
 
 
-def test_split_radiation_imports_natively_and_refuses_the_unported_half(
+def test_split_radiation_imports_natively_and_refuses_the_unpaired_half(
         tmp_path):
-    """The native split pair, and the loud refusal that replaced a quiet one.
+    """Both split pairs import as themselves, and 1/4 is still refused.
 
     This began as ``test_rrtm_dudhia_pair_emits_native_split_radiation_config``
-    and asserted that a 1/1 WRF RRTM+Dudhia namelist imported to a loadable
-    TOML.  It did -- and every such TOML then raised NotImplementedError from
-    ``gpuwm/core/physics.py`` ``initialize_physics`` at driver construction,
-    because the RRTM longwave is not ported.  The importer refuses every OTHER
-    unported selector outright (``bl_pbl_physics = 2`` is "no ratified gpuwm
-    mapping"), so accepting this one was the anomaly, not the rule; it survived
-    only because ``validate_run_config`` had ``ra_lw_physics`` 1 inside its
-    accepted set with no readiness blocker behind it.  Now it is refused where
-    the rest are.  What must NOT happen is a silent remap onto RTE+RRTMGP, and
-    that is still asserted: the refusal names the selector and no ``ra_``
-    substitution is offered anywhere.
+    asserting that a 1/1 WRF RRTM+Dudhia namelist imported to a loadable TOML,
+    then became a refusal test when it turned out such a TOML validated and
+    then died at driver construction with the longwave unported.  The port
+    landed (``gpuwm/core/rrtm_lw.py``), so 1/1 imports natively again -- which
+    is the whole point of a classic WRF namelist reaching gpuwm.
+
+    What must NOT happen is a silent remap onto RTE+RRTMGP.  That is asserted
+    on both pairs: no ``ra_`` substitution is offered anywhere.  The refusal
+    that survives is the narrower one -- RRTM longwave beside a shortwave that
+    has no adapter is named, never resolved to something adjacent.
     """
     def _radiation(lw, sw):
         return INPUT_TEXT.replace(
@@ -739,18 +738,35 @@ def test_split_radiation_imports_natively_and_refuses_the_unported_half(
             " ra_sw_physics = 4, 4,", f" ra_sw_physics = {sw}, {sw},").replace(
             "&physics\n", "&physics\n icloud = 1,\n swrad_scat = 0.8,\n")
 
-    # The unported half: refused by name, and never substituted.
-    with pytest.raises(NotImplementedError, match="ra_lw_physics=1") as raised:
-        import_namelists(*_pair(tmp_path, inp=_radiation(1, 1)),
-                         name="rrtm_dudhia")
-    assert "16-band" in str(raised.value)
+    # WRF's classic pair, imported as itself.
+    toml_text, report = import_namelists(
+        *_pair(tmp_path, inp=_radiation(1, 1)), name="rrtm_dudhia")
+    output = tmp_path / "rrtm_dudhia.toml"
+    output.write_text(toml_text)
+    exp = load_experiment(output)
+    for dc in exp.domains:
+        assert dc.run.ra_physics == 0
+        assert dc.run.ra_lw_physics == 1
+        assert dc.run.ra_sw_physics == 1
+        assert dc.run.icloud == 1
+        assert dc.run.swrad_scat == pytest.approx(0.8)
+    assert "ra_lw_physics = 1" in toml_text
+    assert "ra_sw_physics = 1" in toml_text
+    assert all("ra_" not in substitution.key
+               for substitution in report.substitutions)
+
+    # RRTM longwave with a shortwave that has no adapter beside it.
+    with pytest.raises(ValueError, match="ra_lw_physics=1") as raised:
+        import_namelists(*_pair(tmp_path, inp=_radiation(1, 4)),
+                         name="rrtm_unpaired")
+    assert "ra_sw_physics=1" in str(raised.value)
 
     # The implemented half of the same split representation still imports, and
-    # this is where the native-split coverage lives: ra_physics is zeroed, the
-    # two component selectors are emitted separately, icloud and swrad_scat
-    # ride with them, and nothing on a radiation key is substituted.
-    # Dudhia-only under Noah is a declared constant downward longwave
-    # since the constant-GLW guard, and a WRF namelist cannot spell a
+    # this is where the other half of the native-split coverage lives:
+    # ra_physics is zeroed, the two component selectors are emitted separately,
+    # icloud and swrad_scat ride with them, and nothing on a radiation key is
+    # substituted.  Dudhia-only under Noah is a declared constant downward
+    # longwave since the constant-GLW guard, and a WRF namelist cannot spell a
     # gpuwm declaration -- so it arrives through the importer's channel,
     # which exists for exactly this.  WRF v4.6.1 refuses the same
     # namelist outright (phys/module_radiation_driver.F:2245).
@@ -1654,6 +1670,93 @@ def test_nssl_parameters_pin_registry_defaults_under_mp18(tmp_path):
     assert "inert" in dropped[("physics", "nssl_cccn")].reason
 
 
+def test_nssl_variant_selectors_import_natively(tmp_path):
+    """The four variant selectors are settings, not pinned constants.
+
+    WRF v4.6.1 has one NSSL scheme and four flags on top of it; a namelist
+    that turns hail or predicted CCN off must come through as those values
+    rather than being fixed back to the shipped default lane.
+    """
+    base = INPUT_TEXT.replace("mp_physics = 55, 55", "mp_physics = 18, 18")
+    inp = base.replace(" mp_physics = 18, 18,",
+                       " mp_physics = 18, 18,\n nssl_hail_on = 0,\n"
+                       " nssl_ccn_on = 0,")
+    toml_text, report = import_namelists(*_pair(tmp_path, inp=inp))
+    output = tmp_path / "nssl_variant.toml"
+    output.write_text(toml_text, encoding="utf-8")
+    run = load_experiment(output).root.run
+    assert run.mp_physics == 18
+    assert run.nssl_hail_on == 0
+    assert run.nssl_ccn_on == 0
+    fixed = {(f.section, f.key) for f in report.fixed}
+    assert ("physics", "nssl_hail_on") not in fixed
+    assert ("physics", "nssl_ccn_on") not in fixed
+    assert not any(item.key == "mp_physics" for item in report.substitutions)
+
+
+def test_deprecated_nssl_scheme_ids_canonicalize_like_wrf(tmp_path):
+    """17 and 22 are WRF's own spellings of option 18 plus variant flags.
+
+    share/module_check_a_mundo.F:3382-3421 rewrites them before any physics
+    runs, so gpuwm performing the same rewrite is a canonicalization: the
+    user gets the scheme WRF would have given them, and it is reported as
+    an applied default rather than as a gpuwm substitution.
+    """
+    for scheme_id, expected in (
+            (17, {"nssl_hail_on": 1, "nssl_ccn_on": 0,
+                  "nssl_density_on": 2}),
+            (22, {"nssl_hail_on": 0, "nssl_ccn_on": 0,
+                  "nssl_density_on": 1}),
+    ):
+        inp = INPUT_TEXT.replace(
+            "mp_physics = 55, 55", f"mp_physics = {scheme_id}, {scheme_id}")
+        toml_text, report = import_namelists(*_pair(tmp_path, inp=inp))
+        output = tmp_path / f"nssl_mp{scheme_id}.toml"
+        output.write_text(toml_text, encoding="utf-8")
+        run = load_experiment(output).root.run
+        assert run.mp_physics == 18, scheme_id
+        for key, value in expected.items():
+            assert getattr(run, key) == value, (scheme_id, key)
+        assert run.nssl_2moment_on == 1, scheme_id
+        assert not any(item.key == "mp_physics"
+                       for item in report.substitutions), scheme_id
+        applied = [d for d in report.defaults_applied
+                   if d.key == "mp_physics"]
+        assert applied and str(scheme_id) in applied[0].reason, scheme_id
+
+
+def test_unported_nssl_variants_are_refused_by_name(tmp_path):
+    """No nearby NSSL branch is substituted for an unported one."""
+    base = INPUT_TEXT.replace("mp_physics = 55, 55", "mp_physics = 18, 18")
+    one_moment = base.replace(" mp_physics = 18, 18,",
+                              " mp_physics = 18, 18,\n"
+                              " nssl_2moment_on = 0,")
+    with pytest.raises(ValueError, match="one-moment"):
+        import_namelists(*_pair(tmp_path, inp=one_moment))
+
+    three_moment = base.replace(" mp_physics = 18, 18,",
+                                " mp_physics = 18, 18,\n nssl_3moment = 1,")
+    with pytest.raises(ValueError, match="three-moment"):
+        import_namelists(*_pair(tmp_path, inp=three_moment))
+
+    # The deprecated one-moment spellings refuse the same way, naming the
+    # scheme ID the user actually wrote.
+    for scheme_id in (19, 21):
+        inp = INPUT_TEXT.replace(
+            "mp_physics = 55, 55", f"mp_physics = {scheme_id}, {scheme_id}")
+        with pytest.raises(ValueError, match="one-moment"):
+            import_namelists(*_pair(tmp_path, inp=inp))
+
+
+def test_nssl_variant_selectors_refuse_a_per_domain_split(tmp_path):
+    """Hail on in one domain and off in another would change the state set."""
+    base = INPUT_TEXT.replace("mp_physics = 55, 55", "mp_physics = 18, 18")
+    split = base.replace(" mp_physics = 18, 18,",
+                         " mp_physics = 18, 18,\n nssl_hail_on = 1, 0,")
+    with pytest.raises(ValueError, match="one NSSL variant for the whole"):
+        import_namelists(*_pair(tmp_path, inp=split))
+
+
 def test_report_carries_three_explicit_sections(tmp_path):
     _, report = _import_with(tmp_path,
                              extra_physics=" swint_opt = 0,\n")
@@ -1877,17 +1980,20 @@ def test_cli_import_namelist_refuses_output_aliasing(tmp_path):
 
 def test_cli_import_namelist_unported_selector_refuses_without_traceback(
         tmp_path, capsys):
-    """A validate_run_config NotImplementedError (ra_lw_physics=1, the
-    unported WRF RRTM longwave) must reach the operator as the uniform CLI
-    refusal -- message on stderr, exit 2 -- not as a leaked traceback.
+    """A validate_run_config radiation refusal must reach the operator as the
+    uniform CLI refusal -- message on stderr, exit 2 -- not as a leaked
+    traceback.
 
     Observed live during the 2026-07-30 WRF-Runner interop verification: a
     runner-generated namelist pair carrying ra_lw_physics=1 crashed
     ``gpuwm import-namelist`` with a stack trace where every neighbouring
-    refusal (unmapped keys, FDDA, mosaic) printed one actionable line."""
+    refusal (unmapped keys, FDDA, mosaic) printed one actionable line.  The
+    1/1 pair itself now imports -- the WRF RRTM longwave port landed -- so the
+    fixture moves to the pairing that is still refused, RRTM longwave beside
+    RRTMGP shortwave.  The boundary this test owns is unchanged, and so is the
+    message prefix it checks: the refusal still opens with the selector."""
     unported = INPUT_TEXT.replace(
-        " ra_lw_physics = 4, 4,", " ra_lw_physics = 1, 1,").replace(
-        " ra_sw_physics = 4, 4,", " ra_sw_physics = 1, 1,")
+        " ra_lw_physics = 4, 4,", " ra_lw_physics = 1, 1,")
     wps_path, inp_path = _pair(tmp_path, inp=unported)
     out = tmp_path / "resolved.toml"
     rc = cli.main(["import-namelist", str(wps_path), str(inp_path),

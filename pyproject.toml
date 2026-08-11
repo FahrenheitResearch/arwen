@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "1.8.9"
+version = "1.9.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -82,7 +82,15 @@ obs = ["scipy>=1.11"]
 # it is absent rather than dying inside the gridding loop an hour into
 # a run.
 dealias = ["scipy>=1.11"]
-dev = ["pytest>=8.0"]
+# psutil: tests/test_prepare_hrrr_wrf.py's Windows arm walks the process
+# ancestry to find the cmd.exe shim that owns a decoder worker, and a
+# fresh venv running the union battery breaks on the bare import.  It is
+# a test-time need only -- no gpuwm/ or tools/ module imports it -- so
+# it lives here beside pytest rather than in the runtime dependencies.
+# The two previously-audited undeclared imports of the same class are
+# already declared where their features live: pyshp (task #65) in
+# [render] and scipy (task #78) in [obs]/[dealias].
+dev = ["pytest>=8.0", "psutil>=5.9"]
 # The two extras a person running a forecast on their own card needs,
 # under one name, so the quickstart is one pip line instead of a choice
 # between two that most readers want both of. Deliberately NOT geog:

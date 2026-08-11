@@ -36,7 +36,8 @@ from typing import Mapping
 import cupy as cp
 import numpy as np
 
-from gpuwm.config import (NOAHMP_OPTION_IDENTITY, RUC_OPTION_IDENTITY,
+from gpuwm.config import (MYJ_PBL_SCHEME, MYJ_SFCLAY_SCHEME,
+                          NOAHMP_OPTION_IDENTITY, RUC_OPTION_IDENTITY,
                           SASE_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
@@ -104,6 +105,10 @@ from gpuwm.verify.sase_ref import (C_K as SASE_C_K,
                                    CP_AIR as SASE_CP_AIR,
                                    E_MIN as SASE_E_MIN,
                                    prandtl_blend as sase_prandtl_blend)
+from gpuwm.core.myjpbl import (MYJ_PBL_INOUT, myj_pbl_step,
+                               validate_myj_pbl_outputs)
+from gpuwm.core.myjsfc import (MYJ_SFCLAY_INOUT, MYJ_SFCLAY_OUTPUTS,
+                               launch_myj_sfclay)
 from gpuwm.core.shinhong import launch_shinhong, validate_shinhong_outputs
 from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
 from gpuwm.ingest.soil import NOAH_LAYER_THICKNESS_M
@@ -242,6 +247,13 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
     "sf_sfclay_physics": {
         0: None,
         1: "_run_sfclay",     # revised MM5
+        # Eta similarity (WRF v4.6.1 module_sf_myjsfc.F).  It gets its OWN
+        # runner rather than a fourth _run_sfclay arm because it publishes
+        # a different set: AKHS/AKMS/THZ0/QZ0/UZ0/VZ0 and no MOL, ZOL,
+        # PSIM/PSIH, REGIME, GZ1OZ0 or WSPD.  gpuwm.config.
+        # validate_myj_pairing refuses it with any PBL but MYJ for exactly
+        # that reason.
+        2: "_run_myj_sfclay",
         5: "_run_sfclay",     # MYNN surface layer
         91: "_run_sfclay",    # classic MM5
     },
@@ -254,6 +266,13 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
     "bl_pbl_physics": {
         0: None,
         1: "_run_ysu",        # YSU
+        # MYJ (WRF v4.6.1 module_bl_myjpbl.F), Mellor-Yamada level 2.5 as
+        # extended by Janjic.  Unlike every other row here the scheme does
+        # its OWN implicit vertical diffusion, so _run_myj_pbl receives
+        # finished tendencies rather than diffusivities.  Its surface
+        # pairing is enforced in gpuwm.config.validate_myj_pairing, which
+        # is WRF's own fatal at module_physics_init.F:3770-3772.
+        2: "_run_myj_pbl",
         5: "_run_mynn_pbl",   # MYNN EDMF
         # Shin-Hong scale-aware (WRF v4.6.1 module_bl_shinhong.F).  The
         # scheme has NO RunConfig knobs on purpose: WRF's
@@ -304,6 +323,16 @@ def resolve_physics_dispatch(cfg) -> dict[str, str | None]:
 #: von Karman constant (WRF share/module_model_constants.F ``karman``),
 #: consumed by the SASE flux-consistent lower-boundary e source.
 KARMAN = 0.4
+
+#: MYJ's cold-start TKE_MYJ: WRF's ``epsq2``, the value MYJPBLINIT's
+#: non-restart block writes into the whole column
+#: (module_bl_myjpbl.F:1725, share/module_model_constants.F:92 "initial
+#: TKE").  A literal rather than an import of
+#: :data:`gpuwm.verify.myj_ref.EPSQ2` because core must not depend on the
+#: verification tree (the Shin-Hong precedent in
+#: :mod:`gpuwm.core.state`); the two are gated equal in
+#: ``tests/test_myj_port.py``.
+MYJ_TKE_COLD_START = 0.2
 
 #: SPLIT SUBGRID-FLUX DIAGNOSTIC row table (cfg.sase_flux_diag): the
 #: implicit-solve scalar rows that carry a recorded K_v flux, mapped to
@@ -424,6 +453,18 @@ def _cumulus_optional_tendency_components(
     return tuple(components)
 
 
+#: ``mp_physics`` values whose WRF Registry ``moist`` package carries QI,
+#: and therefore the values for which the PBL driver returns an ``rqi``
+#: tendency the run must hold.  THREE sites read it and all three must
+#: agree, or the ``gpuwm check --alloc`` measurement stops covering true
+#: runtime residency: this module's :func:`_pbl_optional_tendency_
+#: components` (what the run allocates), ``preflight.physics_array_shapes``
+#: (what the estimate prices) and ``preflight._materialize_physics`` (what
+#: the measurement constructs).  They used to be three literal tuples, and
+#: mp=16 reached production having moved only two of them.
+PBL_RQI_MICROPHYSICS = (6, 8, 9, 10, 16, 18, 28, 50)
+
+
 def _pbl_optional_tendency_components(cfg: RunConfig) -> tuple[str, ...]:
     """Canonical optional YSU categories for the configured moist state.
 
@@ -435,9 +476,14 @@ def _pbl_optional_tendency_components(cfg: RunConfig) -> tuple[str, ...]:
     package as ``moist:qv,qc,qr,qi,qs,qg`` -- the identical moist inventory
     ``thompson`` (:3024) declares.  Gated by
     ``tests/test_physics.py::test_the_pbl_rqi_budget_admits_28``.
+
+    ``mp_physics=50`` (P3) belongs too: ``Registry.EM_COMMON:3038`` declares
+    the ``p3_1category`` package as ``moist:qv,qc,qr,qi``, so ``F_QI`` is
+    true even though P3 carries no snow or graupel -- the predicate is about
+    QI's presence in the moist array, not about the frozen inventory.
     """
     return (("rqi",)
-            if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18, 28)
+            if cfg.bl_pbl_physics and cfg.mp_physics in PBL_RQI_MICROPHYSICS
             else ())
 
 
@@ -496,8 +542,13 @@ def microphysics_scheme_sr_available(mp_physics: int) -> bool:
     everywhere: WRF's Kessler is warm-rain by construction, so the zero is
     the scheme's answer and falling back to air temperature would freeze cold
     rain the scheme says is liquid.
+
+    ``mp_physics=50`` (P3) belongs for the same reason mp=28 does: its WRF
+    driver arm binds ``SR=SR`` (module_microphysics_driver.F:1592) and the
+    wrapper computes it as the solid-to-total precipitation ratio
+    ``pcprt_sol/(pcprt_liq+pcprt_sol+1.e-12)`` (module_mp_p3.F:898).
     """
-    return int(mp_physics) in (1, 6, 8, 10, 18, 28)
+    return int(mp_physics) in (1, 6, 8, 9, 10, 16, 18, 28, 50)
 
 
 def _composed_optional_tendency_components(
@@ -526,7 +577,7 @@ def microphysics_scratch_slots(
         return (("rainnc", "mp_rainnc"),
                 ("rainncv", "mp_rainncv"),
                 ("sr", "mp_kessler_sr"))
-    if mp_physics in (6, 8, 10, 28):
+    if mp_physics in (6, 8, 10, 16, 28):
         return (("rainnc", "mp_rainnc"),
                 ("rainncv", "mp_rainncv"),
                 ("sr", "mp_sr"),
@@ -534,7 +585,12 @@ def microphysics_scratch_slots(
                 ("snowncv", "mp_snowncv"),
                 ("graupelnc", "mp_graupelnc"),
                 ("graupelncv", "mp_graupelncv"))
-    if mp_physics == 18:
+    if mp_physics in (9, 18):
+        # Milbrandt-Yau shares NSSL's nine-slot row because its WRF driver
+        # arm binds the same nine: RAINNC/RAINNCV (:1868-1869),
+        # SNOWNC/SNOWNCV (:1870-1871), HAILNC/HAILNCV (:1872-1873),
+        # GRAUPELNC/GRAUPELNCV (:1874-1875) and SR (:1876) in
+        # module_microphysics_driver.F's CASE (MILBRANDT2MOM).
         return (("rainnc", "mp_rainnc"),
                 ("rainncv", "mp_rainncv"),
                 ("snownc", "mp_snownc"),
@@ -544,6 +600,19 @@ def microphysics_scratch_slots(
                 ("hailnc", "mp_hailnc"),
                 ("hailncv", "mp_hailncv"),
                 ("sr", "mp_sr"))
+    if mp_physics == 50:
+        # P3 one-category.  FIVE slots, not mp=6/8's seven: the driver arm
+        # ``CASE (P3_1CATEGORY)`` binds RAINNC/RAINNCV/SR/SNOWNC/SNOWNCV and
+        # NO graupel argument (module_microphysics_driver.F:1590-1595),
+        # because P3 has a single ice category whose rime fraction spans
+        # what other schemes split into snow, graupel and hail.  Listing
+        # graupel here would allocate a canonical accumulator that stayed
+        # zero forever and let output claim a graupel field P3 never has.
+        return (("rainnc", "mp_rainnc"),
+                ("rainncv", "mp_rainncv"),
+                ("sr", "mp_sr"),
+                ("snownc", "mp_snownc"),
+                ("snowncv", "mp_snowncv"))
     return ()
 
 
@@ -1768,11 +1837,27 @@ class PhysicsDriver:
             # Imported here so physics -> microphysics -> nssl2_runtime does
             # not observe a partially initialized module. The binding owns
             # every selector-reachable callback and reusable device buffer.
+            from gpuwm.core.nssl2_contract import (
+                require_ported_nssl2_mode,
+                resolve_nssl2_mode_for_config,
+            )
             from gpuwm.core.nssl2_default_hooks import (
                 make_nssl2_production_binding,
             )
+            # WRF has one NSSL scheme and four variant selectors
+            # (share/module_check_a_mundo.F:3433-3455).  Resolve them into
+            # the mode the binding freezes for the life of the domain;
+            # validate_run_config has already refused unported combinations.
+            nssl2_mode = require_ported_nssl2_mode(
+                resolve_nssl2_mode_for_config(cfg))
             self.nssl2_binding = make_nssl2_production_binding(
-                state, cfg.dt)
+                state, cfg.dt, mode=nssl2_mode)
+            # The variant's absent categories are pinned to exact zero
+            # HERE, at domain construction, before the first history or
+            # restart write can publish whatever the allocation left --
+            # see pin_absent_nssl2_fields for why this is per-step too.
+            from gpuwm.core.nssl2_runtime import pin_absent_nssl2_fields
+            pin_absent_nssl2_fields(state, nssl2_mode)
         else:
             self.nssl2_binding = None
 
@@ -2421,6 +2506,141 @@ class PhysicsDriver:
                     carrier = f"{name}_sea"
                     f[carrier][...] = cp.where(
                         ice_component, getattr(sea, name), f[carrier])
+
+    def _run_myj_sfclay(self, atmosphere: Mapping[str, cp.ndarray],
+                        cfg: RunConfig) -> None:
+        """Run WRF's Eta similarity surface layer (sf_sfclay_physics=2).
+
+        The call cadence and the LSM contract are the MM5 layers': the
+        exchange coefficients Noah reads (CHS/CHS2/CQS2/FLHC/FLQC/QGH/CPM
+        and RIB) land in the same ``fields`` slots ``_run_sfclay`` fills,
+        because that contract is a property of gpuwm's surface seam rather
+        than of a scheme.  What is MYJ's -- the viscous sublayer over
+        water, the Zilitinkevich thermal roughness over land, the five-pass
+        flux iteration and the AKHS/AKMS/THZ0/QZ0/UZ0/VZ0 set the MYJ PBL
+        consumes -- lives in :mod:`gpuwm.core.myjsfc` next to its source
+        anchors.
+
+        Bindings with their source of truth:
+
+        * ``RIB`` is written to ``fields["br"]``.  That is WRF's own
+          binding, not an analogy: the surface driver passes ``br`` as
+          MYJSFC's ``RIB`` actual argument
+          (module_surface_driver.F:2199,:2217), and ``_run_noah`` copies
+          ``br`` into ``rib`` for Noah.
+        * ``USTM``/``WSPD``/``CH`` are filled from the driver's own
+          post-call block (:2226-2231): ``ustm = ust``, ``wspd =
+          max(sqrt(u1^2+v1^2), 0.001)``, ``ch = chs``.
+        * ``Z0BASE`` is the background roughness the Zilitinkevich fix
+          reads (module_sf_myjsfc.F:733).  It is a static field seeded from
+          the cold-start ZNT in :func:`initialize_physics`, never the
+          working ZNT the sea branch overwrites every iteration.
+        * ``PBLH`` is MYJSFC's own TKE scan (:263-277), not MIXLEN's
+          (module_bl_myjpbl.F:834).  The two use different interfaces on
+          purpose and WRF lets the surface layer's value stand until the
+          PBL call replaces it.
+        * ``ITIMESTEP`` is one-based, matching WRF's NTSD: the scheme's
+          first-step branches seed USTAR, QSFC, THZ0 and QZ0.
+        """
+        f = self.fields
+        itimestep = int(np.floor(
+            float(self.state.elapsed_seconds) / cfg.dt + 0.5)) + 1
+        columns = {"dz": atmosphere["dz"], "tke": f["tke_myj"]}
+        surface = {
+            "u1": atmosphere["u"][0], "v1": atmosphere["v"][0],
+            "t1": atmosphere["temperature"][0],
+            "th1": atmosphere["theta"][0],
+            "qv1": atmosphere["qv"][0], "qc1": atmosphere["qc"][0],
+            "p1": atmosphere["pressure"][0],
+            "psfc": atmosphere["p_interface"][0],
+            "tsk": f["tsk"], "xland": f["xland"], "mavail": f["mavail"],
+            "z0base": f["z0base"],
+        }
+        state = {name: f[name] for name in MYJ_SFCLAY_INOUT}
+        outputs = {"rib": f["br"]}
+        outputs.update({name: f[name] for name in MYJ_SFCLAY_OUTPUTS
+                        if name != "rib"})
+        launch_myj_sfclay(columns, surface, state, outputs,
+                          itimestep=itimestep)
+        # module_surface_driver.F:2226-2231, the driver's own post-call
+        # block.  Without it USTM/WSPD/CH keep the previous step's values
+        # and the LES TKE path reads a stale friction velocity.
+        f["ustm"][...] = f["ust"]
+        wspd = cp.sqrt(atmosphere["u"][0] * atmosphere["u"][0]
+                       + atmosphere["v"][0] * atmosphere["v"][0])
+        f["wspd"][...] = cp.maximum(wspd, DTYPE(0.001))
+        f["ch"][...] = f["chs"]
+
+    def _run_myj_pbl(self, atmosphere: Mapping[str, cp.ndarray],
+                     cfg: RunConfig) -> None:
+        """Run the MYJ PBL (bl_pbl_physics=2).
+
+        MYJ is the one PBL in this driver that performs its own implicit
+        vertical diffusion, so the launcher returns finished tendencies and
+        the only thing left here is WRF's mass coupling and A-grid-to-C-grid
+        interpolation -- which is YSU's seam because it is a property of
+        the PBL slot, not of a scheme (the _run_mynn_pbl rationale).
+
+        Scheme-specific bindings, each with its source of truth:
+
+        * ``ELFLX`` is ``fields["lh"]``, exactly as the WRF PBL driver
+          binds it (module_pbl_driver.F:1458 ``ELFLX=lh``).  It is the
+          latent-heat flux the LAND branch inverts to rebuild QSFC
+          (module_bl_myjpbl.F:554-557), which is why a MYJ run wants an
+          LSM: with sf_surface_physics=0 nothing writes LH or CHKLOWQ and
+          the surface humidity stops evolving.
+        * ``TKE_MYJ``/``EL_MYJ`` are ``fields["tke_myj"]``/
+          ``fields["el_myj"]``, the scheme's own carried state; the same
+          arrays the surface layer's PBLH scan read earlier in this step.
+        * ``QCI`` follows WRF's ``PRESENT(QCI)`` arm (:264-273): with ice
+          in the moist set the species stack is four rows and RQIBLTEN is
+          real, without it three and the row is a published zero.
+        * ``AKHS``/``AKMS``/``THZ0``/``QZ0``/``UZ0``/``VZ0`` come from the
+          Eta surface layer earlier in this same due step, which is the
+          pairing gpuwm.config.validate_myj_pairing enforces.
+        """
+        f = self.fields
+        flqi = atmosphere.get("qi") is not None
+        columns = {
+            "dz": atmosphere["dz"], "u": atmosphere["u"],
+            "v": atmosphere["v"], "t": atmosphere["temperature"],
+            "th": atmosphere["theta"], "exner": atmosphere["exner"],
+            "qv": atmosphere["qv"], "qc": atmosphere["qc"],
+            "qi": atmosphere.get("qi"), "p": atmosphere["pressure"],
+        }
+        surface = {
+            "psfc": atmosphere["p_interface"][0],
+            "ust": f["ust"], "tsk": f["tsk"], "chklowq": f["chklowq"],
+            "xland": f["xland"], "sice": f["xice"], "snow": f["snow"],
+            "akhs": f["akhs"], "akms": f["akms"], "elflx": f["lh"],
+            "uz0": f["uz0"], "vz0": f["vz0"],
+        }
+        state = {name: f[name] for name in MYJ_PBL_INOUT}
+        out = myj_pbl_step(columns, surface, state, f["tke_myj"],
+                           dtturbl=self.bldt_seconds, flqi=flqi)
+        # Same validation policy as YSU and Shin-Hong, one host reduction
+        # per field.  MYJ has no known WRF 0/0 of its own, so unlike
+        # Shin-Hong a NaN here is a defect rather than a reproduced quirk;
+        # the refusal names the field instead of advancing bad state.
+        invalid = validate_myj_pbl_outputs(out)
+        if invalid is not None:
+            raise FloatingPointError(
+                f"MYJ returned non-finite {invalid}")
+        f["pblh"][...] = out["pblh"]
+        f["kpbl"][...] = out["kpbl"]
+        f["mixht"][...] = out["mixht"]
+        f["exch_h"][...] = out["exch_h"]
+        f["el_myj"][...] = out["el_myj"]
+        self.pbl_tendencies = couple_ysu_tendencies(self.state, cfg, out)
+        pbl_components = (
+            _composed_optional_tendency_components(cfg)
+            if physics_reuses_pbl_composition(cfg)
+            else _pbl_optional_tendency_components(cfg))
+        self.pbl_tendencies.materialize(pbl_components)
+        # No counterpart to YSU's positive-cadence raw-output retention
+        # (the _run_mynn_pbl rationale): the coupling above is the only
+        # consumer of the rates, and the diagnostics persist in ``fields``.
+        self.last_ysu = None
 
     def _run_noah(self, atmosphere: Mapping[str, cp.ndarray],
                   cfg: RunConfig, itimestep: int) -> None:
@@ -3763,9 +3983,11 @@ def initialize_physics(
     A radiation or cumulus callable is selected by its nonzero RunConfig
     scheme ID.  Legacy ``ra_physics=4`` resolves to RTE+RRTMGP and
     ``ra_physics=90`` to the analytic clear-sky adapter.  Split
-    ``ra_lw_physics=0, ra_sw_physics=1`` resolves to Dudhia shortwave;
-    the RRTM longwave half of the 1/1 pair is deliberately unavailable
-    until its 16-band coefficient kernels land.  Production adapters require
+    ``ra_lw_physics=0, ra_sw_physics=1`` resolves to Dudhia shortwave, and
+    ``1, 1`` to WRF's classic RRTM longwave + Dudhia shortwave pair, which
+    is a COMPOSITION of the two single-stream adapters rather than a
+    coupled one (:class:`gpuwm.core.rrtm_lw.RRTMDudhiaRadiation`).
+    Production adapters require
     their UTC start time and mass-grid latitude/longitude here.
     ``cu_physics=1`` resolves to the
     Kain-Fritsch adapter (:class:`gpuwm.core.kf.KainFritsch`).  A
@@ -3846,11 +4068,18 @@ def initialize_physics(
                 radiation_start_time, radiation_latitude,
                 radiation_longitude, swrad_scat=cfg.swrad_scat,
                 icloud=cfg.icloud)
-        elif ra_lw_physics == 1:
-            raise NotImplementedError(
-                "ra_lw_physics=1 (WRF RRTM) is not executable yet: the "
-                "16-band/140-g-point coefficient and transfer kernels are "
-                "still required; no approximate LW scheme is substituted")
+        elif (ra_lw_physics, ra_sw_physics) == (1, 1):
+            # WRF's classic pair.  Unlike 4/4 and 90/90 this is not one
+            # coupled adapter: RRTMDudhiaRadiation composes the RRTM
+            # longwave adapter with the Dudhia shortwave adapter exactly
+            # as module_radiation_driver.F dispatches lwrad_select and
+            # swrad_select independently.  RRTM owns the GLW buffer.
+            from gpuwm.core.rrtm_lw import RRTMDudhiaRadiation
+            radiation = RRTMDudhiaRadiation(
+                radiation_start_time, radiation_latitude,
+                radiation_longitude,
+                p_top=getattr(state, "p_top", None),
+                icloud=cfg.icloud, swrad_scat=cfg.swrad_scat)
         else:
             raise ValueError(
                 "unsupported built-in radiation pair "
@@ -4018,6 +4247,29 @@ def initialize_physics(
                 carrier = f"{name}_sea"
                 if carrier not in f:
                     f[carrier] = cp.ascontiguousarray(f[name].copy())
+    elif int(cfg.sf_sfclay_physics) == MYJ_SFCLAY_SCHEME:
+        # The Eta surface layer's OWN published set, allocated only for its
+        # own selector for the reason the MYNN block above gives: carrying
+        # these in an MM5 run would change that run's restart inventory and
+        # its VRAM accounting for nothing.  Every one is a WRF Registry
+        # field cold-started at zero except the three noted.
+        for name in (*MYJ_SFCLAY_INOUT, *MYJ_SFCLAY_OUTPUTS,
+                     "ustm", "wspd", "ch", "mixht"):
+            if name not in f:
+                f[name] = cp.zeros(shape, dtype=DTYPE)
+        # Z0BASE is the BACKGROUND roughness the Zilitinkevich thermal-
+        # roughness fix reads (module_sf_myjsfc.F:733).  WRF fills it from
+        # the land-use table at initialization and never lets the surface
+        # layer touch it; the working ZNT, which the sea branch overwrites
+        # every iteration from u*, is a different field.  Seeding it from
+        # the cold-start ZNT is the closest gpuwm gets without a Z0BASE
+        # ingest, and it is exactly what WRF's own MYJSFCINIT leaves behind
+        # on a restart (:1128-1161 only refills Z0 under NMM).
+        f["z0base"] = cp.ascontiguousarray(f["znt"].copy())
+        # module_sf_myjsfc.F:186-203 seeds USTAR=0.1 on step one; the
+        # kernel applies it per column, so the allocation just has to be a
+        # real number rather than the 1e-4 cold start the MM5 layers use.
+        f["ustm"][...] = f["ust"]
     elif cfg.km_opt in (2, 3, 4) and cfg.bl_pbl_physics == 0:
         # WRF Registry state USTM is the friction velocity without SFCLAY's
         # convective-wind correction.  vertical_diffusion_2 consumes USTM,
@@ -4067,6 +4319,43 @@ def initialize_physics(
     # and on this hardware the VRAM budget is a correctness bar.  WRF
     # cold-starts every one of them at zero (Registry defaults); the
     # ``initflag`` block inside the driver is what seeds them on step one.
+    if int(cfg.bl_pbl_physics) == MYJ_PBL_SCHEME:
+        # MYJ's two carried columns, for its selector only, on the same
+        # terms as MYNN's block below.  TKE_MYJ is genuinely PROGNOSTIC --
+        # it is read as 2*TKE at the top of every call and rewritten at the
+        # bottom (module_bl_myjpbl.F:377, :462), and the surface layer's
+        # PBLH scan reads it too -- so a restart that dropped it would
+        # resume a different boundary layer.
+        #
+        # TKE_MYJ cold-starts at EPSQ2, NOT at zero.  MYJPBLINIT's
+        # non-restart block is `TKE_MYJ(I,K,J)=EPSQ2` with epsq2=0.2
+        # (module_bl_myjpbl.F:1725, share/module_model_constants.F:92,
+        # commented "initial TKE"); only RUBLTEN/RVBLTEN/RTHBLTEN/RQVBLTEN
+        # and EXCH_H are zeroed there.  Zero would be WRONG, not merely
+        # different, and the mechanism is MIXLEN's LPBL scan: q2 = 2*TKE
+        # and the scan threshold is EPSQ2*FH = 0.202, so WRF's seed
+        # (q2 = 0.4) falls through to LPBL=1 and the Blackadar EL0 branch
+        # runs the whole column, while a zero seed trips the scan at the
+        # first level tested and pins LPBL = LMH-1.  On a 30-level 100 m
+        # column that is pblh 2900 m against 100 m on step one, and the
+        # step-1 PBLH feeds the surface layer too (BTGH -> WSTAR2 -> u*),
+        # so the divergence is not confined to a diagnostic.  A zero
+        # column additionally makes MIXLEN's SQ (a sum of sqrt(q2))
+        # exactly zero, so EL0=MIN(ALPH*SZQ*0.5/SQ,EL0MAX) is a 0/0 WRF
+        # never reaches.  Pinned in tests/test_myj_port.py against the
+        # authority's own EPSQ2, which is a literal here for the reason
+        # state.py's Shin-Hong cold start gives: core must not import the
+        # verification tree.
+        #
+        # EL_MYJ genuinely is zero at cold start, but not because
+        # MYJPBLINIT says so -- EL_MYJ is not one of its arguments at all
+        # (module_bl_myjpbl.F:1694-1697).  It is INTENT(OUT) on MYJPBL and
+        # rewritten from `EL_MYJ(its:ite,:,jts:jte) = 0.` at the top of
+        # every call (:341), so its cold-start value is unobservable; zero
+        # is both WRF's Registry default and what the first call writes.
+        f["tke_myj"] = cp.full((cfg.nz, *shape), MYJ_TKE_COLD_START,
+                               dtype=DTYPE)
+        f["el_myj"] = cp.zeros((cfg.nz, *shape), dtype=DTYPE)
     if int(cfg.bl_pbl_physics) == 5:
         for name in MYNN_PBL_STATE_3D:
             f[name] = cp.zeros((cfg.nz, *shape), dtype=DTYPE)

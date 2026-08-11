@@ -267,5 +267,63 @@ tests/test_native_wrf_distribution.py
 # evidence axis a receipt publishes is one the readers agree on, which is
 # the class of drift that only shows up when a document and the tool that
 # derives it move in different commits -- exactly what stage 1 exists to
-# catch before a cut does.
+# catch before a cut does.  The WDM6 lane's round-2 verification named
+# the same two suites independently, on the same reasoning a registry
+# edit reaches both on every cut.
 tests/test_evidence_axes.py
+
+# THE 1.9 GATE'S CLASS-KILLER.  The composition walk above measures ONE
+# gate -- gpuwm.experiment.build_experiment -- and the memory preflight is
+# a second one that every real run reaches (gpuwm/core/model.py calls
+# estimate_experiment unconditionally, and `gpuwm check` is that call).
+# Its kernel-module tables are fail-closed, so a scheme the loader admits
+# and the preflight has no row for is a scheme a user can select and
+# cannot run.  Two shipped that way into the 1.9 assembly -- mp_physics=50
+# (P3) and bl_pbl_physics=2 / sf_sfclay_physics=2 (MYJ + Eta) -- both
+# recorded ACCEPTED in the walk receipt, both dead at `gpuwm check`.  This
+# suite prices every composition that receipt accepts and allows a refusal
+# only when it matches a DECLARED composition rule, so the next scheme
+# that lands without a row fails here on the cut instead of in a user's
+# first run.  ~4 s, CPU-only.
+tests/test_composition_pricing.py
+
+# Task #168, the lake-blockiness root cause.  Water temperature was chosen
+# per cell between two differently-mapped fields, and the switch itself was
+# the artifact; the assembly that replaced it had no stage-1 gate, because
+# the defect shipped from 1.0 and was found by measuring a render rather
+# than by a suite.  These tests pin the guarantees a revert would break:
+# one provider per connected body, no ocean donor for a lake, no land donor
+# for any water cell, a total WATER_TEMP_SOURCE, and wrf_compat reproducing
+# the historical selector exactly.
+tests/test_water_temperature.py
+
+# Its neighbour: the mapped SST field stays METGRID.TBL's, fill and all,
+# because the reconciler and the parity batteries read it expecting WPS.
+tests/test_horiz.py
+
+# Its counterpart: the declared-overlay path that replaces those water
+# temperatures outright.  What it pins is CATALOG IDENTITY, not field values:
+# that the optional key stays out of ExperimentConfig, that an absent overlay
+# leaves the experiment fingerprint untouched, and that a declared one moves
+# the input-catalog identity exactly when its bytes move.  A change to the
+# DEFAULT water treatment does not move any of that, so this file is here for
+# the overlay path's own refusals and loaders, not as a tripwire for the
+# default.
+tests/test_water_overlay.py
+
+# The line-ending gate.  `.gitattributes` sets `* -text`, so a rewrite from
+# LF to CRLF is a real byte change in files the product hashes for identity
+# (_runtime_source_identity, the preparation proof's export-source set).
+# Task #168 rewrote thirteen files that way with a scripted edit and the
+# stage-1 battery stayed green through two full runs, because the gate that
+# catches it was not in this list.  It is a CPU test and it takes a second.
+tests/test_line_ending_stability.py
+
+# The release-note gate.  It reads the NEWEST changelog section and fails on a
+# branch name, an internal review verdict, a case identifier, or a development
+# log pasted in whole.  Every lane writes into that section and nothing else
+# checks it, so the first reader of a red here is whoever is cutting the
+# release.  Task #168 turned it red and the stage-1 battery stayed green, the
+# same blind spot the line-ending gate above closed.  It is a CPU test and it
+# reads one file.
+tests/test_release_notes_are_public_facing.py

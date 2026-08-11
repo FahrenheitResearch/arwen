@@ -650,13 +650,18 @@ def test_raw_lake_uses_source_water_skin_without_changing_land_or_ocean():
         fields[name] = np.asarray([values], dtype=np.float64)
     soil_type = np.full(shape, 6.0)
     deep = np.array([[282.0, 281.0, 0.0]])
+    # These calls hand the router a raw SST beside SKINTEMP on purpose:
+    # what this test pins is the HISTORICAL selector's raw-lake override,
+    # so it declares wrf_compat, the policy that names that selector.
     baseline = preprocess_noah_soil(
-        fields, soil_type=soil_type, deep_soil_temperature=deep)
+        fields, soil_type=soil_type, deep_soil_temperature=deep,
+        water_temperature_policy="wrf_compat")
     lake_mask = np.array([[False, False, True]])
     lake_skin = np.array([[np.nan, np.nan, 278.0]])
     corrected = preprocess_noah_soil(
         fields, soil_type=soil_type, deep_soil_temperature=deep,
-        lake_mask=lake_mask, lake_skin_temperature=lake_skin)
+        lake_mask=lake_mask, lake_skin_temperature=lake_skin,
+        water_temperature_policy="wrf_compat")
 
     for name in ("tsk", "landmask", "xland", "xice", "snow_water",
                  "snow_depth"):
@@ -676,7 +681,7 @@ def test_raw_lake_uses_source_water_skin_without_changing_land_or_ocean():
     with pytest.raises(ValueError, match="must be provided together"):
         preprocess_noah_soil(
             fields, soil_type=soil_type, deep_soil_temperature=deep,
-            lake_mask=lake_mask)
+            lake_mask=lake_mask, water_temperature_policy="wrf_compat")
 
 
 def test_nonphysical_tsk_refusal_names_the_cells_and_the_metgrid_fill():
@@ -701,9 +706,12 @@ def test_nonphysical_tsk_refusal_names_the_cells_and_the_metgrid_fill():
     for name in ("SM000007", "SM007028", "SM028100", "SM100289"):
         fields[name] = np.full(shape, 0.3)
     with pytest.raises(ValueError) as excinfo:
+        # Raw SST beside SKINTEMP on purpose: the test pins the historical
+        # selector's TSK refusal, so it declares wrf_compat.
         preprocess_noah_soil(
             fields, soil_type=np.full(shape, 6.0),
-            deep_soil_temperature=np.full(shape, 299.0))
+            deep_soil_temperature=np.full(shape, 299.0),
+            water_temperature_policy="wrf_compat")
     message = str(excinfo.value)
     assert message.startswith(
         "TSK contains non-finite or nonphysical values")
@@ -795,7 +803,10 @@ def test_reconciled_era5_sea_ice_exercises_noah_ice_branch(params):
         fields[name] = np.full(shape, value)
     for name in ("SM000007", "SM007028", "SM028100", "SM100289"):
         fields[name] = np.full(shape, 0.3)
-    soil = preprocess_noah_soil(fields, soil_type=np.array([[6, 14]]))
+    # Raw SST beside SKINTEMP on purpose: this pins the historical
+    # sea-ice path, so it declares wrf_compat.
+    soil = preprocess_noah_soil(fields, soil_type=np.array([[6, 14]]),
+                                water_temperature_policy="wrf_compat")
 
     assert soil.xice[0, 0] == 0.0  # land/ice masks are mutually exclusive
     col = _base_col(params, sfctmp=268.0, tsk=268.0)
@@ -820,12 +831,16 @@ def test_seaice_grib_flags_are_repaired_before_fraction_validation():
         fields[name] = np.full((1, 2), 270.0)
     for name in ("SM000007", "SM007028", "SM028100", "SM100289"):
         fields[name] = np.full((1, 2), 0.3)
-    soil = preprocess_noah_soil(fields, soil_type=np.array([[14, 14]]))
+    # Raw SST beside SKINTEMP on purpose: this pins the historical
+    # sea-ice flag repair, so it declares wrf_compat.
+    soil = preprocess_noah_soil(fields, soil_type=np.array([[14, 14]]),
+                                water_temperature_policy="wrf_compat")
     np.testing.assert_array_equal(soil.xice, [[0.0, 1.0]])
     with pytest.raises(ValueError, match=r"\[0, 1\]"):
         preprocess_noah_soil(
             {**fields, "SEAICE": np.array([[2.0, 0.75]])},
-            soil_type=np.array([[14, 14]]))
+            soil_type=np.array([[14, 14]]),
+            water_temperature_policy="wrf_compat")
 
 
 def test_mirror_soiltype_water_remap(params):

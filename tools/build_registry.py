@@ -259,6 +259,145 @@ TIGHTEN: dict[str, dict] = {
     "top_lid": {"type": "boolean", "default": True},
     "morr_rimed_ice": {"type": "integer", "enum": [0, 1], "default": 1},
     "wsm6_hail_opt": {"type": "integer", "enum": [0, 1], "default": 0},
+    # WRF v4.6.1's NSSL variant selectors.  There is one NSSL scheme
+    # (mp_physics=18) and these four flags on top of it; the deprecated
+    # IDs 17/19/21/22 are spellings share/module_check_a_mundo.F
+    # rewrites onto exactly this set.  gpuwm/core/nssl2_contract.py
+    # resolves them and refuses the combinations with no ported path.
+    "nssl_2moment_on": {
+        "type": "integer",
+        "enum": [-1, 1],
+        "default": -1,
+        "note": (
+        "WRF's nssl_2moment_on (Registry.EM_COMMON:2423). -1 takes WRF's "
+        "consistency-pass default of 1 (module_check_a_mundo.F:3437-3439). 0 "
+        "selects the one-moment NSSL family (the deprecated mp_physics=19/21 "
+        "spellings), which is NOT ported and is refused at validation rather "
+        "than substituted."),
+        "evidence": (
+        "Column smoke over the four ported variant modes on the shipped "
+        "run_nssl2_production_step seam (tools/nssl2_variant_probe.py, "
+        "evidence/nssl2-variants/variant-column-smoke.json), in two regimes: "
+        "the seeded moist column behind the mp18 digest baseline, and a "
+        "riming-updraft regime built to put the graupel-to-hail conversion "
+        "in range. Each variant is compared against the DEFAULT mode run on "
+        "THE SAME inputs, so a delta is a treatment and not an input "
+        "difference. Asserted: every output array finite; the fields a "
+        "variant's Registry packages would not allocate stay exactly 0.0; "
+        "the CCN field comes back byte-identical to its input when the "
+        "variant does not predict it; and every variant moves at least one "
+        "field against its control (the hail arms move 29 and 30 fields in "
+        "the riming regime and legitimately move none in the moist column, "
+        "where the conversion never fires). The shipped mp18 default lane is "
+        "unchanged by all of this: all 30 digests in "
+        "evidence/nssl2-variants/mp18-digest-baseline.json reproduce "
+        "byte-for-byte. NO ORACLE COMPARISON AGAINST WRF FORTRAN EXISTS FOR "
+        "ANY VARIANT PATH -- no WRF run, no matched trajectory, no ULP "
+        "measurement. The oracle campaign is the declared next stage, as it "
+        "was for Shin-Hong and Grell-Freitas."),
+    },
+    "nssl_ccn_on": {
+        "type": "integer",
+        "enum": [-1, 0, 1],
+        "default": -1,
+        "note": (
+        "WRF's nssl_ccn_on (Registry.EM_COMMON:2421). -1 resolves to 1 "
+        "(module_check_a_mundo.F:3433-3435). 0 is the deprecated "
+        "mp_physics=17/22 semantics: qnn is not allocated, the unactivated "
+        "CCN is diagnosed from the base concentration every step "
+        "(module_mp_nssl_2mom.F:2734), never stored back (:3283), and "
+        "renucfrac rises to 1.0 (:2555-2557), which changes the nucleation "
+        "pool at :10116 and arms the low-temperature limiter at "
+        ":10120-10127."),
+        "evidence": (
+        "Column smoke over the four ported variant modes on the shipped "
+        "run_nssl2_production_step seam (tools/nssl2_variant_probe.py, "
+        "evidence/nssl2-variants/variant-column-smoke.json), in two regimes: "
+        "the seeded moist column behind the mp18 digest baseline, and a "
+        "riming-updraft regime built to put the graupel-to-hail conversion "
+        "in range. Each variant is compared against the DEFAULT mode run on "
+        "THE SAME inputs, so a delta is a treatment and not an input "
+        "difference. Asserted: every output array finite; the fields a "
+        "variant's Registry packages would not allocate stay exactly 0.0; "
+        "the CCN field comes back byte-identical to its input when the "
+        "variant does not predict it; and every variant moves at least one "
+        "field against its control (the hail arms move 29 and 30 fields in "
+        "the riming regime and legitimately move none in the moist column, "
+        "where the conversion never fires). The shipped mp18 default lane is "
+        "unchanged by all of this: all 30 digests in "
+        "evidence/nssl2-variants/mp18-digest-baseline.json reproduce "
+        "byte-for-byte. NO ORACLE COMPARISON AGAINST WRF FORTRAN EXISTS FOR "
+        "ANY VARIANT PATH -- no WRF run, no matched trajectory, no ULP "
+        "measurement. The oracle campaign is the declared next stage, as it "
+        "was for Shin-Hong and Grell-Freitas."),
+    },
+    "nssl_density_on": {
+        "type": "integer",
+        "enum": [-1, 1, 2],
+        "default": -1,
+        "note": (
+        "WRF's nssl_density_on (Registry.EM_COMMON:2425). -1 resolves to 2 "
+        "with hail on and 1 with hail off "
+        "(module_check_a_mundo.F:3449-3455). 0 (fixed graupel/hail density) "
+        "is not ported. 1 with hail on is refused: the module sets lvhl>0 at "
+        "module_mp_nssl_2mom.F:1674-1679 and then reads and writes the qvolh "
+        "field that only the nssl_hailvol package (nssl_density_on=2) "
+        "allocates."),
+        "evidence": (
+        "Column smoke over the four ported variant modes on the shipped "
+        "run_nssl2_production_step seam (tools/nssl2_variant_probe.py, "
+        "evidence/nssl2-variants/variant-column-smoke.json), in two regimes: "
+        "the seeded moist column behind the mp18 digest baseline, and a "
+        "riming-updraft regime built to put the graupel-to-hail conversion "
+        "in range. Each variant is compared against the DEFAULT mode run on "
+        "THE SAME inputs, so a delta is a treatment and not an input "
+        "difference. Asserted: every output array finite; the fields a "
+        "variant's Registry packages would not allocate stay exactly 0.0; "
+        "the CCN field comes back byte-identical to its input when the "
+        "variant does not predict it; and every variant moves at least one "
+        "field against its control (the hail arms move 29 and 30 fields in "
+        "the riming regime and legitimately move none in the moist column, "
+        "where the conversion never fires). The shipped mp18 default lane is "
+        "unchanged by all of this: all 30 digests in "
+        "evidence/nssl2-variants/mp18-digest-baseline.json reproduce "
+        "byte-for-byte. NO ORACLE COMPARISON AGAINST WRF FORTRAN EXISTS FOR "
+        "ANY VARIANT PATH -- no WRF run, no matched trajectory, no ULP "
+        "measurement. The oracle campaign is the declared next stage, as it "
+        "was for Shin-Hong and Grell-Freitas."),
+    },
+    "nssl_hail_on": {
+        "type": "integer",
+        "enum": [-1, 0, 1],
+        "default": -1,
+        "note": (
+        "WRF's nssl_hail_on (Registry.EM_COMMON:2420). -1 resolves to 1 "
+        "under two moments (module_check_a_mundo.F:3441-3447). 0 drops the "
+        "hail category: lhl=0 at module_mp_nssl_2mom.F:1445-1447 and the "
+        "graupel-hail conversion block at :19860 never runs. 2 (one-moment "
+        "hail) is refused: WRF would read the hail-number field the "
+        "nssl_hail1m package never allocated."),
+        "evidence": (
+        "Column smoke over the four ported variant modes on the shipped "
+        "run_nssl2_production_step seam (tools/nssl2_variant_probe.py, "
+        "evidence/nssl2-variants/variant-column-smoke.json), in two regimes: "
+        "the seeded moist column behind the mp18 digest baseline, and a "
+        "riming-updraft regime built to put the graupel-to-hail conversion "
+        "in range. Each variant is compared against the DEFAULT mode run on "
+        "THE SAME inputs, so a delta is a treatment and not an input "
+        "difference. Asserted: every output array finite; the fields a "
+        "variant's Registry packages would not allocate stay exactly 0.0; "
+        "the CCN field comes back byte-identical to its input when the "
+        "variant does not predict it; and every variant moves at least one "
+        "field against its control (the hail arms move 29 and 30 fields in "
+        "the riming regime and legitimately move none in the moist column, "
+        "where the conversion never fires). The shipped mp18 default lane is "
+        "unchanged by all of this: all 30 digests in "
+        "evidence/nssl2-variants/mp18-digest-baseline.json reproduce "
+        "byte-for-byte. NO ORACLE COMPARISON AGAINST WRF FORTRAN EXISTS FOR "
+        "ANY VARIANT PATH -- no WRF run, no matched trajectory, no ULP "
+        "measurement. The oracle campaign is the declared next stage, as it "
+        "was for Shin-Hong and Grell-Freitas."),
+    },
     "icloud": {"type": "integer", "enum": [0, 1], "default": 1},
     "radt": {"type": "number", "minimum": 0.0, "default": 0.0},
     "radt_minutes": {"type": "number", "minimum": 0.0, "default": 12.0},
@@ -373,16 +512,14 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "stream. components.microphysics.options.thompson-aerosol-mp28 runs "
         "thompson_init's synthetic CCN/IN profile because gpuwm has no WIF "
         "ingest, so the count would size an array nothing reads."),
-    "nssl_2moment_on": (
-        "c",
-        "Disabling NSSL two-moment changes the scheme identity, prognostic "
-        "number fields, kernel contract, restart inventory, and nest "
-        "transition semantics; only the NSSL two-moment component is ported."),
     "nssl_3moment": (
         "c",
-        "NSSL three-moment needs additional prognostic moments, allocations, "
-        "kernel equations, restart/wrfout fields, and nest transitions; the "
-        "ported component is two-moment only."),
+        "The NSSL three-moment extension (nssl_3moment=1, which WRF rewrites "
+        "to 2 with hail on at module_check_a_mundo.F:3457-3463) adds the "
+        "qzr/qzg/qzh reflectivity moments and the ipconc>=6 branch "
+        "throughout the scheme. The ported family is the two-moment ipconc=5 "
+        "branch only; gpuwm/core/nssl2_contract.py refuses the combination "
+        "at validation."),
     "nssl_alphah": (
         "b",
         "The hail gamma-shape option is a bounded branch in the already "
@@ -403,18 +540,6 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "The initial CCN concentration is a bounded NSSL setup value, but "
         "gpuwm hardwires QNN cold-start initialization and has no RunConfig/"
         "restart-bound path or two-value WRF initialization oracle."),
-    "nssl_ccn_on": (
-        "b",
-        "The NSSL CCN-number branch is inside the ported scheme and QNN state "
-        "exists, but the on/off coefficient and tendency paths are not wired "
-        "through setup/kernel arguments or covered by independent WRF "
-        "oracles."),
-    "nssl_density_on": (
-        "c",
-        "Variable-density NSSL hydrometeors require density prognostic state, "
-        "additional kernel equations, restart/wrfout fields, and transition "
-        "semantics; the fixed-density NSSL two-moment identity is the only "
-        "ported one."),
     "nssl_ehlw0": (
         "c",
         "Not a WRF v4.6.1 namelist option. NSSL_EHLW0 is a scheme-internal "
@@ -423,12 +548,6 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "c",
         "Not a WRF v4.6.1 namelist option. NSSL_EHW0 is a scheme-internal "
         "collection-efficiency constant and has no legal user setting."),
-    "nssl_hail_on": (
-        "c",
-        "Changing the NSSL hail-species mode changes prognostic species, "
-        "kernel/state binding, restart inventory, radiation radii, and nest "
-        "transition semantics; only the hail-enabled NSSL two-moment identity "
-        "is ported."),
     "nssl_icdx": (
         "b",
         "The NSSL ice-distribution selector is a bounded coefficient branch "
@@ -2210,9 +2329,18 @@ _MATURITY_RUNGS = (
     ("planned", "unimplemented-only",
      "Registered so the roadmap is readable. No GPUWM runtime component "
      "exists, implemented is false, and the option cannot be selected."),
-    ("port-in-progress", "unimplemented-only",
-     "A port exists in the tree but does not reach the runtime. "
-     "implemented is false and the option cannot be selected."),
+    # 'port-in-progress' lived here while the WRF RRTM longwave row was
+    # the one option using it.  That port landed (ra_lw_physics=1 +
+    # ra_sw_physics=1, gpuwm/core/rrtm_lw.py) and moved to
+    # implemented-unverified, leaving the rung with no occupant.  What
+    # forces the deletion is tests/test_evidence_axes.py's AC3 case
+    # test_the_rung_set_equals_the_set_in_use ("no decorative rungs"),
+    # which requires the rung set to equal the set of maturity values
+    # actually in use.  NOT the loader: gpuwm/physics_registry.py's D-22
+    # check (_enforce_evidence_axes) enforces order-vs-rungs agreement
+    # and value membership, and an unoccupied rung passes it.  Either
+    # way the ladder is meant to describe states the registry is in, so
+    # a future in-tree-but-unreachable port re-adds it here.
     ("implemented-unverified", "warn",
      "A GPUWM runtime component executes this option and no matched "
      "ArWen-versus-WRF forecast trajectory has been run with it. "
@@ -2530,10 +2658,397 @@ def _composition_exemptions() -> dict:
     }
 
 
+MP9_OPTION_ID = "milbrandt2mom-mp9"
+
+
+def _milbrandt2mom_mp9(registry: dict) -> None:
+    """Register Milbrandt-Yau two-moment at the maturity its evidence earns.
+
+    ``implemented: true`` -- the scheme runs on the device through
+    ``gpuwm/core/milbrandt2.py`` and ``gpuwm/core/kernels/milbrandt2.cu``
+    and is dispatched by ``gpuwm/core/microphysics.py`` on
+    ``mp_physics == 9``.
+
+    ``maturity: implemented-unverified`` -- and no higher, for the plainest
+    possible reason: NO oracle exists yet.  Unlike mp=28 (column-oracle
+    measured, residuals published) or Morrison (ULP table against the real
+    Fortran), this option's evidence today is a column smoke through the
+    shipped seams plus float64 self-consistency.  It may not claim
+    ``validation-candidate`` and it may not imply the column evidence is
+    conformance evidence, because there is no comparison to conform to.
+
+    ``reachability: component-override`` -- computed, not chosen.  No
+    template selects mp=9 and ``DEFAULT_TEMPLATE_ID`` is untouched, so the
+    only way in is a per-domain experiment override on the tree route,
+    which already lists ``microphysics`` in
+    ``allowed_component_overrides``.
+    """
+    options = registry["components"]["microphysics"]["options"]
+    options[MP9_OPTION_ID] = {
+        "asset_requirements": [],
+        # The RTE+RRTMGP cloud-optics refusal is NOT written here.  It is
+        # attached by _rte_rrtmgp_cloud_optics_constraints below, which
+        # derives WHICH schemes need it from
+        # gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME rather than from a
+        # list maintained by hand -- mp=9 was not the only scheme missing
+        # a row, and the second one (P3) shipped into 1.9 undetected.
+        "constraints": {
+            "required_settings": {"moist": True},
+        },
+        "extensions": {
+            "fixed_mode": (
+                "two-moment in all six hydrometeors, separate graupel AND "
+                "hail, continental CCN (CCNtype=2), Meyers+contact primary "
+                "ice nucleation, non-spherical snow"),
+            "arwen_radiation_constraint": {
+                "classification": (
+                    "ArWen structural constraint; WRF v4.6.1 runs mp=9 with "
+                    "any radiation because RRTMG computes its own radii "
+                    "when has_reqc=0"),
+                "reason": (
+                    "MILBRANDT2MOM is absent from WRF's use_mp_re "
+                    "disjunction (phys/module_physics_init.F:1004-1023) and "
+                    "the scheme's own effective-radius block is commented "
+                    "out (phys/module_mp_milbrandt2mom.F:3351-3378), so it "
+                    "hands radiation no radii. ArWen's "
+                    "RTE+RRTMGP adapter has no cloud-optics row meaning "
+                    "'ice-active, scheme supplies no radii' and refuses the "
+                    "pairing rather than inventing one; ra_rrtmg_variant="
+                    "'rrtmg_legacy' and ra_lw_physics=0/ra_sw_physics=1 "
+                    "(Dudhia) both work."),
+            },
+        },
+        "implemented": True,
+        "label": "Milbrandt-Yau two-moment / MP9",
+        "maturity": "implemented-unverified",
+        "parameters": {
+            "moist": True,
+            "moist_cq": True,
+        },
+        "reachability": {"state": "component-override"},
+        "scientific_evidence": "none",
+        "selectors": {"mp_physics": 9},
+        "warnings": [
+            "NO ORACLE HAS BEEN RUN. This option is a line-by-line "
+            "transcription of the byte-frozen WRF v4.6.1 "
+            "phys/module_mp_milbrandt2mom.F:841-3485 "
+            "(mp_milbrandt2mom_main), :564-836 "
+            "(sedi_wrapper_2/sedi_1D/count_columns), :31-433 and :3489-3525 "
+            "(the helper functions) and :3559-3703 (the 3-D wrapper) -- and "
+            "what has been TESTED is a column smoke "
+            "driving the shipped seams (initialize_physics + "
+            "microphysics.apply) for finiteness, boundedness and "
+            "moment-vs-mass consistency, plus a water budget that closes "
+            "to the reported precipitation on three seeding layouts. Read "
+            "the budget narrowly: it detects a source/sink term only where "
+            "that term is non-zero on the column, so it resolves the "
+            "deposition, riming and melting families and NOT the terms "
+            "that are zero on all three columns, and the number-only "
+            "source/sink lines at "
+            "phys/module_mp_milbrandt2mom.F:2721-2728 carry no mass and "
+            "cannot appear in a water budget at all. The layouts and the "
+            "measured per-term margins are in tests/test_milbrandt2.py. "
+            "There is NO "
+            "comparison against the WRF Fortran: no ULP table, "
+            "no column oracle, no matched forecast trajectory. The oracle "
+            "campaign is the declared next stage, as it was for Shin-Hong "
+            "and Grell-Freitas before their measurements landed.",
+            "PINNED IDENTITY, not a subset. WRF exposes no namelist for any "
+            "Milbrandt-Yau switch: mp_milbrandt2mom_driver hard-codes "
+            "CCNtype=2 (continental, "
+            "phys/module_mp_milbrandt2mom.F:3615), precipDiag/sedi/"
+            "warmphase/autoconv/icephase/snow all .true. (:3618-3623) and "
+            "nk_BOTTOM=.false. (:3591), and the scheme body hard-codes "
+            "snowSpherical=.false. (:1174), primIceNucl=1 (:1175) and "
+            "grpl/hail/rainAccr/iceDep ON (:1170-1173). mp=9 therefore has "
+            "exactly ONE identity in WRF v4.6.1 and ArWen ships that one; "
+            "gpuwm/config.py::validate_milbrandt2_options refuses by name "
+            "any request to move one, because the 154-entry constant table "
+            "in gpuwm/core/milbrandt2_constants.py is derived under these "
+            "settings (CCNtype=2 fixes N_c_SM=2e8, snowSpherical=.false. "
+            "selects the Brandes m(D) pair).",
+            "DELIBERATE DIVERGENCE, WRF is undefined or unreachable, four "
+            "of them, each commented at its site in the ported "
+            "translation unit gpuwm/core/kernels/milbrandt2.cu. (1) "
+            "phys/module_mp_milbrandt2mom.F:2819-2823 is a LIVE "
+            "print-and-STOP on T<173 K or T>323 K -- a device kernel cannot "
+            "abort a run and ArWen's step-level health gate owns that "
+            "decision, so the value is left as computed. (2) count_columns "
+            "at phys/module_mp_milbrandt2mom.F:821 would read QX(i,0) when "
+            "ktop_sedi==kbot, which needs the lowest two layers to span "
+            "20 km, so the walk is clamped to 'inactive'. (3) "
+            "phys/module_mp_milbrandt2mom.F:1733, :1754 and :1771 each zero "
+            "iLAMxB1 twice and never zero iLAMxB2 -- every iLAMxB2 read "
+            "sits inside the Qx>epsQ branch that also writes it, so the "
+            "stale value is unreachable and the defined behaviour (zeroing) "
+            "is implemented. (4) RT_snd at "
+            "phys/module_mp_milbrandt2mom.F:3224-3262 and RT_peL at "
+            ":3321-3327 are computed by the scheme and DISCARDED by "
+            "mp_milbrandt2mom_driver, so they are not computed at all.",
+            "TRANSCRIBED WRF QUIRKS, deliberately NOT corrected because "
+            "they are defined behaviour: the surface precipitation "
+            "diagnostic reads N_r, DE and T at the model TOP while reading "
+            "QR at the bottom (phys/module_mp_milbrandt2mom.F:3298-3313, "
+            "nk vs kbot); the raindrop-breakup efficiency tests iLAMr "
+            "rather than Dr and goes negative for large iLAMr (:2951); the "
+            "hail size-sorting ratio omits the air-density factor its Dm_x "
+            "sibling carries (:698); "
+            "and with T>0 C the pristine-ice mass is zeroed at :2042 and "
+            "the resulting QMLir is then cancelled by the ice "
+            "overdepletion guard, so that mass leaves the system rather "
+            "than becoming rain. The scheme's own 4-term-truncated Lanczos "
+            "gamma (:160-195, 'do j=1,4') is used throughout -- gamma(3) "
+            "comes out 1.9999542 and that is the number every WRF mp=9 run "
+            "integrates with.",
+        ],
+    }
+
+WDM6_OPTION_ID = "wdm6-mp16"
+
+
+def _wdm6_mp16(registry: dict) -> None:
+    """Register WDM6 (mp_physics=16) at exactly the maturity it has earned.
+
+    ``implemented: true`` -- the component exists and runs.  The column
+    kernel is ``gpuwm/core/kernels/wdm6.cu``, transcribed line by line from
+    the byte-frozen WRF v4.6.1 ``phys/module_mp_wdm6.F``; the adapter is
+    ``gpuwm/core/wdm6.py``; ``gpuwm/core/microphysics.py`` dispatches on
+    ``mp_physics == 16``; the state carries qnn/qnc/qnr; the namelist
+    importer maps 16 natively.
+
+    ``maturity: implemented-unverified`` -- and NOT for the reason that
+    label carries on ``morrison-mp10`` and ``thompson-aerosol-mp28``, where
+    an oracle ran and came back mixed.  Here it means the weaker thing, and
+    the warning below says so in its first sentence: NO oracle comparison
+    against the WRF Fortran has been run at all.  What exists is a
+    shipped-seam column smoke and float64 self-consistency.  The oracle
+    campaign is the declared next stage, as it was for Shin-Hong and
+    Grell-Freitas before theirs ran.
+
+    ``reachability: component-override`` -- computed from the routes, not
+    chosen.  No template registers mp_physics=16 and no runner route lists
+    one, so an implemented microphysics option with no template is reachable
+    exactly one way: as a per-domain experiment override.
+    ``tests/test_registry_reachability.py`` recomputes the state and would
+    fail on any other declaration.
+    """
+
+    options = registry["components"]["microphysics"]["options"]
+    options[WDM6_OPTION_ID] = {
+        "asset_requirements": [],
+        "constraints": {"required_settings": {"moist": True}},
+        "extensions": {
+            "wrf_package": (
+                "Registry/Registry.EM_COMMON:3031 binds mp_physics==16 to "
+                "the wdm6scheme package: moist qv,qc,qr,qi,qs,qg and scalar "
+                "qnn,qnc,qnr, plus state re_cloud,re_ice,re_snow"),
+            "prognostic_species": {
+                "transported": ["qi", "qs", "qg", "nn", "nc", "nr"],
+                "not_ported": [],
+                "note": (
+                    "WDM6 is WSM6's six-class mass set plus three number "
+                    "moments: nn is the CCN reservoir, nc the cloud droplet "
+                    "number and nr the rain number. Nothing in the WRF "
+                    "package is left out."),
+            },
+            "family_siblings_refused": {
+                "wdm5_mp14": (
+                    "not ported; WDM5 has no graupel class and gpuwm refuses "
+                    "mp_physics=14 by name in gpuwm/config.py rather than "
+                    "substituting WDM6"),
+                "wdm7_mp26": (
+                    "not ported; WDM7 adds a hail class and gpuwm refuses "
+                    "mp_physics=26 by name in gpuwm/config.py rather than "
+                    "substituting WDM6"),
+            },
+            "surface_field_dependency": {
+                "field": "XLAND",
+                "authority": "phys/module_mp_wdm6.F:607-614",
+                "note": (
+                    "WDM6 is the first gpuwm microphysics scheme whose "
+                    "PROCESS RATES read a surface field: the autoconversion "
+                    "threshold is qc0 (maritime, xncr0=5e7) where xland==2 "
+                    "and qc1 (continental, xncr1=5e8) elsewhere, a factor of "
+                    "ten. The adapter reads XLAND from the physics driver "
+                    "and REFUSES when none is present rather than assuming "
+                    "a mask."),
+            },
+        },
+        "implemented": True,
+        "label": "WDM6 double-moment warm rain / MP16",
+        "maturity": "implemented-unverified",
+        "parameters": {
+            "moist": True,
+            "moist_cq": True,
+            "wdm6_hail_opt": 0,
+            "wdm6_ccn_conc": 1.0e8,
+        },
+        "reachability": {"state": "component-override"},
+        "scientific_evidence": "none",
+        "selectors": {"mp_physics": 16},
+        "warnings": [
+            "NO ORACLE COMPARISON AGAINST THE WRF FORTRAN HAS BEEN RUN FOR "
+            "WDM6. This option's evidence is: (1) the CUDA column kernel and "
+            "the wdm6init coefficient block are transcribed line by line "
+            "from the byte-frozen WRF v4.6.1 phys/module_mp_wdm6.F in the "
+            "1974 reference bundle, with file:line citations at every "
+            "process block; (2) gpuwm/core/wdm6_constants.py recomputes "
+            "wdm6init in float64 and tests/test_wdm6.py pins the FP32 "
+            "literals baked into the kernel against it; (3) a column smoke "
+            "through the SHIPPED seams (initialize_physics into "
+            "microphysics.apply at mp_physics=16) asserts finiteness, "
+            "physical bounds, water-substance conservation to the "
+            "sedimentation flux, and that a stubbed scheme fails the test. "
+            "What is NOT established: any ULP or relative agreement with "
+            "WRF's own module_mp_wdm6.F on any column, and any gpuwm/WRF "
+            "forecast-trajectory comparison. Neither number exists, so "
+            "neither may be quoted. The oracle campaign that produced "
+            "Shin-Hong's max_ulp 0 and Grell-Freitas's 216-column boundary "
+            "is the declared next stage for this scheme. Its known deltas "
+            "are written down BEFORE it runs, in "
+            "docs/wdm6_oracle_known_deltas.md: the float64 _rgmma "
+            "coefficient floor, the PLM remap kt clamp, the rain-slope "
+            "density inconsistency, and the -35 dBZ floor that looks like a "
+            "delta and is not.",
+            "DELIBERATE DIVERGENCE, WRF is inconsistent with itself (both "
+            "halves are defined behaviour, so this is transcribed rather "
+            "than repaired, and recorded here so it is not mistaken for a "
+            "port error): wdm62D consumes ncr as a VOLUMETRIC number, "
+            "dividing by (q*den) at module_mp_wdm6.F:2251, while "
+            "refl10cm_wdm6 forms nr = nr1d*rho against rr = qr1d*rho so the "
+            "densities cancel and nr1d enters as a PER-MASS number (:3005). "
+            "The two rain slope definitions therefore differ by a factor "
+            "rho inside a cube root, about 3 per cent in lamr near the "
+            "surface. gpuwm reproduces both as written.",
+            "ENGINE SEAM, recorded deviations of the mp_physics=16 adapter: "
+            "(1) WRF fills the whole CCN array with the namelist ccn_conc "
+            "on the first time step (module_mp_wdm6.F:220-227) and ccn0 "
+            "reaches nothing else in the module; gpuwm performs that fill "
+            "once at state allocation from cfg.wdm6_ccn_conc, which is "
+            "equivalent for a cold start and is the NSSL qnn precedent, but "
+            "is NOT equivalent if a future ingest supplies an initial CCN "
+            "field -- such an ingest must advance the restart algorithm "
+            "identity rather than resume onto this one. (2) WDM6 is not in "
+            "the registry's cross-scheme nest transition table, so a domain "
+            "hierarchy mixing mp=16 with another scheme is refused rather "
+            "than diagnosed across the edge.",
+        ],
+    }
+
+#: Why a microphysics scheme has no RTE+RRTMGP cloud-optics row, one
+#: entry per selector that lacks one.  MEMBERSHIP is derived from
+#: ``gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME``; only the WRF reason is
+#: written here, because the reasons genuinely differ and a generic one
+#: would be worse than none.  A selector with no row and no entry here
+#: STOPS THE BUILD -- that is the whole point, and it is what mp=50 needed
+#: and did not get.
+_NO_RTE_RRTMGP_CLOUD_OPTICS_REASON = {
+    9: ("mp_physics=9 has no RTE+RRTMGP cloud-optics coupling. "
+        "MILBRANDT2MOM is absent from WRF's use_mp_re disjunction "
+        "(phys/module_physics_init.F:1004-1023) and the scheme's own "
+        "effective-radius block is commented out "
+        "(phys/module_mp_milbrandt2mom.F:3351-3378), so it hands radiation "
+        "no radii at all."),
+    50: ("mp_physics=50 has no RTE+RRTMGP cloud-optics coupling. WRF sets "
+         "has_reqs=0 for P3 (phys/module_physics_init.F:1027-1033) and "
+         "P3's single ice category carries no separate snow species, so "
+         "there is no snow radius to hand RRTMGP; every existing row in "
+         "gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME assumes one."),
+}
+
+#: The remedy sentence both refusals end on.  One copy, because it is the
+#: same two doors and a user who is told different things about the same
+#: door stops trusting either.
+_RTE_RRTMGP_CLOUD_OPTICS_REMEDY = (
+    " Set ra_rrtmg_variant='rrtmg_legacy', which computes its own radii "
+    "the way WRF does, or select the Dudhia pair ra_lw_physics=0 / "
+    "ra_sw_physics=1.")
+
+
+def _rte_rrtmgp_cloud_optics_constraints(registry: dict) -> None:
+    """Refuse, in the registry, every scheme RTE+RRTMGP cannot couple to.
+
+    THE FAILURE THIS CLOSES.  gpuwm/core/rrtmgp.py resolves a cloud-optics
+    row per ``mp_physics`` and RAISES on a selector with no row -- correct,
+    and it raises at the FIRST RADIATION CALL, deep inside a forecast.  Two
+    schemes reached 1.9 admitted by the loader with no row: mp=9, whose
+    refusal existed in gpuwm/config.py but only as prose in the registry
+    (tests/test_authority_agreement.py measured 320 combinations the two
+    authorities decided differently), and mp=50, which had no refusal
+    anywhere and would simply die mid-run.
+
+    IT IS A CONJUNCTION, so it needs ``constraints.refused_when``.  A plain
+    ``requires_components`` on radiation is WRONG here and was tried first:
+    the three shipped ``*-rrtmg-legacy-*`` templates select the SAME
+    ``rte-rrtmgp`` component option and switch adapters with the
+    ``ra_rrtmg_variant`` PARAMETER, so excluding the option refuses the
+    very configuration the refusal message recommends -- measured, 16
+    disagreements in the other direction.
+
+    DERIVED, not transcribed, in all three of its parts: which schemes need
+    the rule comes from ``_MP_CLOUD_OPTICS_SCHEME`` itself, the radiation
+    clause from the options' own projected selectors (every option landing
+    on the explicit 4/4 pair), and the variant clause from the shipped
+    ``ra_rrtmg_variant`` enum minus the legacy value.  A new scheme, a new
+    radiation option resolving to the same adapter, or a third adapter each
+    force a decision here instead of silently widening the admission.
+    """
+
+    from gpuwm.core.rrtmgp import _MP_CLOUD_OPTICS_SCHEME
+
+    radiation_options = registry["components"]["radiation"]["options"]
+    rte_rrtmgp_4_4 = sorted(
+        option_id for option_id, option in radiation_options.items()
+        if option.get("selectors", {}).get("ra_lw_physics") == 4
+        and option.get("selectors", {}).get("ra_sw_physics") == 4)
+    if not rte_rrtmgp_4_4:
+        raise RuntimeError(
+            "no radiation option projects the RTE+RRTMGP 4/4 selector pair; "
+            "the cloud-optics constraints would be vacuous.  If the adapter "
+            "moved, re-derive from its new spelling rather than deleting "
+            "the constraints.")
+    variants = registry["parameters"]["ra_rrtmg_variant"]["enum"]
+    rte_rrtmgp_variants = sorted(
+        value for value in variants if value != "rrtmg_legacy")
+    if not rte_rrtmgp_variants:
+        raise RuntimeError(
+            "ra_rrtmg_variant declares no non-legacy adapter; the "
+            "cloud-optics constraints would be vacuous")
+
+    for option_id, option in sorted(
+            registry["components"]["microphysics"]["options"].items()):
+        if option.get("implemented") is not True:
+            continue
+        selector = option.get("selectors", {}).get("mp_physics")
+        if selector is None or selector in _MP_CLOUD_OPTICS_SCHEME:
+            continue
+        reason = _NO_RTE_RRTMGP_CLOUD_OPTICS_REASON.get(selector)
+        if reason is None:
+            raise RuntimeError(
+                f"microphysics/{option_id} (mp_physics={selector}) has no "
+                "row in gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME, so an "
+                "RTE+RRTMGP run of it dies at the first radiation call. "
+                "Either add the cloud-optics row with its WRF authority, "
+                "or add the scheme's reason to "
+                "_NO_RTE_RRTMGP_CLOUD_OPTICS_REASON so the registry can "
+                "refuse the pairing up front.")
+        option.setdefault("constraints", {})["refused_when"] = [
+            {
+                "components": {"radiation": rte_rrtmgp_4_4},
+                "reason": reason + _RTE_RRTMGP_CLOUD_OPTICS_REMEDY,
+                "settings": {"ra_rrtmg_variant": rte_rrtmgp_variants},
+            },
+        ]
+
+
 def build(registry: dict) -> dict:
     """Apply this pass's tables to ``registry`` in place and return it."""
     _surface_coupling_warnings(registry)
     _thompson_aerosol_mp28(registry)
+    _milbrandt2mom_mp9(registry)
+    _wdm6_mp16(registry)
+    # After every microphysics option is registered, because it walks them.
+    _rte_rrtmgp_cloud_optics_constraints(registry)
     registry["authority"][
         "wrf_v461_compatibility_matrix"
     ] = _wrf_compatibility_authority()
@@ -2638,6 +3153,198 @@ def build(registry: dict) -> dict:
     # Brunt-Vaisala frequency; a dry state has nothing for it to integrate.
     pbl_options["sase"]["constraints"]["required_settings"]["moist"] = True
     pbl_options["sase"]["reachability"] = {"state": "component-override"}
+    # ---- MYJ (bl_pbl_physics=2) and its Eta similarity surface layer -----
+    # The one PAIR in this registry.  WRF v4.6.1 fatals a MYJ PBL whose
+    # surface layer did not set isfc=2 (phys/module_physics_init.F:
+    # 3770-3772), and among the surface layers gpuwm ports only MYJSFCSCHEME
+    # does (:3169).  Both halves therefore declare the other in
+    # requires_components, and gpuwm.config.validate_myj_pairing refuses the
+    # mismatch in BOTH directions at load.  No template selects either --
+    # the shinhong/sase posture: a user asks for the pair explicitly or does
+    # not get it.
+    _MYJ_PAIR_WARNING = (
+        "MYJ and the Eta similarity surface layer are selected TOGETHER or "
+        "not at all. WRF v4.6.1's own law is one-directional -- "
+        "phys/module_physics_init.F:3770-3772 fatals bl_pbl_physics=2 "
+        "unless the surface layer set isfc=2, which only "
+        "sf_sfclay_physics=2 does among the layers gpuwm ports (:3169) -- "
+        "and ArWen adds the reverse refusal for a stated reason: the Eta "
+        "layer publishes AKHS/AKMS/THZ0/QZ0/UZ0/VZ0 and publishes NO MOL, "
+        "ZOL, PSIM/PSIH, REGIME, GZ1OZ0 or WSPD "
+        "(phys/module_sf_myjsfc.F:361-1056), while YSU, MYNN, Shin-Hong and "
+        "SASE each read at least one of those. Pairing them would hand a "
+        "PBL scheme a zero where WRF hands it a similarity function: "
+        "finite, plausible and wrong. gpuwm.config.validate_myj_pairing is "
+        "that refusal.")
+    _MYJ_EVIDENCE_WARNING = (
+        "MYJ is implemented-unverified and the evidence string says exactly "
+        "what was run: the float32 CPU authority "
+        "(gpuwm/verify/myj_ref.py) is a line-by-line transcription of the "
+        "byte-frozen phys/module_bl_myjpbl.F and phys/module_sf_myjsfc.F, "
+        "and tests/test_myj_port.py drives the SHIPPED seams "
+        "(initialize_physics + PhysicsDriver.compute) plus the CUDA "
+        "translation units, asserting finiteness, physical bounds, the "
+        "conservation the scheme has and CPU-vs-CUDA agreement, with "
+        "mutation controls that STUB THE PORTED ROUTINES THEMSELVES and "
+        "record which bars each stub turns red (the two bars nothing "
+        "breaks -- _vdifq and the similarity-table lookup -- are declared "
+        "in the same table rather than left silently green). TKE_MYJ "
+        "cold-starts at epsq2=0.2, which is what MYJPBLINIT writes "
+        "(phys/module_bl_myjpbl.F:1725, share/module_model_constants.F:92) "
+        "and not zero: the seed decides MIXLEN's LPBL scan on step one and "
+        "a zero column is a 0/0 in EL0 that WRF never reaches. NO "
+        "ORACLE COMPARISON AGAINST THE WRF FORTRAN HAS BEEN RUN: there is "
+        "no tools/myj_wrf461_oracle, no gfortran replay and no ULP table, "
+        "so nothing here claims bit agreement with WRF. That campaign is "
+        "the declared next stage, as it was for Shin-Hong and "
+        "Grell-Freitas.")
+    _MYJ_QUIRK_WARNING = (
+        "WRF quirks transcribed rather than repaired, each cited in the "
+        "port. CT (the countergradient correction) is identically zero in "
+        "ARW: MYJSFC zeroes it every call "
+        "(phys/module_sf_myjsfc.F:206-211) and SFCDIF's countergradient "
+        "block is commented out (phys/module_sf_myjsfc.F:816-825, CT=0.), "
+        "so MIXLEN's DTH+CT fix (phys/module_bl_myjpbl.F:845-850) and "
+        "VDIFH's RKCT term add exactly zero -- both seams are still built "
+        "so a future WRF that restores them lands in the right place. CZIL "
+        "is hard-coded to 0.1 because the Chen-Zhang block is commented "
+        "out (phys/module_sf_myjsfc.F:689-697), which is why "
+        "IVGTYP/ISURBAN/IZ0TLND are dead arguments and why gpuwm.config "
+        "refuses isftcflx/iz0tlnd with this surface layer. The "
+        "Zilitinkevich thermal-roughness fix reads Z0BASE, not the working "
+        "ZNT (phys/module_sf_myjsfc.F:733). DIFCOF's inversion block is "
+        "commented out (phys/module_bl_myjpbl.F:1275-1322), so its T "
+        "argument is dead and the port does not take it.")
+    _MYJ_DIVERGENCE_WARNING = (
+        "DELIBERATE DIVERGENCE, gpuwm goes its own way (float32 "
+        "precision): the interface-height column is GROUND-relative. WRF "
+        "seeds it with the terrain height, ZINT(I,KTE+1,J)=HT(I,J) "
+        "(phys/module_bl_myjpbl.F:312, phys/module_sf_myjsfc.F:162), so "
+        "every height it carries is above sea level; gpuwm seeds zero. "
+        "Every consumer in both modules reads only DIFFERENCES of those "
+        "heights, so HT cancels EXACTLY in real arithmetic and only "
+        "APPROXIMATELY in float32, where differencing numbers offset by "
+        "1-3 km drops bits the ground-relative column keeps. gpuwm's "
+        "column is the more accurate one, which is why it ships. The "
+        "cancellation is MEASURED rather than assumed: over five columns "
+        "(four stretched so no dz and no interface height is an exactly "
+        "representable float32) crossed with terrain at 1523.7, 2987.3 "
+        "and 4411.1 m, land and water, KPBL is identical in every case, "
+        "non-tendency fields move at most 69 ULP -- attained on lh over "
+        "water, where the move is 1.645e-05 W m-2 -- and at most "
+        "5.75e-06 relative, attained on qfx rather than on lh, and "
+        "tendency rows move at most 2.05 "
+        "quanta of the source field's ULP over dt "
+        "(tests/test_myj_port.py::"
+        "test_the_dropped_terrain_height_cancels_in_float32). It will be "
+        "a real term in the ULP table when the oracle campaign runs.")
+    _MYJ_SCOPE_WARNING = (
+        "OUT OF SCOPE, refused rather than approximated. WRF sends the MYJ "
+        "PBL through myjurb (phys/module_bl_myjurb.F:130-771) when sf_urban_physics "
+        "is 2 or 3, the BEP/BEM multi-layer urban canopies "
+        "(phys/module_physics_init.F:3775-3781). gpuwm has no "
+        "sf_urban_physics selector at all, so that arm is UNREACHABLE "
+        "rather than silently substituted by the non-urban one; a future "
+        "urban port must add the selector and its own registry option. "
+        "With sf_surface_physics=0 the land branch stops evolving surface "
+        "humidity rather than failing: MYJPBL rebuilds QSFC over land from "
+        "ELFLX and CHKLOWQ, both of which an LSM writes, and its "
+        "IF(QFC1>0.) guard leaves QSFC untouched when they are zero "
+        "(phys/module_bl_myjpbl.F:547-557). That is WRF's own behaviour and "
+        "it is admitted, not refused -- but a land run without an LSM is a "
+        "land run whose surface moisture is frozen at its initial value. "
+        "The MYJPBL species stack is WRF's own three or four rows (theta, "
+        "vapour, cloud water and cloud ice when the moist set carries it): "
+        "the QCS/QCR/QCG rows the source declares are commented out "
+        "upstream (:274-285) and are not ported. The kernel holds the "
+        "column in per-thread local memory like YSU's, so it carries the "
+        "same 128-level ceiling and refuses a deeper column rather than "
+        "truncating it.")
+    pbl_options["myj"] = {
+        "asset_requirements": [],
+        "constraints": {
+            "required_settings": {"moist": True},
+            "requires_components": {
+                # The surface layer is the ONLY component MYJ constrains.
+                # An earlier draft also listed the land-surface options,
+                # and that was a gate this port invented: WRF places no
+                # LSM restriction on MYJ, and with sf_surface_physics=0
+                # the code path is DEFINED rather than broken -- LH and
+                # CHKLOWQ are zero, so QFC1 is zero and MYJPBL's
+                # IF(QFC1>0.) guard simply leaves QSFC where it was
+                # (module_bl_myjpbl.F:547-557).  Degraded, not impossible,
+                # and the consequence belongs in a warning rather than in
+                # a refusal; the pairing the port drove end to end is
+                # named in the evidence warning instead.
+                "surface_layer": ["eta-similarity"],
+            },
+        },
+        "extensions": {
+            "arwen_pairing_requirement": {
+                "reason": (
+                    "the MYJ PBL's every implicit solve takes "
+                    "AKHS/AKMS/THZ0/QZ0/UZ0/VZ0 as its lower boundary and "
+                    "only the Eta similarity surface layer produces them"),
+                "classification": (
+                    "WRF v4.6.1 law in the PBL direction "
+                    "(phys/module_physics_init.F:3770-3772); ArWen structural "
+                    "constraint in the surface-layer direction"),
+                "wrf_source": (
+                    "phys/module_physics_init.F:3169,3770-3772"),
+            },
+            "arwen_moist_structural_requirement": {
+                "reason": (
+                    "MYJPBL mixes water vapour and cloud water as species "
+                    "rows 2 and 3 of its own tridiagonal solve and forms "
+                    "the mixing length from a moist buoyancy gradient "
+                    "(phys/module_bl_myjpbl.F:501-503, phys/module_bl_myjpbl.F:865-867); a dry state "
+                    "has nothing for those rows to carry"),
+                "classification": (
+                    "ArWen structural constraint; WRF v4.6.1 guards the "
+                    "same thing with PRESENT(qv_curr) at "
+                    "phys/module_pbl_driver.F:1441-1443"),
+            },
+        },
+        "implemented": True,
+        "label": "MYJ PBL",
+        "maturity": "implemented-unverified",
+        "parameters": {},
+        "reachability": {"state": "component-override"},
+        "scientific_evidence": "none",
+        "selectors": {"bl_pbl_physics": 2},
+        "warnings": [_MYJ_EVIDENCE_WARNING, _MYJ_PAIR_WARNING,
+                     _MYJ_QUIRK_WARNING, _MYJ_DIVERGENCE_WARNING,
+                     _MYJ_SCOPE_WARNING],
+    }
+    surface_options["eta-similarity"] = {
+        "asset_requirements": [],
+        "constraints": {
+            "requires_components": {"pbl": ["myj"]},
+        },
+        "extensions": {
+            "arwen_pairing_requirement": {
+                "reason": (
+                    "the Eta surface layer's published set is not the MM5 "
+                    "layers' published set, so a non-MYJ PBL would read "
+                    "zeros for MOL/ZOL/PSIM/PSIH/REGIME/GZ1OZ0/WSPD"),
+                "classification": (
+                    "ArWen structural constraint; WRF v4.6.1 admits "
+                    "sf_sfclay_physics=2 with PBL schemes gpuwm does not "
+                    "port (phys/module_physics_init.F:3742, phys/module_physics_init.F:3756)"),
+                "wrf_source": "phys/module_sf_myjsfc.F:361-1056",
+            },
+        },
+        "implemented": True,
+        "label": "Eta similarity surface layer",
+        "maturity": "implemented-unverified",
+        "parameters": {},
+        "reachability": {"state": "component-override"},
+        "scientific_evidence": "none",
+        "selectors": {"sf_sfclay_physics": 2},
+        "warnings": [_MYJ_EVIDENCE_WARNING, _MYJ_PAIR_WARNING,
+                     _MYJ_QUIRK_WARNING, _MYJ_DIVERGENCE_WARNING,
+                     _MYJ_SCOPE_WARNING],
+    }
     # Grell-Freitas (cu_physics=3), the first cumulus option admitted
     # since KF and the first scale-aware one: sig = (1-frh)^2 is the
     # scheme's own dx taper, so per-domain admission carries no grid gate.
@@ -2651,8 +3358,17 @@ def build(registry: dict) -> dict:
             # config.py enforces the same law: the trigger's excesses and
             # the shallow arm read KPBL and the PBL-maintained surface
             # fluxes, so a PBL scheme must be active.
+            # "myj" joined this list with the MYJ port, and it is a
+            # STRUCTURAL statement rather than an evidence one -- the
+            # extension below says so.  MYJ writes KPBL
+            # (module_bl_myjpbl.F:421) and maintains the surface fluxes
+            # through its Eta surface layer, which is exactly what the
+            # adapter reads; leaving it out would have invented a
+            # prohibition WRF does not make and would have put the
+            # registry and validate_run_config into disagreement over 816
+            # combinations.
             "requires_components": {
-                "pbl": ["ysu", "mynn", "shinhong", "sase"]},
+                "pbl": ["ysu", "mynn", "shinhong", "sase", "myj"]},
         },
         "extensions": {
             "arwen_pbl_structural_requirement": {
@@ -2784,9 +3500,25 @@ def build(registry: dict) -> dict:
     land_options = registry["components"]["land_surface"]["options"]
     for option_id in ("noah", "ruc-lsm", "noah-mp"):
         option = land_options[option_id]
+        # "eta-similarity" joined all three lists with the MYJ port, and
+        # the reason it is all three is the reason this list exists at all.
+        # It is a STRUCTURAL statement -- "who writes the exchange fields
+        # this seam reads" -- not an evidence one, exactly as the extension
+        # below says, and the Eta layer writes every one of them
+        # (UST/CHS/CHS2/CQS2/FLHC/FLQC plus the RIB the driver carries as
+        # BR); none of gpuwm's three LSM runtimes reads a MM5-only surface
+        # field by name.  Restricting it to Noah, the pairing the port
+        # actually exercised, was tried and is WRONG here: it invents a
+        # prohibition WRF does not make, it puts this table into
+        # disagreement with validate_run_config over 744 combinations (the
+        # thing tests/test_authority_agreement.py exists to catch), and it
+        # states evidence in the place reserved for structure.  Where the
+        # evidence scope belongs is the OPTION's maturity and warnings,
+        # which say implemented-unverified and say what was run -- the same
+        # posture "mynn" already has in these three lists.
+        accepted = ["revised-mm5", "classic-mm5", "mynn", "eta-similarity"]
         option.setdefault("constraints", {}).setdefault(
-            "requires_components", {})["surface_layer"] = [
-                "revised-mm5", "classic-mm5", "mynn"]
+            "requires_components", {})["surface_layer"] = accepted
         option.setdefault("extensions", {})[
             "arwen_surface_exchange_structural_requirement"
         ] = {
@@ -2815,10 +3547,21 @@ def build(registry: dict) -> dict:
         # reachability is "template" -- a user can also ask for the whole
         # registered suite -- and this entry keeps the per-domain override
         # legal beside it.
-        "pbl": ["off", "ysu", "mynn", "sase", "shinhong"],
-        "surface_layer": ["revised-mm5", "classic-mm5", "mynn"],
+        # "myj" and "eta-similarity" are listed TOGETHER and only
+        # together: they are the one pair in this registry, and a plan that
+        # names one without the other is refused by their own
+        # requires_components and again by
+        # gpuwm.config.validate_myj_pairing.
+        "pbl": ["off", "ysu", "mynn", "sase", "shinhong", "myj"],
+        "surface_layer": [
+            "revised-mm5", "classic-mm5", "mynn", "eta-similarity"],
+        # "wrf-rrtm-dudhia" is WRF's classic 1/1 pair.  No template
+        # selects it, so like sase and grell-freitas it is a
+        # component-override: a user asks for RRTM longwave explicitly.
+        # It is the only registered longwave-on pairing that is not the
+        # coupled RRTMG adapter, which is the point of listing it here.
         "radiation": [
-            "off", "dudhia-shortwave", "rte-rrtmgp",
+            "off", "dudhia-shortwave", "wrf-rrtm-dudhia", "rte-rrtmgp",
             "rte-rrtmgp-legacy-aggregate"],
     }
     # Grell-Freitas is selectable per domain on the tree route, the same
@@ -2934,16 +3677,25 @@ def build(registry: dict) -> dict:
     # microphysics selector -- tests/test_mynn_pbl.py asserts set equality
     # against the registry's own options -- so a new scheme lands here in the
     # same pass that registers it.  mp_physics=28's thompsonaero package
-    # carries qs (Registry.EM_COMMON:3036), so F_QS is true for it.
+    # carries qs (Registry.EM_COMMON:3036), so F_QS is true for it, and
+    # mp_physics=16's wdm6scheme package carries qs at :3031, so F_QS is
+    # true for WDM6 too.
     mynn["extensions"]["supplied_moisture_species"] = {
         "supplied": ["qv", "qc", "qi", "qs"],
         "withheld": ["qnc", "qni", "qnwfa", "qnifa", "qnbca", "o3"],
-        "flag_qs_true_microphysics_selectors": [6, 8, 10, 18, 28],
-        "flag_qs_false_microphysics_selectors": [0, 1],
+        "flag_qs_true_microphysics_selectors": [6, 8, 9, 10, 16, 18, 28],
+        # mp_physics=50 (P3 one-category) is FALSE, and for the substantive
+        # reason rather than because it is new: P3 has a single ice category
+        # and its Registry package declares moist:qv,qc,qr,qi with NO qs
+        # (Registry.EM_COMMON:3038), so WRF's own F_QS is false and MYNN
+        # correctly sees sqs = 0.  This is the one case where withholding
+        # snow is not a substitution -- there is no snow field to withhold.
+        "flag_qs_false_microphysics_selectors": [0, 1, 50],
         "wrf_flag_source": (
             "phys/module_pbl_driver.F:873-878 derives flag_qs from F_QS; "
-            "Registry.EM_COMMON declares qs for mp_physics 6, 8, 10, 18 and "
-            "28"),
+            "Registry.EM_COMMON declares qs for mp_physics 6, 8, 9, 10, 16, "
+            "18 and 28, and does NOT declare it for 50 (P3 has one ice "
+            "category, :3038)"),
         "gpuwm_runtime_source": (
             "gpuwm/core/mynn_pbl_runtime.py::MYNN_SNOW_MICROPHYSICS is the "
             "shipped set this list is checked against, selector by selector, "
@@ -3190,6 +3942,7 @@ def build(registry: dict) -> dict:
         (1, "kessler-mp1"),
         (6, "wsm6-mp6"),
         (8, "thompson-mp8"),
+        (9, MP9_OPTION_ID),
         (10, "morrison-mp10"),
         (18, "nssl2-mp18"),
     )

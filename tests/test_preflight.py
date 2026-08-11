@@ -96,11 +96,18 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
                                    bl_pbl_physics=SASE_PBL_SCHEME,
                                    km_opt=0, khdif=0.0, kvdif=0.0,
                                    bldt=0.0)
+    # P3 (mp=50) owns four names no other scheme allocates -- the rime
+    # mass/volume pair and the two cross-step supersaturation carriers --
+    # plus their RK time-t copies.  Without this arm they would be
+    # classified in the restart manifest and unaccounted for in the VRAM
+    # projection, which is exactly the drift this equality exists to catch.
+    p3_cfg = dataclasses.replace(d01_cfg, mp_physics=50)
     names = (set(pf.state_array_shapes(d01_cfg))
              | set(pf.state_array_shapes(nssl_cfg))
              | set(pf.state_array_shapes(les_cfg))
              | set(pf.state_array_shapes(aerosol_cfg))
-             | set(pf.state_array_shapes(sase_cfg)))
+             | set(pf.state_array_shapes(sase_cfg))
+             | set(pf.state_array_shapes(p3_cfg)))
     classified = (set(restart.STATE_SERIALIZED_ATTRS)
                   | set(restart.STATE_REBUILT_ATTRS)
                   | set(restart.STATE_SETUP_ARRAYS))
@@ -110,6 +117,12 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
     for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
         assert name in restart.STATE_SERIALIZED_ATTRS
     for name in ("nc0", "nwfa0", "nifa0"):
+        assert name in restart.STATE_REBUILT_ATTRS
+    # Same guard for P3: the rime pair and the supersaturation carriers are
+    # cross-step state WRF restart-carries, their time-t copies are not.
+    for name in ("qir", "qib", "th_old", "qv_old"):
+        assert name in restart.STATE_SERIALIZED_ATTRS
+    for name in ("qir0", "qib0"):
         assert name in restart.STATE_REBUILT_ATTRS
 
 
@@ -430,6 +443,8 @@ def test_scratch_lifetime_audit_covers_registry_and_manifest(d01_cfg, exp4):
         RunConfig(**_TINY, moist=True, mp_physics=8, km_opt=4),
         RunConfig(**_TINY, moist=True, mp_physics=18, km_opt=4),
         RunConfig(**_TINY, moist=True, mp_physics=28, km_opt=4),
+        RunConfig(**_TINY, moist=True, moist_cq=True, mp_physics=50,
+                  km_opt=4),
     ]
     slots = set()
     for cfg in configs:
@@ -698,8 +713,20 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
                           emdiv=0.01),
                 RunConfig(**_TINY, moist=True, mp_physics=6),
                 RunConfig(**_TINY, moist=True, mp_physics=8),
+                RunConfig(**_TINY, moist=True, mp_physics=9),
+                RunConfig(**_TINY, moist=True, moist_cq=True,
+                          mp_physics=16),
                 RunConfig(**_TINY, moist=True, mp_physics=18),
                 RunConfig(**_TINY, moist=True, mp_physics=28),
+                # P3 one-category owns the only three ice-diagnostic slots
+                # in the tree (p3_vmi/p3_di/p3_rhopo); without this arm they
+                # are invisible to the completeness gate.  moist_cq and
+                # km_opt=4 are on because P3 owns two more slot families no
+                # other scheme reaches: the shared zero plane calc_cq needs
+                # for its absent snow/graupel, and the smag_rqir/smag_rqib
+                # held tendencies for its transported rime pair.
+                RunConfig(**_TINY, moist=True, moist_cq=True,
+                          mp_physics=50, km_opt=4),
                 RunConfig(**_TINY, sf_sfclay_physics=1),
                 RunConfig(**_TINY, nwp_diagnostics=1),
                 # LES closures: km_opt=3 owns the vertical exchange-
@@ -1077,6 +1104,45 @@ def test_mp28_is_priced_and_never_falls_through_to_a_guess():
     assert pf.kernel_local_memory_bytes(exp) >= 0
 
 
+def test_mp9_is_priced_and_never_falls_through_to_a_guess():
+    """mp=9 must be a priced row, with the frame its kernels really hold.
+
+    The two halves of pricing a new scheme fail in different directions and
+    only one of them is loud.  A missing ``KERNEL_MAX_LOCAL_SIZE_BYTES`` row
+    is caught by the driver-measured sweep, but only on a GPU box.  A missing
+    ``_MICROPHYSICS_KERNEL_MODULES`` row is caught nowhere at all until a
+    user runs ``gpuwm check`` on an mp=9 config, at which point
+    ``domain_kernel_modules`` fails closed and the scheme cannot be priced
+    or gated -- config admits the selector, preflight refuses it.  So this
+    asserts BOTH ends meet.
+    """
+    from datetime import datetime as _dt
+
+    from gpuwm.experiment import experiment_from_run_config
+
+    cfg = RunConfig(**_TINY, moist=True, mp_physics=9, output_interval_s=1.0)
+    exp = experiment_from_run_config(cfg, _dt(1974, 4, 3, 12))
+    modules = pf.physics_kernel_modules(exp)
+    assert "milbrandt2" in modules
+    assert "microphysics_validation" in modules
+    # mp=9 fills the REFL_10CM slot from its own diagnostics kernel and only
+    # stashes the array (gpuwm/core/milbrandt2.py:291-296), so the shared
+    # refl module is never loaded and must never be priced.
+    assert "refl" not in modules
+    assert 9 not in pf._REFLECTIVITY_MICROPHYSICS
+
+    frames = pf.kernel_local_frame_bytes(exp)
+    for name in modules:
+        assert name in frames, name
+    # The row is the module CEILING, not this configuration's price: _TINY
+    # is nz=4, so the launcher takes milbrandt2_sediment_64 at 512 B while
+    # the table carries milbrandt2_sediment_256's 2,048 B.  Over-pricing is
+    # the safe direction for a rail gate, and it is what the table's own
+    # header says these rows mean.
+    assert frames["milbrandt2"] == 2048
+    assert pf.kernel_local_memory_bytes(exp) >= 0
+
+
 # ---------------------------------------------------------------------------
 # mp_physics=28 -- the PhysicsDriver budgets.
 #
@@ -1258,6 +1324,91 @@ def test_mp28_acoustic_cq_sums_six_masses_and_no_number_moment():
     assert captured["fields"][6] is state.qv
     for moment in (state.nc, state.nwfa, state.nifa):
         assert not any(moment is arg for arg in captured["fields"])
+
+
+def test_mp50_acoustic_cq_takes_its_one_ice_category_arm():
+    """gpuwm/core/acoustic.py -- the P3 arm of ``prepare_moist_cq``.
+
+    That arm had NO coverage.  ``RunConfig.moist_cq`` and
+    ``verify.cases.moist_bubble.default_config()`` both default the flag
+    OFF, so every other committed mp=50 test short-circuits at the
+    ``use_cq`` gate: deleting the whole arm left the p3 suite green while
+    a ``moist_cq=True`` run went straight back to the defect it fixed,
+    ``ValueError: unsupported mp_physics=50 for cq``.  The config is the
+    one ``test_scratch_lifetime_audit_covers_registry_and_manifest``
+    already prices (``moist_cq=True, mp_physics=50, km_opt=4``); what is
+    new here is that the cq call is actually MADE.
+
+    What the arm owes: select on qi-present/qs-absent, keep the six-mass
+    kernel mode, hand the absent snow and graupel the shared zero plane,
+    and leave qir/qib out -- they are Registry ``scalar``, and qir is a
+    COMPONENT of qi, so summing it would double count the rimed mass.
+    """
+    from gpuwm.core import acoustic
+
+    captured = {}
+
+    def fake_get_kernel(module, func):
+        assert (module, func) == ("acoustic", "calc_cq")
+
+        def launch(_grid, _block, args):
+            captured["fields"] = args[:7]
+            captured["faces"] = args[7:10]
+            captured["n_mass"] = int(args[10])
+        return launch
+
+    import gpuwm.core.state as state_mod
+
+    cfg = RunConfig(**_TINY, moist=True, moist_cq=True, mp_physics=50,
+                    km_opt=4)
+    monkey = pytest.MonkeyPatch()
+    try:
+        # numpy for the whole call, scratch allocations included, so this
+        # runs in the CPU shard and never needs a device.
+        monkey.setattr(state_mod, "cp", np)
+        monkey.setattr(acoustic, "get_kernel", fake_get_kernel)
+        monkey.setattr(acoustic, "cp", np, raising=False)
+        state = state_mod.DomainState(cfg)
+        # The arm is selected on PRESENCE, so state the premise it keys on.
+        assert getattr(state, "qi", None) is not None
+        assert getattr(state, "qs", None) is None
+        # Real mass in every P3 field, so "the absent plane is zero" is a
+        # measurement and not a restatement of zero-initialisation.
+        for field, value in (("qv", 8.0e-3), ("qc", 1.0e-3), ("qr", 4.0e-4),
+                             ("qi", 2.0e-4), ("qir", 5.0e-5),
+                             ("qib", 1.0e-7)):
+            getattr(state, field)[...] = value
+        cqu, cqv, cqw, use = acoustic.prepare_moist_cq(state, cfg)
+    finally:
+        monkey.undo()
+
+    # It reached the kernel at all -- the ValueError arm is what this pins.
+    assert use is True
+    assert captured, "prepare_moist_cq never launched calc_cq"
+    faces = captured["faces"]
+    assert cqu is faces[0] and cqv is faces[1] and cqw is faces[2]
+    assert cqu.shape == (cfg.nz, cfg.ny, cfg.nx + 1)
+    assert cqv.shape == (cfg.nz, cfg.ny + 1, cfg.nx)
+    assert cqw.shape == (cfg.nz + 1, cfg.ny, cfg.nx)
+
+    # Six-mass mode with ONE real ice mass behind it.
+    assert captured["n_mass"] == 6
+    qv, qc, qr, qi, qs, qg, qh = captured["fields"]
+    assert qv is state.qv
+    assert qc is state.qc
+    assert qr is state.qr
+    assert qi is state.qi
+    # The absent snow and graupel are the SAME shared plane, and it is
+    # zeroed before the read, so the six-mass sum is exact.  Every real
+    # field above carries mass, so this is a measurement of the plane and
+    # not a restatement of zero-initialisation.
+    assert qi.any() and qv.any()
+    assert qs is qg
+    assert not qs.any()
+    assert qh is state.qv          # hail placeholder, never read at mp=50
+    # The rime pair is not mass loading and must not enter the sum.
+    for extra in (state.qir, state.qib):
+        assert not any(extra is arg for arg in captured["fields"])
 
 
 def test_mp28_npref_cq_species_match_mp8_exactly():
@@ -2985,6 +3136,226 @@ def test_the_level_specialized_frame_model_agrees_with_every_measurement():
     for module, spec in pf.LEVEL_SPECIALIZED_KERNEL_FRAMES.items():
         assert (spec.frame_bytes(spec.unspecialized_levels)
                 == pf.KERNEL_MAX_LOCAL_SIZE_BYTES[module])
+
+
+def test_the_run_door_prices_wdm6_instead_of_refusing_mp_16():
+    """The whole of mp=16's reachability, on CPU.
+
+    ``gpuwm.core.model.build_experiment``, ``domain_wizard``, ``runplan``
+    and the prepared domain-tree forecast all call ``estimate_experiment``
+    unconditionally, and ``estimate_experiment`` prices the local-memory
+    reservation from ``kernel_local_frame_bytes``.  A ``wdm6`` row missing
+    from ``KERNEL_MAX_LOCAL_SIZE_BYTES`` therefore did not degrade mp=16 --
+    it made every one of those doors raise, so the ported scheme could not
+    be run at all.  The refusal reproduced without a device, and so does
+    the fix.
+    """
+    start = datetime(1974, 4, 3, 12)
+    cfg = RunConfig(**_TINY, moist=True, moist_cq=True, mp_physics=16)
+    exp = experiment_from_run_config(cfg, start)
+
+    modules = pf.physics_kernel_modules(exp)
+    assert "wdm6" in modules and "wsm6" not in modules
+    frames = pf.kernel_local_frame_bytes(exp)
+    # nz = 4 compiles the 64 tier, which is the recorded row.
+    assert frames["wdm6"] == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["wdm6"] == 9776
+    assert pf.kernel_local_memory_bytes(exp) > 0
+    estimate = pf.estimate_experiment(exp)
+    assert estimate.alloc_estimate_bytes > 0
+
+
+def test_wdm6_is_priced_at_the_tier_its_launcher_compiles_not_at_nz():
+    """The two rungs, and the two ways an nz-linear model would be wrong.
+
+    ``gpuwm/core/wdm6.py`` compiles ``WDM6_KMAX`` at 64 or 80, never at
+    ``nz``, so a 49-level WDM6 run launches the 64-tier kernel and holds
+    its 9,776 B frame.  Pricing 152 x 49 = 7,488 B there would under-price
+    the reservation by 2,288 B/thread -- 570 MiB of device memory the pool
+    never reports -- which is the direction the header at the top of
+    preflight.py says put a run 1,630 MiB over.
+    """
+    start = datetime(1974, 4, 3, 12)
+
+    def frame(nz, mp_physics=16):
+        cfg = RunConfig(**{**_TINY, "nz": nz}, moist=True, moist_cq=True,
+                        mp_physics=mp_physics)
+        return pf.kernel_local_frame_bytes(
+            experiment_from_run_config(cfg, start)).get("wdm6")
+
+    assert frame(4) == frame(49) == frame(64) == 9776
+    assert frame(65) == frame(80) == 12208
+    profile = pf.MEASURED_LOCAL_MEMORY_PROFILE
+    assert (profile.reservation_bytes(9776) - profile.reservation_bytes(7488)
+            ) > 500 * 1024 ** 2
+    # Deeper than the deepest compiled tier is a refusal, not a guess.
+    with pytest.raises(ValueError, match="WDM6 requires 2 <= nz <= 80"):
+        frame(96)
+    # ... and a scheme that does not launch WDM6 never reaches that bound.
+    # Morrison, not WSM6: WSM6 became the SECOND conditionally tiered module
+    # at 1.9 and carries its own 2 <= nz <= 80 ladder, so mp_physics=6 at
+    # nz = 96 is refused on WSM6's own bound before this assertion can say
+    # anything about WDM6.  The control needs a scheme that launches neither,
+    # which is what the WSM6 half of this pair uses in the mirror direction.
+    assert frame(96, mp_physics=10) is None
+
+
+def test_the_tiered_frame_model_agrees_with_the_wdm6_measurements():
+    """Both rungs, against the driver measurements they were taken from.
+
+    ``tests/test_kernel_local_bounds.py`` re-reads them off the card; this
+    is the CPU half, so a model edit fails somewhere even on a host with no
+    device.
+    """
+    from gpuwm.core.wdm6_constants import (WDM6_KERNEL_LEVEL_TIERS,
+                                           wdm6_level_tier)
+
+    assert pf.WDM6_TIER_FRAME.define == "WDM6_KMAX"
+    assert WDM6_KERNEL_LEVEL_TIERS == (64, 80)
+    for tier, measured in ((64, 9776), (80, 12208)):
+        assert pf.WDM6_TIER_FRAME.frame_bytes(tier) == measured, tier
+    assert (pf.WDM6_TIER_FRAME.frame_bytes(pf.WDM6_TIER_FRAME.shipped_tier)
+            == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["wdm6"])
+    assert wdm6_level_tier(64) == 64 and wdm6_level_tier(65) == 80
+
+
+def test_the_rqi_budget_shapes_materialization_and_physics_name_one_set():
+    """The agreement the ``--alloc`` comment asks for, enforced.
+
+    ``physics_array_shapes`` (what the estimate prices),
+    ``_materialize_physics`` (what the measurement constructs) and
+    ``physics._pbl_optional_tendency_components`` (what the run allocates)
+    have to admit the same schemes or ``--alloc`` stops covering true
+    runtime residency.  They were three literal tuples and mp=16 moved only
+    two of them, so the mp=16 + PBL run allocated a ``pbl_tendencies.rqi``
+    the measurement never materialized.  One constant now, read by all
+    three, and the reachable consequence is asserted below rather than the
+    identity alone.
+    """
+    from gpuwm.core.physics import (PBL_RQI_MICROPHYSICS,
+                                    _pbl_optional_tendency_components)
+
+    source = (ROOT / "gpuwm/core/preflight.py").read_text(encoding="utf-8")
+    assert source.count("cfg.mp_physics in PBL_RQI_MICROPHYSICS") == 2, (
+        "both preflight rqi gates must read the named set, or they will "
+        "drift apart again")
+    for mp_physics in range(0, 60):
+        cfg = RunConfig(**_TINY, moist=mp_physics != 0, moist_cq=True,
+                        mp_physics=mp_physics, bl_pbl_physics=1,
+                        sf_sfclay_physics=1)
+        expects_rqi = mp_physics in PBL_RQI_MICROPHYSICS
+        assert (_pbl_optional_tendency_components(cfg) == ("rqi",)
+                ) is expects_rqi, mp_physics
+        if mp_physics not in (0, 1, 6, 8, 10, 16, 18, 28):
+            continue          # not an admitted selector; nothing to price
+        shapes = pf.physics_array_shapes(cfg)
+        assert ("pbl_tendencies/rqi" in shapes) is expects_rqi, mp_physics
+
+
+def test_wsm6_is_priced_at_the_tier_its_launcher_compiles_not_at_a_flat_row():
+    """The two rungs, and the way the flat row was wrong above 64 levels.
+
+    ``gpuwm/core/wsm6.py`` compiles ``WSM6_KMAX`` at 64 or 80, never at
+    ``nz``, and until 1.8.9 preflight priced BOTH at the 64 row.  An
+    nz = 72 WSM6 run -- the six shipped tornado-LES configs -- therefore
+    reserved against 7,216 B while the kernel it launches holds 9,008 B:
+    1,792 B/thread, +446.2 MiB of backing store the pool never reports,
+    the direction the header at the top of preflight.py says put a run
+    1,630 MiB over.
+    """
+    start = datetime(1974, 4, 3, 12)
+
+    def frame(nz, mp_physics=6):
+        cfg = RunConfig(**{**_TINY, "nz": nz}, moist=True, moist_cq=True,
+                        mp_physics=mp_physics)
+        return pf.kernel_local_frame_bytes(
+            experiment_from_run_config(cfg, start)).get("wsm6")
+
+    assert frame(4) == frame(49) == frame(64) == 7216
+    assert frame(65) == frame(72) == frame(80) == 9008
+    profile = pf.MEASURED_LOCAL_MEMORY_PROFILE
+    moved = (profile.reservation_bytes(9008)
+             - profile.reservation_bytes(7216))
+    assert moved == 467927040                       # +446.2 MiB, measured
+    # Deeper than the deepest compiled tier is a refusal, not a guess.
+    with pytest.raises(ValueError, match="WSM6 requires 2 <= nz <= 80"):
+        frame(96)
+    # ... and a scheme that does not launch WSM6 never reaches that bound.
+    assert frame(96, mp_physics=10) is None
+
+
+def test_the_tiered_frame_model_agrees_with_the_wsm6_measurements():
+    """Both rungs, against the driver measurements they were taken from.
+
+    ``tests/test_kernel_local_bounds.py`` re-reads them off the card; this
+    is the CPU half, so a model edit fails somewhere even on a host with
+    no device.
+    """
+    from gpuwm.core.wsm6_constants import (WSM6_KERNEL_LEVEL_TIERS,
+                                           wsm6_level_tier)
+
+    assert pf.WSM6_TIER_FRAME.define == "WSM6_KMAX"
+    assert WSM6_KERNEL_LEVEL_TIERS == (64, 80)
+    for tier, measured in ((64, 7216), (80, 9008)):
+        assert pf.WSM6_TIER_FRAME.frame_bytes(tier) == measured, tier
+    assert (pf.WSM6_TIER_FRAME.frame_bytes(pf.WSM6_TIER_FRAME.shipped_tier)
+            == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["wsm6"])
+    assert wsm6_level_tier(64) == 64 and wsm6_level_tier(65) == 80
+    # The launcher and the estimator read ONE ladder, so the adapter cannot
+    # compile a tier the model has never heard of.
+    from gpuwm.core import wsm6 as wsm6_adapter
+    assert wsm6_adapter._kernel_capacity is wsm6_level_tier
+
+    # And the front-door bound agrees with it.  physics_vertical_contract
+    # keeps its own literal deliberately -- it is a top-level module the
+    # standalone preprocessing distribution imports without staging any
+    # CUDA-backed component -- and its docstring says component tests bind
+    # these values to their runtime counterparts.  For WSM6 nothing did,
+    # which is how the deepest tier and the admitted maximum could part
+    # company and let a front door accept an nz the launcher refuses.
+    from gpuwm.physics_vertical_contract import WSM6_VERTICAL_LEVEL_BOUNDS
+    from gpuwm.core.wsm6_constants import (
+        WSM6_VERTICAL_LEVEL_BOUNDS as ladder_bounds)
+    assert WSM6_VERTICAL_LEVEL_BOUNDS == ladder_bounds == (2, 80)
+    assert WSM6_VERTICAL_LEVEL_BOUNDS[1] == WSM6_KERNEL_LEVEL_TIERS[-1]
+
+
+def test_the_six_tornado_les_configs_are_the_ones_this_moves():
+    """Reachability, named: which shipped configs the tier actually changes.
+
+    All six are nz = 72 four-domain WSM6 trees, so all six were priced at
+    the 64 rung.  Their local TOTAL does not move, and that is worth
+    saying out loud rather than leaving as a silent pass: ``ysu`` holds
+    9,232 B on these compositions, 224 B wider than WSM6's 80-tier frame,
+    and the reservation is a MAX over the selected modules.  The
+    under-pricing is real and is exposed the moment WSM6 is the widest
+    module a run selects -- which the second half measures.
+    """
+    from gpuwm.experiment import load_experiment
+
+    frames = []
+    for path in sorted((ROOT / "configs").glob("les_tornado_100m_*.toml")):
+        exp = load_experiment(path)
+        f = pf.kernel_local_frame_bytes(exp)
+        assert {int(d.run.nz) for d in exp.domains} == {72}, path.name
+        frames.append((path.name, f["wsm6"], max(f.values())))
+    assert len(frames) == 6, [name for name, _, _ in frames]
+    assert all(wsm6 == 9008 and widest == 9232
+               for _, wsm6, widest in frames), frames
+
+    # WSM6 widest: the total moves by the frame's whole reservation delta.
+    start = datetime(2021, 12, 10, 3)
+    totals = {}
+    for nz in (64, 72):
+        cfg = RunConfig(nx=400, ny=400, nz=nz, dx=100.0, dy=100.0,
+                        ztop=18000.0, dt=0.5, run_seconds=60.0,
+                        moist=True, moist_cq=True, mp_physics=6)
+        exp = experiment_from_run_config(cfg, start)
+        assert max(pf.kernel_local_frame_bytes(exp),
+                   key=pf.kernel_local_frame_bytes(exp).get) == "wsm6"
+        totals[nz] = pf.kernel_local_memory_bytes(exp)
+    assert totals[64] == 1616855040                 # 1542.0 MiB, unchanged
+    assert totals[72] == 2084782080                 # 1988.2 MiB
+    assert totals[72] - totals[64] == 467927040     # +446.2 MiB
 
 
 def test_the_widest_frame_is_one_cumulus_kernel_not_anything_mynn_owns():

@@ -1019,7 +1019,7 @@ def analyze_namelists(
                 # run (_INVENTORIES[28], wrf_physics_inventory.py:281) -- so
                 # 28 reaches this line and the value is load-bearing, not
                 # aspirational.
-                runtime_supported = mp[index] in {6, 8, 10, 18, 28}
+                runtime_supported = mp[index] in {6, 8, 10, 16, 18, 28}
                 if not runtime_supported:
                     gpuwm_reasons.append(
                         f"d{index + 1:02d}: gpuwm runtime on paired head does not "

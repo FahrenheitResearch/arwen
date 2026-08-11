@@ -48,7 +48,7 @@ def _frozen_constructors():
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
-    assert names[-87:] == [
+    assert names[-94:] == [
         "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
         "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
         "swrad_scat", "wrf_rrtmg_compatibility", "num_soil_layers",
@@ -110,7 +110,19 @@ def test_new_fields_are_reviewed_defaults_appended_last():
         # The Grell-family keys, appended last: read only where
         # cu_physics = 3, which no frozen configuration selects, and
         # both defaults are WRF's own (Registry.EM_COMMON:2544,2546).
-        "clos_choice", "ishallow"]
+        "clos_choice", "ishallow",
+        # The NSSL variant selectors: one WRF scheme, four
+        # flags on top of it (Registry.EM_COMMON:2420-2425).
+        "nssl_2moment_on", "nssl_hail_on", "nssl_ccn_on",
+        "nssl_density_on", "nssl_3moment",
+        # The WDM6 pair, appended after them at the 1.9 assembly.  Both defaults are WRF's own
+        # (hail_opt = 0, Registry.EM_COMMON:2665; ccn_conc = 1.0e8,
+        # :2664) and both are read only where mp_physics = 16, which no
+        # frozen configuration selects.  They are additionally dropped
+        # from the restart identity of every run that is not WDM6
+        # (gpuwm.core.model.restart_identity_payload), so appending them
+        # moves neither a trajectory nor a fingerprint.
+        "wdm6_hail_opt", "wdm6_ccn_conc"]
     # Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors,
     # appended last.  Both defaults are WRF's own Registry defaults
     # (Registry/Registry.EM_COMMON:2656 and

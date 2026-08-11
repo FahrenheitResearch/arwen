@@ -33,10 +33,36 @@ import numpy as np
 import pytest
 
 from gpuwm.ingest.ruc_soil import (RUC_LEVEL_DEPTHS_M, RucSoilState,
-                                   preprocess_land_surface_soil,
-                                   preprocess_ruc_soil, ruc_soil_depths)
-from gpuwm.ingest.soil import (HRRR_SOIL_NODE_DEPTHS_M, NoahSoilState,
-                               preprocess_noah_soil)
+                                   ruc_soil_depths)
+from gpuwm.ingest.ruc_soil import (
+    preprocess_land_surface_soil as _preprocess_land_surface_soil,
+    preprocess_ruc_soil as _preprocess_ruc_soil)
+from gpuwm.ingest.soil import (HRRR_SOIL_NODE_DEPTHS_M, NoahSoilState)
+from gpuwm.ingest.soil import (
+    preprocess_noah_soil as _preprocess_noah_soil)
+
+
+# These fixtures hand the soil router the raw SST/SKINTEMP pair on purpose:
+# what they pin is WRF's OWN per-cell water-skin fallback
+# (module_initialize_real.F:2844-2866), which is exactly what
+# `water_temperature_policy = "wrf_compat"` names.  The router refuses that
+# pair when nobody declares a decision, so the declaration is made once here
+# instead of at every call site below, and the tests keep asserting the
+# historical numbers they were written for.
+def preprocess_land_surface_soil(fields, **kwargs):
+    kwargs.setdefault("water_temperature_policy", "wrf_compat")
+    return _preprocess_land_surface_soil(fields, **kwargs)
+
+
+def preprocess_ruc_soil(fields, **kwargs):
+    kwargs.setdefault("water_temperature_policy", "wrf_compat")
+    return _preprocess_ruc_soil(fields, **kwargs)
+
+
+def preprocess_noah_soil(fields, **kwargs):
+    kwargs.setdefault("water_temperature_policy", "wrf_compat")
+    return _preprocess_noah_soil(fields, **kwargs)
+
 
 _ROOT = Path(__file__).resolve().parents[1]
 

@@ -96,7 +96,8 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from gpuwm.config import (DEFAULT_COLUMN_CHUNK, SASE_PBL_SCHEME, RunConfig,
+from gpuwm.config import (DEFAULT_COLUMN_CHUNK, MYJ_PBL_SCHEME,
+                          MYJ_SFCLAY_SCHEME, SASE_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.experiment import DomainConfig, ExperimentConfig
@@ -854,15 +855,20 @@ def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
 #: module; regenerated and compared by
 #: ``tests/test_preflight.py::test_the_recorded_local_frames_match_the_driver``.
 #:
-#: Two modules do not launch at their unspecialized bound: ``kf`` and
-#: ``refl`` compile their column arrays to the configuration's own level
-#: count (:data:`LEVEL_SPECIALIZED_KERNEL_FRAMES`), so their rows here are
-#: the CEILING, not the price.  ``acoustic`` is a third case and the only
-#: one that can price ABOVE its row: it compiles the implicit w''-phi''
-#: solve at a coarse ``WPHI_MAX_LEV`` tier chosen by ``nz``
+#: Three modules do not launch at their unspecialized bound: ``kf``,
+#: ``refl`` and ``wdm6_refl`` compile their column arrays to the
+#: configuration's own level count
+#: (:data:`LEVEL_SPECIALIZED_KERNEL_FRAMES`), so their rows here are the
+#: CEILING, not the price.  Three more are TIERED, and those are the only
+#: ones that can price ABOVE their row.  ``acoustic`` compiles the implicit
+#: w''-phi'' solve at a coarse ``WPHI_MAX_LEV`` tier chosen by ``nz``
 #: (:data:`ACOUSTIC_TIER_FRAME`), so this row is its price at the shipped
 #: 129 tier -- every ``nz <= 128`` configuration -- and the deeper tiers add
-#: to it.  Everything else launches as compiled.
+#: to it.  ``wdm6`` and ``wsm6`` are the same shape, each with a two-rung
+#: ladder (:data:`WDM6_TIER_FRAME`, :data:`WSM6_TIER_FRAME`): each row is
+#: that module's ``KMAX = 64`` default, every ``nz <= 64`` configuration,
+#: and the 80 tier prices above it.
+#: Everything else launches as compiled.
 #:
 #: A module maximum is an UPPER bound over the kernels a scheme can launch --
 #: e.g. Morrison's launched sedimentation kernel measures 1,280 B against the
@@ -899,8 +905,45 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "kf_validation": 0,
     "lbc_flow": 0,
     "lbc_state": 0,
+    # Milbrandt-Yau.  MEASURED on an RTX 5090 over all seven kernels of the
+    # module: milbrandt2_sediment_256 is the only one with a frame worth
+    # naming at 2,048 B -- exactly its two per-thread column arrays
+    # ``float VVQ[KMAX]; float VVN[KMAX]`` at MY2_KMAX_GENERIC = 256
+    # (2 * 256 * 4) -- with milbrandt2_sediment_64 at 512 B on the same
+    # arrays at MY2_KMAX_SHALLOW = 64, and prelim/geometry/warm/cold/
+    # diagnostics holding no local frame at all.
+    #
+    # This row is a CEILING in the same sense Morrison's is: the launcher
+    # picks the 64-level kernel for nz <= 64 (gpuwm/core/milbrandt2.py:185),
+    # so a shallow configuration is priced 1,536 B per thread over what it
+    # reserves.  It is NOT a LEVEL_SPECIALIZED_KERNEL_FRAMES case -- both
+    # tiers are compiled into the shipped unit at fixed bounds rather than
+    # recompiled at the configuration's nz -- and it needs no tiered entry
+    # above the row, because milbrandt2's VERTICAL_LEVEL_BOUNDS = (3, 256)
+    # refuses anything deeper than the 256 tier this 2,048 B measures.
+    "milbrandt2": 2048,
     "morrison": 5120,
     "microphysics_validation": 0,
+    # MYJ.  MEASURED on an RTX 5090 by the driver sweep this table is
+    # checked against, at the kernel's compiled MYJ_KMAX = 128 tier: the
+    # PBL translation unit holds 9,232 B and the Eta surface layer holds
+    # none.  One thread owns one whole column and MYJPBL carries MIXLEN's
+    # GM/GH/EL/Q2, DIFCOF's AKM/AKH, VDIFH's tridiagonal coefficients and
+    # the species stack all at once, which is where the frame goes; the
+    # surface layer is scalar per column, so it has nothing to hold.
+    #
+    # This closes the port's own open question ("nobody has measured the
+    # local-memory cost of this kernel at production width").  By the
+    # reservation model at the head of docs/kernel_local_memory_bounds.md
+    # that frame reserves (9232 - 1024) * 1536 * 170 = 2,143,764,480 B
+    # ~ 2.00 GiB on first launch, for the life of the process -- more than
+    # SASE's and a third of GF's, and it is the price of selecting MYJ at
+    # all, not of the domain size.  Like SASE's, it should be linear in
+    # the compiled level bound and is therefore specializable; that is a
+    # separate change, and until then the stated bound is the compiled
+    # ceiling, which is the safe direction for a rail gate.
+    "myjpbl": 9232,
+    "myjsfc": 0,
     # SASE.  MEASURED on an RTX 5090 over all 29 kernels in the module at
     # the closure's compiled tier (SASE_KMAX = 128): the maximum is
     # sase_plume_vent_flux at 6,272 B; sase_moist_n2 5,120 B,
@@ -945,6 +988,11 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "openbc": 0,
     "pd_advection": 0,
     "refl": 18432,
+    # WDM6's own reflectivity translation unit (see wdm6_refl.cu's
+    # header for why it is not part of refl.cu).  63 B/level against
+    # refl.cu's widest 72: WDM6 diagnoses one N0 array from nr where
+    # Morrison carries three.
+    "wdm6_refl": 16128,
     "rrtmg_lw": 0,
     "rrtmg_mcica_wrf": 0,
     "rrtmgp_cloud": 0,
@@ -1003,6 +1051,24 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "tke_budget": 0,
     "uh_diag": 0,
     "vert_interp": 768,
+    # WDM6 (mp_physics=16).  MEASURED 2026-08-10 on the reference RTX 5090
+    # the same NVRTC + driver way as every other row: the module's one
+    # kernel, ``wdm6_column``, holds 9,776 B at the source's ``#ifndef``
+    # default ``WDM6_KMAX = 64`` (88 registers).  One thread owns a whole
+    # column, so the frame is that bound's ~30 per-thread work arrays.
+    #
+    # This row is the 64 TIER, not a ceiling: the launcher compiles the 80
+    # tier for 65 <= nz <= 80 and that frame is WIDER (12,208 B measured).
+    # :data:`WDM6_TIER_FRAME` carries the ladder, and the measurements
+    # behind it -- exactly 152 B per level between the two rungs -- are
+    # re-read off the driver by tests/test_kernel_local_bounds.py.
+    "wdm6": 9776,
+    # WSM6 (mp_physics=6).  This row is the 64 TIER, not a ceiling: the
+    # launcher compiles the 80 tier for 65 <= nz <= 80 and that frame is
+    # WIDER (9,008 B measured).  :data:`WSM6_TIER_FRAME` carries the ladder
+    # and the measurements behind it -- exactly 112 B per level between the
+    # two rungs -- and tests/test_kernel_local_bounds.py re-reads both off
+    # the driver.
     "wsm6": 7216,
     "ysu": 9232,
     "ysu_validation": 0,
@@ -1060,13 +1126,22 @@ class LevelSpecializedFrame:
         return raw if remainder == 0 else raw + self.alignment_bytes - remainder
 
 
-#: The two modules whose local frame follows the configuration's ``nz``.
-#: ``bytes_per_level`` is fixed by construction against the unspecialized
-#: row of :data:`KERNEL_MAX_LOCAL_SIZE_BYTES` (checked at import below), so
-#: the two tables cannot drift apart.
+#: The three modules whose local frame follows the configuration's ``nz``
+#: exactly.  (``acoustic`` and ``wdm6`` follow a TIER of ``nz`` instead and
+#: live in :class:`TieredKernelFrame` below.)  ``bytes_per_level`` is fixed
+#: by construction against the unspecialized row of
+#: :data:`KERNEL_MAX_LOCAL_SIZE_BYTES` (checked at import below), so the two
+#: tables cannot drift apart.
 LEVEL_SPECIALIZED_KERNEL_FRAMES: dict[str, LevelSpecializedFrame] = {
     "kf": LevelSpecializedFrame("kf", "KF_KMAX", 128, 188),
     "refl": LevelSpecializedFrame("refl", "REFL_KMAX", 256, 72),
+    # 16-byte granularity, not refl.cu's 8: measured against the driver at
+    # ten bounds from 256 down to 10 (63*n rounded up to 16 reproduces every
+    # one).  At bound 1 the compiler eliminates the frame entirely and the
+    # model over-prices by 64 B, which is the safe direction and the reason
+    # tests/test_wdm6.py pins the realistic bounds rather than that one.
+    "wdm6_refl": LevelSpecializedFrame(
+        "wdm6_refl", "REFL_KMAX", 256, 63, alignment_bytes=16),
 }
 
 for _spec in LEVEL_SPECIALIZED_KERNEL_FRAMES.values():
@@ -1118,6 +1193,43 @@ class TieredKernelFrame:
 
 #: ``acoustic.cu``'s ``WPHI_MAX_LEV`` sizes one FP32 column per thread.
 ACOUSTIC_TIER_FRAME = TieredKernelFrame("acoustic", "WPHI_MAX_LEV", 129, 4)
+
+#: ``wdm6.cu``'s ``WDM6_KMAX`` sizes the whole per-thread column stack, and
+#: ``gpuwm/core/wdm6.py`` compiles it at one of two rungs
+#: (``wdm6_constants.WDM6_KERNEL_LEVEL_TIERS`` = 64, 80) rather than at
+#: ``nz``.  That is why WDM6 is priced HERE and not in
+#: :data:`LEVEL_SPECIALIZED_KERNEL_FRAMES`: an nz-linear model would price
+#: a 49-level WDM6 run at 7,488 B when the kernel it actually launches
+#: holds 9,776 B, and under-pricing a rail gate is the direction that put a
+#: run 1,630 MiB over.
+#:
+#: MEASURED on the reference RTX 5090 over sixteen bounds from 2 to 80.  The
+#: two rungs the launcher can compile are exactly linear in the bound --
+#: 9,776 B at 64 and 12,208 B at 80, 2,432 B over 16 levels = 152 B/level --
+#: which is what this frame reproduces, exactly, at both.  (Between the
+#: rungs the driver's frame wanders by up to 16 B against the same line; the
+#: launcher never compiles there, and the model is a ceiling on that band,
+#: which is the safe direction.)
+WDM6_TIER_FRAME = TieredKernelFrame("wdm6", "WDM6_KMAX", 64, 152)
+
+#: ``wsm6.cu``'s ``WSM6_KMAX`` sizes the whole per-thread column stack, and
+#: ``gpuwm/core/wsm6.py`` compiles it at one of two rungs
+#: (``wsm6_constants.WSM6_KERNEL_LEVEL_TIERS`` = 64, 80) rather than at
+#: ``nz``.  Until 1.8.9 the flat row above WAS the price for every WSM6
+#: configuration, so an ``nz = 72`` run -- the six shipped tornado-LES
+#: configs -- was priced at the 64-tier 7,216 B while the kernel it
+#: actually launches holds 9,008 B.  1,792 B/thread of backing store the
+#: pool never reports, which is the direction that put a run 1,630 MiB
+#: over.
+#:
+#: RE-MEASURED 2026-08-10 on the reference RTX 5090, NVRTC + driver,
+#: eighteen bounds from 2 to 80: ``wsm6_column`` holds 7,216 B at the
+#: source's ``#ifndef`` default of 64 and 9,008 B at 80 -- 1,792 B over 16
+#: levels = exactly 112 B per level -- which this frame reproduces at both
+#: rungs.  (Between the rungs the driver's frame sits up to 16 B below the
+#: same line; the launcher never compiles there, and the model is a stated
+#: ceiling on that band, which is the safe direction.)
+WSM6_TIER_FRAME = TieredKernelFrame("wsm6", "WSM6_KMAX", 64, 112)
 
 #: Kernel modules whose local frame CANNOT be measured at this checkout
 #: because they do not compile alone: ``noahmp_driver.cu``,
@@ -1224,15 +1336,34 @@ CORE_KERNEL_MODULES = frozenset({
     "spec_bdy", "tke_budget", "vert_interp"})
 
 #: ``mp_physics`` -> the kernel modules that scheme launches.  Keys are
-#: exactly ``gpuwm/config.py``'s accepted set (0, 1, 6, 8, 10, 18) plus 28,
-#: which is priced here ahead of its driver dispatch so a run can never
-#: reach ``kernel_local_frame_bytes`` with an unpriced selector.
+#: exactly ``gpuwm/config.py``'s accepted set (0, 1, 6, 8, 9, 10, 16, 18,
+#: 28, 50), which is priced here ahead of its driver dispatch so a run can
+#: never reach ``kernel_local_frame_bytes`` with an unpriced selector.
+#: That "exactly" is now MEASURED rather than asserted in prose --
+#: tests/test_composition_pricing.py walks every composition the loader
+#: accepts and prices each one, which is what caught mp=50 and MYJ
+#: shipping accepted-but-unpriceable into the 1.9 assembly.
 _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (),
     1: ("kessler", "microphysics_validation"),
     6: ("wsm6", "microphysics_validation"),
     8: ("thompson", "microphysics_validation"),
+    # Milbrandt-Yau.  All seven kernels live in the one ``milbrandt2``
+    # translation unit (gpuwm/core/milbrandt2.py:179-187), and the scheme
+    # takes the NATIVE validation path -- ``accept_microphysics`` routes
+    # everything but mp=18 through ``_validate_native_microphysics``
+    # (gpuwm/core/physics.py:1753-1765) -- so it launches the shared
+    # validator exactly as Kessler/WSM6/Thompson/Morrison do.  ``refl`` is
+    # deliberately NOT priced for this selector and 9 is absent from
+    # _REFLECTIVITY_MICROPHYSICS below: mp=9 fills the REFL_10CM slot from
+    # its own diagnostics kernel and only stashes the array
+    # (gpuwm/core/milbrandt2.py:291-296), so no refl kernel is ever loaded.
+    9: ("milbrandt2", "microphysics_validation"),
     10: ("morrison", "microphysics_validation"),
+    # WDM6 launches ONE column kernel plus the shared moisture validation
+    # pass; its cold half is transcribed inside wdm6.cu rather than shared
+    # with wsm6.cu, so mp=16 never loads the WSM6 translation unit.
+    16: ("wdm6", "microphysics_validation"),
     18: ("nssl2", "nssl2_driver_support", "nssl2_diagnostics",
          "nssl2_fused_gs", "nssl2_nucond", "nssl2_qvexcess"),
     # Thompson aerosol-aware.  ``thompson`` is genuinely launched: mp=28
@@ -1244,6 +1375,32 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     28: ("thompson", "thompson_aerosol_state", "thompson_aerosol_sat",
          "thompson_aerosol_cold", "thompson_aerosol_warm",
          "thompson_aerosol_sed"),
+    # P3 one-category.  The row is ONE module, and the reason is the
+    # scheme's execution model rather than a gap in this table: P3 is a
+    # HOST float32 transcription.  ``gpuwm/core/p3.py:apply`` pulls the
+    # prognostic slabs off the device with ``_host`` (:1683-1691), runs
+    # ``mp_p3_wrapper_wrf`` in NumPy on the host, and writes the results
+    # back with ``_from_slab`` (:1701-1705).  There is no
+    # ``gpuwm/core/kernels/p3.cu``; the module directory has none, and
+    # ``p3.py`` contains no ``get_kernel`` call and no CuPy import outside
+    # ``_as_backend``'s host->device copy.  So P3 launches NOTHING of its
+    # own and reserves no per-thread local frame of its own, and pricing
+    # a P3-named module here would reserve backing store for a
+    # translation unit that never compiles.
+    #
+    # ``microphysics_validation`` IS launched, on the same footing as
+    # Kessler/WSM6/Thompson/Morrison/Milbrandt-Yau: mp=50 has a
+    # five-slot canonical row (gpuwm/core/physics.py:603-608) and P3's
+    # diagnostics are exactly those canonical scratch arrays, so
+    # ``accept_microphysics`` takes the native path and launches the
+    # shared validator (gpuwm/core/microphysics.py:385-386).  Its frame
+    # is 0 B, which is the honest price and not a placeholder.
+    #
+    # 50 is deliberately ABSENT from _REFLECTIVITY_MICROPHYSICS below,
+    # for mp=9's reason: P3 computes REFL_10CM inside its own host pass
+    # and ``stash_refl_10cm`` only parks the array on the driver
+    # (gpuwm/core/refl.py:651-663), so no ``refl`` kernel is ever loaded.
+    50: ("microphysics_validation",),
 }
 
 #: ``mp_physics`` values with a REFL_10CM path in ``gpuwm/core/refl.py``.
@@ -1257,20 +1414,51 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
 #: cadence.  Pricing it here before ``gpuwm/core/refl.py`` admits 28 is the
 #: safe direction -- an over-priced rail refuses a run that would have fit,
 #: an under-priced one lets a run breach the budget.
-_REFLECTIVITY_MICROPHYSICS = frozenset({1, 6, 8, 10, 18, 28})
+_REFLECTIVITY_MICROPHYSICS = frozenset({1, 6, 8, 10, 16, 18, 28})
 
 _CUMULUS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("kf", "kf_validation"),
     # One translation unit carries all of GFDRV (deep, shallow, driver).
     3: ("gf",)}
 _PBL_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
-    0: (), 1: ("ysu", "ysu_validation"), 5: ("mynn_pbl",),
+    0: (), 1: ("ysu", "ysu_validation"),
+    # MYJ (Mellor-Yamada-Janjic).  ONE module: gpuwm/core/myjpbl.py's only
+    # kernel load is ``get_kernel("myjpbl", "myjpbl_column")`` (:111), one
+    # thread per column, and the scheme does its own implicit vertical
+    # diffusion inside that kernel rather than handing tendencies to a
+    # separate diffusion launcher (gpuwm/core/physics.py:2574-2582).
+    #
+    # No validation module, and that is a measured absence rather than an
+    # oversight: YSU and Shin-Hong each launch a batched device validator
+    # (``ysu_validation``, ``shinhong_validation``), while MYJ's
+    # ``validate_myj_pbl_outputs`` is a host reduction over the returned
+    # fields (gpuwm/core/physics.py:2625) and compiles nothing.
+    #
+    # The frame this selects is the widest of any PBL in the tree --
+    # KERNEL_MAX_LOCAL_SIZE_BYTES["myjpbl"] = 9,232 B at the compiled
+    # MYJ_KMAX = 128 tier, ~2.00 GiB of reservation on the reference card
+    # by the model at the head of docs/kernel_local_memory_bounds.md.  It
+    # is a flat row and not a tiered one because gpuwm/core/myjpbl.py
+    # compiles at the source's fixed bound rather than at nz, so it is the
+    # price of selecting MYJ at all; the row's own comment records that
+    # specializing it is a real saving and a separate change.
+    MYJ_PBL_SCHEME: ("myjpbl",),
+    5: ("mynn_pbl",),
     # Shin-Hong launches its column kernel plus its own batched output
     # validator, the YSU pair's shape (gpuwm/core/shinhong.py).
     11: ("shinhong", "shinhong_validation"),
     SASE_PBL_SCHEME: ("sase",)}
 _SURFACE_LAYER_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
-    0: (), 1: ("sfclay",), 5: ("mynn_surface",), 91: ("sfclay",)}
+    0: (), 1: ("sfclay",),
+    # Eta similarity, MYJ's own surface layer.  gpuwm/core/myjsfc.py loads
+    # exactly ``get_kernel("myjsfc", "myjsfc_column")`` (:102) and nothing
+    # else; the module measures 0 B because the scheme is scalar per
+    # column and holds no per-thread stack.  It is a separate row from the
+    # PBL's on purpose: sf_sfclay_physics is its own selector, and
+    # gpuwm.config.validate_myj_pairing is what ties the two values
+    # together -- this table prices whichever the resolved config names.
+    MYJ_SFCLAY_SCHEME: ("myjsfc",),
+    5: ("mynn_surface",), 91: ("sfclay",)}
 _LAND_SURFACE_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (),
     2: ("noah",),
@@ -1364,7 +1552,10 @@ def domain_kernel_modules(dc: DomainConfig, *,
         else:
             modules.update(table[value])
     if prices_refl and int(dc.run.mp_physics) in _REFLECTIVITY_MICROPHYSICS:
-        modules.add("refl")
+        # mp=16 launches its reflectivity from its OWN translation unit, so
+        # a WDM6 domain must never reserve refl.cu's wider frame and a
+        # non-WDM6 domain must never reserve wdm6_refl.cu's.
+        modules.add("wdm6_refl" if int(dc.run.mp_physics) == 16 else "refl")
     return frozenset(modules)
 
 
@@ -1447,6 +1638,37 @@ def kernel_local_frame_bytes(exp: ExperimentConfig) -> dict[str, int]:
         frame = ACOUSTIC_TIER_FRAME.frame_bytes(tier)
         if frame > frames.get(ACOUSTIC_TIER_FRAME.module, -1):
             frames[ACOUSTIC_TIER_FRAME.module] = frame
+    # ``wdm6`` and ``wsm6`` are the CONDITIONAL tiered modules, so
+    # unlike acoustic it is priced PER DOMAIN THAT SELECTS IT.  Both halves
+    # of that matter: a 40-level WDM6 child beside a 100-level WSM6 parent
+    # must be priced at WDM6's own 64 tier, not raised to a tier WDM6 has no
+    # kernel for -- and the parent's 100 levels must not reach WDM6's
+    # level-bound refusal at all, because the parent never launches it.  The
+    # ladder lives in the CuPy-free constants leaf, so this still prices on
+    # a host with no device.
+    from gpuwm.core.wdm6_constants import wdm6_level_tier
+
+    for dc in exp.domains:
+        if WDM6_TIER_FRAME.module not in domain_kernel_modules(
+                dc, prices_refl=prices_refl):
+            continue
+        frame = WDM6_TIER_FRAME.frame_bytes(wdm6_level_tier(int(dc.run.nz)))
+        if frame > frames.get(WDM6_TIER_FRAME.module, -1):
+            frames[WDM6_TIER_FRAME.module] = frame
+    # ``wsm6`` prices the same way, and the same two halves matter: a
+    # 40-level WSM6 child beside a 100-level Morrison parent takes WSM6's
+    # own 64 tier rather than a tier WSM6 has no kernel for, and the
+    # parent's 100 levels never reach WSM6's level-bound refusal on behalf
+    # of a domain that does not launch it.
+    from gpuwm.core.wsm6_constants import wsm6_level_tier
+
+    for dc in exp.domains:
+        if WSM6_TIER_FRAME.module not in domain_kernel_modules(
+                dc, prices_refl=prices_refl):
+            continue
+        frame = WSM6_TIER_FRAME.frame_bytes(wsm6_level_tier(int(dc.run.nz)))
+        if frame > frames.get(WSM6_TIER_FRAME.module, -1):
+            frames[WSM6_TIER_FRAME.module] = frame
     return frames
 
 
@@ -1866,9 +2088,22 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     if cfg.moist:
         for name in ("qv", "qc", "qr", "qv0", "qc0", "qr0", "h_diabatic"):
             shapes[name] = m
-        if cfg.mp_physics in (6, 8, 10, 18, 28):
+        if cfg.mp_physics == 50:
+            # P3 one-category (Registry.EM_COMMON:3038, and the mp==50 arm
+            # of gpuwm/core/state.py): ONE ice mass with rime mass and rime
+            # volume, no qs/qg/effs, plus the two cross-step supersaturation
+            # carriers p3_main writes at the end of every call.  Every
+            # transported field carries its RK time-t copy.
+            for name in ("qi", "ni", "nr", "qir", "qib", "effc", "effi",
+                         "th_old", "qv_old",
+                         "qi0", "ni0", "nr0", "qir0", "qib0"):
+                shapes[name] = m
+        if cfg.mp_physics in (6, 8, 10, 16, 18, 28):
             for name in ("qi", "qs", "qg", "qi0", "qs0", "qg0",
                          "effc", "effi", "effs"):
+                shapes[name] = m
+        if cfg.mp_physics == 16:
+            for name in ("nn", "nc", "nr", "nn0", "nc0", "nr0"):
                 shapes[name] = m
         if cfg.mp_physics == 8:
             for name in ("nr", "ni", "nr0", "ni0"):
@@ -2025,7 +2260,7 @@ def physics_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     placeholders, KF W0AVG/LUT, and RRTMGP setup grids.  Active microphysics
     diagnostics and KF ``cu_*`` persistence live in the scratch registry.
     """
-    from gpuwm.core.physics import (hmix_k_diag_names,
+    from gpuwm.core.physics import (PBL_RQI_MICROPHYSICS, hmix_k_diag_names,
                                     microphysics_scratch_slots,
                                     physics_driver_required,
                                     physics_retains_ysu_output,
@@ -2087,14 +2322,15 @@ def physics_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         for comp in ("rqr", "rqi", "rqs"):
             shapes[f"cumulus_tendencies/{comp}"] = m
             shapes[f"{target}/{comp}"] = m
-    if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18, 28):
+    if cfg.bl_pbl_physics and cfg.mp_physics in PBL_RQI_MICROPHYSICS:
         # Mixed-phase states carry qi; YSU returns dqi and rqi survives
         # composition (physics.py:263-264, :681-692).  mp=28 belongs by
         # Registry/Registry.EM_COMMON:3036 -- the thompsonaero package
         # declares moist:qv,qc,qr,qi,qs,qg, so WRF's F_QI is true and
         # module_first_rk_step_part1.F:1112's CALL pbl_driver hands
-        # moist(...,P_QI), F_QI=F_QI (:1199) to the PBL driver.  This budget mirrors physics._pbl_optional_tendency_
-        # components; the two sets must stay identical.
+        # moist(...,P_QI), F_QI=F_QI (:1199) to the PBL driver.  This budget
+        # mirrors physics._pbl_optional_tendency_components; the two sets
+        # must stay identical, so they are now ONE constant.
         shapes["pbl_tendencies/rqi"] = m
         if (radiation_enabled(cfg) or cfg.cu_physics) and not reuse_pbl:
             shapes["tendencies/rqi"] = m
@@ -2160,15 +2396,30 @@ def physics_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         # (rrtmgp.py:1076-1077): two 60-level FP32 device arrays, 480 B.
         shapes["radiation/_ozone_logp"] = (60,)
         shapes["radiation/_ozone_vmr"] = (60,)
+    if (ra_lw_physics, ra_sw_physics) in ((1, 1), (4, 4)):
         # The OLR publication buffer (physics.py PhysicsDriver __init__):
         # one resident (ny, nx) FP32 driver persistent holding WRF's TOA
         # outgoing longwave for output, allocated when the attached
         # longwave adapter declares ``publishes_olr``.  BOTH built-in 4/4
-        # adapters declare it, which is what this gate reproduces; a
+        # adapters declare it, and so does the 1/1 WRF RRTM + Dudhia
+        # composition, which is what this gate reproduces; a
         # caller-injected adapter that does not leaves this counted but
         # unallocated, and over-counting by one 2-D field is the safe
         # direction for a VRAM estimate.
         shapes["olr"] = s2
+        # NOT counted for the (1,1) pair, and said here so the omission
+        # is deliberate rather than forgotten: RRTM's transfer holds
+        # several (column_chunk, nlayers, 140) g-point arrays for the
+        # duration of a chunk (gpuwm/core/rrtm_lw.py rtrn_columns).
+        # Those are transients, and this whole rail prices PERSISTENT
+        # allocations -- adding a peak-transient term for one scheme
+        # would make the number mean something different from what it
+        # means for every other row.  The size is real, though:
+        # 1.67 GiB measured at column_chunk=4096 and 53 layers on an
+        # RTX 5090, so about 0.2 GiB at the default 512 and linear in
+        # the chunk.  A user who raises column_chunk gets no warning
+        # from the budget; the registry warning on wrf-rrtm-dudhia and
+        # DEFAULT_COLUMN_CHUNK's own comment carry that fact.
     return shapes
 
 
@@ -2316,6 +2567,20 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # and/or the km_opt=2 TKE carrier advect with them).
         slots.update(rk_ru_m=xs, rk_rv_m=ys, rk_ww_m=fl)
         slots["moist_rq_t"] = m                     # moist.py:247
+        allocated = state_array_shapes(cfg)
+        if "qi" in allocated and "qs" not in allocated:
+            # gpuwm/core/moist.py::absent_mass_plane.  The two fused
+            # moist-array sums (calc_cq, slow_buoyancy's q_total) select
+            # their species by an integer mode with no one-ice-mass arm,
+            # so a scheme with qi and no qs/qg hands the absent pair this
+            # single shared zero plane.  P3 (mp=50) is the only such
+            # scheme today, but the RUNTIME guards are presence-based, so
+            # this predicate is too -- a cfg-keyed list here would
+            # under-count memory for the next one-ice-category port
+            # instead of failing.  Spelled as a literal because this
+            # module must stay importable without cupy;
+            # tests/test_p3_port.py pins it to moist.ABSENT_MASS_SLOT.
+            slots["moist_absent_mass"] = m
         pd = ((cfg.moist and cfg.moist_adv_opt == 1) or cfg.km_opt == 2)             and not (cfg.open_x or cfg.open_y)
         if pd:
             slots.update(pd_fxl=xs, pd_fxc=xs, pd_fyl=ys, pd_fyc=ys,
@@ -2350,6 +2615,14 @@ def scratch_slot_registry(cfg: RunConfig, *,
                      wsm6_z8w=fl, mp_rainnc=s2, mp_rainncv=s2,
                      mp_snownc=s2, mp_snowncv=s2, mp_graupelnc=s2,
                      mp_graupelncv=s2, mp_sr=s2, refl_t=m, refl_10cm=m)
+    if cfg.mp_physics == 16:
+        # wdm6.py preparation, persistent precipitation and due reflectivity.
+        # Same slot shape as mp=6: WDM6's three extra moments are STATE, not
+        # scratch, so nothing here grows with the double-moment warm rain.
+        slots.update(wdm6_theta=m, wdm6_rho=m, wdm6_pii=m, wdm6_dz=m,
+                     wdm6_z8w=fl, mp_rainnc=s2, mp_rainncv=s2,
+                     mp_snownc=s2, mp_snowncv=s2, mp_graupelnc=s2,
+                     mp_graupelncv=s2, mp_sr=s2, refl_t=m, refl_10cm=m)
     if cfg.mp_physics == 8:
         # microphysics.py:_apply_thompson preparation,
         # persistent precipitation, output-due private graupel-number shadow,
@@ -2369,6 +2642,27 @@ def scratch_slot_registry(cfg: RunConfig, *,
             mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2, mp_snowncv=s2,
             mp_graupelnc=s2, mp_graupelncv=s2, mp_sr=s2,
             refl_t=m, refl_10cm=m,
+        )
+    if cfg.mp_physics == 50:
+        # P3 one-category (gpuwm/core/p3.py::apply).  The WRF preparation
+        # bracket, five precipitation slots and the reflectivity staging,
+        # plus P3's three own ice diagnostics.  NO graupel accumulators:
+        # P3 has a single ice category and its driver arm passes no
+        # GRAUPELNC (module_microphysics_driver.F:1590-1595).
+        #
+        # vmi3d/di3d/rhopo3d are WRF grid STATE for mp=50
+        # (Registry.EM_COMMON:3038) but nothing downstream of the scheme
+        # reads them in gpuwm yet, so they are registered as scratch rather
+        # than promoted to DomainState fields -- the honest place for an
+        # output the model computes and does not consume.  They are
+        # registered rather than left unclassified so the allocation gate
+        # sees their true size.
+        slots.update(
+            mp_th=m, mp_pii=m, mp_dz8w=m, mp_z8w=fl,
+            mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2, mp_snowncv=s2,
+            mp_sr=s2,
+            p3_vmi=m, p3_di=m, p3_rhopo=m,
+            refl_10cm=m,
         )
     if cfg.mp_physics == 28:
         # Thompson AEROSOL-AWARE (mp=28).  A deliberate near-clone of the
@@ -2453,6 +2747,24 @@ def scratch_slot_registry(cfg: RunConfig, *,
             mp_thompson_aero_l_qc_entry=m,
             mp_thompson_aero_condensation_rate=m,
         )
+    if cfg.mp_physics == 9:
+        # milbrandt2.py::apply -- the WRF prep pair, the thirteen scratch
+        # volumes the six kernels hand to one another (Part 1 leaves DZ/iDZ
+        # frozen while Part 3 refreshes DE/iDE, so both pairs are named
+        # slots rather than temporaries), the nine-slot precipitation row
+        # its WRF driver arm binds, and the reflectivity the scheme writes
+        # itself (module_microphysics_driver.F:1878 binds Zet to
+        # refl_10cm, so refl_t is deliberately absent -- no generic radar
+        # operator runs under mp=9).
+        slots.update(my2_theta=m, my2_pii=m, my2_t=m, my2_z=m, my2_z8w=fl,
+                     my2_psfc=s2,
+                     my2_pres=m, my2_de=m, my2_ide=m, my2_dz=m, my2_idz=m,
+                     my2_gamfact=m, my2_qsw=m, my2_qsi=m,
+                     my2_qc_in=m, my2_qr_in=m, my2_nc_in=m, my2_nr_in=m,
+                     mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2,
+                     mp_snowncv=s2, mp_graupelnc=s2, mp_graupelncv=s2,
+                     mp_hailnc=s2, mp_hailncv=s2,
+                     mp_sr=s2, refl_10cm=m)
     if cfg.mp_physics == 10:
         # morrison.py:153-172 (prep + accumulators) + refl.py:324-325.
         slots.update(morr_theta=m, morr_rho=m, morr_pii=m, morr_dz=m,
@@ -2517,8 +2829,11 @@ def scratch_slot_registry(cfg: RunConfig, *,
         if cfg.moist:
             for name in ("qv", "qc", "qr"):
                 slots["smag_r" + name] = m
-            if cfg.mp_physics in (6, 8, 10, 18, 28):
+            if cfg.mp_physics in (6, 8, 10, 16, 18, 28):
                 for name in ("qi", "qs", "qg"):
+                    slots["smag_r" + name] = m
+            if cfg.mp_physics == 16:
+                for name in ("nn", "nc", "nr"):
                     slots["smag_r" + name] = m
             if cfg.mp_physics == 8:
                 for name in ("nr", "ni"):
@@ -2532,6 +2847,13 @@ def scratch_slot_registry(cfg: RunConfig, *,
                     slots["smag_r" + name] = m
             if cfg.mp_physics == 10:
                 for name in ("nr", "ni", "ns", "ng"):
+                    slots["smag_r" + name] = m
+            if cfg.mp_physics == 50:
+                # One held tendency per TRANSPORTED species, and the set is
+                # gpuwm/core/moist.py::P3_SPECIES -- which is what
+                # prepare_fixed_tendencies iterates.  qs/qg are absent for
+                # the same reason they are absent from the state.
+                for name in ("qi", "ni", "nr", "qir", "qib"):
                     slots["smag_r" + name] = m
             if cfg.mp_physics == 18:
                 for name in ("qh", "qndrop", "qnr", "qni", "qns", "qng",
@@ -2553,15 +2875,19 @@ def scratch_slot_registry(cfg: RunConfig, *,
         slots["physics_qtot"] = m                   # physics.py:369
         if not cfg.moist:
             slots.update(physics_dry_qv=m, physics_dry_qc=m)
-        if cfg.mp_physics not in (6, 8, 10, 18, 28):
-            # physics.py:984-993 substitutes a zero-filled scratch plane only
-            # when the state has no qi/qs of its own.  mp=28 allocates both,
-            # so listing them here would price two full 3-D fields the run
-            # never asks for.
-            slots["physics_qi"] = m                 # physics.py:984-988
-            slots["physics_qs"] = m                 # physics.py:989-993
+        # physics.py:1400-1409 substitutes a zero-filled scratch plane only
+        # when the state has no qi/qs of its own, PER FIELD.  mp=28 and
+        # mp=16 allocate both, so listing them there would price two full
+        # 3-D fields the run never asks for; mp=50 (P3) allocates qi and
+        # NOT qs, so it is the one scheme that needs exactly one of the
+        # two -- the conditions are therefore split rather than sharing a
+        # tuple.
+        if cfg.mp_physics not in (6, 8, 10, 16, 18, 28, 50):
+            slots["physics_qi"] = m                 # physics.py:1400-1404
+        if cfg.mp_physics not in (6, 8, 10, 16, 18, 28):
+            slots["physics_qs"] = m                 # physics.py:1405-1409
     if (int(cfg.bl_pbl_physics) in (1, 11)
-            or int(cfg.mp_physics) in (1, 6, 8, 10, 28)
+            or int(cfg.mp_physics) in (1, 6, 8, 10, 16, 28)
             or int(cfg.cu_physics) == 1):
         # 28 is here for the same reason 6/8/10 are, and it was found by the
         # merge rather than by the port: physics.py:1284-1291 takes the
@@ -2660,8 +2986,10 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
     kinds = ["u", "v", "w", "t", "ph", "mu"]
     if cfg.moist:
         kinds += ["qv", "qc", "qr"]
-        if cfg.mp_physics in (6, 8, 10, 18, 28):
+        if cfg.mp_physics in (6, 8, 10, 16, 18, 28):
             kinds += ["qi", "qs", "qg"]
+        if cfg.mp_physics == 16:
+            kinds += ["nn", "nc", "nr"]
         if cfg.mp_physics == 8:
             kinds += ["nr", "ni"]
         if cfg.mp_physics == 28:
@@ -2671,6 +2999,14 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
         if cfg.mp_physics == 18:
             kinds += ["qh", "qndrop", "qnr", "qni", "qns", "qng",
                       "qnh", "qnn", "qvolg", "qvolh"]
+        if cfg.mp_physics == 50:
+            # P3 one-category: the inventory follows what is transported
+            # (gpuwm/core/moist.py::P3_SPECIES), so the rime mass/volume
+            # pair is forced across a nest edge exactly like the number
+            # moments.  Forcing qi without them would hand the child ice
+            # whose rime fraction and rime density came from whatever the
+            # child's own last step left behind.
+            kinds += ["qi", "ni", "nr", "qir", "qib"]
     return tuple(kinds)
 
 
@@ -2835,13 +3171,22 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         ("smag_km", "smag_kh", "smag_ru", "smag_rv", "smag_rw",
          "smag_rth", "smag_rqv", "smag_rqc", "smag_rqr", "smag_rqi",
          "smag_rqs", "smag_rqg", "smag_rnr", "smag_rni", "smag_rns",
+         # mp=16 (WDM6) transported number moments.  smag_rnc/smag_rnr are
+         # already above -- Morrison named them first -- so only the CCN
+         # reservoir is new.
+         "smag_rnn",
          "smag_rng", "smag_rqh", "smag_rqndrop", "smag_rqnr",
          "smag_rqni", "smag_rqns", "smag_rqng", "smag_rqnh",
          "smag_rqnn", "smag_rqvolg", "smag_rqvolh",
          # mp=28 transported number/aerosol moments.  Same construction,
          # same lifetime: prepare_fixed_tendencies writes each held
          # tendency once before the RK loop and every stage only reads it.
-         "smag_rnc", "smag_rnwfa", "smag_rnifa"),
+         "smag_rnc", "smag_rnwfa", "smag_rnifa",
+         # mp=50 (P3) rime mass and rime volume.  Same construction, same
+         # lifetime: they are transported scalars like the number moments,
+         # so prepare_fixed_tendencies writes each held tendency once
+         # before the RK loop and every stage only reads it.
+         "smag_rqir", "smag_rqib"),
         "write_before_read",
         "gpuwm/core/dycore.py:prepare_fixed_tendencies",
         "time-t K and its held tendencies are written and consumed before "
@@ -2895,10 +3240,15 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "scalar face fluxes, so every Smagorinsky configuration retains "
         "two distinct face backings"),
     ScratchSlotLifetime(
-        ("moist_pd_q0", "moist_rq_t", "pd_fxl", "pd_fxc", "pd_fyl",
+        ("moist_pd_q0", "moist_rq_t", "moist_absent_mass",
+         "pd_fxl", "pd_fxc", "pd_fyl",
          "pd_fyc", "pd_fzl", "pd_fzc"), "write_before_read",
-        "gpuwm/core/moist.py:197-203,247-308",
-        "source copies, tendencies, and six PD fluxes are filled before use"),
+        "gpuwm/core/moist.py:197-203,247-308; "
+        "gpuwm/core/moist.py::absent_mass_plane",
+        "source copies, tendencies, and six PD fluxes are filled before "
+        "use; the absent-mass plane is zeroed inside the same call that "
+        "hands it to calc_cq or slow_buoyancy, immediately before the "
+        "launch, so no arena neighbour can be observed through it"),
     ScratchSlotLifetime(
         ("mp_th", "mp_rho", "mp_pii", "mp_z", "mp_dz8w", "mp_z8w",
          "nssl2_driver_state", "nssl2_driver_surface_export",
@@ -2917,6 +3267,15 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "fused-GS prepass overwrites temperature and primary-ice target "
         "snapshots before the process kernel reads them; NUCOND overwrites "
         "its supersaturation filter before reading it"),
+    ScratchSlotLifetime(
+        ("p3_vmi", "p3_di", "p3_rhopo"), "write_before_read",
+        "gpuwm/core/p3.py:1749-1751 (allocation), :p3_main diagnostic pass; "
+        "phys/module_mp_p3.F:1965-1967 (intent(out)), :2282-2284 (zeroed on "
+        "entry), :4856-4858 (written from the post-update ice state)",
+        "P3's three ice diagnostics are intent(out) of p3_main: it zeroes "
+        "them on entry and refills them from the updated ice state before "
+        "returning, so nothing in them survives a call boundary and the "
+        "driver's read-back always follows that call's own write"),
     ScratchSlotLifetime(
         ("mp_thompson_temperature",
          "mp_thompson_frozen_reference_density",
@@ -2981,10 +3340,35 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "WSM6 preparation fully assigns each array before the scheme launch "
         "or any dependent read"),
     ScratchSlotLifetime(
+        ("wdm6_theta", "wdm6_rho", "wdm6_pii", "wdm6_dz",
+         "wdm6_z8w"), "write_before_read",
+        "gpuwm/core/wdm6.py:apply",
+        "WDM6 preparation fully assigns each array before the scheme launch "
+        "or any dependent read"),
+    ScratchSlotLifetime(
         ("morr_theta", "morr_rho", "morr_pii", "morr_dz",
          "morr_ice_to_snow", "morr_z8w"), "write_before_read",
         "gpuwm/core/morrison.py:159-202",
         "Morrison preparation fields are rebuilt for every scheme call"),
+    ScratchSlotLifetime(
+        ("my2_theta", "my2_pii", "my2_t", "my2_z", "my2_z8w", "my2_psfc"),
+        "write_before_read", "gpuwm/core/milbrandt2.py::apply",
+        "Milbrandt-Yau preparation assigns every element of each array "
+        "before the launch, and the surface pressure is derived from the "
+        "same call's geopotential"),
+    ScratchSlotLifetime(
+        ("my2_pres", "my2_de", "my2_ide", "my2_gamfact", "my2_qsw",
+         "my2_qsi", "my2_qc_in", "my2_qr_in", "my2_nc_in", "my2_nr_in"),
+        "write_before_read", "gpuwm/core/kernels/milbrandt2.cu"
+        "::milbrandt2_prelim",
+        "the Part 1 kernel writes every one of these for every cell before "
+        "any later kernel reads them; entry contents are never consulted"),
+    ScratchSlotLifetime(
+        ("my2_dz", "my2_idz"), "write_before_read",
+        "gpuwm/core/kernels/milbrandt2.cu::milbrandt2_geometry",
+        "the geometry kernel writes both for every cell from the Part 1 "
+        "density and pressure, before the cold/warm/sedimentation kernels "
+        "read them"),
     ScratchSlotLifetime(
         ("refl_t",), "write_before_read", "gpuwm/core/refl.py:349-372; "
         "gpuwm/core/nssl2_runtime.py:apply_nssl2_production",
@@ -3548,7 +3932,7 @@ def rrtmgp_column_shapes(
            "clwp", "ciwp", "reliq", "dgice"]
     if cfg.mp_physics == 10:
         lay += ["nc", "nr", "ni", "ns", "effc", "effr", "effi", "effs"]
-    elif cfg.mp_physics in (6, 8, 18, 28):
+    elif cfg.mp_physics in (6, 8, 16, 18, 28):
         # WRF's use_mp_re scheme table lists THOMPSONAERO explicitly and
         # separately from THOMPSON in the same disjunction
         # (phys/module_physics_init.F:1005 THOMPSON, :1006 THOMPSONAERO), and
@@ -3696,6 +4080,49 @@ def shinhong_output_transient_shapes(
     return shapes
 
 
+#: PBL schemes that allocate the MYJ per-call output bundle
+#: (gpuwm/core/myjpbl.py myj_pbl_step: one cp.empty comprehension for the
+#: eight 3-D fields plus three cp.empty for the 2-D ones -- the four
+#: allocation sites the physics allocation inventory prices).  Its own
+#: constant for the reason the Shin-Hong pair above gives: the rosters
+#: differ, and keying two schemes off one tuple prices the wrong one.
+_MYJ_OUTPUT_BUNDLE_SCHEMES = (2,)
+
+#: The launcher's exact per-call output roster, single-sourced against
+#: gpuwm/core/myjpbl.py -- which is CuPy-importing and therefore not
+#: imported here -- by tests/test_myj_port.py::
+#: test_preflights_myj_output_roster_matches_the_launchers, the
+#: ysu/shinhong constant-pair idiom above.  ``tke``
+#: is absent on purpose: MYJ's TKE column is CARRIED state that
+#: initialize_physics allocates once, not a per-call transient, and it is
+#: already priced as a driver field.
+_MYJ_3D = ("rublten", "rvblten", "rthblten", "rqvblten", "rqcblten",
+           "rqiblten", "el_myj", "exch_h")
+_MYJ_2D = ("pblh", "kpbl", "mixht")
+
+
+def myj_output_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """Raw per-call MYJ PBL outputs before coupling consumes them.
+
+    The :func:`ysu_output_transient_shapes` contract for scheme 2: these
+    allocations exist on every ``_run_myj_pbl`` call and are released at
+    the last consumer.  ``kpbl`` is int32; every other field is float32,
+    so one 4-byte itemsize covers the whole roster.
+
+    The Eta surface layer (sf_sfclay_physics=2) has no counterpart here
+    and needs none: gpuwm/core/myjsfc.py allocates NOTHING per call -- it
+    writes into the driver's own persistent surface fields -- which the
+    physics allocation inventory records as an empty row.
+    """
+    if int(cfg.bl_pbl_physics) not in _MYJ_OUTPUT_BUNDLE_SCHEMES:
+        return {}
+    m = (cfg.nz, cfg.ny, cfg.nx)
+    s2 = (cfg.ny, cfg.nx)
+    shapes = {f"myj_output/{name}": m for name in _MYJ_3D}
+    shapes.update({f"myj_output/{name}": s2 for name in _MYJ_2D})
+    return shapes
+
+
 def noahmp_lsm_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     """Noah-MP land-surface per-call device transients, both paths.
 
@@ -3839,6 +4266,7 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
     items += _items("transient", atmosphere_transient_shapes(run))
     items += _items("transient", ysu_output_transient_shapes(run))
     items += _items("transient", shinhong_output_transient_shapes(run))
+    items += _items("transient", myj_output_transient_shapes(run))
     items += _items("transient", noahmp_lsm_transient_shapes(run),
                     itemsize=1)
     items += tuple(MemoryItem(name, "transient", shape, size)
@@ -4805,7 +5233,7 @@ def _materialize_physics(state, cfg: RunConfig, start_time: datetime,
     footprint it exists to measure (the MYNN no-radiation d04 pair)."""
     import cupy as cp
     import numpy as np
-    from gpuwm.core.physics import (initialize_physics,
+    from gpuwm.core.physics import (PBL_RQI_MICROPHYSICS, initialize_physics,
                                     physics_retains_ysu_output,
                                     physics_reuses_pbl_composition)
     from gpuwm.core.state import DTYPE
@@ -4833,12 +5261,18 @@ def _materialize_physics(state, cfg: RunConfig, start_time: datetime,
                 and getattr(adapter, "w0avg", None) is None):
             adapter.w0avg = zero_m()          # kf.py:174 shape contract
             adapter._history_state = state
-    if cfg.bl_pbl_physics and cfg.mp_physics in (6, 8, 10, 18, 28):
+    if cfg.bl_pbl_physics and cfg.mp_physics in PBL_RQI_MICROPHYSICS:
         # The materialization side of the pbl_tendencies/rqi budget above.
         # 28 belongs for the same reason: Registry/Registry.EM_COMMON:3036
-        # gives the thompsonaero package qi in moist, so WRF's F_QI is true.
+        # gives the thompsonaero package qi in moist, so WRF's F_QI is true;
+        # 16 (wdm6scheme, :3031) declares the same moist inventory.
         # This set and physics._pbl_optional_tendency_components must agree,
-        # or the --alloc measurement stops covering true runtime residency.
+        # or the --alloc measurement stops covering true runtime residency --
+        # which is why it is now ONE named constant read by all three sites
+        # (the shapes budget above, this materializer, and the physics
+        # module), pinned equal by
+        # tests/test_preflight.py::test_the_rqi_budget_shapes_materialization
+        # _and_physics_name_one_set.
         if driver.pbl_tendencies.rqi is None:
             driver.pbl_tendencies.rqi = zero_m()
         if ((radiation_enabled(cfg) or cfg.cu_physics)
@@ -5956,7 +6390,8 @@ __all__ = [
     "kernel_local_memory_bytes", "non_pool_device_bytes",
     "physics_kernel_modules", "refl_diagnostic_reachable",
     "LEVEL_SPECIALIZED_KERNEL_FRAMES", "LevelSpecializedFrame",
-    "ACOUSTIC_TIER_FRAME", "TieredKernelFrame",
+    "ACOUSTIC_TIER_FRAME", "TieredKernelFrame", "WDM6_TIER_FRAME",
+    "WSM6_TIER_FRAME",
     "domain_kernel_modules", "kernel_local_frame_bytes",
     "ALLOCATOR_HEADROOM", "AllocReport", "CAL_D01_DEVICE_FOOTPRINT_BYTES",
     "CAL_D01_POOL_HELD_BYTES", "CAL_D01_POOL_RETENTION_BYTES",
@@ -5975,6 +6410,7 @@ __all__ = [
     "estimate_domain", "estimate_experiment", "evaluate_alloc_gates",
     "gate_display_name",
     "k_distribution_bytes", "lbc_interval_values", "lbc_intervals",
+    "myj_output_transient_shapes",
     "nest_allocation_manifest", "nest_field_kinds", "nest_slot_dtypes",
     "nest_slot_shapes",
     "physics_array_lifetime", "physics_array_shapes",

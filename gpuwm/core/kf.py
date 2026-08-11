@@ -88,14 +88,49 @@ def kf_phase_mode_for_microphysics(mp_physics: int) -> KFPhaseMode:
     ``P_QS`` are both allocated and ``F_QI``/``F_QS`` are both true.  Before
     28 was admitted here, ``initialize_physics`` could not even construct an
     mp=28 + KF domain -- ``_cumulus_optional_tendency_components`` raised.
+
+    ``mp_physics=9`` (Milbrandt-Yau) resolves the same way and by the same
+    single test: ``Registry/Registry.EM_COMMON:3025`` declares ``package
+    milbrandt2mom mp_physics==9 - moist:qv,qc,qr,qi,qs,qg,qh``, so ``P_QI``
+    and ``P_QS`` are both allocated, ``F_QI``/``F_QS`` are both true and
+    ``KF_eta_CPS`` takes the separate-DQIDT branch.  The extra ``qh`` in
+    that package changes nothing here: KF's feedback pair is F_QI/F_QS and
+    hail is not one of them.
     """
-    if int(mp_physics) in (6, 8, 10, 18, 28):
+    if int(mp_physics) in (6, 8, 9, 10, 16, 18, 28):
         return KFPhaseMode.SEPARATE_ICE_SNOW
     if int(mp_physics) == 1:
         return KFPhaseMode.WARM_RAIN
-    if int(mp_physics) == 0:
+    if int(mp_physics) in (0, 50):
         # WRF sets WARM_RAIN only for Kessler.  With no microphysics scheme,
         # F_QS is false and KF uses the melting-level !F_QS closure.
+        #
+        # mp_physics=50 (P3) reaches the SAME branch, and WRF's own control
+        # flow says so without any interpretation on gpuwm's part.  The
+        # feedback cascade is
+        # ``IF (warm_rain) ... ELSEIF (.NOT. F_QS) ... ELSEIF (F_QS) ...``
+        # (phys/module_cu_kfeta.F:2599/:2607/:2622).  P3 does not set
+        # ``warm_rain``: ``mp_init`` initialises it .false. at
+        # module_physics_init.F:4459 and only the Kessler cases assign it
+        # .true. (:4477, :4480), while P3's own case at :4568 does not
+        # touch it.  And ``F_QS`` is false because the ``p3_1category``
+        # package declares ``moist:qv,qc,qr,qi`` with no qs at all
+        # (Registry.EM_COMMON:3038).  warm_rain false + F_QS false selects
+        # the melting-level closure at :2607 -- the one this mode names.
+        #
+        # The tendency contract matches: that branch sets DQIDT = 0 and
+        # DQSDT = 0 (:2618, :2620) and folds ice into DQCDT and snow into
+        # DQRDT, so KF contributes ``rqr`` only and asks P3's state for no
+        # snow or ice tendency array it does not have
+        # (_cumulus_optional_tendency_components, physics.py).
+        #
+        # This is a DERIVED admission, not a measured one: it is exactly as
+        # verified as the mp=0 row beside it, and no P3+KF forecast has been
+        # compared against WRF.  What IS executed is
+        # tests/test_p3_port.py::
+        # test_p3_runs_under_the_default_cumulus_scheme, which builds an
+        # mp=50 + cu_physics=1 domain through initialize_physics and steps
+        # microphysics on it.
         return KFPhaseMode.NO_SEPARATE_SNOW
     raise ValueError(
         f"KF has no verified phase-output contract for mp_physics="

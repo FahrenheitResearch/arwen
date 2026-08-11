@@ -528,6 +528,73 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
     assert set(bridges.BRIDGE_ENV) == set(bridges.BRIDGE_ABI_MARKERS)
 
 
+def test_the_decoder_door_gates_the_contract_for_every_caller(
+        monkeypatch, tmp_path):
+    """One door, one gate: the resolver asks the contract question itself.
+
+    ``resolve_source_decoder`` checked existence.  ``gpuwm doctor``
+    asked ``bridge_abi_matches`` afterwards; ``tools/prepare_hrrr_wrf``
+    did not, while its own docstring said "gpuwm doctor calls the same
+    function, so a green report and a runnable preparation are now the
+    same claim".  A 12-byte text file planted at each override path was
+    returned by all three sources:
+
+        era5 / grib1_bridge      RETURNED THE FAKE: True   abi -> False
+        gfs  / gfs_grib2_bridge  RETURNED THE FAKE: True   abi -> False
+        hrrr / hrrr_grib2_bridge RETURNED THE FAKE: True   abi -> False
+
+    Both directions, all three sources: a fake refuses by name with a
+    remedy, and a binary carrying the marker resolves clean.  Doctor
+    reports the refusal as a gap rather than raising, and still reports
+    a good binary verified -- it calls both functions and must not
+    double-refuse.
+    """
+
+    from gpuwm import bridges
+
+    for source, name in sorted(bridges.SOURCE_DECODERS.items()):
+        fake = tmp_path / f"{source}-fake" / bridges.executable_name(name)
+        fake.parent.mkdir(parents=True, exist_ok=True)
+        fake.write_bytes(b"not a bridge")
+        assert fake.stat().st_size == 12
+        monkeypatch.setenv(bridges.BRIDGE_ENV[name], str(fake))
+        with pytest.raises(bridges.DecoderContractError) as excinfo:
+            bridges.resolve_source_decoder(source)
+        message = str(excinfo.value)
+        assert str(fake) in message, "the refusal names the thing"
+        assert "predates this release" in message, "and the reason"
+        assert "cargo build" in message or "git clone" in message, \
+            "and the one-line way through"
+
+        # The same binary with the marker in it resolves, unchanged.
+        good = tmp_path / f"{source}-good" / bridges.executable_name(name)
+        good.parent.mkdir(parents=True, exist_ok=True)
+        good.write_bytes(b"prefix\x00" + bridges.BRIDGE_ABI_MARKERS[name])
+        monkeypatch.setenv(bridges.BRIDGE_ENV[name], str(good))
+        assert bridges.resolve_source_decoder(source) == good
+        monkeypatch.delenv(bridges.BRIDGE_ENV[name])
+
+    # Doctor calls the resolver AND the gate.  The contract refusal must
+    # reach the report as a gap, not as a traceback, and a good binary
+    # must still read verified exactly once.
+    for source in doctor.DOCTOR_SOURCES:
+        name = bridges.SOURCE_DECODERS[source]
+        fake = tmp_path / f"{source}-fake" / bridges.executable_name(name)
+        monkeypatch.setenv(bridges.BRIDGE_ENV[name], str(fake))
+        check = doctor._decoder_route_check(source)
+        assert check.status == "missing"
+        assert str(fake) in check.detail
+        assert check.remedy and (
+            "cargo build" in check.remedy or "git clone" in check.remedy)
+
+        good = tmp_path / f"{source}-good" / bridges.executable_name(name)
+        monkeypatch.setenv(bridges.BRIDGE_ENV[name], str(good))
+        check = doctor._decoder_route_check(source)
+        assert check.status == "verified"
+        assert "speaks this release's contract" in check.detail
+        monkeypatch.delenv(bridges.BRIDGE_ENV[name])
+
+
 def test_the_sealer_and_the_doctor_share_one_bridge_contract(monkeypatch):
     """One marker table, so the two surfaces cannot drift apart.
 

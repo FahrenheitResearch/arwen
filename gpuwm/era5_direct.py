@@ -69,7 +69,8 @@ from gpuwm.source_hierarchy import (
     initialize_and_export_regular_source_hierarchy,
 )
 from gpuwm.hrrr_native_static import verified_static_catalog
-from gpuwm.static.build import build_static_for_domain
+from gpuwm.static.build import (build_static_for_domain,
+                                geog_selection_from_catalog)
 from gpuwm.wrf_direct import export_prepared_wrf
 from gpuwm.vertical_contract import validate_explicit_eta_grid
 
@@ -155,17 +156,56 @@ def _validated_static(
     return validate_native_static_fields(fields, grid, ny, nx)
 
 
+from gpuwm.ingest.water_temperature import (
+    WaterTemperatureStatics,
+    validate_water_temperature_policy,
+)
+
+
+#: The ERA5 adapter's name in every water-temperature refusal and
+#: receipt.  Not a case name and not a file name: the ROUTE.
+_WATER_ROUTE = "the ERA5 direct route"
+
+
+def _water_temperature_statics(static, landuse_attrs, policy):
+    """The surface this route assembles water temperature over.
+
+    Lakes come from the selected land-use table's own ``ISLAKE`` rather
+    than a hard-coded MODIS 21, because the category number is a
+    property of the table: USGS 24-category has no inland-water class at
+    all.  ``WaterTemperatureStatics`` carries whether the table could
+    name one, and the advisory says so when it could not.
+
+    ``None`` when the land-use metadata is not reachable at all, which
+    is the prebuilt-static-cache path with no geog root: the NPZ is
+    numeric fields only.  The caller announces that and the assembly is
+    skipped rather than run on a silently all-False lake mask.
+    """
+    if landuse_attrs is None:
+        return None
+    return WaterTemperatureStatics.for_route(
+        route=_WATER_ROUTE, policy=policy,
+        landmask=static["LANDMASK"], lu_index=static["LU_INDEX"],
+        landuse_attrs=landuse_attrs)
+
+
 def _load_static(path: Path, grid, ny: int, nx: int) -> dict[str, np.ndarray]:
     return load_native_static_cache(path, grid, ny, nx)
 
 
 def _static_from_geog(
         wps_namelist: Path, geog_root: Path, grid, cfg,
-) -> tuple[dict[str, np.ndarray], dict[str, object]]:
+) -> tuple[dict[str, np.ndarray], dict[str, object], dict[str, object]]:
     catalog, receipt = verified_static_catalog(
         Path(wps_namelist), Path(geog_root), (1,))
     fields = build_static_for_domain(grid, catalog, 1)
-    return _validated_static(fields, grid, cfg.ny, cfg.nx), receipt
+    # The land-use table's own ISLAKE/ISWATER, from the same GEOG index
+    # the statics were built from, so the water-temperature assembly
+    # and the statics cannot disagree about what a lake is.
+    landuse_attrs = geog_selection_from_catalog(
+        catalog, 1).landuse_global_attrs()
+    return (_validated_static(fields, grid, cfg.ny, cfg.nx), receipt,
+            landuse_attrs)
 
 
 def _write_static_cache(path: Path, fields: Mapping[str, np.ndarray]) -> None:
@@ -211,6 +251,7 @@ def prepare_era5_wrf(
     hierarchy_workers: int | None = None,
     hierarchy_source_orography: SourceOrographyDeclaration | None = None,
     water_temperature_overlay: Path | None = None,
+    water_temperature_policy_declared: str | None = None,
 ) -> dict[str, object]:
     """Build native ERA5 initial/boundary files and return the proof receipt.
 
@@ -296,8 +337,9 @@ def prepare_era5_wrf(
         grids = validate_native_lambert_contracts(
             exp, paths["wps_namelist"], source_name="ERA5")
         grid = grids[0]
+    landuse_attrs = None
     if static_input is None:
-        static, root_static_receipt = _static_from_geog(
+        static, root_static_receipt, landuse_attrs = _static_from_geog(
             paths["wps_namelist"], Path(geog_root), grid, cfg)
         root_static_provider = "native-wps-geog"
     else:
@@ -305,11 +347,39 @@ def prepare_era5_wrf(
             Path(static_receipt), paths["static_input"], grid, cfg)
         static = _load_static(paths["static_input"], grid, cfg.ny, cfg.nx)
         root_static_provider = "prebuilt-hash-bound-cache"
+        if geog_root is not None:
+            catalog, _ = verified_static_catalog(
+                paths["wps_namelist"], Path(geog_root), (1,))
+            landuse_attrs = geog_selection_from_catalog(
+                catalog, 1).landuse_global_attrs()
     source_terrain = (
         None if source_orography is None
         else _load_source_orography(
             paths["source_orography"], source_orography_variable)
     )
+
+    water_temperature_policy = validate_water_temperature_policy(
+        water_temperature_policy_declared
+        if water_temperature_policy_declared is not None
+        else ("external_overlay" if water_temperature_overlay is not None
+              else None))
+    water_statics = _water_temperature_statics(
+        static, landuse_attrs, water_temperature_policy)
+    if water_statics is None:
+        # LOUD, and the coherent receipt is NOT printed: a prebuilt static
+        # NPZ is numeric fields only, so with no geog root there is no
+        # land-use table to read ISLAKE from, and the assembly would have to
+        # guess a category number.  Run the historical selector, say so, and
+        # name the one argument that restores the default treatment.
+        water_temperature_policy = "wrf_compat"
+        print(
+            "water temperature: the prebuilt static cache carries no "
+            "land-use metadata, so this run cannot tell an inland body from "
+            "the ocean and falls back to the historical per-cell selector "
+            "(lakes stay blocky).  Pass --geog-root, which is read only for "
+            "the land-use index, to get the default class-coherent "
+            "treatment.",
+            file=sys.stderr)
 
     decode_started = time.perf_counter()
     snapshots = cached_era5_snapshots(
@@ -404,7 +474,8 @@ def prepare_era5_wrf(
             source, grid,
             source_orography_catalog=source_orography_catalog,
             backend=preprocess,
-            target_landmask=np.asarray(static["LANDMASK"]) >= 0.5)
+            target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
+            water_temperature_statics=water_statics)
         coord = make_vertical_coord(
             cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac,
             eta_levels=exp.vertical.eta_levels)
@@ -441,7 +512,13 @@ def prepare_era5_wrf(
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"],
         terrain=static["HGT_M"],
-        source_orography=source_terrain)
+        source_orography=source_terrain,
+        # getattr on every route, so a stand-in snapshot is refused by
+        # the router on its merits rather than by an AttributeError.
+        water_temperature=getattr(
+            initial_met, "water_temperature", None),
+        water_temperature_policy=water_temperature_policy,
+        route=_WATER_ROUTE)
     # LOUD when it happened, silent when it did not: the SMCDRY floor
     # receipt is only bound into the prepared metadata/proof when at
     # least one land cell was floored (getattr: the RUC state carries
@@ -450,6 +527,14 @@ def prepare_era5_wrf(
     soil_floor_binding = (
         {"soil_moisture_floor": soil_moisture_floor}
         if soil_moisture_floor else {})
+    # Same discipline for the deep-soil repair: bound into the prepared
+    # metadata only when at least one LAND cell took TSK for its TMN.
+    # The water half of that substitution is every run's ordinary path
+    # and never appears here.
+    deep_soil_repair = dict(getattr(soil, "deep_soil_repair", {}) or {})
+    if deep_soil_repair:
+        soil_floor_binding = {**soil_floor_binding,
+                              "deep_soil_repair": deep_soil_repair}
     initialize_seconds = time.perf_counter() - initialize_started
     input_manifest_digest = _sha256(Path(input_manifest))
     # LOUD when configured, absent when not: the overlay binding joins

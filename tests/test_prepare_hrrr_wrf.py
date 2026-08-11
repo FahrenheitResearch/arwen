@@ -270,20 +270,44 @@ def _fixture_decoder(tmp_path: Path) -> Path:
         if __name__ == "__main__":
             main(sys.argv)
     ''').lstrip(), encoding="utf-8")
+    # The resolver reads the binary for this release's contract marker
+    # before it hands the path to anything, so a fixture decoder has to
+    # carry it too -- as a comment, since this launcher is a script.  A
+    # fixture that did not carry it would be exactly the stale bridge
+    # the gate exists to stop.
+    from gpuwm import bridges
+    contract = bridges.BRIDGE_ABI_MARKERS["hrrr_grib2_bridge"].decode("ascii")
     if os.name == "nt":
         launcher = tmp_path / "minimal_hrrr_decoder.cmd"
         launcher.write_text(
-            f'@echo off\n"{sys.executable}" "{script}" %*\n',
+            f'@echo off\nrem {contract}\n"{sys.executable}" "{script}" %*\n',
             encoding="ascii")
     else:
         launcher = tmp_path / "minimal_hrrr_decoder"
         launcher.write_text(
             f"#!{sys.executable}\n"
+            f"# {contract}\n"
             f"exec(compile(open({str(script)!r}, 'rb').read(), "
             f"{str(script)!r}, 'exec'))\n",
             encoding="utf-8")
         launcher.chmod(0o755)
     return launcher.resolve()
+
+
+def _contract_carrying_decoder(path: Path) -> Path:
+    """A stand-in bridge binary that speaks this release's contract.
+
+    ``b"decoder"`` used to be enough because the resolver only asked
+    whether the file existed.  It asks the contract question itself now,
+    so a placeholder has to answer it -- which is the point: a build
+    that predates the contract no longer reaches a production door.
+    """
+    from gpuwm import bridges
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        b"decoder\x00" + bridges.BRIDGE_ABI_MARKERS["hrrr_grib2_bridge"])
+    return path
 
 
 def _real_wrapper_inputs(tmp_path: Path):
@@ -728,6 +752,9 @@ def _write_minimal_stream_tree_config(
         bl_pbl_physics = 1
         sf_sfclay_physics = 91
         sf_surface_physics = 2
+        ra_lw_physics = 1
+        ra_sw_physics = 1
+        radt = 12.0
 
         [[domain]]
         grid_id = 1
@@ -1849,15 +1876,21 @@ def test_the_wrapper_resolves_the_decoder_the_shared_ladder_resolves(
         prepare._decoder({})
     assert str(staged) in str(error.value)
 
-    decoder = staged / bridges.executable_name("hrrr_grib2_bridge")
-    decoder.write_bytes(b"decoder")
+    decoder = _contract_carrying_decoder(
+        staged / bridges.executable_name("hrrr_grib2_bridge"))
     assert prepare._decoder({}) == decoder.resolve()
+
+    # And the ladder is not a name match: a staged binary that predates
+    # this release's contract refuses here, at the production door, the
+    # way it always did in the report.
+    decoder.write_bytes(b"not a bridge")
+    with pytest.raises(bridges.DecoderContractError, match="predates"):
+        prepare._decoder({})
 
 
 def test_an_explicit_decoder_override_is_honored_and_fails_loud(
         monkeypatch, tmp_path: Path) -> None:
-    override = tmp_path / "my_bridge"
-    override.write_bytes(b"decoder")
+    override = _contract_carrying_decoder(tmp_path / "my_bridge")
     monkeypatch.setenv("GPUWM_HRRR_DECODER", str(override))
     assert prepare._decoder({}) == override.resolve()
 

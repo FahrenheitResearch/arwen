@@ -335,15 +335,32 @@ FROZEN_MODULE_DIGESTS = {
     'nssl2_diagnostics': (
         'a95ae9e0bc3dd20a13865cfa6d1148d2a78ee5d7c17c9c1bca9a0c8dbdf19868',
         '331b4a9734959260ab515216e24ee7100eac18d8e6d646b1e0e8bf21c0c23374'),
+    # The three NSSL translation units below are re-pinned for the WRF
+    # v4.6.1 variant family (nssl_hail_on / nssl_ccn_on).  Each gained one
+    # trailing `int` kernel parameter and a branch on it: the CCN load and
+    # store in nssl2_driver_support, the graupel-to-hail conversion call in
+    # nssl2_fused_gs, and the nucleation pool in nssl2_nucond.  None of them
+    # is an mp=8 translation unit, so the mp=8 numerics guarantee this file
+    # exists to protect is untouched.
+    #
+    # The pins move; the mp18 default lane's OUTPUT does not.  That is the
+    # justification, and it is measured rather than argued: with these exact
+    # bytes, tools/nssl2_mp18_digest_probe.py reproduces all 30 committed
+    # SHA-256 field digests in evidence/nssl2-variants/mp18-digest-baseline
+    # .json byte for byte (re-run on this tree: 30 reproduced, 0
+    # mismatched).  That is what rules out the FMA-contraction risk of
+    # adding a parameter and a branch to a fused kernel.  Each digest below
+    # was re-derived from the tree by this test's own fixture, not edited
+    # to match.
     'nssl2_driver_support': (
-        '4e52a801fbf2b5b1f877e5d1b0a02cdc00eec775e55271fbbdeb4cf490edfe51',
-        '43c74556040cc34ad3f3e2ea3171049cb7421e41e97aed2e21e8691703a6282d'),
+        'd1c729369bdf59859f178622402f138e2c9b67f4f12fa5661162924c7cf542ec',
+        '0ae24c4f406b91a4d849f5ce171838264be81254544dc04693550f3355a14511'),
     'nssl2_fused_gs': (
-        '4b6bb119e54a19039f2b81e46964a1ac38d3bb835b05a9f4c16c789720fad9c8',
-        '8acb6a2ac2a8c292a5f30e527c91276c941cf512593456a14986965f1c2eb593'),
+        'a07aee42bbed62c88d033cd0b99c30bc2d751626fa975d61fe1e1abf8ae1f41e',
+        'b630f6a93f7a43b2ea88e350fdf2f7037eabc9ecfcdf0f65788330327ddf620b'),
     'nssl2_nucond': (
-        'e7b2df8d8fd6a0dd98c464d0db595437fc701143be7d3652bf565659253a2244',
-        'd4c9659486dbe9e3acb5b91efb979e89713d5e2a527aa5f8680083a7115d93f0'),
+        '20afd579594f30076b1e7d157383b125950509b4a9823f4d2772e7a0f0aa759b',
+        '88776c363984e019f933de384e85989641531650128de57cddb07f30347f5e92'),
     'nssl2_qvexcess': (
         '6906dcd9f8822d73d87ff3cb6e545a1b1ddef567c16c658435d4f669f1f369dc',
         '89d27036499b7f57d780c594308766b83ef711fbc9d9c5d0ece2e79c270f6626'),

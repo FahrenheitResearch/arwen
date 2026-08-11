@@ -979,7 +979,8 @@ def test_native_hrrr_real74_suite_profiles_bind_exact_namelist_and_runtime(
     else:
         assert receipt["readiness"] == "WRF_MATCHED_RUN_CANDIDATE"
         assert receipt["nssl2_contract"]["selector"] == 18
-        assert receipt["nssl2_contract"]["resolved_default_mode"] == {
+        assert receipt["nssl2_contract"]["is_default_lane"] is True
+        assert receipt["nssl2_contract"]["resolved_mode"] == {
             "two_moment": True,
             "hail": True,
             "predicted_ccn": True,

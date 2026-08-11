@@ -397,7 +397,12 @@ def _decoder(env: dict[str, str]) -> Path:
     ``GPUWM_HRRR_DECODER`` override first and fail-loud, then a
     checkout's own build, then ``libexec/bridges``, then
     ``~/.gpuwm/bridges``.  ``gpuwm doctor`` calls the same function, so
-    a green report and a runnable preparation are now the same claim.
+    a green report and a runnable preparation are now the same claim --
+    and since 1.8.9 that includes the contract check, which the resolver
+    performs itself.  It used to sit outside, in doctor only, so a
+    binary built before this release's contract passed this door and
+    failed the report; a 12-byte text file planted at the override path
+    was accepted here.  A stale bridge now refuses at both.
 
     Building from source stays available and stays last: it is the
     developer convenience it always was, and it can only run where the

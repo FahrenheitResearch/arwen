@@ -89,6 +89,7 @@ from gpuwm.config import RunConfig
 from gpuwm.core import constants as c
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import DTYPE, DomainState
+from gpuwm.core.wdm6_constants import WDM6_NUMBER_SPECIES
 from gpuwm.physics_compat import thompson_table_root as _thompson_table_root
 
 _TPB = 64          # threads per block (one thread per column)
@@ -112,9 +113,22 @@ KESSLER_VERTICAL_LEVEL_BOUNDS = (None, _KMAX)
 #: allocates them (gpuwm/core/moist.py, ``nwfa`` is the mp=28 discriminator).
 #: ``nwfa2d``/``nifa2d`` are deliberately absent: they are INTENT(IN) in WRF
 #: and the microphysics never writes them.
+#: ``qh``/``nh`` join for mp=9 (Milbrandt-Yau): its hail mass and hail
+#: number are prognostic and the adapter writes them in place, so an
+#: unrestored ring would carry hail WRF's clipped tiles never touch.
+#: Presence guards keep every other scheme unaffected -- mp=18 allocates
+#: ``qh`` too and has always been captured through it, and no scheme but
+#: mp=9 allocates ``nh``.
+#: ``qir``/``qib`` (P3's rime mass and rime volume) and ``th_old``/``qv_old``
+#: join for mp=50 under the same presence guard: p3_main updates all four in
+#: place, and ``th_old``/``qv_old`` in particular are written whole-array at
+#: the end of every call (module_mp_p3.F:5018-5021), so an unrestored ring
+#: would feed the NEXT step's supersaturation tendency (:3171) from columns
+#: WRF's clipped tiles never advanced.  No other scheme allocates them.
 _RING_STATE_FIELDS = (
-    "thp", "qv", "qc", "qr", "qi", "qs", "qg",
-    "nc", "nr", "ni", "ns", "ng", "nwfa", "nifa",
+    "thp", "qv", "qc", "qr", "qi", "qs", "qg", "qh",
+    "nc", "nr", "ni", "ns", "ng", "nh", "nwfa", "nifa",
+    "qir", "qib", "th_old", "qv_old",
     "effc", "effr", "effi", "effs",
 )
 
@@ -127,7 +141,8 @@ _RING_STATE_FIELDS = (
 #: clipped tile writes.
 _RING_SURFACE_SLOTS = (
     "mp_rainnc", "mp_rainncv", "mp_snownc", "mp_snowncv",
-    "mp_graupelnc", "mp_graupelncv", "mp_sr", "mp_kessler_sr",
+    "mp_graupelnc", "mp_graupelncv", "mp_hailnc", "mp_hailncv",
+    "mp_sr", "mp_kessler_sr",
 )
 
 #: Persistent 3-D scratch slots that survive the call (the REFL_10CM
@@ -181,10 +196,20 @@ def spec_zone_ring_save_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         return {}
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
     fields = ["thp", "qv", "qc", "qr"]
-    if cfg.mp_physics in (6, 8, 10, 28):
+    if cfg.mp_physics in (6, 8, 9, 10, 16, 28):
         fields += ["qi", "qs", "qg"]
     if cfg.mp_physics == 8:
         fields += ["nr", "ni"]
+    if cfg.mp_physics == 9:
+        # Milbrandt-Yau: hail mass beside graupel plus all six numbers.
+        fields += ["qh", "nc", "nr", "ni", "ns", "ng", "nh"]
+    if cfg.mp_physics == 16:
+        # WDM6's three transported moments (gpuwm/core/wdm6.py).  nn is in
+        # the set because the scheme WRITES it -- rain that fully evaporates
+        # returns its number to the CCN reservoir (module_mp_wdm6.F:
+        # 1249-1252) and cloud that fully evaporates does the same
+        # (:1990-1994) -- so an unguarded ring would keep the change.
+        fields += list(WDM6_NUMBER_SPECIES)
     if cfg.mp_physics == 10:
         fields += ["nc", "nr", "ni", "ns", "ng"]
     if cfg.mp_physics == 28:
@@ -193,7 +218,13 @@ def spec_zone_ring_save_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         # are NOT here: WRF passes them INTENT(IN) and no microphysics
         # kernel writes them, so the guard has nothing to restore.
         fields += ["nr", "ni", "nc", "nwfa", "nifa"]
-    if cfg.mp_physics in (6, 8, 10, 28):
+    if cfg.mp_physics == 50:
+        # P3 one-category: one ice mass with its rime mass/volume, two
+        # number moments, and the two previous-step carriers.  No qs/qg
+        # and no effs -- P3 does not have those species (state.py mp==50).
+        fields += ["qi", "qir", "qib", "ni", "nr", "th_old", "qv_old",
+                   "effc", "effi"]
+    if cfg.mp_physics in (6, 8, 9, 10, 16, 28):
         fields += ["effc", "effi", "effs"]
     if cfg.mp_physics == 10:
         fields += ["effr"]
@@ -206,10 +237,24 @@ def spec_zone_ring_save_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     volume_slots = ["refl_10cm"]
     if cfg.mp_physics == 1:
         surface_slots = ["mp_rainnc", "mp_rainncv", "mp_kessler_sr"]
+    elif cfg.mp_physics == 50:
+        # P3's wrapper writes RAINNC/RAINNCV/SNOWNC/SNOWNCV/SR and nothing
+        # else (module_mp_p3.F:894-898): there is no graupel category and
+        # the driver arm passes no GRAUPELNC (:1590-1595).
+        surface_slots = ["mp_rainnc", "mp_rainncv", "mp_snownc",
+                         "mp_snowncv", "mp_sr"]
     else:
         surface_slots = ["mp_rainnc", "mp_rainncv", "mp_snownc",
                          "mp_snowncv", "mp_graupelnc", "mp_graupelncv",
                          "mp_sr"]
+        if cfg.mp_physics in (9, 18):
+            # The two hail-bearing schemes.  Both bind HAILNC/HAILNCV in
+            # WRF's driver (module_microphysics_driver.F:1841-1842 for
+            # mp=9), both are written by clipped tiles only, and both must
+            # therefore be captured -- mp=18's pair was previously outside
+            # the guard's slot family, so its ring HAILNC accumulated where
+            # WRF's is exactly zero.
+            surface_slots += ["mp_hailnc", "mp_hailncv"]
     n_lo = min(sz, ny)
     n_hi = max(ny - sz, n_lo)
     e_lo = min(sz, nx)
@@ -693,6 +738,19 @@ def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
     elif cfg.mp_physics == 8:
         return _apply_thompson(
             state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    elif cfg.mp_physics == 9:
+        # Milbrandt-Yau two-moment.  Lazy import for the same reason the
+        # Morrison and aerosol arms use one: an mp=8 or Kessler run must
+        # never compile kernels/milbrandt2.cu.
+        from gpuwm.core.milbrandt2 import apply as apply_milbrandt2
+        return apply_milbrandt2(
+            state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    elif cfg.mp_physics == 16:
+        # Lazy import for the Morrison reason: mp=16 compiles its own CUDA
+        # translation unit, which a WSM6 or Kessler run must never build.
+        from gpuwm.core.wdm6 import apply as apply_wdm6
+        return apply_wdm6(
+            state, cfg, dt, refl_10cm_due=refl_10cm_due)
     elif cfg.mp_physics == 10:
         # Lazy import leaves the frozen Kessler module/import path intact.
         from gpuwm.core.morrison import apply as apply_morrison
@@ -709,6 +767,13 @@ def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
         return _apply_thompson_aerosol(
             state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    elif cfg.mp_physics == 50:
+        # P3 one-category.  Lazy import for the reason the Morrison and
+        # aerosol arms use one, plus a P3-specific one: importing this
+        # module does not read the 1.6 MiB lookup table, but the adapter's
+        # first call does, and a Kessler or WSM6 run must never pay that.
+        from gpuwm.core.p3 import apply as apply_p3
+        return apply_p3(state, cfg, dt, refl_10cm_due=refl_10cm_due)
     else:
         # Branch-local imports avoid the microphysics -> nssl2_runtime ->
         # microphysics partial-initialization cycle.
@@ -818,15 +883,29 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
         if refl_10cm_due:
             raise ValueError("REFL_10CM is due without active microphysics")
         return None
-    if cfg.mp_physics not in (1, 6, 8, 10, 18, 28):
+    if cfg.mp_physics not in (1, 6, 8, 9, 10, 16, 18, 28, 50):
         raise ValueError(f"unknown mp_physics={cfg.mp_physics} "
                          "(0 = none, 1 = Kessler, 6 = WSM6, "
-                         "8 = Thompson, 10 = Morrison, "
-                         "18 = NSSL, 28 = Thompson aerosol-aware)")
+                         "8 = Thompson, 9 = Milbrandt-Yau, "
+                         "10 = Morrison, 16 = WDM6, "
+                         "18 = NSSL, 28 = Thompson aerosol-aware, "
+                         "50 = P3 one-category)")
     if state.qv is None:
         raise ValueError(f"mp_physics={cfg.mp_physics} requires "
                          "cfg.moist=True: the state "
                          "carries no qv/qc/qr arrays")
+    if cfg.mp_physics == 18:
+        # An NSSL variant's absent categories are pinned to exact zero
+        # HERE, ahead of the spec-zone ring snapshot, and not inside the
+        # scheme: the ring is bit-restored after the call, so a pin applied
+        # further in would leave a nested or specified domain's ring
+        # carrying a hydrometeor the resolved mode has no physics for.  The
+        # default lane pins nothing and this costs it one dataclass.
+        # Branch-local import for the same partial-initialization reason as
+        # the dispatch arm below.
+        from gpuwm.core.nssl2_contract import resolve_nssl2_mode_for_config
+        from gpuwm.core.nssl2_runtime import pin_absent_nssl2_fields
+        pin_absent_nssl2_fields(state, resolve_nssl2_mode_for_config(cfg))
     slices = _ring_guard_slices(state, cfg)
     if slices is None:
         return _dispatch_scheme(state, cfg, dt, refl_10cm_due=refl_10cm_due)

@@ -69,7 +69,10 @@ def test_launcher_passes_one_workspace_and_exact_environment(monkeypatch):
         for actual, expected in zip(args[:9], expected_fused)
     )
     assert args[9] == np.float32(12.5)
-    assert args[10:] == (np.int32(4), np.int32(6), np.int32(24))
+    # nz, ncol, n, then the hail switch: the default lane runs with
+    # WRF's hail category present (nssl_hail_on resolving to 1).
+    assert args[10:] == (
+        np.int32(4), np.int32(6), np.int32(24), np.int32(1))
 
 
 def test_callback_adapter_preserves_the_narrow_hook(monkeypatch):
@@ -79,7 +82,7 @@ def test_callback_adapter_preserves_the_narrow_hook(monkeypatch):
     monkeypatch.setattr(
         fused,
         "launch_fused_gs",
-        lambda *args: calls.append(args),
+        lambda *args, **kwargs: calls.append((args, kwargs)),
     )
     theta, rho, pressure, exner, w, temperature, target, dz = environment
     fields = SimpleNamespace(
@@ -87,10 +90,17 @@ def test_callback_adapter_preserves_the_narrow_hook(monkeypatch):
     )
     callback = fused.NSSL2FusedGS(temperature, target, 30.0)
     callback(workspace, fields)
-    assert calls == [(
+    assert calls == [((
         workspace, theta, rho, pressure, exner, w,
         temperature, target, dz, 30.0,
-    )]
+    ), {"hail_on": True})]
+
+    # The variant's hail switch is carried by the adapter, not smuggled in
+    # from module state: an adapter built hail-off must forward hail-off.
+    calls.clear()
+    fused.NSSL2FusedGS(temperature, target, 30.0, hail_on=False)(
+        workspace, fields)
+    assert calls[0][1] == {"hail_on": False}
 
 
 @pytest.mark.parametrize("dt_s", [0.0, -1.0, np.inf, -np.inf, np.nan])

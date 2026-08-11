@@ -1,0 +1,65 @@
+# P3 one-category (mp_physics = 50), selected as a PER-DOMAIN override.
+#
+# One of two deliberately redundant spellings.  gpuwm resolves physics per
+# DOMAIN, and a selector may be written once under [shared] or set on an
+# individual [[domain]]; the two paths reach RunConfig differently, so a
+# scheme that prices through one and not the other is half-wired.  Both are
+# checked at every cut -- p3_mp50_shared.toml here, p3_mp50_domain.toml
+# beside it -- because mp=50 reached the 1.9 assembly unpriceable through
+# BOTH and nothing noticed.
+#
+# Radiation is the LEGACY RRTMG variant, and deliberately so.  P3 supplies
+# no snow effective radius (WRF's has_reqs = 0 override,
+# phys/module_physics_init.F:1027-1033), so
+# gpuwm.config.validate_p3_radiation refuses the 4/4 RTE+RRTMGP pairing by
+# name and offers two ways through.  This config takes the first one, which
+# makes the check a proof that the refusal's own advice runs.
+
+[experiment]
+name = "p3_mp50_domain"
+start_time = 2021-06-01T18:00:00
+run_seconds = 600.0
+restart_interval_s = 0.0
+
+[projection]
+map_proj = "lambert"
+ref_lat = 38.0
+ref_lon = -97.0
+truelat1 = 30.0
+truelat2 = 45.0
+stand_lon = -97.0
+
+[shared]
+nz = 40
+ztop = 20000.0
+map_proj = 1
+moist = true
+cudt_minutes = 0.0
+bl_pbl_physics = 1
+sf_sfclay_physics = 1
+sf_surface_physics = 2
+num_soil_layers = 4
+ra_lw_physics = 4
+ra_sw_physics = 4
+ra_rrtmg_variant = "rrtmg_legacy"
+radt = 12.0
+cu_physics = 1
+km_opt = 1
+
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+history_interval_s = 300.0
+nx = 41
+ny = 41
+dx = 3000.0
+dy = 3000.0
+time_step = 15
+specified = true
+# THE ONE LINE that differs from p3_mp50_shared.toml: the selector is
+# written on the domain instead of in [shared].
+mp_physics = 50

@@ -155,6 +155,78 @@ NSSL_SCALAR_SPECIES = (
     "qvolg", "qvolh")
 NSSL_SPECIES = NSSL_MASS_SPECIES + NSSL_SCALAR_SPECIES
 
+# Milbrandt-Yau option 9 carries hail mass beside graupel and a number
+# moment for EVERY one of the six hydrometeors -- the WRF driver's
+# CASE(MILBRANDT2MOM) arm binds qnc/qnr/qni/qns/qng/qnh
+# (module_microphysics_driver.F:1857-1862) and Registry.EM_COMMON declares
+# all six in the ``scalar`` package.  ``nc`` is transported here, unlike
+# Morrison's diagnostic droplet number, because the scheme prognoses it:
+# NccnFNC activation writes it at :3014 and evaporation depletes it at
+# :3022.
+MY2_MASS_SPECIES = ("qi", "qs", "qg", "qh")
+MY2_NUMBER_SPECIES = ("nc", "nr", "ni", "ns", "ng", "nh")
+MY2_SPECIES = MY2_MASS_SPECIES + MY2_NUMBER_SPECIES
+
+# P3 one-category (mp=50) is the first scheme in the tree with ``qi`` and NO
+# ``qs``/``qg``, so it cannot reuse ICE_MASS_SPECIES: that tuple would name
+# two fields an mp=50 DomainState deliberately does not allocate, and the
+# generic dycore loops would raise on ``state.qs0`` at the first RK time-t
+# copy.  WRF Registry.EM_COMMON:3038 registers the package as
+#     moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib
+# and solve_em advects the scalar array beside the moist one, so all four
+# scalar entries are transported.  The order here is WRF's own scalar order
+# (qni, qnr, qir, qib) after the single moist ice mass, which is also
+# gpuwm/core/state.py's mp=50 allocation order -- transport order is
+# per-field independent, so the only thing it buys is that the two
+# inventories read the same way.
+#
+# ``qir`` (rime MASS) and ``qib`` (rime VOLUME) must move with ``qi`` or
+# they decouple from the ice they describe: qirim/qitot picks the lookup
+# table's rime-fraction index and rho_rime = qirim/birim picks its
+# rime-density index, so a stationary pair would mis-select every ice fall
+# speed and collection rate within a few steps.  Neither is additional
+# water: qir is a COMPONENT of qi, and qib is a volume.  They are Registry
+# ``scalar`` entries, so they stay out of WRF_MOIST_ARRAY_SPECIES, out of
+# ``calc_cq`` and out of the hydrostatic qtot sum, exactly like the number
+# moments beside them.
+P3_SPECIES = ("qi", "ni", "nr", "qir", "qib")
+
+#: The scratch slot holding a zero plane for a moist-array mass species the
+#: active scheme does not allocate.  See :func:`absent_mass_plane`.
+ABSENT_MASS_SLOT = "moist_absent_mass"
+
+
+def absent_mass_plane(state) -> cp.ndarray:
+    """A freshly zeroed (nz, ny, nx) stand-in for an unallocated mass field.
+
+    Two fused CUDA kernels sum the WRF ``moist`` array by an integer mode
+    rather than by a field list: ``calc_cq`` (kernels/acoustic.cu:80-109,
+    mass arms 1/3/6/7) and ``slow_buoyancy``'s ``q_total``
+    (kernels/dycore.cu:212-228, modes 0/1/2/3).  Both jump straight from
+    "warm rain" to "ice plus snow plus graupel", because until P3 every
+    scheme with ``qi`` also had ``qs`` and ``qg``.
+
+    P3 has ONE ice category.  Rather than reopen two FROZEN translation
+    units -- tests/test_mp8_frozen.py pins both files' bytes AND their
+    compile strings, which is what proves mp=8 has not moved -- the
+    callers hand the absent qs/qg slots this shared zero plane and keep
+    the six-mass mode.  The sum is exact, not merely close: both kernels
+    accumulate with a literal ``add.rn.f32`` (``arn_add``/``rn_add``) over
+    non-negative terms starting at +0.0f, so a zero addend is an identity
+    on every bit pattern the accumulator can hold.
+
+    Zeroed on every call, immediately before the launch that reads it, so
+    the slot keeps its ``write_before_read`` lifetime and no arena
+    neighbour can be observed through it.
+    """
+    # Spelled as a literal, not as ABSENT_MASS_SLOT: the completeness gate
+    # (tests/test_preflight.py::test_every_scratch_call_site_is_classified)
+    # resolves slot names statically, and a Name-passed slot escapes it.
+    plane = state.scratch(state.p.shape, "moist_absent_mass")
+    plane[...] = 0.0
+    return plane
+
+
 #: The species WRF v4.6.1 carries in its ``moist`` 4-D array, as opposed to
 #: its ``scalar`` array.  Registry/Registry.EM_COMMON declares qv (:453),
 #: qc (:455), qr (:457), qi (:459), qs (:465), qg (:467) and qh (:469) with
@@ -187,9 +259,28 @@ def extra_moist_species(state: DomainState) -> tuple[str, ...]:
     transport it -- see :data:`THOMPSON_AERO_NUMBER_SPECIES`).  The mp=28 arm
     therefore sits BEFORE the generic presence filter and returns its own
     closed tuple rather than widening that filter.
+
+    Milbrandt-Yau (mp=9) and NSSL (mp=18) BOTH allocate ``qh``, so hail mass
+    stopped being a discriminator the moment a second hail scheme landed.
+    ``nh`` is the mp=9 one: mp=9 spells its hail number ``nh`` and mp=18
+    spells its ``qnh``, and no other scheme allocates either.  The mp=9 test
+    therefore sits ahead of the ``qh`` test -- reversing them would hand a
+    Milbrandt-Yau state NSSL's nine-scalar package and advect nine fields
+    that do not exist.
+
+    P3 (mp=50) is selected on ``state.qir`` for the same reason: rime mass
+    is allocated by exactly one scheme.  Its arm must also sit before the
+    generic filter, because that filter starts from
+    :data:`ICE_MASS_SPECIES` and P3 is the first scheme with ``qi`` and no
+    ``qs``/``qg`` -- see :data:`P3_SPECIES`.  It is independent of the mp=9
+    arm beside it: no state allocates both ``nh`` and ``qir``.
     """
     if getattr(state, "qi", None) is None:
         return ()
+    if getattr(state, "qir", None) is not None:
+        return P3_SPECIES
+    if getattr(state, "nh", None) is not None:
+        return MY2_SPECIES
     if getattr(state, "qh", None) is not None:
         return NSSL_SPECIES
     if getattr(state, "nwfa", None) is not None:

@@ -298,6 +298,42 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     the lsm4 slice.  The whole sweep is now the 7 x 4 x 5 x 4 x 2 x 2 =
     2240 product, and 1148 + 1092 = 2240 accounts for all of it.
 
+    MYJ RE-PIN, 2026-08-09 (lane/port-myj).  This port routes TWO new
+    selectors -- sf_sfclay_physics=2 (Eta similarity) and bl_pbl_physics=2
+    (MYJ) -- so it widens BOTH swept axes at once, the first change here to
+    do that.  The cross-product goes 5 sfclay x 6 pbl x 4 lsm x 2 km_opt x
+    7 mp x 2 cu = 3360, and 1260 + 2100 = 3360 accounts for all of it.
+    Every number below was measured by
+    `python tools/health_field_census.py --json configs/real74_4dom.toml`
+    on this tree, and each delta is accounted for exactly:
+
+        rows        1148 -> 1260  (+112)
+        rejected    1092 -> 2100  (+1008)
+        lsm4 rows    280 ->  308   (+28)
+        lsm4 WRF-scheme refusals
+                     168 ->  392  (+224)
+        SASE refusals
+                     448 ->  560  (+112), of which 112 are the MYJ
+                                  pairing law rather than km_opt
+
+    +112 rows is exactly MYJ's own slice: sfclay {2} x lsm {0,2,3,4} x
+    km_opt {1,4} x 7 mp x cu {0,1}.  MYJ is the FIRST scheme here whose
+    slice is smaller than YSU's, and the reason is the pairing: WRF admits
+    YSU with two surface layers and MYJ with exactly one
+    (module_physics_init.F:3770-3772), so MYJ measures 112 rows where YSU
+    measures 224.  The +1008 refusals are 448 (MYJ with a surface layer it
+    refuses) plus 560 (the Eta layer with a PBL it refuses) -- the pairing
+    law, counted from both sides.  SASE's extra 112 are the 
+    sfclay=2 x pbl=900 cells, which now hit validate_myj_pairing before
+    they ever reach the km_opt check, so the "every SASE refusal names
+    km_opt" assertion below is scoped to the cells where that is still
+    true instead of being deleted.
+
+    What did NOT move, again, is the point: the worst selectable
+    descriptor count is unchanged at 632 of 1024.  MYJ adds nine 2-D
+    surface fields and two 3-D columns under its own selectors, and the
+    widest configuration is still someone else's.
+
     THE KM_OPT AXIS IS TWO VALUES, NOT THREE, ON THIS LINE.  The census
     probes validate_run_config for the selectable set rather than
     transcribing one, and the 1.7 validator refuses km_opt=3 unless
@@ -320,9 +356,74 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     selectable set ties the existing peak instead of moving it, which is
     what "km_opt does not change the inventory" has always claimed and is
     now measured across two values again.
+
+    Re-pinned 2026-08-09 for the Milbrandt-Yau lane: mp_physics=9 became
+    routable, so the microphysics axis is 8 values instead of 7 and the
+    whole sweep is now 8 x 4 x 5 x 4 x 2 x 2 = 2560, with 1312 + 1248
+    accounting for all of it.  Scheme 9 adds exactly ONE microphysics
+    value and every count below is that value's own slice, measured:
+
+        rows        1148 -> 1312   (+164)
+        rejected    1092 -> 1248   (+156)
+        sase rej     448 ->  512    (+64)
+        lsm4 rows    280 ->  320    (+40)
+        lsm4 WRF-scheme refusals
+                     168 ->  192    (+24)
+        lsm4 SASE refusals
+                     112 ->  128    (+16)
+
+    Its slice is the SAME SIZE as every other scheme's at every cut,
+    which is the point: 164 rows like mp 0/1/6/8/10/18/28, not a
+    partial one.  It was partial for one measurement -- 82 rows -- while
+    gpuwm/core/kf.py refused Kain-Fritsch with mp=9, and that refusal was
+    a real gap rather than a WRF fact (Registry.EM_COMMON:3025 declares
+    qi and qs, so F_QI/F_QS are both true and KF_eta_CPS has its branch).
+    Fixing the contract rather than pinning the halved number is why the
+    slice is whole here.  The ceiling is untouched: the widest mp=9 row
+    measures 420 descriptors against the unchanged 632 peak.
+
+    1.9 INTEGRATION RE-PIN.  The two blocks above are each a lane's own
+    measurement against 1.8.7, and neither is the number once both land:
+    MYJ widens the PBL and surface-layer axes while Milbrandt-Yau widens
+    the microphysics axis, so the movements MULTIPLY and adding the two
+    deltas would under-count by 428 rows.  That intermediate sweep was
+    5 sfclay x 6 pbl x 4 lsm x 2 km_opt x 8 mp x 2 cu = 3840, with
+    1440 + 2400 accounting for all of it.
+
+    P3 then adds the NINTH microphysics value, and WDM6 the TENTH.
+    Neither touches a PBL, surface-layer, land-surface, cumulus or
+    km_opt axis, so both movements are one more value on one axis.  The
+    sweep is
+    5 sfclay x 6 pbl x 4 lsm x 2 km_opt x 10 mp x 2 cu = 4800, and
+    1800 + 3000 = 4800 accounts for all of it.  Every number below was
+    re-measured by
+    `python tools/health_field_census.py --json configs/real74_4dom.toml`
+    on the merged tree, and each one is the per-microphysics-value rate
+    carried across two more values:
+
+        rows        1260 -> 1440 -> 1620 -> 1800  (180 per mp value)
+        rejected    2100 -> 2400 -> 2700 -> 3000  (300 per mp value)
+        lsm4 rows    308 ->  352 ->  396 ->  440  ( 44 per mp value)
+        lsm4 WRF-scheme refusals
+                     392 ->  448 ->  504 ->  560  ( 56 per mp value)
+        SASE refusals
+                     560 ->  640 ->  720 ->  800  ( 80 per mp value), of
+                                   which 160 are the MYJ pairing law
+                                   rather than km_opt
+
+    The per-value rates are asserted, not assumed: the measured census
+    reports exactly 180 rows and 300 refusals for EVERY one of the ten
+    microphysics values, mp=50 and mp=16 included, so each new scheme's
+    slice is a full one.
+
+    The ceiling is untouched by any of the four lanes: the peak is
+    still 632 of 1024 at mp18-lsm3-pbl5-sfclay5-cu1-km1.  Neither MYJ's
+    surface fields, nor Milbrandt-Yau's twelve transported moments, nor
+    P3's rime pair and previous-step carriers, nor WDM6's three
+    transported numbers produce the widest configuration.
     """
     report = four_domain_census
-    assert len(report["rows"]) == 1148
+    assert len(report["rows"]) == 1800
     # Re-pinned when the SASE closure joined the dispatch table.  The
     # census derives its sweep from PHYSICS_SLOT_DISPATCH on purpose --
     # "an admitted scheme joins the census the moment it is routed" --
@@ -334,13 +435,23 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     # Gray-zone lane, 2026-08-03: the routed Shin-Hong selector adds its
     # own 336 measured rows and 336 refusals, the second scheme to prove
     # this sentence by moving these numbers.)
-    assert len(report["rejected"]) == 1092
+    assert len(report["rejected"]) == 3000
     sase = [row for row in report["rejected"] if "pbl900" in row["selection"]]
-    assert len(sase) == 448, len(sase)  # 32 per (km_opt, mp) cell x 2 x 7
+    assert len(sase) == 800, len(sase)  # 80 per mp value x 10 mp values
     # Every one of them is the same refusal, and it is a real one: the
     # closure supplies the mixing km_opt would apply, so it is admitted
     # only at km_opt=0 and this census never sweeps km_opt=0.
-    assert all("km_opt" in row["reason"] for row in sase)
+    # SPLIT, not relaxed.  The 160 cells that pair SASE with the Eta
+    # surface layer are refused by validate_myj_pairing before the km_opt
+    # check is reached, so they carry the MYJ message; every OTHER SASE
+    # refusal still names km_opt, and that is asserted separately rather
+    # than absorbed into a weaker predicate.  16 per microphysics value,
+    # so the two 1.9 microphysics ports carry it 144 to 160.
+    myj_paired = [row for row in sase if "sfclay2" in row["selection"]]
+    assert len(myj_paired) == 160, len(myj_paired)
+    assert all("Eta similarity" in row["reason"] for row in myj_paired)
+    assert all("km_opt" in row["reason"]
+               for row in sase if row not in myj_paired)
     # THE GAP THIS RECORDS, deliberately, rather than hiding: because the
     # sweep never tries km_opt=0, the closure contributes ZERO measured
     # rows.  This census does not cover SASE at all.  Widening the sweep
@@ -350,11 +461,12 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     assert not [row for row in report["rows"] if "pbl900" in row["selection"]]
     lsm4_rows = [row for row in report["rows"]
                  if row["sf_surface_physics"] == 4]
-    assert len(lsm4_rows) == 280, (
-        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 280 the "
-        "1.7-line census recorded (140 per km_opt value across {1, 4}: "
-        "the 1.5-line's 224 plus Shin-Hong's own 56, the same 56 YSU "
-        "contributes); re-run and re-pin")
+    assert len(lsm4_rows) == 440, (
+        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 440 the "
+        "1.9 census recorded (44 per microphysics value across 10 values: "
+        "the MYJ line's 44 per value, unchanged, because Milbrandt-Yau, P3 "
+        "and WDM6 each add a microphysics value and none adds a PBL or "
+        "surface-layer one); re-run and re-pin")
     budget_refusals = [entry["selection"] for entry in report["rejected"]
                        if "Noah-MP column budget" in entry["reason"]]
     assert not budget_refusals, (
@@ -371,19 +483,25 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     # mode this whole census exists to prevent.
     wrf_refused = [entry for entry in refused
                    if "pbl900" not in entry["selection"]]
-    assert len(wrf_refused) == 168, (
-        f"{len(wrf_refused)} WRF-scheme lsm4 refusals against the 168 "
-        "recorded on the 1.7 line -- Lane C's 96 (72 WRF-fatal "
+    assert len(wrf_refused) == 560, (
+        f"{len(wrf_refused)} WRF-scheme lsm4 refusals against the 560 "
+        "recorded on the 1.9 line -- Lane C's 96 (72 WRF-fatal "
         "PBL/surface-layer rows and 24 active-LSM rows without an ArWen "
-        "surface-exchange writer) carried across the two km_opt values "
-        "and the seven-scheme microphysics axis the validator now admits, "
-        "giving the 1.5 line's 112, plus Shin-Hong's own 56: WRF v4.6.1 "
-        "refuses scheme 11 with the surface layer off and with MYNN's, "
-        "which is the same pairing refusal YSU carries")
+        "surface-exchange writer) carried across the two km_opt values, "
+        "giving the 1.5 line's 112, plus Shin-Hong's own 56, plus MYJ's "
+        "224 -- lsm4 cells that ask for the MYJ PBL with a surface layer it "
+        "refuses and the Eta surface layer with a PBL it refuses, the same "
+        "law counted from both sides -- all of it per microphysics value at "
+        "56 per value, so Milbrandt-Yau, P3 and WDM6 each multiply it up by "
+        "one more value, 7 to 8 to 9 to 10")
     sase_refused = [entry for entry in refused
                     if "pbl900" in entry["selection"]]
-    assert len(sase_refused) == 112, len(sase_refused)
-    assert all("km_opt" in entry["reason"] for entry in sase_refused)
+    assert len(sase_refused) == 200, len(sase_refused)
+    myj_paired_lsm4 = [entry for entry in sase_refused
+                       if "sfclay2" in entry["selection"]]
+    assert len(myj_paired_lsm4) == 40, len(myj_paired_lsm4)
+    assert all("km_opt" in entry["reason"] for entry in sase_refused
+               if entry not in myj_paired_lsm4)
 
 
 def test_worst_selectable_count_stays_inside_the_early_warning_band(

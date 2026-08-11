@@ -20,6 +20,7 @@ from gpuwm.ingest.preprocess_backend import _rotate_earth_to_grid_cpu
 from gpuwm.ingest.horiz import (
     _canonical_psfc_bilinear,
     _WPS_FULL_CHAIN,
+    _WPS_SST_CHAIN,
     HorizontalSnapshot,
     interpolate_lake_skin_temperature,
     interpolate_era5_to_lambert,
@@ -395,6 +396,90 @@ def test_lambert_rotation_uses_task4_mass_sinalpha_cosalpha():
     expected_sina, expected_cosa = grid.rotation_m()
     np.testing.assert_array_equal(sina, expected_sina)
     np.testing.assert_array_equal(cosa, expected_cosa)
+
+
+def _coastal_sst_source():
+    """A 0.25-degree strip: land on the left, a lake, land, then open water.
+
+    SST is defined only over water, as every SST analysis is, so the lake's
+    stencils reach across the land gap into missing values.
+    """
+    lat = np.arange(40.0, 44.01, 0.25)
+    lon = np.arange(-84.0, -76.99, 0.25)
+    ny, nx = lat.size, lon.size
+    landsea = np.ones((ny, nx), dtype=np.float64)
+    # A lake narrower than a four-point stencil -- the ordinary case for an
+    # inland lake on a 0.25 degree grid, and the one WPS abandons.
+    landsea[7, 7] = 0.0
+    # Open water on the right edge, wide enough for a full 16-point stencil.
+    landsea[:, 20:] = 0.0
+    sst = np.full((ny, nx), np.nan, dtype=np.float64)
+    water = landsea < 0.5
+    # A gentle gradient, so any wrong donor shows up as a wrong value.
+    gradient = 280.0 + 0.5 * np.arange(nx)[None, :] + 0.1 * np.arange(ny)[:, None]
+    sst[water] = gradient[water]
+    return lat, lon, landsea, sst
+
+
+def test_wps_sst_chain_is_metgrid_tbl_and_abandons_the_coast_to_the_fill():
+    """The mapped SST field is WPS's, fill and all, and stays that way.
+
+    ``sixteen_pt`` and ``four_pt`` both demand a fully usable stencil, and an
+    SST analysis is missing over land, so a lake narrower than a stencil gets
+    no mapped SST at all.  That is METGRID.TBL's own behaviour and the
+    reconciler, the ``wrf_compat`` policy and every stock-WRF comparison read
+    this field expecting exactly it.  The forecast's water temperature is
+    assembled elsewhere (gpuwm/ingest/water_temperature.py), from the source
+    analysis, which is why this field no longer has to be repaired here.
+    """
+    assert _WPS_SST_CHAIN == ("sixteen_pt", "four_pt")
+
+    lat, lon, landsea, sst = _coastal_sst_source()
+    # Half-cell offset: a model grid does not land on source nodes, and on a
+    # node metgrid's four_pt takes its integer-degeneracy path instead of a
+    # real stencil.
+    target_lat, target_lon = np.meshgrid(lat[:-1] + 0.125, lon[:-1] + 0.125,
+                                         indexing="ij")
+    mapped = wps_masked_field_interpolate(
+        sst, lat, lon, target_lat, target_lon,
+        source_valid=np.isfinite(sst),
+        target_active=np.ones(target_lat.shape, dtype=bool),
+        chain=_WPS_SST_CHAIN, fill_value=0.0)
+
+    lake = np.zeros(target_lat.shape, dtype=bool)
+    lake[7, 7] = True
+    # The WPS fill over the lake -- zero, which is not a temperature.
+    assert mapped[lake][0] == 0.0
+    # Open water wide enough for the stencils still resolves.
+    assert np.any(mapped[:, 21:] > 0.0)
+
+
+def test_sst_chain_excludes_search_so_a_landlocked_lake_keeps_its_own_water():
+    """``search`` is unbounded, and SST donors are a different basin.
+
+    ``_wps_search`` expands up to 1200 source cells, so appending it to the
+    SST chain would let a lake with no analysis of its own take ocean water
+    from far outside its basin -- a confident wrong answer where the WPS fill
+    is at least diagnosable downstream.  The chain must stop at the local
+    operators.
+    """
+    assert "search" not in _WPS_SST_CHAIN
+    assert _WPS_SST_CHAIN[:2] == ("sixteen_pt", "four_pt")
+
+    lat = np.arange(40.0, 44.01, 0.25)
+    lon = np.arange(-84.0, -76.99, 0.25)
+    sst = np.full((lat.size, lon.size), np.nan, dtype=np.float64)
+    # One distant patch of water, and a target with none of its own.
+    sst[:3, -3:] = 300.0
+    valid = np.isfinite(sst)
+    target_lat = np.array([[41.0]])
+    target_lon = np.array([[-83.0]])
+    got = wps_masked_field_interpolate(
+        sst, lat, lon, target_lat, target_lon,
+        source_valid=valid, target_active=np.array([[True]]),
+        chain=_WPS_SST_CHAIN, fill_value=0.0)
+    # The fill, not the distant basin's 300 K.
+    assert got[0, 0] == 0.0
 
 
 def test_wps_search_is_queue_limited_not_global_nearest():

@@ -96,11 +96,12 @@ from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
                                   RRTMG_VARIANT_RTE_RRTMGP, rrtmg_variant)
 from gpuwm.core.nssl2_contract import (
     CONTRACT_ID as NSSL2_CONTRACT_ID,
-    DEFAULT_MODE as NSSL2_DEFAULT_MODE,
     DEFAULT_RESTART_FIELDS as NSSL2_DEFAULT_RESTART_FIELDS,
     WRF_NAMELIST_DEFAULTS as NSSL2_WRF_NAMELIST_DEFAULTS,
     WRF_REFERENCE_COMMIT as NSSL2_WRF_REFERENCE_COMMIT,
     WRF_REFERENCE_VERSION as NSSL2_WRF_REFERENCE_VERSION,
+    pinned_zero_fields as nssl2_pinned_zero_fields,
+    resolve_nssl2_mode_for_config,
 )
 from gpuwm.state_serialization_contract import (
     LATERAL_BOUNDARY_PREFIX_SCHEMA,
@@ -127,8 +128,12 @@ READABLE_RESTART_FORMAT_VERSIONS = frozenset({2, RESTART_FORMAT_VERSION})
 #: MP18 extends the existing v5 physics-identity object rather than creating
 #: another archive format.  This nested contract is independently versioned:
 #: an old/aliased MP18 payload cannot be mistaken for the canonical Registry
-#: transport even though the outer NPZ layout remains v5.
-NSSL2_RESTART_CONTRACT_VERSION = 1
+#: transport even though the outer NPZ layout remains v5.  v2 replaces the
+#: hardcoded ``resolved_default_mode`` with the RESOLVED variant mode of the
+#: run that wrote the file, plus its transported and absent field lists; a v1
+#: payload is refused by version rather than by a confusing whole-dict
+#: mismatch.
+NSSL2_RESTART_CONTRACT_VERSION = 2
 NSSL2_RESTART_PROGNOSTICS = NSSL2_DEFAULT_RESTART_FIELDS
 NSSL2_RESTART_AUXILIARY_STATE = ("h_diabatic",)
 NSSL2_RESTART_PRECIPITATION_SLOTS = (
@@ -215,6 +220,22 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     8: ("classic-thompson-wrf-v4.6.1-experimental-v3-cloud-fallout-"
         "refl10cm-ng-shadow-snow-rime-mass-number-velocity"),
     10: "morrison-two-moment-v2-kf-number-seeding",
+    # WDM6 (WRF v4.6.1 WDM6SCHEME, Registry/Registry.EM_COMMON:3031).  Named
+    # at the mp=8/28 granularity -- the trajectory-defining pieces, not the
+    # scheme name.  "prognostic-nc-nr-ccn" is the change everything else
+    # follows from (module_mp_wdm6.F carries qnn/qnc/qnr as scalars);
+    # "gamma-mu1-rain" names the rain PSD whose intercept is diagnosed from
+    # nr rather than fixed (:2251-2261); "ccn-activation" names the
+    # supersaturation activation that moves mass and number out of the
+    # reservoir (:1951-1969); "xland-autoconversion" names the per-column
+    # maritime/continental threshold (:607-614), which makes the LAND MASK
+    # part of this scheme's trajectory identity in a way no other gpuwm
+    # microphysics has been; "ccn-conc-init" records that the CCN reservoir
+    # starts from the namelist constant fill (:220-227) rather than an
+    # ingested aerosol field, so a future ingest must advance this tag
+    # instead of silently resuming onto it.
+    16: ("wdm6-double-moment-warm-rain-wrf-v4.6.1-v1-prognostic-nc-nr-ccn-"
+         "gamma-mu1-rain-ccn-activation-xland-autoconversion-ccn-conc-init"),
     18: "nssl-two-moment-state-transport-v1-process-boundary-fail-loud",
     # Thompson AEROSOL-AWARE (WRF v4.6.1 THOMPSONAERO,
     # Registry/Registry.EM_COMMON:3036).  Named at the granularity the mp=8
@@ -239,6 +260,22 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     28: ("thompson-aerosol-aware-wrf-v4.6.1-v1-prognostic-nc-nwfa-nifa-"
          "ccn-activate-table-demott-koop-scavenging-surface-emission-"
          "synthetic-aerosol-init"),
+    # P3 (WRF v4.6.1 P3_1CATEGORY, Registry.EM_COMMON:3038).  Named at the
+    # granularity the mp=8/28 rows use -- the trajectory-defining
+    # configuration, not the scheme name -- because that is what makes an
+    # incompatible resume fail BEFORE restore.  "1cat" and "2mom-ice" name
+    # the nCat=1 / log_3momentIce=.false. build (module_mp_p3.F:1043-1050);
+    # "specified-nc" names log_predictNc=.false., which is the difference
+    # between this row and the unported mp=51; "diagnosed-ssat" names
+    # log_predictSsat=.false., the branch that makes th_old/qv_old the
+    # cross-step carriers this restart serializes (:2325-2337); "rime-mass-
+    # volume-transported" records that qir/qib advect with qi
+    # (gpuwm/core/moist.py::P3_SPECIES) -- a build that stopped
+    # transporting them would integrate a DIFFERENT trajectory while
+    # staying finite, which is exactly the silent resume this string is
+    # here to refuse.
+    50: ("p3-one-category-wrf-v4.6.1-v1-2mom-ice-specified-nc-"
+         "diagnosed-ssat-rime-mass-volume-transported"),
 }
 
 #: The mp_physics=28 state a restart may NEVER drop.  Every name here is
@@ -261,6 +298,13 @@ THOMPSON_AEROSOL_RESTART_SURFACE_STATE = ("nwfa2d", "nifa2d")
 SURFACE_LAYER_ALGORITHM_IDENTITIES = {
     0: "disabled",
     1: "revised-mm5-surface-layer-v1",
+    # The Eta similarity surface layer.  The identity binds the WRF version
+    # whose byte-frozen module_sf_myjsfc.F the port transcribes AND the
+    # similarity tables it interpolates: MYJSFCINIT builds PSIM/PSIH by
+    # accumulating ZETA in float32, so a different table construction is a
+    # different scheme even at the same WRF version, and a checkpoint may
+    # not resume across one.
+    2: "eta-similarity-surface-layer-wrf-v4.6.1-v1-myjsfcinit-tables",
     5: "mynn-surface-layer-wrf-v4.6.1-v1",
     91: "classic-mm5-surface-layer-v1",
 }
@@ -279,6 +323,14 @@ PBL_ALGORITHM_IDENTITIES = {
     # the certified CPU authority transcribes (max ULP 0, both arms); a
     # future re-transcription against a different WRF advances the suffix
     # rather than silently resuming onto this one.
+    # MYJ carries genuinely prognostic state -- TKE_MYJ is read as 2*TKE at
+    # the top of every call and rewritten at the bottom, and the Eta surface
+    # layer's PBLH scan reads it too -- so a resume that dropped it would
+    # continue a different boundary layer while staying finite.  The
+    # identity binds the WRF version the port transcribes; a
+    # re-transcription against another WRF advances the suffix rather than
+    # silently resuming onto this one.
+    2: "myj-pbl-wrf-v4.6.1-v1-mellor-yamada-2.5-janjic",
     11: "shinhong-pbl-wrf-v4.6.1-v1",
     # SASE carries no WRF version in its identity because there is no WRF
     # scheme it transcribes.  What the identity DOES have to bind is the
@@ -412,6 +464,13 @@ STATE_REBUILT_ATTRS = frozenset({
     # only for mp=28: mp=10 allocates nc but does not transport it and so
     # has no nc0 (gpuwm/core/moist.py::THOMPSON_AERO_NUMBER_SPECIES).
     "nc0", "nwfa0", "nifa0",
+    # mp_physics=50 (P3) rime-mass and rime-volume RK time-t copies.  They
+    # exist for the same reason qi0 does and are written from the
+    # prognostics by dycore.step before any reader, now that
+    # gpuwm/core/moist.py::P3_SPECIES transports the pair.  The carriers
+    # themselves (qir/qib) are SERIALIZED, in
+    # gpuwm/state_serialization_contract.py.
+    "qir0", "qib0",
     # Slow-tendency slots, zeroed at the top of every RK stage.
     "ru_t", "rv_t", "rw_t", "rth_t", "rph_t", "rmu_t",
     # Acoustic perturbations, reseeded by _init_small_steps each stage
@@ -429,6 +488,14 @@ STATE_INFRA_ATTRS = frozenset({
     "_host_setup_state",
     "physics", "lateral_boundaries", "_lateral_boundary_device",
     "elapsed_seconds", "_nest_restart_classification",
+    # mp_physics=50 (P3).  WRF's itimestep, which the adapter maintains
+    # lazily on the state (gpuwm/core/p3.py, the ``it`` block).  It is a
+    # plain int, not an array, and it is CLOCK-DERIVED rather than dropped:
+    # the scheme reads only ``it <= 1``, and the adapter seeds a fresh
+    # attribute from ``elapsed_seconds`` -- which the header already
+    # carries -- so a resumed run does not replay P3's first-step
+    # saturation adjustment.  Same category as ``elapsed_seconds`` above.
+    "p3_itimestep",
 })
 
 # --------------------------------------------------------------------------
@@ -505,6 +572,16 @@ REBUILT_SCRATCH_SLOTS = frozenset({
     "mp_thompson_aero_nu_c_entry",
     "mp_thompson_aero_l_qc_entry",
     "mp_thompson_aero_condensation_rate",
+    # mp_physics=50 (P3 one-category).  The adapter's three ice diagnostics
+    # -- mass-weighted fall speed, mean diameter and bulk rime density --
+    # are filled in full by p3_main on every call before the driver reads
+    # them back (gpuwm/core/p3.py:1749-1751, registered at
+    # gpuwm/core/preflight.py:2334).  Nothing in them survives a call
+    # boundary: WRF's own diag_vmi/diag_di/diag_rhopo are ``intent(out)``
+    # of p3_main (module_mp_p3.F:1965-1967), zeroed on entry (:2282-2284)
+    # and re-diagnosed from the post-update ice state (:4856-4858) on every
+    # call.  Serializing them would be the bug it would look like a fix for.
+    "p3_vmi", "p3_di", "p3_rhopo",
     "nssl2_driver_state", "nssl2_driver_surface_export",
     "nssl2_driver_ignored_accumulator",
     "nssl2_fused_temperature", "nssl2_primary_ice_target",
@@ -521,7 +598,7 @@ REBUILT_SCRATCH_SLOTS = frozenset({
 
 REBUILT_SCRATCH_PREFIXES = (
     "rk_", "adv_", "smag_", "diff_", "diff6_", "acoustic_", "openbc_",
-    "moist_", "pd_", "morr_", "wsm6_", "refl_", "physics_", "lbc_",
+    "moist_", "pd_", "morr_", "wsm6_", "wdm6_", "refl_", "physics_", "lbc_",
     "integration_health_", "nest_",
     # UP_HELI_MAX per-step work planes (column UH + use_column flags),
     # overwritten by every launch; the accumulator itself is the exact
@@ -544,6 +621,16 @@ REBUILT_SCRATCH_PREFIXES = (
     # state is the ten 3-D ``fields`` arrays, which are serialized as fields
     # and are deliberately not scratch.
     "mynn_pbl_",
+    # Milbrandt-Yau's per-call work volumes (gpuwm/core/milbrandt2.py).
+    # Every one of them is written for every cell by milbrandt2_prelim or
+    # milbrandt2_geometry at the top of the same apply() that reads it --
+    # including my2_de/my2_ide, which Part 3b mutates DURING the call and
+    # which the next call rebuilds from pressure and temperature before any
+    # kernel touches them.  The scheme's carried state is the twelve
+    # prognostic moments and the precipitation accumulators, and those are
+    # serialized as fields and mp_* slots, deliberately not under this
+    # prefix.
+    "my2_",
 )
 
 # --------------------------------------------------------------------------
@@ -781,8 +868,18 @@ def _admissible_elapsed_seconds(value, where: str) -> float:
     return elapsed
 
 
-def _nssl2_restart_contract_identity() -> dict[str, object]:
-    """Return the exact versioned MP18 state carried by restart v5."""
+def _nssl2_restart_contract_identity(cfg) -> dict[str, object]:
+    """Return the exact versioned MP18 state carried by restart v5.
+
+    ``resolved_mode`` describes THIS run, not the shipped default lane: a
+    hail-off or diagnosed-CCN run resolves a different mode, keeps a
+    different set of fields absent, and must not be handed a receipt
+    describing someone else's configuration.  ``absent_fields`` names the
+    Registry fields the variant pins to exact zero -- they are still
+    written to the archive (the state allocates them), and this is the
+    statement that their zeros are the contract rather than an accident.
+    """
+    mode = resolve_nssl2_mode_for_config(cfg)
     return {
         "schema_version": NSSL2_RESTART_CONTRACT_VERSION,
         "physics_contract_id": NSSL2_CONTRACT_ID,
@@ -790,7 +887,9 @@ def _nssl2_restart_contract_identity() -> dict[str, object]:
             "version": NSSL2_WRF_REFERENCE_VERSION,
             "commit": NSSL2_WRF_REFERENCE_COMMIT,
         },
-        "resolved_default_mode": dataclasses.asdict(NSSL2_DEFAULT_MODE),
+        "resolved_mode": dataclasses.asdict(mode),
+        "transported_fields": list(mode.transported_fields),
+        "absent_fields": list(nssl2_pinned_zero_fields(mode)),
         "resolved_wrf_namelist_defaults": dict(NSSL2_WRF_NAMELIST_DEFAULTS),
         "state_members": [
             *(f"state/{name}" for name in NSSL2_RESTART_PROGNOSTICS),
@@ -1570,6 +1669,49 @@ def _thompson_table_identity(path) -> dict:
     }
 
 
+def _p3_setup_identity() -> dict:
+    """Resolved implementation/table identity for ``mp_physics=50``.
+
+    The table root resolves exactly as the forecast adapter resolves it
+    (:func:`gpuwm.core.p3_tables.p3_table_root`: the packaged
+    ``gpuwm/data/p3/tables`` directory unless ``GPUWM_P3_TABLE_ROOT``
+    overrides it), and the bytes are re-validated here -- size AND
+    SHA-256 -- so the identity written into a checkpoint names the table
+    the trajectory actually loaded and a same-path byte replacement is
+    refused before any live state is mutated.  P3's process rates ARE
+    these tables: a resume onto different bytes is a different scheme.
+    """
+    from gpuwm.core.p3_tables import (
+        TABLE_1_2MOM_ASSET,
+        TABLE_1_2MOM_VERSION,
+        _validate_asset_bytes,
+        p3_table_root,
+    )
+
+    root = p3_table_root()
+    path = Path(root) / TABLE_1_2MOM_ASSET.filename
+    try:
+        _validate_asset_bytes(path, TABLE_1_2MOM_ASSET)
+    except (OSError, TypeError, ValueError) as exc:
+        raise RestartManifestError(
+            f"active P3 table identity is invalid at {root}") from exc
+    return {
+        "schema": 1,
+        "table_version": TABLE_1_2MOM_VERSION,
+        "assets": [{
+            "filename": TABLE_1_2MOM_ASSET.filename,
+            "bytes": int(TABLE_1_2MOM_ASSET.size),
+            "sha256": TABLE_1_2MOM_ASSET.sha256,
+        }],
+        # The rain fallspeed/ventilation tables are NOT an external asset:
+        # p3_init generates them in process from the module's own math
+        # (module_mp_p3.F:599-670), so their identity is the code identity
+        # in MICROPHYSICS_ALGORITHM_IDENTITIES[50], not a file digest.
+        "generated_rain_tables": "in-process-from-p3-init-v1",
+        "itimestep_policy": "gpuwm-itimestep-seeded-from-model-clock-v1",
+    }
+
+
 def _thompson_setup_identity() -> dict:
     """Resolved implementation/table identity for ``mp_physics=8``.
 
@@ -1788,7 +1930,9 @@ def physics_setup_identity(state, cfg) -> dict:
         microphysics["thompson_aerosol"] = _thompson_aerosol_setup_identity()
     if int(cfg.mp_physics) == 18:
         microphysics["restart_contract"] = \
-            _nssl2_restart_contract_identity()
+            _nssl2_restart_contract_identity(cfg)
+    if int(cfg.mp_physics) == 50:
+        microphysics["p3"] = _p3_setup_identity()
 
     land_surface = {
         "scheme_id": int(cfg.sf_surface_physics),
@@ -2290,7 +2434,7 @@ def _require_nssl2_restart_contract(header: dict, cfg, path) -> None:
         raise RestartMismatchError(
             f"restart file {path} has MP18 restart contract version "
             f"{version!r}; expected {NSSL2_RESTART_CONTRACT_VERSION}")
-    if actual != _nssl2_restart_contract_identity():
+    if actual != _nssl2_restart_contract_identity(cfg):
         raise RestartMismatchError(
             f"restart file {path} MP18 restart contract does not exactly "
             "match the canonical state/timing inventory")

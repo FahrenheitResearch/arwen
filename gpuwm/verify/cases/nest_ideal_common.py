@@ -923,8 +923,15 @@ def prepare_idealized_domain(state, dc, grid, start_time):
 #: far from the omission.  28 belongs here because WRF's calc_refl10cm has
 #: no aerosol-aware arm (module_mp_thompson.F:5710-5711, reached from the
 #: single site :1458 gated on diagflag alone) and gpuwm's mp=28 adapter
-#: stages the field through the same seam as mp=8.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 18, 28)
+#: stages the field through the same seam as mp=8.  16 belongs here for the
+#: identical structural reason: ``wdm6`` reaches ``refl10cm_wdm6`` from the
+#: single site module_mp_wdm6.F:291, gated on
+#: ``diagflag .and. do_radar_ref == 1`` (:279-280), and gpuwm's mp=16
+#: adapter stages the field through the same seam.  Omitting it here while
+#: gpuwm/runtime.py admitted it is exactly the failure this comment warns
+#: about -- the stage happens, the consume does not, and the raise lands at
+#: the next history frame.
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 16, 18, 28)
 
 
 def consume_history_reflectivity(node, ticks: int) -> None:

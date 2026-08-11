@@ -8,7 +8,7 @@ nobody, including the people who wrote it, because the evidence for it was
 always "read this file".
 
 So it is measured.  ``tools/report_physics_composition_walk.py`` writes
-6530 physics combinations into real experiment TOMLs and pushes every one
+9781 physics combinations into real experiment TOMLs and pushes every one
 through :func:`gpuwm.experiment.build_experiment` -- the single front door
 ``gpuwm run``, ``gpuwm go``, ``gpuwm check``, both prepared runners and the
 DA drivers reach a per-domain ``RunConfig`` through -- and records what
@@ -57,7 +57,7 @@ def receipt() -> dict:
 
 @pytest.fixture(scope="module")
 def regenerated() -> dict:
-    """One walk, shared by every test in the file (6530 loader calls)."""
+    """One walk, shared by every test in the file (9781 loader calls)."""
 
     return walk.evaluate()
 
@@ -158,12 +158,18 @@ def test_the_walk_covers_what_it_says_it_covers(receipt) -> None:
 
 def test_every_admitted_value_of_every_axis_reaches_an_accepted_run(
         receipt) -> None:
-    """No axis value is decorative -- except the one that says it is not.
+    """No axis value is decorative, and now there is no exception.
 
-    ``ra_lw_physics=1`` is schema-legal and deliberately unexecutable (the
-    RRTM longwave kernels are not ported), and it is the ONLY value in the
-    whole space with that status.  Everything else has to reach an accepted
-    run, or the schema is advertising a choice the engine does not offer.
+    ``ra_lw_physics=1`` used to be the one schema-legal, deliberately
+    unexecutable value in the whole space: the WRF RRTM longwave kernels
+    were not ported, so the schema advertised a choice the engine did not
+    offer.  The 1.9 port makes it executable, so the exception set is
+    EMPTY and every admitted value of every axis reaches an accepted run.
+
+    The assertion is kept as an equality against the empty set rather than
+    deleted.  An empty exception set is the strong claim, and a future
+    scheme that lands schema-legal but unrunnable has to come back here
+    and say so out loud.
     """
 
     unreachable = {
@@ -172,16 +178,15 @@ def test_every_admitted_value_of_every_axis_reaches_an_accepted_run(
         for value, counts in values.items()
         if counts["accepted"] == 0
     }
-    assert unreachable == {"ra_lw_physics=1"}, (
+    assert unreachable == set(), (
         "the set of admitted-but-unreachable selector values changed: "
         f"{sorted(unreachable)}")
-    # Non-vacuous: the one exception really is refused for being unported,
-    # and the refusal says so.
+    # Non-vacuous: the value that used to be the exception now runs, and
+    # the pairing the old refusal named as unreachable is accepted.
     combination = dict(walk.ANCHORS["ysu-mm5-noah-rrtmgp"], **walk.TIER_A_HELD)
     combination.update(ra_lw_physics=1, ra_sw_physics=1)
     outcome = walk.attempt(combination)
-    assert outcome.verdict == "REFUSED"
-    assert "not executable yet" in outcome.message
+    assert outcome.verdict == "ACCEPTED", outcome.message
 
 
 def test_the_shipped_presets_are_a_corner_of_the_admitted_space(
@@ -366,13 +371,18 @@ def test_mynn_composes_with_every_radiation_pairing_the_loader_admits(
         receipt) -> None:
     """"Every admitted radiation option" stated exactly.
 
-    Radiation is selected as a PAIR, and the loader admits four pairings in
-    total: both off, Dudhia shortwave with longwave off, RTE+RRTMGP on
-    both, and the analytic proxy on both.  (LW=1 is unported and SW=1 pairs
-    only with LW=0; the 4/90 and 90/4 crossings are refused because the two
-    are coupled adapters.)  MYNN reaches all four -- including the two that
-    carry longwave, which is the whole point of the radiation-bearing MYNN
+    Radiation is selected as a PAIR, and the loader admits five pairings
+    in total: both off, Dudhia shortwave with longwave off, WRF's classic
+    RRTM/Dudhia pair, RTE+RRTMGP on both, and the analytic proxy on both.
+    (The 4/90 and 90/4 crossings are refused because the two are coupled
+    adapters, and LW=1 pairs only with SW=1, the combination WRF itself
+    ships it as.)  MYNN reaches all five -- including the three that carry
+    longwave, which is the whole point of the radiation-bearing MYNN
     presets that landed beside this walk.
+
+    1/1 is new at 1.9.  Before the RRTM longwave port, ra_lw_physics=1
+    was schema-legal and unrunnable, so this set had four members and the
+    longwave-bearing subset had two.
     """
 
     accepted_anywhere = {
@@ -385,10 +395,10 @@ def test_mynn_composes_with_every_radiation_pairing_the_loader_admits(
     }
     assert set(receipt["mynn_slice"]["radiation_options_accepted"]) == \
         accepted_anywhere
-    assert accepted_anywhere == {"0/0", "0/1", "4/4", "90/90"}
+    assert accepted_anywhere == {"0/0", "0/1", "1/1", "4/4", "90/90"}
     longwave_on = {pair for pair in accepted_anywhere
                    if pair.split("/")[0] not in ("0",)}
-    assert longwave_on == {"4/4", "90/90"}
+    assert longwave_on == {"1/1", "4/4", "90/90"}
 
 
 def test_the_mynn_matrix_is_the_same_in_every_land_surface_column(
@@ -414,14 +424,80 @@ def test_the_mynn_matrix_is_the_same_in_every_land_surface_column(
     assert "ACCEPTED" in columns[LAND_SURFACE_SCHEMES[0]]
 
 
+#: The microphysics MYNN reaches in the walk's MYNN slice, measured.
+#:
+#: The slice's anchor runs RTE+RRTMGP on both radiation streams, and TWO
+#: admitted microphysics values are refused against it, both for the same
+#: missing thing -- a cloud-optics row in
+#: gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME -- and for different WRF
+#: reasons:
+#:
+#: * mp_physics=9 (Milbrandt-Yau) publishes NO effective radii at all.  WRF
+#:   leaves has_reqc/has_reqi/has_reqs at 0 for MILBRANDT2MOM
+#:   (phys/module_physics_init.F:1004-1023) and the scheme's own
+#:   effective-radius block is commented out.
+#: * mp_physics=50 (P3) publishes cloud and ice radii but no SNOW radius:
+#:   WRF's P3 override sets has_reqs=0 (:1027-1033) and P3's single ice
+#:   category has no separate snow species.  Every existing row assumes a
+#:   snow radius, so there is none to reuse.
+#:
+#: Neither is a MYNN limitation, and neither is a place to invent physics:
+#: handing RRTMGP radii nobody computed is what put mp=28 on Kessler's row
+#: until 2026-08-01.  Both refusals name two remedies and both work:
+#: ra_rrtmg_variant = 'rrtmg_legacy', or the Dudhia pair.
+#:
+#: The 50 entry moved OUT of this list at the 1.9 gate, when
+#: gpuwm.config.validate_p3_radiation started refusing the pairing the
+#: loader used to admit and the run used to die on.
+MYNN_MICROPHYSICS_ACCEPTED = [0, 1, 6, 8, 10, 16, 18, 28]
+
+#: The admitted microphysics values the MYNN slice does not reach, and
+#: why.  Stated as the pair they are refused against, because each is
+#: refused against THAT radiation variant and not in general.  50 joined 9
+#: at the 1.9 gate; see MYNN_MICROPHYSICS_ACCEPTED for the two distinct
+#: WRF reasons.
+MYNN_MICROPHYSICS_EXCLUDED = (9, 50)
+
+
 def test_mynn_composes_with_every_microphysics_and_cumulus_scheme(
         receipt) -> None:
+    """The claim, stated as the measurement instead of as an aspiration.
+
+    This used to assert that MYNN reaches every admitted microphysics
+    value.  With the 1.9 microphysics ports landed that is a false
+    product statement: the slice's RTE+RRTMGP anchor refuses
+    Milbrandt-Yau for absent cloud-optics coupling.  The assertion is now
+    the exact measured set plus the named exclusion, so the excluded
+    value cannot grow silently and the reason travels with the number.
+    """
+
     from gpuwm.config import CU_SCHEMES
 
-    assert (receipt["mynn_slice"]["microphysics_options_accepted"]
-            == sorted(walk.AXIS_VALUES["mp_physics"]))
+    accepted = receipt["mynn_slice"]["microphysics_options_accepted"]
+    assert accepted == MYNN_MICROPHYSICS_ACCEPTED
     assert (receipt["mynn_slice"]["cumulus_options_accepted"]
             == sorted(CU_SCHEMES))
+
+    # The exclusions are exactly these values, and every one is admitted by
+    # the schema -- so these are composition refusals, not a shrunken axis.
+    excluded = sorted(set(walk.AXIS_VALUES["mp_physics"]) - set(accepted))
+    assert excluded == sorted(MYNN_MICROPHYSICS_EXCLUDED)
+
+    # Non-vacuous, and the reason is each microphysics lane's own rule
+    # rather than anything about MYNN: the same scheme runs under MYNN on
+    # the Dudhia pair, and the refusal names the coupling it cannot make.
+    anchor = dict(walk.ANCHORS["mynn-rrtmgp-noah"], **walk.TIER_A_HELD)
+    for mp_physics in MYNN_MICROPHYSICS_EXCLUDED:
+        refused = walk.attempt(dict(anchor, mp_physics=mp_physics))
+        assert refused.verdict == "REFUSED", mp_physics
+        assert "has no cloud-optics coupling" in refused.message
+        assert "ra_rrtmg_variant='rrtmg_legacy'" in refused.message
+        accepted_on_dudhia = walk.attempt(dict(
+            anchor, mp_physics=mp_physics,
+            ra_lw_physics=0, ra_sw_physics=1))
+        assert accepted_on_dudhia.verdict == "ACCEPTED", (
+            f"the mp={mp_physics} refusal is about RRTMGP cloud optics, so "
+            f"its remedy has to run under MYNN: {accepted_on_dudhia.message}")
 
 
 def _radiation_bearing(switches) -> bool:

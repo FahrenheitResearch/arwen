@@ -132,5 +132,43 @@ def coefficients(hail_opt: int = 0) -> WSM6Coefficients:
     )
 
 
-__all__ = ["WSM6Coefficients", "WSM6RimedIceConstants", "coefficients",
-           "rimed_ice_constants"]
+#: ``kernels/wsm6.cu``'s ``WSM6_KMAX`` ladder.  One CUDA thread owns a whole
+#: column, so the bound sizes the per-thread work arrays and the driver
+#: reserves a local-memory backing store for the device's entire resident
+#: -thread capacity at first launch -- the law at the head of
+#: ``gpuwm/core/preflight.py``.  ``gpuwm/core/wsm6.py`` therefore compiles the
+#: SHALLOWEST tier that holds the configuration's ``nz``, and compiles a TIER
+#: rather than ``nz`` itself so a nested tree with several level counts loads
+#: at most two WSM6 modules.
+#:
+#: 64 is the ``#ifndef`` default baked into the source, which is why it is
+#: also the value the driver-regeneration gate reads back for the
+#: unspecialized module and therefore the value recorded in
+#: ``KERNEL_MAX_LOCAL_SIZE_BYTES``.  The 80 tier prices ABOVE that row;
+#: ``preflight.WSM6_TIER_FRAME`` is what carries it.
+#:
+#: This ladder lives in the constants module, not in ``gpuwm/core/wsm6.py``,
+#: for one reason: the adapter imports CuPy at module scope and the memory
+#: estimator must price a configuration on a host with no device at all.
+WSM6_SHALLOW_KMAX = 64
+WSM6_DEEP_KMAX = 80
+WSM6_KERNEL_LEVEL_TIERS = (WSM6_SHALLOW_KMAX, WSM6_DEEP_KMAX)
+#: ``(minimum, maximum)`` levels WSM6 admits: 2 (the scheme needs a layer
+#: above and below to sediment between) up to the deepest compiled tier.
+WSM6_VERTICAL_LEVEL_BOUNDS = (2, WSM6_DEEP_KMAX)
+
+
+def wsm6_level_tier(nz: int) -> int:
+    """Return the ``WSM6_KMAX`` tier ``wsm6.cu`` compiles for ``nz``."""
+    nz = int(nz)
+    minimum, maximum = WSM6_VERTICAL_LEVEL_BOUNDS
+    if not minimum <= nz <= maximum:
+        raise ValueError(
+            f"WSM6 requires {minimum} <= nz <= {maximum}, got {nz}")
+    return next(tier for tier in WSM6_KERNEL_LEVEL_TIERS if nz <= tier)
+
+
+__all__ = ["WSM6Coefficients", "WSM6RimedIceConstants",
+           "WSM6_DEEP_KMAX", "WSM6_KERNEL_LEVEL_TIERS", "WSM6_SHALLOW_KMAX",
+           "WSM6_VERTICAL_LEVEL_BOUNDS", "coefficients",
+           "rimed_ice_constants", "wsm6_level_tier"]

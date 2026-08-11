@@ -86,7 +86,23 @@ VERTICAL_LEVEL_BOUNDS = (5, None)
 #: flag_qs-true selector since the scheme was registered; the two are bound
 #: together by ``tests/test_physics_registry.py::
 #: test_the_registry_flag_qs_contract_is_the_one_the_shipped_runtime_applies``.
-MYNN_SNOW_MICROPHYSICS = frozenset((6, 8, 10, 18, 28))
+#: 9 (Milbrandt-Yau) belongs here for the same Registry reason:
+#: ``Registry.EM_COMMON:3025`` declares ``package milbrandt2mom
+#: mp_physics==9 - moist:qv,qc,qr,qi,qs,qg,qh``, so F_QS is true and
+#: MYNN must see the scheme's snow.
+#:
+#: ``mp_physics = 50`` (P3 one-category) is deliberately ABSENT, and it is
+#: the one selector whose absence needs no apology: P3 carries a single ice
+#: category and its Registry package is ``moist:qv,qc,qr,qi`` with no ``qs``
+#: at all (``Registry.EM_COMMON:3038``), so WRF's ``F_QS`` is false and
+#: MYNN's ``sqs = 0`` is the scheme's own answer rather than a withheld
+#: field.  Contrast mp=28, which HAD snow and was wrongly excluded here.
+#:
+#: 16 (WDM6) belongs here on the same Registry reading:
+#: ``Registry.EM_COMMON:3031`` declares ``package wdm6scheme
+#: mp_physics==16 - moist:qv,qc,qr,qi,qs,qg;scalar:qnn,qnc,qnr``, so F_QS
+#: is true and the scheme's snow is MYNN's to see.
+MYNN_SNOW_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28))
 
 
 def mynn_flag_qs(mp_physics: int) -> bool:

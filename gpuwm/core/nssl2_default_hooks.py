@@ -25,6 +25,11 @@ from gpuwm.core.nssl2_driver_support import (
     NSSL2DriverWorkspace,
     validate_nssl2_driver_workspace,
 )
+from gpuwm.core.nssl2_contract import (
+    DEFAULT_MODE,
+    NSSL2Mode,
+    require_ported_nssl2_mode,
+)
 from gpuwm.core.nssl2_nucond import launch_nucond
 from gpuwm.core.nssl2_production_coordinator import (
     NSSL2ProductionConfigurationError,
@@ -83,7 +88,8 @@ def _required_state_shape(state) -> tuple[int, int, int]:
 
 def make_nssl2_default_runtime_hooks(
         state, dt_s: float, fused_gs: NSSL2RuntimeStageCallback, *,
-        validate_values: bool = True) -> NSSL2RuntimeHooks:
+        validate_values: bool = True,
+        mode: NSSL2Mode = DEFAULT_MODE) -> NSSL2RuntimeHooks:
     """Bind the production default NUCOND+QVEXCESS stage to ``state``.
 
     ``fused_gs`` is the separately admitted shared-limiter GS implementation.
@@ -102,6 +108,7 @@ def make_nssl2_default_runtime_hooks(
         raise TypeError("NSSL default hook 'fused_gs' must be callable")
     if not isinstance(validate_values, bool):
         raise TypeError("validate_values must be bool")
+    require_ported_nssl2_mode(mode)
     step = _step32(dt_s)
 
     shape = _required_state_shape(state)
@@ -148,6 +155,7 @@ def make_nssl2_default_runtime_hooks(
             step,
             supersaturation_scratch=supersaturation_scratch,
             concentration_space=True,
+            predicted_ccn=mode.predicted_ccn,
             validate_values=validate_values,
         )
 
@@ -168,6 +176,7 @@ class NSSL2ProductionBinding:
     fused_gs: object
     hooks: NSSL2RuntimeHooks
     nucond_scratch: object
+    mode: NSSL2Mode = DEFAULT_MODE
 
     def validate(self, state, dt_s: float, /) -> None:
         """Fail before mutation if ownership, structure, or step drifted."""
@@ -190,6 +199,11 @@ class NSSL2ProductionBinding:
         if getattr(self.fused_gs, "dt_s", None) != self.dt_s:
             raise NSSL2ProductionConfigurationError(
                 "NSSL fused hook timestep differs from binding")
+        require_ported_nssl2_mode(self.mode)
+        if getattr(self.fused_gs, "hail_on", None) is not self.mode.hail:
+            raise NSSL2ProductionConfigurationError(
+                "NSSL fused hook hail switch differs from the resolved "
+                "variant mode")
 
         validate_nssl2_driver_workspace(self.workspace, self.shape)
         pool = getattr(state, "_scratch", None)
@@ -224,8 +238,17 @@ class NSSL2ProductionBinding:
 
 
 def make_nssl2_production_binding(
-        state, dt_s: float) -> NSSL2ProductionBinding:
-    """Build the one persistent default MP18 binding for a domain."""
+        state, dt_s: float, *,
+        mode: NSSL2Mode = DEFAULT_MODE) -> NSSL2ProductionBinding:
+    """Build the one persistent MP18 binding for a domain.
+
+    ``mode`` is the resolved NSSL variant from
+    :func:`gpuwm.core.nssl2_contract.resolve_nssl2_mode`.  It is frozen into
+    the binding, so a domain cannot change hail or CCN treatment mid-run:
+    ``validate`` re-checks that the fused hook still carries the same hail
+    switch on every step.
+    """
+    require_ported_nssl2_mode(mode)
     step = _step32(dt_s)
     shape = _required_state_shape(state)
     nz, ny, nx = shape
@@ -255,9 +278,10 @@ def make_nssl2_production_binding(
         temperature_k=fused_temperature,
         primary_ice_target_m3=primary_ice_target,
         dt_s=step,
+        hail_on=mode.hail,
     )
     hooks = make_nssl2_default_runtime_hooks(
-        state, step, fused_gs, validate_values=False)
+        state, step, fused_gs, validate_values=False, mode=mode)
     binding = NSSL2ProductionBinding(
         state=state,
         shape=shape,
@@ -266,6 +290,7 @@ def make_nssl2_production_binding(
         fused_gs=fused_gs,
         hooks=hooks,
         nucond_scratch=state._scratch[NSSL2_NUCOND_SCRATCH],
+        mode=mode,
     )
     binding.validate(state, step)
     return binding

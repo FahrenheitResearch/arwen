@@ -79,6 +79,22 @@ def test_the_optional_keys_are_exactly_the_silent_exposure():
         # input path, so a dropped key would silently run WITHOUT the
         # hi-res water overlay the user configured.
         "water_temperature_overlay",
+        # task #168.  Moved deliberately, with the thought the guard's own
+        # comment demands ("the OPTIONAL keys are optional by construction,
+        # so a misspelling of any of them passes every check that follows
+        # and the case loads with the built-in default under the name of
+        # the user's value").  What this one selects is which provider
+        # decides the water-surface temperature, and its two non-default
+        # values are the ones a user reaches for on purpose: `wrf_compat`
+        # to reproduce an archived stock-WRF run byte for byte, and
+        # `external_overlay` to keep the declared-overlay precedence.  A
+        # dropped `water_temperature_policy = "wrf_compat"` would run the
+        # class-coherent default and report success, so a parity
+        # certification would compare against a tree that silently did not
+        # do what the config asked.  The near-miss refusal is the same one
+        # every optional key gets, and the parametrized test below proves
+        # it fires for this key too.
+        "water_temperature_policy",
     }
 
 

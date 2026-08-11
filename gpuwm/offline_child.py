@@ -27,6 +27,7 @@ import time
 import netCDF4
 import numpy as np
 
+from gpuwm.core import microphysics_transition as _mt
 from gpuwm.core.grid import (BaseState, compute_hybrid_coeffs,
                              finalize_vertical_coord, make_vertical_coord)
 from gpuwm.core.nest_interp import register_nest, sint
@@ -117,16 +118,50 @@ _NSSL_WRF_TO_STATE = MappingProxyType({
 #: paths this module already runs for ``nr``/``ni``, with no new numerics.
 #: What is DELIBERATELY NOT admitted is any CROSS-scheme edge touching 28 --
 #: see :data:`_CROSS_SCHEME_REFUSED_MP_PHYSICS`.
+#: mp_physics=16 (WDM6) is DELIBERATELY ABSENT, in the same shape mp=28's
+#: cross-scheme refusal takes: the scheme ships and runs, but this module's
+#: wrfout field map has no row for its CCN reservoir.  ``nn`` and NSSL's
+#: ``qnn`` both publish under QNCCN, so admitting 16 here would make the
+#: reverse mapping ambiguous exactly where the child state is built, and a
+#: WDM6 child forced from a WDM6 parent would silently start with a
+#: zero-filled reservoir -- the inert-aerosol failure mode mp=28's
+#: microphysics_init hook exists to prevent.  Admitting it means giving the
+#: field map a scheme-qualified QNCCN row and measuring the closure, not
+#: adding 16 to this set.
 OFFLINE_CHILD_MP_PHYSICS = frozenset({6, 8, 10, 18, 28})
 
 #: Schemes that may not participate in an offline CROSS-physics conversion.
-#: This mirrors ``gpuwm.core.microphysics_transition.
-#: UNVALIDATED_MIXED_EDGE_SELECTORS`` exactly, and it must: the online nest
-#: lane refuses every mixed mp=28 edge because no cross-scheme entry closure
-#: for nc/nwfa/nifa has been measured, and an offline downscale that
-#: performed the same unvalidated closure through a different code path
-#: would defeat that refusal rather than respect it.
-_CROSS_SCHEME_REFUSED_MP_PHYSICS = frozenset({28})
+#: DERIVED from ``gpuwm.core.microphysics_transition.
+#: UNVALIDATED_MIXED_EDGE_SELECTORS`` rather than re-spelled, so the mirror
+#: cannot drift again: the online nest lane refuses every mixed edge touching
+#: one of these because no cross-scheme entry closure for its moments has
+#: been measured, and an offline downscale that performed the same
+#: unvalidated closure through a different code path would defeat that
+#: refusal rather than respect it.
+#:
+#: mp=16 is in this set even though ``OFFLINE_CHILD_MP_PHYSICS`` already
+#: excludes it, i.e. an mp=16 parent is refused EARLIER, at
+#: ``ParentPhysicsBinding.__post_init__``.  That earlier gate is a stronger
+#: refusal but it is a DIFFERENT guarantee -- it says "this module cannot
+#: read the field", not "this closure is unmeasured" -- and it would silently
+#: stop being a refusal the day the QNCCN field-map row lands.  Keeping the
+#: mirror exact means the closure question is answered on its own terms, at
+#: the site whose job it is.
+_CROSS_SCHEME_REFUSED_MP_PHYSICS = frozenset(
+    _mt.UNVALIDATED_MIXED_EDGE_SELECTORS)
+
+
+def _cross_scheme_refusal_clause(mp: int) -> str:
+    """Name the scheme and the moments its missing closure would need.
+
+    One source of truth with the online nest lane
+    (:mod:`gpuwm.core.microphysics_transition`), so an offline refusal can
+    never tell a WDM6 operator that their scheme is Thompson.
+    """
+
+    scheme = _mt._UNVALIDATED_MIXED_EDGE_REASONS[int(mp)][0]
+    moments = "/".join(_mt.UNVALIDATED_MIXED_EDGE_MOMENTS[int(mp)])
+    return f"mp_physics={int(mp)} ({scheme}), moments {moments}"
 
 #: The parents a CROSS-scheme conversion has a measured mapping for: every
 #: admitted parent that is not cross-refused.  Derived, never re-spelled, so
@@ -537,23 +572,21 @@ def map_microphysics_to_nssl18(
 
     source_mp = int(source_mp_physics)
     if source_mp in _CROSS_SCHEME_REFUSED_MP_PHYSICS:
-        # NAMED refusal, in the same words the online nest lane uses.  mp=28
-        # IS a readable parent here (OFFLINE_CHILD_MP_PHYSICS admits it) --
-        # what is missing is a validated cross-scheme entry closure for its
-        # nc/nwfa/nifa moments, which is exactly why
-        # gpuwm/core/microphysics_transition.py refuses all eleven of its
+        # NAMED refusal, in the same words the online nest lane uses.  What
+        # is missing is a validated cross-scheme entry closure for the
+        # scheme's own moments, which is exactly why
+        # gpuwm/core/microphysics_transition.py refuses every one of its
         # MIXED nest edges.  Converting them here through a second,
-        # unvalidated path would defeat that refusal.
+        # unvalidated path would defeat that refusal.  The scheme name and
+        # the moment list come from that module, never re-spelled here.
         raise OfflineChildContractError(
-            f"offline cross-physics conversion from mp_physics={source_mp} "
-            "(Thompson aerosol-aware) to NSSL mp18 is REFUSED: mp=28 carries "
-            "a prognostic cloud droplet number plus two aerosol number "
-            "tracers (nc, nwfa, nifa) that no other ported scheme has, and "
-            "no cross-scheme entry closure for them has been measured.  The "
+            "offline cross-physics conversion to NSSL mp18 is REFUSED for "
+            f"{_cross_scheme_refusal_clause(source_mp)}: no cross-scheme "
+            "entry closure for those moments has been measured, and the "
             "online nest lane refuses the same edge "
             "(gpuwm/core/microphysics_transition.py::"
-            "UNVALIDATED_MIXED_EDGE_SELECTORS); same-scheme 28 -> 28 "
-            "downscaling is supported")
+            f"UNVALIDATED_MIXED_EDGE_SELECTORS); same-scheme {source_mp} -> "
+            f"{source_mp} downscaling is supported")
     if source_mp not in PARENT_SCHEME_CONTRACT:
         raise OfflineChildContractError(
             f"NSSL conversion currently accepts source mp 6/8/10/18, got {source_mp}")
@@ -1103,14 +1136,14 @@ def interpolate_parent_initial_state(
     elif (target_mp != int(source_mp_physics)
             and target_mp in _CROSS_SCHEME_REFUSED_MP_PHYSICS):
         raise OfflineChildContractError(
-            f"offline cross-physics initialization of an mp_physics="
-            f"{target_mp} (Thompson aerosol-aware) child from an "
+            "offline cross-physics initialization of a child at "
+            f"{_cross_scheme_refusal_clause(target_mp)} from an "
             f"mp_physics={int(source_mp_physics)} parent is REFUSED: no "
-            "cross-scheme entry closure for nc/nwfa/nifa has been measured, "
+            "cross-scheme entry closure for those moments has been measured, "
             "and the online nest lane refuses the same edge "
             "(gpuwm/core/microphysics_transition.py::"
-            "UNVALIDATED_MIXED_EDGE_SELECTORS).  Same-scheme 28 -> 28 "
-            "downscaling is supported")
+            f"UNVALIDATED_MIXED_EDGE_SELECTORS).  Same-scheme {target_mp} -> "
+            f"{target_mp} downscaling is supported")
     elif target_mp != int(source_mp_physics):
         raise OfflineChildContractError(
             "cross-physics offline initialization currently targets NSSL mp18")
@@ -1381,11 +1414,14 @@ def interpolate_parent_boundary_snapshot(
         if (target_mp in _CROSS_SCHEME_REFUSED_MP_PHYSICS
                 or int(source_mp_physics)
                 in _CROSS_SCHEME_REFUSED_MP_PHYSICS):
+            refused = (target_mp if target_mp
+                       in _CROSS_SCHEME_REFUSED_MP_PHYSICS
+                       else int(source_mp_physics))
             raise OfflineChildContractError(
                 f"offline cross-physics forcing across the mp_physics="
                 f"{int(source_mp_physics)} -> {target_mp} edge is REFUSED: "
-                "mp_physics=28 (Thompson aerosol-aware) has no measured "
-                "cross-scheme entry closure for nc/nwfa/nifa, and the online "
+                f"{_cross_scheme_refusal_clause(refused)} has no measured "
+                "cross-scheme entry closure, and the online "
                 "nest lane refuses the same edge "
                 "(gpuwm/core/microphysics_transition.py::"
                 "UNVALIDATED_MIXED_EDGE_SELECTORS)")

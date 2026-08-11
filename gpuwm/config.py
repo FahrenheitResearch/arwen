@@ -557,6 +557,53 @@ class RunConfig:
     # selects, so appending them cannot move a frozen trajectory.
     clos_choice: int = 0
     ishallow: int = 0
+    # WRF v4.6.1 NSSL variant selectors
+    # (Registry.EM_COMMON:2420-2425).  Since v4.5 every NSSL configuration
+    # is mp_physics=18 plus these flags; the deprecated scheme IDs
+    # 17/19/21/22 are namelist-import spellings that
+    # share/module_check_a_mundo.F:3382-3421 rewrites onto them.  ``-1``
+    # takes WRF's consistency-pass defaults (:3433-3455), which resolve to
+    # the shipped two-moment + hail + predicted-CCN + graupel/hail-volume
+    # lane.  Resolution and the ported-combination gate live in
+    # gpuwm/core/nssl2_contract.py; unported combinations refuse loudly at
+    # validation instead of substituting a nearby branch.
+    #
+    # Appended last, as every new field must be, so positional construction
+    # of every existing RunConfig is unchanged.
+    nssl_2moment_on: int = -1
+    nssl_hail_on: int = -1
+    nssl_ccn_on: int = -1
+    nssl_density_on: int = -1
+    nssl_3moment: int = 0
+
+    # ---- WDM6 (mp_physics = 16), appended after the NSSL block at the 1.9
+    # assembly; both lanes append last, so every existing RunConfig's
+    # positional construction is unchanged either way.
+    # so positional construction of every existing RunConfig is unchanged.
+    #
+    # WDM6's half of WRF's SHARED ``hail_opt`` namelist key.  WRF reaches
+    # wdm6init with ``config_flags%hail_opt`` (module_physics_init.F:
+    # 4582-4584) -- the same scalar mp_wsm6_init reads at :4487 -- and the
+    # branch sets the same five rimed-ice constants.  gpuwm keeps the two
+    # SEPARATE because the config field is the restart-identity record of
+    # which scheme ran under which rimed ice; the importer writes both from
+    # the one namelist key, so no namelist can make them disagree.
+    #
+    # ``wdm6_ccn_conc`` is WRF ``ccn_conc`` (Registry.EM_COMMON:2664,
+    # default 1.0E8 # m-3).  Its ONLY effect in module_mp_wdm6.F is the
+    # first-step fill of the CCN array (:220-227): ``wdm62D`` and
+    # ``wdm6init`` both take ccn0 ``intent(in)`` and never read it.  gpuwm
+    # performs that fill once at state allocation, so this value is part of
+    # the initial condition and therefore trajectory-bound.
+    #
+    # Both are SCHEME-SCOPED: nothing outside the mp=16 path reads either,
+    # and ``gpuwm.core.model.restart_identity_payload`` drops them from the
+    # identity of every run that does not select WDM6, on the same
+    # absent-stays-absent convention the ``perturbation`` block and the
+    # per-domain ``spawn`` declaration already use.  That is what keeps
+    # every pre-WDM6 experiment's fingerprint byte-identical.
+    wdm6_hail_opt: int = 0
+    wdm6_ccn_conc: float = 1.0e8
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -700,7 +747,7 @@ RUC_OPTION_IDENTITY: dict[str, object] = {
 # --------------------------------------------------------------------------
 
 #: WRF sf_sfclay_physics values in gpuwm's schema.
-SURFACE_LAYER_SCHEMES = (0, 1, 5, 91)
+SURFACE_LAYER_SCHEMES = (0, 1, 2, 5, 91)
 #: WRF sf_surface_physics values in gpuwm's schema.
 LAND_SURFACE_SCHEMES = (0, 2, 3, 4)
 #: ``bl_pbl_physics`` value selecting the SASE closure.
@@ -729,12 +776,23 @@ SASE_MAX_NZ = _sase_limits.MAX_COLUMN_LEVELS
 #: publishes under ``authority.wrf_v461_compatibility_matrix``.
 MYNN_SFCLAY_SCHEME = 5
 
-#: ``bl_pbl_physics`` values in gpuwm's schema.  0/1/5/11 are WRF's --
-#: 11 is Shin-Hong (module_bl_shinhong.F, ported at max ULP 0 against the
-#: byte-frozen WRF v4.6.1 module; runtime wired by _run_shinhong in
+#: WRF's Eta similarity surface layer (``sf_sfclay_physics``) and the MYJ
+#: PBL (``bl_pbl_physics``).  They share the number 2 in WRF's two
+#: namespaces and they are a PAIR, not two independently selectable
+#: schemes: ``phys/module_physics_init.F:3770-3772`` fatals a MYJ PBL
+#: whose surface layer did not set ``isfc = 2``, and the Eta surface layer
+#: is the only ``sf_sfclay_physics`` value gpuwm ports that does
+#: (:3169).  :func:`validate_myj_pairing` is that law.
+MYJ_SFCLAY_SCHEME = 2
+MYJ_PBL_SCHEME = 2
+
+#: ``bl_pbl_physics`` values in gpuwm's schema.  0/1/2/5/11 are WRF's --
+#: 2 is MYJ (module_bl_myjpbl.F) and 11 is Shin-Hong
+#: (module_bl_shinhong.F, ported at max ULP 0 against the byte-frozen WRF
+#: v4.6.1 module; runtime wired by _run_shinhong in
 #: gpuwm/core/physics.py) -- and 900 is :data:`SASE_PBL_SCHEME`,
 #: ArWen-only (see there).
-PBL_SCHEMES = (0, 1, 5, 11, SASE_PBL_SCHEME)
+PBL_SCHEMES = (0, 1, MYJ_PBL_SCHEME, 5, 11, SASE_PBL_SCHEME)
 # 0 = none, 1 = Kain-Fritsch, 3 = Grell-Freitas.
 CU_SCHEMES = (0, 1, 3)
 
@@ -952,6 +1010,80 @@ def radiation_enabled(cfg: RunConfig) -> bool:
 
 
 # --------------------------------------------------------------------------
+# P3 (mp_physics = 50) and its three unported siblings.
+# --------------------------------------------------------------------------
+
+#: WRF v4.6.1 maps P3 across four ``mp_physics`` values
+#: (Registry.EM_COMMON:3038-3041).  gpuwm ports exactly ONE of them -- 50,
+#: ``p3_1category``, the configuration WRF's own driver calls with
+#: ``N_ICECAT=1``, no ``nc_3d`` and no ``qzi1_3d``
+#: (module_microphysics_driver.F:1557-1602).  The other three are not
+#: "unsupported numbers": they are different physics inside the same
+#: Fortran module, each gated by a switch the port does not carry, so each
+#: gets its own refusal naming what is missing.  Silently running the
+#: 1-category solver for a namelist that asked for two categories or a
+#: third moment would be exactly the substitution PHYSICS.md forbids.
+_P3_UNPORTED_VARIANTS = {
+    51: (
+        "mp_physics=51 (P3 with prognostic droplet number, "
+        "Registry.EM_COMMON:3039) is not ported. gpuwm ports mp_physics=50, "
+        "which runs P3 with SPECIFIED droplet number (nccnst/rho, "
+        "module_mp_p3.F:2350) -- mp=51 passes nc_3d, which switches on the "
+        "CCN-activation path (:3313-3339) that this port does not carry. "
+        "Use mp_physics=50 for P3 one-category."
+    ),
+    52: (
+        "mp_physics=52 (P3 two ice categories, "
+        "Registry.EM_COMMON:3040) is not ported. gpuwm ports the "
+        "nCat=1 configuration only: the inter-category collection "
+        "(module_mp_p3.F:2754-2829), the category-merge pass (:4615-4697) "
+        "and the second lookup table p3_lookupTable_2 are structurally "
+        "absent from this port, and its state carries one ice category. "
+        "Use mp_physics=50 for P3 one-category."
+    ),
+    53: (
+        "mp_physics=53 (P3 one category, three-moment ice, "
+        "Registry.EM_COMMON:3041) is not ported. gpuwm ports the "
+        "TWO-moment-ice configuration: the prognostic reflectivity moment "
+        "zitot, its compute_mu_3moment/G_of_mu closure and the 3momI "
+        "lookup table (module_mp_p3.F, log_3momentIce branches) are absent, "
+        "and only p3_lookupTable_1.dat-v5.4_2momI is packaged. "
+        "Use mp_physics=50 for P3 one-category."
+    ),
+}
+
+#: The mp_physics schema menu, as one sentence, so every out-of-schema
+#: value is refused in the same shape.  Held apart from the raise sites
+#: because there are two of them: the generic unknown-value branch and the
+#: P3 sibling branch below, which states its own missing physics FIRST and
+#: then recites this menu.  A refusal that recites the menu is a VALUE
+#: refusal; a refusal that does not is about a combination.  That
+#: distinction is load-bearing -- tools/report_physics_composition_walk.py
+#: separates the two kinds by exactly this recitation -- so a new mp value
+#: is added here once and both branches stay in the same form.
+_MP_PHYSICS_SCHEMA_MENU = (
+    "mp_physics must be 0 (off), 1 (Kessler), 6 (WSM6), 8 "
+    "(Thompson), 9 (Milbrandt-Yau two-moment), 10 (Morrison "
+    "two-moment), 16 (WDM6 double-moment warm rain), 18 (NSSL "
+    "two-moment), 28 (Thompson aerosol-aware), or 50 (P3 "
+    "one-category)"
+)
+
+
+def unported_p3_variant_refusal(value: int) -> str:
+    """A P3 sibling's refusal: its own missing physics, then the menu.
+
+    ``mp_physics`` 51/52/53 are real WRF v4.6.1 packages this port does not
+    cover, and each is owed the specific reason.  They are still values the
+    schema does not admit, so the message ends the way every other
+    out-of-schema mp value's does.
+    """
+
+    return (f"{_P3_UNPORTED_VARIANTS[value]} "
+            f"{_MP_PHYSICS_SCHEMA_MENU}, got {value}.")
+
+
+# --------------------------------------------------------------------------
 # mp_physics = 28 aerosol source: the one deliberate deviation, published.
 # --------------------------------------------------------------------------
 
@@ -1045,6 +1177,129 @@ def validate_aerosol_source_options(cfg: RunConfig) -> None:
             + MP28_AEROSOL_SOURCE_DEVIATION
         )
 
+#: Every switch WRF's Milbrandt-Yau path hard-codes, with the line that
+#: does it.  ``mp_milbrandt2mom_driver`` fixes the first seven
+#: (phys/module_mp_milbrandt2mom.F:3615-3623) and the scheme body fixes the
+#: last two (:1174-1175); there is no namelist that moves any of them, so
+#: mp=9 has exactly ONE identity in WRF v4.6.1 and gpuwm ships that one.
+#: gpuwm's constant table (gpuwm/core/milbrandt2_constants.py) is derived
+#: under these settings -- CCNtype=2 fixes N_c_SM=2e8 and
+#: snowSpherical=.false. selects the Brandes m(D) pair -- so a knob that
+#: moved one of them would silently invalidate 154 constants.
+MILBRANDT2_FIXED_IDENTITY: dict[str, tuple[object, str]] = {
+    "ccntype": (2, "module_mp_milbrandt2mom.F:3615 (continental)"),
+    "precip_diag": (True, "module_mp_milbrandt2mom.F:3618"),
+    "sedi": (True, "module_mp_milbrandt2mom.F:3619"),
+    "warmphase": (True, "module_mp_milbrandt2mom.F:3620"),
+    "autoconv": (True, "module_mp_milbrandt2mom.F:3621"),
+    "icephase": (True, "module_mp_milbrandt2mom.F:3622"),
+    "snow": (True, "module_mp_milbrandt2mom.F:3623"),
+    "snow_spherical": (False, "module_mp_milbrandt2mom.F:1174"),
+    "prim_ice_nucl": (1, "module_mp_milbrandt2mom.F:1175 (Meyers+contact)"),
+}
+
+
+def validate_milbrandt2_options(cfg: RunConfig) -> None:
+    """Fail closed on the mp=9 pairings gpuwm cannot honour.
+
+    Two things are checked, and neither is a taste call:
+
+    THE PINNED IDENTITY.  WRF exposes no namelist for any of
+    :data:`MILBRANDT2_FIXED_IDENTITY`, so there is nothing to validate on
+    :class:`RunConfig` today -- the entry exists so that the day someone
+    adds an ``mp9_*`` knob, the pin is already written down beside the
+    Fortran line that owns it (the MYNN pattern).  The loop below refuses
+    any such attribute that appears and disagrees.
+
+    RTE+RRTMGP CLOUD OPTICS.  ``MILBRANDT2MOM`` is absent from WRF's
+    ``use_mp_re`` disjunction (phys/module_physics_init.F:1004-1023), so
+    the scheme supplies radiation no effective radii -- its own reff block
+    is commented out (module_mp_milbrandt2mom.F:3362/:3364/:3372/:3374).
+    gpuwm's RTE+RRTMGP adapter needs a cloud-optics row per selector and
+    has none that means "ice-active, scheme supplies no radii": Kessler's
+    row would silently radiate an overcast ice cloud as clear sky and
+    Morrison's row would derive radii from a gamma distribution that is
+    Morrison's, not Milbrandt-Yau's.  Rather than invent one, the pairing
+    is refused and the legacy RRTMG port -- which computes its own radii
+    exactly as WRF does under has_reqc=0 -- is named as the way through.
+    """
+    if cfg.mp_physics != 9:
+        return
+    for name, (only, citation) in MILBRANDT2_FIXED_IDENTITY.items():
+        if not hasattr(cfg, name):
+            continue
+        value = getattr(cfg, name)
+        if value == only:
+            continue
+        raise NotImplementedError(
+            f"{name}={value!r} is not implemented for mp_physics=9; WRF "
+            f"hard-codes {name}={only!r} ({citation}) and gpuwm's constant "
+            "table is derived under that identity, so a different value "
+            "would silently invalidate it.")
+    if ((cfg.ra_lw_physics, cfg.ra_sw_physics) == (4, 4)
+            and cfg.ra_rrtmg_variant != "rrtmg_legacy"):
+        raise NotImplementedError(
+            "mp_physics=9 with ra_lw_physics=4/ra_sw_physics=4 on the "
+            "RTE+RRTMGP variant has no cloud-optics coupling: WRF leaves "
+            "has_reqc/has_reqi/has_reqs at 0 for MILBRANDT2MOM "
+            "(phys/module_physics_init.F:1004-1023) and the scheme's own "
+            "effective-radius block is commented out, so there are no "
+            "scheme radii to hand RRTMGP and no row in "
+            "gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME. Set "
+            "ra_rrtmg_variant='rrtmg_legacy' (which computes its own radii "
+            "the way WRF does under has_reqc=0), or select "
+            "ra_lw_physics=0/ra_sw_physics=1 (Dudhia).")
+
+
+def validate_p3_radiation(cfg: RunConfig) -> None:
+    """Refuse P3 on RTE+RRTMGP, where it has no cloud-optics coupling.
+
+    FOUND AT THE 1.9 GATE, while proving mp=50 can actually step.  The
+    admission path accepted mp_physics=50 with ra_lw_physics=4 /
+    ra_sw_physics=4 and the run then died at the FIRST radiation call:
+    ``gpuwm/core/rrtmgp.py:1961`` resolves
+    ``cloud_optics_scheme(50)`` and ``_MP_CLOUD_OPTICS_SCHEME`` has no row
+    for 50, so the adapter raised NotImplementedError mid-forecast.  A
+    refusal a user meets after the prepare is not a refusal.
+
+    Why the answer is a refusal and not a new row.  P3 is not
+    Milbrandt-Yau's case: it IS in WRF's ``use_mp_re`` disjunction, so
+    ``has_reqc = has_reqi = 1`` and the scheme does supply cloud and ice
+    radii (gpuwm/core/p3.py writes ``state.effc``/``state.effi``).  What
+    it does NOT supply is snow radii -- ``phys/module_physics_init.F``'s
+    P3 / Jensen-Ishmael override sets ``has_reqs = 0`` at :1027-1033 --
+    and P3's single ice category spans rime fraction rather than
+    separating snow from graupel at all.  No row in
+    ``_MP_CLOUD_OPTICS_SCHEME`` means "ice-active, cloud and ice radii
+    supplied, no snow radii": Thompson's and Morrison's rows all assume a
+    supplied re_snow and a separate snow species.  Choosing one of them
+    would hand RRTMGP a snow radius P3 never computed, which is inventing
+    physics, and inventing it silently is what put mp=28 on Kessler's row
+    until 2026-08-01.
+
+    So the pairing is refused and both working alternatives are named, on
+    the mp=9 precedent directly above: the legacy RRTMG variant computes
+    its own radii the way WRF does, and the Dudhia pair needs none.
+    Adding a real P3 cloud-optics row is a porting decision with its own
+    WRF authority and its own evidence, and it is not this gate's to make.
+    """
+
+    if int(cfg.mp_physics) != 50:
+        return
+    if ((cfg.ra_lw_physics, cfg.ra_sw_physics) == (4, 4)
+            and cfg.ra_rrtmg_variant != "rrtmg_legacy"):
+        raise NotImplementedError(
+            "mp_physics=50 with ra_lw_physics=4/ra_sw_physics=4 on the "
+            "RTE+RRTMGP variant has no cloud-optics coupling: WRF sets "
+            "has_reqs=0 for P3 (phys/module_physics_init.F:1027-1033) and "
+            "P3's single ice category carries no separate snow species, so "
+            "there is no snow radius to hand RRTMGP and no row in "
+            "gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME. Set "
+            "ra_rrtmg_variant='rrtmg_legacy' (which computes its own radii "
+            "the way WRF does), or select "
+            "ra_lw_physics=0/ra_sw_physics=1 (Dudhia).")
+
+
 _KNOWN_TABLES = ("grid", "dynamics", "run")
 
 def load_config(path: str | Path) -> RunConfig:
@@ -1112,6 +1367,76 @@ _SASE_REQUIREMENTS: tuple[tuple[str, object, str], ...] = (
 )
 
 
+def validate_myj_pairing(cfg: RunConfig) -> None:
+    """Refuse a MYJ half without its other half, in either direction.
+
+    WRF's own law, transcribed: ``phys/module_physics_init.F:3770-3772``
+    is ``CASE (MYJPBLSCHEME) / if(isfc .ne. 2) CALL wrf_error_fatal
+    ('module_physics_init: use myjsfc scheme for this pbl option')``, and
+    of the surface layers gpuwm ports only ``MYJSFCSCHEME`` sets
+    ``isfc = 2`` (:3169).  So the MYJ PBL with anything else is a WRF
+    fatal, and this is that fatal.
+
+    THE REVERSE DIRECTION IS ARWEN'S, and it is stated as such.  WRF
+    admits the Eta surface layer under several PBLs it also ports (the
+    ``isfc .ne. 2`` guards at :3742 and :3756 belong to other schemes);
+    gpuwm ports NONE of those, so the only PBL that could consume the Eta
+    surface layer's output here is MYJ.  What makes the mismatch a
+    refusal rather than a warning is that the Eta layer's published set
+    is not the MM5 layers' published set: it produces ``AKHS``/``AKMS``/
+    ``THZ0``/``QZ0``/``UZ0``/``VZ0`` and produces NO ``MOL``, ``ZOL``,
+    ``PSIM``/``PSIH``, ``REGIME``, ``GZ1OZ0`` or ``WSPD`` (the outputs of
+    ``SFCDIF``, module_sf_myjsfc.F:361-1056).  YSU, MYNN, Shin-Hong and
+    SASE all read at least one of those, so pairing them with the Eta
+    layer would feed a PBL scheme a zero where WRF gives it a similarity
+    function -- finite, plausible, and wrong.  Refusing beats that.
+
+    Urban is refused by ABSENCE, deliberately: WRF sends the MYJ PBL
+    through ``myjurb`` when ``sf_urban_physics`` is 2 or 3 (BEP/BEM,
+    module_physics_init.F:3775-3781, phys/module_bl_myjurb.F).  gpuwm has
+    no ``sf_urban_physics`` selector at all, so that arm is unreachable
+    rather than silently substituted; the registry option records it.
+    """
+    pbl = int(cfg.bl_pbl_physics)
+    sfclay = int(cfg.sf_sfclay_physics)
+    if pbl == MYJ_PBL_SCHEME and sfclay != MYJ_SFCLAY_SCHEME:
+        raise ValueError(
+            f"bl_pbl_physics={MYJ_PBL_SCHEME} (MYJ) requires "
+            f"sf_sfclay_physics={MYJ_SFCLAY_SCHEME} (Eta similarity), got "
+            f"sf_sfclay_physics={sfclay}. WRF v4.6.1 fatals this exact "
+            "pairing at phys/module_physics_init.F:3770-3772 ('use myjsfc "
+            "scheme for this pbl option'): the MYJ PBL's every implicit "
+            "solve takes AKHS/AKMS/THZ0/QZ0/UZ0/VZ0 as its lower boundary "
+            "and only the Eta surface layer produces them. No substitution "
+            "is applied.")
+    if pbl == MYJ_PBL_SCHEME and not cfg.moist:
+        # WRF's own fatal, not a house rule: the PBL driver guards MYJPBL
+        # with PRESENT(qv_curr) .AND. PRESENT(qc_curr) and calls
+        # wrf_error_fatal('Lack arguments to call MYJ pbl') otherwise
+        # (phys/module_pbl_driver.F:1441-1443, :1500-1513).  The scheme
+        # mixes vapour and cloud water as rows 2 and 3 of its own
+        # tridiagonal solve and forms its mixing length from a moist
+        # buoyancy gradient; a dry state has nothing for those rows.
+        raise ValueError(
+            f"bl_pbl_physics={MYJ_PBL_SCHEME} (MYJ) requires moist=true: "
+            "the scheme mixes water vapour and cloud water as species rows "
+            "of its own vertical solve and builds its mixing length from a "
+            "moist buoyancy gradient (module_bl_myjpbl.F:501-503, "
+            ":865-867). WRF refuses the same configuration at "
+            "module_pbl_driver.F:1500-1513.")
+    if sfclay == MYJ_SFCLAY_SCHEME and pbl != MYJ_PBL_SCHEME:
+        raise ValueError(
+            f"sf_sfclay_physics={MYJ_SFCLAY_SCHEME} (Eta similarity) is "
+            f"admitted with bl_pbl_physics={MYJ_PBL_SCHEME} (MYJ) only, got "
+            f"bl_pbl_physics={pbl}. The Eta surface layer publishes "
+            "AKHS/AKMS/THZ0/QZ0/UZ0/VZ0 and publishes no MOL, ZOL, "
+            "PSIM/PSIH, REGIME, GZ1OZ0 or WSPD (module_sf_myjsfc.F:"
+            "361-1056); every other PBL gpuwm ports reads at least one of "
+            "those and would silently receive a zero. Select "
+            "sf_sfclay_physics=1 (revised MM5) or 91 (classic MM5) for "
+            "those schemes, or bl_pbl_physics=2 for this one.")
+
+
 def validate_sase_config(cfg: RunConfig) -> None:
     """Admission for the SASE closure and its three knobs.
 
@@ -1121,6 +1446,7 @@ def validate_sase_config(cfg: RunConfig) -> None:
     needs -- see :data:`_SASE_REQUIREMENTS` for why the development
     lane's wider whitelist is not reproduced.
     """
+    validate_myj_pairing(cfg)
     sase = cfg.bl_pbl_physics == SASE_PBL_SCHEME
     if sase:
         for name, admitted, why in _SASE_REQUIREMENTS:
@@ -1793,8 +2119,9 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     # every unfinished component instead of failing on the first number.
     if cfg.sf_sfclay_physics not in SURFACE_LAYER_SCHEMES:
         raise ValueError(
-            "sf_sfclay_physics must be 0 (off), 1 (revised MM5), 5 (MYNN), "
-            f"or 91 (classic MM5), got {cfg.sf_sfclay_physics}."
+            "sf_sfclay_physics must be 0 (off), 1 (revised MM5), 2 (Eta "
+            "similarity, the MYJ pair), 5 (MYNN), or 91 (classic MM5), got "
+            f"{cfg.sf_sfclay_physics}."
         )
     if cfg.sf_surface_physics not in LAND_SURFACE_SCHEMES:
         raise ValueError(
@@ -1809,9 +2136,10 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     soil_layer_count(cfg)
     if cfg.bl_pbl_physics not in PBL_SCHEMES:
         raise ValueError(
-            f"bl_pbl_physics must be 0 (none), 1 (YSU), 5 (MYNN), "
-            f"11 (Shin-Hong), or {SASE_PBL_SCHEME} (SASE, experimental), "
-            f"got {cfg.bl_pbl_physics}."
+            f"bl_pbl_physics must be 0 (none), 1 (YSU), "
+            f"{MYJ_PBL_SCHEME} (MYJ), 5 (MYNN), 11 (Shin-Hong), or "
+            f"{SASE_PBL_SCHEME} (SASE, experimental), got "
+            f"{cfg.bl_pbl_physics}."
         )
     validate_sase_config(cfg)
     require_ready_wrf_physics(
@@ -2022,21 +2350,17 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
         raise ValueError(
             "ra_sw_physics must be 0 (off), 1 (WRF Dudhia), 4 "
             f"(RTE+RRTMGP), or 90 (analytic proxy), got {ra_sw_physics}.")
-    if ra_lw_physics == 1:
-        # Schema-legal and unexecutable, which is exactly the state this
-        # battery is supposed to catch before a run starts.  gpuwm/core/physics
-        # .py initialize_physics already raises NotImplementedError for it, and
-        # the registry refuses the 1/1 pair as an unimplemented option; this
-        # function accepted it, so the three did not agree.  ra_sw_physics=1 on
-        # its own is the implemented Dudhia shortwave (the 0/1 pair) and stays
-        # accepted.
-        raise NotImplementedError(
-            "ra_lw_physics=1 (WRF RRTM longwave) is not executable yet: the "
-            "16-band/140-g-point coefficient and transfer kernels are still "
-            "required, and no approximate longwave scheme is substituted. Use "
-            "0 (off), 4 (RTE+RRTMGP, with ra_sw_physics=4) or 90 (the "
-            "analytic proxy, with ra_sw_physics=90)."
-        )
+    if ra_lw_physics == 1 and ra_sw_physics != 1:
+        # WRF RRTM longwave is implemented (gpuwm.core.rrtm_lw), but only
+        # the pairing WRF's own classic namelists use is wired: RRTM
+        # longwave with Dudhia shortwave.  RRTM-with-RRTMGP-shortwave
+        # would be a scheme combination WRF never runs, and
+        # RRTM-with-shortwave-off has no adapter, so both refuse here
+        # rather than resolve to something nobody asked for.
+        raise ValueError(
+            "ra_lw_physics=1 (WRF RRTM longwave) is implemented only as "
+            "WRF's classic pair with ra_sw_physics=1 (Dudhia shortwave), "
+            f"got ra_sw_physics={ra_sw_physics}.")
     if ((ra_lw_physics in (4, 90) or ra_sw_physics in (4, 90))
             and ra_lw_physics != ra_sw_physics):
         raise ValueError(
@@ -2120,13 +2444,35 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "form, calc_p_rho_phi), got "
             f"{cfg.hypsometric_opt}."
         )
-    if cfg.mp_physics not in (0, 1, 6, 8, 10, 18, 28):
-        raise ValueError(
-            "mp_physics must be 0 (off), 1 (Kessler), 6 (WSM6), 8 "
-            "(Thompson), 10 (Morrison two-moment), 18 "
-            "(NSSL two-moment), or 28 (Thompson aerosol-aware), got "
-            f"{cfg.mp_physics}."
-        )
+    if cfg.mp_physics in _P3_UNPORTED_VARIANTS:
+        # Refuse the sibling P3 options BY NAME rather than letting them
+        # fall into the generic "unknown mp_physics" message: each is a real
+        # WRF v4.6.1 package (Registry.EM_COMMON:3039-3041) that gpuwm's
+        # mp=50 port deliberately does not cover, and a user who typed one
+        # is owed the reason, not a claim that the number is meaningless.
+        # The menu follows the reason: these are out-of-schema VALUES, and
+        # a value refusal recites the menu here the same way as below.
+        raise ValueError(unported_p3_variant_refusal(cfg.mp_physics))
+    if cfg.mp_physics not in (0, 1, 6, 8, 9, 10, 16, 18, 28, 50):
+        # WDM5 (14) and WDM7 (26) are named rather than left to the generic
+        # tail: they are WDM6's siblings in the same WRF family and the
+        # obvious next thing a WDM6 user types, so the refusal says which
+        # one of the three is ported instead of listing nine integers.  It
+        # then recites the menu, the same way the P3 siblings above do,
+        # because these too are out-of-schema VALUES.
+        if cfg.mp_physics in (14, 26):
+            sibling = "WDM5" if cfg.mp_physics == 14 else "WDM7"
+            raise ValueError(
+                f"mp_physics={cfg.mp_physics} ({sibling}) is not ported. "
+                "Of WRF's WDM family only WDM6 (mp_physics=16) exists in "
+                f"gpuwm; {sibling} carries a different hydrometeor set "
+                "(WDM5 has no graupel, WDM7 adds hail) and cannot be run "
+                "by substituting WDM6 for it. "
+                f"{_MP_PHYSICS_SCHEMA_MENU}, got {cfg.mp_physics}."
+            )
+        raise ValueError(f"{_MP_PHYSICS_SCHEMA_MENU}, got {cfg.mp_physics}.")
+    validate_milbrandt2_options(cfg)
+    validate_p3_radiation(cfg)
     validate_aerosol_source_options(cfg)
     if cfg.mp_physics != 0 and not cfg.moist:
         raise ValueError(
@@ -2158,6 +2504,75 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "wsm6_hail_opt must be 0 (graupel, the WRF WSM6 default) or "
             f"1 (hail), got {cfg.wsm6_hail_opt}."
         )
+    _NSSL_SELECTOR_DEFAULTS = {
+        "nssl_2moment_on": -1, "nssl_hail_on": -1, "nssl_ccn_on": -1,
+        "nssl_density_on": -1, "nssl_3moment": 0,
+    }
+    if cfg.mp_physics == 18:
+        # Resolve and gate the variant mode exactly once at validation, so
+        # a rejected combination can never reach state allocation or the
+        # scheme.  resolve applies WRF's module_check_a_mundo.F:3423-3465
+        # consistency pass; require_ported refuses combinations without a
+        # ported numerical path (1-moment, 3-moment, fixed-density, and
+        # WRF's undefined inactive-pointer pairings).
+        from gpuwm.core.nssl2_contract import (
+            require_ported_nssl2_mode,
+            resolve_nssl2_mode_for_config,
+        )
+        try:
+            require_ported_nssl2_mode(resolve_nssl2_mode_for_config(cfg))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"NSSL variant selectors: {exc}") from exc
+    else:
+        for _nssl_key, _nssl_default in _NSSL_SELECTOR_DEFAULTS.items():
+            if getattr(cfg, _nssl_key) != _nssl_default:
+                raise ValueError(
+                    f"{_nssl_key} is an NSSL selector and requires "
+                    f"mp_physics=18 (got mp_physics={cfg.mp_physics}); "
+                    "WRF zeroes stray NSSL flags under other schemes "
+                    "(module_check_a_mundo.F:3423-3430), gpuwm refuses "
+                    "them instead of silently dropping them."
+                )
+    if cfg.wdm6_hail_opt not in (0, 1):
+        raise ValueError(
+            "wdm6_hail_opt must be 0 (graupel, the WRF WDM6 default) or "
+            f"1 (hail), got {cfg.wdm6_hail_opt}."
+        )
+    if not math.isfinite(cfg.wdm6_ccn_conc) or cfg.wdm6_ccn_conc <= 0.0:
+        raise ValueError(
+            "wdm6_ccn_conc must be a finite positive CCN number "
+            "concentration in # m-3 (WRF Registry default 1.0e8), got "
+            f"{cfg.wdm6_ccn_conc}."
+        )
+    if cfg.mp_physics == 16 and not (1.0e8 <= cfg.wdm6_ccn_conc <= 2.0e10):
+        # module_mp_wdm6.F:585 clamps the CCN array to [1e8, 2e10] on every
+        # entry to wdm62D, so a value outside the window is not the initial
+        # condition the operator asked for -- the very first minor loop
+        # discards it.  Refusing beats silently running a different run.
+        raise ValueError(
+            f"wdm6_ccn_conc={cfg.wdm6_ccn_conc} lies outside WDM6's own "
+            "[1e8, 2e10] # m-3 clamp (module_mp_wdm6.F:585), so the scheme "
+            "would overwrite it on the first minor time step; choose a "
+            "value inside the window."
+        )
+    if cfg.mp_physics != 16:
+        # Off-scheme WDM6 knobs are REFUSED, not dropped, on the NSSL
+        # precedent (the nssl_* selectors under mp != 18): nothing outside
+        # the mp=16 path reads either field, so a set value is a request
+        # gpuwm would silently ignore.  The refusal is also what makes
+        # gpuwm.core.model.SCHEME_SCOPED_RUN_FIELDS provably lossless --
+        # under any other scheme these two can hold ONLY their defaults, so
+        # dropping them from the restart identity discards no information.
+        for _wdm6_key, _wdm6_default in (("wdm6_hail_opt", 0),
+                                         ("wdm6_ccn_conc", 1.0e8)):
+            if getattr(cfg, _wdm6_key) != _wdm6_default:
+                raise ValueError(
+                    f"{_wdm6_key} is a WDM6 selector and requires "
+                    f"mp_physics=16 (got mp_physics={cfg.mp_physics}); "
+                    "WRF reads hail_opt/ccn_conc only inside the schemes "
+                    "that declare them, and gpuwm refuses a stray value "
+                    "instead of silently dropping it."
+                )
     if cfg.no_mp_heating not in (0, 1):
         raise ValueError(
             "no_mp_heating must be 0 (microphysics latent heating on, the "

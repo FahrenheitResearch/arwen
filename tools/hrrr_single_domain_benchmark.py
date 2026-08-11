@@ -83,8 +83,7 @@ from gpuwm.core.nssl2_contract import (  # noqa: E402
     DEFAULT_MODE as NSSL2_DEFAULT_MODE,
     MP_PHYSICS as NSSL2_MP_PHYSICS,
     WRF_NAMELIST_DEFAULTS as NSSL2_WRF_NAMELIST_DEFAULTS,
-    WRF_REFERENCE_COMMIT as NSSL2_WRF_REFERENCE_COMMIT,
-    WRF_REFERENCE_VERSION as NSSL2_WRF_REFERENCE_VERSION,
+    nssl2_contract_receipt,
     resolve_nssl2_mode,
 )
 from gpuwm import explain  # noqa: E402
@@ -1583,16 +1582,13 @@ def _validate_native_hrrr_physics_profile(
         receipt["readiness"] = "WRF_MATCHED_RUN_CANDIDATE"
     elif profile in (NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID):
         receipt["readiness"] = "WRF_MATCHED_RUN_CANDIDATE"
-        receipt["nssl2_contract"] = {
-            "selector": NSSL2_MP_PHYSICS,
-            "contract_id": NSSL2_CONTRACT_ID,
-            "wrf_reference_version": NSSL2_WRF_REFERENCE_VERSION,
-            "wrf_reference_commit": NSSL2_WRF_REFERENCE_COMMIT,
-            "resolved_default_mode": asdict(NSSL2_DEFAULT_MODE),
-            "transported_fields": list(
-                NSSL2_DEFAULT_MODE.transported_fields),
-            "wrf_namelist_defaults": dict(NSSL2_WRF_NAMELIST_DEFAULTS),
-        }
+        # This preset pins the default lane -- the selector check above
+        # refuses anything else -- but the receipt is built by the one
+        # shared emitter so every NSSL receipt in the tree reads the same
+        # way and none of them can drift into describing a mode that did
+        # not run.
+        receipt["nssl2_contract"] = nssl2_contract_receipt(
+            NSSL2_DEFAULT_MODE)
     elif profile in (
             KESSLER_PROFILE_ID, MYNN_PROFILE_ID, MYNN_RUC_PROFILE_ID,
             RUC_PROFILE_ID,

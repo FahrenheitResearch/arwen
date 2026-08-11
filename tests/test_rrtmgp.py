@@ -2863,10 +2863,69 @@ def test_the_chunk_invariance_gate_fails_on_a_chunk_dependent_seed(
 # default that let it happen silently.
 # ---------------------------------------------------------------------------
 
-#: Every mp_physics selector ``validate_run_config`` accepts
-#: (gpuwm/config.py:1151).  Asserted against the validator below so this
-#: tuple cannot drift away from the contract it claims to mirror.
-_ACCEPTED_MP_PHYSICS = (0, 1, 6, 8, 10, 18, 28)
+#: Every mp_physics selector ``validate_run_config`` accepts.  Asserted
+#: against the validator below so this tuple cannot drift away from the
+#: contract it claims to mirror -- and it HAD drifted: 9 (Milbrandt-Yau)
+#: and 50 (P3 one-category) were admitted by production while this tuple
+#: still read the pre-1.9 eight, so the three cross-checks that iterate it
+#: had quietly stopped covering two schemes.  RE-DERIVED by running the
+#: production validator over range(0, 60), exactly as
+#: ``test_the_accepted_selector_list_this_module_uses_is_the_real_one``
+#: does; not hand-extended.
+_ACCEPTED_MP_PHYSICS = (0, 1, 6, 8, 9, 10, 16, 18, 28, 50)
+
+#: The admitted selectors with NO row in ``_MP_CLOUD_OPTICS_SCHEME``, and
+#: therefore no RTE+RRTMGP coupling at all.  This is not a gap in the
+#: table: gpuwm.config refuses each of these against the 4/4 RTE+RRTMGP
+#: pair up front (validate_milbrandt2_options, validate_p3_radiation) and
+#: names the two adapters that do work, rather than handing RRTMGP radii
+#: the scheme never computed.  ``test_every_accepted_selector_is_judged``
+#: below asserts the partition is exact and that each refusal really
+#: fires, so a selector cannot land here by being forgotten.
+_NO_RTE_RRTMGP_CLOUD_OPTICS = (9, 50)
+
+#: The selectors the RTE+RRTMGP cross-checks below may actually drive.
+#: Derived, so a scheme cannot be dropped from coverage by hand.
+_RTE_RRTMGP_COUPLED_MP_PHYSICS = tuple(
+    mp for mp in _ACCEPTED_MP_PHYSICS
+    if mp not in _NO_RTE_RRTMGP_CLOUD_OPTICS)
+
+
+def test_every_accepted_selector_is_judged():
+    """The partition is exact, and the uncoupled half really refuses.
+
+    Every selector ``validate_run_config`` admits is either coupled to
+    RTE+RRTMGP by a row in ``_MP_CLOUD_OPTICS_SCHEME`` or refused against
+    the 4/4 pair by name, with the remedy stated.  Nothing may be in
+    neither set: that is the state mp=50 shipped in at 1.9 -- admitted,
+    uncoupled, unrefused -- and it died at the first radiation call rather
+    than at the door.
+    """
+    from gpuwm.config import RunConfig, validate_run_config
+    from gpuwm.core.rrtmgp import _MP_CLOUD_OPTICS_SCHEME
+
+    coupled = set(_MP_CLOUD_OPTICS_SCHEME)
+    uncoupled = set(_NO_RTE_RRTMGP_CLOUD_OPTICS)
+    assert coupled.isdisjoint(uncoupled)
+    assert coupled | uncoupled == set(_ACCEPTED_MP_PHYSICS), (
+        "these accepted selectors are neither coupled nor refused: "
+        f"{sorted(set(_ACCEPTED_MP_PHYSICS) - coupled - uncoupled)}")
+
+    for mp_physics in sorted(uncoupled):
+        cfg = RunConfig(
+            nx=4, ny=3, nz=12, dx=2000.0, dy=2000.0, ztop=8000.0, dt=10.0,
+            run_seconds=0.0, time_step_sound=4, moist=True,
+            mp_physics=mp_physics, ra_lw_physics=4, ra_sw_physics=4)
+        with pytest.raises(NotImplementedError) as caught:
+            validate_run_config(cfg)
+        message = str(caught.value)
+        assert "has no cloud-optics coupling" in message, mp_physics
+        assert "ra_rrtmg_variant='rrtmg_legacy'" in message, mp_physics
+        # And the remedy is admitted, so the refusal is not a dead end.
+        validate_run_config(RunConfig(
+            nx=4, ny=3, nz=12, dx=2000.0, dy=2000.0, ztop=8000.0, dt=10.0,
+            run_seconds=0.0, time_step_sound=4, moist=True,
+            mp_physics=mp_physics, ra_lw_physics=0, ra_sw_physics=1))
 
 
 def test_the_accepted_selector_list_this_module_uses_is_the_real_one():
@@ -2875,8 +2934,21 @@ def test_the_accepted_selector_list_this_module_uses_is_the_real_one():
     The three cross-checks below iterate this tuple; if it silently drifted
     away from ``gpuwm/config.py`` they would stop covering a selector
     without failing.
+
+    ``admits`` classifies a refusal by WHICH SELECTOR it names, not by one
+    sentence's wording.  The generic tail says "mp_physics must be ...",
+    but a scheme gpuwm deliberately does not port gets a NAMED refusal
+    instead -- WDM5/WDM7 (gpuwm/config.py), and the P3 siblings on their
+    own lane -- and those say why rather than reciting the admitted set.
+    Matching one wording made this helper re-raise the named refusals, so
+    the drift detector this test exists to be became an ERROR at the first
+    scheme that got a good refusal message.  It still cannot be silenced: a
+    ValueError that does not name ``mp_physics`` at all still propagates,
+    and the loop below is what decides admission, never a literal.
     """
     from gpuwm.config import RunConfig, validate_run_config
+
+    refusals = {}
 
     def admits(mp_physics):
         try:
@@ -2885,13 +2957,21 @@ def test_the_accepted_selector_list_this_module_uses_is_the_real_one():
                 dt=10.0, run_seconds=0.0, time_step_sound=4, moist=True,
                 mp_physics=mp_physics))
         except ValueError as error:
-            if "mp_physics must be" in str(error):
-                return False
-            raise
+            message = str(error)
+            if not message.startswith("mp_physics"):
+                raise
+            refusals[mp_physics] = message
+            return False
         return True
 
     admitted = tuple(mp for mp in range(0, 60) if admits(mp))
     assert admitted == _ACCEPTED_MP_PHYSICS
+    # The named refusals are the reason the helper cannot key on one
+    # sentence; pin that they exist, so a lane cannot "fix" a future
+    # mismatch by deleting the explanation.
+    assert "WDM5" in refusals[14] and "WDM7" in refusals[26]
+    assert all("mp_physics must be" in refusals[mp]
+               for mp in (2, 5, 55) if mp in refusals)
 
 
 def test_thompsonaero_mp28_resolves_to_the_thompson_cloud_optics_coupling():
@@ -2922,8 +3002,59 @@ def test_thompsonaero_mp28_resolves_to_the_thompson_cloud_optics_coupling():
     assert cloud_optics_scheme(28) == "thompson"
     assert cloud_optics_scheme(28) == cloud_optics_scheme(8)
     assert scheme_is_ice_active(cloud_optics_scheme(28)) is True
-    # Every accepted selector is judged; nothing falls through.
-    assert tuple(sorted(_MP_CLOUD_OPTICS_SCHEME)) == _ACCEPTED_MP_PHYSICS
+    # Every accepted selector is judged; nothing falls through.  A
+    # selector either has a cloud-optics row or is refused against
+    # RTE+RRTMGP by name -- see test_every_accepted_selector_is_judged.
+    assert (tuple(sorted(_MP_CLOUD_OPTICS_SCHEME))
+            == tuple(mp for mp in _ACCEPTED_MP_PHYSICS
+                     if mp not in _NO_RTE_RRTMGP_CLOUD_OPTICS))
+
+
+def test_wdm6_mp16_resolves_to_the_wsm6_cloud_optics_coupling():
+    """mp_physics=16 must get WSM6's radiative coupling, not Kessler's.
+
+    WRF v4.6.1 authority, all in the stock tree:
+
+    * ``Registry/Registry.EM_COMMON:3031`` --
+      ``package wdm6scheme mp_physics==16 - moist:qv,qc,qr,qi,qs,qg;
+      scalar:qnn,qnc,qnr;state:re_cloud,re_ice,re_snow`` -- WSM6's
+      (:3021) ``moist`` inventory character for character, plus three
+      transported numbers and the same three ``re_*`` state fields.
+    * ``phys/module_physics_init.F:1013`` names WDM6SCHEME in the same
+      ``use_mp_re`` disjunction as WSM6SCHEME (:1010), setting
+      ``has_reqc = has_reqi = has_reqs = 1`` (:1021-1023); the P3 /
+      Jensen-Ishmael ``has_reqs = 0`` override (:1027-1033) omits it.
+    * ``module_radiation_driver.F``'s ``cal_cldfra1`` branches on
+      ``mp_physics`` only for Ferrier (:3926-3937); WDM6 takes the
+      ``F_QI .and. F_QC .and. F_QS`` arm at :3870-3877.
+
+    The consequence of getting this wrong is not subtle and is the reason
+    the table fails closed: an unmapped selector used to fall through to
+    Kessler, and mp=28 spent four waves radiating overcast ice as clear
+    sky.  What is CHECKED here is that mp=16 lands on the explicit-radius,
+    ice-active branch -- WDM6's droplet radius is built from prognostic nc
+    (effectRad_wdm6, module_mp_wdm6.F:3203-3213), but that changes the
+    values the scheme supplies, not the branch that consumes them.
+    """
+    from gpuwm.core.rrtmgp import (_MP_CLOUD_OPTICS_SCHEME,
+                                   cloud_optics_scheme, scheme_is_ice_active)
+
+    assert cloud_optics_scheme(16) == "wsm6"
+    assert cloud_optics_scheme(16) == cloud_optics_scheme(6)
+    assert scheme_is_ice_active(cloud_optics_scheme(16)) is True
+    assert cloud_optics_scheme(16) != "kessler"
+    # Every accepted selector is judged; nothing falls through.  A
+    # selector either has a cloud-optics row or is refused against
+    # RTE+RRTMGP by name -- see test_every_accepted_selector_is_judged.
+    assert (tuple(sorted(_MP_CLOUD_OPTICS_SCHEME))
+            == tuple(mp for mp in _ACCEPTED_MP_PHYSICS
+                     if mp not in _NO_RTE_RRTMGP_CLOUD_OPTICS))
+    # ... and the legacy engine agrees, which is the pairing that used to
+    # make ice clouds appear or vanish with the radiation selector.
+    from gpuwm.core.rrtmg_legacy import _MP_DECLARES_RADII, legacy_ice_active
+
+    assert legacy_ice_active(16) is True
+    assert _MP_DECLARES_RADII[16] is True
 
 
 def test_cloud_optics_scheme_fails_closed_on_an_unmapped_selector():
@@ -2956,7 +3087,7 @@ def test_both_radiation_engines_agree_on_which_schemes_carry_ice():
     from gpuwm.core.rrtmg_legacy import (
         _MP_DECLARES_RADII, legacy_ice_active)
 
-    for mp_physics in _ACCEPTED_MP_PHYSICS:
+    for mp_physics in _RTE_RRTMGP_COUPLED_MP_PHYSICS:
         scheme = cloud_optics_scheme(mp_physics)
         assert scheme_is_ice_active(scheme) == legacy_ice_active(mp_physics), (
             f"mp_physics={mp_physics}: RTE+RRTMGP says ice_active="
@@ -3348,7 +3479,7 @@ def test_preflight_prices_radius_columns_for_exactly_the_schemes_that_use_them()
             np.ravel(cp.asnumpy(getattr(result, name)))
             for name in ("rthratenlw", "rthratensw", "swdown", "glw")])
 
-    for mp_physics in _ACCEPTED_MP_PHYSICS:
+    for mp_physics in _RTE_RRTMGP_COUPLED_MP_PHYSICS:
         cfg = RunConfig(
             nx=4, ny=3, nz=12, dx=2000.0, dy=2000.0, ztop=8000.0, dt=10.0,
             run_seconds=0.0, time_step_sound=4, moist=True,

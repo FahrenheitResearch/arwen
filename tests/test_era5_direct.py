@@ -89,6 +89,21 @@ def test_root_static_can_be_built_directly_from_wps_geog(
             or fields
         ),
     )
+    # The land-use attributes come from the SAME catalog the statics were
+    # built from, so the water-temperature assembly and the statics cannot
+    # disagree about which category is a lake.
+    attrs = {"MMINLU": "MODIFIED_IGBP_MODIS_NOAH", "ISWATER": 17,
+             "ISLAKE": 21, "ISICE": 15, "ISURBAN": 13}
+    monkeypatch.setattr(
+        era5_direct,
+        "geog_selection_from_catalog",
+        lambda actual_catalog, domain_id: (
+            observed.update(
+                selection_catalog=actual_catalog,
+                selection_domain_id=domain_id)
+            or SimpleNamespace(landuse_global_attrs=lambda: attrs)
+        ),
+    )
     plane = np.ones((2, 3), dtype=np.float64)
     grid = SimpleNamespace(
         mapfac_m=lambda: plane,
@@ -99,13 +114,16 @@ def test_root_static_can_be_built_directly_from_wps_geog(
     )
     cfg = SimpleNamespace(ny=2, nx=3)
 
-    static, actual_receipt = era5_direct._static_from_geog(
+    static, actual_receipt, landuse_attrs = era5_direct._static_from_geog(
         tmp_path / "namelist.wps", tmp_path / "WPS_GEOG", grid, cfg)
     assert actual_receipt is receipt
     assert observed["ids"] == (1,)
     assert observed["catalog"] is catalog
     assert observed["domain_id"] == 1
     assert static["MAPFAC_U"].shape == (2, 4)
+    assert landuse_attrs is attrs
+    assert observed["selection_catalog"] is catalog
+    assert observed["selection_domain_id"] == 1
 
 
 def test_static_validation_rejects_zero_terrain_over_land_before_export():

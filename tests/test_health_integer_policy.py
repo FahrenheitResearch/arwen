@@ -111,7 +111,22 @@ _NX, _NY, _NZ = 3, 2, 8
 #: km_opt=0, which ``_config`` does not set), so it contributed 16
 #: refusals and zero admissions.  Scheme 11 is the first PBL addition
 #: since that actually lands in the admitted set.
-_ROUTED_COMBINATIONS = 41
+#:
+#: MYJ RE-MEASURE, 2026-08-09 (lane/port-myj).  This port routes TWO new
+#: selectors at once -- sf_sfclay_physics=2 and bl_pbl_physics=2 -- so the
+#: product goes 4 x 4 x 5 = 80 to 5 x 4 x 6 = 120, and the admitted count
+#: is re-measured, not projected:
+#:
+#:   admitted 45 = 13 (pbl 0) + 8 (pbl 1) + 4 (pbl 2) + 12 (pbl 5)
+#:                  + 8 (pbl 11) + 0 (SASE)
+#:
+#: MYJ's own 4 is one per land-surface value at the single surface layer
+#: it admits, which is what a PAIRED scheme looks like on this axis:
+#: every other PBL here spreads over two or three surface layers, and MYJ
+#: over exactly one (module_physics_init.F:3770-3772).  The 4 new
+#: sfclay=2 cells under the other PBLs are all refused by
+#: validate_myj_pairing, which is the reverse half of the same law.
+_ROUTED_COMBINATIONS = 45
 
 #: Every int32 descriptor the routed cross-product actually produces.
 _INT32_DESCRIPTORS = frozenset({

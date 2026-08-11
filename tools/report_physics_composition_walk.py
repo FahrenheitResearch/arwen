@@ -176,9 +176,15 @@ class Axis:
 #: MEASURES each of these sets against the loader rather than trusting the
 #: transcription.
 AXES = (
-    Axis("mp_physics", (0, 1, 6, 8, 10, 18, 28),
+    # Re-derived from the production validator at the 1.9 assembly, not
+    # from a test's assertion error: 9 (Milbrandt-Yau), 16 (WDM6) and 50
+    # (P3 one-category) are admitted by the same inline check that admits
+    # the rest, so they belong in the swept set.  Leaving them out shrank
+    # the measured space while the schema advertised them.
+    Axis("mp_physics", (0, 1, 6, 8, 9, 10, 16, 18, 28, 50),
          "gpuwm.config.validate_run_config, inline 'mp_physics must be' "
-         "check"),
+         "check, plus its two by-name gates -- _P3_UNPORTED_VARIANTS and "
+         "the WDM5/WDM7 siblings -- each of which recites the same menu"),
     Axis("bl_pbl_physics", tuple(PBL_SCHEMES),
          "gpuwm.config.PBL_SCHEMES"),
     Axis("sf_sfclay_physics", tuple(SURFACE_LAYER_SCHEMES),
@@ -406,15 +412,67 @@ REMEDIES = (
                "YSU fatals unless isfc=1, which is sf_sfclay_physics 1 or 91",
      "before": _suite(bl_pbl_physics=1, sf_sfclay_physics=5),
      "after": _suite(bl_pbl_physics=1, sf_sfclay_physics=1)},
+    # The two MYJ rules.  The PBL and its surface layer refuse in both
+    # directions, so both directions carry a pair: neither message is
+    # allowed to be the one that sends a user nowhere.
+    {"id": "myj-pbl-requires-the-eta-surface-layer",
+     "remedy": "'bl_pbl_physics=2 (MYJ) requires sf_sfclay_physics=2 (Eta "
+               "similarity)' -- so move the surface layer, which is the "
+               "only producer of the AKHS/AKMS/THZ0/QZ0/UZ0/VZ0 lower "
+               "boundary MYJ solves against",
+     "before": _suite(bl_pbl_physics=2, sf_sfclay_physics=1),
+     "after": _suite(bl_pbl_physics=2, sf_sfclay_physics=2)},
+    {"id": "eta-surface-layer-is-admitted-with-myj-only",
+     "remedy": "'Select sf_sfclay_physics=1 (revised MM5) or 91 (classic "
+               "MM5) for those schemes, or bl_pbl_physics=2 for this one' "
+               "-- followed the second way, which keeps the Eta surface "
+               "layer the config asked for",
+     "before": _suite(bl_pbl_physics=1, sf_sfclay_physics=2),
+     "after": _suite(bl_pbl_physics=2, sf_sfclay_physics=2)},
+    {"id": "rrtm-longwave-is-the-classic-dudhia-pair",
+     "remedy": "'ra_lw_physics=1 (WRF RRTM longwave) is implemented only as "
+               "WRF's classic pair with ra_sw_physics=1 (Dudhia "
+               "shortwave)' -- so set the shortwave the pair names",
+     "before": _suite(ra_lw_physics=1, ra_sw_physics=4),
+     "after": _suite(ra_lw_physics=1, ra_sw_physics=1)},
+    # The MP9 cloud-optics refusal offers two remedies.  The pair follows
+    # the SECOND, "select ra_lw_physics=0/ra_sw_physics=1 (Dudhia)",
+    # because it moves only axes this walk already sweeps; the first,
+    # ra_rrtmg_variant='rrtmg_legacy', is a non-axis knob and pinned in
+    # the MP9 lane's own suite.
+    {"id": "milbrandt-yau-has-no-rrtmgp-cloud-optics",
+     "remedy": "'select ra_lw_physics=0/ra_sw_physics=1 (Dudhia)' -- the "
+               "scheme publishes no effective radii for RRTMGP to consume, "
+               "so the remedy leaves the RTE+RRTMGP variant",
+     "before": _suite(mp_physics=9, ra_lw_physics=4, ra_sw_physics=4),
+     "after": _suite(mp_physics=9, ra_lw_physics=0, ra_sw_physics=1)},
+    # P3's sibling of the same rule, added at the 1.9 gate.  mp=50 was
+    # ADMITTED against RTE+RRTMGP and died at the first radiation call
+    # (gpuwm/core/rrtmgp.py resolves a cloud-optics row per selector and
+    # has none for 50); gpuwm.config.validate_p3_radiation now refuses it
+    # up front, and this pair is what proves the advice it gives works.
+    # The reason differs from Milbrandt-Yau's and is not interchangeable
+    # with it: P3 IS in WRF's use_mp_re disjunction and does supply cloud
+    # and ice radii, but has_reqs=0 (module_physics_init.F:1027-1033) and
+    # its single ice category has no separate snow species, so there is no
+    # snow radius for any existing row to consume.
+    {"id": "p3-has-no-rrtmgp-cloud-optics",
+     "remedy": "'select ra_lw_physics=0/ra_sw_physics=1 (Dudhia)' -- P3 "
+               "supplies no snow radius and every RTE+RRTMGP row assumes "
+               "one, so the remedy leaves the RTE+RRTMGP variant",
+     "before": _suite(mp_physics=50, ra_lw_physics=4, ra_sw_physics=4),
+     "after": _suite(mp_physics=50, ra_lw_physics=0, ra_sw_physics=1)},
     {"id": "sase-supplies-its-own-horizontal-mixing",
      "remedy": "'Set km_opt=0.'",
      "before": _suite(**_SASE, ra_lw_physics=4, ra_sw_physics=4) | {
          "km_opt": 1},
      "after": _suite(**_SASE)},
-    {"id": "rrtm-longwave-not-executable",
-     "remedy": "'Use 0 (off), 4 (RTE+RRTMGP, with ra_sw_physics=4) or 90'",
-     "before": _suite(ra_lw_physics=1, ra_sw_physics=1),
-     "after": _suite(ra_lw_physics=4, ra_sw_physics=4)},
+    # rrtm-longwave-not-executable is deliberately ABSENT.  It was a
+    # remedy row for a refusal that no longer exists: WRF RRTM longwave
+    # with Dudhia shortwave is ported, so ra_lw_physics=1 with
+    # ra_sw_physics=1 is ACCEPTED and there is nothing to follow through
+    # on.  A remedy row whose "before" case is accepted measures nothing,
+    # and tier F reads that as a broken remedy rather than a retired one.
     {"id": "land-surface-needs-a-surface-layer",
      "remedy": "'requires a surface layer (sf_sfclay_physics != 0)'",
      "before": _suite(bl_pbl_physics=0, sf_sfclay_physics=0,
@@ -795,6 +853,22 @@ class Walk:
                 combination[axis.name] = candidate
                 outcome = self.run(
                     "E-schema-scan", combination, axis.name)
+                # The predicate asks "did the loader recite this axis's
+                # whole menu", which is the shape every VALUE refusal
+                # takes and no COMBINATION refusal does.
+                #
+                # mp_physics has two value gates -- the generic unknown
+                # branch and the P3 siblings 51/52/53, which state their
+                # own missing physics -- and BOTH recite the menu, via
+                # gpuwm.config._MP_PHYSICS_SCHEMA_MENU.  That is a
+                # producer-side invariant, deliberately: a widening here
+                # to match "<axis>=<value>" plus "is not ported" was
+                # tried and rejected, because it also matches the km_opt=2
+                # COMPOSITION refusal, whose message legitimately contains
+                # both, and it dropped a genuinely in-schema value.  A
+                # value refusal is not separable from a combination
+                # refusal by classifying free text, so the two are kept
+                # distinguishable where they are written.
                 schema_refusal = (
                     outcome.verdict == "REFUSED"
                     and f"{axis.name} must be" in outcome.message)

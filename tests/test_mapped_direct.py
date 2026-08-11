@@ -184,6 +184,13 @@ class _Selection:
     def path(self, field):
         return self._geog_root / f"{field}.bin"
 
+    def landuse_global_attrs(self):
+        # The route reads ISLAKE from here to tell an inland body from the
+        # ocean before assembling water temperature; a real GeogSelection
+        # reads it out of the GEOG index.
+        return {"MMINLU": "MODIFIED_IGBP_MODIS_NOAH", "ISWATER": 17,
+                "ISLAKE": 21, "ISICE": 15, "ISURBAN": 13}
+
 
 def _write(path: Path, contents: bytes = b"test") -> Path:
     path.write_bytes(contents)
@@ -222,10 +229,17 @@ def _install_prepare_fakes(
     states = tuple(_State() for _ in snapshots)
     results = tuple(SimpleNamespace(state=state) for state in states)
     mets = tuple(
-        SimpleNamespace(fields={
-            "frame": index,
-            "SOURCE_OROGRAPHY": np.full((2, 2), 123.0 + index),
-        })
+        SimpleNamespace(
+            fields={
+                "frame": index,
+                "SOURCE_OROGRAPHY": np.full((2, 2), 123.0 + index),
+            },
+            # The finished field the assembly hands back on this route.
+            # The soil assertion below proves THIS array is what the
+            # router consumed, which is what stops a receipt from
+            # describing a field nobody used.
+            water_temperature=np.full((2, 2), 284.0 + index),
+        )
         for index in range(len(snapshots))
     )
     boundaries = object()
@@ -330,6 +344,20 @@ def _install_prepare_fakes(
             np.asarray(static["LANDMASK"]) >= 0.5,
             err_msg="mapped lane must pass the static landmask as the "
                     "masked-field target classification")
+        # ... and it must name its water statics, or the assembly runs
+        # with no lake class and a lake joined to the sea by a coarse
+        # coastline can share the ocean's provider.  This route reaches
+        # every rw-wps composition, 20CRv3 included.
+        statics = kwargs["water_temperature_statics"]
+        assert statics is not None
+        assert statics.route == mapped_direct._WATER_ROUTE
+        assert statics.lake_category == 21
+        np.testing.assert_array_equal(
+            statics.lake,
+            np.asarray(static["LU_INDEX"]) == 21,
+            err_msg="mapped lane must name lakes from the land-use "
+                    "table's own ISLAKE")
+        calls.setdefault("water_statics", []).append(statics)
         return mets[snapshots.index(source)]
 
     def initialize(met, *_args, **_kwargs):
@@ -386,6 +414,13 @@ def _install_prepare_fakes(
             mets[0].fields["SOURCE_OROGRAPHY"],
             err_msg="mapped soil must receive the composition source "
                     "orography for the elevation lapse")
+        # RECEIPT IMPLIES CONSUMPTION.  The route pays for an assembly
+        # and prints a policy receipt; the field the router integrates
+        # has to be that assembly and not the per-cell fuse behind it.
+        assert kwargs["water_temperature"] is mets[0].water_temperature
+        assert kwargs["route"] == mapped_direct._WATER_ROUTE
+        assert kwargs["water_temperature_policy"] == (
+            "era5_class_coherent")
         return soil
 
     monkeypatch.setattr(

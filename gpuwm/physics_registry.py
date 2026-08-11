@@ -349,6 +349,89 @@ def _same_value(left: object, right: object) -> bool:
         return False
 
 
+def _conditional_refusals(constraints: Mapping[str, object]) -> list[dict]:
+    """``constraints.refused_when``, the CONDITIONAL refusal rules.
+
+    The other three constraint kinds each ask ONE question:
+    ``required_settings`` about a setting, ``forbidden_setting_values``
+    about a setting's value, ``requires_components`` about a sibling
+    component.  A real coupling is sometimes a conjunction across those
+    kinds, and until 1.9 the registry could not say one: mp_physics=9 is
+    refused with RTE+RRTMGP only when the RTE+RRTMGP ADAPTER is selected,
+    and the adapter is chosen by the ``ra_rrtmg_variant`` PARAMETER over
+    the same radiation component option that the legacy adapter uses.  The
+    coupling was therefore written as prose in ``extensions`` -- which
+    nothing evaluates -- and the registry told launchers a configuration
+    was startable that ``validate_run_config`` refused, 320 combinations
+    of it (tests/test_authority_agreement.py).
+
+    A rule is a mapping with a human ``reason`` and any of:
+
+    ``components``
+        ``{component_id: [option_id, ...]}`` -- every named component must
+        resolve to one of the listed options.
+    ``settings``
+        ``{setting: [value, ...]}`` -- every named setting must resolve to
+        one of the listed values.  A setting the plan does not carry falls
+        back to the registry's own declared default for that parameter, so
+        a rule cannot be dodged by leaving the knob at its default.
+
+    An empty rule fires on everything, which is never what anyone means,
+    so it is treated as no rule at all rather than as an unconditional
+    refusal.
+    """
+
+    rules = constraints.get("refused_when", [])
+    if not isinstance(rules, list):
+        return []
+    return [
+        rule for rule in rules
+        if isinstance(rule, dict)
+        and isinstance(rule.get("reason"), str)
+        and (isinstance(rule.get("components"), dict)
+             or isinstance(rule.get("settings"), dict))
+    ]
+
+
+def _effective_setting(
+    name: str,
+    settings: Mapping[str, object],
+    parameter_specs: Mapping[str, object],
+) -> object:
+    """A setting's resolved value, or the registry's declared default."""
+
+    if name in settings:
+        return settings[name]
+    spec = parameter_specs.get(name)
+    return spec.get("default") if isinstance(spec, Mapping) else None
+
+
+def _conditional_refusal_fires(
+    rule: Mapping[str, object],
+    resolved_components: Mapping[str, str],
+    settings: Mapping[str, object],
+    parameter_specs: Mapping[str, object],
+) -> bool:
+    """Does every clause of one :func:`_conditional_refusals` rule hold?"""
+
+    required_components = rule.get("components")
+    if isinstance(required_components, Mapping):
+        for component_id, option_ids in required_components.items():
+            if not isinstance(option_ids, list):
+                return False
+            if resolved_components.get(component_id) not in option_ids:
+                return False
+    required_settings = rule.get("settings")
+    if isinstance(required_settings, Mapping):
+        for name, values in required_settings.items():
+            if not isinstance(values, list):
+                return False
+            observed = _effective_setting(name, settings, parameter_specs)
+            if not any(_same_value(observed, value) for value in values):
+                return False
+    return True
+
+
 def _empty_validation(
     registry: Mapping[str, object], plan: object
 ) -> dict[str, object]:
@@ -1378,6 +1461,18 @@ def validate_physics_plan(
                                 f"option {option_id!r} requires {required_id} in {allowed_options!r}",
                             )
                         )
+            for rule in _conditional_refusals(constraints):
+                if _conditional_refusal_fires(
+                    rule, resolved_components, settings, parameter_specs
+                ):
+                    errors.append(
+                        _issue(
+                            "component-conditional-refusal",
+                            f"{base_path}.components.{component_id}",
+                            f"option {option_id!r} is refused here: "
+                            f"{rule['reason']}",
+                        )
+                    )
 
         if (
             isinstance(route, dict)

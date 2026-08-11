@@ -196,9 +196,43 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # the commit that adds the module, per the rule this file states,
     # rather than in a later sweep.
     'gpuwm/core/moist_n2_mutation.py': {},
+    # Milbrandt-Yau (mp_physics=9).  Zero, and deliberately so: every one of
+    # the thirteen scratch volumes the six kernels pass to one another is a
+    # named ``DomainState.scratch`` slot the adapter owns, so the allocation
+    # gate budgets them and nothing is created per step.  The module does hold
+    # ONE device buffer the scanner cannot see -- ``_constants_device()``
+    # uploads the 154-entry FP32 constant table with ``cp.asarray``, which is
+    # not in ``_ALLOCATORS``.  It is 616 bytes, module-global, guarded by a
+    # None check and therefore once per PROCESS, not once per step, per domain
+    # or per call; ``launch_milbrandt2`` reads it and never rebinds it.
+    'gpuwm/core/milbrandt2.py': {},
     'gpuwm/core/morrison.py': {
         'launch_morrison': 3,
     },
+    # MYJ (the 2/2 pair).  Entered here by the commit that closed the MYJ
+    # port's review -- the port itself added the two modules and never
+    # entered them, which is exactly the "appeared or vanished" case this
+    # scanner exists to catch, and it caught it.
+    #
+    # The PBL launcher has YSU's shape: four allocation sites building the
+    # eleven per-call outputs (one cp.empty comprehension for the eight 3-D
+    # fields, three cp.empty for pblh/kpbl/mixht).  They are PRICED, which
+    # is what makes them a cost rather than a hazard --
+    # gpuwm/core/preflight.py's myj_output_transient_shapes enumerates
+    # every one of them by name, on the ysu_output_transient_shapes
+    # contract.  That enumeration is a SECOND copy of the launcher's
+    # roster -- preflight cannot import a CuPy-importing module -- so it
+    # is held to the first copy by tests/test_myj_port.py::
+    # test_preflights_myj_output_roster_matches_the_launchers.  Without
+    # that gate this row would price a roster nothing checks, which is
+    # the state it shipped in until the port's re-verification.
+    'gpuwm/core/myjpbl.py': {
+        'myj_pbl_step': 4,
+    },
+    # The Eta surface layer allocates NOTHING per call: it writes into the
+    # driver's own persistent surface fields, so its row is empty and must
+    # stay empty.
+    'gpuwm/core/myjsfc.py': {},
     'gpuwm/core/mynn_pbl_gpu.py': {},
     'gpuwm/core/mynn_pbl_runtime.py': {
         '_validity_flags': 1,
@@ -407,6 +441,31 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # persistent slots -- the scanner finds no bare allocation, and this
     # empty row is the assertion of that, not an unfilled placeholder.
     'gpuwm/core/uh_diag.py': {},
+    # WDM6 (mp_physics=16).  ZERO, and the bound is WSM6's, because the
+    # adapter is WSM6's shape: every array it works in is a named
+    # ``state.scratch`` slot from the static registry (wdm6_theta/rho/pii/
+    # dz/z8w plus the seven shared mp_* surface slots), so preflight already
+    # prices all of them and the scanner correctly finds no bare allocation.
+    #
+    # Two per-call transients the AST scanner does NOT see are stated here
+    # rather than left implied, because "empty row" must mean measured-zero
+    # and not looked-away-from:
+    #   * ``cp.power(state.p / P0, RCP)`` on the Exner line, which is two
+    #     (nz,ny,nx) FP32 temporaries per call, freed before the kernel
+    #     launches.  It is byte-for-byte the line ``gpuwm/core/wsm6.py:111``
+    #     already runs under the same empty row, and the estimator's
+    #     microphysics transient envelope is what prices it.
+    #   * ``cp.ascontiguousarray(xland)``, which is at most ONE (ny,nx) FP32
+    #     plane and in practice zero: ``initialize_physics`` builds
+    #     ``fields["xland"]`` C-contiguous (physics.py:3774-3779), so the
+    #     call returns the same object.  The 3-D transients above dominate
+    #     it by a factor of 2*nz either way.
+    #
+    # This row belongs logically to ea7dcc296, the commit that added
+    # gpuwm/core/wdm6.py; that commit cannot be amended (forward commits
+    # only), so it is entered here with its bound rather than left to a
+    # later sweep -- which is exactly what this gate's message asks for.
+    'gpuwm/core/wdm6.py': {},
     'gpuwm/core/wsm6.py': {},
     'gpuwm/core/ysu.py': {
         # The precedent this rule follows and the reason it is a ratchet

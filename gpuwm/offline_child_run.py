@@ -54,6 +54,11 @@ _CAPABILITIES = {
     # refused by name (gpuwm/offline_child.py::
     # _CROSS_SCHEME_REFUSED_MP_PHYSICS), matching the online nest lane's
     # refusal in gpuwm/core/microphysics_transition.py.
+    # 16 (WDM6) is absent from BOTH lists and from OFFLINE_CHILD_MP_PHYSICS:
+    # this runner cannot read a WDM6 parent at all, because nn and NSSL's
+    # qnn share the QNCCN wrfout name and the field map has no
+    # scheme-qualified row.  It is cross-refused as well, so the mirror with
+    # the online lane stays exact.
     "same_scheme_mp_physics": [6, 8, 10, 18, 28],
     "cross_scheme_transitions": [],
     "vertical_remapping": False,

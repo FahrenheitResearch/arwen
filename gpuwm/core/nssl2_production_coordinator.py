@@ -18,6 +18,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from gpuwm.core.nssl2_contract import (
+    DEFAULT_MODE,
+    NSSL2Mode,
+    require_ported_nssl2_mode,
+)
 from gpuwm.core.nssl2_diagnostics import launch_radardd02
 from gpuwm.core.nssl2_driver_support import (
     NSSL2DriverWorkspace,
@@ -253,6 +258,7 @@ def run_nssl2_production_step(
     re_snow_m=None,
     validate_values: bool = True,
     workspace: NSSL2DriverWorkspace | None = None,
+    mode: NSSL2Mode = DEFAULT_MODE,
 ) -> NSSL2DriverWorkspace:
     """Run one fail-closed NSSL production step in official driver order.
 
@@ -269,9 +275,21 @@ def run_nssl2_production_step(
 
     Required callbacks and due output buffers are validated before gather, so
     a configuration error cannot leave the Registry partially advanced.
+
+    ``mode`` is the resolved WRF variant (see
+    :func:`gpuwm.core.nssl2_contract.resolve_nssl2_mode`).  It governs the
+    CCN load and store at this seam; the hail switch reaches the GS stage
+    through the caller's ``fused_gs`` callback, which owns it.  A callback
+    that DECLARES its switch (``NSSL2FusedGS.hail_on``, and anything else
+    exposing that attribute) is cross-checked against the mode below, so
+    the two halves of a variant cannot disagree.  A bare closure declares
+    nothing and cannot be checked here; on the shipped path that gap is
+    closed by ``NSSL2ProductionBinding.validate``, which the front door
+    (gpuwm/core/microphysics.py) refuses to run without.
     """
     if not isinstance(registry, NSSL2RegistryFields):
         raise TypeError("registry must be NSSL2RegistryFields")
+    require_ported_nssl2_mode(mode)
     if not isinstance(precipitation, NSSL2PrecipitationFields):
         raise TypeError("precipitation must be NSSL2PrecipitationFields")
     if workspace is not None and not isinstance(
@@ -279,6 +297,11 @@ def run_nssl2_production_step(
         raise TypeError("workspace must be NSSL2DriverWorkspace or None")
 
     fused_gs, condensation_hooks, finish = _validated_hooks(hooks)
+    declared_hail = getattr(fused_gs, "hail_on", None)
+    if declared_hail is not None and bool(declared_hail) is not mode.hail:
+        raise NSSL2ProductionConfigurationError(
+            f"NSSL fused-GS callback declares hail_on={declared_hail!r} "
+            f"but the resolved variant mode has hail={mode.hail!r}")
     _validate_due_configuration(
         output_due=output_due,
         radiation_due=radiation_due,
@@ -298,6 +321,7 @@ def run_nssl2_production_step(
         "qscuten": qscuten,
         "qicuten": qicuten,
         "qccuten": qccuten,
+        "predicted_ccn": mode.predicted_ccn,
     }
     if workspace is not None:
         # Keep the direct/oracle path backward compatible while making the
@@ -355,7 +379,9 @@ def run_nssl2_production_step(
             validate_values=validate_values,
         )
 
-    scatter_nssl2_driver_workspace(workspace, air_density, *registry_fields)
+    scatter_nssl2_driver_workspace(
+        workspace, air_density, *registry_fields,
+        predicted_ccn=mode.predicted_ccn)
     finish(workspace)
     return workspace
 

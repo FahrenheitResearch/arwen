@@ -323,6 +323,40 @@ RESTART_TOLERATED_DOMAIN_FIELDS = ("history_interval_s",)
 RESTART_TOLERATED_RUN_FIELDS = (
     "run_seconds", "output_interval_s", "restart_interval_s")
 
+#: ``mp_physics`` -> the RunConfig fields ONLY that scheme reads.  A domain
+#: running some other scheme drops them from its identity entirely rather
+#: than carrying them at their defaults -- the absent-stays-absent
+#: convention ``perturbation`` and the per-domain ``spawn`` declaration
+#: already use, applied to scheme-scoped knobs.
+#:
+#: This is not a relaxation of the restart contract, and the test that
+#: matters is whether any code path can read the field: under a different
+#: ``mp_physics`` no launcher, adapter, allocator or diagnostic touches
+#: them (``gpuwm/core/wdm6.py`` is the only reader of ``wdm6_hail_opt``,
+#: ``gpuwm/core/state.py``'s CCN fill the only reader of
+#: ``wdm6_ccn_conc``, ``gpuwm/core/nssl2_contract.py`` the only reader of
+#: the five NSSL selectors, and all of them sit behind their scheme's
+#: dispatch row).  ``validate_run_config`` REFUSES a non-default value on
+#: any other scheme for every field listed here, so off-scheme these
+#: fields can hold only their defaults and dropping them discards no
+#: information.  A field no path reads cannot move a trajectory, so
+#: binding it would buy no safety and would cost the thing that IS
+#: load-bearing: every experiment written before these schemes existed
+#: keeps its exact fingerprint, and every checkpoint those runs wrote
+#: stays resumable.  Under their own scheme the fields bind, value for
+#: value, because there they ARE the trajectory.
+#:
+#: The NSSL row was added at the 1.9 assembly.  Its five selectors landed
+#: unscoped and moved the pre-NSSL fingerprint anchor
+#: (``tests/test_water_overlay.py``), which is the exact regression this
+#: table exists to prevent; the anchor is back at its lane-base value with
+#: the row in place.  Every scheme-scoped knob goes here.
+SCHEME_SCOPED_RUN_FIELDS: dict[int, tuple[str, ...]] = {
+    16: ("wdm6_hail_opt", "wdm6_ccn_conc"),
+    18: ("nssl_2moment_on", "nssl_hail_on", "nssl_ccn_on",
+         "nssl_density_on", "nssl_3moment"),
+}
+
 
 def restart_identity_payload(exp) -> dict:
     """The experiment, minus everything a restart may legally change.
@@ -358,6 +392,14 @@ def restart_identity_payload(exp) -> dict:
         run = domain.get("run", {})
         for name in RESTART_TOLERATED_RUN_FIELDS:
             run.pop(name, None)
+        # Scheme-scoped knobs leave the identity of every domain that does
+        # not select their scheme (:data:`SCHEME_SCOPED_RUN_FIELDS`).
+        selected = run.get("mp_physics")
+        for scheme, names in SCHEME_SCOPED_RUN_FIELDS.items():
+            if selected == scheme:
+                continue
+            for name in names:
+                run.pop(name, None)
     return experiment
 
 

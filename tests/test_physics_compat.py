@@ -97,7 +97,72 @@ def test_every_shipped_profile_answers_its_own_implicit_switches():
     assert implicit_runtime_switches()["profiles"] == ()
 
 
-def test_front_door_capability_refusal_cites_unimplemented_registry_option():
+def test_no_shipped_selector_reachable_option_is_unimplemented():
+    """Why the refusal below is driven against a PERTURBED registry.
+
+    This case used to run the 1/1 WRF RRTM + Dudhia pair through the front
+    door and expect a refusal, because ``radiation/wrf-rrtm-dudhia`` was
+    registered-but-unimplemented.  814a68ffc ("wire(rrtm): the 1/1 pair
+    becomes selectable, and the ladder loses a rung") WIRED that pair --
+    gpuwm/config.py stopped raising for ra_lw_physics=1,
+    gpuwm/core/physics.py bound (1,1) to RRTMDudhiaRadiation, and the
+    registry row flipped to implemented=true.  That lane repointed the
+    sibling case in tests/test_physics_registry.py and missed this one,
+    so it went on asserting a refusal that had correctly stopped firing.
+
+    THE GUARD DID NOT BREAK.  The branch is still in
+    gpuwm/physics_compat.py::_resolve_physics_component_options and still
+    refuses; what it lost is a witness.  The one registered-but-
+    unimplemented option left in the whole registry is
+    ``microphysics/sase``, and it carries NO selectors, so no
+    configuration can name it and the selector resolver can never make it
+    a candidate.  This test states that fact -- and fails the day it stops
+    being true, which is the day a real witness exists and the perturbed
+    case below should be replaced by it.
+    """
+
+    from gpuwm.physics_registry import physics_registry
+
+    registry = physics_registry()
+    unwitnessed = [
+        (component_id, option_id)
+        for component_id, component in registry["components"].items()
+        if component.get("selector_keys")
+        for option_id, option in component["options"].items()
+        if option.get("implemented") is not True and option.get("selectors")
+    ]
+    assert unwitnessed == [], (
+        "these options are selector-reachable AND unimplemented, so the "
+        "front-door refusal has a real witness again: drive "
+        "test_front_door_capability_refusal_cites_unimplemented_registry_"
+        f"option from {unwitnessed} instead of from a perturbed registry")
+
+
+def test_front_door_capability_refusal_cites_unimplemented_registry_option(
+        monkeypatch):
+    """The refusal names the pointer, the blocker and the selectors.
+
+    Driven against a deep copy with ``radiation/wrf-rrtm-dudhia`` flipped
+    back to unimplemented -- the exact shape the shipped registry carried
+    until 814a68ffc -- because the shipped registry no longer contains a
+    selector-reachable unimplemented option (see the test above).  The
+    perturbation is on a copy; the shipped registry is not touched.
+    """
+
+    from copy import deepcopy
+
+    import gpuwm.physics_registry as registry_module
+
+    blocker = "Not implemented: the 1/1 WRF RRTM+Dudhia pair"
+    perturbed = deepcopy(registry_module.physics_registry())
+    option = perturbed["components"]["radiation"]["options"][
+        "wrf-rrtm-dudhia"]
+    assert option["selectors"] == {"ra_lw_physics": 1, "ra_sw_physics": 1}
+    option["implemented"] = False
+    option["reachability"] = {"state": "unreachable", "blocker": blocker}
+    monkeypatch.setattr(registry_module, "physics_registry",
+                        lambda *a, **k: perturbed)
+
     selected = single_domain_runtime_switches(WSM6_PROFILE_ID)
     selected.update(ra_lw_physics=1, ra_sw_physics=1)
 
@@ -109,8 +174,22 @@ def test_front_door_capability_refusal_cites_unimplemented_registry_option():
         "gpuwm/physics_registry_v2.json#/components/radiation/options/"
         "wrf-rrtm-dudhia"
     ) in message
-    assert "Not implemented: the 1/1 WRF RRTM+Dudhia pair" in message
+    assert blocker in message
     assert "selectors {'ra_lw_physics': 1, 'ra_sw_physics': 1}" in message
+
+
+def test_the_1_1_pair_that_814a68ffc_wired_is_admitted():
+    """The other half of the widening: the pair now RUNS.
+
+    A refusal that stopped firing is only correct if the thing it refused
+    works.  This is the positive statement 814a68ffc earned, and it is
+    what stops the case above from being restored by reflex.
+    """
+
+    selected = single_domain_runtime_switches(WSM6_PROFILE_ID)
+    selected.update(ra_lw_physics=1, ra_sw_physics=1)
+    resolved = validate_physics_capabilities(selected)
+    assert resolved["radiation"] == "wrf-rrtm-dudhia"
 
 
 def test_mixed_mynn_pairings_follow_wrf_v461_instead_of_a_half_suite_gate():

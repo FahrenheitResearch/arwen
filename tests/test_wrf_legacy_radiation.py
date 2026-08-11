@@ -34,18 +34,20 @@ def test_split_radiation_config_preserves_legacy_and_validates_pairs():
     split = _cfg(ra_lw_physics=1, ra_sw_physics=1, icloud=1, swrad_scat=0.7)
     assert radiation_scheme_ids(split) == (1, 1)
     assert radiation_enabled(split)
-    # ...and validate_run_config REFUSES it, because the registry registers
-    # radiation.wrf-rrtm-dudhia as implemented=false and gpuwm/core/physics.py
-    # initialize_physics has always raised NotImplementedError for it at
-    # driver construction.  This used to validate cleanly and then die three
-    # allocations later; tests/test_authority_agreement.py
-    # ::test_an_unimplemented_option_is_refused_when_its_selectors_are_forced
-    # is what found that, and this is the same refusal asserted from the
-    # radiation side.  When the 16-band/140-g-point port lands, the arm in
-    # gpuwm/config.py goes with it and this becomes a success again.
-    with pytest.raises(NotImplementedError, match="ra_lw_physics=1"):
-        validate_run_config(_cfg(
-            ra_lw_physics=1, ra_sw_physics=1, icloud=1, swrad_scat=0.7))
+    # ...and validate_run_config now ACCEPTS it.  This arm asserted a
+    # NotImplementedError while radiation.wrf-rrtm-dudhia was registered
+    # implemented=false; the 16-band/140-g-point port landed
+    # (gpuwm/core/rrtm_lw.py) and the refusal in gpuwm/config.py went with
+    # it.  What survives is the narrower refusal: RRTM longwave is
+    # implemented only as WRF's classic pair, so any other shortwave
+    # selector beside ra_lw_physics=1 is still rejected rather than
+    # resolved to an adjacent scheme.
+    validate_run_config(_cfg(
+        ra_lw_physics=1, ra_sw_physics=1, icloud=1, swrad_scat=0.7))
+    for shortwave in (0, 90):
+        with pytest.raises(ValueError, match="ra_sw_physics=1"):
+            validate_run_config(_cfg(
+                ra_lw_physics=1, ra_sw_physics=shortwave))
     with pytest.raises(ValueError, match="both be explicit"):
         validate_run_config(_cfg(ra_lw_physics=1))
     with pytest.raises(ValueError, match="do not mix"):
@@ -283,19 +285,40 @@ def test_dudhia_adapter_enters_production_driver_radiation_seam(
     }
 
 
-def test_rrtm_pair_fails_at_setup_without_approximate_substitution(
-        monkeypatch):
-    """The incomplete LW solver cannot masquerade as a finished port."""
+def test_rrtm_pair_resolves_to_the_composed_adapter(monkeypatch):
+    """The 1/1 pair binds to RRTM+Dudhia, and to nothing adjacent.
+
+    This asserted a NotImplementedError while the longwave solver was
+    unfinished.  The port landed, so the subject changes from "refuses"
+    to "resolves to exactly the right thing": the resolver must reach
+    RRTMDudhiaRadiation and must not fall through to the RTE+RRTMGP or
+    analytic adapters, which is the substitution the old refusal existed
+    to prevent.
+    """
     import gpuwm.core.physics as physics
+    from gpuwm.core.rrtm_lw import RRTMDudhiaRadiation
 
     cfg = _cfg(ra_lw_physics=1, ra_sw_physics=1)
     monkeypatch.setattr(physics, "physics_driver_required", lambda _cfg: True)
-    with pytest.raises(NotImplementedError, match="no approximate LW"):
+    built = {}
+
+    class _Recorded(RRTMDudhiaRadiation):
+        def __post_init__(self):
+            built["adapter"] = self
+
+    monkeypatch.setattr("gpuwm.core.rrtm_lw.RRTMDudhiaRadiation", _Recorded)
+    # The resolver runs before any allocation the driver needs, so a bare
+    # namespace state gets us past the binding and no further.
+    with pytest.raises(AttributeError):
         physics.initialize_physics(
             SimpleNamespace(), cfg,
             radiation_start_time=datetime(1974, 4, 3, 12),
             radiation_latitude=np.zeros((1, 2), np.float32),
             radiation_longitude=np.zeros((1, 2), np.float32))
+    adapter = built.get("adapter")
+    assert isinstance(adapter, RRTMDudhiaRadiation), built
+    assert adapter.icloud == cfg.icloud
+    assert adapter.swrad_scat == cfg.swrad_scat
 
 
 def _dudhia_parity_inputs(ncol=19, nlay=23):

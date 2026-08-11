@@ -1647,16 +1647,22 @@ def _decoder_route_check(source: str) -> Check:
             remedy or bridges.bridge_remedy(bridges.SOURCE_DECODERS[source]),
             action=_build_action(), brief="not resolvable",
             group=_GROUP_ROUTE)
-    executable = bridges.SOURCE_DECODERS[source]
-    ok, evidence = bridges.bridge_abi_matches(executable, found)
-    if not ok:
+    except bridges.DecoderContractError as error:
+        # The resolver owns the contract check now, so this arm reports
+        # what preparation would refuse rather than re-deriving it.  A
+        # stale binary reaches exactly one verdict, from one place.
+        headline, _, remedy = str(error).partition("\n")
         return Check(
-            name, "missing", f"{found} -- {evidence}",
+            name, "missing", headline,
             "# this one has to be replaced before the "
-            f"{source} route can run:\n"
-            + bridges.install_aware_build_hint(bridges.CARGO_BUILD_HINT),
-            action=_build_action(), brief=_short(evidence),
+            f"{source} route can run:\n" + remedy,
+            action=_build_action(),
+            brief=_short("does not speak this release's contract"),
             group=_GROUP_ROUTE)
+    executable = bridges.SOURCE_DECODERS[source]
+    # Still asked, still reported: the resolver guarantees this is True,
+    # and the evidence string is what the verified line says out loud.
+    _, evidence = bridges.bridge_abi_matches(executable, found)
     return Check(
         name, "verified",
         f"preparation will launch {found} ({evidence})",

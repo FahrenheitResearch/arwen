@@ -591,12 +591,19 @@ def test_the_registry_publishes_the_mynn_snow_species_contract():
     assert species["supplied"] == ["qv", "qc", "qi", "qs"]
     assert "qs" not in species["withheld"]
     # 28 is here because Registry.EM_COMMON:3036 gives package thompsonaero
-    # moist:qv,qc,qr,qi,qs,qg, so WRF's generated F_QS is true for it.  This
+    # moist:qv,qc,qr,qi,qs,qg, so WRF's generated F_QS is true for it; 16 is
+    # here for the same reason, from package wdm6scheme at :3031.  This
     # list is the WRF-derived classification and must equal the set the
     # shipped runtime applies (mynn_pbl_runtime.MYNN_SNOW_MICROPHYSICS),
     # which is asserted directly below.
-    assert species["flag_qs_true_microphysics_selectors"] == [6, 8, 10, 18, 28]
-    assert species["flag_qs_false_microphysics_selectors"] == [0, 1]
+    assert species["flag_qs_true_microphysics_selectors"] == [
+        6, 8, 9, 10, 16, 18, 28]
+    # 50 (P3) is on the FALSE side substantively, not by omission: the
+    # p3_1category package is moist:qv,qc,qr,qi with no qs at all
+    # (Registry.EM_COMMON:3038), so WRF's F_QS is false and MYNN's sqs = 0
+    # is P3's own answer rather than a field gpuwm withheld -- the opposite
+    # of the mp=28 case this list was corrected for.
+    assert species["flag_qs_false_microphysics_selectors"] == [0, 1, 50]
 
     from gpuwm.core.mynn_pbl_runtime import MYNN_SNOW_MICROPHYSICS
 

@@ -1,5 +1,180 @@
 # Changelog
 
+## 1.9.0 (2026-08-10)
+
+Six WRF schemes ported, plus the 1.8.9 recalibration batch and a
+coherent water-temperature default on every forcing route.
+
+Assembly notes for this line, including the inherited-red inventory and
+the artefact regeneration order, are in
+`docs/release-1.9-assembly-notes.md`.
+
+New:
+- WRF RRTM longwave (`ra_lw_physics = 1`), as WRF's classic pair with
+  Dudhia shortwave (`ra_sw_physics = 1`). Line transcription of
+  `module_ra_rrtm.F`; column smoke of the shipped seams only, no oracle
+  comparison against the Fortran. This was the last schema-legal selector
+  value that reached no accepted run.
+- The NSSL 2-moment variant family: `nssl_hail_on`, `nssl_ccn_on`,
+  `nssl_density_on` and `nssl_3moment` beside the default lane. Hail-off
+  and diagnosed-CCN carry column smoke and treatment proofs, no oracle.
+  `nssl_hail_on = 2`, `nssl_density_on = 1` and `nssl_3moment = 1` are
+  refused by name.
+- The MYJ PBL (`bl_pbl_physics = 2`) with the Eta similarity surface layer
+  (`sf_sfclay_physics = 2`), admitted only as the 2/2 pair, which is WRF
+  v4.6.1's own rule. Float32 CPU authority transcribed from the byte-frozen
+  `module_bl_myjpbl.F`, with a CUDA translation unit agreeing inside a
+  stated tolerance. TKE cold-starts at WRF's `epsq2` = 0.2. Declared
+  divergence: interface heights are carried above ground, not above sea
+  level, which cancels to within 69 ULP over 4.4 km terrain with `KPBL`
+  unchanged. No oracle comparison against the Fortran.
+- Milbrandt-Yau 2-moment microphysics (`mp_physics = 9`). Graupel and hail
+  are separate prognostic categories and all twelve moments transport.
+  Column smoke on three seeding layouts, water budget closing to 1.3e-4
+  relative or better, plus a mutation control. No oracle. Per-domain
+  override only.
+- P3 one-category microphysics (`mp_physics = 50`). A 15-step 3-column
+  integration stays finite and non-negative, conserves total water against
+  surface precipitation to 1e-4 relative, and holds rime mass at or below
+  ice mass with rime density in [50, 900]. WRF's
+  `p3_lookupTable_1.dat-v5.4_2momI` is packaged verbatim and SHA-256
+  validated at load; nothing yet checks that the interpolation of it
+  reproduces WRF's. CPU only, no CUDA mirror. Per-domain override only.
+  Siblings 51, 52 and 53 are refused by name.
+- WDM6 double-moment warm rain (`mp_physics = 16`). CUDA kernel and
+  `wdm6init` transcribed line by line from `module_mp_wdm6.F` with
+  file:line citations, a float64 coefficient block pinning the kernel's
+  baked FP32 literals, and a column smoke asserting WDM6's own bounds,
+  water conservation to the surface flux, and CCN activation moving number
+  from `nn` into `nc`. No oracle. WDM5 (14) and WDM7 (26) are refused by
+  name. Per-domain override only.
+- `mp_physics = 9` with RTE+RRTMGP is refused for absent cloud-optics
+  coupling. WRF leaves `has_reqc`/`has_reqi`/`has_reqs` at 0 for
+  MILBRANDT2MOM and the scheme's effective-radius block is commented out,
+  so there are no scheme radii to hand RRTMGP. The refusal names two
+  remedies and both are measured to work: `ra_rrtmg_variant =
+  'rrtmg_legacy'`, or the Dudhia pair. Milbrandt-Yau under MYNN runs on
+  either of them.
+- `mp_physics = 50` with RTE+RRTMGP is refused for absent cloud-optics
+  coupling. WRF sets `has_reqs` to 0 for P3 and its single ice category
+  carries no separate snow species, so there is no snow radius to hand
+  RRTMGP. The pairing was previously admitted and failed at the first
+  radiation call. The refusal names the same two remedies as the
+  Milbrandt-Yau one and both are measured to work.
+- The composition walk grows to 9781 combinations, 990 accepted against 18
+  registered templates and 8791 refused under 19 distinct rules. Every one
+  of the 19 rules carries a demonstrated remedy pair, and every admitted
+  value of every axis now reaches an accepted run.
+- `water_temperature_policy` in `[case_data]` declares which provider decides
+  water temperature: `era5_class_coherent` (the default that silence
+  selects), `wrf_compat` (the historical per-cell selector, byte-for-byte,
+  for stock-WRF certification and parity batteries), and `external_overlay`
+  (the declared-overlay machinery, unchanged, which a declared overlay
+  selects on its own).
+- An advisory line names the policy, the water-cell count, the connected-body
+  count and the per-provider cell counts on any domain the coherent policy
+  touches, and states that a declared overlay with an observational analysis
+  remains the higher-accuracy option. It warns and never blocks.
+- `tools/water_temperature_probe.py` emits the decision surface for one
+  domain of a case: mapped SST, mapped SKINTEMP, their difference, the
+  validity mask the old selector consumed, the assembled field, the provider
+  ids and TSK, under both policies side by side.
+
+Fixed:
+- WSM6 is priced at the tier it compiles rather than at a flat row. The
+  kernel frame under-priced local memory above 64 levels by 446 MiB on
+  4-domain LES configs. WSM6 and WDM6 both price per domain that selects
+  them, at 112 and 152 bytes per level, so a 40-level WSM6 child beside a
+  100-level parent takes its own bound.
+- The WSM6 front-door level bound is bound to the kernel's own ladder
+  instead of a transcribed constant, so the two cannot drift apart.
+- The decoder door asks the bridge-contract question itself. Resolution
+  checked existence only, which let a preparation run against a non-ABI
+  stand-in.
+- `PSFC` follows the surface switch rather than the existence of a driver.
+  wrfout published a fabricated surface pressure for runs with surface
+  physics off.
+- A 0 K deep soil temperature is refused at ingest. The water fill passed
+  every finiteness check and reached the land surface as weather.
+- The duplicated periodic staggered face is pinned to face 0, exactly.
+- Five NSSL selectors entered the restart identity of every run, including
+  runs that select no NSSL scheme. They join `SCHEME_SCOPED_RUN_FIELDS`
+  beside WDM6's pair, so an experiment written before these schemes existed
+  keeps its fingerprint and its checkpoints stay resumable.
+- Out-of-schema `mp_physics` values all recite the accepted menu. The P3
+  siblings named their missing physics without it, so a value refusal and a
+  composition refusal read the same to anything classifying by message.
+- mp18's ring HAILNC accumulated where WRF's is exactly zero. The clipped
+  tile guard's slot family did not carry the NSSL hail pair, so the ring
+  retained hail the driver never wrote. Both hail-bearing schemes now share
+  one slot family. The per-domain allocation estimate rises by 8244 bytes.
+- P3 (`mp_physics = 50`) and MYJ (`bl_pbl_physics = 2` with
+  `sf_sfclay_physics = 2`) can be run. Both were admitted by the config
+  loader and absent from the memory preflight's kernel module tables, so
+  `gpuwm check` refused them and a run died on the same call. P3 prices at
+  the shared moisture validator, since it is a host transcription that
+  launches no kernel of its own; MYJ prices at `myjpbl` and `myjsfc`,
+  9,232 and 0 bytes per thread.
+- The Milbrandt-Yau RTE+RRTMGP refusal reaches the registry. It lived only
+  as prose in an option's extensions, so a launcher offered 320 component
+  combinations that the runtime refuses after the prepare. Registry
+  constraints gain a conditional kind, `refused_when`, because the coupling
+  is a conjunction of a radiation option and an `ra_rrtmg_variant` value
+  and none of the three existing kinds can state one.
+- Lakes and coastal water no longer initialize from a per-cell mixture of two
+  differently-mapped fields on the ERA5 route. The shipped chain chose SST
+  where the mapped SST passed a 170..400 K test and ERA5 SKINTEMP everywhere
+  else. METGRID.TBL maps SST with `sixteen_pt+four_pt` and `fill_missing=0.`,
+  both operators need a fully usable stencil, and an SST analysis is missing
+  over land, so every water cell within two source cells of a coastline took
+  the fill and flipped to SKINTEMP. Over lakes ERA5 SKINTEMP is the FLake
+  model state, several K warmer and quantized on the 0.25 degree cell, so the
+  lake came out a quilt of two providers joined along the validity boundary.
+- `gpuwm/ingest/water_temperature.py` now assembles the finished field before
+  soil preprocessing runs. Surface classes come from the target statics, each
+  class is labelled into connected components, and one provider is chosen per
+  component: the ERA5 analysis on that component's own donors where they
+  cover at least half of it, otherwise the coherent skin field for the whole
+  body. Donors are selected by component identity, so a lake cannot take
+  ocean water and no water cell can take a land donor. Every water cell
+  carries a provider id in `WATER_TEMP_SOURCE`.
+- Measured on Lake Erie 1985-05-31 12Z, 3 km nest, 2684-cell lake, in the 18Z
+  forecast frame of this run and of the control: intra-lake adjacent-cell P99
+  7.32 K to 0.13 K, cells stepping more than 1 K 5.18 % to 0.00 %,
+  shore-to-midlake TSK gap +5.21 K to +0.46 K, lake TSK range 284.51..294.86 K
+  to 284.49..289.41 K. The stock WRF v4.6.1 oracle at 1 km sits at P99 0.60 K
+  and 0.65 % above 1 K, so the default now reaches oracle class. No declared
+  file and no network access are involved.
+- The guarantee is enforced at the soil preprocessing routers, the one seam
+  every forcing route crosses, and not route by route. A route that hands the
+  router a raw SST beside its SKINTEMP with no assembled water temperature is
+  refused by name and told where the decision belongs. A route added later
+  cannot reinstate the per-cell selector by omission.
+- Lakes are named by the selected land-use table's own ISLAKE on every route.
+  A table with no inland-water class is a declared state the advisory states
+  out loud, never a silently empty lake mask.
+- The met_em / rw-wps route and the 20CRv3 route that rides it now carry the
+  lake mask and the policy into the assembly, so the lake-never-takes-ocean
+  guarantee holds there and not only on ERA5.
+- The GFS route forwarded no assembled field into soil while printing the
+  coherent-policy advisory, so the historical per-cell selector ran behind a
+  receipt saying it had not. The route now assembles after its lake skin is
+  resolved and the router consumes that field. A test refuses the advisory on
+  any route that does not consume what it assembled.
+- Water temperature under `era5_class_coherent` interpolates the source
+  analysis, so cells where the mapped SST was valid are not bit-identical to
+  the previous default. Measured on the reproducing case: mean +0.002 K, max
+  0.169 K, 0 of 1955 bit-identical. Unverified on a real coastal ocean domain.
+  Declare `wrf_compat` to reproduce an archived run byte for byte.
+- The ERA5 direct adapter run with `--static-input` and no `--geog-root`
+  cannot resolve a land-use table, because the prebuilt static cache carries
+  numeric fields only. That run says so in one line and keeps the historical
+  selector. Passing `--geog-root` restores the default treatment.
+- Connected-component labels are a pure function of two invariant statics but
+  were recomputed for every forcing time, 0.19 s at 550 squared and 0.61 s at
+  1000 squared on the launch-to-first-plot path. They are computed once per
+  domain and reused.
+
 ## 1.8.9 (2026-08-10)
 
 1.8.8 was tagged but never published: the RW-WPS staging gate refused the

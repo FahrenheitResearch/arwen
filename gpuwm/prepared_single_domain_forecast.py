@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import argparse
 import copy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from fractions import Fraction
 import hashlib
@@ -43,11 +43,9 @@ from gpuwm import __version__  # noqa: E402
 from gpuwm.config import radiation_scheme_ids  # noqa: E402
 from gpuwm.core.nssl2_contract import (  # noqa: E402
     CONTRACT_ID as NSSL2_CONTRACT_ID,
-    DEFAULT_MODE as NSSL2_DEFAULT_MODE,
     MP_PHYSICS as NSSL2_MP_PHYSICS,
-    WRF_NAMELIST_DEFAULTS as NSSL2_WRF_NAMELIST_DEFAULTS,
-    WRF_REFERENCE_COMMIT as NSSL2_WRF_REFERENCE_COMMIT,
-    WRF_REFERENCE_VERSION as NSSL2_WRF_REFERENCE_VERSION,
+    nssl2_contract_receipt,
+    resolve_nssl2_mode_for_config,
 )
 from gpuwm.core.thompson_contract import (  # noqa: E402
     AUXILIARY_TABLE_RECORDS as THOMPSON_AUXILIARY_TABLE_RECORDS,
@@ -188,7 +186,7 @@ HRRR_BUNDLE_PATHS = MappingProxyType({
 #: asserts they are the same set -- and which fails on ANY surviving
 #: ``mp_physics in (1, 6, 8, 10, 18)`` literal anywhere under ``gpuwm/``,
 #: so a fifth copy of this gate cannot be added silently.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 18, 28)
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 16, 18, 28)
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
     # REPORTED METADATA, NOT A GATE (owner ruling 2026-07-31): these
     # per-source lists name the shipped profiles whose verification
@@ -2932,15 +2930,13 @@ def _validate_physics(
             "rimed_ice_category": "hail" if rimed_ice == 1 else "graupel",
         }
     elif mp_selector == NSSL2_MP_PHYSICS:
-        receipt["nssl2_contract"] = {
-            "selector": NSSL2_MP_PHYSICS,
-            "contract_id": NSSL2_CONTRACT_ID,
-            "wrf_reference_version": NSSL2_WRF_REFERENCE_VERSION,
-            "wrf_reference_commit": NSSL2_WRF_REFERENCE_COMMIT,
-            "resolved_default_mode": asdict(NSSL2_DEFAULT_MODE),
-            "transported_fields": list(NSSL2_DEFAULT_MODE.transported_fields),
-            "wrf_namelist_defaults": dict(NSSL2_WRF_NAMELIST_DEFAULTS),
-        }
+        # The mode is RESOLVED FROM THIS CONFIG, never assumed to be the
+        # shipped default lane: a hail-off or diagnosed-CCN run carries a
+        # different mode and a different transported-field list, and a
+        # receipt that describes some other configuration is worse than no
+        # receipt at all.
+        receipt["nssl2_contract"] = nssl2_contract_receipt(
+            resolve_nssl2_mode_for_config(cfg))
     compatibility = str(getattr(cfg, "wrf_rrtmg_compatibility", "none"))
     if compatibility in WRF_RRTMG_SUBSTITUTION_TOKENS:
         scheme_ids = list(radiation_scheme_ids(cfg))

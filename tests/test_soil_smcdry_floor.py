@@ -23,8 +23,22 @@ import pytest
 from gpuwm.core.noah import (
     SOIL_COLS, load_tables, pack_params, sh2o_init)
 from gpuwm.ingest.soil import (
-    ERA5_LAYER_MIDPOINTS_M, NOAH_LAYER_MIDPOINTS_M, _interp_nodes,
-    preprocess_noah_soil)
+    ERA5_LAYER_MIDPOINTS_M, NOAH_LAYER_MIDPOINTS_M, _interp_nodes)
+from gpuwm.ingest.soil import (
+    preprocess_noah_soil as _preprocess_noah_soil)
+
+
+# These fixtures hand the soil router the raw SST/SKINTEMP pair on purpose:
+# what they pin is WRF's OWN per-cell water-skin fallback
+# (module_initialize_real.F:2844-2866), which is exactly what
+# `water_temperature_policy = "wrf_compat"` names.  The router refuses that
+# pair when nobody declares a decision, so the declaration is made once here
+# instead of at every call site below, and the tests keep asserting the
+# historical numbers they were written for.
+def preprocess_noah_soil(fields, **kwargs):
+    kwargs.setdefault("water_temperature_policy", "wrf_compat")
+    return _preprocess_noah_soil(fields, **kwargs)
+
 from gpuwm.verify.npref import np_noah_column
 
 DT = 30.0
@@ -378,3 +392,65 @@ def test_ingest_builds_the_column_with_the_category_noah_will_run(params):
     assert state.moisture_floor["wrf_constant_cells"] == 0, (
         "a reconciled column has a real SMCDRY and must not need WRF's "
         "category-blind fallback")
+
+
+def test_land_deep_soil_repair_is_counted_and_water_stays_silent(capsys):
+    """TMN = TSK on land is WRF-faithful, and now it is also counted.
+
+    The substitution at ``preprocess_noah_soil`` is correct WRF behaviour
+    (``module_initialize_real.F`` repairs an unreasonable land TMN from
+    TSK).  What was missing is the count: a whole-domain deep-soil decode
+    failure and one bad cell produced the same silence -- empty receipt,
+    empty stderr -- while gpuwm's own static builder manufactured the 0 K
+    that triggers it.
+
+    Both directions.  The water half of the same substitution runs on
+    every water cell of every run and must stay silent, or the receipt
+    becomes noise nobody reads.
+    """
+    shape = (3, 3)
+
+    # Direction 1: a healthy domain with water in it.  The water cells
+    # take TSK for their TMN exactly as before, and say nothing.
+    landsea = np.ones(shape)
+    landsea[0, :] = 0.0
+    fields = _era5_fields(shape)
+    fields["LANDSEA"] = landsea
+    healthy = preprocess_noah_soil(
+        fields, soil_type=np.full(shape, 6.0),
+        deep_soil_temperature=np.where(landsea > 0.5, 284.0, 0.0),
+        landmask=landsea)
+    assert dict(healthy.deep_soil_repair) == {}
+    assert capsys.readouterr().err == ""
+    np.testing.assert_allclose(
+        np.asarray(healthy.deep_soil_temperature)[landsea > 0.5], 284.0)
+
+    # Direction 2: the whole domain's deep soil decoded to the geog fill.
+    dead = preprocess_noah_soil(
+        _era5_fields(shape), soil_type=np.full(shape, 6.0),
+        deep_soil_temperature=np.zeros(shape), landmask=np.ones(shape))
+    receipt = dict(dead.deep_soil_repair)
+    assert receipt["repaired_land_cells"] == 9
+    assert receipt["land_cells"] == 9
+    assert receipt["land_fraction_repaired"] == 1.0
+    assert receipt["min_pre_repair"] == 0.0
+    assert receipt["max_pre_repair"] == 0.0
+    assert receipt["policy"] == "land-tmn-outside-170..400K-replaced-by-tsk"
+    assert receipt["wrf_reference"]["wrf_version"] == "v4.6.1"
+    stderr = capsys.readouterr().err
+    assert "deep soil temperature repair: 9 of 9 land cell(s)" in stderr
+    assert "EVERY land cell in the domain" in stderr
+    # The repair itself is unchanged: TMN takes TSK.
+    np.testing.assert_allclose(
+        np.asarray(dead.deep_soil_temperature), 285.0)
+
+    # One bad cell is one bad cell, not a domain failure.
+    one = np.full(shape, 284.0)
+    one[1, 1] = np.nan
+    single = preprocess_noah_soil(
+        _era5_fields(shape), soil_type=np.full(shape, 6.0),
+        deep_soil_temperature=one, landmask=np.ones(shape))
+    assert single.deep_soil_repair["repaired_land_cells"] == 1
+    assert single.deep_soil_repair["non_finite_cells"] == 1
+    assert single.deep_soil_repair["min_pre_repair"] is None
+    assert "EVERY land cell" not in capsys.readouterr().err

@@ -30,7 +30,13 @@ from gpuwm.core.microphysics import (
     moist_physics_finish,
     save_pre_mp_theta,
 )
-from gpuwm.core.nssl2_contract import DEFAULT_RESTART_FIELDS
+from gpuwm.core.nssl2_contract import (
+    DEFAULT_RESTART_FIELDS,
+    NSSL2Mode,
+    pinned_zero_fields,
+    require_ported_nssl2_mode,
+    resolve_nssl2_mode_for_config,
+)
 from gpuwm.core.nssl2_driver_support import NSSL2DriverWorkspace
 from gpuwm.core.nssl2_production_coordinator import (
     NSSL2PrecipitationFields,
@@ -131,6 +137,40 @@ def _validated_hooks(hooks: NSSL2RuntimeHooks):
             _require_callback("qv_excess", hooks.qv_excess),
         )
     return fused_gs, condensation
+
+
+def pin_absent_nssl2_fields(
+        state: DomainState, mode: NSSL2Mode) -> tuple[str, ...]:
+    """Zero every Registry field the resolved variant does not carry.
+
+    In WRF a variant's absent categories are absent because the Registry
+    package never declares them: there is no array to advect, sediment,
+    write to history or restore from a restart, and the scheme's own
+    hail/CCN-indexed rates read structural zeros.  gpuwm allocates the full
+    option-18 field set unconditionally (one DomainState layout for every
+    mode, which is what keeps the arena and the restart manifest fixed), so
+    "the field does not exist" has to be enforced rather than inherited.
+    This is that enforcement, and it is deliberately idempotent and
+    unconditional rather than a check: dynamics, a nest feedback, a DA
+    increment, or a restored checkpoint can each deposit mass in a slot the
+    active variant has no physics for, and WRF's answer in every one of
+    those cases is that the value goes nowhere.
+
+    Called at domain construction (before the first output can publish a
+    field the run does not have) and once per microphysics step (so nothing
+    upstream can reintroduce one).  Returns the field names it pinned --
+    empty for the default lane, which therefore does no work at all here.
+    """
+    require_ported_nssl2_mode(mode)
+    pinned = pinned_zero_fields(mode)
+    for name in pinned:
+        array = getattr(state, name, None)
+        if array is None:
+            raise NSSL2ProductionConfigurationError(
+                f"NSSL variant pins {name} to zero but the DomainState "
+                "does not carry it")
+        array.fill(DTYPE(0.0))
+    return pinned
 
 
 def _require_bool(name: str, value) -> None:
@@ -368,8 +408,25 @@ def apply_nssl2_production(
     if not cfg.moist:
         raise NSSL2ProductionConfigurationError(
             "NSSL runtime adapter requires cfg.moist=True")
+    # The RunConfig selectors are the authority for the variant, and
+    # validate_run_config has already refused any unported combination.
+    # Re-resolve here so an adapter called directly cannot bypass the gate,
+    # and cross-check the persistent binding: hail and CCN treatment change
+    # which prognostics exist, so they must not drift mid-run.
+    mode = require_ported_nssl2_mode(resolve_nssl2_mode_for_config(cfg))
+    if binding is not None and getattr(binding, "mode", None) != mode:
+        raise NSSL2ProductionConfigurationError(
+            "NSSL production binding was built for variant mode "
+            f"{getattr(binding, 'mode', None)!r} but the RunConfig resolves "
+            f"to {mode!r}")
     bound_workspace = _validated_binding(binding, state, hooks, step)
     shape = _validate_state_structure(state)
+    # Second pin of the variant's absent categories.  gpuwm.core.
+    # microphysics.apply already pinned them ahead of the spec-zone ring
+    # snapshot, which is the seam that owns the ring; this one makes the
+    # adapter self-sufficient for a caller that reaches it directly, and
+    # is a no-op for the default lane.
+    pin_absent_nssl2_fields(state, mode)
     driver, precipitation_values, raw_rates = _validate_driver_bindings(
         state, cfg, shape)
     if binding is not None and getattr(
@@ -439,6 +496,7 @@ def apply_nssl2_production(
         re_ice_m=(state.effi if radiation_due else None),
         re_snow_m=(state.effs if radiation_due else None),
         validate_values=validate_values,
+        mode=mode,
         **raw_rates,
     )
     if bound_workspace is not None:

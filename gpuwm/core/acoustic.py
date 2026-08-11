@@ -84,7 +84,28 @@ def prepare_moist_cq(state: DomainState, cfg: RunConfig) -> tuple:
     elif cfg.mp_physics == 1:
         qi = qs = qg = state.qv              # ice placeholders are never read
         n_mass = 3
-    elif cfg.mp_physics in (6, 8, 10, 18, 28):
+    elif getattr(state, "qi", None) is not None \
+            and getattr(state, "qs", None) is None:
+        # P3 one-category (Registry.EM_COMMON:3038): moist:qv,qc,qr,qi --
+        # ONE ice mass, no snow, no graupel.  calc_cq's mass arms are
+        # 1/3/6/7 and 4 is not one of them, so the absent qs/qg take the
+        # shared zero plane at n_mass=6; see moist.absent_mass_plane for
+        # why that is exact and why the kernel is not reopened.
+        #
+        # Selected on PRESENCE, matching the identical guard in
+        # dycore._launch_slow_buoyancy and the predicate
+        # preflight.scratch_slot_registry prices the plane under.  mp=50 is
+        # the only scheme here today; a cfg-keyed arm would send the next
+        # one-ice-category port back to the AttributeError this replaced.
+        #
+        # qir/qib stay out for the same reason the number moments do --
+        # Registry ``scalar``, not ``moist`` -- and qir would be double
+        # counting besides: it is a COMPONENT of qi, not extra mass.
+        from gpuwm.core.moist import absent_mass_plane
+        qi = state.qi
+        qs = qg = absent_mass_plane(state)
+        n_mass = 6
+    elif cfg.mp_physics in (6, 8, 10, 16, 18, 28):
         # mp=28 is numerically IDENTICAL to mp=8 here.  WRF's calc_cq sums
         # the Registry ``moist`` package only, and Registry.EM_COMMON:3036
         # gives aerosol-aware Thompson

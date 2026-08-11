@@ -247,7 +247,8 @@ def _identity_bound_physics_state(cfg, monkeypatch, *, trace_co2=3.30e-4,
     dict(moist=True, mp_physics=8),
     dict(moist=True, mp_physics=10),
     dict(moist=True, mp_physics=18),
-], ids=["dry", "kessler", "thompson", "morrison", "nssl2"])
+    dict(moist=True, mp_physics=50),
+], ids=["dry", "kessler", "thompson", "morrison", "nssl2", "p3"])
 def test_every_domainstate_attribute_is_classified(monkeypatch, overrides):
     """A DomainState attribute outside the manifest raises; the serialized
     manifest names exactly the allocated cross-step arrays per config."""
@@ -273,6 +274,18 @@ def test_every_domainstate_attribute_is_classified(monkeypatch, overrides):
         assert expected_nssl <= set(manifest)
         assert not (set(manifest) & {
             "state/nc", "state/nr", "state/ni", "state/ns", "state/ng",
+        })
+    if overrides.get("mp_physics") == 50:
+        # P3's rime mass/volume and its two cross-step supersaturation
+        # carriers are all restart state in WRF (Registry.EM_COMMON:555-558
+        # ``i0rhusdf`` and :1598-1599 ``rusd`` -- both carry the ``r``), and
+        # the rime pair is transported besides.  Their RK time-t copies are
+        # rebuilt, and P3 has no snow/graupel inventory at all.
+        assert {"state/qir", "state/qib",
+                "state/th_old", "state/qv_old"} <= set(manifest)
+        assert not (set(manifest) & {
+            "state/qs", "state/qg", "state/effs", "state/qir0",
+            "state/qib0",
         })
     if not overrides.get("moist"):
         assert "state/qv" not in manifest
@@ -819,8 +832,10 @@ def test_wsm6_sr_exact_upper_roundtrips_restart_bits(monkeypatch, tmp_path):
         np.full(shape, upper, np.float32).view(np.uint32))
 
 
-def test_synthetic_state_roundtrips_bit_exactly(monkeypatch, tmp_path):
-    cfg = _cfg(moist=True, mp_physics=10)
+@pytest.mark.parametrize("mp_physics", [10, 50], ids=["morrison", "p3"])
+def test_synthetic_state_roundtrips_bit_exactly(monkeypatch, tmp_path,
+                                                mp_physics):
+    cfg = _cfg(moist=True, mp_physics=mp_physics)
     state = _shim_state(cfg, monkeypatch)
     _fill_setup(state)
     _fill_serialized(state, seed=20260716)
@@ -850,6 +865,16 @@ def test_synthetic_state_roundtrips_bit_exactly(monkeypatch, tmp_path):
         assert target.tobytes() == source.tobytes(), name
     assert (fresh._scratch["mp_rainnc"].tobytes()
             == state._scratch["mp_rainnc"].tobytes())
+    if mp_physics == 50:
+        # Named explicitly so a later edit cannot restore the equality by
+        # dropping P3's carriers from the serialized manifest: the rime
+        # pair IS the ice inventory (rho_rime = qir/qib picks the lookup
+        # table's density index), and th_old/qv_old are the cross-step
+        # supersaturation carriers WRF restart-writes.
+        for name in ("qir", "qib", "th_old", "qv_old"):
+            source = getattr(state, name)
+            assert source.any(), f"{name} was never filled"
+            assert getattr(fresh, name).tobytes() == source.tobytes(), name
 
     header = restart.read_restart_header(path)
     assert header["format_version"] == restart.RESTART_FORMAT_VERSION
@@ -1001,7 +1026,9 @@ def test_nssl2_restart_contract_pins_exact_canonical_inventory(
             "version": NSSL2_WRF_REFERENCE_VERSION,
             "commit": NSSL2_WRF_REFERENCE_COMMIT,
         },
-        "resolved_default_mode": asdict(NSSL2_DEFAULT_MODE),
+        "resolved_mode": asdict(NSSL2_DEFAULT_MODE),
+        "transported_fields": list(NSSL2_DEFAULT_MODE.transported_fields),
+        "absent_fields": [],
         "resolved_wrf_namelist_defaults": dict(NSSL2_WRF_NAMELIST_DEFAULTS),
         "state_members": [
             *(f"state/{name}" for name in

@@ -88,6 +88,9 @@ def test_default_hook_binds_direct_workspace_nucond_once(monkeypatch):
         "supersaturation_scratch":
             state._scratch[default_hooks.NSSL2_NUCOND_SCRATCH],
         "concentration_space": True,
+        # The resolved variant reaches NUCOND through the hook, so the
+        # default lane must be seen asking for predicted CCN explicitly.
+        "predicted_ccn": True,
         "validate_values": False,
     }
 

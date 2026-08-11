@@ -27,8 +27,8 @@
     }
   },
   "implementation": {
-    "gpuwm/core/nssl2_nucond.py": "50c621e9e448809d51f40527f9cb38a213a472f8f32fa4c36a78320bd11cf61c",
-    "gpuwm/core/kernels/nssl2_nucond.cu": "e7b2df8d8fd6a0dd98c464d0db595437fc701143be7d3652bf565659253a2244",
+    "gpuwm/core/nssl2_nucond.py": "8283f19d17d8cdc5d4f0ed314688c4f380a2cd849060e2548a4a4a9adf0229d3",
+    "gpuwm/core/kernels/nssl2_nucond.cu": "20afd579594f30076b1e7d157383b125950509b4a9823f4d2772e7a0f0aa759b",
     "gpuwm/core/nssl2_diagnostics.py": "7a7ee43052f2a4262281cc9b17061d63a86a8a070ebe7d754d0bf9fe726bcd81",
     "gpuwm/core/kernels/nssl2_diagnostics.cu": "a95ae9e0bc3dd20a13865cfa6d1148d2a78ee5d7c17c9c1bca9a0c8dbdf19868",
     "gpuwm/core/nssl2_radiation.py": "1a640c5ada9c0b40b27407294dd3f5a4019ab72244703eebfba123a4ff84de70",
@@ -55,7 +55,8 @@
       "command": "python -m ruff check gpuwm/core/nssl2_nucond.py gpuwm/core/nssl2_diagnostics.py gpuwm/core/nssl2_radiation.py tests/test_nssl2_nucond_diagnostics.py",
       "result": "passed"
     },
-    "full_repository_ruff_note": "The base tree reports 151 pre-existing Ruff findings outside this slice; every changed Python file passes Ruff."
+    "full_repository_ruff_note": "The base tree reports 151 pre-existing Ruff findings outside this slice; every changed Python file passes Ruff.",
+    "nssl_ccn_variant_repin": "Re-pinned gpuwm/core/nssl2_nucond.py and gpuwm/core/kernels/nssl2_nucond.cu when the nssl_ccn_on=0 variant added the diagnosed-CCN nucleation pool (WRF renucfrac=1.0, module_mp_nssl_2mom.F:2555-2557 and :10112-10131). The re-pin was made AFTER re-running the oracle, not in place of it: test_nucond_matches_compiled_official_wrf_and_conserves_water_energy passes on all 64 fixture rows in BOTH unit modes against the edited files, as do both radardd02 arms and the registry/concentration equivalence gate. The default lane's arithmetic is untouched by construction -- the variant is a separate branch selected by the new predicted_ccn argument -- and that is measured independently: all 30 digests in evidence/nssl2-variants/mp18-digest-baseline.json reproduce byte-for-byte. No fixture, no oracle build input and no WRF source hash changed."
   },
   "frozen_low_level_kernel": {
     "gpuwm/core/nssl2.py": "1fa293913fb4a8541b9357bf918fc260c6c63f910a0221394a368b264d382e96",

@@ -2359,7 +2359,9 @@ def test_preflight_accepts_exact_nssl2_validation_candidate_and_binds_receipt(
         "wrf-v4.6.1-nssl-mp18-two-moment-hail-ccn-density-v1"
     )
     assert receipt["nssl2_contract"]["selector"] == 18
-    assert receipt["nssl2_contract"]["resolved_default_mode"] == {
+    assert receipt["nssl2_contract"]["is_default_lane"] is True
+    assert receipt["nssl2_contract"]["absent_fields"] == []
+    assert receipt["nssl2_contract"]["resolved_mode"] == {
         "two_moment": True,
         "hail": True,
         "predicted_ccn": True,

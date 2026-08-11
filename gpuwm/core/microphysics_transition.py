@@ -51,7 +51,14 @@ PORTED_MP_PHYSICS = (1, 6, 8, 10, 18)
 #: purely so the refusal names a reason instead of falling through to the
 #: generic "ported selectors are ..." message, which would read as "mp=28 is
 #: not implemented" when in fact only the edge closure is missing.
-UNVALIDATED_MIXED_EDGE_SELECTORS = (28,)
+#: mp=16 (WDM6) joins for the same reason and needs its own sentence,
+#: because its missing closure is a different one: a mixed edge would have
+#: to fill or drain the CCN reservoir nn across the boundary, and the
+#: reservoir is not a diagnostic of any other scheme's state -- Morrison's
+#: nc is a droplet count, not a count of unactivated nuclei.  Same-scheme
+#: mp=16 nesting is unaffected: resolve_microphysics_transition returns the
+#: same-scheme contract before this tuple is consulted.
+UNVALIDATED_MIXED_EDGE_SELECTORS = (16, 28)
 
 _DYNAMIC_FIELDS = ("u", "v", "w", "t", "ph", "mu")
 _MASS_FIELDS = {
@@ -72,13 +79,82 @@ _MOMENT_FIELDS = {
     ),
 }
 
-#: What an mp=28 mixed edge WOULD have to move, recorded so the refusal is
-#: specific and so a future package does not have to rediscover it.  nr/ni
-#: first, so appending 28 to :data:`PORTED_MP_PHYSICS` would extend the
-#: existing code table with nc/nwfa/nifa at 20/21/22 and reorder nothing.
+#: What a mixed edge touching each refused selector WOULD have to move,
+#: recorded so the refusal is specific and so a future package does not have
+#: to rediscover it.  Every tuple leads with the moments that ALREADY have a
+#: stable host field code, so appending the selector to
+#: :data:`PORTED_MP_PHYSICS` extends the code table and reorders nothing:
+#: mp=28's nr/ni are codes 6/7 and its nc/nwfa/nifa would take 20/21/22;
+#: mp=16's nr is code 6 and its nc/nn would take the next two free codes
+#: (20/21 on their own, or 20/23 if 28 is ratified first, since the two
+#: schemes' ``nc`` is one field name and therefore one code).
 UNVALIDATED_MIXED_EDGE_MOMENTS = {
+    16: ("nr", "nc", "nn"),
     28: ("nr", "ni", "nc", "nwfa", "nifa"),
 }
+
+#: The scheme's own name, and the paragraph that says why ITS closure is
+#: missing.  One row per :data:`UNVALIDATED_MIXED_EDGE_SELECTORS` entry: the
+#: two refusals are NOT the same refusal, and a WDM6 operator must never be
+#: handed Thompson's reason, Thompson's fallback constants or Thompson's
+#: Fortran citation.  Each ``reason`` is a sentence fragment that completes
+#: "... but it has no validated cross-scheme entry closure for its moments
+#: (...) -- ".
+_UNVALIDATED_MIXED_EDGE_REASONS = {
+    16: (
+        "WDM6, double-moment warm rain",
+        "a prognostic cloud droplet number, a prognostic rain number and a "
+        "CCN reservoir (nn) that no other ported scheme carries in any form. "
+        "The reservoir is the hard one: it counts UNACTIVATED nuclei, so it "
+        "is not a diagnostic of any other scheme's state -- Morrison's nc "
+        "and Thompson-aerosol's nc are activated droplet counts, and NSSL's "
+        "qnn is a different scheme's reservoir under the same WRF Registry "
+        "name.  WRF's own cold start for the field is a UNIFORM fill, "
+        "scalar(:,:,:,p_qnn) = ccn_conc, and only when the whole array is "
+        "still below 1.0 (dyn_em/start_em.F:1750-1774; note the WDM5/WDM6 "
+        "arm of that IF is explicitly a NO OP, so the value used is the "
+        "Registry default ccn_conc=1.0E8 m-3, Registry.EM_COMMON:2664).  "
+        "Seeding a child that way is the obvious candidate and it is the "
+        "wrong forecast: it would erase the parent's DEPLETED reservoir "
+        "under active convection and hand the nest a fresh 1.0E8 m-3 "
+        "everywhere, re-arming activation exactly where the parent had "
+        "consumed its aerosol.  Nothing would flag it -- WDM6's own clamp "
+        "min(max(nn,1.e8),2.e10) (module_mp_wdm6.F:584) admits that value "
+        "as its floor, so the seeded field is inside every bound this tree "
+        "checks and the trajectory is still different"
+    ),
+    28: (
+        "Thompson aerosol-aware",
+        "a prognostic cloud droplet number plus two aerosol number tracers "
+        "that no other ported scheme carries.  WRF's own non-aerosol-aware "
+        "fallbacks -- nc = Nt_c/rho, nwfa = 11.1E6/rho, "
+        "nifa = naIN1*0.01/rho == 5.0E3/rho "
+        "(module_mp_thompson.F:1248-1255, the ELSE branch mp_gt_driver "
+        "takes when is_aerosol_aware is FALSE) -- are the obvious "
+        "candidate, but nothing has measured them across an ArWen nest "
+        "edge, and they would seed the child with the scheme's own floor "
+        "values instead of the parent's aerosol field.  That is a "
+        "different forecast, and it is one no bound, health rule or "
+        "conservation check in this tree would flag"
+    ),
+}
+
+# A selector may not join UNVALIDATED_MIXED_EDGE_SELECTORS without bringing
+# its own moments and its own sentence.  Adding 16 to the selector tuple and
+# not to the moments table turned the named refusal into a bare KeyError(16),
+# with every advertised gate still claiming the refusal worked; this check
+# turns that into an import-time failure that no code path can reach past.
+_missing_edge_rows = sorted(
+    mp for mp in UNVALIDATED_MIXED_EDGE_SELECTORS
+    if mp not in UNVALIDATED_MIXED_EDGE_MOMENTS
+    or mp not in _UNVALIDATED_MIXED_EDGE_REASONS
+)
+if _missing_edge_rows:
+    raise RuntimeError(
+        "UNVALIDATED_MIXED_EDGE_SELECTORS entries without a moments row and "
+        f"a scheme-specific reason: {_missing_edge_rows}; the refusal in "
+        "resolve_microphysics_transition would raise KeyError instead of "
+        "naming the scheme")
 _TARGET_FIELDS = {
     mp: _MASS_FIELDS[mp] + _MOMENT_FIELDS[mp]
     for mp in PORTED_MP_PHYSICS
@@ -356,9 +432,11 @@ def resolve_microphysics_transition(
     """Resolve one of the 25 ported ordered edges or fail closed.
 
     A same-scheme edge resolves for ANY ported ``mp_physics``, including
-    mp=28, before the mixed-edge matrix is consulted.  A MIXED edge with
-    mp=28 on either side is refused by name (see
-    :data:`UNVALIDATED_MIXED_EDGE_SELECTORS`).
+    mp=16 and mp=28, before the mixed-edge matrix is consulted.  A MIXED
+    edge with mp=16 or mp=28 on either side is refused by name, each with
+    its OWN missing closure (see
+    :data:`UNVALIDATED_MIXED_EDGE_SELECTORS` and
+    :data:`_UNVALIDATED_MIXED_EDGE_REASONS`).
     """
 
     source = int(getattr(parent_cfg, "mp_physics", 0))
@@ -376,29 +454,22 @@ def resolve_microphysics_transition(
             policy_id=policy, mixed=False)
 
     # NAMED refusal before the generic "not a ported selector" message.
-    # mp=28 IS ported; only its cross-scheme entry closure is missing, and an
-    # operator who reads "ported selectors are (1, 6, 8, 10, 18)" would
-    # reasonably conclude the scheme itself is unavailable.
+    # mp=16 and mp=28 ARE ported; only their cross-scheme entry closures are
+    # missing, and an operator who reads "ported selectors are
+    # (1, 6, 8, 10, 18)" would reasonably conclude the scheme itself is
+    # unavailable.  The message body is looked up per scheme, never shared:
+    # the two closures are missing for different reasons.
     unvalidated = sorted(
         {source, target} & set(UNVALIDATED_MIXED_EDGE_SELECTORS))
     if unvalidated:
         mp = unvalidated[0]
         moments = ", ".join(UNVALIDATED_MIXED_EDGE_MOMENTS[mp])
+        scheme, reason = _UNVALIDATED_MIXED_EDGE_REASONS[mp]
         raise ValueError(
             f"mixed nest microphysics edge MP{source}->MP{target} is REFUSED: "
-            f"MP{mp} (Thompson aerosol-aware) is ported and runs, but it has "
+            f"MP{mp} ({scheme}) is ported and runs, but it has "
             f"no validated cross-scheme entry closure for its moments "
-            f"({moments}) -- a prognostic cloud droplet number plus two "
-            "aerosol number tracers that no other ported scheme carries.  "
-            "WRF's own non-aerosol-aware fallbacks -- nc = Nt_c/rho, "
-            "nwfa = 11.1E6/rho, nifa = naIN1*0.01/rho == 5.0E3/rho "
-            "(module_mp_thompson.F:1248-1255, the ELSE branch mp_gt_driver "
-            "takes when is_aerosol_aware is FALSE) -- are the obvious "
-            "candidate, but nothing has measured them across an ArWen nest "
-            "edge, and they would seed the child with the scheme's own floor "
-            "values instead of the parent's aerosol field.  That is a "
-            "different forecast, and it is one no bound, health rule or "
-            "conservation check in this tree would flag.  An honest refusal "
+            f"({moments}) -- {reason}.  An honest refusal "
             f"beats an unvalidated closure: configure both domains with "
             f"mp_physics={mp}, or keep MP{mp} on a single domain.")
 

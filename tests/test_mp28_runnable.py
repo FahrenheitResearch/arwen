@@ -508,7 +508,12 @@ def test_compute_refl_10cm_admits_28_and_names_it_when_refusing():
 
     with pytest.raises(ValueError) as caught:
         compute_refl_10cm(_StubState(), _cfg(mp_physics=38))
-    assert "1, 6, 8, 10, or 28" in str(caught.value)
+    # The list widened when WDM6 landed; what this test is about is that 28
+    # is IN it and that the refusal names the admitted set rather than a
+    # bare "unsupported".
+    message = str(caught.value)
+    assert "1, 6, 8, 10, 16, or 28" in message
+    assert "28" in message
 
 
 def test_mp28_reflectivity_requires_the_same_graupel_shadow_as_mp8():

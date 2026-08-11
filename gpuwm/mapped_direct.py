@@ -33,6 +33,7 @@ from gpuwm.ingest.preprocess_backend import (
 )
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+from gpuwm.ingest.water_temperature import WaterTemperatureStatics
 from gpuwm.mapped_composition import (
     MappedSourceBundle,
     _decoder_inventory,
@@ -73,6 +74,12 @@ def _canonical(value: object) -> str:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False,
     )
+
+
+#: The mapped/rw-wps route's name in every water-temperature refusal
+#: and receipt.  One name for every composition that reaches this
+#: adapter, 20CRv3 included.
+_WATER_ROUTE = "the mapped rw-wps route"
 
 
 def _file_receipt(path: Path) -> dict[str, object]:
@@ -457,6 +464,18 @@ def prepare_mapped_wrf(
         cpu_bridge=cpu_bridge,
     )
     preprocess_receipt = preprocess.receipt()
+    # The surface the water-temperature assembly decides on.  This route
+    # carries no [case_data], so the policy is the default one silence
+    # selects; the mapped compositions declare a skin temperature and no
+    # SST, which is the case where the class-coherent assembly and the
+    # historical selector agree cell for cell, so no policy is reachable
+    # that would change a number here.  What the statics DO change is the
+    # guarantee: with ISLAKE named, a lake and the ocean cannot share a
+    # provider on a target where a coarse coastline joins them.
+    water_statics = WaterTemperatureStatics.for_route(
+        route=_WATER_ROUTE, policy=None,
+        landmask=static["LANDMASK"], lu_index=static["LU_INDEX"],
+        landuse_attrs=selection.landuse_global_attrs())
     initialize_started = time.perf_counter()
     # Only the first time's met/state survive this loop; every later time
     # contributes its perimeter frames and is released at once.  Holding
@@ -481,7 +500,8 @@ def prepare_mapped_wrf(
         # lanes so soil, skin, snow, and physics share one surface.
         met = interpolate_era5_to_lambert(
             source, grid, backend=preprocess,
-            target_landmask=np.asarray(static["LANDMASK"]) >= 0.5)
+            target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
+            water_temperature_statics=water_statics)
         initialized = initialize_real(
             met, cfg, coord, static["HGT_M"],
             p_top=exp.vertical.p_top, sfcp_to_sfcp=True,
@@ -518,6 +538,9 @@ def prepare_mapped_wrf(
         landmask=static["LANDMASK"],
         terrain=static["HGT_M"],
         source_orography=initial_met.fields["SOURCE_OROGRAPHY"],
+        water_temperature=getattr(initial_met, "water_temperature", None),
+        water_temperature_policy=water_statics.policy,
+        route=_WATER_ROUTE,
     )
     initialize_seconds = time.perf_counter() - initialize_started
 

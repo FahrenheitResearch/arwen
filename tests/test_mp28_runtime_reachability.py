@@ -112,7 +112,21 @@ STALE_REFL_ADMISSION = frozenset({1, 6, 8, 10, 18})
 #: ``is_aerosol_aware``, and the routine takes no droplet-number argument
 #: (:5710-5711), so the aerosol-aware package publishes the same field on the
 #: same cadence as the classic one.
-REFL_ADMISSION = frozenset({1, 6, 8, 10, 18, 28})
+#:
+#: 16 (WDM6) joined 2026-08-09 with the mp=16 port, and it is RE-DERIVED on
+#: the same WRF structure rather than added to make a red test green:
+#: ``wdm6`` reaches ``refl10cm_wdm6`` from ONE call site
+#: (module_mp_wdm6.F:291) inside ``IF (diagflag .and. do_radar_ref == 1)``
+#: (:279-280), the identical gate and the identical
+#: ``refl_10cm(i,k,j) = max(-35., dBZ(k))`` store (:294).  So mp=16 publishes
+#: REFL_10CM on exactly the cadence the other admitted schemes do, and every
+#: gate that admits 6/8/10 must admit it.  The lane already moved all four
+#: PRODUCTION constants; this pin was the test-side copy and was stale, not
+#: wrong-headed.  Unlike 28, WDM6's routine DOES take a number argument
+#: (nr1d, :2957) -- that is a producer-side difference (the port gives it its
+#: own kernel, gpuwm/core/kernels/wdm6_refl.cu) and changes nothing about
+#: admission.
+REFL_ADMISSION = frozenset({1, 6, 8, 10, 16, 18, 28})
 
 #: The deliberate exception.  ``PORTED_MP_PHYSICS`` names the selectors with
 #: a ported MIXED nest edge, and mp=28 has none: every one of its eleven
@@ -137,11 +151,14 @@ DELIBERATE_STALE_SITES = {
     ("gpuwm/hrrr_route_inputs.py", "SUPPORTED_MICROPHYSICS"),
 }
 
-#: Every ``mp_physics`` value ``gpuwm/config.py`` accepts (:1148).  Used to
+#: Every ``mp_physics`` value ``gpuwm/config.py`` accepts (:1952).  Used to
 #: tell a microphysics scheme table apart from an arbitrary integer-keyed
 #: map -- RRTMG's band and g-point tables are keyed 1..16 and would
-#: otherwise look exactly like one.
-ACCEPTED_MP_PHYSICS = frozenset({0, 1, 6, 8, 10, 18, 28})
+#: otherwise look exactly like one.  Re-derived 2026-08-09 against the same
+#: validator line after mp=16 (WDM6) joined it; the census below is a
+#: shape-detector, so a selector missing here would make the detector blind
+#: to a dict keyed on it rather than fail.
+ACCEPTED_MP_PHYSICS = frozenset({0, 1, 6, 8, 10, 16, 18, 28})
 
 #: Scheme-KEYED DICTS that omit 28, and the judgement for each.  A dict is a
 #: third shape the same defect comes in and the AST membership scan cannot
@@ -297,9 +314,17 @@ def test_no_new_scheme_keyed_dict_omits_28():
     # The deliberate one must still be deliberate.
     from gpuwm.core import microphysics_transition as mt
 
-    assert set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS) == {28}
+    # One row per refused selector, and EVERY refused selector has one:
+    # 16 joined the selector tuple with the WDM6 port and its moments row
+    # was missing, which turned the named refusal into a bare KeyError(16).
+    assert (set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS)
+            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == {16, 28})
     assert set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS[28]) == {
         "nr", "ni", "nc", "nwfa", "nifa"}
+    # WDM6 is double-moment in cloud AND rain and carries a CCN reservoir:
+    # ncr(:,:,1)=nn, ncr(:,:,2)=nc, ncr(:,:,3)=nr (module_mp_wdm6.F:238-240),
+    # all three prognostic scalars in the WRF Registry.  It has no ni/ns/ng.
+    assert set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS[16]) == {"nr", "nc", "nn"}
 
 
 def test_no_stale_pre_28_scheme_admission_tuple_survives():
@@ -364,11 +389,22 @@ def test_every_refl_10cm_admission_constant_admits_28():
     # never through compute_refl_10cm.  Assert the asymmetry on purpose so
     # a future "consistency" edit has to argue with it.
     refl_source = (PACKAGE / "core" / "refl.py").read_text(encoding="utf-8")
-    assert "cfg.mp_physics not in (1, 6, 8, 10, 28)" in refl_source
+    # Re-derived 2026-08-09 for the WDM6 port: the producer gate gained 16
+    # because compute_refl_10cm now HAS an mp=16 branch (:615, launching
+    # gpuwm/core/kernels/wdm6_refl.cu).  18 is still absent for the original
+    # reason.  The asymmetry the assertion protects -- consumer set minus
+    # producer set == {18} -- is asserted as arithmetic below rather than
+    # left implicit in two hand-spelled tuples.
+    assert "cfg.mp_physics not in (1, 6, 8, 10, 16, 28)" in refl_source
+    assert REFL_ADMISSION - frozenset({1, 6, 8, 10, 16, 28}) == {18}
     assert "elif cfg.mp_physics in (8, 28):" in refl_source, (
         "mp=28 no longer shares mp=8's calc_refl10cm branch; WRF has ONE "
         "such routine with no aerosol-aware arm (module_mp_thompson.F:"
         "5710-6028), so a separate branch could only diverge from it")
+    # WDM6 does NOT share it: refl10cm_wdm6 is its own Fortran routine
+    # (module_mp_wdm6.F:2957-3131) taking a prognostic rain number, so it
+    # gets its own branch and its own kernel.
+    assert "elif cfg.mp_physics == 16:" in refl_source
 
 
 def _code_without_comments_or_strings(path: pathlib.Path) -> str:
@@ -611,9 +647,37 @@ def test_the_restart_identity_names_the_scheme_and_its_provenance():
         assert token in identity, token
     # It must be a NEW identity, not a re-use of the classic Thompson one.
     assert identity != restart.MICROPHYSICS_ALGORITHM_IDENTITIES[8]
-    # And nothing else moved.
+    # And nothing else moved.  Re-derived 2026-08-09: the WDM6 port added
+    # key 16 and NOTHING ELSE, which is the claim this pin exists to hold.
+    # 16 is the only new key, its identity is its own string rather than a
+    # re-use, and every pre-existing row is byte-unchanged (mp=8's exact
+    # string is re-asserted below, and mp=28's above).
+    #
+    # RE-DERIVED AGAIN at the 1.9 gate: 50 is here because the P3
+    # one-category port (mp_physics=50, gpuwm/core/p3.py) registered its own
+    # restart identity, which is exactly what a new scheme is required to
+    # do -- gpuwm/io/restart.py refuses to checkpoint a scheme with no
+    # identity row at all.  It is a DELIBERATE pin update, not a widened
+    # assertion: 50 is the only new key, and the two properties this case
+    # exists for are re-asserted for it below on the same terms as 16's.
+    #
+    # mp=9 (Milbrandt-Yau) is deliberately ABSENT and that is not an
+    # oversight: the mp=9 port registered no restart identity, so a
+    # Milbrandt-Yau run cannot be checkpointed.  Stated here rather than
+    # left to be rediscovered, because a silent absence in this table is
+    # indistinguishable from a forgotten one.
     assert set(restart.MICROPHYSICS_ALGORITHM_IDENTITIES) == {
-        0, 1, 6, 8, 10, 18, 28}
+        0, 1, 6, 8, 10, 16, 18, 28, 50}
+    p3_identity = restart.MICROPHYSICS_ALGORITHM_IDENTITIES[50]
+    assert p3_identity.startswith("p3-one-category-wrf-v4.6.1-")
+    assert p3_identity not in {
+        value for key, value in restart.MICROPHYSICS_ALGORITHM_IDENTITIES.items()
+        if key != 50}
+    wdm6_identity = restart.MICROPHYSICS_ALGORITHM_IDENTITIES[16]
+    assert wdm6_identity.startswith("wdm6-double-moment-warm-rain-wrf-v4.6.1-")
+    assert wdm6_identity not in {
+        value for key, value in restart.MICROPHYSICS_ALGORITHM_IDENTITIES.items()
+        if key != 16}
     assert restart.MICROPHYSICS_ALGORITHM_IDENTITIES[8] == (
         "classic-thompson-wrf-v4.6.1-experimental-v3-cloud-fallout-"
         "refl10cm-ng-shadow-snow-rime-mass-number-velocity")
@@ -1229,9 +1293,14 @@ def test_the_offline_child_lane_decision_is_recorded_not_undecided():
     assert _CAPABILITIES["same_scheme_mp_physics"] == [6, 8, 10, 18, 28]
     assert _CAPABILITIES["cross_scheme_transitions"] == []
     # The offline refusal set must MIRROR the online one, or a downscale
-    # could perform a closure the nest lane refuses.
+    # could perform a closure the nest lane refuses.  It is now DERIVED from
+    # the online tuple rather than re-spelled: the WDM6 port added 16 online
+    # and not here, and the earlier OFFLINE_CHILD_MP_PHYSICS gate that
+    # happened to cover the hole is a different guarantee ("unreadable"), so
+    # it would have stopped covering it the day the QNCCN row landed.
     assert (set(_CROSS_SCHEME_REFUSED_MP_PHYSICS)
-            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS))
+            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == {16, 28})
+    assert 16 not in OFFLINE_CHILD_MP_PHYSICS
 
 
 # ---------------------------------------------------------------------------

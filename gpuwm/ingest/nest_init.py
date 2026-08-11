@@ -62,9 +62,15 @@ from gpuwm.ingest.real import RealInitResult, initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.ingest.soil import (NoahSoilState, reconciler_soil_temperature,
                                reconciler_sst)
+from gpuwm.ingest.water_temperature import WaterTemperatureStatics
 from gpuwm.static.build import (build_static_for_domain,
                                 geog_selection_from_catalog)
 from gpuwm.static.lambert import LambertGrid
+
+#: The nested-child route's name in every water-temperature refusal and
+#: receipt.  A child assembles under its parent's policy but with its
+#: OWN grid, statics and land-use table.
+_WATER_ROUTE = "the nested-child preparation route"
 
 if TYPE_CHECKING:
     # Native setup consumes only ``cfg``, ``grid``, and ``state`` from an
@@ -124,6 +130,11 @@ class PreparedChildInput:
     #: needs them to reconcile ISLTYP before building the soil column, so
     #: the state is never built with a category the model does not use.
     landuse_attrs: Mapping[str, object] | None = None
+    #: The water-temperature policy this child assembled under, carried
+    #: for the same reason: finalization calls the soil router, the
+    #: router refuses an unassembled raw SST/SKINTEMP pair, and the
+    #: catalog that resolved the policy is no longer in scope there.
+    water_temperature_policy: str | None = None
 
     def __post_init__(self) -> None:
         if (not np.isfinite(self.preparation_seconds)
@@ -699,8 +710,28 @@ def _prepare_child_input_on_grid(
             domain_id=child_dc.grid_id,
             case_date=child_dc.start_time.date(),
             landuse_attrs=landuse_attrs)
-    lake_mask = np.asarray(static_fields["LU_INDEX"]) == int(
-        landuse_attrs["ISLAKE"])
+    # The child assembles its water temperature under the SAME policy as
+    # its parent; the catalog carries it because the child sees no case
+    # data of its own.  Lakes come from the child's OWN land-use table
+    # via ISLAKE, never a hard-coded category.
+    water_temperature_policy = getattr(
+        catalog, "water_temperature_policy", None)
+    # LANDMASK is what the soil router decides land and water with, so
+    # the assembly cannot name a water surface without it.  Absent, no
+    # assembly is declared and the router refuses this child by route
+    # name if its mapping carries a raw SST beside its SKINTEMP.
+    _child_landmask_static = static_fields.get("LANDMASK")
+    water_statics = (
+        None if _child_landmask_static is None
+        else WaterTemperatureStatics.for_route(
+            route=_WATER_ROUTE, policy=water_temperature_policy,
+            landmask=_child_landmask_static,
+            lu_index=static_fields["LU_INDEX"],
+            landuse_attrs=landuse_attrs))
+    lake_mask = (
+        (np.asarray(static_fields["LU_INDEX"]) ==
+         int(landuse_attrs["ISLAKE"])) if water_statics is None
+        else water_statics.lake)
     mapping_receipt: dict[str, object] = dict(preprocess.receipt())
     if isinstance(source, HrrrNativeSnapshot):
         soil_mapping_report: dict[str, object] = {}
@@ -750,6 +781,7 @@ def _prepare_child_input_on_grid(
             source_orography_catalog=(catalog if has_invariant else None),
             target_landmask=(None if child_landmask is None
                              else np.asarray(child_landmask) >= 0.5),
+            water_temperature_statics=water_statics,
             backend=preprocess)
         mapping_receipt["source_adapter"] = "regular-grid-native-state-v1"
     return PreparedChildInput(
@@ -759,6 +791,7 @@ def _prepare_child_input_on_grid(
         lake_mask=lake_mask, lake_skin_temperature=lake_skin_temperature,
         preprocess_backend=preprocess,
         preprocess_receipt=mapping_receipt,
+        water_temperature_policy=water_temperature_policy,
         preparation_seconds=time.perf_counter() - started)
 
 
@@ -936,7 +969,14 @@ def finalize_prepared_child(
         landmask=static_fields.get("LANDMASK"),
         terrain=(static_fields["HGT_M"]
                  if child_orography is not None else None),
-        source_orography=child_orography)
+        source_orography=child_orography,
+        # getattr, exactly like the mapped route: a horizontal
+        # snapshot without an assembly is not a silent fallback any
+        # more, it is what the router refuses by route name when the
+        # mapping carries a raw SST beside its SKINTEMP.
+        water_temperature=getattr(horizontal, "water_temperature", None),
+        water_temperature_policy=prepared.water_temperature_policy,
+        route=_WATER_ROUTE)
     save_mub = state.mub2d.copy()
 
     # (2) Scope-trimmed SINT capture: ht/mub/phb ONLY.

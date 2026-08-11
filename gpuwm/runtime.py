@@ -51,6 +51,8 @@ from typing import Mapping
 import numpy as np
 
 from gpuwm.case_data import CaseDataConfig
+from gpuwm.ingest.water_temperature import (
+    WaterTemperatureStatics, resolve_water_temperature_policy)
 from gpuwm.certify.capsule import emit_run_capsule
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
                           radiation_scheme_ids, soil_layer_count)
@@ -88,7 +90,7 @@ from gpuwm.static.lambert import grids_from_projection_config
 #: excluding 28 here does not disable a diagnostic, it strands a field
 #: that the scheme has already computed and that ``refl.py``'s
 #: consume-once contract then reports as an unconsumed stash.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 18, 28)
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 16, 18, 28)
 
 MICROPHYSICS_TRANSITION_RECEIPT_NAME = "microphysics-transitions.json"
 FEEDBACK_PROVENANCE_RECEIPT_NAME = "feedback-provenance.json"
@@ -98,6 +100,12 @@ FEEDBACK_EXPERIMENTAL_WARNING = (
     "stock WRF yet; the certification reference is in progress."
 )
 CONSERVATION_CLOSURE_RECEIPT_NAME = "conservation-closure.json"
+
+
+#: This route's name in every water-temperature refusal and receipt.  Not a
+#: case name and not a file name: the ROUTE, so a false or missing assembly
+#: can be attributed without reading a traceback.
+_WATER_ROUTE = "the ERA5 runtime route"
 
 
 # ---------------------------------------------------------------------------
@@ -675,6 +683,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                       static_domain_id: int = 1,
                       initial_perturbation=None,
                       constant_glw_wm2: float | None = None,
+                      water_temperature_policy=None,
                       ) -> PreparedRealCase:
     """Run the real-case setup pipeline for one domain.
 
@@ -756,6 +765,15 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     if source_orography_path is not None:
         source_orography = load_source_orography(
             source_orography_path, source_orography_variable)
+    # The surface the water-temperature assembly decides on: this domain's
+    # own LANDMASK and the land-use table's own ISLAKE, so a lake and the
+    # ocean stay in separate provider decisions even where a coarse
+    # coastline connects them on the target.  Built once for the whole
+    # forcing loop, because it is invariant across forcing times.
+    water_statics = WaterTemperatureStatics.for_route(
+        route=_WATER_ROUTE, policy=water_temperature_policy,
+        landmask=static["LANDMASK"], lu_index=static["LU_INDEX"],
+        landuse_attrs=landuse_attrs)
     # Only the first time's analysis/state and the last time's analysis
     # outlive this loop; every intermediate time contributes its perimeter
     # frames and is released before the next one is built.  Retaining all
@@ -779,7 +797,8 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         # keeps soil, skin, and physics on one land/water surface.
         met = interpolate_era5_to_lambert(
             source, grid, source_orography_catalog=forcing_catalog,
-            target_landmask=np.asarray(static["LANDMASK"]) >= 0.5)
+            target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
+            water_temperature_statics=water_statics)
         coord = vertical_coord_for(vertical, cfg.nz)
         init_kwargs = dict(
             source_orography=source_orography, p_top=vertical.p_top,
@@ -847,7 +866,16 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"],
         terrain=static["HGT_M"] if source_orography is not None else None,
-        source_orography=source_orography)
+        source_orography=source_orography,
+        # The finished water temperature the ingest assembled: one provider
+        # per connected body of water, never a per-cell choice between two
+        # differently-mapped fields.  The policy and the route name travel
+        # with it, because the router refuses a raw SST/SKINTEMP pair that
+        # arrives with no decision attached.
+        water_temperature=getattr(
+            initial_met, "water_temperature", None),
+        water_temperature_policy=water_temperature_policy,
+        route=_WATER_ROUTE)
     # WRF interpolates GREENFRAC/LAI to the run date
     # (module_initialize_real.F:1322-1335, mid-month anchors); shdmin/
     # shdmax stay the monthly extrema (:1348-1351).  With the supported
@@ -1007,6 +1035,7 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
         trace_gas_overrides=({"co2": data.co2_vmr}
                              if data.co2_vmr is not None else None),
         geog_selection=geog_selection, forcing_catalog=catalog,
+        water_temperature_policy=resolve_water_temperature_policy(data),
         scratch_arena=scratch_arena,
         dycore_state_workspace=dycore_state_workspace,
         radiation_column_chunk=exp.column_chunk,

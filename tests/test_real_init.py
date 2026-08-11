@@ -24,7 +24,21 @@ from gpuwm.ingest.real import (
     surface_pressure_from_surface,
 )
 from gpuwm.ingest.horiz import HorizontalSnapshot
-from gpuwm.ingest.soil import preprocess_noah_soil
+from gpuwm.ingest.soil import (
+    preprocess_noah_soil as _preprocess_noah_soil)
+
+
+# These fixtures hand the soil router the raw SST/SKINTEMP pair on purpose:
+# what they pin is WRF's OWN per-cell water-skin fallback
+# (module_initialize_real.F:2844-2866), which is exactly what
+# `water_temperature_policy = "wrf_compat"` names.  The router refuses that
+# pair when nobody declares a decision, so the declaration is made once here
+# instead of at every call site below, and the tests keep asserting the
+# historical numbers they were written for.
+def preprocess_noah_soil(fields, **kwargs):
+    kwargs.setdefault("water_temperature_policy", "wrf_compat")
+    return _preprocess_noah_soil(fields, **kwargs)
+
 from gpuwm.ingest.vert import interpolate_logp_gpu
 from gpuwm.verify.npref import np_vertical_interpolate_logp
 

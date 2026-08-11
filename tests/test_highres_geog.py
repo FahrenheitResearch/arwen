@@ -163,3 +163,84 @@ def test_merge_highres_overrides_keeps_complete_noah_state():
     assert merged["ALBEDO12M"][0, 3, 3] == 8.0
     assert merged["TMN"][0, 0] == pytest.approx(285.0 - 0.0065 * 120.0)
     assert all(np.isfinite(value).all() for value in merged.values())
+
+
+def _merge_inputs(shape=(4, 4), *, soiltemp=288.0):
+    """Baseline/override pair with one newly-land and one newly-water cell."""
+    old_land = np.ones(shape)
+    old_land[0, 0] = 0.0
+    baseline = {
+        "HGT_M": np.full(shape, 100.0),
+        "LANDMASK": old_land,
+        "LU_INDEX": np.where(old_land > 0.5, 12.0, 21.0),
+        "LANDUSEF": np.zeros((21, *shape)),
+        "SOILCTOP": np.zeros((16, *shape)),
+        "SCT_DOM": np.full(shape, 6.0),
+        "SOILCBOT": np.zeros((16, *shape)),
+        "SCB_DOM": np.full(shape, 6.0),
+        "GREENFRAC": np.full((12, *shape), 0.5),
+        "LAI12M": np.full((12, *shape), 2.0),
+        "ALBEDO12M": np.full((12, *shape), 15.0),
+        "SNOALB": np.full(shape, 0.4),
+        "SOILTEMP": np.full(shape, soiltemp),
+        "TMN": np.full(shape, soiltemp - 0.65),
+    }
+    for name in ("LANDUSEF", "SOILCTOP", "SOILCBOT"):
+        baseline[name][0] = 1.0
+    new_land = old_land.copy()
+    new_land[0, 0] = 1.0
+    new_land[3, 3] = 0.0
+    overrides = {name: baseline[name] for name in
+                 ("LANDUSEF", "SOILCTOP", "SCT_DOM", "SOILCBOT", "SCB_DOM")}
+    overrides["HGT_M"] = np.full(shape, 100.0)
+    overrides["LANDMASK"] = new_land
+    overrides["LU_INDEX"] = np.where(new_land > 0.5, 12.0, 21.0)
+    return baseline, overrides, new_land
+
+
+def test_merged_deep_soil_is_gated_on_land_and_masked_on_water(capsys):
+    """A 0 K deep soil temperature on land refuses; on water it is a mask.
+
+    The water fill used to be 0.0, a finite number that satisfied the
+    finiteness gate and made a manufactured 0 K indistinguishable from a
+    real one.  A whole-domain deep-soil decode failure -- SOILTEMP 0 K
+    everywhere -- therefore produced TMN -0.65 K over land, an empty
+    stderr, and an audit that counted three other things.  Downstream
+    that becomes TMN = TSK for the entire domain, which removes the
+    seasonal thermal reservoir under the soil column for the whole
+    forecast.
+
+    Both directions:  the healthy merge stays silent and clean with the
+    water cells masked, and the whole-domain failure refuses by name with
+    the land count.
+    """
+    baseline, overrides, new_land = _merge_inputs()
+    merged, audit = merge_highres_overrides(baseline, overrides)
+    # The legitimate water-cell path: silent, clean, and NAMED in the
+    # receipt so a reader can tell the 0.0 from a temperature.
+    assert capsys.readouterr().err == ""
+    assert audit["deep_soil_water_masked_cells"] == 1
+    water = new_land < 0.5
+    np.testing.assert_array_equal(merged["SOILTEMP"][water], [0.0])
+    np.testing.assert_array_equal(merged["TMN"][water], [0.0])
+    land = ~water
+    assert np.all(merged["TMN"][land] > 170.0)
+    assert all(np.isfinite(value).all() for value in merged.values())
+
+    # A whole-domain deep-soil decode failure.
+    dead, overrides, _ = _merge_inputs(soiltemp=0.0)
+    dead["SOILTEMP"] = np.zeros((4, 4))
+    with pytest.raises(ValueError) as excinfo:
+        merge_highres_overrides(dead, overrides)
+    message = str(excinfo.value)
+    assert "SOILTEMP is not a temperature on 15 land cell(s) of 15" in message
+    assert "170..400" in message
+    assert "geog soil_temperature" in message
+
+    # One bad land cell is equally visible, and counted as one.
+    holed, overrides, _ = _merge_inputs()
+    holed["SOILTEMP"] = np.array(holed["SOILTEMP"], copy=True)
+    holed["SOILTEMP"][2, 2] = 0.0
+    with pytest.raises(ValueError) as excinfo:
+        merge_highres_overrides(holed, overrides)
+    assert "not a temperature on 1 land cell(s) of 15" in str(excinfo.value)

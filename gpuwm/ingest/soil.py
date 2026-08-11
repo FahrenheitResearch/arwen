@@ -16,6 +16,8 @@ from gpuwm.ingest.soil_contract import (
     soil_layer_bounds,
     validate_soil_layer_contract,
 )
+from gpuwm.ingest.water_temperature import (
+    require_assembled_water_temperature)
 
 
 ERA5_LAYER_BOTTOMS_M = np.array([0.07, 0.28, 1.00, 2.89], dtype=np.float64)
@@ -93,6 +95,13 @@ class NoahSoilState:
     #: mapping whenever nothing was floored, so healthy preparations carry
     #: zero receipt noise and the presence of any key is itself the signal.
     moisture_floor: Mapping[str, object] = field(default_factory=dict)
+    #: Ingest-repair receipt for the WRF-faithful TMN = TSK substitution
+    #: on LAND (:func:`preprocess_noah_soil`).  Same discipline as
+    #: ``moisture_floor``: an EMPTY mapping whenever no land cell needed
+    #: repairing, so the presence of any key is itself the signal.  The
+    #: water half of that substitution is the ordinary path -- every run
+    #: takes it on every water cell -- and is never counted here.
+    deep_soil_repair: Mapping[str, object] = field(default_factory=dict)
 
 
 _TEMP_NAMES = ("ST000007", "ST007028", "ST028100", "ST100289")
@@ -347,6 +356,72 @@ _MOISTURE_FLOOR_WRF_REFERENCE = {
 }
 
 
+_DEEP_SOIL_REPAIR_WRF_REFERENCE = {
+    "wrf_version": "v4.6.1",
+    "wrf_citation": (
+        "dyn_em/module_initialize_real.F (land TMN outside a reasonable "
+        "range is replaced by TSK before module_soil_pre consumes it)"),
+    "wrf_behavior": (
+        "real.exe: a land cell whose deep soil temperature is missing or "
+        "unreasonable takes that cell's skin temperature"),
+    "gpuwm_behavior": (
+        "identical substitution, COUNTED: land cells only, with the "
+        "pre-repair range, because a whole-domain deep-soil decode "
+        "failure and one bad cell used to produce the same silence"),
+}
+
+
+def _count_land_deep_soil_repair(deep, land, valid_deep, tsk):
+    """Receipt for the TMN = TSK substitution, LAND cells only.
+
+    The substitution itself is WRF-faithful and stays exactly as it was.
+    What was missing is the count.  Every run takes this branch on every
+    water cell -- that is the ordinary path and it is not reportable --
+    but on land it means the deep-soil source did not deliver, and a
+    whole-domain failure was indistinguishable from one bad cell because
+    neither was counted.  Deep soil temperature is the lower boundary
+    condition of the soil column, so a domain-wide TMN = TSK removes the
+    seasonal thermal reservoir for the whole forecast.
+
+    Returns an EMPTY mapping when no land cell needed repairing, the same
+    silence-when-healthy discipline :func:`_floor_land_moisture_at_smcdry`
+    uses, so the presence of any key is itself the signal.
+    """
+    repaired = np.asarray(land, dtype=bool) & ~np.asarray(valid_deep, dtype=bool)
+    count = int(np.count_nonzero(repaired))
+    if count == 0:
+        return {}
+    land_cells = int(np.count_nonzero(np.asarray(land, dtype=bool)))
+    before = np.asarray(deep, dtype=np.float64)[repaired]
+    finite = before[np.isfinite(before)]
+    receipt = {
+        "policy": "land-tmn-outside-170..400K-replaced-by-tsk",
+        "wrf_reference": dict(_DEEP_SOIL_REPAIR_WRF_REFERENCE),
+        "repaired_land_cells": count,
+        "land_cells": land_cells,
+        "land_fraction_repaired": count / land_cells if land_cells else 0.0,
+        "non_finite_cells": int(np.count_nonzero(~np.isfinite(before))),
+        "min_pre_repair": float(np.min(finite)) if finite.size else None,
+        "max_pre_repair": float(np.max(finite)) if finite.size else None,
+        "tsk_applied_min": float(np.min(np.asarray(tsk)[repaired])),
+        "tsk_applied_max": float(np.max(np.asarray(tsk)[repaired])),
+    }
+    whole_domain = (" -- that is EVERY land cell in the domain, so the "
+                    "deep-soil source did not decode at all and this "
+                    "forecast has no seasonal thermal reservoir under the "
+                    "soil column" if count == land_cells else "")
+    span = ("all non-finite" if finite.size == 0
+            else f"[{receipt['min_pre_repair']:.6g}, "
+                 f"{receipt['max_pre_repair']:.6g}] K")
+    print(
+        f"deep soil temperature repair: {count} of {land_cells} land "
+        f"cell(s) had TMN outside 170..400 K ({span}) and took that "
+        f"cell's TSK instead, as WRF real.exe does"
+        f"{whole_domain}",
+        file=sys.stderr)
+    return receipt
+
+
 def _floor_land_moisture_at_smcdry(soil_m, pre_clip, terrestrial,
                                    soil_type, params):
     """Floor sub-air-dry LAND soil moisture at the category's SMCDRY.
@@ -488,7 +563,10 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
                          soil_layer_contract=None,
                          landmask=None,
                          terrain=None,
-                         source_orography=None) -> NoahSoilState:
+                         source_orography=None,
+                         water_temperature=None,
+                         water_temperature_policy=None,
+                         route=None) -> NoahSoilState:
     """Map ERA5 layers, GFS Noah layers, or native HRRR depth nodes to Noah.
 
     This is ``module_soil_pre.F:init_soil_2_real`` with layer input:
@@ -518,6 +596,19 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     consistent with the physics driver's mask.  ``None`` retains the
     historical met-source LANDSEA decision for adapters that have not yet
     declared their static mask.
+
+    ``water_temperature`` is the finished water-surface field the calling
+    route assembled with
+    :func:`gpuwm.ingest.water_temperature.assemble_for_route`, one provider
+    per connected body of water.  It is not optional in the ordinary sense:
+    a mapping that carries a raw ``SST`` beside its ``SKINTEMP`` and no
+    assembled field is REFUSED here by ``route`` name, because the per-cell
+    selector this replaced is what painted lakes as a quilt of two
+    differently-mapped providers.  ``water_temperature_policy =
+    "wrf_compat"`` is the one declaration that reopens that selector, for
+    stock-WRF certification.  See
+    :func:`gpuwm.ingest.water_temperature.require_assembled_water_temperature`
+    for why a mapping WITHOUT an SST is the identity and passes.
 
     ``terrain`` and ``source_orography`` (all-or-none) enable WRF's
     ``adjust_soil_temp_new`` elevation lapse: land skin and soil temperature
@@ -672,8 +763,32 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     xice[(~terrestrial) & (~sea_ice)] = 0.0
     effective_land = terrestrial | sea_ice
     landmask = effective_land.astype(np.float64)
-    water_temperature = np.where(np.isfinite(sst) & (sst >= 170.0)
-                                 & (sst <= 400.0), sst, skin)
+    if water_temperature is None:
+        # The structural seam.  A route that hands over a raw SST beside its
+        # SKINTEMP and no assembled field is refused BY NAME here rather
+        # than quietly rerunning the per-cell fuse below; see
+        # require_assembled_water_temperature for why an SST-less mapping is
+        # the identity and is let through.
+        require_assembled_water_temperature(
+            route=route, fields=fields, water_temperature=None,
+            policy=water_temperature_policy)
+        # The historical per-cell fuse between two differently-mapped
+        # fields.  Reached by an SST-less mapping (where it reduces to
+        # SKINTEMP on every water cell) and by a declared ``wrf_compat``.
+        water_temperature = np.where(np.isfinite(sst) & (sst >= 170.0)
+                                     & (sst <= 400.0), sst, skin)
+    else:
+        water_temperature = _host(water_temperature)
+        if water_temperature.shape != shape:
+            raise ValueError(
+                "water_temperature shape differs from soil fields")
+        open_water = ~(terrestrial | sea_ice)
+        candidate = water_temperature[open_water]
+        if (not np.isfinite(candidate).all()
+                or np.any((candidate < 170.0) | (candidate > 400.0))):
+            raise ValueError(
+                "assembled water_temperature is non-finite or outside "
+                "170..400 K on open water")
     tsk = np.where(terrestrial | sea_ice, skin, water_temperature)
     if not np.isfinite(tsk).all() or np.any((tsk < 170.0) | (tsk > 400.0)):
         raise ValueError(_nonphysical_tsk_message(tsk, terrestrial | sea_ice))
@@ -712,6 +827,7 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     valid_deep = np.isfinite(deep) & (deep >= 170.0) & (deep <= 400.0)
     # module_initialize_real.F repairs an unreasonable land TMN from TSK and
     # sets water TMN to the selected SST/TSK before module_soil_pre consumes it.
+    deep_repair = _count_land_deep_soil_repair(deep, land, valid_deep, tsk)
     deep = np.where(land & valid_deep, deep, tsk)
     if mapped_layers:
         # Source-land gaps were rejected before horizontal interpolation.
@@ -857,6 +973,7 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
         snow_water=snow,
         snow_depth=snowh,
         moisture_floor=moisture_floor,
+        deep_soil_repair=deep_repair,
     )
 
 

@@ -132,7 +132,8 @@ extern "C" __global__ void nssl2_nucond_default(
     int concentration_space,
     int n,
     int nz,
-    int horizontal_size)
+    int horizontal_size,
+    int predicted_ccn)
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n) return;
@@ -199,6 +200,36 @@ extern "C" __global__ void nssl2_nucond_default(
         cloud_number = fmaxf(cloud_number, 0.0f);
         rain_number = fmaxf(rain_number, 0.0f);
         ccn_number = fmaxf(ccn_number, 0.0f);
+
+        // WRF's nucleation pool `cnuc`, module_mp_nssl_2mom.F:10112-10131.
+        // It is formed ONCE per grid point from the gather-time CCN and is
+        // never refreshed as CCN deplete within the step.
+        //
+        // With predicted CCN the driver leaves renucfrac at its 0.0 default
+        // (:346) and cnuc = Max(ccnc, cwnccn); that is the shipped default
+        // lane, and its existing in-line spelling below is left untouched
+        // so the mp18 trajectory does not move.
+        //
+        // With nssl_ccn_on=0 the driver sets renucfrac = 1.0 at :2555-2557,
+        // which collapses :10116 to cnuc = ccnc -- the actual available
+        // (diagnosed) CCN rather than the background floor -- and arms the
+        // low-temperature limiter at :10120-10127 that WRF describes as a
+        // "hack to reduce nucleation at low temp in updraft when ccn are
+        // not predicted".  Both are transcribed here.
+        float diagnostic_cnuc = 0.0f;
+        if (!predicted_ccn) {
+            diagnostic_cnuc = ccn_number;
+            if (temperature < 265.0f) {
+                const float cnuc_mass_level_w = 0.5f * (
+                    w_interface[idx] + w_interface[idx + horizontal_size]);
+                if (cloud > 10.0f * qxmin_cloud
+                        && cnuc_mass_level_w > 2.0f) {
+                    diagnostic_cnuc = 0.0f;
+                } else {
+                    diagnostic_cnuc = 0.1f * diagnostic_cnuc;
+                }
+            }
+        }
 
         float cloud_mean_mass = cloud_min_mass;
         if (cloud_number > 1.0e6f) {
@@ -445,8 +476,9 @@ extern "C" __global__ void nssl2_nucond_default(
                 }
             }
             if (admit_renucleation) {
-                const float nucleation_pool =
-                    fmaxf(ccn_number, background_ccn);
+                const float nucleation_pool = predicted_ccn
+                    ? fmaxf(ccn_number, background_ccn)
+                    : diagnostic_cnuc;
                 const float diagnosed_activated =
                     background_ccn - ccn_number;
                 float activated = 23.984773635864258f
@@ -484,8 +516,9 @@ extern "C" __global__ void nssl2_nucond_default(
                 w_interface[idx] + w_interface[idx + horizontal_size]);
             if (initial_cloud_increment > qxmin_cloud
                     && mass_level_w > 0.0f) {
-                const float activation_pool =
-                    fmaxf(ccn_number, background_ccn);
+                const float activation_pool = predicted_ccn
+                    ? fmaxf(ccn_number, background_ccn)
+                    : diagnostic_cnuc;
                 float activated = 23.984773635864258f
                     * powf(activation_pool, 0.7692307829856873f)
                     * powf(mass_level_w, 0.3461538553237915f);

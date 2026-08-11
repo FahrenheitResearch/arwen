@@ -58,6 +58,7 @@ def launch_nucond(
         qv, qc, qr, qi, qs, qndrop, qnr, qni, qns, qnn, dt_s: float, *,
         supersaturation_scratch=None,
         concentration_space: bool = False,
+        predicted_ccn: bool = True,
         validate_values: bool = True) -> None:
     """Advance the exact default MP18 warm ``NUCOND`` stage in place.
 
@@ -75,6 +76,14 @@ def launch_nucond(
     ``supersaturation_scratch`` may supply a reusable contiguous FP32 cell
     field.  The prepass reproduces WRF's immutable ``ssfilt`` field, avoiding
     an in-place neighbor-read race during existing-cloud renucleation.
+
+    ``predicted_ccn`` is WRF's ``nssl_ccn_on``.  ``False`` selects the
+    ``nssl_ccn_on=0`` variant, where the driver raises ``renucfrac`` to 1.0
+    (``module_mp_nssl_2mom.F:2555-2557``) so the nucleation pool ``cnuc``
+    becomes the actual diagnosed CCN instead of the background floor, and
+    the low-temperature updraft limiter at :10120-10127 is armed.  The
+    ``imaxsupopt=4`` saturation-adjustment activation is unaffected: it
+    spells out ``Max(ccnc, cwnccn)`` at :11559 rather than using ``cnuc``.
 
     Value validation is synchronous and fail-closed by default.  Production
     callers that have already passed the global device health gate may set
@@ -108,6 +117,8 @@ def launch_nucond(
         raise ValueError("w_interface must be C-contiguous")
     if not isinstance(concentration_space, bool):
         raise TypeError("concentration_space must be bool")
+    if not isinstance(predicted_ccn, bool):
+        raise TypeError("predicted_ccn must be bool")
 
     if supersaturation_scratch is None:
         import cupy as cp
@@ -156,7 +167,8 @@ def launch_nucond(
          qv, qc, qr, qi, qs, qndrop, qnr, qni, qns, qnn, step32,
          np.int32(concentration_space),
          np.int32(size), np.int32(shape[0]),
-         np.int32(shape[1] * shape[2])))
+         np.int32(shape[1] * shape[2]),
+         np.int32(1 if predicted_ccn else 0)))
 
 
 __all__ = ["launch_nucond"]

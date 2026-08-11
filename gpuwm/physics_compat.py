@@ -1595,8 +1595,12 @@ def validate_physics_capabilities(
     for comparing a named template after capability has been established.
     """
 
+    from gpuwm.physics_registry import (
+        _conditional_refusal_fires, _conditional_refusals, physics_registry)
+
     resolved, options_by_component = _resolve_physics_component_options(
         settings)
+    parameter_specs = physics_registry().get("parameters", {})
 
     for component_id, option in options_by_component.items():
         constraints = option.get("constraints", {})
@@ -1629,6 +1633,34 @@ def validate_physics_capabilities(
                         f"{_registry_pointer(component_id, option_id)} "
                         f"requires {required_component} in {allowed}, got "
                         f"{selected_option!r}")
+        # The conditional kind, evaluated here for the same reason the
+        # other three are: this resolver and
+        # gpuwm.physics_registry.validate_physics_plan are two readers of
+        # ONE constraint table, and a kind only one of them understands is
+        # a constraint that fires or not depending on which door the user
+        # came through.  The SEMANTICS live in physics_registry so there is
+        # one implementation of them; what is local here is reading the
+        # values off a RunConfig-shaped object instead of a resolved
+        # settings dict.
+        rules = _conditional_refusals(constraints)
+        if rules:
+            named = {
+                name
+                for rule in rules
+                for name in (rule.get("settings") or {})
+            }
+            observed = {
+                name: _selection_value(settings, name)
+                for name in named
+                if _selection_value_or_absent(settings, name) is not _ABSENT
+            }
+            for rule in rules:
+                if _conditional_refusal_fires(
+                        rule, resolved, observed, parameter_specs):
+                    option_id = resolved[component_id]
+                    raise PhysicsCapabilityError(
+                        f"{_registry_pointer(component_id, option_id)} is "
+                        f"refused here: {rule['reason']}")
 
     # Runtime-only coupled restrictions and measured-width rails remain the
     # executable authority.  They cite the exact WRF/CUDA reason in their
@@ -2749,6 +2781,32 @@ def pending_wrf_physics_components(
     # would refuse the whole scheme for a limitation that is really about
     # the aerosol SOURCE, and it would hide the WRF citation that makes the
     # limitation checkable.
+    #
+    # mp_physics == 16 (WDM6) appends no blocker either, and like 28 that is
+    # a decision recorded here rather than an omission.  It has a dispatch
+    # row (gpuwm/core/microphysics.py), an adapter (gpuwm/core/wdm6.py) over
+    # its own CUDA translation unit, prognostic nn/nc/nr with transport and
+    # restart, a reflectivity route on its own rain number, a wrfout
+    # inventory and a registry option.  What is NOT admitted is refused by
+    # NAME somewhere a user can see it, never by a silent numeric gate here:
+    #   * WDM5 (14) and WDM7 (26) fail closed in gpuwm.config with the
+    #     scheme spelled out -- different hydrometeor sets, and WDM6 may not
+    #     stand in for either;
+    #   * a MIXED nest edge touching 16 is refused by
+    #     gpuwm.core.microphysics_transition.UNVALIDATED_MIXED_EDGE_SELECTORS
+    #     because no closure for the CCN reservoir across a scheme change
+    #     has been measured, and an offline downscale from a WDM6 parent is
+    #     refused by gpuwm.offline_child for the QNCCN naming reason;
+    #   * a run with no XLAND is refused by the adapter rather than given a
+    #     fabricated land mask, because the mask picks the autoconversion
+    #     threshold (module_mp_wdm6.F:607-614);
+    #   * the registry decides REACHABILITY.  mp=16 registers no template
+    #     and appears in no runner_routes source_template_ids, so it is
+    #     selectable only as a per-domain component override.
+    # The scheme's real limitation is EVIDENCE, not capability: no oracle
+    # comparison against WRF's own module_mp_wdm6.F has been run.  That
+    # belongs on the registry option's maturity and warning, where a user
+    # reads it, not in a blocker that would refuse the scheme outright.
     if (
         bl_pbl_physics in PBL_OPTIONS
         and sf_sfclay_physics in SURFACE_LAYER_OPTIONS

@@ -477,6 +477,75 @@ def test_state_frame_from_domain_state():
     assert not ({"QVAPOR", "QCLOUD", "QRAIN"} & set(fd))
 
 
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize("frame_name", ["state_frame", "_device_state_frame"])
+def test_psfc_source_follows_the_surface_switch_not_the_driver(frame_name):
+    """PSFC comes from the driver only when the surface refreshes it.
+
+    A physics driver allocates ``psfc`` at 100000 Pa and rewrites it from
+    ``p_interface[0]`` only inside the surface/PBL cadence block, which a
+    microphysics-only composition never enters.  Both writer frames used
+    to select the driver's array by asking whether a driver existed, so
+    an mp-only ideal case at ``p_surf = 85000`` published the untouched
+    seed: 100000.00 Pa against a true 84998.16 Pa, a 150 hPa fabrication
+    on the default forecast history path.
+
+    Both directions are pinned at both sites: surface off takes WRF's
+    ``phy_prep`` extrapolation, surface on takes the driver's field
+    (proved with a sentinel no computation could produce).
+    """
+    import cupy as cp
+    from gpuwm.config import RunConfig
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.core.state import init_at_rest
+    from gpuwm.core.diagnostics import update_diagnostics
+    from gpuwm.core.physics import initialize_physics
+    from gpuwm.io import wrfout as wrfout_module
+
+    frame = getattr(wrfout_module, frame_name)
+
+    def _psfc(cfg):
+        vc = make_vertical_coord(cfg.nz)
+        b = make_base_state(
+            vc, lambda z: np.full_like(np.asarray(z, dtype=np.float64), 300.0),
+            p_surf=cfg.p_surf, ztop=cfg.ztop)
+        s = init_at_rest(cfg, vc, b)
+        update_diagnostics(s)
+        driver = initialize_physics(s, cfg, glw=0.0)
+        out = frame(s, include_diagnostic_pressure=True)
+        return driver, np.asarray(cp.asnumpy(out["PSFC"]), dtype=np.float64)
+
+    common = dict(nx=6, ny=5, nz=90, dx=1000.0, dy=1000.0, ztop=20000.0,
+                  dt=1.0, run_seconds=1.0, moist=True, p_surf=85000.0)
+
+    # Direction 1: microphysics only.  The seed is never refreshed, so the
+    # frame must NOT publish it.
+    mp_only, psfc = _psfc(RunConfig(**common, mp_physics=6))
+    assert mp_only.surface_enabled is False
+    assert float(cp.asnumpy(mp_only.fields["psfc"]).ravel()[0]) == 100000.0
+    np.testing.assert_allclose(psfc, 84998.16, atol=0.01)
+    assert abs(psfc - 100000.0).min() > 14000.0    # the fabrication is gone
+
+    # Direction 2: a surface-bearing composition.  The driver's array is
+    # the authority, sentinel-proved.
+    surf_cfg = RunConfig(**common, mp_physics=6, sf_sfclay_physics=1,
+                         sf_surface_physics=2, bl_pbl_physics=1)
+    vc = make_vertical_coord(surf_cfg.nz)
+    b = make_base_state(
+        vc, lambda z: np.full_like(np.asarray(z, dtype=np.float64), 300.0),
+        p_surf=surf_cfg.p_surf, ztop=surf_cfg.ztop)
+    s = init_at_rest(surf_cfg, vc, b)
+    update_diagnostics(s)
+    driver = initialize_physics(s, surf_cfg, glw=0.0)
+    assert driver.surface_enabled is True
+    driver.fields["psfc"][...] = np.float32(12345.0)
+    out = frame(s, include_diagnostic_pressure=True)
+    np.testing.assert_array_equal(
+        np.asarray(cp.asnumpy(out["PSFC"])),
+        np.full((surf_cfg.ny, surf_cfg.nx), np.float32(12345.0)))
+
+
 def test_wrf_time_str():
     """WRF Times formatting: seconds from 0001-01-01_00:00:00, calendar
     rollover included (shared helper single-sources what straka/igw
@@ -1058,3 +1127,43 @@ def test_var_meta_matches_reference_wrfout_attributes():
             assert var.units == units, f"{name}: {var.units!r} != {units!r}"
             checked += 1
     assert checked >= 40
+
+
+def test_p3s_rime_pair_is_published_and_its_carriers_are_not():
+    """mp=50's history inventory, and the two fields WRF keeps out of it.
+
+    WRF gives QIR/QIB the history ``h`` in their IO string
+    (``Registry.EM_COMMON:555-558``, ``i0rhusdf``), and without them an
+    mp=50 wrfout is a one-moment ice field: rime fraction QIR/QICE and rime
+    density QIR/QIB are the two indices P3's whole ice inventory is built
+    on, and neither is recoverable from QICE alone.  th_old/qv_old are
+    restart-only in WRF (``:1598-1599``, ``rusd`` -- no ``h``), so
+    publishing them would be a gpuwm invention, not a transcription.
+
+    Presence-guarded, so no other scheme's inventory moves.
+    """
+    from gpuwm.io.wrfout import _live_state_history_fields
+
+    class _P3:
+        qi = np.zeros((4, 3, 2), np.float32)
+        ni = np.zeros((4, 3, 2), np.float32)
+        nr = np.zeros((4, 3, 2), np.float32)
+        qir = np.full((4, 3, 2), 1.0e-5, np.float32)
+        qib = np.full((4, 3, 2), 2.0e-8, np.float32)
+        th_old = np.full((4, 3, 2), 300.0, np.float32)
+        qv_old = np.full((4, 3, 2), 1.0e-3, np.float32)
+
+    fields = _live_state_history_fields(_P3())
+    assert fields["QIR"] is _P3.qir
+    assert fields["QIB"] is _P3.qib
+    assert fields["QICE"] is _P3.qi
+    # P3 has ONE ice category: these are absent, not zero.
+    assert not ({"QSNOW", "QGRAUP", "QHAIL"} & set(fields))
+    # Restart-only, following WRF's own IO strings.
+    assert not ({"TH_OLD", "QV_OLD"} & set(fields))
+
+    class _Morrison:
+        qi = np.zeros((4, 3, 2), np.float32)
+        nc = np.zeros((4, 3, 2), np.float32)
+
+    assert not ({"QIR", "QIB"} & set(_live_state_history_fields(_Morrison())))

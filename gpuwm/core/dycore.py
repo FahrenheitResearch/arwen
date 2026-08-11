@@ -408,7 +408,16 @@ def _launch_slow_buoyancy(state: DomainState, cfg: RunConfig) -> None:
             moist_mode = 2 if getattr(state, "qi", None) is not None else 1
         qv, qc, qr = state.qv, state.qc, state.qr
         if moist_mode >= 2:
-            qi, qs, qg = state.qi, state.qs, state.qg
+            qi = state.qi
+            # P3 (mp=50) is the one scheme with qi and NO qs/qg, and
+            # q_total's modes are 0/1/2/3 with no "one ice mass" arm.  The
+            # absent pair takes the shared zero plane rather than reopening
+            # a frozen kernel; moist.absent_mass_plane argues the identity.
+            if getattr(state, "qs", None) is None:
+                from gpuwm.core.moist import absent_mass_plane
+                qs = qg = absent_mass_plane(state)
+            else:
+                qs, qg = state.qs, state.qg
         else:
             qi = qs = qg = dummy
         qh = state.qh if moist_mode == 3 else dummy

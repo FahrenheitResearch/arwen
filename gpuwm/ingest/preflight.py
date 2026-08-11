@@ -186,6 +186,11 @@ class InputCatalog:
     #: it.  ``None`` -- the default for every adapter that does not set
     #: it -- is the identity 30-arc-second path.
     static_highres: object | None = None
+    #: The resolved water-temperature policy, carried for the same reason
+    #: as ``static_highres``: nested-child initialization sees the catalog
+    #: and not the case data, and a child that assembled its lakes under a
+    #: different policy than its parent would seam at the nest boundary.
+    water_temperature_policy: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provenance",
@@ -705,6 +710,11 @@ def build_input_catalog(case_data) -> InputCatalog:
     highres = getattr(case_data, "static_highres", None)
     if highres is not None:
         catalog = replace(catalog, static_highres=highres)
+    from gpuwm.ingest.water_temperature import (
+        resolve_water_temperature_policy)
+    catalog = replace(
+        catalog,
+        water_temperature_policy=resolve_water_temperature_policy(case_data))
     return catalog
 
 

@@ -592,21 +592,28 @@ def test_tree_route_admits_morrison_to_nssl_only_with_matrix_policy():
     }
 
 
-def test_registry_advertises_all_twenty_mixed_edges_honestly():
+def test_registry_advertises_every_mixed_edge_honestly():
+    """Every ordered pair of transported-moment schemes, one row each.
+
+    The count is n*(n-1) over the microphysics options the transition
+    enumerates -- 6 schemes (mp 1/6/8/9/10/18) give 30 -- and exactly one
+    of them is ratified.  It is written out rather than derived from the
+    rules under test, which would make the assertion vacuous.
+    """
     rules = physics_registry()["transitions"][
         "microphysics-one-way-v1"]["cross_options"]
     pairs = {
         (rule["parent_option_id"], rule["child_option_id"])
         for rule in rules
     }
-    assert len(rules) == len(pairs) == 20
+    assert len(rules) == len(pairs) == 30
     ratified = [rule for rule in rules if rule["status"] == "ratified"]
     assert [(rule["parent_option_id"], rule["child_option_id"])
             for rule in ratified] == [("thompson-mp8", "nssl2-mp18")]
     experimental = [
         rule for rule in rules if rule["status"] == "experimental"
     ]
-    assert len(experimental) == 19
+    assert len(experimental) == 29
     assert {
         rule["maturity"] for rule in experimental
     } == {"experimental-runtime"}
@@ -842,11 +849,20 @@ def test_noahmp_is_implemented_and_warns_rather_than_blocking():
 
 
 def test_noahmp_is_admitted_with_mm5_or_the_coupled_mynn_suite():
-    """The registry and runtime authorities expose the same pairings."""
+    """The registry and runtime authorities expose the same pairings.
+
+    "eta-similarity" joined this list with the MYJ port.  The list is a
+    STRUCTURAL statement -- which surface layers write the exchange fields
+    this LSM seam reads -- and the Eta layer writes all of them
+    (UST/CHS/CHS2/CQS2/FLHC/FLQC plus the driver's BR); no Noah-MP runtime
+    read is MM5-specific.  Its evidence tier lives in the surface-layer
+    option's own maturity, which is implemented-unverified, not here.
+    """
     option = physics_registry()["components"]["land_surface"]["options"][
         "noah-mp"]
     assert option["constraints"]["requires_components"] == {
-        "surface_layer": ["revised-mm5", "classic-mm5", "mynn"]}
+        "surface_layer": ["revised-mm5", "classic-mm5", "mynn",
+                          "eta-similarity"]}
 
 
 def test_registry_refuses_the_same_mynn_surface_ysu_cell_as_wrf():
@@ -885,15 +901,23 @@ def test_missing_or_stale_plan_identity_binding_blocks(field, value, error_code)
     ("component", "option"),
     [
         ("microphysics", "not-a-scheme"),
+        # ("land_surface", "ruc-lsm") stood here until RUC was admitted, and
+        # ("radiation", "wrf-rrtm-dudhia") until the WRF RRTM longwave port
+        # landed.  "sase" is now the only registered-but-unimplemented
+        # option left in the whole registry, so this path has exactly one
+        # case to make it with; the assertion below is guarded so the case
+        # cannot go on passing vacuously if that option is admitted too.
         ("microphysics", "sase"),
-        # ("land_surface", "ruc-lsm") stood here until RUC was admitted.  The
-        # unimplemented-option path keeps its coverage from the two options
-        # that are still registered-but-unimplemented, in two different
-        # components, rather than losing a case with the scheme it named.
-        ("radiation", "wrf-rrtm-dudhia"),
     ],
 )
 def test_unknown_and_registered_but_unimplemented_options_block(component, option):
+    if option != "not-a-scheme":
+        registry = physics_registry()
+        assert registry["components"][component]["options"][option][
+            "implemented"] is False, (
+            f"{component}.{option} is implemented now; point this case at "
+            "another registered-but-unimplemented option or the "
+            "unimplemented-option error path loses its only witness")
     plan = _single_plan()
     plan["domains"][0]["components"] = {component: option}
     report = validate_physics_plan(plan)

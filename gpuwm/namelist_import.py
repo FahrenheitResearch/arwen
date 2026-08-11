@@ -381,7 +381,24 @@ _MP_MAP = {
     1: (1, "Kessler", "Kessler"),
     6: (6, "WSM6", "WSM6"),
     8: (8, "Thompson", "Thompson"),
+    # A namelist that says mp_physics = 9 gets Milbrandt-Yau, natively.  The
+    # mapped value equals the WRF value, so this is not a substitution and
+    # PHYSICS.md's substitution count is untouched.  Mapping 9 -> 10 would
+    # have been one, and a lie: Morrison carries ONE rimed-ice category
+    # selected by morr_rimed_ice while Milbrandt-Yau carries graupel and
+    # hail simultaneously, and Morrison diagnoses droplet number where
+    # Milbrandt-Yau prognoses it.
+    9: (9, "Milbrandt-Yau 2-moment", "Milbrandt-Yau 2-moment"),
     10: (10, "Morrison 2-moment", "Morrison 2-moment"),
+    # WDM6, native since the WDM6 port.  A TRANSLATION, not a substitution
+    # (the mapped value equals the WRF value), for the same reason the 28
+    # row below is one: WDM6 predicts cloud/rain number and a CCN
+    # reservoir, so mapping 16 -> 6 would silently hand a user who asked
+    # for double-moment warm rain a single-moment scheme.  WDM5 (14) and
+    # WDM7 (26) are deliberately ABSENT and get the named refusal in
+    # gpuwm/config.py: they carry different hydrometeor sets and WDM6
+    # cannot stand in for either.
+    16: (16, "WDM6", "WDM6"),
     18: (18, "NSSL 2-moment", "NSSL 2-moment"),
     # A TRANSLATION, not a substitution: the mapped value equals the WRF
     # value, so PHYSICS.md's "exactly three ratified substitutions" claim is
@@ -392,6 +409,15 @@ _MP_MAP = {
     # asked for aerosol-aware physics is precisely the failure this map
     # exists to prevent.
     28: (28, "Thompson aerosol-aware", "Thompson aerosol-aware"),
+    # P3 one-category (Registry.EM_COMMON:3038).  A NATIVE import, not a
+    # substitution: the mapped value equals the WRF value because gpuwm
+    # ports this exact configuration.  Its three siblings (51/52/53) are
+    # deliberately ABSENT from this map -- an absent key raises the
+    # importer's unmapped-value error, and gpuwm.config's
+    # _P3_UNPORTED_VARIANTS then names each one's missing physics.  Mapping
+    # any of them to 50 would be the substitution that silently downgrades
+    # two ice categories or a third moment to the one-category solver.
+    50: (50, "P3 one-category", "P3 one-category"),
     55: (10, "ISHMAEL", "Morrison 2-moment"),
 }
 
@@ -479,6 +505,14 @@ _BL_MAP = {
     # suite below and refuses every pairing it refused before.  (The
     # RUC/Noah-MP pairing refusals named in an earlier version of this
     # comment were retired by the surface-driver ownership port.)
+    # MYJ (Mellor-Yamada-Janjic level 2.5) imports natively, never as a
+    # substitution: the scheme is transcribed from the byte-frozen WRF
+    # v4.6.1 module_bl_myjpbl.F and dispatched by _run_myj_pbl.  It travels
+    # with sf_sfclay_physics=2 -- the importer accepts a namelist naming
+    # both and gpuwm.config.validate_myj_pairing refuses one without the
+    # other, which is WRF's own fatal at
+    # phys/module_physics_init.F:3770-3772.
+    2: (2, "MYJ", "MYJ"),
     5: (5, "MYNN2.5", "MYNN"),
     # Native since the Shin-Hong port (certified CPU authority, max ULP 0
     # against WRF v4.6.1; see the physics registry's shinhong option).  The
@@ -505,7 +539,9 @@ _RA_SW_MAP = {
 #: here rather than produce an unrunnable config.  Admitting a scheme means
 #: widening these together with its physics_compat row and its
 #: PHYSICS_SLOT_DISPATCH row -- never one of the three alone.
-_SFCLAY_ALLOWED = {0, 1, 5, 91}
+# 2 is WRF's Eta similarity surface layer, native since the MYJ port and
+# admissible only beside bl_pbl_physics=2 (validate_myj_pairing).
+_SFCLAY_ALLOWED = {0, 1, 2, 5, 91}
 _SFSFC_ALLOWED = {0, 2, 3, 4}
 _CU_ALLOWED = {0, 1, 3}
 
@@ -1420,6 +1456,62 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             out.append(table[value])
         return values, out
 
+    # WRF v4.6.1 no longer has separate NSSL scheme IDs: 17/19/21/22 are
+    # compatibility spellings that share/module_check_a_mundo.F:3382-3421
+    # rewrites onto mp_physics=18 plus explicit variant flags, printing a
+    # deprecation CAUTION as it goes.  Doing the same rewrite here is a
+    # canonicalization, not a substitution -- the scheme the user gets is
+    # the scheme WRF would have given them -- so it is reported as an
+    # applied default rather than added to the substitution ledger.
+    _nssl_deprecated_flags: dict[str, int] = {}
+    _nssl_deprecated_id: int | None = None
+    if "mp_physics" in ph.entries:
+        from gpuwm.core.nssl2_contract import (
+            DEPRECATED_MP_PHYSICS_FLAGS as _NSSL_DEPRECATED,
+        )
+        _raw_mp = ph.entries["mp_physics"]
+        _raw_mp = _raw_mp if isinstance(_raw_mp, list) else [_raw_mp]
+        _deprecated_seen = {
+            int(value) for value in _raw_mp
+            if isinstance(value, int) and int(value) in _NSSL_DEPRECATED}
+        if len(_deprecated_seen) > 1:
+            raise _err(
+                "physics", "mp_physics", sorted(_deprecated_seen),
+                "two different deprecated NSSL scheme IDs in one namelist "
+                "resolve to different variant flags; WRF's per-domain "
+                "rewrite (module_check_a_mundo.F:3382-3421) cannot be "
+                "represented by gpuwm's single NSSL selector set")
+        if _deprecated_seen:
+            _nssl_deprecated_id = _deprecated_seen.pop()
+            if any(int(value) != _nssl_deprecated_id for value in _raw_mp):
+                raise _err(
+                    "physics", "mp_physics", _raw_mp,
+                    "a deprecated NSSL scheme ID must apply to every domain: "
+                    "its variant flags are whole-run in gpuwm, while WRF's "
+                    "nssl_hail_on is per-domain "
+                    "(Registry.EM_COMMON:2420)")
+            _nssl_deprecated_flags = dict(_NSSL_DEPRECATED[_nssl_deprecated_id])
+            ph.entries["mp_physics"] = [18 for _ in _raw_mp]
+
+    # The three unported P3 siblings would otherwise fall out of _mapped as
+    # the generic "no ratified gpuwm mapping" error, which tells a user who
+    # asked for two ice categories only that a number is unknown.  Raise
+    # gpuwm.config's per-variant explanation instead, before the map lookup.
+    # PEEK, never ph.col: col() CONSUMES the entry, and _mapped below needs
+    # it.  ph.entries is the same non-consuming read the WIF block at :1285
+    # uses for exactly this reason.
+    from gpuwm.config import (_P3_UNPORTED_VARIANTS,
+                              unported_p3_variant_refusal)
+    for _mp_value in (ph.entries.get("mp_physics") or ()):
+        try:
+            _mp_int = int(str(_mp_value).strip().rstrip(","))
+        except ValueError:
+            continue
+        if _mp_int in _P3_UNPORTED_VARIANTS:
+            raise ValueError(
+                f"{input_path} &physics: "
+                + unported_p3_variant_refusal(_mp_int))
+
     mp_wrf, mp_mapped = _mapped("mp_physics", _MP_MAP)
     mp_physics, wrf_name, gp_name = mp_mapped[0]
     if mp_physics != mp_wrf[0]:
@@ -1431,6 +1523,13 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # explicit 0 = graupel.  It selects AG/BG/RHOG before Morrison derives
     # CG and its gamma/exponent products (module_mp_morr_two_moment.F:
     # 337-411, :483-510).
+    # WRF ccn_conc (Registry.EM_COMMON:2664, default 1.0E8 # m-3).  Only
+    # WDM5/6/7 and NTU consume it; under any other scheme it is inert in
+    # WRF too, so it is parsed unconditionally and emitted only for mp=16.
+    ccn_conc = float(ph.scalar("ccn_conc", 1.0e8))
+    if not (ccn_conc > 0.0):
+        raise _err("physics", "ccn_conc", ccn_conc,
+                   "must be a positive CCN number concentration in # m-3.")
     morr_rimed_ice = int(ph.scalar("morr_rimed_ice", 1))
     if morr_rimed_ice not in (0, 1):
         raise _err("physics", "morr_rimed_ice", morr_rimed_ice,
@@ -1597,8 +1696,15 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # The mp18 port runs at the WRF v4.6.1 Registry defaults pinned by
     # gpuwm/core/nssl2_contract.py; tunable NSSL parameters are not yet
     # plumbed.  Under any other scheme the keys are inert in WRF too.
+    #: The variant selectors, which import natively.  Everything else under
+    #: the nssl_ prefix is a tunable coefficient and stays pinned.
+    _NSSL_VARIANT_SELECTORS = (
+        "nssl_2moment_on", "nssl_hail_on", "nssl_ccn_on",
+        "nssl_density_on", "nssl_3moment",
+    )
+    nssl_selectors: dict[str, int] = {}
     nssl_keys = sorted(key for key in ph.entries if key.startswith("nssl_"))
-    if nssl_keys:
+    if nssl_keys or _nssl_deprecated_flags:
         from gpuwm.core.nssl2_contract import (
             CONTRACT_ID as _NSSL_CONTRACT_ID,
             WRF_NAMELIST_DEFAULTS as _NSSL_DEFAULTS,
@@ -1615,6 +1721,28 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                      "inert: NSSL parameters are consumed only under "
                      "mp_physics = 18")
                 continue
+            if key in _NSSL_VARIANT_SELECTORS:
+                # WRF's nssl_hail_on is the one per-domain NSSL selector
+                # (Registry.EM_COMMON:2420, max_domains); the other four are
+                # scalars.  gpuwm resolves ONE variant for the whole run, so
+                # a per-domain hail split is refused by name rather than
+                # collapsed to whichever domain happened to be first.
+                if len({int(value) for value in values}) > 1:
+                    raise _err(
+                        "physics", key, values,
+                        "gpuwm resolves one NSSL variant for the whole run; "
+                        "a per-domain split of this selector would change "
+                        "which prognostic fields exist between domains")
+                if key in _nssl_deprecated_flags and (
+                        int(values[0]) != _nssl_deprecated_flags[key]):
+                    raise _err(
+                        "physics", key, values,
+                        f"mp_physics = {_nssl_deprecated_id} already forces "
+                        f"{key} = {_nssl_deprecated_flags[key]} "
+                        "(module_check_a_mundo.F:3382-3421); the namelist "
+                        "asks for a value WRF would have overwritten")
+                nssl_selectors[key] = int(values[0])
+                continue
             admitted = _NSSL_DEFAULTS[key]
             if any(not _identity_matches(value, admitted)
                    for value in values):
@@ -1627,6 +1755,47 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             fix("physics", key, values, admitted,
                 f"NSSL parameter pinned at its Registry default by "
                 f"contract {_NSSL_CONTRACT_ID}")
+
+        for _flag, _value in _nssl_deprecated_flags.items():
+            nssl_selectors.setdefault(_flag, _value)
+
+        if mp_physics == 18:
+            # Resolve once here so an unported variant is named at import
+            # time, against the namelist key the user wrote, instead of
+            # surfacing later as a RunConfig validation error about
+            # selectors they never typed.
+            from gpuwm.core.nssl2_contract import (
+                require_ported_nssl2_mode as _nssl_require,
+                resolve_nssl2_mode as _nssl_resolve,
+            )
+            try:
+                _nssl_require(_nssl_resolve(**nssl_selectors))
+            except ValueError as _nssl_exc:
+                raise _err(
+                    "physics",
+                    "mp_physics"
+                    if _nssl_deprecated_id is not None
+                    else "/".join(sorted(nssl_selectors)),
+                    _nssl_deprecated_id
+                    if _nssl_deprecated_id is not None
+                    else nssl_selectors,
+                    f"{_nssl_exc}. No nearby NSSL branch is substituted for "
+                    "an unported one") from _nssl_exc
+            if _nssl_deprecated_id is not None:
+                defaults_applied.append(AppliedDefault(
+                    key="mp_physics",
+                    value=("18 with "
+                           + ", ".join(f"{name} = {value}" for name, value
+                                       in sorted(
+                                           _nssl_deprecated_flags.items()))),
+                    reason=(
+                        f"WRF v4.6.1 deprecated mp_physics = "
+                        f"{_nssl_deprecated_id} and rewrites it onto option "
+                        "18 plus these variant flags before any physics runs "
+                        "(share/module_check_a_mundo.F:3382-3421). gpuwm "
+                        "performs the same rewrite, so this is WRF's own "
+                        "canonicalization and not a gpuwm substitution."),
+                ))
 
     # ---- aerosol-aware Thompson keys ------------------------------------
     # Same shape as the NSSL sweep above and for the same structural
@@ -2484,6 +2653,18 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         lines.append(f'ra_rrtmg_variant = "{RRTMG_VARIANT_LEGACY}"')
     if mp_physics == 6:
         lines.append(f"wsm6_hail_opt = {wsm6_hail_opt}")
+    for _nssl_key in (
+            "nssl_2moment_on", "nssl_hail_on", "nssl_ccn_on",
+            "nssl_density_on", "nssl_3moment"):
+        if _nssl_key in nssl_selectors:
+            lines.append(f"{_nssl_key} = {nssl_selectors[_nssl_key]}")
+    if mp_physics == 16:
+        # WRF's ONE `hail_opt` key drives wsm6 and wdm6 alike
+        # (module_physics_init.F:4487 and :4582-4584), so the WDM6 field is
+        # written from the same parsed scalar; no namelist can make the two
+        # gpuwm fields disagree.
+        lines.append(f"wdm6_hail_opt = {wsm6_hail_opt}")
+        lines.append(f"wdm6_ccn_conc = {_fmt(ccn_conc)}")
     if not coupled_legacy:
         lines += [
             f"ra_lw_physics = {ra_lw_physics}",

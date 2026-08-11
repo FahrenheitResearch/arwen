@@ -593,6 +593,16 @@ SOURCE_DECODERS = {
 }
 
 
+class DecoderContractError(RuntimeError):
+    """A decoder is installed but does not speak this release's contract.
+
+    Distinct from ``FileNotFoundError`` because the two have different
+    remedies -- install one versus replace this one -- and because a
+    caller that catches "missing" to offer a build must not silently
+    swallow "wrong".
+    """
+
+
 def resolve_source_decoder(source: str) -> Path:
     """THE decoder ``source``'s preparation will launch, or a refusal.
 
@@ -616,6 +626,16 @@ def resolve_source_decoder(source: str) -> Path:
     before the staged copy is deliberate: a developer's rebuild must win
     over whatever they downloaded last month.
 
+    Existence is not the whole question, so it is not the whole answer.
+    A binary built before this release's decoder contract is present,
+    executable, and wrong, and until 1.8.9 this function returned it:
+    ``gpuwm doctor`` asked :func:`bridge_abi_matches` afterwards and the
+    production preparation did not, so a stale bridge passed the door
+    that runs it while the report that checks it said green.  A 12-byte
+    text file planted at each override path was returned by all three
+    sources.  The gate lives INSIDE the resolver now -- one question,
+    one answer, no second call for a caller to forget.
+
     Nothing here runs cargo, so it is safe to call from a report.
     """
 
@@ -626,7 +646,12 @@ def resolve_source_decoder(source: str) -> Path:
     name = SOURCE_DECODERS[source]
     found = find_bridge(name)
     if found is not None:
-        return found
+        ok, evidence = bridge_abi_matches(name, found)
+        if ok:
+            return found
+        raise DecoderContractError(
+            f"the {source} route's decoder at {found} {evidence}.\n"
+            + install_aware_build_hint(CARGO_BUILD_HINT))
     raise FileNotFoundError(
         f"the {source} route's decoder ({executable_name(name)}) is not "
         "installed here.  Searched, in order: "
@@ -824,7 +849,7 @@ def decode_failure_message(subject: str, stderr: str) -> str:
 
 __all__ = [
     "decode_failure_message",
-    "SOURCE_DECODERS", "resolve_source_decoder",
+    "SOURCE_DECODERS", "resolve_source_decoder", "DecoderContractError",
     "launchable", "native_executable_format", "quiet_loader_errors",
     "BRIDGE_ABI_MARKERS", "bridge_abi_matches",
     "BRIDGE_ENV", "CARGO_BUILD_HINT", "CLONE_DIR", "CRATE_RELATIVE",

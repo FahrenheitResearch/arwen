@@ -591,6 +591,9 @@ def preprocess_ruc_soil(
     landmask=None,
     terrain=None,
     source_orography=None,
+    water_temperature=None,
+    water_temperature_policy=None,
+    route=None,
 ) -> RucSoilState:
     """Build a RUC initial soil state, in ``preprocess_noah_soil``'s signature.
 
@@ -670,7 +673,10 @@ def preprocess_ruc_soil(
         lake_mask=lake_mask, lake_skin_temperature=lake_skin_temperature,
         soil_layer_contract=soil_layer_contract,
         landmask=landmask, terrain=terrain,
-        source_orography=source_orography)
+        source_orography=source_orography,
+        water_temperature=water_temperature,
+        water_temperature_policy=water_temperature_policy,
+        route=route)
 
     if terrain is not None:
         # The Noah call above validated the all-or-none pairing and
@@ -729,6 +735,9 @@ def preprocess_land_surface_soil(
     landmask=None,
     terrain=None,
     source_orography=None,
+    water_temperature=None,
+    water_temperature_policy=None,
+    route=None,
 ):
     """Route a soil source to the selected land surface's own geometry.
 
@@ -764,6 +773,9 @@ def preprocess_land_surface_soil(
             soil_layer_contract=soil_layer_contract,
             landmask=landmask, terrain=terrain,
             source_orography=source_orography,
+            water_temperature=water_temperature,
+            water_temperature_policy=water_temperature_policy,
+            route=route,
             **({} if num_soil_layers is None
                else {"num_soil_layers": int(num_soil_layers)}))
     if scheme in _NOAH_GEOMETRY_SCHEMES:
@@ -778,7 +790,10 @@ def preprocess_land_surface_soil(
             lake_mask=lake_mask, lake_skin_temperature=lake_skin_temperature,
             soil_layer_contract=soil_layer_contract,
             landmask=landmask, terrain=terrain,
-            source_orography=source_orography)
+            source_orography=source_orography,
+            water_temperature=water_temperature,
+            water_temperature_policy=water_temperature_policy,
+            route=route)
     raise ValueError(
         f"sf_surface_physics={scheme} has no soil ingest.  gpuwm implements "
         f"the Noah geometry for {_NOAH_GEOMETRY_SCHEMES} "

@@ -23,19 +23,18 @@ from gpuwm.core import constants as c
 from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 from gpuwm.core.state import DTYPE, DomainState
 
+from gpuwm.core.wsm6_constants import (WSM6_DEEP_KMAX, WSM6_SHALLOW_KMAX,
+                                       WSM6_VERTICAL_LEVEL_BOUNDS,
+                                       wsm6_level_tier)
+
 _COLUMN_TPB = 32
-_SHALLOW_KMAX = 64
-_KMAX = 80
-VERTICAL_LEVEL_BOUNDS = (2, _KMAX)
-
-
-def _kernel_capacity(nz: int) -> int:
-    """Return the smallest compiled WSM6 local-array tier for ``nz``."""
-    minimum, maximum = VERTICAL_LEVEL_BOUNDS
-    if not minimum <= nz <= maximum:
-        raise ValueError(
-            f"WSM6 requires {minimum} <= nz <= {maximum}, got {nz}")
-    return _SHALLOW_KMAX if nz <= _SHALLOW_KMAX else _KMAX
+# The ladder itself lives in wsm6_constants (a CuPy-free leaf) so the memory
+# preflight can price a WSM6 configuration on a host with no device; these
+# names are the adapter's local spelling of it.
+_SHALLOW_KMAX = WSM6_SHALLOW_KMAX
+_KMAX = WSM6_DEEP_KMAX
+VERTICAL_LEVEL_BOUNDS = WSM6_VERTICAL_LEVEL_BOUNDS
+_kernel_capacity = wsm6_level_tier
 
 
 def launch_wsm6(theta, qv, qc, qr, qi, qs, qg, rho, pii, pressure, dz,

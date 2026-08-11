@@ -40,6 +40,29 @@ STATE_SERIALIZED_ATTRS = (
     # the IO string ``i01{17}rhdu``, whose ``r`` puts them in the restart
     # stream.  Serializing them is transcription, not a gpuwm invention.
     "nwfa", "nifa", "nwfa2d", "nifa2d",
+    # mp_physics=50 (P3 one-category).  ``qir``/``qib`` are the rime MASS
+    # and rime VOLUME that WRF declares in the same ``scalar`` package as
+    # qni/qnr (Registry.EM_COMMON:3038) and carries in the restart stream;
+    # they are transported prognostics in gpuwm too
+    # (gpuwm/core/moist.py::P3_SPECIES), and a resume that dropped them
+    # would restore rime-free ice -- rho_rime = qirim/birim picks the
+    # lookup table's rime-density index, so the resumed run would use a
+    # different ice fall speed and a different collection rate than the
+    # run it claims to continue.
+    #
+    # ``th_old``/``qv_old`` are P3's cross-step supersaturation carriers
+    # (Registry.EM_COMMON:1598-1599, both with the restart ``r`` in their
+    # IO string).  p3_main writes them at the end of every call
+    # (module_mp_p3.F:5018-5021) and reads them at the top of the next
+    # (:2320-2337).  Re-zeroing them on resume would replay the first-step
+    # transient -- WRF's own max(t_old,1.) guard, and the 0/0 sup/supi it
+    # produces -- once more in the middle of a trajectory.  Serializing
+    # them is transcription of WRF's restart stream, not a gpuwm choice.
+    #
+    # All four are absent (None) on every other scheme's state, and both
+    # the writer and the reader skip on ``is None``, so no existing
+    # restart inventory moves.
+    "qir", "qib", "th_old", "qv_old",
     # SASE prognostic subgrid turbulence energy.  Like the optional
     # microphysics moments above, the attribute is ABSENT on a state that
     # did not select the closure, and the manifest walk skips what is not

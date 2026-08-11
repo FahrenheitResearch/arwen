@@ -198,6 +198,38 @@ def test_the_radiation_runs_entry_carries_its_reason_inline() -> None:
         f"earned it: {reason!r}")
 
 
+#: Every suite whose subject is the physics registry or an artifact
+#: derived from it.  A scheme port edits the registry on every lane, so
+#: this is the group stage 1 has repeatedly been blind to -- once really
+#: (the 1.8.5 receipt, task #122) and twice latently (task #128 found the
+#: other two off the list entirely).  Pinned as a GROUP so the next
+#: registry-derived suite has an obvious place to join.
+REGISTRY_DERIVED_ENTRIES = (
+    "tests/test_physics_registry.py",
+    "tests/test_physics_registry_composition.py",
+    "tests/test_evidence_axes.py",
+    "tests/test_native_wrf_distribution.py",
+)
+
+
+@pytest.mark.parametrize("entry", REGISTRY_DERIVED_ENTRIES)
+def test_every_registry_derived_gate_is_listed(entry: str) -> None:
+    """The group above, each member required by name.
+
+    Dropping one is allowed -- but it has to be an argument about that
+    suite, made in a commit message, not a line that disappears in a
+    tidy-up.  ``test_evidence_axes.py`` and
+    ``test_native_wrf_distribution.py`` joined at task #128: the WDM6 port
+    edited the registry and added a CUDA translation unit, and neither
+    consequence had a stage-1 gate.
+    """
+
+    assert entry in _entries(), (
+        f"{entry} is not in tools/battery/stage1_files.txt.  It gates the "
+        "physics registry or an artifact derived from it, and every lane "
+        "that ports a scheme edits the registry")
+
+
 @pytest.mark.parametrize(
     "entry",
     ["tests/test_physics_registry.py",

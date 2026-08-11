@@ -61,6 +61,16 @@ class HorizontalSnapshot:
     valid_time: datetime
     levels_hpa: np.ndarray
     fields: Mapping[str, object]
+    #: The finished water-surface temperature, assembled once per surface
+    #: class and per connected body of water by
+    #: :mod:`gpuwm.ingest.water_temperature`, with the per-cell provider id
+    #: beside it and the receipt that names the policy.  These ride the
+    #: snapshot rather than ``fields`` on purpose: ``fields`` is the metgrid
+    #: field set, and every hash, cache manifest and writer downstream is
+    #: keyed to exactly the names WPS produces.
+    water_temperature: np.ndarray | None = None
+    water_temperature_source: np.ndarray | None = None
+    water_temperature_receipt: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         levels = np.asarray(self.levels_hpa)
@@ -668,6 +678,22 @@ _WPS_SEARCH_DEPTH = 1200
 _WPS_FULL_CHAIN = (
     "sixteen_pt", "four_pt", "wt_average_4pt", "wt_average_16pt", "search")
 _WPS_SNOW_CHAIN = ("four_pt", "average_4pt")
+#: METGRID.TBL's SST operators, exactly as WPS runs them.
+#:
+#: ``sixteen_pt+four_pt`` with ``fill_missing=0.``, and both operators demand
+#: that EVERY stencil point be usable.  An SST analysis carries no values
+#: over land, so within two source cells of any coastline both operators
+#: decline and the target takes the fill.  That is a real limitation of the
+#: WPS mapping, and the mapped ``SST`` field keeps it, because everything
+#: downstream that reads mapped SST -- the soil-category reconciler, the
+#: ``wrf_compat`` water-temperature policy, every stock-WRF comparison --
+#: is asking what WPS produces.
+#:
+#: The water temperature the forecast actually integrates no longer comes
+#: from this field cell by cell.  ``gpuwm.ingest.water_temperature``
+#: assembles it below from the SOURCE analysis, one provider per connected
+#: body of water; see that module for why a per-cell choice between two
+#: differently-mapped fields is what made lakes blocky.
 _WPS_SST_CHAIN = ("sixteen_pt", "four_pt")
 
 
@@ -1049,6 +1075,8 @@ _SNOW_FAMILY = {"SNOW", "SNOWH", "SNOW_EC"}
 #: Second-chance recoveries already announced, so the receipt appears once
 #: per domain instead of once per forcing time.
 _REPORTED_FRACTIONAL_RECOVERY: set = set()
+#: Water-temperature advisories already announced, same reason.
+_REPORTED_WATER_TEMPERATURE: set = set()
 
 
 def _as_host_bool(value):
@@ -1132,6 +1160,7 @@ def _wps_soil_fill(name: str) -> float:
 
 def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                                 target_landmask=None,
+                                water_temperature_statics=None,
                                 source_orography_catalog=None,
                                 relative_humidity_convention="era5_mixed",
                                 backend="cuda", workers=None,
@@ -1146,6 +1175,21 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     is not defined (SST on land, soil/snow on water). ``backend='cuda'``
     preserves the established device path; ``backend='cpu'`` selects the
     packaged deterministic parallel Rust path and returns host FP32 fields.
+
+    ``water_temperature_statics`` is a route's
+    :class:`gpuwm.ingest.water_temperature.WaterTemperatureStatics`: the
+    land/lake surface classes it decides water on, the resolved policy,
+    and the route name that rides the receipt.  Supplied, the returned
+    snapshot carries the finished ``water_temperature`` for the water
+    cells of the target, assembled by
+    :func:`gpuwm.ingest.water_temperature.assemble_for_route`.
+
+    Omitted, nothing is assembled and nothing is announced.  A route
+    whose water statics are only settled LATER -- GFS resolves its lake
+    skin temperature after the forcing loop -- calls
+    ``assemble_for_route`` itself instead of declaring statics it does
+    not have yet, and the soil router refuses whichever route arrives
+    having done neither.
     """
     from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
 
@@ -1271,7 +1315,9 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 # METGRID.TBL SST: sixteen_pt+four_pt, unmasked, bitmap
                 # missing excluded, fill_missing=0 -- coastal stencils that
                 # cross missing land collapse to zero exactly like the WPS
-                # output fields.
+                # output fields.  The forecast's water temperature is
+                # assembled from the source analysis at the end of this
+                # function, not selected from this field.
                 source_valid_host = np.ones(
                     (len(snapshot.latitude), len(snapshot.longitude)),
                     dtype=bool)
@@ -1410,10 +1456,45 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 "(rrpr.F:869-876)",
                 file=sys.stderr)
 
+    water_temperature = water_temperature_source = None
+    water_temperature_receipt = None
+    if water_temperature_statics is not None:
+        from gpuwm.ingest.water_temperature import (
+            announce_water_temperature, assemble_for_route)
+
+        if "SKINTEMP" not in out:
+            raise ValueError(
+                f"{water_temperature_statics.route}: the water-"
+                "temperature assembly needs a mapped SKINTEMP and this "
+                "source carries none")
+        source_sst = snapshot.fields.get("SST")
+        assembly = assemble_for_route(
+            water_temperature_statics,
+            mapped_sst=(None if "SST" not in out
+                        else _as_host_float64(out["SST"])),
+            mapped_skin=_as_host_float64(out["SKINTEMP"]),
+            source_sst=(None if source_sst is None
+                        else _as_host_float64(source_sst)),
+            source_lat=np.asarray(snapshot.latitude, dtype=np.float64),
+            source_lon=np.asarray(snapshot.longitude, dtype=np.float64),
+            target_lat=np.asarray(mass_lat, dtype=np.float64),
+            target_lon=np.asarray(mass_lon, dtype=np.float64))
+        water_temperature = assembly.values
+        water_temperature_source = assembly.provider
+        water_temperature_receipt = assembly.receipt
+        # Once per domain, not once per forcing time: every time of a
+        # domain assembles the same providers over the same cells.
+        announce_water_temperature(
+            water_temperature_receipt, seen=_REPORTED_WATER_TEMPERATURE,
+            scope=mass_lat.shape)
+
     return HorizontalSnapshot(
         valid_time=snapshot.valid_time,
         levels_hpa=snapshot.levels_hpa,
         fields=out,
+        water_temperature=water_temperature,
+        water_temperature_source=water_temperature_source,
+        water_temperature_receipt=water_temperature_receipt,
     )
 
 

@@ -579,6 +579,67 @@ def _nearest_donors(valid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return donor_y, donor_x
 
 
+#: The physical envelope a deep-soil temperature must sit in to be a
+#: temperature at all.  Same band ``gpuwm/ingest/soil.py`` admits TMN and
+#: TSK in, so the producer and the consumer refuse the same thing.
+_DEEP_SOIL_KELVIN_RANGE = (170.0, 400.0)
+
+#: Deep-soil fields whose water cells carry a mask, not a measurement.
+_LAND_ONLY_DEEP_SOIL = ("SOILTEMP", "TMN")
+
+
+def _refuse_unusable_merged_statics(out, new_land) -> None:
+    """Refuse merged statics that are unusable ON LAND, by name and count.
+
+    The gate this replaces asked ``np.isfinite(value).all()`` of every
+    field.  A water fill of 0.0 satisfies it, and so does a whole-domain
+    deep-soil decode failure that leaves 0 K on land: the two are the
+    same bytes, which is exactly why one hid behind the other.  A
+    domain-wide TMN of 0 K removes the seasonal thermal reservoir under
+    the soil column and biases the surface energy balance for the whole
+    forecast, and it used to arrive with an empty receipt.
+
+    Water cells of the deep-soil pair are allowed to be the masked
+    sentinel and nothing else; land cells of every field must be finite;
+    land cells of the deep-soil pair must additionally be a temperature.
+    """
+    land = np.asarray(new_land, dtype=bool)
+    for name, value in out.items():
+        if not isinstance(value, np.ndarray) or not value.size:
+            continue
+        if not np.issubdtype(value.dtype, np.floating):
+            continue
+        broadcast_land = np.broadcast_to(
+            land if value.ndim == 2 else land[None, ...], value.shape)
+        land_cells = int(np.count_nonzero(broadcast_land))
+        holed = broadcast_land & ~np.isfinite(value)
+        if holed.any():
+            raise ValueError(
+                f"merged high-resolution field {name} is non-finite on "
+                f"{int(np.count_nonzero(holed))} land cell(s) of "
+                f"{land_cells} -- the high-resolution mask resolves land "
+                "the source field does not cover")
+        if name not in _LAND_ONLY_DEEP_SOIL:
+            if not np.isfinite(value).all():
+                raise ValueError(
+                    f"merged high-resolution field {name} is non-finite")
+            continue
+        low, high = _DEEP_SOIL_KELVIN_RANGE
+        unusable = broadcast_land & ~((value >= low) & (value <= high))
+        if unusable.any():
+            count = int(np.count_nonzero(unusable))
+            sample = np.asarray(value)[unusable]
+            raise ValueError(
+                f"merged high-resolution {name} is not a temperature on "
+                f"{count} land cell(s) of {land_cells}: range "
+                f"[{np.nanmin(sample):.6g}, {np.nanmax(sample):.6g}] K "
+                f"outside {low:g}..{high:g}.  0 K is the geog "
+                "soil_temperature fill, so this is a deep-soil source "
+                "that did not decode over the land this domain resolves "
+                "-- check the geog soil_temperature tile coverage for "
+                "this footprint")
+
+
 def merge_highres_overrides(
         baseline: Mapping[str, np.ndarray],
         overrides: Mapping[str, np.ndarray]) -> tuple[dict[str, np.ndarray],
@@ -616,10 +677,17 @@ def merge_highres_overrides(
         "LAI12M": 0.0,
         "ALBEDO12M": 8.0,
         "SNOALB": 0.0,
-        "SOILTEMP": 0.0,
+        # A MASKED SENTINEL, not a temperature.  Filling water deep-soil
+        # with 0.0 made a manufactured 0 K indistinguishable from a real
+        # one, so the finiteness gate below -- and every count downstream
+        # -- read a whole-domain deep-soil decode failure as ordinary
+        # water.  NaN says "no deep-soil information here", which is the
+        # truth about a water cell, and lets the gate ask the only
+        # question that matters: is every LAND cell a real temperature?
+        "SOILTEMP": np.nan,
     }
     for name, water_fill in fills.items():
-        value = np.array(baseline[name], copy=True)
+        value = np.array(baseline[name], copy=True, dtype=np.float64)
         if value.ndim == 3:
             value[:, newly_land] = value[:, yy, xx]
             value[:, ~new_land] = water_fill
@@ -632,13 +700,28 @@ def merge_highres_overrides(
     out["TMN"] = np.where(
         new_land, out["SOILTEMP"] - 0.0065 * out["HGT_M"],
         out["SOILTEMP"])
-    for name, value in out.items():
-        if isinstance(value, np.ndarray) and not np.isfinite(value).all():
-            raise ValueError(f"merged high-resolution field {name} is non-finite")
+    _refuse_unusable_merged_statics(out, new_land)
+    # The sentinel does NOT cross this return.  geo_em's on-disk
+    # convention for a land-masked field is 0.0 over water, and three
+    # consumers read the merged TMN with no land mask of their own --
+    # ``gpuwm/runtime.py`` hands it straight to ``initialize_physics``
+    # as the Noah driver's ``tmn`` field.  So the sentinel does its work
+    # inside the gate, where the question is asked, and the returned
+    # arrays keep the convention every reader already expects.  What
+    # changed is that a land leak can no longer hide behind it.
+    water_masked = 0
+    for name in ("SOILTEMP", "TMN"):
+        sentinel = ~np.isfinite(out[name])
+        water_masked = max(water_masked, int(np.count_nonzero(sentinel)))
+        out[name] = np.where(sentinel, 0.0, out[name])
     audit = {
         "newly_land_nearest_climatology_fallback_cells": int(newly_land.sum()),
         "newly_water_masked_cells": int(newly_water.sum()),
         "unchanged_land_water_cells": int((old_land == new_land).sum()),
+        # The water cells whose deep-soil temperature is a mask rather
+        # than a measurement.  Named so a reader of the receipt can tell
+        # the 0.0 in SOILTEMP/TMN from a temperature.
+        "deep_soil_water_masked_cells": water_masked,
     }
     return out, audit
 

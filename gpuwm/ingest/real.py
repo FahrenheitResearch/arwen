@@ -149,7 +149,7 @@ _HRRR_DISPOSITION_OPERATOR = {
 #: members -- so the mass-species handling is the same at all three sites,
 #: and that identity was verified against :3024 and :3036 directly rather
 #: than assumed from the mp=8 arm.
-HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS = (1, 6, 8, 10, 18, 28)
+HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS = (1, 6, 8, 10, 16, 18, 28)
 
 # WRF v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28:
 # Registry/Registry.EM_COMMON:3015 gives Kessler only moist:qv,qc,qr.

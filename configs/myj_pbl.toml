@@ -1,0 +1,65 @@
+# MYJ (bl_pbl_physics = 2) with its own Eta surface layer
+# (sf_sfclay_physics = 2), the pairing gpuwm.config.validate_myj_pairing
+# enforces in BOTH directions.
+#
+# The scheme reached the 1.9 assembly admitted by the loader and absent
+# from the preflight's PBL and surface-layer kernel-module tables, so
+# `gpuwm check` raised and gpuwm/core/model.py died on the same call.
+# This config is the standing check that both rows are there.
+#
+# MYJ carries the widest per-thread local frame of any PBL in the tree
+# (myjpbl, 9,232 B at the compiled MYJ_KMAX = 128 tier, ~2.00 GiB of
+# launch-time backing store on the reference card), which is exactly the
+# reservation the preflight exists to price before a run meets it.
+#
+# Noah is selected on purpose: MYJ's land branch inverts the latent-heat
+# flux to rebuild QSFC (module_bl_myjpbl.F:554-557), so with
+# sf_surface_physics = 0 nothing writes LH and the surface humidity stops
+# evolving.  A PBL proof with a dead surface is not a proof.
+
+[experiment]
+name = "myj_pbl"
+start_time = 2021-06-01T18:00:00
+run_seconds = 600.0
+restart_interval_s = 0.0
+
+[projection]
+map_proj = "lambert"
+ref_lat = 38.0
+ref_lon = -97.0
+truelat1 = 30.0
+truelat2 = 45.0
+stand_lon = -97.0
+
+[shared]
+nz = 40
+ztop = 20000.0
+map_proj = 1
+moist = true
+cudt_minutes = 0.0
+mp_physics = 6
+bl_pbl_physics = 2
+sf_sfclay_physics = 2
+sf_surface_physics = 2
+num_soil_layers = 4
+ra_lw_physics = 4
+ra_sw_physics = 4
+radt = 12.0
+bldt = 0.0
+cu_physics = 1
+km_opt = 1
+
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+history_interval_s = 300.0
+nx = 41
+ny = 41
+dx = 3000.0
+dy = 3000.0
+time_step = 15
+specified = true

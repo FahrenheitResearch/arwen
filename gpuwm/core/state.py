@@ -53,6 +53,7 @@ from gpuwm.core.grid import BaseState, VerticalCoord, rebalance_hydrostatic
 # fill).  From gpuwm.core, not gpuwm.verify: the standalone CPU
 # preprocessing distribution omits the verification tree.
 from gpuwm.core.sase_limits import E_MIN as SASE_E_MIN
+from gpuwm.core.wdm6_constants import WDM6_NUMBER_SPECIES
 
 #: Model-field dtype.  FP64 only in setup code and test references.  Keeping
 #: the scalar type available without CuPy lets the Rust/NumPy native-input
@@ -425,12 +426,59 @@ class DomainState:
             # is impossible and re-zeroing silently drops one step of
             # retained heating on the first resumed trajectory.
             self.h_diabatic = zeros(nz, ny, nx)
-            if cfg.mp_physics in (6, 8, 10, 18, 28):
+            if cfg.mp_physics == 50:
+                # P3 one-category (Registry.EM_COMMON:3038).  Deliberately
+                # NOT folded into the tuple below: P3 has ONE ice category
+                # and therefore no qs/qg/effs at all -- allocating them
+                # would hand the rest of the model (advection, output,
+                # nest transition, health) three frozen species P3 never
+                # writes, which is the silent-zero-field failure mode the
+                # mp=28 comment above warns about.  The registered package
+                # is moist:qi + scalar:qni,qnr,qir,qib +
+                # state:re_cloud,re_ice,th_old,qv_old; vmi3d/di3d/rhopo3d
+                # are diagnostic-only and live in the adapter's scratch.
+                for name in ("qi", "ni", "nr", "qir", "qib",
+                             "effc", "effi"):
+                    setattr(self, name, zeros(nz, ny, nx))
+                # P3 needs the PREVIOUS step's theta and vapour to build its
+                # supersaturation tendency ('A' term, module_mp_p3.F:3171).
+                # p3_main writes them at the end of every call (:5018-5021),
+                # so they are cross-step carriers, not RK-rebuilt copies.
+                # WRF's th_old/qv_old are likewise plain state, zero at
+                # allocation; the scheme's own max(t_old,1.) guard (:2329)
+                # is what makes the zero first step well-defined.
+                # RESTART ADVISORY: both belong in a restart stream (WRF
+                # carries them); a resumed gpuwm run that re-zeroes them
+                # repeats the first-step transient once.
+                self.th_old = zeros(nz, ny, nx)
+                self.qv_old = zeros(nz, ny, nx)
+                # module_mp_p3.F's own background radii, in gpuwm's
+                # radiation-facing micron convention: p3_main initializes
+                # diag_effc = 10.e-6 m and diag_effi = 25.e-6 m every call
+                # before any condensate test (:2280-2282).
+                self.effc[...] = DTYPE(10.0)
+                self.effi[...] = DTYPE(25.0)
+                for name in ("qi0", "ni0", "nr0", "qir0", "qib0"):
+                    setattr(self, name, rebuilt(name, nz, ny, nx))
+            elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
                 common = ("qi", "qs", "qg", "effc", "effi", "effs")
                 number_and_radius = (
                     ("nr", "ni") if cfg.mp_physics == 8 else
+                    # Milbrandt-Yau (mp=9): hail mass beside graupel plus a
+                    # number moment for all six hydrometeors.  The WRF
+                    # driver binds qnc/qnr/qni/qns/qng/qnh
+                    # (module_microphysics_driver.F:1857-1862) and every one
+                    # is INOUT to mp_milbrandt2mom_driver.
+                    (("qh", "nc", "nr", "ni", "ns", "ng", "nh")
+                     if cfg.mp_physics == 9 else
                     (("nc", "nr", "ni", "ns", "ng", "effr")
                      if cfg.mp_physics == 10 else
+                    # mp=16 (WDM6, Registry.EM_COMMON:3031) transports CCN,
+                    # cloud droplet number and rain number as
+                    # scalar:qnn,qnc,qnr beside WSM6's six masses.  The set
+                    # is spelled in gpuwm/core/wdm6.py so the allocator, the
+                    # ring guard and the nest transition cannot drift apart.
+                    (WDM6_NUMBER_SPECIES if cfg.mp_physics == 16 else
                     (("qh", "qndrop", "qnr", "qni", "qns", "qng",
                       "qnh", "qnn", "qvolg", "qvolh")
                      if cfg.mp_physics == 18 else
@@ -441,16 +489,25 @@ class DomainState:
                     # regression risk that would let a future mp=28 field
                     # silently appear on an mp=8 state.
                     (("nc", "nr", "ni", "nwfa", "nifa")
-                     if cfg.mp_physics == 28 else ()))))
+                     if cfg.mp_physics == 28 else ()))))))
                 for name in common + number_and_radius:
                     setattr(self, name, zeros(nz, ny, nx))
+                if cfg.mp_physics == 16:
+                    # module_mp_wdm6.F:220-227: WRF fills the WHOLE CCN
+                    # memory window with the namelist ccn_conc on the first
+                    # time step and never refills it, and ccn0 reaches
+                    # nothing else in the module.  Doing it here instead is
+                    # the NSSL qnn precedent and is exactly equivalent for a
+                    # cold start; nc and nr correctly start at zero, which is
+                    # what WRF's allocator leaves them at too.
+                    self.nn[...] = DTYPE(cfg.wdm6_ccn_conc)
                 if cfg.mp_physics == 18:
                     # WRF start_em.F initializes predicted NSSL CCN to
                     # nssl_cccn / 1.225 when no input field is present.
                     # Registry default nssl_cccn=0.5e9 m-3; the resulting
                     # dry-mass mixing ratio is exactly this FP32 value.
                     self.qnn[...] = DTYPE(408163264.0)
-                if cfg.mp_physics in (6, 8, 28):
+                if cfg.mp_physics in (6, 8, 16, 28):
                     # module_model_constants.F WSM6/Thompson background radii,
                     # stored in gpuwm's radiation-facing micron convention.
                     # (RE_QC_BG/RE_QI_BG/RE_QS_BG = 2.49E-6/4.99E-6/9.99E-6
@@ -465,10 +522,21 @@ class DomainState:
                     self.effc[...] = DTYPE(2.49)
                     self.effi[...] = DTYPE(4.99)
                     self.effs[...] = DTYPE(9.99)
-                elif cfg.mp_physics == 10:
+                elif cfg.mp_physics in (9, 10):
                     self.effc[...] = DTYPE(2.5)
                     self.effi[...] = DTYPE(5.0)
                     self.effs[...] = DTYPE(10.0)
+                    # mp=9 shares Morrison's row for the same WRF reason,
+                    # not by resemblance: MILBRANDT2MOM is absent from the
+                    # use_mp_re disjunction at module_physics_init.F:
+                    # 1004-1023, so has_reqc/has_reqi/has_reqs are all 0 and
+                    # WRF's radiation computes its own radii.  The scheme
+                    # itself has the reff block COMMENTED OUT
+                    # (module_mp_milbrandt2mom.F:3362/:3364/:3372/:3374), so
+                    # nothing writes these after allocation; they exist for
+                    # the state machinery and the spec-zone ring guard, and
+                    # gpuwm/core/rrtmg_legacy.py's _MP_DECLARES_RADII[9] =
+                    # False is what keeps radiation from consuming them.
                 else:
                     # NSSL's native driver bounds are 2.51/10.01/25 um.
                     # State radii use gpuwm's radiation-facing micron
@@ -480,8 +548,14 @@ class DomainState:
                 time_copies = ("qi0", "qs0", "qg0")
                 if cfg.mp_physics == 8:
                     time_copies += ("nr0", "ni0")
+                elif cfg.mp_physics == 9:
+                    time_copies += (
+                        "qh0", "nc0", "nr0", "ni0", "ns0", "ng0", "nh0")
                 elif cfg.mp_physics == 10:
                     time_copies += ("nr0", "ni0", "ns0", "ng0")
+                elif cfg.mp_physics == 16:
+                    time_copies += tuple(
+                        f"{name}0" for name in WDM6_NUMBER_SPECIES)
                 elif cfg.mp_physics == 18:
                     time_copies += (
                         "qh0", "qndrop0", "qnr0", "qni0", "qns0",

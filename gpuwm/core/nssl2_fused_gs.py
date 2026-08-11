@@ -100,8 +100,17 @@ def launch_fused_gs(
     primary_ice_target_m3,
     dz,
     dt_s: float,
+    *,
+    hail_on: bool = True,
 ) -> None:
     """Advance the complete default option-18 GS slab exactly once.
+
+    ``hail_on`` selects WRF's hail category switch.  ``True`` is the resolved
+    option-18 default (``nssl_hail_on=1``, ``lhl>1``).  ``False`` is the
+    ``nssl_hail_on=0`` variant, where ``module_mp_nssl_2mom.F:1445-1447`` sets
+    ``lhl=0`` and the entire graupel<->hail conversion block at :19860 is
+    skipped with its rates left at the zeros written just above it
+    (:19847-19857).
 
     ``workspace`` is the object returned by
     :func:`gpuwm.core.nssl2_driver_support.gather_initialize_and_sediment`.
@@ -129,6 +138,8 @@ def launch_fused_gs(
     ``ipconc=5``/``ibfc=1`` guards. It never invokes the overlapping isolated
     process launchers.
     """
+    if not isinstance(hail_on, bool):
+        raise TypeError("hail_on must be bool")
     size = _validate_workspace(workspace)
     fields = {
         "full_theta": full_theta,
@@ -175,6 +186,7 @@ def launch_fused_gs(
             np.int32(nz),
             np.int32(ny * nx),
             np.int32(size),
+            np.int32(1 if hail_on else 0),
         ),
     )
 
@@ -186,6 +198,7 @@ class NSSL2FusedGS:
     temperature_k: object
     primary_ice_target_m3: object
     dt_s: float
+    hail_on: bool = True
 
     def __call__(self, workspace: NSSL2DriverWorkspace, fields, /) -> None:
         launch_fused_gs(
@@ -199,6 +212,7 @@ class NSSL2FusedGS:
             self.primary_ice_target_m3,
             fields.dz,
             self.dt_s,
+            hail_on=self.hail_on,
         )
 
 

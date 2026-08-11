@@ -135,6 +135,23 @@ _CORE_MODULES = {
     "sase_limits.py",
     "state.py",
     "thompson_contract.py",
+    # state.py allocates WDM6's three number prognostics by NAME and reads
+    # that tuple from `wdm6_constants.WDM6_NUMBER_SPECIES` rather than
+    # copying the spelling, so an mp_physics=16 config cannot be loaded
+    # without it.  Same shape as sase_limits.py above: a leaf constants
+    # module, stdlib-only at module scope (dataclasses/functools/math), no
+    # CuPy and no forecast executor.  It reaches one sibling --
+    # `wsm6_constants.py`, staged just below -- because WDM6's cold half IS
+    # WSM6's and the coefficients are imported rather than duplicated.
+    # `gpuwm/core/microphysics.py` and `gpuwm/core/wdm6.py` import it too,
+    # but both are already excluded from this wheel, so state.py is the
+    # only module that forces it here.
+    "wdm6_constants.py",
+    # Reached only by wdm6_constants.py, for the shared rimed-ice
+    # constants and the Weierstrass Gamma.  Also stdlib-only at module
+    # scope; it is staged as that module's dependency, not on its own
+    # account -- nothing else in this wheel names it.
+    "wsm6_constants.py",
 }
 #: `nest_spawn_init.py` and `relocation_init.py` are forecast-time child
 #: initializers, not preprocessing: one builds a nest that is born mid-run,

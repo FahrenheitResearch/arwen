@@ -173,6 +173,23 @@ _MP_CLOUD_OPTICS_SCHEME = {
     6: "wsm6",       # Registry.EM_COMMON:3021, wsm6scheme
     8: "thompson",   # Registry.EM_COMMON:3024, thompson
     10: "morrison",  # Registry.EM_COMMON:3026, morr_two_moment
+    # WDM6.  The VALUE names a COUPLING, not a scheme -- 28 resolves to
+    # "thompson" on the same principle -- and WDM6's coupling is WSM6's,
+    # for the two reasons that decide this table:
+    #  * F_QI/F_QS.  Registry.EM_COMMON:3031 declares wdm6scheme as
+    #    ``moist:qv,qc,qr,qi,qs,qg``, WSM6's inventory (:3021) character for
+    #    character, so cal_cldfra1 takes the same QCLD = QI + QC + QS arm
+    #    (module_radiation_driver.F:3870-3877).
+    #  * Explicit radii.  module_physics_init.F:1013 lists WDM6SCHEME in the
+    #    same has_reqc/has_reqi/has_reqs disjunction as WSM6SCHEME (:1010),
+    #    and the P3 ``has_reqs = 0`` override (:1027-1033) does not name it,
+    #    so all three are 1 and the scheme's own re_cloud/re_ice/re_snow
+    #    (effectRad_wdm6, module_mp_wdm6.F:3135-3234) reach cloud optics.
+    # What is DIFFERENT about WDM6 -- a droplet radius built from prognostic
+    # nc rather than a fixed number -- is inside the radii the scheme
+    # supplies, not in how radiation consumes them, so it changes the
+    # values on this path and not the path.
+    16: "wsm6",      # Registry.EM_COMMON:3031, wdm6scheme
     18: "nssl",      # Registry.EM_COMMON:3033, nssl_2mom
     28: "thompson",  # Registry.EM_COMMON:3036, thompsonaero
 }

@@ -181,6 +181,7 @@ def gather_initialize_and_sediment(
         first_step: bool = False, cu_used: bool = False,
         qrcuten=None, qscuten=None, qicuten=None, qccuten=None,
         workspace: NSSL2DriverWorkspace | None = None,
+        predicted_ccn: bool = True,
         ) -> NSSL2DriverWorkspace:
     """Gather once, initialize moments, diagnose KF numbers, and sediment.
 
@@ -196,11 +197,21 @@ def gather_initialize_and_sediment(
     a step mass increment and passed through exact ``calcnfromcuten`` number
     diagnosis.  Missing KF arrays are zero rates.  As in WRF, these rates do not
     add mass here: dynamics has already applied their mass tendencies.
+
+    ``predicted_ccn`` is WRF's ``nssl_ccn_on``.  ``True`` is the resolved
+    option-18 default and loads the prognostic ``qnn`` field.  ``False`` is
+    the ``nssl_ccn_on=0`` variant (deprecated ``mp_physics=17``/``22``),
+    where the Registry never allocates ``qnn`` and the module diagnoses the
+    unactivated CCN from the base concentration every step
+    (``module_mp_nssl_2mom.F:2734``).  ``qnn`` is then neither read nor
+    written by the scheme.
     """
     if not isinstance(first_step, bool):
         raise TypeError("first_step must be bool")
     if not isinstance(cu_used, bool):
         raise TypeError("cu_used must be bool")
+    if not isinstance(predicted_ccn, bool):
+        raise TypeError("predicted_ccn must be bool")
 
     volume_fields = {
         "air_density": air_density,
@@ -269,7 +280,7 @@ def gather_initialize_and_sediment(
         (air_density, qv, qc, qr, qi, qs, qg, qh,
          qndrop, qnr, qni, qns, qng, qnh, qnn, qvolg, qvolh,
          *rate_args, state, step, np.int32(first_step), np.int32(cu_used),
-         np.int32(size)))
+         np.int32(size), np.int32(1 if predicted_ccn else 0)))
 
     ncol = ny * nx
     column_blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
@@ -355,10 +366,18 @@ def scatter_nssl2_driver_workspace(
         workspace: NSSL2DriverWorkspace, air_density,
         qv, qc, qr, qi, qs, qg, qh,
         qndrop, qnr, qni, qns, qng, qnh, qnn, qvolg, qvolh,
+        *, predicted_ccn: bool = True,
         ) -> None:
-    """Perform the one final concentration-to-Registry scatter in place."""
+    """Perform the one final concentration-to-Registry scatter in place.
+
+    ``predicted_ccn=False`` reproduces WRF's ``nssl_ccn_on=0`` store, which
+    skips the CCN write entirely (``module_mp_nssl_2mom.F:3283`` requires
+    ``flag_ccn``); ``qnn`` is left exactly as the caller supplied it.
+    """
     if not isinstance(workspace, NSSL2DriverWorkspace):
         raise TypeError("workspace must be NSSL2DriverWorkspace")
+    if not isinstance(predicted_ccn, bool):
+        raise TypeError("predicted_ccn must be bool")
     fields = {
         "air_density": air_density,
         "qv": qv,
@@ -388,7 +407,7 @@ def scatter_nssl2_driver_workspace(
         (blocks,), (_ELEMENT_TPB,),
         (air_density, workspace.state, qv, qc, qr, qi, qs, qg, qh,
          qndrop, qnr, qni, qns, qng, qnh, qnn, qvolg, qvolh,
-         np.int32(size)))
+         np.int32(size), np.int32(1 if predicted_ccn else 0)))
 
 
 def launch_nssl2_driver_support(

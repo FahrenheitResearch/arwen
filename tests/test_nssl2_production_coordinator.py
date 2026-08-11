@@ -116,6 +116,9 @@ def test_production_order_keeps_one_concentration_workspace_until_scatter(monkey
             "qscuten": "snow-rate",
             "qicuten": "ice-rate",
             "qccuten": "cloud-rate",
+            # The resolved variant reaches the gather, which owns WRF's
+            # CCN load; the default lane predicts CCN.
+            "predicted_ccn": True,
         }
         return workspace
 
@@ -192,10 +195,14 @@ def test_production_order_keeps_one_concentration_workspace_until_scatter(monkey
         _assert_identity_sequence(args, expected)
         assert kwargs == {"validate_values": False}
 
-    def scatter(actual_workspace, actual_density, *outputs):
+    def scatter(actual_workspace, actual_density, *outputs,
+                predicted_ccn=True):
         events.append("scatter")
         assert actual_workspace is workspace
         assert actual_density is density
+        # The resolved variant reaches the scatter, so the default lane
+        # must be seen asking for the CCN store explicitly.
+        assert predicted_ccn is True
         _assert_identity_sequence(outputs, registry.as_tuple())
         assert_pre_scatter()
         for index, output in enumerate(outputs, start=1):
@@ -290,7 +297,7 @@ def test_not_due_is_strict_noop_and_combined_nucond_qvexcess_is_explicit(monkeyp
     monkeypatch.setattr(
         coordinator,
         "scatter_nssl2_driver_workspace",
-        lambda *args: events.append("scatter"),
+        lambda *args, **kwargs: events.append("scatter"),
     )
 
     hooks = coordinator.NSSL2ProductionHooks(
@@ -492,7 +499,7 @@ def test_stage_failure_never_scatter_partial_workspace(monkeypatch):
     monkeypatch.setattr(
         coordinator,
         "scatter_nssl2_driver_workspace",
-        lambda *args: scattered.append(True),
+        lambda *args, **kwargs: scattered.append(True),
     )
 
     def failed_qv_excess(workspace):

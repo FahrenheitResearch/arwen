@@ -41,17 +41,26 @@ def test_dispatch_table_routes_only_values_with_a_real_runner():
     from gpuwm.core.physics import PHYSICS_SLOT_DISPATCH
 
     assert PHYSICS_SLOT_DISPATCH == {
-        "sf_sfclay_physics": {0: None, 1: "_run_sfclay", 5: "_run_sfclay",
+        # 2 is the Eta similarity surface layer, routed to its OWN runner
+        # by the MYJ port rather than to a fourth _run_sfclay arm: it
+        # publishes AKHS/AKMS/THZ0/QZ0/UZ0/VZ0 and none of the MM5
+        # layers' MOL/ZOL/PSIM/PSIH, which is why it is admitted only
+        # beside bl_pbl_physics=2.
+        "sf_sfclay_physics": {0: None, 1: "_run_sfclay",
+                              2: "_run_myj_sfclay", 5: "_run_sfclay",
                               91: "_run_sfclay"},
         "sf_surface_physics": {0: None, 2: "_run_noah", 3: "_run_ruc",
                                4: "_run_noahmp"},
-        # 11 is Shin-Hong, routed to its own runner by the Phase-D
-        # wiring (max ULP 0 conformance against the byte-frozen WRF
-        # v4.6.1 module); 900 is SASE, the one ArWen-only scheme: it
-        # takes a value outside WRF's namespace precisely so this table
-        # can route it without ever shadowing a WRF selector.
-        "bl_pbl_physics": {0: None, 1: "_run_ysu", 5: "_run_mynn_pbl",
-                           11: "_run_shinhong", 900: "_run_sase"},
+        # 2 is MYJ, routed by the MYJ port (implemented-unverified: a
+        # transcription of the byte-frozen module_bl_myjpbl.F with no
+        # oracle comparison run yet); 11 is Shin-Hong, routed to its own
+        # runner by the Phase-D wiring (max ULP 0 conformance against the
+        # byte-frozen WRF v4.6.1 module); 900 is SASE, the one ArWen-only
+        # scheme: it takes a value outside WRF's namespace precisely so
+        # this table can route it without ever shadowing a WRF selector.
+        "bl_pbl_physics": {0: None, 1: "_run_ysu", 2: "_run_myj_pbl",
+                           5: "_run_mynn_pbl", 11: "_run_shinhong",
+                           900: "_run_sase"},
     }
 
 
@@ -60,12 +69,14 @@ def test_dispatch_table_routes_only_values_with_a_real_runner():
     # the gate moves to WRF selector values gpuwm still has no runner for
     # rather than being deleted with the scheme it was written for.  These are
     # all real WRF v4.6.1 options: 1 is the 5-layer thermal diffusion slab, 7
-    # is PX LSM, 8 is SSiB, 2 is MYJ PBL and 6 is MYNN3.
+    # is PX LSM, 8 is SSiB and 6 is MYNN3.  bl_pbl_physics=2 (MYJ) left
+    # this list with the MYJ port: it now has a runner, so keeping it here
+    # would pin the absence of a scheme that is present.
     ("sf_surface_physics", 1),
     ("sf_surface_physics", 7),
     ("sf_surface_physics", 8),
-    ("bl_pbl_physics", 2),
     ("bl_pbl_physics", 6),
+    ("sf_sfclay_physics", 7),
 ])
 def test_unrouted_selector_never_resolves_to_another_scheme(selector, value):
     from gpuwm.core.physics import (UnroutedPhysicsSelectorError,
@@ -366,7 +377,10 @@ def test_noahmp_is_admitted_at_four_soil_layers_and_only_there():
 
 
 def test_schema_tables_and_soil_geometry():
-    assert SURFACE_LAYER_SCHEMES == (0, 1, 5, 91)
+    # 2 (Eta similarity) joined with the MYJ port, together with
+    # bl_pbl_physics=2 below: the two are admitted as a PAIR and
+    # validate_myj_pairing refuses either half alone.
+    assert SURFACE_LAYER_SCHEMES == (0, 1, 2, 5, 91)
     assert LAND_SURFACE_SCHEMES == (0, 2, 3, 4)
     # Pin moved (0, 1, 5, 900) -> (0, 1, 5, 11, 900) by the Phase-D
     # Shin-Hong runtime wiring: 11 is WRF's own bl_pbl_physics number for
@@ -375,7 +389,7 @@ def test_schema_tables_and_soil_geometry():
     # widening the registry admission (a5e101c5) enumerated.  900 is
     # SASE: ArWen-only, deliberately outside WRF's namespace (which runs
     # to 99) so it can never collide with a scheme WRF adds later.
-    assert PBL_SCHEMES == (0, 1, 5, 11, 900)
+    assert PBL_SCHEMES == (0, 1, 2, 5, 11, 900)
     assert LAND_SURFACE_SOIL_LAYERS[2] == (4,)
     assert LAND_SURFACE_SOIL_LAYERS[3] == (6, 9)
     assert LAND_SURFACE_SOIL_LAYERS[4] == (4,)
@@ -392,8 +406,16 @@ def test_schema_tables_and_soil_geometry():
     with pytest.raises(ValueError, match="sf_surface_physics must be"):
         validate_run_config(_cfg(sf_surface_physics=7))
     with pytest.raises(ValueError, match="bl_pbl_physics must be"):
-        validate_run_config(_cfg(bl_pbl_physics=2))
+        validate_run_config(_cfg(bl_pbl_physics=6))
     with pytest.raises(ValueError, match="sf_sfclay_physics must be"):
+        validate_run_config(_cfg(sf_sfclay_physics=7))
+    # 2/2 is now IN the schema, so what refuses a half-suite is the
+    # pairing law rather than the schema tables.  Pinned here so the two
+    # refusals cannot be confused for each other.
+    with pytest.raises(ValueError, match="requires sf_sfclay_physics=2"):
+        validate_run_config(_cfg(bl_pbl_physics=2))
+    with pytest.raises(ValueError,
+                       match="admitted with bl_pbl_physics=2"):
         validate_run_config(_cfg(sf_sfclay_physics=2))
 
 
