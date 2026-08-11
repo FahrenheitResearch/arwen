@@ -186,7 +186,7 @@ HRRR_BUNDLE_PATHS = MappingProxyType({
 #: asserts they are the same set -- and which fails on ANY surviving
 #: ``mp_physics in (1, 6, 8, 10, 18)`` literal anywhere under ``gpuwm/``,
 #: so a fifth copy of this gate cannot be added silently.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 16, 18, 28)
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
     # REPORTED METADATA, NOT A GATE (owner ruling 2026-07-31): these
     # per-source lists name the shipped profiles whose verification

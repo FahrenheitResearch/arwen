@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.9.1 (2026-08-11)
+
+Three defects the twin verification of the 1.9.0 ports caught, each
+closed with a class instrument so the pattern cannot ship again.
+
+Fixed:
+- Milbrandt-Yau (`mp_physics = 9`) real cases run. Seven scheme-keyed
+  tables lacked mp=9 arms: the preflight shape manifest, so an accepted
+  configuration could not build its real-case workspace; the acoustic
+  moist sum; the held-mixing slot registry; the nest forcing inventory;
+  the coupled-scalar allowlist; the reflectivity consume membership; and
+  the end-of-run digest's nest-slot membership, where a nested run
+  integrated its full window and then reported failure. The last three
+  also lacked arms for WDM6, P3 or aerosol-aware Thompson. The three
+  hand-copied coupling sets and the digest membership now read one
+  shared inventory, and a new stage-1 suite proves for every
+  `mp_physics` value the loader accepts that the declared closure
+  builds, classifies, couples, consumes its reflectivity and digests.
+  WDM6's CCN pair and Milbrandt-Yau's hail-number pair joined the
+  restart manifest with it.
+- WDM6 and Milbrandt-Yau own the SR roundoff envelope WSM6 already had.
+  The WDM6 kernel forms SR with the identical positive-sum expression as
+  WSM6, but the validator granted the proven envelope to WSM6 alone, so
+  a healthy WDM6 run died on WRF expression-order roundoff, one ULP
+  above 1.0, at its first frozen-dominated column. The envelope is now
+  keyed on the audited shared-expression family with an exact analytic
+  bound per member. Morrison's expression provably cannot exceed 1.0 in
+  float32 and keeps the tight range.
+- RRTM longwave with Dudhia shortwave (1/1) finishes cleanly. The
+  longwave adapter stored `p_top` as a NumPy scalar, which the restart
+  classifier treats as an unclassified array, so every 1/1 run reported
+  failure in the end-of-run digest after a perfect integration. The
+  value is coerced exactly as the legacy-RRTMG adapter coerces its own,
+  the composed pair's sub-adapters and the RRTM coefficient tables are
+  classified, and a new suite walks every registered radiation callable
+  through the restart classifier.
+
+Known:
+- The time-zero history frame publishes the declared constant downward
+  longwave, 300 W m-2, where WRF writes 0.0 before the first radiation
+  call. Recorded here for the surface-radiation carrier contract work;
+  the first radiation call overwrites it.
+
 ## 1.9.0 (2026-08-10)
 
 Six WRF schemes ported, plus the 1.8.9 recalibration batch and a

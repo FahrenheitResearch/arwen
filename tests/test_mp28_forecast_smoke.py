@@ -1086,18 +1086,32 @@ def test_the_runtime_history_lane_admits_28_for_refl_10cm():
     # 16 (WDM6) joined with the WDM6 port: module_mp_wdm6.F reaches
     # refl10cm_wdm6 from one site (:291) under the same
     # ``diagflag .and. do_radar_ref == 1`` guard, so the history lane must
-    # admit it for the same reason it admits 28.
-    assert set(runtime.REFL_10CM_MICROPHYSICS) == {1, 6, 8, 10, 16, 18, 28}
-    # ... and the set is RE-DERIVED against the estimator's own admission
-    # set rather than left as one hand-typed tuple, which is how this pin
-    # went stale: preflight prices a reflectivity kernel for exactly the
-    # schemes that can launch one, so a scheme admitted on one side and not
-    # the other either strands a computed field at the next history frame
-    # or reserves local memory nothing launches.
-    from gpuwm.core import preflight as pf
+    # admit it for the same reason it admits 28.  Since 1.9.1 the
+    # membership is pinned to the accepted menu itself (every moist
+    # accepted scheme; tests/test_mp_accepted_builds.py) -- 9 and 50
+    # shipped through the hand-typed set that used to sit here.
+    from gpuwm.config import MP_PHYSICS_ACCEPTED
 
     assert (set(runtime.REFL_10CM_MICROPHYSICS)
-            == set(pf._REFLECTIVITY_MICROPHYSICS))
+            == {mp for mp in MP_PHYSICS_ACCEPTED if mp})
+    # ... and the set is cross-checked against the estimator's own
+    # admission set rather than left as one hand-typed tuple, which is how
+    # this pin went stale.  The two sets are no longer EQUAL, and the
+    # difference is documented scheme behaviour, not drift: preflight
+    # prices the shared ``refl`` translation unit for exactly the schemes
+    # that LOAD it, while the history lane consumes the stash for every
+    # moist scheme.  mp=9 fills REFL_10CM inside its own milbrandt2
+    # diagnostics kernel and mp=50 inside its host pass, so both consume
+    # without loading ``refl`` (gpuwm/core/preflight.py, the deliberate
+    # absences beside _REFLECTIVITY_MICROPHYSICS).  Every priced scheme
+    # must still be consumed, or a computed field strands at the next
+    # history frame.
+    from gpuwm.core import preflight as pf
+
+    assert (set(pf._REFLECTIVITY_MICROPHYSICS)
+            <= set(runtime.REFL_10CM_MICROPHYSICS))
+    assert (set(runtime.REFL_10CM_MICROPHYSICS)
+            - set(pf._REFLECTIVITY_MICROPHYSICS)) == {9, 50}
 
     runtime_source = (pathlib.Path(__file__).resolve().parent.parent
                       / "gpuwm" / "runtime.py").read_text(encoding="utf-8")

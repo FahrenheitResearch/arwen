@@ -27,6 +27,13 @@ STATE_SERIALIZED_ATTRS = (
     "qi", "qs", "qg", "nc", "nr", "ni", "ns", "ng",
     "qh", "qndrop", "qnr", "qni", "qns", "qng", "qnh", "qnn",
     "qvolg", "qvolh",
+    # mp_physics=9 (Milbrandt-Yau) hail number and mp_physics=16 (WDM6)
+    # CCN concentration.  Both are transported prognostics (MY2_SPECIES /
+    # WDM6_NUMBER_SPECIES in gpuwm/core); a restart that dropped either
+    # would silently resume with a zero moment under nonzero mass.  Both
+    # are absent (None) on every other scheme's state and the writer and
+    # reader skip on ``is None``, so no existing inventory moves.
+    "nh", "nn",
     "effc", "effr", "effi", "effs",
     # mp_physics=28 (Thompson aerosol-aware).  ``nc`` is already listed
     # above (Morrison allocates it).  ``nwfa``/``nifa`` are prognostic

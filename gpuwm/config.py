@@ -1069,6 +1069,15 @@ _MP_PHYSICS_SCHEMA_MENU = (
     "one-category)"
 )
 
+#: Every ``mp_physics`` value the config loader admits, as the importable
+#: authority the accepted-implies-builds instrument iterates
+#: (tests/test_mp_accepted_builds.py).  This tuple and the menu sentence
+#: above are two spellings of ONE schema: ``validate_run_config`` tests
+#: membership against this tuple and recites the menu when it refuses, so
+#: a new scheme is added in both places in the same edit or the loader
+#: and its refusal text disagree in front of a user.
+MP_PHYSICS_ACCEPTED = (0, 1, 6, 8, 9, 10, 16, 18, 28, 50)
+
 
 def unported_p3_variant_refusal(value: int) -> str:
     """A P3 sibling's refusal: its own missing physics, then the menu.
@@ -2453,7 +2462,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
         # The menu follows the reason: these are out-of-schema VALUES, and
         # a value refusal recites the menu here the same way as below.
         raise ValueError(unported_p3_variant_refusal(cfg.mp_physics))
-    if cfg.mp_physics not in (0, 1, 6, 8, 9, 10, 16, 18, 28, 50):
+    if cfg.mp_physics not in MP_PHYSICS_ACCEPTED:
         # WDM5 (14) and WDM7 (26) are named rather than left to the generic
         # tail: they are WDM6's siblings in the same WRF family and the
         # obvious next thing a WDM6 user types, so the refusal says which

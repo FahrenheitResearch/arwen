@@ -327,3 +327,15 @@ tests/test_line_ending_stability.py
 # same blind spot the line-ending gate above closed.  It is a CPU test and it
 # reads one file.
 tests/test_release_notes_are_public_facing.py
+
+# 1.9.1 D1, the second accepted-but-cannot-run instance in ONE release,
+# one table over from the last one: mp_physics=9 shipped ACCEPTED by the
+# loader and PRICED by test_composition_pricing, and could not BUILD its
+# real-case workspace -- preflight's shape manifest had no mp=9 block, so
+# the state builder's rebuilt() views had no backing.  This suite is the
+# missing rung between "prices" and "steps": for EVERY mp value the
+# config loader accepts it builds the shared dycore-state workspace from
+# the preflight declarations and constructs the DomainState against it,
+# then requires the full allocated symbol closure to be declared and
+# restart-classified.  CPU-only (NumPy-backed state), under a second.
+tests/test_mp_accepted_builds.py

@@ -11,6 +11,30 @@ import numpy as np
 
 from gpuwm.core.kernels import get_kernel
 
+#: Every transported hydrometeor/number/volume scalar the coupled-units
+#: machinery accepts, shared by the three sites that used to spell it
+#: inline (state LBC relaxation, couple_nest_field,
+#: uncouple_feedback_field) -- three hand-copied sets is how mp=9's
+#: ``nh``, WDM6's ``nn`` and P3's rime pair were each missing from all
+#: three at once (1.9.1 D1's route, the nest-coupling table).  All of
+#: them take the generic scalar coupling code 7 with half-level mu
+#: weighting, exactly like the moments beside them; membership here is
+#: inventory, not kernel behaviour.  The accepted-implies-builds
+#: instrument pins this set against every accepted scheme's
+#: ``nest_field_kinds``.
+COUPLED_SCALAR_STATE_FIELDS = frozenset({
+    "qv", "qc", "qr", "qi", "qs", "qg",
+    "nr", "ni", "ns", "ng", "nc", "nwfa", "nifa",
+    # mp=9 (Milbrandt-Yau): hail number; the rest of its moments were
+    # already named by the schemes that spelled them first.
+    "nh",
+    # mp=16 (WDM6): the CCN reservoir.
+    "nn",
+    # mp=50 (P3): rime mass and rime volume, transported with qi.
+    "qir", "qib",
+    "qh", "qndrop", "qnr",
+    "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh"})
+
 _THREADS = 256
 _THETA_OFFSET_K = np.float32(300.0)
 
@@ -417,14 +441,11 @@ def apply_specified_relaxation(field, tendency, boundary: FieldBoundary, *,
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("CuPy is required for specified boundaries") from exc
     if state is not None:
-        # mp=28 adds nc/nwfa/nifa.  No kernel change is needed: the ``kind``
-        # lookup below falls through to the generic scalar code 7, which is
-        # what every non-qv scalar already uses.
-        supported = {"u", "v", "w", "theta", "phi", "mu", "qv", "qc",
-                     "qr", "qi", "qs", "qg", "nr", "ni", "ns", "ng",
-                     "nc", "nwfa", "nifa",
-                     "qh", "qndrop", "qnr", "qni", "qns", "qng", "qnh",
-                     "qnn", "qvolg", "qvolh"}
+        # No kernel change is needed for any scalar: the ``kind`` lookup
+        # below falls through to the generic scalar code 7, which is what
+        # every non-qv scalar already uses.
+        supported = ({"u", "v", "w", "theta", "phi", "mu"}
+                     | COUPLED_SCALAR_STATE_FIELDS)
         if field_name not in supported:
             raise ValueError(f"unsupported state LBC field {field_name!r}")
         if field_name == "mu":
@@ -624,11 +645,8 @@ def couple_nest_field(state, field_name: str, *, out):
         raise ValueError(
             f"nest coupled output for {field_name} has shape {out.shape}, "
             f"expected {expected}")
-    scalar_names = {"qv", "qc", "qr", "qi", "qs", "qg",
-                    "nr", "ni", "ns", "ng", "nc", "nwfa", "nifa",
-                    "qh", "qndrop", "qnr",
-                    "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh"}
-    if field_name not in {"u", "v", "w", "t", "ph", "mu"} | scalar_names:
+    if field_name not in ({"u", "v", "w", "t", "ph", "mu"}
+                          | COUPLED_SCALAR_STATE_FIELDS):
         raise ValueError(f"unsupported nest coupling field {field_name!r}")
     kind = {"u": 0, "v": 1, "t": 2, "ph": 3, "mu": 4,
             "qv": 5, "w": 6}.get(field_name, 7)
@@ -668,11 +686,8 @@ def uncouple_feedback_field(state, field_name: str, coupled, reg, *,
         raise ValueError(
             f"coupled feedback field {field_name} has shape "
             f"{tuple(coupled.shape)}, expected {tuple(target.shape)}")
-    scalar_names = {"qv", "qc", "qr", "qi", "qs", "qg",
-                    "nr", "ni", "ns", "ng", "nc", "nwfa", "nifa",
-                    "qh", "qndrop", "qnr",
-                    "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh"}
-    if field_name not in {"u", "v", "w", "t", "ph"} | scalar_names:
+    if field_name not in ({"u", "v", "w", "t", "ph"}
+                          | COUPLED_SCALAR_STATE_FIELDS):
         raise ValueError(f"unsupported feedback field {field_name!r}")
     kind = {"u": 0, "v": 1, "t": 2, "ph": 3,
             "qv": 5, "w": 6}.get(field_name, 7)

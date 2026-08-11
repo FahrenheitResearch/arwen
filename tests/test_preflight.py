@@ -102,12 +102,20 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
     # classified in the restart manifest and unaccounted for in the VRAM
     # projection, which is exactly the drift this equality exists to catch.
     p3_cfg = dataclasses.replace(d01_cfg, mp_physics=50)
+    # Milbrandt-Yau owns nh/nh0 and WDM6 owns nn/nn0; both joined the
+    # classification sets at 1.9.1 (D1's class), so both join the union
+    # for the same reason NSSL and P3 do.  The per-scheme closure itself
+    # is gated by tests/test_mp_accepted_builds.py.
+    my2_cfg = dataclasses.replace(d01_cfg, mp_physics=9)
+    wdm6_cfg = dataclasses.replace(d01_cfg, mp_physics=16)
     names = (set(pf.state_array_shapes(d01_cfg))
              | set(pf.state_array_shapes(nssl_cfg))
              | set(pf.state_array_shapes(les_cfg))
              | set(pf.state_array_shapes(aerosol_cfg))
              | set(pf.state_array_shapes(sase_cfg))
-             | set(pf.state_array_shapes(p3_cfg)))
+             | set(pf.state_array_shapes(p3_cfg))
+             | set(pf.state_array_shapes(my2_cfg))
+             | set(pf.state_array_shapes(wdm6_cfg)))
     classified = (set(restart.STATE_SERIALIZED_ATTRS)
                   | set(restart.STATE_REBUILT_ATTRS)
                   | set(restart.STATE_SETUP_ARRAYS))
@@ -1453,17 +1461,25 @@ def test_mp28_health_rules_cover_the_aerosol_tracers():
 
 
 def test_mp28_lateral_boundary_allow_lists_accept_the_new_scalars():
-    """gpuwm/ingest/lateral_bc.py -- the three allow-lists."""
+    """gpuwm/ingest/lateral_bc.py -- ONE shared coupled-scalar allowlist.
+
+    The three sites used to spell their sets inline, and three
+    hand-copied sets is how mp=9's nh, WDM6's nn and P3's rime pair were
+    each missing from all three at once (1.9.1 D1).  The mp=28 scalars
+    this test originally pinned now live in the shared constant, and
+    each site must read that constant rather than re-spelling a set.
+    """
     import inspect
 
     from gpuwm.ingest import lateral_bc
 
+    for name in ("nc", "nwfa", "nifa", "nh", "nn", "qir", "qib"):
+        assert name in lateral_bc.COUPLED_SCALAR_STATE_FIELDS, name
     for func in (lateral_bc.apply_specified_relaxation,
                  lateral_bc.couple_nest_field,
                  lateral_bc.uncouple_feedback_field):
         source = inspect.getsource(func)
-        for name in ("nc", "nwfa", "nifa"):
-            assert f'"{name}"' in source, (func.__name__, name)
+        assert "COUPLED_SCALAR_STATE_FIELDS" in source, func.__name__
 
 
 def test_mp28_external_lbc_carries_only_qv_and_says_so():

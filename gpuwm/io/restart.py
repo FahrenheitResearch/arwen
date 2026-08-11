@@ -455,14 +455,23 @@ STATE_REBUILT_ATTRS = frozenset({
     "qv0", "qc0", "qr0", "qi0", "qs0", "qg0", "nr0", "ni0", "ns0", "ng0",
     "qh0", "qndrop0", "qnr0", "qni0", "qns0", "qng0", "qnh0",
     "qnn0", "qvolg0", "qvolh0",
+    # mp_physics=9 (Milbrandt-Yau) hail-number RK time-t copy, and
+    # mp_physics=16 (WDM6) CCN + droplet-number RK time-t copies.  Written
+    # from their prognostics by dycore.step before any reader, exactly
+    # like qi0; both were unclassified at 1.9.0, which starved the shared
+    # dycore-state workspace of their backings (1.9.1 D1's class).
+    "nh0", "nn0",
     # km_opt=2's TKE time-t copy, written from the serialized ``tke``
     # carrier by dycore.step before any reader (core/dycore.py:2186-2187),
     # exactly like thp0 and the moist time-t copies above.  The carrier
     # itself is SERIALIZED (state_serialization_contract.py).
     "tke0",
-    # mp_physics=28 (Thompson aerosol-aware) RK time-t copies.  nc0 exists
-    # only for mp=28: mp=10 allocates nc but does not transport it and so
-    # has no nc0 (gpuwm/core/moist.py::THOMPSON_AERO_NUMBER_SPECIES).
+    # RK time-t copies of transported droplet number.  nc0 exists for the
+    # schemes that TRANSPORT nc -- mp=28 (Thompson aerosol-aware), mp=9
+    # (Milbrandt-Yau) and mp=16 (WDM6); mp=10 allocates nc but does not
+    # transport it and so has no nc0
+    # (gpuwm/core/moist.py::THOMPSON_AERO_NUMBER_SPECIES).  nwfa0/nifa0
+    # are mp=28's aerosol-number copies.
     "nc0", "nwfa0", "nifa0",
     # mp_physics=50 (P3) rime-mass and rime-volume RK time-t copies.  They
     # exist for the same reason qi0 does and are written from the
@@ -786,7 +795,28 @@ RADIATION_CALLABLE_CONTAINERS = frozenset({
     "_C", "_sw_tables", "_cuda_sw", "_ozone_climo", "_night_outputs",
     # _ozone is the gpuwm.ingest.wrf_ozone MODULE reference (its globals
     # include cached climatology arrays); modules are code, not state.
-    "_ozone"})
+    "_ozone",
+    # The RRTM+Dudhia (1/1) composition's two single-stream adapters
+    # (gpuwm/core/rrtm_lw.py::RRTMDudhiaRadiation), both rebuild-on-load:
+    # a resumed run constructs a fresh composed adapter, whose
+    # __post_init__ rebuilds both from the same constructor arguments the
+    # radiation identity fingerprints.  The only arrays reachable through
+    # them are the construction-time latitude/longitude device grids --
+    # the same data as the composed adapter's own classified
+    # latitude_deg/longitude_deg -- and the longwave adapter's ``_tables``
+    # (digest-stable packaged RRTM coefficient loads, never mutated per
+    # call).  Neither adapter holds cross-step array state: the held
+    # radiative rates live on the driver (rthratenlw/rthratensw,
+    # serialized by name), and RRTM's ozone is recomputed from packaged
+    # O3DATA every call, unlike legacy RRTMG's restart-carried _o33d_grid.
+    "longwave_adapter", "shortwave_adapter",
+    # The RRTM longwave adapter's coefficient bundle (_tables): a
+    # digest-stable load of the packaged module_ra_rrtm.F data performed
+    # at construction and never mutated per call -- rebuild-on-load, the
+    # same category as legacy RRTMG's _C.  Classified so a directly
+    # registered RRTMLongwaveRadiation (any custom longwave/shortwave
+    # composition) walks cleanly, not only the shipped 1/1 pair.
+    "_tables"})
 #: Cumulus containers, both back-references rather than state of their own:
 #: the KF adapter's ``_history_state`` is the DomainState (arrays covered by
 #: the state walk), and the GF adapter's ``_driver`` is the PhysicsDriver

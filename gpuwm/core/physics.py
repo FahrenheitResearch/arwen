@@ -154,7 +154,8 @@ _MICROPHYSICS_DIAGNOSTIC_LABELS = {
 _MICROPHYSICS_VALIDATION_NAMES = tuple(_MICROPHYSICS_DIAGNOSTIC_LABELS)
 
 
-def _wsm6_sr_roundoff_limit(dt: float) -> tuple[np.float32, int, int]:
+def _wsm6_sr_roundoff_limit(
+        dt: float, step_scalings: int = 0) -> tuple[np.float32, int, int]:
     """Return WRF WSM6's proven positive-sum SR roundoff envelope.
 
     WRF v4.6.1 forms ``SR=(SNOWNCV+GRAUPELNCV)/(RAINNCV+1e-12)``.
@@ -170,6 +171,16 @@ def _wsm6_sr_roundoff_limit(dt: float) -> tuple[np.float32, int, int]:
 
       B = (1+u)^3 (1+gamma_(L-1))
           / ((1-gamma_3) (1-gamma_(L-1))).
+
+    ``step_scalings`` covers a family member whose kernel applies extra
+    unit-scale multiplicative operations to BOTH sides of the quotient
+    after each step's sums -- WDM6 scales every accumulation step by
+    ``delz[0]/1000*dtcld*1000`` (wdm6.cu:618-633, four roundings) where
+    WSM6 accumulates pre-scaled sediment returns.  Each such rounding
+    moves the numerator up by at most ``(1+u)`` and the denominator down
+    by at most ``(1-u)``, so the bound widens by exactly
+    ``((1+u)/(1-u))^step_scalings``; at ``step_scalings=0`` the integer
+    arithmetic below is unchanged bit for bit.
 
     The integer arithmetic below evaluates ``floor((B-1)/ULP(1))`` exactly,
     selecting the largest representable binary32 value no greater than the
@@ -189,9 +200,12 @@ def _wsm6_sr_roundoff_limit(dt: float) -> tuple[np.float32, int, int]:
             f"roundoff envelope: loops={loops}")
 
     # Exact rational form of B after substituting u=1/scale.
-    numerator = (scale + 1) ** 3 * (scale - 3)
+    # (1+u)^s/(1-u)^s = (scale+1)^s/(scale-1)^s carries the per-step
+    # scaling roundings; s=0 reproduces the historic WSM6 integers.
+    numerator = ((scale + 1) ** (3 + step_scalings) * (scale - 3))
     denominator = (scale ** 2 * (scale - 6)
-                   * (scale - 2 * accumulation_adds))
+                   * (scale - 2 * accumulation_adds)
+                   * (scale - 1) ** step_scalings)
     if numerator >= 2 * denominator:
         raise ValueError(
             "WSM6 FP32 SR roundoff bound reaches 2.0, where ULP(1) "
@@ -202,6 +216,82 @@ def _wsm6_sr_roundoff_limit(dt: float) -> tuple[np.float32, int, int]:
     upper_bits = _FP32_ONE_BITS + max_ulps
     upper = np.asarray(upper_bits, dtype=np.uint32).view(np.float32)[()]
     return upper, int(max_ulps), loops
+
+
+def _my2_sr_roundoff_limit() -> tuple[np.float32, int]:
+    """Milbrandt-Yau's positive-sum SR roundoff envelope (dt-independent).
+
+    milbrandt2.cu:2327-2340 (transcribing WRF's mp_milbrandt2mom_driver
+    :3676-3690) forms the SAME positive-sum quotient as WSM6 -- frozen
+    components over a total that re-sums those components in a different
+    association order -- but once per call from the driver's nine rate
+    terms rather than accumulated across minor loops:
+
+      rncv = fl(r1+r2+f1+f2+sn1+sn2+sn3+pe1+pe2) * m   (8 adds, 1 mult)
+      num  = fl(fl(fl(sn1+sn2)*m) + fl(fl(pe1+pe2)*m)) + fl(sn3*m)
+
+    Worst case: numerator paths carry at most (1+u)^4 (pair add, scale,
+    two combining adds), the denominator at least (1-u)^9 (eight adds and
+    the scale), and the division one more (1+u), so
+
+      B = (1+u)^5 / (1-u)^9.
+
+    The ``+1e-12`` denominator is monotone exactly as in WSM6's form.  The
+    integer arithmetic evaluates ``floor((B-1)/ULP(1))`` exactly, the same
+    selection rule as :func:`_wsm6_sr_roundoff_limit`.
+    """
+    scale = _FP32_SIGNIFICAND_SCALE
+    numerator = (scale + 1) ** 5 * scale ** 4
+    denominator = (scale - 1) ** 9
+    scaled_delta = (numerator - denominator) * scale
+    scaled_ulp = 2 * denominator
+    max_ulps = scaled_delta // scaled_ulp
+    upper_bits = _FP32_ONE_BITS + max_ulps
+    upper = np.asarray(upper_bits, dtype=np.uint32).view(np.float32)[()]
+    return upper, int(max_ulps)
+
+
+#: The positive-sum SR expression family (1.9.1 D2).  Audit of every
+#: kernel that writes SR (``grep 'sr\[' gpuwm/core/kernels/*.cu``):
+#:
+#: * wsm6.cu:402 and wdm6.cu:635 form the IDENTICAL expression
+#:   ``sr = (snowncv + graupelncv) / (rainncv + 1e-12)`` accumulated
+#:   across the same ``floor(dt/120+0.5)`` minor-loop split
+#:   (wsm6.cu:372-374 == wdm6.cu:466-468).  WDM6 additionally applies
+#:   four post-sum unit scalings per step (wdm6.cu:618-633), priced by
+#:   the ``step_scalings`` term.  1.9.0 granted the envelope to mp=6
+#:   only, so WDM6's own WRF-expression-order SR killed a healthy run
+#:   at its first frozen-dominated column.
+#: * milbrandt2.cu:2340 (mp=9) forms the same positive-sum quotient once
+#:   per call; :func:`_my2_sr_roundoff_limit` derives its envelope.
+#: * morrison.cu:1041-1049 (mp=10) is NOT a member: its denominator
+#:   ``out_c+out_r+out_i+out_s+out_g`` prepends the two liquid terms to
+#:   the numerator's own association tail ``(out_i+out_s)+out_g``, and
+#:   round-to-nearest is monotone, so every denominator partial dominates
+#:   the numerator's and SR <= 1.0 holds exactly in FP32.  It keeps the
+#:   tight ``upper=1.0``.
+#: * nssl2_driver_support.cu:1266 (mp=18) sits outside the range check by
+#:   the scheme's canonical-scratch contract (accept_microphysics).
+_SR_EXPRESSION_FAMILY_STEP_SCALINGS = {6: 0, 16: 4}
+
+
+def _sr_roundoff_envelope(
+        mp_physics: int, dt: float) -> tuple[np.float32, int, int]:
+    """(upper, max_ulps, minor_loops) for the scheme's SR validator.
+
+    Keyed on SHARED-EXPRESSION FAMILY membership (see
+    :data:`_SR_EXPRESSION_FAMILY_STEP_SCALINGS`), not on one scheme id:
+    every kernel that forms SR with WSM6's positive-sum expression owns
+    the proven roundoff envelope, and everything else keeps the tight
+    ``[0, 1]`` range.
+    """
+    step_scalings = _SR_EXPRESSION_FAMILY_STEP_SCALINGS.get(mp_physics)
+    if step_scalings is not None:
+        return _wsm6_sr_roundoff_limit(dt, step_scalings)
+    if mp_physics == 9:
+        upper, max_ulps = _my2_sr_roundoff_limit()
+        return upper, max_ulps, 0
+    return np.float32(1.0), 0, 0
 
 
 _OUTPUT_FIELDS = {
@@ -1643,13 +1733,14 @@ class PhysicsDriver:
             self.ra_lw_physics or self.ra_sw_physics)
         self.cu_physics = cfg.cu_physics
         self.mp_physics = cfg.mp_physics
-        if self.mp_physics == 6:
-            (self._sr_roundoff_upper, self._sr_roundoff_max_ulps,
-             self._wsm6_minor_loops) = _wsm6_sr_roundoff_limit(cfg.dt)
-        else:
-            self._sr_roundoff_upper = np.float32(1.0)
-            self._sr_roundoff_max_ulps = 0
-            self._wsm6_minor_loops = 0
+        # SR validator envelope, granted by shared-expression family
+        # membership rather than per scheme (1.9.1 D2): wsm6.cu:402 and
+        # wdm6.cu:635 form the identical positive-sum SR expression, and
+        # milbrandt2.cu:2340 the same quotient once per call, so all
+        # three own their WRF expression-order roundoff allowance.
+        (self._sr_roundoff_upper, self._sr_roundoff_max_ulps,
+         self._wsm6_minor_loops) = _sr_roundoff_envelope(
+            self.mp_physics, cfg.dt)
         self.surface_enabled = bool(
             cfg.sf_sfclay_physics or cfg.sf_surface_physics
             or cfg.bl_pbl_physics)

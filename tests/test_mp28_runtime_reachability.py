@@ -126,7 +126,7 @@ STALE_REFL_ADMISSION = frozenset({1, 6, 8, 10, 18})
 #: (nr1d, :2957) -- that is a producer-side difference (the port gives it its
 #: own kernel, gpuwm/core/kernels/wdm6_refl.cu) and changes nothing about
 #: admission.
-REFL_ADMISSION = frozenset({1, 6, 8, 10, 16, 18, 28})
+REFL_ADMISSION = frozenset({1, 6, 8, 9, 10, 16, 18, 28, 50})
 
 #: The deliberate exception.  ``PORTED_MP_PHYSICS`` names the selectors with
 #: a ported MIXED nest edge, and mp=28 has none: every one of its eleven
@@ -392,11 +392,19 @@ def test_every_refl_10cm_admission_constant_admits_28():
     # Re-derived 2026-08-09 for the WDM6 port: the producer gate gained 16
     # because compute_refl_10cm now HAS an mp=16 branch (:615, launching
     # gpuwm/core/kernels/wdm6_refl.cu).  18 is still absent for the original
-    # reason.  The asymmetry the assertion protects -- consumer set minus
-    # producer set == {18} -- is asserted as arithmetic below rather than
-    # left implicit in two hand-spelled tuples.
+    # reason.  Re-derived again 2026-08-11 (1.9.1): mp=9 and mp=50 joined
+    # the CONSUMER set because both were shipped staging a field nothing
+    # consumed (the exact mp=28 crash, at the second output frame), and
+    # both belong on 18's side of the asymmetry -- Milbrandt-Yau stashes
+    # the scheme's own Zet (gpuwm/core/milbrandt2.py, the INOUT dummy WRF
+    # binds straight to refl_10cm) and P3 stashes its own diagnostic
+    # reflectivity (gpuwm/core/p3.py), so neither routes through
+    # compute_refl_10cm.  The asymmetry the assertion protects -- consumer
+    # set minus producer set == the native-reflectivity schemes -- is
+    # asserted as arithmetic below rather than left implicit in two
+    # hand-spelled tuples.
     assert "cfg.mp_physics not in (1, 6, 8, 10, 16, 28)" in refl_source
-    assert REFL_ADMISSION - frozenset({1, 6, 8, 10, 16, 28}) == {18}
+    assert REFL_ADMISSION - frozenset({1, 6, 8, 10, 16, 28}) == {9, 18, 50}
     assert "elif cfg.mp_physics in (8, 28):" in refl_source, (
         "mp=28 no longer shares mp=8's calc_refl10cm branch; WRF has ONE "
         "such routine with no aerosol-aware arm (module_mp_thompson.F:"

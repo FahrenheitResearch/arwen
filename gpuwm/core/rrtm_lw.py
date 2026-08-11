@@ -688,6 +688,14 @@ class RRTMLongwaveRadiation:
 
         if not isinstance(self.start_time, datetime):
             raise TypeError("radiation_start_time must be a datetime")
+        # Coerce to a Python float exactly as the legacy-RRTMG sibling does
+        # (gpuwm/core/rrtmg_legacy.py): initialize_physics hands over
+        # ``state.p_top``, a NumPy float32 SCALAR, which the restart
+        # classifier's ``_is_array_like`` treats as an array -- an
+        # unclassified one, so every RRTM run's end-of-run canonical
+        # digest (and any restart write) died on a perfect integration
+        # (1.9.1 D3).
+        self.p_top = None if self.p_top is None else float(self.p_top)
         self.latitude_deg = cp.ascontiguousarray(
             cp.asarray(self.latitude_deg, dtype=cp.float32))
         self.longitude_deg = cp.ascontiguousarray(
@@ -899,6 +907,11 @@ class RRTMDudhiaRadiation:
     def __post_init__(self) -> None:
         from gpuwm.core.dudhia import DudhiaShortwaveRadiation
 
+        # Same coercion as the longwave adapter below performs for its
+        # own copy: this dataclass retains ``p_top`` as a direct
+        # attribute, and a NumPy float32 scalar here is an unclassified
+        # "array" to the restart classifier (1.9.1 D3).
+        self.p_top = None if self.p_top is None else float(self.p_top)
         self.longwave_adapter = RRTMLongwaveRadiation(
             self.start_time, self.latitude_deg, self.longitude_deg,
             p_top=self.p_top, icloud=self.icloud,

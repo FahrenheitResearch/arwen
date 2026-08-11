@@ -105,7 +105,7 @@ def prepare_moist_cq(state: DomainState, cfg: RunConfig) -> tuple:
         qi = state.qi
         qs = qg = absent_mass_plane(state)
         n_mass = 6
-    elif cfg.mp_physics in (6, 8, 10, 16, 18, 28):
+    elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
         # mp=28 is numerically IDENTICAL to mp=8 here.  WRF's calc_cq sums
         # the Registry ``moist`` package only, and Registry.EM_COMMON:3036
         # gives aerosol-aware Thompson
@@ -116,12 +116,22 @@ def prepare_moist_cq(state: DomainState, cfg: RunConfig) -> tuple:
         # AND out of the w-equation buoyancy loading; a droplet number of
         # order 1e8 entering q_tot would be a catastrophic, not a subtle,
         # error.
+        #
+        # mp=9 (Milbrandt-Yau) carries hail in the MOIST package exactly
+        # like NSSL: Registry.EM_COMMON:469 declares qh with package
+        # ``moist`` and the milbrandt2mom package binds
+        # moist:qv,qc,qr,qi,qs,qg,qh with all six number moments in
+        # ``scalar``, so its cq is NSSL's seven-mass sum (1.9.1 D1's
+        # route: this arm was cfg-keyed and mp=9 was missing, so an
+        # ACCEPTED Milbrandt-Yau real case refused at its first RK stage
+        # -- unlike slow_buoyancy, whose presence-keyed dispatch already
+        # ran mode 3).
         qi = state.qi
         qs, qg = state.qs, state.qg
-        n_mass = 7 if cfg.mp_physics == 18 else 6
+        n_mass = 7 if cfg.mp_physics in (9, 18) else 6
     else:
         raise ValueError(f"unsupported mp_physics={cfg.mp_physics} for cq")
-    qh = state.qh if cfg.mp_physics == 18 else state.qv
+    qh = state.qh if cfg.mp_physics in (9, 18) else state.qv
     n = (nz + 1) * (ny + 1) * (nx + 1)
     blocks = (n + _THREADS - 1) // _THREADS
     get_kernel("acoustic", "calc_cq")(

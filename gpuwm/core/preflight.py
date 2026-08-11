@@ -2098,9 +2098,21 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
                          "th_old", "qv_old",
                          "qi0", "ni0", "nr0", "qir0", "qib0"):
                 shapes[name] = m
-        if cfg.mp_physics in (6, 8, 10, 16, 18, 28):
+        if cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
             for name in ("qi", "qs", "qg", "qi0", "qs0", "qg0",
                          "effc", "effi", "effs"):
+                shapes[name] = m
+        if cfg.mp_physics == 9:
+            # Milbrandt-Yau two-moment: hail mass beside graupel plus a
+            # number moment for EVERY one of the six hydrometeors
+            # (gpuwm/core/moist.py::MY2_SPECIES), each transported field
+            # with its RK time-t copy (gpuwm/core/state.py, the mp==9
+            # arms).  This block was missing at 1.9.0: the state builder
+            # requested rebuilt("qi0"...) views from a shared workspace
+            # this manifest had never priced, so an ACCEPTED mp=9 config
+            # could not build its real-case workspace (1.9.1 D1).
+            for name in ("qh", "nc", "nr", "ni", "ns", "ng", "nh",
+                         "qh0", "nc0", "nr0", "ni0", "ns0", "ng0", "nh0"):
                 shapes[name] = m
         if cfg.mp_physics == 16:
             for name in ("nn", "nc", "nr", "nn0", "nc0", "nr0"):
@@ -2829,8 +2841,15 @@ def scratch_slot_registry(cfg: RunConfig, *,
         if cfg.moist:
             for name in ("qv", "qc", "qr"):
                 slots["smag_r" + name] = m
-            if cfg.mp_physics in (6, 8, 10, 16, 18, 28):
+            if cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
                 for name in ("qi", "qs", "qg"):
+                    slots["smag_r" + name] = m
+            if cfg.mp_physics == 9:
+                # One held tendency per TRANSPORTED species beyond the
+                # ice masses; the set is gpuwm/core/moist.py::MY2_SPECIES,
+                # which is what prepare_fixed_tendencies iterates (1.9.1
+                # D1's route: mp=9 had no arm here at all).
+                for name in ("qh", "nc", "nr", "ni", "ns", "ng", "nh"):
                     slots["smag_r" + name] = m
             if cfg.mp_physics == 16:
                 for name in ("nn", "nc", "nr"):
@@ -2986,8 +3005,16 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
     kinds = ["u", "v", "w", "t", "ph", "mu"]
     if cfg.moist:
         kinds += ["qv", "qc", "qr"]
-        if cfg.mp_physics in (6, 8, 10, 16, 18, 28):
+        if cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
             kinds += ["qi", "qs", "qg"]
+        if cfg.mp_physics == 9:
+            # The inventory follows what is transported
+            # (gpuwm/core/moist.py::MY2_SPECIES): hail mass plus all six
+            # number moments cross a nest edge with the masses they
+            # describe (1.9.1 D1's route: mp=9 had no arm here, so a
+            # nested Milbrandt-Yau child would have been forced with
+            # WSM6's field set).
+            kinds += ["qh", "nc", "nr", "ni", "ns", "ng", "nh"]
         if cfg.mp_physics == 16:
             kinds += ["nn", "nc", "nr"]
         if cfg.mp_physics == 8:
@@ -3175,6 +3202,14 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
          # already above -- Morrison named them first -- so only the CCN
          # reservoir is new.
          "smag_rnn",
+         # mp=9 (Milbrandt-Yau) hail number.  The rest of its transported
+         # set was already audited here by the schemes that named the
+         # slots first; nh is the one name no other scheme transports
+         # (1.9.1 D1's route, third table: registered by
+         # scratch_slot_registry without a row here, invisible until a
+         # TREE reached shared_scratch_arena_shapes -- the identical
+         # class as the km_opt=2/3 row below).
+         "smag_rnh",
          "smag_rng", "smag_rqh", "smag_rqndrop", "smag_rqnr",
          "smag_rqni", "smag_rqns", "smag_rqng", "smag_rqnh",
          "smag_rqnn", "smag_rqvolg", "smag_rqvolh",

@@ -90,7 +90,7 @@ from gpuwm.static.lambert import grids_from_projection_config
 #: excluding 28 here does not disable a diagnostic, it strands a field
 #: that the scheme has already computed and that ``refl.py``'s
 #: consume-once contract then reports as an unconsumed stash.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 10, 16, 18, 28)
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
 
 MICROPHYSICS_TRANSITION_RECEIPT_NAME = "microphysics-transitions.json"
 FEEDBACK_PROVENANCE_RECEIPT_NAME = "feedback-provenance.json"

@@ -519,7 +519,11 @@ def test_rrtmgp_table_containers_are_explicitly_classified():
          # legacy-RRTMG adapter containers (all rebuild-on-load; see the
          # classification comments in gpuwm/io/restart.py)
          "_C", "_sw_tables", "_cuda_sw", "_ozone_climo",
-         "_night_outputs", "_ozone"})
+         "_night_outputs", "_ozone",
+         # the RRTM+Dudhia (1/1) composition's rebuild-on-load
+         # sub-adapters and the RRTM coefficient bundle (1.9.1 D3; see
+         # gpuwm/io/restart.py and tests/test_radiation_callable_manifest)
+         "longwave_adapter", "shortwave_adapter", "_tables"})
     assert restart.CUMULUS_CALLABLE_CONTAINERS == frozenset(
         {"_history_state", "_driver"})
 

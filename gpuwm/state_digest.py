@@ -13,6 +13,8 @@ from typing import Iterable, Mapping
 
 import numpy as np
 
+from gpuwm.ingest.lateral_bc import COUPLED_SCALAR_STATE_FIELDS
+
 
 CANONICAL_STATE_SCHEMA = "gpuwm-canonical-state-v2"
 CANONICAL_INVENTORY_SCHEMA = "gpuwm-canonical-state-inventory-v2"
@@ -24,11 +26,17 @@ CANONICAL_LAZY_MEMBER_CLASSES = (
     "cumulus carrying accumulators",
     "KF W0AVG trigger history",
 )
+# The digest's nest-slot membership is derived from the SAME shared
+# inventory the coupling machinery reads (COUPLED_SCALAR_STATE_FIELDS),
+# never spelled inline: this was the SIXTH hand-copied table on 1.9.1
+# D1's route.  A hand-maintained duplicate here lacked mp=9's nc/nh,
+# WDM6's nn, P3's rime pair AND mp=28's nc/nwfa/nifa, so a nested run of
+# any of those schemes integrated perfectly and then died in the
+# end-of-run canonical digest ("scratch member 'nest_nc_btxe' ... not a
+# concrete registered member") -- the same false-failure class as D3.
 _CANONICAL_NEST_FIELD_KINDS = (
     "u", "v", "w", "t", "ph", "mu",
-    "qv", "qc", "qr", "qi", "qs", "qg", "nr", "ni", "ns", "ng",
-    "qh", "qndrop", "qnr", "qni", "qns", "qng", "qnh", "qnn",
-    "qvolg", "qvolh",
+    *sorted(COUPLED_SCALAR_STATE_FIELDS),
 )
 _CANONICAL_NEST_SLOTS = frozenset({
     *(f"nest_{kind}_{prefix}{side}"
