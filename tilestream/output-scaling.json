@@ -1,0 +1,490 @@
+{
+ "blocks": {
+  "endtoend": [
+   {
+    "nx": 512,
+    "cells": 12845056,
+    "payload_MB": 418.582924,
+    "file_MB": 424.116974,
+    "stage_ms": 11.85119700130599,
+    "derive_device_ms": 4.273250000551343,
+    "alloc_ms": 0.051820999942719936,
+    "d2h_ms": 7.594122000227799,
+    "host_derive_ms": 10.08223400094721,
+    "mono_write_ms": 401.4274929995736,
+    "ooc_write_ms": 377.0001839984616,
+    "common_write_ms": 391.92683750025026,
+    "mono_encode_ms": 121.0686499998701,
+    "ooc_encode_ms": 107.48338200028229,
+    "mono_total_ms": 403.77803450155625,
+    "ooc_total_ms": 402.00907150119747,
+    "saving_ms": 1.7689630003587808,
+    "ratio": 1.0044003061765574,
+    "stage_share": 0.02935077193076067,
+    "spread_stage": 0.36344185321743533,
+    "spread_d2h": 0.019989934539280635,
+    "spread_derive": 0.7594597586421731,
+    "spread_write_m": 0.11598320446810262,
+    "spread_write_o": 1.4226999767204547,
+    "write_delta_frac": 0.06232619627916246
+   },
+   {
+    "nx": 724,
+    "cells": 25684624,
+    "payload_MB": 836.8691,
+    "file_MB": 847.730286,
+    "stage_ms": 20.00878499893588,
+    "derive_device_ms": 5.063245000201277,
+    "alloc_ms": 0.05951999992248602,
+    "d2h_ms": 14.710207999087288,
+    "host_derive_ms": 20.426592000148958,
+    "mono_write_ms": 742.1373449997191,
+    "ooc_write_ms": 785.8968889995595,
+    "common_write_ms": 774.9305980005374,
+    "mono_encode_ms": 288.19090300021344,
+    "ooc_encode_ms": 296.4331080002012,
+    "mono_total_ms": 794.9393829994733,
+    "ooc_total_ms": 795.3571900006864,
+    "saving_ms": -0.41780700121307746,
+    "ratio": 0.9994746926205411,
+    "stage_share": 0.02517020219005697,
+    "spread_stage": 0.09040823815573022,
+    "spread_d2h": 0.02423514341976092,
+    "spread_derive": 0.13567774787990022,
+    "spread_write_m": 0.5123743894058432,
+    "spread_write_o": 0.1149780680714972,
+    "write_delta_frac": 0.056468984593908166
+   },
+   {
+    "nx": 1024,
+    "cells": 51380224,
+    "payload_MB": 1673.9291,
+    "file_MB": 1734.827118,
+    "stage_ms": 35.84693500124558,
+    "derive_device_ms": 6.374864000463276,
+    "alloc_ms": 0.05007799882150721,
+    "d2h_ms": 29.41220200045791,
+    "host_derive_ms": 39.49676500087662,
+    "mono_write_ms": 1350.2886280002713,
+    "ooc_write_ms": 1382.4569120006345,
+    "common_write_ms": 1381.7614515000969,
+    "mono_encode_ms": 596.0194250001223,
+    "ooc_encode_ms": 601.3327510008821,
+    "mono_total_ms": 1417.6083865013425,
+    "ooc_total_ms": 1421.2582165009735,
+    "saving_ms": -3.649829999631038,
+    "ratio": 0.9974319726301273,
+    "stage_share": 0.025286909517878785,
+    "spread_stage": 0.07336409657206516,
+    "spread_d2h": 0.030070818916650564,
+    "spread_derive": 0.031512302351495436,
+    "spread_write_m": 0.3884893326671294,
+    "spread_write_o": 0.4913066780622318,
+    "write_delta_frac": 0.02328063499342813
+   },
+   {
+    "nx": 1448,
+    "cells": 102738496,
+    "payload_MB": 3346.907596,
+    "file_MB": 3527.365998,
+    "stage_ms": 87.32766799948877,
+    "derive_device_ms": 29.186112999013858,
+    "alloc_ms": 0.10330900113331154,
+    "d2h_ms": 61.42422899938538,
+    "host_derive_ms": 99.81677100040542,
+    "mono_write_ms": 3805.0189890000183,
+    "ooc_write_ms": 3600.2637510009663,
+    "common_write_ms": 3645.7657885002845,
+    "mono_encode_ms": 2020.7391859985364,
+    "ooc_encode_ms": 1967.9576409998845,
+    "mono_total_ms": 3733.0934564997733,
+    "ooc_total_ms": 3745.58255950069,
+    "saving_ms": -12.489103000916657,
+    "ratio": 0.9966656447154695,
+    "stage_share": 0.023392842696568605,
+    "spread_stage": 42.21250637335772,
+    "spread_d2h": 13.213822724700488,
+    "spread_derive": 0.2695152400638497,
+    "spread_write_m": 0.21887921490225554,
+    "spread_write_o": 0.17756663295111533,
+    "write_delta_frac": 0.056162477207094476
+   }
+  ],
+  "snapshot": [
+   {
+    "nx": 1024,
+    "volatile_GB": 1.246109696,
+    "frame_GB": 1.6739291,
+    "host_pageable_ms": 70.97096299912664,
+    "host_pinned_ms": 71.39594000000216,
+    "d2h_ms": 128.38724499852106,
+    "host_GBs": 17.45350920514475,
+    "d2h_GBs": 13.038126178494466
+   }
+  ],
+  "transfer": [
+   {
+    "nx": 512,
+    "cells": 12845056,
+    "payload_MB": 418.582924,
+    "volatile_MB": 311.627776,
+    "derive_dev_ms": 12.042624999594409,
+    "derive_dev_med_ms": 17.590229000234103,
+    "d2h_ms": 7.362937001744285,
+    "d2h_med_ms": 9.93874899995717,
+    "d2h_GBs": 56.849993949539076,
+    "host_derive_ms": 8.336933000464342,
+    "host_derive_med_ms": 12.017077999189496,
+    "snapshot_ms": 21.71401300074649,
+    "snapshot_med_ms": 29.139657500309113,
+    "snapshot_GBs": 14.351459400401335,
+    "gpu_mib": 31156,
+    "gpu_util": 99,
+    "reps": 20
+   },
+   {
+    "nx": 724,
+    "cells": 25684624,
+    "payload_MB": 836.8691,
+    "volatile_MB": 623.004896,
+    "derive_dev_ms": 1.7956499996216735,
+    "derive_dev_med_ms": 35.9647404993666,
+    "d2h_ms": 16.679076999935205,
+    "d2h_med_ms": 41.48354550034128,
+    "d2h_GBs": 50.17478485189864,
+    "host_derive_ms": 18.255135999424965,
+    "host_derive_med_ms": 32.70026300015161,
+    "snapshot_ms": 35.57305600043037,
+    "snapshot_med_ms": 36.95636349948472,
+    "snapshot_GBs": 17.513392607946386,
+    "gpu_mib": 31128,
+    "gpu_util": 52,
+    "reps": 20
+   },
+   {
+    "nx": 1024,
+    "cells": 51380224,
+    "payload_MB": 1673.9291,
+    "volatile_MB": 1246.109696,
+    "derive_dev_ms": 2.8454090006562183,
+    "derive_dev_med_ms": 44.21517300033884,
+    "d2h_ms": 29.93003099982161,
+    "d2h_med_ms": 33.03200849950372,
+    "d2h_GBs": 55.92807772267182,
+    "host_derive_ms": 36.92804199999955,
+    "host_derive_med_ms": 45.68355850005901,
+    "snapshot_ms": 72.10322599894425,
+    "snapshot_med_ms": 73.25886050057306,
+    "snapshot_GBs": 17.282301571614084,
+    "gpu_mib": 31700,
+    "gpu_util": 37,
+    "reps": 20
+   },
+   {
+    "nx": 1448,
+    "cells": 102738496,
+    "payload_MB": 3346.907596,
+    "volatile_MB": 2491.451968,
+    "derive_dev_ms": 5.031195001720334,
+    "derive_dev_med_ms": 1534.1492169991398,
+    "d2h_ms": 58.38676600069448,
+    "d2h_med_ms": 74.98709100036649,
+    "d2h_GBs": 57.32305152781009,
+    "host_derive_ms": 81.34825299930526,
+    "host_derive_med_ms": 102.04518449972966,
+    "snapshot_ms": 134.93767100044352,
+    "snapshot_med_ms": 139.45978700030537,
+    "snapshot_GBs": 18.463724396071807,
+    "gpu_mib": 31353,
+    "gpu_util": 13,
+    "reps": 20
+   }
+  ],
+  "steps": [
+   {
+    "nx": 512,
+    "cells": 12845056,
+    "step_ms": 85.7041429999299,
+    "step_med_ms": 116.42371749985614,
+    "ns_per_cell": 6.672150203154421,
+    "spread": 0.45454836983875974,
+    "gpu_mib": 15847,
+    "gpu_util": 100
+   },
+   {
+    "nx": 724,
+    "cells": 25684624,
+    "step_ms": 182.45152950021293,
+    "step_med_ms": 221.93076599978667,
+    "ns_per_cell": 7.103531260578817,
+    "spread": 0.3964419651480035,
+    "gpu_mib": 17775,
+    "gpu_util": 100
+   },
+   {
+    "nx": 1024,
+    "cells": 51380224,
+    "step_ms": 315.8470939997642,
+    "step_med_ms": 322.4032119996991,
+    "ns_per_cell": 6.147250233859707,
+    "spread": 0.39142293812003515,
+    "gpu_mib": 18776,
+    "gpu_util": 100
+   },
+   {
+    "nx": 1448,
+    "cells": 102738496,
+    "step_ms": 341.6323330002342,
+    "step_med_ms": 351.3414195003861,
+    "ns_per_cell": 3.3252611854492615,
+    "spread": 0.044902595096007615,
+    "gpu_mib": 27070,
+    "gpu_util": 98
+   }
+  ]
+ },
+ "meta": {
+  "machine": "RTX 5090, PCIe 5.0 x16, 93.9 GiB host RAM, WSL2",
+  "filesystem": "/dev/sdd ext4 on the WSL2 VHD (NOT /mnt/c DrvFs)",
+  "disk_ceiling_GBs": 1.41,
+  "disk_ceiling_kind": "MEASURED, dd 4/16/32 GiB conv=fsync -> 1.48/1.40/1.41 GB/s, flat past the dirty limit",
+  "frame_throughput_GBs": 1.0880382592003943,
+  "frame_throughput_range": [
+   0.9675240272225526,
+   1.2555185383964798
+  ],
+  "frame_throughput_kind": "MEASURED end to end incl. netCDF encode and fsync; 77% of the raw dd ceiling",
+  "container_overhead": 1.0363802851626152,
+  "nz": 49,
+  "caveat_gpu": "another lane shared this GPU throughout; GPU-side figures are MINIMA over many reps (contention only adds), and solver step times at 512/724/1024 were discarded as unusable"
+ },
+ "per_cell_ns": {
+  "d2h": 0.568304659635026,
+  "derive_device": 0.04897088430923044,
+  "host_derive": 0.7917991421570476,
+  "snapshot": 1.313409055554439,
+  "step": 3.325,
+  "mono_exposed": 0.6172755439442564,
+  "ooc_exposed": 1.313409055554439
+ },
+ "write_fit": {
+  "intercept_ms": -200.13398486514097,
+  "slope_ns_per_cell": 36.309258810152244,
+  "max_residual": 0.32063729147002357,
+  "kind": "DERIVED, and REJECTED for projection: the intercept is negative, which is unphysical"
+ },
+ "throughput_GBs": [
+  1.0821330243804221,
+  1.0939434940203665,
+  1.2555185383964798,
+  0.9675240272225526
+ ],
+ "cadence_curves": {
+  "no output": [
+   23.413823941230625,
+   11.709413371176781,
+   5.853455985307656,
+   2.9273533427941953,
+   1.614146867389865,
+   1.0655891429253406,
+   0.5719057778450485
+  ],
+  "sizes": [
+   512,
+   724,
+   1024,
+   1448,
+   1950,
+   2400,
+   3276
+  ],
+  "monolithic C=1": [
+   2.509407915019575,
+   1.254972048462523,
+   0.6273519787548938,
+   0.31374301211563077,
+   0.17299835068373215,
+   0.11420594244355756,
+   0.06129476710733141
+  ],
+  "streamed C=1": [
+   2.509407915019575,
+   1.254972048462523,
+   0.6273519787548938,
+   0.31374301211563077,
+   0.17299835068373215,
+   0.11420594244355756,
+   0.06129476710733141
+  ],
+  "monolithic C=10": [
+   22.98707627177652,
+   11.495993945141679,
+   5.74676906794413,
+   2.8739984862854198,
+   1.5847269223375633,
+   1.046167382324407,
+   0.5614820444790118
+  ],
+  "streamed C=10": [
+   22.52409896242019,
+   11.264455828585586,
+   5.6310247406050475,
+   2.8161139571463965,
+   1.552809309245149,
+   1.0250967705563678,
+   0.5501733663708718
+  ],
+  "monolithic C=60": [
+   23.341602385795923,
+   11.67329487771681,
+   5.835400596448981,
+   2.9183237194292024,
+   1.6091679200058087,
+   1.0623022596913347,
+   0.5701416950133958
+  ],
+  "streamed C=60": [
+   23.26068711369406,
+   11.632828597135726,
+   5.815171778423515,
+   2.9082071492839314,
+   1.6035896285949287,
+   1.0586197157521209,
+   0.5681652595645298
+  ],
+  "monolithic C=240": [
+   23.395726685696935,
+   11.700362810001483,
+   5.848931671424234,
+   2.9250907025003707,
+   1.6128992442591288,
+   1.0647655167179406,
+   0.5714637345022423
+  ],
+  "streamed C=240": [
+   23.37535101178746,
+   11.690172796224955,
+   5.843837752946865,
+   2.9225431990562387,
+   1.6114945471752828,
+   1.0638381971586828,
+   0.5709660385399953
+  ]
+ },
+ "breakdown": {
+  "nx": 1024,
+  "cells": 51380224,
+  "payload_MB": 1673.9291,
+  "file_MB": 1734.827118,
+  "monolithic": {
+   "transfer D2H": 29.93003099982161,
+   "derive (device)": 2.8454090006562183,
+   "netCDF encode": 598.6760880005022,
+   "disk (close+fsync)": 783.0853634995947
+  },
+  "streamed": {
+   "snapshot (host copy)": 72.10322599894425,
+   "derive (host)": 36.92804199999955,
+   "netCDF encode": 598.6760880005022,
+   "disk (close+fsync)": 783.0853634995947
+  },
+  "monolithic_total": 1414.5368915005747,
+  "streamed_total": 1490.7927194990407
+ },
+ "projections": [
+  {
+   "label": "3276^2 dry, out-of-core",
+   "nx": 3276,
+   "rung": "dry",
+   "fields": 15,
+   "Mcell": 525.876624,
+   "frame_GB_payload": 17.12780164368,
+   "frame_GB_on_disk": 17.750915951685787,
+   "frame_seconds": 16.31460640431067,
+   "frame_seconds_range": [
+    14.138314496221506,
+    18.346744320802973
+   ],
+   "step_seconds": 2.04337,
+   "frame_in_timesteps": 7.984166550507578,
+   "frames_24h_hourly": 24,
+   "disk_24h_hourly_GB": 426.0219828404589,
+   "steps_24h_dt3": 28800.0,
+   "wall_24h_hours": 16.34696,
+   "output_pct_of_wall_hourly": 0.6653472125422982,
+   "note": "step time MEASURED in RESULTS.md row 4 (2043.37 ms, 3.886 ns/cell); cannot be run monolithically at all"
+  },
+  {
+   "label": "1950^2 dry, largest resident",
+   "nx": 1950,
+   "rung": "dry",
+   "fields": 15,
+   "Mcell": 186.3225,
+   "frame_GB_payload": 6.068523825,
+   "frame_GB_on_disk": 6.289298452269624,
+   "frame_seconds": 5.780401928964949,
+   "frame_seconds_range": [
+    5.0093234467905,
+    6.50040544246137
+   ],
+   "step_seconds": 0.69162912,
+   "frame_in_timesteps": 8.35766129824746,
+   "frames_24h_hourly": 24,
+   "disk_24h_hourly_GB": 150.94316285447098,
+   "steps_24h_dt3": 28800.0,
+   "wall_24h_hours": 5.53303296,
+   "output_pct_of_wall_hourly": 0.6964717748539552,
+   "note": "step time from RESULTS.md row 1 (691.70 ms, 3.712 ns/cell)"
+  },
+  {
+   "label": "1873^2 full physics + rings",
+   "nx": 1873,
+   "rung": "full+MYNN+Noah-MP",
+   "fields": 122,
+   "Mcell": 171.898321,
+   "frame_GB_payload": 22.88654245794,
+   "frame_GB_on_disk": 23.719161398946156,
+   "frame_seconds": 21.799933226959784,
+   "frame_seconds_range": [
+    18.891924470696974,
+    24.515320272754536
+   ],
+   "step_seconds": 3.266068099,
+   "frame_in_timesteps": 6.674671980548861,
+   "frames_24h_hourly": 24,
+   "disk_24h_hourly_GB": 569.2598735747077,
+   "steps_24h_dt3": 28800.0,
+   "wall_24h_hours": 26.128544792000003,
+   "output_pct_of_wall_hourly": 0.5562226650457384,
+   "note": "ESTIMATED step: RESULTS.md section 6 uses ~19 ns/cell of compute for a physics rung; no physics step time has been measured on this box, so this row's TIME is estimated while its BYTES are measured"
+  },
+  {
+   "label": "1873^2, moisture only (mp10)",
+   "nx": 1873,
+   "rung": "mp10 Morrison",
+   "fields": 46,
+   "Mcell": 171.898321,
+   "frame_GB_payload": 13.4424487022,
+   "frame_GB_on_disk": 13.931488819269862,
+   "frame_seconds": 12.804226966713648,
+   "frame_seconds_range": [
+    11.09620319669899,
+    14.399114055350795
+   ],
+   "step_seconds": 3.266068099,
+   "frame_in_timesteps": 3.9203796671092155,
+   "frames_24h_hourly": 24,
+   "disk_24h_hourly_GB": 334.3557316624767,
+   "steps_24h_dt3": 28800.0,
+   "wall_24h_hours": 26.128544792000003,
+   "output_pct_of_wall_hourly": 0.3266983055924346,
+   "note": "same estimated step; shows what dropping the MYNN/Noah-MP diagnostics saves on the disk bill"
+  }
+ ],
+ "bytes_per_cell": {
+  "dry": 32.57,
+  "mp10 Morrison": 78.2,
+  "full(real74)+KF": 79.67,
+  "full+MYNN+Noah-MP": 133.14
+ }
+}

@@ -1,0 +1,27 @@
+
+=== GATE: real specified boundaries, monolithic vs streamed, 12 steps ===
+    VRAM 15.21/15.47 GiB free | host 43.8/46.8 GiB
+    statics built in 7.5 s
+    9 row slabs of <= 64 rows (+1 halo row)
+    forcing 1985-05-31 18:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 00:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 06:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 12:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 18:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-05-31 12:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+soil moisture floor: 985 sub-air-dry land value(s) floored to the soil type's SMCDRY across ['SMOIS_L1', 'SMOIS_L2', 'SMOIS_L3', 'SMOIS_L4'] (min pre-floor 0.0130313); WRF real.exe resets such columns to 0.005 (module_initialize_real.F:3376)
+    prepared 648x576x49 from 6 forcing times in 62.0 s
+    ingest device high-water 5.55 GiB (15960 B per mass cell)
+    specified=True open_x=False open_y=False spec_zone=1 relax_zone=4 spec_bdy_width=5
+    5 boundary intervals, ['mu', 'phi', 'qv', 'theta', 'u', 'v']
+    start scalars {'elapsed_seconds': 20.0, 'call_counts': {'radiation': 1, 'sfclay': 1, 'noah': 1, 'ysu': 1, 'cumulus': 0, 'cumulus_history': 0}, 'ysu_nan_guard_fires': 0, 'microphysics_updates': 1}
+    start digest 3699ce92fe1b0d68  139 carriers, 15 geography arrays
+    MONOLITHIC 12 steps in 30.9s  digest d473213ef02ee45f
+    before release: pool live 9.07 GiB, pool held 13.92 GiB, device free 0.17/15.47 GiB
+    after release : pool live 0.02 GiB, pool held 0.14 GiB, device free 14.06/15.47 GiB
+    halo 20 = radius 16 + boundary width 4;  9 tiles of 296x296 (non-periodic plan)
+    windowed lateral boundaries: 9 tiles x 5 intervals x 6 fields = 0.98 GiB host
+    STREAMED   12 steps in 183.2s  digest d473213ef02ee45f  (108 boundary binds)
+    scalars monolithic {'elapsed_seconds': 260.0, 'call_counts': {'radiation': 2, 'sfclay': 13, 'noah': 13, 'ysu': 13, 'cumulus': 0, 'cumulus_history': 0}, 'ysu_nan_guard_fires': 0, 'microphysics_updates': 13} vs streamed {'elapsed_seconds': 260.0, 'call_counts': {'radiation': 2, 'sfclay': 13, 'noah': 13, 'ysu': 13, 'cumulus': 0, 'cumulus_history': 0}, 'ysu_nan_guard_fires': 0, 'microphysics_updates': 13}
+    BIT-EXACT over all 139 carriers -- the quarantine holds
+RESULT {"steps": 12, "tile": 256, "halo": 20, "tiles": 9, "carriers": 139, "differ": [], "bitexact": true}

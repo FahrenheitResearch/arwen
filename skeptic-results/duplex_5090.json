@@ -1,0 +1,174 @@
+{
+ "host": "8827c3026e01",
+ "when": "2026-08-09T09:15:54Z",
+ "device": 0,
+ "name": "NVIDIA GeForce RTX 5090",
+ "pci": "0000:c1:00.0",
+ "async_engine_count": 2,
+ "link": {
+  "current_link_speed": "16.0 GT/s PCIe",
+  "current_link_width": "16",
+  "max_link_width": "16"
+ },
+ "arms": {
+  "h2d": {
+   "gbs_median": 28.17231575710086,
+   "spread_pct": 0.815984337600114,
+   "reps": [
+    {
+     "arm": "h2d",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 28.263382043084633,
+     "gbs_min": 27.573142581324085,
+     "gbs_max": 28.381353161364355,
+     "n": 78
+    },
+    {
+     "arm": "h2d",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 28.17231575710086,
+     "gbs_min": 26.302302682283436,
+     "gbs_max": 28.397559466471485,
+     "n": 78
+    },
+    {
+     "arm": "h2d",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 28.03350035896744,
+     "gbs_min": 25.798520348683848,
+     "gbs_max": 28.322773354497357,
+     "n": 77
+    }
+   ]
+  },
+  "d2h": {
+   "gbs_median": 28.588992290796554,
+   "spread_pct": 0.22086028999031435,
+   "reps": [
+    {
+     "arm": "d2h",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 28.600356136056966,
+     "gbs_min": 27.67154473707601,
+     "gbs_max": 28.654623824561693,
+     "n": 79
+    },
+    {
+     "arm": "d2h",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 28.537214404778204,
+     "gbs_min": 27.486691699620884,
+     "gbs_max": 28.643242015815012,
+     "n": 79
+    },
+    {
+     "arm": "d2h",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 28.588992290796554,
+     "gbs_min": 17.802212616053275,
+     "gbs_max": 28.64631313823767,
+     "n": 74
+    }
+   ]
+  },
+  "bidir_1s": {
+   "gbs_median": 26.358349714749675,
+   "spread_pct": 15.138838145676262,
+   "reps": [
+    {
+     "arm": "bidir_1s",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 24.262990545339996,
+     "gbs_min": 16.944128117453097,
+     "gbs_max": 28.439980846276775,
+     "n": 32
+    },
+    {
+     "arm": "bidir_1s",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 28.25333844652727,
+     "gbs_min": 21.08657689463779,
+     "gbs_max": 28.52357228434058,
+     "n": 37
+    },
+    {
+     "arm": "bidir_1s",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 26.358349714749675,
+     "gbs_min": 17.77367573334118,
+     "gbs_max": 28.49854446026733,
+     "n": 33
+    }
+   ]
+  },
+  "bidir_2s": {
+   "gbs_median": 51.246200288842644,
+   "spread_pct": 1.4071470128325256,
+   "reps": [
+    {
+     "arm": "bidir_2s",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 51.70133837025264,
+     "gbs_min": 49.38751899736283,
+     "gbs_max": 52.14618691261172,
+     "n": 71
+    },
+    {
+     "arm": "bidir_2s",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 51.246200288842644,
+     "gbs_min": 44.216291008367364,
+     "gbs_max": 52.198773677990346,
+     "n": 70
+    },
+    {
+     "arm": "bidir_2s",
+     "device": 0,
+     "chunk_mib": 256,
+     "span_mib": 4096,
+     "queue": 4,
+     "gbs_median": 50.98022899369802,
+     "gbs_min": 39.16497924002154,
+     "gbs_max": 52.33621610776443,
+     "n": 68
+    }
+   ]
+  }
+ },
+ "bidir_2s_over_1s": 1.9442112591808491,
+ "unidir_sum": 56.761308047897415,
+ "bidir_2s_over_sum": 0.9028368452256085
+}

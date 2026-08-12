@@ -1,0 +1,852 @@
+=== gate run: merged ===
+start 2026-08-10T01:22:52Z
+tree     : /home/drew/arwen-reconcile
+branch   : lane/integrate-reconcile
+commit   : c7d7b107d8dfb47a2d8e0d2e813664ee8ad68ab8
+driver.py: bf9c097359c6176f252c2b9c2d26d9690094f408b3b4dfc4b907a98d7da91c91
+python   : /home/drew/venvs/arwen_slice/bin/python
+--- CUDA contexts BEFORE (sample 1) ---
+0
+0
+2536 MiB, 3 %
+--- CUDA contexts BEFORE (sample 2) ---
+0
+0
+2525 MiB, 4 %
+--- import provenance ---
+tilestream /home/drew/arwen-reconcile/tilestream/__init__.py
+gpuwm /home/drew/arwen-reconcile/gpuwm/__init__.py
+cupy 14.1.1
+=== BEGIN test_gate ===
+cupy 14.1.1  NVIDIA GeForce RTX 5090  30.2 GiB free of 31.8
+
+==============================================================================
+PRECONDITIONS
+==============================================================================
+  PASS  streaming inventory complete
+        streamed inventory is complete at N=8: overwriting only 9 fields ['al', 'alt', 'mup', 'p', 'php', 'thp', 'u', 'v', 'w'] on a dirtied state reproduces a fresh run exactly
+  PASS  tile setup == parent window
+        all 29 setup arrays equal the parent window for every one of 9 tiles
+  PASS  pinned host store round trip
+        pinned host store round trip is bit-exact (14.6 MB, digest 020d837546169d28)
+  PASS  caller-supplied pinned shadow store, N=2: bit-exact
+  PASS  a shadow supplied to write_mode='ring' is refused
+  PASS  plan_for derives halo=16 from cfg, 4 tiles, tile_cfg 96x96
+  PASS  pageable host store refused (would run at 15 GB/s, not 57)
+  PASS  halo below harness.halo_radius(cfg) warns
+  PASS  cfg describing a different domain than the store refused
+  PASS  a DomainState used directly as the store, N=2: bit-exact
+
+==============================================================================
+RING GEOMETRY  (the invariant, for every plan the matrix runs)
+==============================================================================
+  PASS  2x1 (x seam), N=1, nb=1                          2 tiles,    9 bands,    24 patch blocks, ring is 19.60% of a domain (shadow is 100%)
+  PASS  1x2 (y seam), N=1, nb=1                          2 tiles,    9 bands,    18 patch blocks, ring is 19.60% of a domain (shadow is 100%)
+  PASS  2x2 (corners), N=1, nb=1                         4 tiles,   26 bands,    60 patch blocks, ring is 32.67% of a domain (shadow is 100%)
+  PASS  2x2, N=3, nb=2                                   4 tiles,   26 bands,    60 patch blocks, ring is 32.67% of a domain (shadow is 100%)
+  PASS  3x3, N=1, nb=1                                   9 tiles,   57 bands,   135 patch blocks, ring is 45.36% of a domain (shadow is 100%)
+  PASS  3x3, N=3, nb=2                                   9 tiles,   57 bands,   135 patch blocks, ring is 45.36% of a domain (shadow is 100%)
+  PASS  3x3, N=8, nb=2                                   9 tiles,   57 bands,   135 patch blocks, ring is 45.36% of a domain (shadow is 100%)
+  PASS  3x3, N=3, nb=3                                   9 tiles,   57 bands,   135 patch blocks, ring is 45.36% of a domain (shadow is 100%)
+  PASS  3x3, N=3, nb=4                                   9 tiles,   57 bands,   135 patch blocks, ring is 45.36% of a domain (shadow is 100%)
+  PASS  6x6 (36 tiles, tile == 2*halo), N=1, nb=2       36 tiles,  153 bands,   480 patch blocks, ring is 75.00% of a domain (shadow is 100%)
+  PASS  6x6, N=3, nb=1                                  36 tiles,  153 bands,   480 patch blocks, ring is 75.00% of a domain (shadow is 100%)
+  PASS  1x1 (window wraps onto itself), N=3, nb=1        1 tiles,    0 bands,     0 patch blocks, ring is  0.00% of a domain (shadow is 100%)
+  PASS  ragged x (200x192, last tile 8 wide), N=3, nb=2  12 tiles,   64 bands,   216 patch blocks, ring is 66.30% of a domain (shadow is 100%)
+  PASS  ragged both, odd (173x149, 48x40), N=3, nb=2    16 tiles,   72 bands,   213 patch blocks, ring is 78.30% of a domain (shadow is 100%)
+  PASS  ragged both, N=8, nb=1                          16 tiles,   72 bands,   213 patch blocks, ring is 78.30% of a domain (shadow is 100%)
+  PASS  PINNED HOST STORE, 3x3, N=3, nb=2                9 tiles,   57 bands,   135 patch blocks, ring is 45.36% of a domain (shadow is 100%)
+  PASS  PINNED HOST STORE, ragged, N=8, nb=2            12 tiles,   64 bands,   216 patch blocks, ring is 66.30% of a domain (shadow is 100%)
+  PASS  PINNED HOST STORE, 6x6, N=1, nb=1               36 tiles,  153 bands,   480 patch blocks, ring is 75.00% of a domain (shadow is 100%)
+
+==============================================================================
+RING vs SHADOW  (same configuration both ways; digests must match each other AND monolithic)
+==============================================================================
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        2x1 (x seam), N=1, nb=1
+        2 tiles, arena 11.4 MB = 19.5% of the store, against a shadow of 58.3 MB = 100%, 0.10 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        1x2 (y seam), N=1, nb=1
+        2 tiles, arena 11.4 MB = 19.5% of the store, against a shadow of 58.3 MB = 100%, 0.09 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        2x2 (corners), N=1, nb=1
+        4 tiles, arena 18.3 MB = 31.3% of the store, against a shadow of 58.3 MB = 100%, 0.11 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        2x2, N=3, nb=2
+        4 tiles, arena 18.3 MB = 31.3% of the store, against a shadow of 58.3 MB = 100%, 0.27 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        3x3, N=1, nb=1
+        9 tiles, arena 25.8 MB = 44.3% of the store, against a shadow of 58.3 MB = 100%, 0.17 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        3x3, N=3, nb=2
+        9 tiles, arena 25.8 MB = 44.3% of the store, against a shadow of 58.3 MB = 100%, 0.43 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        3x3, N=8, nb=2
+        9 tiles, arena 25.8 MB = 44.3% of the store, against a shadow of 58.3 MB = 100%, 0.79 s
+        sha256 06c8a7c63661f1a62134f2fc1578e593
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        3x3, N=3, nb=3
+        9 tiles, arena 25.8 MB = 44.3% of the store, against a shadow of 58.3 MB = 100%, 0.48 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        3x3, N=3, nb=4
+        9 tiles, arena 25.8 MB = 44.3% of the store, against a shadow of 58.3 MB = 100%, 0.58 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        6x6 (36 tiles, tile == 2*halo), N=1, nb=2
+        36 tiles, arena 43.7 MB = 74.9% of the store, against a shadow of 58.3 MB = 100%, 0.50 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        6x6, N=3, nb=1
+        36 tiles, arena 43.7 MB = 74.9% of the store, against a shadow of 58.3 MB = 100%, 1.03 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        1x1 (window wraps onto itself), N=3, nb=1
+        1 tiles, arena 0.0 MB = 0.0% of the store, against a shadow of 58.3 MB = 100%, 0.14 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        ragged x (200x192, last tile 8 wide), N=3, nb=2
+        12 tiles, arena 40.0 MB = 65.8% of the store, against a shadow of 60.7 MB = 100%, 0.38 s
+        sha256 ddbeed3c77fcde12a9156b3d1b720ffc
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        ragged both, odd (173x149, 48x40), N=3, nb=2
+        16 tiles, arena 31.9 MB = 78.1% of the store, against a shadow of 40.8 MB = 100%, 0.49 s
+        sha256 5fc0c66e492da79e5c261ebbcf6db0df
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        ragged both, N=8, nb=1
+        16 tiles, arena 31.9 MB = 78.1% of the store, against a shadow of 40.8 MB = 100%, 1.09 s
+        sha256 f3f8fd3396139b497b8691fc129af28b
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        PINNED HOST STORE, 3x3, N=3, nb=2
+        9 tiles, arena 25.8 MB = 44.3% of the store, against a shadow of 58.3 MB = 100%, 0.43 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        PINNED HOST STORE, ragged, N=8, nb=2
+        12 tiles, arena 40.0 MB = 65.8% of the store, against a shadow of 60.7 MB = 100%, 1.11 s
+        sha256 2c6a3f0c00724aa4e126945228b87811
+  PASS  ring == monolithic, shadow == monolithic, ring == shadow
+        PINNED HOST STORE, 6x6, N=1, nb=1
+        36 tiles, arena 43.7 MB = 74.9% of the store, against a shadow of 58.3 MB = 100%, 0.46 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+
+==============================================================================
+RING NEGATIVE CONTROLS  (a broken ring, and what the hash can and cannot see)
+==============================================================================
+  PASS  differs, maxabs=1.221e+03 worst=p
+        ring_margin='x_only', 3x3, N=1
+        forgetting the y bands changes the answer, so the gate can see a broken ring at all
+  PASS  differs, maxabs=9.320e+02 worst=p
+        ring_margin='x_only', 1x2 y seam, N=2, nb=1
+        and it still sees it on the smallest plan that has a y seam -- but only at nbuffers=1; at nbuffers=2 the prefetch hides the hazard
+  PASS  bit-exact
+        ring_margin='halo', 3x3, N=1
+        an UNSOUND ring that is nonetheless bit-exact: the 192 cells it drops are outside the influence cone. Only rings.assert_ring_covers_reads catches this, which is why that check exists
+  PASS  bit-exact
+        ring_margin='halo', ragged x, N=2
+        same, with 9,344 dropped cells -- the size of the violation says nothing about whether the hash notices
+  OBS   bit-exact -- the card behaved as its single copy engine suggests it would
+        ring_ordering='submission' (cross-stream events REMOVED), 3x3, N=3, nb=2
+        MEASURED BOTH WAYS, same code, same machine, hours apart: BIT-EXACT on an idle card, and WRONG (maxabs 3.7e+02) while another process shared the GPU. The 'one DMA queue drained in submission order' argument is therefore NOT sufficient -- it is a property of an uncontended card, and a tiled run that relied on it would corrupt intermittently, depending on what else the machine was doing. This is why run_tiled defaults to ring_ordering='events'. Either outcome here is a pass; a MISMATCH is the more informative one.
+
+==============================================================================
+PHYSICS PRECONDITIONS
+==============================================================================
+  PASS  carrier arrays move, and the ring follows them
+        15 of 153 carriers change device pointer within 4 steps at rung 'full fast cadence' (driver/cumulus_tendencies/rqc, ...); the ring arena resolves the tile side at issue time, so it follows them
+  PASS  geography is not rebuilt wrong per tile
+        14 rebuilt horizontal arrays are all uniform (so a tile's equals the parent's window), has_msf/rotational both False; negative control refused a varying latitude.  NOT carried and NOT gathered, hence per-tile under tiling: ['driver.olr'] (restart.py declares these output-only)
+  PASS  NEGATIVE CONTROL rebuild: 9/9 tiles differ in all 17 geography arrays -- worst tile 12.4062 deg of latitude, 2069.0 km great circle, 22.11% relative in Coriolis
+  PASS  ASYMMETRY: on a square 96x96 domain the exactly-centred tile (ci0=16, cj0=16) is BIT-EXACT when REBUILT -- 0 of 17 arrays differ -- while the other 8 differ in up to 17.  A one-tile test placed at the centre certifies the bug; that is why every tile is checked
+  PASS  GATHERED: all 17 geography arrays equal the parent window BITWISE on every one of 9 tiles (corners and ragged included), 7.742 MB = 17.145 B per gathered cell; setup scalars agree
+  PASS  NEGATIVE CONTROL guard: a (30720, 59, 12) latitude-interpolated ozone cache (57.8 B/mass-cell, the legacy-RRTMG layout) is REFUSED -- horizontal axes are the LEADING axis, so no gather and no halo reaches it; the uniform-latitude version is accepted; and a gather set of the 13 setup arrays alone is REFUSED for leaving the scheme lat/lon behind
+  PASS  READ-ONLY: all 17 geography arrays are bit-identical after 8 steps at 'full+MYNN+Noah-MP' (state.thp changed, so the run was not a no-op) -- hence gathered ONCE per buffer occupancy, never streamed per step
+  PASS  pinned carrier host store round trip
+        pinned carrier store round trip is bit-exact: 229 fields, 105.3 MB, 279.8 B/cell, 8 layered fields sized by their own rule (['fields/sh2o', 'fields/smcrel', 'fields/smois']...)
+  PASS  inventory complete at N=8: dry (control)
+  PASS  inventory complete at N=8: mp10 Morrison
+  PASS  inventory complete at N=8: +km_opt=2 (TKE)
+  PASS  inventory complete at N=8: +km_opt=4 (2D Smag)
+  PASS  inventory complete at N=8: +sfclay MM5
+  PASS  inventory complete at N=8: +YSU PBL
+  PASS  inventory complete at N=8: +Noah LSM
+  PASS  inventory complete at N=8: +RRTMGP radiation
+  PASS  inventory complete at N=8: full(real74) +KF
+  PASS  inventory complete at N=8: full+MYNN
+  PASS  inventory complete at N=8: full+Noah-MP
+  PASS  inventory complete at N=8: full+MYNN+Noah-MP
+  PASS  inventory complete at N=8: full+NSSL mp18
+  PASS  inventory complete at N=8: full fast cadence
+
+==============================================================================
+GATE MATRIX  (192x192x49 periodic unless stated, seed 20260731, halo 16 unless stated)
+==============================================================================
+  PASS  bit-exact
+        2x1 tiles (x seam only), N=1
+        2 tiles, compute (49, 224, 128), redundancy 1.56x, 91 MB gathered / 58 MB scattered, 0.03 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  bit-exact
+        1x2 tiles (y seam only), N=1
+        2 tiles, compute (49, 128, 224), redundancy 1.56x, 91 MB gathered / 58 MB scattered, 0.03 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  bit-exact
+        2x2 tiles (corners appear), N=1
+        4 tiles, compute (49, 128, 128), redundancy 1.78x, 104 MB gathered / 58 MB scattered, 0.04 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  bit-exact
+        3x3 tiles, N=1
+        9 tiles, compute (49, 96, 96), redundancy 2.25x, 131 MB gathered / 58 MB scattered, 0.07 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  bit-exact
+        3x3 tiles, N=3
+        9 tiles, compute (49, 96, 96), redundancy 2.25x, 394 MB gathered / 175 MB scattered, 0.15 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  bit-exact
+        3x3 tiles, N=3, nbuffers=2 (pipelined)
+        9 tiles, compute (49, 96, 96), redundancy 2.25x, 394 MB gathered / 175 MB scattered, 0.16 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  bit-exact
+        3x3 tiles, N=3, nbuffers=3
+        9 tiles, compute (49, 96, 96), redundancy 2.25x, 394 MB gathered / 175 MB scattered, 0.15 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  bit-exact
+        6x6 tiles (36 tiles, tile 32 < 2*halo), N=1
+        36 tiles, compute (49, 64, 64), redundancy 4.00x, 234 MB gathered / 58 MB scattered, 0.18 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  bit-exact
+        1x1 tile (window wraps onto itself), N=1
+        1 tiles, compute (49, 224, 224), redundancy 1.36x, 79 MB gathered / 58 MB scattered, 0.02 s
+        sha256 0959f35c7a56842cc6ac7d34609de334
+  PASS  bit-exact
+        ragged x: 200x192, tile 64 -> last tile 8 wide, N=1
+        12 tiles, compute (49, 96, 96), redundancy 2.88x, 175 MB gathered / 61 MB scattered, 0.07 s
+        sha256 4dbf0060bc3423fb0f96d971081c7ceb
+  PASS  bit-exact
+        ragged both, odd sizes: 173x149, tile 48x40, N=3
+        16 tiles, compute (49, 72, 80), redundancy 3.58x, 438 MB gathered / 122 MB scattered, 0.21 s
+        sha256 5fc0c66e492da79e5c261ebbcf6db0df
+  PASS  bit-exact
+        PINNED HOST STORE, 3x3 tiles, N=3, nbuffers=2
+        9 tiles, compute (49, 96, 96), redundancy 2.25x, 394 MB gathered / 175 MB scattered, 0.17 s
+        sha256 c9c3eeedb6beceb16a306ea60aa844c0
+  PASS  maxabs=2.656e-01 maxrel=1.01e-04 worst=p pattern=seam-local
+        NEGATIVE halo=8, 3x3, N=1
+        9 tiles, compute (49, 80, 80), redundancy 1.56x, 91 MB gathered / 58 MB scattered, 0.06 s
+        fields differing: ['u', 'v', 'w', 'thp', 'php', 'mup', 'p', 'al', 'alt']
+        pattern: {'differing_columns': 2272, 'columns': 36864, 'max_distance_to_seam': 4, 'mean_distance_to_seam': 0.9784330985915493, 'fraction': 0.06163194444444445, 'tiles_touched': 9, 'verdict': 'seam-local'}
+  PASS  maxabs=7.812e-03 maxrel=1.30e-05 worst=p pattern=single-tile
+        NEGATIVE halo=11, 3x3, N=1 (one below the minimum)
+        9 tiles, compute (49, 86, 86), redundancy 1.81x, 105 MB gathered / 58 MB scattered, 0.06 s
+        fields differing: ['u', 'v', 'w', 'thp', 'php', 'mup', 'p']
+        pattern: {'differing_columns': 1, 'columns': 36864, 'max_distance_to_seam': 1, 'mean_distance_to_seam': 1.0, 'fraction': 2.712673611111111e-05, 'tiles_touched': 1, 'verdict': 'single-tile'}
+  PASS  maxabs=1.381e+03 maxrel=8.66e-01 worst=p pattern=seam-local
+        NEGATIVE write_mode=inplace, 3x3, N=1 (read-at-time-t bug)
+        9 tiles, compute (49, 96, 96), redundancy 2.25x, 131 MB gathered / 58 MB scattered, 0.05 s
+        fields differing: ['u', 'v', 'w', 'thp', 'php', 'mup', 'p', 'al', 'alt']
+        pattern: {'differing_columns': 9420, 'columns': 36864, 'max_distance_to_seam': 13, 'mean_distance_to_seam': 4.020169851380042, 'fraction': 0.2555338541666667, 'tiles_touched': 8, 'verdict': 'seam-local'}
+  PASS  maxabs=8.409e+02 maxrel=8.55e-01 worst=p pattern=uniform
+        NEGATIVE write_mode=inplace, 3x3, N=3
+        9 tiles, compute (49, 96, 96), redundancy 2.25x, 394 MB gathered / 175 MB scattered, 0.11 s
+        fields differing: ['u', 'v', 'w', 'thp', 'php', 'mup', 'p', 'al', 'alt']
+        pattern: {'differing_columns': 30668, 'columns': 36864, 'max_distance_to_seam': 27, 'mean_distance_to_seam': 8.32995304551976, 'fraction': 0.8319227430555556, 'tiles_touched': 9, 'verdict': 'uniform'}
+
+==============================================================================
+PHYSICS GATE MATRIX  (96x80x49 periodic, WK82 sounding, warmup 1, halo 16, whole restart manifest streamed)
+==============================================================================
+  PASS  bit-exact over all 9 carriers, clock ok
+        dry (control)  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 32.3 B/cell gathered, 28 MB gathered / 12 MB scattered, 0.22 s
+  PASS  bit-exact over all 138 carriers, clock ok
+        mp10 Morrison  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 181.2 B/cell gathered, 159 MB gathered / 68 MB scattered, 0.45 s
+  PASS  bit-exact over all 140 carriers, clock ok
+        +km_opt=2 (TKE)  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 185.3 B/cell gathered, 163 MB gathered / 70 MB scattered, 0.40 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +km_opt=4 (2D Smag)  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 181.3 B/cell gathered, 159 MB gathered / 68 MB scattered, 0.46 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +sfclay MM5  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 181.3 B/cell gathered, 159 MB gathered / 68 MB scattered, 0.49 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +YSU PBL  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 185.2 B/cell gathered, 163 MB gathered / 70 MB scattered, 0.52 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +Noah LSM  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 185.2 B/cell gathered, 163 MB gathered / 70 MB scattered, 0.52 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +RRTMGP radiation  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 185.2 B/cell gathered, 163 MB gathered / 70 MB scattered, 1.51 s
+  PASS  bit-exact over all 155 carriers, clock ok
+        full(real74) +KF  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 233.6 B/cell gathered, 205 MB gathered / 88 MB scattered, 1.34 s
+  PASS  bit-exact over all 173 carriers, clock ok
+        full+MYNN  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 274.2 B/cell gathered, 241 MB gathered / 103 MB scattered, 1.47 s
+  PASS  bit-exact over all 211 carriers, clock ok
+        full+Noah-MP  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 239.1 B/cell gathered, 210 MB gathered / 90 MB scattered, 2.10 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 279.8 B/cell gathered, 246 MB gathered / 105 MB scattered, 2.25 s
+  PASS  bit-exact over all 161 carriers, clock ok
+        full+NSSL mp18  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 249.7 B/cell gathered, 219 MB gathered / 94 MB scattered, 1.38 s
+  PASS  bit-exact over all 153 carriers, clock ok
+        full fast cadence  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 225.6 B/cell gathered, 198 MB gathered / 85 MB scattered, 2.43 s
+  PASS  bit-exact over all 9 carriers, clock ok
+        dry (control)  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 32.4 B/cell gathered, 110 MB gathered / 37 MB scattered, 0.20 s
+  PASS  bit-exact over all 138 carriers, clock ok
+        mp10 Morrison  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 181.3 B/cell gathered, 614 MB gathered / 205 MB scattered, 0.67 s
+  PASS  bit-exact over all 140 carriers, clock ok
+        +km_opt=2 (TKE)  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 185.4 B/cell gathered, 628 MB gathered / 209 MB scattered, 0.81 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +km_opt=4 (2D Smag)  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 181.4 B/cell gathered, 614 MB gathered / 205 MB scattered, 0.53 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +sfclay MM5  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 181.4 B/cell gathered, 614 MB gathered / 205 MB scattered, 0.54 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +YSU PBL  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 185.3 B/cell gathered, 628 MB gathered / 209 MB scattered, 0.58 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +Noah LSM  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 185.3 B/cell gathered, 628 MB gathered / 209 MB scattered, 0.79 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +RRTMGP radiation  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 185.3 B/cell gathered, 628 MB gathered / 209 MB scattered, 1.30 s
+  PASS  bit-exact over all 155 carriers, clock ok
+        full(real74) +KF  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 233.6 B/cell gathered, 791 MB gathered / 264 MB scattered, 1.29 s
+  PASS  bit-exact over all 173 carriers, clock ok
+        full+MYNN  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 274.3 B/cell gathered, 929 MB gathered / 310 MB scattered, 1.66 s
+  PASS  bit-exact over all 211 carriers, clock ok
+        full+Noah-MP  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 239.2 B/cell gathered, 810 MB gathered / 270 MB scattered, 2.33 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 279.9 B/cell gathered, 948 MB gathered / 316 MB scattered, 2.32 s
+  PASS  bit-exact over all 161 carriers, clock ok
+        full+NSSL mp18  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 249.8 B/cell gathered, 846 MB gathered / 282 MB scattered, 1.40 s
+  PASS  bit-exact over all 153 carriers, clock ok
+        full fast cadence  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 225.6 B/cell gathered, 764 MB gathered / 255 MB scattered, 5.25 s
+  PASS  bit-exact over all 9 carriers, clock ok
+        dry (control)  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 32.4 B/cell gathered, 510 MB gathered / 97 MB scattered, 0.40 s
+  PASS  bit-exact over all 138 carriers, clock ok
+        mp10 Morrison  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 181.4 B/cell gathered, 2857 MB gathered / 546 MB scattered, 1.50 s
+  PASS  bit-exact over all 140 carriers, clock ok
+        +km_opt=2 (TKE)  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 185.5 B/cell gathered, 2921 MB gathered / 558 MB scattered, 1.84 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +km_opt=4 (2D Smag)  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 181.5 B/cell gathered, 2858 MB gathered / 546 MB scattered, 1.78 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +sfclay MM5  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 181.5 B/cell gathered, 2858 MB gathered / 546 MB scattered, 1.93 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +YSU PBL  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 185.4 B/cell gathered, 2920 MB gathered / 558 MB scattered, 2.02 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +Noah LSM  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 185.4 B/cell gathered, 2920 MB gathered / 558 MB scattered, 2.11 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +RRTMGP radiation  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 185.4 B/cell gathered, 2920 MB gathered / 558 MB scattered, 2.75 s
+  PASS  bit-exact over all 155 carriers, clock ok
+        full(real74) +KF  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 233.7 B/cell gathered, 3681 MB gathered / 703 MB scattered, 3.25 s
+  PASS  bit-exact over all 173 carriers, clock ok
+        full+MYNN  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 274.4 B/cell gathered, 4321 MB gathered / 826 MB scattered, 3.90 s
+  PASS  bit-exact over all 211 carriers, clock ok
+        full+Noah-MP  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 239.3 B/cell gathered, 3768 MB gathered / 720 MB scattered, 6.98 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 279.9 B/cell gathered, 4408 MB gathered / 842 MB scattered, 6.92 s
+  PASS  bit-exact over all 161 carriers, clock ok
+        full+NSSL mp18  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 249.9 B/cell gathered, 3935 MB gathered / 752 MB scattered, 3.12 s
+  PASS  bit-exact over all 153 carriers, clock ok
+        full fast cadence  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 225.7 B/cell gathered, 3555 MB gathered / 679 MB scattered, 25.26 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  3x3 ragged, N=8, PINNED HOST STORE
+        9 tiles, compute (49, 62, 72), halo 16, 279.9 B/cell gathered, 4408 MB gathered / 842 MB scattered, 7.10 s
+  PASS  bit-exact over all 153 carriers, clock ok
+        full fast cadence  |  3x3 ragged, N=8, PINNED HOST STORE
+        9 tiles, compute (49, 62, 72), halo 16, 225.7 B/cell gathered, 3555 MB gathered / 679 MB scattered, 25.73 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  1x1 (window wraps onto itself), N=3
+        1 tiles, compute (49, 112, 128), halo 16, 279.7 B/cell gathered, 589 MB gathered / 316 MB scattered, 1.69 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  3x3 ragged, N=8, nbuffers=1
+        9 tiles, compute (49, 62, 72), halo 16, 279.9 B/cell gathered, 4408 MB gathered / 842 MB scattered, 5.60 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  3x3 ragged, N=8, nbuffers=4
+        9 tiles, compute (49, 62, 72), halo 16, 279.9 B/cell gathered, 4408 MB gathered / 842 MB scattered, 7.26 s
+  PASS  111/229 differ, maxabs=1.011e+04 maxrel=2.00e+00 worst=state/nc pattern=scattered
+        NEGATIVE halo=13 at 256x192 4x4 (one below the measured minimum), full+MYNN+Noah-MP N=8
+        16 tiles, compute (49, 74, 90), halo 13, 279.8 B/cell gathered, 11689 MB gathered / 5387 MB scattered, 11.55 s
+        first differing: ['driver/pbl_tendencies/rqc', 'driver/pbl_tendencies/rqi', 'driver/pbl_tendencies/rqv', 'driver/pbl_tendencies/rtheta', 'driver/pbl_tendencies/ru', 'driver/pbl_tendencies/rv', 'driver/pending_rainbl', 'fields/br']
+  PASS  127/229 differ, maxabs=7.281e+05 maxrel=2.00e+00 worst=state/nc pattern=uniform
+        NEGATIVE stream state/* only (25 of 229), full+MYNN+Noah-MP N=8
+        4 tiles, compute (49, 72, 80), halo 16, 96.4 B/cell gathered, 870 MB gathered / 290 MB scattered, 3.05 s
+        first differing: ['driver/pbl_tendencies/rqc', 'driver/pbl_tendencies/rqi', 'driver/pbl_tendencies/rqv', 'driver/pbl_tendencies/rtheta', 'driver/pbl_tendencies/ru', 'driver/pbl_tendencies/rv', 'driver/pending_rainbl', 'fields/albedo']
+  PASS  46/153 differ, maxabs=5.737e+05 maxrel=2.00e+00 worst=state/nc pattern=uniform
+        NEGATIVE clock not carried, fast cadence, N=8
+        4 tiles, compute (49, 72, 80), halo 16, 225.6 B/cell gathered, 2038 MB gathered / 679 MB scattered, 12.08 s
+        first differing: ['cumulus/w0avg', 'driver/cumulus_tendencies/rqc', 'driver/cumulus_tendencies/rqi', 'driver/cumulus_tendencies/rqv', 'driver/cumulus_tendencies/rtheta', 'driver/pending_rainbl', 'driver/radiation_tendencies/rtheta', 'driver/rthratenlw']
+  PASS  89/155 differ, maxabs=7.977e+06 maxrel=2.00e+00 worst=state/nc pattern=uniform
+        NEGATIVE write_mode=inplace, full(real74) N=8
+        4 tiles, compute (49, 72, 80), halo 16, 233.6 B/cell gathered, 2110 MB gathered / 703 MB scattered, 1.52 s
+        first differing: ['driver/pbl_tendencies/rqc', 'driver/pbl_tendencies/rqi', 'driver/pbl_tendencies/rqv', 'driver/pbl_tendencies/rtheta', 'driver/pbl_tendencies/ru', 'driver/pbl_tendencies/rv', 'driver/pending_rainbl', 'fields/br']
+
+==============================================================================
+PHYSICS RING vs SHADOW  (every carrier, both ways)
+==============================================================================
+  PASS  ring and shadow both bit-exact over all 9 carriers
+        dry (control)  |  3x3 ragged, N=3, nb=1   (0.3 s)
+  PASS  ring and shadow both bit-exact over all 138 carriers
+        mp10 Morrison  |  3x3 ragged, N=3, nb=1   (1.1 s)
+  PASS  ring and shadow both bit-exact over all 139 carriers
+        +Noah LSM  |  3x3 ragged, N=3, nb=1   (1.4 s)
+  PASS  ring and shadow both bit-exact over all 155 carriers
+        full(real74) +KF  |  3x3 ragged, N=3, nb=1   (2.1 s)
+  PASS  ring and shadow both bit-exact over all 229 carriers
+        full+MYNN+Noah-MP  |  3x3 ragged, N=3, nb=1   (4.7 s)
+  PASS  ring and shadow both bit-exact over all 161 carriers
+        full+NSSL mp18  |  3x3 ragged, N=3, nb=1   (2.2 s)
+  PASS  ring and shadow both bit-exact over all 153 carriers
+        full fast cadence  |  3x3 ragged, N=3, nb=1   (18.5 s)
+  PASS  ring and shadow both bit-exact over all 9 carriers
+        dry (control)  |  2x2, N=3, nb=2   (0.3 s)
+  PASS  ring and shadow both bit-exact over all 138 carriers
+        mp10 Morrison  |  2x2, N=3, nb=2   (0.8 s)
+  PASS  ring and shadow both bit-exact over all 139 carriers
+        +Noah LSM  |  2x2, N=3, nb=2   (0.9 s)
+  PASS  ring and shadow both bit-exact over all 155 carriers
+        full(real74) +KF  |  2x2, N=3, nb=2   (2.4 s)
+  PASS  ring and shadow both bit-exact over all 229 carriers
+        full+MYNN+Noah-MP  |  2x2, N=3, nb=2   (4.3 s)
+  PASS  ring and shadow both bit-exact over all 161 carriers
+        full+NSSL mp18  |  2x2, N=3, nb=2   (2.4 s)
+  PASS  ring and shadow both bit-exact over all 153 carriers
+        full fast cadence  |  2x2, N=3, nb=2   (9.9 s)
+  PASS  ring and shadow both bit-exact over all 229 carriers
+        full+MYNN+Noah-MP  |  3x3 ragged, N=8, PINNED HOST STORE   (11.7 s)
+  PASS  ring and shadow both bit-exact over all 153 carriers
+        full fast cadence  |  3x3 ragged, N=8, nb=1   (48.3 s)
+
+==============================================================================
+GEOGRAPHY GATE MATRIX  (96x80x49 periodic, REAL Lambert conformal (map_proj=1) at dx=dy=12 km, real terrain,
+                        per-column lat/lon, halo 16, geography GATHERED not rebuilt)
+==============================================================================
+  PASS  bit-exact over all 9 carriers, clock ok
+        dry (control)  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 13 geography fields gathered 2x (14.8 MB = 52.0% of the carrier gather), 0.25 s
+  PASS  bit-exact over all 138 carriers, clock ok
+        mp10 Morrison  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 13 geography fields gathered 2x (14.8 MB = 9.3% of the carrier gather), 0.32 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +RRTMGP radiation  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 15 geography fields gathered 2x (14.9 MB = 9.2% of the carrier gather), 1.40 s
+  PASS  bit-exact over all 155 carriers, clock ok
+        full(real74) +KF  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 15 geography fields gathered 2x (14.9 MB = 7.3% of the carrier gather), 1.46 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 17 geography fields gathered 2x (15.1 MB = 6.1% of the carrier gather), 2.30 s
+  PASS  bit-exact over all 153 carriers, clock ok
+        full fast cadence  |  2x1 seam, N=1
+        2 tiles, compute (49, 112, 80), halo 16, 15 geography fields gathered 2x (14.9 MB = 7.5% of the carrier gather), 2.40 s
+  PASS  bit-exact over all 9 carriers, clock ok
+        dry (control)  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 13 geography fields gathered 12x (57.0 MB = 52.0% of the carrier gather), 0.21 s
+  PASS  bit-exact over all 138 carriers, clock ok
+        mp10 Morrison  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 13 geography fields gathered 12x (57.0 MB = 9.3% of the carrier gather), 0.37 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +RRTMGP radiation  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 15 geography fields gathered 12x (57.5 MB = 9.2% of the carrier gather), 1.15 s
+  PASS  bit-exact over all 155 carriers, clock ok
+        full(real74) +KF  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 15 geography fields gathered 12x (57.5 MB = 7.3% of the carrier gather), 1.16 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 17 geography fields gathered 12x (58.1 MB = 6.1% of the carrier gather), 2.10 s
+  PASS  bit-exact over all 153 carriers, clock ok
+        full fast cadence  |  2x2 corners, N=3
+        4 tiles, compute (49, 72, 80), halo 16, 15 geography fields gathered 12x (57.5 MB = 7.5% of the carrier gather), 4.95 s
+  PASS  bit-exact over all 9 carriers, clock ok
+        dry (control)  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 13 geography fields gathered 72x (264.9 MB = 52.0% of the carrier gather), 0.38 s
+  PASS  bit-exact over all 138 carriers, clock ok
+        mp10 Morrison  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 13 geography fields gathered 72x (264.9 MB = 9.3% of the carrier gather), 1.16 s
+  PASS  bit-exact over all 139 carriers, clock ok
+        +RRTMGP radiation  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 15 geography fields gathered 72x (267.5 MB = 9.2% of the carrier gather), 2.14 s
+  PASS  bit-exact over all 155 carriers, clock ok
+        full(real74) +KF  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 15 geography fields gathered 72x (267.5 MB = 7.3% of the carrier gather), 2.26 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 17 geography fields gathered 72x (270.0 MB = 6.1% of the carrier gather), 5.50 s
+  PASS  bit-exact over all 153 carriers, clock ok
+        full fast cadence  |  3x3 ragged (40x30), N=8
+        9 tiles, compute (49, 62, 72), halo 16, 15 geography fields gathered 72x (267.5 MB = 7.5% of the carrier gather), 24.17 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  3x3 ragged, N=8, PINNED HOST STORE
+        9 tiles, compute (49, 62, 72), halo 16, 17 geography fields gathered 72x (270.0 MB = 6.1% of the carrier gather), 5.72 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  3x3 ragged, N=8, geography store in VRAM
+        9 tiles, compute (49, 62, 72), halo 16, 17 geography fields gathered 72x (270.0 MB = 6.1% of the carrier gather), 6.11 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  1x1 (window wraps onto itself), N=3
+        1 tiles, compute (49, 112, 128), halo 16, 17 geography fields gathered 1x (12.0 MB = 2.0% of the carrier gather), 1.87 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  3x3 ragged, N=8, nbuffers=1
+        9 tiles, compute (49, 62, 72), halo 16, 17 geography fields gathered 72x (270.0 MB = 6.1% of the carrier gather), 4.75 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  2x2, N=8, nbuffers=4 (one buffer per tile)
+        4 tiles, compute (49, 72, 80), halo 16, 17 geography fields gathered 4x (19.4 MB = 0.8% of the carrier gather), 4.56 s
+  PASS  bit-exact over all 229 carriers, clock ok
+        full+MYNN+Noah-MP  |  3x3 ragged, N=3, write_mode=ring
+        9 tiles, compute (49, 62, 72), halo 16, 17 geography fields gathered 27x (101.3 MB = 6.1% of the carrier gather), 3.07 s
+  PASS  114/229 differ, maxabs=4.023e+07 maxrel=2.00e+00 worst=state/nc pattern=uniform
+        NEGATIVE geography REBUILT per tile (today's behaviour), full+MYNN+Noah-MP N=1
+        4 tiles, compute (49, 72, 80), halo 16, 0 geography fields gathered 0x (0.0 MB = 0.0% of the carrier gather), 1.71 s
+        first differing: ['driver/pbl_tendencies/rqc', 'driver/pbl_tendencies/rqi', 'driver/pbl_tendencies/rqv', 'driver/pbl_tendencies/rtheta', 'driver/pbl_tendencies/ru', 'driver/pbl_tendencies/rv', 'driver/pending_rainbl', 'fields/br']
+  PASS  48/153 differ, maxabs=4.115e+07 maxrel=2.00e+00 worst=state/nc pattern=uniform
+        NEGATIVE geography REBUILT per tile, fast cadence N=8 (radiation every step)
+        4 tiles, compute (49, 72, 80), halo 16, 0 geography fields gathered 0x (0.0 MB = 0.0% of the carrier gather), 11.89 s
+        first differing: ['cumulus/w0avg', 'driver/cumulus_tendencies/rqc', 'driver/cumulus_tendencies/rqi', 'driver/cumulus_tendencies/rqv', 'driver/cumulus_tendencies/rtheta', 'driver/pending_rainbl', 'driver/radiation_tendencies/rtheta', 'driver/rthratenlw']
+  PASS  32/229 differ, maxabs=1.011e+05 maxrel=2.00e+00 worst=state/ni pattern=uniform
+        NEGATIVE has_msf/rotational taken from the TILE's window, full+MYNN+Noah-MP N=1
+        4 tiles, compute (49, 72, 80), halo 16, 17 geography fields gathered 4x (19.4 MB = 6.1% of the carrier gather), 1.70 s
+        first differing: ['driver/pbl_tendencies/rtheta', 'driver/pbl_tendencies/ru', 'driver/pbl_tendencies/rv', 'driver/pending_rainbl', 'fields/surface_rainncv', 'scratch/mp_rainnc', 'scratch/mp_rainncv', 'state/al']
+  PASS  47/153 differ, maxabs=8.960e+03 maxrel=2.00e+00 worst=state/nc pattern=uniform
+        NEGATIVE setup/* gathered but the SCHEME lat/lon rebuilt, fast cadence N=8
+        4 tiles, compute (49, 72, 80), halo 16, 13 geography fields gathered 32x (151.9 MB = 7.5% of the carrier gather), 11.85 s
+        first differing: ['cumulus/w0avg', 'driver/cumulus_tendencies/rqc', 'driver/cumulus_tendencies/rqi', 'driver/cumulus_tendencies/rqv', 'driver/cumulus_tendencies/rtheta', 'driver/pending_rainbl', 'driver/radiation_tendencies/rtheta', 'driver/rthratenlw']
+  PASS  48/153 differ, maxabs=6.989e+07 maxrel=2.00e+00 worst=state/nc pattern=uniform
+        NEGATIVE scheme lat/lon gathered but setup/* rebuilt, fast cadence N=8
+        4 tiles, compute (49, 72, 80), halo 16, 2 geography fields gathered 32x (1.5 MB = 0.1% of the carrier gather), 11.89 s
+        first differing: ['cumulus/w0avg', 'driver/cumulus_tendencies/rqc', 'driver/cumulus_tendencies/rqi', 'driver/cumulus_tendencies/rqv', 'driver/cumulus_tendencies/rtheta', 'driver/pending_rainbl', 'driver/radiation_tendencies/rtheta', 'driver/rthratenlw']
+  PASS  54/229 differ, maxabs=2.944e+03 maxrel=2.00e+00 worst=state/nc pattern=seam-local
+        NEGATIVE periodic_faces=False (msfv[ny,:] != msfv[0,:]), full+MYNN+Noah-MP N=1
+        4 tiles, compute (49, 72, 80), halo 16, 17 geography fields gathered 4x (19.4 MB = 6.1% of the carrier gather), 1.76 s
+        first differing: ['driver/pbl_tendencies/rqc', 'driver/pbl_tendencies/rqi', 'driver/pbl_tendencies/rqv', 'driver/pbl_tendencies/rtheta', 'driver/pbl_tendencies/ru', 'driver/pbl_tendencies/rv', 'fields/ch', 'fields/chs']
+  PASS  46/229 differ, maxabs=1.088e+03 maxrel=1.00e+00 worst=state/nc pattern=seam-local
+        NEGATIVE halo=7 at 256x192 4x4 (one below the measured minimum of 8 AT dx=12 km), full+MYNN+Noah-MP N=8
+        16 tiles, compute (49, 62, 78), halo 7, 17 geography fields gathered 128x (520.0 MB = 6.1% of the carrier gather), 9.45 s
+        first differing: ['driver/pbl_tendencies/rqc', 'driver/pbl_tendencies/rqi', 'driver/pbl_tendencies/rqv', 'driver/pbl_tendencies/rtheta', 'driver/pbl_tendencies/ru', 'driver/pbl_tendencies/rv', 'fields/cldfra_bl', 'fields/cov']
+
+==============================================================================
+HALO SWEEP  (192x192x49, 3x3 tiles of 64x64)
+==============================================================================
+  N = 1 step(s):
+    halo=8   FAIL maxabs=2.656e-01 worst=p pattern=seam-local
+    halo=10  FAIL maxabs=2.383e-01 worst=p pattern=seam-local
+    halo=11  FAIL maxabs=7.812e-03 worst=p pattern=single-tile
+    halo=12  bit-exact
+    halo=13  bit-exact
+    halo=14  bit-exact
+    halo=16  bit-exact
+    halo=17  bit-exact
+    halo=20  bit-exact
+    halo=24  bit-exact
+    halo=32  bit-exact
+    -> smallest halo that passes at N=1: 12   (harness.halo_radius says 16)
+  N = 3 step(s):
+    halo=8   FAIL maxabs=7.266e-01 worst=p pattern=uniform
+    halo=10  FAIL maxabs=5.938e-01 worst=p pattern=uniform
+    halo=11  FAIL maxabs=4.922e-01 worst=p pattern=scattered
+    halo=12  FAIL maxabs=3.672e-01 worst=p pattern=seam-local
+    halo=13  bit-exact
+    halo=14  bit-exact
+    halo=16  bit-exact
+    halo=17  bit-exact
+    halo=20  bit-exact
+    halo=24  bit-exact
+    halo=32  bit-exact
+    -> smallest halo that passes at N=3: 13   (harness.halo_radius says 16)
+
+  NOTE the minimum MOVED with the step count. It is not a structural bound;
+  run --deep for the halo x step-count table that shows a 'passing' halo
+  going bit-exact at N=3 and wrong by 0.5 at N=8. Set the halo from
+  harness.halo_radius(cfg), never from a short measurement.
+
+==============================================================================
+RESTART ROUND TRIP  (see tilestream/test_restart_gate.py)
+==============================================================================
+cupy 14.1.1  NVIDIA GeForce RTX 5090  24.5 GiB free of 31.8
+checkpoints -> /tmp/arwen-restart-gate
+
+==============================================================================
+PRECONDITIONS
+==============================================================================
+  PASS  restart manifest == streamed carrier inventory: 229 members, SAME OBJECTS (cumulus 1, driver 24, fields 162, scratch 17, state 25)
+  PASS  STATE_SERIALIZED_ATTRS is a DIFFERENT list: 41 names, 25 allocated here = 25/229 members and 34.4% of the carrier bytes; the other 204 live in state._scratch, state.physics and on the scheme objects
+  PASS  contract names with no member at this rung (absent or None): ['e_sgs', 'nifa', 'nifa2d', 'nwfa', 'nwfa2d', 'qh', 'qndrop', 'qng', 'qnh', 'qni', 'qnn', 'qnr', 'qns', 'qvolg', 'qvolh', 'tke']
+  PASS  stream-assembled setup == domain
+        setup fingerprint 17ced967ea8788e3 and physics setup bc50b3eaf505e275 rebuilt from 6.46 MB of geography + tile verticals, identical to the monolithic domain's; header view restored the buffer
+  PASS  format is gpuwm's, both directions
+        229 members, 105.3 MB: gpuwm restore_restart accepts a streamed file bit-exactly, and the streamed reader accepts a resident file bit-exactly; the streamed write pulled 2 arrays / 0.5 kB off the device, NONE of them a carrier (the resident writer pulls all 229 = 105.3 MB)
+
+==============================================================================
+ROUND TRIP  (stream N, checkpoint, FRESH store, reload, stream N; compare at 2N)
+==============================================================================
+  PASS  round trip == monolithic, uninterrupted == monolithic, round trip == uninterrupted
+        full+MYNN+Noah-MP  |  3x3 ragged (40x30), N=4+4
+        229 carriers, 9 tiles, halo 16, 4+4 steps, clock ok
+        checkpoint 229 members 105.3 MB in 228 ms (0.46 GB/s, header 67 ms, 0 device copies); restored store == checkpointed store: True
+        physics fired  first half: cumulus=0, cumulus_history=0, noah=4, radiation=0, sfclay=4, ysu=4
+                       second half: cumulus=0, cumulus_history=0, noah=4, radiation=0, sfclay=4, ysu=4
+                       uninterrupted 2N: cumulus=0, cumulus_history=0, noah=8, radiation=0, sfclay=8, ysu=8
+        sha256 42061792b23b694fe61ec4ee909bce78c3d636a1c1989d2d
+  PASS  round trip == monolithic, uninterrupted == monolithic, round trip == uninterrupted
+        full+MYNN+Noah-MP  |  2x2 corners, N=2+2
+        229 carriers, 4 tiles, halo 16, 2+2 steps, clock ok
+        checkpoint 229 members 105.3 MB in 237 ms (0.44 GB/s, header 70 ms, 0 device copies); restored store == checkpointed store: True
+        physics fired  first half: cumulus=0, cumulus_history=0, noah=2, radiation=0, sfclay=2, ysu=2
+                       second half: cumulus=0, cumulus_history=0, noah=2, radiation=0, sfclay=2, ysu=2
+                       uninterrupted 2N: cumulus=0, cumulus_history=0, noah=4, radiation=0, sfclay=4, ysu=4
+        sha256 910bb02399f6eeaae09318a1a190e9ebc4a63b9024a2fa76
+  PASS  round trip == monolithic, uninterrupted == monolithic, round trip == uninterrupted
+        full+MYNN+Noah-MP  |  3x3 ragged, N=4+4, shadow
+        229 carriers, 9 tiles, halo 16, 4+4 steps, clock ok
+        checkpoint 229 members 105.3 MB in 202 ms (0.52 GB/s, header 49 ms, 0 device copies); restored store == checkpointed store: True
+        physics fired  first half: cumulus=0, cumulus_history=0, noah=4, radiation=0, sfclay=4, ysu=4
+                       second half: cumulus=0, cumulus_history=0, noah=4, radiation=0, sfclay=4, ysu=4
+                       uninterrupted 2N: cumulus=0, cumulus_history=0, noah=8, radiation=0, sfclay=8, ysu=8
+        sha256 42061792b23b694fe61ec4ee909bce78c3d636a1c1989d2d
+  PASS  round trip == monolithic, uninterrupted == monolithic, round trip == uninterrupted
+        full+MYNN+Noah-MP  |  3x3 ragged, N=4+4, NaN-POISONED fresh store
+        229 carriers, 9 tiles, halo 16, 4+4 steps, clock ok
+        checkpoint 229 members 105.3 MB in 249 ms (0.42 GB/s, header 62 ms, 0 device copies); restored store == checkpointed store: True
+        physics fired  first half: cumulus=0, cumulus_history=0, noah=4, radiation=0, sfclay=4, ysu=4
+                       second half: cumulus=0, cumulus_history=0, noah=4, radiation=0, sfclay=4, ysu=4
+                       uninterrupted 2N: cumulus=0, cumulus_history=0, noah=8, radiation=0, sfclay=8, ysu=8
+        sha256 42061792b23b694fe61ec4ee909bce78c3d636a1c1989d2d
+  PASS  round trip == monolithic, uninterrupted == monolithic, round trip == uninterrupted
+        full fast cadence  |  3x3 ragged, N=4+4 (radiation every step)
+        153 carriers, 9 tiles, halo 16, 4+4 steps, clock ok
+        checkpoint 153 members 84.9 MB in 418 ms (0.20 GB/s, header 64 ms, 0 device copies); restored store == checkpointed store: True
+        physics fired  first half: cumulus=2, cumulus_history=2, noah=0, radiation=4, sfclay=0, ysu=0
+                       second half: cumulus=2, cumulus_history=2, noah=0, radiation=4, sfclay=0, ysu=0
+                       uninterrupted 2N: cumulus=4, cumulus_history=4, noah=0, radiation=8, sfclay=0, ysu=0
+        sha256 b763d4df4378ec12d31ed74a2a3c5c2386ab2ef438a6a42d
+  PASS  round trip == monolithic, uninterrupted == monolithic, round trip == uninterrupted
+        full fast cadence  |  2x1 seam, N=1+1
+        153 carriers, 2 tiles, halo 16, 1+1 steps, clock ok
+        checkpoint 153 members 84.9 MB in 422 ms (0.20 GB/s, header 58 ms, 0 device copies); restored store == checkpointed store: True
+        physics fired  first half: cumulus=1, cumulus_history=1, noah=0, radiation=1, sfclay=0, ysu=0
+                       second half: cumulus=0, cumulus_history=0, noah=0, radiation=1, sfclay=0, ysu=0
+                       uninterrupted 2N: cumulus=1, cumulus_history=1, noah=0, radiation=2, sfclay=0, ysu=0
+        sha256 7f654c51f16ca32ba28910daa2341d131233378886aa6533
+  PASS  round trip == monolithic, uninterrupted == monolithic, round trip == uninterrupted
+        mp10 Morrison      |  3x3 ragged, N=4+4
+        138 carriers, 9 tiles, halo 16, 4+4 steps, clock ok
+        checkpoint 138 members 68.2 MB in 108 ms (0.63 GB/s, header 4 ms, 0 device copies); restored store == checkpointed store: True
+        physics fired  first half: cumulus=0, cumulus_history=0, noah=0, radiation=0, sfclay=0, ysu=0
+                       second half: cumulus=0, cumulus_history=0, noah=0, radiation=0, sfclay=0, ysu=0
+                       uninterrupted 2N: cumulus=0, cumulus_history=0, noah=0, radiation=0, sfclay=0, ysu=0
+        sha256 420c303052607646ea8adec438a3b3c1f34ed02470f3f0dc
+  PASS  round trip == monolithic, uninterrupted == monolithic, round trip == uninterrupted
+        full+NSSL mp18    |  3x3 ragged, N=2+2
+        161 carriers, 9 tiles, halo 16, 2+2 steps, clock ok
+        checkpoint 161 members 94.0 MB in 206 ms (0.46 GB/s, header 66 ms, 0 device copies); restored store == checkpointed store: True
+        physics fired  first half: cumulus=0, cumulus_history=0, noah=2, radiation=0, sfclay=2, ysu=2
+                       second half: cumulus=0, cumulus_history=0, noah=2, radiation=0, sfclay=2, ysu=2
+                       uninterrupted 2N: cumulus=0, cumulus_history=0, noah=4, radiation=0, sfclay=4, ysu=4
+        sha256 9e9050aa0f70a03966f0004baf4af7ed5689a002785be8bf
+  PASS  round trip == monolithic, uninterrupted == monolithic, round trip == uninterrupted
+        dry (control)     |  3x3 ragged, N=4+4
+        9 carriers, 9 tiles, halo 16, 4+4 steps, clock ok
+        checkpoint 9 members 12.2 MB in 25 ms (0.49 GB/s, header 4 ms, 0 device copies); restored store == checkpointed store: True
+        physics fired  first half: (none)
+                       second half: (none)
+                       uninterrupted 2N: (none)
+        sha256 c9a7a556a259c6f934f28129c6c7ea5c8a3796d8ff1e9772
+note: streamed restart rt_96e409e00d5d.npz DELIBERATELY omits ['fields/ust'] -- this is a negative control, not a checkpoint
+note: restart rt_96e409e00d5d.npz is missing 1 carriers ['fields/ust']; allow_missing=True, so they keep this run's preparation values and the trajectory WILL diverge
+  PASS  round trip != monolithic, uninterrupted == monolithic, round trip != uninterrupted
+        NEGATIVE one carrier (fields/ust) DROPPED from the restart, reader told to allow it
+        229 carriers, 9 tiles, halo 16, 4+4 steps, clock ok
+        checkpoint 228 members 105.3 MB in 199 ms (0.53 GB/s, header 49 ms, 0 device copies); restored store == checkpointed store: False
+        physics fired  first half: cumulus=0, cumulus_history=0, noah=4, radiation=0, sfclay=4, ysu=4
+                       second half: cumulus=0, cumulus_history=0, noah=4, radiation=0, sfclay=4, ysu=4
+                       uninterrupted 2N: cumulus=0, cumulus_history=0, noah=8, radiation=0, sfclay=8, ysu=8
+        119 carriers differ, worst state/nc maxabs 7.168e+03
+        first differing: ['driver/pbl_tendencies/rqc', 'driver/pbl_tendencies/rqi', 'driver/pbl_tendencies/rqv', 'driver/pbl_tendencies/rtheta', 'driver/pbl_tendencies/ru', 'driver/pbl_tendencies/rv']
+note: streamed restart rt_1bdb1ef3fd5b.npz DELIBERATELY omits ['state/thp'] -- this is a negative control, not a checkpoint
+note: restart rt_1bdb1ef3fd5b.npz is missing 1 carriers ['state/thp']; allow_missing=True, so they keep this run's preparation values and the trajectory WILL diverge
+  PASS  round trip != monolithic, uninterrupted == monolithic, round trip != uninterrupted
+        NEGATIVE one carrier (state/thp) DROPPED, fast cadence, reader told to allow it
+        153 carriers, 9 tiles, halo 16, 4+4 steps, clock ok
+        checkpoint 152 members 83.4 MB in 181 ms (0.46 GB/s, header 53 ms, 0 device copies); restored store == checkpointed store: False
+        physics fired  first half: cumulus=2, cumulus_history=2, noah=0, radiation=4, sfclay=0, ysu=0
+                       second half: cumulus=2, cumulus_history=2, noah=0, radiation=4, sfclay=0, ysu=0
+                       uninterrupted 2N: cumulus=4, cumulus_history=4, noah=0, radiation=8, sfclay=0, ysu=0
+        41 carriers differ, worst state/nc maxabs 1.702e+06
+        first differing: ['cumulus/w0avg', 'driver/cumulus_tendencies/rqc', 'driver/cumulus_tendencies/rqi', 'driver/cumulus_tendencies/rqv', 'driver/cumulus_tendencies/rtheta', 'driver/pending_rainbl']
+  PASS  round trip != monolithic, uninterrupted == monolithic, round trip != uninterrupted
+        NEGATIVE the checkpoint's CLOCK and call counters not restored (arrays only), fast cadence
+        153 carriers, 9 tiles, halo 16, 4+4 steps, clock WRONG
+        checkpoint 153 members 84.9 MB in 186 ms (0.46 GB/s, header 61 ms, 0 device copies); restored store == checkpointed store: True
+        physics fired  first half: cumulus=2, cumulus_history=2, noah=0, radiation=4, sfclay=0, ysu=0
+                       second half: cumulus=2, cumulus_history=2, noah=0, radiation=4, sfclay=0, ysu=0
+                       uninterrupted 2N: cumulus=4, cumulus_history=4, noah=0, radiation=8, sfclay=0, ysu=0
+        38 carriers differ, worst state/nc maxabs 6.400e+03
+        first differing: ['cumulus/w0avg', 'driver/cumulus_tendencies/rqc', 'driver/cumulus_tendencies/rqi', 'driver/cumulus_tendencies/rqv', 'driver/cumulus_tendencies/rtheta', 'driver/pending_rainbl']
+
+==============================================================================
+REFUSALS  (a checkpoint that cannot be trusted must not be read)
+==============================================================================
+note: streamed restart rt_a0b9d233574a.npz DELIBERATELY omits ['fields/ust'] -- this is a negative control, not a checkpoint
+  PASS  REFUSED
+        the same dropped-carrier file, read NORMALLY (allow_missing=False)
+        restart file /tmp/arwen-restart-gate/rt_a0b9d233574a.npz is missing 1 of the store's 229 carriers: ['fields/ust'].  Resuming would keep this run's PREPARATION values for them -- the silent drop the th
+  PASS  STATE_SERIALIZED_ATTRS-only store
+        write REFUSED a 25-member STATE_SERIALIZED_ATTRS store against a 229-member manifest: the store holds 25 members but this configuration's restart manifest has 229: missing ['cumulus/...
+  PASS  header fingerprinted on the per-tile rebuild
+        read REFUSED a 229-member file whose header was fingerprinted on the per-tile geography rebuild: restart file /tmp/arwen-restart-gate/refusal_setup.npz was written on a different model setup (00c81b4ea...
+
+==============================================================================
+RESTART GATE PASSED -- a streamed run can be checkpointed and resumed bit-exactly, and every control fired.
+==============================================================================
+DOMAIN RECEIPTS  (see tilestream/test_receipts_gate.py)
+==============================================================================
+cupy 14.1.1  NVIDIA GeForce RTX 5090  24.4 GiB free of 31.8
+
+==============================================================================
+CONTRACTS
+==============================================================================
+  PASS  step_kwargs reaches every tile: acoustic=False sweep 0d6bd2e6359d1c59 == monolithic advection-only, and != the default sweep f341780feeafdd92
+  PASS  mass_flux_observer refused: mass_flux_observer is a DOMAIN-scope observer and a sweep can only off...
+  PASS  mass_flux_accumulator refused: mass_flux_accumulator is a DOMAIN-scope observer and a sweep can only ...
+  PASS  mass_budget_terms on a periodic domain: all three terms measured zero (no lateral boundary exists)
+  PASS  mass_budget_terms on an open-boundary domain: refused rather than defaulted to zero
+  PASS  tke_budget with cfg.tke_budget=1: refused (a 3-D volume integral accumulated on the tile buffer)
+  PASS  StreamedDomain.domain_mass_measure() == resident (801321064.953125); the same read off .state is 229376 ulp away
+  PASS  1 GPU, run_tiled: carriers bit-exact, receipt 0 ulp (801321065.0)
+  PASS  2 workers, 1 GPU: carriers bit-exact, receipt 0 ulp (801321065.0)
+  PASS  SKIPPED the two-card leg: 1 device(s) visible
+
+==============================================================================
+DOMAIN MASS RECEIPT  (a) asserted bit-identical, (b) published
+==============================================================================
+  PASS  periodic, map_proj=0, flat terrain  (16 tiles, halo 16, 24 steps, 10 carriers)
+        msft in [1.000000, 1.000000]  (identity -- the sum is EXACT, see the docstring)
+        resident receipt 3205297165.3867188 -> 3205297165.3359375  (delta -0.0507812)
+        (a) from the store, monolithic order: 3205297165.3359375  0 ulp from resident
+        (b) folded per tile interior:         3205297165.3359375  +0 ulp, 0.000e+00 abs, 0.000e+00 rel  [DATA, not asserted]
+            reversed fold order:              +0 ulp, spread across associations 0 ulp
+            fold survey over 6 partitions:    max |ulp| 0  2x2:+0  4x4:+0  8x8:+0  16x16:+0  192x1:+0  1x256:+0  [DATA, not asserted]
+        CONTROL folded over GATHERED windows: 2.499999x the truth (plan redundancy 2.50)
+        CONTROL receipt read from state:      106496 ulp from the truth, equals the t=0 mass: True
+        resident TKE budget: 24.0 steps, residual_rel 2.579e-08; streamed drain from state: None
+        CONTROL naive TKE fold over 2 buffers (192 steps each vs the domain's 24): shear 0.3115x, worst term 'transport' at 1.505e+05x
+  PASS  three-term budget closes on the store receipt: residual -5.078125e-02 (1.584e-11 relative), tier observability, reduction_order 'monolithic'
+
+  PASS  periodic, real Lambert + real terrain  (16 tiles, halo 16, 24 steps, 10 carriers)
+        msft in [0.984772, 1.005087]
+        resident receipt 3144329379.3213015 -> 3144329379.221067  (delta -0.100235)
+        (a) from the store, monolithic order: 3144329379.221067  0 ulp from resident
+        (b) folded per tile interior:         3144329379.2210674  +1 ulp, 4.768e-07 abs, 1.516e-16 rel  [DATA, not asserted]
+            reversed fold order:              -2 ulp, spread across associations 3 ulp
+            fold survey over 6 partitions:    max |ulp| 3  2x2:+0  4x4:+1  8x8:+1  16x16:+1  192x1:+3  1x256:+1  [DATA, not asserted]
+        CONTROL folded over GATHERED windows: 2.499724x the truth (plan redundancy 2.50)
+        CONTROL receipt read from state:      210207 ulp from the truth, equals the t=0 mass: True
+        resident TKE budget: 24.0 steps, residual_rel 2.939e-08; streamed drain from state: None
+        CONTROL naive TKE fold over 2 buffers (193 steps each vs the domain's 24): shear 0.3114x, worst term 'transport' at -395.1x
+  PASS  three-term budget closes on the store receipt: residual -1.002345e-01 (3.188e-11 relative), tier observability, reduction_order 'monolithic'
+
+==============================================================================
+REDUCTION-ORDER POLICY  (what several later items depend on)
+==============================================================================
+  periodic, map_proj=0, flat terrain:
+      the tiling's own 4x4 fold +0 ulp (0.000e+00 rel), spread across associations 0 ulp
+      fold survey (partition:ulp)  2x2:+0  4x4:+0  8x8:+0  16x16:+0  192x1:+0  1x256:+0    max |ulp| 0
+      ^ identity map factors: the weight is exactly 1.0, every term is an FP32 column mass and the whole sum is
+        EXACT in FP64, so these zeros say nothing about associativity.  Read the mapped row instead.
+  periodic, real Lambert + real terrain:
+      the tiling's own 4x4 fold +1 ulp (1.516e-16 rel), spread across associations 3 ulp
+      fold survey (partition:ulp)  2x2:+0  4x4:+1  8x8:+1  16x16:+1  192x1:+3  1x256:+1    max |ulp| 3
+  POLICY: take domain reductions from the STORE in the monolithic
+          traversal order.  A 2-D reduction always fits on the
+          card even when the 3-D domain does not.
+
+==============================================================================
+ALL RECEIPT CHECKS PASS
+==============================================================================
+==============================================================================
+CUDA GRAPH REPLAY  (the same cases, with the step captured once per buffer and replayed per tile)
+==============================================================================
+  PASS  PASS  bit-exact
+        dry, 2x2, N=3, graph replay
+        6 captures / 12 replays, 214 nodes, 0 deferred health records, 0 fallbacks, capture 60.6 ms
+  PASS  PASS  bit-exact
+        dry, 3x3 ragged (40x30), N=8, graph replay
+        16 captures / 72 replays, 214 nodes, 0 deferred health records, 0 fallbacks, capture 96.6 ms
+  PASS  PASS  bit-exact
+        mp10 Morrison  |  2x2, N=3, graph replay
+        6 captures / 12 replays, 386 nodes, 8 deferred health records, 0 fallbacks, capture 98.4 ms
+  PASS  PASS  bit-exact
+        +YSU PBL  |  2x2, N=3, graph replay
+        6 captures / 12 replays, 627 nodes, 20 deferred health records, 0 fallbacks, capture 191.3 ms
+  PASS  PASS  bit-exact
+        full(real74) +KF  |  2x2, N=3, graph replay  (THE SHIP CONFIG)
+        6 captures / 12 replays, 708 nodes, 20 deferred health records, 0 fallbacks, capture 214.9 ms
+  PASS  PASS  bit-exact
+        full fast cadence  |  2x2, N=3, graph replay  (radiation EVERY step, cumulus every 2nd)
+        6 captures / 12 replays, 1246-1303 nodes, 106 deferred health records, 0 fallbacks, capture 471.3 ms
+  PASS  PASS  bit-exact
+        full fast cadence  |  3x3 ragged (40x30), N=8, graph replay
+        16 captures / 72 replays, 1246-1303 nodes, 180 deferred health records, 0 fallbacks, capture 696.5 ms
+  PASS  PASS  bit-exact
+        full fast cadence  |  2x2, N=3, graph replay + verify_topology (recaptures every step and demands the cached graph still describes it)
+        6 captures / 12 replays, 1246-1303 nodes, 152 deferred health records, 0 fallbacks, capture 409.1 ms
+  PASS  PASS  bit-exact
+        full(real74) +KF  |  REAL Lambert projection, 2x2, N=3, graph replay
+        6 captures / 12 replays, 724 nodes, 20 deferred health records, 0 fallbacks, capture 186.5 ms
+  PASS  PASS  bit-exact
+        full+MYNN+Noah-MP  |  2x2, N=3, graph AUTO -> must FALL BACK and still be exact (MYNN and Noah-MP still branch on device data)
+        0 captures / 0 replays, ? nodes, 0 deferred health records, 12 fallbacks, capture 0.0 ms, RuntimeError: the current stream is capturing, so H2D transfers are disallowed
+
+==============================================================================
+CUDA GRAPH NEGATIVE CONTROLS  (a graph replayed under the wrong assumptions)
+==============================================================================
+  PASS  differs in 34 carriers, maxabs=1.006e+05
+        graph_reuse='run': one graph per TOPOLOGY, re-used across steps
+        a graph bakes in every kernel's scalar arguments, and RRTMGP takes the solar hour angle as one (rrtmgp.py:2045, :2201); replaying a radiation-due step at a later clock re-uses the earlier step's sun.  THIS is why the default keys on the sweep, and it is a measurement rather than a worry
+  PASS  differs in 46 carriers, maxabs=1.672e+05
+        graph_key='none' AND graph_reuse='run': the cadence ignored as well
+        cumulus is due on alternate steps at cudt=0.1 min, so one graph for the whole run also replays a cumulus step's kernels on a non-cumulus step.  Note the cadence key is only load-bearing under reuse='run': under the default the sweep index already separates every step, and this control is what shows the difference
+  PASS  differs in 46 carriers, maxabs=1.672e+05
+        graph_scalars=False: the replay does not re-apply the step's scalar carrier increment
+        the buffer clock stops advancing, so every later sweep evaluates the cadence at the wrong itimestep
+
+==============================================================================
+GATE PASSED -- every configuration behaved as specified, including every negative control.
+=== EXIT CODE: 0 ===
+end 2026-08-10T01:38:10Z
+--- CUDA contexts AFTER ---
+0
+0

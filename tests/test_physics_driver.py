@@ -235,6 +235,18 @@ def _cpu_surface_driver(monkeypatch, *, sf_surface_physics):
         }.items()
     }
     driver.surface_enabled = True
+    # THE CARRIER CONTRACT, wired rather than dodged.  A hand-built driver
+    # is exactly the construction path the consumption check exists to
+    # cover, so this fixture goes through it like a real driver: both of
+    # Noah's carriers are declared as the constants this fixture's stub
+    # schemes assume.  Deleting either declaration (or the check itself)
+    # turns every sf_surface_physics=2 test below red.
+    driver.carriers = physics.CarrierContract()
+    driver.carriers.declare(
+        "glw", source=physics.CARRIER_SOURCE_DECLARED_CONSTANT)
+    driver.carriers.declare(
+        "swdown", source=physics.CARRIER_SOURCE_DECLARED_CONSTANT)
+    driver.radt_seconds = 720.0
     driver.stepbl = 1
     driver.radt_minutes = 12.0
     driver.cudt_minutes = 5.0

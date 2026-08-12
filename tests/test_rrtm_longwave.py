@@ -614,6 +614,209 @@ def test_the_longwave_adapter_alone_returns_zero_shortwave(
     assert np.all(np.asarray(result.rthratenlw) < 0.0)
 
 
+def test_the_auto_sized_chunk_follows_free_memory() -> None:
+    """``column_chunk=None`` sizes the solver pass from free memory.
+
+    The fixed 512-column default re-dispatched the whole per-chunk CuPy
+    op graph hundreds of times per radiation step on a production nest
+    (~3.2M kernel launches, ~93% host-dispatch gap -- the task #185
+    profile).  The auto-sizer must scale with free memory, keep the 512
+    floor when the device is starved, cap at the block's own columns,
+    and leave an explicit pin untouched.  Numerics are chunk-invariant,
+    which :func:`test_column_chunking_does_not_change_the_answer` pins.
+    """
+    free = 8 << 30
+    nlayers = 60
+
+    class _Pool:
+        @staticmethod
+        def free_bytes():
+            return 0
+
+    class _FakeCupy:
+        __name__ = "cupy"
+        cuda = SimpleNamespace(
+            runtime=SimpleNamespace(memGetInfo=lambda: (free, 24 << 30)))
+
+        @staticmethod
+        def get_default_memory_pool():
+            return _Pool()
+
+    fit = (int(free * rrtm_lw._TRANSIENT_MEMORY_FRACTION)
+           // (rrtm_lw._TRANSIENT_BYTES_PER_COLUMN_LAYER * nlayers))
+    assert fit > rrtm_lw.DEFAULT_COLUMN_CHUNK
+    resolved = rrtm_lw._resolve_column_chunk(None, 200000, nlayers, _FakeCupy)
+    assert resolved == fit
+    # Cap: a block smaller than the fit runs in one pass.
+    assert rrtm_lw._resolve_column_chunk(None, 96, nlayers, _FakeCupy) == 96
+    # Floor: a starved device falls back to the conservative default.
+    free = 1 << 20
+    assert (rrtm_lw._resolve_column_chunk(None, 200000, nlayers, _FakeCupy)
+            == rrtm_lw.DEFAULT_COLUMN_CHUNK)
+    # An explicit pin wins over the fit.
+    free = 8 << 30
+    assert rrtm_lw._resolve_column_chunk(2048, 200000, nlayers,
+                                         _FakeCupy) == 2048
+    # Host (NumPy) blocks have no pool to protect: one pass.
+    assert rrtm_lw._resolve_column_chunk(None, 777, nlayers, np) == 777
+
+
+def test_the_auto_size_is_resolved_once_and_never_inside_capture() -> None:
+    """The 8d94a2ff7 regression, pinned at the resolver seam.
+
+    The perf fix called ``cudaMemGetInfo`` on EVERY solve, and that call
+    is illegal inside CUDA graph capture -- both graph-replay rungs of
+    the 2.0 tiles gate raised ``GraphCaptureError`` on it.  The contract
+    now is: the memory query runs on eager solves only and its answer is
+    cached per ``(ncol, nlayers)``; a captured solve reuses the cache; a
+    COLD capture (no eager solve yet) uses the floor without touching
+    the query OR the cache, so a later eager call still auto-sizes; an
+    explicit pin bypasses all of it.  The fake cupy's ``memGetInfo``
+    detonates while "capturing", which is exactly what the CUDA runtime
+    does, so a revert of any branch goes red here without a card.
+    """
+    from gpuwm.core.rrtm_lw import DEFAULT_COLUMN_CHUNK, RRTMLongwaveRadiation
+
+    free = 8 << 30
+    nlayers = 60
+    capturing = False
+    queries = []
+
+    class _Pool:
+        @staticmethod
+        def free_bytes():
+            return 0
+
+    def _mem_get_info():
+        if capturing:
+            raise RuntimeError(
+                "operation not permitted when stream is capturing")
+        queries.append(True)
+        return free, 24 << 30
+
+    class _Stream:
+        @staticmethod
+        def is_capturing():
+            return capturing
+
+    class _FakeCupy:
+        __name__ = "cupy"
+        cuda = SimpleNamespace(
+            runtime=SimpleNamespace(memGetInfo=_mem_get_info),
+            get_current_stream=staticmethod(lambda: _Stream()))
+
+        @staticmethod
+        def get_default_memory_pool():
+            return _Pool()
+
+    adapter = RRTMLongwaveRadiation.__new__(RRTMLongwaveRadiation)
+    adapter.column_chunk = None
+    adapter._auto_chunk = {}
+
+    fit = (int(free * rrtm_lw._TRANSIENT_MEMORY_FRACTION)
+           // (rrtm_lw._TRANSIENT_BYTES_PER_COLUMN_LAYER * nlayers))
+    # Eager: resolves from free memory and caches -- ONE query.
+    assert adapter._column_chunk_for(200000, nlayers, _FakeCupy) == fit
+    assert adapter._column_chunk_for(200000, nlayers, _FakeCupy) == fit
+    assert len(queries) == 1
+    # Captured with the cache warm: the cached value, and NO query (the
+    # fake raises if one is attempted).
+    capturing = True
+    assert adapter._column_chunk_for(200000, nlayers, _FakeCupy) == fit
+    # Cold capture on a fresh adapter: the floor, no query, no cache
+    # poisoning -- the next eager call still auto-sizes.
+    cold = RRTMLongwaveRadiation.__new__(RRTMLongwaveRadiation)
+    cold.column_chunk = None
+    cold._auto_chunk = {}
+    assert cold._column_chunk_for(200000, nlayers,
+                                  _FakeCupy) == DEFAULT_COLUMN_CHUNK
+    assert cold._column_chunk_for(96, nlayers, _FakeCupy) == 96
+    assert cold._auto_chunk == {}
+    capturing = False
+    assert cold._column_chunk_for(200000, nlayers, _FakeCupy) == fit
+    # An explicit pin never consults anything, capturing or not.
+    pinned = RRTMLongwaveRadiation.__new__(RRTMLongwaveRadiation)
+    pinned.column_chunk = 2048
+    pinned._auto_chunk = {}
+    capturing = True
+    assert pinned._column_chunk_for(200000, nlayers, _FakeCupy) == 2048
+
+
+def test_the_longwave_solve_runs_under_stream_capture_bit_exact() -> None:
+    """The regression test the graph-replay rungs paid for, on a card.
+
+    An eager solve, then the SAME solve captured into a CUDA graph and
+    replayed.  Before the fix the captured solve raised out of
+    ``cudaMemGetInfo`` at :func:`_resolve_column_chunk`; now the capture
+    must complete and the replayed bytes must equal the eager bytes,
+    which is the chunk-invariance guarantee doing its job across the
+    eager/captured boundary.
+    """
+    cp = pytest.importorskip("cupy")
+    try:
+        cp.cuda.runtime.getDeviceCount()
+    except Exception:
+        pytest.skip("no usable CUDA device")
+    from gpuwm.core.rrtm_lw import RRTMLongwaveRadiation
+
+    atmosphere, fields, state, cfg = _atmosphere_and_state()
+    atmosphere = {name: cp.asarray(value)
+                  for name, value in atmosphere.items()}
+    fields = {name: cp.asarray(value) for name, value in fields.items()}
+    # A real DomainState's fnm/fnp are DEVICE arrays (state.py allocates
+    # them with the state's own module), so the adapter's cp.asarray on
+    # them is a no-op in production.  The CPU fixture's NumPy pair would
+    # instead be a pageable H2D copy, which capture refuses -- that would
+    # test a state shape the model never runs.
+    state.fnm = cp.asarray(state.fnm, dtype=cp.float32)
+    state.fnp = cp.asarray(state.fnp, dtype=cp.float32)
+    ny, nx = fields["tsk"].shape
+    adapter = RRTMLongwaveRadiation(
+        datetime(2011, 4, 27, 18), np.full((ny, nx), 39.0, F),
+        np.full((ny, nx), -87.0, F), p_top=state.p_top)
+    call = dict(atmosphere=atmosphere, fields=fields, state=state, cfg=cfg)
+
+    stream = cp.cuda.Stream(non_blocking=True)
+    with stream:
+        # Eager warmup: caches the auto-sized chunk, the device constant
+        # tables and the pool blocks, exactly as a real run's first
+        # radiation call precedes any tilestream capture.
+        eager_tten, eager_glw, eager_olr = adapter.longwave(**call)
+        stream.synchronize()
+        stream.begin_capture()
+        try:
+            captured_tten, captured_glw, captured_olr = adapter.longwave(
+                **call)
+        finally:
+            graph = stream.end_capture()
+        graph.launch(stream)
+        stream.synchronize()
+
+    assert cp.array_equal(captured_tten, eager_tten)
+    assert cp.array_equal(captured_glw, eager_glw)
+    assert cp.array_equal(captured_olr, eager_olr)
+
+    # COLD capture: a fresh adapter whose first solve is the captured one
+    # takes the floor fallback instead of the memory query, and the
+    # bytes still match by chunk invariance.
+    cold = RRTMLongwaveRadiation(
+        datetime(2011, 4, 27, 18), np.full((ny, nx), 39.0, F),
+        np.full((ny, nx), -87.0, F), p_top=state.p_top)
+    with stream:
+        stream.begin_capture()
+        try:
+            cold_tten, cold_glw, cold_olr = cold.longwave(**call)
+        finally:
+            graph = stream.end_capture()
+        graph.launch(stream)
+        stream.synchronize()
+    assert cold._auto_chunk == {}, (
+        "a capture-time fallback must not poison the eager cache")
+    assert cp.array_equal(cold_tten, eager_tten)
+    assert cp.array_equal(cold_glw, eager_glw)
+    assert cp.array_equal(cold_olr, eager_olr)
+
+
 def test_column_chunking_does_not_change_the_answer(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "cupy", np)
     from gpuwm.core.rrtm_lw import RRTMLongwaveRadiation

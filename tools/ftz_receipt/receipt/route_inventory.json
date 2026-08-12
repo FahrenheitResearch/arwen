@@ -9,13 +9,13 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 62,
+  "site_count": 63,
   "site_count_by_kind": {
-    "cupy.ElementwiseKernel": 2,
+    "cupy.ElementwiseKernel": 3,
     "cupy.RawKernel": 1,
-    "cupy.RawModule": 46,
+    "cupy.RawModule": 45,
     "cupy.ReductionKernel": 5,
-    "cupy.cuda.compiler.compile_using_nvrtc": 8
+    "cupy.cuda.compiler.compile_using_nvrtc": 9
   },
   "site_count_by_surface": {
     "other": {
@@ -23,10 +23,10 @@
       "cupy.cuda.compiler.compile_using_nvrtc": 1
     },
     "package": {
-      "cupy.ElementwiseKernel": 2,
-      "cupy.RawModule": 9,
+      "cupy.ElementwiseKernel": 3,
+      "cupy.RawModule": 8,
       "cupy.ReductionKernel": 3,
-      "cupy.cuda.compiler.compile_using_nvrtc": 2
+      "cupy.cuda.compiler.compile_using_nvrtc": 3
     },
     "tests": {
       "cupy.RawKernel": 1,
@@ -108,6 +108,22 @@
       "options_element_expressions": null,
       "options_are_literal": false,
       "text": "return cp.ElementwiseKernel(\", \".join(params), \"T flux\", \"\\n\".join(body),"
+    },
+    {
+      "file": "gpuwm/core/health_ledger.py",
+      "line": 282,
+      "column": 24,
+      "surface": "package",
+      "constructor": "cp.ElementwiseKernel",
+      "constructor_kind": "cupy.ElementwiseKernel",
+      "enclosing": "masked_clear",
+      "takes_caller_options": false,
+      "options_argument_present": false,
+      "options_expression": null,
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "_MASKED_CLEAR = cp.ElementwiseKernel("
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
@@ -305,12 +321,12 @@
     },
     {
       "file": "gpuwm/core/noahmp_vegeflux_gpu.py",
-      "line": 142,
+      "line": 159,
       "column": 13,
       "surface": "package",
       "constructor": "cp.RawModule",
       "constructor_kind": "cupy.RawModule",
-      "enclosing": "_module",
+      "enclosing": "_module_on",
       "takes_caller_options": true,
       "options_argument_present": true,
       "options_expression": "tuple(options)",
@@ -321,7 +337,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_lw.py",
-      "line": 3723,
+      "line": 3733,
       "column": 24,
       "surface": "package",
       "constructor": "_cc.compile_using_nvrtc",
@@ -329,23 +345,21 @@
       "enclosing": "_gpu_module",
       "takes_caller_options": true,
       "options_argument_present": true,
-      "options_expression": "(\"-std=c++17\", \"--ftz=false\", f\"-arch=compute_{arch}\")",
+      "options_expression": "(\"-std=c++17\", \"--ftz=false\")",
       "options": [
         "-std=c++17",
-        "--ftz=false",
-        null
+        "--ftz=false"
       ],
       "options_element_expressions": [
         "\"-std=c++17\"",
-        "\"--ftz=false\"",
-        "f\"-arch=compute_{arch}\""
+        "\"--ftz=false\""
       ],
-      "options_are_literal": false,
+      "options_are_literal": true,
       "text": "ptx, _mapping = _cc.compile_using_nvrtc("
     },
     {
       "file": "gpuwm/core/rrtmg_mcica.py",
-      "line": 464,
+      "line": 469,
       "column": 24,
       "surface": "package",
       "constructor": "_cc.compile_using_nvrtc",
@@ -353,27 +367,25 @@
       "enclosing": "_mcica_gpu_module",
       "takes_caller_options": true,
       "options_argument_present": true,
-      "options_expression": "(\"-std=c++17\", \"--ftz=false\", f\"-arch=compute_{arch}\")",
+      "options_expression": "(\"-std=c++17\", \"--ftz=false\")",
       "options": [
         "-std=c++17",
-        "--ftz=false",
-        null
+        "--ftz=false"
       ],
       "options_element_expressions": [
         "\"-std=c++17\"",
-        "\"--ftz=false\"",
-        "f\"-arch=compute_{arch}\""
+        "\"--ftz=false\""
       ],
-      "options_are_literal": false,
+      "options_are_literal": true,
       "text": "ptx, _mapping = _cc.compile_using_nvrtc("
     },
     {
       "file": "gpuwm/core/rrtmg_sw.py",
-      "line": 2890,
-      "column": 22,
+      "line": 2906,
+      "column": 24,
       "surface": "package",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
+      "constructor": "_cc.compile_using_nvrtc",
+      "constructor_kind": "cupy.cuda.compiler.compile_using_nvrtc",
       "enclosing": "__init__",
       "takes_caller_options": true,
       "options_argument_present": true,
@@ -387,7 +399,7 @@
         "\"--ftz=false\""
       ],
       "options_are_literal": true,
-      "text": "self.module = cp.RawModule(code=code,"
+      "text": "ptx, _mapping = _cc.compile_using_nvrtc("
     },
     {
       "file": "tests/test_constants.py",

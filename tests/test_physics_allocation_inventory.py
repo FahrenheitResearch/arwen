@@ -147,6 +147,17 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         'advect_scalar_rk3_periodic_test': 7,
     },
     'gpuwm/core/diagnostics.py': {},
+    # THE STREAMED SAFETY FOLD's two buffers, from feat-safety-observers.
+    # ``StreamedStability.__init__`` allocates the per-tile partial record
+    # array (ntiles * 256 blocks x 9 floats) and the 8-word folded result,
+    # both ONCE per streamed domain and neither per step -- which is the
+    # whole point: the reduction it replaces was a whole-domain
+    # ``stability_report`` issued every dynamics substep over a DomainState
+    # the sweep never writes.  Bound: 9 KiB per tile plus 32 B, so 144 KiB
+    # at 16 tiles, against a store measured in tens of GiB.
+    'gpuwm/core/streaming.py': {
+        '__init__': 2,
+    },
     'gpuwm/core/diffusion.py': {
         'diffuse_only_test': 1,
     },
@@ -180,9 +191,20 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         'reset': 1,
     },
     'gpuwm/core/health.py': {},
+    # ``w0avg`` moved out of ``update_trigger_history`` and into
+    # ``ensure_trigger_history`` when [tiles] landed.  The count is the same
+    # one ``cp.zeros`` and the bound is unchanged -- (nz, ny, nx) float32, one
+    # per KainFritsch object -- but WHERE it happens is the whole point of the
+    # move: allocated on the first due cumulus call, the array joined the
+    # carrier set twenty steps into a run, and a seam plan built once from the
+    # inventory at construction cannot follow a carrier set that changes
+    # identity mid-run.  ``ensure_trigger_history`` is idempotent and
+    # construction-time, so the inventory is settled before the first step.
+    # ``update_trigger_history`` keeps a ``cp.ascontiguousarray`` of the
+    # half-level mean, which is not in ``_ALLOCATORS`` and never was.
     'gpuwm/core/kf.py': {
+        'ensure_trigger_history': 1,
         'launch_kf': 10,
-        'update_trigger_history': 1,
     },
     'gpuwm/core/microphysics.py': {},
     'gpuwm/core/microphysics_transition.py': {},

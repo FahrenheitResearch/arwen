@@ -730,6 +730,17 @@ def _write_minimal_stream_tree_config(
         start_time = {cycle.isoformat()}
         run_seconds = {run_seconds}
         restart_interval_s = 3600.0
+        # This fixture runs Noah with no radiation selector, which the
+        # 2026-08-09 radiation-off land-surface guard refuses undeclared
+        # (gpuwm/physics_compat.py radiation_off_land_surface_refusal).
+        # The test is about stream-tree extension mechanics, not the sky;
+        # declaring the experiment keeps the physics this fixture always
+        # exercised while satisfying the guard the product now enforces.
+        # Two claims, two tokens, exactly as the refusal spells them.
+        acknowledgements = [
+            "radiation-off-land-surface-v1",
+            "constant-downward-longwave-v1",
+        ]
 
         [projection]
         map_proj = "lambert"

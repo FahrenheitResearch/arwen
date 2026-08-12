@@ -1,0 +1,39 @@
+DEVICE {"name": "NVIDIA GeForce RTX 5080", "asyncEngineCount": 2, "totalGlobalMem_GiB": 15.47100830078125, "cupy": "14.1.1", "driver": 13010, "runtime": 13020}
+    statics built in 15.4 s
+    14 row slabs of <= 64 rows (+1 halo row)
+    forcing 1985-05-31 18:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+    forcing 1985-06-01 00:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+    forcing 1985-06-01 06:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+    forcing 1985-06-01 12:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+    forcing 1985-06-01 18:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+    forcing 1985-05-31 12:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+soil moisture floor: 2265 sub-air-dry land value(s) floored to the soil type's SMCDRY across ['SMOIS_L1', 'SMOIS_L2', 'SMOIS_L3', 'SMOIS_L4'] (min pre-floor 0.015464); WRF real.exe resets such columns to 0.005 (module_initialize_real.F:3376)
+    prepared 960x864x49 from 6 forcing times in 140.0 s
+    ingest device high-water 12.24 GiB (15851 B per mass cell)
+    settling step SKIPPED (settle=False): this domain is past the resident ceiling, and run_tiled's inventory match is the guard that a lazy carrier cannot slip through
+    store 139 carriers, 7.00 GiB pinned (184.9 B/cell); geography 15 arrays, 0.64 GiB
+    before release: pool live 12.24 GiB, pool held 12.24 GiB, device free 2.77/15.47 GiB
+    after release : pool live 0.00 GiB, pool held 0.00 GiB, device free 15.18/15.47 GiB
+DECISION [tiles] ON (host store): [tiles] mode = 'on'; tile 320x432, nbuffers=2, halo=16
+PLAN 6 tiles of 472x360, halo 20, nbuffers 2
+    windowed lateral boundaries: 6 tiles x 5 intervals x 6 fields = 0.92 GiB host
+SETUP TiledRun 24.6s (factory 24.3s)  overlap=off deferred_seam=False
+STEP 2 wall  11272.6 ms  (control)
+STEP 3 wall  11212.6 ms  (control)
+STEP 4 wall  11623.0 ms  (control)
+STEP 5 wall  11266.5 ms  (control)
+STEP 6 wall  11749.0 ms  (control)
+STEP 7 wall  11625.9 ms  (control)
+STEP 8 wall  12055.0 ms  (control)
+STEP 9 wall  11486.4 ms  (control)
+STEP 10 wall  11850.5 ms  (control)
+STEP 11 wall  11857.3 ms  (control)
+STEP 12 wall  11871.2 ms  (control)
+STEP 13 wall  11892.8 ms  (control)
+STEP 14 wall  11709.4 ms  (control)
+STEP 15 wall  74234.1 ms  (control)
+STEP 16 wall  11849.1 ms  (control)
+WINDOW {"window_s": 237.5560334430047, "steps": 15, "per_step_ms": 15837.068896200313, "overlap": "off", "deferred_seam": false, "rep": 1}
+WINDOW {"window_s": 235.82119554300152, "steps": 15, "per_step_ms": 15721.413036200101, "overlap": "off", "deferred_seam": false, "rep": 2}
+WINDOW {"window_s": 235.29188325599534, "steps": 15, "per_step_ms": 15686.125550399689, "overlap": "off", "deferred_seam": false, "rep": 3}
+RESULT {"device": {"name": "NVIDIA GeForce RTX 5080", "asyncEngineCount": 2, "totalGlobalMem_GiB": 15.47100830078125, "cupy": "14.1.1", "driver": 13010, "runtime": 13020}, "config": "/workspace/overlap/arm_c_dx2.7km.toml", "bind": null, "nx": 960, "ny": 864, "nz": 49, "dx_m": 2700.0, "dt_s": 12.0, "decision": "[tiles] ON (host store): [tiles] mode = 'on'; tile 320x432, nbuffers=2, halo=16", "steps": 15, "warmup": 2, "control": true, "overlap": "off", "deferred_seam": false, "window": {"window_s": 237.5560334430047, "steps": 15, "per_step_ms": 15837.068896200313, "overlap": "off", "deferred_seam": false, "rep": 1}, "windows": [{"window_s": 237.5560334430047, "steps": 15, "per_step_ms": 15837.068896200313, "overlap": "off", "deferred_seam": false, "rep": 1}, {"window_s": 235.82119554300152, "steps": 15, "per_step_ms": 15721.413036200101, "overlap": "off", "deferred_seam": false, "rep": 2}, {"window_s": 235.29188325599534, "steps": 15, "per_step_ms": 15686.125550399689, "overlap": "off", "deferred_seam": false, "rep": 3}]}

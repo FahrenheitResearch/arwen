@@ -265,6 +265,76 @@ _WRF_LW_TPROF_K = np.array([
     249.89, 246.67, 243.48, 240.25, 236.66, 233.86,
 ], np.float64)
 
+#: ``(pressure, temperature)`` for WRF's LW upper-atmosphere climatology, in
+#: ascending pressure order, one array pair per array module.  Uploaded once
+#: instead of once per radiation call: the profile is a literal in this file
+#: and the sort is over 30-odd elements, but every call used to pay two
+#: pageable host-to-device copies for it -- and an H2D of any kind is illegal
+#: inside a CUDA graph capture, so on a radiation-due step this was the line
+#: that made the step uncapturable.  Same bytes, same interpolation, same
+#: answer.
+_LW_CLIMATOLOGY: dict = {}
+
+#: The shortwave g-point solar source, uploaded once per gas-table set.
+#: Same reasoning as :data:`_LW_CLIMATOLOGY`: a shipped table that was
+#: re-copied from host memory on every radiation call.
+#:
+#: Held HERE and not on the radiation callable, which was the first attempt:
+#: ``gpuwm/io/restart.py`` audits every array attribute a callable owns and
+#: refused it as unclassified, and it was right to -- an array on the driver
+#: is state that a restart has to account for, and a cached constant is not
+#: state.  The key holds a reference to the tables object so its ``id`` can
+#: never be recycled under the cache.
+_SOLAR_SOURCE: dict = {}
+
+
+def _cache_device_key(xp=None):
+    """Cache key that includes the CARD, because the value is a DEVICE array.
+
+    A memoized device array keyed on anything but the device is handed to
+    whichever card asks for it next.  With peer access that merely reads
+    across the bus; WITHOUT it -- which is every GeForce box, including the
+    4x RTX 5080 this was found on -- CuPy raises outright:
+
+        ValueError: The device where the array resides (0) is different from
+        the current device (1).  Peer access is unavailable...
+
+    ``tilestream/mgstream.py`` documents five sites with exactly this defect
+    (rrtmgp.GasTables/CloudTables.to_device, kf._device_table,
+    mynn_pbl_runtime._VALIDITY_FLAGS, noahmp_vegeflux_gpu._module,
+    noahmp_slab_libm._KERNEL_CACHE) and keys each on the current device.
+    These two were NOT among them, and they are on the longwave and
+    shortwave radiation paths, so any multi-GPU run with radiation on hits
+    them at the first due step on the second card.
+    """
+    name = "cupy" if xp is None else getattr(xp, "__name__", str(xp))
+    if name == "cupy":
+        import cupy as cp
+        return (name, int(cp.cuda.Device().id))
+    return (name,)
+
+
+def _solar_source_device(sw_tables):
+    import cupy as cp
+
+    key = (id(sw_tables), _cache_device_key())
+    held = _SOLAR_SOURCE.get(key)
+    if held is None:
+        held = (sw_tables, cp.asarray(sw_tables.solar_source, dtype=DTYPE))
+        _SOLAR_SOURCE[key] = held
+    return held[1]
+
+
+def _lw_climatology(xp):
+    key = _cache_device_key(xp)
+    cached = _LW_CLIMATOLOGY.get(key)
+    if cached is None:
+        order = np.argsort(_WRF_LW_PPROF_HPA)
+        cached = (xp.asarray(_WRF_LW_PPROF_HPA[order], dtype=DTYPE),
+                  xp.asarray(_WRF_LW_TPROF_K[order], dtype=DTYPE))
+        _LW_CLIMATOLOGY[key] = cached
+    return cached
+
 
 @dataclass(frozen=True)
 class _RadiationColumnProfile:
@@ -375,9 +445,7 @@ def _extend_above_model_profile(
         upper_play = DTYPE(0.5) * (
             all_upper_interfaces[:, :-1] + all_upper_interfaces[:, 1:])
 
-        order = np.argsort(_WRF_LW_PPROF_HPA)
-        pprof = xp.asarray(_WRF_LW_PPROF_HPA[order], dtype=DTYPE)
-        tprof = xp.asarray(_WRF_LW_TPROF_K[order], dtype=DTYPE)
+        pprof, tprof = _lw_climatology(xp)
         climo_top = xp.interp(
             top_pressure.ravel() * DTYPE(0.01), pprof, tprof).reshape(ncol, 1)
         climo_upper = xp.interp(
@@ -826,7 +894,21 @@ class GasTables:
     solar_source: np.ndarray | None = None
     tsi_default: float | None = None
     optimal_angle_fit: np.ndarray | None = None
-    _device: DeviceTables | None = field(default=None, init=False, repr=False)
+    #: PER CUDA DEVICE, not per process.  ``load_gas_tables`` is
+    #: ``lru_cache``d on the kind alone, so one ``GasTables`` object serves
+    #: the whole process; memoizing ONE ``DeviceTables`` on it handed every
+    #: device the pointers of whichever device uploaded first.  MEASURED on a
+    #: dual-4090 box: with device 0 touched first, ``gas_lw.kmajor`` lives on
+    #: device 0 and a physics step on device 1 dies with
+    #: CUDA_ERROR_ILLEGAL_ADDRESS inside RRTMGP; touch device 1 first and the
+    #: failure moves to device 0.  Consumer Ada has no P2P to paper over it,
+    #: and an illegal address destroys the CUDA context for the whole
+    #: process, so one such step takes every later run down with it.
+    #: The tables are duplicated per card -- see ``preflight
+    #: .k_distribution_bytes``, which counts them once per PROCESS and is
+    #: therefore a per-device figure that must be multiplied by the number of
+    #: cards a run actually uses.
+    _device: dict = field(default_factory=dict, init=False, repr=False)
 
     @property
     def ngas(self) -> int:
@@ -841,8 +923,11 @@ class GasTables:
                 if isinstance(value, np.ndarray)}
 
     def to_device(self) -> DeviceTables:
-        if self._device is None:
-            import cupy as cp
+        """The k-distribution on the CURRENT device, uploaded once per card."""
+        import cupy as cp
+
+        dev = cp.cuda.runtime.getDevice()
+        if dev not in self._device:
             values: dict[str, object] = {}
             for name, value in vars(self).items():
                 if isinstance(value, np.ndarray):
@@ -855,8 +940,8 @@ class GasTables:
                                                                    dtype=dtype))
                 elif not name.startswith("_"):
                     values[name] = value
-            self._device = DeviceTables(values)
-        return self._device
+            self._device[dev] = DeviceTables(values)
+        return self._device[dev]
 
 
 @dataclass
@@ -876,7 +961,8 @@ class CloudTables:
     extice: np.ndarray
     ssaice: np.ndarray
     asyice: np.ndarray
-    _device: DeviceTables | None = field(default=None, init=False, repr=False)
+    #: PER CUDA DEVICE -- see GasTables._device for the measurement.
+    _device: dict = field(default_factory=dict, init=False, repr=False)
 
     @property
     def liq_step_size(self) -> float:
@@ -887,15 +973,18 @@ class CloudTables:
         return (self.diamice_upr - self.diamice_lwr) / (self.nsize_ice - 1)
 
     def to_device(self) -> DeviceTables:
-        if self._device is None:
-            import cupy as cp
+        """The cloud optics tables on the CURRENT device, once per card."""
+        import cupy as cp
+
+        dev = cp.cuda.runtime.getDevice()
+        if dev not in self._device:
             values = {name: (cp.ascontiguousarray(cp.asarray(value,
                                                                dtype=cp.float32))
                              if isinstance(value, np.ndarray) else value)
                       for name, value in vars(self).items()
                       if not name.startswith("_")}
-            self._device = DeviceTables(values)
-        return self._device
+            self._device[dev] = DeviceTables(values)
+        return self._device[dev]
 
 
 @lru_cache(maxsize=2)
@@ -1588,8 +1677,13 @@ def _validate_device_call_shapes(*, play, plev, tlay, tlev, tsfc, exner,
 
 def _validation_flags_device(*, play, plev, tlay, tlev, tsfc, exner, qv,
                              qc, qr, qi, qs, cldfra, emiss,
-                             numbers, effective, tables_lw, tables_sw):
-    """Run the production predicate scan and return its host bitset."""
+                             numbers, effective, tables_lw, tables_sw,
+                             describe=None):
+    """Run the production predicate scan and return its host bitset.
+
+    ``describe`` opts the readback into :mod:`gpuwm.core.health_ledger`; see
+    :func:`gpuwm.core.microphysics.validate_surface_diagnostics`.
+    """
     _validate_device_call_shapes(
         play=play, plev=plev, tlay=tlay, tlev=tlev, tsfc=tsfc,
         exner=exner, qv=qv, qc=qc, qr=qr, qi=qi, qs=qs,
@@ -1634,13 +1728,33 @@ def _validation_flags_device(*, play, plev, tlay, tlev, tsfc, exner, qv,
             DTYPE(radii_bands["effc"][0]), DTYPE(radii_bands["effc"][1]),
             DTYPE(radii_bands["effi"][0]), DTYPE(radii_bands["effi"][1]),
             DTYPE(radii_bands["effs"][0]), DTYPE(radii_bands["effs"][1])))
-    # This is the production path's sole validation synchronization/D2H read.
-    return int(cp.asnumpy(flags)[0])
+    # This is the production path's sole validation synchronization/D2H read
+    # -- unless a health ledger is active, in which case it is not a read at
+    # all and the drain reports the same bitset later.
+    from gpuwm.core import health_ledger
+
+    return health_ledger.read_status(
+        flags, site="rrtmgp", describe=describe)
 
 
 def _validate_device_call(*, diagnose=None, **profiles):
-    """Run fused guards, replaying legacy diagnostics only on failure."""
-    observed = _validation_flags_device(**profiles)
+    """Run fused guards, replaying legacy diagnostics only on failure.
+
+    The deferred report drops ``diagnose()``: it replays the legacy
+    validators over the LIVE arrays, and by the time a deferred drain runs
+    those arrays hold a later step.  A message built from them would name
+    the wrong values with complete confidence, which is worse than not
+    having it.  The bitset itself is exact either way.
+    """
+    def _describe(observed: int) -> None:
+        from gpuwm.core import health_ledger
+
+        raise ValueError(
+            "RRTMGP input validation failed: "
+            + "; ".join(_validation_error_messages(observed))
+            + health_ledger.deferred_note())
+
+    observed = _validation_flags_device(describe=_describe, **profiles)
     if observed:
         if diagnose is not None:
             diagnose()
@@ -2188,6 +2302,11 @@ class RRTMGPRadiation:
                 flux.flux_dn, nz, xp=cp)
             del vmr_lw, gas_lw, cld_lw, optics_lw, sources, emiss, flux
             del chunk_metadata, lw_profile, lw_paths, lw_cldfra, lw_chunk
+            # ``work`` is the phase view mapping and every value in it is a
+            # view of the workspace backing, so the name keeps the whole
+            # allocation alive past the loop.  Rebind rather than ``del``:
+            # the name does not exist on the workspace-less branch.
+            work = None
 
         valid_time = (self.start_time
                       + timedelta(seconds=float(state.elapsed_seconds)))
@@ -2207,7 +2326,7 @@ class RRTMGPRadiation:
         mu = cp.where(daylight, mu_raw, DTYPE(1.0)).reshape(-1)
         albedo_surface = cp.asarray(
             fields["albedo"], dtype=DTYPE).reshape(-1)
-        solar = cp.asarray(self.sw_tables.solar_source, dtype=DTYPE)
+        solar = _solar_source_device(self.sw_tables)
         # WRF scales every SW band by scon/rrsw_scon so TOA irradiance
         # equals radconst's SOLCON (module_ra_rrtmg_sw.F:10872 'scon =
         # solcon*(1-obscur)', 9867-9871 'solvar(ib) = scon/rrsw_scon');
@@ -2308,10 +2427,24 @@ class RRTMGPRadiation:
             del vmr_sw, gas_sw, cld_sw, optics_sw
             del albedo, inc, flux, mask, chunk_metadata
             del sw_profile, sw_paths, sw_cldfra, sw_chunk
+            # As in the LW loop: ``work`` and the materialized mu0 broadcast
+            # are workspace views and hold the backing alive past the loop.
+            work = mu_chunk = None
 
         result = _fluxes_to_radiation(
             lw_up, lw_dn, sw_up, sw_dn, plev, exner, ny=ny, nx=nx,
             coszen=mu_raw, validate=full_validation)
+        # Release hook.  The shipped SharedRRTMGPChunkWorkspace has no
+        # ``on_call_end``, so it keeps its persistent behaviour with no
+        # branch and no cost; a workspace that CAN hand its bytes back
+        # between firings does so here, after the last chunk of both bands
+        # has been consumed and _fluxes_to_radiation has read the model
+        # fluxes out of the per-call arrays.  Deliberately not in a finally:
+        # a call that raised leaves the backing intact for the traceback and
+        # for whatever inspects the workspace afterwards.
+        release = getattr(workspace, "on_call_end", None)
+        if release is not None:
+            release()
         self.update_count += 1
         return result
 

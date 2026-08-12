@@ -1105,13 +1105,18 @@ Grell-Freitas.
 Cost, in time and in memory: the solver is array-vectorised over column
 chunks, not a fused CUDA kernel like the two 4/4 engines, and holds
 several `(column_chunk, nlayers, 140)` arrays at once. It is materially
-slower per radiation call than either 4/4 adapter. Those chunk arrays
-are transients, and `--memory-budget-mib` prices persistent allocations
+slower per radiation call than either 4/4 adapter. The chunk is sized
+automatically from free device memory at each call (half of what the
+device can hand back without growing its footprint, floored at 512
+columns and capped at the grid); the answer is byte identical across
+chunk sizes, so the sizing is a throughput lever only. An explicit
+`column_chunk` on the adapter pins it. Those chunk arrays are
+transients, and `--memory-budget-mib` prices persistent allocations
 only, so the budget understates a 1/1 run by roughly the chunk cost:
 1.67 GiB peak measured at `column_chunk = 4096` and 53 layers on an
-RTX 5090, so about 0.2 GiB at the default 512 and linear in between.
-Raising `column_chunk` raises the peak with no warning from the budget.
-Choosing this pair on a large domain is a deliberate trade both ways.
+RTX 5090 (about 8.3 KB per column-layer, the constant the auto-sizer
+uses), and the auto-sizer claims at most half of free memory at call
+time. Choosing this pair on a large domain remains a deliberate trade.
 
 ## Cumulus (`cu_physics`)
 

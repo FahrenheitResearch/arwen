@@ -1,0 +1,49 @@
+start 2026-08-11T09:25:09Z
+lane/stream-overlap measurement+receipt session (Fable, task #166) since 2026-08-11T09:24:57Z
+rustwx_build_settled 2026-08-11T09:25:09Z
+-rwxrwxr-x 2 root root 9491328 Aug 11 09:20 /workspace/wt-tip/tools/rustwx/target/release/rw_wrfbatch
+BEGIN gate_tip 2026-08-11T09:25:10Z
+gate_tip rc=0 2026-08-11T09:40:43Z
+BEGIN overlap_cpu 2026-08-11T09:40:43Z
+overlap_cpu rc=0 2026-08-11T09:40:45Z
+BEGIN perf_a_off 2026-08-11T09:40:45Z
+perf_a_off rc=0 2026-08-11T09:47:27Z
+BEGIN perf_a_on 2026-08-11T09:47:27Z
+perf_a_on rc=0 2026-08-11T09:54:08Z
+BEGIN perf_b3_off 2026-08-11T09:54:08Z
+perf_b3_off rc=0 2026-08-11T10:05:23Z
+BEGIN perf_b3_on 2026-08-11T10:05:23Z
+perf_b3_on rc=0 2026-08-11T10:16:38Z
+BEGIN perf_c27_off 2026-08-11T10:16:38Z
+perf_c27_off rc=0 2026-08-11T10:32:49Z
+BEGIN perf_c27_on 2026-08-11T10:32:49Z
+perf_c27_on rc=0 2026-08-11T10:48:45Z
+BEGIN digest_a_off 2026-08-11T10:48:45Z
+digest_a_off rc=1 2026-08-11T10:51:03Z
+BEGIN digest_a_on 2026-08-11T10:51:03Z
+digest_a_on rc=1 2026-08-11T10:53:20Z
+BEGIN digest_b3_off 2026-08-11T10:53:20Z
+digest_b3_off rc=1 2026-08-11T10:55:13Z
+BEGIN digest_b3_on 2026-08-11T10:55:13Z
+digest_b3_on rc=1 2026-08-11T10:57:06Z
+BEGIN digest_c27_off 2026-08-11T10:57:06Z
+digest_c27_off rc=1 2026-08-11T10:59:29Z
+BEGIN digest_c27_on 2026-08-11T10:59:29Z
+digest_c27_on rc=1 2026-08-11T11:01:52Z
+BEGIN twin_c27 2026-08-11T11:01:52Z
+twin_c27 rc=1 2026-08-11T11:04:15Z
+BEGIN twin_b3 2026-08-11T11:04:15Z
+twin_b3 rc=1 2026-08-11T11:06:09Z
+twin_dir /workspace/overlap/twin_b3 2026-08-11T11:06:09Z
+BEGIN wrfcmp 2026-08-11T11:06:09Z
+wrfcmp rc=0 2026-08-11T11:06:09Z
+BEGIN render_resident 2026-08-11T11:06:09Z
+render_resident rc=1 2026-08-11T11:06:09Z
+BEGIN render_streamed 2026-08-11T11:06:09Z
+render_streamed rc=1 2026-08-11T11:06:10Z
+BEGIN pngcmp 2026-08-11T11:06:10Z
+pngcmp rc=0 2026-08-11T11:06:10Z
+BEGIN pack 2026-08-11T11:06:10Z
+pack rc=0 2026-08-11T11:06:10Z
+9ea67d689eac72910e8732d88818c81a5e7765fae4c978a622bb5fff43a5e4de  /workspace/overlap/gallery.tgz
+ALL_DONE 2026-08-11T11:06:10Z

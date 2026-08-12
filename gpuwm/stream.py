@@ -3120,10 +3120,21 @@ def stream_main(args) -> int:
 
 
 def register_cli(subparsers) -> None:
+    # The disambiguation goes in BOTH strings on purpose.  ``help`` is the
+    # only one argparse shows in ``gpuwm --help``'s command list, and
+    # ``description`` is the only one it shows in ``gpuwm stream --help``,
+    # which is where somebody who has already picked the wrong command
+    # arrives.  One noun, two unrelated features, and the whole point of
+    # the [tiles] naming ruling is that neither door stays silent about it.
+    _NOT_THE_OTHER_ONE = (
+        "NOT the out-of-core mode: to run a domain larger than the card, "
+        "see the [tiles] table and docs/public/TILES.md")
     parser = subparsers.add_parser(
         "stream",
         help=("follow uploading forecast cycles with sealed hourly "
-              "restart-extend legs"))
+              f"restart-extend legs ({_NOT_THE_OTHER_ONE})"),
+        description=("Follow an uploading forecast cycle with sealed hourly "
+                     f"restart-extend legs.  {_NOT_THE_OTHER_ONE}."))
     parser.add_argument(
         "plan", type=Path, metavar="PLAN.toml",
         help=f"strict {PLAN_SCHEMA} orchestration plan")

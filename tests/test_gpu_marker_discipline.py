@@ -224,11 +224,141 @@ def test_the_detector_is_quiet_on_modules_that_only_mention_cupy(tmp_path):
     assert not _imports_cupy(str(module))
 
 
+# --------------------------------------------------------------------------
+# the runtime ban: guards no import style can dodge
+# --------------------------------------------------------------------------
+#
+# The AST layer above answers "which tests' own source imports cupy".  It is
+# structurally blind to a test that reaches the device through an intermediary
+# module, and that blindness was exploited for real: a gpu-marked test whose
+# only import was a lazy ``from tilestream import multigpu`` inside the test
+# body carried the marker, dodged the AST-driven skip, and ran on the local
+# card during a mandated CPU-only invocation.  Two closures, each pinned here
+# red-on-revert:
+#
+# * marker implies skip -- ``pytest_collection_modifyitems`` bans every item
+#   CARRYING the gpu marker, not just its own AST hits;
+# * the device-visibility backstop -- under GPUWM_NO_LOCAL_GPU=1 the conftest
+#   sets ``CUDA_VISIBLE_DEVICES=-1`` before any test runs, so an escaped
+#   unmarked test's first device use goes red (cudaErrorNoDevice) instead of
+#   silently running on the owner's card, whatever its import style.
+
+
+def _run_banned(path: pathlib.Path, cwd: pathlib.Path) -> tuple:
+    """Run one test file in a subprocess WITH the local-GPU ban set.
+
+    For a scratch file outside tests/, the tests/ conftest is loaded
+    explicitly with ``-p conftest`` because directory walking would not find
+    it -- and these tests exist precisely to prove what that conftest
+    enforces.  A file inside tests/ picks it up normally, and loading it
+    twice would double-register the plugin.
+    """
+    import os
+    # CUDA_VISIBLE_DEVICES is deliberately stripped: the conftest under test
+    # must plant it itself, and an inherited copy would mask a reverted
+    # backstop.
+    env = {k: v for k, v in os.environ.items()
+           if k != "CUDA_VISIBLE_DEVICES"}
+    env.update({"GPUWM_NO_LOCAL_GPU": "1",
+                "PYTHONPATH": os.pathsep.join([str(_ROOT), str(_TESTS)])})
+    command = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
+    if _TESTS not in path.parents:
+        command += ["-p", "conftest"]
+    command += ["-q", str(path)]
+    proc = subprocess.run(command, capture_output=True, text=True,
+                          cwd=str(cwd), env=env)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_the_ban_hides_every_device_from_an_unmarked_escapee(tmp_path):
+    """An UNMARKED test reaching CUDA through an INTERMEDIARY sees no card.
+
+    This is the escape the AST automation cannot see: the test file itself
+    never mentions cupy -- a helper module does, imported lazily in the test
+    body, which is exactly how ``test_multigpu_forced_gpu.py`` reached the
+    local card (its intermediary was ``tilestream.multigpu``).  The scratch
+    test asserts it CAN see a device, so under the backstop it fails
+    red-loud; if the backstop is reverted on a machine with a card it
+    passes -- an escaped test would once again run GPU work locally -- and
+    THIS test goes red.
+
+    The probe is ``getDeviceCount`` only: under the backstop there is no
+    device to see, and on revert enumeration alone opens no context, so
+    neither outcome runs work on the owner's card.
+    """
+    helper = tmp_path / "scratch_gpu_helper.py"
+    helper.write_text(
+        "import cupy\n\n\n"
+        "def visible_devices():\n"
+        "    try:\n"
+        "        return cupy.cuda.runtime.getDeviceCount()\n"
+        "    except Exception:\n"
+        "        return 0  # cudaErrorNoDevice: the ban, doing its job\n",
+        encoding="utf-8")
+    scratch = tmp_path / "test_scratch_lazy_gpu.py"
+    scratch.write_text(
+        "def test_reaches_for_the_device():\n"
+        "    import scratch_gpu_helper  # the intermediary dodge under"
+        " test\n"
+        "    assert scratch_gpu_helper.visible_devices() > 0\n",
+        encoding="utf-8")
+    rc, out = _run_banned(scratch, tmp_path)
+    assert rc != 0 and "1 failed" in out, (
+        "an unmarked test reaching CUDA through an intermediary could still"
+        " see a device under GPUWM_NO_LOCAL_GPU=1 -- the CUDA_VISIBLE_DEVICES"
+        f" backstop is gone and the local card is reachable again (rc={rc}):"
+        f"\n{out}")
+
+
+def test_a_marked_test_with_clean_source_is_still_skipped(tmp_path):
+    """The gpu MARKER alone must trigger the ban skip, without any AST hit.
+
+    A skip, not a run: the marked test never executes at all.  If
+    marker-implies-skip is narrowed back to AST-detected items only, the
+    test below RUNS (and passes, since importing cupy without touching the
+    device is legal) -- turning this "1 skipped" assertion red.
+    """
+    helper = tmp_path / "scratch_gpu_helper2.py"
+    helper.write_text("import cupy\nTOUCHED = cupy.ndarray\n",
+                      encoding="utf-8")
+    scratch = tmp_path / "test_scratch_marked_gpu.py"
+    scratch.write_text(
+        "import pytest\n\n"
+        "pytestmark = pytest.mark.gpu\n\n\n"
+        "def test_transitive_device_use():\n"
+        "    # An intermediary, not cupy itself: no AST hit in THIS file,\n"
+        "    # so only the marker can trigger the skip.  Never reached when\n"
+        "    # the marker skip works.\n"
+        "    import scratch_gpu_helper2\n"
+        "    assert scratch_gpu_helper2.TOUCHED is not None\n",
+        encoding="utf-8")
+    rc, out = _run_banned(scratch, tmp_path)
+    assert rc == 0 and "1 skipped" in out, (
+        "a gpu-marked test with no cupy in its own source was not skipped"
+        f" under the ban (rc={rc}) -- marker-implies-skip has regressed:"
+        f"\n{out}")
+
+
+def test_the_original_escapee_is_skipped_under_the_ban():
+    """The file that actually ran on the forbidden card, pinned by name."""
+    path = _TESTS / "test_multigpu_forced_gpu.py"
+    if not path.exists():
+        pytest.skip("test_multigpu_forced_gpu.py not present")
+    rc, out = _run_banned(path, _ROOT)
+    assert rc == 0 and "skipped" in out and "passed" not in out, (
+        f"test_multigpu_forced_gpu.py was not skipped under the ban"
+        f" (rc={rc}):\n{out}")
+
+
 def _environ() -> dict:
     import os
     # Never inherit the ban into the subprocess: these are collection-only
-    # runs, and the ban would skip the very items being counted.
-    env = {k: v for k, v in os.environ.items() if k != "GPUWM_NO_LOCAL_GPU"}
+    # runs, and the ban would skip the very items being counted.  The
+    # device-visibility backstop travels with the ban and is stripped for
+    # the same reason -- modules that probe the device at import would
+    # otherwise all collect as "unanswerable".
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GPUWM_NO_LOCAL_GPU", "CUDA_VISIBLE_DEVICES")}
     return env
 
 

@@ -230,9 +230,34 @@ FROZEN_MODULE_DIGESTS = {
         '00fb2e5d5550680fef154b4f67c7e282ad7ca1b170df59abdea89f888dad91ef',
         'f4958de3298bfcd764a5fd848aedfbb13938043ab91132db419408951c0a061e'),
     'dycore': (
-        '93846074b99bdb5f03b33da51c7f70aeedc2cb0d9058d3baac43c107f8387e90',
-        'a1510158f36fc8b2289e309339dba17f371f6c6f79f51f600b2be621abaadcdf'),
+        # Re-pinned for the small-step lateral-boundary fix:
+        # small_step_init_uv / small_step_finish_uv took WRF calc_mu_uv's
+        # periodic_x branch unconditionally, so a specified / nested / open
+        # domain drew its west boundary face mass from the EAST-most mass
+        # column.  They now take boundary_x/boundary_y and clamp when the
+        # axis is not periodic.  A PERIODIC run is bit-identical -- the two
+        # branches differ only at i = 0 / i = nx and j = 0 / j = ny -- and
+        # that is measured, not argued: tilestream/test_gate.py's whole
+        # output (51 physics cases, dry through full physics + MYNN +
+        # Noah-MP, plus every negative control) is byte-identical across the
+        # change, as is the whole-inventory SHA-256 after 1 and 8 steps on
+        # three periodic rungs.  mp=8 is periodic-agnostic and dycore is not
+        # an mp=8 translation unit, so the mp=8 numerics guarantee is
+        # untouched; see tests/test_small_step_lateral_wrap.py.
+        'af1c30640e10bce8c567a4c3dde466375b3ff1b44a39aa2a56513b80be2f4533',
+        'af656dc03896f103d79b0b80fe59950f3e12932caec6c52c0c034fb087aef117'),
     'health': (
+        # RECOMPUTED at the tilestream port, over the MERGED health.cu that
+        # carries both re-pins below.  The pin that arrived with the port
+        # was the integration side's alone and described a source that does
+        # not exist in this tree, so it was red by construction and a pass
+        # would have been coincidence; both rationales are kept because both
+        # edits are present in the merged source.  The two values are the
+        # file's own sha256 and the sha256 of the assembled compile string,
+        # both computed from text: no card and no nvrtc were involved, which
+        # is why this recompute closed on the CPU shard.
+        #
+        # --- from v1.8.7 ---
         # Re-pinned for the validation-gate launch geometry: blockIdx.y now
         # selects the descriptor and blockIdx.x a chunk within it, so the
         # full-state scan is no longer one block per field.  health is not
@@ -243,8 +268,22 @@ FROZEN_MODULE_DIGESTS = {
         # status bits and the same atomicMin over (field << 48) | index,
         # both order-independent, so which block visits an element cannot
         # change what is reported (tests/test_health.py).
-        'c6ee3291ee9265df4b11cdff8f5190b742731598308b75e63ef77ea4443c611a',
-        '051f4e4228a4a904f0341cd1df82ba5fbdc85adceadf11a690b0061fea013a2a'),
+        #
+        # --- from integration ---
+        # Re-pinned for the STREAMED SAFETY FOLD (defect2-observer-fold).
+        # health.cu gained one kernel, health_partial_tile: the per-tile half
+        # of stability_report, emitted after a tile's step and before its
+        # interior is scattered, so that under [tiles] with a host store
+        # the run loop's nan / w_max / CFL gate reduces over the STORE rather
+        # than over a DomainState the sweep never writes.  ADDITIVE: nothing
+        # that was in this translation unit changed, health_partial and
+        # health_final are byte-identical, and mp=8 does not compile health
+        # at all, so the mp=8 numerics guarantee is untouched.  The fold's
+        # own proof is tilestream/test_obsfold.py; the whole-gate evidence is
+        # that tilestream/test_gate.py passes 233/233 across the change,
+        # negative controls included.
+        'c904e487cbf3cf0b6f6bbf6acad56158d2c3392d3c2a8a2e3ec6200d89f0cb03',
+        '5f01ec47943352f0239f690945ec20924a23a70bbba6b5ca2437724871314b0c'),
     'kessler': (
         'fecf2e8028fda0ed4cb47fccce4c602d4632048d2dcbdd163613685ded952fdc',
         '530faef7f3bc5e5600d7a5f1086c9e4d0914a3aeda735214072bed30907c05d7'),

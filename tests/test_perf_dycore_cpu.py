@@ -431,13 +431,23 @@ def test_small_step_prep_and_finish_each_use_two_raw_launches(monkeypatch):
 
     monkeypatch.setattr(dycore, "get_kernel", fake_get_kernel)
     state = FakeState()
-    dycore._init_small_steps(state)
-    dycore._finish_small_steps(state)
+    cfg = SimpleNamespace(open_x=False, open_y=False, specified=False,
+                          nested=False)
+    dycore._init_small_steps(state, cfg)
+    dycore._finish_small_steps(state, cfg)
 
     assert [name for name, *_ in launches] == [
         "small_step_init_uv", "small_step_init_column",
         "small_step_finish_uv", "small_step_finish_column",
     ]
+    # The uv kernels' boundary_x/boundary_y flags sit between has_msf and
+    # nz/ny/nx; a periodic config must send 0/0 -- the unconditional wrap
+    # this pair carried before the flags existed.
+    nz, ny, nx = state.p.shape
+    for name, _grid, _block, args in launches:
+        if name.endswith("_uv"):
+            assert args[-5:] == (np.int32(0), np.int32(0), np.int32(nz),
+                                 np.int32(ny), np.int32(nx))
     assert all(block == (256,) for _name, _grid, block, _args in launches)
 
 
@@ -468,9 +478,13 @@ def test_prepared_small_step_boundaries_reuse_launch_containers(monkeypatch):
 
     monkeypatch.setattr(dycore, "get_kernel", fake_get_kernel)
     state = FakeState()
-    launch_init = dycore._prepare_small_step_init_launch(state)
-    launch_finish_zero = dycore._prepare_small_step_finish_launch(state, 0.0)
-    launch_finish_final = dycore._prepare_small_step_finish_launch(state, 60.0)
+    cfg = SimpleNamespace(open_x=False, open_y=False, specified=False,
+                          nested=False)
+    launch_init = dycore._prepare_small_step_init_launch(state, cfg)
+    launch_finish_zero = dycore._prepare_small_step_finish_launch(
+        state, cfg, 0.0)
+    launch_finish_final = dycore._prepare_small_step_finish_launch(
+        state, cfg, 60.0)
 
     for launch in (launch_init, launch_finish_zero, launch_finish_final):
         launch()

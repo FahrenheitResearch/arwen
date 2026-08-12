@@ -1,0 +1,160 @@
+TREE: /home/drew/arwen-reconcile/tilestream/__init__.py
+DOMAIN 192 x 128 x 49 = 1.20 Mcell   grid 2x2 = 4 sub-domains on devices [0, 0, 0, 0]   halo=16
+LADDER (1, 3, 24) steps   seam threshold 3.0
+CUDA CONTEXTS ON THE BOX AT START: 0   (idle apart from this process)
+  exchange rule ndim>=3  : 8 of 9 carriers  (drops ['mup'])
+  exchange rule namespace: 9 of 9 carriers  (drops nothing)
+  IC uniform  : horizontal range per carrier al=0, alt=0, mup=0, p=0, php=0, thp=0, u=0, v=0, w=0   -> FLAT
+  IC perturbed: horizontal range per carrier al=0.00157738, alt=0.00157738, mup=56.9626, p=703.516, php=0, thp=1.44938, u=0.144965, v=0.144968, w=0.144972   -> STRUCTURED
+
+--- ic=uniform   exchange=ndim>=3   ---
+    1 steps  digest 254fe19d683f5b62  monolithic 254fe19d683f5b62  BITEXACT PASS  -> green
+      SEAM mup (surface pressure prognostic) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM mup (surface pressure prognostic) y: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) y: horizontally uniform, carries no seam signal, NOT GATED
+    3 steps  digest 514dbf57b64e4a53  monolithic 514dbf57b64e4a53  BITEXACT PASS  -> green
+      SEAM mup (surface pressure prognostic) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM mup (surface pressure prognostic) y: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) y: horizontally uniform, carries no seam signal, NOT GATED
+   24 steps  digest 207925a1ae286c59  monolithic 207925a1ae286c59  BITEXACT PASS  -> green
+      SEAM mup (surface pressure prognostic) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM mup (surface pressure prognostic) y: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) y: horizontally uniform, carries no seam signal, NOT GATED
+
+--- ic=uniform   exchange=namespace ---
+    1 steps  digest 254fe19d683f5b62  monolithic 254fe19d683f5b62  BITEXACT PASS  -> green
+      SEAM mup (surface pressure prognostic) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM mup (surface pressure prognostic) y: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) y: horizontally uniform, carries no seam signal, NOT GATED
+    3 steps  digest 514dbf57b64e4a53  monolithic 514dbf57b64e4a53  BITEXACT PASS  -> green
+      SEAM mup (surface pressure prognostic) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM mup (surface pressure prognostic) y: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) y: horizontally uniform, carries no seam signal, NOT GATED
+   24 steps  digest 207925a1ae286c59  monolithic 207925a1ae286c59  BITEXACT PASS  -> green
+      SEAM mup (surface pressure prognostic) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM mup (surface pressure prognostic) y: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) x: horizontally uniform, carries no seam signal, NOT GATED
+      SEAM p[0] (lowest-level pressure) y: horizontally uniform, carries no seam signal, NOT GATED
+
+--- ic=perturbed exchange=ndim>=3   ---
+    1 steps  digest e5e51b631c079396  monolithic e5e51b631c079396  BITEXACT PASS  -> green
+      SEAM mup (surface pressure prognostic) x: across 1.76776  elsewhere 1.77359  ratio 0.9967  PASS
+      SEAM mup (surface pressure prognostic) y: across 2.68748  elsewhere 2.70677  ratio 0.9929  PASS
+      SEAM p[0] (lowest-level pressure) x: across 11.7296  elsewhere 10.6057  ratio 1.1060  PASS
+      SEAM p[0] (lowest-level pressure) y: across 13.5289  elsewhere 13.4841  ratio 1.0033  PASS
+    3 steps  digest 36ed0d749d99b880  monolithic a64064fdc8e17271  BITEXACT FAIL  -> RED
+      9 carriers differ: al, alt, mup, p, php, thp, u, v, w
+        al: max|d|=2.98023e-06 over 9 x-columns, span (87, 178)
+        alt: max|d|=2.98023e-06 over 9 x-columns, span (87, 178)
+        mup: max|d|=0.00017786 over 40 x-columns, span (0, 191)
+        p: max|d|=0.234375 over 11 x-columns, span (87, 178)
+        php: max|d|=0.000411987 over 129 x-columns, span (0, 191)
+        thp: max|d|=3.05176e-05 over 6 x-columns, span (89, 177)
+        u: max|d|=2.49445e-05 over 112 x-columns, span (0, 192)
+        v: max|d|=2.05785e-05 over 125 x-columns, span (0, 191)
+      SEAM mup (surface pressure prognostic) x: across 9.37404  elsewhere 9.40779  ratio 0.9964  PASS
+      SEAM mup (surface pressure prognostic) y: across 14.079  elsewhere 14.093  ratio 0.9990  PASS
+      SEAM p[0] (lowest-level pressure) x: across 12.0024  elsewhere 11.8218  ratio 1.0153  PASS
+      SEAM p[0] (lowest-level pressure) y: across 16.0479  elsewhere 16.3346  ratio 0.9824  PASS
+   24 steps  digest 18679019c37bb939  monolithic a718debb73bb7dae  BITEXACT FAIL  -> RED
+      9 carriers differ: al, alt, mup, p, php, thp, u, v, w
+        al: max|d|=3.82662e-05 over 192 x-columns, span (0, 191)
+        alt: max|d|=3.82662e-05 over 192 x-columns, span (0, 191)
+        mup: max|d|=0.982563 over 192 x-columns, span (0, 191)
+        p: max|d|=1.875 over 192 x-columns, span (0, 191)
+        php: max|d|=0.127716 over 192 x-columns, span (0, 191)
+        thp: max|d|=0.000457764 over 192 x-columns, span (0, 191)
+        u: max|d|=0.00570247 over 193 x-columns, span (0, 192)
+        v: max|d|=0.00571954 over 192 x-columns, span (0, 191)
+      SEAM mup (surface pressure prognostic) x: across 9.09417  elsewhere 9.12805  ratio 0.9963  PASS
+      SEAM mup (surface pressure prognostic) y: across 13.8593  elsewhere 13.6703  ratio 1.0138  PASS
+      SEAM p[0] (lowest-level pressure) x: across 1.00903  elsewhere 3.85579  ratio 0.2617  PASS
+      SEAM p[0] (lowest-level pressure) y: across 5.59863  elsewhere 3.97985  ratio 1.4067  PASS
+
+--- ic=perturbed exchange=namespace ---
+    1 steps  digest e5e51b631c079396  monolithic e5e51b631c079396  BITEXACT PASS  -> green
+      SEAM mup (surface pressure prognostic) x: across 1.76776  elsewhere 1.77359  ratio 0.9967  PASS
+      SEAM mup (surface pressure prognostic) y: across 2.68748  elsewhere 2.70677  ratio 0.9929  PASS
+      SEAM p[0] (lowest-level pressure) x: across 11.7296  elsewhere 10.6057  ratio 1.1060  PASS
+      SEAM p[0] (lowest-level pressure) y: across 13.5289  elsewhere 13.4841  ratio 1.0033  PASS
+    3 steps  digest a64064fdc8e17271  monolithic a64064fdc8e17271  BITEXACT PASS  -> green
+      SEAM mup (surface pressure prognostic) x: across 9.37404  elsewhere 9.40779  ratio 0.9964  PASS
+      SEAM mup (surface pressure prognostic) y: across 14.079  elsewhere 14.093  ratio 0.9990  PASS
+      SEAM p[0] (lowest-level pressure) x: across 12.0024  elsewhere 11.8218  ratio 1.0153  PASS
+      SEAM p[0] (lowest-level pressure) y: across 16.0479  elsewhere 16.3346  ratio 0.9824  PASS
+   24 steps  digest a718debb73bb7dae  monolithic a718debb73bb7dae  BITEXACT PASS  -> green
+      SEAM mup (surface pressure prognostic) x: across 9.10457  elsewhere 9.13693  ratio 0.9965  PASS
+      SEAM mup (surface pressure prognostic) y: across 13.6762  elsewhere 13.6867  ratio 0.9992  PASS
+      SEAM p[0] (lowest-level pressure) x: across 1.10657  elsewhere 3.85542  ratio 0.2870  PASS
+      SEAM p[0] (lowest-level pressure) y: across 5.72437  elsewhere 3.97359  ratio 1.4406  PASS
+
+--- ic=perturbed exchange=namespace  +rank-tiled mup ---
+    1 steps  digest f744654b4fc9d32e  monolithic e5e51b631c079396  BITEXACT FAIL  -> RED
+      9 carriers differ: al, alt, mup, p, php, thp, u, v, w
+        al: max|d|=0.00145149 over 192 x-columns, span (0, 191)
+        alt: max|d|=0.00145149 over 192 x-columns, span (0, 191)
+        mup: max|d|=50.1978 over 192 x-columns, span (0, 191)
+        p: max|d|=104.109 over 192 x-columns, span (0, 191)
+        php: max|d|=0.209284 over 192 x-columns, span (0, 191)
+        thp: max|d|=0.00012207 over 192 x-columns, span (0, 191)
+        u: max|d|=0.0267028 over 193 x-columns, span (0, 192)
+        v: max|d|=0.0494665 over 192 x-columns, span (0, 191)
+      SEAM mup (surface pressure prognostic) x: across 1.74378  elsewhere 1.78365  ratio 0.9776  PASS
+      SEAM mup (surface pressure prognostic) y: across 25.2339  elsewhere 2.72285  ratio 9.2675  FAIL
+      SEAM p[0] (lowest-level pressure) x: across 10.7734  elsewhere 10.5994  ratio 1.0164  PASS
+      SEAM p[0] (lowest-level pressure) y: across 52.4948  elsewhere 13.4865  ratio 3.8924  FAIL
+    3 steps  digest a3339cdc8e69b838  monolithic a64064fdc8e17271  BITEXACT FAIL  -> RED
+      9 carriers differ: al, alt, mup, p, php, thp, u, v, w
+        al: max|d|=0.00135505 over 192 x-columns, span (0, 191)
+        alt: max|d|=0.00135505 over 192 x-columns, span (0, 191)
+        mup: max|d|=41.847 over 192 x-columns, span (0, 191)
+        p: max|d|=78.6484 over 192 x-columns, span (0, 191)
+        php: max|d|=2.48101 over 192 x-columns, span (0, 191)
+        thp: max|d|=0.000427246 over 192 x-columns, span (0, 191)
+        u: max|d|=0.0696758 over 193 x-columns, span (0, 192)
+        v: max|d|=0.156445 over 192 x-columns, span (0, 191)
+      SEAM mup (surface pressure prognostic) x: across 9.38884  elsewhere 9.40633  ratio 0.9981  PASS
+      SEAM mup (surface pressure prognostic) y: across 13.9974  elsewhere 14.1518  ratio 0.9891  PASS
+      SEAM p[0] (lowest-level pressure) x: across 12.0416  elsewhere 11.8257  ratio 1.0183  PASS
+      SEAM p[0] (lowest-level pressure) y: across 17.2038  elsewhere 16.6079  ratio 1.0359  PASS
+   24 steps  digest 85c8c88b5f9c8008  monolithic a718debb73bb7dae  BITEXACT FAIL  -> RED
+      9 carriers differ: al, alt, mup, p, php, thp, u, v, w
+        al: max|d|=0.00117147 over 192 x-columns, span (0, 191)
+        alt: max|d|=0.00117147 over 192 x-columns, span (0, 191)
+        mup: max|d|=26.337 over 192 x-columns, span (0, 191)
+        p: max|d|=51.4688 over 192 x-columns, span (0, 191)
+        php: max|d|=5.17874 over 192 x-columns, span (0, 191)
+        thp: max|d|=0.00164795 over 192 x-columns, span (0, 191)
+        u: max|d|=0.0529744 over 193 x-columns, span (0, 192)
+        v: max|d|=0.227995 over 192 x-columns, span (0, 191)
+      SEAM mup (surface pressure prognostic) x: across 9.12753  elsewhere 9.13178  ratio 0.9995  PASS
+      SEAM mup (surface pressure prognostic) y: across 13.6687  elsewhere 13.6943  ratio 0.9981  PASS
+      SEAM p[0] (lowest-level pressure) x: across 0.992859  elsewhere 3.83918  ratio 0.2586  PASS
+      SEAM p[0] (lowest-level pressure) y: across 5.71549  elsewhere 4.15397  ratio 1.3759  PASS
+
+==============================================================================
+DISCRIMINATION MATRIX  (green = a gate in this configuration reports PASS)
+==============================================================================
+configuration                                       1          3         24
+ic=uniform, exchange=ndim>=3                    green      green      green
+ic=uniform, exchange=namespace                  green      green      green
+ic=perturbed, exchange=ndim>=3                  green        RED        RED
+ic=perturbed, exchange=namespace                green      green      green
+ic=perturbed, exchange=namespace, rank-tiled mup      RED        RED        RED
+
+THE PROOF THIS GATE DISCRIMINATES, in four cells:
+  1. old conditions (uniform IC, 3 steps) + the SHIPPED exchange set  -> green
+  2. hardened conditions (perturbed global-sliced IC, 24 steps) + the SAME shipped set -> RED
+  3. hardened conditions + the namespace fix                                -> green
+  4. hardened conditions + fix + defect 2 (rank-tiled mup)                  -> RED
+
+EVOLUTION CHECK (a row that never moved cannot gate anything): every row integrated
+
+CUDA CONTEXTS AT END: 1 (start 0).  Box idle throughout; clean.
+elapsed 10.6 s
+HARDENED SEAM GATE DISCRIMINATES: YES

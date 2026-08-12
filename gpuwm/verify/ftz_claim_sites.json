@@ -10,10 +10,10 @@
     "gpuwm/ingest/hrrr.py"
   ],
   "attribution_note": "route/mechanism attribution is judgment across five measured routes and is not machine-derivable; unattributed records carry asserted_token: null and the gate requires only that a token, once written, agrees with the receipt",
-  "site_count": 794,
+  "site_count": 802,
   "site_count_by_kind": {
     "behavioural": 31,
-    "prose": 763
+    "prose": 771
   },
   "sites": [
     {
@@ -106,7 +106,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 1540,
+      "line": 1851,
       "kind": "prose",
       "anchor": "- Two silent wrong answers on sm_120, where FP32 subnormals are flushed",
       "anchor_sha256": "bcc677ec38d515737f2fb65993dfd2d0c0ff7f019725b8552b6e232d1668e1ad",
@@ -117,7 +117,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 1542,
+      "line": 1853,
       "kind": "prose",
       "anchor": "whose cube is subnormal and flushes to zero, turning a quotient into",
       "anchor_sha256": "d16d72f334e8d30903c3d85abea785c1573abd77b9da707e1a4a5721f5997048",
@@ -128,7 +128,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 1801,
+      "line": 2111,
       "kind": "prose",
       "anchor": "FP32 subnormal flushing on sm_120 was described as a hardware property no",
       "anchor_sha256": "9845ca444fc2d1b5f5725fdb68f0b92434646fa1c15e917f719b3d7da391d204",
@@ -139,7 +139,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 1803,
+      "line": 2113,
       "kind": "prose",
       "anchor": "the same source built without an appended `-ftz=true` keeps full IEEE",
       "anchor_sha256": "2e9db2d996710d5597910bd049935b00c288546c51893027e4da7cb352f1b818",
@@ -150,7 +150,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 1804,
+      "line": 2114,
       "kind": "prose",
       "anchor": "subnormals on the same card. The CPU reference binary was described as an Intel",
       "anchor_sha256": "af90298485911dcdd5f05cf5efa704c8500e4a6f04ac8f3be6cd3da1092f68e1",
@@ -161,7 +161,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2907,
+      "line": 3216,
       "kind": "prose",
       "anchor": "functions, FP32 subnormal flushing), what each compared surface covers",
       "anchor_sha256": "2e3226a8e81d2f609a854e0ef0205ff199a9b03595eeb01dd045446a32e6cb6b",
@@ -392,10 +392,10 @@
     },
     {
       "file": "PROVENANCE.md",
-      "line": 198,
+      "line": 196,
       "kind": "prose",
-      "anchor": "- `-std=c++17` `--ftz=false` a target flag built from the device",
-      "anchor_sha256": "cd80584e7bddbf9a98168409e3bcccf05108ef5dbb909f309bb0fdef559fb932",
+      "anchor": "- `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_lw.py:3733`",
+      "anchor_sha256": "11bab45714d0b7129aa9ec18698369e1224ff60b305084f26adcbafd2325b645",
       "route": null,
       "mechanism": null,
       "asserted_token": null,
@@ -403,18 +403,7 @@
     },
     {
       "file": "PROVENANCE.md",
-      "line": 201,
-      "kind": "prose",
-      "anchor": "- `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_sw.py:2890`",
-      "anchor_sha256": "970b0e33226b88141e650a21446f87bc2c693fcab2e915dca87235b3ed78a750",
-      "route": null,
-      "mechanism": null,
-      "asserted_token": null,
-      "attribution": "unattributed"
-    },
-    {
-      "file": "PROVENANCE.md",
-      "line": 209,
+      "line": 206,
       "kind": "prose",
       "anchor": "Evidence: the device bit table `tools/ftz_receipt/receipt/bitpatterns.csv` (both",
       "anchor_sha256": "eaf4cae2cb1b51f5062adac0c662cf67998254835525db9ddab6c8dc37cb029e",
@@ -425,7 +414,7 @@
     },
     {
       "file": "PROVENANCE.md",
-      "line": 211,
+      "line": 208,
       "kind": "prose",
       "anchor": "`tools/ftz_receipt/receipt/cubin/`, and their disassembly,",
       "anchor_sha256": "1dcd178b198686ff031e349b85c4211d6920e6e4701586aa5a6ff35ae6f89227",
@@ -436,7 +425,7 @@
     },
     {
       "file": "PROVENANCE.md",
-      "line": 212,
+      "line": 209,
       "kind": "prose",
       "anchor": "`tools/ftz_receipt/receipt/sass/` (Cuda compilation tools, release 13.0,",
       "anchor_sha256": "a0df53efafa6139081711b4d18a8345397a4fa2a0b50c541a77a45c00c0a4c81",
@@ -447,7 +436,7 @@
     },
     {
       "file": "PROVENANCE.md",
-      "line": 213,
+      "line": 210,
       "kind": "prose",
       "anchor": "V13.0.39), all recorded in `tools/ftz_receipt/receipt/receipt.json`.",
       "anchor_sha256": "252b0c72da975fbef06c0d6f79061395ea6a7ac715f960063c887da5f6c0db94",
@@ -458,7 +447,7 @@
     },
     {
       "file": "PROVENANCE.md",
-      "line": 214,
+      "line": 211,
       "kind": "prose",
       "anchor": "<!-- END GENERATED ftz-statement: provenance-compile-policy -->",
       "anchor_sha256": "395a7e19ff527fbad73e430e5006d6e2d5beb53ac6a34ec3976d85f15ebf89d8",
@@ -469,7 +458,7 @@
     },
     {
       "file": "PROVENANCE.md",
-      "line": 218,
+      "line": 215,
       "kind": "prose",
       "anchor": "`--ftz=false`, `--prec-div=true`, and `--prec-sqrt=true` (see the NVIDIA",
       "anchor_sha256": "d0681085c70301063199096210eda93b020b4272bcc80e1b9c939fca60538503",
@@ -3505,7 +3494,7 @@
     },
     {
       "file": "gpuwm/core/preflight.py",
-      "line": 887,
+      "line": 930,
       "kind": "prose",
       "anchor": "# The FTZ receipt's probe rides the production loader from the same",
       "anchor_sha256": "75c3f0473733e9afa9e3d7d9d9230537ef1cb78f9e5b6cc2d4d6828fcdc97f33",
@@ -3516,7 +3505,7 @@
     },
     {
       "file": "gpuwm/core/preflight.py",
-      "line": 890,
+      "line": 933,
       "kind": "prose",
       "anchor": "\"ftz_probe\": 0,",
       "anchor_sha256": "3bb7365d1801c6f82b6bd565fa112638740c9bf31ab17e74f29348ed03a9d956",
@@ -3670,10 +3659,10 @@
     },
     {
       "file": "gpuwm/core/rrtmg_lw.py",
-      "line": 3725,
+      "line": 3724,
       "kind": "prose",
-      "anchor": "(\"-std=c++17\", \"--ftz=false\", f\"-arch=compute_{arch}\"),",
-      "anchor_sha256": "21d3d71e168238bbe50ed19817941982004dd46278840957710434c7bd39b4dd",
+      "anchor": "compiles and ``--ftz=false`` still survives (cupy injects no -ftz on",
+      "anchor_sha256": "f81d9e2ea7e655d9a8f1fced742a2581be6e08e5ef60519e676d26fd6fc1b40c",
       "route": null,
       "mechanism": null,
       "asserted_token": null,
@@ -3681,7 +3670,18 @@
     },
     {
       "file": "gpuwm/core/rrtmg_lw.py",
-      "line": 3740,
+      "line": 3735,
+      "kind": "prose",
+      "anchor": "(\"-std=c++17\", \"--ftz=false\"),",
+      "anchor_sha256": "00e7cb2ac2362b16b95f3ab4c2a28f8c25130cd0cdbbb08ef6c834b93acb7622",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "gpuwm/core/rrtmg_lw.py",
+      "line": 3750,
       "kind": "prose",
       "anchor": "\"\"\"Prove toolchain behaviour on the live device: subnormal survival",
       "anchor_sha256": "6cb2c9268766af1d3bd784ffac962c72100b6600dc7bba2186cc849ecc02f90b",
@@ -3692,7 +3692,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_lw.py",
-      "line": 3760,
+      "line": 3770,
       "kind": "prose",
       "anchor": "\"rrtmg_lw GPU preflight failed: got %r want %r (subnormal \"",
       "anchor_sha256": "65646b912465aa4b58501e78d5ddd5db5a563af75b9fcb50a5db96b1722f1a87",
@@ -3736,10 +3736,10 @@
     },
     {
       "file": "gpuwm/core/rrtmg_mcica.py",
-      "line": 466,
+      "line": 471,
       "kind": "prose",
-      "anchor": "(\"-std=c++17\", \"--ftz=false\", f\"-arch=compute_{arch}\"),",
-      "anchor_sha256": "21d3d71e168238bbe50ed19817941982004dd46278840957710434c7bd39b4dd",
+      "anchor": "(\"-std=c++17\", \"--ftz=false\"),",
+      "anchor_sha256": "00e7cb2ac2362b16b95f3ab4c2a28f8c25130cd0cdbbb08ef6c834b93acb7622",
       "route": null,
       "mechanism": null,
       "asserted_token": null,
@@ -3747,7 +3747,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_mcica.py",
-      "line": 481,
+      "line": 486,
       "kind": "prose",
       "anchor": "\"\"\"Prove, on the live device, that FP32 subnormals survive our",
       "anchor_sha256": "30757d3c2d0a181f17d967bbab2e6b668774276222757f4e54eef668cee1110a",
@@ -3758,7 +3758,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_mcica.py",
-      "line": 503,
+      "line": 508,
       "kind": "prose",
       "anchor": "\"(subnormal flush or seed/kissvec divergence on this \"",
       "anchor_sha256": "09025cb38f5e6aab4c1877b92b746ada2e8ed08c33d997559e6f70edf3192365",
@@ -3793,8 +3793,8 @@
       "file": "gpuwm/core/rrtmg_sw.py",
       "line": 2889,
       "kind": "prose",
-      "anchor": "# keeps.  An explicit --ftz=false takes precedence.",
-      "anchor_sha256": "f19fd18dd1c184f3d9eac4070688e2372c47b162d8a23cd1593c4965b9a2157b",
+      "anchor": "# keeps.  An explicit --ftz=false USED to take precedence, because",
+      "anchor_sha256": "3d06e8a14db0bd71653149791affa25cb50151a4a9931ee4826b6be1ad295a87",
       "route": null,
       "mechanism": null,
       "asserted_token": null,
@@ -3802,10 +3802,10 @@
     },
     {
       "file": "gpuwm/core/rrtmg_sw.py",
-      "line": 2891,
+      "line": 2892,
       "kind": "prose",
-      "anchor": "options=(\"-std=c++17\", \"--ftz=false\"))",
-      "anchor_sha256": "d6e0c3227680031ab40a82cb817f5b3e19e3d2ba530888fbc7f07f329be0f0c7",
+      "anchor": "# ``nvrtc: error: --ftz (-ftz) defined more than once`` -- so",
+      "anchor_sha256": "f9f932dab3bc391c350cf8b52aec592e1a2de3134cce4962b489c0ec34bf6ee4",
       "route": null,
       "mechanism": null,
       "asserted_token": null,
@@ -3813,7 +3813,51 @@
     },
     {
       "file": "gpuwm/core/rrtmg_sw.py",
-      "line": 2895,
+      "line": 2896,
+      "kind": "prose",
+      "anchor": "# --ftz=false raises, RawModule without it compiles with",
+      "anchor_sha256": "3d60c99726e48ca938742a740ecd7fcb22f619f5010e0a090d1d0ed63a08dddc",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "gpuwm/core/rrtmg_sw.py",
+      "line": 2897,
+      "kind": "prose",
+      "anchor": "# subnormals flushed, which is the wrong answer quietly).",
+      "anchor_sha256": "aaf98d0abe2e204e7bf07eb729f9f87bcc257b14b0cbbdcfea63de16fec32b44",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "gpuwm/core/rrtmg_sw.py",
+      "line": 2900,
+      "kind": "prose",
+      "anchor": "# not inject -ftz on that path, so --ftz=false survives.  Do NOT",
+      "anchor_sha256": "5fc21487c4cd80095f1b32b3ac409a87cfb767ac4530d212134a9be60418034d",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "gpuwm/core/rrtmg_sw.py",
+      "line": 2907,
+      "kind": "prose",
+      "anchor": "code, (\"-std=c++17\", \"--ftz=false\"), None, \"rrtmg_sw.cu\")",
+      "anchor_sha256": "853626599c816ac26257b487a13941e317f3b2c27d601fedb9943d062c57e99a",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "gpuwm/core/rrtmg_sw.py",
+      "line": 2912,
       "kind": "prose",
       "anchor": "options=(\"-std=c++17\", \"--ftz=false\"),",
       "anchor_sha256": "b91b72c6264dc98e4e7cbbe41872e68b027ad00447d2345e9745c25bb74a79ed",
@@ -3824,7 +3868,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_sw.py",
-      "line": 3709,
+      "line": 3726,
       "kind": "prose",
       "anchor": "F(a - b) scalar loop performs, including subnormal handling (x86",
       "anchor_sha256": "f9b5fd41ee0a723239275afc0143cbacae4b528351306b8b88cb26a7a7f20c36",
@@ -3879,7 +3923,7 @@
     },
     {
       "file": "pyproject.toml",
-      "line": 142,
+      "line": 160,
       "kind": "prose",
       "anchor": "# The FTZ claim census is a shipped register, not a development artifact: a",
       "anchor_sha256": "9f5a21205d5e0eaf496f9b613a8dca1c1214d7618b52cb75b6ed48a5b60c50d2",
@@ -3890,7 +3934,7 @@
     },
     {
       "file": "pyproject.toml",
-      "line": 143,
+      "line": 161,
       "kind": "prose",
       "anchor": "# reader who installs the wheel and finds an FTZ sentence in the docs needs",
       "anchor_sha256": "dcd6092069328db1ddbb6a36eba3013c20c72fc5360cee3982717985ca5cc0d9",
@@ -4781,10 +4825,54 @@
     },
     {
       "file": "tests/test_kernel_manifest.py",
-      "line": 139,
+      "line": 13,
+      "kind": "prose",
+      "anchor": "``-ftz=true`` after the caller's options, NVRTC 13.0 rejects the repeat",
+      "anchor_sha256": "452ae475232aa9d505e35a286912d87e8ad76d6bd24b8881c7c261157ab9ba19",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tests/test_kernel_manifest.py",
+      "line": 201,
       "kind": "prose",
       "anchor": "assert shortwave == [\"('-std=c++17', '--ftz=false')\"]",
       "anchor_sha256": "cf87a9ae8192178fb2bf95009498c4b859c19b9d1c497e094f6f50199b2c3e13",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tests/test_kernel_manifest.py",
+      "line": 241,
+      "kind": "prose",
+      "anchor": "``rrtmg_sw`` compiles with ``--ftz=false`` because CuPy's RawModule route",
+      "anchor_sha256": "8619333d555df2a705d6f0a34eb360732d8e932be40695f3c7f16d6f93e8a667",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tests/test_kernel_manifest.py",
+      "line": 242,
+      "kind": "prose",
+      "anchor": "would inject ``-ftz=true`` and flush the subnormal transmittance products",
+      "anchor_sha256": "24e63fdad9019002a23c6afc6955de6a38241327801293327ca31cc68dcd5bbb",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tests/test_kernel_manifest.py",
+      "line": 252,
+      "kind": "prose",
+      "anchor": "'                      options=(\"-std=c++17\", \"--ftz=false\"),',",
+      "anchor_sha256": "0b18200d28df69cd9aff0845a1717d945564724634663be3ac7acaa097a19897",
       "route": null,
       "mechanism": null,
       "asserted_token": null,
@@ -4902,7 +4990,7 @@
     },
     {
       "file": "tests/test_mp8_frozen.py",
-      "line": 473,
+      "line": 512,
       "kind": "prose",
       "anchor": "# subnormal and flushes to zero on sm_120, turning WRF's prfac2",
       "anchor_sha256": "705c3e872f792e9ddf3ecce3ac106d898251ab5f13910dc8c0c50d34218f48b9",

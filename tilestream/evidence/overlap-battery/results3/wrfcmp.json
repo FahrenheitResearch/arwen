@@ -1,0 +1,65 @@
+{
+ "a": "/workspace/overlap/twin_a/resident",
+ "b": "/workspace/overlap/twin_a/streamed",
+ "frames": [
+  {
+   "frame": "wrfout_d01_1985-05-31_12_00_00",
+   "differ": [],
+   "max_abs": {},
+   "vars_a_only": [],
+   "vars_b_only": [],
+   "nvars": 68
+  },
+  {
+   "frame": "wrfout_d01_1985-05-31_13_00_00",
+   "differ": [],
+   "max_abs": {},
+   "vars_a_only": [],
+   "vars_b_only": [],
+   "nvars": 68
+  },
+  {
+   "frame": "wrfout_d01_1985-05-31_14_00_00",
+   "differ": [],
+   "max_abs": {},
+   "vars_a_only": [],
+   "vars_b_only": [],
+   "nvars": 68
+  },
+  {
+   "frame": "wrfout_d01_1985-05-31_15_00_00",
+   "differ": [],
+   "max_abs": {},
+   "vars_a_only": [],
+   "vars_b_only": [],
+   "nvars": 68
+  },
+  {
+   "frame": "wrfout_d01_1985-05-31_16_00_00",
+   "differ": [],
+   "max_abs": {},
+   "vars_a_only": [],
+   "vars_b_only": [],
+   "nvars": 68
+  },
+  {
+   "frame": "wrfout_d01_1985-05-31_17_00_00",
+   "differ": [],
+   "max_abs": {},
+   "vars_a_only": [],
+   "vars_b_only": [],
+   "nvars": 68
+  },
+  {
+   "frame": "wrfout_d01_1985-05-31_18_00_00",
+   "differ": [],
+   "max_abs": {},
+   "vars_a_only": [],
+   "vars_b_only": [],
+   "nvars": 68
+  }
+ ],
+ "identical": true,
+ "a_only": [],
+ "b_only": []
+}

@@ -125,6 +125,17 @@ _CORE_MODULES = {
     # get_kernel inside the device fold, which no config-validation path
     # ever calls.
     "uh_diag.py",
+    # The [tiles] option surface, and NOT the streamed transport.  Module
+    # scope here is dataclasses plus typing: every tilestream import in the
+    # file is function-local, so staging it carries no forecast executor
+    # and no CuPy.  It is not optional either -- gpuwm/experiment.py holds
+    # `tiles: StreamingOptions = OFF` as a field default, so the class
+    # cannot be defined without it, and a wheel that stages experiment.py
+    # and not this one fails on `import gpuwm.era5_direct`.  That is how
+    # the tilestream port broke this wheel: the scan below reads
+    # `from gpuwm.core import streaming` as an import of `gpuwm.core`,
+    # which IS staged, so nothing refused the staging.
+    "streaming.py",
     "nssl2_contract.py",
     "noah.py",
     # state.py allocates the SASE prognostic and reads its realizability
@@ -196,6 +207,30 @@ _OPTIONAL_STAGED_IMPORTS = {
         "and compiles no CUDA module",
     ("gpuwm/core/state.py", "gpuwm.core.preflight"):
         "CUDA forecast scratch-preflight path; RW-WPS constructs host state",
+    ("gpuwm/core/uh_diag.py", "gpuwm.core.streaming"):
+        "the streamed view of the tracking accumulators, reached only from "
+        "_zero_domain_slot -- i.e. only when a run RESETS a running max "
+        "after publishing a history frame. uh_diag is staged for the slot "
+        "NAMES that [relocation.follow] and [[domain]].spawn validation "
+        "read while LOADING a config, and no config-validation path calls "
+        "the reset. Kept as an OPTIONAL entry after gpuwm.core.streaming "
+        "joined _CORE_MODULES, because what it records is that uh_diag "
+        "does not need the module at import time and the record is worth "
+        "more than the redundancy: the module is staged for the option "
+        "surface experiment.py cannot define itself without, and if that "
+        "reason ever goes away this line says uh_diag does not supply a "
+        "second one",
+    ("gpuwm/core/streaming.py", "gpuwm.core.dycore"):
+        "the tile sweep's stepper and its stability record, imported inside "
+        "the four functions that run a tile: attach, step, and the health "
+        "fold over the store. gpuwm.core.streaming is staged for the "
+        "[tiles] option surface alone -- the dataclass experiment.py holds "
+        "as a field default -- and every route that reaches these imports "
+        "is the forecast executor this wheel omits",
+    ("gpuwm/core/streaming.py", "gpuwm.core.refl"):
+        "the reflectivity stash the streamed history writer consumes, "
+        "imported inside the publish path. Same reason as gpuwm.core.dycore "
+        "directly above: no config-loading path reaches it",
     ("gpuwm/hrrr_prepared_bundle.py",
      "gpuwm.prepared_single_domain_forecast"):
         "physics-selection helpers on the opt-in portable-bundle branch. "

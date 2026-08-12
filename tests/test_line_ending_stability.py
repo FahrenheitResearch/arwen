@@ -108,6 +108,38 @@ def test_every_hashed_file_matches_its_committed_blob():
 
 @pytest.mark.skipif(not _is_checkout(),
                     reason="line-ending stability is a checkout property")
+def test_every_hashed_blob_is_lf_only():
+    """The committed blobs themselves carry no CR, absolutely.
+
+    The disk-vs-blob comparison above is necessary but blind to one
+    arrangement: a file committed WITH CRLF checks out as CRLF and the
+    two sides agree byte for byte.  That is exactly what a Windows
+    worktree with ``core.autocrlf=true`` produces when a lane edits a
+    hashed file -- the flip enters the object database and every hash
+    the product takes of it disagrees with a Linux clone's, while the
+    gate above stays green on the machine that caused it.  So the blob
+    is asked directly: zero CR bytes, no allowlist, no tolerance.
+    """
+
+    crlf = []
+    for relative in _hashed_paths():
+        try:
+            committed = subprocess.check_output(
+                ["git", "cat-file", "blob", f"HEAD:{relative}"],
+                cwd=ROOT, stderr=subprocess.DEVNULL)
+        except subprocess.CalledProcessError:
+            continue  # not committed yet on this branch
+        if b"\r" in committed:
+            crlf.append(relative)
+    assert not crlf, (
+        "these committed blobs contain CR bytes; a CRLF blob hashes "
+        "differently on every platform that checks out LF, so the "
+        "runtime source identity splits by clone: "
+        f"{crlf}")
+
+
+@pytest.mark.skipif(not _is_checkout(),
+                    reason="line-ending stability is a checkout property")
 def test_the_repository_declares_no_conversion_at_all():
     """``* -text`` is present, so a new file is covered by default.
 

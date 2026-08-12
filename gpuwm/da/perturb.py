@@ -504,6 +504,22 @@ class PerturbationConfig:
     entirely, which also removes the module's only need for a diagnosed
     pressure -- but only if no ``"t"`` perturbation is requested, since the
     Exner conversion needs pressure too.
+
+    ``fft_host`` forces the spectral filter onto the host even when the
+    state is on the device.  Off it is a performance choice; on it is a
+    REPRODUCIBILITY one, and it exists because of a specific measurement.
+    The white-noise draw is already host-side Philox so ``noise_sha256``
+    identifies the perturbation rather than the machine -- but the filter
+    was not, and cuFFT and pocketfft round differently: MEASURED on a
+    192x160x49 draw at ``length_scale_km = 6``, a CuPy-filtered ``theta``
+    increment and a NumPy-filtered one agree to 2.24e-13 relative and to
+    ZERO bits.  That is fine for a resident forecast, where both members
+    filter the same way, and it is fatal for a STREAMED one, whose domain
+    lives in pinned host RAM and therefore filters on the host by
+    construction: the two execution modes produced different members from
+    the same seed.  With ``fft_host = True`` a resident member and a
+    streamed member of the same seed are byte-identical, which is what
+    makes the mode a transport rather than a science change.
     """
 
     dx_km: float
@@ -519,6 +535,10 @@ class PerturbationConfig:
     qv_floor: float = 0.0
     rh_cap: float | None = 1.0
     compute_dtype: str = "float64"
+    #: Filter on the host even when the state is on the device, so a
+    #: resident member and a streamed member of the same seed are
+    #: byte-identical.  See the class docstring for the measurement.
+    fft_host: bool = False
 
     def __post_init__(self) -> None:
         for label, value in (("dx_km", self.dx_km), ("dy_km", self.dy_km)):
@@ -589,6 +609,7 @@ class PerturbationConfig:
             raise ValueError(
                 f"compute_dtype must be 'float32' or 'float64', got "
                 f"{self.compute_dtype!r}")
+        object.__setattr__(self, "fft_host", bool(self.fft_host))
 
     @property
     def field_names(self) -> tuple[str, ...]:
@@ -616,7 +637,8 @@ class PerturbationConfig:
         keyed by field name.
         """
         known = {"dx_km", "dy_km", "fields", "species", "rim_width",
-                 "rim_taper", "qv_floor", "rh_cap", "compute_dtype"}
+                 "rim_taper", "qv_floor", "rh_cap", "compute_dtype",
+                 "fft_host"}
         unknown = sorted(set(mapping) - known)
         if unknown:
             raise ValueError(
@@ -660,6 +682,8 @@ class PerturbationConfig:
             kwargs["rh_cap"] = None if cap is None else float(cap)
         if "compute_dtype" in mapping:
             kwargs["compute_dtype"] = str(mapping["compute_dtype"])
+        if "fft_host" in mapping:
+            kwargs["fft_host"] = bool(mapping["fft_host"])
         return cls(**kwargs)
 
 
@@ -895,6 +919,7 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
                           length_scale_km: float,
                           vertical_scale_levels: float = 0.0,
                           xp=None, dtype: str = "float64",
+                          fft_host: bool = False,
                           ) -> tuple[Any, dict[str, Any]]:
     """A unit-variance Gaussian random field of ``shape`` ``(nz, ny, nx)``.
 
@@ -907,6 +932,13 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
     The field's *expected* variance is exactly 1 by analytic normalization;
     its realized variance fluctuates like any finite sample, which is the
     behaviour an ensemble wants.
+
+    ``fft_host`` runs the transform on the host regardless of ``xp``.  The
+    draw already does (host Philox, so the SHA is machine-independent);
+    this extends the same guarantee to the FILTER, which is what a domain
+    living in pinned host RAM needs in order to produce the same member as
+    the resident run.  ``info["fft_backend"]`` records which one ran, so a
+    manifest says how a member was filtered and not merely that it was.
     """
     shape = tuple(int(extent) for extent in shape)
     if len(shape) != 3 or any(extent < 1 for extent in shape):
@@ -926,8 +958,10 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
 
     # Filter wherever the FFT actually works; move the finished field to the
     # requested backend afterwards.  A half-device pipeline would be worse
-    # than either whole one.
-    fft_xp = xp if _device_fft_available(xp) else np
+    # than either whole one.  ``fft_host`` overrides that in the one
+    # direction that is always available -- a device that cannot do an FFT
+    # is already forced here, and a host that cannot is not a host.
+    fft_xp = np if fft_host else (xp if _device_fft_available(xp) else np)
     working = noise if fft_xp is np else fft_xp.asarray(noise)
 
     spectrum = fft_xp.fft.rfftn(working, axes=(0, 1, 2))
@@ -1336,7 +1370,7 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
             dx_km=cfg.dx_km, dy_km=cfg.dy_km,
             length_scale_km=spec.length_scale_km,
             vertical_scale_levels=spec.vertical_scale_levels,
-            xp=xp, dtype=cfg.compute_dtype)
+            xp=xp, dtype=cfg.compute_dtype, fft_host=cfg.fft_host)
         taper = boundary_taper(ny, nx, cfg.rim_width, kind=cfg.rim_taper,
                                xp=xp, dtype=draw.dtype)
         exponent = (_clip_draw(xp, draw, spec.clip_sigmas)
@@ -1527,7 +1561,7 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
             shape, seed=seed, name=name, dx_km=cfg.dx_km, dy_km=cfg.dy_km,
             length_scale_km=spec.length_scale_km,
             vertical_scale_levels=spec.vertical_scale_levels,
-            xp=xp, dtype=cfg.compute_dtype)
+            xp=xp, dtype=cfg.compute_dtype, fft_host=cfg.fft_host)
         taper = boundary_taper(shape[1], shape[2], cfg.rim_width,
                                kind=cfg.rim_taper, xp=xp,
                                dtype=draw.dtype)
@@ -1615,8 +1649,15 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
         #: "numpy" alongside a "cupy" backend means the device FFT was
         #: unavailable and the filtering ran on the host -- correct, slower,
         #: and never silent.
-        "fft_backend": ("numpy" if not _device_fft_available(xp)
+        "fft_backend": ("numpy" if (cfg.fft_host
+                                    or not _device_fft_available(xp))
                         else ("numpy" if xp is np else "cupy")),
+        #: True means the filter was pinned to the host on purpose, so this
+        #: member is byte-reproducible against one perturbed on a domain
+        #: living in pinned host RAM (the streamed execution mode).  False
+        #: means the member is reproducible only against another member
+        #: filtered on the same backend.
+        "fft_host": bool(cfg.fft_host),
         "compute_dtype": cfg.compute_dtype,
         "mass_grid": [nz, ny, nx],
         "grid_spacing_km": {"dx": float(cfg.dx_km), "dy": float(cfg.dy_km)},

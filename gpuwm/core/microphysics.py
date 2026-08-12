@@ -376,8 +376,17 @@ class MicrophysicsDiagnostics:
 
 def validate_surface_diagnostics(
         values: tuple[cp.ndarray, ...], active: int, sr_upper: np.float32,
-        status: cp.ndarray) -> int:
-    """Return compact finite/range flags for canonical surface outputs."""
+        status: cp.ndarray, *, describe=None) -> int:
+    """Return compact finite/range flags for canonical surface outputs.
+
+    ``describe`` opts this site into :mod:`gpuwm.core.health_ledger`: with a
+    ledger active the flags are accumulated on the device and ``0`` is
+    returned, and ``describe(flags)`` raises at the drain instead.  Without
+    it -- the default, and every historical caller -- the word is read here
+    and nothing about the site changes.
+    """
+    from gpuwm.core import health_ledger
+
     status.fill(cp.uint32(0))
     sr = values[2]
     count = sr.size
@@ -388,7 +397,8 @@ def validate_surface_diagnostics(
         (blocks,), (_VALIDATION_TPB,),
         values + (np.uint32(active), DTYPE(sr_upper), status,
                   np.int64(count)))
-    return int(status[0].item())
+    return health_ledger.read_status(
+        status, site="microphysics", describe=describe)
 
 
 def save_pre_mp_theta(state: DomainState) -> None:

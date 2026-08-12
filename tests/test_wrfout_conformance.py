@@ -381,8 +381,13 @@ def _build_precipitation(cu_physics):
     base = make_base_state(coord, theta, p_surf=cfg.p_surf, ztop=cfg.ztop)
     state = init_moist_balanced(cfg, coord, base, qvapor)
     state.u[...] = cp.float32(5.0)
+    # Radiation off with Noah on: both consumed carriers are DECLARED, which
+    # is the second remedy the carrier contract names.  swdown=0.0 is the
+    # same zeros initialize_physics always allocated -- the declaration
+    # changes no byte of any frame this fixture publishes, it gives the
+    # number an origin so the consumption check cannot refuse it.
     driver = initialize_physics(state, cfg, landmask=1.0, tsk=303.0,
-                                glw=_IDEALISED_GLW)
+                                glw=_IDEALISED_GLW, swdown=0.0)
     return state, cfg, driver
 
 

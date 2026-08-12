@@ -1,0 +1,206 @@
+{
+  "mode": "step",
+  "rung": "full(real74) +KF",
+  "nz": 49,
+  "steps": 20,
+  "repeats": 3,
+  "reuse": "run",
+  "device": "NVIDIA GeForce RTX 4090",
+  "rows": [
+    {
+      "window": 128,
+      "stream": 18.124952250218485,
+      "graph": 14.664333850669209,
+      "stream_samples": [
+        18.150291449273936,
+        18.124952250218485,
+        18.60777190013323
+      ],
+      "graph_samples": [
+        14.664333850669209,
+        14.67284239915898,
+        14.686391499708407
+      ],
+      "nodes": 876,
+      "capture_ms": 69.25342799513601,
+      "pool_mb": 126.191616,
+      "fired": [
+        {
+          "radiation": 0,
+          "sfclay": 20,
+          "noah": 20,
+          "ysu": 20,
+          "cumulus": 1,
+          "cumulus_history": 1
+        },
+        {
+          "radiation": 0,
+          "sfclay": 20,
+          "noah": 20,
+          "ysu": 20,
+          "cumulus": 0,
+          "cumulus_history": 0
+        }
+      ],
+      "saved": 3.4606183995492756,
+      "speedup": 1.2359887898618287,
+      "us_per_launch": 3.9504776250562506
+    },
+    {
+      "window": 224,
+      "stream": 47.14634399861097,
+      "graph": 44.61448660003953,
+      "stream_samples": [
+        47.14634399861097,
+        47.18394920055289,
+        49.008318049891386
+      ],
+      "graph_samples": [
+        44.62448465055786,
+        44.61448660003953,
+        44.72576630068943
+      ],
+      "nodes": 876,
+      "capture_ms": 78.50354700349271,
+      "pool_mb": 386.330624,
+      "fired": [
+        {
+          "radiation": 0,
+          "sfclay": 20,
+          "noah": 20,
+          "ysu": 20,
+          "cumulus": 1,
+          "cumulus_history": 1
+        },
+        {
+          "radiation": 0,
+          "sfclay": 20,
+          "noah": 20,
+          "ysu": 20,
+          "cumulus": 0,
+          "cumulus_history": 0
+        }
+      ],
+      "saved": 2.5318573985714465,
+      "speedup": 1.056749670152412,
+      "us_per_launch": 2.890248171885213
+    },
+    {
+      "window": 352,
+      "stream": 115.58258459990611,
+      "graph": 114.91749275010079,
+      "stream_samples": [
+        115.58258459990611,
+        115.61554329964565,
+        120.47922469937475
+      ],
+      "graph_samples": [
+        114.94109994964674,
+        114.91749275010079,
+        114.99721379950643
+      ],
+      "nodes": 876,
+      "capture_ms": 74.04498901451007,
+      "pool_mb": 953.841664,
+      "fired": [
+        {
+          "radiation": 0,
+          "sfclay": 20,
+          "noah": 20,
+          "ysu": 20,
+          "cumulus": 1,
+          "cumulus_history": 1
+        },
+        {
+          "radiation": 0,
+          "sfclay": 20,
+          "noah": 20,
+          "ysu": 20,
+          "cumulus": 0,
+          "cumulus_history": 0
+        }
+      ],
+      "saved": 0.6650918498053215,
+      "speedup": 1.005787559699476,
+      "us_per_launch": 0.759237271467262
+    },
+    {
+      "window": 544,
+      "stream": 298.4602165990509,
+      "graph": 297.87396260071546,
+      "stream_samples": [
+        298.4602165990509,
+        298.5061182494974,
+        310.19379470089916
+      ],
+      "graph_samples": [
+        297.8788242995506,
+        297.87396260071546,
+        298.2408383002621
+      ],
+      "nodes": 876,
+      "capture_ms": 77.19379899208434,
+      "pool_mb": 2277.951488,
+      "fired": [
+        {
+          "radiation": 0,
+          "sfclay": 20,
+          "noah": 20,
+          "ysu": 20,
+          "cumulus": 1,
+          "cumulus_history": 1
+        },
+        {
+          "radiation": 0,
+          "sfclay": 20,
+          "noah": 20,
+          "ysu": 20,
+          "cumulus": 0,
+          "cumulus_history": 0
+        }
+      ],
+      "saved": 0.5862539983354509,
+      "speedup": 1.001968127704808,
+      "us_per_launch": 0.669239724127227
+    },
+    {
+      "window": 672,
+      "stream": 454.9475852501928,
+      "graph": 454.31944915035274,
+      "stream_samples": [
+        455.15508630051045,
+        454.9475852501928,
+        472.52025330089964
+      ],
+      "graph_samples": [
+        454.39668525068555,
+        454.31944915035274,
+        463.8488437005435
+      ],
+      "nodes": 876,
+      "capture_ms": 77.93709399993531,
+      "pool_mb": 3475.918848,
+      "fired": [
+        {
+          "radiation": 0,
+          "sfclay": 20,
+          "noah": 20,
+          "ysu": 20,
+          "cumulus": 1,
+          "cumulus_history": 1
+        },
+        {
+          "radiation": 0,
+          "sfclay": 20,
+          "noah": 20,
+          "ysu": 20,
+          "cumulus": 0,
+          "cumulus_history": 0
+        }
+      ],
+      "saved": 0.6281360998400487,
+      "speedup": 1.0013825868582442,
+      "us_per_launch": 0.7170503422831607
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+warning: SIGINT is set to ignore in this process, so Ctrl-C cannot stop `gpuwm render`; send SIGTERM to stop it
+gpuwm render: gpuwm 1.8.9 -- editable source at /workspace/wt-tip
+render: engine rust (/workspace/wt-tip/tools/rustwx/target/release/rw_wrfbatch)
+render: engine bridge in-tree (the renderer is inside the executing source root /workspace/wt-tip)
+render FAIL: /workspace/overlap/twin_b3/streamed/wrfout_d01_*: /workspace/overlap/twin_b3/streamed/wrfout_d01_*: unreadable wrfout (no such file)
+render: 0 file(s) -> /workspace/overlap/gallery/streamed

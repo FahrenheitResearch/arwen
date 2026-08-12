@@ -48,7 +48,7 @@ def _frozen_constructors():
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
-    assert names[-94:] == [
+    assert names[-95:] == [
         "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
         "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
         "swrad_scat", "wrf_rrtmg_compatibility", "num_soil_layers",
@@ -122,7 +122,15 @@ def test_new_fields_are_reviewed_defaults_appended_last():
         # from the restart identity of every run that is not WDM6
         # (gpuwm.core.model.restart_identity_payload), so appending them
         # moves neither a trajectory nor a fingerprint.
-        "wdm6_hail_opt", "wdm6_ccn_conc"]
+        "wdm6_hail_opt", "wdm6_ccn_conc",
+        # The surface-radiation carrier policy, appended last.  A LABEL on
+        # a guard rather than a physics knob: the default "required" is the
+        # behaviour every frozen trajectory already had once the contract
+        # is in place -- carriers those runs consume all have producers --
+        # and the only other value is the declared escape, which a frozen
+        # case does not select.  It moves no trajectory and it is not a WRF
+        # namelist key, because WRF has no carrier provenance to declare.
+        "surface_radiation_policy"]
     # Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors,
     # appended last.  Both defaults are WRF's own Registry defaults
     # (Registry/Registry.EM_COMMON:2656 and
@@ -154,6 +162,11 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # nonzero values without the scheme.
     assert RunConfig.__dataclass_fields__["clos_choice"].default == 0
     assert RunConfig.__dataclass_fields__["ishallow"].default == 0
+    # The carrier policy defaults to the strict value, not the escape:
+    # a run that says nothing gets the guard, and a run that wants
+    # pre-1.9 behaviour has to type the word.
+    assert RunConfig.__dataclass_fields__[
+        "surface_radiation_policy"].default == "required"
     # Noah option selectors. Each default reproduces the value the launcher
     # previously pinned, so exposing them cannot move a frozen trajectory.
     assert RunConfig.__dataclass_fields__["usemonalb"].default is False

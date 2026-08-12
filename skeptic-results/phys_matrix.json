@@ -1,0 +1,162 @@
+[
+ {
+  "rung": "mp10 Morrison",
+  "devices": [
+   0,
+   0
+  ],
+  "write_mode": "shadow",
+  "partition": "block",
+  "carriers": 138,
+  "bitexact": true,
+  "differing": [],
+  "clock_matches": true,
+  "tiles": 9,
+  "compute": [
+   49,
+   64,
+   64
+  ],
+  "halo": 16
+ },
+ {
+  "rung": "mp10 Morrison",
+  "devices": [
+   0,
+   0
+  ],
+  "write_mode": "shadow",
+  "partition": "stripe",
+  "carriers": 138,
+  "bitexact": true,
+  "differing": [],
+  "clock_matches": true,
+  "tiles": 9,
+  "compute": [
+   49,
+   64,
+   64
+  ],
+  "halo": 16
+ },
+ {
+  "rung": "+YSU PBL",
+  "devices": [
+   0,
+   0
+  ],
+  "write_mode": "shadow",
+  "partition": "block",
+  "carriers": 139,
+  "bitexact": true,
+  "differing": [],
+  "clock_matches": true,
+  "tiles": 9,
+  "compute": [
+   49,
+   64,
+   64
+  ],
+  "halo": 16
+ },
+ {
+  "rung": "+YSU PBL",
+  "devices": [
+   0,
+   0
+  ],
+  "write_mode": "shadow",
+  "partition": "stripe",
+  "carriers": 139,
+  "bitexact": true,
+  "differing": [],
+  "clock_matches": true,
+  "tiles": 9,
+  "compute": [
+   49,
+   64,
+   64
+  ],
+  "halo": 16
+ },
+ {
+  "rung": "full(real74) +KF",
+  "devices": [
+   0,
+   0
+  ],
+  "write_mode": "shadow",
+  "partition": "block",
+  "carriers": 155,
+  "bitexact": true,
+  "differing": [],
+  "clock_matches": true,
+  "tiles": 9,
+  "compute": [
+   49,
+   64,
+   64
+  ],
+  "halo": 16
+ },
+ {
+  "rung": "full(real74) +KF",
+  "devices": [
+   0,
+   0
+  ],
+  "write_mode": "shadow",
+  "partition": "stripe",
+  "carriers": 155,
+  "bitexact": true,
+  "differing": [],
+  "clock_matches": true,
+  "tiles": 9,
+  "compute": [
+   49,
+   64,
+   64
+  ],
+  "halo": 16
+ },
+ {
+  "rung": "full fast cadence",
+  "devices": [
+   0,
+   0
+  ],
+  "write_mode": "shadow",
+  "partition": "block",
+  "carriers": 153,
+  "bitexact": true,
+  "differing": [],
+  "clock_matches": true,
+  "tiles": 9,
+  "compute": [
+   49,
+   64,
+   64
+  ],
+  "halo": 16
+ },
+ {
+  "rung": "full fast cadence",
+  "devices": [
+   0,
+   0
+  ],
+  "write_mode": "shadow",
+  "partition": "stripe",
+  "carriers": 153,
+  "bitexact": true,
+  "differing": [],
+  "clock_matches": true,
+  "tiles": 9,
+  "compute": [
+   49,
+   64,
+   64
+  ],
+  "halo": 16
+ }
+]

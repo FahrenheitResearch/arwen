@@ -188,18 +188,15 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 5 distinct caller-supplied option tuples across the 16
+  The inventory records 4 distinct caller-supplied option tuples across the 17
   compile sites in the shipped package, each listed here with a site that
   supplies it:
   - no caller options -- `gpuwm/core/dycore.py:157` (cp.ElementwiseKernel),
-    and 8 other site(s)
+    and 9 other site(s)
+  - `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_lw.py:3733`
+    (_cc.compile_using_nvrtc), and 2 other site(s)
   - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:78` (cp.RawModule), and
     2 other site(s)
-  - `-std=c++17` `--ftz=false` a target flag built from the device
-    architecture at run time -- `gpuwm/core/rrtmg_lw.py:3723`
-    (_cc.compile_using_nvrtc), and 1 other site(s)
-  - `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_sw.py:2890`
-    (cp.RawModule)
   - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:259`
     (cp.RawModule)
   `R5` and `R1` are kernels inside ONE compiled object -- same device, same

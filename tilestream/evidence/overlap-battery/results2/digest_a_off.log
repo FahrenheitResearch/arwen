@@ -1,0 +1,69 @@
+
+=== GATE: real specified boundaries, monolithic vs streamed, 12 steps ===
+    VRAM 15.21/15.47 GiB free | host 43.7/46.8 GiB
+    statics built in 7.5 s
+    9 row slabs of <= 64 rows (+1 halo row)
+    forcing 1985-05-31 18:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 00:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 06:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 12:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 18:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-05-31 12:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+soil moisture floor: 985 sub-air-dry land value(s) floored to the soil type's SMCDRY across ['SMOIS_L1', 'SMOIS_L2', 'SMOIS_L3', 'SMOIS_L4'] (min pre-floor 0.0130313); WRF real.exe resets such columns to 0.005 (module_initialize_real.F:3376)
+    prepared 648x576x49 from 6 forcing times in 62.2 s
+    ingest device high-water 5.55 GiB (15960 B per mass cell)
+    specified=True open_x=False open_y=False spec_zone=1 relax_zone=4 spec_bdy_width=5
+    5 boundary intervals, ['mu', 'phi', 'qv', 'theta', 'u', 'v']
+    start scalars {'elapsed_seconds': 20.0, 'call_counts': {'radiation': 1, 'sfclay': 1, 'noah': 1, 'ysu': 1, 'cumulus': 0, 'cumulus_history': 0}, 'ysu_nan_guard_fires': 0, 'microphysics_updates': 1}
+    start digest 3699ce92fe1b0d68  139 carriers, 15 geography arrays
+    MONOLITHIC 12 steps in 31.1s  digest d473213ef02ee45f
+    halo 20 = radius 16 + boundary width 4;  9 tiles of 296x296 (non-periodic plan)
+    windowed lateral boundaries: 9 tiles x 5 intervals x 6 fields = 0.98 GiB host
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/workspace/wt-tip/tilestream/run_realcase.py", line 606, in <module>
+    main()
+  File "/workspace/wt-tip/tilestream/run_realcase.py", line 601, in main
+    {"gate": stage_gate, "ceiling": stage_ceiling,
+  File "/workspace/wt-tip/tilestream/run_realcase.py", line 158, in stage_gate
+    driver.run_tiled(store, cfg, args.tile, args.tile, halo=halo,
+  File "/workspace/wt-tip/tilestream/driver.py", line 2559, in run_tiled
+    run = TiledRun(
+          ^^^^^^^^^
+  File "/workspace/wt-tip/tilestream/driver.py", line 1434, in __init__
+    tiles = [factory(tile_cfg) for _ in range(nbuffers)]
+             ^^^^^^^^^^^^^^^^^
+  File "/workspace/wt-tip/tilestream/driver.py", line 326, in <lambda>
+    tile_state_factory=lambda tile_cfg: make_physics_tile_state(
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/wt-tip/tilestream/driver.py", line 296, in make_physics_tile_state
+    _harness.run_steps(state, tile_cfg, int(warmup))
+  File "/workspace/wt-tip/tilestream/harness.py", line 707, in run_steps
+    step(state, cfg, **step_kwargs)
+  File "/workspace/wt-tip/gpuwm/core/dycore.py", line 2413, in step
+    physics_tendencies = state.physics.compute(state, cfg)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/wt-tip/gpuwm/core/physics.py", line 3538, in compute
+    self._run_radiation(atmosphere, state, cfg)
+  File "/workspace/wt-tip/gpuwm/core/physics.py", line 1973, in _run_radiation
+    result = self.radiation_callable(
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/wt-tip/gpuwm/core/rrtmgp.py", line 2228, in __call__
+    sources = _planck_sources(
+              ^^^^^^^^^^^^^^^^
+  File "/workspace/wt-tip/gpuwm/core/rrtmgp.py", line 2907, in _planck_sources
+    lev = cp.empty(shapes[1], dtype=DTYPE)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/venv-overlap/lib/python3.12/site-packages/cupy/_creation/basic.py", line 34, in empty
+    return cupy.ndarray(shape, dtype, order=order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "cupy/_core/core.pyx", line 176, in cupy._core.core.ndarray.__new__
+  File "cupy/_core/core.pyx", line 282, in cupy._core.core._ndarray_base._init
+  File "cupy/cuda/memory.pyx", line 904, in cupy.cuda.memory.alloc
+  File "cupy/cuda/memory.pyx", line 1614, in cupy.cuda.memory.MemoryPool.malloc
+  File "cupy/cuda/memory.pyx", line 1635, in cupy.cuda.memory.MemoryPool.malloc
+  File "cupy/cuda/memory.pyx", line 1350, in cupy.cuda.memory.SingleDeviceMemoryPool.malloc
+  File "cupy/cuda/memory.pyx", line 1376, in cupy.cuda.memory.SingleDeviceMemoryPool._malloc
+  File "cupy/cuda/memory.pyx", line 1560, in cupy.cuda.memory.SingleDeviceMemoryPool._try_malloc
+cupy.cuda.memory.OutOfMemoryError: Out of memory allocating 240,000,000 bytes (allocated so far: 14,747,978,240 bytes).

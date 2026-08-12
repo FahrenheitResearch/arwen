@@ -1,0 +1,26 @@
+
+=== PAIR: streamed overlap off vs on, 12 steps ===
+    VRAM 15.21/15.47 GiB free | host 44.0/46.8 GiB
+    statics built in 12.1 s
+    12 row slabs of <= 64 rows (+1 halo row)
+    forcing 1985-05-31 18:00:00: 12 slabs, perimeter kept; pool 6.96 GiB
+    forcing 1985-06-01 00:00:00: 12 slabs, perimeter kept; pool 6.96 GiB
+    forcing 1985-06-01 06:00:00: 12 slabs, perimeter kept; pool 6.96 GiB
+    forcing 1985-06-01 12:00:00: 12 slabs, perimeter kept; pool 6.96 GiB
+    forcing 1985-06-01 18:00:00: 12 slabs, perimeter kept; pool 6.96 GiB
+    forcing 1985-05-31 12:00:00: 12 slabs, perimeter kept; pool 6.96 GiB
+soil moisture floor: 1746 sub-air-dry land value(s) floored to the soil type's SMCDRY across ['SMOIS_L1', 'SMOIS_L2', 'SMOIS_L3', 'SMOIS_L4'] (min pre-floor 0.0154677); WRF real.exe resets such columns to 0.005 (module_initialize_real.F:3376)
+    prepared 864x768x49 from 6 forcing times in 110.5 s
+    ingest device high-water 9.81 GiB (15877 B per mass cell)
+    settling step SKIPPED (settle=False): this domain is past the resident ceiling, and run_tiled's inventory match is the guard that a lazy carrier cannot slip through
+    store 139 carriers, 5.60 GiB pinned (184.9 B/cell); geography 15 arrays, 0.51 GiB
+    before release: pool live 9.81 GiB, pool held 9.81 GiB, device free 5.09/15.47 GiB
+    after release : pool live 0.00 GiB, pool held 0.00 GiB, device free 15.19/15.47 GiB
+    halo 20;  12 tiles of 296x296, nbuffers 2
+    windowed lateral boundaries: 12 tiles x 5 intervals x 6 fields = 1.31 GiB host
+    STREAMED overlap=off 12 steps in 243.2s  digest b5474ac65a806ced
+    windowed lateral boundaries: 12 tiles x 5 intervals x 6 fields = 1.31 GiB host
+    STREAMED overlap=on  12 steps in 244.7s  digest b5474ac65a806ced
+    scalars off {'elapsed_seconds': 180.0, 'call_counts': {'radiation': 1, 'sfclay': 12, 'noah': 12, 'ysu': 12, 'cumulus': 0, 'cumulus_history': 0}, 'ysu_nan_guard_fires': 0, 'microphysics_updates': 12} vs on {'elapsed_seconds': 180.0, 'call_counts': {'radiation': 1, 'sfclay': 12, 'noah': 12, 'ysu': 12, 'cumulus': 0, 'cumulus_history': 0}, 'ysu_nan_guard_fires': 0, 'microphysics_updates': 12}
+    BIT-EXACT over all 139 carriers -- the chain changes nothing but the clock
+RESULT {"steps": 12, "tile": 256, "halo": 20, "tiles": 12, "carriers": 139, "digest_off": "b5474ac65a806ced", "digest_on": "b5474ac65a806ced", "differ": [], "bitexact": true}

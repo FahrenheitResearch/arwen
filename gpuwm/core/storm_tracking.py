@@ -98,7 +98,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from gpuwm.core import uh_diag
+from gpuwm.core import streaming, uh_diag
 
 #: Versioned label carried by every receipt this module emits.
 FOLLOW_CONTRACT = "gpuwm-storm-follow.v1"
@@ -410,9 +410,16 @@ def _plane_from_state(state, field: str, *,
             "so reading it would make this decision depend on the output "
             "cadence.")
     slot = uh_slot if field == "uh" else REFLECTIVITY_SLOT
-    getter = getattr(state, "existing_scratch", None)
-    buf = getter(slot) if getter is not None else None
+    # WHEREVER the domain is keeping it.  Under [tiles] the window is
+    # folded in the tile buffers and lands in the store, and the copy on the
+    # state stopped moving when streaming.attach took it -- so reading the
+    # state would steer the nest on a frozen plane, which is the same defect
+    # that swallowed the resets (gpuwm/core/streaming.py:live_scratch).
+    # Resident, domain_scratch IS state.existing_scratch(slot).
+    buf = streaming.domain_scratch(state, slot)
     if buf is None:
+        # Test doubles and reduced states that hang the plane straight off
+        # the object rather than in a scratch pool.
         buf = getattr(state, slot, None)
     if buf is None:
         remedy = ("nwp_diagnostics = 1 populates it every step"

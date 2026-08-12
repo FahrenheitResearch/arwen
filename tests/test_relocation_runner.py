@@ -551,9 +551,17 @@ def test_run_experiment_front_door_lift_and_residual_refusals(
     follow source with no child to move still refuses at the door."""
     from gpuwm import runtime
 
+    from gpuwm.core.streaming import OFF as _STREAMING_OFF
+
     manual = _manual_config((ScheduledRelocationMove(60.0, 1, 0),))
+    # ``streaming`` is not decoration on this double: since preflight-ledger
+    # and feat-route-wire, run_experiment refuses a [tiles] block at
+    # ADMISSION -- before the ingest -- because none of its arms consult one.
+    # A real Experiment always carries the attribute (build_experiment
+    # defaults it to OFF); a double without it raises AttributeError from
+    # inside the front door and never reaches the refusal under test.
     single = SimpleNamespace(relocation=manual, domains=(object(),),
-                             feedback=0)
+                             feedback=0, tiles=_STREAMING_OFF)
     with pytest.raises(ValueError, match="no nest to move"):
         runtime.run_experiment(single, None, tmp_path / "out")
 
@@ -571,7 +579,8 @@ def test_run_experiment_front_door_lift_and_residual_refusals(
     monkeypatch.setattr(
         wrfout_module, "quarantine_orphan_wrfouts", _sentinel)
     tree = SimpleNamespace(relocation=manual,
-                           domains=(object(), object()), feedback=0)
+                           domains=(object(), object()), feedback=0,
+                           tiles=_STREAMING_OFF)
     with pytest.raises(_ReachedPreparation):
         runtime.run_experiment(tree, None, tmp_path / "out2")
 

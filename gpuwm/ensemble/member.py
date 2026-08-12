@@ -90,6 +90,27 @@ def refresh_diagnostics(state, *, hypsometric_opt: int) -> dict:
     before = diagnostics_sha256(state)
     update_diagnostics(state, hypsometric_opt)
     after = diagnostics_sha256(state)
+    # THE PUBLISHED 2 m FIELDS, on the same post-condition.  T2 and Q2 are
+    # not prognostic: they are diagnosed once per surface call from the
+    # lowest model level and the surface endpoint as they stood at that
+    # call.  An analysis that changed the lowest level therefore leaves
+    # them describing the state BEFORE it, and the next output frame
+    # carries them out as though they described the state after -- with the
+    # error largest exactly where the analysis did the most work.  Rerun
+    # HERE, at the one seam every applier already calls, so a cycle driver
+    # cannot forget it and a new applier inherits it.
+    #
+    # Nothing is advanced: no scheme runs, no accumulator moves, no model
+    # second passes.  A configuration whose 2 m provider lives inside its
+    # LSM step (RUC, Noah-MP) has no rerunnable provider and says so rather
+    # than half-running one.
+    driver = getattr(state, "physics", None)
+    surface = None
+    if driver is not None:
+        rerun = getattr(
+            driver, "refresh_surface_diagnostics_after_analysis", None)
+        if rerun is not None:
+            surface = bool(rerun(state))
     return {
         "contract": "gpuwm.da.perturb/post_conditions/update_diagnostics",
         "ran": True,
@@ -98,6 +119,10 @@ def refresh_diagnostics(state, *, hypsometric_opt: int) -> dict:
         "sha256_before": before,
         "sha256_after": after,
         "moved": after != before,
+        # None: no physics driver attached, so there is nothing to
+        # republish.  False: a driver whose 2 m provider is not rerunnable
+        # outside its LSM step.  True: the provider reran.
+        "surface_diagnostics_reran": surface,
     }
 
 

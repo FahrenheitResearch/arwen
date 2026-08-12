@@ -1,5 +1,11 @@
 # Chunked forecast streaming
 
+**This page is not [Tiling a domain that does not fit on the card](TILES.md).**
+That page is the `[tiles]` table, which runs one domain out of core by
+cycling it through the card a tile at a time. This page is a fetch-and-run
+cadence over a live HRRR cycle. The two share no configuration and no code
+path, and either can be used without the other.
+
 `gpuwm stream PLAN.toml` follows an uploading HRRR cycle with sealed hourly
 forecast legs. It uses the Rust full-file fetch path, prepares a new immutable
 forcing prefix, resumes from the preceding tree checkpoint, requires initial

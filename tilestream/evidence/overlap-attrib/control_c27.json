@@ -1,0 +1,74 @@
+{
+ "device": {
+  "name": "NVIDIA GeForce RTX 5080",
+  "asyncEngineCount": 2,
+  "totalGlobalMem_GiB": 15.47100830078125,
+  "cupy": "14.1.1",
+  "driver": 13010,
+  "runtime": 13020
+ },
+ "config": "/workspace/overlap/arm_c_dx2.7km.toml",
+ "bind": null,
+ "nx": 960,
+ "ny": 864,
+ "nz": 49,
+ "dx_m": 2700.0,
+ "dt_s": 12.0,
+ "decision": "[tiles] ON (host store): [tiles] mode = 'on'; tile 320x432, nbuffers=2, halo=16",
+ "steps": 17,
+ "warmup": 2,
+ "control": true,
+ "rows": [
+  {
+   "wall_ms": 10971.948004007572
+  },
+  {
+   "wall_ms": 11260.960792002152
+  },
+  {
+   "wall_ms": 11383.68418799655
+  },
+  {
+   "wall_ms": 11600.378695991822
+  },
+  {
+   "wall_ms": 11838.847920997068
+  },
+  {
+   "wall_ms": 11843.747962993803
+  },
+  {
+   "wall_ms": 11729.024988992023
+  },
+  {
+   "wall_ms": 11519.736076006666
+  },
+  {
+   "wall_ms": 11959.414808996371
+  },
+  {
+   "wall_ms": 12130.642570002237
+  },
+  {
+   "wall_ms": 11840.507635992253
+  },
+  {
+   "wall_ms": 11683.614563997253
+  },
+  {
+   "wall_ms": 11609.92881799757
+  },
+  {
+   "wall_ms": 74388.34855500318
+  },
+  {
+   "wall_ms": 11287.685959003284
+  },
+  {
+   "wall_ms": 11185.568326996872
+  },
+  {
+   "wall_ms": 11407.702430995414
+  }
+ ]
+}

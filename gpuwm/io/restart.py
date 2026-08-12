@@ -505,6 +505,35 @@ STATE_INFRA_ATTRS = frozenset({
     # carries -- so a resumed run does not replay P3's first-step
     # saturation adjustment.  Same category as ``elapsed_seconds`` above.
     "p3_itimestep",
+
+    # gpuwm.core.streaming.STREAMED_SCRATCH_ATTR: {slot: array} pointing at
+    # the DOMAIN's scratch arrays while they live in a streaming store rather
+    # than on this state.  Infra, not state: it holds no value of its own,
+    # every array in it is already covered as a carrier, and it exists only
+    # so an external whole-domain write (the UP_HELI_MAX history reset and
+    # the two tracker-window resets) can find the arrays the model is
+    # actually integrating.  Absent on every resident state.
+    "_streamed_scratch",
+    # Set by gpuwm.core.streaming.attach on the resident state whose
+    # carriers it copied into a pinned host store: the back-reference the
+    # history writers read to learn that this state is no longer where this
+    # domain's numbers are.  INFRA and not serialized, deliberately -- the
+    # mode is a property of the MACHINE a run is on, never of the forecast,
+    # and streaming.identity_payload_entry contributes nothing to the
+    # restart identity for the same reason: a checkpoint written streamed
+    # must resume resident and vice versa, which is the operation that makes
+    # the mode worth having.  On restore the resident state is rebuilt
+    # unmarked and re-marked by whatever attach the new run performs.
+    "_streamed_domain",
+    # A streamed domain's store, published on the state by
+    # gpuwm.core.streaming.publish_store so that the readers which are not
+    # the tile sweep -- the nest coupler above all -- can find the domain's
+    # truth.  INFRA and not serialized: it holds the SAME carriers this
+    # manifest already walks, so serializing it would write every field
+    # twice and a checkpoint's identity would then depend on whether the
+    # run happened to be streaming, which
+    # gpuwm.core.streaming.identity_payload_entry deliberately refuses.
+    "_streamed_store",
 })
 
 # --------------------------------------------------------------------------
@@ -529,21 +558,45 @@ SERIALIZED_SCRATCH_SLOTS = frozenset({
     "up_heli_max",
 })
 
+#: Cross-step accumulators that are deliberately NOT checkpointed.
+#:
+#: A THIRD class, because two questions were being answered by one word and
+#: they are different questions: "does this survive a checkpoint" and "is this
+#: cross-step state that a run must not lose between steps".  ``serialize``
+#: says yes to both and ``rebuild`` says no to both; these say NO to the first
+#: and YES to the second, and until this class existed they had to be filed
+#: ``rebuild`` — which is read as "per-call work buffer" by everything that
+#: consumes the classification for a purpose other than writing a restart
+#: file.
+#:
+#: MEASURED CONSEQUENCE of the missing class, and the reason it now exists:
+#: ``tilestream.physics_inventory.carrier_manifest`` builds the STREAMING
+#: carrier set out of this classification (deliberately, so a field added to
+#: gpuwm tomorrow is streamed the day it is added).  Reading ``rebuild`` as
+#: "not cross-step", it neither gathered nor scattered the two tracker
+#: windows, so under a host store they were not in the store at all: each tile
+#: buffer accumulated its own window over whatever tiles that buffer served,
+#: at that buffer's coordinates, and the domain had no window anywhere.
+#: ``tilestream/test_uh_stream.py`` is the gate; its ``carry_windows=False``
+#: control reproduces the old inventory and must differ.
+#:
+#: The storm-following consumer windows (gpuwm/core/uh_diag.py:
+#: TRACKER_WINDOW_SLOTS) are the whole membership.  Not serialized: a window
+#: means "max since that consumer last looked", and a checkpoint has no way to
+#: know when the consumer will next look, so carrying the number across a
+#: restart would restore a window measured against a boundary that no longer
+#: exists.  They restart EMPTY; the first post-restart evaluation therefore
+#: sees a short window and may under-read, which is the same
+#: tolerated-experiment posture already ruled for a restart across a move and
+#: across a spawn -- the tracker promises nothing across a restart.
+CARRIED_SCRATCH_SLOTS = frozenset({
+    "uh_follow_window", "uh_spawn_window",
+})
+
 #: Per-call work buffers overwritten before every read.  ``mp_``/``cu_``
 #: rebuilds are EXACT names only — a future accumulator slot under those
 #: prefixes must be classified explicitly instead of silently dropping.
 REBUILT_SCRATCH_SLOTS = frozenset({
-    # The storm-following consumer windows (gpuwm/core/uh_diag.py:
-    # TRACKER_WINDOW_SLOTS).  Deliberately NOT serialized: a window means
-    # "max since that consumer last looked", and a checkpoint has no way
-    # to know when the consumer will next look, so carrying the number
-    # across a restart would restore a window measured against a boundary
-    # that no longer exists.  They restart EMPTY; the first post-restart
-    # evaluation therefore sees a short window and may under-read, which
-    # is the same tolerated-experiment posture already ruled for a
-    # restart across a move and across a spawn -- the tracker promises
-    # nothing across a restart.
-    "uh_follow_window", "uh_spawn_window",
     "mp_th", "mp_rho", "mp_pii", "mp_z", "mp_dz8w", "mp_z8w",
     "mp_thompson_temperature",
     "mp_thompson_frozen_reference_density",
@@ -666,6 +719,19 @@ DRIVER_SERIALIZED_ATTRS = frozenset({
     "rthratenlw", "rthratensw", "_pending_rainbl",
     "microphysics_updates", "call_counts", "ysu_nan_guard_fires",
     "fields",
+    # THE SURFACE-RADIATION CARRIER CONTRACT
+    # (gpuwm/core/radiation_carriers.py).  Serialized, not rebuilt, and
+    # the distinction is the whole point: the carrier FIELDS ride the
+    # surface inventory above, but WHO wrote them and WHEN cannot be
+    # re-derived from the resumed configuration.  A rebuild would hand
+    # the resumed run a fresh "unwritten"/"just written" record and the
+    # first post-restart surface call would either refuse a healthy run
+    # or admit a stale carrier -- both wrong, in opposite directions.
+    # Carried in the driver HEADER (a mapping of two scalars per
+    # carrier), so no array key moves and the v5 layout is untouched; a
+    # checkpoint written before this contract existed has no such
+    # mapping and forces a producer refresh instead (_restore_carriers).
+    "carriers",
 })
 
 #: Driver attributes rebuilt by initialize_physics from config/tables, or
@@ -746,6 +812,17 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # so there is no second identity to bind.  The per-call census is a
     # receipt the next call overwrites.
     "ruc_params", "last_ruc_census",
+    # The opt-in surface-moisture ledger (gpuwm/core/
+    # surface_moisture_ledger.py).  A DIAGNOSTIC an operator attaches to
+    # one run: it writes no physics field and no restart-carried buffer,
+    # and a resumed run attaches its own or does not.  Carrying it would
+    # make an instrument part of the model state.
+    "surface_moisture_ledger",
+    # Set only when a PRE-CONTRACT checkpoint is resumed, and consumed by
+    # the first surface call after the resume (which forces a producer
+    # refresh).  A cold-started driver has it False, so it is rebuilt
+    # rather than carried; see _restore_carriers.
+    "carriers_need_producer_refresh",
     "tendencies", "last_ysu", "refl_10cm", "microphysics",
     "nssl2_binding",
     "bldt_seconds", "stepbl", "radt_minutes", "cudt_minutes",
@@ -1106,6 +1183,48 @@ def _is_array_like(value) -> bool:
             and hasattr(value, "ndim"))
 
 
+def _restore_carriers(driver, driver_header) -> None:
+    """Re-establish the surface-radiation carrier contract on a resume.
+
+    THE PROBLEM A RESTART CREATES.  A carrier's provenance and its age are
+    the two things a checkpoint's arrays cannot carry: the GLW field is
+    serialized with the rest of the surface inventory, but "a longwave
+    scheme wrote this at model second 3600" is not a property of the
+    numbers.  Rebuild it from the resumed configuration and the first
+    post-restart surface call gets one of two wrong answers -- a fresh
+    "unwritten" record refuses a perfectly healthy run, or a fresh
+    "just written" record admits a carrier that has actually been stale
+    since before the checkpoint.
+
+    So it is SERIALIZED, and a checkpoint that carries it resumes with the
+    provenance and the ages the uninterrupted run had at that instant.
+    Restart identity therefore holds across a resume that lands on a step
+    where no radiation call is due, which is exactly the step that would
+    otherwise expose the difference.
+
+    A CHECKPOINT WRITTEN BEFORE THIS CONTRACT EXISTED has no such mapping,
+    and gpuwm does not guess: the resumed driver is marked so that the
+    first surface call refreshes its producers before consuming anything.
+    That costs one off-cadence radiation call on a legacy resume and
+    changes nothing else; guessing would cost a silent wrong answer.
+    """
+    stored = driver_header.get("carriers")
+    if stored is None:
+        driver.carriers_need_producer_refresh = True
+        return
+    driver.carriers.restore(stored)
+    policy = driver_header.get("surface_radiation_policy")
+    if policy is not None and policy != driver.carriers.policy:
+        raise RestartMismatchError(
+            "restart was written under surface_radiation_policy = "
+            f"{policy!r} and is resuming under "
+            f"{driver.carriers.policy!r}.  The carrier policy binds into "
+            "run identity because it decides whether a land-surface "
+            "scheme may consume a carrier no producer wrote; a resume "
+            "that changed it would be a different experiment continuing "
+            "under the first one's name.")
+
+
 def classify_state_attr(name: str) -> str:
     """Classify one ``DomainState`` attribute name.
 
@@ -1131,11 +1250,22 @@ def classify_state_attr(name: str) -> str:
 def classify_scratch_slot(slot: str) -> str:
     """Classify one ``DomainState.scratch`` slot name.
 
-    Returns ``"serialize"`` or ``"rebuild"``; raises
+    Returns ``"serialize"``, ``"carry"`` or ``"rebuild"``; raises
     :class:`RestartManifestError` for unknown slots.
+
+    ``"carry"`` is cross-step state that is deliberately not checkpointed
+    (:data:`CARRIED_SCRATCH_SLOTS`).  Every restart path in this module tests
+    ``== "serialize"`` or ``!= "serialize"``, so a ``carry`` slot is treated
+    exactly like a ``rebuild`` one HERE and the restart stream is unchanged
+    byte for byte.  The distinction exists for the consumers that ask this
+    function a different question -- above all the streaming carrier set,
+    which must move a ``carry`` slot between the store and every tile buffer
+    and used to drop it.
     """
     if slot in SERIALIZED_SCRATCH_SLOTS:
         return "serialize"
+    if slot in CARRIED_SCRATCH_SLOTS:
+        return "carry"
     if slot in REBUILT_SCRATCH_SLOTS:
         return "rebuild"
     if any(slot.startswith(prefix) for prefix in REBUILT_SCRATCH_PREFIXES):
@@ -1143,7 +1273,8 @@ def classify_scratch_slot(slot: str) -> str:
     raise RestartManifestError(
         f"scratch slot {slot!r} is not classified in the restart manifest "
         "(gpuwm/io/restart.py): declare it serialized (persistent "
-        "accumulator/held state) or rebuilt (per-call work buffer)")
+        "accumulator/held state), carried (cross-step but not checkpointed) "
+        "or rebuilt (per-call work buffer)")
 
 
 def setup_fingerprint(state) -> str:
@@ -2127,6 +2258,55 @@ def _scratch_manifest(state) -> dict[str, object]:
     return manifest
 
 
+def carried_scratch_manifest(state) -> dict[str, object]:
+    """``{scratch/<slot>: array}`` for the CARRY class -- never for a file.
+
+    Deliberately a second function rather than a flag on
+    :func:`_scratch_manifest`: nothing that writes or validates a checkpoint
+    may ever pick these up by accident, and the way to guarantee that is that
+    the checkpoint path cannot reach them.  The one caller is
+    :func:`tilestream.physics_inventory.carrier_manifest`, which needs the
+    cross-step set, not the checkpointed one.
+    """
+    pool = getattr(state, "_scratch", {})
+    return {f"scratch/{slot}": pool[slot] for slot in sorted(pool)
+            if classify_scratch_slot(slot) == "carry"}
+
+
+
+def _any_on_owning_device(array) -> bool:
+    """``bool(array.any())`` EVALUATED ON THE CARD THE ARRAY LIVES ON.
+
+    A CuPy reduction launches on the CURRENT device, so ``array.any()`` on an
+    array that lives on another card needs peer access -- and on a GeForce box
+    there is none (measured on 4x RTX 5080: ``deviceCanAccessPeer`` is 0 for
+    all twelve ordered pairs), so it raises instead of returning an answer.
+
+    This one call is on the path every inventory takes:
+    ``tilestream.physics_inventory.carrier_inventory`` ->
+    ``carrier_manifest`` -> ``_driver_manifest``.  ``MultiGPUDomain`` builds
+    each rank's inventory inside a loop whose current device is whatever the
+    last iteration left, so asking rank 1 for its carriers with device 0
+    current died here -- an INVENTORY call, which reads no data and should
+    not care which card is current, brought the run down.  Entering the
+    array's own device costs one context switch per checkpoint-manifest call
+    and makes the function device-independent, which is what its callers
+    already assume.
+    """
+    device = getattr(array, "device", None)
+    if not hasattr(device, "__enter__"):
+        # Host arrays take the plain reduction.  The test is "is this a
+        # device CONTEXT", not "is there a device attribute": NumPy 2
+        # gave every ndarray a ``.device`` -- the STRING ``"cpu"`` (array
+        # API standard) -- so ``device is None`` stopped meaning "host
+        # array" and ``with "cpu":`` is a TypeError.  A CuPy array's
+        # ``.device`` is a ``cupy.cuda.Device``, a context manager, and
+        # keeps the owning-card entry below.
+        return bool(array.any())
+    with device:
+        return bool(array.any())
+
+
 def _driver_manifest(driver) -> dict[str, object]:
     """Serialized driver arrays; enforces driver attribute coverage."""
     for name in sorted(vars(driver)):
@@ -2144,7 +2324,7 @@ def _driver_manifest(driver) -> dict[str, object]:
     # clear.  ``cu_expiring`` itself remains rebuild-only scratch.
     cu_expiring = getattr(driver, "cu_expiring", None)
     if (bool(getattr(driver, "_cu_expiry_pending", False))
-            or (cu_expiring is not None and bool(cu_expiring.any()))):
+            or (cu_expiring is not None and _any_on_owning_device(cu_expiring))):
         raise RestartManifestError(
             "cannot write restart while KF expiry finalization is pending; "
             "call PhysicsDriver.finish_step() before checkpointing")
@@ -2269,6 +2449,11 @@ def write_restart(path, state, cfg, *, run_trackers=None,
                             for key, value in driver.call_counts.items()},
             "ysu_nan_guard_fires": int(driver.ysu_nan_guard_fires),
             "microphysics_updates": int(driver.microphysics_updates),
+            # Carrier provenance: source + last producer model time, per
+            # carrier.  Two scalars each, in the header rather than the
+            # array set, so the v5 key layout is untouched.
+            "carriers": driver.carriers.state(),
+            "surface_radiation_policy": driver.carriers.policy,
         }
     physics_setup = physics_setup_identity(state, cfg)
     physics_setup_sha256 = _json_sha256(physics_setup)
@@ -3728,6 +3913,7 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
     driver.ysu_nan_guard_fires = int(driver_header["ysu_nan_guard_fires"])
     driver.microphysics_updates = int(
         driver_header["microphysics_updates"])
+    _restore_carriers(driver, driver_header)
 
     if "cumulus/w0avg" in stored:
         adapter = driver.cumulus_callable
@@ -3778,6 +3964,7 @@ __all__ = [
     "ROOT_EXTERNAL_LBC_CLOCK_LEGACY", "RestartInfo", "TreeRestartInfo",
     "SEALED_FORCING_EXTENSION_MODE",
     "RestartManifestError", "RestartMismatchError",
+    "CARRIED_SCRATCH_SLOTS", "carried_scratch_manifest",
     "SERIALIZED_SCRATCH_SLOTS", "STATE_REBUILT_ATTRS",
     "STATE_SERIALIZED_ATTRS", "STATE_SETUP_ARRAYS", "STATE_SETUP_SCALARS",
     "THOMPSON_AEROSOL_RESTART_STATE",

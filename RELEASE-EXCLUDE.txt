@@ -126,3 +126,50 @@ tools/ens_sweep/run_sweep.sh
 # fixture for this machine rather than anything a reader can run. Nothing
 # in the tree references it.
 tools/gf_real74_dual/**
+
+# The streamed-run lane's engineering records.  Each one is the provenance
+# of a number the lane quotes -- which box, which venv, which run directory,
+# which rescued fork the digest came off -- so the machine paths inside them
+# are the measurement conditions, not sloppiness, and scrubbing them would
+# falsify the record rather than clean it.  They are internal engineering
+# documents in the sense docs/superpowers/** already is: the user-facing
+# page for this feature is docs/public/TILES.md, which carries no machine
+# path and ships.
+tilestream/BRANCHES.md
+tilestream/DEV-BOX-CUPY.md
+tilestream/GPU-SCHEDULING-TRAPS.md
+tilestream/HANDOFF-case-imagery.md
+tilestream/HANDOFF.md
+tilestream/HARDENED-SEAM-GATE.md
+tilestream/OVERLAP-RECEIPT.md
+tilestream/PERF-FINDINGS.md
+tilestream/PLOTS-AS-YOU-GO.md
+tilestream/RENDER-CLI.md
+tilestream/RESULTS.md
+
+# Verbatim forks rescued off two destroyed boxes, kept so a digest taken on
+# a dead machine can still be diffed against the tree that replaced it.
+# They are copies of files that also exist above them, they are not on any
+# import path, and editing them is the one thing that would make them
+# useless.
+tilestream/rescued-tools/**
+
+# Campaign runbook shells: each cds into a rented node's own case tree and
+# drives a measurement that needs that node's staged inputs, on the
+# tools/ens_sweep precedent above -- the analysis Python beside them is not
+# excluded and ships.
+tilestream/rrtmgp_runall.sh
+tools/harvest_case_imagery.sh
+tools/les1m_costfinal.sh
+tools/les1m_queue.sh
+tools/les1m_trimmed.sh
+
+# The 2011 superoutbreak campaign configs.  Their forcing, vtable and
+# geography roots point into the case tree staged on the rented node the
+# runs were made on; nobody else has those files, so the configs are a
+# record of what was run rather than something a reader can run.  The
+# probe_* configs beside them carry no machine path and ship.
+configs/superoutbreak_20110427_d01_3km.toml
+configs/superoutbreak_20110427_d01_960.toml
+configs/superoutbreak_20110427_probe480.toml
+configs/superoutbreak_20110427_smoke.toml

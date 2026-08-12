@@ -1508,8 +1508,17 @@ def apply_smag2d_moisture(state: DomainState, cfg: RunConfig,
         q += dt_eff * state.scratch((nz, ny, nx), "smag_r" + name) / chm
 
 
-def _prepare_small_step_init_launch(state: DomainState):
-    """Bind the two invariant small-step initialization launches."""
+def _prepare_small_step_init_launch(state: DomainState, cfg: RunConfig):
+    """Bind the two invariant small-step initialization launches.
+
+    ``cfg`` is consumed for one thing only: whether each horizontal axis is
+    periodic.  The uv kernel builds WRF's ``muu``/``muus`` inline and
+    ``calc_mu_uv`` picks the boundary face's off-domain neighbour from
+    ``periodic_x``/``periodic_y`` (module_big_step_utilities_em.F:59-115),
+    so the flag has to reach the kernel; ArWen's spelling of "not periodic"
+    is ``_boundary_x``/``_boundary_y`` (open, specified, or nested), the same
+    predicate ``slow_pgf`` and the advection launchers already pass.
+    """
     nz, ny, nx = state.p.shape
     block = (256,)
     uv_n = nz * (ny + 1) * (nx + 1)
@@ -1519,6 +1528,7 @@ def _prepare_small_step_init_launch(state: DomainState):
         state.u_pp, state.v_pp, state.u0, state.v0, state.u, state.v,
         state.mup0, state.mup, state.mub2d, state.c1h, state.c2h,
         state.msfu, state.msfv, np.int32(state.has_msf),
+        np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg)),
         np.int32(nz), np.int32(ny), np.int32(nx),
     )
 
@@ -1541,7 +1551,7 @@ def _prepare_small_step_init_launch(state: DomainState):
     return launch
 
 
-def _init_small_steps(state: DomainState) -> None:
+def _init_small_steps(state: DomainState, cfg: RunConfig) -> None:
     """WRF ``small_step_prep`` + ``calc_p_rho`` (step 0).
 
     The acoustic perturbations are the deviations of the *time-t* fields
@@ -1552,12 +1562,19 @@ def _init_small_steps(state: DomainState) -> None:
     gradient is consistent.  On stage 1 (t* = t) every perturbation is
     exactly zero.
     """
-    _prepare_small_step_init_launch(state)()
+    _prepare_small_step_init_launch(state, cfg)()
 
 
-def _prepare_small_step_finish_launch(state: DomainState,
+def _prepare_small_step_finish_launch(state: DomainState, cfg: RunConfig,
                                       hdiab_dt: float = 0.0):
-    """Bind the two invariant small-step finish launches."""
+    """Bind the two invariant small-step finish launches.
+
+    ``cfg`` carries the same periodic-axis decision the init launcher
+    documents: ``small_step_finish`` divides by the very ``muu``/``muus``
+    pair ``small_step_prep`` multiplied by (module_small_step_em.F:96-98),
+    so the two kernels must agree on the boundary face's neighbour or the
+    coupling is not undone.
+    """
     nz, ny, nx = state.p.shape
     block = (256,)
     uv_n = nz * (ny + 1) * (nx + 1)
@@ -1566,7 +1583,9 @@ def _prepare_small_step_finish_launch(state: DomainState,
     uv_args = (
         state.u, state.v, state.u_pp, state.v_pp, state.mup, state.mu_pp,
         state.mub2d, state.c1h, state.c2h, state.msfu, state.msfv,
-        np.int32(state.has_msf), np.int32(nz), np.int32(ny), np.int32(nx),
+        np.int32(state.has_msf),
+        np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg)),
+        np.int32(nz), np.int32(ny), np.int32(nx),
     )
 
     h_diabatic = state.h_diabatic if hdiab_dt else state.p
@@ -1588,7 +1607,8 @@ def _prepare_small_step_finish_launch(state: DomainState,
     return launch
 
 
-def _finish_small_steps(state: DomainState, hdiab_dt: float = 0.0) -> None:
+def _finish_small_steps(state: DomainState, cfg: RunConfig,
+                        hdiab_dt: float = 0.0) -> None:
     """WRF ``small_step_finish``: fold the acoustic perturbations into the
     uncoupled prognostic fields — the new RK stage estimate.
 
@@ -1605,7 +1625,7 @@ def _finish_small_steps(state: DomainState, hdiab_dt: float = 0.0) -> None:
     keep the heating in their provisional estimates, :408-415).  Float64
     mirror: ``gpuwm.verify.npref.np_small_step_finish_theta``.
     """
-    _prepare_small_step_finish_launch(state, hdiab_dt)()
+    _prepare_small_step_finish_launch(state, cfg, hdiab_dt)()
 
 
 def _advance_stage(state: DomainState, dt_eff: float) -> None:
@@ -2114,6 +2134,12 @@ def apply_open_zero_gradient(state: DomainState, cfg: RunConfig) -> None:
     phi'/mu' stay prognostic everywhere (their boundary evolution is
     column-local plus the radiated boundary-face divergence).  Called at
     the end of every RK stage; no-op with the periodic defaults.
+
+    The tangential velocity's mask needs one more row/column than the
+    boundary-normal mask has, and where that extra one comes from is decided
+    by the TANGENTIAL axis's own boundary condition -- see the comment at the
+    two ``concatenate`` calls.  ``open_x`` with a periodic y is the case that
+    made it matter.
     """
     if cfg.open_x:
         uw = state.u[:, :, 0]                          # (nz, ny) west face
@@ -2135,8 +2161,26 @@ def apply_open_zero_gradient(state: DomainState, cfg: RunConfig) -> None:
                                        state.w[1:-1, :, 0])
         state.w[1:-1, :, -1] = cp.where(owe, state.w[1:-1, :, -2],
                                         state.w[1:-1, :, -1])
-        mvw = cp.concatenate([outw, outw[:, -1:]], axis=1)   # v rows 0..ny
-        mve = cp.concatenate([oute, oute[:, -1:]], axis=1)
+        # The mask is (nz, ny) at mass rows and v needs (nz, ny+1) rows, so
+        # the tangential axis has to supply one more.  WHICH one is the y
+        # boundary condition's business, not a detail: on a NON-periodic y
+        # the extra row is a real north face and takes the zero-gradient
+        # repeat; on a PERIODIC y row ny is the ALIAS of row 0
+        # (tilestream/spec.py's module docstring states the convention, and
+        # `harness.make_state` seeds it) and must take row 0's mask, or the
+        # two copies of one physical face are given opposite treatments.
+        #
+        # MEASURED at 96x64x25, open_x with y periodic, ONE resident step:
+        # the repeat leaves max|v[ny] - v[0]| = 2.51 m/s, at exactly the two
+        # x boundary columns and nowhere else, from a seeded state where it
+        # was zero.  The periodic arm of the same probe stays at 0, which is
+        # what shows the probe can see the invariant at all.  It is also
+        # what made this configuration untileable: a tiled scatter writes the
+        # alias FROM row 0 and so cannot reproduce a domain that has broken
+        # its own alias.
+        y_alias = slice(-1, None) if _boundary_y(cfg) else slice(0, 1)
+        mvw = cp.concatenate([outw, outw[:, y_alias]], axis=1)  # v rows 0..ny
+        mve = cp.concatenate([oute, oute[:, y_alias]], axis=1)
         state.v[:, :, 0] = cp.where(mvw, state.v[:, :, 1], state.v[:, :, 0])
         state.v[:, :, -1] = cp.where(mve, state.v[:, :, -2],
                                      state.v[:, :, -1])
@@ -2160,11 +2204,64 @@ def apply_open_zero_gradient(state: DomainState, cfg: RunConfig) -> None:
                                        state.w[1:-1, 0, :])
         state.w[1:-1, -1, :] = cp.where(own, state.w[1:-1, -2, :],
                                         state.w[1:-1, -1, :])
-        mus = cp.concatenate([outs, outs[:, -1:]], axis=1)   # u faces 0..nx
-        mun = cp.concatenate([outn, outn[:, -1:]], axis=1)
+        # The x mirror of the y rule above: with ``open_y`` and a PERIODIC x
+        # (``open_x`` off and no specified/nested forcing) u's slot nx is the
+        # alias of slot 0 and takes slot 0's mask.
+        x_alias = slice(-1, None) if _boundary_x(cfg) else slice(0, 1)
+        mus = cp.concatenate([outs, outs[:, x_alias]], axis=1)  # u faces 0..nx
+        mun = cp.concatenate([outn, outn[:, x_alias]], axis=1)
         state.u[:, 0, :] = cp.where(mus, state.u[:, 1, :], state.u[:, 0, :])
         state.u[:, -1, :] = cp.where(mun, state.u[:, -2, :],
                                      state.u[:, -1, :])
+
+
+
+def close_periodic_alias(state: DomainState, cfg: RunConfig) -> None:
+    """On a periodic axis, the extra staggered face IS face 0.  Say so.
+
+    ``u`` has ``nx+1`` faces for ``nx`` mass cells and ``v`` has ``ny+1`` for
+    ``ny``.  When the axis wraps, the last of those is not a face of its own:
+    it is the SAME FACE as index 0, reached the other way round.
+    ``tilestream.spec`` builds every gather, scatter and halo band on exactly
+    that identity (spec.py:34-52: "gathers never read the alias slot"; under
+    ``periodic=True`` the alias slot is logical face 0), and
+    ``TileSpec.scatter`` writes the domain's alias slot FROM face 0 for that
+    reason.
+
+    NOTHING WAS MAINTAINING IT.  No periodic stencil writes the slot -- they
+    wrap their indices instead -- so it kept whatever the initialiser left,
+    which for a window of a larger analysis is the real column one past the
+    window: on this case's 128-wide window, ``u[:, :, nx]`` sat 17.4 m/s away
+    from ``u[:, :, 0]`` at t=0 and stayed there.
+
+    Consumers read it.  ``dycore._mass_divergence`` (:122-123) differences
+    ``ru[:, :, 1:] - ru[:, :, :-1]``, so the last mass column's mass tendency
+    came off that stale face, and ``physics._prepare_atmosphere``
+    (physics.py:1379-1381) destaggers ``0.5*(u[:-1] + u[1:])``, so the last
+    mass column and the top mass row of every surface-layer and PBL carrier
+    were driven by a wind that is not part of the solution.  That is wrong on
+    ONE GPU.
+
+    It is also the whole of the single-vs-multi physics divergence.  A
+    decomposition re-derives the slot from face 0 -- by the contract above,
+    and unavoidably: the rank that holds the domain's alias slot receives it
+    through the halo exchange from the rank that owns face 0 -- so the two
+    arms fed different winds to the same cells and differed after ONE step,
+    diffusely and nowhere near a rank seam.  MEASURED, 128x96x49, one step,
+    full physics through ``MultiGPUDomain``: 61 of 158 carriers differ
+    without this call, 0 with it, at 1x1, 1x2 and 2x2 alike.
+
+    Closing it here, at the end of the step, is inert for a RANK: the halo
+    exchange overwrites the tile's outermost faces before the next step, and
+    the outermost mass column those faces feed is a halo column that
+    ``TileSpec.scatter`` discards.  A NON-PERIODIC axis carries a real
+    closing boundary face -- the specified/open lateral boundary owns it --
+    and is left alone.
+    """
+    if not _boundary_x(cfg):
+        state.u[..., -1] = state.u[..., 0]
+    if not _boundary_y(cfg):
+        state.v[..., -1, :] = state.v[..., 0, :]
 
 
 def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
@@ -2370,12 +2467,12 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
               (ns, cfg.dt / ns))
     emdiv = cfg.emdiv > 0.0
     nzs, nys, nxs = state.p.shape
-    launch_small_step_init = _prepare_small_step_init_launch(state)
-    launch_small_step_finish = _prepare_small_step_finish_launch(state)
+    launch_small_step_init = _prepare_small_step_init_launch(state, cfg)
+    launch_small_step_finish = _prepare_small_step_finish_launch(state, cfg)
     if cfg.mp_physics != 0:
         final_hdiab_dt = stages[-1][0] * stages[-1][1]
         launch_small_step_finish_final = _prepare_small_step_finish_launch(
-            state, final_hdiab_dt)
+            state, cfg, final_hdiab_dt)
     else:
         launch_small_step_finish_final = launch_small_step_finish
     small_step_finishes = (
@@ -2509,6 +2606,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         if state.physics is not None:
             state.physics.accept_microphysics(microphysics_result)
         update_diagnostics(state, cfg.hypsometric_opt)  # after the RK loop)
+    close_periodic_alias(state, cfg)
     state.elapsed_seconds += cfg.dt
 
 
@@ -2569,6 +2667,20 @@ def stability_report(state: DomainState, cfg: RunConfig | None = None,
     kernel = get_kernel("health", "health_final")
     kernel((1,), (256,), (partial, result, np.int32(nblocks)))
     host = cp.asnumpy(result)                           # sole health readback
+    return decode_stability_record(host, cfg, boundary_width=boundary_width)
+
+
+def decode_stability_record(host, cfg: RunConfig | None = None, *,
+                            boundary_width: int | None = None) -> dict:
+    """``health_final``'s eight-word record, as :func:`stability_report`'s dict.
+
+    Factored out so a STREAMED domain, whose record is folded per tile inside
+    the sweep (:mod:`gpuwm.core.streaming`), decodes through this exact
+    function rather than through a copy of it.  The two paths differ in which
+    memory the reduction READS and in nothing else, which is the whole claim
+    that fold rests on -- and a duplicated decoder is how such a claim stops
+    being true a year later.
+    """
     u_max, w_max, th_max = (float(value) for value in host[:3])
     nan = not (math.isfinite(u_max) and math.isfinite(w_max)
                and math.isfinite(th_max))

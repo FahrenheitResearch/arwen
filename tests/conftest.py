@@ -33,6 +33,30 @@ import pytest
 #: The rented-GPU workflow leaves this set on the user's own machine.
 NO_LOCAL_GPU = os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0")
 
+if NO_LOCAL_GPU:
+    # RUNTIME BACKSTOP, because source inspection is not a guarantee.  The
+    # AST detector below marks tests whose *own* source imports cupy, but a
+    # test can reach the device through an intermediary --
+    # ``test_multigpu_forced_gpu.py`` did exactly that with a lazy
+    # ``from tilestream import multigpu`` inside the test body, dodged the
+    # marker automation, and RAN ON THE LOCAL CARD during a mandated
+    # CPU-only invocation.  No enumeration of intermediaries can close that,
+    # so the guarantee is planted where every route converges: the CUDA
+    # runtime reads this variable at initialisation, and "-1" is an invalid
+    # ordinal that leaves NOTHING visible.  Any escaped test's first device
+    # use then fails loudly (cudaErrorNoDevice) instead of silently running
+    # on the owner's card, whatever its import style, and subprocesses
+    # inherit the ban.
+    #
+    # An import-level ban was tried first and rejected: merely importing
+    # cupy is NOT the crime (module-scope ``import cupy`` sits under swaths
+    # of legitimate CPU coverage, and zarr pulls the full package into every
+    # pytest process before any conftest runs) -- opening the device is.
+    # ``tests/test_gpu_marker_discipline.py`` pins this backstop
+    # red-on-revert by asserting the banned process really sees zero
+    # devices.
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 
 def has_gpu() -> bool:
     """True when a usable CUDA device is present.
@@ -159,6 +183,15 @@ def pytest_collection_modifyitems(config, items):
 
     Marking is unconditional so that ``-m "not gpu"`` is honest on any
     machine, with or without a device.
+
+    The ban-skip applies to every item CARRYING the marker, not only to the
+    items this hook marked.  The old form skipped exactly its own AST hits,
+    so a hand-marked test whose device use is transitive (no cupy in its own
+    source, a lazy ``from tilestream import multigpu`` in the body) was
+    marked ``gpu`` yet NOT skipped, and ran on the local card during a
+    CPU-only invocation.  Belt: marker implies skip.  Braces: the
+    ``CUDA_VISIBLE_DEVICES=-1`` backstop planted at import above, for tests
+    carrying no marker at all.
     """
     skip_local = pytest.mark.skip(
         reason="GPUWM_NO_LOCAL_GPU=1: GPU work belongs on the rented device")
@@ -167,13 +200,15 @@ def pytest_collection_modifyitems(config, items):
         if path is None:
             continue
         whole, functions = _cupy_scope(str(path))
+        detected = whole
         if not whole:
             # ``originalname`` is the undecorated name for parametrised items.
             name = getattr(item, "originalname", None) or item.name
-            if name.split("[")[0] not in functions:
-                continue
-        item.add_marker(pytest.mark.gpu)
-        if NO_LOCAL_GPU:
+            detected = name.split("[")[0] in functions
+        if detected:
+            item.add_marker(pytest.mark.gpu)
+        if NO_LOCAL_GPU and (detected
+                             or item.get_closest_marker("gpu") is not None):
             item.add_marker(skip_local)
 
 

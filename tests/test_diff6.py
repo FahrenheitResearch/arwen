@@ -573,7 +573,7 @@ def test_step_adds_one_time_t_diff6_tendency_to_all_three_rk_stages(
 
     seen = []
 
-    def prepare_init(_state):
+    def prepare_init(_state, _cfg):
         def record_stage_tendency():
             seen.append(cp.asnumpy(_state.rth_t).astype(np.float64))
         return record_stage_tendency

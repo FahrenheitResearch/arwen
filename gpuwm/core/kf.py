@@ -186,14 +186,31 @@ def load_kf_table() -> KFTable:
     return KFTable(**arrays, **scalars)
 
 
-@lru_cache(maxsize=1)
-def _device_table():
+@lru_cache(maxsize=None)
+def _device_table_on(_device: int):
+    """The KF_LUTAB on ONE card.  The argument is the cache key and nothing
+    else -- it is the CURRENT device, which is what ``cp.asarray`` uploads to.
+
+    Keyed on the device because the alternative was measured to be fatal: a
+    process-wide ``lru_cache`` handed every card the pointers of whichever
+    one uploaded first, and on a dual-4090 (consumer Ada, no P2P) the second
+    card's KF kernel died with CUDA_ERROR_ILLEGAL_ADDRESS -- which destroys
+    the context for the whole process, so every later run in it also failed,
+    at unrelated allocations.  The table is 250x220x2 + 220 + 200 float32
+    = 0.42 MiB, so a copy per card is not a cost worth avoiding.
+    """
     import cupy as cp
 
     table = load_kf_table()
     return tuple(cp.asarray(value) for value in
                  (table.temperature, table.qsat, table.thetae_base,
                   table.log_ratio))
+
+
+def _device_table():
+    import cupy as cp
+
+    return _device_table_on(cp.cuda.runtime.getDevice())
 
 
 def launch_kf(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
@@ -275,8 +292,11 @@ def launch_kf(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
 
 
 def validate_kf_outputs(
-        values: tuple, active: int, status) -> int:
+        values: tuple, active: int, status, *, describe=None) -> int:
     """Return finite-check flags for native KF feedback arrays.
+
+    ``describe`` opts this site into :mod:`gpuwm.core.health_ledger`; see
+    :func:`gpuwm.core.microphysics.validate_surface_diagnostics`.
 
     ``values`` follows the driver's first-invalid order: the six 3-D rates
     ``rthcuten``, ``rqvcuten``, ``rqccuten``, ``rqicuten``, ``rqrcuten``,
@@ -330,7 +350,10 @@ def validate_kf_outputs(
         (blocks,), (_VALIDATION_TPB,),
         values + (np.uint32(active), status,
                   np.int64(count_3d), np.int64(count_2d)))
-    return int(status[0].item())
+    from gpuwm.core import health_ledger
+
+    return health_ledger.read_status(
+        status, site="kain-fritsch", describe=describe)
 
 
 class KainFritsch:
@@ -344,6 +367,37 @@ class KainFritsch:
         self.w0avg = None
         self._history_state = None
         self._history_time = None
+
+    def ensure_trigger_history(self, state):
+        """Materialise ``w0avg`` NOW rather than on the first due call.
+
+        ``w0avg`` is a CARRIER (``restart.CUMULUS_CALLABLE_ARRAYS``), so it
+        belongs to the set a tiled or decomposed run ships between buffers.
+        Allocating it lazily means an inventory taken at construction does not
+        contain it and an inventory taken after the first cumulus event does:
+        the carrier set CHANGES IDENTITY MID-RUN.  A seam plan is built once
+        from the inventory and cannot follow that, so
+        ``tilestream.multigpu.MultiGPUDomain.refresh_arrays`` aborts the run
+        the moment cumulus first fires -- at cudt=5 min and dt=15 s that is
+        step 20, twenty steps after anything could still be called a
+        start-up failure.  ``tilestream.driver.make_physics_tile_state``
+        works around it by throwing a warm-up step away; the array is
+        (nz, ny, nx) zeros and there is nothing to warm up.
+
+        Idempotent, and it re-allocates on a state or shape change exactly as
+        the lazy path did, so a driver moved to a new state still gets a
+        fresh mean rather than the previous domain's memory.
+        """
+        import cupy as cp
+
+        shape = (int(state.w.shape[0]) - 1,) + tuple(
+            int(n) for n in state.w.shape[1:])
+        if (self.w0avg is None or self._history_state is not state
+                or tuple(self.w0avg.shape) != shape):
+            self.w0avg = cp.zeros(shape, dtype=DTYPE)
+            self._history_state = state
+            self._history_time = None
+        return self.w0avg
 
     def update_trigger_history(self, *, state, cfg):
         """Advance WRF's running-mean trigger velocity for one due call.
@@ -365,11 +419,7 @@ class KainFritsch:
 
         instantaneous = cp.ascontiguousarray(
             DTYPE(0.5) * (state.w[:-1] + state.w[1:]), dtype=DTYPE)
-        if (self.w0avg is None or self._history_state is not state
-                or self.w0avg.shape != instantaneous.shape):
-            self.w0avg = cp.zeros_like(instantaneous)
-            self._history_state = state
-            self._history_time = None
+        self.ensure_trigger_history(state)
         clock_dt = _model_clock_dt(cfg)
         stepcu = (1 if cfg.cudt_minutes <= 0.0 else
                   max(int(np.floor(

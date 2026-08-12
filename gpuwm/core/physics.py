@@ -42,6 +42,7 @@ from gpuwm.config import (MYJ_PBL_SCHEME, MYJ_SFCLAY_SCHEME,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.core import constants as c
+from gpuwm.core import health_ledger
 from gpuwm.core.noah import (_F2D as NOAH_FIELDS_2D,
                              _F3D as NOAH_FIELDS_3D,
                              launch_noah, load_tables, pack_params)
@@ -98,6 +99,14 @@ from gpuwm.core.sase import (launch_bulk_richardson_zi,
                              launch_vent_flux_diag)
 from gpuwm.core.sfclay import (SFCLAY_OUTPUTS, SFClayResult,
                                launch_sfclay, sfclay)
+from gpuwm.core.radiation_carriers import (
+    CARRIER_SOURCE_ANALYTIC_GEOMETRY,
+    CARRIER_SOURCE_DECLARED_CONSTANT,
+    CARRIER_SOURCE_EXTERNAL_ARRAY,
+    CARRIER_SOURCE_RADIATION_SCHEME,
+    CARRIER_SOURCE_UNWRITTEN,
+    SURFACE_RADIATION_POLICY_REQUIRED,
+    CarrierContract, CarrierContractError, consumer_carriers)
 from gpuwm.core.state import DTYPE, DomainState
 # NumPy-only authority module: the SASE closure constants are single-
 # sourced from it exactly as gpuwm.core.sase does (no CPU-import cost).
@@ -806,11 +815,22 @@ def _surface_pbl_step_due(itimestep: int, stepbl: int,
 
 
 def _validated_array(value, shape: tuple[int, ...], name: str) -> cp.ndarray:
-    """Validate one scheme output and return a contiguous FP32 device view."""
+    """Validate one scheme output and return a contiguous FP32 device view.
+
+    The finite check runs through :func:`gpuwm.core.health_ledger.check_finite`
+    so that a caller who has installed a ledger keeps the reduction and loses
+    only the blocking read.  It matters more here than the count of sites
+    suggests: this is the per-ARRAY validator, and a radiation- or
+    cumulus-due step walks it a dozen times, so a due step was a dozen
+    pipeline drains that the whole-step profile never saw because it never
+    profiled a due step.
+    """
     array = cp.asarray(value, dtype=DTYPE)
     if array.shape != shape:
         raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
-    if not bool(cp.isfinite(array).all()):
+    if not health_ledger.check_finite(
+            array, site=f"validated:{name}",
+            message=f"{name} contains a non-finite value"):
         raise FloatingPointError(f"{name} contains a non-finite value")
     return cp.ascontiguousarray(array)
 
@@ -858,8 +878,19 @@ def _validate_native_microphysics(
         result: MicrophysicsDiagnostics,
         slots: Mapping[str, str],
         sr_upper: np.float32,
-        status: cp.ndarray) -> tuple[str | None, bool, bool]:
-    """Validate canonical scheme outputs with one kernel and one readback."""
+        status: cp.ndarray,
+        labels: Mapping[str, str] | None = None) -> tuple[str | None, bool, bool]:
+    """Validate canonical scheme outputs with one kernel and one readback.
+
+    ``labels`` opts the readback into :mod:`gpuwm.core.health_ledger`: it is
+    the caller's display names, and supplying them is what lets this site
+    build the refusal the CALLER would have built, at a drain, without a
+    blocking copy here.  All three returned values are error-only -- nothing
+    downstream of a healthy step reads them -- which is why deferring them
+    cannot move a forecast byte.
+    """
+    from gpuwm.core import health_ledger
+
     sr = result.sr
     active = sum(
         1 << bit for bit, name in enumerate(_MICROPHYSICS_VALIDATION_NAMES)
@@ -867,13 +898,28 @@ def _validate_native_microphysics(
     values = tuple(
         getattr(result, name) if name in slots else sr
         for name in _MICROPHYSICS_VALIDATION_NAMES)
+
+    def _first(flags: int) -> str | None:
+        return next(
+            (name for bit, name in enumerate(_MICROPHYSICS_VALIDATION_NAMES)
+             if flags & (1 << bit)),
+            None)
+
+    def _describe(flags: int) -> None:
+        name = _first(flags)
+        note = health_ledger.deferred_note()
+        if name is not None:
+            raise FloatingPointError(
+                f"microphysics {labels[name]} contains a non-finite "
+                f"value{note}")
+        raise ValueError(
+            "microphysics SR is outside its validated range "
+            f"[0, {float(sr_upper):.9g}]{note}")
+
     flags = validate_surface_diagnostics(
-        values, active, sr_upper, status)
-    invalid = next(
-        (name for bit, name in enumerate(_MICROPHYSICS_VALIDATION_NAMES)
-         if flags & (1 << bit)),
-        None)
-    return invalid, bool(flags & (1 << 16)), bool(flags & (1 << 17))
+        values, active, sr_upper, status,
+        describe=None if labels is None else _describe)
+    return _first(flags), bool(flags & (1 << 16)), bool(flags & (1 << 17))
 
 
 def _specified_mass_mask(array: cp.ndarray) -> None:
@@ -1172,7 +1218,7 @@ def validate_ysu_tendencies(
             f"YSU returned non-finite {name} tendency{where}{detail}")
 
     if status is not None:
-        invalid = validate_ysu_outputs(ysu, status)
+        invalid = validate_ysu_outputs(ysu, status, refuse=_refuse)
         if invalid is not None:
             _refuse(invalid)
         return
@@ -1325,10 +1371,20 @@ def _validate_native_kf_result(
         else:
             values.append(value)
             active |= 1 << bit
+    def _describe(flags: int) -> None:
+        from gpuwm.core import health_ledger
+
+        for bit, label in enumerate(_KF_VALIDATION_LABELS):
+            if flags & (1 << bit):
+                raise FloatingPointError(
+                    f"{label} contains a non-finite value"
+                    + health_ledger.deferred_note())
+
     invalid = validate_kf_outputs(
         tuple(values), active,
         state.scratch(
-            (1,), "physics_validation_status").view(cp.uint32))
+            (1,), "physics_validation_status").view(cp.uint32),
+        describe=_describe)
     for bit, label in enumerate(_KF_VALIDATION_LABELS):
         if invalid & (1 << bit):
             raise FloatingPointError(
@@ -1455,6 +1511,30 @@ def couple_ysu_tendencies(state: DomainState, cfg: RunConfig,
     if state.has_msf:
         ru = ru / state.msfu[None]
         rv = rv / state.msfv[None]
+        # AND THE DIVISION UNDOES THE DUPLICATION MADE AT :1277-1280.
+        # ``msfu``/``msfv`` are staggered STATICS and their own alias slot
+        # was never closed: on a window of a larger analysis it holds the
+        # map factor one column/row OUTSIDE the window, not face zero's.  So
+        # ``ru[..., nx] = ru[..., 0] / msfu[..., nx]`` while
+        # ``ru[..., 0] = ru[..., 0] / msfu[..., 0]``, and the periodic
+        # identity this function states in its own comment stops holding
+        # right here.  Restoring it is what makes the coupled PBL momentum
+        # tendency survive a decomposition: a tiled run re-derives the alias
+        # slot from face 0 (tilestream/spec.py:34-52) and the monolithic run
+        # must agree with it.  MEASURED, 128x96x49, full physics, one step:
+        # driver/pbl_tendencies/rv was the last of 158 carriers still
+        # differing 1 GPU vs 4; with this it is exact.
+        #
+        # Closing the tendency rather than the map factor is deliberate.
+        # ru/rv are CARRIERS, so a rank's copy is refreshed by the halo
+        # exchange every step and this write is inert there; the map factors
+        # are setup arrays that no exchange refreshes, and rewriting a
+        # tile's outermost map-factor column would corrupt the outer edge of
+        # its halo ring permanently.
+        if not (cfg.specified or cfg.nested or cfg.open_x):
+            ru[..., -1] = ru[..., 0]
+        if not (cfg.specified or cfg.nested or cfg.open_y):
+            rv[..., -1, :] = rv[..., 0, :]
         rtheta = rtheta / state.msft[None]
     return PhysicsTendencies(cp.ascontiguousarray(ru),
                              cp.ascontiguousarray(rv),
@@ -1659,11 +1739,30 @@ class PhysicsDriver:
     #: instead of publishing a GLW row that looks like a measurement.
     glw_provenance: str = "declared"
 
+    #: CLASS DEFAULTS for the three bookkeeping slots the hot path reads
+    #: every step, on exactly the argument the ``sase_active`` default
+    #: above is written on: a driver someone assembled another way -- a
+    #: test double, a probe -- must not raise AttributeError inside
+    #: ``compute``, and a plain attribute read is what keeps the hot path
+    #: cheap.  ``__init__`` sets all three, so a real driver never uses
+    #: these.
+    #:
+    #: ``carriers`` defaults to None rather than to a contract, and the
+    #: consumer seam REFUSES on None.  A shared mutable class default
+    #: would be one contract for every driver in the process, and a
+    #: silently-created empty one would let a driver assembled without a
+    #: contract consume whatever its buffers held -- which is the defect
+    #: the contract exists to close, reintroduced through the back door.
+    carriers = None
+    surface_moisture_ledger = None
+    carriers_need_producer_refresh = False
+
     def __init__(self, state: DomainState, cfg: RunConfig,
                  fields: dict[str, cp.ndarray], sfclay_result: SFClayResult,
                  noah_params, radiation=None, cumulus=None,
                  noahmp_params=None, noahmp_geometry=None,
-                 ruc_params=None, glw_provenance="declared"):
+                 ruc_params=None, glw_provenance="declared",
+                 carriers=None):
         self.state = state
         self.fields = fields
         # Where this domain's downward longwave came from; see the class
@@ -1787,6 +1886,36 @@ class PhysicsDriver:
                             "noah": 0, "ysu": 0, "cumulus": 0,
                             "cumulus_history": 0}
         self.ysu_nan_guard_fires = 0
+        #: Opt-in :class:`~gpuwm.core.surface_moisture_ledger.
+        #: SurfaceMoistureLedger`, or ``None`` on every ordinary run.  The
+        #: two branches that read it are the ONLY places it is consulted,
+        #: and neither writes a physics field or a restart-carried scratch
+        #: buffer, so attaching one cannot move a forecast.  Bound here
+        #: rather than left to ``getattr`` so that reading it is a plain
+        #: attribute access on the hot path.
+        self.surface_moisture_ledger = None
+        #: THE SURFACE-RADIATION CARRIER CONTRACT
+        #: (:mod:`gpuwm.core.radiation_carriers`).  Always present, never
+        #: opt-in: it is the authority that stands between a land-surface
+        #: scheme and a radiative buffer nobody wrote.  ``initialize_physics``
+        #: seeds it with each carrier's true origin; the radiation seam, the
+        #: analytic COSZEN provider and :meth:`set_forcing` are the only
+        #: writers; :meth:`compute` reads it immediately before the LSM call.
+        #: A driver assembled directly gets one too -- that is the whole
+        #: point of putting the check at consumption rather than at the
+        #: config door.
+        self.carriers = (
+            carriers if carriers is not None
+            else CarrierContract(
+                getattr(cfg, "surface_radiation_policy",
+                        SURFACE_RADIATION_POLICY_REQUIRED)))
+        #: True only on a resume from a checkpoint written before the
+        #: carrier contract existed, where the provenance and ages of the
+        #: carriers are simply not in the file.  The first surface call
+        #: after such a resume forces a producer refresh rather than
+        #: trusting a rebuilt record; see gpuwm/io/restart.py's
+        #: _restore_carriers for why guessing is the worse option.
+        self.carriers_need_producer_refresh = False
         # SASE claims the PBL slot when selected.  The ``sase`` count key
         # and every SASE attribute exist ONLY when it is active, so every
         # other configuration's driver header stays byte-identical.
@@ -1977,7 +2106,8 @@ class PhysicsDriver:
                 invalid, below, above = _validate_native_microphysics(
                     result, slots, self._sr_roundoff_upper,
                     self.state.scratch(
-                        (1,), "physics_validation_status").view(cp.uint32))
+                        (1,), "physics_validation_status").view(cp.uint32),
+                    labels)
                 if invalid is not None:
                     raise FloatingPointError(
                         f"microphysics {labels[invalid]} contains a "
@@ -2070,6 +2200,49 @@ class PhysicsDriver:
                     f[carrier] += cp.maximum(diagnostic, DTYPE(0.0))
         self.microphysics_updates += 1
 
+    def attach_surface_moisture_ledger(self, ledger) -> None:
+        """Attach a ledger and seed it with the carriers' INITIAL provenance.
+
+        Seeding matters more than it looks.  A run whose longwave is a
+        declared constant never calls ``_stamp_carriers``, so without this
+        the ledger would show the carrier as never-written and a reader
+        could not tell "no longwave scheme, value declared at t=0" from
+        "longwave scheme attached but somehow never ran".  Those are
+        different defects and the ledger has to separate them.
+        """
+        ledger.note_carrier(
+            "glw", source=f"initial:{self.glw_provenance}", model_time=0.0,
+            value=float(self.fields["glw"].reshape(-1)[0]))
+        for name in ("swdown", "gsw", "coszen"):
+            array = self.fields.get(name)
+            if array is None:
+                continue
+            ledger.note_carrier(
+                name, source="initial:allocated", model_time=0.0,
+                value=float(array.reshape(-1)[0]))
+        self.surface_moisture_ledger = ledger
+
+    def _stamp_carriers(self, state: DomainState, cfg: RunConfig) -> None:
+        """Tell an attached ledger which carriers this call just rewrote.
+
+        The SOURCE recorded is the scheme pair that produced the value, not
+        the buffer it landed in, because "GLW is 300" and "GLW is 300
+        because nothing computes it" are the two cases the ledger exists to
+        tell apart.  A carrier absent from ``self.fields`` is absent from
+        the record rather than recorded as zero.
+        """
+        ledger = self.surface_moisture_ledger
+        now = float(state.elapsed_seconds)
+        source = (f"ra_lw_physics={int(cfg.ra_lw_physics)},"
+                  f"ra_sw_physics={int(cfg.ra_sw_physics)}")
+        for name in ("glw", "swdown", "gsw", "coszen"):
+            array = self.fields.get(name)
+            if array is None:
+                continue
+            ledger.note_carrier(
+                name, source=source, model_time=now,
+                value=float(array.reshape(-1)[0]))
+
     def _run_radiation(self, atmosphere: Mapping[str, cp.ndarray],
                        state: DomainState, cfg: RunConfig) -> None:
         """Invoke and capture one due radiation result."""
@@ -2104,6 +2277,41 @@ class PhysicsDriver:
                     "callable")
             self.fields["coszen"][...] = _checked_array(
                 result.coszen, (ny, nx), "radiation COSZEN")
+        # CARRIER CONTRACT.  Stamped HERE rather than at the consumer
+        # because this is the one place that knows a carrier was actually
+        # RECOMPUTED rather than re-read.  The consumer's freshness
+        # question -- "how old is the longwave this surface call is about
+        # to eat" -- is answerable only against this timestamp, and the
+        # answer has to come from the producer's own call site or it is
+        # just a restatement of the buffer's existence.
+        now = float(state.elapsed_seconds)
+        if self.carriers is None:
+            raise CarrierContractError(
+                "the radiation seam has no carrier contract to stamp; a "
+                "PhysicsDriver assembled outside initialize_physics must "
+                "carry one, because provenance recorded nowhere is "
+                "provenance lost")
+        for name in ("glw", "swdown", "gsw", "coszen"):
+            if name not in self.fields:
+                continue
+            # A DECLARED longwave SURVIVES the radiation call: with
+            # ra_lw_physics=0 the shortwave-only adapters return the GLW
+            # array they were handed (gpuwm/core/dudhia.py), so the buffer
+            # is unchanged and relabelling it "produced by a radiation
+            # scheme" would be the exact mislabelling this contract exists
+            # to stop.  Its declared source and its timelessness both hold.
+            if (name == "glw" and int(cfg.ra_lw_physics) == 0
+                    and self.carriers.source("glw") in (
+                        CARRIER_SOURCE_DECLARED_CONSTANT,
+                        CARRIER_SOURCE_EXTERNAL_ARRAY)):
+                continue
+            self.carriers.declare(
+                name, source=CARRIER_SOURCE_RADIATION_SCHEME,
+                model_time=now)
+        # CARRIER PROVENANCE, ledger half.  Stamped only when a ledger is
+        # attached; the contract above is unconditional.
+        if self.surface_moisture_ledger is not None:
+            self._stamp_carriers(state, cfg)
         if self.olr is not None:
             # Fail closed rather than republish the previous call's flux:
             # the buffer only exists because the attached scheme declared
@@ -2321,22 +2529,34 @@ class PhysicsDriver:
         clearing these persistent copies therefore preserves current-step RK
         forcing and changes only Morrison plus the next compose.  No
         volume-rate copy is allocated.
+
+        THE EARLY RETURN IS GONE, ON PURPOSE.  It used to read
+        ``bool(self.cu_expiring.any())`` -- a host branch over device data --
+        and skip the clears when nothing was expiring.  Two things were wrong
+        with that and only one of them was the ~94 us the readback drains:
+        the branch made the STEP'S LAUNCH SEQUENCE depend on the values in
+        the arrays, so the step could not be captured as a CUDA graph and,
+        worse, no host-computable cache key could ever have been correct for
+        it.  The clears now run unconditionally through
+        :func:`gpuwm.core.health_ledger.masked_clear`, which writes exactly
+        what ``cp.where(mask, 0, array)`` wrote -- a select-and-store with no
+        arithmetic -- and, on the overwhelmingly common no-expiry step, only
+        reads the (ny, nx) mask and writes nothing.  Bit-exact, cheaper than
+        the ``cp.where`` it replaces even when it does fire (no full-size
+        temporary), and constant-topology.
         """
         if self.cu_expiring is None:
             self._cu_expiry_pending = False
             return
-        if not bool(self.cu_expiring.any()):
-            self._cu_expiry_pending = False
-            return
         mask = self.cu_expiring[None] != DTYPE(0.0)
         for array in self.cu_rates.values():
-            array[...] = cp.where(mask, DTYPE(0.0), array)
+            health_ledger.masked_clear(mask, array)
         # These are the held, already mass-coupled copies used on the NEXT
         # compose.  The separately composed current-step target is untouched.
         for name in ("rtheta", "rqv", "rqc", "rqr", "rqi", "rqs"):
             array = getattr(self.cumulus_tendencies, name)
             if array is not None:
-                array[...] = cp.where(mask, DTYPE(0.0), array)
+                health_ledger.masked_clear(mask, array)
         self.cu_expiring[...] = DTYPE(0.0)
         self._cu_expiry_pending = False
 
@@ -2868,6 +3088,52 @@ class PhysicsDriver:
         f["rainbl"][...] = 0.0
         self._pending_rainbl[...] = 0.0
         SurfacePrecipitationForcing.from_fields(f).clear()
+
+    def refresh_surface_diagnostics_after_analysis(
+            self, state: DomainState) -> bool:
+        """Rerun the FINAL 2 m provider after an analysis moved the column.
+
+        WHY A DA CYCLE NEEDS THIS.  T2 and Q2 are not prognostic.  They are
+        diagnosed once per surface call, from the lowest model level and the
+        surface endpoint as they stood at that call.  An analysis that
+        changes the lowest-level temperature or moisture therefore leaves
+        the PUBLISHED 2 m fields describing the state before the analysis --
+        and the next output frame carries them out as though they described
+        the state after it.  The error is largest exactly where the analysis
+        did the most work, which is the worst possible place for it.
+
+        So the provider reruns HERE, between the analysis and the first
+        output frame, and the provider that reruns is the one that owns the
+        published value for THIS land-surface scheme: Noah's SFCDIAGS for
+        scheme 2 (:data:`LAND_SURFACE_SFCDIAGS_SCHEMES`), and nothing for
+        RUC or Noah-MP, whose own 2 m diagnostics are computed inside their
+        LSM step and cannot be rerun without rerunning the LSM.  Scheme 2
+        is spelled here as its resolved runner (``_run_noah``) rather than
+        as the selector value, so a scheme renumbering cannot silently
+        redirect this at a different LSM.  Returns
+        True when a value was republished and False when this configuration
+        has no rerunnable provider, so a caller can say which happened
+        rather than assume.
+
+        NOT a physics step: no scheme is advanced, no accumulator moves, no
+        model second passes.  It republishes a diagnostic from the state
+        that is already there.
+        """
+        if not self.surface_enabled:
+            return False
+        # Dispatched on the driver's OWN resolved selector map rather than
+        # on a RunConfig handed in, because the caller of this method is a
+        # DA applier that has a state and no config, and because dispatching
+        # on the resolved map is what every other seam in this class does.
+        if self.scheme_dispatch["sf_surface_physics"] != "_run_noah":
+            return False
+        atmosphere = _prepare_atmosphere(state)
+        # PSFC first, for the same reason the ordinary surface call
+        # refreshes it first: the diagnostic divides by a density built
+        # from it, and an analysis can move the pressure column.
+        self.fields["psfc"][...] = atmosphere["p_interface"][0]
+        self._refresh_surface_diagnostics(atmosphere)
+        return True
 
     def _refresh_surface_diagnostics(self, atmosphere) -> None:
         """Transcribe WRF v4.6.1 SFCDIAGS for the supported Noah path.
@@ -3784,11 +4050,67 @@ class PhysicsDriver:
                 self.call_counts["sfclay"] += 1
             land_method = dispatch["sf_surface_physics"]
             if land_method is not None:
+                # THE ANALYTIC COSZEN PROVIDER, on the radiation cadence a
+                # radiation call would have used.  Radiation-free Noah-MP
+                # has no other writer for this carrier, and a carrier
+                # written once is a carrier that stops answering to the sun
+                # after its first minute.
+                # LEGACY-CHECKPOINT PRODUCER REFRESH.  A resume from a
+                # pre-contract checkpoint knows the carrier VALUES and
+                # nothing about their provenance, so the producers are
+                # rerun once here, before anything consumes them.  Costs
+                # one off-cadence radiation call on the first step after
+                # such a resume and nothing thereafter.
+                if self.carriers_need_producer_refresh:
+                    if radiation_enabled(cfg):
+                        self._run_radiation(atmosphere, state, cfg)
+                        self.call_counts["radiation"] += 1
+                    self.carriers_need_producer_refresh = False
+                if (not radiation_enabled(cfg)
+                        and "coszen" in self.fields
+                        and self.noahmp_geometry is not None
+                        and _radiation_step_due(
+                            itimestep, self.stepra, self.radt_minutes)):
+                    self._update_analytic_coszen(state, cfg)
+                # THE CARRIER CONTRACT, at the one instant that is
+                # downstream of every way a driver can be built: a config
+                # load, a direct initialize_physics call, a restart, a DA
+                # analysis.  The config-load guards are the friendly early
+                # word; this is the authority.
+                if self.carriers is None:
+                    raise CarrierContractError(
+                        "this PhysicsDriver was assembled without a "
+                        "surface-radiation carrier contract, and "
+                        f"sf_surface_physics={int(cfg.sf_surface_physics)} "
+                        "is about to consume radiative carriers.  "
+                        "initialize_physics builds one; a driver built "
+                        "another way must pass carriers=CarrierContract(...) "
+                        "and declare each carrier's source.  Skipping the "
+                        "contract is not a way to run without one -- it is "
+                        "the defect the contract closes."
+                    )
+                self.carriers.check_before_consumption(
+                    sf_surface_physics=int(cfg.sf_surface_physics),
+                    fields=self.fields, model_time=now,
+                    radiation_interval_seconds=float(self.radt_seconds),
+                    timestep_seconds=float(cfg.dt))
                 getattr(self, land_method)(atmosphere, cfg, itimestep)
                 if int(cfg.sf_surface_physics) in \
                         LAND_SURFACE_SFCDIAGS_SCHEMES:
                     self._refresh_surface_diagnostics(atmosphere)
                 self.call_counts["noah"] += 1
+            # SURFACE-MOISTURE LEDGER (opt-in, off by default).  Placed here
+            # because this is the instant after the FINAL writer of Q2 has
+            # run and before the PBL scheme can touch the column, which is
+            # the only point where "who wrote Q2, from what" has a single
+            # answer.  Attaching a ledger does not change a single physics
+            # field; an unattached driver never reaches this branch.
+            if self.surface_moisture_ledger is not None:
+                self.surface_moisture_ledger.capture(
+                    fields=self.fields, atmosphere=atmosphere,
+                    model_time=now,
+                    sf_sfclay_physics=int(cfg.sf_sfclay_physics),
+                    sf_surface_physics=int(cfg.sf_surface_physics))
             pbl_method = dispatch["bl_pbl_physics"]
             if pbl_method is not None:
                 getattr(self, pbl_method)(atmosphere, cfg)
@@ -3838,14 +4160,85 @@ class PhysicsDriver:
         return self.tendencies
 
     def set_forcing(self, **fields) -> None:
-        """Update externally supplied surface/radiation forcing in place."""
-        allowed = {"swdown", "glw", "rainbl"}
+        """Update externally supplied surface/radiation forcing in place.
+
+        ``gsw`` is in the allowed set and was not: RUC reads the NET
+        shortwave rather than SWDOWN, so an offline-forced RUC run had no
+        way to supply the one shortwave carrier its LSM actually consumes
+        and integrated the allocation zeros instead.  It arrives with the
+        same provenance discipline as its neighbours -- an externally
+        supplied carrier is ``external_array``, which is a producer for
+        the contract's purposes and a declared forcing in the receipt,
+        never "radiation available".
+
+        ``rainbl`` is not a radiative carrier and takes no provenance; it
+        is here because this is the surface-forcing door.
+        """
+        allowed = {"swdown", "glw", "gsw", "rainbl"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"unknown physics forcing field(s): {sorted(unknown)}")
+        missing = {name for name in fields
+                   if name != "rainbl" and name not in self.fields}
+        if missing:
+            # GSW exists only under RUC.  Setting a carrier this driver has
+            # no buffer for is a configuration mistake, not a no-op.
+            raise ValueError(
+                f"this driver carries no {sorted(missing)} buffer; GSW "
+                "exists only under sf_surface_physics=3 (RUC) and COSZEN "
+                "only under 4 (Noah-MP), so forcing one into a driver that "
+                "has neither would write nothing and read as success")
+        if self.carriers is None and set(fields) != {"rainbl"}:
+            # The same refusal the radiation seam and the consumption seam
+            # carry, written for this door: an offline-forcing caller who
+            # hands a hand-built driver a radiative field would otherwise
+            # crash on an attribute error here, or worse, write the buffer
+            # and leave its provenance nowhere -- which is the unlabelled
+            # carrier this contract exists to make impossible.
+            raise CarrierContractError(
+                "set_forcing received a radiative carrier, but this "
+                "PhysicsDriver was assembled without a surface-radiation "
+                "carrier contract to record who supplied it.  "
+                "initialize_physics builds one; a driver built another "
+                "way must pass carriers=CarrierContract(...) before "
+                "forcing radiative fields through this door.")
         shape = self.fields["tsk"].shape
         for name, value in fields.items():
             self.fields[name][...] = _as_2d(value, shape, name)
+            if name != "rainbl":
+                self.carriers.declare(
+                    name, source=CARRIER_SOURCE_EXTERNAL_ARRAY)
+
+    def _update_analytic_coszen(self, state: DomainState,
+                                cfg: RunConfig) -> None:
+        """Refresh COSZEN from solar geometry on the radiation cadence.
+
+        WHY A PROVIDER RATHER THAN AN INITIALIZATION.  COSZEN is a
+        radiation-driver carrier in WRF, so a run with radiation off has no
+        writer for it.  gpuwm used to seed it ONCE in
+        ``initialize_physics``, at the half-interval hour angle of a due
+        radiation call, and then never touch it again -- so a 12-hour
+        Noah-MP run computed its canopy radiation transfer against the sun
+        angle of its first minute for the whole forecast.  A single
+        initialization is not a provider; the sun moves.
+
+        Runs on the SAME cadence a radiation call would have, from the same
+        :func:`gpuwm.core.dudhia.wrf_solar_geometry` at the same
+        half-interval offset, so the sequence of values a radiation-free
+        run sees is the sequence a radiation-bearing run would have seen.
+        """
+        from gpuwm.core.dudhia import wrf_solar_geometry
+        geometry = self.noahmp_geometry
+        interval = float(self.radt_seconds)
+        coszen, _ = wrf_solar_geometry(
+            geometry.start_time, geometry.latitude_deg,
+            geometry.longitude_deg,
+            hour_offset_seconds=float(state.elapsed_seconds)
+            + 0.5 * interval)
+        self.fields["coszen"][...] = cp.asarray(coszen, dtype=DTYPE)
+        self.carriers.declare("coszen",
+                              source=CARRIER_SOURCE_ANALYTIC_GEOMETRY,
+                              model_time=float(state.elapsed_seconds))
 
     def _zero_accumulator(self) -> cp.ndarray:
         """A fresh zero surface field, shaped like every other 2-D output.
@@ -4049,7 +4442,7 @@ def initialize_physics(
         soil_temperature=285.0, soil_moisture=0.30, liquid_moisture=None,
         ivgtyp=10, isltyp=6, vegfra=50.0, tmn=285.0, xice=0.0, snow=0.0,
         snow_depth=0.0, sst=None,
-        swdown=0.0, glw=None, pblh=0.0, mavail=1.0,
+        swdown=None, glw=None, pblh=0.0, mavail=1.0,
         landuse=None,
         noah_params=None, radiation=None, cumulus=None,
         radiation_start_time=None, radiation_latitude=None,
@@ -4266,7 +4659,13 @@ def initialize_physics(
         "vegfra": _as_2d(vegfra, shape, "vegfra"),
         "tmn": _as_2d(tmn, shape, "tmn"),
         "xice": _as_2d(xice, shape, "xice"),
-        "swdown": _as_2d(swdown, shape, "swdown"),
+        # ``swdown=None`` allocates the same zeros the 0.0 default
+        # allocated, so every existing trajectory is byte-identical; what
+        # changes is that the CONTRACT can now tell "nobody said anything"
+        # from "the caller declared zero", which is the difference between
+        # a hole and a configuration.
+        "swdown": _as_2d(0.0 if swdown is None else swdown, shape,
+                         "swdown"),
         "glw": _as_2d(glw, shape, "glw"),
         "snow": _as_2d(snow, shape, "snow"),
         "snowh": _as_2d(snow_depth, shape, "snow_depth"),
@@ -4538,8 +4937,13 @@ def initialize_physics(
         guard_noahmp_glacier_columns(f, noahmp_params)
         if not radiation_active:
             # WRF's COSZEN is a radiation-driver carrier.  With radiation
-            # disabled there is no future writer, so seed the carrier once at
-            # the same half-interval hour angle a due radiation call uses.
+            # disabled there is no future writer in WRF's own design, so
+            # gpuwm supplies one: the seed below is the t=0 value of the
+            # analytic provider that PhysicsDriver._update_analytic_coszen
+            # then refreshes on the radiation cadence for the rest of the
+            # run.  Through 1.8.9 this WAS the whole story -- one value,
+            # never updated -- so a multi-hour Noah-MP run computed its
+            # canopy radiative transfer against its first minute's sun.
             from gpuwm.core.dudhia import wrf_solar_geometry
             interval = _physics_interval_seconds(
                 cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes,
@@ -4551,12 +4955,58 @@ def initialize_physics(
                 hour_offset_seconds=0.5 * interval)
             f["coszen"][...] = cp.asarray(coszen, dtype=DTYPE)
 
+    carriers = CarrierContract(
+        getattr(cfg, "surface_radiation_policy",
+                SURFACE_RADIATION_POLICY_REQUIRED))
+    # SEED THE CONTRACT with each carrier's TRUE origin at t=0.
+    #
+    # GLW: _resolve_initial_glw's three provenances map onto the contract
+    # without loss, and the mapping is where the old defect dies.  "scheme"
+    # means the buffer is SCRATCH -- the fill is DECLARED_CONSTANT_GLW_WM2
+    # only because that is the number 1.8.7 allocated and a healthy run
+    # must stay byte-for-byte what it was -- so its source is UNWRITTEN
+    # until a radiation call actually writes it.  That is the whole of
+    # "the constructor's 300.0 seed can never be silently consumed": if a
+    # surface call arrives before any radiation call has run, the contract
+    # refuses instead of integrating the allocation fill.  "unused" is
+    # unwritten for the same reason and consumes nothing.  "declared" is
+    # the caller's own number or the caller's own field, and the two are
+    # different sources because a receipt that cannot tell a typed
+    # constant from a source dataset's GLW is not a receipt.
+    if glw_provenance == "declared":
+        carriers.declare(
+            "glw",
+            source=(CARRIER_SOURCE_EXTERNAL_ARRAY
+                    if hasattr(glw, "shape") and getattr(glw, "ndim", 0)
+                    else CARRIER_SOURCE_DECLARED_CONSTANT))
+    else:
+        carriers.declare("glw", source=CARRIER_SOURCE_UNWRITTEN)
+    # SWDOWN/GSW/COSZEN all start unwritten.  swdown's argument default is
+    # None precisely so that "the caller said nothing" and "the caller
+    # typed a number" are different states; a caller-supplied value is a
+    # declaration and is labelled as one.
+    carriers.declare(
+        "swdown",
+        source=(CARRIER_SOURCE_UNWRITTEN if swdown is None else
+                CARRIER_SOURCE_EXTERNAL_ARRAY
+                if hasattr(swdown, "shape") and getattr(swdown, "ndim", 0)
+                else CARRIER_SOURCE_DECLARED_CONSTANT))
+    if "gsw" in f:
+        carriers.declare("gsw", source=CARRIER_SOURCE_UNWRITTEN)
+    if "coszen" in f:
+        carriers.declare(
+            "coszen",
+            source=(CARRIER_SOURCE_ANALYTIC_GEOMETRY if not radiation_active
+                    else CARRIER_SOURCE_UNWRITTEN),
+            model_time=(0.0 if not radiation_active else None))
+
     driver = PhysicsDriver(state, cfg, f, result, noah_params,
                            radiation=radiation, cumulus=cumulus,
                            noahmp_params=noahmp_params,
                            noahmp_geometry=noahmp_geometry,
                            ruc_params=ruc_params,
-                           glw_provenance=glw_provenance)
+                           glw_provenance=glw_provenance,
+                           carriers=carriers)
     if int(cfg.sf_surface_physics) == 3:
         # ruclsminit runs once, before the first step, where
         # module_physics_init.F runs it.  Without it SH2O is whatever the
@@ -4617,6 +5067,15 @@ def initialize_physics(
     receipt = microphysics_cold_start(state, cfg)
     if receipt:
         _MICROPHYSICS_INIT_RECEIPTS[driver] = receipt
+    # Carriers must exist before anyone takes an inventory: see
+    # gpuwm.core.kf.KainFritsch.ensure_trigger_history.  A cumulus
+    # callable without the hook (a synthetic or direct-driver stand-in)
+    # is left alone.
+    _ensure_history = getattr(
+        driver.cumulus_callable, "ensure_trigger_history", None)
+    if _ensure_history is not None:
+        _ensure_history(state)
+
     return driver
 
 

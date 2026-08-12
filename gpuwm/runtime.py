@@ -1940,10 +1940,129 @@ def _attach_spawned_children(model, active_exp, record, writers,
     return attached
 
 
+def _exchange_consumer_planes(model, steppers, direction: str,
+                              names) -> list[int]:
+    """Move ONE consumer's whole-domain planes between store and state.
+
+    A whole-domain model consumer -- the spawn trigger
+    (:class:`gpuwm.core.nest_spawn.SpawnWatch`) and the follow tracker
+    (:class:`gpuwm.core.storm_tracking.StormTracker`) -- reads ONE plane off
+    ``parent_state`` through ``storm_tracking.signal_plane``, which is
+    ``state.existing_scratch(slot)``.  A streamed domain's arrays live in its
+    store and its ``DomainState`` stops changing at attach, so that read
+    returns the plane the state was allocated with: for the UH windows, zeros
+    (state.py:720), for the whole run, with no error.
+
+    Both directions are needed and they are not symmetric bookkeeping:
+    ``publish`` is how the consumer sees the domain, ``adopt`` is how the
+    domain sees that the consumer zeroed its window.  Cheap by construction
+    -- one ``(ny, nx)`` plane per streamed domain per LEG boundary, not per
+    step, and nothing at all when no domain streams.
+
+    ``names`` is THIS consumer's slots and no one else's, on the same
+    reasoning that gave the two consumers separate windows in the first place
+    (Drew's ruling, 2026-08-07): the relocation runner resets the follow
+    window on its own cadence, from inside ``execute_experiment``, and a
+    spawn boundary that published or adopted that window as well could undo a
+    reset the tracker had already made or hand it a window measured against a
+    boundary it does not own.
+    """
+    if not steppers:
+        return []
+    from gpuwm.core import streaming as _streaming
+
+    names = tuple(names)
+    touched: list[int] = []
+    for gid, stepper in sorted(steppers.items()):
+        if not _streaming.is_streaming(stepper):
+            continue
+        node = model.nodes_by_grid_id.get(int(gid))
+        if node is None:
+            continue
+        # Asked of the streaming module rather than looked up here: this
+        # file is not a sanctioned scratch-API site and
+        # tests/test_uh_lifecycle.py's roster is right to say so.  The
+        # duck-typing (a reduced state, a test double, nwp_diagnostics = 0)
+        # is inside allocated_planes.
+        present = _streaming.allocated_planes(node.state, names)
+        if not present:
+            # nwp_diagnostics = 0 allocates no window at all, so there is no
+            # plane for any consumer to read and nothing to move.
+            continue
+        getattr(stepper, direction)(present)
+        touched.append(int(gid))
+    return touched
+
+
+def _spawn_consumer_planes() -> tuple[str, ...]:
+    """The spawn trigger's own slot, as a streaming manifest key."""
+    from gpuwm.core.uh_diag import UH_SPAWN_WINDOW_SLOT
+
+    return (f"scratch/{UH_SPAWN_WINDOW_SLOT}",)
+
+
+def _publish_consumer_planes(model, steppers, names) -> list[int]:
+    return _exchange_consumer_planes(model, steppers, "publish", names)
+
+
+def _adopt_consumer_planes(model, steppers, names) -> list[int]:
+    return _exchange_consumer_planes(model, steppers, "adopt", names)
+
+
+def _adjudicate_newborn_steppers(steppers, model, attached, factory):
+    """Bind (or refuse) a stepper for every domain born this boundary.
+
+    ``gpuwm.core.streaming.steppers_for_tree`` walks the tree ONCE, before
+    the run, and returns ``{grid_id: stepper}``; the executor resolves a
+    missing grid to ``dycore.step`` (model.py's "delayed-start child" note,
+    written before streaming existed).  For a DELAYED-START child that is
+    right: the domain was in the tree when the mapping was built and was
+    adjudicated then, it simply had not started yet.  For a SPAWNED child it
+    is not: that domain was not in the tree at all when the mapping was
+    built, so nothing ever asked whether it should stream.
+
+    The two failure modes of the silent fallback are opposite and both bad.
+    A big newborn that should have streamed dies at the resident allocation
+    the mode was turned on to avoid -- after hours of integration, at the
+    one instant the run cannot be restarted from.  A small newborn that
+    should not have streamed runs correctly, which is worse, because the
+    run then certifies a spawn path that has never once been exercised
+    under the mode its config says it is in.
+
+    So: with streaming engaged (a non-empty mapping is the only thing that
+    says so -- ``steppers_for_tree`` returns ``{}`` when ``[tiles]`` is
+    absent AND when ``auto`` decides every domain fits), a newborn either
+    gets an adjudicated stepper from the route's factory, or the run
+    refuses HERE, naming the grid.  Never a silent fallthrough.
+    """
+    if not steppers or not attached:
+        return steppers
+    if factory is None:
+        named = ", ".join(f"d{int(gid):02d}" for gid in sorted(attached))
+        raise RuntimeError(
+            f"[tiles] is engaged for this run ({len(steppers)} domain(s) "
+            f"stream) and {named} was born at a spawn boundary, after the "
+            "stepper mapping was built.  gpuwm.core.streaming"
+            ".steppers_for_tree walks the tree once, before the run, so a "
+            "domain that joins it later is not in the mapping and the "
+            "executor would resolve it to gpuwm.core.dycore.step -- "
+            "integrating a newborn RESIDENT inside a streamed run, with "
+            "nothing in the log to say so.  This route must pass "
+            "spawned_stepper_factory (grid_id, node) -> stepper | None so a "
+            "newborn is adjudicated the same way its siblings were.")
+    out = dict(steppers)
+    for gid in sorted(int(g) for g in attached):
+        stepper = factory(gid, model.node(gid))
+        if stepper is not None:
+            out[gid] = stepper
+    return out
+
+
 def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
                     spawn_runner, writers, lbc_interval_s,
                     relocation_runner=None, relocation_runner_factory=None,
-                    coupler_factory=None, **execute_kwargs):
+                    coupler_factory=None, spawned_stepper_factory=None,
+                    **execute_kwargs):
     """Integrate the run as LEGS so dormant nests can be born mid-run.
 
     The production consumer of
@@ -1956,6 +2075,16 @@ def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
 
     Restart across a spawn boundary inherits the moving-nest posture
     whole: it promises nothing (Drew, 2026-08-06).
+
+    ``spawned_stepper_factory(grid_id, node) -> stepper | None`` adjudicates
+    a NEWBORN's execution mode.  It is consulted only when this run is
+    actually streaming something, and its absence in that case is a refusal
+    rather than a fallthrough -- see :func:`_adjudicate_newborn_steppers`
+    for the two ways the silent version goes wrong.  Every parent's stepper
+    is left alone: a :class:`~gpuwm.core.streaming.StreamedDomain` owns the
+    domain's arrays in its store and its tile buffers, and re-attaching one
+    at a leg boundary would re-copy the ATTACH-TIME state over the store and
+    silently discard every step the run has taken.
     """
     from gpuwm.core.model import execute_experiment
 
@@ -1996,12 +2125,27 @@ def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
         model._resume_committed_history_grid_ids = frozenset(
             gid for gid, node in model.nodes_by_grid_id.items()
             if node.clock.history_due())
+        # The trigger reads the parent's WHOLE-DOMAIN plane off
+        # ``node.state``; a streamed parent's arrays live in its store and
+        # its state stopped changing at attach.  Publishing here -- once per
+        # leg boundary, only the planes a consumer reads -- is what makes the
+        # watch see the running domain instead of the attach-time zeros.
+        planes = _spawn_consumer_planes()
+        _publish_consumer_planes(model, execute_kwargs.get("steppers"), planes)
         record = spawn_runner.on_leg_boundary(model, t=elapsed)
+        # The runner zeroed each parent's window on the STATE (its
+        # "max since I last looked" reset).  The domain is the store, so the
+        # zeroing has to reach it or the next fold accumulates on top of a
+        # window the consumer already believes it spent.
+        _adopt_consumer_planes(model, execute_kwargs.get("steppers"), planes)
         if record is not None:
-            _attach_spawned_children(
+            attached = _attach_spawned_children(
                 model, record["experiment"], record,
                 writers, spawn_runner.on_child_built, lbc_interval_s,
                 coupler_factory)
+            execute_kwargs["steppers"] = _adjudicate_newborn_steppers(
+                execute_kwargs.get("steppers"), model, attached,
+                spawned_stepper_factory)
             # A follow target that was dormant could not be wired at
             # build time; now that it exists, it can follow its storm.
             if relocation_runner is None and (
@@ -2162,6 +2306,29 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
                                  wrfout_filename)
 
     state = prepared.initial_result.state
+    if getattr(state, "_streamed_domain", None) is not None:
+        # REFUSED, not served.  This is the frozen reference integration
+        # loop and its frame is a DIFFERENT frame from the async writer's --
+        # `state_frame` order, the grid metadata block, an explicit RAINNC
+        # row -- so serving it off the store would mean maintaining a second
+        # store-side frame assembly whose only proof of correctness is that
+        # somebody kept the two in step.  The production history path
+        # (PerDomainWrfoutWriters.submit, which `gpuwm go` and the tree
+        # runner both use) publishes streamed domains correctly; this one
+        # says so instead of writing t = 0 into every frame, which is what
+        # it did before this check existed.
+        #
+        # "[tiles] host store", not "streaming host store": the product has a
+        # second door called `gpuwm stream`, and a refusal is the one place a
+        # reader cannot afford to be told about the wrong feature.
+        raise RuntimeError(
+            "write_case_output was handed a domain whose arrays live in a "
+            "[tiles] host store, not on this state.  Every frame after "
+            "the cold-start one would be the initial condition with a later "
+            "timestamp -- correct inventory, correct Times, no forecast.  "
+            "Integrate this case through the experiment route "
+            "(PerDomainWrfoutWriters), or publish the frame with "
+            "gpuwm.core.streaming.StreamedDomain.history_fields().")
     # initialize_real and every completed dycore step leave p/al/alt current.
     # Re-diagnosing here would make an observational output operation mutate
     # the next step's initial state, so case output is deliberately read-only.
@@ -2252,6 +2419,34 @@ def apply_single_domain_pbl_cadence(physics, cfg) -> None:
         physics.stepbl = 1
 
 
+def _reset_streamed_up_heli_max(stepper) -> None:
+    """The history-interval UP_HELI_MAX reset, applied to a streamed domain.
+
+    ``reset_up_heli_max(state)`` zeroes the accumulator the frame just
+    snapshotted.  On a streamed domain that accumulator is
+    ``store["scratch/up_heli_max"]``; the loop's ``state`` holds the
+    preparation copy and zeroing it changes nothing the model will read.
+    ``up_heli_max`` is a SERIALIZED scratch slot
+    (``restart.classify_scratch_slot`` says so), so it is one of the 229
+    carriers and it goes into every checkpoint -- which means the omission
+    was not merely a wrong diagnostic: it made a streamed checkpoint and a
+    resident checkpoint of the same forecast differ, in exactly one member,
+    at the first history interval.  A running maximum only ever grows, so
+    the symptom is an UP_HELI_MAX window that never resets and a bit
+    comparison that fails on one array out of 229 with everything else
+    identical -- the most persuasive possible argument that the difference
+    is "just a diagnostic" and can be ignored.
+
+    ``None`` (the resident run, where ``stepper is dycore.step``) does
+    nothing at all, so the unstreamed path is untouched.
+    """
+    if stepper is None:
+        return
+    buffer = stepper.store.get("scratch/up_heli_max")
+    if buffer is not None:
+        buffer[...] = 0.0
+
+
 def integrate_prepared_case(
         output_dir, prepared, *, start_time: datetime, output_title: str,
         domain_id: int = 1, integration_cfg: RunConfig | None = None,
@@ -2259,7 +2454,7 @@ def integrate_prepared_case(
         history_interval_s: float | None = None,
         restart_interval_s: float | None = None, progress_callback=None,
         health_debug: bool = False,
-        feedback=None) -> RealCaseRunSummary:
+        feedback=None, stepper=None) -> RealCaseRunSummary:
     """Integrate a prepared real case and write its configured outputs.
 
     Extraction of the frozen reference integration loop: intentionally free
@@ -2282,14 +2477,92 @@ def integrate_prepared_case(
     ``run_seconds``/``history_interval_s``/``restart_interval_s`` are the
     experiment/domain timing authority.  Legacy callers omit them and use
     the compatibility copies on ``cfg``.
+
+    ``stepper`` is what one dynamics substep is taken with.  ``None`` binds
+    ``gpuwm.core.dycore.step`` ITSELF -- not a wrapper around it -- so a run
+    that configures no ``[tiles]`` executes the identical call it always
+    did.  ``gpuwm.core.streaming.make_stepper`` returns either that same
+    function or a :class:`~gpuwm.core.streaming.StreamedDomain`, which has
+    the same signature and advances the same domain by the same substep out
+    of a pinned host store, one tile at a time.  The loop around it --
+    history cadence, restart cadence, the REFL_10CM handshake -- is not aware
+    of the difference and does not need to be.
+
+    THE OBSERVERS ARE ASKED OF THE STEPPER, NOT OF THE STATE.  That is not
+    tidiness, it is a correctness fix.  Under ``[tiles] store = "host"``
+    the domain lives in a pinned host store and
+    ``gpuwm.core.streaming.attach`` fills it with ``gather.pinned_copy``,
+    which COPIES: the prepared ``DomainState`` this function holds is a
+    snapshot of t = 0 that no sweep ever writes again.  Reducing over it --
+    which is what this loop did -- meant ``nan_free`` stayed true forever,
+    ``w_max`` froze at its initial value, and a domain that went non-finite
+    in the store completed and wrote a checkpoint recording that it had not.
+    Keeping the state current instead is not available: the premise of the
+    mode is that the domain does not fit on the card.  So the reduction is
+    folded per tile inside the sweep and asked of the stepper here, exactly
+    as ``dycore.stability_report`` is asked of it when the domain is resident
+    -- ``streaming.stability_observer`` returns THAT function itself in that
+    case, so a resident run executes the identical call it always did.
+
+    ``StateHealthValidator`` is NOT yet folded.  See the comment at its
+    cadence below: it is armed for a resident run and, under a host store, it
+    still validates the t = 0 snapshot.
     """
     import cupy as cp
+    from gpuwm.core import streaming as _streaming
     from gpuwm.core.health import StateHealthValidator
-    from gpuwm.core.dycore import stability_report, step
+    # ``dycore.stability_report`` is deliberately NOT imported here: the
+    # per-substep gate goes through ``stability_observer``, which returns that
+    # function ITSELF for a resident domain and the sweep's per-tile fold of
+    # the store for a streamed one.  Importing it anyway would leave the
+    # obvious-looking wrong call one keystroke away.
+    from gpuwm.core.dycore import step
+    from gpuwm.core.streaming import (domain_call_counts, domain_field_max,
+                                      is_streaming, stability_observer)
     from gpuwm.io.restart import (restart_filename, restore_restart,
                                   write_restart)
     from gpuwm.supervisor import validate_manifest_checkpoint
 
+    stepper = step if stepper is None else stepper
+    # ``gpuwm.core.dycore.stability_report`` ITSELF for a resident domain --
+    # the same object, not a wrapper round it, so the resident path has no
+    # "streaming disabled" branch that could be subtly different.
+    stability_report = stability_observer(stepper)
+    # Whether the full-state validator observes the live domain.  The
+    # condition is store = "host" specifically, NOT "is streamed": with
+    # store = "device" ``attach`` makes the store the DomainState's own
+    # arrays, so the sweep writes the very memory the validator reads and it
+    # is armed exactly as it always was.
+    health_armed = not (is_streaming(stepper)
+                        and getattr(stepper, "host_store", False))
+    health_validations_unarmed = 0
+    if health_debug and not health_armed:
+        # "armed under [tiles]", not "under streaming", for the reason
+        # write_case_output's refusal above carries: this sentence is read by
+        # somebody who configured [tiles], and `gpuwm stream` is a different
+        # feature with a prior claim on the other word.
+        raise RuntimeError(
+            "health_debug asks for a full-state validation every substep, but "
+            "this domain is streamed to a host store: StateHealthValidator "
+            "reads the resident DomainState and the sweep never writes it, so "
+            "every one of those validations would pass regardless of what the "
+            "forecast did.  Refused rather than run, because an attribution "
+            "mode that cannot attribute is worse than no attribution mode.  "
+            "The nan / w_max / CFL gate remains armed under [tiles] -- it "
+            "folds the store per tile -- so a streamed run is still guarded, "
+            "just not by this.")
+    # WHERE THE DOMAIN IS.  Everything below that touches model state has to
+    # ask, because a streamed domain's carriers are in the stepper's store
+    # and the ``state`` this loop holds has been frozen at its preparation
+    # values since ``attach`` copied them out.  The restart is the case
+    # where getting it wrong is silent: ``write_restart(state, cfg)`` would
+    # produce a complete, self-consistent, fully validating checkpoint of
+    # the INITIAL CONDITION stamped with the current clock -- every shape
+    # check passes and the file resumes into a forecast that threw away
+    # every step taken.  ``is_streaming`` is ``False`` for the unstreamed
+    # run, where ``stepper is dycore.step``, so the resident path below is
+    # the identical code it always was.
+    streamed = is_streaming(stepper)
     cfg = prepared.cfg
     run_seconds = cfg.run_seconds if run_seconds is None else run_seconds
     history_interval_s = (cfg.output_interval_s
@@ -2309,8 +2582,32 @@ def integrate_prepared_case(
     state = prepared.initial_result.state
     _preparation_progress(progress_callback, "initialize-health-validator")
     health = StateHealthValidator(state)
+    if is_streaming(stepper) and stepper.host_store:
+        # SAID, not discovered.  The stability record is folded per tile and
+        # is correct under streaming; this validator is not, and the failure
+        # mode of a disarmed gate is that everything looks fine.  An operator
+        # who is told loses nothing; an operator who is not gets a forecast
+        # whose only whole-state gate has been passing on a snapshot of
+        # t = 0.  See the comment at its cadence below for why it cannot
+        # simply be pointed at a tile.
+        import warnings
+
+        warnings.warn(
+            "[tiles] store = 'host': StateHealthValidator is bound to "
+            "the prepared DomainState, which the sweep does not write, so "
+            "the full-state health gate is NOT armed for this run.  Its "
+            "validations are SKIPPED AND COUNTED rather than run, so a run "
+            "summary cannot show validations that observed nothing.  The "
+            "NaN/w_max/CFL/swdown record IS armed -- it is folded per tile "
+            "out of the store (gpuwm.core.streaming.StreamedStability).",
+            RuntimeWarning, stacklevel=2)
+    # Asked of the STEPPER, not of the dycore: a streamed domain takes the
+    # substep as a sweep of tiles and has no single phase to observe, so it
+    # declines the hook and the loop falls back to validating between
+    # substeps.  With no streaming configured this is the same signature it
+    # has always been, because the stepper is the same function.
     phase_hook_supported = "phase_observer" in inspect.signature(
-        step).parameters
+        stepper).parameters
     # bldt=0 follows each internal dynamics step; radiation follows the
     # configured WRF STEPRA calendar on those internal steps.  A positive
     # configured bldt keeps the driver's WRF STEPBL calendar (see helper).
@@ -2341,11 +2638,27 @@ def integrate_prepared_case(
         # is immediately after the frame is durable.
         from gpuwm.core.uh_diag import reset_up_heli_max
         reset_up_heli_max(state)
+        _reset_streamed_up_heli_max(stepper if streamed else None)
     else:
         _preparation_progress(progress_callback, "validate-checkpoint")
         last_checkpoint = validate_manifest_checkpoint(restart_path)
         _preparation_progress(progress_callback, "restore-checkpoint")
-        info = restore_restart(last_checkpoint, state, cfg)
+        # Into the STORE for a streamed domain, and into the state for a
+        # resident one.  Not a preference: the resident reader's first act
+        # is to allocate a host copy of every carrier and overwrite the
+        # device state with it, and above the card's ceiling that state does
+        # not exist.  Below it, the state exists but is not the domain --
+        # restoring into it would leave the store holding the PREPARATION
+        # values and the run would resume from t=0 with the checkpoint's
+        # clock.  The streamed reader applies the same refusals in the same
+        # order (config echo, setup fingerprint, physics setup fingerprint,
+        # clock admissibility, member classification) plus one the resident
+        # reader cannot make: a resuming resident state has every slot
+        # allocated by preparation, so it cannot tell a restored carrier
+        # from an unrestored one, and the streamed reader requires the
+        # file's member set to BE the store's.
+        info = (stepper.restore_restart(last_checkpoint, cfg) if streamed
+                else restore_restart(last_checkpoint, state, cfg))
         start_outer_step = whole_step_count(
             info.elapsed_seconds, cfg.dt, "restart elapsed_seconds")
         if start_outer_step >= outer_steps:
@@ -2385,12 +2698,12 @@ def integrate_prepared_case(
                             outer_step, substep, output_outer_steps,
                             dynamics_substeps))
             phase = f"outer-{outer_step + 1}.substep-{substep + 1}"
-            if health_debug and not phase_hook_supported:
+            if health_debug and not phase_hook_supported and health_armed:
                 health.require_healthy(phase=phase + ".pre-step")
             step_kwargs = {"refl_10cm_due": refl_due}
             if health_debug and phase_hook_supported:
                 step_kwargs["phase_observer"] = health.phase_observer
-            step(state, integration_cfg, **step_kwargs)
+            stepper(state, integration_cfg, **step_kwargs)
             # Validator cadence (controller amendment, 2026-07-16): the
             # measured full-validation cost is 5.00% of step wall vs the
             # plan's <=2% gate, so the pre-registered remedy applies --
@@ -2406,8 +2719,39 @@ def integrate_prepared_case(
                 and (outer_step + 1) % restart_write_steps == 0
                 and substep == dynamics_substeps - 1)
             if health_debug or mandatory or step_index % 4 == 0:
-                health.require_healthy(phase=phase + ".post-step")
+                # NOT YET FOLDED, and loud about it above rather than
+                # silent here.  ``StateHealthValidator`` is a descriptor
+                # kernel over up to 1024 WHOLE fields with one block per
+                # descriptor and no windowing, so it cannot be pointed at a
+                # tile's interior the way the stability reduction can.  The
+                # foldable form is a per-BUFFER validation issued after the
+                # gather and before the step -- at that instant the buffer
+                # holds exactly the store's bytes, halo included, so the
+                # union over tiles covers the domain with no false positives
+                # -- but it observes the state one step behind, needs its own
+                # readback point inside the sweep, and multiplies the launch
+                # by the tile count.  That is a bigger change than a
+                # correctness fix should smuggle in, so it is stated, not
+                # done.  Under a host store this call still validates the
+                # t=0 snapshot -- so under a host store it is SKIPPED
+                # AND COUNTED rather than run.  Counting the skips makes an
+                # unarmed validator visible in the run summary instead of
+                # indistinguishable from a passing one.  The nan / w_max /
+                # CFL gate below is a different observer and IS armed: it
+                # folds the store.
+                if health_armed:
+                    health.require_healthy(phase=phase + ".post-step")
+                else:
+                    health_validations_unarmed += 1
             width = cfg.spec_bdy_width
+            # NOT stability_report(state, ...).  Under [tiles] with a host
+            # store the domain's arrays are in the store and this state is
+            # never written by the sweep, so reading it here reports the
+            # condition the store was FILLED from -- healthy at t=0 and
+            # healthy forever, which silently disarms the nan gate below and
+            # freezes w_max and the CFL at their initial values.  step_health
+            # asks the stepper: the dycore's own whole-domain reduction when
+            # resident, the sweep's per-tile fold of the store when streamed.
             report = stability_report(
                 state, integration_cfg, boundary_width=width)
             nan_free = nan_free and not report["nan"]
@@ -2430,8 +2774,18 @@ def integrate_prepared_case(
                     "real-case integration produced a non-finite state at "
                     f"dynamics substep "
                     f"{dynamics_substeps * outer_step + substep + 1}")
-        surface_forcing_updates = state.physics.call_counts["radiation"]
-        step_swdown_peak = float(cp.max(state.physics.fields["swdown"]))
+        # Both of these are the DOMAIN's, and under a host store the domain
+        # is not on ``state``: its call counts live on the sweep's carried
+        # clock and its swdown maximum is in the store.
+        surface_forcing_updates = domain_call_counts(
+            stepper, state)["radiation"]
+        # Once per OUTER step over one 2-D field, so the honest fix for the
+        # streamed case is to read the store on the host rather than to add
+        # another hook inside the sweep: no tile writes swdown's maximum, and
+        # a 672x672 float32 plane is 1.8 MB.  Resident runs still take
+        # ``cp.max`` over the state, which is what the argument names.
+        step_swdown_peak = domain_field_max(
+            stepper, state, "fields/swdown", state.physics.fields["swdown"])
         if step_swdown_peak > swdown_peak:
             swdown_peak = step_swdown_peak
             swdown_peak_time = forcing_time
@@ -2447,21 +2801,32 @@ def integrate_prepared_case(
             # above snapshotted the accumulator synchronously).
             from gpuwm.core.uh_diag import reset_up_heli_max
             reset_up_heli_max(state)
+            _reset_streamed_up_heli_max(stepper if streamed else None)
         if (restart_write_steps is not None
                 and (outer_step + 1) % restart_write_steps == 0):
             valid = start_time + timedelta(seconds=(outer_step + 1) * cfg.dt)
-            last_checkpoint = write_restart(
-                output_dir / restart_filename(valid, f"d{domain_id:02d}"),
-                state, cfg,
-                run_trackers={
-                    "nan_free": nan_free,
-                    "w_max_ms": float(w_max),
-                    "w_max_boundary_row": w_max_boundary_row,
-                    "boundary_w_max_ms": float(boundary_w_max),
-                    "interior_w_max_ms": float(interior_w_max),
-                    "swdown_peak_wm2": float(swdown_peak),
-                    "swdown_peak_time": swdown_peak_time.isoformat(),
-                })
+            checkpoint_path = (
+                output_dir / restart_filename(valid, f"d{domain_id:02d}"))
+            trackers = {
+                "nan_free": nan_free,
+                "w_max_ms": float(w_max),
+                "w_max_boundary_row": w_max_boundary_row,
+                "boundary_w_max_ms": float(boundary_w_max),
+                "interior_w_max_ms": float(interior_w_max),
+                "swdown_peak_wm2": float(swdown_peak),
+                "swdown_peak_time": swdown_peak_time.isoformat(),
+            }
+            if streamed:
+                # From the pinned store, with ZERO device-to-host copies.
+                # The resident writer would not fail here -- it would write
+                # this loop's ``state``, which streaming froze at t=0 -- so
+                # the branch is the difference between a checkpoint and a
+                # forgery that passes every check in the reader.
+                last_checkpoint = stepper.write_restart(
+                    checkpoint_path, cfg, run_trackers=trackers).path
+            else:
+                last_checkpoint = write_restart(
+                    checkpoint_path, state, cfg, run_trackers=trackers)
         # The state gate completed after the final internal step.  Publish
         # progress only after any due wrfout/checkpoint is durable, so a
         # heartbeat can never advertise unguarded or unpublished work.
@@ -2499,6 +2864,14 @@ def integrate_prepared_case(
         lat, lon = prepared.grid.latlon_mass()
         rainc_lat = float(lat[j, i])
         rainc_lon = float(lon[j, i])
+    if health_validations_unarmed:
+        import warnings
+
+        warnings.warn(
+            f"{health_validations_unarmed} full-state health validations were "
+            "skipped as unarmed over this streamed run; the per-substep "
+            "nan / w_max / CFL gate ran on the store as normal.",
+            RuntimeWarning, stacklevel=2)
     return RealCaseRunSummary(
         trajectory_digest=trajectory_digest,
         wrfout_paths=tuple(outputs), nan_free=nan_free,
@@ -2605,6 +2978,17 @@ def resolved_config_report(exp: ExperimentConfig, data: CaseDataConfig,
     add("radiation.column_chunk", f"{exp.column_chunk}")
     add("radiation.downward_longwave",
         downward_longwave_source(exp, cfg))
+    # THE CARRIER POLICY, always in the receipt, both values.  A reader
+    # looking for "did this run integrate a sky nobody computed" gets an
+    # answer whether or not the escape was taken, which is what makes the
+    # answer trustworthy -- an absent line reads as "not applicable" and
+    # this question is never not applicable to a run with a land surface.
+    add("radiation.surface_radiation_policy",
+        f"{cfg.surface_radiation_policy}"
+        + ("" if cfg.surface_radiation_policy == "required" else
+           " (EXPERIMENTAL FORCING: carriers with no producer are "
+           "consumed at their allocation fill; not a valid configuration "
+           "for a real case)"))
     add("time.forcing_interval_s",
         "discover" if data.forcing_interval_s is None
         else f"{data.forcing_interval_s:g}")
@@ -2723,10 +3107,45 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     runs the extracted prepare/integrate pipeline with every input and
     policy drawn from the config pair.
     """
+    from gpuwm.core.streaming import refuse_unrouted_streaming
     from gpuwm.io.wrfout import quarantine_orphan_wrfouts
+
+    # BEFORE the ingest, on the same governance as the relocation and spawn
+    # refusals below.  Neither this route's single-domain arm (which calls
+    # integrate_prepared_case with stepper=None) nor either of its tree arms
+    # (execute_experiment / walk_spawn_legs, both without steppers=) reads
+    # exp.tiles at all -- so a [tiles] block here does not decide
+    # anything, it is simply dropped, and the run integrates resident with
+    # nothing in the log to say the mode never engaged.  That is the one
+    # outcome gpuwm.core.streaming exists to prevent.
+    refuse_unrouted_streaming(exp, "gpuwm run", consults_the_seam=False)
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    if exp.tiles.enabled:
+        # [tiles] is SILENTLY IGNORED on this route, and silence is the
+        # dangerous direction.  Neither branch below consults it: the
+        # single-domain branch calls integrate_prepared_case, whose
+        # `stepper` argument no caller in this checkout ever supplies, and
+        # the tree branch calls execute_experiment with no `steppers`, so
+        # both bind gpuwm.core.dycore.step unconditionally.  A user who
+        # asked for out-of-core and got a resident run would find out at
+        # the allocation the mode existed to avoid, with nothing in the log
+        # to say the mode never engaged -- exactly the failure
+        # streaming.make_stepper refuses rather than produces.
+        #
+        # Named at the front door, before minutes of ingest, on the same
+        # precedent as the [relocation] follow-source refusal below.
+        raise ValueError(
+            "[tiles] is configured but this route cannot honour it: "
+            "gpuwm.runtime.run_experiment binds gpuwm.core.dycore.step for "
+            "every domain and never consults exp.tiles, so the run "
+            "would be RESIDENT with no indication that the mode did not "
+            "engage.  The routes that stream are "
+            "gpuwm.prepared_single_domain_forecast and "
+            "gpuwm.prepared_domain_tree_forecast, which wire "
+            "streaming.builders_for_tree; delete the [tiles] table to "
+            "run here.")
     follow_configured = exp.relocation.enabled and (
         exp.relocation.follow is not None or exp.relocation.moves)
     if follow_configured and len(exp.domains) == 1:
@@ -2754,6 +3173,29 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             "[[domain]] spawn = {...} on a single-domain experiment: a "
             "dormant nest needs a parent to be born from, and the "
             "single-domain path runs no tree walk.")
+    # [tiles] is READ by the experiment loader, validated, echoed into
+    # the resolved-config report -- and this route builds no stepper for it,
+    # so before this refusal a configured `mode = "on"` integrated the domain
+    # RESIDENT and said nothing.  Every other surface in this loader refuses
+    # a knob it cannot honour ([relocation] on a single domain, a spawn on a
+    # route with no walk) for the same reason: a configuration that silently
+    # does nothing is discovered when the run dies at the allocation the
+    # mode was turned on to avoid, or -- worse -- does not die and is quietly
+    # a different experiment from the one that was asked for.  Streaming
+    # needs a per-domain builder (store filled from the prepared state, tile
+    # buffers on the domain's own physics selectors, geography inventoried,
+    # boundary tables windowed per tile), which `gpuwm.core.streaming
+    # .steppers_for_tree` takes as `builders=` and this route does not yet
+    # supply.  Until it does, say so.
+    if exp.tiles.enabled:
+        raise ValueError(
+            f"[tiles] mode = {exp.tiles.mode!r} is configured, but "
+            "gpuwm.runtime.run_experiment wires no streamed-domain builder "
+            "and would have integrated this experiment RESIDENT without "
+            "saying so.  [tiles] is reachable today only "
+            "through gpuwm.core.streaming.make_stepper with a route-owned "
+            "build= callable (see tilestream/test_join.py); remove the "
+            "[tiles] block to run resident.")
     # The land-state refusal that used to stand here is LIFTED (2026-08-07).
     # It named one gap -- "a newborn real-data nest has no defined
     # soil/land state, and how it should get one is an open physics
@@ -2856,13 +3298,28 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                 seconds=ticks / tree.schedule.clock.tick_den)
             tree._last_checkpoint = write_tree_restart(outdir, tree, valid)
 
+        # [tiles], on the SAME terms as the prepared domain-tree route
+        # (gpuwm/prepared_domain_tree_forecast.py) and for the same reason.
+        # Absent -- the default -- this is an empty mapping, no planner is
+        # consulted, no tilestream module is imported and the executor binds
+        # gpuwm.core.dycore.step for every grid exactly as it always did.
+        # Configured, a domain the planner says will not fit resident gets a
+        # streamed stepper or a loud refusal.  Before this call existed the
+        # block was read, validated, echoed into the resolved-config report
+        # and then IGNORED on this route: a user who wrote
+        # [tiles] mode = "on" got a fully resident run with nothing
+        # anywhere saying the mode never engaged.
+        from gpuwm.core import streaming as _streaming
+
+        steppers = _streaming.steppers_for_tree(model, exp.tiles)
         if spawn_runner is None:
             execute_experiment(
                 model, history_handler=history_handler,
                 restart_handler=restart_handler,
                 progress_callback=progress_callback,
                 health_debug=health_debug,
-                relocation_runner=relocation_runner)
+                relocation_runner=relocation_runner,
+                steppers=steppers)
         else:
             # The leg walk: dormant nests are born mid-run and integrate
             # from their birth boundary onward.
@@ -2878,7 +3335,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                 history_handler=history_handler,
                 restart_handler=restart_handler,
                 progress_callback=progress_callback,
-                health_debug=health_debug)
+                health_debug=health_debug,
+                steppers=steppers)
         writers.drain()
         paths = writers.paths
     import cupy as cp

@@ -1,0 +1,28 @@
+### GPU before:
+4150 MiB, 32607 MiB, 5 %
+
+###### WSL2 END TO END, ship config, shipping default reuse=sweep ######
+# NVIDIA GeForce RTX 5090  full(real74) +KF  384^2 x 49  halo 16
+# monolithic (resident, untiled): 91.788 ms/step   physics fired {'radiation': 0, 'sfclay': 4, 'noah': 4, 'ysu': 4, 'cumulus': 0, 'cumulus_history': 0}
+ window   tile  tiles  stream ms   graph ms  speedup  tax off  tax on  nodes   cap/rep  physics fired
+    128     96     16   1072.642   1053.045   1.019x   11.69x  11.47x    876    8/64    {'radiation': 0, 'sfclay': 4, 'noah': 4, 'ysu': 4, 'cumulus': 0, 'cumulus_history': 0} vs {'radiation': 0, 'sfclay': 4, 'noah': 4, 'ysu': 4, 'cumulus': 0, 'cumulus_history': 0}
+    160    128      9   1201.673   1183.111   1.016x   13.09x  12.89x    876    8/36    {'radiation': 0, 'sfclay': 4, 'noah': 4, 'ysu': 4, 'cumulus': 0, 'cumulus_history': 0} vs {'radiation': 0, 'sfclay': 4, 'noah': 4, 'ysu': 4, 'cumulus': 0, 'cumulus_history': 0}
+# wrote /tmp/claude-1000/-home-drew-bowecho-dea/12456cae-783d-4a37-9cd5-d2db7c7bd8da/scratchpad/probe/_w_ship_sweep.json
+
+###### WSL2 END TO END, dry, more tiles per buffer ######
+# NVIDIA GeForce RTX 5090  dry (control)  512^2 x 49  halo 16
+# monolithic (resident, untiled): 36.085 ms/step   physics fired {'radiation': 0, 'cumulus': 0, 'sfclay': 0, 'noah': 0, 'ysu': 0}
+ window   tile  tiles  stream ms   graph ms  speedup  tax off  tax on  nodes   cap/rep  physics fired
+    128     96     36    119.099    110.861   1.074x    3.30x   3.07x    232    8/144   {} vs {}
+    160    128     16     70.022     70.529   0.993x    1.94x   1.95x    232    8/64    {} vs {}
+    224    192      9     64.530     70.138   0.920x    1.79x   1.94x    232    8/36    {} vs {}
+# wrote /tmp/claude-1000/-home-drew-bowecho-dea/12456cae-783d-4a37-9cd5-d2db7c7bd8da/scratchpad/probe/_w_dry_sweep.json
+
+###### WSL2 MECHANISM ONLY (the report's own mode), for comparison ######
+# NVIDIA GeForce RTX 5090  full(real74) +KF  window^2 x 49  one buffer, no gather/scatter
+ window  stream ms   graph ms  saved ms  speedup  nodes  us/launch  cap ms  pool MB  physics fired
+    128     15.722     10.961     4.761   1.434x    876       5.44    58.3      126  {'radiation': 0, 'sfclay': 20, 'noah': 20, 'ysu': 20, 'cumulus': 1, 'cumulus_history': 1} vs {'radiation': 0, 'sfclay': 20, 'noah': 20, 'ysu': 20, 'cumulus': 0, 'cumulus_history': 0}
+    224     33.674     30.746     2.928   1.095x    876       3.34    52.2      386  {'radiation': 0, 'sfclay': 20, 'noah': 20, 'ysu': 20, 'cumulus': 1, 'cumulus_history': 1} vs {'radiation': 0, 'sfclay': 20, 'noah': 20, 'ysu': 20, 'cumulus': 0, 'cumulus_history': 0}
+    544    191.133    205.613   -14.481   0.930x    876     -16.53    61.0     2278  {'radiation': 0, 'sfclay': 20, 'noah': 20, 'ysu': 20, 'cumulus': 1, 'cumulus_history': 1} vs {'radiation': 0, 'sfclay': 20, 'noah': 20, 'ysu': 20, 'cumulus': 0, 'cumulus_history': 0}
+# wrote /tmp/claude-1000/-home-drew-bowecho-dea/12456cae-783d-4a37-9cd5-d2db7c7bd8da/scratchpad/probe/_w_ship_step.json
+### WSL DONE

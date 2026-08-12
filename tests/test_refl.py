@@ -330,6 +330,19 @@ def test_refl_stash_has_no_trajectory_or_restart_reader():
         "gpuwm/offline_child_run.py",
         "gpuwm/prepared_single_domain_forecast.py",
         "gpuwm/verify/cases/nest_ideal_common.py",
+        # The STREAMED path, and it consumes for a different reason from
+        # every other entry here: it is not publishing a frame, it is
+        # CLEARING a per-tile handoff.  ``stash_refl_10cm`` refuses to
+        # overwrite an unconsumed stash, which in a resident run is the
+        # right refusal (a second unconsumed field IS a cadence bug) and in
+        # a sweep is wrong -- the handoff is per TILE and the frame is per
+        # DOMAIN, so the second tile a buffer serves would raise "REFL_10CM
+        # stash was not consumed before reuse", naming a defect that is not
+        # present.  ``streaming.refl_handoff_hook`` consumes each tile's
+        # reference after its step; the VALUES are in the scratch slot,
+        # which the scatter carries into the domain field like any other
+        # carrier.
+        "gpuwm/core/streaming.py",
     }
 
     # Prevent a direct attribute read or constant-name getattr from bypassing

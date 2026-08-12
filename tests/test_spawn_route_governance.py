@@ -141,10 +141,17 @@ def test_the_run_route_no_longer_refuses_a_dormant_nest_for_land_state():
 
     from gpuwm import runtime
 
+    from gpuwm.core.streaming import OFF as _STREAMING_OFF
+
+    # ``tiles=OFF`` for the reason given in test_relocation_runner: the
+    # front door refuses a [tiles] block at admission, so a double that
+    # lacks the attribute a real Experiment always has raises AttributeError
+    # before the guard under test is reached.
     exp = SimpleNamespace(
         domains=(SimpleNamespace(grid_id=1, spawn=None),
                  SimpleNamespace(grid_id=2, spawn=object())),
-        relocation=SimpleNamespace(enabled=False, follow=None, moves=()))
+        relocation=SimpleNamespace(enabled=False, follow=None, moves=()),
+        tiles=_STREAMING_OFF)
     with pytest.raises(Exception) as err:
         runtime.run_experiment(exp, None, "out-tree-spawn")
     message = str(err.value)
@@ -155,7 +162,8 @@ def test_the_run_route_no_longer_refuses_a_dormant_nest_for_land_state():
     ordinary = SimpleNamespace(
         domains=(SimpleNamespace(grid_id=1, spawn=None),
                  SimpleNamespace(grid_id=2, spawn=None)),
-        relocation=SimpleNamespace(enabled=False, follow=None, moves=()))
+        relocation=SimpleNamespace(enabled=False, follow=None, moves=()),
+        tiles=_STREAMING_OFF)
     with pytest.raises(Exception) as control:
         runtime.run_experiment(ordinary, None, "out-tree-control")
     assert type(err.value) is type(control.value)
@@ -196,9 +204,12 @@ def test_the_run_route_still_refuses_a_dormant_nest_with_no_parent():
 
     from gpuwm import runtime
 
+    from gpuwm.core.streaming import OFF as _STREAMING_OFF
+
     exp = SimpleNamespace(
         domains=(SimpleNamespace(grid_id=1, spawn=object()),),
-        relocation=SimpleNamespace(enabled=False, follow=None, moves=()))
+        relocation=SimpleNamespace(enabled=False, follow=None, moves=()),
+        tiles=_STREAMING_OFF)
     with pytest.raises(ValueError, match="single-domain path runs no tree"):
         runtime.run_experiment(exp, None, "out-single-spawn")
 

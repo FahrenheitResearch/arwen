@@ -1,0 +1,36 @@
+DEVICE {"name": "NVIDIA GeForce RTX 5080", "asyncEngineCount": 2, "totalGlobalMem_GiB": 15.47100830078125, "cupy": "14.1.1", "driver": 13010, "runtime": 13020}
+    statics built in 7.5 s
+    9 row slabs of <= 64 rows (+1 halo row)
+    forcing 1985-05-31 18:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 00:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 06:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 12:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-06-01 18:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+    forcing 1985-05-31 12:00:00: 9 slabs, perimeter kept; pool 3.92 GiB
+soil moisture floor: 985 sub-air-dry land value(s) floored to the soil type's SMCDRY across ['SMOIS_L1', 'SMOIS_L2', 'SMOIS_L3', 'SMOIS_L4'] (min pre-floor 0.0130313); WRF real.exe resets such columns to 0.005 (module_initialize_real.F:3376)
+    prepared 648x576x49 from 6 forcing times in 62.3 s
+    ingest device high-water 5.55 GiB (15960 B per mass cell)
+    settling step SKIPPED (settle=False): this domain is past the resident ceiling, and run_tiled's inventory match is the guard that a lazy carrier cannot slip through
+    store 139 carriers, 3.15 GiB pinned (185.0 B/cell); geography 15 arrays, 0.29 GiB
+    before release: pool live 5.54 GiB, pool held 5.54 GiB, device free 9.57/15.47 GiB
+    after release : pool live 0.00 GiB, pool held 0.00 GiB, device free 15.19/15.47 GiB
+DECISION [tiles] ON (host store): [tiles] mode = 'on'; tile 324x288, nbuffers=3, halo=16
+PLAN 4 tiles of 328x364, halo 20, nbuffers 3
+    windowed lateral boundaries: 4 tiles x 5 intervals x 6 fields = 0.51 GiB host
+SETUP TiledRun 25.8s (factory 25.6s)  overlap=off deferred_seam=False
+STEP 2 wall   4786.6 ms  compute   2556.8  xfer  4521.2 (exposed  2229.6)  host    0.0  unattr    0.2
+STEP 3 wall   4798.5 ms  compute   2678.2  xfer  4526.1 (exposed  2120.1)  host    0.0  unattr    0.2
+STEP 4 wall   4732.4 ms  compute   2497.3  xfer  4465.8 (exposed  2234.9)  host    0.0  unattr    0.2
+STEP 5 wall   4827.1 ms  compute   2630.9  xfer  4561.6 (exposed  2195.9)  host    0.0  unattr    0.2
+STEP 6 wall   4956.8 ms  compute   2721.2  xfer  4689.6 (exposed  2235.4)  host    0.0  unattr    0.2
+STEP 7 wall   4926.6 ms  compute   2659.8  xfer  4660.6 (exposed  2266.5)  host    0.0  unattr    0.2
+STEP 8 wall   4734.2 ms  compute   2716.3  xfer  4467.0 (exposed  2017.7)  host    0.0  unattr    0.2
+STEP 9 wall   4871.9 ms  compute   2621.7  xfer  4607.0 (exposed  2250.0)  host    0.0  unattr    0.2
+STEP 10 wall   4873.3 ms  compute   2592.8  xfer  4607.2 (exposed  2280.4)  host    0.0  unattr    0.2
+STEP 11 wall   4973.5 ms  compute   2748.7  xfer  4706.6 (exposed  2224.6)  host    0.0  unattr    0.2
+STEP 12 wall  36129.8 ms  compute  34894.2  xfer  4804.4 (exposed  1234.9)  host    0.0  unattr    0.7
+STEP 13 wall   4997.3 ms  compute   2642.8  xfer  4731.9 (exposed  2354.4)  host    0.0  unattr    0.2
+WINDOW {"window_s": 89.60935129699646, "steps": 12, "per_step_ms": 7467.445941416372, "overlap": "off", "deferred_seam": false, "rep": 1}
+BIND {"lazy_bind_ms": [0.004672998329624534, 0.001367006916552782, 0.0006990012479946017, 0.0005620095180347562], "eager_bind_ms": [43.075248002423905, 22.731076998752542, 31.120069994358346, 46.704275999218225], "binds_per_sweep": 4}
+MEAN {"wall_ms": 7467.343052999543, "compute_busy_ms": 5330.054824829102, "transfer_busy_ms": 4612.419132877684, "transfer_exposed_ms": 2137.0331414632965, "transfer_hidden_ms": 2475.385991414388, "exposed_fill_ms": 706.2544345948069, "exposed_drain_ms": 485.4457194010417, "unattributed_ms": 0.22984588146209717, "per_category_ms": {"h2d": 2278.0300717751184, "d2h": 2015.5970458984375, "geo_h2d": 97.10894855787046, "ring_save": 541.7195536295573, "ring_patch": 1160.4832967122395}, "exposed_by_category_ms": {"h2d": 1224.3074816465378, "d2h": 1016.6807250976562, "geo_h2d": 54.16975991854755, "ring_save": 147.24725850423178, "ring_patch": 418.5225423177083}, "host_ms": {"advance_clock": 0.009447501118605336, "set_scalars": 0.01081457594409585, "tile_hook": 0.00497874862048775}}
+RESULT {"device": {"name": "NVIDIA GeForce RTX 5080", "asyncEngineCount": 2, "totalGlobalMem_GiB": 15.47100830078125, "cupy": "14.1.1", "driver": 13010, "runtime": 13020}, "config": "/workspace/overlap/arm_a_dx4km.toml", "bind": {"lazy_bind_ms": [0.004672998329624534, 0.001367006916552782, 0.0006990012479946017, 0.0005620095180347562], "eager_bind_ms": [43.075248002423905, 22.731076998752542, 31.120069994358346, 46.704275999218225], "binds_per_sweep": 4}, "nx": 648, "ny": 576, "nz": 49, "dx_m": 4000.0, "dt_s": 20.0, "decision": "[tiles] ON (host store): [tiles] mode = 'on'; tile 324x288, nbuffers=3, halo=16", "steps": 12, "warmup": 2, "control": false, "overlap": "off", "deferred_seam": false, "window": {"window_s": 89.60935129699646, "steps": 12, "per_step_ms": 7467.445941416372, "overlap": "off", "deferred_seam": false, "rep": 1}, "windows": [{"window_s": 89.60935129699646, "steps": 12, "per_step_ms": 7467.445941416372, "overlap": "off", "deferred_seam": false, "rep": 1}], "mean": {"wall_ms": 7467.343052999543, "compute_busy_ms": 5330.054824829102, "transfer_busy_ms": 4612.419132877684, "transfer_exposed_ms": 2137.0331414632965, "transfer_hidden_ms": 2475.385991414388, "exposed_fill_ms": 706.2544345948069, "exposed_drain_ms": 485.4457194010417, "unattributed_ms": 0.22984588146209717, "per_category_ms": {"h2d": 2278.0300717751184, "d2h": 2015.5970458984375, "geo_h2d": 97.10894855787046, "ring_save": 541.7195536295573, "ring_patch": 1160.4832967122395}, "exposed_by_category_ms": {"h2d": 1224.3074816465378, "d2h": 1016.6807250976562, "geo_h2d": 54.16975991854755, "ring_save": 147.24725850423178, "ring_patch": 418.5225423177083}, "host_ms": {"advance_clock": 0.009447501118605336, "set_scalars": 0.01081457594409585, "tile_hook": 0.00497874862048775}}}

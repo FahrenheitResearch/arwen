@@ -21,16 +21,31 @@ If that is what you are looking at, this page is about your run.
 
 The run has shortwave radiation switched on and longwave radiation
 switched off. That pairing is a **daytime** validation
-configuration. By day the shortwave heats the ground and the surface
-behaves. After sunset there is no shortwave left, and with no
-longwave scheme running there is also no downward longwave to balance
-what the surface radiates away. So the surface keeps cooling with
-nothing to stop it: skin temperature craters, the saturation humidity
-right at the surface collapses with it, and the 2 m dewpoint the
-model reports ends up far below the airmass that is actually sitting
-over the site. Nothing is broken in the microphysics or the boundary
+configuration. With no longwave scheme running, the downward longwave
+the land surface integrates is not computed at all. It is a fixed
+300 W/m2, the buffer's allocation value, held constant for the whole
+run. That number answers to nothing: not to the clouds, not to the
+moisture, not to the hour. Over a warm, moist night the real downward
+longwave is well above it, often by 100 W/m2 or more, so the surface
+energy budget runs a deficit all night. By day the shortwave heats
+the ground and hides the shortfall. After sunset the deficit is the
+whole budget: skin temperature craters, the saturation humidity right
+at the surface collapses with it, and the 2 m dewpoint the model
+reports ends up far below the airmass that is actually sitting over
+the site. Nothing is broken in the microphysics or the boundary
 layer. The run is answering the question it was configured to answer,
 and that question was a daytime one.
+
+Earlier editions of this page described the missing longwave as zero.
+It is not zero. It is a constant 300 W/m2 that nothing computed, which
+is why the symptom is a nightly sawtooth rather than an immediate
+crash. Current versions refuse to consume a downward longwave with no
+producer unless the config declares it (see the acknowledgement
+section below), and the mechanism over open water differs: the marine
+surface path derives its endpoint from the prescribed skin temperature
+and pressure alone, so a single surface call over water cannot see the
+longwave at all. The land and shoreline columns are where the deficit
+does its damage.
 
 ## Am I affected
 

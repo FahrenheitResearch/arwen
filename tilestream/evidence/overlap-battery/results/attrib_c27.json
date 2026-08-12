@@ -1,0 +1,716 @@
+{
+ "device": {
+  "name": "NVIDIA GeForce RTX 5080",
+  "asyncEngineCount": 2,
+  "totalGlobalMem_GiB": 15.47100830078125,
+  "cupy": "14.1.1",
+  "driver": 13010,
+  "runtime": 13020
+ },
+ "config": "/workspace/overlap/arm_c_dx2.7km.toml",
+ "bind": {
+  "lazy_bind_ms": [
+   0.008600007276982069,
+   0.002474000211805105,
+   0.0008609931683167815,
+   0.0007330090738832951,
+   0.0007079943316057324,
+   0.0007189955795183778
+  ],
+  "eager_bind_ms": [
+   62.45613200007938,
+   63.04855100461282,
+   57.568535004975274,
+   26.864835002925247,
+   26.754163001896814,
+   62.284465006086975
+  ],
+  "binds_per_sweep": 6
+ },
+ "nx": 960,
+ "ny": 864,
+ "nz": 49,
+ "dx_m": 2700.0,
+ "dt_s": 12.0,
+ "decision": "[tiles] ON (host store): [tiles] mode = 'on'; tile 320x432, nbuffers=2, halo=16",
+ "steps": 17,
+ "warmup": 2,
+ "control": false,
+ "rows": [
+  {
+   "wall_ms": 11104.198394998093,
+   "compute_busy_ms": 7781.169250488281,
+   "transfer_busy_ms": 10857.1399227418,
+   "transfer_exposed_ms": 3322.729095105082,
+   "transfer_hidden_ms": 7534.410827636719,
+   "per_category_ms": {
+    "h2d": 4350.796829223633,
+    "d2h": 5009.284423828125,
+    "geo_h2d": 928.5851742066443,
+    "ring_save": 411.97137451171875,
+    "ring_patch": 2708.1293334960938
+   },
+   "exposed_by_category_ms": {
+    "h2d": 637.8242340087891,
+    "d2h": 2540.0673828125,
+    "geo_h2d": 716.4836117066443,
+    "ring_save": 110.96405029296875,
+    "ring_patch": 1869.0170288085938
+   },
+   "exposed_fill_ms": 781.6773372925818,
+   "exposed_drain_ms": 665.5390625,
+   "host_ms": {
+    "tile_hook": 0.011853000614792109,
+    "set_scalars": 0.017174999811686575,
+    "advance_clock": 0.007144000846892595
+   },
+   "unattributed_ms": 0.26387740345671773,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 2544781824,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11610.084930987796,
+   "compute_busy_ms": 8365.765197753906,
+   "transfer_busy_ms": 11367.871332578361,
+   "transfer_exposed_ms": 3243.85393755883,
+   "transfer_hidden_ms": 8124.017395019531,
+   "per_category_ms": {
+    "h2d": 4667.179557800293,
+    "d2h": 5185.6136474609375,
+    "geo_h2d": 884.3568062111735,
+    "ring_save": 428.04876708984375,
+    "ring_patch": 2644.7495727539062
+   },
+   "exposed_by_category_ms": {
+    "h2d": 603.5608444213867,
+    "d2h": 2522.0928955078125,
+    "geo_h2d": 655.3050483986735,
+    "ring_save": 111.16815185546875,
+    "ring_patch": 1793.8040161132812
+   },
+   "exposed_fill_ms": 720.8103584572673,
+   "exposed_drain_ms": 718.5595703125,
+   "host_ms": {
+    "tile_hook": 0.016416001017205417,
+    "set_scalars": 0.0178549817064777,
+    "advance_clock": 0.019637998775579035
+   },
+   "unattributed_ms": 0.4118866935605183,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 3393042432,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11252.23657800234,
+   "compute_busy_ms": 8121.79443359375,
+   "transfer_busy_ms": 11008.31440610066,
+   "transfer_exposed_ms": 3130.128737155348,
+   "transfer_hidden_ms": 7878.1856689453125,
+   "per_category_ms": {
+    "h2d": 4693.581039428711,
+    "d2h": 5018.06201171875,
+    "geo_h2d": 868.8420550264418,
+    "ring_save": 493.084228515625,
+    "ring_patch": 2381.5642700195312
+   },
+   "exposed_by_category_ms": {
+    "h2d": 710.9291839599609,
+    "d2h": 2330.116455078125,
+    "geo_h2d": 656.0061175264418,
+    "ring_save": 187.42431640625,
+    "ring_patch": 1692.4718627929688
+   },
+   "exposed_fill_ms": 798.5562273897231,
+   "exposed_drain_ms": 632.55078125,
+   "host_ms": {
+    "tile_hook": 0.018974023987539113,
+    "set_scalars": 0.018473001546226442,
+    "advance_clock": 0.006307003786787391
+   },
+   "unattributed_ms": 0.2696532239206135,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 4241303040,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11810.10470399633,
+   "compute_busy_ms": 8561.687255859375,
+   "transfer_busy_ms": 11566.238782007247,
+   "transfer_exposed_ms": 3248.0953493900597,
+   "transfer_hidden_ms": 8318.143432617188,
+   "per_category_ms": {
+    "h2d": 4807.632610321045,
+    "d2h": 5294.928466796875,
+    "geo_h2d": 893.1931277103722,
+    "ring_save": 445.66583251953125,
+    "ring_patch": 2637.1541748046875
+   },
+   "exposed_by_category_ms": {
+    "h2d": 634.7252616882324,
+    "d2h": 2525.215087890625,
+    "geo_h2d": 655.2092409916222,
+    "ring_save": 111.36297607421875,
+    "ring_patch": 1833.918212890625
+   },
+   "exposed_fill_ms": 721.8082400150597,
+   "exposed_drain_ms": 685.7421875,
+   "host_ms": {
+    "tile_hook": 0.010708026820793748,
+    "set_scalars": 0.017158003174699843,
+    "advance_clock": 0.0070820096880197525
+   },
+   "unattributed_ms": 0.28715070721227676,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 5089563648,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11763.2548410038,
+   "compute_busy_ms": 8481.954162597656,
+   "transfer_busy_ms": 11527.743568820879,
+   "transfer_exposed_ms": 3280.88694040291,
+   "transfer_hidden_ms": 8246.856628417969,
+   "per_category_ms": {
+    "h2d": 4694.496780395508,
+    "d2h": 5306.0736083984375,
+    "geo_h2d": 974.1113666724414,
+    "ring_save": 490.86163330078125,
+    "ring_patch": 2534.0520629882812
+   },
+   "exposed_by_category_ms": {
+    "h2d": 694.3929595947266,
+    "d2h": 2455.4332275390625,
+    "geo_h2d": 759.1225971411914,
+    "ring_save": 111.19622802734375,
+    "ring_patch": 1732.5938110351562
+   },
+   "exposed_fill_ms": 824.6043476294726,
+   "exposed_drain_ms": 719.9345703125,
+   "host_ms": {
+    "tile_hook": 0.013675002264790237,
+    "set_scalars": 0.018521997844800353,
+    "advance_clock": 0.020620005670934916
+   },
+   "unattributed_ms": 0.36092099745292217,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 5937824256,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11745.909154997207,
+   "compute_busy_ms": 8474.601440429688,
+   "transfer_busy_ms": 11500.104722946882,
+   "transfer_exposed_ms": 3270.9601916968822,
+   "transfer_hidden_ms": 8229.14453125,
+   "per_category_ms": {
+    "h2d": 4771.3474197387695,
+    "d2h": 5177.89404296875,
+    "geo_h2d": 951.4094714820385,
+    "ring_save": 481.4796142578125,
+    "ring_patch": 2608.527587890625
+   },
+   "exposed_by_category_ms": {
+    "h2d": 702.086067199707,
+    "d2h": 2424.713623046875,
+    "geo_h2d": 716.5300769507885,
+    "ring_save": 172.7796630859375,
+    "ring_patch": 1745.4041748046875
+   },
+   "exposed_fill_ms": 843.7073840796947,
+   "exposed_drain_ms": 675.0595703125,
+   "host_ms": {
+    "tile_hook": 0.020029983716085553,
+    "set_scalars": 0.01638701360207051,
+    "advance_clock": 0.00715100031811744
+   },
+   "unattributed_ms": 0.30395487300120294,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 6786084864,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11980.687643997953,
+   "compute_busy_ms": 8571.346801757812,
+   "transfer_busy_ms": 11733.209511203691,
+   "transfer_exposed_ms": 3409.014320774004,
+   "transfer_hidden_ms": 8324.195190429688,
+   "per_category_ms": {
+    "h2d": 4882.551910400391,
+    "d2h": 5346.388671875,
+    "geo_h2d": 1073.4147113990039,
+    "ring_save": 420.14892578125,
+    "ring_patch": 2645.2865600585938
+   },
+   "exposed_by_category_ms": {
+    "h2d": 728.7353820800781,
+    "d2h": 2526.6142578125,
+    "geo_h2d": 814.6376117896289,
+    "ring_save": 111.0645751953125,
+    "ring_patch": 1862.5437622070312
+   },
+   "exposed_fill_ms": 880.0813373755664,
+   "exposed_drain_ms": 659.607421875,
+   "host_ms": {
+    "tile_hook": 0.010791991371661425,
+    "set_scalars": 0.015161989722400904,
+    "advance_clock": 0.006583999493159354
+   },
+   "unattributed_ms": 0.29398348554968834,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 7634345472,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11683.803352003451,
+   "compute_busy_ms": 8413.047790527344,
+   "transfer_busy_ms": 11438.52511019446,
+   "transfer_exposed_ms": 3270.3292483780533,
+   "transfer_hidden_ms": 8168.195861816406,
+   "per_category_ms": {
+    "h2d": 4747.308143615723,
+    "d2h": 5199.04150390625,
+    "geo_h2d": 1022.0069827530533,
+    "ring_save": 444.1845703125,
+    "ring_patch": 2534.621826171875
+   },
+   "exposed_by_category_ms": {
+    "h2d": 698.8785171508789,
+    "d2h": 2432.060302734375,
+    "geo_h2d": 772.1520022843033,
+    "ring_save": 111.0401611328125,
+    "ring_patch": 1764.836181640625
+   },
+   "exposed_fill_ms": 837.5119876358658,
+   "exposed_drain_ms": 661.388671875,
+   "host_ms": {
+    "tile_hook": 0.01215799420606345,
+    "set_scalars": 0.016581019735895097,
+    "advance_clock": 0.01618999522179365
+   },
+   "unattributed_ms": 0.381384088890627,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 8482606080,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11918.194580997806,
+   "compute_busy_ms": 8673.672424316406,
+   "transfer_busy_ms": 11673.245348757133,
+   "transfer_exposed_ms": 3244.169482057914,
+   "transfer_hidden_ms": 8429.075866699219,
+   "per_category_ms": {
+    "h2d": 4718.102508544922,
+    "d2h": 5391.5946044921875,
+    "geo_h2d": 947.2682369407266,
+    "ring_save": 440.04571533203125,
+    "ring_patch": 2579.9461059570312
+   },
+   "exposed_by_category_ms": {
+    "h2d": 630.6377258300781,
+    "d2h": 2462.8682861328125,
+    "geo_h2d": 715.1080806907266,
+    "ring_save": 111.20367431640625,
+    "ring_patch": 1728.0635375976562
+   },
+   "exposed_fill_ms": 780.6370113547891,
+   "exposed_drain_ms": 728.693359375,
+   "host_ms": {
+    "tile_hook": 0.0145800004247576,
+    "set_scalars": 0.01855098525993526,
+    "advance_clock": 0.009068986400961876
+   },
+   "unattributed_ms": 0.31047465139999986,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 9330866688,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11405.348864995176,
+   "compute_busy_ms": 7977.845458984375,
+   "transfer_busy_ms": 11160.03047300689,
+   "transfer_exposed_ms": 3427.1541302334517,
+   "transfer_hidden_ms": 7732.8763427734375,
+   "per_category_ms": {
+    "h2d": 4532.170520782471,
+    "d2h": 5254.63916015625,
+    "geo_h2d": 898.6482098232955,
+    "ring_save": 466.9130859375,
+    "ring_patch": 2655.581787109375
+   },
+   "exposed_by_category_ms": {
+    "h2d": 628.0049934387207,
+    "d2h": 2705.4306640625,
+    "geo_h2d": 655.4421551357955,
+    "ring_save": 110.9813232421875,
+    "ring_patch": 1975.21728515625
+   },
+   "exposed_fill_ms": 720.6352093350142,
+   "exposed_drain_ms": 724.859375,
+   "host_ms": {
+    "tile_hook": 0.012820994015783072,
+    "set_scalars": 0.015370998880825937,
+    "advance_clock": 0.012835997040383518
+   },
+   "unattributed_ms": 0.308247787412256,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 10179127296,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11804.154851997737,
+   "compute_busy_ms": 8439.419616699219,
+   "transfer_busy_ms": 11557.88146891445,
+   "transfer_exposed_ms": 3364.405577801168,
+   "transfer_hidden_ms": 8193.475891113281,
+   "per_category_ms": {
+    "h2d": 4826.066459655762,
+    "d2h": 5287.525146484375,
+    "geo_h2d": 981.784972332418,
+    "ring_save": 464.639892578125,
+    "ring_patch": 2631.0260009765625
+   },
+   "exposed_by_category_ms": {
+    "h2d": 743.981315612793,
+    "d2h": 2521.097900390625,
+    "geo_h2d": 776.330626629293,
+    "ring_save": 111.229248046875,
+    "ring_patch": 1844.927490234375
+   },
+   "exposed_fill_ms": 841.8908072933555,
+   "exposed_drain_ms": 670.7392578125,
+   "host_ms": {
+    "tile_hook": 0.014760007616132498,
+    "set_scalars": 0.01799300662241876,
+    "advance_clock": 0.006653004675172269
+   },
+   "unattributed_ms": 0.290251478436403,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 11027387904,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11763.412981003057,
+   "compute_busy_ms": 8390.101440429688,
+   "transfer_busy_ms": 11506.39252895303,
+   "transfer_exposed_ms": 3372.990063132718,
+   "transfer_hidden_ms": 8133.4024658203125,
+   "per_category_ms": {
+    "h2d": 4922.988945007324,
+    "d2h": 5149.052001953125,
+    "geo_h2d": 996.0072140116245,
+    "ring_save": 435.97442626953125,
+    "ring_patch": 2672.2967529296875
+   },
+   "exposed_by_category_ms": {
+    "h2d": 735.8673629760742,
+    "d2h": 2529.573486328125,
+    "geo_h2d": 776.6370968241245,
+    "ring_save": 110.96588134765625,
+    "ring_patch": 1889.873046875
+   },
+   "exposed_fill_ms": 842.0102047342807,
+   "exposed_drain_ms": 634.318359375,
+   "host_ms": {
+    "tile_hook": 0.01540500670671463,
+    "set_scalars": 0.019793995306827128,
+    "advance_clock": 0.007480004569515586
+   },
+   "unattributed_ms": 0.27879843406844884,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 11875648512,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11903.682874006336,
+   "compute_busy_ms": 8491.700744628906,
+   "transfer_busy_ms": 11659.556628156453,
+   "transfer_exposed_ms": 3411.655688215047,
+   "transfer_hidden_ms": 8247.900939941406,
+   "per_category_ms": {
+    "h2d": 5018.574443817139,
+    "d2h": 5166.265380859375,
+    "geo_h2d": 1019.1954831369221,
+    "ring_save": 577.0673828125,
+    "ring_patch": 2565.0466918945312
+   },
+   "exposed_by_category_ms": {
+    "h2d": 816.2552909851074,
+    "d2h": 2507.646484375,
+    "geo_h2d": 776.5756100900471,
+    "ring_save": 172.5054931640625,
+    "ring_patch": 1825.2655639648438
+   },
+   "exposed_fill_ms": 903.3870114572346,
+   "exposed_drain_ms": 675.86328125,
+   "host_ms": {
+    "tile_hook": 0.01386700023431331,
+    "set_scalars": 0.016622012481093407,
+    "advance_clock": 0.00797200482338667
+   },
+   "unattributed_ms": 0.28798014484345913,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 12723909120,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 74301.04217698681,
+   "compute_busy_ms": 72631.76940917969,
+   "transfer_busy_ms": 11304.82327480428,
+   "transfer_exposed_ms": 1667.8293783199042,
+   "transfer_hidden_ms": 9636.993896484375,
+   "per_category_ms": {
+    "h2d": 4896.388282775879,
+    "d2h": 4150.677734375,
+    "geo_h2d": 1122.7108480464667,
+    "ring_save": 425.126953125,
+    "ring_patch": 1513.62939453125
+   },
+   "exposed_by_category_ms": {
+    "h2d": 757.9642105102539,
+    "d2h": 764.63671875,
+    "geo_h2d": 837.6434652339667,
+    "ring_save": 111.197998046875,
+    "ring_patch": 0.096923828125
+   },
+   "exposed_fill_ms": 903.1926595699042,
+   "exposed_drain_ms": 740.203125,
+   "host_ms": {
+    "tile_hook": 0.013455020962283015,
+    "set_scalars": 0.018283011741004884,
+    "advance_clock": 0.00906200148165226
+   },
+   "unattributed_ms": 1.4025894530350342,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 13572169728,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11644.016855003429,
+   "compute_busy_ms": 8265.019714355469,
+   "transfer_busy_ms": 11405.34944171086,
+   "transfer_exposed_ms": 3378.6291658319533,
+   "transfer_hidden_ms": 8026.720275878906,
+   "per_category_ms": {
+    "h2d": 4695.022171020508,
+    "d2h": 5120.1630859375,
+    "geo_h2d": 1062.2129671014845,
+    "ring_save": 486.353515625,
+    "ring_patch": 2591.436767578125
+   },
+   "exposed_by_category_ms": {
+    "h2d": 726.8410797119141,
+    "d2h": 2500.6826171875,
+    "geo_h2d": 811.1238557733595,
+    "ring_save": 111.1170654296875,
+    "ring_patch": 1778.70361328125
+   },
+   "exposed_fill_ms": 876.4764558710158,
+   "exposed_drain_ms": 715.4970703125,
+   "host_ms": {
+    "tile_hook": 0.013954995665699244,
+    "set_scalars": 0.020526000298559666,
+    "advance_clock": 0.012970995157957077
+   },
+   "unattributed_ms": 0.3205228248843923,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 14420430336,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11000.421828997787,
+   "compute_busy_ms": 7901.821594238281,
+   "transfer_busy_ms": 10753.271042719483,
+   "transfer_exposed_ms": 3098.242417231202,
+   "transfer_hidden_ms": 7655.028625488281,
+   "per_category_ms": {
+    "h2d": 4479.765716552734,
+    "d2h": 4847.52099609375,
+    "geo_h2d": 884.1506813913584,
+    "ring_save": 440.7177734375,
+    "ring_patch": 2439.6243896484375
+   },
+   "exposed_by_category_ms": {
+    "h2d": 598.3348693847656,
+    "d2h": 2376.199951171875,
+    "geo_h2d": 654.7419899851084,
+    "ring_save": 111.3453369140625,
+    "ring_patch": 1696.1287841796875
+   },
+   "exposed_fill_ms": 720.4113625437021,
+   "exposed_drain_ms": 675.150390625,
+   "host_ms": {
+    "tile_hook": 0.01525299740023911,
+    "set_scalars": 0.01597001391928643,
+    "advance_clock": 0.013052995200268924
+   },
+   "unattributed_ms": 0.31354152178391814,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 15268690944,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  },
+  {
+   "wall_ms": 11059.8596320051,
+   "compute_busy_ms": 7856.77978515625,
+   "transfer_busy_ms": 10804.845780421048,
+   "transfer_exposed_ms": 3202.6785440929234,
+   "transfer_hidden_ms": 7602.167236328125,
+   "per_category_ms": {
+    "h2d": 4444.509216308594,
+    "d2h": 4951.5716552734375,
+    "geo_h2d": 997.3780069835484,
+    "ring_save": 396.0938720703125,
+    "ring_patch": 2463.5585327148438
+   },
+   "exposed_by_category_ms": {
+    "h2d": 694.5241088867188,
+    "d2h": 2383.0877685546875,
+    "geo_h2d": 752.2088175304234,
+    "ring_save": 111.1097412109375,
+    "ring_patch": 1710.0136108398438
+   },
+   "exposed_fill_ms": 817.6763468272984,
+   "exposed_drain_ms": 668.076171875,
+   "host_ms": {
+    "tile_hook": 0.014644989278167486,
+    "set_scalars": 0.018036007531918585,
+    "advance_clock": 0.017142010619863868
+   },
+   "unattributed_ms": 0.35147974849678576,
+   "report": {
+    "gathered_bytes": 9240764928,
+    "scattered_bytes": 7516156416,
+    "ring_saved_bytes": 867246528,
+    "ring_patched_bytes": 861203520,
+    "geography_bytes": 16116951552,
+    "tiles": 6,
+    "nbuffers": 2
+   }
+  }
+ ],
+ "mean": {
+  "wall_ms": 15279.436132116483,
+  "compute_busy_ms": 12082.323324764477,
+  "transfer_busy_ms": 11342.620196708094,
+  "transfer_exposed_ms": 3196.6913098457326,
+  "transfer_hidden_ms": 8145.928886862363,
+  "exposed_fill_ms": 812.651428756578,
+  "exposed_drain_ms": 685.3989545036765,
+  "unattributed_ms": 0.37862926572972144,
+  "per_category_ms": {
+   "h2d": 4714.616620905259,
+   "d2h": 5109.19389073989,
+   "geo_h2d": 970.8986067781773,
+   "ring_save": 455.78691549862134,
+   "ring_patch": 2518.013635971967
+  },
+  "exposed_by_category_ms": {
+   "h2d": 690.7966710258933,
+   "d2h": 2382.7963005514707,
+   "geo_h2d": 735.3681179224787,
+   "ring_save": 122.86211081112133,
+   "ring_patch": 1690.7575827205883
+  },
+  "host_ms": {
+   "advance_clock": 0.010997294927673304,
+   "set_scalars": 0.017556414069772205,
+   "tile_hook": 0.01431453154723653
+  }
+ }
+}

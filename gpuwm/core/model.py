@@ -17,7 +17,8 @@ from types import MappingProxyType
 from typing import Literal, Protocol, runtime_checkable
 
 from gpuwm.core.clock import DomainClock, Schedule
-from gpuwm.config import radiation_scheme_ids
+from gpuwm.config import (SURFACE_RADIATION_POLICY_REQUIRED,
+                          radiation_scheme_ids)
 from gpuwm.core.state import DomainState
 from gpuwm.experiment import DomainConfig
 from gpuwm.static.lambert import LambertGrid
@@ -318,7 +319,18 @@ RESTART_TOLERATED_EXPERIMENT_FIELDS = (
     # move the fingerprint of every experiment that never mentions
     # relocation and refuse every checkpoint written before it existed.
     # Held byte-inert by tests/test_nest_relocation.py.
-    "relocation")
+    "relocation",
+    # [tiles] is an EXECUTION choice and the only thing it claims is
+    # that it changes nothing.  A domain integrated resident and the same
+    # domain streamed tile-by-tile from pinned host RAM produce the same
+    # bytes -- proven carrier by carrier at every physics rung, and proven
+    # again across a checkpoint in four legs (streamed -> file -> streamed,
+    # streamed -> file -> MONOLITHIC through the unmodified restore path,
+    # monolithic -> file -> streamed, all bit-exact).  Binding the mode
+    # would therefore refuse exactly the operation it exists for: a
+    # forecast that outgrew its card resuming on the card it outgrew.
+    # See gpuwm.core.streaming.identity_payload_entry.
+    "tiles")
 RESTART_TOLERATED_DOMAIN_FIELDS = ("history_interval_s",)
 RESTART_TOLERATED_RUN_FIELDS = (
     "run_seconds", "output_interval_s", "restart_interval_s")
@@ -400,6 +412,20 @@ def restart_identity_payload(exp) -> dict:
                 continue
             for name in names:
                 run.pop(name, None)
+        # THE SURFACE-RADIATION CARRIER POLICY, on the same convention the
+        # perturbation and spawn blocks above use: the DEFAULT drops out of
+        # the identity payload, so every experiment written before the
+        # policy existed keeps its exact fingerprint and restart identity,
+        # and the DECLARED ESCAPE binds.  That is the whole requirement --
+        # "wrf_compat_zero" has to be part of what a run IS, because a leg
+        # that consumed a sky nobody computed is not the same experiment as
+        # one that did not, and a resume across the change must refuse.  A
+        # label that changed every existing fingerprint while changing no
+        # trajectory would be identity churn, which is the opposite of what
+        # identity is for.
+        if run.get("surface_radiation_policy") == (
+                SURFACE_RADIATION_POLICY_REQUIRED):
+            run.pop("surface_radiation_policy", None)
     return experiment
 
 
@@ -689,7 +715,7 @@ def execute_experiment(
         arena_nan_poison: bool = False,
         skip_feedback_path: bool = False,
         pool_trim_per_period: bool = True,
-        relocation_runner=None):
+        relocation_runner=None, steppers=None):
     """Wire one :class:`ExperimentState` into ``execute_schedule``.
 
     STEP calls the domain's existing dycore, FORCE calls its node-facing
@@ -718,6 +744,20 @@ def execute_experiment(
     cached blocks, never live allocations, so no computed value can
     change; allocator behavior is not part of any ratified comparator.
     Disable only for allocator forensics.
+
+    ``steppers`` is ``{grid_id: callable}``, the callable a STEP op steps
+    that domain with.  ``None`` -- and any grid absent from a supplied
+    mapping -- binds ``gpuwm.core.dycore.step`` ITSELF, so an experiment
+    that configures nothing runs the identical function through the
+    identical call, not a wrapper that forwards to it.  A domain whose
+    ``[tiles]`` fired binds a
+    :class:`gpuwm.core.streaming.StreamedDomain` instead, which has the
+    same signature and advances the same domain by the same one model
+    step -- out of a pinned host store, one tile of it on the card at a
+    time.  Everything around the call is unchanged BECAUSE the loop is
+    unchanged: the same clock refresh either side, the same health
+    validators, the same ``refl_10cm_due`` handshake, the same history
+    and restart ops on the same cadences.
     """
     from gpuwm.core.clock import execute_schedule
     from gpuwm.core.dycore import step
@@ -765,6 +805,10 @@ def execute_experiment(
                 "any other route constructs "
                 "gpuwm.core.relocation_runner.RelocationRunner and passes "
                 "it here, or drives relocate_child directly")
+    # Resolved to a plain dict here, keyed by grid, so a delayed-start child
+    # that joins the tree later falls back to the dycore's own step rather
+    # than to whatever the last domain happened to bind.
+    steppers = dict(steppers or {})
     feedback_scratch = {
         node.cfg.grid_id: FeedbackScratch()
         for node in model.walk_parent_first() if node.parent is not None}
@@ -775,6 +819,19 @@ def execute_experiment(
 
     validators = {}
     if validate_state:
+        # BOUND TO node.state, WHICH A STREAMED DOMAIN DOES NOT LIVE IN.
+        # ``[tiles] store = "host"`` moves the domain into a pinned host
+        # store (``gpuwm.core.streaming.attach``, via ``pinned_copy``, which
+        # COPIES) and the sweep never writes ``node.state`` again, so under
+        # streaming this validator inspects a snapshot of t = 0 and passes
+        # forever.  Refreshing the state is not an option -- the premise of
+        # the mode is that the domain does not fit on the card -- so the fix
+        # is a per-tile fold, which ``stability_report`` has had since
+        # ``gpuwm.core.streaming.StreamedStability`` and this descriptor
+        # kernel has not: it runs one block per whole field and cannot be
+        # windowed onto a tile's interior.  See the same note in
+        # ``gpuwm.runtime.integrate_prepared_case``.  It is armed for a
+        # resident tree, which is every tree that configures no [tiles].
         from gpuwm.core.health import StateHealthValidator
         validators = {node.cfg.grid_id: StateHealthValidator(node.state)
                       for node in model.walk_parent_first()}
@@ -790,17 +847,50 @@ def execute_experiment(
             return nullcontext()
         return dycore_state_workspace.acquire(owner)
 
+    def _streamed(grid_id):
+        """The streamed stepper for one grid, or ``None`` if it is resident.
+
+        ``steppers`` holds ``dycore.step`` for nothing -- a resident grid is
+        simply absent -- so this is the whole test.
+        """
+        from gpuwm.core.streaming import is_streaming
+
+        stepper = steppers.get(int(grid_id))
+        return stepper if is_streaming(stepper) else None
+
     def on_period_begin(period, clocks) -> None:
         status.schedule_cursor = PERIOD_BEGIN
         status.prior_feedback_committed = True
         if relocation_runner is None:
             return
+        # A STREAMED parent keeps its arrays in a store, not on its state,
+        # and the whole of relocation reads the state: the tracker reduces
+        # the parent's UH plane, the runner zeroes that plane, and the
+        # rebuild takes a full SINT of the live parent.  With a host store
+        # every one of those reads t=0 unless the store is projected onto
+        # the state first -- and the zeroing has to be projected BACK, or
+        # the window silently stops meaning "since I last looked".
+        #
+        # Only on a cadence boundary, and only for the target's parent.  The
+        # planes are (ny, nx); the SINT source is the whole state, which is
+        # why it is done here (once per cadence) and not per step.
+        from gpuwm.core.streaming import TRACKER_PLANE_CARRIERS
+
+        parent_stream = None
+        if relocation_runner.is_due(model, clocks):
+            target = model.node(int(relocation_runner.config.grid_id))
+            if target.parent is not None:
+                parent_stream = _streamed(target.parent.cfg.grid_id)
+            if parent_stream is not None:
+                parent_stream.sync_to_state()
         outcome = relocation_runner.on_period_begin(
             model, clocks, period=period,
             # The executor's validator holds live references into the
             # outgoing child; dropping it here is what lets the
             # host-staged release actually free the device bytes.
             before_rebuild=lambda gid: validators.pop(gid, None))
+        if parent_stream is not None:
+            parent_stream.sync_from_state(TRACKER_PLANE_CARRIERS)
         if outcome is not None and outcome.get("event") == "relocated":
             gid = int(outcome["grid_id"])
             if validate_state:
@@ -876,14 +966,24 @@ def execute_experiment(
             # Kernel-facing curr_secs mirrors WRF REAL; after the solve the
             # public state clock is refreshed from exact integer ticks.
             refresh_model_time(node.state, clock, kernel_launch=True)
-            step(node.state, node.cfg.run,
-                 # REFL_10CM is a one-frame producer/consumer handoff. A
-                 # headless forecast still advances history alarms in the
-                 # clock report, but has no output consumer, so it must not
-                 # stage a field that can never be consumed.
-                 refl_10cm_due=(
-                     history_handler is not None
-                     and clock.history_rings_within_step()))
+            # The clock is the CALENDAR AUTHORITY, and a streamed domain
+            # does not read the state it was just written onto: its tiles
+            # take elapsed_seconds from the sweep's scalar carriers.  Impose
+            # it here, from the same value the resident kernels get, or the
+            # domain runs a second free-running clock and every physics
+            # cadence -- and dtbc -- is evaluated against it.
+            streamed_here = _streamed(grid_id)
+            if streamed_here is not None:
+                streamed_here.impose_clock(node.state.elapsed_seconds)
+            steppers.get(grid_id, step)(
+                node.state, node.cfg.run,
+                # REFL_10CM is a one-frame producer/consumer handoff. A
+                # headless forecast still advances history alarms in the
+                # clock report, but has no output consumer, so it must not
+                # stage a field that can never be consumed.
+                refl_10cm_due=(
+                    history_handler is not None
+                    and clock.history_rings_within_step()))
             refresh_model_time(node.state, clock, after_step=True)
             poison()
             if validators and health_debug:
@@ -897,6 +997,25 @@ def execute_experiment(
                 # 15-sim-min run). Same byte-inert release, per STEP op.
                 _trim_default_pool()
 
+    #: How far outside a child's parent-cell footprint the coupler reaches,
+    #: in PARENT cells.  ``register_nest``'s SINT stencil is +-2 and the
+    #: specified/relaxation zone the force tables fill is ``spec_bdy_width``
+    #: CHILD cells; 8 bounds both at every ratio this tree admits, and a
+    #: superset is free (the reader ignores what it does not need) while a
+    #: subset is a stale cell inside the zone the reader does use.
+    _FORCE_HALO_PARENT_CELLS = 8
+
+    def _footprint_window(node) -> tuple:
+        """The child's footprint on the parent, in 0-based parent mass cells."""
+        dc = node.cfg
+        ratio = int(dc.parent_grid_ratio)
+        i0 = int(dc.i_parent_start) - 1
+        j0 = int(dc.j_parent_start) - 1
+        span_i = -(-int(dc.run.nx) // ratio)
+        span_j = -(-int(dc.run.ny) // ratio)
+        pad = _FORCE_HALO_PARENT_CELLS
+        return (j0 - pad, j0 + span_j + pad, i0 - pad, i0 + span_i + pad)
+
     def on_force(child_id, parent_id, child_clock, parent_clock) -> None:
         with domain_turn(("FORCE", child_id, parent_id)):
             node = model.node(child_id)
@@ -905,6 +1024,18 @@ def execute_experiment(
                     "schedule FORCE edge differs from domain tree")
             status.pending_force = status.pending_force + 1
             status.prior_feedback_committed = False
+            # A STREAMED parent's arrays are in its store; the coupler
+            # interpolates the child's boundaries out of ``parent.state``.
+            # With a host store that state is frozen at attach time, so
+            # without this the nest is forced by t=0 air for the whole run --
+            # silently, because t=0 air is perfectly well-formed air.  Only
+            # the footprint plus the coupler's reach is copied: the domain is
+            # streamed BECAUSE it does not fit, and a whole-state projection
+            # per parent step would be the allocation the mode exists to
+            # avoid, paid again every step.
+            parent_stream = _streamed(parent_id)
+            if parent_stream is not None:
+                parent_stream.sync_to_state(window=_footprint_window(node))
             try:
                 node.coupler.force(node)
                 if validators and health_debug:
@@ -924,6 +1055,32 @@ def execute_experiment(
     def on_feedback_commit(child_id, parent_id, child_clock,
                            parent_clock) -> None:
         node = model.node(child_id)
+        # Two-way feedback is the one nest op that WRITES the parent, and a
+        # streamed parent's writes have to land in its store or they are
+        # thrown away at the next sweep.  Projecting a restriction back is a
+        # different piece of work from projecting a read forward -- the
+        # sweep would have to be told not to overwrite it -- and none of it
+        # is done, so this refuses by name rather than integrating a
+        # two-way nest whose feedback silently never arrives.  ``feedback =
+        # 0``, the production one-way path, walks a dormant transaction and
+        # is unaffected.
+        # Attribute access in a try, never reflection: this module is
+        # AST-audited against getattr/setattr
+        # (tests/test_clock.py::test_no_float_elapsed_accumulation_audit),
+        # and the only couplers without the attribute are the stub objects
+        # in the refusal tests, for which no carve-out applies.
+        try:
+            two_way = int(node.coupler.feedback) == 1
+        except AttributeError:
+            two_way = False
+        if two_way and _streamed(parent_id) is not None:
+            raise RuntimeError(
+                f"d{parent_id:02d} is STREAMED and d{child_id:02d} runs "
+                "two-way feedback (feedback = 1).  The restriction writes "
+                "the parent's state, a streamed parent's state is a "
+                "projection of its store, and nothing projects a write "
+                "back -- the feedback would be discarded by the next "
+                "sweep.  Run the parent resident, or set feedback = 0.")
         status.mutation_in_progress = True
         try:
             node.coupler.feedback_commit(node)

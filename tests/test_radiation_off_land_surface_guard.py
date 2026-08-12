@@ -384,10 +384,17 @@ def test_the_downward_longwave_has_no_default_at_all():
     parameters = inspect.signature(initialize_physics).parameters
     assert parameters["glw"].default is None
     # The sibling on the same line was always 0.0; the asymmetry between
-    # them is what made a missing scheme look like weather.  swdown keeps
-    # its default because nothing consumes it as a surface energy term
-    # when no shortwave scheme is attached.
-    assert parameters["swdown"].default == 0.0
+    # them is what made a missing scheme look like weather.  1.9's carrier
+    # contract removes that default too, and for a reason the note here
+    # used to have backwards: SWDOWN IS consumed as a surface energy term
+    # -- Noah and Noah-MP read it every surface step whether or not a
+    # shortwave scheme is attached -- so "the caller said nothing" and
+    # "the caller typed zero" had to become different states.  The BUFFER
+    # is still allocated as zeros, so every existing trajectory is
+    # byte-identical; what changed is that gpuwm.core.radiation_carriers
+    # can now tell the two apart and refuse the first before an LSM eats
+    # it.
+    assert parameters["swdown"].default is None
     # A value a caller may type, and NOT a seed anything hands out.
     assert DECLARED_CONSTANT_GLW_WM2 == 300.0
     assert not hasattr(physics_module, "GLW_NO_LONGWAVE_SCHEME"), (

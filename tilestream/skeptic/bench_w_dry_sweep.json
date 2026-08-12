@@ -1,0 +1,138 @@
+{
+  "rung": "dry (control)",
+  "domain": 512,
+  "nz": 49,
+  "halo": 16,
+  "steps": 4,
+  "warmup": 1,
+  "nbuffers": 2,
+  "host_store": false,
+  "repeats": 2,
+  "device": "NVIDIA GeForce RTX 5090",
+  "free_gib_at_start": 28.283203125,
+  "total_gib": 31.84234619140625,
+  "rows": [
+    {
+      "window": 128,
+      "tile": 96,
+      "stream": 119.09852049939218,
+      "stream_samples": [
+        119.09852049939218,
+        121.76849050047167
+      ],
+      "stream_fired": {},
+      "tiles": 36,
+      "compute": [
+        49,
+        128,
+        128
+      ],
+      "graph": 110.86064174924104,
+      "graph_samples": [
+        111.00046274987108,
+        110.86064174924104
+      ],
+      "graph_fired": {},
+      "graph_info": {
+        "reuse": "sweep",
+        "key": "cadence",
+        "captures": 8,
+        "replays": 144,
+        "fallbacks": 0,
+        "capture_seconds": 0.04957283500698395,
+        "nodes": [
+          232
+        ],
+        "health_records": 0,
+        "reason": null
+      },
+      "speedup": 1.0743084165865162,
+      "tax_stream": 3.3004739861908448,
+      "tax_graph": 3.0721847983633017
+    },
+    {
+      "window": 160,
+      "tile": 128,
+      "stream": 70.02214550084318,
+      "stream_samples": [
+        70.02214550084318,
+        75.07588074986415
+      ],
+      "stream_fired": {},
+      "tiles": 16,
+      "compute": [
+        49,
+        160,
+        160
+      ],
+      "graph": 70.52912525068677,
+      "graph_samples": [
+        74.03994999913266,
+        70.52912525068677
+      ],
+      "graph_fired": {},
+      "graph_info": {
+        "reuse": "sweep",
+        "key": "cadence",
+        "captures": 8,
+        "replays": 64,
+        "fallbacks": 0,
+        "capture_seconds": 0.048253769004077185,
+        "nodes": [
+          232
+        ],
+        "health_records": 0,
+        "reason": null
+      },
+      "speedup": 0.9928117675068052,
+      "tax_stream": 1.9404629773212225,
+      "tax_graph": 1.9545124673473633
+    },
+    {
+      "window": 224,
+      "tile": 192,
+      "stream": 64.53003625028941,
+      "stream_samples": [
+        65.75618100032443,
+        64.53003625028941
+      ],
+      "stream_fired": {},
+      "tiles": 9,
+      "compute": [
+        49,
+        224,
+        224
+      ],
+      "graph": 70.13793049918604,
+      "graph_samples": [
+        78.27658874884946,
+        70.13793049918604
+      ],
+      "graph_fired": {},
+      "graph_info": {
+        "reuse": "sweep",
+        "key": "cadence",
+        "captures": 8,
+        "replays": 36,
+        "fallbacks": 0,
+        "capture_seconds": 0.04790988200693391,
+        "nodes": [
+          232
+        ],
+        "health_records": 0,
+        "reason": null
+      },
+      "speedup": 0.9200447716523129,
+      "tax_stream": 1.788264917809112,
+      "tax_graph": 1.9436716265422151
+    }
+  ],
+  "monolithic_ms": 36.08527775031689,
+  "monolithic_fired": {
+    "radiation": 0,
+    "cumulus": 0,
+    "sfclay": 0,
+    "noah": 0,
+    "ysu": 0
+  }
+}

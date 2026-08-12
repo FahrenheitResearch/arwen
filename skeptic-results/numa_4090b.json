@@ -1,0 +1,47 @@
+{
+ "gpu": {
+  "device": 0,
+  "name": "NVIDIA GeForce RTX 4090",
+  "pci_bus_id": "0000:81:00.0",
+  "async_engine_count": 2,
+  "free_bytes": 5358682112,
+  "total_bytes": 25250627584,
+  "pcie": {
+   "max_link_speed": "16.0 GT/s PCIe",
+   "max_link_width": "16",
+   "current_link_speed": "16.0 GT/s PCIe",
+   "current_link_width": "16"
+  }
+ },
+ "direction": "h2d",
+ "arms": {
+  "near_node1": {
+   "gbs_median": 25.8090517165189,
+   "spread_pct": 1.1403673266097658,
+   "runs": [
+    25.948669443307374,
+    25.654351450224375,
+    25.8090517165189
+   ]
+  },
+  "far_node0": {
+   "gbs_median": 23.609788297765235,
+   "spread_pct": 1.399891277675736,
+   "runs": [
+    23.609788297765235,
+    23.537084238515718,
+    23.86759560557384
+   ]
+  },
+  "unbound": {
+   "gbs_median": 24.343011827366652,
+   "spread_pct": 0.30183235682034865,
+   "runs": [
+    24.345352188720092,
+    24.271877102400495,
+    24.343011827366652
+   ]
+  }
+ },
+ "far_over_near": 0.914787128062282
+}

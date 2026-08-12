@@ -1,5 +1,316 @@
 # Changelog
 
+## 2.0.0 (2026-08-12)
+
+New:
+- A streamed sweep's transfers run beside its compute. Each tile buffer
+  carries a copy-in and a copy-out stream next to its compute stream,
+  ordered by the event chain `tilestream/overlap.py` derives from the
+  ring plan. When nothing armed on the run needs a hard sweep barrier,
+  the end-of-sweep device synchronization is deferred too: the next
+  step's gathers chain on the previous step's scatter events and the
+  pipeline stays primed across steps. Anything that reads the store
+  drains first, through `TiledRun.store` or `TiledRun.drain()`.
+  `overlap="on"` is the default and changes no arithmetic; `"off"`
+  keeps the single-stream loop as the reference; `"unchained"` drops
+  the chain, wrong on purpose, as the negative control.
+- `tilestream/test_overlap.py` gates the event chain without a card. The
+  sweep is simulated under the driver's own dependencies and driven by
+  adversarial schedules; the full chain must match the monolithic
+  reference under every adversary, each wait class cut must fire the
+  construction-time checker and either move the digest or be proven
+  transitively implied, and the unchained control must move the digest.
+  Listed in `tools/battery/tiles_gates.txt` as a cpu gate.
+- A domain too large for the card runs as a streamed forecast. The state
+  lives in pinned host RAM and cycles through the GPU one tile at a time,
+  under the `[tiles]` table. `mode = "auto"` streams only when the domain
+  does not fit, and unknown keys in the table are refused by name.
+- `docs/public/TILES.md` documents the streamed run. `gpuwm stream` and
+  `docs/public/STREAMING.md` remain the HRRR cycle-following feature. Both
+  pages, and both `stream` help texts, open by naming the other: the two
+  share no configuration and no code path.
+- Health is reduced per tile. `health_partial_tile` folds a tile's nan,
+  w_max and CFL record after its step and before its interior is
+  scattered, so the run loop's gate reduces over the host store instead of
+  over a state the sweep never writes.
+- `tools/battery/tiles_gates.txt` enumerates the four `[tiles]` gates, the
+  shard each runs on, the environment each one's real acceptance needs, and
+  the measured card floor for the graph section. Two gates have a rung or
+  geometry selector whose default is the weaker setting, so each is listed
+  twice. `tests/test_tiles_gate_manifest.py` gates the list.
+- Stage 1 gains seven CPU-only suites from this work, each with its reason
+  inline: the `[tiles]` option surface, spawn-at-trigger under `[tiles]`,
+  the gate list, the gates' green-on-nothing preconditions, the GLW
+  declaration contract, the physics allocation inventory, and the
+  distribution's import closure.
+- `tilestream/` carries the harness, its engineering records and the
+  evidence logs behind every figure stated here. None of it is product
+  surface and no gate covers it.
+- Specified (externally forced) lateral boundaries run through the
+  multi-GPU decomposition. `plan_split` takes per-axis periodicity; a
+  non-periodic axis clamps edge ranks at the domain, so the real boundary
+  sits on the rank's own array edge, and no wrap seam is exchanged there.
+- Each forced rank attaches the domain's `LateralBoundaries` windowed to
+  its array: the domain's own tables on true edges, inert tables on
+  interior seams. The halo is padded by `max(spec_zone, relax_zone)` so
+  seam-side boundary fiction stays inside the throwaway ring.
+- Forced decompositions that cannot be right are refused by name: forcing
+  missing on a specified config, forcing on a periodic config, nested
+  forcing, a quarantine-defeating halo, Davies zone mismatch between the
+  forcing and the config, and ranks narrower than the relaxation frame.
+- The gate battery gains a FORCED rung alongside the periodic one:
+  `tilestream.test_forced_gate` runs the specified case at 1, 2 and 4
+  ranks against the resident digest, with a poison-seam control that must
+  match and a scaled-edge control that must differ. Stage 1 gains
+  `tests/test_multigpu_specified_bc.py`, the CPU-hermetic geometry,
+  windowing, corner and refusal suite.
+- Every radiative field a land-surface scheme reads carries a source and a
+  last-producer time, and the check runs immediately before the scheme
+  consumes it. Sources are `radiation_scheme`, `declared_constant`,
+  `external_array`, `analytic_geometry`, `wrf_compat_zero` and `unwritten`.
+  The consumer matrix states what each scheme reads: Noah GLW+SWDOWN, RUC
+  GLW+GSW, Noah-MP GLW+SWDOWN+COSZEN, no land surface nothing. A scheme not
+  in the matrix refuses rather than defaulting to requiring nothing.
+- `surface_radiation_policy` defaults to `"required"` for every run. The
+  escape `"wrf_compat_zero"` consumes unsourced carriers at their
+  allocation fill, is never selected automatically, labels every carrier it
+  admits, appears in the run receipt, and is refused on a resume that
+  changed it. It is an experimental forcing, not a valid configuration for
+  a real case. A declared constant GLW is an experimental forcing on the
+  same terms, not a statement that radiation is available.
+- The check counts the consumer's cells before refusing, with the same
+  land and sea-ice predicate the schemes dispatch on. A domain with zero
+  land and zero ice cells feeds its land-surface scheme nothing, so an
+  all-water idealised run with radiation off is admitted. One land or
+  ice cell restores the full refusal, and a state whose footprint cannot
+  be read runs the check in full.
+- Per-carrier provenance in the run receipt and the output metadata.
+  The prepared runner's `report.json` carries one row per carrier with
+  its source, last producer time and a representative value, and every
+  wrfout file carries `GPUWM_SURFACE_RADIATION_POLICY` plus
+  `GPUWM_CARRIER_<NAME>_SOURCE` and `GPUWM_CARRIER_<NAME>_LAST_UPDATE`
+  globals, stamped per frame from the live contract.
+
+Fixed:
+- Classic RRTM+Dudhia (1/1) radiation no longer stalls large nests on
+  host dispatch. The RRTM longwave solver re-dispatched its whole CuPy
+  op graph once per fixed 512-column chunk and re-uploaded its
+  coefficient tables in every chunk -- about 3.2 million kernel
+  launches per radiation step on a 500x400 nest, GPU idle 93 percent
+  of that wall. The chunk is now sized from free device memory at the
+  first eager solve of each column geometry and cached (512-column
+  floor, whole-grid cap, explicit `column_chunk` still pins it); the
+  tables move to the device once per process. Byte identical across
+  chunk sizes, pinned by the existing chunking test; the RTX 3090
+  re-measure reproduced the pre-fix trajectory digests bit for bit.
+  The 2-domain NSSL steady step fell from 39.0 to 4.2 seconds and
+  Morrison from 37.9 to 3.0; a window that took 807 seconds takes 165.
+  The reported 16x NSSL-vs-Morrison gap was a benchmark config
+  confound (d01-only versus d01+d02 walls); on matched configs NSSL
+  costs 1.0-1.4x Morrison before and after this fix.
+- The RRTM chunk auto-sizer no longer queries device memory inside CUDA
+  graph capture, where `cudaMemGetInfo` is refused. A captured solve
+  reuses the eagerly cached chunk; a cold capture takes the 512-column
+  floor. Byte identical by chunk invariance, with a bit-exact capture
+  test.
+- The carrier-contract consumption check runs inside CUDA graph capture,
+  where its blocking footprint and finiteness reads are refused. Under
+  an active health ledger the footprint read is skipped and the check
+  runs in full (fail-closed); the
+  finiteness verdict is recorded into the ledger, re-accumulated on
+  replay, and raised at the sweep drain.
+- A streamed run survives its second output frame. The carrier
+  contract's produced-at ledger now rides the domain clock's round trip
+  through the tile sweep, the graph stepper's scalar records and the
+  streamed checkpoint header. Fresh tile buffers previously kept their
+  build-time stamps, so the freshness law refused hour-N consumption as
+  stale GLW while radiation ran on every tile. The law is unchanged;
+  pre-contract streamed checkpoints take the one-time producer
+  refresh.
+- The tiles harness and the fixtures behind the conformance, RUC
+  runtime, MYJ and MYNN pairing suites declare the shortwave carriers
+  the carrier contract made law, the way they declared GLW:
+  `declared_swdown_kwargs`, `declared_carrier_kwargs` and
+  `declare_offline_gsw` read the contract's own consumer matrix and
+  declare the allocation zeros those rungs always ran on, so no gate
+  digest moves.
+- Both tiles real-case preparers assemble their water temperature before
+  soil preprocessing, the mainline ERA5 route's own `assemble_for_route`
+  call at full-domain scope so slab seams cannot split a connected body.
+  Every streamed ERA5-with-SST run was refused at prepare without it.
+  Policy, route and receipt reach the soil router,
+  under a structural test.
+- The committed GLW no-op digest test skips, naming the condition, when
+  its probe subprocess cannot see a CUDA device the test process itself
+  holds: visibility withheld from child processes, not a probe verdict.
+  Every other nonzero exit still fails.
+- The production streamed attach bound lateral boundaries EAGERLY on
+  every buffer-tile change: every forcing interval re-validated, re-packed
+  and re-uploaded, 27-63 ms per bind, host-blocking, ~0.3 s per step at
+  the attribution run's largest arm. `make_tile_hook` now uses the
+  single-slot streaming bind the real-case harness already carried the
+  digest proof for, measured at ~0.01 ms per bind.
+- The restart manifest's KF-expiry guard entered `array.device` as a CUDA
+  context whenever the attribute existed. NumPy 2 gives every host array a
+  `device`, the string `"cpu"`, so checkpointing host-resident state raised
+  a TypeError. The guard now enters only a device that is a context
+  manager; the CuPy owning-card entry is unchanged.
+- The dycore left the periodic staggered alias slot stale between steps.
+- RRTMGP memoised two device arrays without keying them to the card, so a
+  second device read the first one's arrays.
+- The map-factor division left `gpuwm/core/physics.py` without the alias
+  it undoes.
+- `plan_split` rejected the 1x1 identity plan.
+- The restart inventory path ran a device-blind reduction.
+- `kf` allocated `w0avg` at the first due cumulus call, so the carrier set
+  changed identity mid-run. It is allocated at construction instead, which
+  is why the slice gate now reassembles 246 arrays over 229 carriers where
+  it reassembled 245 over 228.
+- The streamed real-case route died at its first tile change:
+  `tilestream/realcase.py` bound `tile_hook` to the superseded
+  three-argument contract. The consolidated gate is periodic by design and
+  never calls `tile_hook`, so it held 233 PASS / 0 FAIL throughout.
+- The standalone RW-WPS preprocessing wheel staged `gpuwm/experiment.py`
+  without `gpuwm.core.streaming`, which its field default requires.
+- No `[tiles]` gate reports success over an empty comparison. Two empty
+  carrier maps hashed equal and were recorded bit-exact, a reassembly
+  verdict of `not bad` passed at zero carriers checked, and three verdict
+  lines asserted totality while stating no size. Each now carries a
+  declared precondition with a floor of one, and each passing verdict
+  states how much it covered.
+- The `health` entry in the mp=8 frozen-kernel census described a source
+  this tree does not carry: two re-pins landed on opposite sides of a
+  merge and only one was recorded. Recomputed over the merged source.
+- The gate's Noah rungs declare their downward longwave instead of
+  inheriting the constant that `initialize_physics` used to supply in
+  silence. Every digest is unchanged and the receipt names an origin.
+- A graph negative control that ran out of memory held the memory through
+  the controls after it, by way of the caught exception's traceback.
+- The wheel shipped `gpuwm/core/streaming.py` and not the `tilestream`
+  package it calls, so `[tiles]` mode `auto` and `on` raised
+  `ModuleNotFoundError` from a clean install while mode `off` worked.
+  Every import is function-local and every gate runs from the repository
+  root, which is why nothing caught it. `tilestream` is in the
+  distribution now. `tools/les1m_probe.py` rode the same gap.
+- `tilestream` resolved only when the working directory was the repository
+  root, editable installs included. It resolves from any directory now.
+- `tests/test_tiles_distribution.py` gates the property rather than the
+  fix: the shipped package set must be closed under importing, and any
+  file a shipped module opens beside itself must be declared package data.
+  It is on stage 1.
+- The physics allocation inventory still recorded `w0avg` against
+  `kf.update_trigger_history` after the fix above moved it to
+  `kf.ensure_trigger_history`. Stage 1 was green because that suite was
+  not on the list. Row corrected, suite added.
+- The gate list omitted the seam gate's `GRID=2x2` entry, so a battery run
+  only ever split one axis. Both geometries discriminate.
+- The card-floor note claimed the consolidated gate needs more than 16 GB,
+  and its replacement claimed 16 GB is enough on any idle card. Both were
+  wrong. An idle 16 GB RTX 4080 reports 233 checks passed and 0 failed. An
+  idle 16 GB RTX 5080 refuses the graph section's capture allocations with
+  15.2 GiB free, at 1.1 MB in one run and 201.6 MB in another. The note
+  carries the measured matrix and says which cell an operator is reading.
+- A graph capture the card would not serve was reported as a failed
+  negative control, so the consolidated gate exited 1 on an idle 16 GB RTX
+  5080. A row the card cannot run is MACHINE-LIMITED: counted on its own,
+  printed where it happened, and listed in the verdict, which reads GATE
+  PASSED WITH A COVERAGE HOLE and names every unevaluated row. A control
+  that fails for any other reason, the harness included, still fails the
+  gate.
+- `[tiles]` decisions and refusals were worded as "streaming", which is
+  the name of the unrelated `gpuwm stream` feature. They say `[tiles]`.
+- The four gate runners printed "Box idle throughout" whenever at most one
+  CUDA context was on the box, including when that one was somebody
+  else's. The verdict separates this gate's own context from every other
+  by pid, reports the split, and says UNKNOWN when nvidia-smi cannot be
+  read.
+- The consolidated gate then took its start count after its own first
+  device call, so every run called the box not idle and its verdict
+  provisional, an empty box included. The count is read before anything
+  touches a card, as the other three runners already did.
+- `tests/test_tiles_distribution.py` routed both load-bearing tests
+  through `pytest.importorskip("setuptools")`, and the project virtualenv
+  carries no setuptools, so the suite skipped in the environment it runs
+  in. Each setuptools measurement now has a tomllib reading of the same
+  declaration beside it, and a third test holds the two against each
+  other. Reverting the include list to the state that shipped the defect
+  turns the file red with setuptools absent and with setuptools present.
+- `tests/test_tiles_gate_manifest.py` stayed green when `GRID=2x2` or
+  `PHYSICS=1` was deleted from the gate list: entry identity is module
+  plus environment, and every other test walks whatever the file says.
+  Both rows are pinned by name.
+- The check is at the consumer, so it covers direct `initialize_physics`
+  callers, restarts and DA cycles, not only configs loaded through a front
+  door. The config-load guards stay and are unchanged; they refuse earlier
+  and more helpfully, and they are no longer the only line.
+- `set_forcing` refuses a radiative carrier on a driver assembled
+  without a contract, in the same sentence family as the radiation and
+  consumption seams, instead of crashing on an attribute error after
+  writing the buffer.
+- Zero shortwave at night passes on source and age, never on the value
+  looking plausible. The same zero after sunrise with no live producer
+  refuses before the land-surface call, naming the carrier, the consumer
+  and the fix.
+- `gsw` joins the generic forcing setter. RUC reads net shortwave, so an
+  offline-forced RUC run could not supply the one shortwave carrier its
+  land surface consumes and integrated zeros.
+- Radiation-free Noah-MP gets an analytic COSZEN provider on the radiation
+  cadence. It was written once at startup, so a twelve-hour run computed
+  canopy radiative transfer against the sun angle of its first minute.
+- The 300 W m-2 GLW buffer fill can no longer be consumed. It stays as the
+  allocation value so healthy trajectories are byte-identical, and its
+  source is `unwritten` until a producer writes it. `swdown`'s 0.0 default
+  becomes `None` on the same argument: the buffer is still zeros, and the
+  contract can now tell a silent default from a declared zero.
+- Carrier provenance and age are serialized into the restart driver header,
+  two scalars per carrier, so no array key moves. A checkpoint written
+  before the contract forces one producer refresh rather than guessing.
+  Proven through `write_restart` and `restore_restart` themselves:
+  a mid-interval checkpoint resumes with source and age bit-equal to the
+  uninterrupted run, a header without the mapping forces the refresh,
+  and a resume under a changed policy is refused.
+
+Record correction:
+- The 1.6.2 nocturnal dewpoint collapse ran under a silent fixed
+  300 W m-2 GLW with shortwave-only radiation. It did not run under
+  GLW = 0. Full LW+SW radiation removed the symptom and remains the
+  default for real-data runs. The direct mechanism is proven for land and
+  shoreline columns. Over open water the mechanism does not apply in a
+  single surface call: SFCLAY builds its surface endpoint from TSK and
+  PSFC alone (`gpuwm/core/kernels/sfclay.cu:255`) and TSK over water is
+  prescribed, so a 120 W m-2 longwave change leaves QSFC, QFX, Q2 and
+  TSK bit-identical (`tests/test_open_water_longwave_invariant.py`).
+  Open-water attribution beyond one call is not claimed.
+- The instrument for this class is
+  `gpuwm/core/surface_moisture_ledger.py`, which records the final writer
+  of Q2 by name, that writer's own inputs, and its formula re-evaluated in
+  FP64 from the published inputs. `tools/surface_moisture_ledger.py`
+  decomposes a difference between two arms into named terms and exits
+  non-zero on an unexplained remainder above 0.1 g/kg. The decomposition
+  is provider-aware: Noah SFCDIAGS rows expand the Noah identity
+  (QSFC, QFX flux route, rho times cqs2 route, cross), SFCLAY-family
+  rows expand theirs, because the first land A/B put the whole QFX route
+  into the remainder under the SFCLAY terms.
+- The accounting ran on a two-arm column A/B on node 5 differing only in
+  the declared constant GLW, 300 versus 420 W m-2 over land for two
+  hours: dQ2 +3.49 g/kg, dTd2 +4.8 K, dominant named term QSFC (skin
+  saturation humidity, +5.07 g/kg, partially offset by the flux route),
+  unexplained remainder 0.0 across all 1440 column-times, exit 0.
+  Corrupting one published Q2 in the arm file flips the tool to exit 1.
+  Receipt: `docs/public/receipts/surface-moisture-ledger-accounting.json`.
+  This is column-tier evidence generated for the accounting; the
+  historical case's data was never staged and no case-tier accounting is
+  claimed.
+
+Evidence:
+- Ported from a tree whose branch point is byte-identical to this line at
+  1.8.7 over all 13,585 shared paths, re-measured at the merge tip before
+  anything moved. 229 clean adds, 40 modified files, 12 collisions, 10 of
+  them merging with zero conflicts.
+- No capacity multiplier against a resident run is stated here, because
+  none has been measured. `tilestream/NO-DRY-NUMBERS.md` lists the figures
+  that may not be quoted and why.
+
 ## 1.9.1 (2026-08-11)
 
 Three defects the twin verification of the 1.9.0 ports caught, each
@@ -1789,7 +2100,6 @@ contract, the post-upload index proof rides out registry lag with
 bounded backoff, and the cut refuses bridge binaries that are not
 provably built from the release commit.
 
-
 ## 1.4.1 (2026-08-02)
 
 A correction and operations release. No new physics scheme and no kernel
@@ -2619,7 +2929,6 @@ broken across a line break, which Python 3.12 accepts and the supported
 3.11 floor rejects. 1.2.1 is 1.2.0 with that statement rewritten in
 3.11-compatible form and the whole tree compile-checked under 3.11.
 No other change.
-
 
 ## 1.2.0 (2026-07-30)
 

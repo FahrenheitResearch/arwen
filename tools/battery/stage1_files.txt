@@ -339,3 +339,96 @@ tests/test_release_notes_are_public_facing.py
 # then requires the full allocated symbol closure to be declared and
 # restart-classified.  CPU-only (NumPy-backed state), under a second.
 tests/test_mp_accepted_builds.py
+
+# The tilestream port, and the reason the option surface is gated here
+# rather than on the GPU shard.  [tiles] is a front-door table: it is
+# read, validated and refused entirely on the CPU, and two of the ported
+# commits exist because that door once let a misconfiguration through in
+# silence -- the case-data route ignored the table outright, and
+# mode = "auto" declined without saying so.  This suite is the
+# parametrized refusal table for every key the option accepts, it is the
+# conformance suite the physics registry does not cover (a runtime table
+# has no WRF namelist counterpart and so takes no registry row), and it
+# needs no card.
+tests/test_streaming.py
+
+# Spawn-at-trigger under [tiles], same port.  A nest that fires mid-run
+# is default-adjacent surface: the streamed route has to decide whether
+# the child fits resident and refuse rather than window it wrong, and
+# that decision is CPU-side config resolution.  Listed separately from
+# its sibling above because the two suites fail for different reasons
+# and a reader who sees only one would not know the other exists.
+tests/test_spawn_streaming.py
+
+# The [tiles] gate list, from the same port.  The lane's gates are not
+# pytest and nothing collects them, so a gate that stops existing -- a
+# module renamed, a runner moved -- is invisible until a release cut
+# tries to run the leg.  This is the cheap hermetic half of that
+# coverage: it reads tools/battery/tiles_gates.txt, resolves every module
+# against the tree, and pins that the consolidated gate and the tile_hook
+# contract are BOTH listed, because the consolidated gate is periodic by
+# design and was 233 PASS / 0 FAIL through the whole period the lateral
+# boundary seam was broken.  No card, two file reads.
+tests/test_tiles_gate_manifest.py
+
+# The green-on-nothing preconditions in the same lane's gates, on the
+# d998bb667 / 9b1b99289 incident: four release gates reported success when
+# the thing they check was absent.  The ported gates carried all three
+# shapes -- two empty carrier maps hashing equal and reporting bit-exact,
+# a reassembly verdict of "not bad" that passes at checked == 0, and
+# verdict lines that assert totality while stating no size.  This suite
+# gates the fixes in both directions, with a positive control beside every
+# refusal so a condition that refuses everything cannot masquerade as one
+# that refuses the empty case.  numpy only, no card, 0.3 s.
+tests/test_tiles_gate_preconditions.py
+
+# The GLW seam between the same lane's harness and the release line's
+# downward-longwave rule, which is the one collision the integration map
+# predicted that no file diff could show: the gate's +Noah LSM rungs pair
+# a land-surface scheme with radiation off, the GLW lane made that a
+# refusal, and five gate cases raised it on the first run from the
+# integrated tree.  The harness now declares the constant those rungs were
+# always silently getting.  Gated here because the decision is which
+# keyword argument gets passed and that happens before any allocation, and
+# because it has to hold in BOTH directions -- a harness that declared
+# unconditionally would overwrite a longwave scheme's own field.
+tests/test_tiles_harness_glw.py
+
+# The physics allocation inventory, added on the gate that caught it: the
+# same [tiles] port moved a `cp.zeros` out of kf.update_trigger_history
+# and into the new kf.ensure_trigger_history, updated the inventory for
+# gpuwm/core/streaming.py, and left kf.py's row describing the old code.
+# Stage 1 was green the whole time because this file was not on it; the
+# union leg is what went red.  It is a pure AST scan of the physics
+# modules -- no card, no cupy, under a second -- so there was never a cost
+# reason for it to be missing, and the class of defect it catches
+# (an allocation that moved, or a new one nobody priced) is exactly what a
+# release most often breaks.
+tests/test_physics_allocation_inventory.py
+
+# The distribution's import closure, from the gate that found the wheel
+# shipping gpuwm/core/streaming.py without the tilestream package it calls
+# at about twenty sites.  Every one of those imports is function-local, so
+# `import gpuwm` succeeded in a wheel that could not run [tiles] at all,
+# and every gate passed because tools/battery/tiles_gates.txt says to run
+# FROM THE REPOSITORY ROOT -- which puts the missing package on sys.path.
+# The check is the general property rather than the one fix: the shipped
+# package set must be CLOSED under importing.  AST walks plus one
+# interpreter start.
+tests/test_tiles_distribution.py
+
+# Task #144: specified lateral boundaries through the multi-GPU path.
+# The CPU-hermetic half of the forced decomposition: the non-periodic
+# plan clamp, the seam census with per-side halo widths, the per-rank
+# boundary-table windowing (real tables on true edges, inert on seams),
+# the corner-rank data path, and every named refusal.  All 25 red on
+# revert of tilestream/multigpu.py; the stepped bit-identity half is
+# tilestream.test_forced_gate on the GPU shard.
+tests/test_multigpu_specified_bc.py
+# 2.0 blocker: the streamed twin died at model second 3620 because the
+# carrier contract's produced-at ledger never rode the tile sweep's
+# clock round trip -- fresh buffers consumed hour-N fields under
+# build-time stamps.  CPU-hermetic, red on a revert of the carriers
+# entries in tilestream/physics_inventory.py; the real 2 h streamed
+# boundary crossing is the node regate's twin row on the GPU shard.
+tests/test_streamed_carrier_freshness.py

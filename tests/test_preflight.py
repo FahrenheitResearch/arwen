@@ -301,7 +301,13 @@ def test_physics_manifest_groups_cover_restart_driver_attrs(d01_cfg):
     groups = {name.split("/")[0] for name in
               pf.physics_array_shapes(d01_cfg)}
     scalar_attrs = {"microphysics_updates", "call_counts",
-                    "ysu_nan_guard_fires"}
+                    "ysu_nan_guard_fires",
+                    # The surface-radiation carrier contract: two scalars
+                    # per carrier (source, last producer model time) in the
+                    # checkpoint HEADER, no array of its own.  The carrier
+                    # FIELDS ride the serialized surface inventory, which
+                    # is where their shapes are already accounted for.
+                    "carriers"}
     assert set(restart.DRIVER_SERIALIZED_ATTRS) - scalar_attrs <= groups
     assert "last_ysu" not in groups
     assert "last_ysu" in restart.DRIVER_REBUILT_ATTRS

@@ -1,0 +1,21 @@
+start 2026-08-11T08:35:47Z
+mutex: lane/stream-overlap build session (Fable, task #166) since $(date -u +%FT%TZ)
+gpu procs beyond ours: 0
+BEGIN gate 2026-08-11T08:35:47Z
+gate rc=1 2026-08-11T08:51:42Z
+BEGIN route 2026-08-11T08:51:42Z
+route rc=1 2026-08-11T08:59:25Z
+BEGIN perf_b_on 2026-08-11T08:59:25Z
+perf_b_on rc=1 2026-08-11T08:59:26Z
+BEGIN perf_b_off 2026-08-11T08:59:26Z
+perf_b_off rc=1 2026-08-11T08:59:26Z
+BEGIN perf_a_on 2026-08-11T08:59:26Z
+perf_a_on rc=1 2026-08-11T08:59:27Z
+BEGIN perf_a_off 2026-08-11T08:59:27Z
+perf_a_off rc=1 2026-08-11T08:59:27Z
+BEGIN attrib_b_on 2026-08-11T08:59:27Z
+attrib_b_on rc=1 2026-08-11T08:59:28Z
+ALL_DONE 2026-08-11T08:59:28Z
+BEGIN regate 2026-08-11T09:00:11Z
+regate rc=0 2026-08-11T09:15:43Z
+REGATE_DONE

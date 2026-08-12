@@ -313,6 +313,23 @@ class RelocationRunner:
 
     # -- the cadence hook -------------------------------------------------
 
+    def is_due(self, model, clocks) -> bool:
+        """Whether THIS boundary is a cadence opportunity.
+
+        The same gate :meth:`on_period_begin` opens with, published so a
+        caller can do work that must happen BEFORE the provider is
+        consulted and that would be wasteful at every other boundary.  The
+        streamed-domain projection is the one that needs it: a streamed
+        parent's UH plane lives in its store, so the executor has to copy it
+        onto the state before the tracker reduces it -- once per cadence,
+        not once per parent step.
+        """
+        root_clock = clocks[model.root.cfg.grid_id]
+        ticks = int(root_clock.ticks)
+        period_ticks = int(model.schedule.period_ticks)
+        return ticks != 0 and ticks % (
+            period_ticks * self.cadence_periods) == 0
+
     def on_period_begin(self, model, clocks, *, period=None,
                         before_rebuild=None):
         """One cadence opportunity; returns the receipt row or ``None``.

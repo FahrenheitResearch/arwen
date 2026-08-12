@@ -130,8 +130,25 @@ def _copy_constant(module, name: str, value: np.ndarray) -> None:
     target[...] = cp.asarray(value)
 
 
-@lru_cache(maxsize=2)
-def _module(use_device_libm: bool = False):
+@lru_cache(maxsize=None)
+def _module_on(_device: int, use_device_libm: bool = False):
+    """The VEGE_FLUX translation unit on ONE card, constants uploaded.
+
+    ``_device`` is a cache key and nothing else: it is the CURRENT device,
+    which is where ``compile()`` loads and where ``_copy_constant`` writes.
+
+    THIS ONE IS SILENT, which is why it is worth the extra function.  A
+    ``RawModule`` loads its cubin onto whichever device asks, so a second
+    card gets a working module -- with UNINITIALISED ``__constant__``
+    memory, because the eleven ``_copy_constant`` calls below ran once,
+    against the first card's instance.  The kernel then evaluates its libm
+    polynomials from garbage coefficients and returns finite-looking
+    nonsense.  MEASURED on a dual-4090: with this cached per process, a
+    ``full+Noah-MP`` step on the second card produced 3072 non-finite ``hfx``
+    values and was caught only by YSU's own guard (physics.py:984) one
+    scheme later -- caught, but by luck of a downstream check, not by
+    anything here.
+    """
     import cupy as cp
 
     options = ["-std=c++14"]
@@ -152,6 +169,12 @@ def _module(use_device_libm: bool = False):
     for name, value in _constant_tables().items():
         _copy_constant(module, name, value)
     return module
+
+
+def _module(use_device_libm: bool = False):
+    import cupy as cp
+
+    return _module_on(cp.cuda.runtime.getDevice(), use_device_libm)
 
 
 def _bind_call(args, kwargs) -> dict:

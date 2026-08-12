@@ -711,3 +711,100 @@ def test_gpu_nested_w_relaxation_matches_map_factor_free_wrf_mirror():
     np.testing.assert_allclose(got, expected, rtol=2.0e-5, atol=2.0e-6)
     point = (1, 1, nx // 2)
     assert abs(got[point] - expected[point]) < abs(got[point] - wrong[point])
+
+
+# --------------------------------------------------------------------------
+# A COUPLED DOMAIN THAT IS STREAMED: node.state is not the domain
+# --------------------------------------------------------------------------
+
+def _publish(state, arrays):
+    """Give ``state`` a streaming store, the way ``streaming.attach`` does."""
+    from gpuwm.core import streaming
+
+    setattr(state, streaming._STORE_ATTR,
+            {f"state/{name}": value for name, value in arrays.items()})
+
+
+def test_force_refuses_a_streamed_child_rather_than_forcing_a_ghost():
+    """A streamed CHILD is unimplemented, so it must REFUSE, not proceed.
+
+    ``attach_nest_boundaries`` installs a device descriptor on the child's
+    ``DomainState``; a streamed child is stepped as tile buffers whose only
+    boundary hook is ``streaming.make_tile_hook``, which knows
+    ``attach_lateral_boundaries`` and nothing about nest tables.  Proceeding
+    would step the child with no nest forcing at all.
+    """
+    _parent, child = _nodes()
+    coupler = NestCoupler(child)
+    _publish(child.state, {"mup": child.state.mup.copy()})
+    with pytest.raises(RuntimeError, match="STREAMED child"):
+        coupler.force(child)
+    assert coupler.force_count == 0
+
+
+def test_force_reads_the_parent_STORE_and_not_the_frozen_state(monkeypatch):
+    """The defect, as a unit: a streamed parent's state is at attach time.
+
+    The store here carries a mass field that differs from the one on the
+    state, exactly as it does after one sweep.  ``force`` must couple the
+    STORE's numbers.  With the store unpublished -- the code path before
+    this existed -- it couples the state's, and that is asserted too, so the
+    test fails if the fix stops mattering rather than passing vacuously.
+    """
+    import gpuwm.core.nest as nest_mod
+
+    parent, child = _nodes()
+    coupler = NestCoupler(child)
+    monkeypatch.setattr(coupler, "_bind_geometry", lambda: None)
+    monkeypatch.setattr(nest_mod, "bdy_interp1",
+                        lambda *a, **k: k["out"])
+    monkeypatch.setattr(nest_mod, "attach_nest_boundaries",
+                        lambda *a, **k: None)
+    seen = []
+    monkeypatch.setattr(
+        nest_mod, "couple_nest_field",
+        lambda state, kind, out: (seen.append((kind, float(state.mup[0, 0]))),
+                                  out)[1])
+
+    swept = parent.state.mup.copy() + np.float32(7.0)
+    _publish(parent.state, {"mup": swept})
+    # ``refresh_from_store`` is written for CuPy arrays (``ndarray.set``);
+    # on the host mirror the assignment is the same operation.  The
+    # RESIDENT no-op is reproduced too, and it is not decoration: ``force``
+    # syncs the CHILD as well as the parent, the child here is resident, and
+    # a stand-in that assumed every state had a store made this test raise
+    # AttributeError from inside the coupler -- which is a bug in the double,
+    # not in the coupler.
+    def _fake_refresh(state, attrs):
+        store = getattr(state, "_streamed_store", None)
+        if store is None:
+            return 0
+        moved = 0
+        for a in attrs:
+            src = store.get(f"state/{a}")
+            if src is None:
+                continue
+            dst = getattr(state, a)
+            dst[...] = src
+            moved += int(dst.nbytes)
+        return moved
+
+    monkeypatch.setattr("gpuwm.core.streaming.refresh_from_store",
+                        _fake_refresh)
+
+    coupler.force(child)
+    parent_mu = [mu for kind, mu in seen if kind == "mu"]
+    assert parent_mu, "no parent field was coupled"
+    assert parent_mu[0] == pytest.approx(float(swept[0, 0]))
+    assert coupler.force_count == 1
+
+
+def test_resident_domains_never_consult_a_store():
+    """``domain_store`` is ``None`` for every state that never streamed."""
+    from gpuwm.core.streaming import (commit_to_store, domain_store,
+                                      refresh_from_store)
+
+    _parent, child = _nodes()
+    assert domain_store(child.state) is None
+    assert refresh_from_store(child.state, ("mup", "u")) == 0
+    assert commit_to_store(child.state, ("mup", "u")) == 0

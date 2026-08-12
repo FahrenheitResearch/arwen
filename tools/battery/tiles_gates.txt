@@ -1,0 +1,183 @@
+# The streamed-run lane's gates, as the battery invokes them.
+#
+# WHAT THIS IS
+#   [tiles] arrived with its own gates, and they are not pytest: each one
+#   is a module with a main() that prints a matrix and ends in a single
+#   verdict line, because what they compare is a whole forecast against
+#   another whole forecast rather than a function against an expectation.
+#   Collecting them as pytest would report one test per module and throw
+#   away the matrix, so they keep their runners and this file is how the
+#   battery finds them.
+#
+# WHY A FILE AND NOT A PARAGRAPH IN A DOC
+#   tools/battery/stage1_files.txt exists because the stage-1 list once
+#   lived only in a scratchpad queue script and a lost scratchpad silently
+#   lost every amendment ever made to it (task #122).  A gate nobody can
+#   enumerate is the same failure with a different list.
+#
+# FORMAT
+#   One entry per line: SHARD, whitespace, the module's dotted path, then
+#   zero or more KEY=VALUE environment assignments.
+#   SHARD is `cpu` (no card, runnable in the stage-1 environment with
+#   GPUWM_NO_LOCAL_GPU=1) or `gpu` (needs a card, runs on the GPU leg).
+#   Invoke an entry as `KEY=VALUE... python -m <module>` FROM THE
+#   REPOSITORY ROOT.  Blank lines and lines whose first non-space
+#   character is `#` are ignored.  Exit status is the verdict: 0 passes,
+#   non-zero fails.
+#
+#   The environment column exists because one of these gates has a RUNG
+#   SELECTOR and its default is the weaker rung, so "run the module" is
+#   not a complete instruction.  A gate whose real acceptance needs an
+#   environment variable that lives only in somebody's shell history is a
+#   gate that quietly stops being run.  Two entries may share a module
+#   when they differ in environment; a comment block covers the whole
+#   contiguous group beneath it.
+#
+# AMENDMENT DISCIPLINE
+#   Same as stage1_files.txt: an addition carries its REASON inline, on
+#   the lines above it, naming what the gate proves that nothing else
+#   does.  tests/test_tiles_gate_manifest.py is the gate on this file.
+#
+# NOT LISTED, DELIBERATELY
+#   tilestream/ carries about forty other test_* modules and the multi-GPU
+#   ones -- test_mgphys, test_mgstream, test_open_mg, test_uh_mgstream,
+#   test_real_decomp_gate -- are the multi-GPU lane's, not this one's.
+#   They travel with the tree as code and this lane claims nothing about
+#   them.  A reader who infers coverage from co-location would be wrong,
+#   which is why the list is explicit rather than a directory glob.
+
+# THE CONSOLIDATED GATE.  Six sections -- dry tiling, the full physics
+# matrix over fourteen rungs, geography, restart round trip, domain
+# receipts, CUDA graph replay -- each comparing a tiled run against a
+# monolithic one on the SHA-256 of the whole persisted inventory, and each
+# carrying negative controls that must FAIL: a short halo, an in-place
+# write mode, a state-only inventory, three graph controls.  This is the
+# only thing in the lane that says the transport is correct rather than
+# fast, because a streaming bug that skips work looks exactly like a
+# speedup.  Its context count is stamped at both ends: contention on this
+# hardware changes results, not only timings.
+#
+# CARD FLOOR: THE GRAPH SECTION IS CARD-DEPENDENT, AND 16 GB IS NOT ONE
+# ANSWER.  Every graph holds a private capture pool, and whether that pool can
+# be grown inside an active capture is a fact about the card and its driver.
+# The measured matrix, with each cell's run count stated and nothing
+# interpolated between them:
+#
+#   16 GB RTX 4080, idle (0 CUDA contexts both ends)
+#       233 checks passed / 0 failed, graph section included.
+#   16 GB RTX 4080, a neighbour on the card
+#       the graph negative controls died at a 201.6 MB capture allocation
+#       and the gate refused.
+#   16 GB RTX 5080, sm_120, CUDA 13.1, cupy 14.1.1, IDLE (0 contexts both
+#   ends), five runs
+#       231 to 232 checks passed, 0 failed, and one or two of the three
+#       graph negative controls MACHINE-LIMITED, which of them moving
+#       between runs: 232/0 with one hole twice, 231/0 with two holes
+#       once, and before this outcome existed the same card reported
+#       231/2 FAILED and 232/1 FAILED on the same rows. The card
+#       reports 15.2 GiB of 15.5 free and the allocation that fails is
+#       1.1 MB in one run and 201.6 MB in another, so bulk capacity is
+#       not what ran out: a fresh allocation inside an ACTIVE capture is
+#       what this card refuses. Everything else in the section captures
+#       and replays.
+#   24 GB RTX 3090, sm_86, CUDA 13.0, cupy 14.1.1, IDLE (0 contexts at
+#   start, 1 at end and it was the gate's own), one run, node 7
+#       233 checks passed / 0 failed, 0 MACHINE-LIMITED lines.  All ten
+#       graph replay rows captured and replayed (the MYNN+Noah-MP row
+#       fell back as it must), and all THREE graph negative controls
+#       EVALUATED and fired: reuse='run' differs in 34 carriers at
+#       maxabs 1.006e+05, key='none'+reuse='run' and
+#       graph_scalars=False each differ in 46 carriers at maxabs
+#       1.682e+05.  The verdict reads GATE PASSED with no coverage
+#       hole, which is the first time the whole control row set has
+#       been evidence rather than a hole: every earlier cell is 16 GB.
+#
+# So idleness is necessary and it is not sufficient, and the note that stood
+# here before -- "16 GB is enough on an idle card, the floor is idleness, not
+# capacity" -- is refuted by the third row.  A 5080 operator sees those rows
+# reported as MACHINE-LIMITED: not passes, not failures, counted on their own,
+# and the verdict reads GATE PASSED WITH A COVERAGE HOLE and lists every row
+# the card could not run.  Exit status 0 is deliberate -- a row that never ran
+# disproves nothing -- so read the hole list and not only the status.  Those
+# rows become evidence only on a card that serves the capture, which of the
+# cards measured means the 4080 idle or the 3090 idle.  Read the context line
+# the gate prints at both ends before reading its verdict either way.
+gpu  tilestream.test_gate
+
+# THE SLICE GATE.  Decomposition geometry, then the bit-identity of a
+# sliced initial condition against the monolithic one, then seam
+# continuity across rank boundaries on a field that has horizontal
+# structure.  It is the acceptance the multi-GPU work turns on and it runs
+# on one card, so it belongs to every tree that carries decomp.py --
+# including this one, where nothing else touches that path.
+#
+# IT HAS A RUNG SELECTOR AND THE DEFAULT IS THE WEAKER ONE.  Invoked
+# plainly it runs the geography rung and reassembles 22 arrays; PHYSICS=1
+# runs full+MYNN+Noah-MP and reassembles 246, which is the acceptance the
+# multi-GPU work actually turns on.  Both were measured on a 16 GB RTX
+# 4080 at 256x192x49, 0 differ at 1, 2, 4 and 8 ranks, 0 CUDA contexts
+# before and after.  Run it BOTH ways: the cheap one covers the geometry
+# and the expensive one covers the carriers.
+gpu  tilestream.test_decomp_gate
+gpu  tilestream.test_decomp_gate  PHYSICS=1
+
+# THE HARDENED SEAM GATE.  The old bit-exactness gate was green through
+# the entire episode in which surface pressure carried a real seam,
+# because it ran three steps on a horizontally uniform state over an
+# exchange set that dropped state/mup.  This module puts initial
+# condition, step count, field and exchange set on independent axes and
+# ends by asserting that it DISCRIMINATES -- the old conditions green, the
+# hardened ones red -- so the question "would this gate have caught it?"
+# is answered by the gate rather than by its docstring.
+#
+# TWO GEOMETRIES, and the same reason the slice gate has two rungs: GRID
+# defaults to 1x2, so invoked plainly this gate only ever splits one axis
+# and a y/x transposition in the seam copies has a whole axis to hide in.
+# GRID=2x2 splits both and gates the corner exchange as well.  The lane's
+# own committed evidence carries seamgate-1x2.log AND seamgate-2x2.log, so
+# the second geometry was always part of the acceptance -- it was just
+# living in somebody's shell history rather than in this file, which is
+# the failure the environment column exists to close.  Both DISCRIMINATE
+# YES on a 16 GB RTX 4080.
+gpu  tilestream.test_seam_gate
+gpu  tilestream.test_seam_gate  GRID=2x2
+
+# THE TILE_HOOK CONTRACT.  numpy only, no card, and the one seam the
+# consolidated gate cannot reach: tile_hook exists for lateral boundaries
+# and the gate lane is periodic by design, so 233 PASS / 0 FAIL held for
+# the whole period in which every real-case streamed run died at its first
+# tile change on a four-argument call into a three-argument binder.  It
+# reads the call site out of driver.py with ast and drives the real bind
+# closure, so the two sides are checked against each other rather than
+# against a restatement of either.
+cpu  tilestream.test_tile_hook_contract
+
+# THE OVERLAP ORDERING GATE.  numpy only, no card, and the one property
+# the consolidated gate structurally cannot certify: that the overlap
+# build's event chain is LOAD-BEARING.  The GPU gate proves the default
+# chain bit-exact, but whether an unordered pair of stream operations
+# actually races is a property of the card (ring_ordering="submission"
+# was bit-exact idle and wrong by 3.7e+02 under contention), so the
+# adversary here is a scheduler the test controls: the sweep's tasks are
+# simulated on their copy-in / compute / copy-out streams under exactly
+# the driver's dependencies, driven through issue-order, starvation and
+# random schedules.  The full chain must match the monolithic reference
+# under every adversary; each wait class cut must fire the construction
+# checker AND either move the digest or be PROVEN transitively implied;
+# the unchained control must move the digest.  An ast contract ties the
+# driver's wait loops to the simulated event classes.
+cpu  tilestream.test_overlap
+
+# THE FORCED RUNG (task #144).  Every gate above runs PERIODIC, and the
+# consequence was observed on a real box: the 4x storm sim ran with
+# periodic lateral boundaries because the decomposition had no specified
+# support, and the domain edges degraded as the wrap contamination band
+# advected inward.  gate_forced runs the SPECIFIED case -- real Lambert
+# projection, real terrain, external two-time forcing with a nonzero
+# tendency -- at 1, 2 and 4 ranks against the resident digest, alongside
+# two controls: poison seam tables that must MATCH (the padded halo
+# quarantines seam fiction) and true-edge tables scaled by 1.000001 that
+# must DIFFER (the forcing reaches the answer).  Ranks round-robin over
+# the visible cards, so a one-card box gates the full geometry and
+# forcing arithmetic; the transport degenerates to same-device copies.
+gpu  tilestream.test_forced_gate

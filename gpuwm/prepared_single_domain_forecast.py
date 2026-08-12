@@ -39,6 +39,7 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from gpuwm.core import streaming  # noqa: E402
 from gpuwm import __version__  # noqa: E402
 from gpuwm.config import radiation_scheme_ids  # noqa: E402
 from gpuwm.core.nssl2_contract import (  # noqa: E402
@@ -3829,6 +3830,11 @@ def preflight_prepared_forecast(
     refuse_unrouted_perturbation(
         source_exp, "prepared single-domain forecast")
     refuse_unrouted_spawn(source_exp, "prepared single-domain forecast")
+    # Same governance, same place: this route wires no streamed-domain
+    # builder either, so [tiles] mode = 'on' is refused at admission
+    # rather than after the prepared cache has been restored onto the card.
+    streaming.refuse_unrouted_streaming(
+        source_exp, "prepared single-domain forecast")
     layout = _resolve_prepared_layout(
         source=source, prepared_root=prepared_root, proof=proof,
         source_exp=source_exp, domain_bundle=domain_bundle)
@@ -4347,7 +4353,7 @@ def run_prepared_forecast(
     import cupy as cp
 
     from gpuwm.core.clock import build_schedule, resolve_clock
-    from gpuwm.core.dycore import stability_gate_failed, stability_report
+    from gpuwm.core.dycore import stability_gate_failed
     from gpuwm.core.gpu_mem_watch import (
         GpuPeakMemoryWatcher, default_cupy_probes,
     )
@@ -4476,9 +4482,22 @@ def run_prepared_forecast(
     forecast_started = time.perf_counter()
 
     def history_handler(_model, current, ticks):
-        report = stability_report(
-            current.state, current.cfg.run,
-            boundary_width=current.cfg.run.spec_bdy_width)
+        # ASKED OF THE STEPPER.  ``steppers`` is bound below and read here at
+        # CALL time, which is after ``streaming.steppers_for_tree`` has run.
+        # It matters because the gate two lines down --
+        # ``stability_gate_failed`` at CFL 10 and w 150 m/s -- is this
+        # route's safety net, and under ``[tiles] store = "host"`` the
+        # domain is in a pinned host store while ``current.state`` is the
+        # copy taken at t = 0 that the sweep never writes.  Reducing over it
+        # meant the net reported the INITIAL CFL at every history frame,
+        # forever, on a run that could already have gone non-finite.
+        # ``stability_observer`` returns ``dycore.stability_report`` itself
+        # for a resident domain, so nothing changes for a run that
+        # configures no [tiles].
+        report = streaming.stability_observer(
+            steppers.get(int(current.cfg.grid_id)))(
+                current.state, current.cfg.run,
+                boundary_width=current.cfg.run.spec_bdy_width)
         sample = {
             "ticks": int(ticks),
             "elapsed_seconds": float(current.clock.elapsed_seconds),
@@ -4549,13 +4568,42 @@ def run_prepared_forecast(
     if observer is not None:
         writers.attach_progress_callback(observer)
 
+    # [tiles]; see the same call in prepared_domain_tree_forecast.  An
+    # experiment that does not configure it gets {} and the executor's own
+    # dycore.step, unchanged -- builders_for_tree returns {} on the same
+    # test and imports nothing either.
+    #
+    # The builders are the half of this seam that was missing.  Without them
+    # steppers_for_tree refused every configuration it was given ("this
+    # route wired no streamed-domain builder"), so [tiles] mode = "on"
+    # was configurable and unreachable at the same time: no forecast this
+    # CLI can launch was capable of streaming.
+    #
+    # `streaming_decisions` is the OTHER half.  The stepper dict cannot say
+    # which way `auto` went: a grid that declined to stream is absent from
+    # it, and absent is what an unconfigured run looks like too.  So an
+    # `auto` forecast that quietly ran resident would be indistinguishable
+    # from one that streamed -- including to a test pointed at it.  The
+    # decisions are recorded per grid, reported in the receipt below as
+    # report["tiles"], and printed as one line.
+    streaming_decisions: dict = {}
+    steppers = streaming.steppers_for_tree(
+        model, exp.tiles,
+        builders=streaming.builders_for_tree(model, exp.tiles),
+        decisions=streaming_decisions)
+    streaming_report = streaming.streaming_receipt(
+        exp.tiles, streaming_decisions)
+    if streaming_report:
+        print(f"prepared forecast: {streaming_report['summary']}", flush=True)
+
     try:
         memory_watch.start()
         with writers:
             execution = execute_experiment(
                 model, history_handler=history_handler,
                 progress_callback=progress_callback, validate_state=True,
-                skip_feedback_path=True, pool_trim_per_period=True)
+                skip_feedback_path=True, pool_trim_per_period=True,
+                steppers=steppers)
             cp.cuda.Stream.null.synchronize()
             timing["forecast_execution_with_async_io"] = (
                 time.perf_counter() - forecast_started)
@@ -4587,10 +4635,16 @@ def run_prepared_forecast(
             "WRF history output filenames/cadence differ from the "
             "hash-bound request")
 
+    # The final health gate still validates node.state and CANNOT be folded:
+    # StateHealthValidator is one block per whole field with no windowing, so
+    # it has no tile-interior form.  Under a host store it therefore passes
+    # on the t = 0 snapshot -- runtime.integrate_prepared_case warns about
+    # exactly this, and the note is repeated here rather than left implicit.
     final_health = _strict_json(vars(
         StateHealthValidator(node.state).validate(phase="final.d01")))
-    final_stability = _strict_json(stability_report(
-        node.state, cfg, boundary_width=cfg.spec_bdy_width))
+    final_stability = _strict_json(streaming.stability_observer(
+        steppers.get(int(node.cfg.grid_id)))(
+            node.state, cfg, boundary_width=cfg.spec_bdy_width))
     if not final_health["ok"]:
         raise FloatingPointError(
             f"prepared forecast final health failed: {final_health}")
@@ -4668,6 +4722,16 @@ def run_prepared_forecast(
             "swdown_min_wm2": float(cp.min(driver.fields["swdown"]).get()),
             "swdown_max_wm2": float(cp.max(driver.fields["swdown"]).get()),
             "rainnc_max_mm": float(cp.max(driver.microphysics.rainnc).get()),
+            # PER-CARRIER PROVENANCE (gpuwm/core/radiation_carriers.py):
+            # one row per radiative carrier -- its source, the model
+            # second its producer last wrote it, and a representative
+            # element read from the live buffer at receipt time.  This is
+            # the run-receipt surface the contract promises: a reader
+            # asking "did this run integrate a sky nobody computed" gets
+            # the answer per carrier, at end of run.
+            "surface_radiation_policy": str(driver.carriers.policy),
+            "surface_radiation_carriers": _strict_json(
+                driver.carriers.report(fields=driver.fields)),
         },
         "memory": {
             "gpu_peak_used_bytes_observed": memory_watch.peak_bytes(
@@ -4680,6 +4744,10 @@ def run_prepared_forecast(
             # What each number above actually measured, how often it was
             # sampled, and whether observation stayed complete.
             "gpu_peak_sampling": memory_watch.summary(),
+            # WHICH EXECUTION MODE produced the peaks above; empty, and the
+            # receipt therefore unchanged, whenever [tiles] is off.
+            "tiles": streaming.receipt_entry(
+                exp.tiles, streaming_decisions),
         },
         "gridded_output": {
             "cadence_seconds": cadence_seconds,
@@ -4737,6 +4805,13 @@ def run_prepared_forecast(
             "authority_sha256": dict(inputs.file_sha256),
         },
     }
+    # Added rather than inlined above, and only when [tiles] was
+    # configured: an unconfigured run must produce the report it produced
+    # before this mode existed, key for key, so that every stored receipt
+    # and every hash taken over one stays valid.  Same emptiness contract as
+    # streaming.identity_payload_entry.
+    if streaming_report:
+        report["tiles"] = streaming_report
     _atomic_json(outdir / "report.json", report)
     emit_run_capsule(
         outdir, emission_site="prepared_single_domain_forecast",

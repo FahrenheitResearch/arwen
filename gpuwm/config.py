@@ -24,6 +24,35 @@ from gpuwm.core import sase_limits as _sase_limits
 DEFAULT_COLUMN_CHUNK = 3125
 
 
+
+#: THE SURFACE-RADIATION CARRIER POLICY vocabulary.  Defined in the CONFIG
+#: module rather than beside the contract it governs
+#: (gpuwm.core.radiation_carriers), because the config-load refusal has to
+#: be reachable from the standalone RW-WPS preprocessing wheel, which
+#: carries gpuwm.config and does not carry gpuwm.core.  The contract
+#: imports these names from here; the arrow never points the other way.
+SURFACE_RADIATION_POLICY_REQUIRED = "required"
+SURFACE_RADIATION_POLICY_WRF_COMPAT_ZERO = "wrf_compat_zero"
+SURFACE_RADIATION_POLICIES = (SURFACE_RADIATION_POLICY_REQUIRED,
+                              SURFACE_RADIATION_POLICY_WRF_COMPAT_ZERO)
+
+
+def validate_surface_radiation_policy(policy: str) -> str:
+    """Return the policy, or refuse a value that is not one of the two."""
+    if policy not in SURFACE_RADIATION_POLICIES:
+        raise ValueError(
+            f"surface_radiation_policy={policy!r} is not a policy.  The "
+            f"choices are {SURFACE_RADIATION_POLICY_REQUIRED!r} (the "
+            "default: every carrier a land-surface scheme reads must have "
+            "a producer, checked immediately before the scheme consumes "
+            f"it) and {SURFACE_RADIATION_POLICY_WRF_COMPAT_ZERO!r} (the "
+            "declared escape: unsourced carriers are consumed at their "
+            "allocation fill, which reproduces pre-1.9 behaviour and is an "
+            "experimental forcing rather than a valid real-case "
+            "configuration).")
+    return policy
+
+
 @dataclass(frozen=True)
 class RunConfig:
     nx: int
@@ -604,6 +633,22 @@ class RunConfig:
     # every pre-WDM6 experiment's fingerprint byte-identical.
     wdm6_hail_opt: int = 0
     wdm6_ccn_conc: float = 1.0e8
+
+    # APPENDED LAST, and deliberately so: the config-freeze discipline
+    # requires new fields at the end so positional construction of every
+    # frozen case is unchanged.
+    #
+    # THE SURFACE-RADIATION CARRIER POLICY (gpuwm/core/radiation_carriers.py).
+    # "required" is the default for every run, real-data or idealised: a
+    # radiative carrier a land-surface scheme reads must have a producer,
+    # checked immediately before the LSM consumes it.  "wrf_compat_zero" is
+    # the declared escape -- unsourced carriers are consumed at their
+    # allocation fill, reproducing pre-1.9 behaviour.  It is never selected
+    # automatically, it labels every carrier it touches in the run receipt
+    # and the output metadata, and it is an EXPERIMENTAL FORCING rather
+    # than a valid configuration for a real case.  Not a WRF namelist key:
+    # WRF has no carrier provenance to declare.
+    surface_radiation_policy: str = "required"
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -2217,6 +2262,17 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "use_mp_re must be 0 (legacy-RRTMG calculated radii) or 1 "
             f"(use the WRF microphysics scheme table), got {cfg.use_mp_re}."
         )
+    # The carrier policy is validated HERE as well as at the seam that
+    # consumes it, so a misspelled policy is refused at config load with
+    # the two choices named rather than three minutes into a run.
+    #
+    # The vocabulary lives in THIS module, not in gpuwm.core, and the
+    # import direction is the reason: the standalone RW-WPS preprocessing
+    # wheel carries gpuwm.config and does NOT carry gpuwm.core, so a
+    # config-load refusal that reached into the core would hand a
+    # standalone user an ImportError instead of the sentence written for
+    # them.  That is the exact defect that withdrew 1.8.8.
+    validate_surface_radiation_policy(cfg.surface_radiation_policy)
     if (not math.isfinite(cfg.seaice_albedo_default)
             or not 0.0 <= cfg.seaice_albedo_default <= 1.0):
         raise ValueError(

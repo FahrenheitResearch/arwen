@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "1.9.1"
+version = "2.0.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -122,8 +122,26 @@ gpuwm-mapped-inspect = "gpuwm.mapped_source:main"
 gpuwm-prepared-forecast = "gpuwm.prepared_single_domain_forecast:main"
 gpuwm-prepared-tree-forecast = "gpuwm.prepared_domain_tree_forecast:main"
 
+# `tilestream*` is not optional and not a convenience: it is the streamed
+# transport, and gpuwm/core/streaming.py -- which DOES ship -- imports it at
+# about twenty sites.  Every one is function-local, so the omission was
+# invisible to any import of gpuwm and to every gate, because
+# tools/battery/tiles_gates.txt says to run FROM THE REPOSITORY ROOT and a
+# repository root on sys.path makes tilestream importable whether it is
+# installed or not.  From a clean install it was not: `[tiles]` mode `auto`
+# and `on` both died in `decide()` at `from tilestream.harness import
+# halo_radius` with ModuleNotFoundError, and tools/les1m_probe.py the same
+# way.  tests/test_tiles_distribution.py is the gate, and it asks setuptools
+# rather than restating the pattern.
+#
+# The glob rather than a bare `tilestream`: a bare name ships the top level
+# only, so the first subpackage anyone adds would reproduce exactly the
+# defect this line closes.  The package is flat today and setuptools' find
+# is not a namespace find, so the directories of evidence and receipts under
+# it -- evidence/, evidence-reconcile/, rescued-tools/, skeptic/ -- carry no
+# __init__.py and are not swept in by it.
 [tool.setuptools.packages.find]
-include = ["gpuwm*", "tools"]
+include = ["gpuwm*", "tools", "tilestream*"]
 
 # Recursive globs, never an enumeration of filenames. The previous per-directory
 # enumeration had drifted 52 files behind the tree -- including parameter tables
@@ -148,6 +166,17 @@ gpuwm = [
 "gpuwm.certify" = ["*.json"]
 "gpuwm.ingest" = ["*.md"]
 tools = ["prepare_hrrr_*.sh"]
+# The one non-Python file under tilestream/ that a shipped module OPENS:
+# make_plots.py and make_output_json.py both resolve it as
+# `Path(__file__).with_name("output-scaling.json")`, which in an install
+# resolves inside site-packages and nowhere else.  Declared for the same
+# reason the enumeration under `tools` is: this is not a data directory and
+# a blanket glob would be wrong.  Everything else beside it -- 27 markdown
+# handoffs, 19 gate logs, the skeptic/ and evidence/ receipt trees -- is
+# development record read by people out of a checkout, never by code, and
+# is deliberately not shipped.  tests/test_tiles_distribution.py pins that
+# claim by re-deriving it from the source rather than trusting this comment.
+tilestream = ["output-scaling.json"]
 
 # Wheel exclusions come in exactly two pinned classes; nothing may be
 # excluded for any other reason, and tests/test_package_data_coverage.py

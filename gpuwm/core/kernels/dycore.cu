@@ -943,6 +943,51 @@ void slow_geopotential_faces(real* __restrict__ rph_t,
 // a separate FP32 array.  rn_* preserves each of those store/load rounding
 // boundaries explicitly, so batching the pointwise chains changes neither
 // expression order nor contraction while removing the temporary traffic.
+//
+// THE FACE-MASS NEIGHBOUR IS BOUNDARY-DEPENDENT.  Both uv kernels below build
+// WRF's muu/muus and muv/muvs inline -- the column mass carried to a u/v face
+// as the mean of the two mass cells that share it (module_small_step_em.F
+// small_step_prep :225-228 and small_step_finish :96-98 consume exactly those
+// arrays).  WRF builds them in calc_mu_uv
+// (module_big_step_utilities_em.F:59-115 x / :118-174 y) and that routine
+// chooses the off-domain neighbour from ``config_flags%periodic_x`` /
+// ``periodic_y``:
+//
+//   west face  i = ids:  im = its   normally, its-1 under periodic_x
+//   east face  i = ide:  im = ite-1 normally, ite   under periodic_x
+//
+// The periodic branch reads the halo cell, which the period fill has loaded
+// with the opposite edge -- the ``i % nx`` / ``(i-1+nx) % nx`` below.  The
+// NON-periodic branch names the boundary cell twice, so the boundary face
+// carries that cell's own mass: a zero-gradient ghost, which is min/max
+// clamping of the same two indices.  ``advance_mu_th`` (kernels/acoustic.cu)
+// already spells the identical choice for its four face masses.
+//
+// Until this flag arrived both kernels wrapped unconditionally, so on a
+// specified, nested or open-lateral domain the west boundary face took its
+// mass from the EAST-most mass column and vice versa -- a real coupling of
+// the two physical boundaries, at both ends of every acoustic rung of every
+// RK stage.  These were the last two sites where a wrapped index SURVIVED on
+// a non-periodic domain: ``advance_uv`` (kernels/acoustic.cu) also spells
+// ``i % nx``, but under specified/nested its spec_zone guard never reaches
+// the boundary face, and under open boundaries acoustic.py overwrites both
+// face sets from their saved pre-substep values immediately after the
+// launch.  MEASURED after the fix, 96x64x24 dry, one step, 25 Pa on one
+// west mass column, over all 76 device arrays the state owns: the influence
+// stops at column 10 on an open domain and at column 0 on a specified one,
+// while the periodic control still reaches the far edge in 33 arrays.
+// Before the fix the same probe moved the far edge in 34 open-domain arrays
+// and in the two stage mass fluxes of a specified one.
+//
+// The two boundary-normal face columns are the whole footprint of the
+// change: interior faces 1 <= i <= nx-1 index i-1 and i on both branches, so
+// a periodic run is bit-identical (proved by tilestream/test_gate.py, which
+// is periodic throughout, and by tests/test_small_step_lateral_wrap.py's
+// periodic rows).  A specified domain moves by exactly one float32 ULP at
+// one step, in 22 of 148992 ``ru`` faces and 26 of 149760 ``rv`` faces --
+// all of them at i = 0 / i = nx and j = 0 / j = ny, free interior exactly
+// zero; the persisted state first differs at step 3 and by step 8 is
+// 1.1e-3 m/s in u and 1.9e-2 Pa in mu.
 
 extern "C" __global__
 void small_step_init_uv(real* __restrict__ u_pp,
@@ -958,7 +1003,8 @@ void small_step_init_uv(real* __restrict__ u_pp,
                         const real* __restrict__ c2h,
                         const real* __restrict__ msfu,
                         const real* __restrict__ msfv,
-                        int has_msf, int nz, int ny, int nx)
+                        int has_msf, int boundary_x, int boundary_y,
+                        int nz, int ny, int nx)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int nyf = ny + 1, nxf = nx + 1;
@@ -969,7 +1015,8 @@ void small_step_init_uv(real* __restrict__ u_pp,
     int i = r - j * nxf;
 
     if (j < ny) {
-        int ia = i % nx, ib = (i - 1 + nx) % nx;
+        int ia = boundary_x ? min(i, nx - 1) : i % nx;
+        int ib = boundary_x ? max(i - 1, 0)  : (i - 1 + nx) % nx;
         size_t ca = (size_t)j * nx + ia;
         size_t cb = (size_t)j * nx + ib;
         real mt_a = rn_add(mub2d[ca], mup0[ca]);
@@ -986,7 +1033,8 @@ void small_step_init_uv(real* __restrict__ u_pp,
         u_pp[ix] = value;
     }
     if (i < nx) {
-        int ja = j % ny, jb = (j - 1 + ny) % ny;
+        int ja = boundary_y ? min(j, ny - 1) : j % ny;
+        int jb = boundary_y ? max(j - 1, 0)  : (j - 1 + ny) % ny;
         size_t ca = (size_t)ja * nx + i;
         size_t cb = (size_t)jb * nx + i;
         real mt_a = rn_add(mub2d[ca], mup0[ca]);
@@ -1096,7 +1144,8 @@ void small_step_finish_uv(real* __restrict__ u,
                           const real* __restrict__ c2h,
                           const real* __restrict__ msfu,
                           const real* __restrict__ msfv,
-                          int has_msf, int nz, int ny, int nx)
+                          int has_msf, int boundary_x, int boundary_y,
+                          int nz, int ny, int nx)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int nyf = ny + 1, nxf = nx + 1;
@@ -1107,7 +1156,8 @@ void small_step_finish_uv(real* __restrict__ u,
     int i = r - j * nxf;
 
     if (j < ny) {
-        int ia = i % nx, ib = (i - 1 + nx) % nx;
+        int ia = boundary_x ? min(i, nx - 1) : i % nx;
+        int ib = boundary_x ? max(i - 1, 0)  : (i - 1 + nx) % nx;
         size_t ca = (size_t)j * nx + ia;
         size_t cb = (size_t)j * nx + ib;
         real msa = rn_add(mub2d[ca], mup[ca]);
@@ -1124,7 +1174,8 @@ void small_step_finish_uv(real* __restrict__ u,
         u[ix] = rn_div(rn_add(rn_mul(cs, u[ix]), pp), cn);
     }
     if (i < nx) {
-        int ja = j % ny, jb = (j - 1 + ny) % ny;
+        int ja = boundary_y ? min(j, ny - 1) : j % ny;
+        int jb = boundary_y ? max(j - 1, 0)  : (j - 1 + ny) % ny;
         size_t ca = (size_t)ja * nx + i;
         size_t cb = (size_t)jb * nx + i;
         real msa = rn_add(mub2d[ca], mup[ca]);

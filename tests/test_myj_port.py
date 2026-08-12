@@ -1088,13 +1088,15 @@ def test_a_myj_forecast_advances_through_the_shipped_seams():
     state = init_at_rest(cfg, coord, base)
     state.u[...] = cp.asarray(
         np.full(tuple(state.u.shape), 6.0), dtype=state.u.dtype)
-    # radt=0.0 with Noah on: this column runs no longwave scheme, so it
-    # declares its downward longwave instead of letting one be invented.
-    # That is the second remedy the GLW-source refusal names, and it is
-    # the right one here because the subject is the MYJ PBL and surface
-    # layer advancing through the shipped seams, not the sky.
+    # radt=0.0 with Noah on: this column runs no radiation scheme, so it
+    # declares its downward longwave AND its downward shortwave instead of
+    # letting either be invented.  That is the second remedy the carrier
+    # contract names, and it is the right one here because the subject is
+    # the MYJ PBL and surface layer advancing through the shipped seams,
+    # not the sky.  swdown=0.0 is the value the buffer always held; the
+    # declaration moves no number, it names the number's origin.
     driver = initialize_physics(state, cfg, landmask=1.0, tsk=305.0,
-                                glw=DECLARED_CONSTANT_GLW_WM2)
+                                glw=DECLARED_CONSTANT_GLW_WM2, swdown=0.0)
 
     # The scheme's own fields exist under its own selectors, and nothing
     # else's do.

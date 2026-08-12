@@ -42,6 +42,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from gpuwm import __version__  # noqa: E402
 from gpuwm.certify.capsule import emit_run_capsule  # noqa: E402
+from gpuwm.core import streaming  # noqa: E402
 from gpuwm.core.microphysics_transition import (  # noqa: E402
     MP8_TO_MP18_POLICY,
     resolve_microphysics_transition,
@@ -859,12 +860,19 @@ def preflight_prepared_tree(
     # nest.
     from gpuwm.experiment import refuse_unrouted_spawn
     refuse_unrouted_spawn(exp, "prepared domain-tree")
+    # And the same governance for [tiles], one line down, because this
+    # route wires no streamed-domain builder either.  Without this the
+    # refusal still happens -- make_stepper raises it -- but 790 lines and
+    # one whole resident tree construction later, which is exactly the wrong
+    # side of the allocation a streamed run exists to avoid.
+    streaming.refuse_unrouted_streaming(exp, "prepared domain-tree")
     # THE predicate, asked rather than restated.  This runner is the
     # door the whole corridor mechanism exists to satisfy, and it used
     # to hold its own copy of the sentence -- so a reading of
     # "[relocation] with moves but no follow" that the preparation doors
     # agreed on could have differed here, in the one place that decides
-    # whether a bundle is accepted.
+    # whether a bundle is accepted.  Supersedes the inline
+    # exp.relocation.enabled and (follow is not None or moves) test.
     from gpuwm.static.corridor import config_declares_follow_source
     relocation_follow = config_declares_follow_source(exp)
     if relocation_follow:
@@ -1376,7 +1384,6 @@ def run_prepared_tree(
     from gpuwm import runtime
     from gpuwm.config import radiation_scheme_ids
     from gpuwm.core.clock import build_schedule, resolve_clock
-    from gpuwm.core.dycore import stability_report
     from gpuwm.core.gpu_mem_watch import (
         GpuPeakMemoryWatcher,
         default_cupy_probes,
@@ -1690,13 +1697,22 @@ def run_prepared_tree(
     forecast_started = time.perf_counter()
 
     def history_handler(_tree, node, ticks):
+        # ASKED OF THE STEPPER, per grid.  ``steppers`` is bound below and
+        # read at CALL time.  Under ``[tiles] store = "host"`` the domain
+        # is in a pinned host store and ``node.state`` is the copy taken at
+        # t = 0 that the sweep never writes, so every history sample would
+        # otherwise record the INITIAL nan/w_max/CFL as though it were the
+        # frame's.  ``stability_observer`` returns ``dycore.stability_report``
+        # itself for a resident grid, which is every grid of a tree that
+        # configures no [tiles].
         sample = {
             "grid_id": int(node.cfg.grid_id),
             "ticks": int(ticks),
             "elapsed_seconds": float(node.clock.elapsed_seconds),
-            **stability_report(
-                node.state, node.cfg.run, boundary_width=node.cfg.run.spec_bdy_width
-            ),
+            **streaming.stability_observer(
+                steppers.get(int(node.cfg.grid_id)))(
+                    node.state, node.cfg.run,
+                    boundary_width=node.cfg.run.spec_bdy_width),
         }
         history.append(_strict_json(sample))
         if writers is not None:
@@ -1739,6 +1755,37 @@ def run_prepared_tree(
         # frames must describe the footprint that produced them.
         relocation_runner.on_child_built.attach_writers(writers)
 
+    # [tiles].  Absent -- the default -- this is an empty mapping and the
+    # executor binds gpuwm.core.dycore.step for every grid, which is the
+    # function it always bound: no planner is consulted and no tilestream
+    # module is imported, so a resident forecast pays nothing for the mode
+    # existing.  Configured, a domain that the planner says will not fit
+    # resident gets a streamed stepper here or a loud refusal; what it never
+    # gets is a silent resident run that dies at the allocation the mode was
+    # turned on to avoid.  The builders are what makes "gets a streamed
+    # stepper here" true rather than aspirational: until they were wired,
+    # every configuration on this route took the refusal branch, including
+    # the ones the mode exists for.  A NEST that fires is still refused, on
+    # purpose -- see streaming.prepared_domain_builder.
+    #
+    # The decisions are recorded per grid because the stepper dict cannot
+    # report them: a grid that declined to stream is simply missing from it,
+    # which is also what a grid looks like when [tiles] was never
+    # configured.  On a TREE that ambiguity is worse than on a single
+    # domain -- `auto` can legitimately stream the parent and leave a small
+    # nest resident, so "some grids are missing" is the NORMAL case and
+    # cannot be read as an anomaly.  Only a per-grid verdict distinguishes
+    # that from a run where auto declined on every grid.
+    streaming_decisions: dict = {}
+    steppers = streaming.steppers_for_tree(
+        model, exp.tiles,
+        builders=streaming.builders_for_tree(model, exp.tiles),
+        decisions=streaming_decisions)
+    streaming_report = streaming.streaming_receipt(
+        exp.tiles, streaming_decisions)
+    if streaming_report:
+        print(f"prepared tree: {streaming_report['summary']}", flush=True)
+
     try:
         memory_watch.start()
         if writers is None:
@@ -1752,6 +1799,7 @@ def run_prepared_tree(
                 skip_feedback_path=True,
                 pool_trim_per_period=True,
                 relocation_runner=relocation_runner,
+                steppers=steppers,
             )
             wrfout_paths = ()
         else:
@@ -1766,6 +1814,7 @@ def run_prepared_tree(
                     skip_feedback_path=True,
                     pool_trim_per_period=True,
                     relocation_runner=relocation_runner,
+                    steppers=steppers,
                 )
                 writers.drain()
                 wrfout_paths = writers.paths
@@ -1793,11 +1842,14 @@ def run_prepared_tree(
         final_health[f"d{grid_id:02d}"] = _strict_json(result)
         if not result["ok"]:
             raise FloatingPointError(f"final d{grid_id:02d} health failed: {result}")
+        # The health gate above still validates node.state and CANNOT be
+        # folded (one block per whole field, no windowing), so under a host
+        # store it passes on the t = 0 snapshot; the stability record below
+        # is folded per tile and is the domain's.
         final_stability[f"d{grid_id:02d}"] = _strict_json(
-            stability_report(
-                node.state, node.cfg.run, boundary_width=node.cfg.run.spec_bdy_width
-            )
-        )
+            streaming.stability_observer(steppers.get(int(grid_id)))(
+                node.state, node.cfg.run,
+                boundary_width=node.cfg.run.spec_bdy_width))
         final_digests[f"d{grid_id:02d}"] = canonical_state_digest(
             node.state, node.clock, scope="trajectory"
         )
@@ -1921,6 +1973,14 @@ def run_prepared_tree(
             "statics_corridor_host_bytes": (
                 None if inputs.statics_corridor is None
                 else inputs.statics_corridor.host_bytes),
+            # WHICH EXECUTION MODE the two numbers above describe.  The
+            # estimate prices a whole resident tree; a streamed domain's
+            # observed peak is a few tile buffers.  Absent this field the
+            # gap between them reads as slack in the estimator.  Empty --
+            # and the receipt therefore byte-identical to the one written
+            # before streaming existed -- whenever [tiles] is off.
+            "tiles": streaming.receipt_entry(
+                exp.tiles, streaming_decisions),
         },
         "output": {
             "io_mode": io_mode,
@@ -1946,6 +2006,11 @@ def run_prepared_tree(
         },
         "runtime_source_identity": runtime_identity,
     }
+    # Only when [tiles] was configured, so an unconfigured tree writes
+    # the receipt it wrote before the mode existed -- see the same guard in
+    # prepared_single_domain_forecast.
+    if streaming_report:
+        report["tiles"] = streaming_report
     _atomic_json(evidence / "run-receipt.json", report)
     emit_run_capsule(
         outdir, emission_site="prepared_domain_tree_forecast",

@@ -114,13 +114,20 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
 
 
 def validate_ysu_outputs(
-        out: Mapping[str, cp.ndarray], status: cp.ndarray) -> str | None:
+        out: Mapping[str, cp.ndarray], status: cp.ndarray,
+        *, refuse=None) -> str | None:
     """Return the first non-finite native YSU output name, or ``None``.
 
     ``launch_ysu`` owns this exact output layout.  One validation kernel
     records a bit per floating-point output and one scalar readback preserves
     the driver's historical first-invalid error ordering.  The two integer
     outputs are necessarily finite and need no device work.
+
+    ``refuse`` opts this site into :mod:`gpuwm.core.health_ledger`.  It is
+    the caller's own refusal -- the closure that builds the forensic message
+    -- and with a ledger active it is called at the drain with the first
+    flagged name, preserving the historical first-invalid ordering because
+    the bit order is the launcher order.  Without it the word is read here.
     """
     if tuple(out) != _YSU_OUTPUTS:
         raise ValueError(
@@ -161,8 +168,16 @@ def validate_ysu_outputs(
         tuple(out[name] for name in _YSU_3D_FLOAT_OUTPUTS)
         + tuple(out[name] for name in _YSU_2D_FLOAT_OUTPUTS)
         + (status, np.int64(count_3d), np.int64(count_2d)))
-    invalid = int(status[0].item())
-    for bit, name in enumerate(_YSU_OUTPUTS):
-        if invalid & (1 << bit):
-            return name
-    return None
+    from gpuwm.core import health_ledger
+
+    def _first_name(flags: int) -> str | None:
+        for bit, name in enumerate(_YSU_OUTPUTS):
+            if flags & (1 << bit):
+                return name
+        return None
+
+    invalid = health_ledger.read_status(
+        status, site="ysu",
+        describe=None if refuse is None
+        else lambda flags: refuse(_first_name(flags)))
+    return _first_name(invalid)

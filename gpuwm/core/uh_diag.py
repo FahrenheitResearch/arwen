@@ -49,6 +49,20 @@ Ratified divergences from WRF, recorded here and in the STEP17 handoff:
    UP_HELI_MAX stay exactly zero, and the west column / south row mirror
    their inward neighbours.
 
+UNDER ``[tiles]``, THE RESET IS THE HARD PART, NOT THE FOLD.  The fold is
+pointwise after a horizontal-radius-1 smooth, so it tiles like any other
+carrier and is bit-exact against a resident run at every rung measured
+(tilestream/test_uh_stream.py).  The three RESETS are whole-domain writes
+arriving from outside the stepper, and a streamed domain's arrays are in the
+tiling store rather than on the ``DomainState`` the consumers hold -- so a
+reset written to the state left the real accumulator running and every window
+silently became "max since the run began", biasing the tracker and the spawn
+trigger toward firing early and never releasing.  Every reset here therefore
+goes through :func:`gpuwm.core.streaming.live_scratch`, and every READER of a
+window (gpuwm/core/storm_tracking.py) through
+:func:`~gpuwm.core.streaming.domain_scratch`.  Resident, both are exactly
+``state.existing_scratch(slot)`` and nothing changed.
+
 The oracle for the transcription is tools/uh_wrf461_oracle (fixtures under
 gpuwm/data/uh/oracle); tests/test_uh_wrf461_parity.py holds the NumPy
 mirror and the CUDA kernel at the recorded ULP baseline against it.
@@ -435,12 +449,7 @@ def reset_tracker_window(state, slot: str) -> None:
             f"{slot!r} is not a tracker window; the consumer windows are "
             f"{TRACKER_WINDOW_SLOTS} and UP_HELI_MAX is reset by the "
             "history writer alone (reset_up_heli_max)")
-    existing_scratch = getattr(state, "existing_scratch", None)
-    if existing_scratch is None:
-        return
-    buf = existing_scratch(slot)
-    if buf is not None:
-        buf[...] = 0.0
+    _zero_domain_slot(state, slot)
 
 
 def device_uh_step(u, v, w, ph, phb, msfu, msfv, ht, dn, dnw, fnm, fnp,
@@ -477,12 +486,25 @@ def reset_up_heli_max(state) -> None:
     """Zero the accumulator after its history frame is written (the WRF
     history-interval reset, module_diag_nwp.F:246-269, moved to the write
     itself -- ratified divergence 1 in the module docstring)."""
-    # Duck-type tolerant like the wrfout builder: history-handler test
-    # doubles and reduced states without a scratch pool simply have no
-    # accumulator to reset.
-    existing_scratch = getattr(state, "existing_scratch", None)
-    if existing_scratch is None:
-        return
-    buf = existing_scratch("up_heli_max")
-    if buf is not None:
+    _zero_domain_slot(state, UP_HELI_MAX_SLOT)
+
+
+def _zero_domain_slot(state, slot: str) -> None:
+    """Zero one running max WHEREVER this domain is actually keeping it.
+
+    Not ``state.existing_scratch(slot)[...] = 0`` -- that was the defect.
+    Under ``[tiles]`` the domain's arrays live in the tiling store and the
+    state the model still holds is a copy taken at attach time, so a reset
+    written to the state left the real accumulator running and the window
+    silently became "max since the run began".  ``streaming.live_scratch``
+    returns every live view of the slot -- one resident, two streamed -- and
+    the reasoning, the measurement and the safe-instant rule are on it.
+
+    Duck-type tolerant exactly as before: history-handler test doubles and
+    reduced states without a scratch pool simply have no accumulator to
+    reset, and ``live_scratch`` returns nothing for them.
+    """
+    from gpuwm.core.streaming import live_scratch
+
+    for buf in live_scratch(state, slot):
         buf[...] = 0.0

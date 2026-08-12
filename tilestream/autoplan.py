@@ -1,0 +1,1443 @@
+"""Choose the tiling, so that nobody has to choose a tile size ever again.
+
+``run_tiled`` takes a tile size, a buffer count and a halo.  All three are
+traps, and two of them are silent:
+
+* **the halo.**  Too small is bit-wrong AND faster, so a benchmark rewards
+  it and a one-step test certifies it (``harness.halo_radius``'s docstring
+  has the numbers: halo 13 at ``full+MYNN+Noah-MP`` is bit-exact at N=1 and
+  wrong in 111 carriers at N=8).  This module never measures a halo.  It
+  copies ``harness.halo_radius(cfg)`` and refuses to accept an override.
+* **the tile size.**  Too big does not fit; too small spends the card on
+  halo cells (MEASURED: a 160-cell window on a 1024^2 dry domain does 1.56x
+  the necessary work and takes 1.36x the time); and a tile that does not
+  DIVIDE the domain multiplies the ring arena by 4.2x (MEASURED: 3276^2
+  costs 24.46% of the store at tile 512 and 5.84% at tile 546).
+* **the buffer count.**  Worth ~32% when it fits and an out-of-memory crash
+  when it does not, and whether it fits turns on a question this module had
+  to answer with a measurement -- see below.
+
+Give it a ``RunConfig`` and a :class:`Machine` and it answers: resident or
+tiled; if tiled, what tile, how many buffers, how much pinned host RAM; and
+if neither, WHICH resource is binding.  ``python -m tilestream.autoplan``
+prints the plan and the reasoning for it.
+
+
+THE COST MODEL, AND THE QUESTION NOBODY HAD CHECKED
+---------------------------------------------------
+The project's working figure was "~2.5 GiB FIXED plus ~656 B/cell, both for a
+resident domain and for each tile buffer".  If the fixed part really were per
+buffer, ``nbuffers=2`` would cost 5 GiB of fixed on a 12 GB card and the
+overlap would be unaffordable there.  MEASURED instead, by building 1..4
+physics states in ONE process and reading ``cudaMemGetInfo`` after each
+(``--measure`` re-runs it)::
+
+    full+MYNN+Noah-MP, 128^2 x 49, RTX 4090
+        buffer 1   3392 MiB      buffer 3   1336 MiB
+        buffer 2   1332 MiB      buffer 4   1340 MiB
+
+The first buffer costs 2.0 GiB more than every buffer after it.  **The fixed
+part is per PROCESS, not per buffer** -- and it has to be, because CUDA
+context, module code and the RRTMGP k-distribution tables are process-wide.
+What IS per buffer is much smaller, and only one rung has any of it at all:
+
+===================  ==============  =============  ==========  ============
+rung                 process fixed   buffer fixed   B/cell      carrier B/cell
+===================  ==============  =============  ==========  ============
+dry                       128 MiB          0 MiB     155           32.3
+mp10 (moist only)          96 MiB        200 MiB     391          181.0
+full(real74)+KF          3232 MiB         16 MiB     541          233.3
+full+MYNN+Noah-MP        2560 MiB       1024 MiB     612          279.5
+===================  ==============  =============  ==========  ============
+
+so the model this module plans with is
+
+    VRAM = context + process_fixed + nbuffers * (buffer_fixed + b * cells)
+
+The consequence is the whole point: a second buffer on a 12 GB card costs
+``buffer_fixed + b * window_cells``, NOT another 2.5 GiB, so overlap is
+affordable on a small card and the planner takes it.  Three ways this could
+have been got wrong and was not: the numbers come from a fit over 29 points
+spanning k = 1..4 buffers and 0.8 to 20 Mcell on two different cards (4090
+and 5090, agreeing to 6% on ``b`` at every rung); the fit is non-negative, so
+none of the three terms is an artefact of the other two absorbing a sign; and
+the worst UNDER-prediction over all points is -4.3%, which is what
+:data:`VRAM_SAFETY` covers.
+
+Two things in the table deserve a second look.  ``full(real74)+KF`` has
+3.2 GiB of process fixed and no per-buffer fixed; ``full+MYNN+Noah-MP`` has
+2.6 GiB of process fixed and 1.0 GiB per buffer.  MYNN and Noah-MP move a
+gigabyte of workspace from process scope to driver scope, so the rung with
+the SMALLER one-time cost is the expensive one to run two buffers of.  And
+the per-cell figures are 541-612 B/cell, not the 656 the project had been
+using -- 7 to 20% high, which at the 5395^2 capacity headline is a third of a
+tile.
+
+
+WHAT THE PLANNER OPTIMISES, AND WHAT IT REFUSES TO OPTIMISE
+-----------------------------------------------------------
+Subject to VRAM and pinned-host budgets, it minimises
+
+    redundancy(tile) / overlap_gain(nbuffers)
+
+where ``redundancy = ntiles_x*ntiles_y*(Tx+2h)*(Ty+2h) / (nx*ny)`` -- the
+useful work divided into the work actually done, which counts a ragged
+trailing tile's waste automatically because ``plan_tiles`` gives every tile
+the SAME compute window and only the trailing interiors shrink.
+
+It does NOT try to optimise the compute window for occupancy, because that
+turned out not to be the effect it was assumed to be.  MEASURED here, a
+monolithic dry step in ns per cell against the window edge:
+
+    4090   128: 5.115   192: 3.692   256: 3.713   512: 4.109   1280: 4.539
+    5090   128: 4.527   192: 3.228   256: 2.721   512: 2.806   1280: 3.027
+
+Both cards are within 4% of their best by a 256-cell window and slowly get
+WORSE above ~640 (cache, not occupancy); full physics saturates at 256 as
+well (48.5 ns/cell at 256^2 on the 4090 against 82.8 at 128^2).  So "never
+benchmark below ~500 cells" is a rule about the TILING TAX and not about the
+arithmetic rate of the window.  :data:`MIN_COMPUTE_WINDOW` is therefore a
+warning threshold, not a constraint.
+
+Radiation and cumulus fired ZERO times inside every window timed above
+(``radt=12 min`` and ``cudt=5 min`` against ``dt=3 s`` are 240 and 100 steps
+apart, and the driver's ``call_counts`` were read on both sides to prove it);
+sfclay/Noah-MP/PBL fired every step.  Those curves are a fast-cadence step,
+which is 239 of every 240.
+
+And the tiling tax itself, MEASURED against the objective it is supposed to
+justify -- 1024^2 dry on a 4090, VRAM store so PCIe is out of it, nbuffers=2,
+150 steps per call:
+
+    tile  window  tiles  redundancy   tax    tax/redundancy
+     128     160     64      1.562    1.359      0.870
+     256     288     16      1.266    1.217      0.961
+     512     544      4      1.129    1.346      1.192
+
+Redundancy predicts the measured tax within 13% over an 8x range of tile
+size, which is what makes it a usable objective.  It is not a perfect one:
+the best row here is the MIDDLE tile, and the largest tile -- which this
+planner would choose -- came out 10.6% worse than it.  Two effects pull
+against each other and redundancy only sees one: a bigger window has lower
+redundancy but a slightly worse arithmetic rate (the curve above), and four
+tiles against two buffers leaves the pipeline almost nothing to overlap.  The
+second is the more likely culprit and it is why a plan with fewer than three
+tiles per buffer says so.  A one-configuration result is not enough to
+rebuild the objective on, so the objective stands and the caveat is stated.
+
+A warning for anyone who repeats that measurement: ``run_tiled`` builds its
+``nbuffers`` tile states on every CALL, and a 544-cell dry buffer takes 3.3 s
+to build.  At 4 steps per call that is 1650 ms/step of construction against
+244 ms/step of physics, and the tax comes out at 8.7x with the largest tile
+looking WORST by a factor of four.  At 30 steps the tile-512 row still read
+2.25x.  Only at 150 steps do the numbers above stop moving.
+
+
+HOST RAM, AND WHY /proc/meminfo IS NOT ALLOWED TO ANSWER
+--------------------------------------------------------
+``hoststore`` will not pin more than 47% of MemTotal and page-locking walls
+at 50% of it, both MEASURED.  But inside a container ``/proc/meminfo`` is the
+HOST's -- on the box these constants were measured on it reports 503 GiB
+while ``/sys/fs/cgroup/memory.max`` says 241.7 GiB, and a store sized from
+the first number is a plan to be OOM-killed.  :meth:`Machine.detect` reads
+the cgroup limit first, takes the smaller of the two, and refuses to guess at
+all if it can see it is containerised and there is no limit to read.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import os
+from typing import Any, Sequence
+
+from tilestream import harness as _harness
+
+GIB = 1 << 30
+MIB = 1 << 20
+
+
+# --------------------------------------------------------------------------
+# measured constants
+# --------------------------------------------------------------------------
+
+#: VRAM an initialised CUDA process holds before any model exists, MEASURED at
+#: 397 MiB on a headless RTX 4090 (CUDA 13, CuPy 14.1.1).  It is charged once,
+#: not per buffer.  :meth:`Machine.detect` budgets against FREE VRAM, so a
+#: desktop compositor's share is already excluded and this covers only us.
+CUDA_CONTEXT_BYTES = 400 * MIB
+
+#: Worst under-prediction of the fitted model over all 29 measured points was
+#: -4.3% (dry, 1152^2, where CuPy's pool rounding runs ahead of the fit).  A
+#: planner that under-predicts hands out a tile that OOMs three hours into a
+#: forecast, so the model is inflated past its worst measured miss.
+VRAM_SAFETY = 1.06
+
+#: The staggered ``+1`` columns make a store slightly dearer per cell than the
+#: flat figure; MEASURED at 279.7 B/cell at 128^2 against 279.5 at 384^2, i.e.
+#: 0.07%, so 1% covers it everywhere a real domain lives.
+STORE_SAFETY = 1.01
+
+#: Below this compute-window edge the TILING TAX -- halo redundancy plus
+#: per-tile overhead -- is what stops being negligible; the window's own
+#: arithmetic rate is flat from ~256 up (see the module docstring).  This is a
+#: warning threshold, never a constraint: on a 12 GB card at full physics
+#: there may be no window this large, and running is better than refusing.
+MIN_COMPUTE_WINDOW = 500
+
+#: What a second buffer is worth: gathers for tile i+1 overlap compute for
+#: tile i.  1.32x on dry, measured by this project before this module existed.
+#: A third buffer is taken only when it costs nothing, so it carries no
+#: separate credit here.
+OVERLAP_GAIN = 1.32
+
+#: Tiles per buffer below which the pipeline has little left to overlap.  In
+#: the measured tax curve the four-tile / two-buffer row is the one where the
+#: largest tile lost to a smaller one despite less redundancy; three is a
+#: threshold for saying so, not a measured cliff.
+MIN_TILES_PER_BUFFER = 3
+
+#: Candidates within this band of the best redundancy are decided on ring
+#: arena instead, because redundancy does not price the arena and the arena is
+#: what raggedness actually costs: MEASURED 5.84% of the store at 3276^2/546
+#: (exact) against 24.46% at 3276^2/512 (13 ragged tiles), 4.2x the arena for
+#: 6.6% of the tile.
+#:
+#: Note this is a strictly better rule than "prefer a tile that divides the
+#: domain", and it disagrees with it in a case that comes up: on nx=4098
+#: (= 2*3*683) the exact ladder jumps from 683 to 1366, so a 1025 tile leaves
+#: a 1023-cell trailing tile -- ragged by two cells.  That tiling has BOTH
+#: less redundancy (1.065x against 1.096x) and less arena (1.6% against 2.3%)
+#: than the exact 683 one.  Raggedness is expensive when the trailing tile is
+#: much narrower than the others, not when it is merely unequal, and the arena
+#: is the quantity that knows the difference.
+ARENA_TIE_BAND = 0.05
+
+#: A ring arena above this fraction of the store is called out.  An exact
+#: tiling at a realistic tile size measured 2-6%; the badly ragged plans
+#: measured 22-25%.
+EXPENSIVE_ARENA = 0.10
+
+#: Fraction of MemTotal that may be pinned.  ``hoststore`` measured the wall
+#: at 0.4998 x MemTotal and refuses past 0.47; this is that refusal, restated
+#: where the plan is made rather than where the allocation fails.
+PINNED_FRACTION = 0.47
+
+#: VRAM left unplanned, on top of :data:`VRAM_SAFETY`.  CuPy's pool fragments
+#: across a long run, cuFFT/cuBLAS workspaces appear on first use, and the
+#: cost of being wrong is a dead forecast.
+VRAM_HEADROOM = 0.08
+
+
+@dataclass(frozen=True)
+class Footprint:
+    """The VRAM and host-store cost of one physics rung, MEASURED.
+
+    ``process_fixed_bytes`` is charged once per process; ``buffer_fixed_bytes``
+    once per tile buffer; ``bytes_per_cell`` per cell of each buffer's compute
+    WINDOW (not of the domain).  ``store_bytes_per_cell`` is the carrier
+    inventory -- what a pinned host store actually holds -- and is a different
+    and much smaller number than the VRAM per-cell, because a resident state
+    also carries scratch, tendencies and physics workspace that never leaves
+    the card.
+    """
+
+    rung: str
+    process_fixed_bytes: int
+    buffer_fixed_bytes: int
+    bytes_per_cell: float
+    store_bytes_per_cell: float
+    source: str = "measured"
+
+    def buffer_bytes(self, window_cells: int) -> float:
+        """VRAM one tile buffer of ``window_cells`` costs."""
+        return self.buffer_fixed_bytes + self.bytes_per_cell * window_cells
+
+    def vram_bytes(self, window_cells: int, nbuffers: int) -> float:
+        """VRAM a process holding ``nbuffers`` such buffers costs, with safety."""
+        raw = (CUDA_CONTEXT_BYTES + self.process_fixed_bytes
+               + nbuffers * self.buffer_bytes(window_cells))
+        return raw * VRAM_SAFETY
+
+    def resident_bytes(self, cells: int) -> float:
+        """VRAM the whole domain costs with no tiling: one buffer, no halo."""
+        return self.vram_bytes(cells, 1)
+
+    def store_bytes(self, cells: int) -> float:
+        """Pinned host bytes one full-domain carrier store costs."""
+        return self.store_bytes_per_cell * cells * STORE_SAFETY
+
+
+#: MEASURED on an RTX 4090 (rented, headless) and an RTX 5090 (local, sharing
+#: the card with a desktop), CUDA 13 / CuPy 14.1.1, by non-negative least
+#: squares over 1..4 buffers x 0.8..20 Mcell.  Each entry is the CONSERVATIVE
+#: envelope of the two cards, because the planner is asked about machines it
+#: cannot see.  Per-card values, ``(process MiB, buffer MiB, B/cell)``:
+#:
+#: ==================  ====================  ====================
+#: rung                4090                  5090
+#: ==================  ====================  ====================
+#: dry                 54,     0,   154.3    122,    0,   149.0
+#: mp10                70,   193,   389.6     88,  185,   390.4
+#: full(real74)+KF     2720,    9,   540.8   3228,    9,   540.8
+#: full+MYNN+Noah-MP   2024,  907,   611.2   2551,  974,   574.4
+#: ==================  ====================  ====================
+#:
+#: The two cards agree on ``B/cell`` to 6% at every rung and on the per-buffer
+#: fixed to 8%, which is the cross-check that this is a property of the model
+#: and not of one machine.  ``store_bytes_per_cell`` is the carrier inventory
+#: measured directly (``physics_inventory.carrier_inventory``), and its dry
+#: value reproduces the project's independently derived 32.26 B/cell.
+FOOTPRINTS: dict[str, Footprint] = {
+    "dry": Footprint("dry", 128 * MIB, 0, 155.0, 32.3),
+    "moist": Footprint("moist", 96 * MIB, 200 * MIB, 391.0, 181.0),
+    "full": Footprint("full", 3232 * MIB, 16 * MIB, 541.0, 233.3),
+    "full+mynn+noahmp": Footprint("full+mynn+noahmp",
+                                  2560 * MIB, 1024 * MIB, 612.0, 279.5),
+}
+
+
+class CannotPlan(RuntimeError):
+    """No plan exists.  ``resource`` names what is binding.
+
+    ``resource`` is one of ``"vram"``, ``"host"``, ``"geometry"``.  It is an
+    attribute rather than prose because a caller that wants to retry on a
+    bigger box needs to know WHICH box to ask for.
+    """
+
+    def __init__(self, message: str, resource: str,
+                 detail: dict | None = None):
+        super().__init__(message)
+        self.resource = resource
+        self.detail = detail or {}
+
+
+# --------------------------------------------------------------------------
+# the rung, from the config
+# --------------------------------------------------------------------------
+
+def rung_of(cfg) -> str:
+    """Which measured footprint row ``cfg`` belongs to.
+
+    Deliberately coarse and deliberately pessimistic: a config that turns on
+    radiation lands on a ``full`` row even if its scheme selectors differ from
+    the ones measured, and anything with MYNN or Noah-MP lands on the dearest
+    row of all.  Getting this wrong in the cheap direction hands out a tile
+    that does not fit, so where the rungs are ambiguous the expensive one
+    wins.  Pass ``footprint=`` to :func:`plan` to override with a measurement
+    of your own configuration.
+
+    The "is anything on at all" questions are asked of ``gpuwm.config`` and
+    ``gpuwm.core.physics`` rather than of the raw selectors, because the raw
+    selectors lie: ``make_config``'s dry default leaves ``ra_sw_physics`` and
+    ``ra_lw_physics`` at ``-1``, which is "unset, resolve from the suite" and
+    not "RRTMGP is running".  A truthiness test on those two fields alone
+    plans every dry domain as though it carried 3.2 GiB of radiation.
+    """
+    from gpuwm.config import radiation_enabled
+    from gpuwm.core.physics import physics_enabled
+
+    pbl = int(getattr(cfg, "bl_pbl_physics", 0) or 0)
+    surface = int(getattr(cfg, "sf_surface_physics", 0) or 0)
+    if pbl == 5 or surface == 4:
+        return "full+mynn+noahmp"
+    if radiation_enabled(cfg) or physics_enabled(cfg):
+        return "full"
+    if bool(getattr(cfg, "moist", False)) or int(
+            getattr(cfg, "mp_physics", 0) or 0):
+        return "moist"
+    return "dry"
+
+
+def footprint_for(cfg, *, rung: str | None = None) -> Footprint:
+    """The :class:`Footprint` to plan ``cfg`` with."""
+    key = rung or rung_of(cfg)
+    if key not in FOOTPRINTS:
+        raise KeyError(f"unknown rung {key!r}; have {sorted(FOOTPRINTS)}")
+    return FOOTPRINTS[key]
+
+
+def _forced(cfg) -> bool:
+    """``dycore._boundary_forced``: specified or nested forces BOTH axes."""
+    return (bool(getattr(cfg, "specified", False))
+            or bool(getattr(cfg, "nested", False)))
+
+
+def is_periodic_x(cfg) -> bool:
+    """``not dycore._boundary_x(cfg)`` -- does the model wrap in x?
+
+    This is the flag ``spec.plan_tiles`` must be given for the x axis, and it
+    is a transcription of the dycore's own predicate rather than a guess: the
+    advection launchers, ``slow_pgf``, ``stage_fluxes`` and the small-step uv
+    kernels all take ``_boundary_x(cfg) = open_x or specified or nested`` and
+    clamp when it is set, wrap when it is not.
+    """
+    return not (bool(getattr(cfg, "open_x", False)) or _forced(cfg))
+
+
+def is_periodic_y(cfg) -> bool:
+    """``not dycore._boundary_y(cfg)`` -- does the model wrap in y?"""
+    return not (bool(getattr(cfg, "open_y", False)) or _forced(cfg))
+
+
+def is_periodic(cfg) -> bool:
+    """True when every lateral-boundary flag is off, i.e. BOTH axes wrap.
+
+    A specified/open/nested domain is NOT periodic, and ``spec.plan_tiles``
+    then requires the compute window to fit inside the domain rather than
+    wrapping -- a constraint the planner has to honour, because a window
+    wider than the domain is a ``ValueError`` and not a slow plan.
+
+    THIS IS THE CONSERVATIVE ANSWER AND IT IS NOT ALWAYS THE RIGHT PLAN.
+    ``open_x=True, open_y=False`` is non-periodic in x and genuinely periodic
+    in y; planning both axes off this one boolean clamps the y windows and
+    silently corrupts the two y-boundary tile rows (measured: nine of nine
+    dry carriers after ONE step, rows 0-11 and 180-191 at every x).  A caller
+    that owns a plan must ask :func:`is_periodic_x` and :func:`is_periodic_y`
+    separately; this stays because "can this domain wrap at all" is still a
+    question the sizing model asks.
+    """
+    return is_periodic_x(cfg) and is_periodic_y(cfg)
+
+
+# --------------------------------------------------------------------------
+# the machine
+# --------------------------------------------------------------------------
+
+def _cgroup_memory_limit() -> int | None:
+    """The container's own memory ceiling, or None outside a container.
+
+    cgroup v2 first (``memory.max``), then v1.  ``"max"`` means unlimited and
+    is reported as None so the caller falls back to MemTotal.
+    """
+    for path in ("/sys/fs/cgroup/memory.max",
+                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            with open(path, "r", encoding="ascii") as handle:
+                raw = handle.read().strip()
+        except OSError:
+            continue
+        if raw == "max":
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        # v1 reports a sentinel near 2**63 for "no limit".
+        if value <= 0 or value >= (1 << 62):
+            return None
+        return value
+    return None
+
+
+def _in_container() -> bool:
+    if os.path.exists("/.dockerenv"):
+        return True
+    try:
+        with open("/proc/1/cgroup", "r", encoding="ascii") as handle:
+            body = handle.read()
+    except OSError:
+        return False
+    return any(tag in body for tag in ("docker", "kubepods", "containerd",
+                                       "lxc", "libpod"))
+
+
+@dataclass(frozen=True)
+class Machine:
+    """What the plan is allowed to spend.
+
+    ``vram_bytes`` is what the card will actually give this process now, not
+    what the box has -- :meth:`detect` reads FREE VRAM so another tenant's
+    allocation is already deducted.  ``host_bytes`` is the machine's RAM;
+    ``host_budget_bytes`` applies the page-locking limit to it.
+    """
+
+    vram_bytes: int
+    host_bytes: int
+    name: str = "unknown"
+    vram_headroom: float = VRAM_HEADROOM
+    pinned_fraction: float = PINNED_FRACTION
+    host_source: str = "explicit"
+
+    @property
+    def vram_budget_bytes(self) -> int:
+        return int(self.vram_bytes * (1.0 - self.vram_headroom))
+
+    @property
+    def host_budget_bytes(self) -> int:
+        return int(self.host_bytes * self.pinned_fraction)
+
+    @classmethod
+    def detect(cls, *, host_bytes: int | None = None, device: int = 0,
+               use_free_vram: bool = True) -> "Machine":
+        """Read the machine, refusing to guess where guessing is unsafe.
+
+        VRAM comes from ``cudaMemGetInfo``: FREE by default, because a card
+        with a desktop or another tenant on it does not have its total to
+        give.  Host RAM comes from the cgroup limit and ``MemTotal``,
+        whichever is smaller -- ``/proc/meminfo`` inside a container reports
+        the HOST's memory (MEASURED: 503 GiB reported against a 241.7 GiB
+        cgroup limit), and a pinned store sized from that number is a plan to
+        be OOM-killed.  Containerised with no cgroup limit to read, this
+        raises rather than inventing a number.
+        """
+        import cupy as cp
+
+        with cp.cuda.Device(device):
+            free, total = cp.cuda.runtime.memGetInfo()
+        props = cp.cuda.runtime.getDeviceProperties(device)
+        name = props["name"].decode() if isinstance(props["name"], bytes) \
+            else str(props["name"])
+
+        source = "explicit"
+        if host_bytes is None:
+            limit = _cgroup_memory_limit()
+            meminfo = _host_memtotal()
+            if limit is not None and meminfo is not None:
+                host_bytes = min(limit, meminfo)
+                source = ("cgroup limit" if limit <= meminfo
+                          else "/proc/meminfo MemTotal")
+            elif limit is not None:
+                host_bytes, source = limit, "cgroup limit"
+            elif meminfo is not None and not _in_container():
+                host_bytes, source = meminfo, "/proc/meminfo MemTotal"
+            else:
+                raise CannotPlan(
+                    "containerised with no cgroup memory limit to read, so "
+                    "/proc/meminfo describes the HOST and not this container "
+                    "-- pass host_bytes= explicitly rather than letting a "
+                    "pinned store be sized from someone else's RAM",
+                    "host")
+        return cls(vram_bytes=int(free if use_free_vram else total),
+                   host_bytes=int(host_bytes), name=name, host_source=source)
+
+
+def _host_memtotal() -> int | None:
+    try:
+        with open("/proc/meminfo", "r", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        return None
+    return None
+
+
+# --------------------------------------------------------------------------
+# geometry
+# --------------------------------------------------------------------------
+
+def tile_candidates(n: int, *, max_tiles: int = 4096) -> list[int]:
+    """Interior tile extents worth considering along an axis of length ``n``.
+
+    ``ceil(n/k)`` for every tile count ``k``, which is what ``plan_tiles``
+    would produce for ``k`` tiles and which contains every divisor of ``n`` as
+    the subset where the division is exact.  Deduplicated and sorted
+    descending, because the search wants the largest first.
+    """
+    n = int(n)
+    out = {n}
+    for k in range(1, min(n, max_tiles) + 1):
+        out.add(-(-n // k))
+    return sorted(out, reverse=True)
+
+
+def ring_arena_fraction(nx: int, ny: int, tile_nx: int, tile_ny: int,
+                        halo: int) -> float:
+    """Ring arena as a fraction of the store, for ``write_mode="ring"``.
+
+    Two facts decide it and the obvious formula gets both wrong:
+
+    * **only bands a LATER tile reads are saved.**  A band its predecessors
+      read is protected by ordering the read ahead of the write, which halves
+      the saved set against a four-sided ``interior - erosion(halo)``
+      estimate.  So the kept core is eroded on ONE side per axis, not two.
+    * **a ragged trailing tile is read right through.**  Its compute window is
+      the same width as every other tile's, so it reaches ``tile + halo - r``
+      cells past its own interior (``r`` = the ragged remainder) and its
+      neighbour has to save a band that deep instead of ``halo`` deep.
+
+    Per axis, then, the saved depth is ``halo`` for every tile plus that
+    overhang once, and the two axes compose as ``1 - (1-fx)(1-fy)``.
+    VALIDATED against every arena ``rings.py`` has measured in bytes -- this
+    is cells, and the two agree because the staggered ``+1``s are a small
+    correction:
+
+    ==================  ========  =========
+    plan                measured  this
+    ==================  ========  =========
+    1950^2, tile 650      4.97%     4.85%
+    3276^2, tile 546      5.84%     5.77%
+    4608^2, tile 768      4.17%     4.12%
+    5120^2, tile 512      6.19%     6.15%
+    5395^2, tile 1079     2.98%     2.94%
+    5412^2, tile 1353     2.39%     2.35%
+    192^2,  tile 64      44.29%    43.75%
+    3276^2, tile 512     24.46%    23.92%   <- 13 ragged tiles
+    5182^2, tile 512     22.73%    22.70%   <- 21 ragged tiles
+    ==================  ========  =========
+
+    Every row is within 0.6 percentage points and always low, which is why the
+    caller inflates it; the two ragged rows are the ones that prove the
+    overhang term is doing something, since a model without it returns the
+    exact-tiling answer for both.
+    """
+    def axis(n: int, t: int) -> float:
+        n, t = int(n), int(t)
+        ntiles = -(-n // t)
+        remainder = n - (ntiles - 1) * t
+        first = halo if remainder == t else min(n, t + halo - remainder)
+        return min(1.0, (first + (ntiles - 1) * halo) / n)
+
+    fx, fy = axis(nx, tile_nx), axis(ny, tile_ny)
+    return 1.0 - (1.0 - fx) * (1.0 - fy)
+
+
+def redundancy(nx: int, ny: int, tile_nx: int, tile_ny: int,
+               halo: int) -> float:
+    """Work done divided by work needed, for this tiling.
+
+    ``plan_tiles`` gives EVERY tile the same ``(tile + 2*halo)`` compute
+    window and lets only the trailing interiors shrink, so a ragged tiling
+    pays for a full window and gets a part-tile of interior out of it.  That
+    is why this counts windows rather than interiors, and why raggedness needs
+    no separate penalty term here.
+    """
+    ntx = -(-int(nx) // int(tile_nx))
+    nty = -(-int(ny) // int(tile_ny))
+    return (ntx * (tile_nx + 2 * halo) * nty * (tile_ny + 2 * halo)
+            / float(nx * ny))
+
+
+def suggest_friendly_domains(nx: int, want_tile: int, *, span: int = 64,
+                             count: int = 4) -> list[tuple[int, int]]:
+    """``(n, tile)`` near ``nx`` that divide exactly at about ``want_tile``.
+
+    Offered when the requested extent has no usable divisor, because "your
+    domain is prime" is only half an answer.
+    """
+    out: list[tuple[int, int]] = []
+    for delta in range(0, span + 1):
+        for n in ({nx + delta, nx - delta} if delta else {nx}):
+            if n < 2 * want_tile:
+                continue
+            best = max((t for t in _divisors(n)
+                        if t <= want_tile), default=0)
+            if best and best >= 0.75 * want_tile:
+                out.append((n, best))
+                if len(out) >= count:
+                    return out
+    return out
+
+
+def _divisors(n: int) -> list[int]:
+    out = []
+    i = 1
+    while i * i <= n:
+        if n % i == 0:
+            out.append(i)
+            if i != n // i:
+                out.append(n // i)
+        i += 1
+    return sorted(out)
+
+
+# --------------------------------------------------------------------------
+# the plan
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Plan:
+    """What to run, and why.
+
+    ``run_kwargs`` hands the whole thing to ``driver.run_tiled`` so that a
+    caller never retypes a tile size::
+
+        plan = autoplan.plan(cfg, autoplan.Machine.detect())
+        driver.run_tiled(store, cfg, nsteps=N, **plan.run_kwargs)
+    """
+
+    mode: str                      # "resident" | "tiled"
+    nx: int
+    ny: int
+    nz: int
+    rung: str
+    halo: int
+    periodic: bool
+    tile_nx: int
+    tile_ny: int
+    nbuffers: int
+    write_mode: str
+    ntiles_x: int
+    ntiles_y: int
+    window_nx: int
+    window_ny: int
+    ragged: bool
+    redundancy: float
+    vram_bytes: float
+    vram_budget_bytes: int
+    store_bytes: float
+    arena_bytes: float
+    host_budget_bytes: int
+    footprint: Footprint
+    machine: Machine
+    notes: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    #: Per-axis periodicity, which is what ``plan_tiles`` actually needs.
+    #: ``periodic`` above is their conjunction and is kept because it is what
+    #: the sizing question ("can a window wrap at all") asks.  Defaulted so a
+    #: caller that builds a Plan by hand still gets the old meaning.
+    periodic_x: bool = True
+    periodic_y: bool = True
+
+    @property
+    def cells(self) -> int:
+        return self.nx * self.ny * self.nz
+
+    @property
+    def window_cells(self) -> int:
+        return self.window_nx * self.window_ny * self.nz
+
+    @property
+    def ntiles(self) -> int:
+        return self.ntiles_x * self.ntiles_y
+
+    @property
+    def host_bytes(self) -> float:
+        return self.store_bytes + self.arena_bytes
+
+    @property
+    def run_kwargs(self) -> dict[str, Any]:
+        """Keywords for ``driver.run_tiled`` -- empty for a resident plan."""
+        if self.mode == "resident":
+            return {}
+        return dict(tile_nx=self.tile_nx, tile_ny=self.tile_ny,
+                    halo=self.halo, nbuffers=self.nbuffers,
+                    write_mode=self.write_mode, periodic=self.periodic,
+                    periodic_x=self.periodic_x, periodic_y=self.periodic_y)
+
+    def explain(self) -> str:
+        """The plan and the reasoning for it, as text."""
+        g = lambda b: f"{b / GIB:.2f} GiB"                      # noqa: E731
+        lines = [
+            "ArWen out-of-core plan",
+            f"  domain        {self.nx} x {self.ny} x {self.nz}"
+            f"  = {self.cells / 1e6:.1f} Mcell"
+            f"   ({'periodic' if self.periodic else 'NOT periodic'})",
+            f"  rung          {self.rung}"
+            f"   ({self.footprint.bytes_per_cell:.0f} B/cell of VRAM,"
+            f" {self.footprint.store_bytes_per_cell:.1f} B/cell of store)",
+            f"  machine       {self.machine.name}:"
+            f" {g(self.machine.vram_bytes)} VRAM"
+            f" (budget {g(self.vram_budget_bytes)}),"
+            f" {g(self.machine.host_bytes)} host RAM"
+            f" (pinnable {g(self.host_budget_bytes)},"
+            f" from {self.machine.host_source})",
+            "",
+            f"DECISION: {self.mode.upper()}",
+        ]
+        if self.mode == "resident":
+            lines += [
+                f"  the whole domain fits on the card: {g(self.vram_bytes)}"
+                f" of {g(self.vram_budget_bytes)}",
+                "  no tiling, no halo, no host store, no pinned memory",
+            ]
+        else:
+            lines += [
+                f"  tile          {self.tile_nx} x {self.tile_ny}"
+                f"   ({self.ntiles_x} x {self.ntiles_y} = {self.ntiles} tiles,"
+                f" {'RAGGED' if self.ragged else 'exact: no ragged tile'})",
+                f"  halo          {self.halo}"
+                f"   = harness.halo_radius(cfg) = 10 + 3*ns//2"
+                f"   (never measured, never tuned)",
+                f"  window        {self.window_nx} x {self.window_ny} x"
+                f" {self.nz} = {self.window_cells / 1e6:.1f} Mcell"
+                f"   -> redundancy {self.redundancy:.3f}x",
+                f"  buffers       {self.nbuffers}"
+                f"   ({g(self.footprint.buffer_bytes(self.window_cells))}"
+                f" each above a {g(self.footprint.process_fixed_bytes)}"
+                f" per-process fixed cost)",
+                f"  write mode    {self.write_mode}"
+                f"   (arena {self.arena_bytes / max(self.store_bytes, 1):.1%}"
+                f" of the store)",
+                f"  VRAM          {g(self.vram_bytes)} of"
+                f" {g(self.vram_budget_bytes)}",
+                f"  pinned host   store {g(self.store_bytes)}"
+                f" + arena {g(self.arena_bytes)}"
+                f" = {g(self.host_bytes)} of {g(self.host_budget_bytes)}",
+            ]
+        for note in self.notes:
+            lines.append(f"  - {note}")
+        for warn in self.warnings:
+            lines.append(f"  ! {warn}")
+        return "\n".join(lines)
+
+
+def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
+         rung: str | None = None, write_mode: str = "ring",
+         prefer_resident: bool = True, max_nbuffers: int = 3,
+         allow_ragged: bool = True, prefer_exact: bool = True,
+         max_redundancy: float | None = 4.0) -> Plan:
+    """Decide how to run ``cfg`` on ``machine``, or refuse and say why.
+
+    ``write_mode="ring"`` keeps one store plus a few per cent; ``"shadow"``
+    keeps two full stores and is only worth asking for when a concurrent
+    reader needs the untouched time-t domain.
+
+    ``footprint`` / ``rung`` override the cost model.  Pass ``footprint`` when
+    the configuration is not one of the four measured rungs and you have run
+    :func:`measure_footprint` on it; ``rung`` when you just want a different
+    row of :data:`FOOTPRINTS`.
+
+    ``max_nbuffers`` caps the pipeline depth.  Two are taken whenever they
+    fit even at the cost of a smaller tile (worth 1.32x, measured); a third
+    only when it is free at the tile already chosen.
+
+    ``allow_ragged`` and ``prefer_exact`` control what happens when no tile
+    divides the domain: by default a ragged tiling is allowed and an exact
+    one is preferred inside :data:`ARENA_TIE_BAND`.  ``allow_ragged=False``
+    turns "no exact tile fits" into a ``geometry`` refusal, which is the
+    honest answer for an extent like a prime -- a bigger card will not help.
+
+    ``max_redundancy`` refuses a tiling that does more than that multiple of
+    the necessary work -- the failure mode where a card is so small that the
+    only window that fits is barely wider than two halos, and the run would
+    technically proceed while spending most of the machine on halo cells.
+    Pass ``None`` to allow it anyway.
+
+    The boundary condition is read off ``cfg`` and constrains the search: on
+    a non-periodic domain ``plan_tiles`` clamps the window inside the domain
+    instead of wrapping and REFUSES a window wider than the domain, so tile
+    plus two halos has to fit in ``nx`` and ``ny``.
+
+    Raises :class:`CannotPlan` with ``.resource`` set to the binding resource
+    -- ``"vram"``, ``"host"`` or ``"geometry"``.
+    """
+    if write_mode not in ("ring", "shadow"):
+        raise ValueError(f"write_mode must be 'ring' or 'shadow', "
+                         f"got {write_mode!r}")
+
+    nx, ny, nz = int(cfg.nx), int(cfg.ny), int(cfg.nz)
+    cells = nx * ny * nz
+    halo = _harness.halo_radius(cfg)
+    # PER AXIS.  ``open_x`` alone leaves y wrapping, and a plan that clamps
+    # a wrapping axis corrupts its two boundary tile rows -- see
+    # :func:`is_periodic`.
+    periodic_x, periodic_y = is_periodic_x(cfg), is_periodic_y(cfg)
+    periodic = periodic_x and periodic_y
+    fp = footprint or footprint_for(cfg, rung=rung)
+    vram_budget = machine.vram_budget_bytes
+    host_budget = machine.host_budget_bytes
+    notes: list[str] = []
+    warnings: list[str] = []
+
+    # ---------------------------------------------------------- resident?
+    resident = fp.resident_bytes(cells)
+    if prefer_resident and resident <= vram_budget:
+        return Plan(mode="resident", nx=nx, ny=ny, nz=nz, rung=fp.rung,
+                    halo=halo, periodic=periodic, periodic_x=periodic_x,
+                    periodic_y=periodic_y, tile_nx=nx, tile_ny=ny,
+                    nbuffers=1, write_mode="n/a", ntiles_x=1, ntiles_y=1,
+                    window_nx=nx, window_ny=ny, ragged=False, redundancy=1.0,
+                    vram_bytes=resident, vram_budget_bytes=vram_budget,
+                    store_bytes=0.0, arena_bytes=0.0,
+                    host_budget_bytes=host_budget, footprint=fp,
+                    machine=machine,
+                    notes=("a resident run is always faster than a tiled one:"
+                           " no halo redundancy, no gather, no scatter",))
+    notes.append(
+        f"resident would need {resident / GIB:.2f} GiB of VRAM against a "
+        f"{vram_budget / GIB:.2f} GiB budget, so the domain is tiled")
+
+    # ------------------------------------------------------- host store?
+    store = fp.store_bytes(cells)
+    if write_mode == "shadow" and 2.0 * store > host_budget:
+        raise CannotPlan(
+            f"shadow mode needs two full stores, {2 * store / GIB:.2f} GiB of "
+            f"pinned host RAM, and only {host_budget / GIB:.2f} GiB may be "
+            f"pinned ({PINNED_FRACTION:.0%} of "
+            f"{machine.host_bytes / GIB:.1f} GiB, from {machine.host_source})."
+            f"  write_mode='ring' needs one store plus a few per cent.",
+            "host", dict(store_bytes=store, host_budget=host_budget))
+    if store > host_budget:
+        biggest = _largest_square_store(fp, host_budget, nz)
+        raise CannotPlan(
+            f"the domain store alone is {store / GIB:.2f} GiB of pinned host "
+            f"RAM and only {host_budget / GIB:.2f} GiB may be pinned "
+            f"({PINNED_FRACTION:.0%} of {machine.host_bytes / GIB:.1f} GiB, "
+            f"from {machine.host_source}).  The largest square domain this "
+            f"machine can hold at {fp.rung} is {biggest}^2 x {nz}.",
+            "host", dict(store_bytes=store, host_budget=host_budget,
+                         largest_square=biggest))
+
+    # ------------------------------------------------------ the tile search
+    best: dict | None = None
+    ragged_only = False
+    for nbuffers in range(1, max(1, int(max_nbuffers)) + 1):
+        window_cells = _max_window_cells(fp, nbuffers, vram_budget)
+        if window_cells <= 0:
+            continue
+        cand = _best_tile(nx, ny, nz, halo, window_cells, periodic_x,
+                          periodic_y, allow_ragged, prefer_exact)
+        if cand is None:
+            continue
+        if cand.get("ragged_only"):
+            ragged_only = True
+            continue
+        score = cand["redundancy"] / (OVERLAP_GAIN if nbuffers >= 2 else 1.0)
+        cand.update(nbuffers=nbuffers, score=score)
+        if best is None or score < best["score"] - 1e-12:
+            best = cand
+
+    if best is None and ragged_only:
+        want = _max_window_cells(fp, 1, vram_budget) // nz
+        suggestions = suggest_friendly_domains(nx, int(want ** 0.5) or 1)
+        raise CannotPlan(
+            f"allow_ragged=False and no tile that DIVIDES {nx}x{ny} has a "
+            f"compute window small enough to fit "
+            f"{vram_budget / GIB:.2f} GiB of VRAM"
+            + (f"; {', '.join(f'nx={n} divides by {t}' for n, t in suggestions)}"
+               if suggestions else "")
+            + ".  Tiles that do not divide the domain would fit; pass "
+              "allow_ragged=True to accept the ring arena they cost.",
+            "geometry", dict(nx=nx, ny=ny))
+
+    if best is None:
+        floor = fp.vram_bytes((2 * halo + 1) ** 2 * nz, 1)
+        raise CannotPlan(
+            f"no tile fits in {vram_budget / GIB:.2f} GiB of VRAM: the "
+            f"smallest legal compute window at halo {halo} is "
+            f"{2 * halo + 1}^2 x {nz} and one buffer of it already costs "
+            f"{floor / GIB:.2f} GiB "
+            f"({fp.process_fixed_bytes / GIB:.2f} GiB of that is the "
+            f"per-process fixed cost of the {fp.rung} rung, which no tile "
+            f"size can reduce).",
+            "vram", dict(vram_budget=vram_budget, floor_bytes=floor))
+
+    # A second buffer that costs a smaller tile is still usually worth it, but
+    # a THIRD is taken only when it is free at the tile already chosen -- the
+    # measured 1.32x is what two buffers buy, and nothing was measured for a
+    # third beyond "it does not hurt".
+    tile_nx, tile_ny = best["tile_nx"], best["tile_ny"]
+    window_cells = best["window_nx"] * best["window_ny"] * nz
+    nbuffers = best["nbuffers"]
+    ntiles = best["ntiles_x"] * best["ntiles_y"]
+    while (nbuffers < max_nbuffers and nbuffers < ntiles
+           and fp.vram_bytes(window_cells, nbuffers + 1) <= vram_budget):
+        nbuffers += 1
+    if nbuffers > ntiles:
+        nbuffers = max(1, ntiles)
+        notes.append("buffer count clamped to the tile count: a buffer that "
+                     "never serves a tile is dead VRAM")
+
+    if nbuffers == 1:
+        warnings.append(
+            "only one tile buffer fits, so no gather overlaps any compute; "
+            "the measured cost of that on dry dynamics is 1.32x")
+
+    # ------------------------------------------------------------- arithmetic
+    vram = fp.vram_bytes(window_cells, nbuffers)
+    if write_mode == "ring":
+        frac = ring_arena_fraction(nx, ny, tile_nx, tile_ny, halo)
+        arena = store * frac * 1.05          # the model runs 0.1-0.6 pp low
+    else:
+        arena = store
+    if store + arena > host_budget:
+        raise CannotPlan(
+            f"store {store / GIB:.2f} GiB + {write_mode} arena "
+            f"{arena / GIB:.2f} GiB = {(store + arena) / GIB:.2f} GiB of "
+            f"pinned host RAM against a {host_budget / GIB:.2f} GiB budget."
+            + ("  The arena is this large because the tile does not divide "
+               "the domain and a ragged trailing tile is read right through."
+               if best["ragged"] else ""),
+            "host", dict(store_bytes=store, arena_bytes=arena,
+                         host_budget=host_budget))
+
+    if max_redundancy is not None and best["redundancy"] > max_redundancy:
+        raise CannotPlan(
+            f"the largest tile that fits is {tile_nx}x{tile_ny} inside a "
+            f"{best['window_nx']}x{best['window_ny']} window, so "
+            f"{best['redundancy']:.2f}x of the necessary work would be done "
+            f"on halo cells (limit {max_redundancy:.2f}x).  This is a VRAM "
+            f"problem: {fp.process_fixed_bytes / GIB:.2f} GiB of the "
+            f"{vram_budget / GIB:.2f} GiB budget is the {fp.rung} rung's "
+            f"per-process fixed cost before any tile exists.  Pass "
+            f"max_redundancy=None to run it anyway.",
+            "vram", dict(redundancy=best["redundancy"],
+                         tile=(tile_nx, tile_ny)))
+
+    # ----------------------------------------------------------------- notes
+    fraction = arena / store if store else 0.0
+    if best["ragged"]:
+        trailing = (nx - (best["ntiles_x"] - 1) * tile_nx,
+                    ny - (best["ntiles_y"] - 1) * tile_ny)
+        line = (f"the tile does NOT divide the domain: the trailing tile is "
+                f"{trailing[0]}x{trailing[1]} against {tile_nx}x{tile_ny}, "
+                f"and a tile narrower than its neighbours' compute window is "
+                f"read right through")
+        if write_mode == "ring" and fraction > EXPENSIVE_ARENA:
+            suggestions = suggest_friendly_domains(nx, max(tile_nx, tile_ny))
+            warnings.append(
+                line + f" -- {fraction:.1%} of the store in ring arena, "
+                f"against the 2-6% an exact tiling costs"
+                + (f"; {', '.join(f'nx={n} divides by {t}' for n, t in suggestions)}"
+                   if suggestions else ""))
+        else:
+            notes.append(
+                line + f", but only just: the ring arena is {fraction:.1%} of "
+                f"the store, inside the 2-6% an exact tiling costs")
+    else:
+        notes.append("the tile divides the domain exactly, so there is no "
+                     "ragged trailing tile to be read right through")
+
+    if nbuffers > 1 and ntiles < MIN_TILES_PER_BUFFER * nbuffers:
+        warnings.append(
+            f"{ntiles} tiles against {nbuffers} buffers leaves the pipeline "
+            f"little to overlap; in the measured tax curve this is the shape "
+            f"where the largest tile lost 10.6% to a smaller one despite "
+            f"doing less work.  A tile one step down the ladder may be "
+            f"faster here -- pass a smaller max_nbuffers, or accept it")
+
+    if min(best["window_nx"], best["window_ny"]) < MIN_COMPUTE_WINDOW:
+        warnings.append(
+            f"compute window {best['window_nx']}x{best['window_ny']} is below "
+            f"the {MIN_COMPUTE_WINDOW}-cell edge this project benchmarks "
+            f"above; the window's arithmetic rate is flat from ~256 up "
+            f"(measured), so what this costs is the tiling tax in the "
+            f"{best['redundancy']:.3f}x redundancy above, not occupancy")
+
+    notes.append(
+        f"halo {halo} from harness.halo_radius(cfg) at time_step_sound="
+        f"{int(cfg.time_step_sound)}; a halo below it is bit-wrong AND "
+        f"faster, so it is never inferred from a measurement")
+    if not periodic:
+        clamped = ", ".join(a for a, p in (("x", periodic_x), ("y", periodic_y))
+                            if not p)
+        notes.append(
+            f"the {clamped} axis is specified/open/nested, so its tile "
+            f"windows are clamped inside the domain rather than wrapped and "
+            f"{best['window_nx']}x{best['window_ny']} had to fit inside "
+            f"{nx}x{ny} -- which is what bounds the tile here")
+
+    return Plan(mode="tiled", nx=nx, ny=ny, nz=nz, rung=fp.rung, halo=halo,
+                periodic=periodic, periodic_x=periodic_x,
+                periodic_y=periodic_y, tile_nx=tile_nx, tile_ny=tile_ny,
+                nbuffers=nbuffers, write_mode=write_mode,
+                ntiles_x=best["ntiles_x"], ntiles_y=best["ntiles_y"],
+                window_nx=best["window_nx"], window_ny=best["window_ny"],
+                ragged=best["ragged"], redundancy=best["redundancy"],
+                vram_bytes=vram, vram_budget_bytes=vram_budget,
+                store_bytes=store, arena_bytes=arena,
+                host_budget_bytes=host_budget, footprint=fp, machine=machine,
+                notes=tuple(notes), warnings=tuple(warnings))
+
+
+def _max_window_cells(fp: Footprint, nbuffers: int, budget: int) -> int:
+    """Largest compute window, in cells, that ``nbuffers`` buffers can hold."""
+    room = budget / VRAM_SAFETY - CUDA_CONTEXT_BYTES - fp.process_fixed_bytes
+    room = room / nbuffers - fp.buffer_fixed_bytes
+    return int(room / fp.bytes_per_cell) if room > 0 else 0
+
+
+def _best_tile(nx: int, ny: int, nz: int, halo: int, window_cells: int,
+               periodic_x: bool, periodic_y: bool, allow_ragged: bool,
+               prefer_exact: bool = True) -> dict | None:
+    """The best tile whose compute window fits ``window_cells``.
+
+    Lowest redundancy wins; everything within :data:`ARENA_TIE_BAND` of it is
+    decided on ring arena instead, and a tie there goes to the tiling with
+    fewer tiles.  The two axes are searched independently, which matters: on a
+    12 GiB card a 4096^2 dry domain comes out as 1024 x 512 tiles at 1.096x
+    redundancy, against 1.129x for the largest SQUARE tile whose window fits
+    the same VRAM.  A square-tile search would have left that on the table.
+
+    ``ragged_only`` in the result says the search found candidates and
+    rejected all of them for raggedness, which is a geometry refusal and not
+    a VRAM one -- the caller needs to tell the user which.
+    """
+    cap = window_cells // nz
+    if cap <= 0:
+        return None
+    saw_ragged = False
+    feasible: list[tuple[int, int, bool, float]] = []
+    for tile_nx in tile_candidates(nx):
+        wnx = tile_nx + 2 * halo
+        if not periodic_x and wnx > nx:
+            continue
+        if wnx * (1 + 2 * halo) > cap:
+            continue
+        for tile_ny in tile_candidates(ny):
+            wny = tile_ny + 2 * halo
+            if not periodic_y and wny > ny:
+                continue
+            if wnx * wny > cap:
+                continue
+            ragged = (nx % tile_nx != 0) or (ny % tile_ny != 0)
+            if ragged and not allow_ragged:
+                saw_ragged = True
+                continue
+            feasible.append((tile_nx, tile_ny, ragged,
+                             redundancy(nx, ny, tile_nx, tile_ny, halo)))
+    if not feasible:
+        return {"ragged_only": True} if saw_ragged else None
+
+    # Two passes on purpose.  The band has to be measured against the BEST
+    # redundancy, and a single pass that prunes against a running incumbent
+    # measures it against whatever happened to be first -- which changes the
+    # answer, because `_prefer` can replace the incumbent with a candidate
+    # whose redundancy is slightly higher.
+    floor = min(row[3] for row in feasible)
+    best: dict | None = None
+    for tile_nx, tile_ny, ragged, red in feasible:
+        if red > floor * (1 + ARENA_TIE_BAND):
+            continue
+        cand = dict(tile_nx=tile_nx, tile_ny=tile_ny,
+                    window_nx=tile_nx + 2 * halo, window_ny=tile_ny + 2 * halo,
+                    ragged=ragged, redundancy=red,
+                    arena_fraction=ring_arena_fraction(nx, ny, tile_nx,
+                                                       tile_ny, halo),
+                    ntiles_x=-(-nx // tile_nx), ntiles_y=-(-ny // tile_ny))
+        if best is None or _prefer(cand, best, prefer_exact):
+            best = cand
+    return best
+
+
+def _prefer(cand: dict, best: dict, prefer_exact: bool) -> bool:
+    """Is ``cand`` a better tiling than ``best``?
+
+    Both are already inside :data:`ARENA_TIE_BAND` of the lowest redundancy
+    available -- :func:`_best_tile` filters on that first -- so what is left
+    to decide is: a tile that DIVIDES the domain wins, then the smaller ring
+    arena, then fewer tiles, then redundancy after all.
+
+    Division is the primary tie-break rather than the arena because the
+    arena model, accurate as it is against every plan ``rings.py`` has
+    measured, has never been checked in the barely-ragged regime -- a
+    trailing tile two cells short of the others.  Where a measurement exists
+    the two rules agree; where none exists the rule that has been measured
+    wins.  ``prefer_exact=False`` swaps them, which is worth about 3% of
+    redundancy on an extent like 4098 whose divisor ladder has a hole in it.
+    """
+    if prefer_exact and cand["ragged"] != best["ragged"]:
+        return best["ragged"]
+    if abs(cand["arena_fraction"] - best["arena_fraction"]) > 1e-9:
+        return cand["arena_fraction"] < best["arena_fraction"]
+    cand_tiles = cand["ntiles_x"] * cand["ntiles_y"]
+    best_tiles = best["ntiles_x"] * best["ntiles_y"]
+    if cand_tiles != best_tiles:
+        return cand_tiles < best_tiles
+    return cand["redundancy"] < best["redundancy"]
+
+
+def _largest_square_store(fp: Footprint, host_budget: int, nz: int) -> int:
+    """Largest ``n`` whose full-domain store fits ``host_budget``."""
+    lo, hi = 1, 2
+    while fp.store_bytes(hi * hi * nz) <= host_budget:
+        lo, hi = hi, hi * 2
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if fp.store_bytes(mid * mid * nz) <= host_budget:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def largest_runnable_domain(machine: Machine, *, rung: str = "dry",
+                            nz: int = 49, cfg_kwargs: dict | None = None,
+                            **plan_kwargs) -> tuple[int, Plan | None]:
+    """The largest square domain ``machine`` can run at ``rung``, and its plan.
+
+    Bisection on a real :func:`plan` call rather than on an inequality, so
+    every reported size is one the planner will actually accept -- including
+    the tile-geometry and redundancy limits, which an inequality on bytes
+    would miss.
+    """
+    cfg_kwargs = dict(cfg_kwargs or {})
+
+    def ok(n: int) -> Plan | None:
+        cfg = _config_for_rung(n, n, nz, rung, **cfg_kwargs)
+        try:
+            return plan(cfg, machine, rung=rung, **plan_kwargs)
+        except CannotPlan:
+            return None
+
+    lo, hi = 16, 32
+    if ok(lo) is None:
+        return 0, None
+    while ok(hi) is not None:
+        lo, hi = hi, hi * 2
+        if hi > 1 << 20:
+            break
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if ok(mid) is not None:
+            lo = mid
+        else:
+            hi = mid
+    return lo, ok(lo)
+
+
+#: Config overrides per rung, so the dry-run CLI and the tests can build a
+#: config for a named rung without importing the benchmark.  ``test_gate`` is
+#: the authority on which of these are bit-exact; this is only their shape.
+#: ``ztop=20000`` is load-bearing: the harness default is an 8 km top and
+#: RRTMGP then pads past its own 128-layer limit and raises.
+_MOIST = dict(moist=True, mp_physics=10, ztop=20000.0)
+_FULL = dict(_MOIST, km_opt=4, sf_sfclay_physics=91, bl_pbl_physics=1,
+             bldt=0.0, sf_surface_physics=2, ra_sw_physics=4,
+             ra_lw_physics=4, radt_minutes=12.0, cu_physics=1,
+             cudt_minutes=5.0)
+RUNG_OVERRIDES: dict[str, dict] = {
+    "dry": dict(),
+    "moist": dict(_MOIST),
+    "full": dict(_FULL),
+    "full+mynn+noahmp": dict(_FULL, sf_sfclay_physics=5, bl_pbl_physics=5,
+                             sf_surface_physics=4),
+}
+
+
+def _config_for_rung(nx: int, ny: int, nz: int, rung: str, **overrides):
+    kwargs = dict(RUNG_OVERRIDES[rung])
+    kwargs.update(overrides)
+    return _harness.make_config(nx, ny, nz, **kwargs)
+
+
+# --------------------------------------------------------------------------
+# re-measuring the constants
+# --------------------------------------------------------------------------
+
+def measure_footprint(rung: str = "dry", sizes: Sequence[int] = (128, 256),
+                      buffers: int = 3, nz: int = 49, warmup: int = 1,
+                      report=print) -> Footprint:
+    """Re-derive :data:`FOOTPRINTS`'s row for ``rung`` on THIS machine.
+
+    Builds ``buffers`` states of each size in one process and reads
+    ``cudaMemGetInfo`` after every one.  The split falls out of the
+    arithmetic without any fitting: the marginal cost of buffers 2..k is the
+    per-buffer cost, its slope across two sizes is ``bytes_per_cell``, its
+    intercept is ``buffer_fixed``, and whatever the FIRST buffer cost above
+    the marginal is the per-process fixed cost.
+
+    ``warmup`` must be at least 1.  Kain-Fritsch's ``cumulus/w0avg`` and the
+    radiation packer are allocated on first use, so a buffer that has never
+    stepped is missing footprint that a running one has -- and radiation
+    fires on ``itimestep == 1`` regardless of ``radt``, so one step is
+    enough.  The driver's ``call_counts`` are printed to show it did.
+    """
+    import cupy as cp
+
+    from tilestream import physics_inventory as physinv
+
+    sizes = tuple(int(s) for s in sizes)
+    if len(sizes) < 2:
+        raise ValueError("two sizes are needed to separate the fixed part "
+                         "from the per-cell part")
+
+    def used() -> int:
+        free, total = cp.cuda.runtime.memGetInfo()
+        return total - free
+
+    warm = cp.zeros(1024, dtype=cp.float64) + 1.0
+    cp.cuda.runtime.deviceSynchronize()
+    del warm
+    cp.get_default_memory_pool().free_all_blocks()
+    context = used()
+    report(f"CUDA context before any model: {context / MIB:.0f} MiB "
+           f"(shipped constant {CUDA_CONTEXT_BYTES / MIB:.0f} MiB)")
+    if context > 1.5 * CUDA_CONTEXT_BYTES:
+        report("  -- this reading is total-minus-free, so it includes every "
+               "OTHER process on the card (a desktop compositor is ~1.5 GiB). "
+               "The shipped constant was measured headless; Machine.detect "
+               "budgets against FREE VRAM, so the difference is already out.")
+
+    marginal: dict[int, float] = {}
+    one_time: list[float] = []
+    for n in sizes:
+        cfg = _config_for_rung(n, n, nz, rung)
+        keep = []
+        base = used()
+        deltas = []
+        for _ in range(max(2, int(buffers))):
+            state, drv = physinv.default_builder(cfg, 4242)
+            if warmup:
+                _harness.run_steps(state, cfg, int(warmup))
+            cp.cuda.runtime.deviceSynchronize()
+            keep.append(state)
+            now = used()
+            deltas.append(now - base)
+            base = now
+        calls = dict(drv.call_counts) if drv is not None else {}
+        marg = sum(deltas[1:]) / len(deltas[1:])
+        marginal[n * n * nz] = marg
+        one_time.append(deltas[0] - marg)
+        report(f"  {rung} {n}^2 x {nz}: first buffer "
+               f"{deltas[0] / MIB:.0f} MiB, then "
+               f"{'/'.join(f'{d / MIB:.0f}' for d in deltas[1:])} MiB"
+               f"   -> one-time {(deltas[0] - marg) / MIB:.0f} MiB"
+               f"   physics fired {calls or '{}'}")
+        del keep, state, drv
+        cp.get_default_memory_pool().free_all_blocks()
+
+    (c0, m0), (c1, m1) = sorted(marginal.items())[:2]
+    per_cell = (m1 - m0) / (c1 - c0)
+    buffer_fixed = max(0.0, m0 - per_cell * c0)
+    process_fixed = max(0.0, sum(one_time) / len(one_time))
+    got = Footprint(rung, int(process_fixed), int(buffer_fixed), per_cell,
+                    FOOTPRINTS[rung].store_bytes_per_cell, source="measured "
+                    "here")
+    shipped = FOOTPRINTS[rung]
+    report(f"  measured: process {process_fixed / MIB:.0f} MiB, "
+           f"buffer {buffer_fixed / MIB:.0f} MiB, {per_cell:.1f} B/cell")
+    report(f"  shipped:  process {shipped.process_fixed_bytes / MIB:.0f} MiB, "
+           f"buffer {shipped.buffer_fixed_bytes / MIB:.0f} MiB, "
+           f"{shipped.bytes_per_cell:.1f} B/cell")
+    return got
+
+
+# --------------------------------------------------------------------------
+# dry run
+# --------------------------------------------------------------------------
+
+#: The machines this module's table is quoted for.  ``(VRAM GiB, host GiB)``.
+KNOWN_MACHINES: dict[str, tuple[float, float]] = {
+    "5090": (32.0, 125.0),
+    "4090": (24.0, 128.0),
+    "5070": (12.0, 64.0),
+}
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        prog="python -m tilestream.autoplan",
+        description="print the tiling plan and the reasoning for it")
+    ap.add_argument("--nx", type=int, default=2048)
+    ap.add_argument("--ny", type=int, default=0, help="defaults to --nx")
+    ap.add_argument("--nz", type=int, default=49)
+    ap.add_argument("--rung", default="dry", choices=sorted(RUNG_OVERRIDES))
+    ap.add_argument("--machine", default="", choices=[""] + sorted(KNOWN_MACHINES))
+    ap.add_argument("--vram", type=float, default=0.0, help="GiB")
+    ap.add_argument("--host", type=float, default=0.0, help="GiB")
+    ap.add_argument("--detect", action="store_true",
+                    help="read this machine instead of --vram/--host")
+    ap.add_argument("--write-mode", default="ring", choices=("ring", "shadow"))
+    ap.add_argument("--time-step-sound", type=int, default=4)
+    ap.add_argument("--specified", action="store_true",
+                    help="specified lateral boundaries (not periodic)")
+    ap.add_argument("--table", action="store_true",
+                    help="the machine x rung capacity table instead")
+    ap.add_argument("--measure", action="store_true",
+                    help="re-derive this rung's footprint on this machine")
+    ap.add_argument("--measure-sizes", default="128,256")
+    args = ap.parse_args(argv)
+
+    if args.table:
+        return _print_table()
+    if args.measure:
+        measure_footprint(args.rung,
+                          [int(s) for s in args.measure_sizes.split(",")],
+                          nz=args.nz)
+        return 0
+
+    if args.detect:
+        machine = Machine.detect()
+    elif args.machine:
+        vram, host = KNOWN_MACHINES[args.machine]
+        machine = Machine(int(vram * GIB), int(host * GIB),
+                          name=f"RTX {args.machine}")
+    elif args.vram and args.host:
+        machine = Machine(int(args.vram * GIB), int(args.host * GIB),
+                          name="specified")
+    else:
+        ap.error("give --detect, --machine, or both --vram and --host")
+
+    ny = args.ny or args.nx
+    overrides: dict[str, Any] = dict(time_step_sound=args.time_step_sound)
+    if args.specified:
+        overrides.update(periodic=False, specified=True)
+    cfg = _config_for_rung(args.nx, ny, args.nz, args.rung, **overrides)
+    try:
+        print(plan(cfg, machine, write_mode=args.write_mode).explain())
+    except CannotPlan as exc:
+        print(f"CANNOT RUN  (binding resource: {exc.resource})\n\n  {exc}")
+        return 2
+    return 0
+
+
+#: Reference domains for the capacity table.  1024^2 is where a dry domain
+#: still fits resident on a big card and full physics already does not;
+#: 4096^2 is past every card; 8192^2 is past every host store but one.
+TABLE_DOMAINS = (1024, 2048, 4096, 8192)
+
+
+def _print_table() -> int:
+    """What each machine plans, at each rung, for a ladder of domains."""
+    machines = [Machine(int(v * GIB), int(h * GIB), name=f"RTX {k}")
+                for k, (v, h) in KNOWN_MACHINES.items()]
+    rungs = ("dry", "full+mynn+noahmp")
+
+    print("PLANS  (nz=49, time_step_sound=4 so halo=16, write_mode=ring)\n")
+    print(f"{'machine':<10}{'rung':<18}{'domain':>10}{'decision':>10}"
+          f"{'tile':>13}{'tiles':>8}{'buf':>5}{'redund':>8}"
+          f"{'VRAM':>10}{'pinned host':>13}")
+    for machine in machines:
+        for rung in rungs:
+            for n in TABLE_DOMAINS:
+                cfg = _config_for_rung(n, n, 49, rung)
+                try:
+                    p = plan(cfg, machine, rung=rung)
+                except CannotPlan as exc:
+                    print(f"{machine.name:<10}{rung:<18}{f'{n}^2':>10}"
+                          f"{'REFUSED':>10}   binding resource: {exc.resource}")
+                    continue
+                tile = (f"{p.tile_nx}x{p.tile_ny}" if p.mode == "tiled"
+                        else "-")
+                print(f"{machine.name:<10}{rung:<18}{f'{n}^2':>10}"
+                      f"{p.mode:>10}{tile:>13}"
+                      f"{(p.ntiles if p.mode == 'tiled' else 1):>8}"
+                      f"{p.nbuffers:>5}{p.redundancy:>8.3f}"
+                      f"{p.vram_bytes / GIB:>9.1f}G"
+                      f"{p.host_bytes / GIB:>12.1f}G")
+
+    print("\nCAPACITY  (largest square domain that plans at all)\n")
+    print(f"{'machine':<10}{'rung':<18}{'largest resident':>18}"
+          f"{'largest tiled':>16}{'tile':>12}{'buf':>5}{'redund':>8}"
+          f"{'binding':>10}")
+    for machine in machines:
+        for rung in rungs:
+            n, p = largest_runnable_domain(machine, rung=rung)
+            resident = _largest_resident(FOOTPRINTS[rung], machine)
+            if p is None:
+                print(f"{machine.name:<10}{rung:<18}{'cannot run':>18}")
+                continue
+            # What actually stops it: ask the planner about one cell more and
+            # read the resource off the refusal, rather than guessing.
+            try:
+                plan(_config_for_rung(n + 1, n + 1, 49, rung), machine,
+                     rung=rung)
+                binding = "?"
+            except CannotPlan as exc:
+                binding = exc.resource
+            print(f"{machine.name:<10}{rung:<18}{f'{resident}^2':>18}"
+                  f"{f'{n}^2':>16}{f'{p.tile_nx}x{p.tile_ny}':>12}"
+                  f"{p.nbuffers:>5}{p.redundancy:>8.3f}{binding:>10}")
+    return 0
+
+
+def _largest_resident(fp: Footprint, machine: Machine, nz: int = 49) -> int:
+    lo, hi = 1, 2
+    budget = machine.vram_budget_bytes
+    while fp.resident_bytes(hi * hi * nz) <= budget:
+        lo, hi = hi, hi * 2
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if fp.resident_bytes(mid * mid * nz) <= budget:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

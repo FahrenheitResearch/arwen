@@ -46,6 +46,7 @@ from typing import NamedTuple
 import numpy as np
 
 from gpuwm import physics_mode as physics_mode_module
+from gpuwm.core import streaming as streaming_module
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
                           radiation_enabled, validate_run_config,
                           warn_anisotropic_w_mixing)
@@ -870,6 +871,12 @@ class ExperimentConfig:
     #: payload omits the key entirely so absent-block fingerprints stay
     #: byte-identical to pre-feature ones.
     perturbation: "PerturbationConfig | None" = None
+    #: The resolved [tiles] block (:mod:`gpuwm.core.streaming`).  An
+    #: experiment that never mentions it carries ``StreamingOptions.OFF``,
+    #: whose stepper IS ``dycore.step`` -- there is no disabled-streaming
+    #: code path, only the absence of one.  Excluded from the restart
+    #: identity on purpose: see ``streaming.identity_payload_entry``.
+    tiles: "streaming_module.StreamingOptions" = streaming_module.OFF
 
     def __post_init__(self):
         if self.feedback not in (0, 1):
@@ -1665,7 +1672,7 @@ def _parent_before_child(domain_tables: list, source: str) -> list:
 def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain",
-                    "relocation", "perturbation")
+                    "relocation", "perturbation", "tiles")
     unknown_tables = [name for name in raw if name not in known_tables]
     if unknown_tables:
         # A whole stray table is the same defect as a stray key, one
@@ -1801,6 +1808,18 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     perturbation = None
     if "perturbation" in raw:
         perturbation = _build_perturbation(raw["perturbation"], source)
+
+    # ---- [tiles] ---------------------------------------------------
+    # ABSENT is the OFF contract, and it is the shared StreamingOptions.OFF
+    # object rather than a fresh one: the mode is an EXECUTION choice, it
+    # authors no computed value, and
+    # gpuwm.core.streaming.identity_payload_entry deliberately contributes
+    # nothing to the restart identity -- a checkpoint written resident must
+    # resume streamed and one written streamed must resume resident, which
+    # is the operation the mode exists for.  Proven in four legs across a
+    # file, bit-exact in all of them.
+    tiles = streaming_module.StreamingOptions.from_mapping(
+        raw.get("tiles"), source=source)
 
     # ---- [shared] ------------------------------------------------------
     shared = dict(raw.get("shared", {}))
@@ -2507,7 +2526,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         acknowledgements=tuple(acknowledgements),
         relocation=relocation,
         physics_mode=physics_mode,
-        perturbation=perturbation)
+        perturbation=perturbation,
+        tiles=tiles)
     from gpuwm.physics_compat import (
         constant_longwave_refusal,
         nocturnal_radiation_refusal,

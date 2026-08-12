@@ -419,13 +419,41 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
         "gpuwm/prepared_single_domain_forecast.py",
         "gpuwm/io/wrfout.py",         # emission
         "gpuwm/io/restart.py",        # serialization + tolerant restore
+        # The [tiles] seam.  It never names the slot in code -- it takes
+        # one -- but `live_scratch`'s docstring names the resets it exists
+        # for, and it is the accessor every one of them now goes through.
+        # ADDED because the roster's own question ("who may touch this
+        # accumulator") acquired a new correct answer: under a host store the
+        # domain's arrays are in the store, so a reset written to the state
+        # zeroed a copy and the window silently became "max since the run
+        # began".  It reads nothing into the trajectory; it hands the arrays
+        # to whoever is about to zero them.
+        # Out-of-core streaming names the slot as a CARRIER KEY
+        # ("scratch/up_heli_max"), never through the scratch API.  A
+        # streamed domain's arrays live in a store and its state is a
+        # projection of that store, so the accumulator has to be listed
+        # among the planes the executor projects before a whole-domain
+        # consumer reduces one -- otherwise the tracker, and the wrfout
+        # frame after it, read the plane the state was attached with,
+        # which is all zeros for the life of the run.  This is the
+        # OPPOSITE of a trajectory reader: nothing here feeds the model,
+        # and the AST pins below still hold because streaming touches no
+        # scratch API at all.
+        "gpuwm/core/streaming.py",
     }
 
     # Outside the owner and the sanctioned sites, no scratch-API access to
     # the slot at all; in dycore/runtime specifically, only the two entry
     # points may appear (no direct slot access).
     sanctioned_scratch = {"gpuwm/core/uh_diag.py", "gpuwm/core/state.py",
-                          "gpuwm/io/wrfout.py", "gpuwm/io/restart.py"}
+                          "gpuwm/io/wrfout.py", "gpuwm/io/restart.py",
+                          # Sanctioned for the indirect-acquisition rule
+                          # below: live_scratch/domain_scratch ARE the
+                          # scratch site for a streamed domain, and
+                          # storm_tracking.py stopped being one in the same
+                          # change -- it now asks streaming.domain_scratch
+                          # instead of binding existing_scratch itself.
+                          "gpuwm/core/streaming.py"}
     for path in gpuwm.rglob("*.py"):
         rel = path.relative_to(REPO).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))

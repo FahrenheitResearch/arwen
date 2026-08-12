@@ -1,0 +1,104 @@
+{
+ "device": {
+  "name": "NVIDIA GeForce RTX 5080",
+  "asyncEngineCount": 2,
+  "totalGlobalMem_GiB": 15.47100830078125,
+  "cupy": "14.1.1",
+  "driver": 13010,
+  "runtime": 13020
+ },
+ "config": "/workspace/overlap/arm_c_dx2.7km.toml",
+ "bind": null,
+ "nx": 960,
+ "ny": 864,
+ "nz": 49,
+ "dx_m": 2700.0,
+ "dt_s": 12.0,
+ "decision": "[tiles] ON (host store): [tiles] mode = 'on'; tile 320x432, nbuffers=2, halo=16",
+ "steps": 15,
+ "warmup": 2,
+ "control": true,
+ "overlap": "off",
+ "deferred_seam": false,
+ "window": {
+  "window_s": 237.5560334430047,
+  "steps": 15,
+  "per_step_ms": 15837.068896200313,
+  "overlap": "off",
+  "deferred_seam": false,
+  "rep": 1
+ },
+ "windows": [
+  {
+   "window_s": 237.5560334430047,
+   "steps": 15,
+   "per_step_ms": 15837.068896200313,
+   "overlap": "off",
+   "deferred_seam": false,
+   "rep": 1
+  },
+  {
+   "window_s": 235.82119554300152,
+   "steps": 15,
+   "per_step_ms": 15721.413036200101,
+   "overlap": "off",
+   "deferred_seam": false,
+   "rep": 2
+  },
+  {
+   "window_s": 235.29188325599534,
+   "steps": 15,
+   "per_step_ms": 15686.125550399689,
+   "overlap": "off",
+   "deferred_seam": false,
+   "rep": 3
+  }
+ ],
+ "rows": [
+  {
+   "wall_ms": 11272.584699996514
+  },
+  {
+   "wall_ms": 11212.643224993371
+  },
+  {
+   "wall_ms": 11622.974098005216
+  },
+  {
+   "wall_ms": 11266.51609200053
+  },
+  {
+   "wall_ms": 11749.014398999861
+  },
+  {
+   "wall_ms": 11625.902637999388
+  },
+  {
+   "wall_ms": 12055.043397995178
+  },
+  {
+   "wall_ms": 11486.444403999485
+  },
+  {
+   "wall_ms": 11850.459671011777
+  },
+  {
+   "wall_ms": 11857.315991001087
+  },
+  {
+   "wall_ms": 11871.19707900274
+  },
+  {
+   "wall_ms": 11892.825050003012
+  },
+  {
+   "wall_ms": 11709.360266992007
+  },
+  {
+   "wall_ms": 74234.12149499927
+  },
+  {
+   "wall_ms": 11849.121784995077
+  }
+ ]
+}

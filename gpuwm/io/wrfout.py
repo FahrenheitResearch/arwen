@@ -1346,6 +1346,13 @@ class _AsyncFrame:
     #: the valid time as a value rather than re-parsing ``time_str``
     #: (or the filename) on the writer thread.
     valid_time: object = None
+    #: Per-frame global-attribute override.  Carried on the ticket so a
+    #: submit-time snapshot (carrier provenance, which can change at a
+    #: resume or a mid-run forcing) lands on exactly the file whose frame
+    #: it describes -- without draining the async queue the way a
+    #: whole-writer ``update_global_attrs`` swap must.  ``None`` means
+    #: "use the writer's standing set".
+    global_attrs: object = None
 
 
 class _AsyncTicketQueue(queue.Queue):
@@ -1475,14 +1482,64 @@ class AsyncDomainWrfoutWriter:
                     self._condition.notify_all()
 
     def submit(self, path, valid_time, state, *, extra_fields=None,
-               refl_field=None) -> None:
-        """Queue a nonblocking, stream-ordered snapshot of one domain."""
+               refl_field=None, frame=None, global_attrs=None) -> None:
+        """Queue a nonblocking, stream-ordered snapshot of one domain.
+
+        ``frame`` is a COMPLETE host frame, already assembled, and it is the
+        seam an out-of-core domain publishes through.  A streamed domain has
+        no resident ``DomainState`` to read: ``gpuwm.core.streaming.attach``
+        copies the carriers into a pinned host store and the sweep writes
+        the STORE, so ``state`` still exists, still has the right shapes,
+        and still holds the values it held at t = 0 forever.  Passing it
+        here is the shipped defect this parameter closes -- a full run's
+        worth of frames that are correct in inventory, in Times and in
+        global attributes, and frozen at the initial condition
+        (``tilestream.test_history.negative_frame_from_state`` measures how
+        much of a frame that freezes and requires it to differ).
+
+        With ``frame`` given, ``state`` is not read at all -- pass ``None``
+        -- and there is no D2H: the fields are already host arrays, so the
+        side-stream staging this class exists for becomes a no-op and the
+        writer thread is fed directly.  ``tilestream.output.StoreFrame``
+        builds exactly such a frame off the pinned store, in the device
+        frame's own field order (which is load-bearing: HDF5 lays its name
+        heap out in variable-creation order, and the same numbers in a
+        different order give a file that hashes differently while every
+        variable in it compares equal).
+
+        THE FRAME'S ARRAYS ARE BORROWED, NOT COPIED, and that is the caller's
+        problem to get right, exactly as it is for ``state``.  With
+        ``StoreFrame(overlap=False)`` the carriers are zero-copy views of the
+        pinned store -- which is what makes an out-of-core frame 2.2x-2.4x
+        cheaper than the resident path -- so the caller must ``drain()``
+        before it sweeps again, or use ``overlap=True`` and pay one host
+        memcpy for a snapshot the writer thread may hold.  Submitting views
+        and sweeping on writes a frame the scatter is mutating underneath;
+        it is a property, not a race, and
+        ``tilestream.test_history.negative_async_no_drain`` asserts it.
+
+        ``global_attrs`` is a per-frame global-attribute override (carrier
+        provenance above all); it rides the ticket so the snapshot taken at
+        submit time lands on exactly the file that carries this frame.
+        """
         import cupy as cp
 
         if self._closed:
             raise RuntimeError("cannot submit to a closed wrfout writer")
         self._raise_failure()
         producer = cp.cuda.get_current_stream()
+        if frame is not None:
+            if state is not None:
+                raise ValueError(
+                    "submit() was given both a prepared host frame and a "
+                    "device state; they are two different domains' worth of "
+                    "numbers and there is no rule for which wins.  A "
+                    "streamed domain passes state=None.")
+            self._admit_host_frame(path, valid_time, frame,
+                                   extra_fields=extra_fields,
+                                   refl_field=refl_field, producer=producer,
+                                   global_attrs=global_attrs)
+            return
         device_fields = _device_state_frame(
             state, include_diagnostic_pressure=True)
         if refl_field is not None:
@@ -1529,8 +1586,85 @@ class AsyncDomainWrfoutWriter:
             fields=host_fields, event=done,
             device_refs=tuple(device_refs),
             pinned_refs=tuple(pinned_refs),
-            valid_time=valid_time)
+            valid_time=valid_time,
+            global_attrs=(None if global_attrs is None
+                          else dict(global_attrs)))
         self._admit(ticket)
+
+    def _admit_host_frame(self, path, valid_time, frame, *, extra_fields,
+                          refl_field, producer, global_attrs=None) -> None:
+        """Publish a frame that is already on the host.
+
+        The whole of ``submit``'s device machinery collapses here and it is
+        worth saying which parts and why, because each one was doing a job
+        for the resident path that an out-of-core frame has already done:
+
+        * no ``_device_state_frame`` -- the caller assembled the frame;
+        * no pinned staging and no ``array.get`` -- the arrays are host
+          arrays, and staging them THROUGH the device would be the pure
+          bounce the resident path already refuses for its own host-side
+          fields (measured ~1.8 GiB of cached device staging);
+        * no ``device_refs`` to release and no ``pinned_refs`` to hold --
+          the writer thread reads the caller's arrays directly.
+
+        The event is still recorded on the producing stream and still
+        waited on by the worker.  It fences nothing of this frame's, but a
+        streamed run's REFL_10CM is the exception that makes it necessary
+        rather than ceremonial: ``refl_field`` may be a live device array
+        (a resident domain's) or a host one (a streamed domain's scattered
+        store slot), and the device case needs the same ordering guarantee
+        every other device field gets.
+        """
+        import cupy as cp
+
+        host_fields: dict[str, np.ndarray] = {}
+        device_refs: list[object] = []
+        pinned_refs: list[object] = []
+        ready = cp.cuda.Event()
+        ready.record(producer)
+        self.stream.wait_event(ready)
+        with self.stream:
+            for name, value in dict(frame).items():
+                host_fields[name] = self._host_or_staged(
+                    value, device_refs, pinned_refs)
+            if refl_field is not None:
+                host_fields["REFL_10CM"] = self._host_or_staged(
+                    refl_field, device_refs, pinned_refs)
+            for name, value in (extra_fields or {}).items():
+                if name not in host_fields:
+                    host_fields[name] = np.ascontiguousarray(value)
+            done = cp.cuda.Event()
+            done.record(self.stream)
+        producer.wait_event(done)
+        self._admit(_AsyncFrame(
+            path=Path(path),
+            time_str=valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
+            fields=host_fields, event=done,
+            device_refs=tuple(device_refs),
+            pinned_refs=tuple(pinned_refs),
+            valid_time=valid_time,
+            global_attrs=(None if global_attrs is None
+                          else dict(global_attrs))))
+
+    def _host_or_staged(self, value, device_refs, pinned_refs) -> np.ndarray:
+        """A host array for one field, staging it off the device if needed."""
+        import cupy as cp
+
+        if isinstance(value, np.ndarray):
+            # Borrowed, NOT copied -- see submit's docstring.  Copying here
+            # would silently make every out-of-core frame cost a full extra
+            # host pass and would disarm the drain discipline by making the
+            # unsafe call safe, which is the wrong direction for a defect
+            # that is otherwise invisible.
+            return value
+        array = cp.ascontiguousarray(value)
+        memory = cp.cuda.alloc_pinned_memory(int(array.nbytes))
+        host = np.frombuffer(memory, dtype=array.dtype,
+                             count=array.size).reshape(array.shape)
+        array.get(out=host, stream=self.stream, blocking=False)
+        device_refs.append(array)
+        pinned_refs.append(memory)
+        return host
 
     def _worker(self) -> None:
         while True:
@@ -1552,7 +1686,10 @@ class AsyncDomainWrfoutWriter:
                         with WrfoutWriter(
                                 ticket.path, nx=self.nx, ny=self.ny, nz=self.nz,
                                 dx=self.dx, dy=self.dy, title=self.title,
-                                global_attrs=self.global_attrs,
+                                global_attrs=(
+                                    ticket.global_attrs
+                                    if ticket.global_attrs is not None
+                                    else self.global_attrs),
                                 soil_layers=self.soil_layers,
                                 field_schema=ticket.fields) as writer:
                             writer.write_frame(ticket.time_str, ticket.fields)
@@ -1649,6 +1786,37 @@ class AsyncDomainWrfoutWriter:
         if saved is not None:
             raise saved
         self._raise_failure()
+
+
+def carrier_provenance_attrs(physics) -> dict:
+    """wrfout globals for the surface-radiation carrier contract.
+
+    The contract (gpuwm/core/radiation_carriers.py) promises that a run's
+    carrier provenance -- who wrote GLW/SWDOWN/GSW/COSZEN and when --
+    appears in the output metadata, so a reader of a wrfout can ask "did
+    this file integrate a sky nobody computed" without the run directory.
+    Built from :meth:`CarrierContract.report` at submit time, so the
+    stamped provenance is the provenance of the frames in that file, not
+    of the driver at construction.
+
+    Returns ``{}`` for a state with no driver or no contract (an
+    initial-condition write, a pre-physics smoke): absent keys read as
+    "no land-surface consumer existed", which is true for those files.
+    ``..._LAST_UPDATE`` is the producer's model second, ``-1.0`` for a
+    source that is constant by declaration and has no age.
+    """
+    carriers = getattr(physics, "carriers", None)
+    if carriers is None:
+        return {}
+    attrs = {"GPUWM_SURFACE_RADIATION_POLICY": str(carriers.policy)}
+    rows = carriers.report()
+    for name, row in rows.items():
+        key = str(name).upper()
+        attrs[f"GPUWM_CARRIER_{key}_SOURCE"] = str(row["source"])
+        last = row["last_update_model_time"]
+        attrs[f"GPUWM_CARRIER_{key}_LAST_UPDATE"] = np.float64(
+            -1.0 if last is None else last)
+    return attrs
 
 
 class PerDomainWrfoutWriters:
@@ -1818,14 +1986,60 @@ class PerDomainWrfoutWriters:
             source=self._source))
 
     def submit(self, node, ticks: int, *, refl_field=None) -> None:
+        """One domain's history frame, from wherever that domain's truth is.
+
+        For a resident domain that is ``node.state``, as it always was.  For
+        a STREAMED one it is not: ``gpuwm.core.streaming.attach`` copies the
+        carriers into a pinned host store and the sweep advances the STORE,
+        leaving ``node.state`` holding the initial condition for the rest of
+        the run.  Submitting it produced a full run of frames with the
+        correct inventory, the correct Times and the correct global
+        attributes, every value frozen at t = 0 -- which is not a crash, not
+        a warning, and not obviously wrong in ncview
+        (``tilestream.test_history.negative_frame_from_state`` measures how
+        much of a frame that freezes and requires it to differ).  So the
+        source is asked of the domain rather than assumed, through the
+        marker ``streaming.StreamedDomain`` leaves on the state it took
+        over.
+        """
         seconds = ticks / node.clock.tick_den
         valid_time = self.start_time + timedelta(seconds=seconds)
         path = self.output_dir / wrfout_filename(
             valid_time, node.cfg.grid_id)
-        self._writers[node.cfg.grid_id].submit(
+        writer = self._writers[node.cfg.grid_id]
+        # CARRIER PROVENANCE, snapshotted per frame.  Each valid time is
+        # its own file, and the snapshot rides the ticket rather than the
+        # writer's standing attribute set, so the provenance the driver
+        # holds NOW lands on exactly the file that carries this frame --
+        # a resumed or mid-run-forced carrier is labelled in the file it
+        # affects -- without draining the async queue the way an
+        # update_global_attrs swap must.
+        carrier_attrs = carrier_provenance_attrs(
+            getattr(node.state, "physics", None))
+        frame_attrs = (None if not carrier_attrs
+                       else {**writer.global_attrs, **carrier_attrs})
+        streamed = getattr(node.state, "_streamed_domain", None)
+        if streamed is not None:
+            # A streamed domain's numbers live in the pinned host store;
+            # the provenance snapshot applies to its frames the same way.
+            writer.submit(
+                path, valid_time, None, frame=streamed.history_fields(),
+                extra_fields=self._metadata_by_grid_id[node.cfg.grid_id],
+                refl_field=refl_field,
+                global_attrs=frame_attrs)
+            # The frame's carriers are views of the pinned store and the
+            # next sweep scatters into them, so this write is on the
+            # critical path by construction.  It is affordable: MEASURED at
+            # forecast cadence the whole frame is 0.077% of wall time at
+            # hourly output and 0.31% at every 60 steps, against a solver
+            # step of ~19 ns/cell with physics.
+            writer.drain()
+            return
+        writer.submit(
             path, valid_time, node.state,
             extra_fields=self._metadata_by_grid_id[node.cfg.grid_id],
-            refl_field=refl_field)
+            refl_field=refl_field,
+            global_attrs=frame_attrs)
 
     def drain(self) -> None:
         for gid in sorted(self._writers):

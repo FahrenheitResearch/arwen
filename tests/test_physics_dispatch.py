@@ -142,6 +142,7 @@ def _cpu_driver(monkeypatch, *, sf_sfclay_physics, sf_surface_physics,
     driver.surface_enabled = True
     driver.stepbl = 1
     driver.radt_minutes = 12.0
+    driver.radt_seconds = 720.0
     driver.cudt_minutes = 5.0
     driver.call_counts = {
         "radiation": 0, "sfclay": 0, "noah": 0, "ysu": 0,
@@ -149,6 +150,22 @@ def _cpu_driver(monkeypatch, *, sf_sfclay_physics, sf_surface_physics,
     }
     driver.tendencies = object()
     driver._compose_tendencies = lambda cfg_arg: None
+    # THE CARRIER CONTRACT is a slot compute() reads before it dispatches
+    # to a land-surface runner, so a hand-built driver declares one like
+    # every other slot above.  Seeded as a run with live radiation is
+    # seeded -- every carrier this scheme reads, produced now -- because
+    # this file is about WHICH RUNNER a selector reaches and not about
+    # whether the sky is real.  The refusal itself, on a driver assembled
+    # WITHOUT a contract, is pinned in
+    # tests/test_surface_radiation_carrier_contract.py; if it were pinned
+    # here instead, every dispatch assertion below would stop running.
+    from gpuwm.core import radiation_carriers
+    driver.carriers = radiation_carriers.CarrierContract()
+    for carrier in radiation_carriers.consumer_carriers(sf_surface_physics):
+        driver.carriers.declare(
+            carrier,
+            source=radiation_carriers.CARRIER_SOURCE_RADIATION_SCHEME,
+            model_time=0.0)
     return physics, state, cfg, driver
 
 

@@ -1,0 +1,35 @@
+
+=== PAIR: streamed overlap off vs on, 15 steps ===
+    VRAM 15.21/15.47 GiB free | host 43.9/46.8 GiB
+    statics built in 15.3 s
+    14 row slabs of <= 64 rows (+1 halo row)
+    forcing 1985-05-31 18:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+    forcing 1985-06-01 00:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+    forcing 1985-06-01 06:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+    forcing 1985-06-01 12:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+    forcing 1985-06-01 18:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+    forcing 1985-05-31 12:00:00: 14 slabs, perimeter kept; pool 8.70 GiB
+soil moisture floor: 2265 sub-air-dry land value(s) floored to the soil type's SMCDRY across ['SMOIS_L1', 'SMOIS_L2', 'SMOIS_L3', 'SMOIS_L4'] (min pre-floor 0.015464); WRF real.exe resets such columns to 0.005 (module_initialize_real.F:3376)
+    prepared 960x864x49 from 6 forcing times in 140.2 s
+    ingest device high-water 12.24 GiB (15851 B per mass cell)
+    settling step SKIPPED (settle=False): this domain is past the resident ceiling, and run_tiled's inventory match is the guard that a lazy carrier cannot slip through
+    store 139 carriers, 7.00 GiB pinned (184.9 B/cell); geography 15 arrays, 0.64 GiB
+    before release: pool live 12.24 GiB, pool held 12.24 GiB, device free 2.77/15.47 GiB
+    after release : pool live 0.00 GiB, pool held 0.00 GiB, device free 15.18/15.47 GiB
+    halo 20;  16 tiles of 296x296, nbuffers 2
+    windowed lateral boundaries: 16 tiles x 5 intervals x 6 fields = 1.74 GiB host
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/workspace/wt-tip/tilestream/run_realcase.py", line 712, in <module>
+    main()
+  File "/workspace/wt-tip/tilestream/run_realcase.py", line 706, in main
+    {"gate": stage_gate, "ceiling": stage_ceiling,
+  File "/workspace/wt-tip/tilestream/run_realcase.py", line 491, in stage_pair
+    driver.run_tiled(case.store, cfg, args.tile, args.tile,
+  File "/workspace/wt-tip/tilestream/driver.py", line 2559, in run_tiled
+    run = TiledRun(
+          ^^^^^^^^^
+  File "/workspace/wt-tip/tilestream/driver.py", line 1391, in __init__
+    raise TiledRunError("store holds none of the persisted attributes")
+tilestream.driver.TiledRunError: store holds none of the persisted attributes

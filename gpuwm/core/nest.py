@@ -5,6 +5,53 @@ read-only, and refreshes child-owned rolling boundary value/tendency tables.
 It consumes Task 10's landed full-extent ``bdy_interp1`` unchanged.  F16's
 retired perimeter donor strips are replaced by one full-parent coupled field
 borrowed from the shared, lifetime-audited arena for each field in turn.
+
+WHEN A COUPLED DOMAIN IS STREAMED, ``node.state`` IS NOT THE DOMAIN
+------------------------------------------------------------------
+``gpuwm.core.streaming.attach`` copies a prepared domain's carriers into a
+store and every sweep after that updates THE STORE.  The ``DomainState``
+object stays in the tree and its device arrays stop moving.  Every read in
+this module is off ``node.state`` / ``parent.state``, so a coupler that did
+not know about the store would:
+
+* force the child from the parent's air AT ATTACH TIME, for the whole
+  forecast, with no NaN and no warning -- a nest that looks like it is
+  running and is being driven by t=0;
+* under ``feedback=1``, write the parent's prognostics into arrays the next
+  sweep re-reads from the store, so two-way feedback is silently discarded.
+
+Both are repaired by asking :func:`gpuwm.core.streaming.domain_store`
+whether a state is a window onto something else -- ``None`` for every
+resident domain, which is every domain in a run that configures no
+``[tiles]`` -- and moving exactly the fields the transaction reads or
+writes.
+
+MEASURED, ``tilestream/test_nest.py``: d01 192x192x49 dx 9 km STREAMED from
+a pinned host store at tile 64 (3x3, exact) with halo 16 from
+``harness.halo_radius``, d02 96x96x49 nested 3:1 and resident,
+full(real74)+KF, 6 parent steps and 18 child steps.  With the store
+consulted, both domains are bit-identical to the all-resident control --
+0 of 155 carriers differ on each -- at ``feedback=0`` and at ``feedback=1``.
+With it not consulted, which is the code path before this paragraph existed,
+d01 is still bit-exact (streaming itself was never the problem) and d02
+differs in 89 of 155 carriers with a worst absolute difference of 1.04e+08.
+The two feedback controls fire too: ``feedback=1`` differs from
+``feedback=0`` on the resident control, and disarming ONLY the write-back
+leaves the parent's store without the child's mass.
+
+WHAT THIS DOES NOT FIX, AND WHY IT IS SAID HERE
+-----------------------------------------------
+The refresh writes the domain's OWN resident device arrays, which exist only
+because today's streaming route attaches from a prepared resident state and
+nothing frees it.  It is a correctness repair, not a capacity one: the
+``nest_parent_field`` arena slot is still O(one full parent field), and the
+traffic is still O(the fields the transaction touches) per parent step.
+``bdy_interp1`` only ever READS the parent inside the child's footprint plus
+the +-2 SINT stencil -- a 256-wide 3:1 child covers 86 parent columns, so 90
+with the stencil, 3.1% of a 512^2 parent by area and a 32x smaller slot --
+so a windowed ``bdy_interp1`` would turn both the slot and the traffic into
+O(child footprint).  That is the fix this one stands in for and it is not
+implemented.
 """
 
 from __future__ import annotations
@@ -38,6 +85,42 @@ _GEOMETRY_NAMES = ("ci", "ip", "cj", "jp", "xig", "xjg")
 MISMATCHED_MICROPHYSICS_FEEDBACK_BLOCKER = (
     "cross-scheme-feedback-reverse-mapping-unimplemented-v1"
 )
+
+
+def _state_attr(kind: str) -> str:
+    """The ``DomainState`` attribute one nest field kind lives on."""
+    return {"t": "thp", "ph": "php", "mu": "mup"}.get(kind, kind)
+
+
+#: What ``gpuwm.core.diagnostics.update_diagnostics`` reads that is not setup
+#: geometry.  ``feedback_finalize`` re-runs it over the WHOLE parent, so a
+#: streamed parent needs these four correct everywhere -- not just inside the
+#: feedback rectangle -- before the call.
+_DIAGNOSTIC_INPUTS = ("mup", "thp", "php", "qv")
+
+#: What that call WRITES.  A streamed parent has to carry them back or its
+#: store keeps the pre-feedback diagnostics.
+_DIAGNOSTIC_OUTPUTS = ("p", "al", "alt")
+
+
+def _sync_in(state, attrs) -> int:
+    """Pull ``attrs`` from a streamed domain's store; no-op when resident."""
+    from gpuwm.core.streaming import refresh_from_store
+
+    return refresh_from_store(state, attrs)
+
+
+def _sync_out(state, attrs) -> int:
+    """Push ``attrs`` into a streamed domain's store; no-op when resident."""
+    from gpuwm.core.streaming import commit_to_store
+
+    return commit_to_store(state, attrs)
+
+
+def _is_streamed(state) -> bool:
+    from gpuwm.core.streaming import domain_store
+
+    return domain_store(state) is not None
 
 
 def _field_shape(state, kind: str) -> tuple[int, int, int]:
@@ -225,11 +308,31 @@ class NestCoupler:
         self._geometry_bound = True
 
     def _coupled_parent_field(self, kind: str):
-        """Overwrite and return F16's one full-parent arena prefix."""
+        """Overwrite and return F16's one full-parent arena prefix.
+
+        ``couple_nest_field`` reads exactly two things that MOVE: the field
+        itself and ``mup`` (the coupling mass, read at neighbouring points
+        for the u/v face averages).  Everything else it touches -- ``mub2d``,
+        the hybrid coefficients, the map factors, ``thb`` -- is geography and
+        base state, which streaming treats as INPUT and never scatters, so a
+        streamed parent's copies of those are still correct.  So the pull
+        below is two fields, not a state.
+        """
         parent_state = self.child_node.parent.state
         if transition_handles_field(self.microphysics_transition, kind):
+            if _is_streamed(parent_state):
+                raise RuntimeError(
+                    "a cross-scheme microphysics nest edge "
+                    f"({self.microphysics_transition.policy_id!r}) off a "
+                    "STREAMED parent is unimplemented: "
+                    "launch_microphysics_edge_parent_field reads parent "
+                    "species this coupler cannot enumerate, so it would "
+                    "silently map the parent's air at attach time.  Refused "
+                    "rather than run, because the wrong answer here is "
+                    "finite and plausible.")
             shape = transition_parent_field_shape(parent_state, kind)
         else:
+            _sync_in(parent_state, ("mup", _state_attr(kind)))
             shape = _field_shape(parent_state, kind)
         backing = self._scratch("nest_parent_field")
         count = math.prod(shape)
@@ -307,6 +410,7 @@ class NestCoupler:
         is larger than W.
         """
         state = self.child_node.state
+        _sync_in(state, ("mup", _state_attr(kind)))
         shape = _field_shape(state, kind)
         backing = self._scratch("nest_child_field")
         count = math.prod(shape)
@@ -346,6 +450,19 @@ class NestCoupler:
             raise RuntimeError(
                 f"parent must lead child by one parent interval before FORCE; "
                 f"lead={lead}, interval={parent_interval_ticks}")
+
+        if _is_streamed(node.state):
+            raise RuntimeError(
+                "a STREAMED child cannot be forced: the rolling nest tables "
+                "attach to the child's DomainState "
+                "(lateral_bc.attach_nest_boundaries installs a device "
+                "descriptor on it), while a streamed domain is stepped as "
+                "tile buffers whose only boundary hook is "
+                "streaming.make_tile_hook -> attach_lateral_boundaries.  "
+                "There is no per-tile windowing of nest boundary tables at "
+                "all, so a streamed child is not untested, it is "
+                "unimplemented.  Stream the PARENT instead, or run the "
+                "child resident.")
 
         self._bind_geometry()
         fields = {}
@@ -434,6 +551,24 @@ class NestCoupler:
         run = node.cfg.run
         self._bind_geometry()
 
+        # A STREAMED parent is mutated here from outside dycore.step, so the
+        # transaction has to start from the store and end in it.  Pulled in:
+        # every field the restriction READS on the parent side -- ``mup``,
+        # because the momentum/scalar inverses divide by the parent's own
+        # (just-restricted) column mass and the u/v face averages straddle
+        # the feedback rectangle's edge, plus the four inputs
+        # ``feedback_finalize``'s whole-parent update_diagnostics consumes.
+        # Pushed back out below: everything written.  This is O(the fields
+        # the transaction touches) per parent step, which is the honest cost
+        # of a whole-domain finalize; see the module docstring.
+        streamed_parent = _is_streamed(parent.state)
+        written = ["mup"]
+        if streamed_parent:
+            _sync_in(parent.state,
+                     tuple(dict.fromkeys(
+                         _DIAGNOSTIC_INPUTS
+                         + tuple(_state_attr(k) for k in payload["kinds"]))))
+
         # WRF couples/restricts MU before uncoupling momenta and scalars.
         # MU itself is already in feedback units, so it can be written
         # directly into the exact parent overlap.
@@ -459,6 +594,9 @@ class NestCoupler:
             uncouple_feedback_field(
                 parent.state, kind, restricted, reg,
                 spec_zone=run.spec_zone)
+            written.append(_state_attr(kind))
+        if streamed_parent:
+            _sync_out(parent.state, tuple(dict.fromkeys(written)))
         self.feedback_count += 1
         self.last_feedback_ticks = int(node.clock.ticks)
 
@@ -472,7 +610,14 @@ class NestCoupler:
         from gpuwm.core.diagnostics import update_diagnostics
 
         parent = node.parent
+        # WHOLE-PARENT, and that is the point of the call: WRF re-runs
+        # start_domain on the parent after med_nest_feedback
+        # (share/mediation_integrate.F:787-838).  ``feedback_commit`` has
+        # already made the four inputs correct everywhere on a streamed
+        # parent, so this reads the domain rather than the attach-time
+        # snapshot; the three outputs go back to the store.
         update_diagnostics(parent.state, parent.cfg.run.hypsometric_opt)
+        _sync_out(parent.state, _DIAGNOSTIC_OUTPUTS)
         self._prepared_feedback = None
 
 

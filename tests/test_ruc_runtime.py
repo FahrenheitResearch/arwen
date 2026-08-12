@@ -185,6 +185,16 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
         glw=220.0 if frozen else 340.0, pblh=500.0,
         xice=xice, snow=snow_mm, snow_depth=snow_depth_m,
         radiation=radiation)
+    from gpuwm.config import radiation_scheme_ids
+    if radiation_scheme_ids(cfg)[1] == 0:
+        # Radiation off: RUC consumes GSW -- the NET shortwave, not the
+        # SWDOWN declared above -- and nothing produces it, so the carrier
+        # contract would refuse the first surface step.  The forcing door
+        # is how an offline-forced RUC run supplies it, and it labels the
+        # provenance (external_array).  Writing the allocation's own zeros
+        # moves no number these forecasts ever integrated; it names the
+        # number's origin, which is the whole of the contract's demand.
+        driver.set_forcing(gsw=0.0)
     return state, cfg, driver
 
 

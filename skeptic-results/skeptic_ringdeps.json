@@ -1,0 +1,253 @@
+[
+ {
+  "nx": 2048,
+  "ny": 2048,
+  "tile": 512,
+  "ntiles": 16,
+  "nworkers": 2,
+  "mode": "block",
+  "tiles_with_cross_worker_deps": 8,
+  "first_tile_of_worker1": 8,
+  "its_cross_deps": [
+   4,
+   5,
+   7
+  ],
+  "last_tile_of_worker0": 7,
+  "depends_on_worker0_last": true,
+  "makespan_units": 16,
+  "serial_units": 16,
+  "shadow_ideal_units": 8,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 2048,
+  "ny": 2048,
+  "tile": 512,
+  "ntiles": 16,
+  "nworkers": 2,
+  "mode": "stripe",
+  "tiles_with_cross_worker_deps": 15,
+  "first_tile_of_worker1": 1,
+  "its_cross_deps": [
+   0
+  ],
+  "last_tile_of_worker0": 14,
+  "depends_on_worker0_last": false,
+  "makespan_units": 16,
+  "serial_units": 16,
+  "shadow_ideal_units": 8,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 2048,
+  "ny": 2048,
+  "tile": 256,
+  "ntiles": 64,
+  "nworkers": 2,
+  "mode": "block",
+  "tiles_with_cross_worker_deps": 16,
+  "first_tile_of_worker1": 32,
+  "its_cross_deps": [
+   24,
+   25,
+   31
+  ],
+  "last_tile_of_worker0": 31,
+  "depends_on_worker0_last": true,
+  "makespan_units": 64,
+  "serial_units": 64,
+  "shadow_ideal_units": 32,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 2048,
+  "ny": 2048,
+  "tile": 256,
+  "ntiles": 64,
+  "nworkers": 2,
+  "mode": "stripe",
+  "tiles_with_cross_worker_deps": 63,
+  "first_tile_of_worker1": 1,
+  "its_cross_deps": [
+   0
+  ],
+  "last_tile_of_worker0": 62,
+  "depends_on_worker0_last": false,
+  "makespan_units": 64,
+  "serial_units": 64,
+  "shadow_ideal_units": 32,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 1536,
+  "ny": 1536,
+  "tile": 384,
+  "ntiles": 16,
+  "nworkers": 2,
+  "mode": "block",
+  "tiles_with_cross_worker_deps": 8,
+  "first_tile_of_worker1": 8,
+  "its_cross_deps": [
+   4,
+   5,
+   7
+  ],
+  "last_tile_of_worker0": 7,
+  "depends_on_worker0_last": true,
+  "makespan_units": 16,
+  "serial_units": 16,
+  "shadow_ideal_units": 8,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 1536,
+  "ny": 1536,
+  "tile": 384,
+  "ntiles": 16,
+  "nworkers": 2,
+  "mode": "stripe",
+  "tiles_with_cross_worker_deps": 15,
+  "first_tile_of_worker1": 1,
+  "its_cross_deps": [
+   0
+  ],
+  "last_tile_of_worker0": 14,
+  "depends_on_worker0_last": false,
+  "makespan_units": 16,
+  "serial_units": 16,
+  "shadow_ideal_units": 8,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 1440,
+  "ny": 1440,
+  "tile": 240,
+  "ntiles": 36,
+  "nworkers": 2,
+  "mode": "block",
+  "tiles_with_cross_worker_deps": 12,
+  "first_tile_of_worker1": 18,
+  "its_cross_deps": [
+   12,
+   13,
+   17
+  ],
+  "last_tile_of_worker0": 17,
+  "depends_on_worker0_last": true,
+  "makespan_units": 36,
+  "serial_units": 36,
+  "shadow_ideal_units": 18,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 1440,
+  "ny": 1440,
+  "tile": 240,
+  "ntiles": 36,
+  "nworkers": 2,
+  "mode": "stripe",
+  "tiles_with_cross_worker_deps": 35,
+  "first_tile_of_worker1": 1,
+  "its_cross_deps": [
+   0
+  ],
+  "last_tile_of_worker0": 34,
+  "depends_on_worker0_last": false,
+  "makespan_units": 36,
+  "serial_units": 36,
+  "shadow_ideal_units": 18,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 672,
+  "ny": 672,
+  "tile": 336,
+  "ntiles": 4,
+  "nworkers": 2,
+  "mode": "block",
+  "tiles_with_cross_worker_deps": 2,
+  "first_tile_of_worker1": 2,
+  "its_cross_deps": [
+   0,
+   1
+  ],
+  "last_tile_of_worker0": 1,
+  "depends_on_worker0_last": true,
+  "makespan_units": 4,
+  "serial_units": 4,
+  "shadow_ideal_units": 2,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 672,
+  "ny": 672,
+  "tile": 336,
+  "ntiles": 4,
+  "nworkers": 2,
+  "mode": "stripe",
+  "tiles_with_cross_worker_deps": 3,
+  "first_tile_of_worker1": 1,
+  "its_cross_deps": [
+   0
+  ],
+  "last_tile_of_worker0": 2,
+  "depends_on_worker0_last": false,
+  "makespan_units": 4,
+  "serial_units": 4,
+  "shadow_ideal_units": 2,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 2048,
+  "ny": 2048,
+  "tile": 128,
+  "ntiles": 256,
+  "nworkers": 2,
+  "mode": "block",
+  "tiles_with_cross_worker_deps": 32,
+  "first_tile_of_worker1": 128,
+  "its_cross_deps": [
+   112,
+   113,
+   127
+  ],
+  "last_tile_of_worker0": 127,
+  "depends_on_worker0_last": true,
+  "makespan_units": 256,
+  "serial_units": 256,
+  "shadow_ideal_units": 128,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ },
+ {
+  "nx": 2048,
+  "ny": 2048,
+  "tile": 128,
+  "ntiles": 256,
+  "nworkers": 2,
+  "mode": "stripe",
+  "tiles_with_cross_worker_deps": 255,
+  "first_tile_of_worker1": 1,
+  "its_cross_deps": [
+   0
+  ],
+  "last_tile_of_worker0": 254,
+  "depends_on_worker0_last": false,
+  "makespan_units": 256,
+  "serial_units": 256,
+  "shadow_ideal_units": 128,
+  "ring_speedup_vs_serial": 1.0,
+  "shadow_speedup_vs_serial": 2.0
+ }
+]

@@ -529,6 +529,7 @@ What it does detect, what it does not, and the pin set that defines
 - [Hardware and VRAM sizing](docs/public/HARDWARE.md)
 - [Offline downscaling](docs/public/DOWNSCALE.md)
 - [Chunked forecast streaming](docs/public/STREAMING.md)
+- [Tiling a domain that does not fit on the card](docs/public/TILES.md)
 - [Driving stock WRF](docs/public/WRF-INTEROP.md)
 - [Install and verify](docs/install.md)
 - [Radar-DA nowcast quickstart (demo-grade, unscored)](docs/da-nowcast-quickstart.md)

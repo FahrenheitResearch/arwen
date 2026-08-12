@@ -2886,10 +2886,27 @@ class CudaSW:
         # CuPy appends -ftz=true to NVRTC options; that reaches even
         # mul.rn.f32 from __fmul_rn and flushes the subnormal
         # transmittance products (1e-20 * 1e-20 = 1e-40) the Fortran
-        # keeps.  An explicit --ftz=false takes precedence.
-        self.module = cp.RawModule(code=code,
-                                   options=("-std=c++17", "--ftz=false"))
-        self.module.compile()
+        # keeps.  An explicit --ftz=false USED to take precedence, because
+        # NVRTC honoured the last occurrence of a repeated option.  It no
+        # longer does: NVRTC 13.0 REJECTS the duplicate outright --
+        # ``nvrtc: error: --ftz (-ftz) defined more than once`` -- so
+        # cupy.RawModule cannot express this compile at all on CUDA 13,
+        # and the whole legacy-RRTMG lane failed closed at construction
+        # (MEASURED on cupy 14.1.1 / CUDA 13.0.2 / sm_120: RawModule with
+        # --ftz=false raises, RawModule without it compiles with
+        # subnormals flushed, which is the wrong answer quietly).
+        # compile_using_nvrtc + cuda.function.Module is the bypass
+        # rrtmg_lw.py Section 10 and rrtmg_mcica.py already use: CuPy does
+        # not inject -ftz on that path, so --ftz=false survives.  Do NOT
+        # pass ``-arch`` here -- cupy appends its own
+        # (cuda/compiler.py:_compile), and NVRTC 13 rejects that duplicate
+        # too; the arch cupy derives is ``_get_arch()``, the same value an
+        # explicit option would have carried.
+        from cupy.cuda import compiler as _cc
+        ptx, _mapping = _cc.compile_using_nvrtc(
+            code, ("-std=c++17", "--ftz=false"), None, "rrtmg_sw.cu")
+        self.module = cp.cuda.function.Module()
+        self.module.load(ptx.encode() if isinstance(ptx, str) else ptx)
         from gpuwm.certify.kernel_manifest import record_module
         record_module("gpuwm.core.rrtmg_sw:rrtmg_sw", source=code,
                       options=("-std=c++17", "--ftz=false"),

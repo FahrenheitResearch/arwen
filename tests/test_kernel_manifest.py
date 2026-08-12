@@ -1,11 +1,19 @@
-"""Every RawModule site reports the translation unit it actually compiled.
+"""Every compiled site reports the translation unit it actually compiled.
 
 The manifest is only worth carrying if it cannot drift from the compiler call
 beside it.  These tests read the tree's own syntax: at each site the arguments
-handed to :func:`record_module` must be the *same expressions* handed to
-``cp.RawModule``, so recording a different source, or collapsing nine option
-tuples into one global flags string, is a syntactic difference a test can see
+handed to :func:`record_module` must be the *same expressions* handed to the
+compiler, so recording a different source, or collapsing the option tuples
+into one global flags string, is a syntactic difference a test can see
 without a device.
+
+TWO compiler routes are audited, not one.  ``cp.RawModule`` is the common
+one; ``cupy.cuda.compiler.compile_using_nvrtc`` is the bypass a site must
+take when it needs an option CuPy would otherwise duplicate -- CuPy appends
+``-ftz=true`` after the caller's options, NVRTC 13.0 rejects the repeat
+outright, and ``gpuwm/core/rrtmg_sw.py`` moved onto the bypass for exactly
+that reason.  Auditing only RawModule would have let that site keep
+recording an option tuple no compiler was handed.
 """
 
 from __future__ import annotations
@@ -39,14 +47,51 @@ SITE_FILES = (
     "gpuwm/core/rrtmg_sw.py",
 )
 
-#: Two cached loaders in ``kernels/__init__.py`` plus seven other sites.
-EXPECTED_SITE_COUNT = 9
+#: Two cached loaders in ``kernels/__init__.py`` plus six other sites.
+#: ``rrtmg_sw.py`` is NOT among them any more -- it compiles through
+#: :data:`EXPECTED_NVRTC_SITE_COUNT`'s route instead, see the module
+#: docstring -- but it stays in :data:`SITE_FILES` because it still records.
+EXPECTED_SITE_COUNT = 8
+
+#: ``compile_using_nvrtc`` sites among :data:`SITE_FILES`: rrtmg_sw only.
+#: (``rrtmg_lw.py`` and ``rrtmg_mcica.py`` take the same route but record
+#: nothing, so they are not manifest sites and are not listed above.)
+EXPECTED_NVRTC_SITE_COUNT = 1
 
 
 def _is_rawmodule(node: ast.AST) -> bool:
     return (isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "RawModule")
+
+
+def _is_nvrtc(node: ast.AST) -> bool:
+    """A direct ``compile_using_nvrtc`` call, however it was imported."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    name = (func.attr if isinstance(func, ast.Attribute)
+            else func.id if isinstance(func, ast.Name) else None)
+    return name == "compile_using_nvrtc"
+
+
+#: Per route, how to reach the SOURCE and the OPTIONS argument:
+#: ``(keyword, positional index)``.  ``compile_using_nvrtc(source, options,
+#: arch, filename)`` takes both positionally at every site in this tree.
+_COMPILE_ARGS = {
+    "rawmodule": {"source": ("code", None), "options": ("options", None)},
+    "nvrtc": {"source": ("source", 0), "options": ("options", 1)},
+}
+
+
+def _compiled_argument(call: ast.Call, route: str, which: str):
+    keyword, index = _COMPILE_ARGS[route][which]
+    found = _keyword(call, keyword)
+    if found is not None:
+        return found
+    if index is not None and len(call.args) > index:
+        return call.args[index]
+    return None
 
 
 def _is_record(node: ast.AST) -> bool:
@@ -71,15 +116,17 @@ def _functions(tree: ast.AST):
 def audit_source(path: str, text: str) -> list[str]:
     """Problems with the record/compile pairing in one module's source.
 
-    Returns an empty list when every ``cp.RawModule`` construction is
-    accompanied, in the same function, by a ``record_module`` call whose
-    ``source`` and ``options`` expressions are syntactically the arguments
-    the compiler was given.
+    Returns an empty list when every compile -- ``cp.RawModule`` or a direct
+    ``compile_using_nvrtc`` -- is accompanied, in the same function, by a
+    ``record_module`` call whose ``source`` and ``options`` expressions are
+    syntactically the arguments the compiler was given.
     """
     tree = ast.parse(text)
     problems: list[str] = []
     for function in _functions(tree):
-        compiles = [node for node in ast.walk(function) if _is_rawmodule(node)]
+        compiles = [(node, "rawmodule" if _is_rawmodule(node) else "nvrtc")
+                    for node in ast.walk(function)
+                    if _is_rawmodule(node) or _is_nvrtc(node)]
         if not compiles:
             continue
         records = [node for node in ast.walk(function) if _is_record(node)]
@@ -89,19 +136,17 @@ def audit_source(path: str, text: str) -> list[str]:
                 f"{where} compiles {len(compiles)} module(s) but records "
                 f"{len(records)}")
             continue
-        for compiled, recorded in zip(compiles, records):
-            for compile_arg, record_arg in (("code", "source"),
-                                            ("options", "options")):
-                left = _keyword(compiled, compile_arg)
-                right = _keyword(recorded, record_arg)
+        for (compiled, route), recorded in zip(compiles, records):
+            for which in ("source", "options"):
+                left = _compiled_argument(compiled, route, which)
+                right = _keyword(recorded, which)
                 if left is None or right is None:
-                    problems.append(
-                        f"{where} is missing {compile_arg}/{record_arg}")
+                    problems.append(f"{where} is missing {which}")
                     continue
                 if ast.dump(left) != ast.dump(right):
                     problems.append(
-                        f"{where} records {record_arg}={ast.unparse(right)} "
-                        f"but compiles {compile_arg}={ast.unparse(left)}")
+                        f"{where} records {which}={ast.unparse(right)} "
+                        f"but compiles {which}={ast.unparse(left)}")
     return problems
 
 
@@ -117,6 +162,23 @@ def test_every_rawmodule_site_is_accounted_for():
     assert total == EXPECTED_SITE_COUNT, (
         f"expected {EXPECTED_SITE_COUNT} RawModule sites, found {total}; the "
         "manifest covers a fixed inventory and a new site must join it")
+
+
+def test_every_direct_nvrtc_site_is_accounted_for():
+    """The bypass route is inventoried too, or a site could leave silently.
+
+    A site that moves off ``cp.RawModule`` and onto ``compile_using_nvrtc``
+    -- which is what CUDA 13 forced on ``rrtmg_sw`` -- would otherwise drop
+    out of the RawModule count and out of :func:`audit_source` at the same
+    time, taking its manifest record with it and leaving both tests green.
+    """
+    total = 0
+    for path in SITE_FILES:
+        tree = ast.parse(_site_text(path))
+        total += sum(1 for node in ast.walk(tree) if _is_nvrtc(node))
+    assert total == EXPECTED_NVRTC_SITE_COUNT, (
+        f"expected {EXPECTED_NVRTC_SITE_COUNT} compile_using_nvrtc site(s) "
+        f"among the manifest files, found {total}")
 
 
 @pytest.mark.parametrize("path", SITE_FILES)
@@ -170,6 +232,29 @@ def test_control_options_collapsed_to_a_global_string_is_caught():
     assert mutated != text, "the control did not modify the site"
     problems = audit_source(path, mutated)
     assert problems, "a site recording the wrong option tuple must be reported"
+    assert "records options=" in problems[0]
+
+
+def test_control_an_nvrtc_site_recording_other_options_is_caught():
+    """Failure control 3: the bypass route is audited as strictly.
+
+    ``rrtmg_sw`` compiles with ``--ftz=false`` because CuPy's RawModule route
+    would inject ``-ftz=true`` and flush the subnormal transmittance products
+    (MEASURED: the LW preflight's ``1e-30 * 1e-10`` comes back 0.0 through
+    RawModule and 1e-40 through this route).  Recording an option tuple the
+    compiler never saw would put that claim in the manifest without it being
+    true, so mutate the record and require a complaint.
+    """
+    path = "gpuwm/core/rrtmg_sw.py"
+    text = _site_text(path)
+    mutated = text.replace(
+        '        record_module("gpuwm.core.rrtmg_sw:rrtmg_sw", source=code,\n'
+        '                      options=("-std=c++17", "--ftz=false"),',
+        '        record_module("gpuwm.core.rrtmg_sw:rrtmg_sw", source=code,\n'
+        '                      options=("-std=c++17",),')
+    assert mutated != text, "the control did not modify the site"
+    problems = audit_source(path, mutated)
+    assert problems, "an nvrtc site recording the wrong options must be caught"
     assert "records options=" in problems[0]
 
 

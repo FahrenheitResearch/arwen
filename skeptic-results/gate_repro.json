@@ -1,0 +1,398 @@
+{
+  "positive": [
+    {
+      "devices": [
+        0
+      ],
+      "write_mode": "shadow",
+      "partition": "block",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "256x256x49",
+      "tile": "64x64",
+      "halo": 16,
+      "steps": 3,
+      "tiles": 16,
+      "compute": [
+        49,
+        96,
+        96
+      ],
+      "exact": true,
+      "digest": "0489b2a5b0d57b4f944803be01002456",
+      "want": "0489b2a5b0d57b4f944803be01002456",
+      "max_abs_diff": 0.0,
+      "worst_field": null,
+      "nan_cells": 0,
+      "seconds": 0.36412826110608876,
+      "host_bytes": 1011689472,
+      "host_gbs": 3.778277240760245,
+      "per_worker": [
+        [
+          0,
+          16,
+          1011689472
+        ]
+      ]
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "shadow",
+      "partition": "block",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "256x256x49",
+      "tile": "64x64",
+      "halo": 16,
+      "steps": 3,
+      "tiles": 16,
+      "compute": [
+        49,
+        96,
+        96
+      ],
+      "exact": true,
+      "digest": "0489b2a5b0d57b4f944803be01002456",
+      "want": "0489b2a5b0d57b4f944803be01002456",
+      "max_abs_diff": 0.0,
+      "worst_field": null,
+      "nan_cells": 0,
+      "seconds": 0.5707085521426052,
+      "host_bytes": 1011689472,
+      "host_gbs": 2.1904351959807813,
+      "per_worker": [
+        [
+          0,
+          8,
+          505920000
+        ],
+        [
+          0,
+          8,
+          505769472
+        ]
+      ]
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "shadow",
+      "partition": "stripe",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "256x256x49",
+      "tile": "64x64",
+      "halo": 16,
+      "steps": 3,
+      "tiles": 16,
+      "compute": [
+        49,
+        96,
+        96
+      ],
+      "exact": true,
+      "digest": "0489b2a5b0d57b4f944803be01002456",
+      "want": "0489b2a5b0d57b4f944803be01002456",
+      "max_abs_diff": 0.0,
+      "worst_field": null,
+      "nan_cells": 0,
+      "seconds": 0.5043118828907609,
+      "host_bytes": 1011689472,
+      "host_gbs": 2.5712787753349398,
+      "per_worker": [
+        [
+          0,
+          8,
+          505920000
+        ],
+        [
+          0,
+          8,
+          505769472
+        ]
+      ]
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "ring",
+      "partition": "block",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "256x256x49",
+      "tile": "64x64",
+      "halo": 16,
+      "steps": 3,
+      "tiles": 16,
+      "compute": [
+        49,
+        96,
+        96
+      ],
+      "exact": true,
+      "digest": "0489b2a5b0d57b4f944803be01002456",
+      "want": "0489b2a5b0d57b4f944803be01002456",
+      "max_abs_diff": 0.0,
+      "worst_field": null,
+      "nan_cells": 0,
+      "seconds": 0.49976009083911777,
+      "host_bytes": 1011689472,
+      "host_gbs": 2.0942596342353696,
+      "per_worker": [
+        [
+          0,
+          8,
+          505920000
+        ],
+        [
+          0,
+          8,
+          505769472
+        ]
+      ]
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "ring",
+      "partition": "stripe",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "256x256x49",
+      "tile": "64x64",
+      "halo": 16,
+      "steps": 3,
+      "tiles": 16,
+      "compute": [
+        49,
+        96,
+        96
+      ],
+      "exact": true,
+      "digest": "0489b2a5b0d57b4f944803be01002456",
+      "want": "0489b2a5b0d57b4f944803be01002456",
+      "max_abs_diff": 0.0,
+      "worst_field": null,
+      "nan_cells": 0,
+      "seconds": 0.7534945830702782,
+      "host_bytes": 1011689472,
+      "host_gbs": 1.3725165947944042,
+      "per_worker": [
+        [
+          0,
+          8,
+          505920000
+        ],
+        [
+          0,
+          8,
+          505769472
+        ]
+      ]
+    }
+  ],
+  "negative": [
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "ring",
+      "partition": "stripe",
+      "sync": "none",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "256x256x49",
+      "tile": "64x64",
+      "halo": 16,
+      "steps": 3,
+      "tiles": 16,
+      "compute": [
+        49,
+        96,
+        96
+      ],
+      "exact": false,
+      "digest": "4b44d36105a5b19f9022025caf1981c7",
+      "want": "0489b2a5b0d57b4f944803be01002456",
+      "max_abs_diff": 506.59375,
+      "worst_field": "p",
+      "nan_cells": 0,
+      "seconds": 0.49474189314059913,
+      "host_bytes": 1011689472,
+      "host_gbs": 2.117118068585799,
+      "per_worker": [
+        [
+          0,
+          8,
+          505920000
+        ],
+        [
+          0,
+          8,
+          505769472
+        ]
+      ],
+      "control": "ring, cross-worker handshake removed",
+      "fired": true
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "ring",
+      "partition": "block",
+      "sync": "none",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "256x256x49",
+      "tile": "64x64",
+      "halo": 16,
+      "steps": 3,
+      "tiles": 16,
+      "compute": [
+        49,
+        96,
+        96
+      ],
+      "exact": false,
+      "digest": "05724b9bca69ec1ebd229200675f1806",
+      "want": "0489b2a5b0d57b4f944803be01002456",
+      "max_abs_diff": 1065.390625,
+      "worst_field": "p",
+      "nan_cells": 0,
+      "seconds": 0.4904078310355544,
+      "host_bytes": 1011689472,
+      "host_gbs": 2.166367709093725,
+      "per_worker": [
+        [
+          0,
+          8,
+          505920000
+        ],
+        [
+          0,
+          8,
+          505769472
+        ]
+      ],
+      "control": "ring, cross-worker handshake removed, block",
+      "fired": true
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "shadow",
+      "partition": "block",
+      "sync": "events",
+      "sweep_barrier": false,
+      "nbuffers": 2,
+      "domain": "256x256x49",
+      "tile": "64x64",
+      "halo": 16,
+      "steps": 4,
+      "tiles": 16,
+      "compute": [
+        49,
+        96,
+        96
+      ],
+      "exact": false,
+      "digest": "fe23a995ab4b70e6dd4fe060e88439e8",
+      "want": "db5541ff59e7ee1d6e24f6b81d517357",
+      "max_abs_diff": 17316.3203125,
+      "worst_field": "p",
+      "nan_cells": 15300163,
+      "seconds": 0.7434151470661163,
+      "host_bytes": 1348919296,
+      "host_gbs": 2.069073521143495,
+      "per_worker": [
+        [
+          0,
+          8,
+          674560000
+        ],
+        [
+          0,
+          8,
+          674359296
+        ]
+      ],
+      "control": "shadow, per-sweep barrier removed",
+      "fired": true
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "shadow",
+      "partition": "block",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "256x256x49",
+      "tile": "64x64",
+      "halo": 4,
+      "steps": 3,
+      "tiles": 16,
+      "compute": [
+        49,
+        72,
+        72
+      ],
+      "exact": false,
+      "digest": "acda705a9dc8f9b6d561d91063d90a8a",
+      "want": "0489b2a5b0d57b4f944803be01002456",
+      "max_abs_diff": 0.7265625,
+      "worst_field": "p",
+      "nan_cells": 0,
+      "seconds": 0.49769408511929214,
+      "host_bytes": 705451008,
+      "host_gbs": 1.8197655959295593,
+      "per_worker": [
+        [
+          0,
+          8,
+          352800768
+        ],
+        [
+          0,
+          8,
+          352650240
+        ]
+      ],
+      "control": "halo below the dependency radius (comparison has teeth)",
+      "fired": true
+    }
+  ],
+  "repeatability": {
+    "reps": 3,
+    "distinct": 1,
+    "exact": true,
+    "digests": [
+      "0489b2a5b0d57b4f944803be01002456",
+      "0489b2a5b0d57b4f944803be01002456",
+      "0489b2a5b0d57b4f944803be01002456"
+    ]
+  },
+  "ngpu": 1,
+  "verdict": true
+}

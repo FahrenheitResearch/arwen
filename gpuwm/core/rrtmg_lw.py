@@ -3714,15 +3714,25 @@ def _gpu_module():
     honours the last occurrence, so subnormal float32 results would be
     flushed.  compile_using_nvrtc + cuda.function.Module bypasses the
     injection; gpu_preflight() proves subnormal survival on every run.
+
+    ``-arch`` is NOT passed.  cupy appends its own
+    (``cuda/compiler.py:_compile``) and NVRTC 13.0 rejects a repeated
+    option outright -- ``nvrtc: error: --gpu-architecture (-arch) defined
+    more than once`` -- where NVRTC 12 quietly honoured the last one.
+    MEASURED on cupy 14.1.1 / CUDA 13.0.2 / sm_120: with the explicit
+    ``-arch=compute_120`` this raises, without it the same source
+    compiles and ``--ftz=false`` still survives (cupy injects no -ftz on
+    this path).  The arch cupy derives is ``_cc._get_arch()``, which is
+    the value the explicit option carried, so nothing about the compile
+    target changes.
     """
     global _GPU_MODULE
     if _GPU_MODULE is None:
         import cupy as cp
         from cupy.cuda import compiler as _cc
-        arch = _cc._get_arch()
         ptx, _mapping = _cc.compile_using_nvrtc(
             _gpu_source(),
-            ("-std=c++17", "--ftz=false", f"-arch=compute_{arch}"),
+            ("-std=c++17", "--ftz=false"),
             None, "rrtmg_lw.cu")
         mod = cp.cuda.function.Module()
         mod.load(ptx.encode() if isinstance(ptx, str) else ptx)

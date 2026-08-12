@@ -450,7 +450,13 @@ _MCICA_GPU_PREFLIGHTED = False
 
 def _mcica_gpu_module():
     """Compile kernels/rrtmg_mcica_wrf.cu via NVRTC directly and load
-    the PTX (see the section header for why RawModule is unusable)."""
+    the PTX (see the section header for why RawModule is unusable).
+
+    ``-arch`` is deliberately absent, for the reason spelled out at
+    ``rrtmg_lw._gpu_module``: cupy appends its own and NVRTC 13.0 rejects
+    the duplicate, so an explicit ``-arch=compute_{arch}`` made this
+    module uncompilable on CUDA 13 while compiling fine on CUDA 12.
+    """
     global _MCICA_GPU_MODULE
     if _MCICA_GPU_MODULE is None:
         import os
@@ -460,10 +466,9 @@ def _mcica_gpu_module():
                             "kernels", "rrtmg_mcica_wrf.cu")
         with open(path, encoding="utf-8") as fh:
             source = fh.read()
-        arch = _cc._get_arch()
         ptx, _mapping = _cc.compile_using_nvrtc(
             source,
-            ("-std=c++17", "--ftz=false", f"-arch=compute_{arch}"),
+            ("-std=c++17", "--ftz=false"),
             None, "rrtmg_mcica_wrf.cu")
         mod = cp.cuda.function.Module()
         mod.load(ptx.encode() if isinstance(ptx, str) else ptx)

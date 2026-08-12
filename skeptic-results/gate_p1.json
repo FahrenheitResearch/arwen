@@ -1,0 +1,398 @@
+{
+  "positive": [
+    {
+      "devices": [
+        0
+      ],
+      "write_mode": "shadow",
+      "partition": "block",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "384x256x49",
+      "tile": "128x128",
+      "halo": 16,
+      "steps": 4,
+      "tiles": 6,
+      "compute": [
+        49,
+        160,
+        160
+      ],
+      "exact": true,
+      "digest": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "want": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "max_abs_diff": 0.0,
+      "worst_field": null,
+      "nan_cells": 0,
+      "seconds": 0.47728099511004984,
+      "host_bytes": 1594040320,
+      "host_gbs": 5.275873179056598,
+      "per_worker": [
+        [
+          0,
+          6,
+          1594040320
+        ]
+      ]
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "shadow",
+      "partition": "block",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "384x256x49",
+      "tile": "128x128",
+      "halo": 16,
+      "steps": 4,
+      "tiles": 6,
+      "compute": [
+        49,
+        160,
+        160
+      ],
+      "exact": true,
+      "digest": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "want": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "max_abs_diff": 0.0,
+      "worst_field": null,
+      "nan_cells": 0,
+      "seconds": 0.5390738630667329,
+      "host_bytes": 1594040320,
+      "host_gbs": 4.700028615229747,
+      "per_worker": [
+        [
+          0,
+          3,
+          797170688
+        ],
+        [
+          0,
+          3,
+          796869632
+        ]
+      ]
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "shadow",
+      "partition": "stripe",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "384x256x49",
+      "tile": "128x128",
+      "halo": 16,
+      "steps": 4,
+      "tiles": 6,
+      "compute": [
+        49,
+        160,
+        160
+      ],
+      "exact": true,
+      "digest": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "want": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "max_abs_diff": 0.0,
+      "worst_field": null,
+      "nan_cells": 0,
+      "seconds": 0.5810070170555264,
+      "host_bytes": 1594040320,
+      "host_gbs": 4.193207926765398,
+      "per_worker": [
+        [
+          0,
+          3,
+          797070336
+        ],
+        [
+          0,
+          3,
+          796969984
+        ]
+      ]
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "ring",
+      "partition": "block",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "384x256x49",
+      "tile": "128x128",
+      "halo": 16,
+      "steps": 4,
+      "tiles": 6,
+      "compute": [
+        49,
+        160,
+        160
+      ],
+      "exact": true,
+      "digest": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "want": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "max_abs_diff": 0.0,
+      "worst_field": null,
+      "nan_cells": 0,
+      "seconds": 0.3795542139559984,
+      "host_bytes": 1594040320,
+      "host_gbs": 4.355983381293898,
+      "per_worker": [
+        [
+          0,
+          3,
+          797170688
+        ],
+        [
+          0,
+          3,
+          796869632
+        ]
+      ]
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "ring",
+      "partition": "stripe",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "384x256x49",
+      "tile": "128x128",
+      "halo": 16,
+      "steps": 4,
+      "tiles": 6,
+      "compute": [
+        49,
+        160,
+        160
+      ],
+      "exact": true,
+      "digest": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "want": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "max_abs_diff": 0.0,
+      "worst_field": null,
+      "nan_cells": 0,
+      "seconds": 0.41319332108832896,
+      "host_bytes": 1594040320,
+      "host_gbs": 4.125436922157027,
+      "per_worker": [
+        [
+          0,
+          3,
+          797070336
+        ],
+        [
+          0,
+          3,
+          796969984
+        ]
+      ]
+    }
+  ],
+  "negative": [
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "ring",
+      "partition": "stripe",
+      "sync": "none",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "384x256x49",
+      "tile": "128x128",
+      "halo": 16,
+      "steps": 3,
+      "tiles": 6,
+      "compute": [
+        49,
+        160,
+        160
+      ],
+      "exact": false,
+      "digest": "9f3b342d409f94b9cb4371ef073956b6",
+      "want": "05cd332d89725497780dfbd185c7de41",
+      "max_abs_diff": 616.0859375,
+      "worst_field": "p",
+      "nan_cells": 0,
+      "seconds": 0.31836355198174715,
+      "host_bytes": 1195530240,
+      "host_gbs": 3.9383318493554493,
+      "per_worker": [
+        [
+          0,
+          3,
+          597802752
+        ],
+        [
+          0,
+          3,
+          597727488
+        ]
+      ],
+      "control": "ring, cross-worker handshake removed",
+      "fired": true
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "ring",
+      "partition": "block",
+      "sync": "none",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "384x256x49",
+      "tile": "128x128",
+      "halo": 16,
+      "steps": 3,
+      "tiles": 6,
+      "compute": [
+        49,
+        160,
+        160
+      ],
+      "exact": false,
+      "digest": "0284ea7aecd37f0469779bdbbcc39670",
+      "want": "05cd332d89725497780dfbd185c7de41",
+      "max_abs_diff": 457.4765625,
+      "worst_field": "p",
+      "nan_cells": 0,
+      "seconds": 0.33043546602129936,
+      "host_bytes": 1195530240,
+      "host_gbs": 3.7765305334412465,
+      "per_worker": [
+        [
+          0,
+          3,
+          597878016
+        ],
+        [
+          0,
+          3,
+          597652224
+        ]
+      ],
+      "control": "ring, cross-worker handshake removed, block",
+      "fired": true
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "shadow",
+      "partition": "block",
+      "sync": "events",
+      "sweep_barrier": false,
+      "nbuffers": 2,
+      "domain": "384x256x49",
+      "tile": "128x128",
+      "halo": 16,
+      "steps": 4,
+      "tiles": 6,
+      "compute": [
+        49,
+        160,
+        160
+      ],
+      "exact": false,
+      "digest": "b739b660a7385ddf6c687bdfa3c62d03",
+      "want": "f979071eb1b92a3beb475b4bc8bcebdd",
+      "max_abs_diff": 3538.7734375,
+      "worst_field": "p",
+      "nan_cells": 19302926,
+      "seconds": 0.49373985012061894,
+      "host_bytes": 1594040320,
+      "host_gbs": 5.405559163178035,
+      "per_worker": [
+        [
+          0,
+          3,
+          797170688
+        ],
+        [
+          0,
+          3,
+          796869632
+        ]
+      ],
+      "control": "shadow, per-sweep barrier removed",
+      "fired": true
+    },
+    {
+      "devices": [
+        0,
+        0
+      ],
+      "write_mode": "shadow",
+      "partition": "block",
+      "sync": "events",
+      "sweep_barrier": true,
+      "nbuffers": 2,
+      "domain": "384x256x49",
+      "tile": "128x128",
+      "halo": 4,
+      "steps": 3,
+      "tiles": 6,
+      "compute": [
+        49,
+        136,
+        136
+      ],
+      "exact": false,
+      "digest": "4e0d29059bf150c8f07bbfdcde042400",
+      "want": "05cd332d89725497780dfbd185c7de41",
+      "max_abs_diff": 0.71875,
+      "worst_field": "p",
+      "nan_cells": 0,
+      "seconds": 0.42289783898741007,
+      "host_bytes": 993323136,
+      "host_gbs": 4.622507274834073,
+      "per_worker": [
+        [
+          0,
+          3,
+          496774464
+        ],
+        [
+          0,
+          3,
+          496548672
+        ]
+      ],
+      "control": "halo below the dependency radius (comparison has teeth)",
+      "fired": true
+    }
+  ],
+  "repeatability": {
+    "reps": 3,
+    "distinct": 1,
+    "exact": true,
+    "digests": [
+      "f979071eb1b92a3beb475b4bc8bcebdd",
+      "f979071eb1b92a3beb475b4bc8bcebdd",
+      "f979071eb1b92a3beb475b4bc8bcebdd"
+    ]
+  },
+  "ngpu": 1,
+  "verdict": true
+}

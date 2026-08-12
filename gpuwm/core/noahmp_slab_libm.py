@@ -80,13 +80,21 @@ def _module():
 
 
 _MODULE_CACHE = None
-_KERNEL_CACHE: dict[str, object] = {}
+#: Keyed by ``(device, name)``.  ``RawModule`` itself is device-aware -- it
+#: loads its cubin onto whichever device asks -- but the ``Function`` handle
+#: ``get_function`` returns is bound to ONE device's loaded module, and
+#: calling it on another card is undefined.  Held per name alone, a process
+#: with two devices ran the first card's handles on the second.
+_KERNEL_CACHE: dict[tuple[int, str], object] = {}
 
 
 def _kernel(name: str):
-    if name not in _KERNEL_CACHE:
-        _KERNEL_CACHE[name] = _module().get_function(name)
-    return _KERNEL_CACHE[name]
+    import cupy as cp
+
+    key = (cp.cuda.runtime.getDevice(), name)
+    if key not in _KERNEL_CACHE:
+        _KERNEL_CACHE[key] = _module().get_function(name)
+    return _KERNEL_CACHE[key]
 
 
 def _contiguous(array):

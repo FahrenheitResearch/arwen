@@ -75,17 +75,89 @@ _ABSN = 2.34e-3
 _TBOUND_MAX = 339.99
 #: TOTPLNK's first dimension (module_ra_rrtm.F:110).
 _TOTPLNK_ROWS = 181
-#: Default columns per solver chunk.  The transfer holds several
-#: (ncol, nlayers, 140) arrays at once, so this bounds peak memory --
+#: Floor for the auto-sized solver chunk (and the fallback when free
+#: device memory cannot be queried).  The transfer holds several
+#: (ncol, nlayers, 140) arrays at once, so the chunk bounds peak memory --
 #: and the choice is a real trade, measured on an RTX 5090 at 53 layers:
 #: 4096 columns run in 85 ms with a 1.67 GiB device pool peak, while 256
 #: run in 93 ms with about a sixteenth of that.  The work is
-#: host-dispatch bound, so a bigger chunk is nearly free in time and
-#: costs linearly in memory.  512 is the conservative default for a
-#: 16 GiB card; ``column_chunk`` on either adapter raises it knowingly.
+#: host-dispatch bound: every chunk re-dispatches the whole ~8k-op CuPy
+#: graph, so on a 500x400 nest a fixed 512-column chunk was 391 graph
+#: replays and ~3.2M kernel launches per radiation step (~93% of the
+#: step wall was host dispatch gap; task #185 profile, node-7 RTX 3090).
+#: The adapters therefore auto-size the chunk from free device memory by
+#: default (``column_chunk=None``); an explicit ``column_chunk`` pins it.
+#: Chunking is per-column arithmetic only, so the answer is byte
+#: identical across chunk sizes
+#: (tests/test_rrtm_longwave.py::test_column_chunking_does_not_change_the_answer).
 #: NOTE these transients are NOT priced by gpuwm.core.preflight, which
 #: counts persistent arrays only.
 DEFAULT_COLUMN_CHUNK = 512
+#: Fraction of the currently reusable device memory (runtime free plus
+#: the CuPy pool's free blocks) the auto-sized transfer may claim.
+_TRANSIENT_MEMORY_FRACTION = 0.5
+#: Measured transient cost of the chunk solve: the 1.67 GiB pool peak at
+#: 4096 columns and 53 layers above is 8261 bytes per column-layer.
+_TRANSIENT_BYTES_PER_COLUMN_LAYER = 8261
+
+
+def _resolve_column_chunk(configured, ncol: int, nlayers: int, xp) -> int:
+    """Columns per solver pass: the configured pin, or the memory fit.
+
+    ``None`` sizes the chunk so the solve's transient arrays fit inside
+    ``_TRANSIENT_MEMORY_FRACTION`` of what the device can hand back
+    without growing its footprint, floored at ``DEFAULT_COLUMN_CHUNK``
+    and capped at the block's own column count.  Host (NumPy) blocks
+    have no device pool to protect and run in one pass.
+
+    NEVER CALL THIS INSIDE CUDA GRAPH CAPTURE: ``cudaMemGetInfo`` is not
+    a capturable operation and the runtime refuses it mid-capture.  The
+    adapters resolve the auto-size at their first EAGER solve and cache
+    it (:meth:`RRTMLongwaveRadiation._column_chunk_for`); a capture that
+    arrives cold falls back to the floor, which is byte identical by the
+    chunk-invariance guarantee.
+    """
+    if configured is not None:
+        return int(configured)
+    cuda = getattr(xp, "cuda", None)
+    if cuda is None:
+        return max(int(ncol), 1)
+    free_device, _total = cuda.runtime.memGetInfo()
+    reusable = int(free_device) + int(xp.get_default_memory_pool().free_bytes())
+    per_column = _TRANSIENT_BYTES_PER_COLUMN_LAYER * max(int(nlayers), 1)
+    fit = int(reusable * _TRANSIENT_MEMORY_FRACTION) // per_column
+    return min(int(ncol), max(DEFAULT_COLUMN_CHUNK, int(fit)))
+
+
+def _stream_is_capturing(cp) -> bool:
+    """True when the current stream is inside CUDA graph capture.
+
+    Defensive on purpose: an ``is_capturing`` probe that itself raised
+    (an exotic stream object, an old CuPy) must degrade to the eager
+    answer rather than take the radiation step down, so any failure here
+    reads as "not capturing" and the eager path runs exactly as before.
+    """
+    try:
+        return bool(cp.cuda.get_current_stream().is_capturing())
+    except Exception:                                   # pragma: no cover
+        return False
+
+
+#: Constant coefficient tables moved onto the array namespace once per
+#: process, keyed by (table id, builder name, namespace, dtype).  Before
+#: this cache every solver chunk re-uploaded its tables from pageable
+#: host memory -- hundreds of synchronous H2D copies per radiation step.
+_DEVICE_CONSTANT_CACHE: dict[tuple, object] = {}
+
+
+def _device_constant(xp, dtype, key, build):
+    """Return ``xp.asarray(build(), dtype)`` cached per process."""
+    cache_key = (*key, xp.__name__, np.dtype(dtype).str)
+    value = _DEVICE_CONSTANT_CACHE.get(cache_key)
+    if value is None:
+        value = xp.asarray(build(), dtype=dtype)
+        _DEVICE_CONSTANT_CACHE[cache_key] = value
+    return value
 
 
 def _array_namespace(*values):
@@ -146,10 +218,11 @@ def o3data_columns(xp, prlevh, nlay: int):
     matching the Fortran's reversed ``PRLEVH``.  Returns ``(ncol, nlay)``
     mass mixing ratio.
     """
-    o3wrk_host, ppwrkh_host = _o3_climatology()
     dtype = prlevh.dtype
-    o3wrk = xp.asarray(o3wrk_host, dtype=dtype)
-    ppwrkh = xp.asarray(ppwrkh_host, dtype=dtype)
+    o3wrk = _device_constant(
+        xp, dtype, ("o3data", "o3wrk"), lambda: _o3_climatology()[0])
+    ppwrkh = _device_constant(
+        xp, dtype, ("o3data", "ppwrkh"), lambda: _o3_climatology()[1])
     bottom = prlevh[:, :nlay, None]
     top = prlevh[:, 1:nlay + 1, None]
     zero = dtype.type(0.0)
@@ -166,8 +239,12 @@ def o3data_columns(xp, prlevh, nlay: int):
 def _standard_atmosphere_temperature(xp, statics, pz):
     """Interpolate MM5ATM's mean ``TPROF`` to ``PZ`` (F:4069-4093)."""
     dtype = pz.dtype
-    pprof = xp.asarray(statics["MM5ATM__PPROF"], dtype=dtype)
-    tprof = xp.asarray(statics["MM5ATM__TPROF"], dtype=dtype)
+    pprof = _device_constant(
+        xp, dtype, (id(statics), "MM5ATM__PPROF"),
+        lambda: statics["MM5ATM__PPROF"])
+    tprof = _device_constant(
+        xp, dtype, (id(statics), "MM5ATM__TPROF"),
+        lambda: statics["MM5ATM__TPROF"])
     nprof = int(pprof.shape[0])
     # klev = LL-1 for the first LL>=2 with PPROF(LL) < PZ; PPROF is
     # monotonically decreasing, so that is the count of entries at or
@@ -325,8 +402,11 @@ def setcoef_columns(xp, tables, *, pavel, tavel, coldry, wkl):
     dtype = pavel.dtype
     real = dtype.type
     ncol, nlayers = pavel.shape
-    preflog = xp.asarray(tables.statics["PREFLOG"], dtype=dtype)
-    tref = xp.asarray(tables.statics["TREF"], dtype=dtype)
+    preflog = _device_constant(
+        xp, dtype, (id(tables), "PREFLOG"),
+        lambda: tables.statics["PREFLOG"])
+    tref = _device_constant(
+        xp, dtype, (id(tables), "TREF"), lambda: tables.statics["TREF"])
     stpfac = real(296.0 / 1013.0)
 
     plog = xp.log(pavel)
@@ -448,15 +528,23 @@ def rtrn_columns(xp, tables, *, tavel, pz, tz, cldfrac, taucloud, itr,
     dtype = tavel.dtype
     real = dtype.type
     ncol, nlayers = tavel.shape
-    totplnk = xp.asarray(
-        tables.statics["TOTPLNK"].reshape(
-            (_TOTPLNK_ROWS, RRTM_NBANDS), order="F"), dtype=dtype)
-    delwave = xp.asarray(tables.statics["DELWAVE"], dtype=dtype)
+    totplnk = _device_constant(
+        xp, dtype, (id(tables), "TOTPLNK"),
+        lambda: tables.statics["TOTPLNK"].reshape(
+            (_TOTPLNK_ROWS, RRTM_NBANDS), order="F"))
+    delwave = _device_constant(
+        xp, dtype, (id(tables), "DELWAVE"),
+        lambda: tables.statics["DELWAVE"])
     heatfac = real(tables.statics["HEATFAC"][0])
-    ngb0 = xp.asarray(tables.statics["NGB"], dtype=xp.int32) - 1
-    tau_tab = xp.asarray(tables.tau, dtype=dtype)
-    tf_tab = xp.asarray(tables.tf, dtype=dtype)
-    trans_tab = xp.asarray(tables.trans, dtype=dtype)
+    ngb0 = _device_constant(
+        xp, np.int32, (id(tables), "NGB0"),
+        lambda: np.asarray(tables.statics["NGB"], dtype=np.int32) - 1)
+    tau_tab = _device_constant(
+        xp, dtype, (id(tables), "TAU"), lambda: tables.tau)
+    tf_tab = _device_constant(
+        xp, dtype, (id(tables), "TF"), lambda: tables.tf)
+    trans_tab = _device_constant(
+        xp, dtype, (id(tables), "TRANS"), lambda: tables.trans)
 
     indbound, tbndfrac = _planck_index(xp, tbound, dtype)
     indlev, tlevfrac = _planck_index(xp, tz, dtype)
@@ -676,8 +764,15 @@ class RRTMLongwaveRadiation:
     longitude_deg: object
     p_top: float | None = None
     icloud: int = 1
-    column_chunk: int = DEFAULT_COLUMN_CHUNK
+    #: ``None`` auto-sizes the solver chunk from free device memory at
+    #: the first EAGER solve of each ``(ncol, nlayers)`` geometry and
+    #: caches it (:meth:`_column_chunk_for`); an integer pins it.  The
+    #: answer is byte identical either way.
+    column_chunk: int | None = None
     update_count: int = field(default=0, init=False)
+    #: ``(ncol, nlayers) -> resolved chunk``, filled by eager solves only.
+    #: Plain ints, so it never enters the restart classifier's array walk.
+    _auto_chunk: dict = field(default_factory=dict, init=False, repr=False)
 
     publishes_olr = True
     #: The GLW buffer is produced by this scheme, not carried in.
@@ -704,7 +799,7 @@ class RRTMLongwaveRadiation:
             raise ValueError("radiation latitude/longitude shapes must match")
         if self.icloud not in (0, 1):
             raise ValueError("icloud must be 0 or 1")
-        if self.column_chunk < 1:
+        if self.column_chunk is not None and self.column_chunk < 1:
             raise ValueError("column_chunk must be positive")
         # Fail closed at construction if the packaged tables are missing
         # or corrupt, rather than mid-forecast.
@@ -729,6 +824,36 @@ class RRTMLongwaveRadiation:
         if declared is not None:
             return float(declared)
         return float(atmosphere["p_interface"][-1].max())
+
+    def _column_chunk_for(self, ncol: int, nlayers: int, cp) -> int:
+        """The solver chunk: the pin, the cached auto-size, or the floor.
+
+        The auto-size reads ``cudaMemGetInfo``, which is ILLEGAL inside
+        CUDA graph capture -- the 8d94a2ff7 perf fix called it on every
+        solve and took both graph-replay rungs of the tiles gate down
+        with ``GraphCaptureError``.  So the memory query runs on EAGER
+        solves only, once per ``(ncol, nlayers)`` geometry, and its
+        answer is cached; a captured solve reuses the cached value.  A
+        capture that arrives COLD (no eager solve ran first) uses the
+        ``DEFAULT_COLUMN_CHUNK`` floor without caching it, so a later
+        eager call still auto-sizes.  Every branch returns the same
+        bytes: chunking is per-column arithmetic only
+        (tests/test_rrtm_longwave.py::
+        test_column_chunking_does_not_change_the_answer), so this choice
+        is throughput, never trajectory.  An explicit ``column_chunk``
+        pins all of it, exactly as before.
+        """
+        if self.column_chunk is not None:
+            return int(self.column_chunk)
+        key = (int(ncol), int(nlayers))
+        cached = self._auto_chunk.get(key)
+        if cached is not None:
+            return cached
+        if _stream_is_capturing(cp):
+            return min(int(ncol), DEFAULT_COLUMN_CHUNK)
+        resolved = _resolve_column_chunk(None, ncol, nlayers, cp)
+        self._auto_chunk[key] = resolved
+        return resolved
 
     def longwave(self, *, atmosphere, fields, state, cfg):
         """Run RRTM LW and return ``(rthratenlw, glw, olr)`` on device."""
@@ -823,8 +948,9 @@ class RRTMLongwaveRadiation:
         glw = cp.empty((ncol,), dtype=cp.float32)
         olr = cp.empty((ncol,), dtype=cp.float32)
         hpa = cp.float32(0.01)
-        for start in range(0, ncol, self.column_chunk):
-            stop = min(start + self.column_chunk, ncol)
+        chunk = self._column_chunk_for(ncol, nlayers, cp)
+        for start in range(0, ncol, chunk):
+            stop = min(start + chunk, ncol)
             block = slice(start, stop)
             result = rrtm_longwave_columns(
                 t=t_cols[block], p_mb=p_cols[block] * hpa,
@@ -899,7 +1025,8 @@ class RRTMDudhiaRadiation:
     p_top: float | None = None
     icloud: int = 1
     swrad_scat: float = 1.0
-    column_chunk: int = DEFAULT_COLUMN_CHUNK
+    #: Forwarded to :class:`RRTMLongwaveRadiation`: ``None`` auto-sizes.
+    column_chunk: int | None = None
 
     publishes_olr = True
     glw_provenance = "scheme"

@@ -311,6 +311,20 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # does not carry, and the honest answer was "go clone the
     # repository".  The runner is part of the package now, so if this
     # module imported, so did it.
+
+    # [tiles] mode = 'on', on the same side of the download as the
+    # memory gate and the geography gate, and for the identical reason.
+    # The runner this chain drives refuses it at ITS admission, but that
+    # is after `go` has spent the user's bandwidth on the forcing data
+    # and their time on preprocessing.  Refused as a GoRefusal so it
+    # prints as one of this chain's own refusals rather than as a
+    # traceback from a stage.
+    from gpuwm.core.streaming import (StreamingRefused,
+                                      refuse_unrouted_streaming)
+    try:
+        refuse_unrouted_streaming(experiment, "gpuwm go")
+    except StreamingRefused as error:
+        raise GoRefusal(str(error)) from error
     for key in ("cycle", "hours", "area"):
         if key not in fetch_table:
             raise GoRefusal(

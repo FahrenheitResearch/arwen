@@ -255,6 +255,16 @@ def test_dudhia_adapter_enters_production_driver_radiation_seam(
         "glw": np.full((1, 2), 300.0, np.float32),
         "swdown": np.zeros((1, 2), np.float32),
     }
+    # The carrier contract is a slot the radiation seam writes, so a
+    # hand-built driver declares it like every other one.  Seeded the way
+    # initialize_physics seeds a shortwave-only run: the 300 W m-2 here is
+    # the CALLER'S declared constant, and the assertion below that it
+    # survives the call is the same statement in numbers.
+    from gpuwm.core import radiation_carriers
+    driver.carriers = radiation_carriers.CarrierContract()
+    driver.carriers.declare(
+        "glw", source=radiation_carriers.CARRIER_SOURCE_DECLARED_CONSTANT)
+    driver.surface_moisture_ledger = None
     sentinel = object()
     captured = {}
 
@@ -272,6 +282,13 @@ def test_dudhia_adapter_enters_production_driver_radiation_seam(
     assert np.array_equal(driver.fields["glw"],
                           np.full((1, 2), 300.0, np.float32))
     assert adapter.update_count == 1
+    # The shortwave half went through a scheme; the declared longwave did
+    # not, and the record says so rather than crediting Dudhia with a
+    # longwave it never computed.
+    assert (driver.carriers.source("swdown")
+            == radiation_carriers.CARRIER_SOURCE_RADIATION_SCHEME)
+    assert (driver.carriers.source("glw")
+            == radiation_carriers.CARRIER_SOURCE_DECLARED_CONSTANT)
     from gpuwm.io import restart
     identity = restart._radiation_setup_identity(driver, cfg)
     assert identity["scheme_ids"] == {"lw": 0, "sw": 1}

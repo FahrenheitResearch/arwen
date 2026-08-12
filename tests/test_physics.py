@@ -647,7 +647,15 @@ def test_mp28_integrates_with_the_full_physics_driver_stack():
         sf_sfclay_physics=1, sf_surface_physics=2, num_soil_layers=4,
         bl_pbl_physics=1, bldt=0.0))
     state = _balanced_state(cp, cfg)
-    driver = initialize_physics(state, cfg, glw=_IDEALISED_GLW)
+    # BOTH of Noah's carriers declared, not just GLW.  This composition
+    # runs Noah with radiation off over land, which is exactly the class
+    # the carrier contract (gpuwm/core/radiation_carriers.py) refuses
+    # when SWDOWN has no producer: the pre-contract behaviour was to
+    # integrate the buffer's allocation zeros silently.  A declared 0.0
+    # is the same number with a source -- an idealised dark sky, on the
+    # same terms as _IDEALISED_GLW -- and initialize_physics does NOT
+    # default-declare it, because a silent default is the defect.
+    driver = initialize_physics(state, cfg, glw=_IDEALISED_GLW, swdown=0.0)
     cp.cuda.Stream.null.synchronize()
 
     assert driver.microphysics_init_receipt == {

@@ -295,3 +295,178 @@ void validate_full_state(
         atomicMin(result + 1, packed);
     }
 }
+
+// -------------------------------------------------------------------------
+// The same reductions, over ONE TILE'S INTERIOR, in DOMAIN coordinates.
+//
+// Why this exists: under [tiles] the domain lives in a host store and the
+// resident DomainState the run loop hands to stability_report is never
+// written again, so the loop's nan / w_max / CFL gates observe a corpse.  The
+// reductions are max folds and an OR fold, so they are associative and can be
+// taken per tile inside the sweep instead -- which reads the memory the
+// forecast is actually in.
+//
+// Three things make this EQUAL to the whole-domain reduction rather than
+// merely similar, and all three are parameters rather than assumptions:
+//
+//   * the window is the tile's INTERIOR (the set the scatter writes), never
+//     the halo -- halo cells are a neighbour's copy this tile did not
+//     integrate, and on a domain edge they are seam fill;
+//   * every index compared or classified is a DOMAIN index, built from
+//     (dj0, di0), because health_partial breaks argmax ties by LOWEST FLAT
+//     INDEX and splits boundary from interior using the DOMAIN's (j, i);
+//   * the u window is passed separately from the mass window, because u is
+//     (nz, ny, nx+1) and exactly one tile owns the closing face.
+//
+// Partial records are laid out exactly as health_partial's, so health_final
+// reduces a whole sweep's tiles in one launch with no special case.
+// -------------------------------------------------------------------------
+
+extern "C" __global__
+void health_partial_tile(const real* __restrict__ u,
+                         const real* __restrict__ w,
+                         const real* __restrict__ thp,
+                         const real* __restrict__ ph,
+                         const real* __restrict__ phb,
+                         real* __restrict__ partial,
+                         int tny, int tnx,
+                         int jm0, int jmn, int im0, int imn,
+                         int ju0, int jun, int iu0, int iun,
+                         int nz, int dj0, int di0,
+                         int ny, int nx, int width,
+                         int phb_full, int do_vertical, real gravity)
+{
+    real umax = 0.0f, wmax = 0.0f, thmax = 0.0f;
+    real edge = 0.0f, interior = 0.0f, vertical_rate = 0.0f;
+    unsigned long long windex = 0xffffffffffffffffull;
+    unsigned mask = 0u;
+    unsigned long long start = ((unsigned long long)blockIdx.x * blockDim.x
+                                + threadIdx.x);
+    unsigned long long stride = ((unsigned long long)gridDim.x * blockDim.x);
+
+    const unsigned long long plane_m = (unsigned long long)tny * tnx;
+    const unsigned long long plane_u = (unsigned long long)tny * (tnx + 1);
+    const unsigned long long dplane   = (unsigned long long)ny * nx;
+
+    // ---- u over the owned faces (no argmax: health_partial keeps none) ---
+    unsigned long long nu = (unsigned long long)nz * jun * iun;
+    for (unsigned long long ix = start; ix < nu; ix += stride) {
+        unsigned long long rem = ix;
+        int ii = (int)(rem % (unsigned long long)iun); rem /= (unsigned long long)iun;
+        int jj = (int)(rem % (unsigned long long)jun); rem /= (unsigned long long)jun;
+        int k  = (int)rem;
+        real value = fabsf(u[(unsigned long long)k * plane_u
+                             + (unsigned long long)(ju0 + jj) * (tnx + 1)
+                             + (unsigned long long)(iu0 + ii)]);
+        if (isnan(value)) mask |= 1u;
+        else if (value > umax) umax = value;
+    }
+
+    // ---- w over the owned mass columns, all nz+1 faces -------------------
+    unsigned long long nw = (unsigned long long)(nz + 1) * jmn * imn;
+    for (unsigned long long ix = start; ix < nw; ix += stride) {
+        unsigned long long rem = ix;
+        int ii = (int)(rem % (unsigned long long)imn); rem /= (unsigned long long)imn;
+        int jj = (int)(rem % (unsigned long long)jmn); rem /= (unsigned long long)jmn;
+        int k  = (int)rem;
+        real value = fabsf(w[(unsigned long long)k * plane_m
+                             + (unsigned long long)(jm0 + jj) * tnx
+                             + (unsigned long long)(im0 + ii)]);
+        int dj = dj0 + jj, di = di0 + ii;
+        unsigned long long dindex = (unsigned long long)k * dplane
+                                    + (unsigned long long)dj * nx
+                                    + (unsigned long long)di;
+        bool boundary = false;
+        if (width > 0) {
+            boundary = (dj < width || dj >= ny - width
+                        || di < width || di >= nx - width);
+        }
+        if (isnan(value)) {
+            mask |= 2u;
+            if (width > 0) mask |= boundary ? 8u : 16u;
+        } else {
+            update_max(value, dindex, wmax, windex);
+            if (width > 0) {
+                if (boundary) edge = value > edge ? value : edge;
+                else interior = value > interior ? value : interior;
+            }
+        }
+    }
+
+    // ---- theta' over the owned mass cells --------------------------------
+    unsigned long long nth = (unsigned long long)nz * jmn * imn;
+    for (unsigned long long ix = start; ix < nth; ix += stride) {
+        unsigned long long rem = ix;
+        int ii = (int)(rem % (unsigned long long)imn); rem /= (unsigned long long)imn;
+        int jj = (int)(rem % (unsigned long long)jmn); rem /= (unsigned long long)jmn;
+        int k  = (int)rem;
+        real value = fabsf(thp[(unsigned long long)k * plane_m
+                               + (unsigned long long)(jm0 + jj) * tnx
+                               + (unsigned long long)(im0 + ii)]);
+        if (isnan(value)) mask |= 4u;
+        else if (value > thmax) thmax = value;
+    }
+
+    // ---- co-located |w_upper| / dz_cell ----------------------------------
+    if (do_vertical) {
+        for (unsigned long long ix = start; ix < nth; ix += stride) {
+            unsigned long long rem = ix;
+            int ii = (int)(rem % (unsigned long long)imn); rem /= (unsigned long long)imn;
+            int jj = (int)(rem % (unsigned long long)jmn); rem /= (unsigned long long)jmn;
+            int k  = (int)rem;
+            unsigned long long idx = (unsigned long long)k * plane_m
+                                     + (unsigned long long)(jm0 + jj) * tnx
+                                     + (unsigned long long)(im0 + ii);
+            unsigned long long upper = idx + plane_m;
+            real base_lower = phb_full ? phb[idx] : phb[k];
+            real base_upper = phb_full ? phb[upper] : phb[k + 1];
+            real dz = ((ph[upper] + base_upper) - (ph[idx] + base_lower))
+                      / gravity;
+            real speed = fabsf(w[upper]);
+            if (!isfinite(dz) || dz <= 0.0f || !isfinite(speed)) {
+                mask |= 32u;
+            } else {
+                real rate = speed / dz;
+                vertical_rate = rate > vertical_rate ? rate : vertical_rate;
+            }
+        }
+    }
+
+    __shared__ real values[6][HEALTH_THREADS];
+    __shared__ unsigned long long indices[HEALTH_THREADS];
+    __shared__ unsigned masks[HEALTH_THREADS];
+    int lane = threadIdx.x;
+    values[0][lane] = umax;
+    values[1][lane] = wmax;
+    values[2][lane] = thmax;
+    values[3][lane] = edge;
+    values[4][lane] = interior;
+    values[5][lane] = vertical_rate;
+    indices[lane] = windex;
+    masks[lane] = mask;
+    __syncthreads();
+
+    for (int offset = HEALTH_THREADS / 2; offset > 0; offset >>= 1) {
+        if (lane < offset) {
+            values[0][lane] = values[0][lane + offset] > values[0][lane]
+                              ? values[0][lane + offset] : values[0][lane];
+            update_max(values[1][lane + offset], indices[lane + offset],
+                       values[1][lane], indices[lane]);
+            for (int field = 2; field < 6; ++field)
+                values[field][lane] = values[field][lane + offset]
+                                      > values[field][lane]
+                                      ? values[field][lane + offset]
+                                      : values[field][lane];
+            masks[lane] |= masks[lane + offset];
+        }
+        __syncthreads();
+    }
+    if (lane == 0) {
+        size_t out = (size_t)blockIdx.x * HEALTH_FIELDS;
+        for (int field = 0; field < 6; ++field)
+            partial[out + field] = values[field][0];
+        partial[out + 6] = __uint_as_float((unsigned)indices[0]);
+        partial[out + 7] = __uint_as_float((unsigned)(indices[0] >> 32));
+        partial[out + 8] = __uint_as_float(masks[0]);
+    }
+}

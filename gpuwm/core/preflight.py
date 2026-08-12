@@ -406,6 +406,48 @@ def anisotropic_w_mixing_advisories(exp) -> list[str]:
     return lines
 
 
+def streaming_advisory(exp) -> str | None:
+    """Say out loud that this report prices a RESIDENT allocation.
+
+    Every number this module produces -- ``alloc_estimate_bytes``, the peak
+    envelope, the reserve, the whole N0 chain -- itemizes a domain that
+    lives in VRAM.  There is no streamed term anywhere in it, and none of
+    the enumerations below has a concept of a tile buffer.  With
+    ``[tiles]`` configured that is a fact the reader has to be told,
+    because the report is otherwise indistinguishable from one describing
+    the run they actually asked for.
+
+    Two independent things go wrong without it, and both were MEASURED
+    (``python -m tilestream.ledger_ladder``, which prints the table):
+
+    * ``mode = "auto"`` asks :func:`tilestream.autoplan.plan` whether the
+      domain fits, not this module.  The two models price the full(real74)
+      rung at 541 and ~887 B/cell, so this estimate runs 1.35x to 1.54x
+      autoplan's over 672^2..4096^2 x 49.  On every card there is a band of
+      sizes -- 448..512 on a 12 GiB card, 704..816 on 24 GiB, 832..976 on
+      32 GiB -- where autoplan says RESIDENT, so streaming never fires, and
+      the gate built on this estimate then refuses the run anyway.
+    * ``mode = "on"`` is refused outright by every route that runs a
+      forecast, because none of them wires a streamed-domain builder
+      (:func:`gpuwm.core.streaming.refuse_unrouted_streaming`).
+
+    Advisory, never a gate: it changes no exit code and blocks nothing,
+    on the same posture as every other entry in :func:`check_advisories`.
+    """
+    options = getattr(exp, "tiles", None)
+    mode = getattr(options, "mode", "off")
+    if mode == "off":
+        return None
+    return (
+        f"[tiles] mode = '{mode}' is configured, and every memory number "
+        "in this report prices the RESIDENT allocation -- this estimator has "
+        "no model of a streamed domain, so a refusal here is a statement "
+        "about a resident run.  'auto' decides with tilestream.autoplan's "
+        "independently fitted model, which is 0.65x-0.74x this one at "
+        "672^2..4096^2 x 49 full physics; 'on' is refused by the forecast "
+        "routes, which wire no streamed-domain builder.")
+
+
 def check_advisories(exp, config_path=None) -> list[str]:
     """Every route advisory this config earns, in report order.
 
@@ -421,6 +463,7 @@ def check_advisories(exp, config_path=None) -> list[str]:
     advisories = [feedback_advisory(exp)]
     advisories.extend(spawn_reservation_advisories(exp))
     advisories.extend(anisotropic_w_mixing_advisories(exp))
+    advisories.append(streaming_advisory(exp))
     if config_path is not None:
         advisories.append(checkpoint_route_advisory(
             domain_count=len(exp.domains),
@@ -3534,7 +3577,7 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
     ScratchSlotLifetime(
         ("uh_follow_window", "uh_spawn_window"), "carrying",
         "gpuwm/core/uh_diag.py:update_up_heli_max,reset_tracker_window; "
-        "gpuwm/io/restart.py:REBUILT_SCRATCH_SLOTS",
+        "gpuwm/io/restart.py:CARRIED_SCRATCH_SLOTS",
         "per-consumer running-max windows, reset at every evaluation of "
         "the consumer that owns them and never emitted"),
     ScratchSlotLifetime(

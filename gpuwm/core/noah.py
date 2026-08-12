@@ -420,6 +420,48 @@ _F2D = ("psfc", "sfcprs", "sfctmp", "qv1", "qgh", "dz8w1", "glw",
 _F3D = ("smois", "tslb", "sh2o", "smcrel")
 
 
+def _device_tables(params: NoahParams, dzs):
+    """The four CONSTANT kernel inputs, uploaded once per parameter set.
+
+    ``launch_noah`` used to rebuild these on every call: four
+    ``cp.asarray`` of host NumPy -- the vegetation table, the soil table,
+    the general parameters and the soil-layer thicknesses -- for a kernel
+    that only ever reads them.  On a 15 s step that is four pageable H2D
+    copies per model step for data that is fixed at load time.
+
+    Two things it costs, and the second is the one that mattered here.  The
+    copies themselves are small but pageable, so each is a staged,
+    synchronising transfer.  And an H2D of any kind is illegal inside a CUDA
+    graph capture, so this single line was what stopped every rung from
+    ``+Noah LSM`` upward from being capturable -- see the census in
+    :mod:`tilestream.graphcap`.
+
+    The cache lives in this module and NOT on the ``params`` object, keyed
+    by that object's identity with a reference held so the identity cannot
+    be recycled.  Attaching it to ``params`` was the first attempt and
+    ``gpuwm/io/restart.py`` was right to refuse the equivalent on the
+    radiation callable: an array attribute on a driver object is state a
+    restart must account for, and a cached constant is not state.
+    """
+    import cupy as cp
+
+    key = (id(params), tuple(float(v)
+                             for v in np.asarray(dzs, np.float32).ravel()))
+    held = _DEVICE_TABLES.get(key)
+    if held is None:
+        held = (params,
+                (cp.asarray(params.veg.astype(np.float32).ravel()),
+                 cp.asarray(params.soil.astype(np.float32).ravel()),
+                 cp.asarray(params.gen.astype(np.float32)),
+                 cp.asarray(np.asarray(dzs, np.float32))))
+        _DEVICE_TABLES[key] = held
+    return held[1]
+
+
+#: ``(id(params), dzs) -> (params, device tables)``.  See :func:`_device_tables`.
+_DEVICE_TABLES: dict = {}
+
+
 def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
                 isurban: int = 13, isice: int = 15,
                 xice_threshold: float = 0.5, frpcpn: bool = False,
@@ -458,10 +500,7 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
             raise ValueError(f"{name}: expected (4,{ny},{nx}) float32")
         args.append(a)
     args.append(dev["ebal"])
-    vegtbl = cp.asarray(params.veg.astype(np.float32).ravel())
-    soiltbl = cp.asarray(params.soil.astype(np.float32).ravel())
-    genp = cp.asarray(params.gen.astype(np.float32))
-    dzs4 = cp.asarray(np.asarray(dzs, np.float32))
+    vegtbl, soiltbl, genp, dzs4 = _device_tables(params, dzs)
     args += [vegtbl, soiltbl, genp, dzs4,
              DTYPE(dt), np.int32(params.lucats), np.int32(params.slcats),
              np.int32(isurban), np.int32(isice), DTYPE(xice_threshold),
