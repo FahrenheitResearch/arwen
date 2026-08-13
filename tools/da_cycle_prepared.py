@@ -77,8 +77,10 @@ import numpy as np
 
 try:                                    # python -m tools.da_cycle_prepared
     from tools import da_ensemble_state as ens_state
+    from tools import da_solve_ab as ab_bundle
 except ImportError:                     # python tools/da_cycle_prepared.py
     import da_ensemble_state as ens_state
+    import da_solve_ab as ab_bundle
 
 #: Name of the unassimilated trajectory in every report.
 CONTROL = "control"
@@ -317,6 +319,17 @@ def main() -> int:
     parser.add_argument("--memory-budget-mib", type=float, default=6144.0)
     parser.add_argument("--solve-device", default="host",
                         choices=("host", "cuda"))
+    parser.add_argument(
+        "--dump-analysis-bundle", type=Path, default=None,
+        help=("copy each leg's ANALYSIS INPUTS -- the staged member "
+              "checkpoints, that leg's observation file and the history "
+              "file its observations were gridded onto -- into "
+              "DIR/leg_NNN, as a bundle tools/da_solve_ab.py can replay.  "
+              "That is how the solve-device A/B gets a real leg to "
+              "compare on without re-running the forecast that produced "
+              "it.  Copies, because the stage directory is usually a "
+              "tmpfs the next leg overwrites; budget one ensemble of "
+              "checkpoints plus one observation file per leg"))
     parser.add_argument("--no-hotstart", action="store_true")
     # -- the moisture / hydrometeor half ---------------------------------
     # All default to zero amplitude, so a caller that does not ask for
@@ -1447,6 +1460,49 @@ def main() -> int:
                 mp_physics=int(cfg.mp_physics),
                 solve_device=args.solve_device,
                 memory_budget_mib=args.memory_budget_mib)
+            # -- the replayable copy of this leg's analysis inputs -------
+            # Written BEFORE the solve, from the same objects the solve is
+            # about to consume, so a bundle can never describe a different
+            # analysis than the one this leg ran.  Radar-only: a leg whose
+            # analysis also needs a reflectivity or CWP forward operator
+            # cannot be replayed from files alone (the operator needs the
+            # scheme's setup state, which is not in a checkpoint), and a
+            # bundle that silently dropped those batches would compare two
+            # arms on an analysis neither of them performed.
+            if args.dump_analysis_bundle is not None and obs_path is not None:
+                if cfg_da.cwp or cfg_da.reflectivity or cfg_da.clear_air \
+                        or surface_cfg is not None:
+                    print(f"leg {leg}: analysis bundle NOT dumped -- this "
+                          "analysis carries batches whose forward operator "
+                          "is not reconstructable from files "
+                          f"(reflectivity={cfg_da.reflectivity}, "
+                          f"clear_air={cfg_da.clear_air}, "
+                          f"cwp={cfg_da.cwp}, "
+                          f"surface={surface_cfg is not None})", flush=True)
+                else:
+                    bundle_dir = (Path(args.dump_analysis_bundle)
+                                  / f"leg_{leg_number(leg):03d}")
+                    ab_manifest = ab_bundle.dump_real_bundle(
+                        bundle_dir, checkpoints=checkpoints,
+                        obs_path=obs_path,
+                        grid_wrfout=Path(args.grid_wrfout[leg]),
+                        grid=grid_h, cfg=cfg_da,
+                        note=("Analysis inputs of a real cycling DA leg, "
+                              "copied at the analysis seam by "
+                              "tools/da_cycle_prepared.py."),
+                        extra={"driver": "tools/da_cycle_prepared.py",
+                               "leg": int(leg),
+                               "leg_number": int(leg_number(leg)),
+                               "elapsed_seconds": float(t_end),
+                               "solve_device_of_the_dumping_run":
+                                   args.solve_device})
+                    leg_record["analysis_bundle"] = {
+                        "path": str(bundle_dir),
+                        "members": len(ab_manifest["members"]),
+                        "grid_identity_sha256":
+                            ab_manifest["grid"]["identity_sha256"]}
+                    print(f"leg {leg}: analysis bundle -> {bundle_dir}",
+                          flush=True)
             surface_batches = None
             surface_prov = None
             if surface_cfg is not None:

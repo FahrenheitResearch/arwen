@@ -53,7 +53,7 @@ def _stamp(revision: str) -> bytes:
 
 
 def _bundle(tmp_path: Path, payloads: dict[str, bytes]) -> Path:
-    """A synthetic bundle carrying the nine artifacts and one map asset.
+    """A synthetic bundle carrying every artifact and one map asset.
 
     Only the stamp contents vary per test; everything else satisfies the
     pin step's existing membership and asset requirements so a refusal
@@ -69,9 +69,31 @@ def _bundle(tmp_path: Path, payloads: dict[str, bytes]) -> Path:
     return archive
 
 
+def _payload_for(artifact, revision: str) -> bytes:
+    """What a good build of ``artifact`` looks like to the pin step.
+
+    Two shapes, because two different things are proved.  A
+    gpuwm-authored artifact carries the release commit; a VENDORED one
+    carries its declared contract marker and no stamp at all, which is
+    what a build of an unmodified upstream crate actually looks like.
+    """
+
+    if artifact.vendored:
+        return (b"\x7fELF junk " + bridges.BRIDGE_ABI_MARKERS[artifact.name]
+                + b" tail")
+    return b"\x7fELF junk " + _stamp(revision) + b" tail"
+
+
 def _stamped_payloads(revision: str) -> dict[str, bytes]:
-    return {artifact.name: b"\x7fELF junk " + _stamp(revision) + b" tail"
+    return {artifact.name: _payload_for(artifact, revision)
             for artifact in bridge_assets.BUNDLED_ARTIFACTS}
+
+
+def _one_vendored():
+    vendored = [a for a in bridge_assets.BUNDLED_ARTIFACTS if a.vendored]
+    if not vendored:                             # pragma: no cover - none
+        pytest.skip("no vendored artifact is in the bundle")
+    return vendored[0]
 
 
 def _pin(archive: Path, out: Path, *extra: str) -> subprocess.CompletedProcess:
@@ -181,6 +203,60 @@ def test_pin_refuses_a_bundle_stamped_with_another_revision(tmp_path):
     assert not out.exists()
 
 
+def test_pin_takes_a_vendored_artifact_on_its_contract_marker(tmp_path):
+    """No stamp is asked of it, and the bundle still pins.
+
+    The vendored payload here carries the marker and no
+    GPUWM_BRIDGE_SOURCE_REV at all.  If the cut ever started demanding a
+    stamp from it, every release would fail on the one artifact that
+    cannot honestly carry one -- its source is upstream's, frozen at a
+    recorded commit, and stamping it would mean editing a tree whose
+    whole claim is that it is unmodified.
+    """
+
+    vendored = _one_vendored()
+    payloads = _stamped_payloads(RELEASED)
+    assert MARKER not in payloads[vendored.name]
+    assert bridges.BRIDGE_ABI_MARKERS[vendored.name] in payloads[vendored.name]
+    out = tmp_path / "pins.json"
+    result = _pin(_bundle(tmp_path, payloads), out, "--source-rev", RELEASED)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_pin_refuses_a_vendored_artifact_without_its_contract_marker(
+        tmp_path):
+    """The staleness that CAN reach it: a build of an older crate.
+
+    A library predating this release's ABI loads cleanly, answers the
+    legacy version probe, and then fails inside the first refined solve.
+    The marker is what catches it in the cut, statically, without
+    executing anything and on the other platform's bytes.
+    """
+
+    vendored = _one_vendored()
+    payloads = _stamped_payloads(RELEASED)
+    payloads[vendored.name] = b"\x7fELF an older vendored build"
+    out = tmp_path / "pins.json"
+    result = _pin(_bundle(tmp_path, payloads), out, "--source-rev", RELEASED)
+    assert result.returncode != 0
+    message = result.stdout + result.stderr
+    assert vendored.name in message
+    assert "contract marker" in message
+    assert vendored.crate in message
+    assert not out.exists()
+
+
+def test_every_vendored_artifact_declares_a_contract_marker():
+    """The exemption is not a hole: something still proves the bytes."""
+
+    for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+        if artifact.vendored:
+            assert artifact.name in bridges.BRIDGE_ABI_MARKERS, (
+                f"{artifact.name} is exempt from the source-revision stamp "
+                "and declares no contract marker either, so nothing at all "
+                "proves which build of it a release shipped")
+
+
 def test_pin_requires_the_source_revision(tmp_path):
     """The gate is not optional: a cut cannot skip it by omission."""
 
@@ -241,11 +317,16 @@ def test_every_bundled_artifact_entry_point_references_the_stamp():
     _require_bridge_sources()
     unmapped = [artifact.name
                 for artifact in bridge_assets.BUNDLED_ARTIFACTS
-                if artifact.name not in _STAMP_SOURCES]
+                if artifact.name not in _STAMP_SOURCES
+                and not artifact.vendored]
     assert not unmapped, (
         f"BUNDLED_ARTIFACTS gained {unmapped} with no stamp source mapped "
         "here; a bridge the cut cannot prove must not join a bundle")
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+        if artifact.vendored:
+            # Its entry point is upstream's and is not edited here, so it
+            # is asked for its contract marker instead -- above.
+            continue
         source = (REPO_ROOT / artifact.crate
                   / _STAMP_SOURCES[artifact.name])
         text = source.read_text(encoding="utf-8")

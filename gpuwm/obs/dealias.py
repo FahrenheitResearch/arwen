@@ -96,6 +96,38 @@ what crosses that seam -- a ``(radial, gate)`` plane, an azimuth vector, one
 Nyquist scalar -- so that when the plumbing exists it is replaced by a call,
 not by a rewrite.
 
+Engines
+-------
+That call now exists.  :mod:`gpuwm.obs.dealias_region` drives Drew's Rust
+``region-global-dealias`` crate -- a port of Py-ART's
+``dealias_region_based`` -- through a C ABI, and
+:attr:`DealiasParams.engine` selects between them:
+
+``"region-global"`` (the default)
+    The Rust crate.  It unfolds the whole region network jointly rather
+    than growing outward from anchors, carries no environmental reference,
+    and assigns a fold to every region it resolved instead of abstaining.
+    Its refinement pass runs by default with it.
+``"vad-region"``
+    Everything described above: VAD-anchored, and it abstains.  Selectable
+    and supported; it is what every run before 2026-08-12 read.
+
+The two engines are *different algorithms* and their gate decisions differ
+by design; the shared contract is the three-state result, the one physical
+bound of :func:`speed_bounded`, and their accounting -- not the decisions.
+``engine`` is a recorded parameter -- it travels into provenance with the
+velocities it produced -- because "which solver said this wind was 40 m/s"
+is not an implementation detail to anyone reading an assimilated field
+back.
+
+The default changed with measurement in hand, not with the newest engine:
+on one real 14-cut volume the abstainer rejected both gates of a 98 m/s
+couplet as unresolved and the region-global engine recovered them, at
+0.3 percent of the dealias stage's wall clock.  Because that decision
+moves which velocities reach the filter on every run that asks for
+dealiasing, the library the default now needs is a BLOCKING check in
+``gpuwm doctor`` rather than an optional one.
+
 References
 ----------
 Browning, K. A. and R. Wexler, 1968: The determination of kinematic
@@ -122,6 +154,17 @@ from dataclasses import asdict, dataclass, field, fields
 from numbers import Real
 
 import numpy as np
+
+from gpuwm import perf_timing
+from gpuwm.obs import coarse_cost
+from gpuwm.obs.dealias_region import ENGINE_REGION_GLOBAL
+
+#: The VAD-referenced, abstaining engine implemented in this module.
+ENGINE_VAD_REGION = "vad-region"
+
+#: Every engine :func:`dealias_sweep` can dispatch to, in the spelling
+#: ``DealiasParams.engine`` takes and provenance records.
+ENGINES = (ENGINE_VAD_REGION, ENGINE_REGION_GLOBAL)
 
 #: A velocity gate ended in exactly one of these.  There is no fourth.
 STATE_REJECTED = 0
@@ -179,6 +222,30 @@ def scipy_available() -> bool:
                 and find_spec("scipy.sparse.csgraph") is not None)
     except (ImportError, ValueError):     # pragma: no cover - broken install
         return False
+
+
+def engine_unavailable_reason(engine: str) -> str | None:
+    """Why ``engine`` cannot run on this install, or None when it can.
+
+    The two engines have different prerequisites -- one needs scipy, the
+    other needs a built shared library -- and a front door that checked
+    only scipy would clear a run that cannot dealias and let it discover
+    that an hour in.  One function, asked once, per the reason
+    :func:`scipy_available` exists at all.
+    """
+
+    if engine == ENGINE_REGION_GLOBAL:
+        from gpuwm.obs.dealias_region import (  # noqa: PLC0415
+            region_bridge_remedy, region_engine_available)
+
+        if region_engine_available():
+            return None
+        return ("the region-global dealiasing engine's shared library is "
+                "not on this box\n" + region_bridge_remedy())
+    if engine == ENGINE_VAD_REGION:
+        return None if scipy_available() else SCIPY_REMEDY
+    return (f"unknown dealiasing engine {engine!r}; known engines are "
+            f"{list(ENGINES)}")
 
 
 class DealiasParamsError(ValueError):
@@ -340,6 +407,15 @@ class DealiasParams:
     #: averages over, so a gate that lands beyond it is a failure of the
     #: unfolding rather than a measurement.  It applies everywhere, including
     #: where no reference exists to check against.
+    #:
+    #: This is the one tunable above that BOTH engines honour, through
+    #: :func:`speed_bounded`.  It is the only check the region-global
+    #: engine has: that solver assigns a fold to every region it resolved
+    #: and reports no refusal of its own, so without this bound a
+    #: misresolved region reaches the filter as a confident 114 m/s wind.
+    #: Measured on one real 14-cut volume, it refuses 115 of 1,355,617
+    #: gates, 91 of them on two mid-level cuts, and touches nothing in the
+    #: violent low-level couplet in that volume.
     max_speed_ms: float = 75.0
     #: How far a resolved gate may depart from the environmental reference,
     #: m/s, where a reference exists.  This is the bound that actually holds
@@ -364,12 +440,64 @@ class DealiasParams:
     #: once -- to show that the recovery and not some other change is what
     #: moved a score.
     keep_beyond_reject_fraction: bool = True
+    #: Which solver unfolds a sweep -- one of :data:`ENGINES`.  Every field
+    #: above except :attr:`max_speed_ms` tunes ``"vad-region"`` and none of
+    #: them reaches ``"region-global"``, whose behaviour is fixed by the
+    #: vendored crate; they are kept in one object anyway so that a
+    #: provenance reader sees the full parameter set that was in force,
+    #: including the tunables the selected engine ignored.
+    #:
+    #: The default is a decision about the observations, not about the
+    #: code, and it was made by measurement and by the owner of the
+    #: assimilation (2026-08-12).  ``"region-global"`` keeps 3,894 more
+    #: velocity cells per volume than the abstainer and 7,099 more than
+    #: the mask, runs the dealias stage in 62 ms against 18.3 s, and
+    #: recovers the violent low-level couplet the abstainer throws away --
+    #: measured on one real 14-cut volume, with the abstainer rejecting
+    #: both couplet gates as "unresolved".  ``"vad-region"`` stays
+    #: selectable and stays supported; it is the engine to reach for when
+    #: an environmental reference is what should decide, and it is what
+    #: every run before this default read.
+    engine: str = ENGINE_REGION_GLOBAL
+    #: Run the region-global engine's refinement pass (upstream "RIFT"):
+    #: after the region-global solve it considers small gate-resolution
+    #: proposals where one connected region appears to contain two Nyquist
+    #: branches, and applies one only when an independent wrapped-vortex
+    #: fit picks the same branch and a bounded cut lowers the local
+    #: energy.  Meaningless for ``"vad-region"``, which has no such pass,
+    #: and rejected there rather than ignored: a switch that silently does
+    #: nothing is how a run gets reported as having had a treatment it
+    #: never got.
+    #:
+    #: ``None`` means "this engine's default", which is the only spelling
+    #: that lets one default serve two engines: on ``"region-global"`` it
+    #: resolves to on, and on ``"vad-region"`` -- which has no such pass --
+    #: to off.  It is resolved to a bool at construction, so provenance
+    #: never carries the word "default" where a reader needs a fact.
+    #:
+    #: On by default because it self-declines: it proposes nothing unless
+    #: its own detector fires, and it applies nothing unless an
+    #: independent fit agrees.  On the volume this lane measured, it
+    #: detected two regions of interest, solved one, made a vortex
+    #: proposal and DECLINED it as branch-unstable -- moving zero folds on
+    #: any of the 14 cuts -- for about 52 ms on a 62 ms volume.  A pass
+    #: that costs milliseconds and abstains where it is unsure belongs on
+    #: the default path; leaving it off would mean the case it is for
+    #: arrives on a run nobody asked to protect (owner ruling,
+    #: 2026-08-12).
+    refinement: bool | None = None
 
     def __post_init__(self) -> None:
+        if self.refinement is None:
+            object.__setattr__(
+                self, "refinement",
+                str(self.engine) == ENGINE_REGION_GLOBAL)
         self.validate()
         for field_ in fields(self):
             value = getattr(self, field_.name)
-            if field_.type == "bool" or isinstance(value, bool):
+            if field_.name == "engine":
+                object.__setattr__(self, field_.name, str(value))
+            elif field_.type == "bool" or isinstance(value, bool):
                 object.__setattr__(self, field_.name, bool(value))
             elif field_.name in _POSITIVE_INT_FIELDS:
                 object.__setattr__(self, field_.name, int(value))
@@ -379,14 +507,37 @@ class DealiasParams:
     def validate(self) -> "DealiasParams":
         """Refuse any value that cannot do the job the field is named for."""
 
+        if not isinstance(self.engine, str):
+            raise DealiasParamsError(
+                f"engine is {self.engine!r} ({type(self.engine).__name__}); "
+                f"it names a solver and must be one of {list(ENGINES)}")
+        if self.engine not in ENGINES:
+            raise DealiasParamsError(
+                f"engine is {self.engine!r}; known engines are "
+                f"{list(ENGINES)}. An unknown name cannot be silently "
+                "resolved to a default -- the two engines make different "
+                "decisions about which velocities a filter may believe")
+        if not isinstance(self.refinement, bool):
+            raise DealiasParamsError(
+                f"refinement is {self.refinement!r} "
+                f"({type(self.refinement).__name__}); it is a switch and "
+                "only a bool states which way it is thrown")
+        if self.refinement and self.engine != ENGINE_REGION_GLOBAL:
+            raise DealiasParamsError(
+                f"refinement is on with engine={self.engine!r}, which has no "
+                f"refinement pass; only {ENGINE_REGION_GLOBAL!r} does. A "
+                "switch that is accepted and then ignored is how a run gets "
+                "reported as having had a treatment it never got")
         for field_ in fields(self):
             value = getattr(self, field_.name)
-            if field_.name == "keep_beyond_reject_fraction":
+            if field_.name in ("keep_beyond_reject_fraction", "refinement"):
                 if not isinstance(value, bool):
                     raise DealiasParamsError(
-                        f"keep_beyond_reject_fraction is {value!r} "
+                        f"{field_.name} is {value!r} "
                         f"({type(value).__name__}); it is a switch and only a "
                         "bool states which way it is thrown")
+                continue
+            if field_.name == "engine":
                 continue
             if isinstance(value, bool) or not isinstance(value, Real):
                 raise DealiasParamsError(
@@ -424,7 +575,9 @@ class DealiasParams:
     def to_payload(self) -> dict:
         payload = {}
         for key, value in asdict(self).items():
-            if isinstance(value, bool):
+            if key == "engine":
+                payload[key] = str(value)
+            elif isinstance(value, bool):
                 payload[key] = bool(value)
             elif key in _POSITIVE_INT_FIELDS:
                 payload[key] = int(value)
@@ -522,6 +675,32 @@ class SweepDealiasResult:
         return self.state != STATE_REJECTED
 
 
+def speed_bounded(values: np.ndarray, state: np.ndarray, reason: np.ndarray,
+                  *, max_speed_ms: float) -> np.ndarray:
+    """Refuse every gate whose resolved speed leaves the physical bound.
+
+    The one observation-QC layer both engines apply, in one implementation,
+    marking :data:`STATE_REJECTED` with :data:`REASON_SPEED` and returning
+    the mask it marked so a caller can NaN the velocities and zero the
+    folds it just refused.
+
+    It is a *rejection*, never a clamp and never a pass.  A clamped gate is
+    a fabricated observation with a plausible magnitude -- the filter
+    cannot tell it from a measurement -- and a gate passed through at 114
+    m/s is a misresolution the filter will believe. Both are worse than an
+    abstention, which costs one gate and says so by name in the account.
+
+    ``values`` may be the whole plane or the flat vector of finite gates;
+    non-finite entries are left alone, so a plane whose no-data gates are
+    already ``STATE_REJECTED`` for their own reason keeps that reason.
+    """
+
+    beyond = np.isfinite(values) & (np.abs(values) > float(max_speed_ms))
+    state[beyond] = STATE_REJECTED
+    reason[beyond] = REASON_SPEED
+    return beyond
+
+
 def _sweep_wraps(azimuth_deg: np.ndarray) -> bool:
     """Does this cut close the circle?
 
@@ -558,6 +737,149 @@ _COARSE_DIRECTIONS = np.radians(np.arange(0.0, 360.0, 5.0))
 #: and a few hundred samples spread over the compass locate a first harmonic
 #: as well as ten thousand do.
 _COARSE_SAMPLES = 384
+#: The wind grid, as the two harmonic coefficients, in the order the search
+#: reports them.  Built once: it is the same grid for every band of every
+#: sweep of every volume.
+_COARSE_A = (_COARSE_SPEEDS[:, None] * np.cos(_COARSE_DIRECTIONS[None, :])
+             ).ravel()
+_COARSE_B = (_COARSE_SPEEDS[:, None] * np.sin(_COARSE_DIRECTIONS[None, :])
+             ).ravel()
+#: How many candidates the native shortlist keeps before the exact cost
+#: ranks them.  Larger than it needs to be for a well-separated band, and
+#: large enough to swallow the 72 identical zero-speed candidates that a calm
+#: band ties on.  It grows when the guard below is not satisfied.
+_COARSE_SHORTLIST = 128
+#: The absolute error the native cost surface is trusted to within.  The
+#: kernel's rotation recurrence drifts by ~1e-11 on a 384-sample band against
+#: a directly evaluated cost; this is five orders of magnitude of headroom
+#: over that, and still eleven orders below the separation between distinct
+#: candidates on this grid.  It is a *bound used in a proof*, not a
+#: tolerance on an answer -- see :func:`_coarse_shortlisted`.
+_COARSE_COST_TOLERANCE = 1e-6
+
+
+def _coarse_subsample(values: np.ndarray, sin_az: np.ndarray,
+                      cos_az: np.ndarray) -> tuple:
+    """The samples the coarse search looks at, and only those."""
+
+    if values.size > _COARSE_SAMPLES:
+        pick = np.linspace(0, values.size - 1, _COARSE_SAMPLES).astype(np.intp)
+        return values[pick], sin_az[pick], cos_az[pick]
+    return values, sin_az, cos_az
+
+
+def _coarse_cost(values: np.ndarray, sin_az: np.ndarray, cos_az: np.ndarray,
+                 nyquist: float, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Wrapped cost of each ``(a, b)``.  The arithmetic of record.
+
+    Every seed this module returns is ranked by this expression, whether the
+    candidates reaching it are the whole grid or a natively shortlisted part
+    of it.  Nothing else is allowed to order candidates.
+    """
+
+    model = a[:, None] * cos_az[None, :] + b[:, None] * sin_az[None, :]
+    return np.sum(1.0 - np.cos(np.pi * (values[None, :] - model) / nyquist),
+                  axis=1)
+
+
+def _coarse_shortlisted(approx: np.ndarray, values: np.ndarray,
+                        sin_az: np.ndarray, cos_az: np.ndarray,
+                        nyquist: float, count: int) -> tuple[list, int]:
+    """Rank a shortlist, having first proved the shortlist is enough.
+
+    ``approx`` is the native cost surface: accurate to
+    :data:`_COARSE_COST_TOLERANCE` but not NumPy's arithmetic, so it may not
+    choose.  It may only *exclude*, and here is the argument that lets it.
+
+    Write ``eps`` for the tolerance, ``T`` for the approximate cost of the
+    worst shortlisted candidate and ``C`` for the approximate cost of the
+    ``count``-th best.  Every excluded candidate has approximate cost at
+    least ``T``, so its true cost is at least ``T - eps``; the ``count``-th
+    best shortlisted candidate has true cost at most ``C + eps``.  When
+    ``T - C > 2 eps`` every excluded candidate is *strictly* worse than the
+    ``count``-th shortlisted one, so the true best ``count`` all lie in the
+    shortlist -- and strictly, so no exclusion can have been a tie.  The
+    shortlist is then ranked by :func:`_coarse_cost`, in ascending index
+    order, which reproduces a stable argsort over the full grid restricted to
+    those indices.  The result is the same tuple the exhaustive path returns,
+    including which of several tied candidates wins.
+
+    When the guard fails the shortlist grows, and in the limit it is the
+    whole grid, which is the exhaustive search itself.  A band whose
+    candidates genuinely tie -- a calm band, where all 72 zero-speed
+    candidates share a cost -- takes that route rather than a guess.
+    Returns the seeds and how many candidates the exact cost had to price.
+    """
+
+    order = np.argsort(approx, kind="stable")
+    total = int(order.size)
+    size = min(_COARSE_SHORTLIST, total)
+    while size < total:
+        margin = float(approx[order[size - 1]] - approx[order[count - 1]])
+        if margin > 2.0 * _COARSE_COST_TOLERANCE:
+            break
+        size = min(total, size * 4)
+    shortlist = (np.arange(total, dtype=np.intp) if size >= total
+                 else np.sort(order[:size]))
+    cost = _coarse_cost(values, sin_az, cos_az, nyquist,
+                        _COARSE_A[shortlist], _COARSE_B[shortlist])
+    chosen = shortlist[np.argsort(cost, kind="stable")[:count]]
+    return ([(float(_COARSE_A[index]), float(_COARSE_B[index]))
+             for index in chosen], int(shortlist.size))
+
+
+def _coarse_seed_table(bands: list, nyquist: float, count: int = 3,
+                       stats: dict | None = None) -> list:
+    """Coarse seeds for every band of one sweep, in one native call.
+
+    The band loop that follows is sequential -- each fit carries into the
+    next -- but this search is not: a band's cost surface depends on nothing
+    but that band.  Handing the whole sweep's worth to the parallel backend
+    at once is what makes the kernel worth crossing a language boundary for;
+    per band it would be 1214 thread launches on a volume.
+    """
+
+    prepared = [None if entry is None else _coarse_subsample(*entry)
+                for entry in bands]
+    present = [index for index, entry in enumerate(prepared)
+               if entry is not None and entry[0].size]
+    table: list = [[] for _ in prepared]
+    if not present:
+        return table
+    approx = None
+    try:
+        approx = coarse_cost.coarse_cost_batch(
+            [prepared[index] for index in present],
+            _COARSE_SPEEDS, _COARSE_DIRECTIONS, nyquist)
+    except ValueError:
+        # A refusal from the kernel is a fact about this input, and the
+        # NumPy path below answers the same question without it.
+        approx = None
+    priced = 0
+    for slot, band in enumerate(present):
+        values, sin_az, cos_az = prepared[band]
+        if approx is None:
+            table[band] = _coarse_pick(values, sin_az, cos_az, nyquist, count)
+            priced += _COARSE_A.size
+            continue
+        table[band], used = _coarse_shortlisted(
+            approx[slot], values, sin_az, cos_az, nyquist, count)
+        priced += used
+    if stats is not None:
+        stats["coarse_native"] = approx is not None
+        stats["coarse_bands"] = len(present)
+        stats["coarse_candidates_priced"] = priced
+    return table
+
+
+def _coarse_pick(values: np.ndarray, sin_az: np.ndarray, cos_az: np.ndarray,
+                 nyquist: float, count: int) -> list:
+    """The exhaustive search, priced entirely in NumPy."""
+
+    cost = _coarse_cost(values, sin_az, cos_az, nyquist, _COARSE_A, _COARSE_B)
+    order = np.argsort(cost, kind="stable")[:count]
+    return [(float(_COARSE_A[index]), float(_COARSE_B[index]))
+            for index in order]
 
 
 def _coarse_seeds(values: np.ndarray, sin_az: np.ndarray, cos_az: np.ndarray,
@@ -578,21 +900,15 @@ def _coarse_seeds(values: np.ndarray, sin_az: np.ndarray, cos_az: np.ndarray,
     candidate merely for folding; searching it exhaustively over the physical
     range of winds finds the true basin regardless of how much of the sweep
     is folded.
+
+    This is the definition, kept whole and kept reachable: it is what runs
+    when no native library is present, and it is what the parity test holds
+    the native path against band for band.
     """
 
-    if values.size > _COARSE_SAMPLES:
-        pick = np.linspace(0, values.size - 1, _COARSE_SAMPLES).astype(np.intp)
-        values, sin_az, cos_az = values[pick], sin_az[pick], cos_az[pick]
-    speed = _COARSE_SPEEDS[:, None]
-    direction = _COARSE_DIRECTIONS[None, :]
     # v(az) = a cos(az) + b sin(az); (a, b) traced over speed and direction.
-    a = (speed * np.cos(direction)).ravel()
-    b = (speed * np.sin(direction)).ravel()
-    model = a[:, None] * cos_az[None, :] + b[:, None] * sin_az[None, :]
-    cost = np.sum(1.0 - np.cos(np.pi * (values[None, :] - model) / nyquist),
-                  axis=1)
-    order = np.argsort(cost, kind="stable")[:count]
-    return [(float(a[index]), float(b[index])) for index in order]
+    return _coarse_pick(*_coarse_subsample(values, sin_az, cos_az),
+                        nyquist, count)
 
 
 def _fit_band(values: np.ndarray, sin_az: np.ndarray, cos_az: np.ndarray,
@@ -716,9 +1032,17 @@ def vad_reference(velocity: np.ndarray, azimuth_deg: np.ndarray,
 
     band_gates = int(params.reference_band_gates)
     bands = max(1, -(-gates // band_gates))
-    residuals = []
-    carried = (0.0, 0.0)
-    fitted: list = [None] * bands
+    vad_timing = perf_timing.phases("obs.dealias.vad")
+    # `band_fit` covers the gather, the batched coarse search and the
+    # sequential fits together, which is exactly the span it covered when
+    # this was one loop: the phase name and what it accounts for are
+    # unchanged, so a receipt from before the search was batched still
+    # compares against one from after.
+    vad_timing.mark("band_fit", bands=bands)
+    # Every band's samples, gathered before any of them is fitted.  The fits
+    # are sequential and the searches that seed them are not, so the searches
+    # go out together; see :func:`_coarse_seed_table`.
+    gathered: list = [None] * bands
     for band in range(bands):
         start = band * band_gates
         stop = min(start + band_gates, gates)
@@ -726,12 +1050,27 @@ def vad_reference(velocity: np.ndarray, azimuth_deg: np.ndarray,
         finite = np.isfinite(block)
         if not finite.any():
             continue
-        values = block[finite]
-        sin_block = np.broadcast_to(sin_az, block.shape)[finite]
-        cos_block = np.broadcast_to(cos_az, block.shape)[finite]
+        gathered[band] = (block[finite],
+                          np.broadcast_to(sin_az, block.shape)[finite],
+                          np.broadcast_to(cos_az, block.shape)[finite],
+                          finite)
+    coarse_stats: dict = {}
+    coarse = _coarse_seed_table(
+        [None if entry is None else entry[:3] for entry in gathered],
+        nyquist, stats=coarse_stats)
+
+    residuals = []
+    carried = (0.0, 0.0)
+    fitted: list = [None] * bands
+    for band in range(bands):
+        if gathered[band] is None:
+            continue
+        start = band * band_gates
+        stop = min(start + band_gates, gates)
+        values, sin_block, cos_block, finite = gathered[band]
 
         seeds = [carried, (0.0, 0.0)]
-        seeds.extend(_coarse_seeds(values, sin_block, cos_block, nyquist))
+        seeds.extend(coarse[band])
         # A plain fit on the small-|v| samples: contaminated by folds, but a
         # cheap and usually majority-correct starting point.
         near = np.abs(values) <= 0.5 * nyquist
@@ -746,8 +1085,8 @@ def vad_reference(velocity: np.ndarray, azimuth_deg: np.ndarray,
             block_prior = np.asarray(prior, dtype=np.float64)[:, start:stop]
             good = finite & np.isfinite(block_prior)
             if int(good.sum()) >= 8:
-                design = np.stack([np.broadcast_to(cos_az, block.shape)[good],
-                                   np.broadcast_to(sin_az, block.shape)[good]],
+                design = np.stack([np.broadcast_to(cos_az, finite.shape)[good],
+                                   np.broadcast_to(sin_az, finite.shape)[good]],
                                   axis=1)
                 try:
                     solution, *_ = np.linalg.lstsq(design, block_prior[good],
@@ -770,6 +1109,7 @@ def vad_reference(velocity: np.ndarray, azimuth_deg: np.ndarray,
     # neighbours, and a right one always does.  Comparisons are against the
     # ORIGINAL fits rather than against a running result, so the outcome does
     # not depend on the order bands are visited in.
+    vad_timing.mark("continuity", bands=bands)
     window = int(params.reference_band_window)
     step = float(params.reference_max_band_step_ms)
     kept = list(fitted)
@@ -797,6 +1137,7 @@ def vad_reference(velocity: np.ndarray, azimuth_deg: np.ndarray,
     # Where the two disagree past a real shear the volume wins, and the band
     # is replaced rather than dropped -- replacing keeps the anchor, and
     # dropping it would cost the gates this capability exists to recover.
+    vad_timing.mark("profile_reconcile", bands=bands)
     replaced = 0
     if prior is not None:
         prior_plane = np.asarray(prior, dtype=np.float64)
@@ -824,6 +1165,7 @@ def vad_reference(velocity: np.ndarray, azimuth_deg: np.ndarray,
                 kept[band] = (profile_fit[0], profile_fit[1], float("nan"))
                 replaced += 1
 
+    vad_timing.mark("assemble", bands=bands)
     valid_bands = 0
     for band, entry in enumerate(kept):
         if entry is None:
@@ -845,7 +1187,9 @@ def vad_reference(velocity: np.ndarray, azimuth_deg: np.ndarray,
                       for band, entry in enumerate(kept) if entry is not None],
         "band_residual_rms_ms": (round(float(np.mean(residuals)), 4)
                                  if residuals else None),
+        **coarse_stats,
     }
+    vad_timing.close()
     return reference, stats
 
 
@@ -1019,22 +1363,42 @@ def _edge_table(label_a, label_b, jump_folds, params):
 def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
                   nyquist: float | None, params: DealiasParams,
                   *, reference: np.ndarray | None = None,
-                  wraps: bool | None = None) -> SweepDealiasResult:
-    """Unfold one sweep, rejecting every gate the evidence cannot resolve.
+                  wraps: bool | None = None,
+                  first_gate_m: float | None = None,
+                  gate_spacing_m: float | None = None) -> SweepDealiasResult:
+    """Unfold one sweep with the engine ``params`` selects.
 
     ``velocity`` is ``(radial, gate)`` raw radial velocity with NaN for no
     data; ``nyquist`` is the sweep's Nyquist velocity, or None when the sweep
     reports none -- in which case nothing here is knowable and every finite
     gate is rejected with :data:`REASON_NO_NYQUIST`, which is the same
-    refusal :mod:`gpuwm.obs.superob` already makes.
+    refusal :mod:`gpuwm.obs.superob` already makes.  Both engines make that
+    same refusal, so a caller cannot change it by changing solver.
 
     ``reference`` is an optional externally supplied ``(radial, gate)``
     environmental field -- e.g. :meth:`WindProfile.radial_reference` on the
     model background.  When given it seeds the fit and then *supplements* the
     VAD: bands the VAD could not fit fall back to it, so a sweep too
     storm-filled to fit a wind profile still has something to anchor
-    against.
+    against.  It is consumed by ``"vad-region"`` only; the region-global
+    engine carries no environmental reference at all, and is handed none
+    rather than being handed one it would ignore.
+
+    ``first_gate_m`` and ``gate_spacing_m`` are the sweep's physical range
+    geometry.  They are needed only by the region-global refinement pass,
+    which fits a wrapped vortex in real space and cannot do that on gate
+    indices.
     """
+
+    if getattr(params, "engine", ENGINE_VAD_REGION) == ENGINE_REGION_GLOBAL:
+        # Function-local for the same reason scipy is: importing this at
+        # module scope would make every install that merely reads
+        # DealiasParams pay for ctypes and a library search.
+        from gpuwm.obs.dealias_region import dealias_sweep_region  # noqa: PLC0415
+
+        return dealias_sweep_region(
+            velocity, azimuth_deg, nyquist, params,
+            first_gate_m=first_gate_m, gate_spacing_m=gate_spacing_m)
 
     velocity = np.asarray(velocity, dtype=np.float64)
     if velocity.ndim != 2:
@@ -1085,7 +1449,11 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     if wraps is None:
         wraps = _sweep_wraps(azimuth_deg)
 
+    timing = perf_timing.phases("obs.dealias.sweep")
+
     # ---- reference -------------------------------------------------------
+    timing.mark("reference", gates_finite=int(finite.sum()),
+                gates_total=velocity.size)
     vad, vad_stats = vad_reference(velocity, azimuth_deg, nyquist, params,
                                    prior=reference)
     if reference is not None:
@@ -1103,6 +1471,7 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     stats["reference"] = vad_stats
 
     # ---- 1. segment ------------------------------------------------------
+    timing.mark("segment")
     from scipy.sparse import coo_matrix                    # noqa: PLC0415
     from scipy.sparse.csgraph import connected_components  # noqa: PLC0415
 
@@ -1128,6 +1497,7 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     stats["regions"] = n_regions
 
     # ---- 2. vote ---------------------------------------------------------
+    timing.mark("vote", regions=n_regions)
     boundary = comparable & ~joined
     label_a = label_flat[left[boundary]]
     label_b = label_flat[right[boundary]]
@@ -1154,6 +1524,7 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
         neighbours.setdefault(hi, []).append((lo, entry))
 
     # ---- 3. anchor -------------------------------------------------------
+    timing.mark("anchor", regions=n_regions, edges=len(edges))
     # A region may anchor only when it has enough gates with a reference,
     # its fold estimate is unambiguous, and -- the load-bearing one -- it
     # still looks environmental after unfolding.  The last is what stops a
@@ -1192,6 +1563,7 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     stats["regions_anchored"] = len(anchor_fold)
 
     # ---- 4. grow ---------------------------------------------------------
+    timing.mark("grow", regions_anchored=len(anchor_fold))
     import heapq                                           # noqa: PLC0415
 
     resolved: dict[int, int] = {}
@@ -1230,6 +1602,7 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     stats["regions_unresolved"] = n_regions - len(resolved)
 
     # ---- 5. verify -------------------------------------------------------
+    timing.mark("verify", edges_confident=len(confident))
     conflicted: set[int] = set()
     violated = 0
     for (lo, hi), entry in confident.items():
@@ -1243,6 +1616,7 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     stats["regions_conflict"] = len(conflicted)
 
     # ---- assign ----------------------------------------------------------
+    timing.mark("assign", regions=n_regions)
     region_fold = np.zeros(n_regions, dtype=np.int64)
     region_state = np.zeros(n_regions, dtype=np.int8)
     region_reason = np.full(n_regions, REASON_UNRESOLVED, dtype=np.int8)
@@ -1261,9 +1635,8 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     gate_state = region_state[labels]
     gate_reason = region_reason[labels]
     unfolded = flat[flat_finite] + interval * gate_fold
-    beyond = np.abs(unfolded) > params.max_speed_ms
-    gate_state[beyond] = STATE_REJECTED
-    gate_reason[beyond] = REASON_SPEED
+    speed_bounded(unfolded, gate_state, gate_reason,
+                  max_speed_ms=params.max_speed_ms)
     # The bound that actually holds the line.  A fold error displaces a gate
     # by a whole Nyquist interval; the physical departures this must not
     # touch are smaller.  Only applied where a reference exists to depart
@@ -1299,5 +1672,6 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
         values, counts = np.unique(applied, return_counts=True)
         stats["fold_histogram"] = {int(v): int(c)
                                    for v, c in zip(values, counts)}
+    timing.close()
     return SweepDealiasResult(output, state, reason, fold_plane,
                               reference_plane, stats)

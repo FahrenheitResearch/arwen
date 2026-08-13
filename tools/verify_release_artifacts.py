@@ -172,6 +172,11 @@ def main(argv: list[str] | None = None) -> int:
         artifact.name: artifact for artifact in bridge_assets.BUNDLED_ARTIFACTS
     }
     bundle_receipts: dict[str, object] = {}
+    # What was actually proved, per binary, so the receipt can say it
+    # rather than assert a blanket claim that stopped being true the day
+    # a vendored artifact joined the bundle.
+    stamped: list[str] = []
+    vendored_by_marker: list[str] = []
     for platform, bundle in sorted(pins.platforms.items()):
         assert len(bundle.binaries) == len(by_name)
         assert {pin.artifact for pin in bundle.binaries} == set(by_name)
@@ -211,9 +216,37 @@ def main(argv: list[str] | None = None) -> int:
                 # proves the bytes were built from the commit being
                 # released.  Both platforms' binaries are provable from
                 # this one machine because the stamp is read, never run.
-                bridge_assets.verify_source_revision(
-                    payload, expected=args.source_rev,
-                    label=f"{platform}: {pin.filename}")
+                #
+                # A VENDORED artifact is a verbatim upstream crate frozen
+                # at a recorded commit.  It does not move with this
+                # checkout, so the release commit says nothing about it
+                # and the build deliberately leaves it unstamped -- the
+                # tree's whole claim is that no file in it differs from
+                # upstream by a byte.  The packer asks such an artifact
+                # for its declared contract marker instead, and so does
+                # this verifier: the same staleness question, asked the
+                # only way these bytes can answer it.
+                artifact = by_name[pin.artifact]
+                label = f"{platform}: {pin.filename}"
+                if artifact.vendored:
+                    marker = bridges.BRIDGE_ABI_MARKERS.get(artifact.name)
+                    if marker is None:
+                        raise SystemExit(
+                            f"{label}: vendored artifact with no declared "
+                            "contract marker, so nothing proves which "
+                            "build of it this is")
+                    if marker not in payload:
+                        raise SystemExit(
+                            f"{label}: does not carry the "
+                            f"{artifact.name} contract marker "
+                            f"{marker.decode('ascii', 'replace')!r}, so "
+                            "it was built from a vendored crate older "
+                            "than the one this release speaks to")
+                    vendored_by_marker.append(label)
+                else:
+                    bridge_assets.verify_source_revision(
+                        payload, expected=args.source_rev, label=label)
+                    stamped.append(label)
             for pin in bundle.assets:
                 payload = archive.read(pin.path)
                 assert len(payload) == pin.bytes, (platform, pin.path)
@@ -287,13 +320,36 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     receipt = {
-        "schema": "gpuwm-release-artifact-proof-v1",
+        # v2, not a v1 with extra keys.  v1 asserted one blanket claim --
+        # every binary carries this release's revision stamp -- and that
+        # invariant stopped being true the day a vendored artifact joined
+        # the bundle.  The invariant v2 states is the real one: every
+        # binary is proved stale-free either by a source-revision stamp
+        # or by a declared contract marker, and the receipt names which
+        # binaries got which proof rather than asking a reader to trust a
+        # single boolean.  A consumer written against v1's key should
+        # fail loudly on a v2 receipt, so the key is retired, not aliased.
+        "schema": "gpuwm-release-artifact-proof-v2",
         "mode": "dry-run" if args.dry_run else "cut",
         "not_proven": list(DRY_RUN_SKIPS) if args.dry_run else [],
         "status": "PASS",
         "release": args.release,
         "source_rev": args.source_rev,
-        "source_rev_stamp_verified_in_every_binary": True,
+        "source_rev_stamp_verified_in_every_built_binary": True,
+        # The two proof lists partition the bundle's binaries, per
+        # platform-qualified filename:
+        #   binaries_proved_by_source_rev_stamp -- gpuwm-authored bytes
+        #     carrying GPUWM_BRIDGE_SOURCE_REV equal to the released
+        #     commit, so the build cannot predate the source it ships.
+        #   binaries_proved_by_contract_marker -- vendored bytes, which
+        #     do not move with this checkout and so carry no stamp;
+        #     BRIDGE_ABI_MARKERS names an ABI literal that is a property
+        #     of those exact bytes, so a build predating the contract
+        #     this release speaks is caught statically.
+        # Together they cover every binary in every platform bundle;
+        # a name missing from both would be bytes nobody proved.
+        "binaries_proved_by_source_rev_stamp": sorted(stamped),
+        "binaries_proved_by_contract_marker": sorted(vendored_by_marker),
         "installed_module": str(installed),
         "installed_version": gpuwm.__version__ if not args.dry_run else None,
         "wheel": {

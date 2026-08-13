@@ -20,11 +20,26 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gpuwm.obs.dealias import (REASON_NO_NYQUIST, REASON_NONFINITE,
-                               REASON_UNRESOLVED, STATE_REJECTED,
-                               STATE_UNCHANGED, STATE_UNFOLDED,
-                               DealiasParams, DealiasParamsError, WindProfile,
-                               dealias_sweep)
+from gpuwm.obs import dealias
+from gpuwm.obs.dealias import (ENGINE_VAD_REGION, REASON_NO_NYQUIST,
+                               REASON_NONFINITE, REASON_UNRESOLVED,
+                               STATE_REJECTED, STATE_UNCHANGED,
+                               STATE_UNFOLDED, DealiasParams,
+                               DealiasParamsError, WindProfile, dealias_sweep)
+
+
+def _vad(**kwargs) -> DealiasParams:
+    """Parameters for the engine this module tests, named.
+
+    Every case here states a truth this engine's algorithm must recover or
+    refuse -- its VAD reference, its anchors, its abstentions -- so it
+    names the engine rather than reading whichever one is currently the
+    shipped default.  When the default moved to ``region-global`` on
+    2026-08-12 these tests kept testing what they were written to test,
+    which is the whole reason the engine is named here.
+    """
+
+    return DealiasParams(engine=ENGINE_VAD_REGION, **kwargs)
 
 #: A real WSR-88D Doppler-cut Nyquist -- the one the KDMX case reports on
 #: every tilt from 0.53 through 6.28 degrees, which is why the 0.8 mask caps
@@ -72,7 +87,7 @@ def test_smooth_folded_field_is_recovered_exactly():
     observed = fold(truth)
     assert np.abs(truth).max() > NYQUIST, "the fixture must actually fold"
 
-    result = dealias_sweep(observed, _azimuths(), NYQUIST, DealiasParams())
+    result = dealias_sweep(observed, _azimuths(), NYQUIST, _vad())
 
     assert result.stats["gates_rejected"] == 0
     assert result.stats["gates_unfolded"] > 0
@@ -90,7 +105,7 @@ def test_states_and_folds_agree_with_the_truth_gate_by_gate():
     observed = fold(truth)
     expected_fold = np.rint((truth - observed) / INTERVAL).astype(int)
 
-    result = dealias_sweep(observed, _azimuths(), NYQUIST, DealiasParams())
+    result = dealias_sweep(observed, _azimuths(), NYQUIST, _vad())
 
     np.testing.assert_array_equal(result.fold, expected_fold)
     np.testing.assert_array_equal(result.state == STATE_UNFOLDED,
@@ -111,7 +126,7 @@ def test_a_background_wind_profile_can_stand_in_for_the_vad():
     reference = profile.radial_reference(
         azimuth, np.zeros_like(azimuth), np.zeros_like(azimuth))
 
-    result = dealias_sweep(observed, _azimuths(), NYQUIST, DealiasParams(),
+    result = dealias_sweep(observed, _azimuths(), NYQUIST, _vad(),
                            reference=reference)
 
     assert result.stats["gates_rejected"] == 0
@@ -159,7 +174,7 @@ def test_a_couplet_straddling_the_nyquist_survives_intact():
     observed = fold(truth)
     assert truth.max() > NYQUIST, "the outbound lobe must fold"
 
-    result = dealias_sweep(observed, _azimuths(), NYQUIST, DealiasParams())
+    result = dealias_sweep(observed, _azimuths(), NYQUIST, _vad())
 
     core = np.zeros(truth.shape, dtype=bool)
     core[81:100, 141:160] = True
@@ -241,7 +256,7 @@ def test_a_coherent_fold_with_no_interior_jump_is_refused_not_guessed():
         "the patch interior must be smooth, or the shear scan would have "
         "caught it and this would not be the uncaught case")
 
-    result = dealias_sweep(observed, _azimuths(), NYQUIST, DealiasParams())
+    result = dealias_sweep(observed, _azimuths(), NYQUIST, _vad())
 
     assert np.all(result.state[interior] == STATE_REJECTED)
     assert np.all(result.reason[interior] == REASON_UNRESOLVED)
@@ -269,7 +284,7 @@ def test_a_coherent_fold_the_reference_can_pin_is_recovered():
     folded = np.rint((truth - fold(truth)) / INTERVAL) != 0
     assert folded[interior].any(), "the patch must contain folded gates"
 
-    result = dealias_sweep(observed, _azimuths(), NYQUIST, DealiasParams())
+    result = dealias_sweep(observed, _azimuths(), NYQUIST, _vad())
 
     resolved = result.state[interior] != STATE_REJECTED
     assert resolved.mean() > 0.99
@@ -295,7 +310,7 @@ def test_a_sector_scan_with_no_fittable_reference_refuses_everything():
     observed = fold(truth)
     azimuth = np.arange(40, dtype=np.float64)  # 40 x 1 degree = 1.1 sectors
 
-    result = dealias_sweep(observed, azimuth, NYQUIST, DealiasParams(),
+    result = dealias_sweep(observed, azimuth, NYQUIST, _vad(),
                            wraps=False)
 
     assert result.stats["reference"]["bands_valid"] == 0
@@ -321,7 +336,7 @@ def test_an_ambiguous_jump_of_about_one_nyquist_abstains():
     interior = np.zeros(truth.shape, dtype=bool)
     interior[152:188, 122:168] = True
 
-    result = dealias_sweep(observed, _azimuths(), NYQUIST, DealiasParams())
+    result = dealias_sweep(observed, _azimuths(), NYQUIST, _vad())
 
     assert np.all(result.state[interior] == STATE_REJECTED)
 
@@ -345,7 +360,7 @@ def test_every_gate_lands_in_exactly_one_of_three_states(builder):
     """
 
     observed = builder()
-    result = dealias_sweep(observed, _azimuths(), NYQUIST, DealiasParams())
+    result = dealias_sweep(observed, _azimuths(), NYQUIST, _vad())
     stats = result.stats
 
     assert (stats["gates_unchanged"] + stats["gates_unfolded"]
@@ -367,7 +382,7 @@ def test_a_sweep_without_a_nyquist_refuses_every_gate():
     """No Nyquist, nothing knowable -- the same refusal superob already makes."""
 
     observed = fold(_environment())
-    result = dealias_sweep(observed, _azimuths(), None, DealiasParams())
+    result = dealias_sweep(observed, _azimuths(), None, _vad())
 
     finite = np.isfinite(observed)
     assert np.all(result.state[finite] == STATE_REJECTED)
@@ -380,7 +395,7 @@ def test_speeds_beyond_the_physical_bound_are_rejected():
 
     observed = fold(_environment(shear_u=0.10, shear_v=0.14))
     result = dealias_sweep(observed, _azimuths(), NYQUIST,
-                           DealiasParams(max_speed_ms=20.0))
+                           _vad(max_speed_ms=20.0))
 
     kept = result.state != STATE_REJECTED
     assert np.all(np.abs(result.velocity[kept]) <= 20.0)
@@ -462,7 +477,7 @@ def test_a_fold_that_looks_exactly_like_the_environment_is_a_stated_limit():
     interior = np.zeros(truth.shape, dtype=bool)
     interior[152:188, 122:168] = True
 
-    result = dealias_sweep(observed, _azimuths(), NYQUIST, DealiasParams())
+    result = dealias_sweep(observed, _azimuths(), NYQUIST, _vad())
 
     assert np.all(result.state[interior] == STATE_UNCHANGED)
     assert np.all(result.fold[interior] == 0)
@@ -607,7 +622,7 @@ def test_the_volume_profile_recovers_the_wind_the_volume_was_built_from():
 
     cuts = [_cut(elevation, u=18.0, v=-24.0)
             for elevation in (0.5, 1.5, 2.4, 3.4, 4.3, 6.0, 8.0, 10.0)]
-    profile = volume_wind_profile(cuts, DealiasParams())
+    profile = volume_wind_profile(cuts, _vad())
 
     assert profile is not None
     assert profile.height_m.size >= 2
@@ -626,7 +641,7 @@ def test_a_layer_only_one_elevation_reached_is_not_believed():
     from gpuwm.obs.dealias import volume_wind_profile
 
     assert volume_wind_profile([_cut(0.5, u=18.0, v=-24.0)],
-                               DealiasParams()) is None
+                               _vad()) is None
 
 
 def test_the_profile_refuses_to_extrapolate_past_what_it_sampled():
@@ -648,3 +663,104 @@ def test_the_profile_refuses_to_extrapolate_past_what_it_sampled():
 
     assert np.isnan(reference[0]) and np.isnan(reference[2])
     assert reference[1] == pytest.approx(20.0, abs=1e-9)
+
+
+# --------------------------------------------------------------------------
+# the coarse VAD search: the native kernel may go faster, never elsewhere
+# --------------------------------------------------------------------------
+
+
+def _coarse_band(seed: int, samples: int, *, speed: float, direction: float,
+                 noise: float = 1.5) -> tuple:
+    """One range band's worth of folded samples, truth known."""
+
+    rng = np.random.default_rng(seed)
+    azimuth = rng.uniform(0.0, 2.0 * np.pi, samples)
+    truth = (speed * np.cos(direction) * np.cos(azimuth)
+             + speed * np.sin(direction) * np.sin(azimuth)
+             + rng.normal(0.0, noise, samples))
+    return fold(truth), np.sin(azimuth), np.cos(azimuth)
+
+
+def test_the_native_search_returns_the_seeds_the_exhaustive_one_does():
+    """Band for band, tuple for tuple, on bands built to be hard.
+
+    The kernel is allowed to be faster and is not allowed to be different.
+    It never ranks candidates: it shortlists them, and this asserts the
+    shortlist plus the exact ranking reproduces the exhaustive search --
+    including the last band, where every zero-speed candidate ties exactly
+    and only an argsort's stability decides which three come back.
+    """
+
+    bands = [_coarse_band(index, samples, speed=speed, direction=direction)
+             for index, (samples, speed, direction) in enumerate(
+                 [(240, 39.7, 1.1), (900, 8.0, 4.0), (11000, 44.0, 2.2),
+                  (4000, 21.5, 0.0)])]
+    calm = _coarse_band(99, 3000, speed=0.0, direction=0.0, noise=0.0)
+    bands.append((np.zeros_like(calm[0]), calm[1], calm[2]))
+
+    exhaustive = [dealias._coarse_seeds(*band, NYQUIST) for band in bands]
+    table = dealias._coarse_seed_table(bands, NYQUIST)
+
+    assert table == exhaustive
+
+
+def test_the_shortlist_guard_widens_rather_than_guessing():
+    """A shortlist that cannot be proved sufficient is not used.
+
+    Forcing the tolerance to something enormous makes every guard fail, so
+    the shortlist has to grow to the whole grid -- which is the exhaustive
+    search.  The seeds must be unchanged, because widening is the safe
+    direction and the exact cost still ranks whatever survives.
+    """
+
+    band = _coarse_band(7, 2000, speed=33.0, direction=2.5)
+    approx = dealias._coarse_cost(*dealias._coarse_subsample(*band), NYQUIST,
+                                  dealias._COARSE_A, dealias._COARSE_B)
+    values, sin_az, cos_az = dealias._coarse_subsample(*band)
+
+    seeds, priced = dealias._coarse_shortlisted(
+        approx, values, sin_az, cos_az, NYQUIST, 3)
+    assert priced == dealias._COARSE_SHORTLIST
+
+    original = dealias._COARSE_COST_TOLERANCE
+    try:
+        dealias._COARSE_COST_TOLERANCE = 1e9
+        widened, priced = dealias._coarse_shortlisted(
+            approx, values, sin_az, cos_az, NYQUIST, 3)
+    finally:
+        dealias._COARSE_COST_TOLERANCE = original
+
+    assert priced == dealias._COARSE_A.size
+    assert widened == seeds == dealias._coarse_seeds(*band, NYQUIST)
+
+
+def test_an_absent_native_library_changes_no_decision(monkeypatch):
+    """Same sweep, both paths, gate for gate.
+
+    This is the acceptance in miniature: whatever the box has, the two
+    routes through the coarse search must produce the same velocities, the
+    same states, the same reasons and the same folds.  On a tree with the
+    library built one arm is native; on one without it the test still holds
+    the refactor to the original arithmetic.
+    """
+
+    truth = _environment(rows=360, gates=300, u=31.0, v=-19.0, shear_u=0.35)
+    velocity = fold(truth)
+    azimuth = _azimuths(360)
+
+    # `_vad()`, not a bare `DealiasParams()`: the coarse seed search this
+    # test is about belongs to the vad-region engine, and the shipped
+    # default became `region-global` on 2026-08-12. A bare default here
+    # dispatches to the other engine, which never runs this code and
+    # needs a native library besides.
+    native = dealias_sweep(velocity, azimuth, NYQUIST, _vad())
+    monkeypatch.setattr(dealias.coarse_cost, "coarse_cost_batch",
+                        lambda *args, **kwargs: None)
+    plain = dealias_sweep(velocity, azimuth, NYQUIST, _vad())
+
+    np.testing.assert_array_equal(native.velocity, plain.velocity)
+    np.testing.assert_array_equal(native.state, plain.state)
+    np.testing.assert_array_equal(native.reason, plain.reason)
+    np.testing.assert_array_equal(native.fold, plain.fold)
+    assert plain.stats["reference"]["coarse_native"] is False

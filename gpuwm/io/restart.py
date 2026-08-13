@@ -90,6 +90,7 @@ from pathlib import Path
 
 import numpy as np
 
+from gpuwm import perf_timing
 from gpuwm.config import radiation_scheme_ids
 from gpuwm.supervisor import fsync_file
 from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
@@ -2429,6 +2430,16 @@ def write_restart(path, state, cfg, *, run_trackers=None,
     resumed run reports the same summary as an uninterrupted one — model
     evolution itself never reads them.
     """
+    with perf_timing.stage("io.restart.write_restart"):
+        return _write_restart(
+            path, state, cfg, run_trackers=run_trackers,
+            tree_header=tree_header,
+            sealed_forcing_extension=sealed_forcing_extension)
+
+
+def _write_restart(path, state, cfg, *, run_trackers=None,
+                   tree_header: dict | None = None,
+                   sealed_forcing_extension: bool = False) -> Path:
     path = Path(path)
     _validate_nssl2_live_restart_state(state, cfg)
     _validate_thompson_aerosol_live_restart_state(state, cfg)

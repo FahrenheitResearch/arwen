@@ -1,0 +1,218 @@
+# The Rust workspaces' test suites, as the battery invokes them.
+#
+# WHAT THIS IS
+#   This tree carries two Cargo workspaces that are not decoration: the
+#   vendored Rusty Weather renderer under tools/rustwx (every product PNG
+#   a run publishes comes out of rw_wrfbatch) and the GRIB decoder under
+#   tools/grib1_bridge (every byte of GFS and HRRR the model initialises
+#   from comes through it).  Both ship in the release.  Neither had a leg
+#   on the release battery: `pytest` cannot collect a Rust test, so the
+#   whole of it was invisible to every gate a cut runs, and the only
+#   thing the battery ever asked of these workspaces was that the
+#   renderer BINARY existed.
+#
+#   Drew's ruling, 2026-08-12 ("probably we would want tests right"),
+#   makes the Rust crate tests a battery leg.  This file is that leg's
+#   list, and it is a CURATED ENUMERATION for the same reason
+#   tools/battery/stage1_files.txt is: a gate nobody can enumerate is a
+#   gate that quietly stops being run.
+#
+# WHY NOT `cargo test --workspace`
+#   One invocation would be faster and would report ONE number.  A crate
+#   that stops being a workspace member disappears from that number
+#   without changing it in any way a reader can see, and the count moves
+#   for legitimate reasons on every commit, so nothing can be pinned to
+#   it.  Per-package entries make the membership explicit, give the
+#   manifest gate something to compare the workspace against, and let
+#   each package carry its own floor.
+#
+# FORMAT
+#   One entry per line, four fixed columns then zero or more trailing
+#   tokens:
+#
+#       SHARD  WORKSPACE  PACKAGE  MIN_TESTS  [KEY=VALUE...] [cargo args]
+#
+#   SHARD      `cpu`       no card, runnable in the stage-1 environment.
+#                          This is the release battery's leg.
+#              `gpu`       needs a card.  Nothing is on it today --
+#                          neither workspace touches CUDA -- and the
+#                          column exists so a crate that grows a
+#                          card-dependent test has somewhere to go other
+#                          than off the list.
+#              `fixtures`  needs a data set the repository does not
+#                          carry, fetched from a public bucket by a
+#                          script in the crate.  NOT part of the default
+#                          leg, listed anyway: see the rw-sat entry.
+#   WORKSPACE  repository-relative directory holding Cargo.toml AND
+#              .cargo/config.toml.  The config is not optional -- it is
+#              the vendored source replacement that makes --offline work.
+#   PACKAGE    a member package of that workspace, by name.
+#   MIN_TESTS  the expected-green contract: the entry passes when cargo
+#              exits 0, reports zero failures, AND runs at least this
+#              many tests.  A floor rather than an equality so adding a
+#              test does not turn the leg red; a floor rather than
+#              nothing because "0 passed" also exits 0, and a feature
+#              flag or a `#[cfg]` that stops COMPILING a test module is
+#              indistinguishable from a green run without it.  The
+#              numbers below are what each package reported on its first
+#              green run, 2026-08-12, cargo 1.94.0 on Windows.
+#   KEY=VALUE  extra environment for that entry, same idiom and same
+#              reason as tools/battery/tiles_gates.txt: an invocation
+#              whose real acceptance needs a variable that lives in
+#              somebody's shell history is an invocation that drifts.
+#   cargo args any trailing token that is not KEY=VALUE is passed to
+#              cargo verbatim, after `test --locked --offline -p NAME`.
+#              This is how a package splits across shards by TARGET --
+#              one entry taking `--lib`, another taking `--test <name>`.
+#
+#   Blank lines and lines whose first non-space character is `#` are
+#   ignored.  tools/battery/run_cargo_gates.py is the runner; it prints a
+#   matrix and one verdict line and its exit status is the verdict.
+#
+# CARGO_TARGET_DIR IS MANDATORY AND MUST BE OUTSIDE THE TREE
+#   The runner REFUSES to start without it and refuses one that resolves
+#   inside the repository.  This is not tidiness.  A release cut checks
+#   the worktree-local renderer at tools/rustwx/target/release and hashes
+#   it before it believes any leg that renders; a test leg sharing that
+#   directory can rebuild, replace or lock the binary the cut is
+#   adjudicating, and the two answers would then depend on which leg ran
+#   last.  The gate also stays honest about the tree: a cut refuses to
+#   assemble from a dirty source tree, and target/ artefacts are exactly
+#   what makes one dirty on a clone whose .gitignore has moved.
+#
+# OFFLINE ONLY
+#   Every invocation is `cargo test --locked --offline`.  Both workspaces
+#   vendor their dependencies (tools/rustwx/vendor/crates-io,
+#   tools/grib1_bridge/vendor/crates-io) with a .cargo/config.toml that
+#   replaces the crates.io source, so a green leg proves the vendored
+#   closure is complete.  Dropping --offline would let a leg pass on a
+#   box with a warm registry cache and fail on the release box, which is
+#   the same class of failure as a gate that lives in a shell history.
+#
+# AMENDMENT DISCIPLINE
+#   Same as stage1_files.txt and tiles_gates.txt: an addition carries its
+#   REASON inline, on the lines above it, naming what the package covers.
+#   tests/test_cargo_gate_manifest.py is the gate on this file, and it
+#   checks BOTH directions -- every entry names a real workspace member,
+#   and every workspace member has an entry.  That second direction is
+#   how a crate that lands later joins this leg: adding it to
+#   tools/rustwx/Cargo.toml's members turns the manifest gate RED until
+#   somebody writes its line here, so a new crate cannot arrive already
+#   ungated.  MIN_TESTS for a new entry is the count its first green run
+#   reported; the runner prints that number.
+
+# ---------------------------------------------------------- tools/rustwx
+# The vendored Rusty Weather renderer workspace (VENDOR.md).  Drew's own
+# crates, carried at the state that produced the campaign renderer, plus
+# rw-wrfbatch, which is this project's.  Every product plot the model
+# publishes is drawn by this workspace, and a release ships its binary.
+
+# Meteorological arithmetic: derived fields, ECAPE, the severe-weather
+# family, windowed reductions.  Numbers, not looks -- this is the crate
+# whose answers a diagnostic is read off, so a silent change here is a
+# wrong forecast product rather than an ugly one.
+cpu  tools/rustwx  rustwx-calc  83
+
+# Contouring.  Isolines are the one place a rendering bug can invent
+# structure that was never in the field, so it is gated as arithmetic.
+cpu  tools/rustwx  rustwx-contour  7
+
+# The shared vocabulary: grids, product keys, timestamps, typed
+# provenance.  Everything else in the workspace agrees through it.
+cpu  tools/rustwx  rustwx-core  26
+
+# Field IO and the store-facing readers.
+cpu  tools/rustwx  rustwx-io  59
+
+# Model/grid descriptions, including projections.  A projection defect
+# here misplaces the whole picture over the map without failing anything.
+cpu  tools/rustwx  rustwx-models  97
+
+# The product catalogue: what each product IS, its scale, its units, its
+# colour treatment.  The largest suite in the workspace and the one the
+# renderer's own regressions land in.
+cpu  tools/rustwx  rustwx-products  291
+
+# The raster/vector renderer, basemaps, fonts and layout.
+cpu  tools/rustwx  rustwx-render  159
+
+# The library half of Drew's top-level crate (the eleven command-line
+# bins and their 9.8 MB of fixtures are deliberately not vendored --
+# VENDOR.md), which is why this floor is small next to the crate's name.
+cpu  tools/rustwx  rusty-weather  30
+
+# Fetch: the HTTP/S3 side of the ingest path, offline-testable parts.
+cpu  tools/rustwx  rw-fetch  44
+
+# The verification instruments: `rw_fieldcmp`, the paired-FRAME judge
+# that prints the campaign metric table, and `rw_runscore`, the
+# paired-RUN judge that reduces two run directories to one distance per
+# registered metric.  Gated as arithmetic, not as tooling: these are the
+# programs a campaign's accept/reject verdict is read off, and their
+# whole design claim is that they reproduce the reference judge's bits
+# rather than merely being defensible.  The summation contract is the
+# load-bearing part -- the pairwise tree, the 8192-element reduction
+# buffer around it, and the cell-first ring packing -- and it is what
+# these tests pin.  Floor is this package's first green run, 43 across
+# the lib, `runscore_contract` and `table_contract`.
+cpu  tools/rustwx  rw-fieldcmp  43
+
+# Ingest: decode and normalise into the store's field model.  Half of
+# "everything data-to-model-input converges on Rust" lives here.
+cpu  tools/rustwx  rw-ingest  61
+
+# NEXRAD Level II: the radar decoder the DA lane reads its observations
+# through.  Its correctness reference is BowEcho, and this is the only
+# gate in this tree that compiles it at all.
+cpu  tools/rustwx  rw-nexrad  125
+
+# Surface and upper-air observations.
+cpu  tools/rustwx  rw-obs  53
+
+# Satellite: the GOES ABI ingest and the L2 cloud products.  --lib is
+# the whole crate EXCEPT tests/cloud_products.rs, which is the entry
+# below; the split is by target, not by subject, so nothing is dropped
+# quietly.
+cpu  tools/rustwx  rw-sat  65  --lib
+
+# The GOES reader proper.
+cpu  tools/rustwx  rw-goes  41
+
+# The run store: the on-disk format every renderer and every diagnostic
+# reads a finished run out of.  A format change that nothing catches
+# strands every artefact already written in it.
+cpu  tools/rustwx  rw-store  146
+
+# rw-wrfbatch: THIS project's crate, not vendored -- the headless
+# wrfout -> product-PNG batch renderer `gpuwm render --engine rust`
+# drives.  It is the seam between the model's output and the pictures a
+# person actually looks at, and it is the one crate here whose upstream
+# is us.
+cpu  tools/rustwx  rw-wrfbatch  114
+
+# THE FIXTURE-DEPENDENT HALF OF rw-sat, LISTED AND NOT RUN BY DEFAULT.
+# tests/cloud_products.rs decodes four REAL GOES-19 granules -- COD, CPS,
+# phase, ACHA cloud-top height -- and checks the CWP computation against
+# an independent one.  The granules are ~tens of MB of NetCDF that the
+# repository does not carry; crates/rw-sat/tests/fixtures/fetch_fixtures.ps1
+# pulls them from NOAA's public bucket.  Without them the suite does not
+# skip: it PANICS by name ("fixture dir exists but granule ... is
+# missing -- re-run the fetch script"), which is the right behaviour and
+# is why `cargo test --workspace` is red on a clean clone of this tree.
+#
+# It is on its own shard rather than deleted from the list because the
+# alternative -- a `cpu  rw-sat` entry restricted to `--lib` and nothing
+# saying why -- is how coverage disappears without an argument.  Run it
+# where the network is allowed:
+#     python tools/battery/run_cargo_gates.py --shard fixtures
+# after running the fetch script.  A release cut does NOT block on it.
+fixtures  tools/rustwx  rw-sat  4  --test cloud_products
+
+# ---------------------------------------------------- tools/grib1_bridge
+# The GRIB decoder.  Every GFS and HRRR field the model initialises from
+# is decoded here, and the release ships the binaries (gfs_grib2_bridge,
+# hrrr_grib2_bridge) as bridges.  Its quantization path is where a
+# decoded field silently loses precision, which is a wrong initial
+# condition rather than a crash -- the failure mode the whole
+# full-files-over-idx ruling exists to keep visible.
+cpu  tools/grib1_bridge  grib1_bridge  64

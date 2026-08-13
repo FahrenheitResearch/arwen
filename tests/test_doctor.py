@@ -524,8 +524,14 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
     assert skewed.remedy and "cargo build" in skewed.remedy
 
     # Every bridge gpuwm resolves declares a contract marker: an
-    # undeclared one would pass this handshake silently forever.
-    assert set(bridges.BRIDGE_ENV) == set(bridges.BRIDGE_ABI_MARKERS)
+    # undeclared one would pass this handshake silently forever.  The
+    # table is allowed to cover artifacts that are not GRIB decoders --
+    # the vendored dealiasing library declares one so the release cut can
+    # tell an old build of it from this one -- so the direction that
+    # matters is that no BRIDGE_ENV entry is missing from it.
+    assert set(bridges.BRIDGE_ENV) <= set(bridges.BRIDGE_ABI_MARKERS)
+    extra = set(bridges.BRIDGE_ABI_MARKERS) - set(bridges.BRIDGE_ENV)
+    assert extra == {"region_global_dealias"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(
@@ -1367,7 +1373,15 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
     root = tmp_path / shape
     root.mkdir(parents=True, exist_ok=True)
     if shape == "checkout":
-        for crate in ("grib1_bridge", "rustwx"):
+        # Every crate a real checkout carries, because `artifact_remedy`
+        # decides clone-versus-build by asking whether the crate source is
+        # on disk under `_package_parent()`.  A crate missing from this
+        # list makes the fake checkout claim to be a wheel for that one
+        # artifact, and the whole-report paste then contains a `git clone`
+        # the "a checkout has the sources" assertion below rejects.  This
+        # list has to grow with `tools/` -- `region_global_dealias` joined
+        # when the region-global dealiaser became the default engine.
+        for crate in ("grib1_bridge", "rustwx", "region_global_dealias"):
             (root / "tools" / crate).mkdir(parents=True, exist_ok=True)
             (root / "tools" / crate / "Cargo.toml").write_text(
                 "[package]\n", encoding="utf-8")

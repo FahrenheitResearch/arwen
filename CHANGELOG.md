@@ -1,5 +1,243 @@
 # Changelog
 
+## 2.1.0 (2026-08-13)
+
+New:
+- Correlation-coefficient QC is available at the radar grid-build front
+  door as `--cc-qc`, off by default. Its rule is per moment. In
+  reflectivity a gate is dropped only where RhoHV and reflectivity are
+  both low, so hail cores, the melting layer and tornadic debris survive
+  as echo. In velocity there is no reflectivity shield: a low-RhoHV gate
+  loses its velocity at every reflectivity, because a scatterer that does
+  not move with the air is not a wind observation. Off is byte-identical
+  to a build from before the flag existed.
+- The debris-signature fringe keeps its velocity. A velocity gate
+  survives the mask where RhoHV sits between the debris floor and the
+  velocity threshold, reflectivity sits between 30 dBZ and the shield,
+  and the gate lies inside the neighbourhood of a clustered velocity
+  couplet in the same sweep. All five conditions must hold. Low RhoHV
+  alone never qualifies, and the debris core at and above the shield is
+  untouched. The exemption is on with `--cc-qc`;
+  `--cc-no-tds-fringe-exempt` restores the strict rule.
+- The mask's account is per radar, not per file. Every exempted gate is
+  counted, and so is every candidate each criterion turned away, so a
+  reader can reconstruct the strict-rule total from the receipt without
+  rerunning anything. The `cc_qc` provenance key appears only when at
+  least one radar's mask ran.
+- Radar velocity dealiasing has a new default engine. `--dealias` runs
+  the vendored `region-global-dealias` crate
+  (`tools/region_global_dealias`), a Rust port of Py-ART's
+  `dealias_region_based`, through a C ABI, with its refinement pass on.
+  Verified fold-for-fold identical to Py-ART 2.2.5 across 1,355,617
+  velocity gates of a real Level-II volume. There it keeps 3,894 more
+  velocity cells than the previous `vad-region` engine, which rejects
+  both gates of that volume's strongest couplet, and the dealias stage
+  falls from 18.3 seconds to 62 ms. `--dealias-engine vad-region` still
+  selects the old solver, `--no-dealias-refinement` turns the refinement
+  off, and the engine that ran is recorded in `provenance.dealias`.
+- Dealiased velocities are bounded by physics on both engines. A gate
+  unfolded past `max_speed_ms` (75 m/s) is rejected as
+  `speed_out_of_range` and counted, never clamped and never passed: 115
+  gates of that volume, worst 114.5 m/s, couplet untouched.
+  `gpuwm fetch-bridges` stages the library the default engine needs, and
+  `gpuwm doctor` blocks without it.
+- `tools/dealias_engine_compare.py` runs both engines, the masking-only
+  and bound-lifted arms over one volume, reporting each arm's wall clock,
+  gate account, gridded `vr` field, per-cell differences, and what each
+  did to the strongest couplet in the data.
+- Radial-velocity dealiasing runs about 21x faster on a real volume, and
+  decides exactly what it decided before. Its coarse VAD seed search --
+  1.13 million wrapped-cost cosines per range band, 1214 bands in a
+  KTLX volume -- moved into the existing preprocessing cdylib as
+  `gpuwm_dealias_coarse_cost_f64`, which rides a plane-rotation
+  recurrence along the speed axis instead of calling a cosine per
+  candidate, and evaluates a whole sweep's bands in parallel. Measured
+  back to back on one KTLX 2013-05-20 volume: the band-fit stage 25.91 s
+  to 1.21 s, the dealiasing cost of the volume 29.97 s to 2.63 s, the
+  whole observation front door 32.05 s to 5.00 s, with the gridded
+  output sha256 and every dealias count identical to the NumPy path and
+  to the unported tree. The kernel never ranks candidates: it shortlists
+  them, `_coarse_shortlisted` proves from its own error bound that no
+  excluded candidate can be in the answer, and the surviving shortlist is
+  ranked by the original NumPy expression -- widening to the exhaustive
+  search when the proof cannot be made. Without the native library the
+  pure-NumPy search runs as before, and the sweep's stats say which path
+  it took.
+- Wall-clock instrumentation reaches the observation, verification and
+  I/O paths, which had none. `GPUWM_PERF_TIMING=1` turns on a per-stage
+  clock inside the dealiasing pipeline, the paired-frame reader and
+  comparison, the wrfout frame writer, the restart writer, the static
+  builder and the HRRR bridge verification; `GPUWM_PERF_TIMING_OUT=<path>`
+  writes the receipt at exit. Off by default, and off costs a
+  module-global read per probe. Nested stages are subtracted from their
+  parent so a receipt says where the wall clock actually sat.
+- `tools/perf_obs_timing.py` prices the observation front door on one real
+  radar volume, gridding it with dealiasing off and on so the capability's
+  cost is a difference rather than an assertion.
+- The paired-frame judge is a Rust program. `rw_fieldcmp` prints the
+  metric table from two directories of history frames: per-field
+  quantiles and their differences, accumulation sums and their ratio,
+  composite coverage at each threshold. `--threads` sizes the pool,
+  `--table` and `--json` write it out, and arm labels, fields, composite
+  and thresholds all come from the command line. On a paired
+  verification set: 2.6 times sooner, all 529 table lines identical to
+  the Python judge's.
+- The paired-run judge is born Rust. `rw_runscore`, in the same crate as
+  the frame judge, scores two run directories against each other over a
+  registered metric set: pooled low-pass state RMSE and pooled boundary
+  increment error per domain and per field, the first-object timing
+  difference per domain, and the mean neighbourhood skill distance on
+  whichever domains carry it. The ladder, the spacings, the field list,
+  every threshold and every metric-key spelling arrive on the command
+  line; the defaults name WRF-convention variables and generic keys, and
+  no campaign, case or physics suite is baked in.
+- It walks the ladder once. The Python scorer reads every frame four
+  times per field, once as the current frame of its own interval and once
+  as the previous frame of the next, on each arm, reopening the file every
+  time: 672 decodes of the state fields and 720 file opens for a
+  four-domain seven-field pair. The Rust one decodes each frame's fields
+  once from one open handle, reduces each on the spot to the scored
+  interior sum and the outer ring of cells the next interval needs, drops
+  the field, and runs the frames in parallel. Same pair: 440 decodes, 56
+  opens.
+- Measured on a real two-arm WRF pair from the pinned node-1 build, seven
+  frames per domain per arm staged on the registered four-domain ladder,
+  6.0 GB of history, cache warm: all 61 distances are bit-identical to the
+  Python scorer, and the comparison costs 16.7 s against the reference's
+  111 s. Three independent timing rounds put it between 6.5x and 7.2x.
+- `tools/verify_runscore_parity.py` runs both scorers on one pair and
+  reports every metric that differs, with the gap in representable
+  doubles rather than a relative epsilon that hides a wrong answer at
+  small magnitudes. It times both in the same pass, so the parity claim
+  and the speed claim come from the same bytes, and it records how the
+  pair was staged. The receipt for the run above is
+  `evidence/verify-instrument/paired-run-score-parity.json`.
+- What the Rust scorer does not replace: the campaign door also re-hashes
+  every history frame against its run artifact before it scores anything.
+  That leg is still the Python one's. It is cheaper than it looks on a
+  warm cache, about 2 s of the 122 s door on this pair, so the metric
+  arithmetic is where the time went and where it was taken from.
+- A stored hour's plots render at the same time instead of one after
+  another, in a private pool the met kernels' own parallel work nests
+  inside. The width is the smallest of the box's physical cores, the
+  hour's product count, and what free memory affords at half of what is
+  free; a width that memory rather than cores decided says so and names
+  the override. `RUSTWX_BATCH_RENDER_THREADS` sets it for this loop,
+  `RUSTWX_RENDER_THREADS` for the renderer as a whole. Measured on a
+  337-plot two-frame gallery from a local WRF run: 85 s to 9 s on a
+  16-core box, every PNG byte-identical to the serial render.
+- Both console streams report in catalog order rather than completion
+  order, at every width. The progress events, the summary's output list
+  and `rw_wrfbatch`'s stdout read as the serial pass did, and so now do
+  the advisories a render writes to stderr about itself. Cancellation
+  still stops new plots from starting and lets in-flight ones finish,
+  now up to one per worker rather than one in total.
+- A release gate changed: the battery now tests the Rust workspaces this
+  project ships, `tools/rustwx` and `tools/grib1_bridge`, which no cut
+  had ever compiled. `tools/battery/cargo_gates.txt` lists them per
+  package with a shard and a test floor;
+  `tools/battery/run_cargo_gates.py` runs the leg offline under an
+  external `CARGO_TARGET_DIR`, reporting COULD NOT RUN rather than a
+  pass when cargo is absent.
+  `tests/test_cargo_gate_manifest.py` keeps list and members in step, so
+  a new crate cannot land ungated.
+- The LETKF analysis times itself. `gpuwm.da.letkf.analyze` records its
+  setup, its chunk loop and its finish, and splits the chunk loop at the
+  phase boundary into the localisation weighting (evaluated at every
+  gridpoint) and the batched transform (at the active ones only). The
+  five numbers reach every cycle report through the `filter` block of
+  `assimilate_radar_grid`'s provenance, beside the host-to-device staging
+  and unstaging the device arm pays. There was no wall clock anywhere in
+  `gpuwm/da/` before this, so a report could say the analysis was most of
+  a DA leg and not say what part of the analysis that was.
+- `tools/da_solve_ab.py` A/Bs one LETKF analysis between solve devices on
+  byte-identical inputs. Each arm runs in a fresh subprocess, the bundle's
+  every input file is re-digested before either arm reads it, and the
+  receipt carries per-stage wall clock, per-field increment agreement and
+  the observation counts that say the two arms saw the same analysis. It
+  judges as well as measures: bitwise-identical increments across two
+  devices are reported as a device arm that silently ran the host path,
+  not as agreement, and a bundle built by the harness rather than dumped
+  from a real leg is labelled synthetic in the verdict.
+- `tools/da_cycle_prepared.py --dump-analysis-bundle DIR` copies each
+  leg's analysis inputs -- the staged member checkpoints, that leg's
+  observation file, the history file its observations were gridded onto --
+  into a bundle the A/B replays. A leg whose analysis needs a forward
+  operator that files alone cannot rebuild says so and dumps nothing.
+- MEASURED, on a synthetic bundle at a radar-sparse shape (86,400
+  gridpoints, 6.5% of them active, 10 members, two radars, numpy):
+  the localisation weighting is 19.9 s of a 22.6 s chunk loop and the
+  batched transform is 2.2 s. The phase that scales with the WHOLE
+  domain dominates the phase that scales with the observed part, so a
+  faster batched eigensolver -- in any language -- is bidding for 9% of
+  this analysis. `evidence/da-solve-ab/host-baseline-sparse.json`.
+- MEASURED, same bundle, host against cuda on one RTX 5090, medians of
+  three: the analysis is 16.63 s on the host arm and 2.17 s on the device
+  arm. The device wins the localisation weighting 14.41 to 0.33 and the
+  transform 1.65 to 0.84, and pays 0.27 s to stage. Sharing the card with
+  a GPU load taxes the device analysis 2x, to 4.29 s, and leaves the host
+  analysis unmoved. The arms agree to 2.6e-15 relative, worst field, with
+  different eigensolvers and identical observation counts.
+  `evidence/da-solve-ab/README.md`.
+
+Fixed:
+- Verifying an HRRR bridge publication hashes its payloads concurrently.
+  The check still covers every payload the manifest lists, so what it
+  proves is unchanged, but the reads no longer run one file at a time.
+  Measured here at 1.18 GB/s serial against 3.51 GB/s on eight workers.
+  A single lead's snapshot load re-verified the whole sealed
+  publication -- all 25 leads on a 24-hour case -- and that read is what
+  made two of six cases take 267 and 280 seconds in a stage the other
+  four finished in 10 to 12.
+- The Rust judge's summation reproduced the reference's pairwise tree but
+  not the buffering around it. The reference's reduction hands its
+  summation kernel 8192 elements at a time and adds each buffer's total
+  into a running scalar, so an array longer than one buffer is summed as
+  a sequence of trees rather than as one tree, and past about a million
+  elements the two arrangements differ in the last bit or two. Every
+  paired-run metric works at that size. Both `rw_fieldcmp` and
+  `rw_runscore` now buffer, in single precision as well as double, with
+  the block totals computed concurrently and added in order so the answer
+  does not depend on the worker count. The buffer length is a settable
+  default in the reference stack, which is recorded where the constant
+  lives: a caller that changes it moves the last bit of every large sum
+  on both sides.
+- Selecting the outer frame of cells from a stack of planes leaves the
+  reference holding a column-major array, and its sums walk memory rather
+  than logic. The ring is packed cell-first to match. Before this was
+  traced, three boundary metrics sat one bit away from the reference with
+  no explanation.
+- The live bundle smoke counted only the binaries it staged. `fetch_bundle`
+  stages every pinned binary and every pinned map asset, so the assertion
+  read 9 against a true 47 on the published v2.0.0 bundle. It is derived
+  from the manifest now. Nothing offline had ever packed a bundle carrying
+  assets, which is why it survived; a hermetic test covers that half now.
+  The same test skipped two different states through one branch: a tree
+  that has never been cut still skips, a cut tree missing a bundle for a
+  supported platform fails.
+- Three `rustwx-products` tests drove one process-global disclosure with
+  nothing serializing them, so one test's reset landed between another's
+  set and its assertion about one run in five. The new cargo leg is what
+  made it visible. The product was never involved.
+- The whole-report doctor paste fixture did not know
+  `tools/region_global_dealias`, so the new region-dealias check believed
+  a source checkout was a wheel and printed a `git clone` the paste
+  contract refuses.
+- The release verifier could not reason about a vendored artifact. It
+  required every binary in a bridge bundle to carry this release's
+  source-revision stamp, but the region-global dealias library is a
+  verbatim upstream crate frozen at a recorded commit, deliberately
+  unstamped, and proved instead by the contract marker naming the ABI it
+  speaks. The packer already knew that; the verifier did not, and would
+  have refused a correct bundle. It asks a vendored artifact for its
+  marker now, and refuses one carrying the wrong marker or none, so the
+  staleness question is still asked of every binary. Its receipt names
+  which binaries each proof covered instead of asserting one blanket
+  claim, so the receipt schema is `gpuwm-release-artifact-proof-v2`.
+  `tests/test_verify_release_artifacts.py` and the release-snapshot
+  suites joined the battery's stage-1 list, which had never carried the
+  machinery a cut itself runs.
+
 ## 2.0.0 (2026-08-12)
 
 New:

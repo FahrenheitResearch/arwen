@@ -239,16 +239,62 @@ _DEALIASED_STATEMENT = (
 )
 
 
+#: What this file's velocities have been through when the REGION-GLOBAL
+#: engine ran.
+#:
+#: A third statement rather than a footnote on the second, for the reason
+#: the second is not a footnote on the first: the claim that separates them
+#: is load-bearing.  ``_DEALIASED_STATEMENT`` promises that every gate is
+#: confidently unfolded, confidently unchanged, or REJECTED, and that where
+#: the evidence is ambiguous the gate is rejected rather than guessed.
+#: This engine makes no such promise -- it has no environmental reference
+#: to be ambiguous against, and it assigns a fold to every region it
+#: resolved.  A consumer reading a file made by this engine must not be
+#: told it was made by an abstaining one.
+_DEALIASED_STATEMENT_REGION_GLOBAL = (
+    "region-global unfolding (gpuwm.obs.dealias_region, driving the "
+    "vendored region-global-dealias crate at tools/region_global_dealias -- "
+    "a Rust port of Py-ART's dealias_region_based, Helmus & Collis 2016, "
+    "verified fold-for-fold identical to Py-ART 2.2.5 on this pipeline's "
+    "own decoded sweeps). Each sweep is segmented into regions that are "
+    "internally fold-free, and the whole region network is unfolded "
+    "JOINTLY: the strongest region pair merges first and every remaining "
+    "connection is re-weighted with what that merge established, rather "
+    "than each boundary being committed from local information alone. "
+    "Regions separated by up to 100 gates of no-data are linked. THIS "
+    "ENGINE DOES NOT ABSTAIN: it carries no environmental reference, and "
+    "every region it resolved is assigned a fold, so provenance.dealias "
+    "records gates as unchanged or unfolded and rejects only gates that "
+    "were not numbers to begin with and gates on a sweep whose Nyquist "
+    "could not be believed. It publishes no region-graph counts across its "
+    "ABI, so provenance.dealias.totals reports those as null rather than "
+    "as zero. Velocities are exact: a gate the solver did not move is "
+    "returned bit-identically, and a gate it moved differs by a whole "
+    "number of Nyquist intervals and nothing else. Because a resolved "
+    "gate's fold state is known, it is bounded by max_speed_ms rather than "
+    "by nyquist_reject_fraction of Nyquist. See provenance.dealias.sweeps "
+    "for the per-sweep account and provenance.fold_suspicion for the shear "
+    "scan, which runs on the UNFOLDED field and so measures what the "
+    "unfolder missed."
+)
+
+
 def dealiasing_statement(params: SuperobParams) -> str:
     """The ``dealiasing`` attribute these parameters entail.
 
     A function rather than a constant because the file's honest description
     of itself depends on what ran, and the only thing that knows what ran is
-    the parameter set the velocities were made with.
+    the parameter set the velocities were made with -- now including *which
+    engine* the parameter set selected.
     """
 
-    return (_DEALIASING_STATEMENT if params.dealias is None
-            else _DEALIASED_STATEMENT)
+    from gpuwm.obs.dealias import ENGINE_REGION_GLOBAL     # noqa: PLC0415
+
+    if params.dealias is None:
+        return _DEALIASING_STATEMENT
+    if params.dealias.engine == ENGINE_REGION_GLOBAL:
+        return _DEALIASED_STATEMENT_REGION_GLOBAL
+    return _DEALIASED_STATEMENT
 
 
 class RadarGridSchemaError(ValueError):
@@ -869,6 +915,13 @@ def _provenance_payload(observations: GriddedObservations,
     dealias = list(getattr(observations, "dealias", ()) or ())
     if dealias:
         payload["dealias"] = dealias
+    # Same rule for the dual-pol mask, and for the same reason.  The
+    # per-radar list carries an empty entry for a radar whose mask never
+    # ran, so the key appears only when at least one radar's did: a file
+    # built without --cc-qc keeps the provenance key set it always had.
+    cc_qc = list(getattr(observations, "cc_qc", ()) or ())
+    if any(cc_qc):
+        payload["cc_qc"] = cc_qc
     if extra:
         payload["context"] = extra
     return payload

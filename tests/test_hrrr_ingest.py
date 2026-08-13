@@ -120,6 +120,30 @@ def test_loader_requires_external_manifest_binding_and_exact_shapes(tmp_path):
             root, 0, expected_manifest_sha256=manifest_hash)
 
 
+def test_every_payload_is_still_verified_when_the_hashing_runs_in_parallel(
+        tmp_path):
+    """The concurrent hash sweep must not lose a late corruption.
+
+    Payload verification runs on a thread pool, so a mismatch is discovered
+    on whichever worker happens to reach it.  This corrupts the *last*
+    payload the manifest lists -- the one a short-circuiting or
+    first-result-only sweep would miss -- and demands the same refusal.
+    """
+    root = tmp_path / "bridge"
+    manifest_hash = _fake_bridge(root)
+    listed = [line.split(None, 1)[1].strip()
+              for line in (root / "SHA256SUMS").read_text().splitlines()
+              if line.strip()]
+    last = [name for name in listed if not name.endswith("SHA256SUMS")][-1]
+    victim = root / last.removeprefix("./")
+    payload = bytearray(victim.read_bytes())
+    payload[0] ^= 0xFF
+    victim.write_bytes(bytes(payload))
+    with pytest.raises(ValueError, match="payload hash mismatch"):
+        load_hrrr_native_window(
+            root, 0, expected_manifest_sha256=manifest_hash)
+
+
 def test_radius_corrected_aligned_d01_maps_to_integer_hrrr_indices():
     source = hrrr_source_grid()
     target = LambertGrid(

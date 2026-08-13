@@ -109,6 +109,52 @@ against a global reference rather than testing neighbours — excludes it.
 The counters exist so that a region whose *boundary* was flagged is visible
 in provenance even when its interior survived; they are evidence, not a
 guarantee, and this module does not claim otherwise.
+
+**A fifth mask is opt-in and dual-pol:** correlation-coefficient QC
+(:mod:`gpuwm.obs.cc_qc`), enabled by setting ``SuperobParams.cc_qc``.
+It runs at the sweep level and *before* the gate-to-gate shear scan,
+because non-meteorological echo corrupts fold-state evidence exactly the
+way it corrupts everything else.
+
+One ordering caveat, stated because it is a real divergence rather than a
+detail.  QC upstream of *all* alias reasoning is the operational order,
+and this mask does not achieve it when the region dealiaser is also on:
+the unfolder runs once per sweep, above the block loop this mask lives
+in, so it reasons about folds on a velocity plane these gates have not
+yet been removed from.  What the mask drops is unaffected -- but not for
+the reason first recorded here.  The drop decision *does* read velocity:
+the debris-fringe exemption's couplet detector is handed a velocity
+plane.  What makes the ordering harmless is WHERE the plans carrying
+that detector are built -- once, above the block loop, over the volume's
+RAW sweeps -- so the dropped set and every counter below are identical
+either way.  It is the unfolder's evidence, not the mask's, that is not
+the evidence this docstring would prefer it had.
+
+RULING (2026-08-12, the 2.1 assembly): the ordering as assembled is
+ACCEPTED for 2.1.  Masking the raw planes before the unfolder is called
+is a change to this stage's shape, so it is to be settled by an A/B --
+the couplet instrument plus a control region -- before any restructure,
+never adopted on the strength of the operational order alone.
+
+Its rule is per moment.  In
+*reflectivity* it is compound (low RhoHV AND low reflectivity), never
+RhoHV alone -- hail cores, the melting layer and the tornadic debris
+signature legitimately depress RhoHV, and a bare threshold deletes
+precisely the echo this pipeline exists to observe.  In *velocity*
+there is no reflectivity shield: a low-RhoHV gate loses its velocity
+however bright it is, debris core included, because a scatterer that
+does not move with the air does not carry a wind observation.  One
+band is exempted from that, on by default: the debris-signature
+*fringe* -- 30 to 35 dBZ, RhoHV between the debris floor and the
+velocity threshold, and beside a clustered velocity couplet in the
+same sweep -- keeps its velocity, because that band is where a weak or
+distant tornado's rotation lives and low RhoHV alone is not evidence
+of debris.  Every exempted gate is counted.  Both the asymmetry and
+the exemption are owner rulings and their reasoning is recorded in
+:mod:`gpuwm.obs.cc_qc`.  Where the
+volume carries no RhoHV -- pre-2013 archives, cuts without a usable
+dual-pol source, gates beyond the RHO extent -- the mask does nothing
+and counts the absence; absent data never fabricates a pass or a fail.
 """
 
 from __future__ import annotations
@@ -118,7 +164,15 @@ from numbers import Real
 
 import numpy as np
 
-from gpuwm.obs.dealias import (STATE_REJECTED, DealiasParams, DealiasParamsError,
+from gpuwm import perf_timing
+from gpuwm.obs.cc_qc import (REASON_COMPANION, REASON_NO_REF, REASON_NO_RHO,
+                             TDS_TURNED_AWAY_ABOVE_Z_BAND,
+                             TDS_TURNED_AWAY_BELOW_Z_BAND,
+                             TDS_TURNED_AWAY_NO_ROTATION,
+                             TDS_TURNED_AWAY_RHO_BELOW_FLOOR,
+                             CcQcParams, CcQcParamsError, build_cc_plans)
+from gpuwm.obs.dealias import (ENGINE_VAD_REGION, STATE_REJECTED,
+                               DealiasParams, DealiasParamsError,
                                dealias_sweep, volume_wind_profile)
 from gpuwm.obs.geometry import (REFRACTION_FACTOR, gate_locations)
 from gpuwm.obs.sweeps import Censor, RadarVolume
@@ -196,6 +250,14 @@ _POSITIVE_FIELDS = (
 #: volume; an infinite one drops it loudly.  Neither is a floor.
 _FINITE_FIELDS = ("min_reflectivity_dbz",)
 
+#: Fields that are parameter objects (or None), not floats: exempt from the
+#: float normalization and the real-number runtime check, validated by
+#: delegation instead.  Every such field must appear here, or the float
+#: normalization in ``__post_init__`` will try to call ``float()`` on a
+#: parameter object and the runtime-type check will refuse it as "not a
+#: real number".
+_NON_FLOAT_FIELDS = ("dealias", "cc_qc")
+
 
 def _fold_boundaries(values: np.ndarray, nyquist: float,
                      params) -> tuple[np.ndarray, int, int]:
@@ -228,6 +290,13 @@ def _fold_boundaries(values: np.ndarray, nyquist: float,
     return flags, int(boundary.sum()), int(finite.sum())
 
 
+#: The region-graph bookkeeping only the VAD engine publishes.  Named once
+#: so the accumulator and the null-out in ``to_payload`` cannot drift.
+_GRAPH_COUNTERS = ("regions", "regions_anchored", "regions_linked",
+                   "regions_unresolved", "regions_conflict", "edges",
+                   "edges_confident", "edges_violated")
+
+
 @dataclass
 class _DealiasTotals:
     """Volume-wide three-state account, summed over sweeps.
@@ -257,6 +326,16 @@ class _DealiasTotals:
     edges_violated: int = 0
     reference_bands: int = 0
     reference_bands_valid: int = 0
+    #: Which engine produced these totals, or ``"mixed"`` if -- impossibly
+    #: today, since one parameter set governs a volume -- two ever did.
+    engine: str = ""
+    #: False once any sweep's account arrived without the region-graph
+    #: counters.  They are the VAD engine's own bookkeeping; the
+    #: region-global engine solves a region network too but exposes no
+    #: count of it across its C ABI, and reporting zero regions for a
+    #: volume it unfolded 90k gates in would be a measurement claim nobody
+    #: made.  :meth:`to_payload` writes them as null in that case.
+    graph_counters_reported: bool = True
     rejected: dict = field(default_factory=dict)
     fold_histogram: dict = field(default_factory=dict)
 
@@ -266,9 +345,12 @@ class _DealiasTotals:
         self.gates_unchanged += int(stats["gates_unchanged"])
         self.gates_unfolded += int(stats["gates_unfolded"])
         self.gates_rejected += int(stats["gates_rejected"])
-        for name in ("regions", "regions_anchored", "regions_linked",
-                     "regions_unresolved", "regions_conflict", "edges",
-                     "edges_confident", "edges_violated"):
+        engine = str(stats.get("engine", ENGINE_VAD_REGION))
+        self.engine = engine if self.engine in ("", engine) else "mixed"
+        for name in _GRAPH_COUNTERS:
+            if name not in stats:
+                self.graph_counters_reported = False
+                continue
             setattr(self, name, getattr(self, name) + int(stats[name]))
         reference = stats.get("reference") or {}
         self.reference_bands += int(reference.get("bands", 0))
@@ -282,6 +364,9 @@ class _DealiasTotals:
     def to_payload(self) -> dict:
         payload = {key: value for key, value in asdict(self).items()
                    if not isinstance(value, dict)}
+        if not self.graph_counters_reported:
+            for name in _GRAPH_COUNTERS:
+                payload[name] = None
         payload["rejected"] = dict(sorted(self.rejected.items()))
         payload["fold_histogram"] = {
             key: self.fold_histogram[key]
@@ -305,7 +390,8 @@ def _dealias_velocity_sweep(sweep, nyquist, dealias_params, site,
     moment = sweep.moments[VELOCITY]
     raw = np.asarray(moment.data, dtype=np.float64)
     reference = None
-    if velocity_reference is not None:
+    if (velocity_reference is not None
+            and dealias_params.engine == ENGINE_VAD_REGION):
         ranges = moment.slant_range_m()
         azimuth = np.broadcast_to(sweep.azimuth_deg[:, None], raw.shape)
         elevation = np.broadcast_to(sweep.elevation_deg[:, None], raw.shape)
@@ -317,8 +403,15 @@ def _dealias_velocity_sweep(sweep, nyquist, dealias_params, site,
         reference = velocity_reference.radial_reference(
             azimuth, elevation, height - site.alt_m)
 
-    result = dealias_sweep(raw, sweep.azimuth_deg, nyquist, dealias_params,
-                           reference=reference)
+    # The clock from lane/perf-instrument around the call as
+    # lane/dealias-region left it: the region engine needs the gate
+    # geometry, and the instrument must time the call the front door
+    # actually makes, not the one that predates it.
+    with perf_timing.stage("obs.dealias.sweep_total", gates=int(raw.size)):
+        result = dealias_sweep(raw, sweep.azimuth_deg, nyquist, dealias_params,
+                               reference=reference,
+                               first_gate_m=moment.first_gate_range_m,
+                               gate_spacing_m=moment.gate_size_m)
     resolved = result.state != STATE_REJECTED
     velocity = np.where(resolved, result.velocity, raw)
     # ``band_fits`` is the raw harmonic coefficients the volume-profile pass
@@ -434,6 +527,14 @@ class SuperobParams:
     #: this field was ever added, which is the point: turning the capability
     #: on is a decision someone makes, and off is not a decision at all.
     dealias: DealiasParams | None = None
+    #: Correlation-coefficient QC, or ``None`` for the behaviour this
+    #: stage has always had.  ``None`` is not merely the default, it is
+    #: the *identity*: ``to_payload`` omits the key entirely while this
+    #: is None, so the observation file's ``superob_params`` attribute is
+    #: unchanged to the byte and a consumer reading a file written
+    #: without CC QC cannot tell the field was ever added.  Turning the
+    #: mask on is a decision someone makes; off is not a decision at all.
+    cc_qc: CcQcParams | None = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -445,7 +546,7 @@ class SuperobParams:
         # already refused anything that is not a real number, so this
         # normalizes what is sound and repairs nothing that is not.
         for field_ in fields(self):
-            if field_.name == "dealias":
+            if field_.name in _NON_FLOAT_FIELDS:
                 continue
             object.__setattr__(self, field_.name,
                                float(getattr(self, field_.name)))
@@ -472,7 +573,7 @@ class SuperobParams:
         """
 
         for field_ in fields(self):
-            if field_.name == "dealias":
+            if field_.name in _NON_FLOAT_FIELDS:
                 continue
             value = getattr(self, field_.name)
             if isinstance(value, bool) or not isinstance(value, Real):
@@ -575,16 +676,33 @@ class SuperobParams:
             except DealiasParamsError as error:
                 raise SuperobParamsError(
                     f"dealias parameters are unusable: {error}") from error
+        if self.cc_qc is not None:
+            if not isinstance(self.cc_qc, CcQcParams):
+                raise SuperobParamsError(
+                    f"cc_qc is {self.cc_qc!r} "
+                    f"({type(self.cc_qc).__name__}); it is either None -- "
+                    "no correlation-coefficient QC -- or a CcQcParams, "
+                    "because asking for the mask without saying its "
+                    "thresholds is not a configuration")
+            try:
+                self.cc_qc.validate()
+            except CcQcParamsError as error:
+                raise SuperobParamsError(
+                    f"cc_qc parameters are unusable: {error}") from error
         return self
 
     def to_payload(self) -> dict:
-        payload = {key: float(value) for key, value in asdict(self).items()
-                   if key != "dealias"}
-        # Present only when dealiasing ran.  A file written without it
-        # carries the same key set it always has, which is what makes the
-        # disabled path byte-identical rather than merely equivalent.
+        payload = {key: float(value)
+                   for key, value in asdict(self).items()
+                   if key not in _NON_FLOAT_FIELDS}
+        # Each optional parameter block is present only when it was
+        # configured.  A file written without either carries the same key
+        # set it always has, which is what makes the disabled paths
+        # byte-identical rather than merely equivalent.
         if self.dealias is not None:
             payload["dealias"] = self.dealias.to_payload()
+        if self.cc_qc is not None:
+            payload["cc_qc"] = self.cc_qc.to_payload()
         return payload
 
 
@@ -647,6 +765,50 @@ class SuperobCounts:
     #: ``provenance`` attribute, and therefore every committed obs digest --
     #: byte-identical to what it was before this field existed.
     censor: CensorCounts | None = None
+    #: Correlation-coefficient QC (:mod:`gpuwm.obs.cc_qc`).  All zero
+    #: unless ``SuperobParams.cc_qc`` is set.  A CC-dropped gate is
+    #: NaN-ed before the geometry pass, so it is *also* counted in
+    #: ``gates_nonfinite`` downstream, by construction: the mask removes
+    #: it the same way the decoder removes a censored gate.  The
+    #: ``without`` counters are pass-open provenance, never failures --
+    #: a sweep with no usable RhoHV source is 2012 data, not bad data.
+    cc_sweeps_masked: int = 0
+    cc_sweeps_paired_companion: int = 0
+    cc_sweeps_without_rho: int = 0
+    cc_sweeps_without_ref: int = 0
+    cc_gates_tested: int = 0
+    cc_gates_rho_missing: int = 0
+    cc_velocity_gates_rejected: int = 0
+    cc_reflectivity_gates_rejected: int = 0
+    #: Of ``cc_velocity_gates_rejected``, how many sat at or above
+    #: ``ref_shield_dbz``: the velocity the reflectivity shield would
+    #: have kept, and therefore the measured price of the purity ruling
+    #: on this volume.  Debris, hail cores and bright-band velocity land
+    #: here.  It is a cost, not a defect, and it is counted so that
+    #: revisiting the ruling is an argument about a number.
+    cc_velocity_gates_rejected_shielded_z: int = 0
+    #: The debris-fringe exemption (owner ruling 2026-08-12), which is
+    #: on unless ``CcQcParams.tds_fringe_exempt`` is turned off.
+    #: ``cc_velocity_gates_exempt_tds_fringe`` is the number of velocity
+    #: gates it kept that the strict rule would have deleted -- 30-35
+    #: dBZ, RhoHV between the debris floor and the velocity threshold,
+    #: beside a clustered velocity couplet.  It is the whole footprint
+    #: of the exemption, and a run with zero here is a run where the
+    #: ruling changed nothing.  ``cc_couplet_seed_gates`` is how many
+    #: clustered couplet seeds the volume's velocity planes produced:
+    #: the exemption cannot fire anywhere in a volume with none, so a
+    #: zero there explains a zero above.
+    cc_velocity_gates_exempt_tds_fringe: int = 0
+    cc_couplet_seed_gates: int = 0
+    #: Of the low-RhoHV velocity gates the strict rule would drop, how
+    #: many each conjunct turned away.  Disjoint, applied in order, and
+    #: together with the exemption count they account for every such
+    #: gate -- which is what lets a reader audit the ruling rather than
+    #: take it on faith.
+    cc_velocity_tds_rho_below_floor: int = 0
+    cc_velocity_tds_below_reflectivity: int = 0
+    cc_velocity_tds_at_or_above_shield: int = 0
+    cc_velocity_tds_no_couplet_nearby: int = 0
 
     def to_payload(self) -> dict:
         payload = {key: int(value) for key, value in asdict(self).items()
@@ -700,6 +862,10 @@ class RadarContribution:
     #: tells "no folds were found" from "nobody looked", which the counters
     #: alone cannot say.
     dealias: dict = field(default_factory=dict)
+    #: The correlation-coefficient QC account -- per-sweep records with
+    #: the RhoHV source each sweep used -- or empty when the mask was
+    #: not configured.  Empty is how a consumer knows it never ran.
+    cc_qc: dict = field(default_factory=dict)
 
 
 def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
@@ -734,6 +900,13 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
     bands the fit could not qualify.  It is never allowed to override a
     band the volume itself resolved, because the volume measured the wind
     and the background guessed it.
+
+    It belongs to the ``vad-region`` engine alone.  The region-global
+    engine has no environmental reference in it, so supplying one beside
+    that engine is refused rather than ignored: a caller who handed a
+    background wind to a solver that never read it would get a run whose
+    provenance says a treatment was applied and whose velocities were
+    produced without it.
     """
 
     params = (params or SuperobParams()).validate()
@@ -760,7 +933,23 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
         censor_counts = CensorCounts()
 
     dealias_params = params.dealias
-    if dealias_params is not None and velocity_reference is None:
+    # The volume-wide wind profile is the VAD engine's anchor and nothing
+    # else's.  Building it for the region-global engine would fit a
+    # harmonic to every range band of every cut -- the most expensive stage
+    # in this module -- and then hand the result to a solver that has no
+    # reference input to put it in.
+    profile_engine = (dealias_params is not None
+                      and dealias_params.engine == ENGINE_VAD_REGION)
+    if velocity_reference is not None and dealias_params is not None \
+            and not profile_engine:
+        raise ValueError(
+            f"velocity_reference was supplied with dealias engine "
+            f"{dealias_params.engine!r}, which carries no environmental "
+            f"reference; only {ENGINE_VAD_REGION!r} anchors against one. "
+            "Silently ignoring it would produce velocities that never saw "
+            "the background wind under provenance that says a background "
+            "was supplied")
+    if profile_engine and velocity_reference is None:
         # Derive the anchor from the volume itself before unfolding any of
         # it.  A per-sweep fit is one range band's view of one height; the
         # volume crossed most heights several times, from different
@@ -768,16 +957,17 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
         # cross-check available without an external model field.  Measured
         # on the real case this is what stops a sparse far-range band from
         # anchoring thousands of gates to a wind no other sweep saw.
-        velocity_reference = volume_wind_profile(
-            ((sweep.elevation_angle_deg,
-              sweep.moments[VELOCITY].data,
-              sweep.azimuth_deg,
-              _believable_nyquist(sweep.nyquist_velocity_ms, params),
-              sweep.moments[VELOCITY].slant_range_m())
-             for sweep in volume.sweeps
-             if VELOCITY in sweep.moments
-             and sweep.elevation_angle_deg <= params.max_elevation_deg),
-            dealias_params)
+        with perf_timing.stage("obs.dealias.volume_profile"):
+            velocity_reference = volume_wind_profile(
+                ((sweep.elevation_angle_deg,
+                  sweep.moments[VELOCITY].data,
+                  sweep.azimuth_deg,
+                  _believable_nyquist(sweep.nyquist_velocity_ms, params),
+                  sweep.moments[VELOCITY].slant_range_m())
+                 for sweep in volume.sweeps
+                 if VELOCITY in sweep.moments
+                 and sweep.elevation_angle_deg <= params.max_elevation_deg),
+                dealias_params)
     shape = (grid.nz, grid.ny, grid.nx)
     zeros = lambda: np.zeros(shape, dtype=np.float64)     # noqa: E731
     counts = SuperobCounts()
@@ -804,12 +994,24 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
     dealias_records: list[dict] = []
     dealias_totals = _DealiasTotals()
 
+    # CC QC plans span the whole volume because split-cut pairing needs
+    # the neighbours: a sweep skipped below (elevation) can still lend
+    # its RHO plane to the cut beside it.
+    cc_plans = None
+    cc_sweep_records: list[dict] = []
+    if params.cc_qc is not None:
+        cc_plans = build_cc_plans(volume.sweeps, params.cc_qc)
+
     site = volume.site
     max_range_m = params.max_range_km * 1000.0
     clear_air_source = (CLEAR_AIR_SOURCE_CENSOR if clear_air_from_censor
                         else CLEAR_AIR_SOURCE)
 
-    for sweep in volume.sweeps:
+    grid_timing = perf_timing.phases("obs.superob")
+    grid_timing.mark("sweep_loop", sweeps=len(volume.sweeps))
+    # `enumerate`, because CC QC's split-cut pairing indexes the plan
+    # table by sweep position.
+    for sweep_position, sweep in enumerate(volume.sweeps):
         if sweep.elevation_angle_deg > params.max_elevation_deg:
             counts.sweeps_skipped_elevation += 1
             continue
@@ -838,6 +1040,19 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
         sweep_boundaries = 0
         sweep_suspect_radials = 0
         sweep_shear_rejected = 0
+        cc_plan = None
+        cc_masker = None
+        if cc_plans is not None:
+            cc_plan = cc_plans[sweep_position]
+            cc_masker = cc_plan.masker
+            if cc_masker is not None:
+                counts.cc_sweeps_masked += 1
+                if cc_plan.reason == REASON_COMPANION:
+                    counts.cc_sweeps_paired_companion += 1
+            elif cc_plan.reason == REASON_NO_RHO:
+                counts.cc_sweeps_without_rho += 1
+            elif cc_plan.reason == REASON_NO_REF:
+                counts.cc_sweeps_without_ref += 1
 
         for product, moment in sweep.moments.items():
             if product not in (REFLECTIVITY, VELOCITY):
@@ -849,6 +1064,11 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
             if not np.any(in_range):
                 continue
             ranges = ranges[in_range]
+            # CC QC evaluates against this moment's own gate ranges: REF
+            # and VEL do not owe each other a gate count, and a plane is
+            # never masked by another plane's index.
+            cc_drop = (None if cc_masker is None
+                       else cc_masker.drop_mask(product, ranges))
 
             # Radial blocks bound peak memory: a super-res sweep is 720 x
             # 1832 gates and the geometry pass holds a dozen float64
@@ -894,6 +1114,64 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                 if dealiased is not None and product == VELOCITY:
                     values = dealiased["velocity"][start:stop][:, in_range]
                     resolved = dealiased["resolved"][start:stop][:, in_range]
+                # CC QC before the shear scan sees the block:
+                # non-meteorological echo is not fold evidence, and a
+                # NaN-ed gate breaks the gate-to-gate chain exactly the
+                # way a decoder-censored gate does.  Only finite gates
+                # count as dropped -- masking a hole is not a rejection.
+                #
+                # ORDERING, and it is a merge decision worth stating.  The
+                # CC lane was written against a stage that had no
+                # dealiaser, and its docstring places this mask "upstream
+                # of alias reasoning".  It cannot be, here: the unfolder
+                # runs once per sweep, above this block loop, on the raw
+                # velocity plane.  So the mask is applied AFTER the
+                # unfolded values are substituted in, not before.
+                #
+                # What that does and does not change, and read this
+                # before moving anything: the drop decision DOES read
+                # velocity -- the TDS-fringe exemption's couplet detector
+                # is handed a velocity plane (`CcSweepMasker(...,
+                # velocity=...)` in cc_qc.py).  What makes the ordering
+                # harmless is not that velocity goes unread; it is that
+                # `build_cc_plans` runs ONCE, above this block loop, over
+                # `volume.sweeps`, so every input to the decision --
+                # RhoHV, reflectivity and that couplet scan alike -- reads
+                # the RAW plane no matter what happens down here.  Move
+                # the plan build INTO this loop and the exemption silently
+                # starts reasoning about dealiased velocity.  As it
+                # stands, WHICH gates are dropped is identical either way
+                # and the counters below stay honest.  Running the mask
+                # before the substitution would have been strictly worse:
+                # the NaNs would be overwritten by
+                # `dealiased["velocity"]` on the very next line while the
+                # counters still claimed the drops.  What is genuinely
+                # lost is that the unfolder's fold reasoning saw gates
+                # this mask would have removed.  Owner ruling 2026-08-12
+                # (the 2.1 assembly): this ordering is ACCEPTED for 2.1,
+                # and masking the raw planes before the unfolder is to be
+                # settled by an A/B -- couplet instrument plus a control
+                # region -- before any restructure.
+                if cc_drop is not None:
+                    finite_before = np.isfinite(values)
+                    # The exemption is invisible in the drop counts by
+                    # construction -- the gate it saved is the gate that
+                    # is no longer there to count -- so account for it
+                    # on every block, dropped gates or not.
+                    exempt = cc_masker.count_block(
+                        product, finite_before, start)
+                    if product == VELOCITY:
+                        counts.cc_velocity_gates_exempt_tds_fringe += exempt
+                    cc_hits = cc_drop[start:stop] & finite_before
+                    if np.any(cc_hits):
+                        values = np.array(values, dtype=np.float64, copy=True)
+                        values[cc_hits] = np.nan
+                        dropped = cc_masker.count_dropped(
+                            product, cc_hits, start)
+                        if product == VELOCITY:
+                            counts.cc_velocity_gates_rejected += dropped
+                        else:
+                            counts.cc_reflectivity_gates_rejected += dropped
                 # The shear scan runs here, on raw range-ordered gates,
                 # because this is the last point at which a fold and its
                 # unfolded neighbour still differ by the Nyquist interval.
@@ -1093,9 +1371,30 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                 "gates_rejected_shear": sweep_shear_rejected,
             })
 
+        if cc_plan is not None:
+            if cc_masker is not None:
+                counts.cc_gates_tested += sum(
+                    cc_masker.gates_tested.values())
+                counts.cc_gates_rho_missing += sum(
+                    cc_masker.gates_rho_missing.values())
+                counts.cc_velocity_gates_rejected_shielded_z += (
+                    cc_masker.gates_dropped_shielded_z.get(VELOCITY, 0))
+                counts.cc_couplet_seed_gates += cc_masker.couplet_seed_gates
+                turned = cc_masker.gates_tds_turned_away.get(VELOCITY, {})
+                counts.cc_velocity_tds_rho_below_floor += turned.get(
+                    TDS_TURNED_AWAY_RHO_BELOW_FLOOR, 0)
+                counts.cc_velocity_tds_below_reflectivity += turned.get(
+                    TDS_TURNED_AWAY_BELOW_Z_BAND, 0)
+                counts.cc_velocity_tds_at_or_above_shield += turned.get(
+                    TDS_TURNED_AWAY_ABOVE_Z_BAND, 0)
+                counts.cc_velocity_tds_no_couplet_nearby += turned.get(
+                    TDS_TURNED_AWAY_NO_ROTATION, 0)
+            cc_sweep_records.append(cc_plan.record(sweep))
+
     # A cell whose retained velocities span too much of the Nyquist interval
     # is a fold caught inside one cell: drop it whole rather than average
     # across the wrap.
+    grid_timing.mark("reduce")
     spread = np.where(vr_count > 0, vr_max - vr_min, 0.0)
     folded = ((vr_count > 1)
               & np.isfinite(nyquist_min)
@@ -1107,6 +1406,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
             array[folded] = 0.0
         vr_count[folded] = 0
 
+    grid_timing.close()
     return RadarContribution(
         site_id=site.id, lat_deg=site.lat_deg, lon_deg=site.lon_deg,
         alt_m=site.alt_m, valid_time=volume.valid_time,
@@ -1120,6 +1420,10 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
         counts=counts, provenance=volume.provenance(),
         clear_air_source=clear_air_source,
         fold_suspicion=fold_suspicion,
+        cc_qc=({} if cc_plans is None else {
+            "params": params.cc_qc.to_payload(),
+            "sweeps": cc_sweep_records,
+        }),
         dealias=({} if dealias_params is None else {
             "params": dealias_params.to_payload(),
             "totals": dealias_totals.to_payload(),
@@ -1187,6 +1491,9 @@ class GriddedObservations:
     #: it is how a consumer tells "no folds were found" from "nobody
     #: looked", which no counter can say on its own.
     dealias: list = field(default_factory=list)
+    #: Per-radar correlation-coefficient QC accounts; each entry is empty
+    #: when that radar's mask never ran.  Defaulted for the same reason.
+    cc_qc: list = field(default_factory=list)
 
 
 def merge_contributions(contributions, grid: TargetGrid, *,
@@ -1361,4 +1668,11 @@ def merge_contributions(contributions, grid: TargetGrid, *,
         provenance=[c.provenance for c in contributions],
         fold_suspicion=[list(c.fold_suspicion) for c in contributions],
         dealias=[dict(c.dealias) for c in contributions
-                 if getattr(c, "dealias", None)])
+                 if getattr(c, "dealias", None)],
+        # ``getattr`` for the same reason the line above uses it: a caller
+        # assembling contributions by hand -- a test, a downstream lane --
+        # is not forced to invent an account it never measured.  The list
+        # stays per-radar aligned, so an entry is empty exactly when that
+        # radar's mask did not run.
+        cc_qc=[dict(getattr(c, "cc_qc", None) or {})
+               for c in contributions])

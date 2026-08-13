@@ -8,6 +8,7 @@
 //! contiguous ranges.  No reduction crosses a worker boundary, so changing
 //! the worker count cannot change an output element's arithmetic.
 
+pub mod dealias;
 pub mod quantization;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -38,18 +39,18 @@ pub extern "C" fn gpuwm_preprocess_cpu_source_rev()
     C_STAMP.as_ptr().cast()
 }
 
-const OK: i32 = 0;
-const ERR_NULL: i32 = 1;
-const ERR_DIMENSION: i32 = 2;
-const ERR_NONFINITE: i32 = 3;
-const ERR_PRESSURE_ORDER: i32 = 4;
-const ERR_SURFACE_BRACKET: i32 = 5;
-const ERR_TARGET_ABOVE_TOP: i32 = 6;
-const ERR_INTERPOLATION_WINDOW: i32 = 7;
-const ERR_PANIC: i32 = 127;
+pub(crate) const OK: i32 = 0;
+pub(crate) const ERR_NULL: i32 = 1;
+pub(crate) const ERR_DIMENSION: i32 = 2;
+pub(crate) const ERR_NONFINITE: i32 = 3;
+pub(crate) const ERR_PRESSURE_ORDER: i32 = 4;
+pub(crate) const ERR_SURFACE_BRACKET: i32 = 5;
+pub(crate) const ERR_TARGET_ABOVE_TOP: i32 = 6;
+pub(crate) const ERR_INTERPOLATION_WINDOW: i32 = 7;
+pub(crate) const ERR_PANIC: i32 = 127;
 
 #[inline]
-fn worker_ranges(length: usize, workers: usize) -> Vec<(usize, usize)> {
+pub(crate) fn worker_ranges(length: usize, workers: usize) -> Vec<(usize, usize)> {
     let count = workers.min(length);
     let quotient = length / count;
     let remainder = length % count;

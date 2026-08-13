@@ -36,22 +36,27 @@ from typing import Iterable, Mapping, Sequence
 import netCDF4
 import numpy as np
 
+from gpuwm import perf_timing
+
 
 def read_frame_field(path: str | Path, field: str) -> np.ndarray:
     """Read one leading-Time-dimension field as float64, refusing gaps."""
     path = Path(path)
-    with netCDF4.Dataset(path) as dataset:
-        if field not in dataset.variables:
-            raise ValueError(f"history frame {path} is missing {field}")
-        variable = dataset.variables[field]
-        if variable.ndim < 3 or variable.shape[0] != 1:
-            raise ValueError(f"field {field} in {path} has invalid shape")
-        value = np.ma.asarray(variable[0])
-        if np.ma.isMaskedArray(value) and np.any(np.ma.getmaskarray(value)):
-            raise ValueError(f"field {field} in {path} carries masked data")
-        result = np.asarray(value, dtype=np.float64)
-    if result.size == 0 or not np.all(np.isfinite(result)):
-        raise ValueError(f"field {field} in {path} is empty/non-finite")
+    with perf_timing.stage("verify.read_frame_field") as timed:
+        with netCDF4.Dataset(path) as dataset:
+            if field not in dataset.variables:
+                raise ValueError(f"history frame {path} is missing {field}")
+            variable = dataset.variables[field]
+            if variable.ndim < 3 or variable.shape[0] != 1:
+                raise ValueError(f"field {field} in {path} has invalid shape")
+            value = np.ma.asarray(variable[0])
+            if np.ma.isMaskedArray(value) and np.any(
+                    np.ma.getmaskarray(value)):
+                raise ValueError(f"field {field} in {path} carries masked data")
+            result = np.asarray(value, dtype=np.float64)
+        if result.size == 0 or not np.all(np.isfinite(result)):
+            raise ValueError(f"field {field} in {path} is empty/non-finite")
+        timed.count(bytes_f64=int(result.nbytes), elements=int(result.size))
     return result
 
 
@@ -228,6 +233,8 @@ def state_and_boundary_rmse(*, left_frames: Mapping[int, Path],
     """
     low_pass_differences: list[np.ndarray] = []
     boundary_differences: list[np.ndarray] = []
+    timed_pair = perf_timing.stage("verify.state_and_boundary_rmse")
+    timed_pair.__enter__()
     for seconds in score_times:
         lhs = read_frame_field(left_frames[seconds], field)
         rhs = read_frame_field(right_frames[seconds], field)
@@ -244,8 +251,10 @@ def state_and_boundary_rmse(*, left_frames: Mapping[int, Path],
         increment_error = (lhs - lhs_prev) - (rhs - rhs_prev)
         boundary_differences.append(
             boundary_values(increment_error, boundary_width_cells))
-    return (aggregate_rmse(low_pass_differences),
-            aggregate_rmse(boundary_differences))
+    scores = (aggregate_rmse(low_pass_differences),
+              aggregate_rmse(boundary_differences))
+    timed_pair.__exit__()
+    return scores
 
 
 def mean_fss_distance(left_fields: Mapping[int, np.ndarray],

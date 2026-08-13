@@ -168,8 +168,9 @@ def test_the_bundled_front_door_uses_the_resolution_ladders_own_env_var():
 def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
     """The docstring is the contract a release engineer reads; keep it true."""
 
-    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 9
-    assert "eight artifacts" not in bridge_assets.__doc__
+    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 10
+    for stale in ("eight artifacts", "nine artifacts", "nine files"):
+        assert stale not in bridge_assets.__doc__
 
 
 def test_doctor_imports_without_the_scientific_stack():

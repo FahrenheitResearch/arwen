@@ -173,6 +173,7 @@ anywhere in the computed increments.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
@@ -838,6 +839,49 @@ class LetkfDiagnostics:
     device_used_mib: float = 0.0
     pool_total_mib: float = 0.0
     device_pool_gap_mib: float = 0.0
+    #: Wall clock of the three phases of :func:`analyze`, in seconds, on
+    #: whichever namespace the arrays arrived in.  There was no timing
+    #: anywhere in this module before, so a receipt could say the analysis
+    #: was 65% of a DA cycle and not say which part of the analysis that
+    #: was -- and the answer is not obvious: the localisation weights of
+    #: phase 1 are evaluated at EVERY gridpoint while the eigensolve runs
+    #: only at the active ones, so a radar-sparse domain can spend the
+    #: majority of its wall clock on gridpoints that never enter a solve.
+    #: An A/B between solve devices that cannot see that split cannot say
+    #: what it moved.
+    #:
+    #: ``setup_seconds`` covers validation, the stencils and the chunk
+    #: sizing; ``solve_seconds`` is the chunk loop, DEVICE-SYNCHRONISED at
+    #: its end so an asynchronous namespace does not bill its own work to
+    #: whatever runs next; ``finish_seconds`` is the spread and increment
+    #: statistics.  They do not sum to the caller's wall: the caller's
+    #: host-to-device staging is outside this function.
+    setup_seconds: float = 0.0
+    solve_seconds: float = 0.0
+    finish_seconds: float = 0.0
+    #: ``solve_seconds`` split at the phase boundary inside the chunk
+    #: loop, which is the split that decides what a faster analysis would
+    #: have to be faster AT.  ``weights_seconds`` is phase 1 -- the
+    #: localisation weights and the active-point selection, evaluated at
+    #: EVERY gridpoint of the chunk, whether or not it ends up in a
+    #: solve.  ``transform_seconds`` is phase 2 -- the gathers, the
+    #: eigendecomposition and the member transform, at the ACTIVE points
+    #: only.
+    #:
+    #: On a radar-sparse domain these are not close.  A batched
+    #: small-eigensolver kernel, in any language, can only move the
+    #: second, and the first is a memory-bound stencil over the whole
+    #: domain; reading the pair before committing to a port is the
+    #: difference between a week well spent and a week spent on 10% of
+    #: the wall clock.
+    #:
+    #: The two do not quite sum to ``solve_seconds``; the residual is
+    #: per-chunk bookkeeping outside both phases, chiefly the release of a
+    #: chunk's scratch as ``_solve_chunk`` returns.  MEASURED at 5% of the
+    #: loop on a two-chunk numpy analysis.  Attributing it to either phase
+    #: would be inventing a number, so it stays visible as the gap.
+    weights_seconds: float = 0.0
+    transform_seconds: float = 0.0
     #: Per field, the RMS of the ensemble-mean increment.
     mean_increment_rms: dict = field(default_factory=dict)
     #: Per field, the domain-mean prior and posterior ensemble spread.
@@ -1022,6 +1066,28 @@ def _is_device_memory_error(exc) -> bool:
         node = node.__cause__ if node.__cause__ is not None \
             else node.__context__
     return False
+
+
+def _sync_namespace(xp) -> None:
+    """Wait for the namespace's queued work, so a timer means something.
+
+    A no-op on numpy, which is synchronous.  On a device namespace every
+    call in :func:`analyze` only ENQUEUES work, so a stopwatch read
+    without this bills whatever it likes to whichever phase happens to
+    block first -- typically the one that copies a result back, which is
+    the phase after the expensive one.  A device A/B measured that way
+    reports the wrong phase as the cost and is worse than no timing at
+    all.  Swallowed on failure for the same reason as
+    :func:`_release_device_scratch`: this measures the analysis, it must
+    never be able to fail one.
+    """
+
+    if xp is np:
+        return
+    try:
+        xp.cuda.runtime.deviceSynchronize()
+    except Exception:
+        pass
 
 
 def _release_device_scratch(xp) -> None:
@@ -1386,6 +1452,7 @@ def analyze(
     if diagnostics is None:
         diagnostics = LetkfDiagnostics()
 
+    t_enter = time.perf_counter()
     fields = config.analysis_fields
     probe = [prior[f] for f in fields if f in prior]
     probe += [o.values for o in obs]
@@ -1632,6 +1699,8 @@ def analyze(
     nactive = 0
     nbatch = 0
     max_sweeps = 0
+    weights_seconds = 0.0
+    transform_seconds = 0.0
 
     def _solve_chunk(start, stop):
         """One chunk's analysis: ``(active_points, max_local_obs, sweeps)``.
@@ -1659,6 +1728,8 @@ def analyze(
         same analysis to rounding, not the same bytes, and
         ``chunk_oom_shrinks`` in the receipt is what says which happened.
         """
+        nonlocal weights_seconds, transform_seconds
+        t_weights = time.perf_counter()
         pts = xp.arange(start, stop)
         kk = pts // (ny * nx)
         rem = pts - kk * (ny * nx)
@@ -1716,12 +1787,18 @@ def analyze(
         active = xp.nonzero(nvalid > 0)[0]
         ng = int(active.size)
         if ng == 0:
+            _sync_namespace(xp)
+            weights_seconds += time.perf_counter() - t_weights
             return 0, 0, 0
         local_max = int(nvalid.max())
 
         wloc = wloc[active]
         gidx = gidx[active]
         gpts = pts[active]
+
+        _sync_namespace(xp)
+        t_transform = time.perf_counter()
+        weights_seconds += t_transform - t_weights
 
         # ---- phase 2: the batched transform ---------------------------
         # yb: (G, P, R); d: (G, P); winv: (G, P) = localisation / error^2.
@@ -1831,6 +1908,8 @@ def analyze(
                     xa = xa * relax[None, :]
             incr_flat[f][:, gpts] = (
                 dbar[None, :] + xa - xbg).astype(work_dtype)
+        _sync_namespace(xp)
+        transform_seconds += time.perf_counter() - t_transform
         return ng, local_max, int(sweeps)
 
     # ---- the chunk loop, with the budget enforced rather than hoped ----
@@ -1858,6 +1937,9 @@ def analyze(
             pool_cap = pool.used_bytes() + per_point * chunk
         except Exception:
             pool = None
+    _sync_namespace(xp)
+    t_solve = time.perf_counter()
+    diagnostics.setup_seconds = t_solve - t_enter
     start = 0
     while start < npts:
         if pool_cap is not None and pool.total_bytes() > pool_cap:
@@ -1910,6 +1992,12 @@ def analyze(
             max_sweeps = max(max_sweeps, sweeps)
         start = stop
 
+    _sync_namespace(xp)
+    t_finish = time.perf_counter()
+    diagnostics.solve_seconds = t_finish - t_solve
+
+    diagnostics.weights_seconds = weights_seconds
+    diagnostics.transform_seconds = transform_seconds
     diagnostics.active_points = nactive
     diagnostics.max_local_obs = max_local
     diagnostics.batches = nbatch
@@ -1943,4 +2031,6 @@ def analyze(
             pass
 
     _finish(xp, fields, pri, increments, members, diagnostics)
+    _sync_namespace(xp)
+    diagnostics.finish_seconds = time.perf_counter() - t_finish
     return increments

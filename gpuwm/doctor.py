@@ -992,6 +992,78 @@ def _nexrad_front_door_check() -> Check:
                  brief=_short(evidence), group=_GROUP_ENGINES)
 
 
+def _region_dealias_check() -> Check:
+    """The region-global dealiasing engine, which the default now needs.
+
+    ``missing``, and the change of status from ``info`` is the finding:
+    ``region-global`` became the shipped ``--dealias-engine`` on
+    2026-08-12, so an absent library no longer costs an OPTION -- it
+    costs every dealiased velocity in the DA nowcast, on the path a run
+    reaches an hour in.  A default that needs a build is a default whose
+    build blocks, the same rule that puts ``rw_nexrad`` here while the
+    renderer and the fetch backbone stay informational.
+
+    What it does NOT do is send the operator to a workaround: the remedy
+    is the build, and ``--dealias-engine vad-region`` is named as what it
+    is, a different solver with different decisions, not as a way around
+    a missing file.
+    """
+
+    name = "region-global dealiasing engine (default --dealias-engine)"
+    blocks = ("blocks the default velocity dealiasing path -- every "
+              "--dealias run in the DA nowcast, live and archived")
+    try:
+        from gpuwm.obs import dealias_region
+    except ImportError as error:                 # pragma: no cover - partial
+        return Check(name, "missing",
+                     f"gpuwm.obs is not importable ({error}) -- {blocks}",
+                     "# reinstall so the observation stack imports:\n"
+                     f"{REINSTALL_HINT}",
+                     action="reinstall gpuwm",
+                     brief="obs stack not importable",
+                     group=_GROUP_ENGINES)
+    try:
+        found = dealias_region.find_region_bridge()
+    except FileNotFoundError as error:
+        return Check(
+            name, "missing", str(error),
+            f"# {dealias_region.REGION_DEALIAS_ENV} names a missing "
+            "library: point it at a real build, or unset it --\n"
+            + dealias_region.region_bridge_remedy(),
+            action=(f"unset {dealias_region.REGION_DEALIAS_ENV}, or point it "
+                    "at a real build"),
+            brief=f"{dealias_region.REGION_DEALIAS_ENV} names a missing file",
+            group=_GROUP_ENGINES)
+    if found is None:
+        return Check(
+            name, "missing", f"not staged or built -- {blocks}",
+            dealias_region.region_bridge_remedy()
+            + "\n  # or `gpuwm fetch-bridges`, which stages it with the\n"
+            "  # other prebuilt artifacts.  --dealias-engine vad-region\n"
+            "  # runs without it, but it is a DIFFERENT solver: it\n"
+            "  # abstains where this one resolves, and the engine that\n"
+            "  # ran is recorded with the velocities it made",
+            action=_build_action(dealias_region.CRATE_RELATIVE),
+            brief="not staged; default dealiasing blocked",
+            group=_GROUP_ENGINES)
+    try:
+        engine = dealias_region.load_region_dealiaser(found)
+    except Exception as error:                   # noqa: BLE001 - reported
+        return Check(
+            name, "missing", f"{found} -- {error}",
+            "# REBUILD it: this is a contract mismatch, so re-pointing\n"
+            f"  # {dealias_region.REGION_DEALIAS_ENV} at another copy of the\n"
+            "  # same vintage fails identically --\n"
+            + dealias_region.region_bridge_remedy(),
+            action=_build_action(dealias_region.CRATE_RELATIVE),
+            brief=_short(str(error)), group=_GROUP_ENGINES)
+    evidence = (f"ABI {engine.abi_version}, refinement API "
+                f"{engine.rift_api_version}, upstream "
+                f"{dealias_region.UPSTREAM_COMMIT[:12]}")
+    return Check(name, "verified", f"{found} -- {evidence}",
+                 brief=_short(evidence), group=_GROUP_ENGINES)
+
+
 def _rust_renderer_check() -> Check:
     """The vendored Rusty Weather renderer: probe-execute, not stat().
 
@@ -1204,8 +1276,20 @@ def _cpu_library_check() -> Check:
             group=_GROUP_BRIDGES)
     path, abi = backend.path, backend.abi_version
     backend.close()
+    # The same library carries the dealiaser's coarse VAD search.  A
+    # library built before that entry point existed still serves every
+    # interpolation call, so this is a note on the line and not a second
+    # verdict -- but it is the difference between a radar volume
+    # dealiased in seconds and one dealiased in half a minute, and a
+    # user who cannot see which one they have cannot ask why.
+    from gpuwm.obs.coarse_cost import unavailable_reason
+
+    reason = unavailable_reason()
+    search = ("radar coarse VAD search: native"
+              if reason is None else
+              f"radar coarse VAD search: NumPy ({reason})")
     return Check("cpu preprocess library", "verified",
-                 f"{path} loaded via ctypes, ABI v{abi}",
+                 f"{path} loaded via ctypes, ABI v{abi}; {search}",
                  brief=f"ABI v{abi}", group=_GROUP_BRIDGES)
 
 
@@ -1786,6 +1870,7 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     checks.append(_renderer_tree_check())
     checks.append(_fetch_backbone_check())
     checks.append(_nexrad_front_door_check())
+    checks.append(_region_dealias_check())
     checks.extend(_bridge_checks())
     checks.append(_cpu_library_check())
     checks.append(_thompson_tables_check())

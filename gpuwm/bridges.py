@@ -83,6 +83,14 @@ BRIDGE_ABI_MARKERS = {
     "grib2_dump": (
         b"parameter\tcenter\tsubcenter\tmaster_table_version\t"
         b"local_table_version\tlevel_type"),
+    # A library, so the literal is an exported symbol name rather than a
+    # usage line: `bw_dealias_rift_v1` is the refinement entry point, and
+    # it is the contract that matters here because the default engine
+    # runs refinement.  A build predating it exports `bw_dealias` alone,
+    # loads cleanly, answers the legacy ABI probe with 1, and then fails
+    # inside the first refined solve -- which is exactly the class of
+    # stale build this table exists to catch statically.
+    "region_global_dealias": b"bw_dealias_rift_v1",
 }
 
 #: True when the shell a remedy will be pasted into is Windows

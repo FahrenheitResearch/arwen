@@ -781,20 +781,18 @@ fn fit_text_to_width(text: &str, max_width: u32, scale: u32, bold: bool) -> (Str
 /// every product in the catalog, and 150 copies of one warning is a way
 /// of not being read.  Silence was the actual defect: the plot claims to
 /// carry its provenance and the cut is invisible in the image.
+///
+/// The say-once bookkeeping lives in [`crate::advisory`] rather than here,
+/// because under a batch render's worker pool the copy that survives must
+/// be chosen by catalog position, not by which thread arrived first.
 fn warn_subtitle_truncated(slot: &str, full: &str, fitted: &str) {
-    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-        std::sync::OnceLock::new();
-    let seen = SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-    let key = format!("{slot}\u{1}{full}");
-    if let Ok(mut set) = seen.lock() {
-        if !set.insert(key) {
-            return;
-        }
-    }
-    eprintln!(
-        "warning: the {slot} subtitle does not fit the plot width and was \
-         drawn as {fitted:?}; the full text is {full:?} -- widen the image \
-         (--size WxH) to keep the whole provenance line"
+    crate::advisory::advise_once(
+        format!("subtitle-truncated\u{1}{slot}\u{1}{full}"),
+        format!(
+            "warning: the {slot} subtitle does not fit the plot width and was \
+             drawn as {fitted:?}; the full text is {full:?} -- widen the image \
+             (--size WxH) to keep the whole provenance line"
+        ),
     );
 }
 

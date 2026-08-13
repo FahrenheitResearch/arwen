@@ -1,0 +1,42 @@
+[package]
+name = "region-global-dealias"
+version = "0.2.0"
+edition = "2024"
+# 1.85 for edition 2024; 1.87 for `usize::is_multiple_of`.
+rust-version = "1.87"
+description = "Region-based radar velocity dealiasing for a single sweep — a Py-ART dealias_region_based port with no dependencies"
+repository = "https://github.com/FahrenheitResearch/region-global-dealias"
+readme = "README.md"
+keywords = ["radar", "weather", "velocity", "dealiasing", "nexrad"]
+categories = ["science", "algorithms", "wasm"]
+# The solver is a Py-ART derivative (see THIRD-PARTY-NOTICES.md), whose
+# BSD-3-Clause terms apply on top of this project's MIT/Apache-2.0 choice.
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause"
+
+[lib]
+# cdylib for the wasm32 / shared-library build, rlib so `cargo test` and Rust
+# consumers can link it directly.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Exposes `solver::profile_phases` for `examples/profile.rs`. Not part of the
+# supported API.
+profiling = []
+
+# Intentionally none. The solver works on flat `f32` slices, so it needs no
+# radar format, no threads, and no allocator crate — which is what lets one
+# wasm build run unmodified in every JavaScript runtime.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+# Safe here (and a size win) precisely because wasm32-unknown-unknown has no
+# unwinder: a panic already traps the instance there.
+panic = "abort"
+
+[[example]]
+name = "profile"
+required-features = ["profiling"]

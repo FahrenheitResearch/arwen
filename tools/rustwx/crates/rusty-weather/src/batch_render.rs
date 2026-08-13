@@ -9,7 +9,10 @@ use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::Instant;
+
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use rustwx_core::{CycleSpec, ModelId, SourceId};
 use rustwx_models::{model_summary, plot_recipe_store_requirements};
@@ -20,7 +23,9 @@ use rustwx_products::direct::{direct_recipe_is_time_invariant, store_direct_reci
 use rustwx_products::shared_context::{DomainSpec, TitleProvenance};
 use rustwx_products::windowed::HrrrWindowedProduct;
 use rustwx_render::PngCompressionMode;
+use rustwx_render::advisory::{self, Advisory};
 
+use crate::host_memory;
 use crate::render_all::{
     StoreFieldSource, StoreRenderConfig, partition_products, render_hour_products,
     render_windowed_products,
@@ -508,6 +513,34 @@ pub fn run_batch_render(
     };
     let mut completed = 0usize;
     let mut native_domain = None;
+    // Say-once advisory keys, for the whole job rather than per hour: a
+    // warning about a subtitle that does not fit is one fact about this
+    // gallery, not one fact per stored hour.
+    let mut advised: HashSet<String> = HashSet::new();
+
+    // One pool for the whole job, built before the first hour so worker
+    // threads are created once rather than per stored hour.  It is a
+    // PRIVATE pool and the product fan-out `install`s into it, which is
+    // what keeps the total thread count bounded: the met kernels inside
+    // `rustwx-calc` and `rustwx-products` are themselves rayon-parallel,
+    // and left on the process-wide pool they would stack a second
+    // full-width fan-out on top of this one.
+    // Asked once, so the width and the line explaining the width cannot
+    // disagree about how much memory the box had.
+    let available_bytes = host_memory::available_bytes();
+    let worker_count = product_worker_count_within(per_hour.len(), available_bytes);
+    advise_if_memory_bound(worker_count, per_hour.len(), available_bytes);
+    let pool = if worker_count > 1 {
+        Some(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(worker_count)
+                .thread_name(|index| format!("rustwx-batch-render-{index}"))
+                .build()
+                .map_err(|err| format!("build the batch render worker pool: {err}"))?,
+        )
+    } else {
+        None
+    };
 
     'hours: for (hour_index, &hour) in hours.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -562,79 +595,23 @@ pub fn run_batch_render(
         )?;
         let config = render_config(&request, model, &cycle, source, domain);
 
-        for (kind, slug) in &per_hour {
-            if cancel.load(Ordering::Relaxed) {
-                break 'hours;
-            }
-            emit(BatchRenderEvent::ItemStarted {
-                hour: Some(hour),
-                slug: slug.clone(),
-                kind: *kind,
-                completed,
-                total: planned,
-            });
-            // A grid property, not a forecast: render it on the first
-            // selected hour and say so for the rest, rather than writing
-            // one identical image per lead.  Announced, because a silent
-            // drop and a deliberate single render look the same in a
-            // directory listing.
-            if matches!(kind, BatchProductKind::Direct)
-                && hour_index > 0
-                && direct_recipe_is_time_invariant(slug)
-            {
-                completed += 1;
-                summary.skipped += 1;
-                emit(BatchRenderEvent::ItemSkipped {
-                    hour: Some(hour),
-                    slug: slug.clone(),
-                    reason: format!(
-                        "static field: does not vary with forecast time, rendered once for this domain at F{:03}",
-                        hours[0]
-                    ),
-                    completed,
-                    total: planned,
-                });
-                continue;
-            }
-            let outcome = protected(|| render_hour_item(&config, &store, hour, *kind, slug));
-            completed += 1;
-            match outcome {
-                Ok(ProductOutcome::Rendered {
-                    output_path,
-                    render_ms,
-                }) => {
-                    summary.rendered += 1;
-                    summary.outputs.push(output_path.clone());
-                    emit(BatchRenderEvent::ItemRendered {
-                        hour: Some(hour),
-                        slug: slug.clone(),
-                        output_path,
-                        render_ms,
-                        completed,
-                        total: planned,
-                    });
-                }
-                Ok(ProductOutcome::Skipped(reason)) => {
-                    summary.skipped += 1;
-                    emit(BatchRenderEvent::ItemSkipped {
-                        hour: Some(hour),
-                        slug: slug.clone(),
-                        reason,
-                        completed,
-                        total: planned,
-                    });
-                }
-                Err(error) => {
-                    summary.failed += 1;
-                    emit(BatchRenderEvent::ItemFailed {
-                        hour: Some(hour),
-                        slug: slug.clone(),
-                        error,
-                        completed,
-                        total: planned,
-                    });
-                }
-            }
+        render_hour_items(
+            pool.as_ref(),
+            &config,
+            &store,
+            hour,
+            hour_index,
+            hours[0],
+            &per_hour,
+            cancel,
+            planned,
+            &mut completed,
+            &mut summary,
+            &mut advised,
+            &mut emit,
+        );
+        if cancel.load(Ordering::Relaxed) {
+            break 'hours;
         }
     }
 
@@ -762,6 +739,345 @@ pub fn run_batch_render(
     summary.elapsed_ms = started.elapsed().as_millis();
     emit(BatchRenderEvent::Finished(summary.clone()));
     Ok(summary)
+}
+
+/// How many of an hour's products render at the same time.
+///
+/// [`std::thread::available_parallelism`] counts LOGICAL processors.  A
+/// product render is dominated by field decode, projection and
+/// rasterization -- memory-bandwidth work whose hyperthread sibling buys
+/// little while costing cache -- so the default is half of it, which is
+/// the physical core count on an SMT machine.  Deliberately the same
+/// arithmetic and the same `RUSTWX_RENDER_THREADS` variable the derived
+/// lane's own render fan-out already reads
+/// (`rustwx_products::derived::store_render`), so one variable still
+/// sets the renderer's width everywhere it fans out;
+/// `RUSTWX_BATCH_RENDER_THREADS` narrows this loop alone, which is the
+/// knob for a memory-tight box (each concurrent product holds its own
+/// decoded planes, so peak RAM scales with this number).
+///
+/// One divergence from the derived lane's version: an explicit override
+/// wins even when `available_parallelism` cannot answer, rather than
+/// being silently discarded in favour of 1.
+///
+/// The default is capped by MEMORY as well as by cores and by the work,
+/// because the two limits are independent and cores are the one users
+/// have more of.  Peak resident memory over this loop is measured, on a
+/// 337-plot gallery of a 250x200 12 km grid and again of a 501x501
+/// 1.33 km grid, as
+///
+/// ```text
+/// peak(width) ~= PRODUCT_LOOP_BASE_BYTES + width * PRODUCT_WORKER_BYTES
+/// ```
+///
+/// -- flat in grid size, because a product's cost is dominated by the
+/// fixed per-plot work (projection, basemap, encoding a 1200x900 PNG)
+/// rather than by the field it draws, which is the same reason the
+/// speedup holds at both resolutions.  So the width a box can afford is
+///
+/// ```text
+/// cap = (available_physical_bytes * BUDGET_FRACTION) / PRODUCT_WORKER_BYTES
+/// width = min(physical cores, products in the hour, cap), at least 1
+/// ```
+///
+/// [`BUDGET_FRACTION`] is half: a render is a guest on the box, and the
+/// number it divides is already what is free rather than what is
+/// installed.  A platform that will not report free memory imposes no
+/// cap at all, which is what this loop did before the cap existed.
+///
+/// An override skips the cap entirely.  A user who names a width has
+/// said what their box can take, and refusing to honour it would leave
+/// no way to ask for more.
+///
+/// `available_bytes` is a PARAMETER rather than a query inside, so the
+/// rule can be tested at memory sizes this box does not have, and so the
+/// width and the line explaining the width read one number, not two.
+fn product_worker_count_within(item_count: usize, available_bytes: Option<u64>) -> usize {
+    if item_count <= 1 {
+        return 1;
+    }
+    let override_threads = std::env::var("RUSTWX_BATCH_RENDER_THREADS")
+        .ok()
+        .or_else(|| std::env::var("RUSTWX_RENDER_THREADS").ok())
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|&value| value > 0);
+    if let Some(width) = override_threads {
+        return width.min(item_count);
+    }
+    let detected = std::thread::available_parallelism()
+        .map(|count| (count.get() / 2).max(1))
+        .unwrap_or(1);
+    let affordable = match available_bytes {
+        Some(bytes) => {
+            let budget = (bytes as f64 * BUDGET_FRACTION) as u64;
+            let for_workers = budget.saturating_sub(PRODUCT_LOOP_BASE_BYTES);
+            usize::try_from(for_workers / PRODUCT_WORKER_BYTES)
+                .unwrap_or(usize::MAX)
+                .max(1)
+        }
+        None => usize::MAX,
+    };
+    detected.min(item_count).min(affordable)
+}
+
+/// Fixed cost of the loop itself: the store handle, the basemap, the
+/// process.  Measured as the peak resident set of the width-1 render
+/// phase, where the ladder starts.
+const PRODUCT_LOOP_BASE_BYTES: u64 = 470 * 1024 * 1024;
+
+/// What one more concurrent product costs at peak: the slope of that
+/// ladder, rounded UP past the steeper of the two grids measured,
+/// because a constant that under-estimates is the failure it exists to
+/// prevent.
+const PRODUCT_WORKER_BYTES: u64 = 96 * 1024 * 1024;
+
+/// The share of free memory this loop will plan to occupy.
+const BUDGET_FRACTION: f64 = 0.5;
+
+/// Say so, once, when free memory rather than the box's cores is what
+/// decided the width.
+///
+/// Silence here would be the defect: a run that is four times slower than
+/// the same box managed yesterday, with nothing on the console to say
+/// that the memory it had at the time is the reason.
+fn advise_if_memory_bound(width: usize, item_count: usize, available_bytes: Option<u64>) {
+    if item_count <= 1 {
+        return;
+    }
+    if std::env::var_os("RUSTWX_BATCH_RENDER_THREADS").is_some()
+        || std::env::var_os("RUSTWX_RENDER_THREADS").is_some()
+    {
+        return;
+    }
+    let uncapped = std::thread::available_parallelism()
+        .map(|count| (count.get() / 2).max(1))
+        .unwrap_or(1)
+        .min(item_count);
+    if width >= uncapped {
+        return;
+    }
+    let free_mib = available_bytes.unwrap_or(0) / (1024 * 1024);
+    advisory::advise(format!(
+        "RENDER_WIDTH\t{width}\tfree memory ({free_mib} MiB) rather than core count \
+         set the width; {uncapped} products would have rendered at once on a box with \
+         room for them. Set RUSTWX_BATCH_RENDER_THREADS to override."
+    ));
+}
+
+/// What one worker reports back about one product: `None` when the job
+/// was never attempted because cancellation was already set when the
+/// worker picked it up, plus everything the render advised on stderr
+/// while it ran, held so the caller can print it in catalog order.
+type ProductReport = (usize, Option<Result<ProductOutcome, String>>, Vec<Advisory>);
+
+/// Render every product of one stored hour and fold the results into
+/// `summary`, in parallel across the job's worker pool.
+///
+/// Products are independent renders.  Each one reads the hour through
+/// `&StoreFieldSource` -- an mmap or a RAM buffer plus lookup maps built
+/// once at open, with no interior mutability anywhere on the type -- and
+/// writes its own output path, so there is no state to share and none is
+/// shared.  The one process-wide value the render lanes read, the
+/// initial-condition disclosure, is written by the import stage before
+/// any of this runs and is read-only here.
+///
+/// ORDER, not timing, is what the event stream promises.  Results are
+/// held back and reported in catalog order on the CALLER's thread, so a
+/// parallel run emits exactly the event sequence -- and `rw_wrfbatch`
+/// exactly the stdout -- a serial run emits, and `summary.outputs` keeps
+/// its deterministic order.  It also keeps `emit` single-threaded, so
+/// callers may still pass a non-`Send` closure (the egui lane does).
+///
+/// STDERR rides the same hold.  A render advises about itself while it
+/// runs (a generic colortable fallback, a clipped subtitle), and written
+/// straight out of a worker those lines arrive in completion order --
+/// which would leave one of the two console streams reproducible and the
+/// other not.  Each product renders inside an [`advisory::hold`] and its
+/// lines are printed where the product sits in the catalog, between its
+/// own start and outcome events, exactly where the serial loop put them.
+/// `advised` carries the say-once keys across the WHOLE job so a line
+/// that should be said once is still said once, by the first product in
+/// catalog order rather than by whichever worker won a race.
+#[allow(clippy::too_many_arguments)]
+fn render_hour_items(
+    pool: Option<&rayon::ThreadPool>,
+    config: &StoreRenderConfig,
+    store: &StoreFieldSource,
+    hour: u16,
+    hour_index: usize,
+    first_hour: u16,
+    per_hour: &[(BatchProductKind, String)],
+    cancel: &AtomicBool,
+    planned: usize,
+    completed: &mut usize,
+    summary: &mut BatchRenderSummary,
+    advised: &mut HashSet<String>,
+    emit: &mut dyn FnMut(BatchRenderEvent),
+) {
+    // A grid property, not a forecast: render it on the first selected
+    // hour and say so for the rest, rather than writing one identical
+    // image per lead.  Announced, because a silent drop and a deliberate
+    // single render look the same in a directory listing.  Decided HERE,
+    // not inside a worker: it is a pure function of kind, slug and hour
+    // index, and resolving it up front means no thread can ever be the
+    // reason a static field was or was not skipped.
+    let mut work: Vec<(usize, BatchProductKind, &str)> = Vec::with_capacity(per_hour.len());
+    let mut static_skip = vec![false; per_hour.len()];
+    for (index, (kind, slug)) in per_hour.iter().enumerate() {
+        if matches!(kind, BatchProductKind::Direct)
+            && hour_index > 0
+            && direct_recipe_is_time_invariant(slug)
+        {
+            static_skip[index] = true;
+        } else {
+            work.push((index, *kind, slug.as_str()));
+        }
+    }
+
+    let work = &work;
+    std::thread::scope(|scope| {
+        // The fan-out feeds results back over a channel; the caller's
+        // thread does every emit.  With no pool there is no channel and
+        // no extra thread at all: the products render RIGHT HERE, which
+        // is where `rustwx-render` keeps its per-thread projection and
+        // static-base caches -- handing the work to a scratch thread
+        // would cool them once per stored hour.
+        let receiver = pool.map(|pool| {
+            let (sender, receiver) = std::sync::mpsc::channel::<ProductReport>();
+            scope.spawn(move || {
+                pool.install(move || {
+                    work.par_iter().for_each_with(
+                        sender,
+                        |sender: &mut Sender<ProductReport>, &(index, kind, slug)| {
+                            // Cancellation is observed when a product is
+                            // PICKED UP.  The renders already in flight
+                            // (at most one per worker) are allowed to
+                            // finish so renderer state is never abandoned
+                            // halfway through a file write.
+                            let report = if cancel.load(Ordering::Relaxed) {
+                                (index, None, Vec::new())
+                            } else {
+                                let (outcome, advice) = advisory::hold(|| {
+                                    protected(|| {
+                                        render_hour_item(config, store, hour, kind, slug)
+                                    })
+                                });
+                                (index, Some(outcome), advice)
+                            };
+                            let _ = sender.send(report);
+                        },
+                    );
+                });
+            });
+            receiver
+        });
+
+        // The in-order report, on the thread that owns `emit`.
+        let mut pending: HashMap<usize, (Option<Result<ProductOutcome, String>>, Vec<Advisory>)> =
+            HashMap::new();
+        for (index, (kind, slug)) in per_hour.iter().enumerate() {
+            if static_skip[index] {
+                emit(BatchRenderEvent::ItemStarted {
+                    hour: Some(hour),
+                    slug: slug.clone(),
+                    kind: *kind,
+                    completed: *completed,
+                    total: planned,
+                });
+                *completed += 1;
+                summary.skipped += 1;
+                emit(BatchRenderEvent::ItemSkipped {
+                    hour: Some(hour),
+                    slug: slug.clone(),
+                    reason: format!(
+                        "static field: does not vary with forecast time, rendered once for this domain at F{first_hour:03}"
+                    ),
+                    completed: *completed,
+                    total: planned,
+                });
+                continue;
+            }
+            let (outcome, advice) = match &receiver {
+                Some(receiver) => {
+                    let report = loop {
+                        if let Some(report) = pending.remove(&index) {
+                            break report;
+                        }
+                        match receiver.recv() {
+                            Ok((reported, outcome, advice)) => {
+                                pending.insert(reported, (outcome, advice));
+                            }
+                            // Every worker is gone and this product never
+                            // reported: cancelled before it was picked up.
+                            Err(_) => break (None, Vec::new()),
+                        }
+                    };
+                    let (Some(outcome), advice) = report else {
+                        continue;
+                    };
+                    (outcome, advice)
+                }
+                None => {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    // Held on this path too, so the no-pool loop and the
+                    // pool one put the same lines in the same places.
+                    advisory::hold(|| {
+                        protected(|| render_hour_item(config, store, hour, *kind, slug))
+                    })
+                }
+            };
+            emit(BatchRenderEvent::ItemStarted {
+                hour: Some(hour),
+                slug: slug.clone(),
+                kind: *kind,
+                completed: *completed,
+                total: planned,
+            });
+            for held in advice {
+                advisory::drain_one(held, advised);
+            }
+            *completed += 1;
+            match outcome {
+                Ok(ProductOutcome::Rendered {
+                    output_path,
+                    render_ms,
+                }) => {
+                    summary.rendered += 1;
+                    summary.outputs.push(output_path.clone());
+                    emit(BatchRenderEvent::ItemRendered {
+                        hour: Some(hour),
+                        slug: slug.clone(),
+                        output_path,
+                        render_ms,
+                        completed: *completed,
+                        total: planned,
+                    });
+                }
+                Ok(ProductOutcome::Skipped(reason)) => {
+                    summary.skipped += 1;
+                    emit(BatchRenderEvent::ItemSkipped {
+                        hour: Some(hour),
+                        slug: slug.clone(),
+                        reason,
+                        completed: *completed,
+                        total: planned,
+                    });
+                }
+                Err(error) => {
+                    summary.failed += 1;
+                    emit(BatchRenderEvent::ItemFailed {
+                        hour: Some(hour),
+                        slug: slug.clone(),
+                        error,
+                        completed: *completed,
+                        total: planned,
+                    });
+                }
+            }
+        }
+    });
 }
 
 fn render_hour_item(
@@ -1389,6 +1705,203 @@ mod tests {
         let name = output.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.contains("var_mystery_plane_"), "{name}");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The parallel product loop's two determinism claims, on the
+    /// SHIPPED default width (no environment override, so what runs here
+    /// is what a campaign runs): the same request rendered twice
+    /// produces the same event sequence in the same order, and the same
+    /// PNG bytes.  Bit-for-bit, because a product loop that is only
+    /// statistically reproducible is not a render engine.
+    #[test]
+    fn parallel_product_loop_is_byte_deterministic_and_reports_in_catalog_order() {
+        let root = test_dir("parallel-determinism");
+        let run = "local_wrf_20200102_030000";
+        write_mixed_store(&root, run);
+        let products = "2m_temperature,sbcape,var:custom_diagnostic_plane,var:mystery_plane";
+        assert!(
+            product_worker_count_within(4, host_memory::available_bytes()) > 1
+                || std::thread::available_parallelism().unwrap().get() < 4,
+            "a multi-core box must actually fan this request out, or the test proves nothing"
+        );
+
+        let render_pass = |label: &str| {
+            let out = root.join(label);
+            let request =
+                BatchRenderRequest::conservative(&root, "wrf", run, 0, products, &out);
+            let mut events = Vec::new();
+            let summary = run_batch_render(request, &AtomicBool::new(false), |event| {
+                // Timings are wall clock and never identical; identity is
+                // claimed over the sequence, the slugs and the counters.
+                match event {
+                    BatchRenderEvent::ItemStarted {
+                        slug, completed, ..
+                    } => events.push(format!("started {slug} {completed}")),
+                    BatchRenderEvent::ItemRendered {
+                        slug,
+                        output_path,
+                        completed,
+                        ..
+                    } => events.push(format!(
+                        "rendered {slug} {completed} {}",
+                        output_path.file_name().unwrap().to_string_lossy()
+                    )),
+                    BatchRenderEvent::ItemSkipped {
+                        slug,
+                        reason,
+                        completed,
+                        ..
+                    } => events.push(format!("skipped {slug} {completed} {reason}")),
+                    BatchRenderEvent::ItemFailed { slug, error, .. } => {
+                        events.push(format!("failed {slug} {error}"))
+                    }
+                    _ => {}
+                }
+            })
+            .unwrap();
+            let bytes = summary
+                .outputs
+                .iter()
+                .map(|path| {
+                    (
+                        path.file_name().unwrap().to_string_lossy().into_owned(),
+                        std::fs::read(path).unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (summary, events, bytes)
+        };
+
+        let (first_summary, first_events, first_bytes) = render_pass("pass-a");
+        let (second_summary, second_events, second_bytes) = render_pass("pass-b");
+
+        assert_eq!(first_summary.failed, 0, "{first_summary:?}");
+        assert!(first_summary.rendered >= 3, "{first_summary:?}");
+        assert_eq!(first_events, second_events, "event stream is not stable");
+        assert_eq!(
+            first_summary.rendered, second_summary.rendered,
+            "{first_summary:?} vs {second_summary:?}"
+        );
+        assert_eq!(first_summary.skipped, second_summary.skipped);
+        assert_eq!(
+            first_bytes.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            second_bytes.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            "summary.outputs must stay in catalog order"
+        );
+        for ((name, left), (_, right)) in first_bytes.iter().zip(second_bytes.iter()) {
+            assert_eq!(
+                left, right,
+                "{name} differs between two runs of the same request"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Cancelling mid-hour under the fan-out has to terminate, report a
+    /// consistent tally, and leave every PNG it announced on disk.  The
+    /// in-order drain waits on a channel, so a worker that returned
+    /// without reporting would hang the whole batch rather than fail it.
+    #[test]
+    fn cancelling_mid_hour_terminates_with_a_consistent_tally() {
+        let root = test_dir("parallel-cancel");
+        let out = root.join("out");
+        let run = "local_wrf_20200102_030000";
+        write_mixed_store(&root, run);
+        let request = BatchRenderRequest::conservative(
+            &root,
+            "wrf",
+            run,
+            0,
+            "2m_temperature,sbcape,var:custom_diagnostic_plane,var:mystery_plane",
+            &out,
+        );
+        let cancel = AtomicBool::new(false);
+        let summary = run_batch_render(request, &cancel, |event| {
+            if matches!(event, BatchRenderEvent::ItemRendered { .. }) {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+        assert!(summary.cancelled, "{summary:?}");
+        assert_eq!(summary.failed, 0, "{summary:?}");
+        assert!(
+            summary.rendered + summary.skipped <= summary.planned,
+            "{summary:?}"
+        );
+        assert_eq!(summary.rendered, summary.outputs.len(), "{summary:?}");
+        for output in &summary.outputs {
+            assert!(output.exists(), "announced but absent: {}", output.display());
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The width policy itself: never wider than the work, never zero,
+    /// and a one-product hour never builds a pool at all.
+    #[test]
+    fn product_worker_count_is_bounded_by_the_work() {
+        let free = host_memory::available_bytes();
+        assert_eq!(product_worker_count_within(0, free), 1);
+        assert_eq!(product_worker_count_within(1, free), 1);
+        for items in [2usize, 3, 8, 64, 4096] {
+            let workers = product_worker_count_within(items, free);
+            assert!(workers >= 1, "{items} items produced {workers} workers");
+            assert!(workers <= items, "{items} items produced {workers} workers");
+        }
+    }
+
+    /// The width a box can afford is the width it gets.  Driven through
+    /// `product_worker_count_within` with the host query supplied, so the
+    /// rule is tested at memory sizes this machine does not have.
+    #[test]
+    fn the_default_width_is_capped_by_free_memory() {
+        let cores = std::thread::available_parallelism()
+            .map(|count| (count.get() / 2).max(1))
+            .unwrap_or(1);
+        let plenty = PRODUCT_LOOP_BASE_BYTES * 8 + PRODUCT_WORKER_BYTES * 4096;
+
+        // Room for everything: cores and the work are what bind.
+        assert_eq!(
+            product_worker_count_within(4096, Some(plenty * 4)),
+            cores,
+            "an unloaded box must still fan out to its cores"
+        );
+        assert_eq!(product_worker_count_within(3, Some(plenty * 4)), cores.min(3));
+
+        // A platform that will not answer imposes no cap, which is what
+        // this loop did before the cap existed.
+        assert_eq!(product_worker_count_within(4096, None), cores);
+
+        // Room for the loop and about four workers.  Halved first: the
+        // budget is BUDGET_FRACTION of free memory, not all of it.
+        let four = (PRODUCT_LOOP_BASE_BYTES + PRODUCT_WORKER_BYTES * 4) * 2;
+        assert_eq!(product_worker_count_within(4096, Some(four)), cores.min(4));
+
+        // Not even room for the loop's own footprint: still one worker,
+        // never zero, because refusing to render is not this rule's call.
+        assert_eq!(product_worker_count_within(4096, Some(1024)), 1);
+    }
+
+    /// A memory-capped width is never silent, and a width the box chose
+    /// freely never says anything.
+    #[test]
+    fn a_memory_bound_width_advises_and_an_unbound_one_does_not() {
+        let cores = std::thread::available_parallelism()
+            .map(|count| (count.get() / 2).max(1))
+            .unwrap_or(1);
+        if cores < 2 {
+            return; // Nothing to be capped below.
+        }
+        let (_, said) = advisory::hold(|| advise_if_memory_bound(cores, 4096, Some(1 << 40)));
+        assert!(said.is_empty(), "an uncapped width must not editorialise: {said:?}");
+
+        let (_, said) = advisory::hold(|| advise_if_memory_bound(1, 4096, Some(1 << 30)));
+        assert_eq!(said.len(), 1, "a capped width must say so: {said:?}");
+        assert!(said[0].line.starts_with("RENDER_WIDTH\t1\t"), "{}", said[0].line);
+        assert!(
+            said[0].line.contains("RUSTWX_BATCH_RENDER_THREADS"),
+            "the advisory must name the override: {}",
+            said[0].line
+        );
     }
 
     #[test]

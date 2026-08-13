@@ -48,6 +48,14 @@ import hashlib
 import json
 from pathlib import Path
 
+# The engine selector is defined once, by the production spine, and
+# imported here rather than restated: "same flag, same defaults and same
+# provenance as tools.obs_radar_grid_build" is a claim this file makes in
+# its own --dealias help, and two copies of an argparse block is how that
+# claim stops being true.
+from tools.obs_radar_grid_build import (add_dealias_engine_arguments,
+                                        dealias_params_from_args)
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -104,13 +112,15 @@ def build_parser() -> argparse.ArgumentParser:
                              "same provenance as "
                              "tools.obs_radar_grid_build --dealias, so a "
                              "pack rebuilt through this path is comparable "
-                             "with one built through that one. Requires "
-                             "scipy")
+                             "with one built through that one. The default "
+                             "engine needs the region-global shared "
+                             "library; gpuwm doctor prints how to get it")
+    add_dealias_engine_arguments(parser)
     return parser
 
 
 def main(argv=None) -> int:
-    from gpuwm.obs.dealias import SCIPY_REMEDY, DealiasParams, scipy_available
+    from gpuwm.obs.dealias import DealiasParams, engine_unavailable_reason
     from gpuwm.obs.radar_grid import write_radar_grid
     from gpuwm.obs.superob import (SuperobParams, merge_contributions,
                                    superob_volume)
@@ -119,12 +129,11 @@ def main(argv=None) -> int:
 
     args = build_parser().parse_args(argv)
 
-    if args.dealias and not scipy_available():
-        raise SystemExit(SCIPY_REMEDY)
-
     params = SuperobParams(max_range_km=args.max_range_km,
                            max_elevation_deg=args.max_elevation_deg,
-                           dealias=DealiasParams() if args.dealias else None)
+                           dealias=dealias_params_from_args(
+                               args, DealiasParams,
+                               engine_unavailable_reason))
     params.validate()
 
     grid = TargetGrid.from_wrfout(args.grid_wrfout)

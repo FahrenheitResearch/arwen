@@ -19,6 +19,7 @@ members = [
     "crates/rustwx-render",
     "crates/rusty-weather",
     "crates/rw-fetch",
+    "crates/rw-fieldcmp",
     "crates/rw-ingest",
     "crates/rw-nexrad",
     "crates/rw-obs",

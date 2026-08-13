@@ -251,6 +251,15 @@ STAGES = ("survey", "domain", "fetch", "prepare", "forecast", "obs",
 # product option.
 DA_SUBTRACTABLE = ("reflectivity", "clear-air", "dealias", "surface", "cwp")
 
+#: The shipped dealiasing engine, spelled here so this module keeps its
+#: stdlib-only import surface (it builds argv for a subprocess; importing
+#: numpy through gpuwm.obs.dealias to read one string would make every
+#: `da_nowcast --help` pay for it).  ``tests/test_da_nowcast.py`` binds it
+#: to ``gpuwm.obs.dealias.DealiasParams().engine``: a spelling only one
+#: side agrees with is a run that dies at its first observation stage,
+#: hours in.
+DEFAULT_DEALIAS_ENGINE = "region-global"
+
 # The certified full-stack run's CWP vertical localisation
 # (evidence/da-demo/full-stack/run.sh).  --da full fills it only when the
 # caller did not state one; --da custom still requires it explicitly.
@@ -986,9 +995,90 @@ def radar_selection(args) -> RadarSelection:
     )
 
 
+@dataclass(frozen=True)
+class DealiasChoice:
+    """How this run unfolds velocity: whether, with which engine, refined.
+
+    One object rather than three parameters, and a required one rather
+    than a defaulted one, because of the invariant
+    :func:`build_verify_frame` already states: whatever built the
+    assimilated observations must also build the verification composites,
+    or the run is graded against a differently-built truth and the
+    difference shows up as skill.  A defaulted engine keyword would let a
+    caller that was not updated build truth with the other solver and say
+    nothing; a required object makes that a TypeError at import time.
+
+    It rides the receipt for the same reason the ``dealias`` flag always
+    has -- ``da_nowcast verify`` and ``watch`` run days later, from the
+    receipt alone.
+    """
+
+    #: The engine every run before 2026-08-12 used, and the only one there
+    #: was before the selector existed.  Named here rather than spelled
+    #: inline twice: it is the value a receipt that predates the selector
+    #: reads back as, which is a statement about history and must not
+    #: track the shipped default when that moves.
+    LEGACY_ENGINE = "vad-region"
+
+    on: bool = False
+    engine: str = DEFAULT_DEALIAS_ENGINE
+    refinement: bool = True
+
+    @classmethod
+    def from_args(cls, args) -> "DealiasChoice":
+        # ``dealias_refinement`` is tri-state on the parser -- None means
+        # "the engine's default" -- and this object records what RAN, so
+        # None is resolved here, by the same rule the parameter object
+        # uses.  A receipt that said "refinement: null" would leave the
+        # verification composites unable to state what they were built
+        # with.
+        engine = str(getattr(args, "dealias_engine", DEFAULT_DEALIAS_ENGINE))
+        refinement = getattr(args, "dealias_refinement", None)
+        if refinement is None:
+            refinement = engine == DEFAULT_DEALIAS_ENGINE
+        return cls(on=bool(getattr(args, "dealias", False)), engine=engine,
+                   refinement=bool(refinement))
+
+    @classmethod
+    def from_payload(cls, payload) -> "DealiasChoice":
+        """Read one back out of a receipt.
+
+        A receipt with no ``obs`` block predates the flag entirely and
+        reads back off; one with ``dealias`` and no ``dealias_engine``
+        predates the selector and reads back as the engine that was the
+        only one at the time, which is what those runs did.  That fallback
+        stays pinned to :data:`LEGACY_ENGINE` now that the default has
+        moved: an old receipt describes an old run, and re-running its
+        verification with today's engine would grade a run against a
+        differently-built truth.
+        """
+
+        payload = payload or {}
+        engine = str(payload.get("dealias_engine", cls.LEGACY_ENGINE))
+        return cls(on=bool(payload.get("dealias", False)), engine=engine,
+                   refinement=bool(payload.get(
+                       "dealias_refinement",
+                       engine == DEFAULT_DEALIAS_ENGINE)))
+
+    def to_payload(self) -> dict:
+        return {"dealias": bool(self.on), "dealias_engine": str(self.engine),
+                "dealias_refinement": bool(self.refinement)}
+
+    def argv_tail(self) -> list[str]:
+        if not self.on:
+            return []
+        # Both switches are spelled out, always.  This argv builds the
+        # verification composites as well as the assimilated observations,
+        # and "whatever the default was on the day it re-ran" is not a
+        # contract those two can share across a release.
+        return ["--dealias", "--dealias-engine", self.engine,
+                "--dealias-refinement" if self.refinement
+                else "--no-dealias-refinement"]
+
+
 def obs_cmd(*, selection: RadarSelection, valid: datetime,
             grid_wrfout: Path, out_nc: Path, work_dir: Path,
-            bucket: str | None, dealias: bool = False) -> list[str]:
+            bucket: str | None, dealias: DealiasChoice) -> list[str]:
     """Build the obs-stage argv.
 
     ``dealias`` has to reach *both* callers of this function or the run
@@ -1007,8 +1097,7 @@ def obs_cmd(*, selection: RadarSelection, valid: datetime,
     ]
     if bucket:
         argv.extend(("--bucket", bucket))
-    if dealias:
-        argv.append("--dealias")
+    argv.extend(dealias.argv_tail())
     return argv
 
 
@@ -1282,7 +1371,8 @@ def read_receipt(case_dir: Path) -> dict:
 #: partial receipt below is written against the requirement rather than
 #: against a guess at it.
 VERIFY_REQUIRED_FIELDS = ("site", "radars", "plan.init",
-                          "plan.free_leg_times", "obs.dealias")
+                          "plan.free_leg_times", "obs.dealias",
+                          "obs.dealias_engine")
 
 
 def install_provenance() -> dict:
@@ -1308,7 +1398,8 @@ def install_provenance() -> dict:
                 "identity_error": f"{type(error).__name__}: {error}"}
 
 
-def write_partial_receipt(out: Path, *, receipts: Path, dealias: bool,
+def write_partial_receipt(out: Path, *, receipts: Path,
+                          dealias: "DealiasChoice",
                           stopped_after: str) -> Path | None:
     """The receipt a run that stops early still owes its verifier.
 
@@ -1363,7 +1454,7 @@ def write_partial_receipt(out: Path, *, receipts: Path, dealias: bool,
                            "registered campaign; no skill claim is made "
                            "or implied")}
     receipt.update({key: plan_receipt[key] for key in verbatim})
-    receipt["obs"] = {"dealias": bool(dealias)}
+    receipt["obs"] = dealias.to_payload()
     receipt["receipt_provenance"] = {
         "written_by": f"da_nowcast run --stop-after {stopped_after}",
         "why": ("the run stopped at a --stop-after door, before the "
@@ -1372,7 +1463,10 @@ def write_partial_receipt(out: Path, *, receipts: Path, dealias: bool,
                 "does not have to hand-synthesize them"),
         "verbatim_from_receipts_01_plan_json": verbatim,
         "stated_from_the_launch_command": {
-            "obs.dealias": "--dealias passed to da_nowcast run"},
+            "obs.dealias": "--dealias passed to da_nowcast run",
+            "obs.dealias_engine": "--dealias-engine passed to da_nowcast run",
+            "obs.dealias_refinement":
+                "--dealias-refinement passed to da_nowcast run"},
         "not_reconstructed": ["sizing", "survey", "outputs",
                               "length_scale_km", "members",
                               "obs.streams_requested"],
@@ -1475,7 +1569,7 @@ def build_verify_frame(*, case_dir: Path, selection: RadarSelection,
                        valid: datetime, bucket: str | None,
                        max_offset_seconds: float,
                        repo_root: Path,
-                       dealias: bool = False) -> tuple[bool, str]:
+                       dealias: DealiasChoice) -> tuple[bool, str]:
     """Build one frame's observed composite from the live archive.
 
     Built from the SAME :class:`RadarSelection` the cycle assimilated,
@@ -1520,7 +1614,7 @@ def verify_pass(*, case_dir: Path, selection: RadarSelection,
                 frames: list[dict], bucket: str | None,
                 max_offset_seconds: float,
                 repo_root: Path,
-                dealias: bool = False) -> tuple[list[dict], int]:
+                dealias: DealiasChoice) -> tuple[list[dict], int]:
     """One sweep: build what the archive now covers, re-render if new.
 
     The observation file on disk is the record of what was fetched;
@@ -1903,7 +1997,14 @@ def build_parser() -> argparse.ArgumentParser:
                           "counted. Applied to the assimilated obs AND to "
                           "the verification composites, so the run is "
                           "graded against a truth field built the same "
-                          "way it was fed. Requires scipy")
+                          "way it was fed. Requires scipy for the default "
+                          "engine")
+    # The same two options tools.obs_radar_grid_build takes, defined by
+    # that tool and added here rather than restated: this front door
+    # BUILDS that tool's argv, so a second copy of the flag names is a
+    # second thing to keep in step.
+    from tools.obs_radar_grid_build import add_dealias_engine_arguments
+    add_dealias_engine_arguments(run)
     run.add_argument("--da", choices=("full", "vr", "custom"),
                      default="custom",
                      help="observation-stream preset. 'full' is the "
@@ -2072,7 +2173,7 @@ def _stopped_early(out: Path, receipts: Path, args, stage: str) -> int:
     """
 
     written = write_partial_receipt(
-        out, receipts=receipts, dealias=bool(getattr(args, "dealias", False)),
+        out, receipts=receipts, dealias=DealiasChoice.from_args(args),
         stopped_after=stage)
     print(f"stopped after {stage} (receipts written)")
     if written is not None:
@@ -2195,10 +2296,25 @@ def validate_analysis_flags(args) -> None:
     if getattr(args, "dealias", False):
         # The obs stage refuses this too, but only once per cycle and
         # only after that cycle's volumes have been fetched.  A run that
-        # is going to be unable to dealias should learn it now.
-        from gpuwm.obs.dealias import SCIPY_REMEDY, scipy_available
-        if not scipy_available():
-            raise FrontDoorError(f"--dealias: {SCIPY_REMEDY}")
+        # is going to be unable to dealias should learn it now.  Which
+        # prerequisite is missing depends on the engine -- scipy for one,
+        # a built shared library for the other -- so the question is asked
+        # of the engine rather than of scipy.
+        from gpuwm.obs.dealias import engine_unavailable_reason
+        engine = getattr(args, "dealias_engine", None)
+        if getattr(args, "dealias_refinement", None) \
+                and engine != DEFAULT_DEALIAS_ENGINE:
+            raise FrontDoorError(
+                f"--dealias-refinement with --dealias-engine {engine}: that "
+                f"engine has no refinement pass; only "
+                f"{DEFAULT_DEALIAS_ENGINE} does")
+        reason = engine_unavailable_reason(engine)
+        if reason is not None:
+            raise FrontDoorError(f"--dealias-engine {engine}: {reason}")
+    elif getattr(args, "dealias_refinement", None) is not None:
+        raise FrontDoorError(
+            "--dealias-refinement/--no-dealias-refinement refines a "
+            "dealiased field; pass --dealias as well, or drop it")
     # The non-radar streams. Same reasoning as the driver's own refusals,
     # met here so a six-hour run does not pay for the fetch and the
     # georeference forecast before learning it was underspecified.
@@ -2520,7 +2636,7 @@ def run_pipeline(args) -> int:
         run_stage(f"obs-{valid:%H%M}", obs_cmd(
             selection=selection, valid=valid, grid_wrfout=grid,
             out_nc=out_nc, work_dir=out / "vols",
-            bucket=args.bucket, dealias=args.dealias),
+            bucket=args.bucket, dealias=DealiasChoice.from_args(args)),
             cwd=repo_root, receipts_dir=receipts, index=8)
         obs_files.append(out_nc)
         grid_wrfouts.append(grid)
@@ -2576,7 +2692,7 @@ def run_pipeline(args) -> int:
         # were; a run graded against a differently-built truth field
         # would show the difference as skill.
         "obs": {
-            "dealias": bool(args.dealias),
+            **DealiasChoice.from_args(args).to_payload(),
             # Which streams this run CLAIMS. Whether each one actually
             # assimilated anything is measured per cycle by
             # gpuwm.da.treatment and recorded in cycle-report.json under
@@ -2688,7 +2804,7 @@ def _case_context(case_dir: Path) -> tuple[RadarSelection, datetime,
     frames = merge_gallery_rows(
         initial_frames(plan_p["free_leg_times"]),
         gallery_rows(case_dir))
-    dealias = bool(receipt.get("obs", {}).get("dealias", False))
+    dealias = DealiasChoice.from_payload(receipt.get("obs"))
     return selection, parse_iso(plan_p["init"]), frames, dealias
 
 

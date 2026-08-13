@@ -61,6 +61,7 @@ Nothing here is wired into a default route.  EXPERIMENTAL.
 
 from __future__ import annotations
 
+import time
 import types
 from dataclasses import dataclass
 from pathlib import Path
@@ -1254,6 +1255,9 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         solve_dtype=cfg.solve_dtype,
         eigensolver=cfg.eigensolver)
     solve_prior, solve_batches = prior, batches
+    stage_seconds = 0.0
+    unstage_seconds = 0.0
+    t_stage = time.perf_counter()
     if cfg.solve_device == "cuda":
         import cupy as cp  # noqa: PLC0415
 
@@ -1270,13 +1274,25 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                        mask=cp.asarray(np.asarray(batch.mask, bool)),
                        localization=batch.localization)
             for batch in batches]
+        # The staging is the cuda arm's ENTRY FEE and is invisible in the
+        # filter's own three-way split, which starts once the arrays are
+        # already in the namespace they arrived in.  A device arm that
+        # wins the solve and loses the transfer is a real outcome, and a
+        # receipt that cannot show it cannot be used to choose a default.
+        try:
+            cp.cuda.runtime.deviceSynchronize()
+        except Exception:
+            pass
+        stage_seconds = time.perf_counter() - t_stage
     increments = analyze(solve_prior, solve_batches,
                          letkf_grid_geometry(grid), letkf_cfg, diagnostics)
     if cfg.solve_device == "cuda":
         import cupy as cp  # noqa: PLC0415
 
+        t_unstage = time.perf_counter()
         increments = {name: cp.asnumpy(values)
                       for name, values in increments.items()}
+        unstage_seconds = time.perf_counter() - t_unstage
 
     # -- positivity ----------------------------------------------------------
     # On the MASS-POINT increments, before restaggering, because the
@@ -1357,6 +1373,11 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         "moment_policy": moment_receipt,
         "positivity": positivity_receipt,
         "solve_device": cfg.solve_device,
+        # Host-to-device staging of the prior and the observation batches,
+        # and the copy of the increments back.  Both are exactly zero on
+        # the host arm, which is what makes them comparable.
+        "solve_stage_seconds": round(float(stage_seconds), 3),
+        "solve_unstage_seconds": round(float(unstage_seconds), 3),
         "members": len(indices),
         "checkpoints": {int(index): Path(checkpoints[index]).name
                         for index in indices},
@@ -1381,6 +1402,26 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                 getattr(diagnostics, "chunk_oom_shrinks", 0)),
             "solve_bytes_per_point": int(
                 getattr(diagnostics, "solve_bytes_per_point", 0)),
+            # WHERE the analysis spent its wall clock, split three ways by
+            # gpuwm.da.letkf.analyze.  A cycle report already recorded that
+            # the analysis was most of the leg; without this split it could
+            # not say whether that was the eigensolve (which runs at the
+            # ACTIVE points) or the localisation weighting (which runs at
+            # EVERY point), and those two have different remedies.
+            "setup_seconds": round(float(
+                getattr(diagnostics, "setup_seconds", 0.0)), 3),
+            "solve_seconds": round(float(
+                getattr(diagnostics, "solve_seconds", 0.0)), 3),
+            "finish_seconds": round(float(
+                getattr(diagnostics, "finish_seconds", 0.0)), 3),
+            # And the split INSIDE the chunk loop: localisation weights at
+            # every gridpoint, versus the transform at the active ones.
+            # This is the pair that says whether a faster eigensolver
+            # could have helped this analysis at all.
+            "weights_seconds": round(float(
+                getattr(diagnostics, "weights_seconds", 0.0)), 3),
+            "transform_seconds": round(float(
+                getattr(diagnostics, "transform_seconds", 0.0)), 3),
             # Device bytes in use against pool bytes held, at the end of
             # the chunk loop.  The GAP is the part of the card the LETKF
             # budget does not govern and the pool cap cannot reclaim: the

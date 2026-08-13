@@ -417,10 +417,10 @@ pub fn render_generic_store_variable(
                 // but say so, per variable, so an unstyled gallery frame is
                 // traceable to a missing colortable mapping rather than to
                 // a silent style decision.
-                eprintln!(
+                rustwx_render::advisory::advise(format!(
                     "GENERIC_STYLE\t{variable}\tno operational or curated colortable \
                      resolved; using the full-finite-range generic fill"
-                );
+                ));
                 generic_style_for_store_variable(variable, &meta.units, finite_range)
             });
     if !style.convert.is_none() {

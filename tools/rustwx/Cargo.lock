@@ -1653,6 +1653,7 @@ dependencies = [
 name = "rusty-weather"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "rustwx-core",
  "rustwx-models",
  "rustwx-products",
@@ -1672,6 +1673,17 @@ dependencies = [
  "serde_json",
  "sha2",
  "wx-core 0.3.10",
+]
+
+[[package]]
+name = "rw-fieldcmp"
+version = "0.1.0"
+dependencies = [
+ "netcrust",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

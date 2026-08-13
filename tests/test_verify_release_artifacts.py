@@ -11,8 +11,10 @@ this module drives them.
 The fixtures are deliberately not this module's own idea of a bundle:
 the bundles, pins, and manifest come from ``tools/build_bridge_bundle.py``
 -- the real writer the cut runs -- over fixture binaries carrying real
-``GPUWM_BRIDGE_SOURCE_REV`` stamps.  A verifier tested against a fixture
-its own author shaped proves only that two wrong ideas agree.
+``GPUWM_BRIDGE_SOURCE_REV`` stamps, and, for a vendored artifact, the
+real declared contract marker the packer asks it for instead.  A verifier
+tested against a fixture its own author shaped proves only that two wrong
+ideas agree.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ import zipfile
 
 import pytest
 
-from gpuwm import bridge_assets
+from gpuwm import bridge_assets, bridges
 from tools import build_bridge_bundle, verify_release_artifacts
 
 RELEASE = "v9.8.7"
@@ -49,6 +51,32 @@ def _stamped(name: str, source_rev: str) -> bytes:
             b"\n",
         )
     )
+
+
+def _artifact_bytes(
+    artifact: bridge_assets.BundledArtifact, name: str, source_rev: str
+) -> bytes:
+    """Fixture bytes carrying whatever the packer asks this artifact for.
+
+    A vendored artifact is a verbatim upstream crate frozen at a recorded
+    commit, so it does not move with the release checkout and the packer
+    never asks it for a revision stamp -- it asks for the contract marker
+    declared in ``BRIDGE_ABI_MARKERS``, a property of those exact bytes.
+    Stamping such a fixture with a revision would prove nothing the packer
+    reads, so it carries the real marker instead.
+    """
+
+    if artifact.vendored:
+        return b"".join(
+            (
+                b"fixture vendored artifact ",
+                name.encode("utf-8"),
+                b"\n",
+                bridges.BRIDGE_ABI_MARKERS[artifact.name],
+                b"\n",
+            )
+        )
+    return _stamped(name, source_rev)
 
 
 def _pack_and_pin(
@@ -83,7 +111,9 @@ def _pack_and_pin(
         search.mkdir()
         for artifact in bridge_assets.BUNDLED_ARTIFACTS:
             filename = bridge_assets.artifact_filename(artifact, platform)
-            (search / filename).write_bytes(_stamped(filename, source_rev))
+            (search / filename).write_bytes(
+                _artifact_bytes(artifact, filename, source_rev)
+            )
         assert (
             build_bridge_bundle.main(
                 [
@@ -203,6 +233,7 @@ def test_dry_run_passes_the_packers_own_output(
     receipt_path = _dry_run(tmp_path, bundles, pins, manifest, wheel, sdist)
 
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["schema"] == "gpuwm-release-artifact-proof-v2"
     assert receipt["status"] == "PASS"
     assert receipt["release"] == RELEASE
     assert receipt["source_rev"] == SOURCE_REV
@@ -211,6 +242,120 @@ def test_dry_run_passes_the_packers_own_output(
         assert receipt["bundles"][platform]["binaries"] == len(
             bridge_assets.BUNDLED_ARTIFACTS)
         assert receipt["bundles"][platform]["assets"] >= 1
+
+
+def test_the_receipt_names_which_proof_each_binary_got(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v2's invariant, stated as a partition rather than a boolean.
+
+    v1 claimed one blanket thing about every binary, and a vendored
+    artifact -- correct, pinned, deliberately unstamped -- made that claim
+    false.  v2 says instead that every binary was proved by exactly one of
+    two means, and names them, so bytes nobody proved would show up as a
+    filename missing from both lists rather than as a still-true-looking
+    ``True``.
+    """
+
+    bundles, pins, manifest = _pack_and_pin(tmp_path, monkeypatch)
+    wheel, sdist = _build_dists(tmp_path, pins)
+
+    receipt = json.loads(
+        _dry_run(tmp_path, bundles, pins, manifest, wheel, sdist).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert receipt["schema"] == "gpuwm-release-artifact-proof-v2"
+    # The retired v1 key is gone, not aliased: a reader written against
+    # the old blanket claim must fail loudly rather than silently pass.
+    assert "source_rev_stamp_verified_in_every_binary" not in receipt
+
+    stamped = receipt["binaries_proved_by_source_rev_stamp"]
+    markered = receipt["binaries_proved_by_contract_marker"]
+    assert not set(stamped) & set(markered)
+
+    expected: set[str] = set()
+    vendored_names: set[str] = set()
+    for platform in bridge_assets.SUPPORTED_PLATFORMS:
+        for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+            label = (
+                f"{platform}: "
+                f"{bridge_assets.artifact_filename(artifact, platform)}"
+            )
+            expected.add(label)
+            if artifact.vendored:
+                vendored_names.add(label)
+    # Every binary in both bundles is accounted for by one proof or the
+    # other, and the vendored one is accounted for by the marker.
+    assert set(stamped) | set(markered) == expected
+    assert set(markered) == vendored_names
+    assert vendored_names, "fixture no longer covers a vendored artifact"
+
+
+def test_dry_run_refuses_a_vendored_artifact_missing_its_contract_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stale vendored build the marker check exists to catch.
+
+    A vendored artifact carries no revision stamp, so exempting it from
+    the stamp check must not mean exempting it from staleness: the marker
+    is the only question those bytes can answer, and it has to bite.
+
+    The bundle here is packed and pinned honestly, and then the release's
+    declared contract moves on -- which is exactly what re-vendoring is, a
+    commit that advances ``BRIDGE_ABI_MARKERS`` together with the crate.
+    Bundles built before that advance carry the older bytes.  The packer
+    refuses such a bundle at pin time, but this verifier is the
+    independent second reading of already-published artifacts, so it has
+    to refuse on its own rather than inherit the packer's verdict.
+    """
+
+    bundles, pins, manifest = _pack_and_pin(tmp_path, monkeypatch)
+    wheel, sdist = _build_dists(tmp_path, pins)
+    vendored = [
+        artifact
+        for artifact in bridge_assets.BUNDLED_ARTIFACTS
+        if artifact.vendored
+    ]
+    assert vendored, "fixture no longer covers a vendored artifact"
+    monkeypatch.setitem(
+        bridges.BRIDGE_ABI_MARKERS,
+        vendored[0].name,
+        b"bw_dealias_rift_v2_not_in_these_bytes",
+    )
+
+    with pytest.raises(SystemExit) as refusal:
+        _dry_run(tmp_path, bundles, pins, manifest, wheel, sdist)
+
+    assert "contract marker" in str(refusal.value)
+
+
+def test_dry_run_refuses_a_vendored_artifact_with_no_declared_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unstamped binary with nothing else to prove it is not proved.
+
+    Skipping the stamp check for a vendored artifact is only sound while
+    something else answers the staleness question.  If the marker table
+    ever loses that artifact's entry, the exemption must become a refusal
+    rather than a silent pass.
+    """
+
+    bundles, pins, manifest = _pack_and_pin(tmp_path, monkeypatch)
+    wheel, sdist = _build_dists(tmp_path, pins)
+    vendored = [
+        artifact
+        for artifact in bridge_assets.BUNDLED_ARTIFACTS
+        if artifact.vendored
+    ]
+    assert vendored, "fixture no longer covers a vendored artifact"
+    monkeypatch.delitem(bridges.BRIDGE_ABI_MARKERS, vendored[0].name)
+
+    with pytest.raises(SystemExit) as refusal:
+        _dry_run(tmp_path, bundles, pins, manifest, wheel, sdist)
+
+    assert "no declared" in str(refusal.value)
 
 
 def test_a_dry_run_receipt_never_claims_what_it_did_not_prove(

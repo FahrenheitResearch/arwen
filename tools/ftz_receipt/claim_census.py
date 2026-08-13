@@ -36,7 +36,15 @@ SCHEMA_ID = "gpuwm.ftz-claim-census/v1"
 CLAIM_PATTERN = re.compile(r"ftz|subnormal", re.IGNORECASE)
 
 #: Vendored third-party trees.  Their arithmetic is not ours to describe.
-VENDOR_PREFIXES = ("tools/grib1_bridge/vendor/", "tools/rustwx/vendor/")
+#:
+#: ``tools/region_global_dealias/`` is the whole crate rather than a
+#: ``vendor/`` subdirectory of one, because that is how it is vendored: a
+#: verbatim copy at a recorded upstream commit that this tree never edits.
+#: A census record pins a sentence by its exact text, so registering one
+#: inside a tree we do not author would fail the gate on the next
+#: re-vendor -- and the fix would be to edit somebody else's source.
+VENDOR_PREFIXES = ("tools/grib1_bridge/vendor/", "tools/rustwx/vendor/",
+                   "tools/region_global_dealias/")
 
 #: The receipt itself.  Registering a measurement against itself is circular:
 #: the bit table and the receipt are the authority these records point AT, so
@@ -86,11 +94,21 @@ def is_excluded(relpath: str, globs: list[str]) -> bool:
 
 
 def public_files(root: Path) -> list[str]:
+    # `set`, and it is load-bearing rather than tidiness.  During an
+    # unresolved merge `git ls-files` prints a conflicted path ONCE PER
+    # STAGE -- three rows for one file -- and without the dedupe every
+    # claim in that file is registered three times, with identical line
+    # numbers.  A release train regenerates the census while merges are
+    # open, which is exactly when this fires: it inflated CHANGELOG.md's
+    # six claims to eighteen and the census total by twelve, and
+    # `--check` stayed green throughout because every duplicate agreed
+    # with the file it was read from.  Measured on this repo: 3 rows
+    # conflicted, 1 clean.
     out = subprocess.run(["git", "ls-files"], cwd=str(root),
                          capture_output=True, text=True, check=True)
     globs = release_exclusions(root)
-    return sorted(path for path in out.stdout.splitlines()
-                  if path.strip() and not is_excluded(path, globs))
+    return sorted({path for path in out.stdout.splitlines()
+                   if path.strip() and not is_excluded(path, globs)})
 
 
 def anchor_sha256(text: str) -> str:

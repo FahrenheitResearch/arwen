@@ -24,6 +24,7 @@ tools/grib1_bridge/target/
 tools/hrrr_grib2_bridge-*
 .pytest-ckpt/
 !tools/grib1_bridge/vendor/**
+tools/region_global_dealias/target/
 tools/rustwx/target/
 !tools/rustwx/vendor/**
 # ... but not build output or a lock file cargo drops there when an

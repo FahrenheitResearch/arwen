@@ -454,6 +454,30 @@ mod tests {
     use super::*;
     use rustwx_render::{ProjectedExtent, ProjectedLineOverlay, ProjectedPolygonFill};
 
+    /// Serializes the tests that drive the initial-condition disclosure.
+    ///
+    /// The disclosure is process-global, and `cargo test` runs a binary's
+    /// tests on a thread pool.  Three tests below set it, assert against
+    /// it and set it back, so without this lock one test's reset lands
+    /// between another's set and its assertion.  That is a real race and
+    /// it fired: `a_forecast_initialized_run_discloses_its_source_cycle_and_lead`
+    /// failed roughly one run in five, reading the subtitle its
+    /// neighbour's `set_initial_condition_disclosure(None)` had just
+    /// produced.  Nothing about the product is wrong; the tests were
+    /// sharing a global without saying so.
+    ///
+    /// Poisoning is ignored deliberately: if one of these tests panics
+    /// while holding the lock, the others should still report their own
+    /// verdicts rather than a cascade of `PoisonError`s that hides which
+    /// assertion actually failed.
+    static DISCLOSURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn disclosure_guard() -> std::sync::MutexGuard<'static, ()> {
+        DISCLOSURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn projected_context_tracks_sizes() {
         let mut context = PreparedProjectedContext::new();
@@ -495,6 +519,7 @@ mod tests {
 
     #[test]
     fn model_time_subtitle_includes_init_lead_and_valid_time() {
+        let _guard = disclosure_guard();
         set_initial_condition_disclosure(None);
         assert_eq!(
             model_time_subtitle(ModelId::Gfs, "20260424", 22, 4),
@@ -507,6 +532,7 @@ mod tests {
     /// belongs in the picture, not only in `run/report.json`.
     #[test]
     fn a_forecast_initialized_run_discloses_its_source_cycle_and_lead() {
+        let _guard = disclosure_guard();
         set_initial_condition_disclosure(Some("GFS 08/01 00Z f174".to_string()));
         assert_eq!(
             model_time_subtitle(ModelId::WrfGdex, "20260808", 6, 0),
@@ -525,6 +551,7 @@ mod tests {
     /// UNKNOWN is never stamped as anything.
     #[test]
     fn an_undisclosed_run_is_byte_identical_to_before() {
+        let _guard = disclosure_guard();
         set_initial_condition_disclosure(None);
         let plain = model_time_subtitle(ModelId::WrfGdex, "20260808", 6, 0);
         assert_eq!(plain, "Init 08/08 06Z | F000 | Valid 08/08 06Z | WRF");

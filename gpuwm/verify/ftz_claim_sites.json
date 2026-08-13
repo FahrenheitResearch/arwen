@@ -106,7 +106,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 1851,
+      "line": 2089,
       "kind": "prose",
       "anchor": "- Two silent wrong answers on sm_120, where FP32 subnormals are flushed",
       "anchor_sha256": "bcc677ec38d515737f2fb65993dfd2d0c0ff7f019725b8552b6e232d1668e1ad",
@@ -117,7 +117,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 1853,
+      "line": 2091,
       "kind": "prose",
       "anchor": "whose cube is subnormal and flushes to zero, turning a quotient into",
       "anchor_sha256": "d16d72f334e8d30903c3d85abea785c1573abd77b9da707e1a4a5721f5997048",
@@ -128,7 +128,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2111,
+      "line": 2349,
       "kind": "prose",
       "anchor": "FP32 subnormal flushing on sm_120 was described as a hardware property no",
       "anchor_sha256": "9845ca444fc2d1b5f5725fdb68f0b92434646fa1c15e917f719b3d7da391d204",
@@ -139,7 +139,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2113,
+      "line": 2351,
       "kind": "prose",
       "anchor": "the same source built without an appended `-ftz=true` keeps full IEEE",
       "anchor_sha256": "2e9db2d996710d5597910bd049935b00c288546c51893027e4da7cb352f1b818",
@@ -150,7 +150,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2114,
+      "line": 2352,
       "kind": "prose",
       "anchor": "subnormals on the same card. The CPU reference binary was described as an Intel",
       "anchor_sha256": "af90298485911dcdd5f05cf5efa704c8500e4a6f04ac8f3be6cd3da1092f68e1",
@@ -161,7 +161,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3216,
+      "line": 3454,
       "kind": "prose",
       "anchor": "functions, FP32 subnormal flushing), what each compared surface covers",
       "anchor_sha256": "2e3226a8e81d2f609a854e0ef0205ff199a9b03595eeb01dd045446a32e6cb6b",
@@ -3879,7 +3879,7 @@
     },
     {
       "file": "gpuwm/da/letkf.py",
-      "line": 687,
+      "line": 688,
       "kind": "prose",
       "anchor": "ensemble's condition number, and float32 subnormals are flushed in",
       "anchor_sha256": "c5a77faf5003f82b007f8c695aa64f3430ddf225ee8021005fbfa504ae050977",
@@ -3890,7 +3890,7 @@
     },
     {
       "file": "gpuwm/da/letkf.py",
-      "line": 688,
+      "line": 689,
       "kind": "prose",
       "anchor": "every kernel cupy compiles -- it appends ``-ftz=true`` after the",
       "anchor_sha256": "d2e4c295784eb257b902f1e3838b8bf768e8d636d9912424a30917c3eed3af30",
@@ -3901,7 +3901,7 @@
     },
     {
       "file": "gpuwm/ingest/hrrr.py",
-      "line": 348,
+      "line": 368,
       "kind": "behavioural",
       "anchor": "\"\"\"NumPy FP32 mirror of WPS ``oned`` with CUDA FTZ decisions.\"\"\"",
       "anchor_sha256": "4fe50a6a814fa5f8e58468ffa875aeb6bfe68d60117331e0de79b5f809ac5cc1",
@@ -6981,7 +6981,7 @@
     },
     {
       "file": "tools/ftz_receipt/claim_census.py",
-      "line": 45,
+      "line": 53,
       "kind": "prose",
       "anchor": "SELF_PREFIXES = (\"tools/ftz_receipt/receipt/\", \"tools/ftz_receipt/fixtures/\")",
       "anchor_sha256": "33396e7210a4f192630ac2c7fd1c32c43839475660359445181f4dc549963be0",
@@ -6992,7 +6992,7 @@
     },
     {
       "file": "tools/ftz_receipt/claim_census.py",
-      "line": 47,
+      "line": 55,
       "kind": "prose",
       "anchor": "#: Files whose FTZ mention motivates shipped behaviour rather than describing",
       "anchor_sha256": "d2ac0abac1a77e7bf56314fdf705a039ad32381878dd11fe70989f3c4e192290",
@@ -7003,7 +7003,7 @@
     },
     {
       "file": "tools/ftz_receipt/claim_census.py",
-      "line": 151,
+      "line": 169,
       "kind": "prose",
       "anchor": "census_rel = \"gpuwm/verify/ftz_claim_sites.json\"",
       "anchor_sha256": "145ef56705e97202cd92ce366d5523771d789ba6a123488635a7d38310ce69c0",
@@ -7014,7 +7014,7 @@
     },
     {
       "file": "tools/ftz_receipt/claim_census.py",
-      "line": 159,
+      "line": 177,
       "kind": "prose",
       "anchor": "\"generator\": \"tools/ftz_receipt/claim_census.py\",",
       "anchor_sha256": "0f49a203b6494814b48a54a06882d89b057dd560daba1c680fba9caa689fc96d",
@@ -7025,7 +7025,7 @@
     },
     {
       "file": "tools/ftz_receipt/claim_census.py",
-      "line": 180,
+      "line": 198,
       "kind": "prose",
       "anchor": "return root / \"gpuwm\" / \"verify\" / \"ftz_claim_sites.json\"",
       "anchor_sha256": "26360c5b5e5ddb400d9b52aae05dab64191e689e5edc849e581b4a4b5979d80f",
@@ -7036,7 +7036,7 @@
     },
     {
       "file": "tools/ftz_receipt/claim_census.py",
-      "line": 192,
+      "line": 210,
       "kind": "prose",
       "anchor": "census_rel = \"gpuwm/verify/ftz_claim_sites.json\"",
       "anchor_sha256": "145ef56705e97202cd92ce366d5523771d789ba6a123488635a7d38310ce69c0",
@@ -8400,7 +8400,7 @@
     },
     {
       "file": "tools/grib1_bridge/src/lib.rs",
-      "line": 81,
+      "line": 82,
       "kind": "behavioural",
       "anchor": "fn cuda_ftz_product_nonzero(left: f32, right: f32) -> bool {",
       "anchor_sha256": "b7682f98f9b5261f98949204e1b11e9472981664bcca4a2c82d3e3ae2cfba449",
@@ -8411,7 +8411,7 @@
     },
     {
       "file": "tools/grib1_bridge/src/lib.rs",
-      "line": 82,
+      "line": 83,
       "kind": "behavioural",
       "anchor": "// NVIDIA FP32 arithmetic flushes subnormal operands/results to zero.  The",
       "anchor_sha256": "3e13d23d5c611d31691922bce28909074a445d78f8df7b71bd262152189a9992",
@@ -8422,7 +8422,7 @@
     },
     {
       "file": "tools/grib1_bridge/src/lib.rs",
-      "line": 84,
+      "line": 85,
       "kind": "behavioural",
       "anchor": "// operands independently, so preserving host subnormals here can select a",
       "anchor_sha256": "fc8305a1ee2afe8504439f40869324905ff9f04fa3b6bd93337201ac3276af00",
@@ -8433,7 +8433,7 @@
     },
     {
       "file": "tools/grib1_bridge/src/lib.rs",
-      "line": 108,
+      "line": 109,
       "kind": "behavioural",
       "anchor": "let both = cuda_ftz_product_nonzero(b, c);",
       "anchor_sha256": "70665dd63882defbbc9f478d248195c9ce3721b1587185cbf2ef4b76ec6bafd1",

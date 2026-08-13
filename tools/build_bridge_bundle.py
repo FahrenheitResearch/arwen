@@ -5,7 +5,8 @@ by hand from a checkout):
 
 ``pack``
     On each target platform, after ``cargo build --release --locked`` in
-    both vendored workspaces, collect the nine artifacts of
+    the two workspaces and the vendored dealiasing crate, collect the
+    ten artifacts of
     ``gpuwm.bridge_assets.BUNDLED_ARTIFACTS``, plus the renderer's map
     assets, into one zip named for the release and the platform.  The
     archive is deterministic: binaries first in the declared artifact
@@ -64,6 +65,15 @@ extracts the stamp from every binary member and refuses a bundle whose
 stamp is absent, unparseable, ambiguous, or names any other commit.
 String extraction, never execution: it works on the other platform's
 binaries and on a GPU-less runner.
+
+The one exception is a VENDORED artifact, whose source is a verbatim
+upstream tree frozen at a recorded commit and therefore does not move
+with this checkout at all.  A HEAD stamp would say nothing about it and
+injecting one would edit a tree whose whole claim is that it is
+unmodified, so ``pin`` asks it for its declared contract marker instead
+-- equally a property of the bytes, equally read without executing
+anything, and equally fatal when a build predating this release's ABI
+turns up in a bundle.
 """
 
 from __future__ import annotations
@@ -80,7 +90,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from gpuwm import bridge_assets  # noqa: E402
+from gpuwm import bridge_assets, bridges  # noqa: E402
 
 #: Fixed member timestamp so two packs of identical bytes produce
 #: identical archives (zip stores mtime per member).
@@ -224,10 +234,37 @@ def _pin_bundle(archive: Path, release: str,
             # bytes came from the commit being released.  Refusing here,
             # before anything is written, is what keeps a stale binary
             # from becoming a perfectly-pinned release asset.
+            #
+            # A VENDORED artifact is a verbatim upstream crate frozen at a
+            # recorded commit: it does not move with this checkout, so the
+            # release commit says nothing about it, and stamping it would
+            # mean editing a tree whose whole claim is that no file in it
+            # differs from upstream by a byte.  Its declared contract
+            # marker is asked for instead -- a property of these exact
+            # bytes, naming the ABI this release speaks -- so the
+            # equivalent staleness (a library built from an older vendored
+            # crate) is still refused here rather than shipped.
             try:
-                bridge_assets.verify_source_revision(
-                    payload, expected=source_rev,
-                    label=f"{archive.name}: {name}")
+                if artifact.vendored:
+                    marker = bridges.BRIDGE_ABI_MARKERS.get(artifact.name)
+                    if marker is None:
+                        raise bridge_assets.BridgeAssetError(
+                            f"{archive.name}: {name} is a vendored artifact "
+                            "with no declared contract marker, so nothing "
+                            "proves which build of it this is; add one to "
+                            "gpuwm.bridges.BRIDGE_ABI_MARKERS")
+                    if marker not in payload:
+                        raise bridge_assets.BridgeAssetError(
+                            f"{archive.name}: {name} does not carry the "
+                            f"{artifact.name} contract marker "
+                            f"{marker.decode('ascii', 'replace')!r}, so it "
+                            "was built from a vendored crate older than the "
+                            "one this release speaks to; rebuild it from "
+                            f"{artifact.crate} in the release checkout")
+                else:
+                    bridge_assets.verify_source_revision(
+                        payload, expected=source_rev,
+                        label=f"{archive.name}: {name}")
             except bridge_assets.BridgeAssetError as error:
                 raise SystemExit(f"build_bridge_bundle: {error}; refusing "
                                  "to pin a bundle that is not provably "
@@ -415,7 +452,7 @@ def _contract_problems(name: str, archive: Path, platform: str,
     """Every way ``archive`` diverges from this commit's content contract.
 
     The contract is exactly what ``pack`` produces from this checkout:
-    the nine binaries by filename (their bytes are the previous run's
+    the ten binaries by filename (their bytes are the previous run's
     non-reproducible build, proven on its native runner before upload,
     and pinned by the uploaded manifest when there is one), and the
     walked map-asset tree by path AND bytes, because for a data file the

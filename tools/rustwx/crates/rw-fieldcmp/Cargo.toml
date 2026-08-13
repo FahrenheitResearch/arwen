@@ -1,0 +1,31 @@
+# Paired history-stream field comparison: two directories of matching
+# history frames in, one metric table (and machine-readable JSON) out.
+#
+# The metric set is the campaign judge's: per named surface field the
+# mean/p10/p50/p99/max of each arm and their differences, the domain sum of
+# each accumulation field with its ratio, and the composite-reflectivity
+# coverage counts and maximum.  Every frame is opened once and every named
+# variable is read once; the arms and the frames run in parallel.
+
+[package]
+name = "rw-fieldcmp"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "rw_fieldcmp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rw_fieldcmp"
+path = "src/main.rs"
+
+[dependencies]
+netcrust = { path = "../../vendor/netcrust" }
+rayon.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

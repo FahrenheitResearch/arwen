@@ -36,6 +36,32 @@ The three defects, each with the test that reproduces it:
     walk performs the store->state publish before evaluating and the
     state->store adopt after, so the runner's own window reset reaches the
     domain.
+
+WHY SIX OF THESE NINE CARRY ``@pytest.mark.gpu``
+
+The instrument is NumPy end to end and nothing here asserts a value, but
+``execute_experiment`` releases the CuPy default pool's UNUSED blocks on
+every step and every period commit (``model._trim_default_pool``, and
+``pool_trim_per_period`` defaults to True), so the six tests that drive a
+real leg walk open a CUDA context anyway.  Unmarked, they were green on NO
+machine and had been since v2.0.0: they hard-failed
+``cudaErrorNoDevice`` under the release battery's mandated CPU-only stage-1
+leg (``GPUWM_NO_LOCAL_GPU=1``, whose conftest backstop sets
+``CUDA_VISIBLE_DEVICES=-1``), and an unmarked test is DESELECTED by the
+rented card's ``-m gpu`` shard, so the shard never covered them either.
+
+The marker is per test rather than a module-wide ``pytestmark`` on purpose.
+The other three never call ``execute_experiment``, they are the only CPU
+coverage this file has, and marking the module wholesale would trade one
+silent gap for another -- ``tests/test_gpu_marker_discipline.py`` states the
+rule this follows: over-marking is coverage loss wearing a safety costume.
+
+The device contact is at CALL time, not import or collection time: this file
+collects cleanly on a device-free box (9 collected, no CUDA context), so the
+markers are the whole fix here.  Teaching ``_trim_default_pool`` to no-op
+without a device would let all nine run CPU-only, but that is a change to a
+default-on product path in the memory-pressure code, and it belongs to its
+own ruling rather than to a marker repair.
 """
 
 from __future__ import annotations
@@ -184,6 +210,7 @@ def test_both_spawn_capable_routes_either_stream_or_refuse_by_name():
 # 2. the newborn's stepper
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu  # execute_experiment's default-on pool trim opens a context
 def test_a_newborn_inside_a_streamed_run_is_refused_not_silently_resident(
         monkeypatch):
     """THE DEFECT, reproduced and then refused.
@@ -211,6 +238,7 @@ def test_a_newborn_inside_a_streamed_run_is_refused_not_silently_resident(
                         steppers={1: _FakeStreamed(1)})
 
 
+@pytest.mark.gpu  # execute_experiment's default-on pool trim opens a context
 def test_the_defect_itself_with_the_adjudication_removed(monkeypatch):
     """THE CONTROL for the refusal above: what the shipped walk actually did.
 
@@ -249,6 +277,7 @@ def test_the_defect_itself_with_the_adjudication_removed(monkeypatch):
     assert dycore_calls == [2] * 6           # d02 did NOT, and said nothing
 
 
+@pytest.mark.gpu  # execute_experiment's default-on pool trim opens a context
 def test_the_factory_binds_the_newborn_and_the_parent_keeps_its_stepper(
         monkeypatch):
     """With a factory the newborn is adjudicated; the parent is untouched.
@@ -293,6 +322,7 @@ def test_the_factory_binds_the_newborn_and_the_parent_keeps_its_stepper(
     assert dycore_calls == []
 
 
+@pytest.mark.gpu  # execute_experiment's default-on pool trim opens a context
 def test_a_resident_run_never_consults_the_factory(monkeypatch):
     """``[tiles]`` absent must cost the spawn path exactly nothing.
 
@@ -323,6 +353,7 @@ def test_a_resident_run_never_consults_the_factory(monkeypatch):
 # 3. the trigger's plane
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu  # execute_experiment's default-on pool trim opens a context
 def test_the_leg_walk_publishes_the_consumer_plane_before_the_trigger_looks(
         monkeypatch):
     """store -> state before ``on_leg_boundary``, state -> store after.
@@ -375,6 +406,7 @@ def test_the_leg_walk_publishes_the_consumer_plane_before_the_trigger_looks(
     assert order[0][1] == ("scratch/uh_spawn_window",)
 
 
+@pytest.mark.gpu  # execute_experiment's default-on pool trim opens a context
 def test_nothing_moves_when_the_diagnostic_is_off(monkeypatch):
     """``nwp_diagnostics = 0`` allocates no window; the seam is a no-op.
 

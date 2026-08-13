@@ -397,6 +397,12 @@ jobs:
       - name: build the fetch backbone and the batch renderer
         working-directory: tools/rustwx
         run: cargo build --release --locked
+      # The vendored dealiasing crate is its own tree, not a member of
+      # either workspace, so it is built on its own line.  It ships
+      # because --dealias runs it by default.
+      - name: build the region-global dealiasing library
+        working-directory: tools/region_global_dealias
+        run: cargo build --release --locked
       - name: probe every native artifact on its target runner
         shell: bash
         env:
@@ -408,35 +414,52 @@ jobs:
           import os
           from pathlib import Path
 
-          from gpuwm import bridge_assets, doctor
+          from gpuwm import bridge_assets, bridges, doctor
 
           platform = os.environ["BUNDLE_PLATFORM"]
           source_rev = os.environ["BUNDLE_SOURCE_REV"]
           search = (
               Path("tools/grib1_bridge/target/release"),
               Path("tools/rustwx/target/release"),
+              Path("tools/region_global_dealias/target/release"),
           )
+          # Each library's ABI entry point, by artifact: one probe symbol
+          # for every kind == "library" member, so adding a second library
+          # cannot quietly reuse the first one's handshake.
+          LIBRARY_ABI = {
+              "gpuwm_preprocess_cpu": ("gpuwm_preprocess_cpu_abi_version", 1),
+              "region_global_dealias": ("bw_abi_version", 1),
+          }
           for artifact in bridge_assets.BUNDLED_ARTIFACTS:
               filename = bridge_assets.artifact_filename(artifact, platform)
               matches = [directory / filename for directory in search
                          if (directory / filename).is_file()]
               assert len(matches) == 1, (artifact.name, matches)
               path = matches[0]
-              # The build just ran from this checkout, so its embedded
-              # source-revision stamp must name the cut commit.  Failing
-              # here, on the platform runner, is hours earlier than the
-              # same refusal at the pin step.
-              bridge_assets.verify_source_revision(
-                  path.read_bytes(), expected=source_rev, label=str(path))
+              payload = path.read_bytes()
+              if artifact.vendored:
+                  # Upstream's tree, frozen at a recorded commit: it does
+                  # not move with this checkout, so what is asked of it is
+                  # the contract marker the pin step will ask for too.
+                  marker = bridges.BRIDGE_ABI_MARKERS[artifact.name]
+                  assert marker in payload, (artifact.name, marker)
+              else:
+                  # The build just ran from this checkout, so its embedded
+                  # source-revision stamp must name the cut commit.
+                  # Failing here, on the platform runner, is hours earlier
+                  # than the same refusal at the pin step.
+                  bridge_assets.verify_source_revision(
+                      payload, expected=source_rev, label=str(path))
               if artifact.kind == "executable":
                   ok, evidence = doctor._exec_probe(path)
                   assert ok, (path, evidence)
               else:
+                  symbol, expected = LIBRARY_ABI[artifact.name]
                   library = ctypes.CDLL(str(path.resolve()))
-                  abi = library.gpuwm_preprocess_cpu_abi_version
+                  abi = getattr(library, symbol)
                   abi.argtypes = []
                   abi.restype = ctypes.c_uint32
-                  assert int(abi()) == 1
+                  assert int(abi()) == expected, (artifact.name, symbol)
               print(platform, artifact.name, path)
           PY
       - name: pack the bundle
@@ -447,6 +470,7 @@ jobs:
             --platform '${{ matrix.platform }}' \
             --search tools/grib1_bridge/target/release \
             --search tools/rustwx/target/release \
+            --search tools/region_global_dealias/target/release \
             --out dist-bridges
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

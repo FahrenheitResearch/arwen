@@ -5,4 +5,5 @@
 //! instead of copying a renderer into an app shell.
 
 pub mod batch_render;
+mod host_memory;
 pub mod render_all;

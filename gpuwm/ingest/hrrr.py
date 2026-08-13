@@ -10,6 +10,7 @@ rotated into the target Lambert basis.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import hashlib
@@ -19,6 +20,7 @@ from typing import Mapping, MutableMapping
 
 import numpy as np
 
+from gpuwm import perf_timing
 from gpuwm.hrrr_forecast import validate_hrrr_source_forecast_hours
 from gpuwm.ingest.quantization import clamp_bound_kissing
 from gpuwm.ingest.horiz import (
@@ -70,6 +72,7 @@ def _verify_manifest(root: Path, expected_manifest_sha256: str) -> None:
         raise ValueError(
             f"HRRR SHA256SUMS hash mismatch: expected {expected}, got {actual}")
     seen: set[Path] = set()
+    payloads: list[tuple[str, Path, str]] = []
     for line_number, raw in enumerate(manifest.read_text().splitlines(), 1):
         if not raw:
             continue
@@ -94,11 +97,28 @@ def _verify_manifest(root: Path, expected_manifest_sha256: str) -> None:
             continue
         if not path.is_file():
             raise FileNotFoundError(f"manifest payload is missing: {path}")
-        payload_hash = _sha256(path)
-        if payload_hash != digest.lower():
-            raise ValueError(
-                f"HRRR payload hash mismatch for {relative}: "
-                f"expected {digest.lower()}, got {payload_hash}")
+        payloads.append((relative, path, digest.lower()))
+
+    # Every payload is still hashed -- the scope of what this proves is
+    # unchanged -- but the reads run concurrently.  This verification is
+    # the whole bridge publication (all sealed leads) while the caller may
+    # map only one of them, so it is the largest read in the hierarchy
+    # stage; hashlib releases the GIL, so threads here are real
+    # concurrency and not bookkeeping.
+    with perf_timing.stage("ingest.hrrr.verify_manifest",
+                           payloads=len(payloads)) as timed:
+        total = 0
+        workers = max(1, min(8, len(payloads)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for (relative, path, expected_digest), payload_hash in zip(
+                    payloads, pool.map(_sha256,
+                                       [entry[1] for entry in payloads])):
+                if payload_hash != expected_digest:
+                    raise ValueError(
+                        f"HRRR payload hash mismatch for {relative}: "
+                        f"expected {expected_digest}, got {payload_hash}")
+                total += path.stat().st_size
+        timed.count(bytes_hashed=total)
 
 
 def _read_gate(root: Path) -> dict[str, str]:

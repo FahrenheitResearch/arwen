@@ -15,7 +15,9 @@ from types import SimpleNamespace
 import pytest
 
 from tools.da_nowcast import (
-    STAGES, VERIFY_SCHEMA, FrontDoorError, RadarSelection, WindowPlan,
+    DEFAULT_DEALIAS_ENGINE,
+    STAGES, VERIFY_SCHEMA, DealiasChoice, FrontDoorError, RadarSelection,
+    WindowPlan,
     _stop, _stopped_early, advance_state,
     build_parser, cycle_cmd, fetch_cmd, gallery_rows, geojson_box,
     handoff_state, initial_frames, latest_gfs_cycle,
@@ -430,7 +432,8 @@ class TestCommands:
         argv = obs_cmd(selection=RadarSelection(anchor="QQQQ"),
                        valid=utc(2026, 8, 5, 4, 15),
                        grid_wrfout=Path("g"), out_nc=Path("o"),
-                       work_dir=Path("w"), bucket=None)
+                       work_dir=Path("w"), bucket=None,
+                       dealias=DealiasChoice())
         assert "QQQQ" in argv
         assert "--valid-time" in argv
         assert argv[argv.index("--valid-time") + 1] \
@@ -687,7 +690,8 @@ class TestThePartialReceiptAStoppedRunLeaves:
 
         receipts = self._case(tmp_path)
         written = write_partial_receipt(
-            tmp_path, receipts=receipts, dealias=True, stopped_after="obs")
+            tmp_path, receipts=receipts, dealias=DealiasChoice(on=True),
+            stopped_after="obs")
         assert written == tmp_path / "nowcast-receipt.json"
 
         selection, init, frames, dealias = _case_context(tmp_path)
@@ -695,19 +699,19 @@ class TestThePartialReceiptAStoppedRunLeaves:
         assert selection.min_radars == 2
         assert init == datetime(2026, 8, 5, 4, 0, tzinfo=timezone.utc)
         assert [frame["valid"] for frame in frames] == list(FREE_TIMES)
-        assert dealias is True
+        assert dealias == DealiasChoice(on=True)
 
     def test_nothing_in_it_is_invented(self, tmp_path):
         """Verbatim from the plan receipt, or from the launch command."""
         receipts = self._case(tmp_path)
-        write_partial_receipt(tmp_path, receipts=receipts, dealias=False,
-                              stopped_after="obs")
+        write_partial_receipt(tmp_path, receipts=receipts,
+                              dealias=DealiasChoice(), stopped_after="obs")
         receipt = json.loads(
             (tmp_path / "nowcast-receipt.json").read_text(encoding="utf-8"))
         for key in ("site", "radars", "plan", "domain_center", "seed",
                     "case_name"):
             assert receipt[key] == self.PLAN[key]
-        assert receipt["obs"] == {"dealias": False}
+        assert receipt["obs"] == DealiasChoice().to_payload()
         provenance = receipt["receipt_provenance"]
         assert set(provenance["verbatim_from_receipts_01_plan_json"]) == {
             "site", "radars", "plan", "domain_center", "seed", "case_name"}
@@ -719,7 +723,8 @@ class TestThePartialReceiptAStoppedRunLeaves:
 
     def test_it_says_it_is_partial_and_who_wrote_it(self, tmp_path):
         receipts = self._case(tmp_path)
-        write_partial_receipt(tmp_path, receipts=receipts, dealias=False,
+        write_partial_receipt(tmp_path, receipts=receipts,
+                              dealias=DealiasChoice(),
                               stopped_after="forecast")
         receipt = json.loads(
             (tmp_path / "nowcast-receipt.json").read_text(encoding="utf-8"))
@@ -740,7 +745,8 @@ class TestThePartialReceiptAStoppedRunLeaves:
         the very end of a verify pass.
         """
         receipts = self._case(tmp_path)
-        write_partial_receipt(tmp_path, receipts=receipts, dealias=True,
+        write_partial_receipt(tmp_path, receipts=receipts,
+                              dealias=DealiasChoice(on=True),
                               stopped_after="obs")
         write_verification(tmp_path, verification_block(
             frames=initial_frames(FREE_TIMES), state="pending"))
@@ -756,7 +762,7 @@ class TestThePartialReceiptAStoppedRunLeaves:
             "schema": "gpuwm-da.nowcast.v1", "site": "KICT",
             "sizing": {"members": 6}}), encoding="utf-8")
         assert write_partial_receipt(
-            tmp_path, receipts=receipts, dealias=True,
+            tmp_path, receipts=receipts, dealias=DealiasChoice(on=True),
             stopped_after="obs") is None
         receipt = json.loads(
             (tmp_path / "nowcast-receipt.json").read_text(encoding="utf-8"))
@@ -764,9 +770,11 @@ class TestThePartialReceiptAStoppedRunLeaves:
 
     def test_an_earlier_partial_receipt_is_refreshed(self, tmp_path):
         receipts = self._case(tmp_path)
-        write_partial_receipt(tmp_path, receipts=receipts, dealias=False,
+        write_partial_receipt(tmp_path, receipts=receipts,
+                              dealias=DealiasChoice(),
                               stopped_after="survey")
-        write_partial_receipt(tmp_path, receipts=receipts, dealias=True,
+        write_partial_receipt(tmp_path, receipts=receipts,
+                              dealias=DealiasChoice(on=True),
                               stopped_after="obs")
         receipt = json.loads(
             (tmp_path / "nowcast-receipt.json").read_text(encoding="utf-8"))
@@ -777,7 +785,7 @@ class TestThePartialReceiptAStoppedRunLeaves:
         """No plan receipt means nothing honest to copy."""
         (tmp_path / "receipts").mkdir()
         assert write_partial_receipt(
-            tmp_path, receipts=tmp_path / "receipts", dealias=False,
+            tmp_path, receipts=tmp_path / "receipts", dealias=DealiasChoice(),
             stopped_after="survey") is None
         assert not (tmp_path / "nowcast-receipt.json").exists()
 
@@ -786,7 +794,7 @@ class TestThePartialReceiptAStoppedRunLeaves:
         receipts.mkdir()
         (receipts / "01-plan.json").write_text("{not json", encoding="utf-8")
         assert write_partial_receipt(
-            tmp_path, receipts=receipts, dealias=False,
+            tmp_path, receipts=receipts, dealias=DealiasChoice(),
             stopped_after="obs") is None
 
     def test_every_stop_door_goes_through_the_emitter(self, tmp_path,
@@ -799,7 +807,8 @@ class TestThePartialReceiptAStoppedRunLeaves:
         receipts = self._case(tmp_path)
         for stage in STAGES:
             (tmp_path / "nowcast-receipt.json").unlink(missing_ok=True)
-            args = SimpleNamespace(dealias=False)
+            args = SimpleNamespace(dealias=False, dealias_engine="vad-region",
+                                   dealias_refinement=False)
             assert _stopped_early(tmp_path, receipts, args, stage) == 0
             out = capsys.readouterr().out
             assert f"stopped after {stage}" in out
@@ -911,7 +920,8 @@ class TestVerifyPass:
         frames, built = verify_pass(
             case_dir=case, selection=RadarSelection(anchor="QQQQ"),
             init=utc(2026, 8, 5, 4), frames=initial_frames(FREE_TIMES),
-            bucket=None, max_offset_seconds=480.0, repo_root=case)
+            bucket=None, max_offset_seconds=480.0, repo_root=case,
+            dealias=DealiasChoice())
         assert built == 0
         assert FREE_TIMES[0] not in asked   # already on disk, not refetched
         assert asked == FREE_TIMES[1:]
@@ -934,7 +944,8 @@ class TestVerifyPass:
             case_dir=case, selection=RadarSelection(anchor="QQQQ"),
             init=utc(2026, 8, 5, 4),
             frames=initial_frames([soon.strftime("%Y-%m-%dT%H:%M:00Z")]),
-            bucket=None, max_offset_seconds=480.0, repo_root=case)
+            bucket=None, max_offset_seconds=480.0, repo_root=case,
+            dealias=DealiasChoice())
         assert built == 0
         assert frames[0]["status"] == "pending"
         assert "not reached" in frames[0]["note"]
@@ -1235,7 +1246,8 @@ def parsed_run(*extra):
 def obs_argv(selection):
     return obs_cmd(selection=selection, valid=utc(2026, 8, 5, 4, 15),
                    grid_wrfout=Path("g"), out_nc=Path("o"),
-                   work_dir=Path("w"), bucket=None)
+                   work_dir=Path("w"), bucket=None,
+                   dealias=DealiasChoice())
 
 
 def builder_args(argv):
@@ -1329,6 +1341,86 @@ class TestRadarSelectionArgv:
         assert found.min_coverage_fraction == 0.30
         assert found.max_radars == 4
 
+        # The engine selector crosses the same seam, and the builder's own
+        # parser is what has to accept it -- this front door BUILDS that
+        # tool's argv, so a spelling that only this file agrees with is a
+        # run that dies at the first observation stage.
+        from gpuwm.obs.dealias import DealiasParams
+        from tools.obs_radar_grid_build import dealias_params_from_args
+
+        refined = builder_args(obs_cmd(
+            selection=RadarSelection(anchor="QQQQ"),
+            valid=utc(2026, 8, 5, 4, 15), grid_wrfout=Path("g"),
+            out_nc=Path("o"), work_dir=Path("w"), bucket=None,
+            dealias=DealiasChoice(on=True, engine="region-global",
+                                  refinement=True)))
+        assert refined.dealias is True
+        assert refined.dealias_engine == "region-global"
+        assert refined.dealias_refinement is True
+        params = dealias_params_from_args(refined, DealiasParams,
+                                          lambda engine: None)
+        assert params.engine == "region-global" and params.refinement is True
+
+        # Both halves of the refinement switch cross it too, and the
+        # legacy engine's argv has to survive the round trip now that the
+        # default is the other one.
+        legacy = builder_args(obs_cmd(
+            selection=RadarSelection(anchor="QQQQ"),
+            valid=utc(2026, 8, 5, 4, 15), grid_wrfout=Path("g"),
+            out_nc=Path("o"), work_dir=Path("w"), bucket=None,
+            dealias=DealiasChoice(on=True, engine="vad-region",
+                                  refinement=False)))
+        assert legacy.dealias_engine == "vad-region"
+        assert legacy.dealias_refinement is False
+        assert dealias_params_from_args(
+            legacy, DealiasParams, lambda engine: None).refinement is False
+
+    def test_the_front_door_and_the_parameter_object_default_alike(self):
+        """One default, spelled in two places, bound here.
+
+        ``tools.da_nowcast`` imports no numpy -- it builds argv for a
+        subprocess -- so it carries the engine name as a string.  A string
+        only one side agrees with is a run that dies at its first
+        observation stage, hours in.
+        """
+
+        from gpuwm.obs.dealias import DealiasParams
+        from tools.obs_radar_grid_build import (build_parser,
+                                                dealias_params_from_args)
+
+        shipped = DealiasParams()
+        assert DEFAULT_DEALIAS_ENGINE == shipped.engine
+        assert DealiasChoice().engine == shipped.engine
+        assert DealiasChoice().refinement is shipped.refinement is True
+
+        # And the builder's own parser, asked for nothing but --dealias,
+        # produces exactly those parameters.
+        args = build_parser().parse_args([
+            "--site", "QQQQ", "--valid-time", "2026-08-05T04:00:00Z",
+            "--grid-wrfout", "g", "--out", "o", "--work-dir", "w",
+            "--dealias"])
+        params = dealias_params_from_args(args, DealiasParams,
+                                          lambda engine: None)
+        assert params.engine == shipped.engine
+        assert params.refinement is True
+
+    def test_refinement_beside_the_engine_without_one_is_refused(self):
+        """Named at the door, not as a traceback from the parameters."""
+
+        from gpuwm.obs.dealias import DealiasParams
+        from tools.obs_radar_grid_build import (build_parser,
+                                                dealias_params_from_args)
+
+        args = build_parser().parse_args([
+            "--site", "QQQQ", "--valid-time", "2026-08-05T04:00:00Z",
+            "--grid-wrfout", "g", "--out", "o", "--work-dir", "w",
+            "--dealias", "--dealias-engine", "vad-region",
+            "--dealias-refinement"])
+        with pytest.raises(SystemExit) as error:
+            dealias_params_from_args(args, DealiasParams,
+                                     lambda engine: None)
+        assert "no refinement pass" in str(error.value)
+
 
 class TestRadarSelectionFromTheFrontDoor:
     def test_the_flags_default_to_one_radar(self):
@@ -1402,7 +1494,9 @@ class TestTheVerifierGradesAgainstWhatItAssimilated:
         assert init == utc(2026, 8, 5, 4)
         # No "obs" block: this receipt predates --dealias, and every run
         # written before the flag existed masked rather than unfolded.
-        assert dealias is False
+        assert dealias == DealiasChoice(on=False,
+                                        engine=DealiasChoice.LEGACY_ENGINE,
+                                        refinement=False)
 
     def test_the_case_context_recovers_the_dealias_treatment(self, tmp_path):
         """The truth field has to be built the way the analysis was fed.
@@ -1426,7 +1520,14 @@ class TestTheVerifierGradesAgainstWhatItAssimilated:
                      "free_leg_times": list(FREE_TIMES)}}),
             encoding="utf-8")
         _, _, _, dealias = _case_context(tmp_path)
-        assert dealias is True
+        # The receipt predates the engine selector, so it reads back as the
+        # engine that was the only one when it was written -- NOT as
+        # today's default.  An old receipt describes an old run, and its
+        # verification composites have to be built the way its analysis
+        # was fed.
+        assert dealias == DealiasChoice(on=True, engine="vad-region",
+                                        refinement=False)
+        assert DealiasChoice.LEGACY_ENGINE == "vad-region"
 
     def test_the_non_radar_streams_reach_the_cycle_driver(self):
         """The flag that never reached the driver is this project's bug.
@@ -1484,9 +1585,22 @@ class TestTheVerifierGradesAgainstWhatItAssimilated:
                       valid=utc(2026, 8, 5, 4),
                       grid_wrfout=Path("wrfout"), out_nc=Path("out.nc"),
                       work_dir=Path("vols"), bucket=None)
-        assert "--dealias" in obs_cmd(**kwargs, dealias=True)
-        assert "--dealias" not in obs_cmd(**kwargs, dealias=False)
-        assert obs_cmd(**kwargs) == obs_cmd(**kwargs, dealias=False)
+        on = obs_cmd(**kwargs, dealias=DealiasChoice(on=True))
+        assert "--dealias" in on
+        # The engine travels with the flag: a truth composite built by the
+        # other solver is a differently-built truth.  So does the
+        # refinement switch, spelled either way rather than left to
+        # whatever the default is on the day the verifier re-runs.
+        assert on[on.index("--dealias-engine") + 1] == DEFAULT_DEALIAS_ENGINE
+        assert "--dealias-refinement" in on
+        legacy = obs_cmd(**kwargs, dealias=DealiasChoice(
+            on=True, engine="vad-region", refinement=False))
+        assert legacy[legacy.index("--dealias-engine") + 1] == "vad-region"
+        assert "--no-dealias-refinement" in legacy
+        assert "--dealias-refinement" not in legacy
+        off = obs_cmd(**kwargs, dealias=DealiasChoice())
+        assert "--dealias" not in off
+        assert "--dealias-engine" not in off
 
     def test_a_verification_frame_is_built_from_every_radar(
             self, tmp_path, monkeypatch):
@@ -1512,7 +1626,8 @@ class TestTheVerifierGradesAgainstWhatItAssimilated:
         ok, why = front.build_verify_frame(
             case_dir=tmp_path, selection=selection,
             init=utc(2026, 8, 5, 4), valid=utc(2026, 8, 5, 5, 45),
-            bucket=None, max_offset_seconds=480.0, repo_root=tmp_path)
+            bucket=None, max_offset_seconds=480.0, repo_root=tmp_path,
+            dealias=DealiasChoice())
         assert ok, why
         named = [seen["argv"][i + 1]
                  for i, a in enumerate(seen["argv"]) if a == "--site"]

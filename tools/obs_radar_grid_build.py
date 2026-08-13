@@ -57,6 +57,27 @@ Volume selection: the volume whose valid time is nearest the requested
 (default 480 s) or the tool refuses -- an analysis fed a stale volume
 should be a decision, not an accident.
 
+Dual-pol QC: ``--cc-qc`` requests the RHO (correlation coefficient)
+plane from the decode and enables the mask in :mod:`gpuwm.obs.cc_qc`,
+whose rule is per moment.  In reflectivity low CC alone never drops a
+gate, so hail cores, the melting layer and tornadic debris signatures
+survive as echo.  In velocity there is no reflectivity shield: a
+low-CC gate loses its velocity at every reflectivity, debris core
+included, because a scatterer that does not move with the air is not a
+wind observation.  The one exemption is the debris-signature fringe --
+30 to 35 dBZ, CC above the debris floor, beside a clustered velocity
+couplet in the same sweep -- which keeps its velocity because that band
+is where a weak or distant tornado's rotation lives.  It is on with
+``--cc-qc``; ``--cc-no-tds-fringe-exempt`` restores the strict rule,
+and the receipt counts every gate the exemption kept and every
+candidate each criterion turned away.
+
+Off by default until the staged A/B proves it, and off is
+byte-identical to a build from before the flag existed.  What the mask
+did, sweep by sweep and moment by moment, lands in the receipt and the
+NetCDF provenance -- per radar, since this tool builds one file from as
+many radars as cover the grid.
+
 Feed selection: ``--source auto`` (the default) prefers the real-time
 chunk feed and falls back to the archive when the live feed cannot cover
 the request; ``--source live`` refuses rather than falling back;
@@ -230,6 +251,65 @@ def build_parser() -> argparse.ArgumentParser:
                              "superob alike (default: SuperobParams "
                              "default)")
     parser.add_argument("--max-elevation-deg", type=float, default=20.0)
+    parser.add_argument("--cc-qc", action="store_true",
+                        help="correlation-coefficient QC "
+                             "(gpuwm.obs.cc_qc): request the RHO plane "
+                             "from the decode and mask per moment -- "
+                             "reflectivity drops only where RhoHV AND "
+                             "reflectivity are both low, so hail cores, "
+                             "the melting layer and tornadic debris "
+                             "survive as echo; velocity drops wherever "
+                             "RhoHV is low, at every reflectivity. Off "
+                             "by default until the A/B proves it; off is "
+                             "byte-identical to a build that predates "
+                             "the flag")
+    parser.add_argument("--cc-rho-min", type=float, default=None,
+                        help="RhoHV threshold: compound with the shield "
+                             "in reflectivity, alone in velocity "
+                             "(default: the cited CcQcParams default)")
+    parser.add_argument("--cc-ref-shield-dbz", type=float, default=None,
+                        help="reflectivity at or above this is never "
+                             "CC-dropped FROM REFLECTIVITY; it does not "
+                             "protect velocity (default: the cited "
+                             "CcQcParams default)")
+    parser.add_argument("--cc-rho-min-velocity", type=float, default=None,
+                        help="OPTIONAL separate RhoHV threshold for "
+                             "velocity; unset means velocity uses "
+                             "--cc-rho-min, which is the ruling. Set it "
+                             "below the hail band (0.80, the TDS "
+                             "criterion) to keep hail-core velocity "
+                             "while still purging debris and biota")
+    parser.add_argument("--cc-rho-floor", type=float, default=None,
+                        help="OPTIONAL unconditional RhoHV floor, dropped "
+                             "regardless of reflectivity. Deletes tornadic "
+                             "debris signatures from the REFLECTIVITY "
+                             "field at or above their RhoHV; off unless "
+                             "explicitly given, and a decision about a "
+                             "specific volume, never a habit")
+    parser.add_argument("--cc-no-tds-fringe-exempt", action="store_true",
+                        help="turn OFF the debris-signature fringe "
+                             "exemption, restoring the strict velocity "
+                             "rule: 30-35 dBZ low-CC gates beside a "
+                             "velocity couplet lose their velocity like "
+                             "every other low-CC gate. The exemption is "
+                             "on with --cc-qc because a weak or distant "
+                             "TDS lives in that band; this switch is the "
+                             "way to measure what it costs")
+    parser.add_argument("--cc-tds-rho-floor", type=float, default=None,
+                        help="RhoHV below which a gate is never exempted "
+                             "however much rotation surrounds it -- the "
+                             "line between debris and receiver noise "
+                             "(default: the cited CcQcParams default)")
+    parser.add_argument("--cc-tds-ref-min-dbz", type=float, default=None,
+                        help="reflectivity floor of the exemption band; "
+                             "its ceiling is --cc-ref-shield-dbz, above "
+                             "which the strict rule is untouched "
+                             "(default: the cited CcQcParams default)")
+    parser.add_argument("--cc-tds-couplet-delta-v-ms", type=float,
+                        default=None,
+                        help="velocity difference across one "
+                             "adjacent-radial pair that seeds a couplet "
+                             "(default: the cited CcQcParams default)")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--clear-air-from-censor", action="store_true",
                         help="decode with --censor-flags and build clear-air "
@@ -248,23 +328,142 @@ def build_parser() -> argparse.ArgumentParser:
                              "which is what recovers a mesocyclone couplet "
                              "living above 0.8 * Nyquist. Records the "
                              "per-gate account in the file's provenance. "
-                             "Requires scipy")
+                             "The default engine needs the region-global "
+                             "shared library; gpuwm doctor prints how to "
+                             "get it")
+    add_dealias_engine_arguments(parser)
     return parser
+
+
+def dealias_params_from_args(args, params_class, unavailable_reason):
+    """``DealiasParams`` for these flags, or None -- refusing at the door.
+
+    Shared by the three front doors so the refusal, the message and the
+    parameter object are one implementation.  ``--dealias-refinement``
+    without ``--dealias`` is refused rather than ignored: a run that asked
+    for a treatment and silently did not get it is exactly the failure the
+    A/B discipline exists to prevent.
+
+    ``--dealias-refinement`` unset is None, not False, and it stays None
+    all the way into ``DealiasParams``: the refinement default belongs to
+    the engine (on for ``region-global``, meaningless for ``vad-region``),
+    and a front door that resolved it to a bool here would have to know
+    that table too.  Asked for explicitly beside the engine that has no
+    such pass, it is refused by name at the door rather than as a
+    traceback from the parameter object.
+    """
+
+    from gpuwm.obs.dealias import ENGINE_REGION_GLOBAL
+
+    engine = getattr(args, "dealias_engine", None)
+    refinement = getattr(args, "dealias_refinement", None)
+    if not args.dealias:
+        if refinement is not None:
+            raise SystemExit(
+                "--dealias-refinement/--no-dealias-refinement refines a "
+                "dealiased field; pass --dealias as well, or drop it")
+        return None
+    if refinement and engine != ENGINE_REGION_GLOBAL:
+        raise SystemExit(
+            f"--dealias-refinement with --dealias-engine {engine}: that "
+            f"engine has no refinement pass; only {ENGINE_REGION_GLOBAL} "
+            "does. A switch that is accepted and then ignored is how a run "
+            "gets reported as having had a treatment it never got")
+    reason = unavailable_reason(engine)
+    if reason is not None:
+        raise SystemExit(f"--dealias-engine {engine}: {reason}")
+    return params_class(engine=engine, refinement=refinement)
+
+
+def add_dealias_engine_arguments(parser) -> None:
+    """The engine selector, spelled the same way by every front door.
+
+    One function so the three tools that build ``DealiasParams`` cannot
+    describe the same two options differently -- which is how a reader
+    ends up believing two front doors run different solvers.
+
+    The refinement switch is a PAIR of flags with no default of its own.
+    A ``store_true`` cannot express "leave it to the engine", and it
+    cannot turn off a pass that is on by default -- and a default that
+    can only be turned off by editing the source is not a default, it is
+    a hardcoded value.
+    """
+
+    from gpuwm.obs.dealias import ENGINE_REGION_GLOBAL, ENGINES
+
+    parser.add_argument("--dealias-engine", choices=list(ENGINES),
+                        default=ENGINE_REGION_GLOBAL,
+                        help="which solver unfolds a sweep. "
+                             "'region-global' (default) is the vendored "
+                             "region-global-dealias crate -- a Rust port "
+                             "of Py-ART's dealias_region_based, verified "
+                             "fold-for-fold identical to Py-ART on this "
+                             "pipeline's own sweeps -- which unfolds the "
+                             "region network jointly, carries no "
+                             "environmental reference, and assigns a fold "
+                             "to every region it resolved instead of "
+                             "abstaining; its shared library must be "
+                             "present (gpuwm doctor prints the build). "
+                             "'vad-region' is gpuwm.obs.dealias: it "
+                             "anchors regions to a fold-aware VAD fitted "
+                             "from the volume and REJECTS every gate it "
+                             "cannot justify, and needs scipy rather than "
+                             "the library. The two make different "
+                             "decisions by design; the engine is recorded "
+                             "in provenance beside the velocities it made")
+    refinement = parser.add_mutually_exclusive_group()
+    refinement.add_argument("--dealias-refinement", dest="dealias_refinement",
+                            action="store_true", default=None,
+                            help="run the region-global engine's refinement "
+                                 "pass, which considers small "
+                                 "gate-resolution corrections where one "
+                                 "connected region appears to hold two "
+                                 "Nyquist branches and applies one only "
+                                 "when an independent wrapped-vortex fit "
+                                 "agrees. On by default with "
+                                 "--dealias-engine region-global, and "
+                                 "refused with any other engine")
+    refinement.add_argument("--no-dealias-refinement",
+                            dest="dealias_refinement", action="store_false",
+                            help="turn the region-global refinement pass "
+                                 "off. It abstains where it is unsure, so "
+                                 "this is for isolating its effect, not "
+                                 "for avoiding it")
 
 
 def main(argv=None) -> int:
     from gpuwm.obs.radar_source import RadarSourceError, acquire_volume
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     # A contradictory radar request is refused before anything is read,
     # fetched or hashed: it costs nothing to catch here and the message is
     # the same either way.
     named_sites = requested_sites(args)
 
+    # A CC threshold without --cc-qc tunes a mask that is not running.
+    # Refused here rather than accepted as a silent no-op.
+    if not args.cc_qc and any(value is not None for value in (
+            args.cc_rho_min, args.cc_ref_shield_dbz,
+            args.cc_rho_min_velocity, args.cc_rho_floor,
+            args.cc_tds_rho_floor, args.cc_tds_ref_min_dbz,
+            args.cc_tds_couplet_delta_v_ms)):
+        parser.error("--cc-rho-min/--cc-ref-shield-dbz/"
+                     "--cc-rho-min-velocity/--cc-rho-floor/"
+                     "--cc-tds-rho-floor/--cc-tds-ref-min-dbz/"
+                     "--cc-tds-couplet-delta-v-ms tune a mask "
+                     "that --cc-qc turns on; a threshold without the "
+                     "switch would be a silent no-op")
+    if not args.cc_qc and args.cc_no_tds_fringe_exempt:
+        parser.error("--cc-no-tds-fringe-exempt turns off part of a mask "
+                     "that --cc-qc turns on; without --cc-qc there is no "
+                     "exemption to withdraw and the switch would be a "
+                     "silent no-op")
+
     from gpuwm.obs.nexrad import (find_nexrad_bin, nexrad_remedy, run_decode,
                                   run_verify)
     from gpuwm.obs.radar_grid import write_radar_grid
-    from gpuwm.obs.dealias import SCIPY_REMEDY, DealiasParams, scipy_available
+    from gpuwm.obs.dealias import DealiasParams, engine_unavailable_reason
     from gpuwm.obs.superob import (SuperobParams, merge_contributions,
                                    superob_volume)
     from gpuwm.obs.sweeps import read_sweep_pack
@@ -275,16 +474,34 @@ def main(argv=None) -> int:
         raise SystemExit(f"no rw_nexrad front door: {nexrad_remedy()}")
 
     # Refuse before a byte is fetched, not from inside the gridding loop.
-    if args.dealias and not scipy_available():
-        raise SystemExit(SCIPY_REMEDY)
+    dealias_params = dealias_params_from_args(args, DealiasParams,
+                                     engine_unavailable_reason)
 
     target = _parse_iso(args.valid_time)
     range_km = (args.max_range_km if args.max_range_km is not None
                 else SuperobParams().max_range_km)
+    cc_params = None
+    if args.cc_qc:
+        from gpuwm.obs.cc_qc import CcQcParams
+        overrides = {name: value for name, value in (
+            ("rho_min", args.cc_rho_min),
+            ("ref_shield_dbz", args.cc_ref_shield_dbz),
+            ("rho_min_velocity", args.cc_rho_min_velocity),
+            ("rho_floor", args.cc_rho_floor),
+            ("tds_rho_floor", args.cc_tds_rho_floor),
+            ("tds_ref_min_dbz", args.cc_tds_ref_min_dbz),
+            ("tds_couplet_delta_v_ms", args.cc_tds_couplet_delta_v_ms),
+        ) if value is not None}
+        if args.cc_no_tds_fringe_exempt:
+            overrides["tds_fringe_exempt"] = False
+        cc_params = CcQcParams(**overrides)
     params = SuperobParams(max_range_km=range_km,
                            max_elevation_deg=args.max_elevation_deg,
-                           dealias=DealiasParams() if args.dealias else None)
+                           dealias=dealias_params,
+                           cc_qc=cc_params)
     params.validate()
+
+    moments = ("REF", "VEL", "RHO") if args.cc_qc else ("REF", "VEL")
 
     grid = TargetGrid.from_wrfout(args.grid_wrfout)
     grid_wrfout_sha = _sha256(args.grid_wrfout)
@@ -345,9 +562,14 @@ def main(argv=None) -> int:
                     f"recorded {selected.sha256}")
 
             # -- decode + verify (one range authority) --------------------
+            # The RHO plane is requested exactly when the mask that
+            # consumes it is on: a default build's pack stays
+            # byte-identical, and an enabled build's pack self-describes
+            # the extra plane (no schema bump -- the pack format has
+            # always carried arbitrary per-moment planes).
             pack_path = args.work_dir / (selected.filename + ".pack")
             run_decode(binary, volume=volume_path, out=pack_path,
-                       moments=("REF", "VEL"), max_range_km=range_km,
+                       moments=moments, max_range_km=range_km,
                        max_elevation_deg=args.max_elevation_deg,
                        censor_flags=args.clear_air_from_censor)
             verify = run_verify(binary, pack=pack_path)
@@ -548,6 +770,55 @@ def main(argv=None) -> int:
                     "grid_wrfout_sha256": grid_wrfout_sha},
         "writer_receipt": receipt,
     }
+    if cc_params is not None:
+        # Present whenever --cc-qc was REQUESTED.  The guard is on the
+        # parameters, not on any radar having found an RHO plane to run
+        # against, so an all-zero block reads "asked for, nothing to
+        # mask" and only its absence means "never asked".  That is
+        # deliberately not the rule the observations file uses:
+        # radar_grid._payload gates its own cc_qc provenance key on
+        # `any(cc_qc)`, because a file written without the mask must keep
+        # the exact key set it always had.  This is a receipt, not that
+        # file, and a receipt that stayed silent about a mask that was
+        # asked for and found nothing to do would be the less honest of
+        # the two.  The per-radar cc_* counters already ride each entry's
+        # "counts"; this is their sum across the radars that
+        # contributed, so a reader sees the file-wide price of the mask
+        # without adding up the roster by hand.
+        cc_keys = ("cc_sweeps_masked", "cc_sweeps_paired_companion",
+                   "cc_sweeps_without_rho", "cc_sweeps_without_ref",
+                   "cc_gates_tested", "cc_gates_rho_missing",
+                   "cc_velocity_gates_rejected",
+                   "cc_reflectivity_gates_rejected",
+                   "cc_velocity_gates_rejected_shielded_z",
+                   # The debris-fringe exemption, as numbers a reader can
+                   # audit: how many velocity gates it kept, how many
+                   # clustered couplet seeds made that possible, and
+                   # which conjunct turned every other low-CC velocity
+                   # gate away.  The four refusals and the exemption are
+                   # disjoint and together account for every gate the
+                   # strict rule would have deleted.
+                   "cc_velocity_gates_exempt_tds_fringe",
+                   "cc_couplet_seed_gates",
+                   "cc_velocity_tds_rho_below_floor",
+                   "cc_velocity_tds_below_reflectivity",
+                   "cc_velocity_tds_at_or_above_shield",
+                   "cc_velocity_tds_no_couplet_nearby")
+        payload["cc_qc"] = {
+            "params": cc_params.to_payload(),
+            "moments_requested": list(moments),
+            "totals": {key: sum(int(entry["counts"].get(key, 0))
+                                for entry in per_site)
+                       for key in cc_keys},
+            "per_radar": [
+                {"site": entry["site"],
+                 **{key: int(entry["counts"].get(key, 0))
+                    for key in cc_keys}}
+                for entry in per_site],
+            # The per-sweep account, per radar, in contribution order.
+            "sweeps": [contribution.cc_qc.get("sweeps", [])
+                       for contribution in contributions],
+        }
     if len(per_site) == 1:
         # Flat keys the single-radar route has always printed.
         only = per_site[0]

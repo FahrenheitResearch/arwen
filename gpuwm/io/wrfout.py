@@ -25,6 +25,7 @@ import traceback
 import numpy as np
 import netCDF4
 
+from gpuwm import perf_timing
 from gpuwm.config import NO_LAND_SURFACE_SOIL_LAYERS, soil_layer_count
 from gpuwm.io.wrf_output_schema import (
     HISTORY_FIELDS_BY_NETCDF_NAME, PHYSICS_SELECTOR_GLOBALS,
@@ -1210,6 +1211,11 @@ class WrfoutWriter:
         }
 
     def write_frame(self, time_str: str, fields: dict[str, np.ndarray]):
+        with perf_timing.stage("io.wrfout.write_frame") as timed:
+            return self._write_frame(time_str, fields, timed)
+
+    def _write_frame(self, time_str: str, fields: dict[str, np.ndarray],
+                     timed):
         t = self._n
         # netCDF4 1.7.x stringtochar mangles S-dtype input under numpy 2,
         # so build the 19-char record directly (null-pad).  A longer value
@@ -1234,11 +1240,14 @@ class WrfoutWriter:
             raise ValueError(
                 "wrfout frame does not match the creation-time field "
                 f"schema: missing={missing}, extra={extra}")
+        written = 0
         for name, arr in frame.items():
             arr = self._wrf_array(name, np.asarray(arr))
             if name not in self.ds.variables:
                 self._create_variable(name, self._dims_for(name, arr.shape))
             self.ds.variables[name][t] = arr
+            written += int(arr.nbytes)
+        timed.count(fields=len(frame), bytes_written=written)
         self._times.append(buf.rstrip(b"\x00").decode("ascii"))
         self._n += 1
 

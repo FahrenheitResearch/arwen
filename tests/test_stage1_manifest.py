@@ -250,3 +250,41 @@ def test_the_pinned_entries_carry_their_reason_inline(entry: str) -> None:
     assert "#12" in reason, (
         f"the comment above {entry} does not name the task that earned it: "
         f"{reason!r}")
+
+
+#: The release machinery's own gates.  Pinned as a GROUP, like the
+#: registry-derived one, so the next release-tooling suite has an obvious
+#: place to join.
+RELEASE_MACHINERY_ENTRIES = (
+    "tests/test_verify_release_artifacts.py",
+    "tests/test_release_snapshot_front_door.py",
+    "tests/test_release_snapshot_machine_paths.py",
+    "tests/test_release_snapshot_modes.py",
+    "tests/test_release_notes_are_public_facing.py",
+)
+
+
+@pytest.mark.parametrize("entry", RELEASE_MACHINERY_ENTRIES)
+def test_every_release_machinery_gate_is_listed(entry: str) -> None:
+    """Earned by the 2.1.0 assembly, where the miss was nearly terminal.
+
+    The tenth bundled artifact is vendored: deliberately unstamped, and
+    proved instead by its declared contract marker.  Commit 6775e7a0a
+    taught that to ``tools/build_bridge_bundle.py`` and not to
+    ``tools/verify_release_artifacts.py``, so seven cases of
+    ``tests/test_verify_release_artifacts.py`` were red on the assembled
+    branch and the verifier would have refused the bundle in the prepare
+    job -- after the tag was pushed, mid cut.  Nothing caught it because
+    no leg ran that file: the union battery is assembled by hand each
+    cut, and the curated list did not carry the release machinery at all.
+
+    These suites are the cheapest possible insurance -- CPU-only, no
+    card, fixtures built through the real packer and the real snapshot
+    builder -- against the one class of defect a cut cannot route around,
+    because by the time it fires the tag already exists.
+    """
+
+    assert entry in _entries(), (
+        f"{entry} is not in tools/battery/stage1_files.txt.  It gates the "
+        "machinery a release cut itself runs, and a defect there surfaces "
+        "between the tag and PyPI, where there is no cheap way back")

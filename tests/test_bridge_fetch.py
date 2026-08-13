@@ -126,6 +126,63 @@ def test_stage_from_bundle_verifies_then_installs(tmp_path):
         assert bridge_assets.matches_pin(dest / pin.filename, pin)
 
 
+def test_staging_returns_the_assets_it_staged_as_well_as_the_binaries(
+        tmp_path):
+    """`stage_from_bundle` returns binaries AND map assets, and says so.
+
+    #163: the live smoke asserted `len(installed) == len(bundle.binaries)`
+    and stayed green because nothing in this file had ever packed a
+    bundle carrying assets -- every synthetic bundle above is binaries
+    only, so the half of the contract that grew later was tested by the
+    one test that needs GitHub to run. On the published v2.0.0 bundle
+    the old expectation reads 9 against a true 47.
+
+    Offline, and about the contract rather than about one release's
+    counts: whatever the manifest declares, the returned list is exactly
+    the staged binaries followed by the staged assets, each at its own
+    pinned path.
+    """
+
+    binary_names = ("alpha.bin", "beta.bin")
+    asset_paths = (f"{bridge_assets.ASSET_ROOT}/ne_50m_admin_0.shp",
+                   f"{bridge_assets.ASSET_ROOT}/ne_50m_admin_0.dbf",
+                   f"{bridge_assets.ASSET_ROOT}/lakes/ne_50m_lakes.shp")
+    payloads = {name: os.urandom(1024) + name.encode()
+                for name in binary_names}
+    payloads.update({path: os.urandom(512) + path.encode()
+                     for path in asset_paths})
+    blob = _zip_bytes(payloads)
+    archive = tmp_path / "gpuwm-bridges-v0-test-win-x86_64.zip"
+    archive.write_bytes(blob)
+    bundle = bridge_assets.BundlePin(
+        platform="win-x86_64", filename=archive.name, bytes=len(blob),
+        sha256=hashlib.sha256(blob).hexdigest(),
+        binaries=tuple(_pin(payloads[name], name.split(".")[0], name)
+                       for name in binary_names),
+        assets=tuple(bridge_assets.AssetPin(
+            path=path, bytes=len(payloads[path]),
+            sha256=hashlib.sha256(payloads[path]).hexdigest())
+            for path in asset_paths))
+
+    dest = tmp_path / "dest"
+    installed = bridge_assets.stage_from_bundle(
+        archive, bundle, dest, progress=lambda _line: None)
+
+    assert len(installed) == len(bundle.binaries) + len(bundle.assets)
+    # And NOT the binaries alone, which is the assertion #163 fixed.
+    assert len(installed) != len(bundle.binaries)
+    assert installed == ([dest / pin.filename for pin in bundle.binaries]
+                         + [dest / pin.path for pin in bundle.assets])
+    for pin in bundle.binaries:
+        assert bridge_assets.matches_pin(dest / pin.filename, pin)
+    for pin in bundle.assets:
+        staged = dest / pin.path
+        # The pinned path is the staged path, subdirectories and all.
+        assert staged.is_file()
+        assert staged.stat().st_size == pin.bytes
+        assert bridge_assets.sha256_file(staged) == pin.sha256
+
+
 def test_a_corrupt_member_is_refused_and_never_installed(tmp_path):
     archive, bundle = _synthetic_bundle(tmp_path, corrupt="beta.bin")
     dest = tmp_path / "dest"
@@ -556,11 +613,17 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
     host = bridge_assets.host_platform()
     if host is None:
         pytest.skip("no bundle platform for this host")
-    library = cpu_bridge_candidates()[-1].name
+    from gpuwm.obs.dealias_region import library_name as region_library_name
+
+    # One expected filename per library, from the resolver that actually
+    # searches for it: two libraries with one shared expectation would
+    # pass while a bundle staged a file nothing looks for.
+    libraries = {"gpuwm_preprocess_cpu": cpu_bridge_candidates()[-1].name,
+                 "region_global_dealias": region_library_name()}
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
         produced = bridge_assets.artifact_filename(artifact, host)
         if artifact.kind == "library":
-            assert produced == library
+            assert produced == libraries[artifact.name]
         else:
             assert produced == bridges.executable_name(artifact.name)
 
@@ -586,11 +649,12 @@ def test_every_bundled_artifact_is_one_the_resolver_searches_for():
     """A bundle must not carry a file nothing looks for, or miss one.
 
     The five decoders come from doctor's own consumer table, and the
-    other three are the artifacts with their own resolution modules.
+    other four are the artifacts with their own resolution modules.
     """
 
     from gpuwm import doctor, rustwx, rustwx_fetch
     from gpuwm.ingest.cpu_backend import CPU_BRIDGE_ENV
+    from gpuwm.obs import dealias_region
 
     names = [artifact.name for artifact in bridge_assets.BUNDLED_ARTIFACTS]
     assert set(bridges.BRIDGE_ENV) <= set(names)
@@ -602,6 +666,22 @@ def test_every_bundled_artifact_is_one_the_resolver_searches_for():
     assert envs[rustwx.RENDERER_NAME] == rustwx.RENDERER_ENV
     assert envs[rustwx_fetch.FETCH_NAME] == rustwx_fetch.FETCH_ENV
     assert envs["gpuwm_preprocess_cpu"] == CPU_BRIDGE_ENV
+    # The dealiasing library's two strings are spelled literally in
+    # bridge_assets so `gpuwm fetch-bridges` does not import the
+    # observation stack; this is the binding that keeps them true.
+    assert envs["region_global_dealias"] == \
+        dealias_region.REGION_DEALIAS_ENV
+    crates = {artifact.name: artifact.crate
+              for artifact in bridge_assets.BUNDLED_ARTIFACTS}
+    assert crates["region_global_dealias"] == dealias_region.CRATE_RELATIVE
+    # And the filename the bundle stages is the one the ladder opens.
+    staged = bridge_assets.artifact_filename(
+        next(a for a in bridge_assets.BUNDLED_ARTIFACTS
+             if a.name == "region_global_dealias"),
+        "win-x86_64" if os.name == "nt" else "linux-x86_64")
+    assert staged == dealias_region.library_name()
+    assert bridges.default_bridge_dir() / staged in set(
+        dealias_region.region_bridge_candidates())
     for name, env in bridges.BRIDGE_ENV.items():
         assert envs[name] == env
 
@@ -1008,11 +1088,48 @@ def test_the_published_bundle_downloads_and_verifies(tmp_path):
     if os.environ.get("GPUWM_NETWORK_TESTS") != "1":
         pytest.skip("live download smoke needs GPUWM_NETWORK_TESTS=1")
     pins = bridge_assets.load_pins()
-    bundle = pins.bundle_for(bridge_assets.host_platform())
+    host = bridge_assets.host_platform()
+    # Two very different states used to leave through the same skip.
+    #
+    # A tree that has not been through a release cut declares `release:
+    # null` and no platforms at all -- that is what an unpinned document
+    # is supposed to say, and there is genuinely nothing published to
+    # fetch, so skipping is the honest answer.
+    #
+    # A tree that HAS been cut and still has no bundle for a platform the
+    # project claims to support is a release that failed to publish, and
+    # skipping there reports a hole as a pass. That case fails now.
+    if pins.release is None:
+        pytest.skip(
+            "this tree has not been through a release cut: the packaged "
+            "pins declare no release and no platforms, so no published "
+            "bundle exists to download")
+    bundle = pins.bundle_for(host)
     if bundle is None:
-        pytest.skip("this build publishes no bundle for this platform")
+        assert host not in bridge_assets.SUPPORTED_PLATFORMS, (
+            f"the packaged pins are stamped for release {pins.release} but "
+            f"carry no bundle for {host}, which is a supported platform "
+            f"(pinned: {sorted(pins.platforms) or 'nothing'}). That is a "
+            "release that did not publish what it claims to support, not a "
+            "reason to skip")
+        pytest.skip(f"no bundle is published for {host}")
     dest = tmp_path / "dest"
     installed = bridge_assets.fetch_bundle(pins, bundle, dest, progress=print)
-    assert len(installed) == len(bundle.binaries)
+    # What `fetch_bundle` stages is every pinned BINARY *and* every pinned
+    # MAP ASSET -- `stage_from_bundle` appends both to the list it returns.
+    # This used to assert against `bundle.binaries` alone, which was true
+    # only while bundles carried no assets; on the published v2.0.0 bundle
+    # it reads 9 where the honest answer is 47.  The expectation is derived
+    # from the manifest rather than written down, so a bundle that gains or
+    # loses either kind moves this test with it instead of falsifying it.
+    expected = [dest / pin.filename for pin in bundle.binaries]
+    expected += [dest / pin.path for pin in bundle.assets]
+    assert len(installed) == len(bundle.binaries) + len(bundle.assets)
+    assert sorted(installed) == sorted(expected)
     for pin in bundle.binaries:
         assert bridge_assets.matches_pin(dest / pin.filename, pin)
+    for pin in bundle.assets:
+        staged = dest / pin.path
+        assert staged.is_file(), f"pinned map asset not staged: {pin.path}"
+        assert staged.stat().st_size == pin.bytes
+        assert bridge_assets.sha256_file(staged) == pin.sha256

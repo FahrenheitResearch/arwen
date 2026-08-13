@@ -432,3 +432,28 @@ tests/test_multigpu_specified_bc.py
 # entries in tilestream/physics_inventory.py; the real 2 h streamed
 # boundary crossing is the node regate's twin row on the GPU shard.
 tests/test_streamed_carrier_freshness.py
+# Drew's 2026-08-12 ruling ("probably we would want tests right") made
+# the Rust crate tests a release gate, at tools/battery/cargo_gates.txt.
+# This is the gate on that list, and it is on stage 1 rather than only
+# on the cargo leg because it needs no Rust toolchain and no card: it
+# reads the list against the two workspaces' Cargo.toml members in both
+# directions, so a crate that arrives in `members` without an entry --
+# which is how a crate lands already ungated -- goes red on every
+# commit rather than at a cut.
+tests/test_cargo_gate_manifest.py
+
+# The release machinery's own gates, earned by the 2.1.0 assembly.  The
+# tenth bundled artifact is vendored and deliberately unstamped, proved
+# by its contract marker instead; commit 6775e7a0a taught that to the
+# packer and not to tools/verify_release_artifacts.py, so the verifier
+# would have refused the bundle it was handed in the prepare job -- mid
+# cut, after the tag, with seven of this suite's cases already red on the
+# branch and no leg looking at them.  Release-machinery suites are
+# exactly the ones a cut cannot afford to discover late: they are
+# CPU-only, they build their fixtures through the real packer and the
+# real snapshot builder, and they are the difference between a defect
+# found on the branch and a defect found between the tag and PyPI.
+tests/test_verify_release_artifacts.py
+tests/test_release_snapshot_front_door.py
+tests/test_release_snapshot_machine_paths.py
+tests/test_release_snapshot_modes.py

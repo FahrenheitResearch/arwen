@@ -46,6 +46,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from gpuwm import perf_timing
 from .geog import GeogDataset, GeogWindow
 from .lambert import EARTH_RADIUS_M, LambertGrid, _parse_wps_namelist
 
@@ -1255,6 +1256,17 @@ def build_static(
     Omitting it uses :meth:`GeogSelection.fallback`, the exact historical
     code-constant inventory used by frozen verification profiles.
     """
+    with perf_timing.stage("static.build_static",
+                           cells=int(grid.e_we) * int(grid.e_sn)):
+        return _build_static(grid, geog_root, halo, selection=selection,
+                             source_coverage_report=source_coverage_report)
+
+
+def _build_static(
+        grid, geog_root, halo: int = HALO, *,
+        selection: GeogSelection | None = None,
+        source_coverage_report: MutableMapping[str, object] | None = None,
+) -> dict:
     root = Path(geog_root)
     selection = (GeogSelection.fallback(root) if selection is None
                  else selection)

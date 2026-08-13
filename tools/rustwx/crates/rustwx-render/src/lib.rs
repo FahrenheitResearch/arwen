@@ -1,3 +1,4 @@
+pub mod advisory;
 mod color;
 mod colorbar;
 mod colormap;
