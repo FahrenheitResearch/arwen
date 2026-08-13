@@ -56,30 +56,20 @@ NSOIL = 4
 NSNOW = 3
 NFULL = NSOIL + NSNOW
 
-#: Must match the SC_* block of noahmp_sflx.cu, in order.
-SCALARS = ("swdown fsa fsr fira fsh fcev fgev fctr ssoil sav sag beg_wb "
-           "canliq canice sneqv wa prcp ecan etran edir runsrf runsub dt "
-           "qtldrn pah firr canhs irmirate irfirate acc_dwater acc_prcp "
-           "acc_ecan acc_etran acc_edir").split()
-#: Must match the OU_* block.
-OUTPUTS = ("errwat acc_dwater acc_prcp acc_ecan acc_etran acc_edir errsw "
-           "erreng end_wb").split()
+# The layout tables and the comment-stripper live in
+# tests/noahmp_kernel_sources.py, shared with
+# tests/test_noahmp_kernel_source_scans.py -- which is where the two checks
+# that need no device now live.  They used to sit at the top of THIS file,
+# above its `cp = pytest.importorskip("cupy")`, and therefore never ran: a
+# module-level skip fires at import and takes everything above it too, and
+# tests/conftest.py marks a whole module `gpu` when cupy is imported at
+# module scope.  Keeping SCALARS/OUTPUTS in one module is the point -- their
+# whole job is to be ONE spelling of a layout.
+from noahmp_kernel_sources import OUTPUTS, SCALARS  # noqa: E402
+from noahmp_kernel_sources import code as _code  # noqa: E402
 
 COLUMNS = ("veg_warm_day_dry", "veg_warm_night_rain",
            "snowpack_frozen_soil", "bare_thin_snow_melt")
-
-
-def _code(text: str) -> str:
-    """The kernel with its prose removed.
-
-    Every structural check below scans for identifiers, and this file's header
-    *names* the identifiers it forbids in order to explain why they are
-    forbidden.  Scanning the raw text would make the documentation trip its own
-    gate, which is how a check ends up deleted instead of fixed.
-    """
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return "\n".join(re.sub(r"//.*$", "", line)
-                     for line in text.splitlines())
 
 
 def _f32(hexbits: str) -> np.float32:
@@ -127,36 +117,10 @@ SF = _load_sflx()
 EN = _load_energy()
 
 
-# ---------------------------------------------------------------------------
-# The checks that need no GPU
-# ---------------------------------------------------------------------------
-
-def test_scalar_packing_matches_the_kernel():
-    """The .cu's SC_*/OU_* blocks and this module's tables are two spellings of
-    one layout.  A field added on one side alone shifts every column after it,
-    which is exactly the kind of error a bitwise gate reports as physics."""
-    text = open(KERNEL, encoding="ascii").read()
-    for prefix, names, count_macro in (("SC_", SCALARS, "NSC"),
-                                       ("OU_", OUTPUTS, "NOUT")):
-        found = re.findall(rf"^#define {prefix}(\w+)\s+(\d+)$", text, re.M)
-        assert [n.lower() for n, _ in found] == names, prefix
-        assert [int(v) for _, v in found] == list(range(len(names))), prefix
-        n = re.search(rf"^#define {count_macro}\s+(\d+)$", text, re.M)
-        assert n and int(n.group(1)) == len(names), count_macro
-
-
-def test_kernel_does_not_claim_the_column():
-    """``noahmp_sflx.cu`` covers ERROR and the marshalling only.  If it ever
-    grows a call into another subsystem it must stop pretending otherwise --
-    and re-transcribing ENERGY or WATER here is the specific thing this lane
-    must not do."""
-    text = _code(open(KERNEL, encoding="ascii").read())
-    entries = re.findall(r'extern "C" __global__\s*\nvoid (\w+)\(', text)
-    assert entries == ["k_sflx_error", "k_sflx_marshal"], entries
-    for banned in ("expf", "powf", "logf", "tanhf", "__expf", "exp2f"):
-        assert banned not in text, (
-            f"{banned} appeared: neither ERROR nor the marshalling evaluates a "
-            "transcendental, which build_sflx_compose.sh proves with nm -u")
+# The two checks that need no GPU -- the SC_/OU_ layout agreement and the
+# "this kernel has not grown a column" claim -- are in
+# tests/test_noahmp_kernel_source_scans.py.  They were HERE, above the
+# importorskip below, which meant they ran nowhere at all.
 
 
 # ---------------------------------------------------------------------------

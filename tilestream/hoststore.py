@@ -47,6 +47,7 @@ import dataclasses
 from dataclasses import dataclass
 import gc
 import hashlib
+import os
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -617,14 +618,70 @@ def host_memory() -> dict[str, int]:
             "free": info.get("MemFree", 0)}
 
 
-def pinned_ceiling_bytes() -> int:
-    """The page-locked wall, predicted from ``MemTotal`` without allocating.
+#: Environment override for :func:`pinned_ceiling_bytes`, in BYTES.
+#:
+#: The escape hatch for the fact below: a box whose wall has actually been
+#: measured (``probe_pinned_ceiling``, or an operator who knows the machine)
+#: states it here rather than being held to a fraction derived from a
+#: different machine.
+PINNED_CEILING_ENV = "GPUWM_PINNED_CEILING_BYTES"
 
-    ``PINNED_CEILING_FRACTION * MemTotal``.  Measurement backing that constant
-    is in its docstring; :func:`probe_pinned_ceiling` re-derives it the
-    expensive way.
+
+def pinned_ceiling_bytes() -> int:
+    """The page-locked wall for THIS box, without allocating.
+
+    ``MemTotal`` DOES NOT PREDICT THIS NUMBER, and the two measurements in
+    hand disagree about the fraction:
+
+    ===============  ==================  ==========================
+    MemTotal         pinned before wall  fraction
+    ===============  ==================  ==========================
+    93.91 GiB        46.94 GiB           0.4998 (wall reached)
+    123 GiB          84 GiB              0.68 (wall NOT reached)
+    ===============  ==================  ==========================
+
+    The second run stopped at its own probe limit with ``hit_wall`` false, so
+    0.68 is a LOWER BOUND on that box and the real wall is higher still.  A
+    single hardcoded fraction is therefore wrong in both directions: it
+    under-uses a large box, and on a box whose wall sits lower than the one
+    that was measured it would be dangerously permissive.
+
+    So the number is derived, in this order, and the derivation is reported
+    by :func:`pinned_ceiling_source`:
+
+    1. :data:`PINNED_CEILING_ENV`, when set -- a measurement, from a probe or
+       from an operator who knows the machine.
+    2. Otherwise ``PINNED_CEILING_FRACTION * MemTotal``, which is the
+       CONSERVATIVE fallback: it is the only fraction that has been seen to
+       be an actual wall, so predicting it on an unmeasured box errs toward
+       refusing work rather than toward pinning memory the kernel cannot
+       reclaim.
+
+    Deliberately still a prediction and not a probe: probing allocates tens
+    of GiB and frees them, which is not something a store build should do on
+    a shared box on the way to its real allocation.  The prediction is a
+    gate, and :class:`PinnedAllocationFailed` remains the backstop for a wall
+    that sits below it.
     """
+    override = os.environ.get(PINNED_CEILING_ENV, "").strip()
+    if override:
+        try:
+            value = int(float(override))
+        except ValueError:
+            raise ValueError(
+                f"{PINNED_CEILING_ENV}={override!r} is not a byte count"
+            ) from None
+        if value <= 0:
+            raise ValueError(
+                f"{PINNED_CEILING_ENV}={override!r} must be positive")
+        return value
     return int(PINNED_CEILING_FRACTION * host_memory()["total"])
+
+
+def pinned_ceiling_source() -> str:
+    """Where :func:`pinned_ceiling_bytes` got its number, for a receipt."""
+    return ("measured" if os.environ.get(PINNED_CEILING_ENV, "").strip()
+            else "predicted")
 
 
 def probe_pinned_ceiling(block_bytes: int, *, limit_bytes: int = 60 * GIB,

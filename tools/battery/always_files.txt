@@ -1,0 +1,100 @@
+# The battery's ALWAYS list: the gates no selector can find.
+#
+# WHAT THIS IS
+#   The set of test files that run in EVERY lane, unconditionally, however
+#   small the change.  They are the repo-scanning gates and the release
+#   governance suites: files that read the tree rather than import it.
+#
+# WHY IT HAS TO EXIST
+#   tools/battery/fastfix.py selects tests by DIRECT import edges from the
+#   product files a change touched.  That works -- the 2026-08-13 audit
+#   validated it against a real defect -- but it is structurally blind to
+#   this class, because a citation checker, a line-ending gate or a receipt
+#   regenerator has no import edge to anything.  The same audit measured it:
+#   commit 6e9c690f0 left tools/ftz_receipt/receipt/route_inventory.json
+#   stale, and tests/test_ftz_route_inventory.py is a MISS at import depth
+#   0, 1 AND 2.  A selector that skipped it would have shipped exactly the
+#   defect the receipt exists to catch.
+#
+#   So these are never selected.  They are always run.
+#
+# WHO CONSUMES IT
+#   tools/battery/fastfix.py adds every entry here to every selection, and
+#   labels the reason "always (repo-scanning gate)".  tools/battery/FASTFIX.md
+#   describes the lane.
+#
+# FORMAT
+#   One repository-relative path per line, forward slashes.  Blank lines and
+#   lines whose first non-space character is `#` are ignored -- the same
+#   parse as tools/battery/stage1_files.txt, and for the same reason: the
+#   audit's own membership check reported a path as listed when it occurred
+#   only inside a comment.
+#
+# AMENDMENT DISCIPLINE
+#   As stage1_files.txt: an addition carries its REASON inline, on the lines
+#   above it, naming the task or the incident that earned it.  A removal is
+#   an argument, not a tidy-up.  tests/test_always_manifest.py is the gate --
+#   it checks every path exists, rejects duplicates, and pins that a file
+#   here reads the tree rather than importing the product, which is the
+#   property that makes it unselectable in the first place.
+
+# The manifest gates.  Each one is the only thing that stops a tidy-up
+# dropping an entry from the list it gates -- including, since the audit
+# found the gate on the stage-1 list was not on the stage-1 list, this one's
+# own siblings.
+tests/test_stage1_manifest.py
+tests/test_cargo_gate_manifest.py
+tests/test_tiles_gate_manifest.py
+
+# Byte-level repository hygiene.  `.gitattributes` sets `* -text`, so an
+# LF-to-CRLF rewrite is a real byte change in files the product hashes for
+# identity.  Task #168 rewrote thirteen files that way and the stage-1
+# battery stayed green through two full runs.
+tests/test_line_ending_stability.py
+
+# Release governance over prose and configs.  These read the newest
+# CHANGELOG section, the shipped configs and the public claims; no import
+# edge reaches any of them, and every lane writes into the section the first
+# one checks.
+tests/test_release_notes_are_public_facing.py
+tests/test_case_token_leakage.py
+tests/test_public_claim_backing.py
+tests/test_parameter_claim_gate.py
+tests/test_physics_md_reachability_claims.py
+tests/test_shipped_acknowledgement_justifications.py
+tests/test_evidence_axes.py
+
+# The FTZ receipt family: the receipt, the census it must agree with, and
+# the prose derived from it.  route_inventory.json pins a file:line and the
+# exact source text for every cupy kernel-construction site, and only
+# test_ftz_route_inventory.py regenerates it.  This is the family the audit
+# proved a depth-0, depth-1 AND depth-2 selector all miss on 6e9c690f0 --
+# precisely: the gate imports its own GENERATOR (tools/ftz_receipt/), so
+# touching that selects it, but it has no edge to the gpuwm/core/ kernel
+# sites it inventories, and those are the edits that make it go stale.
+# tests/test_fastfix_selector.py pins that distinction rather than the
+# looser sentence, because the looser one is not quite true.
+tests/test_ftz_route_inventory.py
+tests/test_ftz_claim_consistency.py
+tests/test_ftz_render.py
+
+# Provenance and certification hygiene: the seam that refuses every front
+# door when the executing tree disagrees with the installed metadata, and
+# the capsule hygiene scan.  Cheap, and a regression in either direction is
+# a release-stopper.
+tests/test_provenance_gate.py
+tests/test_provenance_wire.py
+tests/test_certify_hygiene.py
+
+# The release machinery's own verifier, earned by the 2.1.0 assembly: seven
+# of its cases were red on the assembled branch and the verifier would have
+# refused the bundle in the prepare job, after the tag, mid cut.  A fast-fix
+# lane publishes; it must never publish through this one un-run.
+tests/test_verify_release_artifacts.py
+
+# The gate on the gate-placement class itself (2026-08-13 audit, G1).  It
+# AST-walks every test module in the tree, so it has no import edge to any
+# product file by construction -- and what it protects is a stage-1 entry
+# silently collecting zero tests, which is the exact failure a fast lane
+# would inherit and amplify.
+tests/test_module_skip_placement.py

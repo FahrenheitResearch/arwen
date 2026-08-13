@@ -514,6 +514,39 @@ def _sw_tables():
     return _SW_TABLES_CACHE
 
 
+_CUDA_SW_CACHE = None
+
+
+def _cuda_sw(tab):
+    """The compiled CUDA SW engine for ``tab``, once per process.
+
+    Construction is the expensive half of this adapter: ``CudaSW.__init__``
+    runs a full NVRTC compile of ``kernels/rrtmg_sw.cu`` and uploads the
+    packed tables to the device.  The LW and McICA halves are already
+    process-cached (``rrtmg_lw._GPU_KERNELS`` / ``_GPU_PREFLIGHTED``,
+    ``rrtmg_mcica``); the SW engine was the only per-INSTANCE GPU cost,
+    which did not matter while one adapter existed per process and does
+    now: streaming builds one adapter per TILE BUFFER, so an uncached
+    engine would multiply both the compile and the resident device tables
+    that streaming exists to save.
+
+    Sharing is sound because ``CudaSW`` is immutable after construction --
+    every ``self.<x> =`` in it is in ``__init__`` (``cp``, ``tab``,
+    ``module``, ``tab_gpu``, ``ngb_gpu``, ``max_nlay``), all read-only
+    thereafter, and its stage drivers allocate their outputs per call.  It
+    is a compiled module plus constant tables, not a carrier.
+
+    Keyed on the tables OBJECT, not merely cached once: ``_sw_tables`` is
+    itself a process singleton, so the identity check is normally free, but
+    a caller assembling its own tables gets its own engine rather than
+    silently borrowing one built from different coefficients.
+    """
+    global _CUDA_SW_CACHE
+    if _CUDA_SW_CACHE is None or _CUDA_SW_CACHE[0] is not tab:
+        _CUDA_SW_CACHE = (tab, _sw.CudaSW(tab))
+    return _CUDA_SW_CACHE[1]
+
+
 # ---------------------------------------------------------------------------
 # Ozone nest routing: the child side of WRF's root-only o3rad evaluation.
 # ---------------------------------------------------------------------------
@@ -674,7 +707,7 @@ class RRTMGLegacyRadiation:
             self._ozone_climo = None
             self._ozone_lat_interp = None
         try:
-            self._cuda_sw = _sw.CudaSW(self._sw_tables)
+            self._cuda_sw = _cuda_sw(self._sw_tables)
         except Exception as exc:
             raise RuntimeError(
                 "ra_rrtmg_variant='rrtmg_legacy' is selected but the "

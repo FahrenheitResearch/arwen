@@ -407,8 +407,15 @@ def open_writer(state, cfg, setup, store):
 
     plan = output.frame_plan(state)
     mirror = None if store is not None else DeviceMirror(state)
+    # require_complete=False, DECLARED rather than inherited.  This is an
+    # endurance bench: it measures how long a store-backed writer survives,
+    # its inventory is the carrier set, and it has never carried the
+    # output-only driver diagnostics.  The product route does
+    # (gpuwm.core.streaming.diagnostic_inventory), and StoreFrame refuses a
+    # short frame there by default; saying so here keeps this bench's
+    # unchanged behaviour a stated choice instead of a silent exemption.
     frame = output.StoreFrame(plan, store if mirror is None else mirror,
-                              setup, cfg)
+                              setup, cfg, require_complete=False)
     return output.StoreHistoryWriter(frame, cfg), mirror
 
 

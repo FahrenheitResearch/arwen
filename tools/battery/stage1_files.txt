@@ -457,3 +457,122 @@ tests/test_verify_release_artifacts.py
 tests/test_release_snapshot_front_door.py
 tests/test_release_snapshot_machine_paths.py
 tests/test_release_snapshot_modes.py
+
+# ---------------------------------------------------------------------------
+# The 2026-08-13 test-estate audit's stage-1 amendments.
+# ---------------------------------------------------------------------------
+
+# THE GATE ON THIS LIST WAS NOT ON THIS LIST.  test_stage1_manifest.py is
+# what stops a tidy-up dropping an entry -- it checks every path resolves,
+# rejects duplicates, and pins the entries whose absence caused a real miss
+# -- and it ran only in the full-suite leg, which is assembled by hand each
+# cut.  The audit found it by parsing the list rather than grepping it: a
+# grep -F reported it as present, because the header names it at line 33,
+# inside a comment.  Any membership check against this file must ignore
+# comment lines, exactly as the header's own consumer snippet does.
+# 0.2 s, 138 tests.
+tests/test_stage1_manifest.py
+
+# The privileged publish workflow, executed.  This suite runs the literal
+# `run:` blocks of the publish workflow against fake GitHub and PyPI, and
+# three of its four commits are publish fixes: stranded assets on a re-run,
+# PyPI index-lag backoff, invented refusal gates.  It gates the window
+# between the tag and PyPI, which is the one window a cut cannot route
+# around -- by the time a defect there fires, the tag already exists.  It
+# sat on no leg.  The audit calls it the single most consequential addition
+# to this list, and at 23 s it is the most expensive one; it is worth it for
+# the same reason test_verify_release_artifacts.py is.
+tests/test_publish_workflow_state_machine.py
+
+# Three more release-machinery suites on no leg, matching the 2.1.0
+# rationale above verbatim: CPU-only, fixtures built through the real tools,
+# and the difference between a defect found on the branch and a defect found
+# mid cut.  1 s, 0.4 s and 2 s respectively; test_doctor_da_eigensolver.py
+# carries two field failures behind it.
+tests/test_verify_source_bridge_pins.py
+tests/test_doctor_nexrad.py
+tests/test_doctor_da_eigensolver.py
+
+# Obs-DA was 5 of 63 files on this list: 58 files and about 1,900 tests
+# never ran on a cut, against a lane that is 197 s in total and 48 s
+# excluding its two big files.  These are the cheap high-value pins the
+# audit names -- about 12 s combined here, 20 real defects between them --
+# and adding them is a better use of an amendment than any deletion in the
+# audit's pruning section.  Radar ingest and the radar grid; the LETKF
+# solver and its chunk sizing; the observation operator and its moments; the
+# v1.2 integration seam; and the ensemble-product hardening.
+tests/test_obs_nexrad.py
+tests/test_obs_radar_grid.py
+tests/test_letkf.py
+tests/test_letkf_chunk_sizing.py
+tests/test_da_obsop.py
+tests/test_da_moments.py
+tests/test_v12_integration.py
+tests/test_enprod_hardening.py
+
+# The gate on the gate-PLACEMENT class, from the same audit's G1.  A
+# module-level skip below a test definition silently takes the tests above
+# it: tests/test_first_products.py had one at line 568 and collected zero of
+# its 23 tests on every cut since 1.8.7, while sitting on this list.  Two
+# more instances were found by AST sweep.  This file walks every test module
+# in tests/ and tilestream/ and fails on the shape, so the next one cannot
+# land quietly.  2 s.
+tests/test_module_skip_placement.py
+
+# The fast-fix selector's own gate.  tools/battery/fastfix.py decides which
+# suites a change must run before it is published, which makes it a thing
+# that can be silently wrong -- the failure mode the whole audit is about.
+# This pins the audit's validation commit (6e9c690f0 must still select
+# tests/test_pd_advection.py), that a non-Python change falls back to the
+# ALWAYS list rather than to nothing, that the selection stays a selection,
+# and the manifest hygiene on tools/battery/always_files.txt.  38 s, and it
+# also gates tools/battery/gpu_shard_files.txt.
+tests/test_fastfix_selector.py
+
+# ---------------------------------------------------------------------------
+# The 2.2 train: lane/ingest-rust-2, appended to the restructured list above.
+# ---------------------------------------------------------------------------
+
+# Round-2 survey candidate 1: the projected-source horizontal operator
+# now runs in the Rust bridge, and the NumPy mirror it replaced is the
+# pinned authority for every nested HRRR preparation ever run.  This is
+# the bit-identity gate on the raw uint32 view -- both `oned` sweeps,
+# the zero/tiny sentinel, the clamped stencil edges, the fraction end
+# points, and the host-versus-CUDA missing-value predicate.  Red on a
+# revert of either the predicate or the sentinel in
+# tools/grib1_bridge/src/lib.rs; skips cleanly when the bridge is not
+# built, which is why it also asserts the loud fallback.
+tests/test_hrrr_projected_operator.py
+# Round-2 survey free win: the fetch engine used to degrade to the
+# Python transport in silence on the branch every install without the
+# bridges bundle takes, and that transport has no whole-file mode -- a
+# measured ~16x tax paid by default.  Covers the warning at selection
+# time, the engine_selection receipt field, and the doctor line.
+tests/test_fetch_engine_degrade_guard.py
+
+# ---------------------------------------------------------------------------
+# The 2.2.0 cut: the user-door gate's five findings against the streamed
+# front door, and the checks that would have caught them.
+# ---------------------------------------------------------------------------
+
+# THE CHECK THAT WAS MISSING.  Every streaming gate the release had
+# compared VALUES of fields both files carried; the defect was a field
+# only the RESIDENT file carried, so a streamed run published 73 of 74
+# variables with forecast validity PASS.  This is the instrument for
+# streamed-versus-resident FRAME FIELD-SET equality, validated in both
+# directions -- a pair it must call identical, and four seeded
+# corruptions it must catch (a dropped field, an invented field, one
+# flipped float bit, one changed provenance attribute), because an
+# equality checker that always answers "equal" passes every parity gate
+# ever written.
+tests/test_streamed_frame_parity.py
+# The admission gate, at the front door.  `gpuwm go` refused a
+# 550-class config with [tiles] on the strength of a RESIDENT memory
+# estimate -- the one configuration class streaming exists to enable,
+# refused by default, with --no-memory-gate printed as the remedy.
+# Drives memory_gate with a probe standing in for the card: the
+# streamed config must be admitted, the same domain without [tiles]
+# must still be refused, and a domain too big even streamed must be
+# refused in the tile-and-window numbers a user can act on.  Also pins
+# that `gpuwm check` stopped telling users the feature does not work.
+tests/test_streamed_admission.py

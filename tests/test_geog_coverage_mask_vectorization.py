@@ -28,6 +28,14 @@ import pytest
 
 from gpuwm.static.geog import GeogDataset
 
+#: TIER C, weekly, on the audit's explicit ruling: "demote to weekly, do not
+#: delete".  This file carries verbatim copies of the pre-vectorization scalar
+#: implementations as frozen differential oracles.  That is defensible -- it is
+#: a real both-directions check -- but what it protects is a speed change
+#: nobody is going to re-do, so it does not need to run on every merge.  1 s
+#: measured, so this entry is about cadence discipline rather than seconds.
+pytestmark = pytest.mark.slow
+
 
 # ---------------------------------------------------------------------------
 # Frozen reference oracles (the pre-vectorization implementations, verbatim)

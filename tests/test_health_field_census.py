@@ -17,11 +17,40 @@ instantiate the real four-domain configuration and count.
 
 WHY THIS FILE EXISTS AT ALL
 ---------------------------
-A ceiling nobody measures is one a user discovers mid-forecast.  The exhaustive
-sweep here is the measurement, and it re-runs on every suite invocation, so a
-scheme admitted next month is counted whether or not its author thinks about
-this file.  It is deliberately NOT marked ``slow``: a gate that is routinely
-deselected is the situation this task was created to end.  It costs about 65 s.
+A ceiling nobody measures is one a user discovers mid-forecast.  The sweep
+here is the measurement, and it re-runs on every suite invocation, so a scheme
+admitted next month is counted whether or not its author thinks about this
+file.
+
+TWO TIERS, AND WHY THE `slow` REFUSAL WAS RIGHT ABOUT THE WRONG NUMBER
+---------------------------------------------------------------------
+This paragraph used to read "It is deliberately NOT marked ``slow``: a gate
+that is routinely deselected is the situation this task was created to end.
+It costs about 65 s."  The instinct is correct and is preserved.  The number
+was not: the 2026-08-13 test-estate audit measured the file at **541 s**, and
+a re-measurement on this branch at **461 s** -- eight times its own
+documented cost, on the most expensive file in the battery, because nothing
+in the project measured test cost and the fast/slow split was maintained
+from stale prose.
+
+So the ceiling gate is still never deselected.  It runs on every merge, in
+Tier A, over the neighbourhood of the recorded peak: the three COUPLED axes
+(LSM x PBL x surface layer) swept in full against each other, the three
+independent axes swept one at a time, about 92 combinations for **25 s**,
+re-deriving the 632 peak instead of reading it back.
+
+The exhaustive 2,560-combination sweep is Tier B, marked ``slow``, and runs
+at the cut.  It is what finds a peak that has moved somewhere Tier A does not
+look.  Neither arm is a substitute for the other and both are named as such
+in each test.
+
+  A one-axis-at-a-time reduction was implemented first and REJECTED by
+  measurement: it predicts 527 on mp18-lsm0-pbl0-sfclay0-cu0-km1 against the
+  real 632 on mp18-lsm3-pbl5-sfclay5-cu1-km1, because LSM, PBL and surface
+  layer interact through the WRF pairing table (RUC retains MYNN's
+  fractional sea-ice result for the post-LSM blend, worth 31 descriptors
+  that none of the three carries alone).  A fast gate that is quietly 105
+  descriptors optimistic is worse than a slow one.
 
 NO DEVICE IS OPENED
 -------------------
@@ -168,6 +197,37 @@ def four_domain_census(tmp_path_factory):
     return json.loads(completed.stdout)
 
 
+#: The anchor for the cheap arm: one member of the recorded peak set.
+#: km_opt does not change the inventory, so either member anchors the same
+#: neighbourhood; km1 is chosen because it is the one the CLI example uses.
+PEAK_ANCHOR = "mp18-lsm3-pbl5-sfclay5-cu1-km1"
+
+
+@pytest.fixture(scope="module")
+def neighbourhood_census(tmp_path_factory):
+    """The peak's own neighbourhood, measured on every merge.
+
+    Same subprocess discipline and same foreign cwd as
+    :func:`four_domain_census` -- see its docstring, which is the reason
+    both of these are subprocesses at all.  What differs is the matrix:
+    ``--around`` sweeps the three COUPLED axes (LSM x PBL x surface layer)
+    in full at the anchor's other values, then the three independent axes
+    one at a time, which is about 92 combinations rather than 2,560.
+
+    Measured on this checkout: **25 s, against 461 s** for the exhaustive
+    sweep, and it re-derives the same 632 peak rather than assuming it.
+    """
+    foreign_cwd = tmp_path_factory.mktemp("not-the-repository")
+    completed = subprocess.run(
+        [sys.executable, str(TOOL), "--around", PEAK_ANCHOR, "--json",
+         str(FOUR_DOMAIN_CONFIG)],
+        cwd=str(foreign_cwd), capture_output=True, text=True, timeout=1800,
+        env={**os.environ, "GPUWM_NO_LOCAL_GPU": "1"})
+    assert completed.returncode == 0, (
+        f"the census failed:\n{completed.stderr[-4000:]}")
+    return json.loads(completed.stdout)
+
+
 def _child_rows(report):
     """Rows by selection, each per-domain map keyed by int grid id."""
     return {row["selection"]: {int(k): v for k, v in row["per_domain"].items()}
@@ -175,9 +235,103 @@ def _child_rows(report):
 
 
 # ---------------------------------------------------------------------------
+# TIER A -- every merge.  About 25 s.
+#
+# The gate this file exists for is "no configuration a user can pick dies at
+# the health ceiling mid-forecast".  That assertion runs here, on the
+# neighbourhood of the recorded peak, and it re-derives the peak rather than
+# reading it back.  What it cannot do is find a brand-new peak in a far
+# corner of the cross-product; that is Tier B's job, below, and Tier B is
+# still exhaustive and still runs at every cut.
+# ---------------------------------------------------------------------------
+
+
+def test_the_peak_neighbourhood_holds_no_combination_over_the_ceiling(
+        neighbourhood_census):
+    """The headline gate, on the family the peak lives in."""
+
+    report = neighbourhood_census
+    assert report["over_ceiling"] == [], (
+        "these selectable combinations exceed MAX_HEALTH_FIELDS and would "
+        f"die mid-forecast: {report['over_ceiling']}")
+    assert report["rows"], "the neighbourhood census measured nothing at all"
+    assert report["worst_count"] <= report["max_health_fields"]
+
+
+def test_the_peak_is_still_where_it_was_measured(neighbourhood_census):
+    """The cheap arm re-derives the peak; it does not read it back.
+
+    This is what makes the reduction honest.  The sweep does not start from
+    ``WORST_MEASURED_COUNT``; it measures 56 selectable combinations around
+    the anchor and reports the largest.  If a scheme edit moves the peak
+    inside the surface/PBL family -- which is where the peak lives, and
+    where the audit found the churn is -- this fails on the merge that
+    lands it, not at the next cut.
+    """
+
+    report = neighbourhood_census
+    assert report["worst_count"] == WORST_MEASURED_COUNT, (
+        f"the worst count in the peak neighbourhood moved from "
+        f"{WORST_MEASURED_COUNT} to {report['worst_count']} "
+        f"({report['worst_selection']}).  Re-run `python "
+        f"tools/health_field_census.py {FOUR_DOMAIN_CONFIG.name}` -- the "
+        "WHOLE sweep, not --around -- record the new number, and state the "
+        f"remaining headroom out of {report['max_health_fields']}.")
+    assert report["worst_selection"] in WORST_SELECTIONS, (
+        f"the peak moved to {report['worst_selection']}, which is not in the "
+        f"recorded set {sorted(WORST_SELECTIONS)}")
+
+
+def test_the_cheap_arm_really_is_cheaper_and_still_covers_the_peak(
+        neighbourhood_census, ):
+    """Both halves of the bargain, so neither can rot unnoticed.
+
+    A sample that quietly grew back to the full cross-product would be a
+    461 s test wearing a 25 s name; a sample that shrank to the anchor alone
+    would be a tautology.  This pins that it is neither.
+    """
+
+    report = neighbourhood_census
+    measured = len(report["rows"])
+    assert 20 < measured < 400, (
+        f"the neighbourhood sweep measured {measured} combinations.  Under "
+        "20 it is not sweeping anything; over 400 it has stopped being the "
+        "cheap arm and the exhaustive sweep already exists")
+    assert report["sampled_around"] == PEAK_ANCHOR, report["sampled_around"]
+    # It must contain the anchor AND its neighbours on the coupled axes,
+    # or "re-derives the peak" is not true.
+    keys = {row["selection"] for row in report["rows"]}
+    assert PEAK_ANCHOR in keys
+    assert len({k for k in keys if k.startswith("mp18-lsm3-pbl5")}) > 1, (
+        "the sweep carries only one surface-layer value at the peak's "
+        "LSM/PBL pairing, so it cannot see that pairing's cost move")
+
+
+# ---------------------------------------------------------------------------
+# TIER B -- `slow`, at the cut.  About 461 s.
+#
+# The exhaustive 2,560-combination sweep.  It stays, unmarked-for-deletion
+# and unweakened: it is the only thing that can find a peak the
+# neighbourhood above does not contain, and the 2026-08-13 audit's own
+# reason for pricing it (this file is one of the two most defect-productive
+# in the project: 18 edits, 10 fixes) is a reason to keep running it, not to
+# run it on every merge.
+#
+# The file's original docstring refused the `slow` marker outright, on the
+# grounds that "a gate that is routinely deselected is the situation this
+# task was created to end".  That was the right instinct against the wrong
+# number: it priced itself at "about 65 s" and measures 461 s.  Splitting
+# the tier keeps the instinct -- the ceiling gate is NOT deselected, it runs
+# on every merge in Tier A -- while paying the exhaustive price where there
+# is time for it.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_no_selectable_combination_exceeds_the_ceiling(four_domain_census):
     """The headline: nothing a user can pick dies at the health gate."""
     report = four_domain_census
@@ -188,6 +342,7 @@ def test_no_selectable_combination_exceeds_the_ceiling(four_domain_census):
     assert report["rows"], "the census measured nothing at all"
 
 
+@pytest.mark.slow
 def test_worst_selectable_count_is_the_recorded_measurement(
         four_domain_census):
     """The peak is pinned, so growth is visible instead of merely tolerated."""
@@ -205,6 +360,7 @@ def test_worst_selectable_count_is_the_recorded_measurement(
         f"the worst-case combination set changed to {sorted(peaks)}")
 
 
+@pytest.mark.slow
 def test_noahmp_slice_matches_the_current_wrf_authority(
         four_domain_census):
     """Why 570 became 601 again, as a gate rather than as a comment.
@@ -504,6 +660,7 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
                if entry not in myj_paired_lsm4)
 
 
+@pytest.mark.slow
 def test_worst_selectable_count_stays_inside_the_early_warning_band(
         four_domain_census):
     """Fire while there is still room to decide, not at the cap."""
@@ -607,6 +764,7 @@ def test_a_measurement_failure_is_never_filed_as_a_refusal(monkeypatch):
 # The structure of the number -- i.e. why the projections were wrong
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_per_domain_counts_are_not_one_domain_times_four(four_domain_census):
     """A root and a child are different inventories; neither scales.
 
@@ -626,6 +784,7 @@ def test_per_domain_counts_are_not_one_domain_times_four(four_domain_census):
         "per DomainState")
 
 
+@pytest.mark.slow
 def test_child_domains_carry_the_rolling_boundary_descriptors(
         four_domain_census):
     """A child's inventory includes what its first FORCE attaches.
@@ -651,6 +810,7 @@ def test_child_domains_carry_the_rolling_boundary_descriptors(
     assert "nest.scratch" not in root
 
 
+@pytest.mark.slow
 def test_grid_dimensions_do_not_change_the_descriptor_count(
         four_domain_census):
     """The count is a property of the configuration, not of its size.
@@ -670,6 +830,7 @@ def test_grid_dimensions_do_not_change_the_descriptor_count(
             f"{per_domain}")
 
 
+@pytest.mark.slow
 def test_the_census_reproduces_the_recorded_527_descriptor_step(
         four_domain_census):
     """Calibration against the only figure written down before this existed.
@@ -693,6 +854,7 @@ def test_the_census_reproduces_the_recorded_527_descriptor_step(
 # Completeness of the sweep, and what the ceiling costs
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 def test_the_sweep_accounts_for_every_axis_combination(four_domain_census):
     """Measured + refused == the whole cross-product: nothing was dropped.
 
@@ -716,6 +878,7 @@ def test_the_sweep_accounts_for_every_axis_combination(four_domain_census):
         "untested here")
 
 
+@pytest.mark.slow
 def test_the_census_measured_this_checkout(four_domain_census):
     """The subprocess measured THIS tree, not the pip-installed one.
 
@@ -734,6 +897,7 @@ def test_the_census_measured_this_checkout(four_domain_census):
             "measured a different checkout")
 
 
+@pytest.mark.slow
 def test_the_ceiling_costs_fixed_metadata_not_field_storage(
         four_domain_census):
     """Record what raising ``MAX_HEALTH_FIELDS`` would actually cost.

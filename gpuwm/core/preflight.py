@@ -417,19 +417,25 @@ def streaming_advisory(exp) -> str | None:
     because the report is otherwise indistinguishable from one describing
     the run they actually asked for.
 
-    Two independent things go wrong without it, and both were MEASURED
-    (``python -m tilestream.ledger_ladder``, which prints the table):
+    REWRITTEN AT 2.2.0, TWICE OVER.  Both halves of what this used to say
+    are now false, and a stale advisory is worse than none: it was the
+    release's own headline feature telling users it does not work.
 
-    * ``mode = "auto"`` asks :func:`tilestream.autoplan.plan` whether the
-      domain fits, not this module.  The two models price the full(real74)
-      rung at 541 and ~887 B/cell, so this estimate runs 1.35x to 1.54x
-      autoplan's over 672^2..4096^2 x 49.  On every card there is a band of
-      sizes -- 448..512 on a 12 GiB card, 704..816 on 24 GiB, 832..976 on
-      32 GiB -- where autoplan says RESIDENT, so streaming never fires, and
-      the gate built on this estimate then refuses the run anyway.
-    * ``mode = "on"`` is refused outright by every route that runs a
-      forecast, because none of them wires a streamed-domain builder
-      (:func:`gpuwm.core.streaming.refuse_unrouted_streaming`).
+    * "this estimator has no model of a streamed domain" -- it does now.
+      :func:`streamed_forecast_envelope` prices the tile working set, the
+      buffers and the pinned store off the same measured
+      :class:`tilestream.autoplan.Footprint` the run attaches with, and
+      :func:`estimate_phases` puts that number in the forecast term.  So a
+      refusal here is a statement about the run the config asks for.
+    * "'on' is refused by the forecast routes, which wire no
+      streamed-domain builder" -- they wire one as of 2.2.0
+      (``prepared_single_domain_forecast``, ``prepared_domain_tree_forecast``),
+      which is the whole point of the release.
+
+    What remains worth saying is the one thing that is still true and still
+    surprising: under ``mode = "auto"`` the DECISION is the planner's, taken
+    against free VRAM at the instant the run starts, so a report written
+    now can describe the other branch if the card's occupancy changes.
 
     Advisory, never a gate: it changes no exit code and blocks nothing,
     on the same posture as every other entry in :func:`check_advisories`.
@@ -438,14 +444,26 @@ def streaming_advisory(exp) -> str | None:
     mode = getattr(options, "mode", "off")
     if mode == "off":
         return None
+    envelope = streamed_forecast_envelope(exp)
+    if envelope is not None:
+        return (f"[tiles] mode = '{mode}' streams this domain, so the memory "
+                "numbers in this report price the STREAMED allocation and "
+                f"not a resident one: {envelope.summary()}.")
+    if mode == "auto":
+        return (
+            "[tiles] mode = 'auto' is configured, so whether this domain "
+            "streams is decided at run time by tilestream.autoplan against "
+            "the free VRAM of that moment.  The numbers below price the "
+            "RESIDENT allocation, which is the branch auto takes when the "
+            "domain fits; if it does not fit, the run streams instead and "
+            "holds a few tile buffers rather than the whole domain, so a "
+            "refusal here is not the last word.")
     return (
-        f"[tiles] mode = '{mode}' is configured, and every memory number "
-        "in this report prices the RESIDENT allocation -- this estimator has "
-        "no model of a streamed domain, so a refusal here is a statement "
-        "about a resident run.  'auto' decides with tilestream.autoplan's "
-        "independently fitted model, which is 0.65x-0.74x this one at "
-        "672^2..4096^2 x 49 full physics; 'on' is refused by the forecast "
-        "routes, which wire no streamed-domain builder.")
+        f"[tiles] mode = '{mode}' is configured but no streamed envelope "
+        "could be priced for this domain, so the numbers below price the "
+        "RESIDENT allocation.  That happens when the planner can fit no "
+        "tile in this card's budget at all, in which case streaming would "
+        "not have saved the run either.")
 
 
 def check_advisories(exp, config_path=None) -> list[str]:
@@ -4542,12 +4560,34 @@ class ExperimentMemoryEstimate:
 # below is what it actually holds.
 # ---------------------------------------------------------------------------
 
-#: Forcing times a streaming ingest holds on the device at once: the
-#: INITIAL time -- which the prepared cache, wrfinput and the surface
-#: analysis are all written from -- plus the time currently being built.
-#: Every other time contributes its perimeter frames and is released
-#: before the next one is interpolated.
-INGEST_RESIDENT_FORCING_TIMES = 2
+#: Forcing times a streaming ingest holds on the device at once: the ONE
+#: currently being built.  Every other time contributes its perimeter
+#: frames -- host memory, O(perimeter) -- and is released before the next
+#: one is interpolated.
+#:
+#: THIS WAS 2, AND THE SECOND ONE WAS THE START TIME.  Nothing reads the
+#: start time until the boundaries are complete (the prepared cache, the
+#: wrfinput export and the surface analysis are all written from it after
+#: the loop), but a prepare loop that walked the times in order built it
+#: FIRST and therefore held it while every later time was built
+#: underneath.  The adapters now build it LAST
+#: (gpuwm/ingest/lateral_bc.py:start_last_forcing_order) and retain
+#: nothing else, which is a pure reordering: the perimeter frames are
+#: accumulated against their positions and the intervals come out
+#: byte-identical.  At 800x800x49, mp=10, three GFS times, that is 14.67
+#: GiB of device residency dropping to 7.66 and a peak envelope of 23.92
+#: GiB dropping to 15.86 -- the whole reason such a domain can be
+#: prepared on a 16 GiB card at all.
+#:
+#: SCOPE, because this number is a gate input and an optimistic gate is
+#: the failure mode this section exists to prevent: it describes the
+#: prepared-cache adapters `gpuwm/gfs_direct.py`, `gpuwm/era5_direct.py`
+#: and `gpuwm/mapped_direct.py`, which are what `gpuwm go` and the domain
+#: wizard price.  `gpuwm/runtime.py:prepare_real_case` -- the verify-case
+#: preparer, off those routes -- has not been reordered and still holds
+#: two, so for a run prepared through THAT path this estimate is
+#: optimistic by exactly one `per_time_bytes`.
+INGEST_RESIDENT_FORCING_TIMES = 1
 
 #: Pressure levels each forcing product decodes onto the target grid.
 #: GFS: the certified 21-level ladder the Rust bridge gates on
@@ -4589,10 +4629,23 @@ SOURCE_ANALYSIS_SURFACE_FIELDS = {"era5": 19, "gfs": 19}
 #: MEASURED, both ends of the same CONUS 12 km case (414x330x49, 9 GFS
 #: times, RTX 5090, process-attributed peak, 432 MiB CUDA context
 #: subtracted): the all-times-resident form itemizes 13.71 GiB and peaked
-#: at 14.93 GiB (0.80 GiB unaccounted); the streaming form itemizes 3.23
-#: GiB and peaked at 4.56 GiB (0.91 GiB unaccounted).  Against a 1.50 GiB
-#: forcing time that is 0.53x and 0.61x -- additive and stable, which is
-#: what a per-call transient should be.  0.65 is the margin over both.
+#: at 14.93 GiB (0.80 GiB unaccounted); the two-resident streaming form
+#: itemizes 3.23 GiB and peaked at 4.56 GiB (0.91 GiB unaccounted).
+#: Against a 1.50 GiB forcing time that is 0.53x and 0.61x -- additive
+#: and stable, which is what a per-call transient should be.  0.65 is the
+#: margin over both.
+#:
+#: The start-last reordering that took residency from two forcing times
+#: to one does NOT move this fraction, and that is the point of stating
+#: it as a fraction of ONE time: it prices the temporaries a single
+#: interpolate/initialize call builds and drops inside itself, which is
+#: the same call in either order.  What the reordering removes is a
+#: RESIDENT term, not a transient one, so the one-resident itemization is
+#: the two-resident measurement minus exactly one `per_time_bytes` --
+#: 3.23 GiB down to 1.73 on that case, against a peak that should follow
+#: it from 4.56 GiB to about 3.06.  That predicted peak is a prediction:
+#: it has not been measured on a device, and the estimate bounds it by
+#: 1.15x.
 INGEST_TRANSIENT_PER_TIME_FRACTION = 0.65
 
 #: What that measurement was, printed beside the number it produces.
@@ -4638,7 +4691,10 @@ class IngestMemoryEstimate:
     time from one horizontally interpolated analysis per forcing time.
     Streaming means ``resident_times`` of each coexist rather than all of
     them, which is the whole difference between this phase costing twice
-    the forecast and costing less than half of it.
+    the forecast and costing less than half of it.  ``resident_times`` is
+    now 1 rather than 2: see
+    :data:`INGEST_RESIDENT_FORCING_TIMES` for which routes that describes
+    and which one it does not.
 
     2026-08-01 AMENDMENT -- IT IS NOT ONE ROOT.  v1.4.0 priced this phase
     on the root domain alone, so the PREDICTION FELL as nests were added
@@ -4731,7 +4787,8 @@ class IngestMemoryEstimate:
         Pool allocations plus the non-pool CUDA context.  No second
         envelope multiplier: unlike the forecast, this phase has no
         per-step churn for a retention factor to model -- it builds one
-        forcing time at a time, keeps two, and drops the rest.
+        forcing time at a time, keeps ``resident_times`` of them, and
+        drops the rest.
         """
         return (self.alloc_estimate_bytes + self.context_bytes
                 + self.device_overhead_bytes)
@@ -4812,10 +4869,24 @@ class PhaseMemoryEstimate:
     forecast_envelope_bytes: int
     ingest_envelope_bytes: int | None
     source: str | None = None
+    #: The STREAMED forecast envelope, when ``[tiles]`` resolves to streaming
+    #: this domain.  Present means ``forecast_envelope_bytes`` above is the
+    #: number that binds -- it is already the streamed one, not the resident
+    #: one -- and this carries the tiling that produced it so the verdict can
+    #: name it.  ``None`` is every resident run, where nothing changed.
+    streamed: "StreamedEnvelope | None" = None
+    #: The resident forecast envelope, kept beside the streamed one so a
+    #: report can say what streaming BOUGHT.  Equal to
+    #: ``forecast_envelope_bytes`` on a resident run.
+    resident_forecast_envelope_bytes: int | None = None
 
     @property
     def ingest_priced(self) -> bool:
         return self.ingest_envelope_bytes is not None
+
+    @property
+    def streamed_forecast(self) -> bool:
+        return self.streamed is not None
 
     @property
     def binding_phase(self) -> str:
@@ -4835,7 +4906,16 @@ class PhaseMemoryEstimate:
         return self.peak_envelope_bytes <= int(budget_bytes)
 
     def verdict(self, budget_bytes: int | None) -> str:
-        """One sentence naming the binding phase and its number."""
+        """One sentence naming the binding phase and its number.
+
+        Under ``[tiles]`` the forecast term is the STREAMED envelope, so the
+        sentence has to say so: a reader who sees "the forecast needs 6.61
+        GiB" for a 550x550 domain that manifestly cannot fit in 6.61 GiB
+        resident is owed the reason in the same breath, and the tiling is
+        the reason.
+        """
+        if self.streamed_forecast:
+            return self._streamed_verdict(budget_bytes)
         if not self.ingest_priced:
             text = (f"the forecast needs "
                     f"{self.forecast_envelope_bytes / GIB:.2f} GiB peak "
@@ -4862,6 +4942,74 @@ class PhaseMemoryEstimate:
                 f"budget by "
                 f"{(self.peak_envelope_bytes - budget_bytes) / GIB:.2f} GiB")
 
+    def _streamed_verdict(self, budget_bytes: int | None) -> str:
+        env = self.streamed
+        phase = self.binding_phase
+        label = ("preprocessing (ingest)" if phase == "ingest"
+                 else "the streamed forecast")
+        parts = [f"{label} is the memory-binding phase at "
+                 f"{self.peak_envelope_bytes / GIB:.2f} GiB peak envelope "
+                 f"(streamed forecast "
+                 f"{self.forecast_envelope_bytes / GIB:.2f} GiB"]
+        if self.ingest_priced:
+            parts.append(f", ingest {self.ingest_envelope_bytes / GIB:.2f} "
+                         "GiB")
+        parts.append(")")
+        text = "".join(parts)
+        if self.resident_forecast_envelope_bytes is not None:
+            text += (f"; {env.nbuffers} tile buffer(s) of "
+                     f"{env.window_nx}x{env.window_ny} instead of the whole "
+                     f"domain, against "
+                     f"{self.resident_forecast_envelope_bytes / GIB:.2f} GiB "
+                     "resident")
+        text += (f", with the forecast itself in "
+                 f"{env.host_bytes / GIB:.2f} GiB of pinned host RAM")
+        if budget_bytes is None:
+            return text
+        if self.fits(budget_bytes):
+            return (f"{text}; it fits the {budget_bytes / GIB:.2f} GiB "
+                    "budget with "
+                    f"{(budget_bytes - self.peak_envelope_bytes) / GIB:.2f} "
+                    "GiB to spare")
+        return (f"{text}; that EXCEEDS the {budget_bytes / GIB:.2f} GiB "
+                f"budget by "
+                f"{(self.peak_envelope_bytes - budget_bytes) / GIB:.2f} GiB")
+
+
+def streamed_forecast_envelope(exp: ExperimentConfig, *, machine=None):
+    """The ROOT domain's streamed envelope under this config's ``[tiles]``.
+
+    ``None`` whenever this configuration does not stream, which includes the
+    cases where the question cannot be answered here: ``mode = "auto"`` with
+    no pinned tiling has to consult the planner, and the planner needs a
+    card.  Passing ``machine`` (built from an out-of-process probe, never
+    from ``Machine.detect`` inside a long-lived CLI) is what lets ``auto``
+    be priced.
+
+    NEVER RAISES.  This runs inside an admission gate whose whole job is to
+    answer before the user spends a download, and a planner refusal
+    ("no tile fits in this budget") is a legitimate answer meaning "streaming
+    will not save this either" -- the caller then prices the resident
+    envelope and refuses on that, which is the correct and conservative
+    outcome.
+
+    The root domain only, deliberately: a nested tree is refused by
+    ``prepared_domain_builder`` for a nest anyway, so pricing a nest's
+    streamed envelope would describe a run that cannot happen.
+    """
+    options = getattr(exp, "tiles", None)
+    if options is None or getattr(options, "mode", "off") == "off":
+        return None
+    if not getattr(exp, "domains", None):
+        return None
+    from gpuwm.core import streaming
+
+    try:
+        return streaming.streamed_envelope(
+            exp.domains[0].run, options, machine=machine)
+    except Exception:                    # a gate never dies on its estimate
+        return None
+
 
 def estimate_phases(exp: ExperimentConfig, *, source: str,
                     column_chunk: int | None = None,
@@ -4870,12 +5018,25 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
                     ingest_forcing_interval_seconds: float | None = None,
                     vram_gib: float | None = None,
                     profile: DeviceLocalMemoryProfile | None = None,
+                    machine=None,
                     ) -> PhaseMemoryEstimate:
     """Price every phase of ``exp`` and say which one binds the card.
 
     ``ingest_forcing_interval_seconds`` defaults to the SOURCE's own
     fetch cadence rather than the forecast's LBC interval, because the
     ingest phase's time count is set by what was downloaded.
+
+    ``[tiles]`` REPLACES THE FORECAST TERM (2.2.0).  Every enumeration in
+    this module itemizes a domain resident in VRAM, so with streaming
+    configured the forecast term described a run that was not going to
+    happen -- and the gate built on it refused, by default, the one
+    configuration class streaming exists to enable.  When
+    :func:`streamed_forecast_envelope` returns a number the forecast term
+    becomes that number; the ingest term is untouched, because preprocessing
+    is not streamed and still has to fit the card on its own.
+
+    ``machine`` is only consulted for ``mode = "auto"`` with no pinned
+    tiling, where the decision belongs to the planner.
     """
     forecast = estimate_experiment(
         exp, column_chunk=column_chunk,
@@ -4891,12 +5052,16 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
         ingest = estimate_ingest(
             exp, source=key, forcing_interval_seconds=float(cadence),
             vram_gib=vram_gib)
+    resident_forecast = forecast.peak_envelope_bytes
+    streamed = streamed_forecast_envelope(exp, machine=machine)
     return PhaseMemoryEstimate(
         forecast=forecast, ingest=ingest,
-        forecast_envelope_bytes=forecast.peak_envelope_bytes,
+        forecast_envelope_bytes=(resident_forecast if streamed is None
+                                 else int(streamed.vram_bytes)),
         ingest_envelope_bytes=(None if ingest is None
                                else ingest.peak_envelope_bytes),
-        source=key,
+        source=key, streamed=streamed,
+        resident_forecast_envelope_bytes=resident_forecast,
     )
 
 

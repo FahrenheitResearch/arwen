@@ -1898,9 +1898,15 @@ def test_unnamed_forecast_main_reaches_execution_and_states_the_status(
     _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
     observed = {}
 
-    def fake_run(inputs, *, output_directory, observer=None):
+    # The double tracks the real signature, including `first_products`
+    # -- the runner's own early render, which `main` now arms before the
+    # preflight.  A stub that swallowed **kwargs instead would keep
+    # passing while the argument it was handed went nowhere.
+    def fake_run(inputs, *, output_directory, observer=None,
+                 first_products=None):
         observed["inputs"] = inputs
         observed["observer"] = observer
+        observed["first_products"] = first_products
         return {
             "schema": runner.REPORT_SCHEMA,
             "status": "PASS",

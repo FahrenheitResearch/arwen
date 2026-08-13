@@ -996,7 +996,10 @@ def test_the_memory_gate_prices_both_phases_and_names_the_binding_one(
     phases = gate["phases"]
     assert phases.ingest_priced
     assert phases.ingest.n_forcing_times >= 2
-    assert phases.ingest.resident_times == 2
+    # ONE resident forcing time: the adapters build the start time last
+    # (gpuwm/ingest/lateral_bc.py:start_last_forcing_order) so nothing is
+    # held across the loop.  The gate has to price what the adapters do.
+    assert phases.ingest.resident_times == 1
     assert phases.binding_phase in ("forecast", "ingest")
     assert phases.binding_phase in gate["verdict"]
     assert "forecast" in gate["verdict"] and "ingest" in gate["verdict"]

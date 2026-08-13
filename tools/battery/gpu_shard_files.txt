@@ -1,0 +1,147 @@
+# The release battery's GPU pytest shard.
+#
+# WHAT THIS IS
+#   The set of test files the battery runs on a CUDA device at a cut.  It is
+#   the third leg, beside tools/battery/stage1_files.txt (CPU pytest) and
+#   tools/battery/cargo_gates.txt (Rust).
+#
+# WHY IT EXISTS
+#   Gap G2 of the 2026-08-13 test-estate audit: THERE WAS NO GPU PYTEST LEG
+#   AT ALL.  stage1_files.txt is CPU by construction, cargo_gates.txt is
+#   Rust, tiles_gates.txt names `python -m tilestream.*` modules.  No file
+#   anywhere named a GPU pytest shard, so the entire WRF-parity dycore ran
+#   on no list -- 6th-order diffusion including its boundary faces, both
+#   Smagorinsky closures, open and specified lateral boundaries, the
+#   acoustic solver, the mapped mass closure, the TKE budget.  The audit
+#   measured 389 of 1,258 in-scope core tests (31%) skipping on CPU, with
+#   these files at 100%.
+#
+#   Consequences are not hypothetical.  tests/test_wrfout_conformance.py is
+#   18 of 18 skipped on CPU, and its own docstring says every OTHER wrfout
+#   test is self-consistency while it is the only file that judges a gpuwm
+#   wrfout with a real WRF reader.  It is the file that would catch the
+#   ISNOWXY-class miss, and a CPU-only gate never asks it.
+#
+# WHO CONSUMES IT
+#   The GPU leg of the per-assembly queue scripts, parsed exactly as the
+#   stage-1 list is:
+#
+#     $gpushard = @(Get-Content (Join-Path $CUT 'tools/battery/gpu_shard_files.txt') |
+#         ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+#
+#   It runs on a DESIGNATED GPU NODE (node-1 class: a 16 GB sm_120 card, a
+#   CUDA toolkit whose headers CuPy can compile against, and a cupy wheel
+#   matching the box's CUDA major -- see the rental playbook).  It does NOT
+#   run on Drew's desktop card: GPU authorization is a state Drew sets, and
+#   a release leg must not assume it.
+#
+#   Run it with GPUWM_NO_LOCAL_GPU UNSET.  That variable is what makes the
+#   CPU legs honest; setting it here would skip the entire shard and report
+#   green, which is the exact class of defect this file was created to end.
+#
+# FORMAT
+#   One repository-relative path per line, forward slashes.  Blank lines and
+#   lines whose first non-space character is `#` are ignored.
+#
+# AMENDMENT DISCIPLINE
+#   As tools/battery/stage1_files.txt: an addition carries its REASON
+#   inline, on the lines above it, naming the task or the incident.  A
+#   removal is an argument made in the commit, not a tidy-up.
+#   tests/test_gpu_shard_manifest.py is the gate -- it checks every path
+#   exists, rejects duplicates, and pins the property that earns an entry a
+#   place here: that the file really is GPU-bound, so a CPU leg cannot be
+#   mistaken for coverage of it.
+#
+# SHARD 1 is below and is the per-cut leg.  SHARD 2 (the GF cumulus family)
+# is listed at the bottom and is weekly, on the audit's reasoning that
+# frozen bit-exact oracle ports carry the mass and almost none of the
+# defects.
+
+# ---------------------------------------------------------------------------
+# SHARD 1a: the WRF-parity dycore, whole-module GPU.
+#
+# Every one of these is 100% skipped on a CPU box.  They are the dynamics,
+# not the schemes: diffusion and its boundary faces, both Smagorinsky
+# closures, the open lateral boundary, the mass closure under a map factor,
+# the TKE budget, the small-step lateral wrap, the terrain metric.
+# ---------------------------------------------------------------------------
+tests/test_openbc.py
+tests/test_diff6.py
+tests/test_diff6_boundary_face.py
+tests/test_smag2d.py
+tests/test_smag3d.py
+tests/test_terrain_dynamics.py
+tests/test_small_step_lateral_wrap.py
+tests/test_mapped_mass_closure.py
+tests/test_tke_budget.py
+tests/test_tke_km2.py
+tests/test_periodic_face_identity.py
+tests/test_kernel_local_bounds.py
+tests/test_dycore_full.py
+
+# The anisotropic-mixing criterion's stepped half.  Its CPU sibling
+# (tests/test_anisotropic_mixing_advisory.py) is already on stage 1; the
+# criterion that closed the 2026-08-06 LES tornado crash is only really
+# proved by stepping, and stepping needs the card.
+tests/test_anisotropic_mixing_w_stability.py
+
+# ---------------------------------------------------------------------------
+# SHARD 1b: the same dycore seen from the files whose GPU half is
+# function-marked rather than whole-module.  tests/conftest.py marks
+# individual test functions when the cupy import is inside them, so these
+# files DO run on a CPU leg -- they just run their CPU half.  Their device
+# halves are in exactly the same position as 1a above: on no list.
+#
+# tests/test_pd_advection.py is KNOWN RED at 2.1.1 on the CPU backend
+# (gpuwm/core/moist.py's cp.ElementwiseKernel, red #1 of the audit, task
+# #161 class).  It is listed anyway and deliberately: the whole point of
+# this file is that a red belongs somewhere a leg can see it.
+# ---------------------------------------------------------------------------
+tests/test_acoustic.py
+tests/test_lateral_bc.py
+tests/test_advection.py
+tests/test_pd_advection.py
+
+# ---------------------------------------------------------------------------
+# SHARD 1c: the only file that judges a gpuwm wrfout with a WRF reader.
+#
+# 18 of 18 skip on CPU.  Its own docstring: every other wrfout test is
+# self-consistency, and this is the one that reads the product the way a
+# user's tooling will.  If any single entry in this file justifies the leg,
+# it is this one.
+# ---------------------------------------------------------------------------
+tests/test_wrfout_conformance.py
+
+# ---------------------------------------------------------------------------
+# SHARD 2 (WEEKLY, not per-cut): the GF cumulus family.
+#
+# The audit's shard-design finding is that defect density is inverted
+# against test mass: frozen bit-exact WRF leaf ports carry the tests and
+# almost none of the defects, because they are pinned to an oracle that
+# cannot drift.  GF cumulus is 376 GPU tests across these files and NINE OF
+# THEM HAVE NEVER CO-MOVED WITH A FIX.  That is what a working frozen-oracle
+# pin looks like, not a reason to delete them -- but it is the right first
+# cut when the GPU battery needs sharding, so they run weekly rather than on
+# every cut.
+#
+# Entries below this line are shard 2.  The gate keeps the two blocks
+# separate so a runner cannot silently promote one into the per-cut leg.
+# ---------------------------------------------------------------------------
+# SHARD-2-BEGIN
+tests/test_gf_deep_cuda.py
+tests/test_gf_shallow_cuda.py
+tests/test_gf_gfdrv_cuda.py
+tests/test_gf_engine_smoke.py
+
+# NOT LISTED, and the reason is a finding.  The GF family also carries
+# tests/test_gf_{deep,shallow,driver,wrf461}_parity.py, and the obvious move
+# was to put all eight here.  test_gpu_shard_manifest.py refused them: by
+# conftest's own detector they open no CUDA device, and running them proves
+# it -- 396 passed in 12 s on the CPU, and 3 s / 1 s / 2 s / 1 s on the GPU
+# node, which is what CPU work looks like when it runs on a card.
+#
+# A CPU-only file on this list would be worse than useless: it would make
+# the shard look broader than it is and burn node time rented by the hour.
+# They are ALSO on no CPU list, so they are 396 tests running nowhere -- a
+# separate gap, recorded here rather than swept, and the right place to fix
+# it is tools/battery/stage1_files.txt, not this file.

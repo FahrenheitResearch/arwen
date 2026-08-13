@@ -396,8 +396,47 @@ def _wps_oned_cpu(x, a, b, c, d):
     return np.asarray(np.where(all_four, regular, out), dtype=np.float32)
 
 
+#: What actually evaluated a projected-source horizontal apply.  It goes
+#: into the mapping report, because "the CPU backend" stopped being one
+#: answer the moment the operator got a second implementation.
+PROJECTED_OPERATOR_CUDA = "cuda-projected-donor-v1"
+PROJECTED_OPERATOR_RUST = "rust-indexed-donor-v1"
+PROJECTED_OPERATOR_NUMPY = "numpy-projected-donor-v1"
+
+#: One process, one sentence.  A child hierarchy builds three plans per
+#: domain and every one of them would otherwise say the same thing.
+_PROJECTED_FALLBACK_ANNOUNCED = False
+
+
+def _announce_projected_numpy_fallback(reason: str) -> None:
+    """Say once, loudly, that this run is on the slow projected operator."""
+
+    global _PROJECTED_FALLBACK_ANNOUNCED
+    if _PROJECTED_FALLBACK_ANNOUNCED:
+        return
+    _PROJECTED_FALLBACK_ANNOUNCED = True
+    from gpuwm import explain
+
+    explain.warn(
+        "projected-source horizontal mapping is running the NumPy mirror "
+        f"instead of the native operator ({reason}).  It is the same "
+        "arithmetic and it is slow: the native entry evaluates the same "
+        "stencil across every core with no whole-array temporaries.  "
+        "Rebuild the CPU preprocessing bridge (cd tools/grib1_bridge && "
+        "cargo build --release --locked --offline) or stage a current "
+        "bridges bundle.",
+        "The NumPy mirror issues 32 fancy-index gathers per 3-D field and "
+        "evaluates roughly 150 whole-target-shape temporaries inside the "
+        "five `oned` calls, on one core, to produce one target-shape "
+        "answer.  Nested HRRR preparation is dominated by this operator, "
+        "so an install that quietly inherits the mirror pays it on every "
+        "child of every run.")
+
+
 class _ProjectedGpuPlan:
     """WPS overlapping-parabolic interpolation on projected source indices."""
+
+    operator = PROJECTED_OPERATOR_CUDA
 
     def __init__(self, snapshot: HrrrNativeSnapshot, target_lat, target_lon):
         cp = _cupy()
@@ -473,13 +512,24 @@ class _ProjectedGpuPlan:
 
 
 class _ProjectedCpuPlan:
-    """Exact-donor NumPy WPS interpolation on projected source indices.
+    """Exact-donor WPS interpolation on projected source indices.
 
-    The Rust regular-grid ABI currently accepts only fractional coordinates.
-    Passing a local coordinate just below an integer through FP32 can advance
-    its donor after rounding.  HRRR therefore retains the FP64-selected donor
-    separately, exactly like the CUDA plan, while outer domain parallelism
-    supplies the CPU concurrency.
+    The donor is selected in FP64 and kept: passing a local coordinate
+    just below an integer through FP32 can advance it after rounding, so
+    this route carries ``(donor, fraction)`` as two separate things all
+    the way down, exactly like the CUDA plan.  That is why it could not
+    use the Rust regular-grid entry, which derives the donor from a
+    fractional coordinate itself.
+
+    It now has an entry of its own.  When the loaded bridge exposes
+    ``gpuwm_indexed_interp_f32`` this hands it the donors and the
+    fractions and the whole operator runs across every core with no
+    intermediate arrays; :meth:`_apply_numpy` stays beside it as the
+    reference implementation, is what runs when the bridge is older than
+    the checkout, and is what the parity gate compares against.  The two
+    are bit-identical by construction and by test, including the
+    zero/``tiny`` sentinel round trip and the host-IEEE ``oned``
+    missing-value predicate.
     """
 
     def __init__(self, snapshot: HrrrNativeSnapshot, target_lat, target_lon,
@@ -499,8 +549,44 @@ class _ProjectedCpuPlan:
         self.fy = np.asarray(global_y - global_iy, dtype=np.float32)
         self.nearest_ix = nearest_ix.astype(np.int32)
         self.nearest_iy = nearest_iy.astype(np.int32)
+        self._native = None
+        self.operator = PROJECTED_OPERATOR_NUMPY
+        builder = getattr(backend, "indexed_donor_plan", None)
+        if builder is None:
+            _announce_projected_numpy_fallback(
+                "this preprocessing backend has no indexed-donor plan")
+        elif not getattr(backend, "indexed_donor_interp", False):
+            _announce_projected_numpy_fallback(
+                "the loaded CPU preprocessing bridge does not export "
+                "gpuwm_indexed_interp_f32")
+        else:
+            self._native = builder(
+                self.source_shape, self.iy, self.ix, self.fy, self.fx)
+            self.operator = PROJECTED_OPERATOR_RUST
 
     def apply(self, field, *, method="parabolic"):
+        field = np.asarray(field, dtype=np.float32)
+        if field.ndim < 2 or field.shape[-2:] != self.source_shape:
+            raise ValueError("HRRR field trailing dimensions do not match window")
+        if method == "nearest":
+            lead = (slice(None),) * (field.ndim - 2)
+            return field[lead + (self.nearest_iy, self.nearest_ix)]
+        if method not in ("bilinear", "parabolic"):
+            raise ValueError(
+                "method must be 'nearest', 'bilinear', or 'parabolic'")
+        if self._native is not None:
+            return self._native.apply(field, method=method)
+        return self._apply_numpy(field, method=method)
+
+    def _apply_numpy(self, field, *, method="parabolic"):
+        """The reference operator: one core, whole-array temporaries.
+
+        Kept callable in its own right, not only as a fallback.  It is
+        the authority the native entry is pinned to, so the gate that
+        proves the port has to be able to run it side by side with the
+        thing that replaced it.
+        """
+
         field = np.asarray(field, dtype=np.float32)
         if field.ndim < 2 or field.shape[-2:] != self.source_shape:
             raise ValueError("HRRR field trailing dimensions do not match window")
@@ -1244,6 +1330,12 @@ def interpolate_hrrr_to_lambert(
             "target-water SOILT=SKINTEMP and SOILW=1"),
         "integral_conservation_claimed": False,
         "preprocess_backend": engine.receipt(),
+        # WHICH implementation of the projected horizontal operator ran.
+        # The backend receipt above says "cpu", and "cpu" now covers two
+        # implementations that agree bit for bit but not within an order
+        # of magnitude in wall time -- so a receipt that only said "cpu"
+        # could not tell a slow run from a fast one after the fact.
+        "projected_horizontal_operator": mass_plan.operator,
         "wind_rotation": {
             "policy": (
                 "source_grid_to_earth_then_earth_to_target_grid; "

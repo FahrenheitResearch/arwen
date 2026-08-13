@@ -156,11 +156,13 @@ __all__ = [
     "SOURCE_DRIVER_DIAGNOSTIC",
     "SOURCE_SETUP",
     "SOURCE_ZERO",
+    "ShortFrameRefused",
     "StoreFrame",
     "StoreHistoryWriter",
     "derive_psfc",
     "derive_t",
     "diagnostic_inventory",
+    "diagnostic_members",
     "frame_plan",
     "scatter_cost",
     "write_frame",
@@ -171,6 +173,18 @@ SOURCE_SETUP = "setup"
 SOURCE_DERIVED = "derived"
 SOURCE_ZERO = "structural-zero"
 SOURCE_DRIVER_DIAGNOSTIC = "driver-diagnostic"
+
+
+class ShortFrameRefused(ValueError):
+    """A streamed frame would have published fewer rows than a resident one.
+
+    Its own class, not a bare ``ValueError``, because the whole point is
+    that a caller can tell this apart from a broken store: the run is
+    healthy, the trajectory is bit-identical, and the ONLY thing wrong is
+    that the transport was not asked to carry a REBUILT diagnostic.  The
+    remedy is a one-line change to the run's ``inventory_fn`` and the
+    refusal names it.
+    """
 
 #: Frame fields this module derives on the host, with the rule named.  Every
 #: other unmatched field is reported UNAVAILABLE rather than guessed at.
@@ -392,23 +406,50 @@ def diagnostic_inventory(obj, names=None) -> dict:
         source: dict = dict(obj)
     else:
         source = dict(physinv.carrier_manifest(obj))
-        driver = getattr(obj, "physics", None)
-        for attr in physinv.OUTPUT_ONLY_DRIVER_ATTRS:
-            held = getattr(driver, attr, None)
-            if held is None:
-                continue
-            if isinstance(held, Mapping):
-                for key, item in held.items():
-                    producer = _producer_array(obj, key)
-                    if producer is not None:
-                        source[f"diag/{key}"] = producer
-                    elif hasattr(item, "shape"):
-                        source[f"diag/{attr}/{key}"] = item
-            elif hasattr(held, "shape"):
-                source[f"diag/{attr}"] = held
+        source.update(diagnostic_members(obj))
     keys = sorted(source) if names is None else list(names)
     return {key: source[key] for key in keys
             if source.get(key) is not None}
+
+
+def diagnostic_members(obj) -> dict:
+    """The ``diag/...`` members ALONE, for an object that holds a driver.
+
+    Split out of :func:`diagnostic_inventory` so a caller composing over a
+    DIFFERENT base -- ``gpuwm.core.streaming.diagnostic_inventory`` wraps
+    ``streaming_inventory``, which is the restart manifest rather than the
+    carrier manifest -- adds exactly the same members by exactly the same
+    naming, and the two cannot drift apart.  The naming's inverse is
+    :func:`_diagnostic_key`, which is what lets :func:`frame_plan` find a
+    scattered diagnostic without knowing this table.
+
+    Returns ``{}`` for a mapping (a store already holds its members under
+    their keys) and for an object with no driver.  Never allocates: a
+    producer slot that does not exist yet is simply absent, so the caller's
+    refusal can still fire rather than being papered over by a fresh array
+    of zeros that no step writes.
+    """
+    inner = getattr(obj, "arrays", None)
+    if isinstance(inner, dict):
+        obj = inner
+    if isinstance(obj, Mapping):
+        return {}
+    members: dict = {}
+    driver = getattr(obj, "physics", None)
+    for attr in physinv.OUTPUT_ONLY_DRIVER_ATTRS:
+        held = getattr(driver, attr, None)
+        if held is None:
+            continue
+        if isinstance(held, Mapping):
+            for key, item in held.items():
+                producer = _producer_array(obj, key)
+                if producer is not None:
+                    members[f"diag/{key}"] = producer
+                elif hasattr(item, "shape"):
+                    members[f"diag/{attr}/{key}"] = item
+        elif hasattr(held, "shape"):
+            members[f"diag/{attr}"] = held
+    return {key: value for key, value in members.items() if value is not None}
 
 
 def _producer_array(state, frame_name: str):
@@ -490,10 +531,33 @@ class StoreFrame:
     fields in place and returns the frame dict; the carriers in it are views
     of the store's own pinned pages unless ``overlap=True``, in which case
     they are copies the writer thread may hold while the solver runs on.
+
+    REFUSES A SHORT FRAME (``require_complete``, default on).  A plan with
+    unavailable driver-diagnostic rows describes a frame that is MISSING
+    rows a resident run of the same configuration writes, and until 2.2.0
+    this class published it anyway -- :meth:`fields` skipped those rows with
+    a comment, the writer took the short dict as its schema, and the file
+    validated, so the run reported forecast validity PASS and health
+    status_bits 0 with ``OLR`` simply absent.  MEASURED at the 2.2.0 cut:
+    a 438x350x49 streamed run through ``gpuwm go`` published 73 of the
+    resident run's 74 variables at both frames, with no error anywhere.
+    A missing output field is not a smaller frame, it is a wrong one, and
+    nothing downstream can tell it from a configuration that never asked
+    for the field.
+
+    The remedy is in the refusal because it is one call: list the
+    diagnostics in the run's ``inventory_fn`` (:func:`diagnostic_inventory`,
+    or :func:`gpuwm.core.streaming.diagnostic_inventory` composed over the
+    streaming manifest) and the ordinary gather/scatter carries them --
+    they are REBUILT rows, so the trajectory is bit-identical either way
+    and the only cost is 0.082 B/cell for ``OLR``.  ``require_complete =
+    False`` is for the benches that price exactly this trade
+    (``tilestream.test_io.case_diagnostic_sources``, whose whole output is
+    the list of unavailable rows) and never for a route that publishes.
     """
 
     def __init__(self, plan: FramePlan, store, setup, cfg, *,
-                 overlap: bool = False):
+                 overlap: bool = False, require_complete: bool = True):
         self.plan = plan
         self.cfg = cfg
         self.overlap = bool(overlap)
@@ -507,6 +571,23 @@ class StoreFrame:
                 f"the store does not carry {missing[:8]}, which this frame's "
                 "plan says are carriers -- the plan was taken from a "
                 "different configuration than the store was sized from")
+        unavailable = tuple(plan.unavailable)
+        if unavailable and require_complete:
+            raise ShortFrameRefused(
+                f"this frame plan cannot publish {list(unavailable)}, which "
+                "a resident run of the same configuration writes.  They are "
+                "output-only driver diagnostics "
+                f"({', '.join(plan.origin[n] for n in unavailable)}): the "
+                "transport neither gathers nor scatters them, so after a "
+                "sweep the tile buffer holds whatever the LAST tile wrote "
+                "and the store has nowhere to join the tiles' windows.  A "
+                "frame missing rows a resident run writes is not the same "
+                "frame, and writing it short is silent.\n"
+                "  remedy: carry them -- inventory_fn="
+                "gpuwm.core.streaming.diagnostic_inventory(base) -- which "
+                "costs 0.082 B/cell for OLR and leaves the trajectory "
+                "bit-identical, since every one of these rows is REBUILT "
+                "and nothing reads it back.")
         self._statics = setup.output_statics(self.nz, self.ny, self.nx)
         self._thb = np.asarray(setup.thb)
         self._pb = np.asarray(setup.pb)
@@ -579,7 +660,13 @@ class StoreFrame:
                 else:                                  # unreachable by _DERIVED_RULES
                     raise KeyError(f"no host rule for derived field {name}")
             else:
-                continue                # driver-diagnostic: reported, not faked
+                # driver-diagnostic, and UNREACHABLE for a frame built with
+                # require_complete (the default): __init__ refuses the plan
+                # rather than letting this skip publish a short frame, which
+                # is exactly how OLR went missing from every streamed run
+                # up to 2.2.0.  Reachable only for the benches that price
+                # the unavailable set on purpose.
+                continue
         return out
 
 

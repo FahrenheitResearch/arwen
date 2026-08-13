@@ -145,11 +145,46 @@ def halo_radius(cfg) -> int:
     were safe: at the START of a step every window cell holds the domain's
     own value, and a perturbation introduced partway through the step has
     strictly less than a full step left to travel.
+
+    A DIAGNOSTIC DOES WIDEN IT, WHICH PHYSICS DOES NOT (2.2.0)
+    ----------------------------------------------------------
+    Everything above is about the CARRIER set: what a step reads in order
+    to integrate the next one.  ``nwp_diagnostics = 1`` adds a consumer of
+    a different shape -- ``gpuwm.core.uh_diag`` evaluates ``UP_HELI_MAX``
+    in the dycore EPILOGUE from a horizontal stencil two cells wide
+    (vorticity radius 1, then the 9-point smoother's radius 1 on top of
+    it; :data:`gpuwm.core.uh_diag.UH_DIAGNOSTIC_HALO_CELLS`).  Physics adds
+    no horizontal reach because every scheme in this build is column-local.
+    This is not physics, and it reads its neighbours at the one instant in
+    the step when a tile's halo has already been eaten from the outside in
+    by that step's own dependency cone.
+
+    The prescribed 16 clears the measured minimum of 14 by exactly 2, so
+    the diagnostic consumes the whole margin and leaves none.  MEASURED at
+    the 2.2.0 cut on a 438x350x49 run at tile 200x200: 74 of 75 fields
+    bit-identical to the resident twin, and ``UP_HELI_MAX`` differing at
+    ONE cell -- ``(j=331, i=200)``, 1.16e-10, one float32 ULP, at exactly
+    the first interior column of the second tile, which is the signature
+    of a stencil reaching one cell past what the halo still guarantees.
+    The same configuration at halo 18 is bit-identical in all 75 fields at
+    every frame.
+
+    So the radius is widened by the diagnostic's own reach whenever the
+    diagnostic is on -- by default, with no flag to set: a run that emits
+    ``UP_HELI_MAX`` gets a correct one.  It changes no forecast, since the
+    trajectory is bit-exact for any halo at or above 14, and it costs 4
+    cells on each window axis (MEASURED on that run: 232x232 windows to
+    236x236, 6.61 GiB of VRAM to 6.71 GiB).
     """
     ns = int(cfg.time_step_sound)
     if ns % 2 != 0:
         raise ValueError(f"time_step_sound must be even, got {ns}")
-    return 10 + 3 * ns // 2
+    radius = 10 + 3 * ns // 2
+    if int(getattr(cfg, "nwp_diagnostics", 0) or 0):
+        from gpuwm.core.uh_diag import UH_DIAGNOSTIC_HALO_CELLS
+
+        radius += UH_DIAGNOSTIC_HALO_CELLS
+    return radius
 
 
 # --------------------------------------------------------------------------

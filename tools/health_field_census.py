@@ -545,6 +545,118 @@ def selectable_matrix(reference_cfg) -> tuple[Selection, ...]:
     return tuple(selections)
 
 
+#: The axes whose values INTERACT, so they must be swept against each other
+#: rather than one at a time.  Measured, not assumed: the recorded peak
+#: (632) needs sf_surface_physics=3, bl_pbl_physics=5 and
+#: sf_sfclay_physics=5 together -- RUC retains MYNN's fractional sea-ice
+#: surface-layer result for WRF's post-LSM blend, worth 31 descriptors that
+#: no one of the three carries alone.  See WORST_SELECTIONS in
+#: tests/test_health_field_census.py.
+COUPLED_AXES = ("sf_surface_physics", "bl_pbl_physics", "sf_sfclay_physics")
+
+#: The axes that do move the count but do not interact with the others.
+INDEPENDENT_AXES = ("mp_physics", "cu_physics", "km_opt")
+
+
+def neighbourhood_sample_matrix(reference_cfg, anchor):
+    """The peak's own neighbourhood: cheap enough to run on every merge.
+
+    WHY THIS EXISTS
+    ---------------
+    ``selectable_matrix`` is the whole cross-product -- 2,560 combinations
+    on the four-domain reference case -- and the 2026-08-13 test-estate
+    audit measured what that costs: **461 s**, against this file's own
+    docstring pricing it at "about 65 s".  It was the single most expensive
+    file in the battery and it ran on every merge.
+
+    WHAT WAS TRIED FIRST, AND WHY IT IS NOT WHAT THIS DOES
+    -----------------------------------------------------
+    The obvious reduction is one-axis-at-a-time: if a descriptor count were
+    a SUM of independent per-scheme contributions, the peak of the product
+    would be the product of the per-axis maxima, and 23 measurements would
+    replace 2,560.  That was implemented, measured, and **it is wrong on
+    this inventory**: the OAT sample predicts 527 on
+    ``mp18-lsm0-pbl0-sfclay0-cu0-km1`` and the real exhaustive peak is 632
+    on ``mp18-lsm3-pbl5-sfclay5-cu1-km1``.  The axes are not additive --
+    LSM, PBL and surface layer interact through the WRF pairing table.
+    Shipping the OAT version would have replaced a slow gate with a fast
+    gate that was quietly 105 descriptors optimistic.
+
+    WHAT THIS DOES INSTEAD
+    ----------------------
+    The three coupled axes are swept against each other in full, at the
+    ``anchor``'s values for the three that are not coupled; and those three
+    are then swept one at a time at the anchor's coupled values.  That is
+    ``4 x 5 x 4 + 8 + 2 + 2`` rather than ``8 x 4 x 5 x 4 x 2 x 2``: about
+    92 combinations instead of 2,560, and it rediscovers the 632 peak
+    rather than assuming it.
+
+    THE HONEST LIMIT, WHICH THE SLOW ARM COVERS
+    -------------------------------------------
+    This finds a peak that moves WITHIN the recorded peak's family.  It
+    cannot find a brand-new peak in some far corner of the product -- a
+    scheme that only becomes expensive beside a cumulus option this does
+    not vary, say.  That is what the exhaustive sweep is for, and it still
+    runs: behind the ``slow`` marker, at the cut, not on every merge.
+    """
+
+    full = selectable_matrix(reference_cfg)
+    selectable = set(full)
+    if anchor not in selectable:
+        raise ValueError(
+            f"anchor {anchor.key()} is not a selectable combination; the "
+            "recorded peak has left the matrix, which is itself the finding")
+
+    values = {}
+    for name in COUPLED_AXES + INDEPENDENT_AXES:
+        seen = []
+        for selection in full:
+            value = getattr(selection, name)
+            if value not in seen:
+                seen.append(value)
+        values[name] = seen
+
+    sample = [anchor]
+
+    def _add(candidate):
+        if candidate in selectable and candidate not in sample:
+            sample.append(candidate)
+
+    for lsm in values["sf_surface_physics"]:
+        for pbl in values["bl_pbl_physics"]:
+            for sfclay in values["sf_sfclay_physics"]:
+                _add(dataclasses.replace(
+                    anchor, sf_surface_physics=lsm, bl_pbl_physics=pbl,
+                    sf_sfclay_physics=sfclay))
+
+    for name in INDEPENDENT_AXES:
+        for value in values[name]:
+            _add(dataclasses.replace(anchor, **{name: value}))
+
+    return tuple(sample)
+
+
+def selection_from_key(key: str) -> "Selection":
+    """Parse ``mp18-lsm3-pbl5-sfclay5-cu1-km4`` back into a Selection."""
+
+    parts = dict(
+        mp_physics=None, sf_surface_physics=None, bl_pbl_physics=None,
+        sf_sfclay_physics=None, cu_physics=None, km_opt=None)
+    prefixes = (("mp", "mp_physics"), ("lsm", "sf_surface_physics"),
+                ("pbl", "bl_pbl_physics"), ("sfclay", "sf_sfclay_physics"),
+                ("cu", "cu_physics"), ("km", "km_opt"))
+    for token in key.split("-"):
+        for prefix, field in prefixes:
+            if token.startswith(prefix) and token[len(prefix):].isdigit():
+                if parts[field] is None:
+                    parts[field] = int(token[len(prefix):])
+                break
+    missing = [name for name, value in parts.items() if value is None]
+    if missing:
+        raise ValueError(f"{key!r} does not name {missing}")
+    return Selection(**parts)
+
+
 #: Exception types the production configuration/driver validators use to say
 #: "no user can run this".  Anything else escaping a measurement is a failure
 #: of the census and must not be filed as a refusal.
@@ -740,10 +852,25 @@ def main(argv=None) -> int:
                         help="emit the full census as JSON")
     parser.add_argument("--breakdown", action="store_true",
                         help="print the per-family descriptor breakdown")
+    parser.add_argument(
+        "--around", metavar="SELECTION",
+        help="measure only the neighbourhood of SELECTION (e.g. "
+             "mp18-lsm3-pbl5-sfclay5-cu1-km1) instead of the whole "
+             "cross-product: about 92 combinations rather than 2560.  See "
+             "neighbourhood_sample_matrix for what that does and does not "
+             "cover.")
     args = parser.parse_args(argv)
 
     install_host_array_backend()
-    census = experiment_census(args.config)
+    if args.around:
+        experiment = load_any_experiment(args.config)
+        anchor = selection_from_key(args.around)
+        sample = neighbourhood_sample_matrix(experiment.domains[0].run, anchor)
+        census = experiment_census(args.config, selections=sample)
+        census["sampled_around"] = anchor.key()
+    else:
+        census = experiment_census(args.config)
+        census["sampled_around"] = None
     if args.json:
         json.dump(census, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

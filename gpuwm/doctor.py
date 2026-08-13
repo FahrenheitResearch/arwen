@@ -872,14 +872,20 @@ def _fetch_backbone_check() -> Check:
                             for c in rustwx_fetch.fetch_candidates()) + ")")
         return Check(
             name, "info",
-            detail + " -- gpuwm fetch falls back to the Python transport",
+            detail + " -- gpuwm fetch falls back to the Python transport, "
+            "which has no whole-file branch: every object arrives as "
+            "hundreds of serial .idx range GETs, measured at 560 s for "
+            "one 419 MB HRRR file against 27-35 s for the same file "
+            "taken whole (~16x).  A run that pays it records "
+            "engine_selection='python-fallback' in its fetch manifest",
             bridges.install_aware_build_hint(
                 rustwx_fetch.CARGO_BUILD_HINT, "tools/rustwx")
             + "\n  # enables gpuwm fetch --engine rust: parallel range "
             "GETs,\n  # the cross-process NOMADS rate governor, and "
             "--mode full-file",
             action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
-            brief="not built; gpuwm fetch uses the Python transport",
+            brief="not built; gpuwm fetch pays a measured ~16x transport "
+                  "tax",
             group=_GROUP_ENGINES)
     ok, evidence = rustwx_fetch.probe_fetch_bin(found)
     if not ok:
@@ -1275,21 +1281,45 @@ def _cpu_library_check() -> Check:
             brief=f"not loadable as ABI v{CPU_BACKEND_ABI}",
             group=_GROUP_BRIDGES)
     path, abi = backend.path, backend.abi_version
+    indexed = backend.indexed_donor_interp
     backend.close()
     # The same library carries the dealiaser's coarse VAD search.  A
     # library built before that entry point existed still serves every
     # interpolation call, so this is a note on the line and not a second
     # verdict -- but it is the difference between a radar volume
     # dealiased in seconds and one dealiased in half a minute, and a
-    # user who cannot see which one they have cannot ask why.
+    # user who cannot see which one they have cannot ask why.  It is a
+    # note on BOTH verdicts below: the indexed-donor entry point and the
+    # VAD search are separate additions to the same library, and a
+    # reader told about one of them still has to be told about the other.
     from gpuwm.obs.coarse_cost import unavailable_reason
 
     reason = unavailable_reason()
     search = ("radar coarse VAD search: native"
               if reason is None else
               f"radar coarse VAD search: NumPy ({reason})")
+    if not indexed:
+        # A staged library can be older than the checkout driving it, and
+        # the ABI integer cannot say so: it describes the calls that
+        # already existed, and this one is an addition.  Absence is not a
+        # fault -- the projected route keeps its NumPy mirror and warns
+        # at the first plan -- but it is a whole preparation stage's
+        # worth of wall clock, so the estate report says it rather than
+        # calling the library simply "verified".
+        return Check(
+            "cpu preprocess library", "info",
+            f"{path} loaded via ctypes, ABI v{abi}, but without "
+            "gpuwm_indexed_interp_f32: projected-source horizontal "
+            "mapping falls back to the single-core NumPy mirror, which "
+            f"dominates nested preparation; {search}",
+            "# it has to be rebuilt from this checkout:\n" + remedy,
+            action=_build_action(),
+            brief="ABI v{0}, projected mapping on the NumPy mirror".format(
+                abi),
+            group=_GROUP_BRIDGES)
     return Check("cpu preprocess library", "verified",
-                 f"{path} loaded via ctypes, ABI v{abi}; {search}",
+                 f"{path} loaded via ctypes, ABI v{abi}, "
+                 f"indexed-donor horizontal entry present; {search}",
                  brief=f"ABI v{abi}", group=_GROUP_BRIDGES)
 
 

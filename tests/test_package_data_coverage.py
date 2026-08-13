@@ -117,6 +117,14 @@ _REDISTRIBUTED_WRF_DATA = frozenset({
 })
 
 
+def _build_system_requires() -> list[str]:
+    """What this project declares it needs in order to be built at all."""
+
+    with PYPROJECT.open("rb") as stream:
+        config = tomllib.load(stream)
+    return list(config.get("build-system", {}).get("requires", []))
+
+
 def _package_data_declaration() -> dict[str, list[str]]:
     with PYPROJECT.open("rb") as stream:
         config = tomllib.load(stream)
@@ -162,9 +170,46 @@ def _files_setuptools_would_ship(monkeypatch: pytest.MonkeyPatch) -> set[str]:
     ``build_py.get_data_files_without_manifest`` is the exact code path that
     populates a wheel, so this measures the declaration rather than trusting a
     private re-implementation of glob semantics.
+
+    An absent setuptools is a FAILURE here, not a skip.  It used to be
+    ``pytest.importorskip("setuptools")``, and the 2026-08-13 test-estate
+    audit measured the consequence: this file is on
+    ``tools/battery/stage1_files.txt`` and was **56% dark** on the assembly
+    venvs -- 4 passed, 5 skipped -- and the five that skipped are exactly
+    the wheel-content assertions the file exists for (every data file
+    declared, the exclusion lists, the renderer asset tree, the runtime
+    assets, the Thompson table).  That is the same class as the defect
+    ``fix(render): the map assets ship with the renderer that reads them``
+    closed, and a stage-1 entry cannot be allowed to report green while its
+    reason for existing is switched off.
+
+    A skip would be defensible if setuptools were optional.  It is not:
+    ``[build-system] requires`` in this project's own pyproject.toml names
+    ``setuptools>=77``, so any environment that can build this project has
+    it, and one that does not cannot answer the question this file asks.
+    The remedy is one line -- ``pip install setuptools`` -- and the message
+    below says so.
     """
 
-    setuptools = pytest.importorskip("setuptools")
+    try:
+        import setuptools
+    except ModuleNotFoundError as exc:      # pragma: no cover - env defect
+        requires = _build_system_requires()
+        assert any(r.replace("_", "-").lower().startswith("setuptools")
+                   for r in requires), (
+            "setuptools is absent AND [build-system] requires no longer names "
+            f"it ({requires}); this file's premise has changed, so decide "
+            "deliberately whether the wheel-content assertions still apply")
+        raise AssertionError(
+            "setuptools is not installed, so the five wheel-content "
+            "assertions in this file cannot run -- and this file is on "
+            "tools/battery/stage1_files.txt, where a silent skip reports "
+            f"green.  pyproject.toml's [build-system] requires {requires}, so "
+            "every environment that can build this project has it.  Remedy: "
+            "pip install setuptools (or install the project with "
+            "'pip install -e .[dev,render]' in a venv built with it)."
+        ) from exc
+
     from setuptools.command.build_py import build_py
 
     packages = _discover_packages()
@@ -189,6 +234,29 @@ def _files_setuptools_would_ship(monkeypatch: pytest.MonkeyPatch) -> set[str]:
         for name in filenames:
             shipped.add(Path(src_dir, name).as_posix())
     return shipped
+
+
+def test_the_wheel_content_assertions_cannot_go_dark_by_skipping() -> None:
+    """The premise behind refusing to skip on an absent setuptools.
+
+    The 2026-08-13 test-estate audit measured this file at 4 passed / 5
+    skipped on the assembly venvs, and the five that skipped are the whole
+    point of the file.  ``_files_setuptools_would_ship`` now raises instead,
+    which is only defensible while setuptools really is a build requirement
+    of this project rather than an optional extra.  This is that check: if
+    the build backend ever moves, the assertion below fails and whoever
+    moves it has to decide what these five assertions become, instead of
+    silently inheriting a skip.
+    """
+
+    requires = _build_system_requires()
+    assert requires, "pyproject.toml declares no [build-system] requires"
+    assert any(r.replace("_", "-").lower().startswith("setuptools")
+               for r in requires), (
+        f"[build-system] requires is {requires} and no longer names "
+        "setuptools, so 'every environment that can build this project has "
+        "setuptools' has stopped being true.  _files_setuptools_would_ship "
+        "raises on an absent setuptools on the strength of that sentence")
 
 
 def test_every_data_file_under_gpuwm_is_declared(

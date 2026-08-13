@@ -142,8 +142,15 @@ class History:
                 "History.capture was never called -- the frame plan can only "
                 "be read off the resident state build_stores releases")
         self.case = case
+        # require_complete=False, DECLARED.  This harness takes its plan off
+        # the resident state before build_stores releases it and its store
+        # is the carrier set, so the output-only driver diagnostics were
+        # never in it.  The PRODUCT route carries them
+        # (gpuwm.core.streaming.diagnostic_inventory) and StoreFrame refuses
+        # a short frame there by default; a harness that publishes one says
+        # so here rather than being quietly exempt.
         self._frame = tsout.StoreFrame(self.plan, case.store, self.setup,
-                                       self.cfg)
+                                       self.cfg, require_complete=False)
 
     # -- one frame ------------------------------------------------------
 

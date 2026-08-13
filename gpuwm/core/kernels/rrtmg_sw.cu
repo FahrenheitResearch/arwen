@@ -3,13 +3,15 @@
 // against the same Fortran fixtures.
 //
 // Numerics discipline (follows the Noah-MP lanes of this project):
-//   * FP32 add/sub/mul go through the AD/SU/MU macros onto rsw_add/rsw_sub/
-//     rsw_mul, and division/sqrt onto __fdiv_rn/__fsqrt_rn, so NVRTC's
-//     default --fmad=true cannot fuse a bit.  The __f*_rn intrinsics do NOT
-//     opt out of CuPy's appended -ftz: under it they compile to .rn.ftz and
-//     flush like any other FP32 instruction, which is why the flush-sensitive
-//     arithmetic is on the rsw_ helpers and only div/sqrt -- whose operands
-//     the INVARIANT below keeps non-subnormal -- stay on bare intrinsics;
+//   * FP32 add/sub/mul go through the AD/SU/MU macros onto the inline-PTX
+//     rsw_rn_add/rsw_rn_sub/rsw_rn_mul, and division/sqrt onto
+//     __fdiv_rn/__fsqrt_rn, so NVRTC's default --fmad=true cannot fuse a
+//     bit.  The __f*_rn intrinsics do NOT opt out of CuPy's appended -ftz:
+//     under it they compile to .rn.ftz and flush like any other FP32
+//     instruction, which is why the flush-sensitive arithmetic is written
+//     as PTX without the .ftz modifier -- the one mechanism this compile
+//     route cannot reach -- and only div/sqrt, whose operands the INVARIANT
+//     below keeps non-subnormal, stay on bare intrinsics;
 //   * FP64 intermediates inside the glibc transcriptions go through
 //     __dadd_rn/__dsub_rn/__dmul_rn for the same reason;
 //   * double -> float conversions in the libm use rsw_d2f_rn, because
@@ -45,32 +47,74 @@
 // (and, as before, levels/g-points as independent work items), never a
 // reduction.
 
-// This unit is compiled through cp.RawModule (gpuwm/core/rrtmg_sw.py
-// SECTION 10), and CuPy appends -ftz=true after the caller's options, so the
-// compiler honours the last occurrence and flushes FP32 subnormals in EVERY
-// arithmetic instruction it emits here - even __fadd_rn(x, 0.0f), and it
-// synthesises a flush around cvt.f64.f32, which has none of its own.  It is
-// the flag and not the SM: built without the append, the same source keeps
-// full IEEE subnormals on this card (per-route measurements in
-// tools/ftz_receipt/receipt/receipt.json), so a compile-route change would
-// move these numbers and is not a cleanup.  Meanwhile gfortran on x86-64
-// (MXCSR FTZ/DAZ clear) keeps full IEEE subnormal semantics, and this
-// chain really produces subnormals (exp_tbl floors at 1e-20,
-// so two clamped layers give a 1e-40 transmittance product).  FP32 add/sub/
-// mul are therefore emulated through exact FP64: the product of two
-// binary32 values is exact in binary64 (48 <= 53 bits), and for sums the
-// double result converts to the same binary32 as single rounding would for
-// every operand pair (when the exact sum does not fit binary64 the operand
-// magnitudes differ by > 2^53, far beyond the 2^25 half-ulp threshold, so
-// both roundings return the larger operand).  rsw_f2d decodes subnormal
-// inputs from bits (the cvt the compiler emits here DAZes them); rsw_d2f_rn
-// encodes subnormal results (from the Noah-MP lane; on this compile route
-// __double2float_rn flushes them).  Division and
-// sqrt keep the hardware correctly-rounded instructions: no division in
-// this chain sees or produces a subnormal (inputs are floored by exp_tbl's
-// 1e-20 clamp or normal-scale physics), and FP64 emulation of division
-// would introduce a genuine double-rounding hazard.  Equality-with-zero
-// tests on flush-sensitive quantities use bitwise EQ0.
+// FP32 subnormals are flush-sensitive here in a way that depends on how
+// this unit gets compiled, which is why the arithmetic does not rely on
+// that.  tools/ftz_receipt/receipt/receipt.json measures six arithmetic
+// mechanisms across five compile routes on this silicon:
+//   * through cp.RawModule (routes R1, R2, R4) CuPy appends -ftz=true after
+//     the caller's options and EVERY compiler-emitted FP32 instruction
+//     flushes -- even __fadd_rn(x, 0.0f) -- and a flush is synthesised
+//     around cvt.f64.f32, which has none of its own.  R2 is this unit's own
+//     option tuple: its --ftz=false loses to the append, and its cubin
+//     hashes byte-equal to a plain -ftz=true build;
+//   * through compile_using_nvrtc + cuda.function.Module (route R3) CuPy
+//     injects nothing, --ftz=false survives, and the same mechanisms score
+//     ieee-agreement;
+//   * inline PTX written WITHOUT the .ftz modifier (route R5) scores
+//     ieee-agreement even while riding a module that carries the append.
+// It is the flag and not the SM.
+//
+// gpuwm/core/rrtmg_sw.py takes route R3 today, so as it stands a plain
+// __fmul_rn here would keep its subnormals.  That is not something to build
+// a numerics contract on: the unit was on route R1/R2 until NVRTC 13 began
+// rejecting the duplicated flag and forced the bypass, and any future move
+// back -- or any caller that wraps this source in a RawModule -- would
+// reintroduce the flush silently, with no test failing at the seam.  R5 is
+// the only mechanism that is correct under every route, so the arithmetic
+// is written as PTX and the compile route is left as a performance and
+// tooling choice rather than a correctness one.
+//
+// This matters because gfortran on x86-64 (MXCSR FTZ/DAZ clear) keeps full
+// IEEE subnormal semantics and this chain really produces subnormals:
+// exp_tbl floors at 1e-20, so two clamped layers give a 1e-40 transmittance
+// product.  Measured by tools/rrtmg_sw_witness over a diurnal batch:
+// 1,659,113 subnormal results and 2,166,356 subnormal operands in
+// 304,204,382 macro calls, all of them inside rsw_reftra / rsw_vrtqdr /
+// rsw_spcvmc_body / rsw_spc_accum_body -- the direct-beam transmittance
+// chain and what consumes it.  setcoef, taumol, cldprmc, sfluxzen, inatm
+// and post witness none.
+//
+// FP32 add/sub/mul are therefore written as add.rn.f32 / sub.rn.f32 /
+// mul.rn.f32 without .ftz: one instruction each, full IEEE gradual
+// underflow, and immune to the option tuple.  This is the same idiom
+// dycore.cu / acoustic.cu / mynn_pbl.cu already use for their own
+// rounding-tree discipline.
+//
+// Until the 2.1.x radiation-armor lane these three macros instead ran an
+// FP64 EMULATION -- rsw_add/rsw_sub/rsw_mul below, retained verbatim as the
+// reference semantics and as the witness build's cross-check arm.  They are
+// exactly equal to the PTX, not merely close: the product of two binary32
+// values is exact in binary64 (48 <= 53 bits, and 2^-149 squared is still a
+// binary64 normal), and for sums 53 >= 2*24 + 2 makes the second rounding
+// provably innocuous (Figueroa), while a sum landing in the binary32
+// subnormal range is a multiple of 2^-149 below 2^-126 and so needs at most
+// 24 bits, i.e. is itself exact in binary64.  So both arms are the
+// correctly-rounded binary32 operation with gradual underflow, which is the
+// definition of the unflushed .rn instruction.  tests/
+// test_rrtmg_sw_rn_identity.py proves that equality on the CPU over the
+// structured, exhaustive-low-order and cancellation sweeps; the witness
+// build proves it again on-card over every value a real case produces; and
+// the max_ulp-0 oracle and batched gates re-prove the unit end to end.
+// rsw_f2d decodes subnormal inputs from bits (the cvt the compiler emits
+// here DAZes them); rsw_d2f_rn encodes subnormal results (from the Noah-MP
+// lane; on this compile route __double2float_rn flushes them) and is still
+// live on the shipped path as the libm transcriptions' return conversion.
+//
+// Division and sqrt keep the hardware correctly-rounded instructions: no
+// division in this chain sees or produces a subnormal (inputs are floored
+// by exp_tbl's 1e-20 clamp or normal-scale physics), and FP64 emulation of
+// division would introduce a genuine double-rounding hazard.  Equality-with
+// -zero tests on flush-sensitive quantities use bitwise EQ0.
 //
 // INVARIANT (SW-audit item, load-bearing for the raw div/sqrt choice):
 // because division and sqrt stay on the hardware __fdiv_rn/__fsqrt_rn,
@@ -114,6 +158,9 @@ __device__ float rsw_d2f_rn(double y)
     return __double2float_rn(y);
 }
 
+// The FP64 emulation.  No longer on the hot path; kept as the written
+// reference semantics for the paragraph above, and compiled into the
+// witness build as the cross-check arm.
 __device__ real rsw_add(real a, real b)
 { return rsw_d2f_rn(__dadd_rn(rsw_f2d(a), rsw_f2d(b))); }
 __device__ real rsw_sub(real a, real b)
@@ -121,9 +168,107 @@ __device__ real rsw_sub(real a, real b)
 __device__ real rsw_mul(real a, real b)
 { return rsw_d2f_rn(__dmul_rn(rsw_f2d(a), rsw_f2d(b))); }
 
-#define AD(a, b) rsw_add((a), (b))
-#define SU(a, b) rsw_sub((a), (b))
-#define MU(a, b) rsw_mul((a), (b))
+// The shipped path: correctly-rounded binary32, gradual underflow intact,
+// one instruction.  Written as PTX because that is the only mechanism this
+// compile route's appended -ftz=true cannot reach (receipt route R5).
+static __device__ __forceinline__ real rsw_rn_add(real a, real b)
+{
+    real r;
+    asm("add.rn.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+
+static __device__ __forceinline__ real rsw_rn_sub(real a, real b)
+{
+    real r;
+    asm("sub.rn.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+
+static __device__ __forceinline__ real rsw_rn_mul(real a, real b)
+{
+    real r;
+    asm("mul.rn.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+
+#ifdef RSW_WITNESS
+// ---------------------------------------------------------------------------
+// Witness build (tools/rrtmg_sw_witness).  NEVER defined on the shipped
+// path.  Every AD/SU/MU site reports into a __device__ counter array keyed
+// by its own __LINE__, so the census needs no hand-maintained site list:
+//
+//   slot 0  calls
+//   slot 1  calls with a subnormal OPERAND (what DAZ would destroy)
+//   slot 2  calls with a subnormal RESULT  (what FTZ would destroy)
+//   slot 3  calls where the PTX arm and the FP64-emulation arm disagree
+//
+// Slot 3 is the on-card half of the bit-identity proof: it runs both arms
+// on every operand pair a real case produces and counts mismatches, which
+// must be zero.  The macros take their arguments as function parameters, so
+// each is evaluated exactly once and nested macro sites are not double
+// counted.
+// ---------------------------------------------------------------------------
+#ifndef RSW_WITNESS_LINES
+#define RSW_WITNESS_LINES 4096
+#endif
+// Caller-allocated so readback is an ordinary device-array copy and the
+// probe needs no global-symbol API from whichever module wrapper is in use.
+__device__ unsigned long long* rsw_wit;
+
+extern "C" __global__ void rsw_witness_bind(unsigned long long* p)
+{ rsw_wit = p; }
+
+static __device__ __forceinline__ bool rsw_is_subnormal(real x)
+{
+    unsigned int u = __float_as_uint(x) & 0x7fffffffu;
+    return (u != 0u) && (u < 0x00800000u);
+}
+
+// Instrument self-test.  A zero mismatch count is only evidence if a
+// nonzero one is reachable, so this arm damages the cross-check's REFERENCE
+// side in the one way that matters -- flushing its subnormal results, which
+// is exactly what an unarmored build would do -- and the census must then
+// report mismatches equal to its own subnormal-result count.  Compile with
+// -DRSW_WITNESS -DRSW_WITNESS_SELFTEST; the shipped path defines neither.
+static __device__ __forceinline__ real rsw_wit_ref(real x)
+{
+#ifdef RSW_WITNESS_SELFTEST
+    return rsw_is_subnormal(x) ? (__float_as_uint(x) & 0x80000000u
+                                  ? -0.0f : 0.0f) : x;
+#else
+    return x;
+#endif
+}
+
+static __device__ __forceinline__
+real rsw_wit_note(real ptx, real emu, real a, real b, int line)
+{
+    emu = rsw_wit_ref(emu);
+    unsigned long long* s = &rsw_wit[(line & (RSW_WITNESS_LINES - 1)) * 4];
+    atomicAdd(s + 0, 1ULL);
+    if (rsw_is_subnormal(a) || rsw_is_subnormal(b)) atomicAdd(s + 1, 1ULL);
+    if (rsw_is_subnormal(ptx)) atomicAdd(s + 2, 1ULL);
+    if (__float_as_uint(ptx) != __float_as_uint(emu) &&
+        !(isnan(ptx) && isnan(emu))) atomicAdd(s + 3, 1ULL);
+    return ptx;
+}
+
+static __device__ __forceinline__ real rsw_wit_add(real a, real b, int line)
+{ return rsw_wit_note(rsw_rn_add(a, b), rsw_add(a, b), a, b, line); }
+static __device__ __forceinline__ real rsw_wit_sub(real a, real b, int line)
+{ return rsw_wit_note(rsw_rn_sub(a, b), rsw_sub(a, b), a, b, line); }
+static __device__ __forceinline__ real rsw_wit_mul(real a, real b, int line)
+{ return rsw_wit_note(rsw_rn_mul(a, b), rsw_mul(a, b), a, b, line); }
+
+#define AD(a, b) rsw_wit_add((a), (b), __LINE__)
+#define SU(a, b) rsw_wit_sub((a), (b), __LINE__)
+#define MU(a, b) rsw_wit_mul((a), (b), __LINE__)
+#else
+#define AD(a, b) rsw_rn_add((a), (b))
+#define SU(a, b) rsw_rn_sub((a), (b))
+#define MU(a, b) rsw_rn_mul((a), (b))
+#endif
 #define DV(a, b) __fdiv_rn((a), (b))
 #define DAD(a, b) __dadd_rn((a), (b))
 #define DSU(a, b) __dsub_rn((a), (b))

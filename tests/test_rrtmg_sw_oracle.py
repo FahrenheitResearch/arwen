@@ -14,6 +14,16 @@ import pytest
 
 from gpuwm.core import rrtmg_sw as sw
 
+#: TIER C, weekly.  48 s measured on this branch (the 2026-08-13 test-estate
+#: audit read 31 s on a shared box).  This is an exhaustive sweep over frozen
+#: bit-exact oracle fixtures: the class the audit measured as carrying the
+#: test mass and almost none of the defects, because a pin against an oracle
+#: that cannot drift does not go red on legitimate growth.  Nothing here is
+#: deselected from a CUT -- `slow` is a cadence, not a deletion -- it is
+#: deselected from the per-merge tier, where 48 s buys a re-proof of arithmetic
+#: that was frozen when it landed.  Run it with `-m slow`, or run the file.
+pytestmark = pytest.mark.slow
+
 FIXDIR = Path(__file__).resolve().parents[1] / "tools" / "rrtmg_wrf461_oracle" / "sw_fixtures"
 
 _FIX_FILES = ("fixtures_real.npz", "fixtures_synth.npz")

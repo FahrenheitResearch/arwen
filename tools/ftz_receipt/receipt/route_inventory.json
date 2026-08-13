@@ -9,13 +9,13 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 63,
+  "site_count": 64,
   "site_count_by_kind": {
     "cupy.ElementwiseKernel": 3,
     "cupy.RawKernel": 1,
     "cupy.RawModule": 45,
     "cupy.ReductionKernel": 5,
-    "cupy.cuda.compiler.compile_using_nvrtc": 9
+    "cupy.cuda.compiler.compile_using_nvrtc": 10
   },
   "site_count_by_surface": {
     "other": {
@@ -36,7 +36,7 @@
     "tools": {
       "cupy.RawModule": 5,
       "cupy.ReductionKernel": 2,
-      "cupy.cuda.compiler.compile_using_nvrtc": 2
+      "cupy.cuda.compiler.compile_using_nvrtc": 3
     }
   },
   "distinct_literal_option_tuples": [
@@ -693,7 +693,7 @@
     },
     {
       "file": "tests/test_noahmp_sflx_cuda.py",
-      "line": 172,
+      "line": 136,
       "column": 11,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -789,7 +789,7 @@
     },
     {
       "file": "tests/test_noahmp_water_cuda.py",
-      "line": 418,
+      "line": 349,
       "column": 10,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -809,7 +809,7 @@
     },
     {
       "file": "tests/test_noahmp_water_cuda.py",
-      "line": 475,
+      "line": 406,
       "column": 15,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -829,7 +829,7 @@
     },
     {
       "file": "tests/test_noahmp_water_cuda.py",
-      "line": 477,
+      "line": 408,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -1242,6 +1242,22 @@
       "options_element_expressions": null,
       "options_are_literal": false,
       "text": "mod = cp.RawModule(code=src, backend=\"nvrtc\", options=tuple(opts))"
+    },
+    {
+      "file": "tools/rrtmg_sw_witness/probe.py",
+      "line": 199,
+      "column": 13,
+      "surface": "tools",
+      "constructor": "cc.compile_using_nvrtc",
+      "constructor_kind": "cupy.cuda.compiler.compile_using_nvrtc",
+      "enclosing": "main",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "tuple(opts)",
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "ptx, _ = cc.compile_using_nvrtc(code, tuple(opts), None, \"rrtmg_sw.cu\")"
     }
   ]
 }

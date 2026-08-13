@@ -31,7 +31,9 @@ it had nothing to do with.
 
 from __future__ import annotations
 
+import functools
 import pathlib
+import re
 import subprocess
 import sys
 import warnings
@@ -42,6 +44,13 @@ from conftest import _cupy_scope, _imports_cupy
 
 _TESTS = pathlib.Path(__file__).resolve().parent
 _ROOT = _TESTS.parent
+
+#: pytest's own way of saying the collection is incomplete: an ``ERROR``
+#: header line, or the ``N errors`` count in the terminal summary.  Anchored,
+#: because "error" occurs inside legitimate node ids all over this tree.
+_ERRORS_IN_COLLECTION = re.compile(
+    r"^(?:ERROR\b|E\s+ImportError)|^!+ Interrupted.*error|\b\d+ errors?\b",
+    re.MULTILINE)
 
 
 def _cupy_modules() -> list[pathlib.Path]:
@@ -95,9 +104,79 @@ def _collect(path: pathlib.Path, selection: str | None) -> set[str]:
     return ids
 
 
-def _node_ids(selection: str, path: pathlib.Path) -> set[str]:
-    """Test ids pytest would select from one file under one ``-m`` filter."""
-    return _collect(path, selection)
+@functools.lru_cache(maxsize=None)
+def _tree_collect(selection: str | None) -> dict[str, frozenset[str]] | None:
+    """One whole-tree collection, grouped by file: ``{name: {test ids}}``.
+
+    WHY THIS IS ONE SUBPROCESS AND NOT NINETY
+    -----------------------------------------
+    This file used to spawn ``pytest --collect-only`` once per
+    cupy-importing module per selection -- about 260 subprocesses.  The
+    2026-08-13 test-estate audit priced it at 266 s and named it the second
+    most expensive file in the battery; re-measured on this branch it is
+    **311 s on the Windows cut box** (process spawn is dearer there) and
+    122 s on a Linux node.  pytest can collect the whole tree in one pass
+    and the answers are identical, because a ``-m`` selection is applied per
+    item, not per invocation.
+
+    Returns ``None`` when the whole-tree collection cannot be trusted, in
+    which case every caller falls back to the per-file subprocess.  That
+    fallback is not decoration: a single module that raises at import turns
+    a whole-tree collect into a partial answer, and a partial answer read as
+    a complete one is exactly the vacuous green this file exists to prevent.
+    """
+
+    command = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
+               "--collect-only", "-q"]
+    if selection is not None:
+        command += ["-m", selection]
+    command.append(str(_TESTS))
+    proc = subprocess.run(
+        command, capture_output=True, text=True, cwd=str(_ROOT),
+        env={**_environ(), "PYTHONPATH": str(_ROOT)})
+    if proc.returncode not in (0, 5):
+        return None
+    # A collection ERROR is reported in the summary while OTHER files still
+    # collect, so rc alone does not say the answer is complete.  Silently
+    # keeping a partial result would under-report every file that failed to
+    # import, and an under-report here reads as "no leaking tests" -- the
+    # vacuous green this file exists to prevent.  Fall back instead.
+    #
+    # Matched precisely, on the summary line pytest actually writes.  A
+    # substring search for "error" anywhere in stdout was tried and is
+    # useless: node ids contain the word (test_..._error..., k_sflx_error),
+    # so it tripped on every run and this optimisation silently did nothing
+    # -- 311 s became 296 s instead of 30 s, which is how it was caught.
+    if _ERRORS_IN_COLLECTION.search(proc.stdout):
+        return None
+
+    by_file: dict[str, set[str]] = {}
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if "::" not in line or line.startswith(("<", "=")):
+            continue
+        location, _, rest = line.partition("::")
+        name = pathlib.PurePath(location).name
+        if not name.startswith("test_") or not name.endswith(".py"):
+            continue
+        by_file.setdefault(name, set()).add(rest.split("::")[0].split("[")[0])
+    if not by_file:
+        return None
+    return {name: frozenset(ids) for name, ids in by_file.items()}
+
+
+def _node_ids(selection: str | None, path: pathlib.Path) -> set[str]:
+    """Test ids pytest would select from one file under one ``-m`` filter.
+
+    Served from the single whole-tree collection when that succeeded, and
+    from this file's original one-subprocess-per-file path when it did not.
+    Both routes answer the same question; only the cost differs.
+    """
+
+    tree = _tree_collect(selection)
+    if tree is None:
+        return _collect(path, selection)
+    return set(tree.get(path.name, frozenset()))
 
 
 def test_no_device_touching_test_survives_the_not_gpu_selection():
@@ -143,7 +222,7 @@ def test_every_device_touching_test_is_selected_under_m_gpu():
     for path in _cupy_modules():
         whole, functions = _cupy_scope(str(path))
         selected = _node_ids("gpu", path)
-        if not selected and not _collect(path, None):
+        if not selected and not _node_ids(None, path):
             unanswerable.append(path.name)
             continue
         if whole:

@@ -137,6 +137,57 @@ HRRR_TRANSPORTS = ("auto", "nomads", "s3")
 #: when it is built and the Python transport when it is not.
 FETCH_ENGINES = ("auto", "rust", "python")
 
+#: HOW the downloader in a receipt was chosen, which ``engine`` alone
+#: cannot say.  ``engine: "python"`` covers two different situations --
+#: an operator who asked for the stdlib transport, and an install that
+#: inherited it because the backbone was not there -- and only the
+#: second one is a measured tax somebody would want to see in a
+#: receipt after a slow run.  So the receipt carries both fields.
+#:
+#: This is deliberately NOT called ``transport``: on this front door
+#: ``--transport`` already names the HOST (nomads or s3), a separate
+#: axis, and a second meaning for the word in the same document would
+#: be worse than a longer key.
+FETCH_ENGINE_SELECTIONS = ("rust", "python-requested", "python-fallback")
+PYTHON_FALLBACK_SELECTION = "python-fallback"
+
+#: The one sentence an install gets when it inherits the slow transport.
+#: One line, at SELECTION time, so every caller of the front door says it
+#: -- the HRRR command said something like it and the GFS full-file
+#: command, the streamer's preflight and every library caller said
+#: nothing at all.
+_PYTHON_TRANSPORT_TAX = (
+    "gpuwm fetch is using the Python transport ({reason}).  It has no "
+    "whole-file branch: every object is pulled as hundreds of serial "
+    ".idx range GETs, measured at 560 s for one 419 MB HRRR file "
+    "against 27-35 s for the same file taken whole through the rust "
+    "backbone -- roughly a 16x tax.  Install the bridges bundle "
+    "(`gpuwm setup`, or `gpuwm fetch-bridges`) to get the fast path.")
+
+_PYTHON_TRANSPORT_TAX_WHY = (
+    "The Python transport is the always-available fallback and it is "
+    "correct; it is simply the slow one, and an install should not "
+    "discover that after the download rather than before it.  On NOMADS "
+    "it is worse than 16x: the cross-process rate governor allows one "
+    "worker per NOMADS URL with a 2.5 s minimum interval, so the "
+    "degraded path is one thread pausing between every range request.  "
+    "The receipt records engine_selection='python-fallback' so a run "
+    "that paid this can be recognised afterwards without guessing.")
+
+
+@dataclass(frozen=True)
+class FetchEngineChoice:
+    """Which downloader was chosen, and whether anybody chose it."""
+
+    engine: str
+    binary: Path | None
+    selection: str
+    reason: str | None = None
+
+    @property
+    def degraded(self) -> bool:
+        return self.selection == PYTHON_FALLBACK_SELECTION
+
 #: ``--transport`` picks the *host*; ``--mode`` picks the *byte
 #: transport*, which is a separate axis: whether to pull the whole
 #: object or only the ``.idx``-selected byte ranges out of it.  ``auto``
@@ -1128,6 +1179,27 @@ def check_prior_request(out: Path, *, source: str, cycle: datetime,
             "manifest."))
 
 
+def _engine_selection(engine: str, selection: str | None) -> str:
+    """How the downloader was chosen, for a caller that did not say.
+
+    A caller that resolved the engine through
+    :func:`select_fetch_engine` passes the answer.  A caller that
+    resolved it some other way -- a library, a test, an older script --
+    gets the honest default: rust was found, or python was named.  It
+    never guesses "python-fallback", because claiming a degrade that did
+    not happen would make the field useless for the one thing it exists
+    to answer.
+    """
+
+    if selection is not None:
+        if selection not in FETCH_ENGINE_SELECTIONS:
+            raise ValueError(
+                f"unknown engine selection {selection!r}; expected one of "
+                f"{FETCH_ENGINE_SELECTIONS}")
+        return selection
+    return "rust" if engine == "rust" else "python-requested"
+
+
 def _manifest_payload(*, source: str, cycle: datetime,
                       hours: tuple[int, ...], area: Area | None,
                       files: list[dict]) -> dict:
@@ -1421,6 +1493,9 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
             payload["longitude_span_amplification"] = (
                 longitude_amplification)
         payload["engine"] = "python"
+        # Not a degrade: the CGI subset route has no rust transport to
+        # fall back FROM, so nobody inherited anything here.
+        payload["engine_selection"] = "python-requested"
         payload["mode"] = "nomads-cgi-subset"
         payload["record_bars"] = [bar.as_manifest()]
         # The ladder is request state, not a constant, so the receipt
@@ -1614,6 +1689,7 @@ def fetch_gfs_fullfile(*, cycle: datetime, hours: tuple[int, ...],
                        area: Area | None, out: Path, progress=print,
                        force: bool = False, source: str = "gfs",
                        engine: str = "python", engine_bin: Path | None = None,
+                       engine_selection: str | None = None,
                        cache_dir: Path | None = None,
                        top_pressure_pa: float | None = None,
                        all_levels: bool = False,
@@ -1636,6 +1712,7 @@ def fetch_gfs_fullfile(*, cycle: datetime, hours: tuple[int, ...],
         return _fetch_gfs_fullfile_locked(
             cycle=cycle, hours=hours, area=area, out=out, progress=progress,
             force=force, source=source, engine=engine, engine_bin=engine_bin,
+            engine_selection=engine_selection,
             cache_dir=cache_dir, top_pressure_pa=top_pressure_pa,
             all_levels=all_levels, available_levels=available_levels)
 
@@ -1644,6 +1721,7 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
                                area: Area | None, out: Path, progress,
                                force: bool, source: str, engine: str,
                                engine_bin: Path | None,
+                               engine_selection: str | None,
                                cache_dir: Path | None,
                                top_pressure_pa: float | None,
                                all_levels: bool,
@@ -1728,6 +1806,8 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
             "gfs_grib2_bridge with its scan-order flip and the SOILW "
             "missing-value matched pair); no area crop is involved")
         payload["engine"] = engine
+        payload["engine_selection"] = _engine_selection(
+            engine, engine_selection)
         payload["mode"] = "full-file"
         payload["transport"] = "s3"
         # The decode ladder this request declares; the front-door
@@ -2365,21 +2445,40 @@ def _force_quarantine_output(out: Path, progress, label: str) -> list[str]:
     return moved
 
 
-def resolve_fetch_engine(requested: str, *, progress=print
-                         ) -> tuple[str, Path | None]:
-    """Resolve ``--engine`` to ``('rust', binary)`` or ``('python', None)``.
+def _degrade_to_python_transport(reason: str) -> FetchEngineChoice:
+    """Say the tax out loud, once per degrade, and record it."""
 
-    ``rust`` is explicit and fails loudly when the backbone is not
-    built; ``auto`` prefers it silently when it is there and falls
-    through to the Python transport with one line of explanation when it
-    is not.  ``python`` never looks.
+    explain.warn(_PYTHON_TRANSPORT_TAX.format(reason=reason),
+                 _PYTHON_TRANSPORT_TAX_WHY)
+    return FetchEngineChoice(
+        "python", None, PYTHON_FALLBACK_SELECTION, reason)
+
+
+def select_fetch_engine(requested: str, *, progress=print
+                        ) -> FetchEngineChoice:
+    """Resolve ``--engine``, and say when the answer was not asked for.
+
+    ``rust`` is explicit and fails loudly when the backbone is not built;
+    ``python`` never looks; ``auto`` prefers the backbone and falls
+    through to the Python transport when it is absent or unusable.
+
+    That fall-through used to be silent on the missing-binary branch --
+    the branch an ordinary install without the bridges bundle takes every
+    time.  It is the expensive one: the Python transport has no
+    whole-file mode at all, so degrading also silently converts a
+    whole-file request into idx subsetting, and the source has carried
+    the measurement of that difference (16x) since before this warning
+    existed.  Under warn-not-block it is still not a refusal: the
+    transport is correct, the run continues, and the reader is told what
+    it costs and how to stop paying it before the bytes move rather than
+    after.
     """
 
     if requested not in FETCH_ENGINES:
         raise ValueError(f"unknown fetch engine {requested!r}; expected one "
                          f"of {FETCH_ENGINES}")
     if requested == "python":
-        return "python", None
+        return FetchEngineChoice("python", None, "python-requested")
 
     from gpuwm import rustwx_fetch
 
@@ -2389,15 +2488,30 @@ def resolve_fetch_engine(requested: str, *, progress=print
             raise ValueError(
                 "--engine rust needs the vendored fetch backbone, which is "
                 f"not built.\n  {rustwx_fetch.fetch_remedy()}")
-        return "python", None
+        return _degrade_to_python_transport(
+            "the vendored rw_fetch backbone is not installed")
     ok, evidence = rustwx_fetch.probe_fetch_bin(binary)
     if not ok:
         if requested == "rust":
             raise ValueError(f"--engine rust: {binary} -- {evidence}")
         progress(f"fetch: the rust backbone at {binary} is unusable "
                  f"({evidence}); using the Python transport")
-        return "python", None
-    return "rust", binary
+        return _degrade_to_python_transport(
+            f"the rust backbone at {binary} is unusable ({evidence})")
+    return FetchEngineChoice("rust", binary, "rust")
+
+
+def resolve_fetch_engine(requested: str, *, progress=print
+                         ) -> tuple[str, Path | None]:
+    """``select_fetch_engine`` for the callers that only want the pair.
+
+    Kept at its original arity on purpose: widening it would break every
+    two-value unpack in and outside this repository for a field the
+    receipt writers reach through :func:`select_fetch_engine` anyway.
+    """
+
+    choice = select_fetch_engine(requested, progress=progress)
+    return choice.engine, choice.binary
 
 
 def _rw_fetch_hrrr(*, binary: Path, cycle: datetime, hour: int, kind: str,
@@ -2666,6 +2780,7 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
                probe=None, sleeper=time.sleep,
                clock=time.monotonic,
                engine: str = "python", engine_bin: Path | None = None,
+               engine_selection: str | None = None,
                mode: str = "auto", cache_dir: Path | None = None,
                accept_inventory_change: bool = False,
                transport_fallback: tuple[str, ...] = ()) -> Path:
@@ -2685,7 +2800,8 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
             retries=retries, progress=progress, force=force,
             transport=transport, wait=wait, wait_timeout_s=wait_timeout_s,
             probe=probe, sleeper=sleeper, clock=clock, engine=engine,
-            engine_bin=engine_bin, mode=mode, cache_dir=cache_dir,
+            engine_bin=engine_bin, engine_selection=engine_selection,
+            mode=mode, cache_dir=cache_dir,
             accept_inventory_change=accept_inventory_change,
             transport_fallback=transport_fallback)
 
@@ -2701,6 +2817,7 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                        clock=time.monotonic,
                        engine: str = "python",
                        engine_bin: Path | None = None,
+                       engine_selection: str | None = None,
                        mode: str = "auto", cache_dir: Path | None = None,
                        accept_inventory_change: bool = False,
                        transport_fallback: tuple[str, ...] = ()) -> Path:
@@ -2838,6 +2955,8 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
             "serve byte-identical files, so per-file transports may mix "
             "across resumed runs without weakening the digest bars")
         payload["engine"] = engine
+        payload["engine_selection"] = _engine_selection(
+            engine, engine_selection)
         payload["mode"] = mode
         payload["record_bars"] = [
             bar.as_manifest() for bar in bars.values()]
@@ -3562,10 +3681,13 @@ def fetch_main(args) -> int:
                             "other would publish a manifest mixing two "
                             "requests' bytes."))
             if gfs_fullfile:
-                engine, engine_bin = resolve_fetch_engine(
+                choice = select_fetch_engine(
                     args.engine if args.engine is not None else "auto")
+                engine, engine_bin = choice.engine, choice.binary
                 print(f"fetch {source}: engine {engine}"
                       + (f" ({engine_bin})" if engine_bin is not None
+                         else "")
+                      + (" [inherited, not chosen]" if choice.degraded
                          else "")
                       + ", mode full-file (whole pgrb2.0p25 objects from "
                         "the S3 archive)")
@@ -3573,6 +3695,7 @@ def fetch_main(args) -> int:
                     cycle=cycle, hours=hours, area=area, out=args.out,
                     force=args.force_refetch, source=source,
                     engine=engine, engine_bin=engine_bin,
+                    engine_selection=choice.selection,
                     cache_dir=args.cache_dir,
                     top_pressure_pa=args.p_top_pa,
                     all_levels=args.all_levels)
@@ -3597,12 +3720,17 @@ def fetch_main(args) -> int:
         # who named --transport gets that host or an error.
         transport_fallback = (
             tuple(HRRR_TRANSPORTS[1:]) if transport == "auto" else ())
-        engine, engine_bin = resolve_fetch_engine(
+        choice = select_fetch_engine(
             args.engine if args.engine is not None else "auto")
+        engine, engine_bin = choice.engine, choice.binary
         # The default is the fast path wherever the fast path exists.
         # The Python transport can only do .idx range subsets, so on an
-        # install without the backbone the default has to stay 'auto' --
-        # and that install is told, in one line, what it is paying.
+        # install without the backbone the default has to stay 'auto'.
+        # The line that says what that costs is no longer here: it is
+        # said at selection time now, by select_fetch_engine, so that
+        # the GFS full-file command, the streamer's preflight and every
+        # library caller of the front door get it too rather than only
+        # this one command.
         if args.mode is not None:
             mode = args.mode
             if mode == "idx-subset":
@@ -3614,21 +3742,6 @@ def fetch_main(args) -> int:
             mode = HRRR_DEFAULT_MODE
         else:
             mode = "auto"
-            # Only when the slow path was inherited rather than chosen.
-            if args.engine != "python":
-                explain.warn(
-                    "gpuwm fetch is using the Python transport, which can "
-                    "only do .idx range subsets; whole-file transfers need "
-                    "the rust backbone.  Run `gpuwm setup` (or `gpuwm "
-                    "fetch-bridges`) to stage it.",
-                    "A field measurement of this exact difference: one "
-                    "419 MB HRRR file took 560 s through serial .idx range "
-                    "requests on a 2 Gbps host, and 27-35 s for the same "
-                    "class of file taken whole through the backbone's "
-                    "parallel range GETs.  The Python transport is the "
-                    "always-available fallback and is correct -- it is "
-                    "simply the slow one, and an install should not "
-                    "discover that after the download.")
         if engine == "python" and mode != "auto":
             raise ValueError(
                 f"--mode {mode} needs the rust fetch backbone: the Python "
@@ -3714,7 +3827,8 @@ def fetch_main(args) -> int:
                 cycle=cycle, hours=hours, area=area, out=args.out,
                 force=args.force_refetch, transport=transport,
                 wait=args.wait_for, wait_timeout_s=timeout_minutes * 60.0,
-                engine=engine, engine_bin=engine_bin, mode=mode,
+                engine=engine, engine_bin=engine_bin,
+                engine_selection=choice.selection, mode=mode,
                 cache_dir=args.cache_dir,
                 accept_inventory_change=args.accept_inventory_change,
                 transport_fallback=transport_fallback)
@@ -4125,7 +4239,8 @@ def register_cli(subparsers) -> None:
 __all__ = [
     "AREA_HINT_DECIMALS", "Area", "Era5ValidationReport", "FETCH_HINT_KEYS",
     "area_bounds_inward", "source_coverage_envelope", "validate_fetch_area",
-    "FETCH_MANIFEST_SCHEMA", "GFS_FRONT_DOOR_MANIFEST_SCHEMA",
+    "FETCH_ENGINE_SELECTIONS", "FETCH_MANIFEST_SCHEMA",
+    "FetchEngineChoice", "GFS_FRONT_DOOR_MANIFEST_SCHEMA",
     "GFS_INPUT_MANIFEST_NAME", "GFS_LAKE_DONOR_MARGIN_DEG",
     "HRRR_DEFAULT_MODE", "FETCH_ENGINES", "FETCH_MODES",
     "HRRR_NOMADS_BASE", "HRRR_NOMADS_RETENTION_HOURS", "HRRR_TRANSPORTS",
@@ -4138,7 +4253,8 @@ __all__ = [
     "fetch_hrrr", "fetch_main", "gfs_forecast_hours", "gfs_object_url",
     "gfs_suggested_fetch_margin_deg",
     "hrrr_forecast_hours", "hrrr_object_url", "parse_area", "parse_cycle",
-    "read_grib1_records", "register_cli", "resolve_hrrr_transport",
+    "read_grib1_records", "register_cli", "resolve_fetch_engine",
+    "select_fetch_engine", "resolve_hrrr_transport",
     "cycle_probe_urls",
     "require_published_cycle",
     "resolve_latest_cycle",

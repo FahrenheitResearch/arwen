@@ -1,5 +1,285 @@
 # Changelog
 
+## 2.2.0 (2026-08-13)
+
+New:
+- A fast-fix lane, for shipping a correctness fix in under 90 minutes.
+  `tools/battery/fastfix.py` takes the range a fix spans and prints the
+  test files the change can break, cheapest first, with the reason each
+  was selected and an estimated wall time. Selection is by direct
+  imports: measured against the alternative, a transitive walk selects
+  three quarters of the test estate and finds nothing extra.
+  `tools/battery/FASTFIX.md` documents the procedure, including what it
+  does not yet cover.
+- Repository-scanning gates run unconditionally, from
+  `tools/battery/always_files.txt`. Citation checkers, receipt
+  regenerators and line-ending gates read the tree instead of importing
+  it, so no selector can reach them; running them every time is the only
+  correct answer.
+- A GPU test leg, `tools/battery/gpu_shard_files.txt`. The dynamics
+  core had no automated gate on any list: sixth-order diffusion and its
+  boundary faces, both Smagorinsky closures, the open lateral boundary,
+  the acoustic solver, the mapped mass closure and the turbulence budget
+  all skip on a machine without a card. First run on a 16 GB sm_120
+  card: 314 passed, 121 seconds. The file that checks a gpuwm history
+  frame with an independent WRF reader now runs too, 18 passed, where it
+  had never run anywhere.
+- The projected-source horizontal mapping runs in the packaged Rust
+  bridge. `gpuwm_indexed_interp_f32` takes the donor as an exact integer
+  pair plus its FP32 fraction, which is the shape a projected source
+  needs and the reason this route had no Rust boundary at all: it selects
+  its donor in FP64, and a coordinate just below an integer can advance
+  that donor once it is rounded to FP32. The 4x4 stencil and both `oned`
+  sweeps are fused per point across every core, with no intermediate
+  array. Measured on a real HRRR CONUS window against the real les.km3
+  d02 child (1059x1799 source, 608x488 target, 50 levels): the complete
+  `interpolate_hrrr_to_lambert` apply set falls from 32.37 s to 0.301 s
+  on 32 workers and to 2.334 s on one, and a single 3-D parabolic apply
+  from 3.764 s to 0.027 s.
+- The port is pinned to the NumPy operator it replaces, not to a
+  tolerance. On that same real window and child, 136,187,136 output
+  elements compare bit-identical across every method, both ranks, real
+  values and an adversarial arm carrying zeros, negative zeros, the
+  1e-20 sentinel itself, subnormal operands, NaN donors and overflowing
+  products. `tests/test_hrrr_projected_operator.py` gates the same
+  comparison on the raw uint32 view, so a signed zero cannot hide in it.
+- The bridge now carries two `oned` missing-value predicates and says
+  which authority each serves. The regular-grid entry keeps the CUDA one,
+  which flushes subnormal operands; the projected entry uses the host
+  IEEE one, which flushes only the product, because that is what the
+  NumPy operator on this route does and reproducing it is the whole
+  point. They differ only when an operand is subnormal or infinite and
+  the host product is not, and both the divergence and the test that
+  holds the line are named in `tools/grib1_bridge/src/lib.rs`.
+- An install whose bridge predates the new entry keeps the NumPy mirror
+  and is told so in one line, once, naming the rebuild. `gpuwm doctor`
+  reports the same gap on the library itself rather than calling it
+  simply verified, because the ABI integer cannot express an addition.
+  The HRRR mapping report records `projected_horizontal_operator`, so a
+  receipt can no longer say "cpu" for two implementations an order of
+  magnitude apart.
+- Legacy RRTMG shortwave runs its FP32 arithmetic 1.62x faster on the
+  GPU and returns the same bits. The unit's 679 add/sub/mul sites carried
+  a subnormal countermeasure that emulated every FP32 operation through
+  FP64: decode a possibly subnormal operand from its bits, do the work in
+  double, re-encode the result, about twenty instructions where one would
+  do, at FP64's 1:64 rate on GeForce. They now compile to `add.rn.f32`,
+  `sub.rn.f32` and `mul.rn.f32` written as inline PTX without the `.ftz`
+  modifier, which is the same correctly-rounded binary32 operation with
+  gradual underflow that the emulation was computing, and the same idiom
+  `dycore.cu`, `acoustic.cu` and `mynn_pbl.cu` already use. Measured on
+  an RTX 5070 Ti (sm_120) over 8,450 real fixture columns at 50 layers,
+  shortwave kernel time per call falls 609.98 ms to 376.40 ms: the
+  dominant `rsw_spcvmc_gpt_b` 511.07 to 371.70, `rsw_taumol_b` 43.38 to
+  1.31, `rsw_cldprmc_b` 25.10 to 1.13, `rsw_spc_accum_b` 29.01 to 1.78.
+  Every output field is byte-identical to the emulation at 169, 1,690,
+  8,450 and 16,900 columns.
+- The armor is retained at every one of the 679 sites, not traded away.
+  A witness build counts, per source line, how many times each site runs,
+  how often it sees or makes a subnormal, and whether the PTX and FP64
+  arms ever disagree. Over a batch spanning a full diurnal `coszen`
+  ladder from 0.02 to 0.99: 304,204,382 macro calls, 2,166,356 with a
+  subnormal operand, 1,659,113 producing a subnormal result, and zero
+  mismatches between the two arms. The subnormals are real and they are
+  concentrated exactly where the file said they would be, in the
+  direct-beam transmittance chain and what consumes it: `rsw_reftra`,
+  `rsw_vrtqdr`, `rsw_spcvmc_body` and `rsw_spc_accum_body` hold every one
+  of them and carry 79.7% of all calls, while `setcoef`, `taumol`,
+  `cldprmc`, `sfluxzen`, `inatm` and `post` witness none.
+- `tests/test_rrtmg_sw_rn_identity.py` proves on the CPU that the FP64
+  emulation is ordinary IEEE binary32 round-to-nearest, over structured
+  operand classes, an exhaustive sweep of the low-order subnormal range,
+  a mantissa sweep that lands products on subnormal rounding ties, and a
+  Sterbenz cancellation sweep. Two red-on-revert arms drop either half of
+  the armor, the operand decode or the result encode, and show the same
+  check going red.
+
+Fixed:
+- The early-render and time-to-first-plot suite ran none of its tests.
+  A module-level skip for an optional package sat two thirds of the way
+  down the file, and a module-level skip applies to the whole module, so
+  the 21 tests defined above it were skipped as well. The suite is on
+  the per-cut list and had reported success while executing nothing
+  since the feature shipped. It now collects 36 tests and passes them.
+- Two Noah-MP kernel suites had the same defect and four more tests
+  that had never executed on any machine, including one whose own
+  documentation said it needed no GPU and ran everywhere. Their
+  device-free checks now live where they run.
+- A new gate refuses the whole class: a module-level skip below a test
+  definition fails, naming the file, the line, and how many tests it
+  silently takes with it.
+- The wheel-contents suite no longer skips when its build dependency is
+  absent. Five of its nine assertions were skipping in the release
+  environment, and those five are the ones that check that declared data
+  files actually reach the wheel. An absent dependency is now a failure
+  with a one-line remedy.
+- The per-merge test cost falls by about 800 seconds with no assertion
+  removed or weakened. The health-descriptor ceiling gate keeps running
+  on every merge, over the neighbourhood of the measured peak, and
+  re-derives that peak rather than reading it back; the exhaustive sweep
+  moves to the per-cut tier. The GPU-marker gate reuses one collection
+  instead of spawning several hundred. The registry citation checker
+  indexes the tree once instead of walking it per citation.
+- Seven test files whose subject or replacement was re-verified are
+  retired. Three further candidates are kept and the reasons recorded:
+  one rested on a duplicate that does not exist.
+- Degrading to the Python fetch transport is no longer silent. The
+  missing-backbone branch of the engine selection returned the stdlib
+  transport with no message at all, which is the branch every install
+  without the bridges bundle takes; it is also the expensive one,
+  because that transport has no whole-file mode, so a `--mode
+  full-file` request quietly became `.idx` subsetting. Selection now
+  emits one `warning:` line naming the measured tax (560 s for one
+  419 MB HRRR file against 27-35 s taken whole, roughly 16x) and the
+  fix, before any bytes move. Nothing is refused.
+- The line is said at selection time rather than by one command, so the
+  GFS full-file command, the streamer's preflight and every library
+  caller of the front door get it; the HRRR command's own near-duplicate
+  is gone. `select_fetch_engine` returns the reason beside the engine;
+  `resolve_fetch_engine` keeps its two-value shape for the callers that
+  only want the pair.
+- The fetch manifest records `engine_selection` beside `engine` --
+  `rust`, `python-requested`, or `python-fallback` -- so a receipt
+  distinguishes a transport somebody chose from one an install
+  inherited. It is not called `transport`, because `--transport`
+  already names the host on this front door.
+- `gpuwm doctor` prices the missing backbone instead of only naming it:
+  the check line carries the same measurement and the receipt field to
+  look for.
+- The shortwave unit no longer depends on a compiler flag to keep its
+  subnormals. `tools/ftz_receipt` measures that every compiler-emitted
+  FP32 instruction flushes under CuPy's appended `-ftz=true`, and that
+  inline PTX without `.ftz` does not. The module currently escapes the
+  append by compiling through `compile_using_nvrtc` rather than
+  `RawModule`, and that escape is load-bearing but incidental: it was
+  adopted because NVRTC 13 started rejecting the duplicate flag, and a
+  build-route change would silently reintroduce the flush. Writing the
+  instructions as PTX makes the subnormal contract a property of the
+  source instead of a property of the option tuple.
+- Streaming works from the product front doors. `[tiles]` had only ever
+  run through the tilestream engineering route, and every path a user
+  actually takes failed somewhere between admission and the first output
+  frame. The shipped default physics suite failed first and hardest: its
+  radiation is legacy RRTMG, a plain class whose constructor requires a
+  start time and per-column latitude and longitude, and the per-buffer
+  twin builder could rebuild only dataclasses and empty constructors. So
+  every `[tiles]` forecast of the default suite raised StreamingRefused
+  inside TiledRun before taking a step, and the docstring that should
+  have caught it asserted legacy RRTMG was a dataclass. The builder now
+  carries explicit constructor recipes, audited two ways: a recipe must
+  name every constructor parameter, and its twin must agree with the
+  domain's adapter on every non-volatile scalar. An adapter with no
+  recipe is still refused. Measured on a 16 GB card through the prepared
+  single-domain runner, 550x550x49 at 3 km with the default suite: 240
+  streamed steps, one forecast hour, health green, no NaN, peak 15828
+  MiB.
+- The tile-buffer warm-up handed the radiation an atmosphere that did not
+  exist. Buffers were built on `make_vertical_coord`'s default stretch
+  while the domain's own eta table was imposed on top, so their 3-D base
+  state described one atmosphere and their pressure another, and then a
+  throwaway step integrated that against the domain's real lateral
+  forcing. RTE+RRTMGP's gas tables refused the result at 120.3 K to
+  407.3 K, and legacy RRTMG, which has no equivalent validator,
+  integrated the same field in silence. The `[160, 355] K` range is the
+  tables' own and is unchanged. Buffers are built on the domain's eta
+  table now, and the warm-up step is gone: it existed only to allocate
+  two lazily-created carriers, which are allocated directly instead.
+  Verified with RTE+RRTMGP at 550x550x49, `mode = "on"`: 240 streamed
+  steps, health green.
+- `[tiles] mode = "on"` was refused at admission by the routes that
+  support it. The refusal was written when the prepared routes passed no
+  streamed-domain builder; they have passed one since, but the refusal
+  outlived the wiring and went on rejecting the one mode that asks for
+  streaming unconditionally, with a message asserting the route wired no
+  builder while `mode = "auto"` streamed through that very builder.
+  `gpuwm go` mirrored it before the download, so the front door most
+  users type was the last place that rejected streaming. `gpuwm run`
+  still refuses, because it reads `[tiles]` at no point.
+- A streamed forecast's final health gate and canonical digest reported
+  the initial condition. Under a host store the DomainState is the
+  snapshot that filled the store, and neither the whole-field health
+  validator nor the trajectory digest has a tile-interior form, so both
+  answered for the analysis on a run that had integrated for an hour.
+  The runner copies the domain back from the store before they read it,
+  and the receipt records how many carriers moved.
+- A streamed run could not publish reflectivity. `refl_10cm` is rebuilt
+  scratch, correctly absent from the carrier manifest and therefore from
+  the store, so each tile computed its own window and the transport had
+  nowhere to join them. The sweep refused the first due frame, which on
+  an hourly cadence is an hour into a healthy forecast. The slot is
+  primed on the domain and on every buffer before the store is sized.
+- Legacy RRTMG's ozone grid is carried by a checkpoint and no longer by a
+  sweep. The adapter recomputes it from the climatology on every
+  radiation call and reads it only from a child domain, which streaming
+  refuses outright, so a warmed buffer had it while the prepared domain
+  did not and the inventories differed by exactly that key.
+- The prepare stage holds one forcing time resident instead of two. The
+  loop retained the start time's state for its whole duration while every
+  later time was built underneath it. Measured at 800x800x49 with
+  Morrison, a 6-hour GFS chain: resident 14.67 GiB to 7.66 GiB, peak
+  envelope 23.92 GiB to 15.86 GiB. A 24-hour chain and any ERA5 chain
+  still price above 16 GiB; the binding term left is
+  `domain_boundary_snapshot`'s full-domain host copy.
+- The HRRR route can configure `[tiles]`. It had no way to, and said
+  nothing: the block was silently dropped and the run went resident.
+  Carried as a runner flag rather than rendered into the published
+  authority, which is hash-bound, so that a bundle prepared streamed can
+  still be re-run resident. Multi-domain plans that cannot stream are
+  refused at config validation, before the fetch, naming every nest and
+  the grid that can stream.
+- The prepared front door renders its first committed frame. It published
+  frames with nothing watching, so reaching a first plot needed an
+  external watcher polling `GPUWM_WRITE_COMPLETE`.
+- Legacy RRTMG compiles its shortwave CUDA engine once per process rather
+  than once per adapter. Streaming builds one adapter per tile buffer, so
+  an uncached engine multiplied both the NVRTC compile and the resident
+  device tables that streaming exists to save.
+- A streamed forecast publishes `OLR`. It had been dropped from every
+  frame a streamed run wrote, silently: the field is produced by
+  radiation, published to output and read back by nothing, so it is not
+  a carrier, so the transport neither gathered nor scattered it and the
+  store had nowhere to join the tiles' windows. The frame was written
+  short and the run still reported forecast validity PASS with health
+  status bits clear, so 73 of a resident run's 74 variables was
+  indistinguishable from success. The transport now carries the
+  output-only diagnostics the same way it carries reflectivity, which
+  leaves the trajectory bit-identical because nothing reads them back,
+  and `XKMH`/`XKHH` are carried with them when the eddy-viscosity
+  diagnostic is on.
+- A streamed frame that cannot publish a field a resident run writes is
+  refused instead of written short. The refusal was documented but never
+  implemented: the writer took the short field list as its schema and
+  the file validated. It now names the missing rows and the one-line
+  remedy.
+- Carrier provenance on a streamed frame states the radiation that
+  actually ran. `GLW` and `SWDOWN` were byte-identical to a resident run
+  while the same file's provenance attributes read `unwritten` with no
+  update time, because the export path read the driver on the domain
+  state and a streamed domain's radiation runs on the tile buffers. The
+  ledger itself was always current; only the reader was stale.
+- `gpuwm go` and `gpuwm check` price a streamed run as streamed. Every
+  memory term described a domain resident in VRAM, so a configuration
+  with `[tiles]` was refused by the default front door on the strength of
+  a number describing a run that was not going to happen -- and the
+  configuration refused was the one streaming exists to make possible.
+  The forecast term is now the streamed envelope, the tile working set
+  and the pinned store, taken from the same measured model the run
+  attaches with. Preprocessing is not streamed and keeps its own term.
+- `gpuwm check` no longer tells users that `[tiles] mode = "on"` is
+  refused by the forecast routes. It has not been since the routes were
+  wired, and the same advisory also claimed the estimator had no model
+  of a streamed domain, which is no longer true either.
+- `UP_HELI_MAX` is bit-identical under tiling. It was the one field of 75
+  a streamed run did not reproduce exactly, by one part in ten billion at
+  a single cell -- and that cell sat on a tile seam, which is what named
+  the cause. The diagnostic is evaluated at the end of a step from a
+  stencil two cells wide, at the one moment when a tile's outermost halo
+  has already been consumed by that step, and the halo carried exactly
+  two cells of spare margin. A run that emits the diagnostic now widens
+  its halo by the diagnostic's own reach, with nothing to configure. The
+  forecast is unchanged either way; the tile windows grow by four cells
+  on each axis.
+
 ## 2.1.1 (2026-08-13)
 
 Fixed:

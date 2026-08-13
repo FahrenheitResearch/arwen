@@ -457,6 +457,158 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
         detail={"plan": plan.explain()})
 
 
+@dataclass(frozen=True)
+class StreamedEnvelope:
+    """What a STREAMED forecast of one domain actually holds, priced.
+
+    The number the admission gate needs and did not have.  Every memory
+    term ``gpuwm.core.preflight`` computes itemizes a domain resident in
+    VRAM, so with ``[tiles]`` configured the gate was answering a question
+    nobody asked: MEASURED at the 2.2.0 cut, a 550x550x49 run with 200x200
+    tiles -- the exact shape streaming exists for -- was refused by
+    ``gpuwm go`` at "15.36 GiB peak envelope exceeds the 13.09 GiB budget"
+    on a card with 15.24 GiB free, and the remedy printed was
+    ``--no-memory-gate``.  A feature whose only configuration is refused by
+    default is not shipped, so the gate learns the streamed envelope here.
+
+    Built from :class:`tilestream.autoplan.Footprint` -- the same measured
+    model ``autoplan.plan`` sizes tiles with and the same one ``decide``
+    consults -- so the gate and the run cannot give two answers about one
+    card.  ``vram_bytes`` is the whole streamed process: CUDA context, the
+    rung's per-process fixed cost, and ``nbuffers`` tile buffers of the
+    COMPUTE WINDOW (tile plus halo on both axes), with autoplan's safety
+    factor already applied.  ``host_bytes`` is the pinned store plus the
+    ring arena, which is where the domain actually lives.
+    """
+
+    vram_bytes: int
+    store_bytes: int
+    arena_bytes: int
+    host_bytes: int
+    host_budget_bytes: int | None
+    tile_nx: int
+    tile_ny: int
+    nbuffers: int
+    halo: int
+    window_nx: int
+    window_ny: int
+    rung: str
+    write_mode: str = "ring"
+
+    def summary(self) -> str:
+        """One sentence, in the vocabulary of the table that configured it."""
+        gib = 1024 ** 3
+        host = (f"{self.host_bytes / gib:.2f} GiB of pinned host RAM"
+                if self.host_budget_bytes is None else
+                f"{self.host_bytes / gib:.2f} GiB of pinned host RAM against "
+                f"a {self.host_budget_bytes / gib:.2f} GiB budget")
+        return (f"[tiles] streams this domain, so the card holds "
+                f"{self.nbuffers} tile buffer(s) of "
+                f"{self.window_nx}x{self.window_ny} (tile "
+                f"{self.tile_nx}x{self.tile_ny} + halo {self.halo}) at the "
+                f"{self.rung} rung = {self.vram_bytes / gib:.2f} GiB, not the "
+                f"whole domain; the forecast itself lives in {host}")
+
+
+def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
+                      machine=None, decision: StreamingDecision | None = None
+                      ) -> StreamedEnvelope | None:
+    """Price ``cfg`` as the streamed run ``options`` would actually attach.
+
+    Returns ``None`` when this configuration does NOT stream -- ``[tiles]``
+    off, or ``mode = "auto"`` deciding the domain fits resident -- which is
+    the caller's signal to keep using the resident estimate.  That is the
+    whole contract: an admission gate calls this, and if it gets a number
+    it prices the run against THAT number instead.
+
+    ``decision`` is accepted so a caller that has already resolved
+    ``[tiles]`` (the run itself, a report that prints the decision) prices
+    the decision it will execute rather than re-deriving one that could
+    differ.  Without it, :func:`decide` resolves the options -- and a
+    ``mode = "auto"`` config with no pinned tiling consults the planner,
+    which needs a ``machine``; pass one built from an out-of-process probe
+    rather than letting ``Machine.detect`` stand a CUDA context up inside a
+    long-lived CLI (the reason ``go_cli.memory_gate`` probes in a
+    subprocess at all).
+    """
+    from tilestream import autoplan
+
+    if decision is None:
+        decision = decide(cfg, options, machine=machine)
+    if not decision.stream:
+        return None
+
+    fp = autoplan.footprint_for(cfg)
+    nx, ny, nz = int(cfg.nx), int(cfg.ny), int(cfg.nz)
+    halo = int(decision.halo if decision.halo is not None else _halo_for(cfg))
+    tile_nx = int(decision.tile_nx or nx)
+    tile_ny = int(decision.tile_ny or ny)
+    nbuffers = int(decision.nbuffers or 2)
+    # autoplan's own window arithmetic (_best_tile), not an approximation of
+    # it: the compute window is the tile plus a halo on BOTH sides of BOTH
+    # axes, and it is the window -- never the tile -- that a buffer holds.
+    window_nx = tile_nx + 2 * halo
+    window_ny = tile_ny + 2 * halo
+    vram = fp.vram_bytes(window_nx * window_ny * nz, nbuffers)
+    store = fp.store_bytes(nx * ny * nz)
+    if decision.write_mode == "ring":
+        arena = store * autoplan.ring_arena_fraction(
+            nx, ny, tile_nx, tile_ny, halo) * 1.05
+    else:
+        arena = store
+    host_total = _host_total_bytes()
+    return StreamedEnvelope(
+        vram_bytes=int(vram), store_bytes=int(store), arena_bytes=int(arena),
+        host_bytes=int(store + arena),
+        host_budget_bytes=(None if host_total is None
+                           else int(host_total * autoplan.PINNED_FRACTION)),
+        tile_nx=tile_nx, tile_ny=tile_ny, nbuffers=nbuffers, halo=halo,
+        window_nx=window_nx, window_ny=window_ny, rung=fp.rung,
+        write_mode=decision.write_mode)
+
+
+def _host_total_bytes() -> int | None:
+    """This box's RAM, or ``None`` rather than a guess.
+
+    ``autoplan.Machine.detect`` reads ``/proc/meminfo``, which is the right
+    source on the Linux nodes and does not exist on the Windows box the
+    product's own front door runs on.  A gate that raised there would be a
+    worse failure than not pricing host RAM at all, so this answers ``None``
+    and :meth:`StreamedEnvelope.summary` simply omits the budget.
+    """
+    import sys
+
+    from tilestream.autoplan import _cgroup_memory_limit, _host_memtotal
+
+    limit = _cgroup_memory_limit()
+    total = _host_memtotal()
+    if sys.platform == "win32" and total is None:
+        import ctypes
+
+        class _Status(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        status = _Status()
+        status.dwLength = ctypes.sizeof(_Status)
+        try:
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                    ctypes.byref(status)):
+                total = int(status.ullTotalPhys)
+        except (AttributeError, OSError):
+            total = None
+    if limit is not None and total is not None:
+        return min(limit, total)
+    return limit if total is None else total
+
+
 class StreamedDomain:
     """One domain integrated tile-by-tile, one sweep per ``__call__``.
 
@@ -627,6 +779,18 @@ class StreamedDomain:
         cannot publish the output-only driver diagnostics (``OLR``, and
         ``XKMH``/``XKHH`` under ``hmix_k_diag``), and a frame missing rows a
         resident run writes is not the same frame.
+
+        THAT RAISE IS REAL AS OF 2.2.0 AND WAS NOT BEFORE.  Until then this
+        docstring described an intention: ``StoreFrame.fields`` skipped the
+        unavailable rows and the writer took the short dict as its schema,
+        so the sentence above was true of the design and false of the
+        behaviour -- a streamed run published a frame without ``OLR`` and
+        reported validity PASS.  :class:`tilestream.output.ShortFrameRefused`
+        is the refusal, :func:`diagnostic_inventory` is the reason it no
+        longer fires on the product route, and
+        ``tests/test_streamed_frame_parity.py`` is what keeps the two
+        honest by comparing the streamed and resident FIELD SETS rather
+        than trusting either description.
         """
         if self._frame is None:
             from tilestream import checkpoint as _checkpoint
@@ -742,6 +906,43 @@ class StreamedDomain:
             _physics.set_carrier_scalars(target, self.scalars)
         cp.cuda.Stream.null.synchronize()
         return len(live)
+
+    def carrier_provenance(self) -> dict | None:
+        """The surface-radiation carrier ledger AS OF THE LAST SWEEP.
+
+        The third observer of the corpse, after the history frame itself and
+        the stability fold, and the last one to be found.  ``gpuwm.io.wrfout
+        .carrier_provenance_attrs`` reads ``state.physics.carriers``, and
+        under a host store that driver is the snapshot the store was filled
+        from: it never ran radiation, so its contract still reads
+        ``unwritten`` / ``-1.0`` for every carrier while the STORE holds the
+        sky those producers demonstrably computed.  MEASURED at the 2.2.0
+        cut, 438x350x49 t+1h: ``GLW`` and ``SWDOWN`` byte-identical to the
+        resident run (means 411.14745 and 46.99931), and the four
+        ``GPUWM_CARRIER_*`` attributes on the same file denying that
+        anything wrote them.  Provenance metadata that contradicts the data
+        beside it is worse than no metadata, because the whole point of the
+        contract (gpuwm/core/radiation_carriers.py) is that a reader can ask
+        a wrfout "did this file integrate a sky nobody computed" without the
+        run directory.
+
+        The ledger itself was never lost: it rides ``carrier_scalars`` on
+        the domain clock, ``_advance_clock`` republishes it into
+        :attr:`scalars` after every sweep, and :meth:`refresh_state` already
+        restores it onto a state.  Only the EXPORT path was reading the
+        stale object, so this is a read of the live one and not a new
+        mechanism.  Returns ``None`` when this domain carries no contract
+        (no scalars, or a pre-contract streamed checkpoint), which the
+        caller must treat as "ask the state" rather than as "unwritten".
+        """
+        scalars = self.scalars or {}
+        rows = scalars.get("carriers")
+        if rows is None:
+            return None
+        return {
+            "policy": scalars.get("surface_radiation_policy"),
+            "records": {str(name): dict(row) for name, row in rows.items()},
+        }
 
     def domain_mass_measure(self) -> float:
         """The FP64 dry-mass receipt, taken from the STORE.
@@ -1285,6 +1486,11 @@ class StreamedStability:
         self.ntiles = len(run.specs)
         self.folds = 0
         self.tile_launches = 0
+        #: How many sweeps have STARTED.  Zero means the domain has not been
+        #: stepped even once, which is a different thing from a sweep that
+        #: skipped tiles and must not be answered the same way.  See
+        #: :meth:`__call__`.
+        self.sweeps_begun = 0
         self._seen: set[int] = set()
         self._partial = cp.zeros(
             (self.ntiles * self.blocks_per_tile, 9), dtype=cp.float32)
@@ -1301,6 +1507,7 @@ class StreamedStability:
         folded in with fifteen current ones looks exactly like a healthy
         domain.  With the set cleared here, :meth:`__call__` refuses instead.
         """
+        self.sweeps_begun += 1
         self._seen.clear()
         self._report = None
 
@@ -1371,17 +1578,14 @@ class StreamedStability:
     def __call__(self, state=None, cfg=None, *, boundary_width=None) -> dict:
         """:func:`gpuwm.core.dycore.stability_report`'s signature, exactly.
 
-        ``state`` is accepted and IGNORED, because the whole point is that
-        it is not where the domain is.  ``boundary_width`` must match the
-        width the tiles were classified against: the boundary/interior split
-        is baked into the per-tile records and cannot be re-cut afterwards.
+        ``state`` is accepted and IGNORED once the domain has been swept,
+        because the whole point is that it is not where the domain is.  It is
+        read in exactly one case -- before the FIRST sweep, see below -- which
+        is the one moment it is still the domain.  ``boundary_width`` must
+        match the width the tiles were classified against: the
+        boundary/interior split is baked into the per-tile records and cannot
+        be re-cut afterwards.
         """
-        import cupy as cp
-        import numpy as np
-
-        from gpuwm.core.dycore import decode_stability_record
-        from gpuwm.core.kernels import get_kernel
-
         width = (self.boundary_width if boundary_width is None
                  else boundary_width)
         # Compared as INTEGERS with None folded to 0, because the silent
@@ -1397,6 +1601,29 @@ class StreamedStability:
                 "decided per tile against the DOMAIN's extents while the "
                 "tile is on the card; it cannot be re-cut from the folded "
                 "record.")
+        if self.sweeps_begun == 0:
+            # (imports deliberately below this branch: answering the analysis
+            # frame needs no kernel and no device)
+            # THE ANALYSIS FRAME.  A route that publishes a t = 0 history
+            # frame asks for its health before anything has been stepped, and
+            # there is no fold yet because there has been no sweep -- not a
+            # short one, none.  The honest answer is the one the resident path
+            # would give: attach COPIED this state into the store and no sweep
+            # has written either since, so the state still IS the initial
+            # condition the frame contains.  This is the only moment that is
+            # true, which is why it is keyed on sweeps_begun rather than on an
+            # empty record: once a sweep has run, the state is the corpse this
+            # class exists to stop reading and a short sweep must REFUSE.
+            if state is None:
+                raise StreamingRefused(
+                    "the stability record was read before the first sweep and "
+                    "without the domain state, so there is nothing to report "
+                    "the initial condition from")
+            from gpuwm.core.dycore import stability_report
+            return stability_report(
+                state, self.cfg if cfg is None else cfg,
+                boundary_width=width)
+
         if len(self._seen) != self.ntiles:
             missing = sorted(set(range(self.ntiles)) - self._seen)
             raise StreamingRefused(
@@ -1405,6 +1632,13 @@ class StreamedStability:
                 "reading it now would report the health of part of a domain "
                 "as the health of all of it, which is the exact shape of the "
                 "defect this fold exists to remove")
+
+        import cupy as cp
+        import numpy as np
+
+        from gpuwm.core.dycore import decode_stability_record
+        from gpuwm.core.kernels import get_kernel
+
         if self._report is None:
             # Under the driver's deferred sweep seam the per-tile records
             # were issued on the COMPUTE streams and nothing has barriered
@@ -1441,6 +1675,36 @@ def stability_observer(stepper):
 
     folded = getattr(stepper, "stability", None)
     return stability_report if folded is None else folded
+
+
+def refresh_streamed_state(stepper, state) -> int:
+    """Bring ``state`` up to date from the store, for whoever is about to read it.
+
+    The OFF contract, like :func:`stability_observer`: a resident stepper is
+    a ``getattr`` and a zero, so a route calls this unconditionally and a run
+    with no ``[tiles]`` is unchanged.
+
+    A streamed domain under ``store = "host"`` leaves the ``DomainState`` as
+    the snapshot that filled the store, and three readers on this route are
+    not foldable the way the stability record was: ``StateHealthValidator``
+    is one block per whole field with no tile-interior form,
+    ``canonical_state_digest`` is a whole-trajectory hash, and the
+    diagnosis path reads fields directly.  Left alone they answer for the
+    INITIAL CONDITION and say so nowhere -- a receipt reporting
+    ``nan_free: true`` and a final digest that is the analysis, on a run
+    that integrated for an hour.
+
+    :meth:`StreamedDomain.refresh_state` is the copy, and its docstring puts
+    it "on the HISTORY cadence and at the end of the run, never per step":
+    it is one domain-sized D2H/H2D of the carrier set, which is what one
+    history frame already costs.  It allocates nothing -- ``attach`` needed a
+    resident state to fill the store from, so the destination already
+    exists.  Returns the number of carriers copied, so a caller can record
+    that the refresh moved the whole manifest rather than a lucky subset.
+    """
+    if not is_streaming(stepper):
+        return 0
+    return int(stepper.refresh_state(state) or 0)
 
 
 def domain_call_counts(stepper, state) -> dict:
@@ -1728,6 +1992,206 @@ def make_tile_hook(per_tile):
 #: gather/scatter does the rest.
 REFL_STORE_KEY = "scratch/refl_10cm"
 
+#: The ``refl_10cm`` scratch slot's own name, on the state side of the key.
+REFL_SCRATCH_SLOT = "refl_10cm"
+
+
+def prime_refl_10cm(state, cfg) -> bool:
+    """Allocate the REFL_10CM scratch slot so the transport can carry it.
+
+    ``refl_10cm`` is a REBUILT scratch slot: microphysics computes it into
+    the slot when a frame is due and nothing carries it between steps, so it
+    is correctly absent from the carrier manifest and therefore from the
+    store.  Under streaming that absence is fatal rather than harmless --
+    each tile computes its own window and the transport, having no home for
+    it, throws every one away -- which is why
+    :meth:`StreamedDomain.__call__` refuses a due frame outright.
+
+    Priming is unconditional, and deliberately so.  Whether reflectivity will
+    ever be due is a question only the model's history cadence can answer,
+    and attach happens long before the first frame; the alternative to
+    priming always is deciding wrong and stopping a forecast an hour in, at
+    the first due frame, which is exactly what the product route did.  The
+    cost is one domain-sized float32 among the ~130 carriers a physics-on
+    domain already streams, under 1% of the store.
+
+    Returns whether the slot had to be created, so a caller can report it.
+    """
+    if state is None or not hasattr(state, "scratch"):
+        return False
+    # The slot name is a LITERAL at both call sites, not REFL_SCRATCH_SLOT.
+    # tests/test_preflight.py's scratch-completeness gate reads these with an
+    # AST scan and can only check a slot it can see: a variable expression is
+    # classified "variable" and refused unless pinned in an allowlist, which
+    # would exempt this slot from the registry check rather than satisfy it.
+    if state.existing_scratch("refl_10cm") is not None:
+        return False
+    state.scratch((int(cfg.nz), int(cfg.ny), int(cfg.nx)), "refl_10cm")
+    return True
+
+
+def prime_lazy_carriers(state, cfg) -> tuple:
+    """Allocate every carrier that would otherwise appear on first USE.
+
+    THE WARM-UP STEP THIS REPLACES.  A tile buffer used to be handed one
+    throwaway ``dycore.step`` before it served any tile, for one reason:
+    two carriers are allocated lazily, so an inventory taken at construction
+    is SHORTER than one taken after a step and ``TiledRun`` refuses the
+    mismatch.  ``KainFritsch.ensure_trigger_history`` says it outright --
+    "make_physics_tile_state works around it by throwing a warm-up step
+    away; the array is (nz, ny, nx) zeros and there is nothing to warm up".
+
+    The workaround is worse than it looks, because a buffer at construction
+    holds NOTHING the domain holds.  Its thermodynamics are an analytic
+    sounding, its geography is ``harness.neutral_geography``, and -- on a
+    specified-boundary domain -- the lateral tables attached to it are the
+    DOMAIN's real forcing.  So the throwaway step blended real GFS boundary
+    values into an analytic interior and integrated the result.
+
+    MEASURED on the product front door, 550x550x49: that step handed
+    rte-rrtmgp a temperature field spanning 211.0 K to 456.7 K and the
+    gas-table validator refused it.  Building the buffer on the domain's own
+    eta table (:func:`domain_vertical_coord`) had already moved the low end
+    from 120.3 K to 211.0 K -- necessary, and not sufficient, because the
+    remaining error is not in the coordinate but in stepping fabricated data
+    at all.  Legacy RRTMG has no such validator and integrated it silently.
+
+    Priming is what the warm-up was FOR, done directly: allocate the
+    carriers, integrate nothing.  Returns the names primed, so a caller can
+    report what it did rather than assume.
+    """
+    primed = []
+    if prime_refl_10cm(state, cfg):
+        primed.append(REFL_STORE_KEY)
+    primed.extend(prime_hmix_k_diag(state, cfg))
+    driver = getattr(state, "physics", None)
+    cumulus = getattr(driver, "cumulus_callable", None)
+    ensure = getattr(cumulus, "ensure_trigger_history", None)
+    if ensure is not None:
+        ensure(state)
+        primed.append("cumulus/w0avg")
+    return tuple(primed)
+
+
+def prime_hmix_k_diag(state, cfg) -> tuple:
+    """Allocate the eddy-viscosity PRODUCER slots so the transport can carry them.
+
+    ``XKMH``/``XKHH`` are the ``OLR`` case one level down.  Their frame rows
+    come out of ``PhysicsDriver.hmix_k_diag``, but that bundle is a COPY
+    taken when a frame is built (gpuwm/core/physics.py:3727-3745) and carries
+    nothing between steps -- so scattering the bundle moves zeros, and
+    ``tilestream.output`` measured exactly that: with the bundle alone in the
+    inventory both fields came back bit-exact against the monolithic
+    reference BECAUSE BOTH WERE EXACTLY ZERO, a control passing for the wrong
+    reason.  The producer is the dycore's ``smag_km``/``smag_kh`` scratch,
+    and that is what :data:`tilestream.output._DIAGNOSTIC_PRODUCERS` names
+    and what has to exist before the store is sized.
+
+    Both slots are allocated by ``dycore.step`` on first use, which is one
+    step too late: attach takes the inventory that sizes the store, so a
+    slot that appears later has nowhere to land and the first history frame
+    is refused an hour into the forecast.  Primed here for the same reason
+    and on the same cadence as ``refl_10cm``.
+
+    Only under ``cfg.hmix_k_diag`` -- off by default -- because that flag is
+    what puts the rows in the frame at all.  Two full 3-D fields is 8 B/cell,
+    100x ``OLR``'s, and a run that does not ask for the diagnostic must not
+    pay it.  The slot names are LITERALS at every call site for the reason
+    :func:`prime_refl_10cm` spells out: tests/test_preflight.py's
+    scratch-completeness gate reads them with an AST scan.
+    """
+    if state is None or not hasattr(state, "scratch"):
+        return ()
+    if not bool(getattr(cfg, "hmix_k_diag", False)):
+        return ()
+    shape = (int(cfg.nz), int(cfg.ny), int(cfg.nx))
+    primed = []
+    if state.existing_scratch("smag_km") is None:
+        state.scratch(shape, "smag_km")
+        primed.append("diag/XKMH")
+    if state.existing_scratch("smag_kh") is None:
+        state.scratch(shape, "smag_kh")
+        primed.append("diag/XKHH")
+    return tuple(primed)
+
+
+def refl_inventory(base):
+    """``base`` plus the REFL_10CM slot, for every object the run inventories.
+
+    The transport applies one ``inventory_fn`` to three different kinds of
+    object -- the domain state at attach, the store mapping, and each tile
+    buffer -- so the wrapper adds the slot the way each kind carries it: out
+    of ``existing_scratch`` for a state or a buffer, and already present by
+    key for the store, which was built from the state's inventory.  Never
+    allocates: :func:`prime_refl_10cm` is what creates the slot, and a slot
+    that is genuinely absent stays absent so the refusal can still fire.
+    """
+    def inventory(obj, names=None):
+        live = dict(base(obj, names))
+        if REFL_STORE_KEY in live:
+            return live
+        existing = getattr(obj, "existing_scratch", None)
+        if existing is None:
+            return live
+        slot = existing("refl_10cm")
+        if slot is not None and (names is None or REFL_STORE_KEY in names):
+            live[REFL_STORE_KEY] = slot
+        return live
+
+    return inventory
+
+
+def diagnostic_inventory(base):
+    """``base`` plus the output-only driver diagnostics, on all three kinds.
+
+    THE SIBLING OF :func:`refl_inventory`, and the same shape of fix.  A
+    frame row that physics writes, output publishes and nothing reads back
+    is classified REBUILT by ``gpuwm/io/restart.py``, so it is correctly
+    absent from the carrier manifest -- and therefore from the store, and
+    therefore from the sweep's gather and scatter.  Each tile computes its
+    own window of it correctly and the transport throws every one away, so
+    the buffer ends a sweep holding the LAST tile's window and the domain
+    has no copy at all.  ``OLR`` is that row at every shipped rung;
+    ``XKMH``/``XKHH`` join it under ``cfg.hmix_k_diag`` and the SASE flux
+    rows under SASE.
+
+    Listing them here makes the ordinary gather/scatter carry them, which
+    :func:`tilestream.output.diagnostic_inventory` measured bit-exact
+    against a monolithic run (``tilestream.test_io.
+    case_diagnostic_scatter``, which asserts the negative too: without the
+    scatter the published field is wrong over ``(tiles-1)/tiles`` of the
+    domain).  They do NOT become carriers by being listed -- nothing reads
+    them back into the trajectory, so a run that carries them integrates
+    the identical forecast.  The price is what :func:`tilestream.output.
+    scatter_cost` prints: 0.082 B/cell for ``OLR``, 8 B/cell for the
+    eddy-viscosity pair.
+
+    WHY THIS WRAPS RATHER THAN REPLACING ``output.diagnostic_inventory``:
+    that function composes over ``carrier_manifest`` and this route's base
+    is ``streaming_inventory`` (the RESTART manifest, which is the wider
+    set -- see :func:`attach`).  Composing keeps one naming, one table and
+    one place where a new output-only attribute has to be declared.
+
+    Never allocates, exactly as :func:`refl_inventory` never does:
+    :func:`prime_lazy_carriers` is what creates a producer slot, and a slot
+    that is genuinely absent stays absent so
+    :class:`tilestream.output.ShortFrameRefused` can still fire at the
+    first frame rather than a plausible array of zeros being published for
+    the whole run.
+    """
+    from tilestream import output as _output
+
+    def inventory(obj, names=None):
+        live = dict(base(obj, names))
+        for key, array in _output.diagnostic_members(obj).items():
+            if key in live:
+                continue
+            if names is None or key in names:
+                live[key] = array
+        return live
+
+    return inventory
+
 
 def refl_handoff_hook():
     """A ``TiledRun`` ``post_step_hook`` that clears each tile's REFL stash.
@@ -1996,6 +2460,139 @@ def _domain_start_time(driver):
     return None
 
 
+def _twin_rrtmg_legacy(scheme, cls, lat, lon):
+    """Rebuild :class:`~gpuwm.core.rrtmg_legacy.RRTMGLegacyRadiation`.
+
+    Its policy is not reachable by ``dataclasses.replace`` -- the adapter is
+    a plain class, and a plain class whose constructor REQUIRES
+    ``start_time``/``latitude_deg``/``longitude_deg`` at that -- but every
+    one of its constructor arguments is recoverable from the instance, so
+    the twin is exact rather than defaulted.  ``start_time`` is the domain's
+    (radiation's solar geometry is a function of it, not of the tile);
+    ``p_top``/``column_chunk``/``o3input`` are policy and part of the
+    restart identity; ``ozone_parent`` is the child-domain o3rad routing,
+    which is ``None`` on every domain that can stream today because a nest
+    is refused upstream, and is carried anyway rather than assumed.
+
+    Only the geography is replaced, which is the whole point: the tile's
+    own ``latitude_deg``/``longitude_deg`` drive ``interp_ozone_to_latitudes``
+    at construction, so a twin built at the domain's latitudes would carry
+    the wrong ozone column for every tile but one.
+    """
+    return cls(scheme.start_time, lat, lon,
+               p_top=scheme.p_top,
+               column_chunk=scheme.column_chunk,
+               o3input=scheme.o3input,
+               ozone_parent=scheme._ozone_provider)
+
+
+@dataclass(frozen=True)
+class _TwinRecipe:
+    """How to rebuild one non-dataclass adapter that requires arguments.
+
+    ``reproduces`` names the constructor parameters ``build`` passes, and is
+    CHECKED against the live signature rather than trusted: an adapter that
+    grows a policy argument the recipe does not carry makes the recipe stale,
+    and a stale recipe is exactly the silent failure the plain-object branch
+    below refuses -- a buffer that allocates the same carriers, passes the
+    inventory check, and integrates different physics.  ``volatile`` names
+    the scalar attributes that are RUNTIME state rather than policy, so the
+    equality audit does not mistake a counter for dropped configuration.
+    """
+
+    build: object
+    reproduces: frozenset
+    volatile: frozenset = frozenset()
+
+
+#: Explicit constructor recipes, keyed ``"module:QualName"`` so registering
+#: one imports nothing.
+#:
+#: The audit behind this table, over every adapter that reaches
+#: :func:`_tile_scheme` (``physics.py`` assigns exactly two slots,
+#: ``radiation_callable`` and ``cumulus_callable``):
+#:
+#: ``RRTMGPRadiation``          dataclass -- ``replace`` handles it
+#: ``AnalyticClearSkyRadiation``dataclass -- ``replace`` handles it
+#: ``KainFritsch``              plain, constructor asks for nothing --
+#:                              the reconstruct-and-check branch handles it
+#: ``RRTMGLegacyRadiation``     plain AND requires three arguments -- here
+#:
+#: So the recipe table has exactly one entry and the refusal was not a
+#: category of broken schemes, it was this one.  The mechanism is a table
+#: rather than a special case because the next such adapter should cost a
+#: recipe, not another rewrite of the dispatch.
+_TWIN_RECIPES = {
+    "gpuwm.core.rrtmg_legacy:RRTMGLegacyRadiation": _TwinRecipe(
+        build=_twin_rrtmg_legacy,
+        reproduces=frozenset({"start_time", "latitude_deg", "longitude_deg",
+                              "p_top", "column_chunk", "ozone_parent",
+                              "o3input"}),
+        # WRF's radiation call counter; the domain's adapter has stepped
+        # when a buffer is built mid-run, a fresh twin has not, and that
+        # difference is not dropped policy.
+        volatile=frozenset({"update_count"}),
+    ),
+}
+
+
+#: What :func:`twin_support` answers, in the order :func:`_tile_scheme`
+#: tries them.
+TWIN_BY_REPLACE = "dataclass-replace"
+TWIN_BY_RECIPE = "recipe"
+TWIN_BY_RECONSTRUCTION = "empty-constructor"
+
+
+def twin_support(cls) -> str | None:
+    """How a per-buffer twin of ``cls`` would be built, or ``None``.
+
+    The CLASS-level half of :func:`_tile_scheme`'s dispatch, factored out so
+    that "can this scheme stream?" is answerable without a device, without a
+    domain and without constructing the adapter -- which for legacy RRTMG
+    means CUDA compilation and for RRTMGP means loading gas tables.  That is
+    what lets the scheme audit run in the CPU battery, where a scheme added
+    without a tile constructor goes red at development time instead of an
+    hour into somebody's forecast.
+
+    ``_tile_scheme`` dispatches on this, so the audit cannot drift from the
+    behaviour it audits.  It answers the SHAPE question only; the per-INSTANCE
+    checks -- that a reconstruction dropped no policy, that a recipe is not
+    stale -- still run at twin time against the domain's actual object.
+    """
+    import dataclasses
+    import inspect
+
+    if dataclasses.is_dataclass(cls):
+        return TWIN_BY_REPLACE
+    if f"{cls.__module__}:{cls.__qualname__}" in _TWIN_RECIPES:
+        return TWIN_BY_RECIPE
+    empty = inspect.Parameter.empty
+    required = [p.name for p in inspect.signature(cls).parameters.values()
+                if p.default is empty
+                and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)]
+    return None if required else TWIN_BY_RECONSTRUCTION
+
+
+def _assert_twin_reproduced_policy(scheme, twin, volatile):
+    """Every scalar the twin and the domain's adapter disagree on is a bug.
+
+    The same audit the reconstruct-and-check branch applies to plain
+    adapters, reused so a recipe is held to the standard the branch it
+    bypasses would have enforced.
+    """
+    for key, value in vars(twin).items():
+        if key in volatile or not isinstance(value, (str, bool, int, float)):
+            continue
+        was = getattr(scheme, key, value)
+        if isinstance(was, (str, bool, int, float)) and was != value:
+            raise StreamingRefused(
+                f"the per-buffer twin recipe for {type(scheme).__name__} "
+                f"produced {key}={value!r} where the domain's adapter "
+                f"carries {was!r}, so the recipe drops policy; a buffer "
+                "built with it would own the same carriers and integrate "
+                "different physics")
+
+
 def _tile_scheme(scheme, lat, lon):
     """A FRESH twin of one scheme adapter, at a tile's extents.
 
@@ -2012,24 +2609,36 @@ def _tile_scheme(scheme, lat, lon):
     check reported buffer 1's radiation lat/lon as ungatherable geography.
     That is what caught it, and it is why ``check_geography`` is left ON.
 
-    Two shapes of adapter, and the rule is the same for both -- reproduce
-    the POLICY exactly, replace only the geography:
+    Three shapes of adapter, and the rule is the same for all three --
+    reproduce the POLICY exactly, replace only the geography:
 
-    *dataclasses* (RRTMGP, legacy RRTMG, the analytic scheme, Noah-MP's
-    geometry) carry their policy as init fields -- ``column_chunk``,
-    ``trace_gas_overrides``, ``p_top``, ``o3input`` -- and their per-column
-    geography as ``latitude_deg``/``longitude_deg``.  ``dataclasses
-    .replace`` gives a new instance that differs in exactly the two fields
-    the gather is going to overwrite anyway.
+    *dataclasses* (RRTMGP, the analytic scheme, Noah-MP's geometry) carry
+    their policy as init fields -- ``column_chunk``,
+    ``trace_gas_overrides``, ``p_top`` -- and their per-column geography as
+    ``latitude_deg``/``longitude_deg``.  ``dataclasses.replace`` gives a new
+    instance that differs in exactly the two fields the gather is going to
+    overwrite anyway.
 
-    *plain objects* (Kain-Fritsch) are reconstructed by calling their class.
-    That is only correct if the class asks for nothing and configures
-    nothing, so both are CHECKED: a constructor with a required parameter is
-    refused, and so is any scalar attribute on which the fresh instance and
+    *plain objects with an empty constructor* (Kain-Fritsch) are
+    reconstructed by calling their class.  That is only correct if the class
+    asks for nothing and configures nothing, so both are CHECKED: a
+    constructor with a required parameter gets no default reconstruction,
+    and neither does any scalar attribute on which the fresh instance and
     the domain's disagree -- which is what a policy the reconstruction
     dropped would look like.  An adapter reconstructed with default policy
     allocates the same carriers and passes the inventory check, so nothing
     downstream would catch it.
+
+    *plain objects that require arguments* (legacy RRTMG) get an explicit
+    recipe from :data:`_TWIN_RECIPES`, audited two ways: the recipe must
+    name every constructor parameter, and the twin it returns must agree
+    with the domain's adapter on every non-volatile scalar.  This branch was
+    once the refusal itself -- legacy RRTMG is the DEFAULT radiation of the
+    shipped physics suite, so streaming refused the default suite outright,
+    and the docstring here asserted legacy RRTMG was a dataclass, which is
+    part of how it went unnoticed.  The refusal below is deliberately kept
+    for adapters with no recipe: sharing the domain's object is still not
+    the fallback.
     """
     import dataclasses
     import inspect
@@ -2045,16 +2654,36 @@ def _tile_scheme(scheme, lat, lon):
 
     cls = type(scheme)
     empty = inspect.Parameter.empty
+    support = twin_support(cls)
+    recipe = (_TWIN_RECIPES.get(f"{cls.__module__}:{cls.__qualname__}")
+              if support == TWIN_BY_RECIPE else None)
+    if recipe is not None:
+        declared = {p.name for p in inspect.signature(cls).parameters.values()
+                    if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)}
+        stale = declared - recipe.reproduces
+        if stale:
+            raise StreamingRefused(
+                f"the per-buffer twin recipe for {cls.__name__} does not "
+                f"reproduce its constructor parameter(s) {sorted(stale)}, so "
+                "it is stale against the adapter; a buffer built from it "
+                "would take those at their defaults and integrate different "
+                "physics from the domain")
+        twin = recipe.build(scheme, cls, lat, lon)
+        _assert_twin_reproduced_policy(scheme, twin, recipe.volatile)
+        return twin
     required = [p.name for p in inspect.signature(cls).parameters.values()
                 if p.default is empty
                 and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)]
     if required:
         raise StreamingRefused(
-            f"the domain's {cls.__name__} is not a dataclass and its "
-            f"constructor requires {required}, so a per-buffer twin of it "
-            "cannot be built.  Sharing the domain's adapter is not the "
-            "fallback: its carriers would be shared with every tile buffer "
-            "at once.")
+            f"the domain's {cls.__name__} is not a dataclass, its "
+            f"constructor requires {required}, and no entry in "
+            "gpuwm.core.streaming._TWIN_RECIPES says how to rebuild it, so "
+            "a per-buffer twin of it cannot be built.  Sharing the domain's "
+            "adapter is not the fallback: its carriers would be shared with "
+            "every tile buffer at once.  Give the adapter a _TWIN_RECIPES "
+            "entry that reproduces its policy and takes the tile's "
+            "geography.")
     fresh = cls()
     for key, value in vars(fresh).items():
         if not isinstance(value, (str, bool, int, float)):
@@ -2068,6 +2697,65 @@ def _tile_scheme(scheme, lat, lon):
                 "would own the same carriers and integrate different "
                 "physics")
     return fresh
+
+
+def domain_vertical_coord(state, cfg):
+    """The DOMAIN's own eta coordinate, for a tile buffer to be built on.
+
+    THE DEFECT THIS EXISTS FOR.  ``harness.make_physics_state`` rebuilds the
+    vertical coordinate when its caller does not supply one, and what it
+    rebuilds is ``make_vertical_coord(nz, hybrid_opt, etac)`` -- the DEFAULT
+    stretch.  A real case runs its own explicit eta table.  Its own docstring
+    says a real case must supply ``coord`` and that arrays built from the
+    wrong table "are the right shape, the right dtype, and wrong, and nothing
+    downstream notices"; the prepared factory then did not supply it.
+
+    :func:`_impose_domain_setup` half-hid the consequence.  It copies the
+    domain's PURELY VERTICAL setup (``znu``, ``znw``, ``dnw``, ``c1h..c4f``,
+    ``p_top``, ``mub``, ``cf1..cfn1``) onto the buffer, so those became the
+    domain's -- but ``thb``/``pb``/``alb``/``phb`` are 3-D on any domain with
+    terrain and are gathered per tile, so they stayed the buffer's, built by
+    ``make_base_state`` against the DEFAULT stretch.  The buffer's warm-up
+    step therefore evaluated a WK82 theta column from one atmosphere against
+    a pressure column from another.
+
+    MEASURED, 550x550x49 at 3 km through the product front door: the warm-up
+    handed rte-rrtmgp a temperature profile spanning 120.3 K to 407.3 K and
+    the gas-table validator refused it -- correctly; ``[160, 355] K`` is the
+    tables' own range and stays.  120.314407 K is 300 K, the sounding's
+    surface theta, taken at 41 hPa: a surface level's theta at the model
+    top's pressure, which is the signature of two mismatched coordinates and
+    not of uninitialised memory.  Legacy RRTMG has no such validator, so on
+    that suite the same wrong warm-up ran silently instead of stopping.
+
+    Built from ``state.znw`` rather than from the config's ``eta_levels`` so
+    it is the table the domain IS on, not the one it was asked for.  A table
+    this refuses to rebuild is refused loudly: falling back to the default
+    stretch is the bug.
+    """
+    import numpy as np
+
+    from gpuwm.core.grid import make_vertical_coord
+
+    znw = getattr(state, "znw", None)
+    if znw is None:
+        raise StreamingRefused(
+            "the domain state carries no znw, so a tile buffer cannot be "
+            "built on the domain's vertical coordinate; it would silently "
+            "get the default stretch and a base state for a different "
+            "atmosphere")
+    eta = np.asarray(_as_host_array(znw), dtype=np.float64)
+    try:
+        return make_vertical_coord(
+            int(cfg.nz), eta_levels=eta,
+            hybrid_opt=int(getattr(cfg, "hybrid_opt", 0)),
+            etac=float(getattr(cfg, "etac", 0.2)))
+    except ValueError as exc:
+        raise StreamingRefused(
+            f"the domain's eta table cannot be rebuilt for a tile buffer "
+            f"({exc}); a buffer built on the default stretch instead would "
+            "carry a base state for a different atmosphere, which is how "
+            "this failed before it was refused") from exc
 
 
 def _impose_domain_setup(tile, state) -> int:
@@ -2119,22 +2807,32 @@ def _impose_domain_setup(tile, state) -> int:
 
 
 def _as_host_array(value):
-    import cupy as cp
+    """A host copy of a device or host array.
 
+    cupy is imported only if the value could be a device array: a host-only
+    caller (and every CPU test) must not need a CUDA build to read a table
+    that is already in host memory.
+    """
     import numpy as np
 
-    return cp.asnumpy(value) if isinstance(value, cp.ndarray) \
-        else np.asarray(value)
+    if type(value).__module__.split(".")[0] == "cupy":
+        import cupy as cp
+
+        return cp.asnumpy(value)
+    return np.asarray(value)
 
 
 def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
-                                warmup: int = 1):
+                                warmup: int = 0):
     """``tile_state_factory`` for a domain ArWen's preparation already built.
 
     :func:`attach` states the contract: the factory must build a state with
-    THE SAME PHYSICS SELECTORS the domain was prepared with, already warmed
-    by one step.  Four things go into satisfying it from a prepared node, and
-    each of them has a specific failure it prevents:
+    THE SAME PHYSICS SELECTORS the domain was prepared with, carrying the
+    same inventory.  ``warmup`` defaults to 0 because that inventory is now
+    reached by :func:`prime_lazy_carriers` rather than by throwing away a
+    step -- see there for the temperature field the thrown-away step used to
+    hand the radiation.  Four things go into satisfying the contract from a
+    prepared node, and each of them has a specific failure it prevents:
 
     *the selectors come from the config, so they are free.*  ``tile_cfg`` is
     the domain's own ``RunConfig`` with only ``nx``/``ny`` replaced
@@ -2174,6 +2872,10 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
 
     driver = getattr(state, "physics", None)
     start_time = None if driver is None else _domain_start_time(driver)
+    # ONCE, not per buffer: the domain's eta table does not vary by tile, and
+    # rebuilding it is where a buffer stops being a model of the domain.  See
+    # :func:`domain_vertical_coord`.
+    coord = domain_vertical_coord(state, cfg)
 
     def make(tile_cfg):
         import numpy as np
@@ -2192,8 +2894,14 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
                 if twin is not None:
                     extra[key] = twin
         tile, _drv = _harness.make_physics_state(
-            tile_cfg, seed, geography=geo, start_time=start_time, **extra)
+            tile_cfg, seed, geography=geo, start_time=start_time,
+            coord=coord, **extra)
         make.setup_entries_imposed = _impose_domain_setup(tile, state)
+        # The buffer's own lazily-allocated carriers, so its inventory matches
+        # the store's WITHOUT integrating anything.  See prime_lazy_carriers:
+        # the warm-up step this replaces stepped an analytic sounding against
+        # the domain's real lateral forcing.
+        make.primed = prime_lazy_carriers(tile, tile_cfg)
         if tables0 is not None:
             attach_lateral_boundaries(tile, tables0)
         if warmup:
@@ -2209,7 +2917,7 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
 
 
 def prepared_domain_builder(node, *, seam: str = "zeros",
-                            tile_seed: int = 4242, warmup: int = 1,
+                            tile_seed: int = 4242, warmup: int = 0,
                             check_geography: bool = True):
     """The ``build`` :func:`make_stepper` needs, for one PREPARED domain node.
 
@@ -2282,12 +2990,34 @@ def prepared_domain_builder(node, *, seam: str = "zeros",
                 "attached LateralBoundaries, so no per-tile forcing can be "
                 "windowed and no buffer could take its warmup step")
 
+        # REFL_10CM before the store is sized, not when the first frame is
+        # due.  The slot is REBUILT scratch, so it is absent from the carrier
+        # manifest by construction and the store would have nowhere to join
+        # the tiles' windows; the sweep then refuses the first due frame,
+        # which on this route is an hour into a forecast that was otherwise
+        # healthy.  Primed on the domain here and on every buffer in the
+        # factory, and carried by refl_inventory on all three.
+        #
+        # The eddy-viscosity producers ride the same priming for the same
+        # reason (prime_hmix_k_diag, and only under cfg.hmix_k_diag).
+        prime_lazy_carriers(state, cfg)
         factory = prepared_tile_state_factory(
             state, cfg, tables0=(None if tables is None else tables[0]),
             seed=tile_seed, warmup=warmup)
+        from tilestream import physics_inventory as _physinv
+        # THE FRAME'S FIELD SET, not just its trajectory.  refl_inventory
+        # alone carries the reflectivity slot and leaves every OTHER
+        # output-only driver diagnostic behind, so a streamed frame
+        # published 73 of the resident run's 74 variables -- OLR silently
+        # absent, validity PASS, health status_bits 0 (MEASURED at the
+        # 2.2.0 cut, 438x350x49 through `gpuwm go`).  diagnostic_inventory
+        # carries the rest; StoreFrame refuses a plan that still cannot
+        # publish one, so this can no longer fail quietly.
         streamed = attach(state, cfg, decision, tile_state_factory=factory,
                           geography=geography, boundary_tables=tables,
-                          check_geography=check_geography)
+                          check_geography=check_geography,
+                          inventory_fn=diagnostic_inventory(refl_inventory(
+                              _physinv.streaming_inventory)))
         if decision.store == "host":
             import warnings
 
@@ -2376,6 +3106,19 @@ def refuse_unrouted_streaming(exp, route: str, *,
     mode existed to avoid -- and, if it somehow fits, a refusal whose message
     they will read as something the run did rather than something the config
     always was.
+
+    WHO STILL CALLS THIS, and who stopped.  ``gpuwm run``
+    (:func:`gpuwm.runtime.run_experiment`) does, with
+    ``consults_the_seam=False``, because it reads ``exp.tiles`` at no point.
+    The two prepared routes and ``gpuwm go`` do NOT, any more: they wire
+    :func:`builders_for_tree` and stream for real.  Their calls outlived the
+    wiring by a release and refused ``mode = "on"`` -- the one mode that asks
+    for streaming unconditionally -- with a message asserting the route wired
+    no builder, while ``mode = "auto"`` went through that same builder and
+    streamed.  So a user who wrote the explicit form got a refusal quoting a
+    fact that had stopped being true, and ``go``, the front door most users
+    type, mirrored it before the download.  Removed there; kept here for the
+    route that genuinely cannot honour the mode.
 
     ``mode = "on"`` is knowable at admission with NO device work at all: it
     streams unconditionally, consults no planner and needs no card.  So it is

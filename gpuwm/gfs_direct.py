@@ -40,6 +40,7 @@ from gpuwm.ingest.horiz import (
 from gpuwm.ingest.lateral_bc import (
     StateBoundaryFrames,
     attach_lateral_boundaries,
+    start_last_forcing_order,
 )
 from gpuwm.ingest.prepared_cache import (
     prepared_cache_identity,
@@ -1245,10 +1246,18 @@ def prepare_gfs_wrf(
         from gpuwm.core.grid import make_vertical_coord
 
         initialize_started = time.perf_counter()
-        # Only the first time's met/state survive this loop; every later
-        # time contributes its perimeter frames and is released at once.
-        # Retaining all of them is what made ingest peak above the
-        # forecast it was preparing.
+        # ONE forcing time is ever resident.  The start time is built LAST
+        # (start_last_forcing_order) and is the only met/state this loop
+        # retains; every other time contributes its perimeter frames
+        # against its own position and is released before the next one is
+        # interpolated.  Walking the times in order instead meant holding
+        # the start time -- which nothing reads until the boundaries are
+        # complete -- while each later time was built underneath it.  At
+        # 800x800x49 with mp=10 and three GFS times that second resident
+        # time is 14.67 GiB of device residency against 7.66, a priced
+        # peak envelope of 23.92 GiB against 15.86: the difference
+        # between preparing the domain on a 16 GiB card and OOMing after
+        # the whole forcing chain had already been fetched.
         initial_result = None
         initial_met = None
         forcing = StateBoundaryFrames(
@@ -1260,7 +1269,8 @@ def prepare_gfs_wrf(
         # their atmospheric/soil source as land here, then apply the existing
         # explicit nearest-source-water lake initialization below.
         interpolation_landmask[lake_mask] = True
-        for index, source in enumerate(snapshots):
+        for index in start_last_forcing_order(len(snapshots)):
+            source = snapshots[index]
             met = interpolate_era5_to_lambert(
                 source, grid,
                 target_landmask=interpolation_landmask,
@@ -1279,7 +1289,7 @@ def prepare_gfs_wrf(
                 static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
                 static["F"], static["E"], sina=static["SINALPHA"],
                 cosa=static["COSALPHA"])
-            forcing.add_state(initialized.state)
+            forcing.add_state(initialized.state, index=index)
             if index == 0:
                 initial_met = met
                 initial_result = initialized

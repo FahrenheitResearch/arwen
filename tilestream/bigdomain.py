@@ -512,7 +512,8 @@ def _replace_nxny(cfg, nx: int, ny: int):
 
 def build_store_by_slabs(cfg, geo, *, slab_rows: int, noise: SeededNoise,
                          bubbles=None, store=None, log=print,
-                         manifest=None, amplitudes=None):
+                         manifest=None, amplitudes=None,
+                         budget_bytes: int | None = None):
     """The full-domain initial store, built one slab at a time.
 
     Returns ``(store, geo_store, scalars, missing)``.  ``store`` and
@@ -566,15 +567,37 @@ def build_store_by_slabs(cfg, geo, *, slab_rows: int, noise: SeededNoise,
             if manifest is None:
                 manifest = hoststore.manifest_from_arrays(
                     inv, nz, int(slab_rows), nx)
+            geo_shapes = {
+                name: (tuple(arr.shape[:-2])
+                       + (ny + (int(arr.shape[-2]) - int(slab_rows)),
+                          int(arr.shape[-1])))
+                for name, arr in ginv.items()}
+            # THE WHOLE REQUEST, BEFORE THE FIRST BYTE OF IT IS TAKEN.
+            # hoststore.check_allocatable is the fail-closed budget refusal
+            # the class-based store path has always called (hoststore.py:840);
+            # this builder is the newer road and it never did, so it took
+            # pinned memory a slab at a time with nothing between it and the
+            # machine.  MEASURED: a real store reached 87.8 GiB of page-locked
+            # RAM in silence, past the documented ceiling, and starved every
+            # other lane on the box -- pinned pages cannot be swapped, so this
+            # is the failure mode that takes a machine down rather than a run.
+            # Priced from the manifest rather than observed while allocating,
+            # because a guard that fires on the way up has already taken most
+            # of what it is refusing.
+            planned = sum(spec.nbytes(nz, ny, nx) for spec in manifest)
+            planned += sum(int(np.prod(shape))
+                           * np.dtype(ginv[name].dtype).itemsize
+                           for name, shape in geo_shapes.items())
+            hoststore.check_allocatable(planned, budget_bytes=budget_bytes)
+            log(f"store: {planned / hoststore.GIB:.2f} GiB pinned "
+                f"({len(manifest)} carriers + {len(geo_shapes)} geography), "
+                "budget checked")
             for spec in manifest:
                 store[spec.name] = hoststore.alloc_pinned_array(
                     spec.shape(nz, ny, nx), spec.dtype)
-            for name, arr in ginv.items():
-                shape = (tuple(arr.shape[:-2])
-                         + (ny + (int(arr.shape[-2]) - int(slab_rows)),
-                            int(arr.shape[-1])))
+            for name, shape in geo_shapes.items():
                 geo_store[name] = hoststore.alloc_pinned_array(
-                    shape, np.dtype(arr.dtype))
+                    shape, np.dtype(ginv[name].dtype))
             scalars = physinv.carrier_scalars(state)
         for name, arr in inv.items():
             if name not in store:

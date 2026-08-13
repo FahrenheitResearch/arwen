@@ -23,6 +23,12 @@ import numpy as np
 import pytest
 
 from gpuwm.core.fp32_ulp import max_ulp
+
+#: TIER C, weekly.  22 s measured on this branch (the audit read 15 s).  Same
+#: reasoning as tests/test_rrtmg_sw_oracle.py: an exhaustive max_ulp==0 sweep
+#: against committed WRF v4.6.1 oracle rows.  Frozen oracles cannot drift, so
+#: re-running them on every merge buys nothing the cut does not buy.
+pytestmark = pytest.mark.slow
 from gpuwm.core.noahmp import load_noahmp_parameters, transfer_mp_parameters
 from gpuwm.core.noahmp_energy import (
     EnergyOptions,

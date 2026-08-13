@@ -82,6 +82,31 @@ class _Recorder:
         self.warnings.append((code, message, fields))
 
 
+@pytest.fixture(scope="module")
+def wrf_package():
+    """The mandated science core, as a FIXTURE rather than a module skip.
+
+    This was a bare ``pytest.importorskip("wrf")`` at module scope, sitting
+    two thirds of the way down the file under a "the real renderer"
+    banner.  A module-level skip is not local to the section it is
+    written under: it fires at IMPORT, so it took the 21 tests defined
+    ABOVE it with it.  Those 21 are the whole early-render /
+    time-to-first-plot front door, added to
+    ``tools/battery/stage1_files.txt`` in 1.8.7 precisely because a
+    regression in them is silent -- and from that day until this one the
+    file collected ZERO tests on every cut.  A stage-1 entry that reports
+    green while running nothing is worse than an absent one.
+
+    A fixture skips exactly its requesters, so the section boundary is
+    now real: every test that does not ask for this runs without the
+    science core, and every test that genuinely drives a render asks.
+    """
+
+    return pytest.importorskip(
+        "wrf", reason="this proof drives the real renderer, whose derived "
+                      "fields all come from the wrf package")
+
+
 # ---------------------------------------------------------------------------
 # Arming: off by default, on when the run named products
 # ---------------------------------------------------------------------------
@@ -437,7 +462,10 @@ class _CollectedTrigger:
 
 
 def test_the_render_stage_collects_the_early_render_before_it_draws(
-        tmp_path, monkeypatch):
+        wrf_package, tmp_path, monkeypatch):
+    # ``_render_stage`` returns False and prints a remedy when the science
+    # core is absent, so the three tests that assert it returns True are
+    # science-core tests even though they stub the subprocess out.
     from gpuwm import go_cli
 
     plan, frame, _receipt = _published(tmp_path)
@@ -458,7 +486,7 @@ def test_the_render_stage_collects_the_early_render_before_it_draws(
 
 
 def test_a_run_whose_only_frame_was_published_early_draws_nothing_again(
-        tmp_path, monkeypatch, capsys):
+        wrf_package, tmp_path, monkeypatch, capsys):
     from gpuwm import go_cli
 
     plan, _frame_path, _receipt = _published(tmp_path)
@@ -543,7 +571,7 @@ def test_arming_the_hrrr_chain_dict_produces_a_live_trigger(tmp_path):
 
 
 def test_an_observer_without_the_hook_renders_exactly_as_it_always_did(
-        tmp_path, monkeypatch):
+        wrf_package, tmp_path, monkeypatch):
     from gpuwm import go_cli
 
     plan, frame, _receipt = _published(tmp_path)
@@ -565,12 +593,8 @@ def test_an_observer_without_the_hook_renders_exactly_as_it_always_did(
 # ---------------------------------------------------------------------------
 
 
-pytest.importorskip(
-    "wrf", reason="the render idempotence proof needs the wrf package")
-
-
 @pytest.fixture(scope="module")
-def real_wrfout(tmp_path_factory):
+def real_wrfout(wrf_package, tmp_path_factory):
     """A frame written by the project's own writer, as a run produces.
 
     With the production global-attribute profile, not a bare one: the

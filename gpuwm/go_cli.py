@@ -312,19 +312,12 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # repository".  The runner is part of the package now, so if this
     # module imported, so did it.
 
-    # [tiles] mode = 'on', on the same side of the download as the
-    # memory gate and the geography gate, and for the identical reason.
-    # The runner this chain drives refuses it at ITS admission, but that
-    # is after `go` has spent the user's bandwidth on the forcing data
-    # and their time on preprocessing.  Refused as a GoRefusal so it
-    # prints as one of this chain's own refusals rather than as a
-    # traceback from a stage.
-    from gpuwm.core.streaming import (StreamingRefused,
-                                      refuse_unrouted_streaming)
-    try:
-        refuse_unrouted_streaming(experiment, "gpuwm go")
-    except StreamingRefused as error:
-        raise GoRefusal(str(error)) from error
+    # NO [tiles] refusal here.  This gate existed only to bring the runner's
+    # own admission refusal forward, to the near side of the download -- and
+    # the runner no longer refuses, because the prepared single-domain route
+    # wires a streamed-domain builder.  Mirroring a refusal that is gone
+    # would make `go`, the front door most users type, the last place that
+    # still rejects streaming.
     for key in ("cycle", "hours", "area"):
         if key not in fetch_table:
             raise GoRefusal(
@@ -1253,8 +1246,15 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
     # The cadence the domain was SIZED against, from the same [fetch]
     # table the fetch stage reads, so the two cannot disagree.
     cadence_h = plan.get("cadence")
+    # [tiles] mode = "auto" with no pinned tiling is the planner's decision,
+    # and the planner needs a card.  Build its Machine from the SUBPROCESS
+    # probe already taken above rather than letting autoplan.Machine.detect
+    # stand a CUDA context up in this process -- the same reason the probe
+    # is a subprocess at all (0.486 GiB held for the whole run, MEASURED).
+    machine = _planner_machine(probe)
     phases = estimate_phases(
         exp, source=source, vram_gib=vram_gib, profile=profile,
+        machine=machine,
         ingest_forcing_interval_seconds=(
             float(cadence_h) * 3600.0 if cadence_h else None))
 
@@ -1269,14 +1269,55 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
         estimate_bytes=phases.forecast.alloc_estimate_bytes)
     budget = reserve.budget_bytes(free)
     peak = phases.peak_envelope_bytes
+    verdict = phases.verdict(budget)
+    refuse = peak > free
+    # THE PINNED STORE IS A REFUSAL TOO, and only for a streamed run: the
+    # domain lives in host RAM there, so a config whose store cannot be
+    # page-locked dies at attach -- after the download, which is exactly
+    # what this gate exists on this side of.  Priced only when the host
+    # total could be read; unknown host RAM never refuses.
+    if phases.streamed_forecast:
+        env = phases.streamed
+        if (env.host_budget_bytes is not None
+                and env.host_bytes > env.host_budget_bytes):
+            refuse = True
+            verdict += (
+                f"; and the pinned host store is "
+                f"{env.host_bytes / (1024 ** 3):.2f} GiB against a "
+                f"{env.host_budget_bytes / (1024 ** 3):.2f} GiB page-locking "
+                "budget, which is where a streamed domain actually lives")
     return {
-        "verdict": phases.verdict(budget),
-        "refuse": peak > free,
+        "verdict": verdict,
+        "refuse": refuse,
         "warn": peak > budget,
         "free_bytes": free,
         "budget_bytes": budget,
         "phases": phases,
     }
+
+
+def _planner_machine(probe):
+    """A :class:`tilestream.autoplan.Machine` from an out-of-process probe.
+
+    ``Machine.detect`` reads the card with CuPy and the host with
+    ``/proc/meminfo``; neither is available on the terms this gate runs
+    under -- the card must not be touched in this process, and the front
+    door also runs on Windows.  Both numbers are already to hand, so the
+    Machine is built rather than detected.  ``None`` when there is no card
+    to plan against, which leaves ``mode = "auto"`` unpriced and the
+    resident estimate standing, exactly as before.
+    """
+    if probe is None:
+        return None
+    from gpuwm.core.streaming import _host_total_bytes
+    from tilestream import autoplan
+
+    host = _host_total_bytes()
+    if host is None:
+        return None
+    return autoplan.Machine(vram_bytes=int(probe["free_bytes"]),
+                            host_bytes=int(host), name="gpuwm go probe",
+                            host_source="probe")
 
 
 def geography_refusal(geog_root: Path) -> str | None:

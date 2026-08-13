@@ -860,12 +860,13 @@ def preflight_prepared_tree(
     # nest.
     from gpuwm.experiment import refuse_unrouted_spawn
     refuse_unrouted_spawn(exp, "prepared domain-tree")
-    # And the same governance for [tiles], one line down, because this
-    # route wires no streamed-domain builder either.  Without this the
-    # refusal still happens -- make_stepper raises it -- but 790 lines and
-    # one whole resident tree construction later, which is exactly the wrong
-    # side of the allocation a streamed run exists to avoid.
-    streaming.refuse_unrouted_streaming(exp, "prepared domain-tree")
+    # NO streaming refusal for [tiles]: this route wires a streamed-domain
+    # builder (streaming.builders_for_tree, below), so mode = 'on' is
+    # supported.  The refusal that stood here was written before the wiring
+    # and outlived it, rejecting the one mode that asks for streaming
+    # unconditionally.  A NEST that fires is still refused, at build time,
+    # by prepared_domain_builder -- which is the right place for it, because
+    # a tree whose nests fit resident must not be refused for having nests.
     # THE predicate, asked rather than restated.  This runner is the
     # door the whole corridor mechanism exists to satisfy, and it used
     # to hold its own copy of the sentence -- so a reading of

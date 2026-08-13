@@ -85,6 +85,39 @@ UP_HELI_MAX_SLOT = "up_heli_max"
 UH_WORK_COLUMN_SLOT = "uh_diag_col"
 UH_WORK_USE_SLOT = "uh_diag_use"
 
+#: HOW FAR THE DIAGNOSTIC REACHES HORIZONTALLY, in mass cells, and why a
+#: streamed run has to widen its halo by exactly this much.
+#:
+#: Two stencils compose, and it is their SUM that matters:
+#:
+#: 1. the column value at ``(j, i)`` reads ``(j-1..j, i-1..i)`` -- the
+#:    vorticity's ``dv/dx``/``du/dy`` differences and the 8-point ``w``
+#:    average, all backward-staggered (:7305-7388, :7458-7462); radius 1.
+#: 2. the 9-point smoother then reads the COLUMN VALUES at ``(j+-1, i+-1)``
+#:    (:7515-7533); radius 1 again, on top of the first.
+#:
+#: So ``UP_HELI_MAX`` at one point depends on model state two cells away,
+#: and it is evaluated in the dycore EPILOGUE -- at the END of a step,
+#: when a tile's halo has already been invalidated from the outside in by
+#: that step's own dependency cone.
+#:
+#: MEASURED AT THE 2.2.0 CUT, and this is the whole argument.
+#: ``tilestream.harness.halo_radius`` prescribes 16 against a measured
+#: minimum of 14 for the carrier set, i.e. exactly 2 cells of margin --
+#: which this diagnostic consumes entirely, leaving none.  A 438x350x49
+#: streamed run at tile 200x200 came back bit-identical to its resident
+#: twin in 74 of 75 fields, and differed in ``UP_HELI_MAX`` at ONE cell,
+#: ``(j=331, i=200)``, by 1.16e-10 -- one float32 ULP, at exactly the
+#: first interior column of the second tile, which is the signature of a
+#: stencil reaching one cell past what the halo still guarantees.  The
+#: same run at halo 18 is bit-identical in all 75 fields at every frame.
+#:
+#: The forecast is NOT affected either way: the trajectory is bit-exact
+#: for any halo at or above the measured 14, so widening changes only the
+#: diagnostic, and it costs 4 cells on each window axis (MEASURED on that
+#: run: 232x232 -> 236x236, 6.61 -> 6.71 GiB).
+UH_DIAGNOSTIC_HALO_CELLS = 2
+
 #: CONSUMER-OWNED tracking windows (Drew's ruling, 2026-08-07).
 #:
 #: Same operator as UP_HELI_MAX and the same fold below -- what differs is

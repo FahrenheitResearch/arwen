@@ -454,6 +454,21 @@ when it is not. Build it with
 `cd tools/rustwx && cargo build --release --locked --offline`; `gpuwm
 doctor` reports whether it is there and usable.
 
+**That fall-back is not free, and it now says so.** The Python
+transport has no whole-file branch at all, so an install without the
+backbone does not merely lose parallel range GETs -- a `--mode
+full-file` request becomes `.idx` subsetting, hundreds of small serial
+range requests per object. A field measurement of the same 419 MB HRRR
+file: **560 s degraded against 27-35 s taken whole**, roughly a 16x
+tax; on NOMADS it is worse, because the rate governor allows one worker
+with a 2.5 s minimum gap. Every degrade therefore prints one `warning:`
+line naming the tax and the fix before any bytes move, and the fetch
+manifest records `engine_selection` -- `rust`, `python-requested`, or
+`python-fallback` -- beside `engine`, so a slow run can be recognised
+from its receipt afterwards. Nothing is refused: the Python transport
+is correct, and a run that wants it can still ask for it with `--engine
+python`, which is recorded as the request it is.
+
 **Which host** -- `--transport auto|nomads|s3` (HRRR). See the HRRR
 section: both serve byte-identical GRIB files, `auto` prefers S3 (the
 faster host for whole files) and falls back to NOMADS while a cycle is

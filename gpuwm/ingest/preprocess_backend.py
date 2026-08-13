@@ -255,6 +255,20 @@ class ParallelCpuPreprocessBackend:
         native = self._native.indexed_plan(source_shape, y, x)
         return self._bind_native_plan(native)
 
+    @property
+    def indexed_donor_interp(self) -> bool:
+        """Whether this library carries the exact-donor horizontal entry."""
+
+        return bool(getattr(self._native, "indexed_donor_interp", False))
+
+    def indexed_donor_plan(self, source_shape, donor_y, donor_x,
+                           fraction_y, fraction_x):
+        """Bind an exact projected-source integer-donor plan."""
+
+        native = self._native.indexed_donor_plan(
+            source_shape, donor_y, donor_x, fraction_y, fraction_x)
+        return self._bind_native_plan(native)
+
     def _bind_native_plan(self, native):
         workers = self.workers
 

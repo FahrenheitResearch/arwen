@@ -3799,24 +3799,28 @@ def test_ingest_state_term_is_the_real_domain_state_inventory(exp1):
     assert est.category_bytes("state") == expected
 
 
-def test_ingest_holds_two_forcing_times_not_all_of_them(exp1):
+def test_ingest_holds_one_forcing_time_not_all_of_them(exp1):
     """The defect in one assertion.
 
     Ingest used to keep every forcing time's analysis AND state resident,
     which is why preprocessing a 24 h GFS case peaked at roughly twice the
-    forecast.  Streaming keeps two.  Both numbers are reported so a user
-    can see what the phase would have cost.
+    forecast.  Streaming cut that to two, and the start-last reordering
+    (gpuwm/ingest/lateral_bc.py:start_last_forcing_order) cut it to ONE:
+    nothing reads the start time until the boundaries are complete, so
+    building it first meant holding it for the whole loop for no reason.
+    Both the streamed number and the all-at-once one are reported so a
+    user can see what the phase would have cost.
     """
     est = pf.estimate_ingest(
         exp1, source="gfs", forcing_interval_seconds=10800.0)
-    assert est.resident_times == pf.INGEST_RESIDENT_FORCING_TIMES == 2
+    assert est.resident_times == pf.INGEST_RESIDENT_FORCING_TIMES == 1
     assert est.n_forcing_times > est.resident_times
     assert (est.resident_bytes
-            == 2 * est.per_time_bytes + est.forcing_table_bytes)
+            == est.per_time_bytes + est.forcing_table_bytes)
     assert (est.unstreamed_resident_bytes
             == est.n_forcing_times * est.per_time_bytes
             + est.forcing_table_bytes)
-    # Every time beyond the two resident ones is pure saving.
+    # Every time beyond the one resident time is pure saving.
     assert (est.unstreamed_resident_bytes - est.resident_bytes
             == (est.n_forcing_times - est.resident_times)
             * est.per_time_bytes)
@@ -3826,13 +3830,23 @@ def test_ingest_holds_two_forcing_times_not_all_of_them(exp1):
 
 
 def test_ingest_envelope_is_conservative_against_the_measured_case():
-    """Both ends of the CONUS 12 km measurement, re-derived here.
+    """Every end of the CONUS 12 km measurement, re-derived here.
 
     Measured on an RTX 5090 (process-attributed peak, 432 MiB CUDA
-    context included): 15,288 MiB before the streaming fix and 4,672 MiB
-    after, same case, byte-identical outputs.  The estimate must bound
-    BOTH -- a sizing number that lands under a measured peak is the
-    failure mode this whole phase estimate exists to prevent.
+    context included): 15,288 MiB with every forcing time resident and
+    4,672 MiB with the streamed TWO, same case, byte-identical outputs.
+    The estimate must bound both -- a sizing number that lands under a
+    measured peak is the failure mode this whole phase estimate exists to
+    prevent.
+
+    The shipped estimate now prices ONE resident time, which no device
+    has been watched doing.  So the third bound here is a derivation
+    rather than a measurement, and it is written as one: the reordering
+    removes a RESIDENT term and no transient one, so the peak it should
+    produce is the measured two-resident peak minus exactly one forcing
+    time, and the estimate has to stay above THAT.  If a device ever
+    measures the one-resident form, this is the assertion to replace with
+    the number.
     """
     run = RunConfig(nx=414, ny=330, nz=49, dx=12000.0, dy=12000.0,
                     ztop=20000.0, dt=60.0, run_seconds=86400.0,
@@ -3844,10 +3858,25 @@ def test_ingest_envelope_is_conservative_against_the_measured_case():
                            forcing_interval_seconds=10800.0),
         device_overhead_bytes=0)  # the measured node is Linux
     assert est.n_forcing_times == 9
+    assert est.resident_times == 1
 
-    measured_after = 4672 * 1024 ** 2
-    assert est.peak_envelope_bytes >= measured_after
-    assert est.peak_envelope_bytes <= 1.30 * measured_after
+    # The form that WAS measured at 4,672 MiB: identical itemization,
+    # one more resident forcing time.
+    two_resident = dataclasses.replace(est, resident_times=2)
+    measured_two_resident = 4672 * 1024 ** 2
+    assert two_resident.peak_envelope_bytes >= measured_two_resident
+    assert two_resident.peak_envelope_bytes <= 1.30 * measured_two_resident
+
+    # The reordering is worth exactly one forcing time of residency and
+    # nothing else -- the transient is charged per CALL, and the same
+    # calls happen in either order.
+    assert (two_resident.resident_bytes - est.resident_bytes
+            == est.per_time_bytes)
+    assert two_resident.transient_bytes == est.transient_bytes
+
+    derived_one_resident = measured_two_resident - est.per_time_bytes
+    assert est.peak_envelope_bytes >= derived_one_resident
+    assert est.peak_envelope_bytes <= 1.30 * derived_one_resident
 
     measured_before = 15288 * 1024 ** 2
     before = (math.ceil(est.headroom * (est.unstreamed_resident_bytes

@@ -807,6 +807,46 @@ def build_state_lateral_boundaries(states, times, *, spec_bdy_width=5,
         relax_zone=relax_zone)
 
 
+def start_last_forcing_order(count: int) -> tuple[int, ...]:
+    """The positions of ``count`` forcing times, START TIME LAST.
+
+    THE DEFECT THIS EXISTS TO CLOSE.  A prepare loop that walks its
+    forcing times in time order has to hold the START time for the whole
+    loop: it is the first one built and the last one used, because the
+    prepared cache, the wrfinput export and the surface analysis are all
+    written from it after the boundaries are complete.  Every LATER time
+    is then interpolated and initialized underneath it, so two complete
+    full-domain analyses and two complete states coexist at the peak
+    while only one of them is being worked on.  Priced by
+    ``gpuwm.core.preflight.estimate_ingest`` at 800x800x49 with mp=10 and
+    three GFS forcing times, that second resident time is 14.67 GiB of
+    device residency against 7.66, and it carries the phase's peak
+    envelope from 15.86 GiB to 23.92 -- which is to say, it is the
+    difference between preparing that domain on a 16 GiB card and dying
+    in preprocessing after the whole forcing chain has already been
+    downloaded.
+
+    Building the start time LAST costs nothing and removes it.  Every
+    earlier time contributes its perimeter frames to
+    :class:`StateBoundaryFrames` -- host memory, O(perimeter) -- and is
+    released before the next one is interpolated, and the start time is
+    then the only state that is ever retained.
+
+    Reordering the WORK cannot reorder the ANSWER.  The frames are
+    accumulated against their own position (``add_state(..., index=)``)
+    and the intervals are assembled from them in TIME order whatever
+    order they arrived in, and the accumulator is a pure function of that
+    sequence.  The bit-for-bit equality is pinned by
+    ``tests/test_ingest_prepare_ordering.py``.
+    """
+    n = int(count)
+    if n < 2:
+        raise ValueError(
+            "a prepare loop needs at least two forcing times to difference "
+            f"into lateral boundaries; got {n}")
+    return (*range(1, n), 0)
+
+
 class StateBoundaryFrames:
     """One-state-at-a-time accumulator for :class:`LateralBoundaries`.
 
@@ -827,6 +867,14 @@ class StateBoundaryFrames:
     The retained frames are the same ``ascontiguousarray`` slices
     :func:`_field_boundary` would have taken, and the tendency is the same
     float64 ``(after - before) / duration`` over the same two operands.
+
+    A frame may be added AGAINST ITS POSITION rather than in arrival
+    order (``index=``), which is what lets a prepare loop build its
+    forcing times in the order that keeps only ONE of them resident --
+    see :func:`start_last_forcing_order` for the residency this buys and
+    what it cost before.  :meth:`build` sorts by position, so the
+    intervals and their tendencies are the ones the in-order loop would
+    have produced, byte for byte; arrival order reaches no number.
     """
 
     def __init__(self, *, spec_bdy_width: int = 5, spec_zone: int = 1,
@@ -838,8 +886,11 @@ class StateBoundaryFrames:
         self.spec_bdy_width = int(spec_bdy_width)
         self.spec_zone = int(spec_zone)
         self.relax_zone = int(relax_zone)
-        self._frames: list[Mapping[str, Mapping[str, np.ndarray]]] = []
+        self._frames: dict[int, Mapping[str, Mapping[str, np.ndarray]]] = {}
         self._inventory: frozenset[str] | None = None
+        #: None until the first add fixes which addressing this
+        #: accumulator uses; see :meth:`_position`.
+        self._indexed: bool | None = None
 
     def __len__(self) -> int:
         return len(self._frames)
@@ -848,12 +899,49 @@ class StateBoundaryFrames:
     def retained_bytes(self) -> int:
         """Host bytes the accumulated perimeter frames occupy."""
         return sum(int(array.nbytes)
-                   for frame in self._frames
+                   for frame in self._frames.values()
                    for side in frame.values()
                    for array in side.values())
 
-    def add_snapshot(self, snapshot: Mapping[str, object]) -> None:
-        """Retain one coupled full-domain snapshot's perimeter frames."""
+    def _position(self, index: int | None) -> int:
+        """Where this frame belongs in the forcing sequence.
+
+        Arrival order and explicit positions are each coherent on their
+        own and meaningless together: half a sequence counted by arrival
+        and half addressed by position would silently write one frame
+        over another, or leave a hole, and the first symptom would be a
+        boundary tendency built from the wrong pair of times.  So the
+        first add fixes the addressing and a later add of the other kind
+        is refused by name.
+        """
+        indexed = index is not None
+        if self._indexed is None:
+            self._indexed = indexed
+        elif self._indexed != indexed:
+            raise ValueError(
+                "boundary frames must all be added with index= or all "
+                "without it; mixing arrival order with explicit positions "
+                "leaves the forcing sequence undefined")
+        if not indexed:
+            return len(self._frames)
+        position = int(index)
+        if position < 0:
+            raise ValueError(
+                f"forcing-time index {position} is negative")
+        if position in self._frames:
+            raise ValueError(
+                f"forcing-time index {position} was added twice")
+        return position
+
+    def add_snapshot(self, snapshot: Mapping[str, object], *,
+                     index: int | None = None) -> None:
+        """Retain one coupled full-domain snapshot's perimeter frames.
+
+        ``index`` is the snapshot's position in the forcing sequence, for
+        a caller that builds the times out of order.  Omit it and frames
+        are taken in arrival order, which is the same thing when the
+        caller is already in time order.
+        """
         names = frozenset(snapshot)
         if not names:
             raise ValueError("boundary snapshot field inventory is empty")
@@ -870,32 +958,46 @@ class StateBoundaryFrames:
             if min(value.shape[-2:]) < 2 * width:
                 raise ValueError(
                     "domain is too small for the requested boundary width")
-        self._frames.append(MappingProxyType({
+        position = self._position(index)
+        self._frames[position] = MappingProxyType({
             side: extract_lateral_side(snapshot, side, width)
             for side in ("west", "east", "south", "north")
-        }))
+        })
 
-    def add_state(self, state) -> None:
+    def add_state(self, state, *, index: int | None = None) -> None:
         """Retain one initialized :class:`DomainState`'s perimeter frames.
 
         The full-domain coupled snapshot is a device temporary here; only
         the perimeter survives the call, so the caller may release the
-        state as soon as this returns.
+        state as soon as this returns.  ``index`` names the state's
+        position in the forcing sequence when the caller is not building
+        them in time order.
         """
-        self.add_snapshot(domain_boundary_snapshot(state))
+        self.add_snapshot(domain_boundary_snapshot(state), index=index)
 
     def build(self, times: Sequence[datetime | float]) -> LateralBoundaries:
         """Assemble the intervals from the accumulated perimeter frames."""
         if len(self._frames) != len(times) or len(self._frames) < 2:
             raise ValueError(
                 "snapshots and times must have the same length >= 2")
+        # A count that matches is not a sequence that is complete: an
+        # out-of-order caller that repeats one position and skips another
+        # arrives here with the right number of frames and a hole in the
+        # middle.  Name the holes rather than differencing across them.
+        missing = [index for index in range(len(times))
+                   if index not in self._frames]
+        if missing:
+            raise ValueError(
+                f"forcing-time indices {missing} were never added, so no "
+                "boundary interval can be built across them")
+        frames = [self._frames[index] for index in range(len(times))]
         seconds = _seconds(times)
         intervals = tuple(
             build_lateral_interval_from_sides(
-                self._frames[index], self._frames[index + 1],
+                frames[index], frames[index + 1],
                 start_seconds=float(seconds[index]),
                 end_seconds=float(seconds[index + 1]))
-            for index in range(len(self._frames) - 1))
+            for index in range(len(frames) - 1))
         return LateralBoundaries(intervals, self.spec_bdy_width,
                                  self.spec_zone, self.relax_zone)
 
@@ -1505,4 +1607,4 @@ __all__ = ["BoundaryInterval", "FieldBoundary", "LateralBoundaries",
            "build_lateral_interval_from_sides", "extract_lateral_side",
            "couple_nest_field", "domain_boundary_snapshot",
            "lateral_boundary_clock_dt", "lateral_boundary_reload_count",
-           "lateral_boundary_resident_bytes"]
+           "lateral_boundary_resident_bytes", "start_last_forcing_order"]

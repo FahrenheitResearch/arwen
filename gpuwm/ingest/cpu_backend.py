@@ -1,9 +1,21 @@
 """Parallel Rust CPU fallback for native preprocessing transforms.
 
 The shared library is built by ``tools/grib1_bridge`` alongside the native
-GRIB decoders.  Both public operations consume the same FP32 array contract
-as the CUDA implementations.  Work is split only across independent target
-points/columns, so worker count does not affect an element's arithmetic.
+GRIB decoders.  Every public operation consumes the same FP32 array
+contract as the CUDA implementations.  Work is split only across
+independent target points/columns, so worker count does not affect an
+element's arithmetic.
+
+There are two horizontal entry points, and the difference between them is
+WHO OWNS THE DONOR.  ``gpuwm_regular_interp_f32`` takes a fractional
+source coordinate and derives the donor itself, which is right for a
+regular lat/lon source.  ``gpuwm_indexed_interp_f32`` takes the donor as
+an exact integer pair plus its FP32 fraction, which is the only correct
+shape for a projected source: that route selects its donor in FP64, and a
+local coordinate just below an integer can advance its donor once it is
+rounded to FP32.  The second entry may be absent from an older staged
+library; :attr:`CpuPreprocessBackend.indexed_donor_interp` reports that,
+and the projected caller keeps its NumPy path for exactly that case.
 """
 
 from __future__ import annotations
@@ -177,6 +189,90 @@ class _CpuRegularPlan:
         return output.reshape((*leading_shape, *self.target_shape))
 
 
+class _CpuIndexedDonorPlan:
+    """Exact-integer-donor plan for a projected (non-lat/lon) source.
+
+    :class:`_CpuRegularPlan` hands the library a fractional source
+    coordinate and lets it derive the donor.  A projected source cannot
+    do that: it selects the donor in FP64, and a local coordinate just
+    below an integer can advance its donor once it is rounded to FP32.
+    So this plan carries the donor as an integer pair and the FP32
+    fraction separately, all the way to the kernel, and neither is ever
+    re-derived from the other.
+    """
+
+    #: Nearest is absent on purpose: it reads a DIFFERENT donor pair
+    #: (round-to-nearest, not floor), so it is a plain gather the caller
+    #: already does exactly in NumPy for well under a percent of this
+    #: operator's wall time.
+    _METHODS = {"bilinear": 1, "parabolic": 2}
+
+    def __init__(self, backend: "CpuPreprocessBackend", source_shape,
+                 donor_y, donor_x, fraction_y, fraction_x):
+        if not backend.indexed_donor_interp:
+            raise RuntimeError(
+                "this CPU preprocessing bridge predates "
+                "gpuwm_indexed_interp_f32; rebuild tools/grib1_bridge")
+        try:
+            source_shape = tuple(int(value) for value in source_shape)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("source_shape must contain two integers") from exc
+        if len(source_shape) != 2 or min(source_shape) < 2:
+            raise ValueError(
+                "source_shape must contain two dimensions of at least two")
+        donor_y = np.asarray(donor_y)
+        donor_x = np.asarray(donor_x)
+        fraction_y = np.asarray(fraction_y)
+        fraction_x = np.asarray(fraction_x)
+        shapes = {donor_y.shape, donor_x.shape,
+                  fraction_y.shape, fraction_x.shape}
+        if len(shapes) != 1 or donor_y.size == 0:
+            raise ValueError(
+                "donor indices and fractions must be non-empty and "
+                "equal-shaped")
+        if not np.isfinite(fraction_y).all() or not np.isfinite(fraction_x).all():
+            raise ValueError("target fractions must be finite")
+        self.backend = backend
+        self.source_shape = source_shape
+        self.target_shape = tuple(map(int, donor_y.shape))
+        self.donor_y = np.ascontiguousarray(donor_y, dtype=np.int32)
+        self.donor_x = np.ascontiguousarray(donor_x, dtype=np.int32)
+        self.fraction_y = np.ascontiguousarray(fraction_y, dtype=np.float32)
+        self.fraction_x = np.ascontiguousarray(fraction_x, dtype=np.float32)
+
+    def apply(self, field, method: str = "parabolic", *,
+              workers: int | None = None) -> np.ndarray:
+        """Apply this geometry while preserving leading field dimensions."""
+
+        if method not in self._METHODS:
+            raise ValueError(
+                "method must be 'bilinear' or 'parabolic'; 'nearest' is an "
+                "exact gather on the caller's own nearest-donor indices")
+        source = _host_f32(field)
+        if source.ndim < 2 or source.shape[-2:] != self.source_shape:
+            raise ValueError(
+                "field trailing dimensions do not match source axes")
+        leading_shape = source.shape[:-2]
+        nlead = int(np.prod(leading_shape, dtype=np.int64)) or 1
+        source = np.ascontiguousarray(
+            source.reshape((nlead, *self.source_shape)))
+        ntarget = int(self.donor_y.size)
+        output = np.empty((nlead, ntarget), dtype=np.float32)
+        count = _workers(workers, ntarget)
+        code = int(self.backend._library.gpuwm_indexed_interp_f32(
+            ctypes.c_void_p(source.ctypes.data),
+            ctypes.c_void_p(self.donor_y.ctypes.data),
+            ctypes.c_void_p(self.donor_x.ctypes.data),
+            ctypes.c_void_p(self.fraction_y.ctypes.data),
+            ctypes.c_void_p(self.fraction_x.ctypes.data),
+            ctypes.c_void_p(output.ctypes.data),
+            nlead, self.source_shape[0], self.source_shape[1], ntarget,
+            self._METHODS[method], count,
+        ))
+        self.backend._raise(code, "indexed-donor horizontal interpolation")
+        return output.reshape((*leading_shape, *self.target_shape))
+
+
 class CpuPreprocessBackend:
     """Loaded ABI-v1 Rust preprocessing backend."""
 
@@ -212,6 +308,24 @@ class CpuPreprocessBackend:
             size, ctypes.c_float, size, size,
         ]
         library.gpuwm_wrf_vert_interp_f32.restype = ctypes.c_int32
+        # The indexed-donor entry is looked UP, not versioned in.  The ABI
+        # integer above describes the shape of the calls that already
+        # existed, and bumping it to advertise an addition would refuse
+        # every correctly-built older library over a call it was never
+        # asked to make -- including a staged bridges bundle older than
+        # the checkout driving it.  Absence is a capability answer here,
+        # and the caller keeps the NumPy path for exactly that case.
+        try:
+            indexed = library.gpuwm_indexed_interp_f32
+        except AttributeError:
+            self.indexed_donor_interp = False
+            return
+        indexed.argtypes = [
+            pointer, pointer, pointer, pointer, pointer, pointer,
+            size, size, size, size, ctypes.c_int32, size,
+        ]
+        indexed.restype = ctypes.c_int32
+        self.indexed_donor_interp = True
 
     def close(self) -> None:
         """Release the Windows DLL handle held by a short-lived verifier.
@@ -258,6 +372,13 @@ class CpuPreprocessBackend:
 
         return _CpuRegularPlan.from_index_coordinates(
             self, source_shape, y, x)
+
+    def indexed_donor_plan(self, source_shape, donor_y, donor_x,
+                           fraction_y, fraction_x) -> _CpuIndexedDonorPlan:
+        """Prepare repeated interpolation from exact donors and fractions."""
+
+        return _CpuIndexedDonorPlan(
+            self, source_shape, donor_y, donor_x, fraction_y, fraction_x)
 
     def wrf_vertical_interpolate(
             self, field, surface_value, source_pressure, surface_pressure,

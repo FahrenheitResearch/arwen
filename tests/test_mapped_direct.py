@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import gpuwm.mapped_direct as mapped_direct
+from gpuwm.ingest.lateral_bc import start_last_forcing_order
 
 
 _START = datetime(2026, 7, 20)
@@ -370,17 +371,21 @@ def _install_prepare_fakes(
     monkeypatch.setattr(mapped_direct, "initialize_real", initialize)
     # The mapped lane no longer hands every state to one builder: it
     # streams, adding each state's perimeter frames as that state is
-    # built so the state itself can be released.  This double records
-    # the sequence so the test still proves the builder saw the states,
-    # AND now proves they arrived one at a time in forcing order.
-    frame_calls = {"added": [], "built": []}
+    # built so the state itself can be released.  Nor does it build them
+    # in forcing order any more -- the START time is built LAST so that
+    # nothing is held across the loop, and each state names its own
+    # POSITION.  This double records both, so the test still proves the
+    # builder saw every state, and now also proves which one was built
+    # last and that arrival order and position were kept distinct.
+    frame_calls = {"added": [], "arrival": [], "built": []}
 
     class RecordingFrames:
         def __init__(self, **kwargs):
             frame_calls["kwargs"] = kwargs
 
-        def add_state(self, state):
+        def add_state(self, state, *, index=None):
             frame_calls["added"].append(state)
+            frame_calls["arrival"].append(index)
 
         def build(self, actual_times):
             frame_calls["built"].append(tuple(actual_times))
@@ -525,15 +530,32 @@ def test_single_domain_preserves_legacy_direct_export(monkeypatch, tmp_path):
     assert calls["interpolate"] == len(expected.snapshots)
     assert args["output_root"].is_dir()
     # Streaming contract: every forcing time contributed its perimeter
-    # frames, one state at a time and in forcing order, and the intervals
-    # were assembled once from those frames.  The old builder took all the
-    # states at once, which is what made preprocessing hold them all.
+    # frames, one state at a time, and the intervals were assembled once
+    # from those frames.  The old builder took all the states at once,
+    # which is what made preprocessing hold them all.
     frames = calls["frames"]
     assert len(frames["added"]) == len(expected.snapshots)
-    assert frames["added"] == [r.state for r in expected.results]
     assert len(frames["built"]) == 1
     assert frames["kwargs"]["spec_bdy_width"] == (
         expected.exp.root.run.spec_bdy_width)
+    # ORDERING CONTRACT, which is the OOM fix: the start time is built
+    # LAST, so it is the one met/state the loop retains and no forcing
+    # time is ever held across another one's interpolate/initialize.  In
+    # forcing order the start time was built first and held for the whole
+    # loop, which at 800x800x49 mp=10 is 14.67 GiB of device residency
+    # against 7.66 and the difference between preparing that domain on a
+    # 16 GiB card and OOMing on it.
+    order = start_last_forcing_order(len(expected.snapshots))
+    assert frames["arrival"] == list(order)
+    assert frames["arrival"][-1] == 0
+    assert frames["added"] == [expected.results[k].state for k in order]
+    # The retained met/state are still the START time's, whatever order
+    # they were built in: those are what the prepared cache, the wrfinput
+    # export and the surface analysis are written from.  The boundaries
+    # land on the start time's state and on no other.
+    assert expected.results[0].state.lateral_boundaries is expected.boundaries
+    assert all(result.state.lateral_boundaries is None
+               for result in expected.results[1:])
 
 
 def test_long_provenance_role_publishes_short_hash_named_evidence(

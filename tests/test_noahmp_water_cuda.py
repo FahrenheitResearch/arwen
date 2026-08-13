@@ -26,7 +26,11 @@ compiles from a string with no include path.
 their source files by the documented transform and requires byte equality, so
 a change to either lane that this file has not picked up fails a test rather
 than silently forking a transcription that is already gated at max_ulp 0.
-That test needs no GPU and runs everywhere.
+That test needs no GPU, so it now lives in
+``tests/test_noahmp_kernel_source_scans.py`` -- while it was written HERE,
+above this module's ``pytest.importorskip("cupy")``, it ran on no box at
+all, which is the opposite of the "runs everywhere" this paragraph used to
+claim for it.
 
 Everything compared here comes from the oracle, not from the CPU
 transcription, so a shared mistake in the two ports cannot pass this file.
@@ -114,88 +118,15 @@ def _load():
 TABLE, CASES = _load()
 
 
-# ---------------------------------------------------------------------------
-# The one check that needs no GPU: the imported sections have not forked.
-# ---------------------------------------------------------------------------
-
-SEP = "// " + "=" * 74
-DASH = "// " + "-" * 74
-
-
-def _soil_section(text: str) -> str:
-    a = text.index("#define NSOIL 4")
-    b = text.rindex(SEP, a, text.index("// Host-facing kernels."))
-    s = text[a:b]
-    return re.sub(r"^#define (IN_STRIDE|OUT_STRIDE)\s+\d+.*\n", "", s,
-                  flags=re.M).rstrip() + "\n"
-
-
-def _snow_section(text: str) -> str:
-    a = text.index("#define NSNOW 3")
-    b = text.rindex(SEP, a,
-                    text.index("// Entry points.  One thread per fixture case."))
-    s = text[a:b]
-    for start, end in (
-            (DASH + "\n// glibc __exp2f_data",
-             DASH + "\n// Every float32 constant"),
-            (DASH + "\n// rounding-pinned primitives",
-             DASH + "\n// glibc 2.39 expf"),
-            (DASH + "\n// glibc 2.39 expf",
-             DASH + "\n// column state, in WRF's index convention")):
-        i = s.index(start)
-        s = s[:i] + s[s.index(end, i):]
-    s = re.sub(r"^#define (NSOIL|IN_STRIDE|OUT_STRIDE)\s+\d+.*\n", "", s,
-               flags=re.M)
-    names = sorted(set(re.findall(r"#define (K_[A-Z0-9_]+)", s)), key=len,
-                   reverse=True)
-    assert names, "no K_* macros found in the snow section"
-    s = re.sub(r"\bC_F32\b", "C_SN_F32", s)
-    for n in names:
-        s = re.sub(r"\b%s\b" % n, "SN_" + n, s)
-    return s.rstrip() + "\n"
-
-
-def _read(name: str) -> str:
-    """Read a kernel source with LF line endings.
-
-    The worktree may be checked out CRLF; the comparison below is about the
-    transcription, not about which platform wrote the file.
-    """
-    with open(os.path.join(_KDIR, name), encoding="utf-8", newline="") as fh:
-        return fh.read().replace("\r\n", "\n")
-
-
-def test_imported_sections_match_their_sources():
-    """noahmp_water.cu's two copies must still equal what they were copied from.
-
-    CuPy compiles a RawModule from a string with no include path, so the copy
-    is unavoidable.  What is avoidable is the copy drifting: if the soil-water
-    or snow lane fixes an arithmetic site, this test fails until the fix is
-    carried across, instead of this file quietly holding an older
-    transcription that its own device gate happens to accept.
-    """
-    water = _read("noahmp_water.cu")
-    for marker, source, derive in (
-            ("noahmp_soilwater.cu", "noahmp_soilwater.cu", _soil_section),
-            ("noahmp_snow.cu (K_* -> SN_K_*)", "noahmp_snow.cu",
-             _snow_section)):
-        begin = f"// >>> BEGIN imported section: {marker}"
-        end = f"// <<< END imported section: {source}"
-        i = water.index(begin) + len(begin) + 1
-        j = water.index(end)
-        got = water[i:j]
-        want = derive(_read(source))
-        assert got == want, (
-            f"{marker} section in noahmp_water.cu has drifted from "
-            f"gpuwm/core/kernels/{source}")
-
-
-def test_the_drift_check_can_fail():
-    """A one-character change to a source must break the equality above."""
-    s = _snow_section(_read("noahmp_snow.cu"))
-    assert s != _snow_section(_read("noahmp_snow.cu").replace(
-        "0x3CCCCCCDu, 0x3CCCCCCDu", "0x3CCCCCCEu, 0x3CCCCCCDu", 1))
-
+# The checks that need no GPU -- the imported-section drift check and its
+# falsifiability control -- are in
+# tests/test_noahmp_kernel_source_scans.py.  This file's own docstring says
+# of them "That test needs no GPU and runs everywhere"; it ran nowhere,
+# because it sat ABOVE the `cp = pytest.importorskip("cupy")` below and a
+# module-level skip fires at import, taking everything above it too.  The
+# section transform is shared from tests/noahmp_kernel_sources.py, because
+# the device gate below re-reads the same kernel text.
+from noahmp_kernel_sources import read_kernel as _read  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Device gate

@@ -1817,8 +1817,45 @@ def carrier_provenance_attrs(physics) -> dict:
     carriers = getattr(physics, "carriers", None)
     if carriers is None:
         return {}
-    attrs = {"GPUWM_SURFACE_RADIATION_POLICY": str(carriers.policy)}
-    rows = carriers.report()
+    return _carrier_attrs(str(carriers.policy), carriers.report())
+
+
+def streamed_carrier_provenance_attrs(streamed) -> dict:
+    """The same globals, taken from a STREAMED domain's live ledger.
+
+    :func:`carrier_provenance_attrs` reads the contract off a
+    ``PhysicsDriver``, and under ``[tiles] store = "host"`` the driver the
+    route holds is the snapshot the store was filled from -- it never ran
+    radiation, so it reports ``unwritten`` for carriers whose values are in
+    the file and correct.  ``StreamedDomain.carrier_provenance`` returns the
+    ledger the sweep advances; this renders it in exactly the same keys, so
+    a streamed wrfout and a resident one of the same configuration carry
+    IDENTICAL provenance attributes rather than merely plausible ones.
+
+    Returns ``{}`` when the streamed domain carries no contract, which sends
+    the caller back to the state -- the same answer a pre-physics write
+    gets, and not the same thing as a contract that says ``unwritten``.
+    """
+    provenance = None
+    reader = getattr(streamed, "carrier_provenance", None)
+    if reader is not None:
+        provenance = reader()
+    if not provenance:
+        return {}
+    policy = provenance.get("policy")
+    if policy is None:
+        return {}
+    return _carrier_attrs(str(policy), provenance["records"])
+
+
+def _carrier_attrs(policy: str, rows) -> dict:
+    """Render one carrier ledger as wrfout globals.
+
+    Shared by the resident and streamed readers so the two cannot drift
+    into writing the same provenance under different keys or precisions --
+    which is what the frame-parity gate compares attribute by attribute.
+    """
+    attrs = {"GPUWM_SURFACE_RADIATION_POLICY": str(policy)}
     for name, row in rows.items():
         key = str(name).upper()
         attrs[f"GPUWM_CARRIER_{key}_SOURCE"] = str(row["source"])
@@ -2023,11 +2060,23 @@ class PerDomainWrfoutWriters:
         # a resumed or mid-run-forced carrier is labelled in the file it
         # affects -- without draining the async queue the way an
         # update_global_attrs swap must.
-        carrier_attrs = carrier_provenance_attrs(
-            getattr(node.state, "physics", None))
+        #
+        # ASKED OF THE DOMAIN, exactly as the frame below is.  Under
+        # [tiles] store = "host" the driver on node.state is the snapshot
+        # the store was filled from: radiation ran on the tile buffers, so
+        # that contract still says every carrier is `unwritten` while the
+        # frame beside it carries the sky those producers computed.  The
+        # streamed reader falls back to the state's contract when the
+        # domain carries none, so a resident run is unchanged.
+        streamed = getattr(node.state, "_streamed_domain", None)
+        carrier_attrs = {}
+        if streamed is not None:
+            carrier_attrs = streamed_carrier_provenance_attrs(streamed)
+        if not carrier_attrs:
+            carrier_attrs = carrier_provenance_attrs(
+                getattr(node.state, "physics", None))
         frame_attrs = (None if not carrier_attrs
                        else {**writer.global_attrs, **carrier_attrs})
-        streamed = getattr(node.state, "_streamed_domain", None)
         if streamed is not None:
             # A streamed domain's numbers live in the pinned host store;
             # the provenance snapshot applies to its frames the same way.

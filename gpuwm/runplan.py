@@ -820,6 +820,199 @@ def _follow_unsupported_refusal(chain: str, grid_id: int) -> str:
         "move the nest and needs neither.")
 
 
+# ---------------------------------------------------------------------------
+# [tiles]: which chain streams, and which grid of it
+# ---------------------------------------------------------------------------
+
+#: What a configured ``[tiles]`` table reaches on each chain this front
+#: door dispatches to.
+#:
+#: ``"root_only"``  the chain's forecast stage wires
+#:                  :func:`gpuwm.core.streaming.builders_for_tree`, so
+#:                  ``[tiles]`` genuinely streams -- but only grid 1.
+#:                  :func:`~gpuwm.core.streaming.prepared_domain_builder`
+#:                  refuses a NEST at build time ("[tiles] fired on grid
+#:                  N, which is a NEST"): a nest's lateral forcing is
+#:                  rebuilt from its parent every parent step
+#:                  (``NestCoupler.force`` -> ``RollingNestBoundaries``)
+#:                  rather than tabulated as a ``LateralBoundaries``
+#:                  series, so there is nothing for
+#:                  ``tile_boundary_tables`` to window.
+#: ``"unrouted"``   the chain reads ``exp.tiles`` at NO point, so any
+#:                  enabled mode is a request nothing will ever act on.
+#:
+#: Every chain :func:`_chain_key` can return must appear here; a test
+#: fails if one does not, so a chain cannot be added without answering
+#: "and what does [tiles] do on it?".
+_STREAMING_DELIVERY: dict[str, str] = {
+    # gpuwm.runtime.run_experiment reads exp.tiles nowhere and says so
+    # itself, by calling refuse_unrouted_streaming(consults_the_seam=
+    # False).  Named here so the same refusal arrives at resolve time --
+    # before the run directory, the fetch and the ingest -- in the core's
+    # own words rather than in a second copy of them.
+    "experiment": "unrouted",
+    "prepared:go": "root_only",
+    "prepared:hrrr": "root_only",
+}
+
+
+def streaming_decision(exp, *, chain: str) -> dict[str, Any] | None:
+    """What ``[tiles]`` will do on ``chain``, or ``None``.
+
+    ``None`` means the config configures no ``[tiles]``, which is nearly
+    all of them: an unconfigured plan is not annotated, not refused, and
+    its composed commands are untouched -- the same emptiness contract
+    :func:`gpuwm.core.streaming.identity_payload_entry` keeps.
+
+    Otherwise a record naming the chain, what it can stream, the grids
+    it cannot, and -- when the combination cannot stream at all -- the
+    refusal to raise.
+
+    THE DEFECT THIS ANSWERS.  ``[tiles]`` used to reach the HRRR chain
+    and be dropped without a word: the single-domain arm hands its
+    forecast the authority the PREPARER published
+    (:func:`tools.hrrr_single_domain_benchmark._experiment_tables`),
+    which is built in code and has never carried a ``[tiles]`` table, so
+    a user's block was read by run-plan, reported in ``--resolve``, and
+    then silently replaced by a document that does not mention it.  A
+    run configured to stream integrated resident, and the only evidence
+    was the absence of a line in the log.  The plumbing is now real (see
+    :func:`_hrrr_chain`); this is the other half -- the combinations
+    that CANNOT stream, refused here from the config alone rather than
+    discovered at the first tile buffer, minutes and two preparations
+    downstream.
+    """
+    from gpuwm.core import streaming
+
+    options = getattr(exp, "tiles", None) or streaming.OFF
+    if not options.enabled:
+        return None
+    if chain not in _STREAMING_DELIVERY:
+        raise PlanError(
+            f"run-plan cannot say what [tiles] does on chain {chain!r}: "
+            "it is not in the streaming delivery table, and guessing "
+            "would either refuse a config that streams or accept one "
+            "whose forecast stage will never read the table")
+    delivery = _STREAMING_DELIVERY[chain]
+    root = int(exp.root.grid_id)
+    nests = tuple(int(dc.grid_id) for dc in exp.domains if dc.parent_id != 0)
+    relocation = getattr(exp, "relocation", None)
+    moving = (None if relocation is None or not getattr(
+        relocation, "enabled", False) else int(relocation.grid_id))
+    return {
+        "chain": chain,
+        "delivery": delivery,
+        "mode": options.mode,
+        "store": options.store,
+        "streamable_grid_id": None if delivery == "unrouted" else root,
+        "resident_grid_ids": list(nests),
+        "relocation_grid_id": moving,
+        "refusal": _streaming_refusal(
+            chain, delivery, options, root=root, nests=nests, moving=moving),
+    }
+
+
+def _streaming_refusal(chain: str, delivery: str, options, *, root: int,
+                       nests: tuple[int, ...], moving: int | None
+                       ) -> str | None:
+    """Why this ``[tiles]`` cannot run on this chain, or ``None``.
+
+    ``mode = "on"`` is the only mode refused on a chain that streams,
+    and that asymmetry is
+    :func:`gpuwm.core.streaming.refuse_unrouted_streaming`'s, not a new
+    one: ``on`` streams unconditionally and is therefore decidable from
+    the config alone, while ``auto`` asks :mod:`tilestream.autoplan`
+    about a specific card and legitimately answers "resident" for a nest
+    that fits.  Asking that question here would stand a CUDA primary
+    context up inside a front door that has not decided to use the
+    device yet.  What ``auto`` does to a nest that does NOT fit is the
+    same unfixed gap that function names, and it is named below rather
+    than papered over.
+    """
+    if delivery == "unrouted":
+        # The core's own sentence, raised as this front door's refusal.
+        # Calling it rather than restating it is the point: a route that
+        # learns to stream stops refusing here on the same day it stops
+        # refusing there, without anyone remembering this file exists.
+        from types import SimpleNamespace
+
+        from gpuwm.core import streaming
+
+        try:
+            streaming.refuse_unrouted_streaming(
+                SimpleNamespace(tiles=options), f"{chain!r}",
+                consults_the_seam=False)
+        except streaming.StreamingRefused as refusal:
+            return str(refusal)
+        # It did not refuse, so the core no longer agrees that this
+        # chain is unrouted -- which means the route learned to read
+        # [tiles] and _STREAMING_DELIVERY was not updated with it.
+        # Refused rather than accepted: this function's caller has no
+        # resolution note for a delivery that does not exist, and an
+        # accepted plan here would be one whose forecast stage nobody
+        # has checked reads the table.
+        return layered(
+            f"run-plan lists the {chain!r} chain as reading [tiles] at "
+            "no point, but gpuwm.core.streaming.refuse_unrouted_streaming "
+            f"accepted mode = '{options.mode}' for it.",
+            "The two disagree, so one of them is stale.  If that route "
+            "now wires a streamed-domain builder, give it a delivery in "
+            "gpuwm.runplan._STREAMING_DELIVERY and a note in "
+            "_STREAMING_RESOLUTION_NOTE saying which grid it can stream.")
+    if options.mode != "on" or not nests:
+        return None
+    grids = ", ".join(f"d{grid:02d}" for grid in nests)
+    moving_note = (
+        "" if moving is None else
+        f"  d{moving:02d} is also this config's [relocation] follow "
+        "domain, and a domain that MOVES is a nest by construction -- "
+        "its footprint is re-sited from the parent at each move, so "
+        "there is no fixed tabulated forcing series for it to stream "
+        "out of.")
+    return layered(
+        f"[tiles] mode = 'on' asks every grid in this config to stream, "
+        f"and this config has {len(nests)} nest(s) ({grids}).  Only "
+        f"d{root:02d} can stream on the {chain!r} chain: "
+        "gpuwm.core.streaming.prepared_domain_builder refuses a nest "
+        "outright, so this plan would fetch, prepare, build the whole "
+        "resident tree and THEN stop with \"[tiles] fired on grid "
+        f"{nests[0]}, which is a NEST\".  Refused here instead, from the "
+        f"config alone.{moving_note}",
+        "A nest's lateral forcing is rebuilt from its parent every "
+        "parent step (NestCoupler.force -> RollingNestBoundaries) rather "
+        "than tabulated as a LateralBoundaries series, so there is "
+        "nothing for tile_boundary_tables to window and no per-tile "
+        "forcing to attach.  Streaming a nest is not 'not implemented "
+        "here', it is unposed.\n\n"
+        "  remedy: run the root alone -- one [[domain]] table, which is "
+        "the shape [tiles] exists for, since the root is the domain that "
+        "outgrows the card; or set mode = 'auto', which streams "
+        f"d{root:02d} when tilestream.autoplan says it does not fit and "
+        "leaves the nests resident wherever autoplan says THEY do.  Note "
+        "that 'auto' is accepted rather than proven: a nest autoplan "
+        "says does not fit reaches the same refusal, after the resident "
+        "allocation it was trying to avoid.")
+
+
+#: What ``automatic_resolutions`` says about a configured ``[tiles]``.
+#: A caller reads this to know, BEFORE launching, which grid will
+#: actually stream -- because the run itself cannot tell them: a grid
+#: that declined to stream is ABSENT from the stepper dict, and absent
+#: is exactly what an unconfigured grid looks like.
+_STREAMING_RESOLUTION_NOTE = {
+    "root_only":
+        "[tiles] mode = '{mode}' (store = '{store}') is carried to the "
+        "forecast stage of the {chain} chain, which wires "
+        "streaming.builders_for_tree and streams for real.  Only "
+        "d{root:02d} can stream: a nest's forcing is rebuilt from its "
+        "parent rather than tabulated, so prepared_domain_builder "
+        "refuses one.{nests}  Nothing here binds the restart identity -- "
+        "streaming.identity_payload_entry contributes nothing on purpose, "
+        "so a checkpoint written streamed resumes resident and one "
+        "written resident resumes streamed",
+}
+
+
 def corridor_estimate(exp, decision: Mapping[str, Any] | None
                       ) -> dict[str, Any]:
     """What the sealed corridor will cost, priced before it is built.
@@ -1776,14 +1969,14 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                 "in run-manifest.json is the pid doing the model work "
                 "and the caller owns restart policy"})
 
+    chain = _chain_key(plan.route, (raw.get("fetch") or {}).get("source"))
+
     # A moving nest, decided and REPORTED before anything is fetched.
     # The chain is read off the config's own [fetch] table, which is
     # what `_execute_prepared_route` dispatches on, so the chain judged
     # here is the chain that runs.  A plan with no follow source adds
     # nothing to this document.
-    decision = follow_statics_decision(
-        exp, chain=_chain_key(plan.route,
-                              (raw.get("fetch") or {}).get("source")))
+    decision = follow_statics_decision(exp, chain=chain)
     if decision is not None:
         if decision["refusal"] is not None:
             raise PlanError(decision["refusal"])
@@ -1800,6 +1993,40 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                 grid_id=decision["relocation_grid_id"],
                 stage=_CORRIDOR_STAGE.get(decision["chain"],
                                           "the preparation"))})
+
+    # [tiles], on the same terms and in the same place.  A configured
+    # streaming mode that the chain cannot honour is refused HERE --
+    # from the config, before the fetch -- rather than at the first tile
+    # buffer, which on the HRRR chain is after a download, two
+    # preparations and a whole resident tree construction.  A plan that
+    # configures no [tiles] adds nothing to this document.
+    tiles = streaming_decision(exp, chain=chain)
+    if tiles is not None:
+        if tiles["refusal"] is not None:
+            raise PlanError(tiles["refusal"])
+        tiles = {key: value for key, value in tiles.items()
+                 if key != "refusal"}
+        resolutions.append({
+            # NOT "tiles".  `_schema_default_resolutions` already emits
+            # that key -- scope "experiment", value the whole default
+            # StreamingOptions -- for a config that spells no [tiles].
+            # The two are mutually exclusive today, so a consumer keyed
+            # on the name would never see both; it would just see one
+            # key whose value is sometimes a table of defaults and
+            # sometimes a mode, which is a shape it cannot parse.
+            "scope": "execution", "key": "tiles_delivery",
+            "value": tiles["mode"],
+            "basis": "experiment_config",
+            "note": _STREAMING_RESOLUTION_NOTE[tiles["delivery"]].format(
+                mode=tiles["mode"], store=tiles["store"], chain=chain,
+                root=tiles["streamable_grid_id"],
+                nests=("" if not tiles["resident_grid_ids"] else
+                       "  d"
+                       + ", d".join(f"{grid:02d}" for grid
+                                    in tiles["resident_grid_ids"])
+                       + " therefore run resident, and mode = 'auto' "
+                         "reaches that same refusal for any of them "
+                         "autoplan says does not fit."))})
 
     return {
         "schema": RESOLVE_SCHEMA,
@@ -1825,6 +2052,15 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
         # the resolutions gets the same fact in prose.  ``null`` when
         # the config moves no nest.
         "moving_nest": decision,
+        # The [tiles] decision as a record, for the same reason and on
+        # the same terms: ``null`` when the config configures none, and
+        # otherwise the grid that CAN stream beside the grids that
+        # cannot.  A run cannot answer this for itself -- a grid that
+        # declined to stream is absent from the stepper dict, and absent
+        # is what an unconfigured grid looks like too -- so a front end
+        # that wants to show which domain will stream has to be told
+        # before the run rather than after it.
+        "tiles": tiles,
         "configuration": _config_snapshot(exp, data),
         "declared_inputs": inputs,
         "inputs_present": all(entry["present"] for entry in inputs),
@@ -2228,6 +2464,35 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
         "--wps-namelist", str(handoff["wps_namelist"]),
         "--io-mode", "history", "--outdir", str(forecast_dir),
     ]
+    # [tiles], and the ONE flag on this argv that does not come out of
+    # the bundle.
+    #
+    # THE DEFECT.  --experiment-config above is the authority the
+    # PREPARER published, not the config the user wrote: it is rendered
+    # from tables that stage builds in code
+    # (tools/hrrr_single_domain_benchmark.py _experiment_tables), and
+    # those tables are {experiment, projection, shared, domain} -- there
+    # has never been a [tiles] among them.  So a user's [tiles] block
+    # reached run-plan, was validated, was reported by --resolve, and
+    # then vanished at exactly this line: the forecast loaded a document
+    # that does not mention it and ran resident, with nothing in the log
+    # to say the mode had been asked for.
+    #
+    # Forwarded as a FLAG rather than published into that document on
+    # purpose.  The published authority is hash-bound -- the runner
+    # compares its name and sha256 against the portable source manifest
+    # -- so putting [tiles] in it would make the execution mode part of
+    # the prepared bundle's identity, and a bundle prepared streamed
+    # could then not be re-run resident.  That is the exact coupling
+    # streaming.identity_payload_entry exists to prevent: it contributes
+    # NOTHING to the restart identity so that a forecast which outgrew
+    # its card can resume on the machine it outgrew.
+    #
+    # Only when the mode is enabled, so an ordinary run composes the
+    # argv it has always composed, token for token.
+    if exp.tiles.enabled:
+        argv += ["--tiles", json.dumps(dataclasses.asdict(exp.tiles),
+                                       sort_keys=True)]
     observer.enter_stage("forecast", phase="forecast")
     from gpuwm import prepared_single_domain_forecast as runner
 
@@ -2335,6 +2600,18 @@ def _hrrr_tree_forecast(*, tree_root: Path, config_path: Path,
     is not read: the tool computes that value as the sha256 of
     ``receipt.json``'s bytes, so hashing the artifact gives the
     identical digest without making a printed line load-bearing.
+
+    ``[tiles]`` NEEDS NO FLAG HERE, and that is a fact about this argv
+    rather than an omission.  ``--experiment-config`` below is the
+    USER'S config -- the file they wrote or the wizard emitted, bound by
+    its own digest on the next line -- so ``exp.tiles`` at the tree
+    runner is already the table they typed, verbatim.  The single-domain
+    arm needs ``--tiles`` only because IT hands over the authority the
+    preparer published instead, and that document has no [tiles] table
+    to carry.  Adding a flag here as well would give one table two
+    sources on one route, which is how the two arms end up streaming
+    differently from the same config.  Pinned by a test rather than left
+    to this comment.
     """
 
     from gpuwm.fetch import sha256_file
@@ -3395,5 +3672,5 @@ __all__ = [
     "generate_intent_config", "render_catalog",
     "intent_arguments", "load_plan", "probe_environment", "read_events",
     "register_cli", "resolve_fetch_cycle", "resolve_plan",
-    "run_plan_main", "write_manifest",
+    "run_plan_main", "streaming_decision", "write_manifest",
 ]

@@ -93,7 +93,34 @@ fn cuda_ftz_product_nonzero(left: f32, right: f32) -> bool {
 }
 
 #[inline]
-fn wps_oned(x: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
+fn host_ieee_product_normal(left: f32, right: f32) -> bool {
+    // The OTHER missing-value predicate: a literal mirror of NumPy's
+    //     np.abs(np.multiply(b, c, dtype=np.float32))
+    //         >= np.finfo(np.float32).tiny
+    // as `gpuwm/ingest/hrrr.py:_wps_oned_cpu` writes it.  It differs from
+    // `cuda_ftz_product_nonzero` in exactly one corner -- a SUBNORMAL
+    // OPERAND whose product with its partner is normal -- because the
+    // NumPy form flushes only the RESULT (the `>= tiny` compare) and
+    // never the operands, while CUDA flushes both.  Measured on the box
+    // that built this: `np.float32(1e-40) * np.float32(1e10)` is
+    // 9.999946e-31, a normal number, so the NumPy predicate says "both"
+    // and the CUDA one says "neither".
+    //
+    // Which one is correct is not this function's question.  The two
+    // predicates serve two different pinned authorities: the projected
+    // HRRR host route is pinned to the NumPy operator it is replacing,
+    // the regular-grid route is pinned to the CUDA plan beside it.  A
+    // port that "improved" the corner would move production bits, so
+    // this reproduces it and says so.
+    //
+    // f32::MIN_POSITIVE is the smallest positive NORMAL, which is
+    // exactly what np.finfo(np.float32).tiny names.  NaN compares false
+    // (NumPy agrees), infinities compare true (NumPy agrees).
+    (left * right).abs() >= f32::MIN_POSITIVE
+}
+
+#[inline]
+fn wps_oned_with(x: f32, a: f32, b: f32, c: f32, d: f32, both: bool) -> f32 {
     let zero = 0.0f32;
     let half = 0.5f32;
     let one = 1.0f32;
@@ -106,7 +133,6 @@ fn wps_oned(x: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
     if x == one {
         out = c;
     }
-    let both = cuda_ftz_product_nonzero(b, c);
     if both && a == zero && d == zero {
         out = b * (one - x) + c * x;
     }
@@ -120,6 +146,16 @@ fn wps_oned(x: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
         out = regular;
     }
     out
+}
+
+#[inline]
+fn wps_oned(x: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
+    wps_oned_with(x, a, b, c, d, cuda_ftz_product_nonzero(b, c))
+}
+
+#[inline]
+fn wps_oned_host(x: f32, a: f32, b: f32, c: f32, d: f32) -> f32 {
+    wps_oned_with(x, a, b, c, d, host_ieee_product_normal(b, c))
 }
 
 #[inline]
@@ -284,6 +320,197 @@ pub unsafe extern "C" fn gpuwm_regular_interp_f32(
         } else {
             code
         }
+    }))
+    .unwrap_or(ERR_PANIC)
+}
+
+// ---------------------------------------------------------------------------
+// Indexed-donor horizontal interpolation
+// ---------------------------------------------------------------------------
+//
+// `gpuwm_regular_interp_f32` above takes FRACTIONAL source coordinates and
+// derives the donor cell from them with an FP32 floor.  A projected source
+// (HRRR on its own Lambert grid) cannot use that: it selects the donor in
+// FP64 and keeps it, because a local coordinate just below an integer can
+// advance its donor once it is rounded to FP32.  So the projected route had
+// no Rust boundary at all and ran the whole operator in NumPy.
+//
+// This is that boundary.  It takes the donor as an EXACT integer pair plus
+// the FP32 fraction the caller already holds -- the same `(iy, ix, fy, fx)`
+// split `_ProjectedGpuPlan` hands the CUDA kernel -- and never re-derives
+// either one.  The arithmetic below is a statement-order mirror of
+// `gpuwm/ingest/hrrr.py:_ProjectedCpuPlan.apply`, down to the zero/`tiny`
+// sentinel round trip and the host-IEEE `oned` predicate; see
+// `host_ieee_product_normal` for the one place that differs from the CUDA
+// mirror in this same file, and why it must.
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn indexed_point(
+    source: &[f32],
+    lead: usize,
+    iy: i64,
+    ix: i64,
+    fy: f32,
+    fx: f32,
+    ny: usize,
+    nx: usize,
+    method: i32,
+) -> f32 {
+    let one = 1.0f32;
+    if method == 1 {
+        // NumPy indexes iy/iy+1 and ix/ix+1 WITHOUT clipping here; the
+        // caller's geometry guarantees the four-point halo and the entry
+        // point below rejects a donor that would leave the window.
+        let iy = iy as usize;
+        let ix = ix as usize;
+        let lower = (one - fx) * source_at(source, lead, iy, ix, ny, nx)
+            + fx * source_at(source, lead, iy, ix + 1, ny, nx);
+        let upper = (one - fx) * source_at(source, lead, iy + 1, ix, ny, nx)
+            + fx * source_at(source, lead, iy + 1, ix + 1, ny, nx);
+        return (one - fy) * lower + fy * upper;
+    }
+    // Parabolic.  np.clip(ix + offset, 0, nx - 1), in i64 so an extreme
+    // donor cannot wrap the way int32 index arithmetic would.
+    let tiny = 1.0e-20f32;
+    let mut rows = [0.0f32; 4];
+    for (row_index, y_offset) in (-1i64..=2).enumerate() {
+        let jy = (iy + y_offset).clamp(0, ny as i64 - 1) as usize;
+        let mut values = [0.0f32; 4];
+        for (column_index, x_offset) in (-1i64..=2).enumerate() {
+            let jx = (ix + x_offset).clamp(0, nx as i64 - 1) as usize;
+            let value = source_at(source, lead, jy, jx, ny, nx);
+            values[column_index] = if value == 0.0 { tiny } else { value };
+        }
+        rows[row_index] = wps_oned_host(fx, values[0], values[1], values[2], values[3]);
+    }
+    let result = wps_oned_host(fy, rows[0], rows[1], rows[2], rows[3]);
+    if result == tiny {
+        0.0
+    } else {
+        result
+    }
+}
+
+/// Interpolate FP32 fields onto targets given by an EXACT integer donor
+/// index plus its FP32 fraction.  `method` is 1=bilinear, 2=WPS parabolic.
+///
+/// Nearest is deliberately absent: it is a pure gather off a SEPARATE
+/// donor pair (the caller's round-to-nearest indices, not this floor), so
+/// routing it here would mean a second index contract for an operation
+/// NumPy fancy-indexing already does exactly and in well under a percent
+/// of this operator's wall time.
+///
+/// Non-finite values are propagated, not refused, because the operator
+/// this mirrors propagates them: the `oned` missing-value predicate is
+/// false for a NaN product, so a NaN donor resolves to the polynomial's
+/// zero default rather than to NaN, and refusing here would turn a
+/// reproduction into a behaviour change.
+///
+/// # Safety
+///
+/// Every pointer must address the complete contiguous buffer implied by the
+/// dimensions.  Input and output buffers must not overlap.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn gpuwm_indexed_interp_f32(
+    source: *const f32,
+    donor_y: *const i32,
+    donor_x: *const i32,
+    fraction_y: *const f32,
+    fraction_x: *const f32,
+    output: *mut f32,
+    nlead: usize,
+    source_ny: usize,
+    source_nx: usize,
+    ntarget: usize,
+    method: i32,
+    workers: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if source.is_null()
+            || donor_y.is_null()
+            || donor_x.is_null()
+            || fraction_y.is_null()
+            || fraction_x.is_null()
+            || output.is_null()
+        {
+            return ERR_NULL;
+        }
+        if nlead == 0
+            || source_ny < 2
+            || source_nx < 2
+            || ntarget == 0
+            || workers == 0
+            || !(1..=2).contains(&method)
+        {
+            return ERR_DIMENSION;
+        }
+        let source_length = match nlead
+            .checked_mul(source_ny)
+            .and_then(|n| n.checked_mul(source_nx))
+        {
+            Some(value) => value,
+            None => return ERR_DIMENSION,
+        };
+        if nlead.checked_mul(ntarget).is_none() {
+            return ERR_DIMENSION;
+        }
+        let source_slice = std::slice::from_raw_parts(source, source_length);
+        let donor_y_slice = std::slice::from_raw_parts(donor_y, ntarget);
+        let donor_x_slice = std::slice::from_raw_parts(donor_x, ntarget);
+        let fy_slice = std::slice::from_raw_parts(fraction_y, ntarget);
+        let fx_slice = std::slice::from_raw_parts(fraction_x, ntarget);
+        // Bilinear reads iy+1/ix+1 unguarded, exactly as the mirrored
+        // NumPy expression does.  NumPy would WRAP a negative index and
+        // raise on an overrun; neither is a reproduction worth having, so
+        // the whole donor field is checked once, up front, before any
+        // worker starts.  Parabolic clamps every offset and needs nothing.
+        if method == 1 {
+            let fits = (0..ntarget).all(|index| {
+                let iy = donor_y_slice[index] as i64;
+                let ix = donor_x_slice[index] as i64;
+                iy >= 0 && ix >= 0 && iy + 1 < source_ny as i64 && ix + 1 < source_nx as i64
+            });
+            if !fits {
+                return ERR_DIMENSION;
+            }
+        }
+        let output_address = output as usize;
+        std::thread::scope(|scope| {
+            for (start, stop) in worker_ranges(ntarget, workers) {
+                scope.spawn(move || {
+                    let output_ptr = output_address as *mut f32;
+                    // Lead outer, target inner: within one level the source
+                    // stencil sweeps the window in raster order, so the
+                    // four donor rows stay resident, and the stores are
+                    // contiguous.  Pure loop order -- no element's
+                    // arithmetic depends on it, and neither does the
+                    // partition, which is why worker count cannot move a
+                    // bit here any more than it can in the two entry
+                    // points above.
+                    for lead in 0..nlead {
+                        for target_index in start..stop {
+                            let value = indexed_point(
+                                source_slice,
+                                lead,
+                                donor_y_slice[target_index] as i64,
+                                donor_x_slice[target_index] as i64,
+                                fy_slice[target_index],
+                                fx_slice[target_index],
+                                source_ny,
+                                source_nx,
+                                method,
+                            );
+                            unsafe {
+                                *output_ptr.add(lead * ntarget + target_index) = value;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        OK
     }))
     .unwrap_or(ERR_PANIC)
 }
@@ -579,6 +806,19 @@ pub unsafe extern "C" fn gpuwm_wrf_vert_interp_f32(
     .unwrap_or(ERR_PANIC)
 }
 
+/// The ABI generation of the entry points already in the contract.
+///
+/// It stays 1 across the addition of `gpuwm_indexed_interp_f32`, and that
+/// is the whole versioning rule: this number describes the SHAPE of the
+/// existing calls, and Python refuses a library whose number is not the
+/// one it was built against (`gpuwm/ingest/cpu_backend.py`).  Bumping it
+/// to advertise a NEW symbol would refuse every correctly-built older
+/// library over a call those libraries were never asked to make.  A
+/// caller that wants the new entry looks the symbol up instead and keeps
+/// its own fallback -- which is also the only honest answer, since a
+/// staged bundle can be older than the checkout driving it.
+///
+/// Changing an existing signature is the thing that bumps this.
 #[no_mangle]
 pub extern "C" fn gpuwm_preprocess_cpu_abi_version() -> u32 {
     1
@@ -611,6 +851,141 @@ mod tests {
         let actual = horizontal_point(&source, 0, 1.002_899_2, 1.937_393_2, 4, 4, 2)
             .expect("valid parabolic stencil");
         assert_eq!(actual.to_bits(), 0.0f32.to_bits());
+    }
+
+    #[test]
+    fn this_build_does_not_flush_subnormals() {
+        // The host-IEEE predicate is only a mirror of NumPy if THIS
+        // binary keeps subnormals.  x86-64 Rust does not set MXCSR
+        // FTZ/DAZ and does not enable fast-math, so it does not -- but
+        // that is a property of the build, not of the language, and a
+        // future flag that changed it would silently move the projected
+        // route's bits.  Assert it where it would be noticed.
+        let subnormal = f32::from_bits(0x0001_1682); // np.float32(1e-40)
+        assert!(!subnormal.is_normal());
+        assert_ne!(subnormal, 0.0);
+        // DAZ off: the subnormal operand is not read as zero.
+        let product = subnormal * 1.0e10f32;
+        assert!(product.is_normal());
+        // FTZ off: a subnormal RESULT survives as a subnormal.
+        let squeezed = subnormal * 0.5f32;
+        assert!(!squeezed.is_normal());
+        assert_ne!(squeezed, 0.0);
+    }
+
+    #[test]
+    fn host_and_cuda_predicates_split_only_on_a_non_normal_operand() {
+        let subnormal = f32::from_bits(0x0001_1682); // np.float32(1e-40)
+        // (left, right, host/NumPy answer, cuda/FTZ answer).  The two
+        // split exactly when an OPERAND is not normal but the host
+        // product still is -- CUDA flushes the operand, NumPy does not.
+        for (left, right, host, cuda) in [
+            (subnormal, 1.0e10f32, true, false),
+            (1.0e10f32, subnormal, true, false),
+            (f32::INFINITY, 5.0f32, true, false),
+            // Agreement everywhere else, including the subnormal PRODUCT
+            // of two normal operands, which is what `>= tiny` is for.
+            (1.0e-20f32, 1.0e-20f32, false, false),
+            (subnormal, 1.0e-10f32, false, false),
+            (0.0f32, 5.0f32, false, false),
+            (5.0f32, 0.0f32, false, false),
+            (f32::NAN, 5.0f32, false, false),
+            (3.0e38f32, 3.0e38f32, true, true),
+            (1.0f32, 1.0f32, true, true),
+            (-2.5f32, 4.0f32, true, true),
+        ] {
+            assert_eq!(
+                host_ieee_product_normal(left, right),
+                host,
+                "host predicate on ({left}, {right})"
+            );
+            assert_eq!(
+                cuda_ftz_product_nonzero(left, right),
+                cuda,
+                "cuda predicate on ({left}, {right})"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_parabolic_is_worker_count_invariant() {
+        let ny = 24usize;
+        let nx = 31usize;
+        let nlead = 3usize;
+        let ntarget = 97usize;
+        let source: Vec<f32> = (0..nlead * ny * nx)
+            .map(|index| {
+                let value = ((index * 37) % 211) as f32 * 0.125 - 6.0;
+                if index % 17 == 0 {
+                    0.0
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let donor_y: Vec<i32> = (0..ntarget).map(|i| (i % (ny - 3) + 1) as i32).collect();
+        let donor_x: Vec<i32> = (0..ntarget).map(|i| (i % (nx - 3) + 1) as i32).collect();
+        let fy: Vec<f32> = (0..ntarget).map(|i| (i % 8) as f32 / 8.0).collect();
+        let fx: Vec<f32> = (0..ntarget).map(|i| (i % 5) as f32 / 5.0).collect();
+        let run = |workers: usize| {
+            let mut output = vec![0.0f32; nlead * ntarget];
+            let code = unsafe {
+                gpuwm_indexed_interp_f32(
+                    source.as_ptr(),
+                    donor_y.as_ptr(),
+                    donor_x.as_ptr(),
+                    fy.as_ptr(),
+                    fx.as_ptr(),
+                    output.as_mut_ptr(),
+                    nlead,
+                    ny,
+                    nx,
+                    ntarget,
+                    2,
+                    workers,
+                )
+            };
+            assert_eq!(code, OK);
+            output
+        };
+        let serial = run(1);
+        for workers in [2usize, 3, 7, 64] {
+            let parallel = run(workers);
+            assert!(
+                serial
+                    .iter()
+                    .zip(parallel.iter())
+                    .all(|(left, right)| left.to_bits() == right.to_bits()),
+                "worker count {workers} moved a bit"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_bilinear_refuses_a_donor_outside_the_halo() {
+        let source = [1.0f32; 16];
+        let donor_y = [3i32];
+        let donor_x = [0i32];
+        let fy = [0.5f32];
+        let fx = [0.5f32];
+        let mut output = [0.0f32; 1];
+        let code = unsafe {
+            gpuwm_indexed_interp_f32(
+                source.as_ptr(),
+                donor_y.as_ptr(),
+                donor_x.as_ptr(),
+                fy.as_ptr(),
+                fx.as_ptr(),
+                output.as_mut_ptr(),
+                1,
+                4,
+                4,
+                1,
+                1,
+                1,
+            )
+        };
+        assert_eq!(code, ERR_DIMENSION);
     }
 
     #[test]

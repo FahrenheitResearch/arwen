@@ -3795,8 +3795,33 @@ def preflight_prepared_forecast(
         expert_acknowledgements: tuple[str, ...] = (),
         run_seconds: float, history_interval_seconds: float,
         domain_bundle: Path | None = None,
+        tiles=None,
 ) -> PreparedForecastInputs:
-    """Validate every portable preparation authority without importing CuPy."""
+    """Validate every portable preparation authority without importing CuPy.
+
+    ``tiles`` is an optional :class:`~gpuwm.core.streaming.StreamingOptions`
+    that REPLACES whatever the hash-bound experiment declares, and it is
+    the one execution control this stage accepts from outside the bundle.
+
+    It has to be, on one route.  The native HRRR chain hands this runner
+    the authority its PREPARER published, which is rendered from tables
+    that stage builds in code -- ``{experiment, projection, shared,
+    domain}``, with no ``[tiles]`` among them and no way for a user's
+    block to get into one.  So a config that asked to stream was read,
+    validated and reported by the front door and then integrated
+    resident, because the document that reached this function had never
+    heard of the table.  The mode arrives as an argument instead.
+
+    Overlaying rather than publishing is deliberate and is the reason
+    this is sound.  ``[tiles]`` contributes NOTHING to the restart
+    identity on purpose (:func:`gpuwm.core.streaming.identity_payload_entry`
+    returns ``{}``): a checkpoint written resident must resume streamed
+    and one written streamed must resume resident, since a forecast that
+    outgrew its card resuming on the machine it outgrew is the operation
+    the mode exists for.  Rendering the table into the hash-bound
+    document would bind the execution mode into the prepared bundle's
+    identity and refuse exactly that.
+    """
 
     if source not in SUPPORTED_SOURCES:
         raise ValueError(f"unsupported prepared forecast source {source!r}")
@@ -3830,11 +3855,16 @@ def preflight_prepared_forecast(
     refuse_unrouted_perturbation(
         source_exp, "prepared single-domain forecast")
     refuse_unrouted_spawn(source_exp, "prepared single-domain forecast")
-    # Same governance, same place: this route wires no streamed-domain
-    # builder either, so [tiles] mode = 'on' is refused at admission
-    # rather than after the prepared cache has been restored onto the card.
-    streaming.refuse_unrouted_streaming(
-        source_exp, "prepared single-domain forecast")
+    # NO streaming refusal here.  This route wires a streamed-domain builder
+    # (streaming.builders_for_tree, below), so mode = 'on' is something it
+    # can do rather than something to refuse at admission.  The refusal that
+    # used to stand here outlived the wiring by a release: it was written
+    # when the route passed no builders, and it went on rejecting the one
+    # mode that asks for streaming unconditionally -- with a message saying
+    # the route "wires no streamed-domain builder" -- while mode = 'auto'
+    # went through the very builder it said did not exist.
+    # refuse_unrouted_streaming is still correct for gpuwm run, which reads
+    # [tiles] at no point; see its docstring.
     layout = _resolve_prepared_layout(
         source=source, prepared_root=prepared_root, proof=proof,
         source_exp=source_exp, domain_bundle=domain_bundle)
@@ -4246,6 +4276,25 @@ def preflight_prepared_forecast(
     if (file_sha256["proof"] != proof_sha256
             or file_sha256["source_manifest"] != source_manifest_sha256):
         raise RuntimeError("preparation authorities changed during preflight")
+    if tiles is not None:
+        # LAST, after every identity comparison above.  [tiles] is not a
+        # domain field and could not move one of them, but an execution
+        # control that is applied before the checks it cannot affect is
+        # an execution control someone will later assume was checked.
+        declared = getattr(exp, "tiles", None)
+        if declared is not None and declared.enabled and declared != tiles:
+            # Cannot happen on the HRRR route -- its published authority
+            # has no [tiles] table to declare.  Said out loud anyway,
+            # because a caller supplying the mode from outside while the
+            # bundle carries its own is two authorities disagreeing about
+            # how this forecast integrates, and picking one silently is
+            # the failure this sentence exists to prevent.
+            print(f"prepared forecast: --tiles mode = '{tiles.mode}' "
+                  "replaces the [tiles] the hash-bound experiment "
+                  f"declares (mode = '{declared.mode}'); the flag is the "
+                  "later and more specific statement, and [tiles] binds "
+                  "no identity either way", file=sys.stderr)
+        exp = replace(exp, tiles=tiles)
     return PreparedForecastInputs(
         source=source, layout=layout.kind, prepared_root=prepared_root,
         domain_bundle_path=layout.domain_bundle,
@@ -4333,9 +4382,41 @@ def _peak_rss_bytes() -> int:
     return int(usage.ru_maxrss * scale)
 
 
+class _LandingObservers:
+    """Fan the wrfout landing hook out to more than one consumer.
+
+    ``PerDomainWrfoutWriters.attach_progress_callback`` reads ONE
+    ``output_committed`` attribute off what it is handed and assigns it
+    to every writer's ``landing_observer``, unconditionally -- so a
+    second consumer cannot be added by calling attach twice.  The
+    second call would overwrite the first, silently, and the run would
+    keep publishing frames with the earlier consumer no longer watching.
+
+    That matters here because this runner now has two: the observer of a
+    caller hosting it in-process (``gpuwm run-plan``), and its OWN early
+    render when the command line asked for one.  Both are given the
+    frame; neither can suppress the other; and a consumer that raises
+    does not take the writer thread or its sibling down with it, which
+    is the same contract the writer keeps for a single one.
+    """
+
+    def __init__(self, *sinks):
+        self._sinks = tuple(sink for sink in sinks if sink is not None)
+
+    def __bool__(self) -> bool:
+        return bool(self._sinks)
+
+    def output_committed(self, **event) -> None:
+        for sink in self._sinks:
+            try:
+                sink(**event)
+            except Exception:  # noqa: BLE001 - telemetry never fails a run
+                pass
+
+
 def run_prepared_forecast(
         inputs: PreparedForecastInputs, *, output_directory: Path,
-        observer=None,
+        observer=None, first_products=None,
 ) -> dict[str, object]:
     """Restore, integrate, and publish hash-bound source-neutral history.
 
@@ -4346,6 +4427,18 @@ def run_prepared_forecast(
     already builds, and -- if it carries the ``output_committed`` hook
     -- each wrfout as it becomes durable.  ``None`` leaves every byte of
     this runner's behaviour unchanged.
+
+    ``first_products`` is a :class:`gpuwm.first_products.FirstProducts`
+    this runner OWNS, for the command line rather than for a host.  It
+    exists because the feature was reachable only through a host: arming
+    lives on ``RunObserver`` and on ``gpuwm go``, so ``python -m
+    gpuwm.prepared_single_domain_forecast`` published its analysis frame
+    -- fsynced, self-validated and renamed, minutes before the forecast
+    ends -- with nothing watching.  MEASURED consequence: reaching a
+    89 s launch-to-first-plot on this route took an EXTERNAL process
+    polling the frames for ``GPUWM_WRITE_COMPLETE``, which is a watcher
+    reimplementing a hook the writer already raises.  ``None`` -- and
+    every invocation that names no products -- changes nothing.
     """
 
     _verify_thompson_runtime_environment(inputs.physics_receipt)
@@ -4565,8 +4658,27 @@ def run_prepared_forecast(
     # do.  Still ahead of every submit -- the first one happens inside
     # execute_experiment below -- and attach_progress_callback refuses
     # outright if that ever stops being true.
-    if observer is not None:
-        writers.attach_progress_callback(observer)
+    #
+    # ONE attach, with both consumers behind it.  attach_progress_callback
+    # overwrites `landing_observer` rather than appending to it, so
+    # calling it twice would silently unhook the host's observer the
+    # moment this runner armed a render of its own.
+    #
+    # No root-domain guard, unlike RunObserver.output_committed: this
+    # runner integrates exactly one domain (preflight replaces a
+    # multi-domain experiment with `(source_exp.root,)`), so there is one
+    # writer, it is the root's, and a guard here would be a test that
+    # cannot fail.  The tree runner is where that guard earns its keep.
+    #
+    # `getattr` for the observer's hook, exactly as attach_progress_callback
+    # itself reads it: this runner's contract has always been that an
+    # observer without `output_committed` is fine and simply hears
+    # nothing about landings.
+    landing = _LandingObservers(
+        getattr(observer, "output_committed", None),
+        None if first_products is None else first_products.frame_committed)
+    if landing:
+        writers.attach_progress_callback(landing)
 
     # [tiles]; see the same call in prepared_domain_tree_forecast.  An
     # experiment that does not configure it gets {} and the executor's own
@@ -4635,11 +4747,17 @@ def run_prepared_forecast(
             "WRF history output filenames/cadence differ from the "
             "hash-bound request")
 
-    # The final health gate still validates node.state and CANNOT be folded:
+    # The final health gate validates node.state and CANNOT be folded:
     # StateHealthValidator is one block per whole field with no windowing, so
-    # it has no tile-interior form.  Under a host store it therefore passes
-    # on the t = 0 snapshot -- runtime.integrate_prepared_case warns about
-    # exactly this, and the note is repeated here rather than left implicit.
+    # it has no tile-interior form.  Under a host store that state is the
+    # snapshot that filled the store, so the gate used to pass on the t = 0
+    # ANALYSIS -- and so did canonical_state_digest below it: a receipt
+    # reporting nan_free on a run that had integrated for an hour, and a
+    # final digest that was the initial condition.  The note was here and
+    # the fix was not; this is the fix.  Zero and a getattr on a resident
+    # run, so nothing changes for a forecast that configures no [tiles].
+    carriers_refreshed = streaming.refresh_streamed_state(
+        steppers.get(int(node.cfg.grid_id)), node.state)
     final_health = _strict_json(vars(
         StateHealthValidator(node.state).validate(phase="final.d01")))
     final_stability = _strict_json(streaming.stability_observer(
@@ -4748,6 +4866,12 @@ def run_prepared_forecast(
             # receipt therefore unchanged, whenever [tiles] is off.
             "tiles": streaming.receipt_entry(
                 exp.tiles, streaming_decisions),
+            # How many carriers the final health gate and the canonical
+            # digest were brought up to date from the store before they ran.
+            # 0 on a resident run; on a streamed one it is the whole
+            # manifest, and a reader can tell the two apart from the
+            # receipt rather than by trusting that the refresh happened.
+            "carriers_refreshed_before_final_reads": carriers_refreshed,
         },
         "gridded_output": {
             "cadence_seconds": cadence_seconds,
@@ -4812,6 +4936,23 @@ def run_prepared_forecast(
     # streaming.identity_payload_entry.
     if streaming_report:
         report["tiles"] = streaming_report
+    # The early render, collected before this process may exit.  Its
+    # worker is a DAEMON thread -- it has to be, so a wedged render can
+    # never hold a finished forecast open -- and a daemon thread is
+    # killed at interpreter shutdown, so a runner that returned here
+    # without joining would publish a receipt for pictures that were
+    # never written.  `wait` returns None on every way it declined,
+    # which is the same "assume nothing was published" answer the
+    # finalize stage acts on.
+    #
+    # Added rather than inlined above, and only when something was
+    # published: a run that named no products writes the report it wrote
+    # before this existed, key for key.  Same emptiness contract as
+    # report["tiles"].
+    if first_products is not None:
+        receipt = first_products.wait()
+        if receipt is not None:
+            report["first_products"] = receipt
     _atomic_json(outdir / "report.json", report)
     emit_run_capsule(
         outdir, emission_site="prepared_single_domain_forecast",
@@ -4963,6 +5104,33 @@ def _parse_args(argv=None):
               "history_interval_s, and defaults to it when omitted"))
     parser.add_argument("--io-mode", choices=("history",), required=True)
     parser.add_argument("--outdir", type=Path, required=True)
+    parser.add_argument(
+        "--tiles", default=None, metavar="JSON",
+        help=("the [tiles] table this forecast integrates under, as a "
+              "JSON object with the keys gpuwm.core.streaming."
+              "StreamingOptions takes (mode/tile_nx/tile_ny/nbuffers/"
+              "halo/store/write_mode/pipeline/vram_budget_bytes/"
+              "host_budget_bytes).  For the caller whose hash-bound "
+              "experiment cannot carry one: the native HRRR chain hands "
+              "this runner the authority its preparer BUILT, which has "
+              "no [tiles] table, so a user's block had nowhere to ride.  "
+              "Validated by the same StreamingOptions.from_mapping the "
+              "config front door uses, and binds no identity -- omitted, "
+              "the hash-bound experiment's own table (usually none) runs"))
+    parser.add_argument(
+        "--render-products", default=None, metavar="SPEC",
+        help=("`gpuwm render --products`' own spec -- a comma-separated "
+              "product list, or `all`, or `none` -- for the FIRST frame "
+              "this run commits, rendered on a worker thread while the "
+              "forecast is still integrating.  Absent is off, and off is "
+              "the default: there is deliberately no second switch, so "
+              "\"which products\" has one answer that cannot disagree "
+              "with itself.  The first frame is the analysis at t = 0, "
+              "durable before a single step is integrated"))
+    parser.add_argument(
+        "--render-dir", type=Path, default=None, metavar="DIR",
+        help=("where --render-products publishes; defaults to "
+              "OUTDIR/png.  Ignored without --render-products"))
     return parser.parse_args(argv)
 
 
@@ -4991,6 +5159,92 @@ def _parse_materialize_args(argv=None):
     # gpuwm/explain.py promises can never reach a terminal does.
     add_explain_flag(parser)
     return parser.parse_args(argv)
+
+
+def _streaming_options_argument(text: str | None):
+    """``--tiles`` as a validated :class:`StreamingOptions`, or ``None``.
+
+    Through ``StreamingOptions.from_mapping`` and nothing else, so this
+    flag and a ``[tiles]`` table in a config are refused by the SAME
+    validator: an unknown key, a mode this build does not have, half a
+    tiling, a tiling set while the mode is off -- all of them produce
+    the sentence the config front door produces, rather than a second
+    vocabulary a user has to learn for the flag.
+    """
+
+    if text is None:
+        return None
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"--tiles must be a JSON object, got {type(payload).__name__}")
+    return streaming.StreamingOptions.from_mapping(payload, source="--tiles")
+
+
+def _route_owned_first_products(args, *, outdir: Path, observer,
+                                started: float):
+    """This runner's own early render, or ``None``.
+
+    ``None`` for three separate reasons, and the distinction matters:
+
+    * ``--render-products`` was not given, or was given as ``none``.
+      Off by ABSENCE, decided by
+      :func:`gpuwm.first_products.early_render_requested` rather than
+      here, so this runner and every other door agree on what "asked for
+      pictures" means without a second switch to disagree with.
+    * a HOST already armed one.  ``gpuwm run-plan``'s HRRR chain arms
+      the render on its observer before it calls this runner, with the
+      dict its own finalize stage will use.  Arming a second trigger on
+      the same directory would render the same frame twice, publish two
+      receipts over each other, and make the finalize skip depend on
+      which worker finished last.  The host's arming wins and this says
+      so, because a flag that was passed and quietly did nothing is the
+      failure this whole increment is about.
+
+    The report/warn pair is what a hosted run gets from its event
+    stream, spelled for a process that has none: one line on stdout at
+    the instant the pictures became readable -- carrying the seconds
+    from launch, which IS the time-to-first-plot number -- and one line
+    on stderr for every way the render declined.  The receipt itself is
+    unchanged: :mod:`gpuwm.first_products` writes
+    ``gpuwm.first-products.v1`` beside the pictures either way, so a
+    finalize stage or a reader cannot tell the two arming routes apart.
+    """
+
+    from gpuwm.first_products import FirstProducts, early_render_requested
+
+    if not early_render_requested(args.render_products):
+        return None
+    if getattr(observer, "first_products", None) is not None:
+        print("prepared forecast: --render-products ignored; the caller "
+              "hosting this runner already armed an early render, and two "
+              "on one directory would draw the first frame twice",
+              file=sys.stderr)
+        return None
+    render_dir = (outdir / "png" if args.render_dir is None
+                  else Path(args.render_dir))
+
+    def report(receipt) -> None:
+        elapsed = time.perf_counter() - started
+        print(f"prepared forecast: first products ready {elapsed:.1f} s "
+              "after this runner started "
+              f"({len(receipt['paths'])} picture(s), "
+              f"--products {receipt['render_products']}): "
+              + ", ".join(receipt["paths"]), flush=True)
+
+    def warn(code: str, message: str, **fields) -> None:
+        print(f"prepared forecast: {code}: {message}", file=sys.stderr)
+
+    # The plan dict `go_cli.render_command` and `go_cli._render_stage`
+    # both take, with `run` naming the directory this runner writes its
+    # wrfout subdirectory into -- so a finalize render pointed at the
+    # same --outdir composes the same command and lands in the same
+    # place, which is what makes the early frame's bytes and the late
+    # one's comparable at all.
+    return FirstProducts(
+        {"run": outdir, "render": render_dir,
+         "render_products": args.render_products},
+        report=report, warn=warn)
 
 
 def main(argv=None, *, observer=None) -> int:
@@ -5068,6 +5322,15 @@ def main(argv=None, *, observer=None) -> int:
         return 0
     args = _parse_args(argv)
     _resolve_clock_arguments(args)
+    # Before the output directory is claimed: a malformed [tiles] is a
+    # usage mistake, and refusing it after creating a run directory
+    # leaves the caller a directory to clean up for a typo.
+    try:
+        tiles = _streaming_options_argument(args.tiles)
+    except (ValueError, TypeError) as error:
+        print(f"prepared_single_domain_forecast: --tiles refused: {error}",
+              file=sys.stderr)
+        return 2
     # A rejected --outdir is a usage mistake, not a crash: one sentence
     # naming the problem and a directory that works, never a traceback.
     try:
@@ -5078,6 +5341,12 @@ def main(argv=None, *, observer=None) -> int:
               file=sys.stderr)
         return 2
     started = time.perf_counter()
+    # Armed here, before the preflight: the frame this renders is the
+    # analysis at t = 0, and the history alarm is true at t = 0, so it is
+    # durable before a single step is integrated.  Anything armed after
+    # the forecast opens is already racing the thing it exists to catch.
+    first_products = _route_owned_first_products(
+        args, outdir=outdir, observer=observer, started=started)
     _atomic_json(outdir / "progress.json", {
         "schema": PROGRESS_SCHEMA,
         "status": "VALIDATING_PREPARATION",
@@ -5097,7 +5366,8 @@ def main(argv=None, *, observer=None) -> int:
             expert_acknowledgements=tuple(args.ack),
             run_seconds=args.run_seconds,
             history_interval_seconds=args.history_interval_seconds,
-            domain_bundle=args.domain_bundle)
+            domain_bundle=args.domain_bundle,
+            tiles=tiles)
         verification = dict(inputs.physics_receipt).get("verification")
         if (isinstance(verification, dict)
                 and verification.get("status") != "wrf-verified"
@@ -5107,7 +5377,8 @@ def main(argv=None, *, observer=None) -> int:
             print(f"prepared forecast: {verification['sentence']}",
                   file=sys.stderr)
         report = run_prepared_forecast(inputs, output_directory=outdir,
-                                       observer=observer)
+                                       observer=observer,
+                                       first_products=first_products)
     except BaseException as error:
         model_elapsed_seconds = 0.0
         try:

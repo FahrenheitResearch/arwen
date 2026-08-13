@@ -675,3 +675,64 @@ def test_gpu_device_path_matches_the_numpy_state_path():
     want = host_state.existing_scratch("up_heli_max")
     assert want.max() > 0.0
     np.testing.assert_array_equal(got, want)
+
+
+# ---------------------------------------------------------------------------
+# the streamed halo the diagnostic needs
+# ---------------------------------------------------------------------------
+
+def test_the_streamed_halo_widens_for_the_diagnostics_own_reach():
+    """F4 at the 2.2.0 cut: one ULP at one cell, at exactly a tile seam.
+
+    ``UP_HELI_MAX`` was the only field of 75 that a streamed run did not
+    reproduce bit-identically -- one cell, ``(j=331, i=200)``, 1.16e-10,
+    on a 438x350 domain tiled 200x200.  ``i=200`` is the first interior
+    column of the second tile, which is what named the mechanism: the
+    diagnostic runs in the dycore epilogue from a stencil two cells wide,
+    at the one instant when a tile's halo has already been invalidated
+    from the outside in by that step's own dependency cone.
+
+    ``halo_radius`` prescribes 16 against a measured carrier minimum of
+    14, so the margin is exactly 2 and the diagnostic consumes all of it.
+    Re-running that configuration at halo 18 gave bit-identity in all 75
+    fields at every frame, which is the measurement this pins.
+
+    Asserted as ``bare + UH_DIAGNOSTIC_HALO_CELLS`` rather than as the
+    literal 18, so a change to the sound-step formula moves both together
+    and this test keeps testing the diagnostic's reach rather than a
+    number that happened to be right once.
+    """
+    from gpuwm.core.uh_diag import UH_DIAGNOSTIC_HALO_CELLS
+    from tilestream import harness
+
+    for ns in (4, 6, 8):
+        off = harness.make_config(64, 64, 8, time_step_sound=ns,
+                                  nwp_diagnostics=0)
+        on = harness.make_config(64, 64, 8, time_step_sound=ns,
+                                 nwp_diagnostics=1)
+        assert harness.halo_radius(off) == 10 + 3 * ns // 2
+        assert (harness.halo_radius(on)
+                == harness.halo_radius(off) + UH_DIAGNOSTIC_HALO_CELLS)
+
+    # The default-on half: a run that emits the diagnostic gets the wider
+    # halo with no flag set, which is the whole difference between a fix
+    # and a workaround.
+    default_on = harness.make_config(64, 64, 8, time_step_sound=4,
+                                     nwp_diagnostics=1)
+    assert harness.halo_radius(default_on) == 18
+
+
+def test_the_diagnostic_reach_matches_the_stencil_it_describes():
+    """The constant is not a magic number: it is 1 + 1, and both are here.
+
+    Vorticity and the 8-point ``w`` average read ``(j-1..j, i-1..i)``;
+    the 9-point smoother then reads column values at ``(j+-1, i+-1)``.
+    A change to either stencil that did not move this constant would
+    silently re-open the defect, so the arithmetic is asserted rather
+    than described.
+    """
+    from gpuwm.core.uh_diag import UH_DIAGNOSTIC_HALO_CELLS
+
+    column_stencil_radius = 1        # rvort / wavg, backward-staggered
+    smoother_radius = 1              # the 9-point smooth, both directions
+    assert UH_DIAGNOSTIC_HALO_CELLS == column_stencil_radius + smoother_radius

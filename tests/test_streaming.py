@@ -764,6 +764,676 @@ def test_a_dataclass_scheme_is_twinned_at_the_tiles_extents():
     assert twin.column_chunk == 12_500
 
 
+# --------------------------------------------------------------------------
+# the twin RECIPE -- legacy RRTMG, the default suite's radiation
+# --------------------------------------------------------------------------
+#
+# RRTMGLegacyRadiation is a plain class whose constructor requires
+# (start_time, latitude_deg, longitude_deg), so _tile_scheme refused it and
+# every [tiles] run of the SHIPPED DEFAULT physics suite died in
+# TiledRun.__init__ -- streaming was reachable only by selecting rte-rrtmgp.
+# These hold the recipe that rebuilds it and the two audits that keep the
+# recipe honest, without constructing one (its constructor wants CUDA).
+
+
+def _recipe_key(cls):
+    """The key _tile_scheme derives for a class."""
+    return f"{cls.__module__}:{cls.__qualname__}"
+
+
+def test_the_default_suites_legacy_rrtmg_has_a_twin_recipe():
+    """The registration itself, against the REAL class.
+
+    A source-shaped assertion for the same reason the route-builder test
+    above is one: the defect was an ABSENT recipe, and nothing else in this
+    suite would notice its removal.
+    """
+    from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
+
+    key = _recipe_key(RRTMGLegacyRadiation)
+    assert key in streaming._TWIN_RECIPES, (
+        "legacy RRTMG has no per-buffer twin recipe; every [tiles] run of "
+        "the default physics suite will raise StreamingRefused")
+
+
+def test_the_recipe_reproduces_every_constructor_parameter():
+    """The staleness audit, run against the live signature.
+
+    This is the test that fails when someone adds a policy argument to the
+    adapter: a recipe that does not carry it would build buffers whose
+    physics differs from the domain's at that argument's DEFAULT, which no
+    inventory or geography check downstream can see.
+    """
+    import inspect
+
+    from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
+
+    recipe = streaming._TWIN_RECIPES[_recipe_key(RRTMGLegacyRadiation)]
+    declared = {p.name for p in
+                inspect.signature(RRTMGLegacyRadiation).parameters.values()
+                if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)}
+    assert declared <= recipe.reproduces, (
+        f"the recipe does not reproduce {sorted(declared - recipe.reproduces)}")
+
+
+class _RequiresArgs:
+    """A stand-in with legacy RRTMG's SHAPE: required args plus policy."""
+
+    def __init__(self, start_time, latitude_deg, longitude_deg, *,
+                 column_chunk=4096):
+        self.start_time = start_time
+        self.latitude_deg = latitude_deg
+        self.longitude_deg = longitude_deg
+        self.column_chunk = column_chunk
+        self.update_count = 0
+
+
+def _register(monkeypatch, cls, **kw):
+    kw.setdefault("build", lambda scheme, cls_, lat, lon: cls_(
+        scheme.start_time, lat, lon, column_chunk=scheme.column_chunk))
+    kw.setdefault("reproduces", frozenset({
+        "start_time", "latitude_deg", "longitude_deg", "column_chunk"}))
+    kw.setdefault("volatile", frozenset({"update_count"}))
+    table = dict(streaming._TWIN_RECIPES)
+    table[_recipe_key(cls)] = streaming._TwinRecipe(**kw)
+    monkeypatch.setattr(streaming, "_TWIN_RECIPES", table)
+
+
+def test_a_recipe_twin_takes_the_tiles_geography_and_the_domains_policy(
+        monkeypatch):
+    import numpy as np
+
+    _register(monkeypatch, _RequiresArgs)
+    domain = _RequiresArgs("T0", np.zeros((8, 8)), np.zeros((8, 8)),
+                           column_chunk=12_500)
+    lat, lon = np.ones((4, 4)), np.ones((4, 4))
+    twin = streaming._tile_scheme(domain, lat, lon)
+
+    assert twin is not domain                       # a FRESH object, not shared
+    assert twin.latitude_deg.shape == (4, 4)        # the TILE's geography
+    assert twin.start_time == "T0"                  # the DOMAIN's start time
+    assert twin.column_chunk == 12_500              # the DOMAIN's policy
+
+
+def test_a_stale_recipe_is_refused_rather_than_defaulting_the_policy(
+        monkeypatch):
+    """A recipe that does not name every constructor parameter is stale."""
+    import numpy as np
+
+    _register(monkeypatch, _RequiresArgs,
+              reproduces=frozenset({"start_time", "latitude_deg",
+                                    "longitude_deg"}))
+    domain = _RequiresArgs("T0", np.zeros((8, 8)), np.zeros((8, 8)))
+    with pytest.raises(StreamingRefused, match="stale against the adapter"):
+        streaming._tile_scheme(domain, np.ones((4, 4)), np.ones((4, 4)))
+
+
+def test_a_recipe_that_drops_policy_is_refused(monkeypatch):
+    """The scalar audit, applied to the recipe's own output."""
+    import numpy as np
+
+    _register(monkeypatch, _RequiresArgs,
+              build=lambda scheme, cls_, lat, lon: cls_(
+                  scheme.start_time, lat, lon))       # drops column_chunk
+    domain = _RequiresArgs("T0", np.zeros((8, 8)), np.zeros((8, 8)),
+                           column_chunk=12_500)
+    with pytest.raises(StreamingRefused, match="drops policy"):
+        streaming._tile_scheme(domain, np.ones((4, 4)), np.ones((4, 4)))
+
+
+def test_a_running_counter_is_not_mistaken_for_dropped_policy(monkeypatch):
+    """The domain's adapter has stepped; a fresh twin has not."""
+    import numpy as np
+
+    _register(monkeypatch, _RequiresArgs)
+    domain = _RequiresArgs("T0", np.zeros((8, 8)), np.zeros((8, 8)))
+    domain.update_count = 17
+    twin = streaming._tile_scheme(domain, np.ones((4, 4)), np.ones((4, 4)))
+    assert twin.update_count == 0
+
+
+def test_an_adapter_with_no_recipe_is_still_refused():
+    """The guard is EXTENDED by the recipe table, not weakened by it."""
+    import numpy as np
+
+    domain = _RequiresArgs("T0", np.zeros((8, 8)), np.zeros((8, 8)))
+    with pytest.raises(StreamingRefused, match="_TWIN_RECIPES"):
+        streaming._tile_scheme(domain, np.ones((4, 4)), np.ones((4, 4)))
+
+
+# --------------------------------------------------------------------------
+# the buffer's VERTICAL COORDINATE -- the rte-rrtmgp warm-up crash
+# --------------------------------------------------------------------------
+#
+# A tile buffer was built on make_vertical_coord's DEFAULT stretch while
+# _impose_domain_setup gave it the domain's eta table, so its 3-D base state
+# (thb/pb/alb/phb, not imposed because they are gathered) described a
+# different atmosphere from its pressure.  The warm-up step then handed
+# rte-rrtmgp 120.3-407.3 K and the gas-table validator refused it.  The
+# validator is right and is untouched; the buffer was wrong.
+
+
+class _EtaState:
+    def __init__(self, znw):
+        self.znw = znw
+
+
+class _EtaCfg:
+    hybrid_opt, etac = 2, 0.2
+
+    def __init__(self, nz):
+        self.nz = nz
+
+
+def _real_eta(nz=8):
+    """A table that is NOT the default stretch, as a real case's is not."""
+    import numpy as np
+    x = np.linspace(0.0, 1.0, nz + 1)
+    znw = (1.0 - x) ** 1.7            # monotone 1 -> 0, clustered low
+    znw[0], znw[-1] = 1.0, 0.0
+    return znw
+
+
+def test_the_buffer_is_built_on_the_domains_eta_table_not_the_default():
+    import numpy as np
+
+    eta = _real_eta(8)
+    coord = streaming.domain_vertical_coord(_EtaState(eta), _EtaCfg(8))
+    assert np.allclose(np.asarray(coord.znw, dtype=np.float64), eta)
+
+    from gpuwm.core.grid import make_vertical_coord
+    default = make_vertical_coord(8, hybrid_opt=2, etac=0.2)
+    # The whole point: the two genuinely differ, so building on the default
+    # is a real error rather than a harmless rebuild.
+    assert not np.allclose(np.asarray(default.znw, dtype=np.float64), eta)
+
+
+def test_a_domain_without_an_eta_table_is_refused_not_defaulted():
+    with pytest.raises(StreamingRefused, match="carries no znw"):
+        streaming.domain_vertical_coord(_EtaState(None), _EtaCfg(8))
+
+
+def test_an_unrebuildable_eta_table_is_refused_not_defaulted():
+    """Falling back to the default stretch IS the defect, so never fall back."""
+    import numpy as np
+
+    bad = np.array([1.0, 0.5, 0.6, 0.0])       # not monotone
+    with pytest.raises(StreamingRefused, match="cannot be rebuilt"):
+        streaming.domain_vertical_coord(_EtaState(bad), _EtaCfg(3))
+
+
+def test_the_prepared_factory_builds_buffers_on_the_domains_coordinate():
+    """Held as source: constructing a buffer needs a card and a real domain."""
+    import inspect
+
+    src = inspect.getsource(streaming.prepared_tile_state_factory)
+    assert "coord = domain_vertical_coord(state, cfg)" in src
+    assert "coord=coord" in src, (
+        "the factory computes the domain's coordinate and then does not "
+        "hand it to make_physics_state, which rebuilds the DEFAULT stretch")
+
+
+def test_the_routes_that_stream_do_not_refuse_the_mode_that_asks_for_it():
+    """mode = 'on' was refused at admission BY THE ROUTES THAT SUPPORT IT.
+
+    refuse_unrouted_streaming was written when the prepared routes passed no
+    builders.  They pass them now -- the test above is the proof -- but the
+    admission refusal outlived the wiring, so the explicit form was rejected
+    with a message asserting the route wired no builder while mode = 'auto'
+    streamed through that very builder.  `gpuwm go` mirrored the refusal
+    before the download, making the front door most users type the last
+    place that rejected streaming.
+    """
+    import inspect
+
+    import gpuwm.go_cli as go
+    import gpuwm.prepared_domain_tree_forecast as tree
+    import gpuwm.prepared_single_domain_forecast as single
+
+    for module in (single, tree, go):
+        src = inspect.getsource(module)
+        calls = [line for line in src.splitlines()
+                 if "refuse_unrouted_streaming(" in line
+                 and not line.strip().startswith("#")]
+        assert not calls, (
+            f"{module.__name__} refuses [tiles] mode='on' at admission but "
+            f"wires a streamed-domain builder: {calls}")
+
+
+def test_the_route_that_never_reads_tiles_still_refuses():
+    """The guard is REMOVED where it lied, not deleted where it is true."""
+    import inspect
+
+    import gpuwm.runtime as runtime
+
+    src = inspect.getsource(runtime)
+    assert "refuse_unrouted_streaming(exp, \"gpuwm run\", " \
+        "consults_the_seam=False)" in src, (
+            "gpuwm run reads [tiles] at no point; dropping its refusal would "
+            "make it silently integrate resident, which is the silence the "
+            "module forbids")
+
+
+# --------------------------------------------------------------------------
+# REFL_10CM: a REBUILT slot the store still has to hold
+# --------------------------------------------------------------------------
+
+
+class _ScratchState:
+    """A state with just the scratch API prime/inventory use."""
+
+    def __init__(self, **slots):
+        self._scratch = dict(slots)
+        self.requested = []
+
+    def existing_scratch(self, slot):
+        return self._scratch.get(slot)
+
+    def scratch(self, shape, slot, dtype=None):
+        self.requested.append((slot, tuple(shape)))
+        self._scratch.setdefault(slot, ("array", tuple(shape)))
+        return self._scratch[slot]
+
+
+class _Cfg:
+    nz, ny, nx = 49, 550, 550
+
+
+def test_the_reflectivity_slot_is_primed_at_the_domains_extents():
+    state = _ScratchState()
+    assert streaming.prime_refl_10cm(state, _Cfg()) is True
+    assert state.requested == [("refl_10cm", (49, 550, 550))]
+
+
+def test_priming_an_already_primed_slot_does_nothing():
+    """A slot keeps the shape it was first requested with, so never re-ask."""
+    state = _ScratchState(refl_10cm=("array", (49, 550, 550)))
+    assert streaming.prime_refl_10cm(state, _Cfg()) is False
+    assert state.requested == []
+
+
+def test_the_inventory_carries_the_primed_slot_for_state_and_buffer():
+    """The transport applies one inventory_fn to state, store and buffers."""
+    state = _ScratchState(refl_10cm="REFL")
+    inventory = streaming.refl_inventory(lambda obj, names=None: {"state/thp": 1})
+    assert inventory(state) == {"state/thp": 1,
+                                streaming.REFL_STORE_KEY: "REFL"}
+    # The store already carries it by key and must not be double-added.
+    store = {"state/thp": 1, streaming.REFL_STORE_KEY: "REFL"}
+    assert streaming.refl_inventory(
+        lambda obj, names=None: dict(obj))(store) == store
+
+
+def test_an_unprimed_slot_is_not_invented_by_the_inventory():
+    """prime_refl_10cm creates the slot; the inventory only reports it.
+
+    If the inventory allocated, the refusal for a domain that genuinely
+    cannot publish reflectivity could never fire.
+    """
+    inventory = streaming.refl_inventory(lambda obj, names=None: {"state/thp": 1})
+    assert inventory(_ScratchState()) == {"state/thp": 1}
+
+
+def test_the_prepared_builder_primes_and_carries_the_reflectivity_slot():
+    """Held as source: the alternative needs a card and an hour of forecast.
+
+    The defect was an absent call -- the sweep refused the first DUE frame,
+    which on an hourly cadence is an hour into a healthy forecast.
+
+    The OUTER wrapper is asserted too, and for a harsher reason: leaving it
+    off is not refused anywhere, it publishes a frame short of OLR and
+    reports validity PASS.  That is what shipped until 2.2.0, so the
+    composition -- diagnostic_inventory OVER refl_inventory, both of them
+    over the streaming manifest -- is the thing under test, not either half.
+    """
+    import inspect
+
+    src = inspect.getsource(streaming.prepared_domain_builder)
+    assert "prime_lazy_carriers(state, cfg)" in src
+    assert "inventory_fn=diagnostic_inventory(refl_inventory(" in src
+    factory_src = inspect.getsource(streaming.prepared_tile_state_factory)
+    assert "prime_lazy_carriers(tile, tile_cfg)" in factory_src
+
+
+def test_the_diagnostic_wrapper_adds_the_output_only_rows_over_any_base():
+    """Composable over the STREAMING manifest, not only the carrier one.
+
+    ``tilestream.output.diagnostic_inventory`` composes over
+    ``carrier_manifest``; this route's base is ``streaming_inventory``, the
+    wider restart manifest.  Wrapping rather than substituting is what keeps
+    one naming table, so this pins that the wrapper adds exactly the
+    ``diag/`` members and leaves the base's own keys untouched.
+    """
+    import numpy as np
+
+    class _Driver:
+        def __init__(self):
+            self.olr = np.zeros((4, 5), dtype=np.float32)
+
+    class _State:
+        def __init__(self):
+            self.physics = _Driver()
+
+        def existing_scratch(self, name):
+            return None
+
+    state = _State()
+    base = lambda obj, names=None: {"state/thp": 1}          # noqa: E731
+    live = streaming.diagnostic_inventory(base)(state)
+    assert live["state/thp"] == 1
+    assert live["diag/olr"] is state.physics.olr
+
+    # A store already holds its members by key, so the wrapper adds nothing.
+    store = {"state/thp": 1, "diag/olr": "OLR"}
+    assert streaming.diagnostic_inventory(
+        lambda obj, names=None: dict(obj))(store) == store
+
+
+def test_the_eddy_viscosity_producers_are_primed_only_when_asked():
+    """8 B/cell is 100x OLR's price; a run that does not ask must not pay it.
+
+    And the slot names are LITERALS here for the same reason
+    prime_refl_10cm's is: tests/test_preflight.py's scratch-completeness
+    gate reads them with an AST scan and classifies a variable expression
+    as unpinned.
+    """
+    import inspect
+
+    src = inspect.getsource(streaming.prime_hmix_k_diag)
+    assert '"smag_km"' in src and '"smag_kh"' in src
+
+    class _Cfg:
+        nx, ny, nz = 4, 5, 6
+        hmix_k_diag = False
+
+    state = _ScratchState()
+    assert streaming.prime_hmix_k_diag(state, _Cfg()) == ()
+
+    _Cfg.hmix_k_diag = True
+    assert streaming.prime_hmix_k_diag(state, _Cfg()) == (
+        "diag/XKMH", "diag/XKHH")
+    # Idempotent: a slot that exists is left alone rather than reallocated.
+    assert streaming.prime_hmix_k_diag(state, _Cfg()) == ()
+
+
+# --------------------------------------------------------------------------
+# priming REPLACES the throwaway warm-up step
+# --------------------------------------------------------------------------
+
+
+class _KFStandIn:
+    def __init__(self):
+        self.calls = 0
+
+    def ensure_trigger_history(self, state):
+        self.calls += 1
+        return "w0avg"
+
+
+class _PrimeState(_ScratchState):
+    def __init__(self, cumulus=None, **slots):
+        super().__init__(**slots)
+        self.physics = type("_D", (), {"cumulus_callable": cumulus})()
+
+
+def test_priming_allocates_both_lazy_carriers():
+    kf = _KFStandIn()
+    state = _PrimeState(cumulus=kf)
+    assert streaming.prime_lazy_carriers(state, _Cfg()) == (
+        streaming.REFL_STORE_KEY, "cumulus/w0avg")
+    assert kf.calls == 1
+    assert state.requested == [("refl_10cm", (49, 550, 550))]
+
+
+def test_priming_a_domain_without_cumulus_primes_only_reflectivity():
+    state = _PrimeState(cumulus=None)
+    assert streaming.prime_lazy_carriers(state, _Cfg()) == (
+        streaming.REFL_STORE_KEY,)
+
+
+def test_the_prepared_factory_no_longer_steps_a_fabricated_buffer():
+    """warmup defaults to 0, because the step was integrating fabricated data.
+
+    A buffer at construction holds an analytic sounding, neutral geography
+    and -- on a specified-boundary domain -- the DOMAIN's real lateral
+    forcing.  The throwaway step blended real boundary values into an
+    analytic interior; MEASURED, that handed rte-rrtmgp 211.0-456.7 K.
+    """
+    import inspect
+
+    for fn in (streaming.prepared_tile_state_factory,
+               streaming.prepared_domain_builder):
+        default = inspect.signature(fn).parameters["warmup"].default
+        assert default == 0, (
+            f"{fn.__name__} still warms buffers by stepping them; the step "
+            "integrates an analytic sounding against real lateral forcing")
+
+
+# --------------------------------------------------------------------------
+# the FINAL reads, which were answering for the initial condition
+# --------------------------------------------------------------------------
+
+
+def test_a_resident_stepper_refreshes_nothing_and_says_zero():
+    """The OFF contract: a route calls this unconditionally."""
+    assert streaming.refresh_streamed_state(object(), "STATE") == 0
+    assert streaming.refresh_streamed_state(None, "STATE") == 0
+
+
+def test_a_streamed_domain_is_copied_back_before_the_final_reads():
+    """StateHealthValidator and canonical_state_digest cannot be folded.
+
+    The validator is one block per whole field with no tile-interior form
+    and the digest is a whole-trajectory hash, so under a host store both
+    answered for the t=0 analysis: a receipt reporting nan_free on a run
+    that had integrated for an hour.
+
+    The stepper is a real StreamedDomain built field-wise, because
+    ``is_streaming`` is an isinstance check -- a duck-typed stand-in is
+    reported RESIDENT and would make this test pass against a no-op.
+    """
+    seen = {}
+
+    def _refresh(state):
+        seen["state"] = state
+        return 137
+
+    streamed = object.__new__(streaming.StreamedDomain)
+    streamed.refresh_state = _refresh
+    assert streaming.refresh_streamed_state(streamed, "STATE") == 137
+    assert seen == {"state": "STATE"}
+
+
+def test_a_resident_store_refresh_reports_zero_rather_than_copying():
+    """``store = "device"`` makes the store the state's OWN arrays.
+
+    refresh_state returns 0 there because a refresh would be a self-copy of
+    the whole manifest, and the route must record that honestly rather than
+    claim a refresh it did not need.
+    """
+    streamed = object.__new__(streaming.StreamedDomain)
+    streamed.refresh_state = lambda state: 0
+    assert streaming.refresh_streamed_state(streamed, "STATE") == 0
+
+
+def test_the_prepared_route_refreshes_before_the_final_health_and_digest():
+    """Held as source, and ORDER is the whole point.
+
+    A refresh after the gate reads is a refresh that changed nothing.
+    """
+    import pathlib
+
+    # Read rather than imported: the runner needs a CUDA build, and this is
+    # a question about the ORDER of three statements in its source.
+    src = (pathlib.Path(streaming.__file__).parents[1]
+           / "prepared_single_domain_forecast.py").read_text(encoding="utf-8")
+    refresh = src.index("streaming.refresh_streamed_state(")
+    # The FINAL gate specifically.  The runner validates the state at entry
+    # too, and that earlier call is not the one this is about: at entry the
+    # state IS the domain, because nothing has streamed off it yet.
+    health = src.index('validate(phase="final.d01")')
+    digest = src.index("final_digest = canonical_state_digest(")
+    assert refresh < health < digest, (
+        "the streamed domain must be copied back BEFORE the final health "
+        "gate and the canonical digest read node.state")
+    assert '"carriers_refreshed_before_final_reads": carriers_refreshed' \
+        in src, "the receipt must say whether the refresh happened"
+
+
+# --------------------------------------------------------------------------
+# the ANALYSIS frame's health, before any sweep has run
+# --------------------------------------------------------------------------
+
+
+def _bare_fold(**kw):
+    """A StreamedStability with no device behind it.
+
+    ``__init__`` allocates cupy buffers; every property these tests exercise
+    is decided before a kernel is reached, so the object is built field-wise.
+    """
+    fold = object.__new__(streaming.StreamedStability)
+    fold.cfg = kw.pop("cfg", "CFG")
+    fold.boundary_width = kw.pop("boundary_width", 5)
+    fold.ntiles = kw.pop("ntiles", 4)
+    fold.sweeps_begun = kw.pop("sweeps_begun", 0)
+    fold._seen = set(kw.pop("seen", ()))
+    fold._report = None
+    for key, value in kw.items():
+        setattr(fold, key, value)
+    return fold
+
+
+def test_the_analysis_frame_reads_the_state_that_filled_the_store(monkeypatch):
+    """A t=0 history frame is asked for its health before anything is stepped.
+
+    There is no fold yet because there has been no sweep -- not a short one,
+    none -- and the resident state is still the initial condition the frame
+    contains, because attach copied it into the store and neither has moved.
+    Refusing here stopped every [tiles] forecast on the product route at its
+    ANALYSIS frame, after the sweep had already been proven to build.
+    """
+    import sys
+    import types
+
+    seen = {}
+
+    def _resident(state, cfg, *, boundary_width=None):
+        seen.update(state=state, cfg=cfg, boundary_width=boundary_width)
+        return {"cfl_max": 0.25}
+
+    # Stubbed as a module: the real gpuwm.core.dycore needs a CUDA build, and
+    # what is under test is which reporter the fold reaches for.
+    stub = types.ModuleType("gpuwm.core.dycore")
+    stub.stability_report = _resident
+    monkeypatch.setitem(sys.modules, "gpuwm.core.dycore", stub)
+    fold = _bare_fold(sweeps_begun=0)
+    assert fold("STATE", "RUNCFG", boundary_width=5) == {"cfl_max": 0.25}
+    assert seen == {"state": "STATE", "cfg": "RUNCFG", "boundary_width": 5}
+
+
+def test_the_analysis_frame_without_a_state_refuses_rather_than_inventing_one():
+    fold = _bare_fold(sweeps_begun=0)
+    with pytest.raises(StreamingRefused, match="before the first sweep"):
+        fold(None, "RUNCFG", boundary_width=5)
+
+
+def test_a_short_sweep_still_refuses_once_a_sweep_has_run():
+    """The guard is NOT weakened: the exemption is keyed on sweeps_begun.
+
+    Once a sweep has run, the resident state is the corpse the fold exists to
+    stop reading, so a sweep that skipped tiles must refuse even though a
+    state is right there and would answer.
+    """
+    fold = _bare_fold(sweeps_begun=1, seen=(0, 1))
+    with pytest.raises(StreamingRefused, match="contributed a stability"):
+        fold("STATE", "RUNCFG", boundary_width=5)
+
+
+def test_begin_sweep_is_what_ends_the_analysis_frame_exemption():
+    fold = _bare_fold(sweeps_begun=0)
+    assert fold.sweeps_begun == 0
+    streaming.StreamedStability.begin_sweep(fold)
+    assert fold.sweeps_begun == 1
+    # and the record is cleared, which is begin_sweep's original job
+    assert fold._seen == set()
+
+
+def test_the_ozone_grid_is_carried_by_a_checkpoint_and_not_by_a_sweep():
+    """The fourth classification, and why it is not the third.
+
+    Legacy RRTMG's radiation/o33d_grid is host memory the adapter recomputes
+    on every radiation call and reads only from a CHILD domain's ozone
+    provider.  A checkpoint must carry it; a sweep must not.  With it in the
+    sweep's set, a tile buffer that warmed up had it and the prepared domain
+    the store was sized from had not run a step, so the inventories differed
+    by exactly this key and TiledRun refused every [tiles] forecast of the
+    default physics suite.
+    """
+    from gpuwm.io import restart
+
+    assert "radiation/o33d_grid" in restart.RESTART_ONLY_DRIVER_SLOTS
+    # The two directions are genuinely different sets, not one list twice.
+    assert not (restart.RESTART_ONLY_DRIVER_SLOTS
+                & restart.CARRIED_SCRATCH_SLOTS)
+    # The checkpoint half is UNTOUCHED: restart still names the key.
+    import inspect
+    assert 'manifest["radiation/o33d_grid"] = o33d_grid' in \
+        inspect.getsource(restart._driver_manifest)
+
+
+def test_the_sweep_manifest_subtracts_the_restart_only_slots(monkeypatch):
+    """The subtraction itself, on both sides at once.
+
+    Stubbed rather than driven from a real state: carrier_manifest's job here
+    is set arithmetic, and the arithmetic is what regressed.
+    """
+    from gpuwm.io import restart
+    from tilestream import physics_inventory as physinv
+
+    monkeypatch.setattr(restart, "state_manifest", lambda s: {"state/thp": 1})
+    monkeypatch.setattr(restart, "_scratch_manifest", lambda s: {})
+    monkeypatch.setattr(restart, "carried_scratch_manifest", lambda s: {})
+    monkeypatch.setattr(restart, "_driver_manifest", lambda d: {
+        "cumulus/w0avg": 2, "radiation/o33d_grid": 3})
+
+    class _State:
+        physics = object()
+
+    manifest = physinv.carrier_manifest(_State())
+    assert "radiation/o33d_grid" not in manifest
+    # Only that one: the lazy carrier that IS transported still is.
+    assert manifest == {"state/thp": 1, "cumulus/w0avg": 2}
+
+
+def test_the_legacy_sw_engine_is_shared_rather_than_compiled_per_buffer(
+        monkeypatch):
+    """One NVRTC compile and one set of device tables per process.
+
+    Streaming builds an adapter per TILE BUFFER.  CudaSW compiles
+    rrtmg_sw.cu and uploads the packed tables on construction, so an
+    uncached engine would multiply both -- spending the device memory
+    streaming exists to save.  Held here because the receipt on the card is
+    a VRAM number nothing else asserts on.
+    """
+    from gpuwm.core import rrtmg_legacy
+
+    built = []
+
+    class _Tables:
+        pass
+
+    monkeypatch.setattr(rrtmg_legacy, "_CUDA_SW_CACHE", None)
+    monkeypatch.setattr(rrtmg_legacy._sw, "CudaSW",
+                        lambda tab: built.append(tab) or object())
+    tables = _Tables()
+    first = rrtmg_legacy._cuda_sw(tables)
+    assert rrtmg_legacy._cuda_sw(tables) is first
+    assert len(built) == 1, "the SW engine was compiled more than once"
+    # Different coefficients get their own engine rather than borrowing.
+    assert rrtmg_legacy._cuda_sw(_Tables()) is not first
+    assert len(built) == 2
+
+
 def test_the_budget_overrides_land_on_the_budget():
     """``vram_budget_bytes`` used to compute a budget of ZERO.
 

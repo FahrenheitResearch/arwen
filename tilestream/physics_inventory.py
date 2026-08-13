@@ -274,6 +274,15 @@ def carrier_manifest(state) -> dict[str, object]:
     driver = getattr(state, "physics", None)
     if driver is not None:
         manifest.update(restart._driver_manifest(driver))
+    # The one place the checkpoint set is WIDER than the sweep set.  See
+    # restart.RESTART_ONLY_DRIVER_SLOTS: legacy RRTMG's radiation/o33d_grid
+    # is host memory the adapter recomputes every radiation call and reads
+    # only from a CHILD domain, which streaming refuses.  Subtracted from
+    # both sides at once -- this function builds the store's inventory and
+    # each buffer's -- so the two agree by construction rather than by the
+    # domain and the buffers happening to have fired radiation equally often.
+    for slot in restart.RESTART_ONLY_DRIVER_SLOTS:
+        manifest.pop(slot, None)
     return manifest
 
 

@@ -22,6 +22,7 @@ from gpuwm.ingest.horiz import interpolate_era5_to_lambert
 from gpuwm.ingest.lateral_bc import (
     StateBoundaryFrames,
     attach_lateral_boundaries,
+    start_last_forcing_order,
 )
 from gpuwm.ingest.prepared_cache import (
     prepared_cache_identity,
@@ -477,9 +478,18 @@ def prepare_mapped_wrf(
         landmask=static["LANDMASK"], lu_index=static["LU_INDEX"],
         landuse_attrs=selection.landuse_global_attrs())
     initialize_started = time.perf_counter()
-    # Only the first time's met/state survive this loop; every later time
-    # contributes its perimeter frames and is released at once.  Holding
-    # all of them is what made ingest peak above the forecast it prepares.
+    # ONE forcing time is ever resident.  The start time is built LAST
+    # (start_last_forcing_order) and is the only met/state this loop
+    # retains; every other time contributes its perimeter frames against
+    # its own position and is released before the next one is
+    # interpolated.  Walking the times in order instead meant holding the
+    # start time -- which nothing reads until the boundaries are complete
+    # -- while each later time was built underneath it.  At 800x800x49
+    # with mp=10 and three GFS times that second resident time is 14.67
+    # GiB of device residency against 7.66, a priced peak envelope of
+    # 23.92 GiB against 15.86: the difference between preparing the
+    # domain on a 16 GiB card and OOMing after the whole forcing chain
+    # had already been fetched.
     initial_result = None
     initial_met = None
     forcing = StateBoundaryFrames(
@@ -494,7 +504,8 @@ def prepare_mapped_wrf(
     )
     coriolis_f, coriolis_e = grid.coriolis_m()
     rotation_sin, rotation_cos = grid.rotation_m()
-    for index, source in enumerate(snapshots):
+    for index in start_last_forcing_order(len(snapshots)):
+        source = snapshots[index]
         # Metgrid classifies masked-field TARGET cells by the model
         # (geogrid) landmask; the mapped lane declares it like the ERA5
         # lanes so soil, skin, snow, and physics share one surface.
@@ -512,7 +523,7 @@ def prepare_mapped_wrf(
             mapfac_m, mapfac_u, mapfac_v, coriolis_f, coriolis_e,
             sina=rotation_sin, cosa=rotation_cos,
         )
-        forcing.add_state(initialized.state)
+        forcing.add_state(initialized.state, index=index)
         if index == 0:
             initial_met = met
             initial_result = initialized

@@ -594,6 +594,45 @@ CARRIED_SCRATCH_SLOTS = frozenset({
     "uh_follow_window", "uh_spawn_window",
 })
 
+#: Driver-manifest members a CHECKPOINT carries and a SWEEP must not.
+#:
+#: The exact complement of :data:`CARRIED_SCRATCH_SLOTS`, which exists because
+#: "what a checkpoint carries" and "what a sweep must carry" are two questions
+#: and the answer differs in BOTH directions.  That set is the slots a sweep
+#: carries and a checkpoint does not; this one is the slots a checkpoint
+#: carries and a sweep does not.  Named here rather than in
+#: ``tilestream.physics_inventory`` for the reason stated above: this file is
+#: where the classification lives, so its classes stay exhaustive.
+#:
+#: ``radiation/o33d_grid`` is the whole membership, and it is not carried
+#: state at all in the sense the sweep means.  Legacy RRTMG recomputes it
+#: from the CAM climatology and the current pressure on EVERY radiation call
+#: (gpuwm/core/rrtmg_legacy.py:1010-1020), never reads its own previous
+#: value, and retains it only so a CHILD domain's ParentOzoneProvider can
+#: interpolate the parent's most recent field (rrtmg_legacy.py:578).  A
+#: checkpoint carries it so that child routing resumes bit-identically across
+#: a restart, which is a real requirement and is untouched here.
+#:
+#: A sweep must not, for three independent reasons.  It is HOST memory on the
+#: adapter, not a device array on the state.  It is per-ADAPTER derived
+#: geography -- the same category as the adapter's own latitude_deg/
+#: longitude_deg, which the transport already handles as geography rather
+#: than as carried state -- so each tile buffer's twin computes its own
+#: tile-shaped field and the domain's domain-shaped one is not the same
+#: quantity.  And its only reader is a nested domain, which streaming refuses
+#: outright (gpuwm/core/streaming.py: "[tiles] fired on grid N, which is a
+#: NEST").
+#:
+#: MEASURED CONSEQUENCE of it having been in the sweep's set: a tile buffer
+#: warms up, which fires radiation and allocates the field, while the
+#: prepared domain the store is sized from has not run a step and so has
+#: not.  The inventories then differ by exactly this key and TiledRun refuses
+#: the run -- which is what every [tiles] forecast of the shipped DEFAULT
+#: physics suite did, once its radiation could be twinned at all.
+RESTART_ONLY_DRIVER_SLOTS = frozenset({
+    "radiation/o33d_grid",
+})
+
 #: Per-call work buffers overwritten before every read.  ``mp_``/``cu_``
 #: rebuilds are EXACT names only — a future accumulator slot under those
 #: prefixes must be classified explicitly instead of silently dropping.
@@ -3976,6 +4015,7 @@ __all__ = [
     "SEALED_FORCING_EXTENSION_MODE",
     "RestartManifestError", "RestartMismatchError",
     "CARRIED_SCRATCH_SLOTS", "carried_scratch_manifest",
+    "RESTART_ONLY_DRIVER_SLOTS",
     "SERIALIZED_SCRATCH_SLOTS", "STATE_REBUILT_ATTRS",
     "STATE_SERIALIZED_ATTRS", "STATE_SETUP_ARRAYS", "STATE_SETUP_SCALARS",
     "THOMPSON_AEROSOL_RESTART_STATE",

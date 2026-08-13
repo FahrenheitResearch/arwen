@@ -63,6 +63,7 @@ against a registry whose citation set had moved on completely.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import pathlib
 import re
@@ -248,24 +249,60 @@ def citations(registry: dict) -> dict[str, list[str]]:
     return found
 
 
+@functools.lru_cache(maxsize=1)
+def _tree_index() -> dict[str, tuple[str, ...]]:
+    """``basename -> every repo-relative path with that basename``, once.
+
+    ``_resolve`` used to run ``MODEL.rglob(name)`` per citation -- a full
+    walk of the tree for each of the several hundred citations in the
+    registry.  The 2026-08-13 test-estate audit priced the consequence:
+    ``test_physics_registry.py`` at 40 s, of which one test is 33 s, and the
+    same walk repeated in ``test_build_registry.py`` (51 s) and
+    ``test_physics_registry_declarations.py`` (9 s).
+
+    One walk, cached for the process, answers every citation.  This changes
+    no answer: ``_resolve``'s result for a given input is identical, and
+    ``tests/test_physics_registry.py`` compares the same enumerated defect
+    list it always did.
+    """
+
+    index: dict[str, list[str]] = {}
+    for candidate in MODEL.rglob("*"):
+        if not candidate.is_file():
+            continue
+        relative = candidate.relative_to(MODEL).as_posix()
+        if "__pycache__" in relative:
+            continue
+        index.setdefault(candidate.name, []).append(relative)
+    return {name: tuple(sorted(paths)) for name, paths in index.items()}
+
+
 def _resolve(cited_path: str) -> list[str]:
     """Repo-relative matches for a cited path, exact or by unique suffix."""
 
     if (MODEL / cited_path).is_file():
         return [cited_path]
-    hits = []
-    for candidate in MODEL.rglob(pathlib.Path(cited_path).name):
-        relative = candidate.relative_to(MODEL).as_posix()
-        if relative.endswith("/" + cited_path) and "__pycache__" not in relative:
-            hits.append(relative)
-    return sorted(hits)
+    suffix = "/" + cited_path
+    return sorted(
+        relative for relative in _tree_index().get(
+            pathlib.PurePosixPath(cited_path).name, ())
+        if relative.endswith(suffix))
 
 
-def _lines(path: str) -> list[str] | None:
+@functools.lru_cache(maxsize=None)
+def _lines(path: str) -> tuple[str, ...] | None:
+    """The cited file's lines.
+
+    Cached for the same reason as ``_tree_index``: a hot file is cited by
+    dozens of parameters and was re-read for each of them.  A tuple rather
+    than a list so the cache cannot hand out a mutable shared object.
+    """
+
     target = MODEL / path
     if not target.is_file():
         return None
-    return target.read_text(encoding="utf-8", errors="replace").splitlines()
+    return tuple(
+        target.read_text(encoding="utf-8", errors="replace").splitlines())
 
 
 def drifted_report() -> list[str]:
