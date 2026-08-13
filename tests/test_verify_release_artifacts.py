@@ -497,3 +497,212 @@ def test_dry_run_refuses_pins_generated_for_another_release(
         _dry_run(
             tmp_path, bundles, pins, manifest, wheel, sdist, release="v0.0.1"
         )
+
+
+# ---------------------------------------------------------------------------
+# The host-staging leg's library probe
+# ---------------------------------------------------------------------------
+#
+# The leg that loads each `kind == "library"` artifact is the one thing
+# `--dry-run` cannot run, and it is where 2.1.0 lost a number: it asked
+# EVERY library for `gpuwm_preprocess_cpu_abi_version` while the vendored
+# dealiasing cdylib exports `bw_abi_version`, so a correct bundle was
+# refused in the prepare job with the tag already public.  These cases
+# drive `probe_library_abi` through its loader seam, so per-artifact
+# dispatch and the refusal for an undeclared library are proved without a
+# target-native binary -- on both platforms' filenames, in CI, on every
+# commit.
+
+
+class _FakeAbi:
+    """One exported symbol, callable the way ctypes' function objects are."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+        self.argtypes: list[object] | None = None
+        self.restype: object | None = None
+
+    def __call__(self) -> int:
+        return self.value
+
+
+class _FakeLibrary:
+    """A loaded library that exports exactly the symbols it was given."""
+
+    def __init__(self, path: str, exports: dict[str, int]) -> None:
+        self.path = path
+        self._exports = {name: _FakeAbi(value)
+                         for name, value in exports.items()}
+
+    def __getattr__(self, name: str) -> _FakeAbi:
+        try:
+            return self.__dict__["_exports"][name]
+        except KeyError:
+            raise AttributeError(
+                f"{self.path}: undefined symbol: {name}") from None
+
+
+def _loader_for(exports_by_filename: dict[str, dict[str, int]]):
+    """A ctypes.CDLL stand-in serving each fixture library its own exports."""
+
+    def load(path: str) -> _FakeLibrary:
+        return _FakeLibrary(path, exports_by_filename[Path(path).name])
+
+    return load
+
+
+def _library_artifacts() -> tuple[bridge_assets.BundledArtifact, ...]:
+    return tuple(artifact for artifact in bridge_assets.BUNDLED_ARTIFACTS
+                 if artifact.kind == "library")
+
+
+def test_the_release_ships_two_libraries_with_different_abi_symbols() -> None:
+    """The premise of the dispatch: two libraries, two handshakes.
+
+    If this ever collapses to one library the dispatch cases below stop
+    proving anything, and this one says so out loud rather than letting
+    them pass vacuously.
+    """
+
+    artifacts = _library_artifacts()
+    assert len(artifacts) == 2, [a.name for a in artifacts]
+    symbols = {bridge_assets.library_abi_for(a.name)[0] for a in artifacts}
+    assert symbols == {"gpuwm_preprocess_cpu_abi_version", "bw_abi_version"}
+
+
+@pytest.mark.parametrize("platform", bridge_assets.SUPPORTED_PLATFORMS)
+def test_each_library_is_probed_with_its_own_declared_symbol(
+    tmp_path: Path, platform: str
+) -> None:
+    """Two library fixtures, each exporting ONLY its own ABI symbol.
+
+    Neither fixture can answer the other's handshake, so a probe that
+    reused one symbol for both -- the 2.1.0 defect -- fails here.
+    """
+
+    artifacts = _library_artifacts()
+    exports: dict[str, dict[str, int]] = {}
+    paths: dict[str, Path] = {}
+    for artifact in artifacts:
+        filename = bridge_assets.artifact_filename(artifact, platform)
+        path = tmp_path / platform / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture library " + artifact.name.encode())
+        symbol, version = bridge_assets.library_abi_for(artifact.name)
+        exports[filename] = {symbol: version}
+        paths[artifact.name] = path
+
+    loader = _loader_for(exports)
+    for artifact in artifacts:
+        probe = verify_release_artifacts.probe_library_abi(
+            paths[artifact.name], artifact, loader=loader
+        )
+        symbol, version = bridge_assets.library_abi_for(artifact.name)
+        assert probe["artifact"] == artifact.name
+        assert probe["symbol"] == symbol
+        assert probe["abi"] == version
+        assert probe["status"] == "PASS"
+        assert probe["filename"] == bridge_assets.artifact_filename(
+            artifact, platform
+        )
+
+
+def test_the_vendored_library_is_not_probed_with_the_stamped_ones_symbol(
+    tmp_path: Path,
+) -> None:
+    """The exact 2.1.0 refusal, as a test.
+
+    The vendored cdylib exports `bw_abi_version` and nothing else.  A
+    probe that reaches for `gpuwm_preprocess_cpu_abi_version` gets an
+    AttributeError from the loader; the shipped dispatch gets an answer.
+    """
+
+    vendored = next(artifact for artifact in _library_artifacts()
+                    if artifact.vendored)
+    stamped = next(artifact for artifact in _library_artifacts()
+                   if not artifact.vendored)
+    filename = bridge_assets.artifact_filename(vendored, "linux-x86_64")
+    path = tmp_path / filename
+    path.write_bytes(b"fixture vendored library\n")
+    loader = _loader_for({filename: {"bw_abi_version": 1}})
+
+    probe = verify_release_artifacts.probe_library_abi(
+        path, vendored, loader=loader
+    )
+    assert probe["symbol"] == "bw_abi_version"
+
+    # The stamped library's artifact record against the vendored bytes:
+    # the wrong handshake, which is what the old code applied to both.
+    with pytest.raises(AttributeError, match="undefined symbol"):
+        verify_release_artifacts.probe_library_abi(
+            path, stamped, loader=loader
+        )
+
+
+def test_a_library_with_no_declared_handshake_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Fail closed, the same shape as the vendored contract-marker refusal.
+
+    A library added to BUNDLED_ARTIFACTS without a LIBRARY_ABI entry is
+    refused by name; it is never probed with some other library's symbol.
+    """
+
+    undeclared = bridge_assets.BundledArtifact(
+        "future_thing", "library", "tools/future_thing",
+        "GPUWM_FUTURE_THING_BRIDGE", "a library nobody declared")
+    assert undeclared.name not in bridge_assets.LIBRARY_ABI
+    path = tmp_path / "libfuture_thing.so"
+    path.write_bytes(b"fixture undeclared library\n")
+    loader = _loader_for(
+        {"libfuture_thing.so": {"gpuwm_preprocess_cpu_abi_version": 1}}
+    )
+
+    with pytest.raises(SystemExit) as refusal:
+        verify_release_artifacts.probe_library_abi(
+            path, undeclared, loader=loader
+        )
+    message = str(refusal.value)
+    assert "future_thing" in message
+    assert "LIBRARY_ABI" in message
+
+
+def test_a_library_answering_another_version_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The right symbol answering the wrong number is still a stale build."""
+
+    stamped = next(artifact for artifact in _library_artifacts()
+                   if not artifact.vendored)
+    filename = bridge_assets.artifact_filename(stamped, "linux-x86_64")
+    path = tmp_path / filename
+    path.write_bytes(b"fixture library\n")
+    symbol, version = bridge_assets.library_abi_for(stamped.name)
+    loader = _loader_for({filename: {symbol: version + 7}})
+
+    with pytest.raises(SystemExit, match=symbol):
+        verify_release_artifacts.probe_library_abi(
+            path, stamped, loader=loader
+        )
+
+
+def test_the_workflow_probe_reads_the_shared_table_not_its_own_copy() -> None:
+    """One table, cross-checked: the workflow must not re-declare it.
+
+    `.github/workflows/publish.yml` runs the same per-artifact dispatch on
+    each target runner.  It carried its own literal copy of the table
+    while the verifier carried the older blanket rule, which is precisely
+    how the two came to disagree.  The copy is gone; this case fails if
+    one is reintroduced, because a second copy is a second thing to
+    forget.
+    """
+
+    workflow = (
+        Path(verify_release_artifacts.__file__).resolve().parent.parent
+        / ".github" / "workflows" / "publish.yml"
+    )
+    text = workflow.read_text(encoding="utf-8")
+    assert "bridge_assets.library_abi_for(" in text
+    for symbol, _version in bridge_assets.LIBRARY_ABI.values():
+        assert f'"{symbol}"' not in text, symbol
+        assert f"'{symbol}'" not in text, symbol

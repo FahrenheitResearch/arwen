@@ -123,6 +123,24 @@ reproduce them, not because their proofs are optional:
       public. It skips only what needs a wheel installed outside the checkout
       and executable target-native binaries, and its receipt names those
       skips, so a dry-run receipt is never mistaken for the cut's.
+- [ ] BEFORE THE TAG, run the one skipped leg that can be run locally:
+      `python tools/probe_library_abi.py --receipt <path>`, after
+      `cargo build --release --locked` in `tools/grib1_bridge` and in
+      `tools/region_global_dealias` (both build offline).  It loads every
+      `kind == "library"` artifact this host can build and resolves the
+      symbol `gpuwm.bridge_assets.LIBRARY_ABI` declares for that artifact,
+      refusing a library that declares none.  The dry run cannot do this:
+      loading a library needs target-native bytes.  That gap is what cost
+      2.1.0 its number -- the verifier's staging leg asked every library
+      for `gpuwm_preprocess_cpu_abi_version`, the vendored dealiasing
+      cdylib exports `bw_abi_version`, and the refusal surfaced in the
+      prepare job with the tag already public.  A full local non-dry-run
+      leg is genuinely unavailable pre-tag: that path needs the release
+      wheel installed outside the checkout AND a pinned bundle for every
+      supported platform, and the other platform's bundle cannot be built
+      on this host.  This probe is the narrowest leg that is nonetheless
+      real, and it exercises the same table and the same code the cut and
+      the workflow runners use.
 - [ ] Confirm the built wheel stamps the release version.  Install it
       into a scratch virtual environment and read it back --
       `python -c "import gpuwm; print(gpuwm.__version__)"` -- because

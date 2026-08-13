@@ -47,6 +47,49 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def probe_library_abi(path, artifact, *, loader=ctypes.CDLL) -> dict:
+    """Load one library artifact and resolve *its own* ABI symbol.
+
+    The handshake is dispatched per artifact through
+    :func:`gpuwm.bridge_assets.library_abi_for`, the one table the
+    workflow's per-runner probe reads too.  This function used to be
+    three inline lines that named ``gpuwm_preprocess_cpu_abi_version``
+    for every ``kind == "library"`` member, which was true while there
+    was one library; the vendored dealiasing cdylib exports
+    ``bw_abi_version``, so the 2.1.0 prepare job refused a correct
+    bundle after the tag was public.
+
+    Fail closed on an undeclared library: a library nobody declared a
+    handshake for is refused here rather than probed with whatever
+    symbol happened to be hardcoded.  ``loader`` is a seam so a unit
+    test can prove the dispatch without a target-native binary.
+    """
+
+    from gpuwm import bridge_assets
+
+    try:
+        symbol, expected = bridge_assets.library_abi_for(artifact.name)
+    except bridge_assets.BridgeAssetError as error:
+        raise SystemExit(f"{path}: {error}") from None
+    library = loader(str(path))
+    abi = getattr(library, symbol)
+    abi.argtypes = []
+    abi.restype = ctypes.c_uint32
+    answered = int(abi())
+    if answered != expected:
+        raise SystemExit(
+            f"{path}: {artifact.name} answers {symbol}() with "
+            f"{answered}, not the {expected} this release speaks")
+    return {
+        "artifact": artifact.name,
+        "filename": Path(path).name,
+        "kind": artifact.kind,
+        "symbol": symbol,
+        "abi": answered,
+        "status": "PASS",
+    }
+
+
 #: What ``--dry-run`` cannot prove outside a live cut, named in its receipt so
 #: a dry-run receipt can never be mistaken for the real one.
 DRY_RUN_SKIPS = (
@@ -304,20 +347,7 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 )
             else:
-                library = ctypes.CDLL(str(path))
-                abi = library.gpuwm_preprocess_cpu_abi_version
-                abi.argtypes = []
-                abi.restype = ctypes.c_uint32
-                assert int(abi()) == 1
-                probes.append(
-                    {
-                        "artifact": artifact.name,
-                        "filename": pin.filename,
-                        "kind": artifact.kind,
-                        "abi": 1,
-                        "status": "PASS",
-                    }
-                )
+                probes.append(probe_library_abi(path, artifact))
 
     receipt = {
         # v2, not a v1 with extra keys.  v1 asserted one blanket claim --

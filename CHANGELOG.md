@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.1.1 (2026-08-13)
+
+Fixed:
+- The release verifier proves every bundled library through the ABI
+  symbol that library itself declares. It used to ask every library
+  for the CPU preprocessing library's symbol, which the region global
+  dealiasing library does not export, and it had no branch at all for
+  a vendored artifact, whose freshness is proved by its contract
+  marker rather than by a source stamp. Either defect refuses a
+  correct set of release artifacts, and both were reached only while
+  preparing 2.1.0, so 2.1.0 was tagged and never published. 2.1.1 is
+  the published form of that release and carries the same contents.
+  A library artifact that declares no ABI handshake is now refused by
+  name instead of being probed with another library's, one table
+  declares each handshake for both the verifier and the release
+  workflow, and a local probe loads every such library before a tag
+  exists.
+
 ## 2.1.0 (2026-08-13)
 
 New:

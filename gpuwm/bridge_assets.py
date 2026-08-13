@@ -281,6 +281,48 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
 )
 
 
+#: The ABI handshake of every ``kind == "library"`` artifact, by artifact
+#: name: the symbol a loader resolves and the version that symbol must
+#: answer.  Per artifact, and declared exactly once.
+#:
+#: Every library used to be probed with `gpuwm_preprocess_cpu`'s symbol,
+#: which was true while there was one library and became false the day
+#: the vendored dealiasing cdylib joined the bundle exporting
+#: `bw_abi_version` instead.  The workflow's per-runner probe was taught
+#: the difference; `tools/verify_release_artifacts.py` was not, so the
+#: 2.1.0 prepare job refused a correct bundle after the tag was public.
+#: The lesson is not "fix the second copy" but "have one": this table is
+#: the single source both the release verifier and the workflow probe
+#: read, so a third library cannot be added to `BUNDLED_ARTIFACTS` and
+#: quietly inherit some other library's handshake.
+LIBRARY_ABI: dict[str, tuple[str, int]] = {
+    "gpuwm_preprocess_cpu": ("gpuwm_preprocess_cpu_abi_version", 1),
+    "region_global_dealias": ("bw_abi_version", 1),
+}
+
+
+def library_abi_for(name: str) -> tuple[str, int]:
+    """``(symbol, expected_version)`` for the library artifact ``name``.
+
+    Fail closed.  A library artifact with no entry here is refused
+    rather than probed with a neighbour's symbol: the wrong symbol
+    either fails to resolve (a confusing refusal blamed on the bytes) or
+    resolves against a library that happens to export the same name and
+    reports a handshake nobody checked.  Adding a library therefore
+    means adding its entry, and the refusal says so by name.
+    """
+
+    try:
+        return LIBRARY_ABI[name]
+    except KeyError:
+        raise BridgeAssetError(
+            f"{name}: library artifact with no declared ABI handshake in "
+            "gpuwm.bridge_assets.LIBRARY_ABI, so nothing says which "
+            "exported symbol proves these bytes speak this release's "
+            "contract; declare it there beside BUNDLED_ARTIFACTS"
+        ) from None
+
+
 def artifact_filename(artifact: BundledArtifact, platform: str) -> str:
     """The filename ``artifact`` is built under on ``platform``.
 
@@ -1227,7 +1269,8 @@ __all__ = [
     "ARCHIVE_SUBDIR", "ASSET_ROOT", "ASSET_URL_BASE_ENV",
     "BUNDLED_ARTIFACTS", "BUNDLE_MANIFEST_SCHEMA", "REQUIRED_ASSET_SUBDIRS",
     "AssetPin", "BinaryPin", "BridgeAssetError", "BridgePins",
-    "BundlePin", "BundledArtifact", "PINS_RESOURCE", "PINS_SCHEMA",
+    "BundlePin", "BundledArtifact", "LIBRARY_ABI", "library_abi_for",
+    "PINS_RESOURCE", "PINS_SCHEMA",
     "SOURCE_REV_MARKER",
     "SUPPORTED_PLATFORMS", "artifact_filename", "asset_url_base",
     "bundle_url", "classify_assets", "classify_destination",

@@ -106,7 +106,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2089,
+      "line": 2107,
       "kind": "prose",
       "anchor": "- Two silent wrong answers on sm_120, where FP32 subnormals are flushed",
       "anchor_sha256": "bcc677ec38d515737f2fb65993dfd2d0c0ff7f019725b8552b6e232d1668e1ad",
@@ -117,7 +117,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2091,
+      "line": 2109,
       "kind": "prose",
       "anchor": "whose cube is subnormal and flushes to zero, turning a quotient into",
       "anchor_sha256": "d16d72f334e8d30903c3d85abea785c1573abd77b9da707e1a4a5721f5997048",
@@ -128,7 +128,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2349,
+      "line": 2367,
       "kind": "prose",
       "anchor": "FP32 subnormal flushing on sm_120 was described as a hardware property no",
       "anchor_sha256": "9845ca444fc2d1b5f5725fdb68f0b92434646fa1c15e917f719b3d7da391d204",
@@ -139,7 +139,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2351,
+      "line": 2369,
       "kind": "prose",
       "anchor": "the same source built without an appended `-ftz=true` keeps full IEEE",
       "anchor_sha256": "2e9db2d996710d5597910bd049935b00c288546c51893027e4da7cb352f1b818",
@@ -150,7 +150,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2352,
+      "line": 2370,
       "kind": "prose",
       "anchor": "subnormals on the same card. The CPU reference binary was described as an Intel",
       "anchor_sha256": "af90298485911dcdd5f05cf5efa704c8500e4a6f04ac8f3be6cd3da1092f68e1",
@@ -161,7 +161,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3454,
+      "line": 3472,
       "kind": "prose",
       "anchor": "functions, FP32 subnormal flushing), what each compared surface covers",
       "anchor_sha256": "2e3226a8e81d2f609a854e0ef0205ff199a9b03595eeb01dd045446a32e6cb6b",

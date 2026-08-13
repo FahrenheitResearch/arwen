@@ -423,13 +423,12 @@ jobs:
               Path("tools/rustwx/target/release"),
               Path("tools/region_global_dealias/target/release"),
           )
-          # Each library's ABI entry point, by artifact: one probe symbol
-          # for every kind == "library" member, so adding a second library
-          # cannot quietly reuse the first one's handshake.
-          LIBRARY_ABI = {
-              "gpuwm_preprocess_cpu": ("gpuwm_preprocess_cpu_abi_version", 1),
-              "region_global_dealias": ("bw_abi_version", 1),
-          }
+          # Each library's ABI entry point comes from the one table that
+          # declares it, gpuwm.bridge_assets.LIBRARY_ABI, so this probe
+          # and tools/verify_release_artifacts.py cannot disagree about
+          # which symbol proves which artifact.  This block used to
+          # declare its own copy; the verifier kept the older blanket
+          # rule and refused a correct bundle mid cut.
           for artifact in bridge_assets.BUNDLED_ARTIFACTS:
               filename = bridge_assets.artifact_filename(artifact, platform)
               matches = [directory / filename for directory in search
@@ -454,7 +453,8 @@ jobs:
                   ok, evidence = doctor._exec_probe(path)
                   assert ok, (path, evidence)
               else:
-                  symbol, expected = LIBRARY_ABI[artifact.name]
+                  symbol, expected = bridge_assets.library_abi_for(
+                      artifact.name)
                   library = ctypes.CDLL(str(path.resolve()))
                   abi = getattr(library, symbol)
                   abi.argtypes = []
