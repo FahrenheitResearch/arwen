@@ -3705,3 +3705,143 @@ def test_a_non_mp8_suite_never_asks_for_thompson_tables(tmp_path,
         physics_profile=runner.MORRISON_PHYSICS_PROFILE,
         output_directory=tmp_path / "authority")
     assert receipt["status"] == "PASS"
+
+
+# ---------------------------------------------------------------------------
+# The prepared front door must accept the cache it just wrote (#198).
+#
+# ``_validate_cache_metadata`` compares ``user`` to ``expected_user``
+# EXACTLY.  Any key a preparer records that the expectation omits is
+# therefore a refusal, not a tolerated extra -- and the ERA5 preparer
+# records ``soil_moisture_floor`` whenever the SMCDRY floor fires, which
+# is the common case on clipped ERA5.
+# ---------------------------------------------------------------------------
+
+_FLOOR_RECEIPT = {"floored_land_cells": 12, "min_pre_floor": 0.0021}
+_REPAIR_RECEIPT = {"repaired_land_cells": 3, "non_finite_cells": 0}
+
+
+def _cache_metadata_case(*, user_extra=None, proof_extra=None):
+    """A portable-single-domain cache/proof pair that validates."""
+
+    start = datetime(2024, 5, 20, 18, 0)
+    forcing_hours = [0, 1]
+    metadata = {
+        "user": {
+            "source_adapter": "era5",
+            "initial_valid_time": start.isoformat(),
+            "last_valid_time": (start + timedelta(hours=1)).isoformat(),
+            "forcing_hours": list(forcing_hours),
+            "boundary_interval_seconds": 3600,
+            "preprocessing": {"backend": "cpu"},
+            **(user_extra or {}),
+        },
+        "surface_fields": sorted(runner._CANONICAL_SURFACE_FIELDS),
+        "met_fields": sorted(runner._REQUIRED_MET_FIELDS),
+        "lbc": {
+            "spec_bdy_width": 5,
+            "spec_zone": 1,
+            "relax_zone": 4,
+            "intervals": [{
+                "start_seconds": 0.0,
+                "end_seconds": 3600.0,
+                "fields": list(runner._LBC_FIELDS),
+            }],
+        },
+    }
+    proof = {
+        "preprocessing": {"backend": "cpu"},
+        **(proof_extra or {}),
+    }
+    exp = SimpleNamespace(
+        start_time=start,
+        root=SimpleNamespace(run=SimpleNamespace(
+            spec_bdy_width=5, spec_zone=1, relax_zone=4)))
+    return dict(
+        reader=SimpleNamespace(header={"metadata": metadata}),
+        source="era5", exp=exp, forcing_hours=forcing_hours,
+        boundary_interval_seconds=3600, proof=proof,
+        layout="portable-single-domain-v2")
+
+
+def test_a_cache_written_with_the_smcdry_floor_fired_validates():
+    """#198: the floor firing must not make the front door refuse itself.
+
+    Before the fix this raised ``prepared cache user metadata differs
+    from source/proof/experiment`` -- the preparation wrote the receipt,
+    the expectation did not list it, and the exact comparison refused.
+    """
+
+    runner._validate_cache_metadata(**_cache_metadata_case(
+        user_extra={"soil_moisture_floor": _FLOOR_RECEIPT},
+        proof_extra={"soil_moisture_floor": _FLOOR_RECEIPT}))
+
+
+def test_the_deep_soil_repair_receipt_validates_the_same_way():
+    """The second instance of the same class, fixed by the same tuple."""
+
+    runner._validate_cache_metadata(**_cache_metadata_case(
+        user_extra={"soil_moisture_floor": _FLOOR_RECEIPT,
+                    "deep_soil_repair": _REPAIR_RECEIPT},
+        proof_extra={"soil_moisture_floor": _FLOOR_RECEIPT,
+                     "deep_soil_repair": _REPAIR_RECEIPT}))
+
+
+def test_a_floor_receipt_that_differs_from_its_proof_still_refuses():
+    """Strictness kept: the fix binds to the proof, it does not wave through."""
+
+    with pytest.raises(ValueError, match="user metadata differs"):
+        runner._validate_cache_metadata(**_cache_metadata_case(
+            user_extra={"soil_moisture_floor": _FLOOR_RECEIPT},
+            proof_extra={"soil_moisture_floor": {"floored_land_cells": 99}}))
+
+
+def test_a_cache_receipt_absent_from_the_proof_still_refuses():
+    """A cache claiming a floor its proof never recorded is inconsistent."""
+
+    with pytest.raises(ValueError, match="user metadata differs"):
+        runner._validate_cache_metadata(**_cache_metadata_case(
+            user_extra={"soil_moisture_floor": _FLOOR_RECEIPT}))
+
+
+def test_a_proof_receipt_absent_from_the_cache_still_refuses():
+    """And the mirror: the proof recorded a floor the cache did not."""
+
+    with pytest.raises(ValueError, match="user metadata differs"):
+        runner._validate_cache_metadata(**_cache_metadata_case(
+            proof_extra={"soil_moisture_floor": _FLOOR_RECEIPT}))
+
+
+def test_a_genuinely_mismatched_knob_is_still_refused():
+    """Negative control: the fix did not loosen the ordinary comparison."""
+
+    case = _cache_metadata_case()
+    case["boundary_interval_seconds"] = 1800
+    with pytest.raises(ValueError, match="user metadata differs"):
+        runner._validate_cache_metadata(**case)
+
+
+def test_a_cache_with_no_receipts_is_unchanged_by_the_fix():
+    """The silent path stays silent: no key, no expectation, no refusal."""
+
+    runner._validate_cache_metadata(**_cache_metadata_case())
+
+
+def test_the_era5_writer_and_the_validator_share_one_receipt_list():
+    """The CLASS fix: one tuple, imported by both sides.
+
+    This is the test that would have caught #198 at authoring time --
+    the writer's key set and the validator's expectation are the same
+    object, so they cannot drift apart again.
+    """
+
+    from gpuwm import era5_direct
+    from gpuwm.ingest.prepared_cache import CONDITIONAL_PREPARATION_RECEIPTS
+
+    assert "soil_moisture_floor" in CONDITIONAL_PREPARATION_RECEIPTS
+    assert "deep_soil_repair" in CONDITIONAL_PREPARATION_RECEIPTS
+    # Every metadata key the writer can bind resolves to an attribute it
+    # actually reads off the soil result.
+    for key in CONDITIONAL_PREPARATION_RECEIPTS:
+        attribute = era5_direct._SOIL_RECEIPT_ATTRIBUTE.get(key, key)
+        assert isinstance(attribute, str) and attribute

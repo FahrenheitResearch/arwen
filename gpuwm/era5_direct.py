@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import sys
 import time
+import tomllib
 from types import SimpleNamespace
 from typing import Mapping
 
@@ -23,12 +25,14 @@ import netCDF4
 import numpy as np
 
 from gpuwm.case_data import (
+    CaseDataConfig,
     PerDomainSourceOrography,
     SourceOrography,
     SourceOrographyDeclaration,
+    load_experiment_case_bytes,
     resolve_source_orography,
 )
-from gpuwm.experiment import load_experiment
+from gpuwm.experiment import ExperimentConfig, load_experiment
 from gpuwm.ingest.grib import (
     cached_era5_snapshots,
     canonical_units,
@@ -41,6 +45,7 @@ from gpuwm.ingest.lateral_bc import (
     start_last_forcing_order,
 )
 from gpuwm.ingest.prepared_cache import (
+    CONDITIONAL_PREPARATION_RECEIPTS,
     prepared_cache_identity,
     write_prepared_cache,
 )
@@ -167,6 +172,15 @@ from gpuwm.ingest.water_temperature import (
 #: receipt.  Not a case name and not a file name: the ROUTE.
 _WATER_ROUTE = "the ERA5 direct route"
 
+#: Where each CONDITIONAL_PREPARATION_RECEIPTS metadata key is read from
+#: on the soil result.  The two names differ for the moisture floor --
+#: the metadata says ``soil_moisture_floor``, the soil object says
+#: ``moisture_floor`` -- and only the METADATA spelling is shared with the
+#: validator.  A key with no entry here is read under its own name.
+_SOIL_RECEIPT_ATTRIBUTE = {
+    "soil_moisture_floor": "moisture_floor",
+}
+
 
 def _water_temperature_statics(static, landuse_attrs, policy):
     """The surface this route assembles water temperature over.
@@ -219,6 +233,40 @@ def _write_geometry_receipt(path: Path, grid, cfg, static_path: Path) -> None:
 
 def _canonical_surface(soil) -> dict[str, np.ndarray]:
     return canonical_noah_surface(soil)
+
+
+def load_era5_adapter_config(
+        experiment_config: Path,
+) -> tuple[ExperimentConfig, CaseDataConfig | None]:
+    """The ERA5 adapter's one config door (task #204).
+
+    Both config shapes this source honestly has are accepted: the
+    ONE-FILE config ``gpuwm domain --source era5`` writes (experiment
+    tables plus ``[case_data]``/``[fetch]``) and the bare experiment
+    config.  Before this door existed the adapter loaded through
+    :func:`gpuwm.experiment.load_experiment` alone, which split off
+    ``[fetch]`` but refused ``[case_data]`` -- so the wizard's own
+    emission was refused by the wizard's own source adapter, with a
+    message claiming the table it carried was absent.
+
+    A present ``[case_data]`` is validated by its owning schema and
+    RETURNED, so its declarations (source orography, geog root, water
+    temperature) can default the matching adapter arguments the caller
+    left unset.  Input existence is deliberately not required here
+    (``require_inputs=False``): the adapter's binding inputs arrive as
+    explicit manifest-bound arguments and are checked by the adapter
+    itself, and a declaration pointing at data fetched to another path
+    must not veto the run the explicit arguments fully describe.
+    """
+    from gpuwm.config_authority import read_config_authority
+
+    authority = read_config_authority(experiment_config)
+    raw = tomllib.load(io.BytesIO(authority.payload))
+    if "case_data" in raw:
+        return load_experiment_case_bytes(
+            authority.payload, source=str(authority.source),
+            base_dir=Path(authority.source).parent, require_inputs=False)
+    return load_experiment(experiment_config), None
 
 
 def _load_source_orography(path: Path, variable: str) -> np.ndarray:
@@ -281,9 +329,8 @@ def prepare_era5_wrf(
         if not Path(static_receipt).is_file():
             raise FileNotFoundError(
                 f"missing ERA5 adapter input static_receipt: {static_receipt}")
-    elif geog_root is None:
-        raise ValueError(
-            "ERA5 requires either static-input/static-receipt or geog-root")
+    # geog_root may still arrive from the config's own [case_data] below,
+    # so its absence is judged AFTER the config is loaded, not here.
     for role, path in paths.items():
         if not path.is_file():
             raise FileNotFoundError(f"missing ERA5 adapter input {role}: {path}")
@@ -299,7 +346,7 @@ def prepare_era5_wrf(
     preprocess_receipt = preprocess.receipt()
 
     total_started = time.perf_counter()
-    exp = load_experiment(paths["experiment_config"])
+    exp, declared = load_era5_adapter_config(paths["experiment_config"])
     from gpuwm.experiment import (
         refuse_unrouted_perturbation, refuse_unrouted_spawn,
     )
@@ -308,6 +355,53 @@ def prepare_era5_wrf(
     from gpuwm.static.highres_production import refuse_inert_highres
     refuse_inert_highres(paths["experiment_config"],
                          lane="ERA5-direct adapter")
+    # A present [case_data] defaults the adapter inputs the caller left
+    # unset, so the wizard's one-file config is self-sufficient.  An
+    # explicit argument always wins, and an explicitly passed input stays
+    # manifest-bound (it sits in ``paths``); a config-declared default is
+    # bound through the experiment config's own manifest entry instead,
+    # exactly like geog_root always was.
+    if declared is not None:
+        if source_orography is None and declared.source_orography is not None:
+            orography_declared = declared.source_orography
+            if isinstance(orography_declared, PerDomainSourceOrography):
+                if hierarchy_source_orography is None:
+                    hierarchy_source_orography = orography_declared
+                root_orography = resolve_source_orography(
+                    orography_declared, 1)
+                source_orography = root_orography.path
+                source_orography_variable = root_orography.variable
+            else:
+                source_orography = orography_declared.path
+                source_orography_variable = orography_declared.variable
+            if not Path(source_orography).is_file():
+                raise FileNotFoundError(
+                    f"source_orography {source_orography} declared in "
+                    f"[case_data] of {paths['experiment_config']} does not "
+                    "exist; stage the artifact at that path or pass "
+                    "--source-orography explicitly.")
+        if geog_root is None and declared.geog_root is not None:
+            geog_root = declared.geog_root
+        if (water_temperature_overlay is None
+                and declared.water_temperature_overlay is not None):
+            water_temperature_overlay = declared.water_temperature_overlay
+            if not Path(water_temperature_overlay).is_file():
+                raise FileNotFoundError(
+                    f"water_temperature_overlay {water_temperature_overlay} "
+                    f"declared in [case_data] of {paths['experiment_config']} "
+                    "does not exist; stage the analysis at that path or pass "
+                    "--water-temperature-overlay explicitly.")
+        if (water_temperature_policy_declared is None
+                and declared.water_temperature_policy is not None):
+            water_temperature_policy_declared = (
+                declared.water_temperature_policy)
+    if static_input is None and geog_root is None:
+        raise ValueError(
+            "ERA5 requires prebuilt statics or a geography root: pass "
+            "--static-input WITH --static-receipt, or --geog-root pointing "
+            "at a WPS_GEOG tree.  The one-file config written by `gpuwm "
+            "domain --source era5` declares geog_root in [case_data] and "
+            "needs no flag; this config carries no such declaration.")
     cfg = exp.root.run
     if len(exp.domains) == 1:
         grid = validate_native_lambert_contract(
@@ -330,7 +424,7 @@ def prepare_era5_wrf(
             root_orography = resolve_source_orography(
                 hierarchy_source_orography, 1)
             if (Path(root_orography.path).resolve()
-                    != paths["source_orography"].resolve()
+                    != Path(source_orography).resolve()
                     or root_orography.variable != source_orography_variable):
                 raise ValueError(
                     "nested ERA5 d01 source_orography differs from the root "
@@ -356,7 +450,7 @@ def prepare_era5_wrf(
     source_terrain = (
         None if source_orography is None
         else _load_source_orography(
-            paths["source_orography"], source_orography_variable)
+            Path(source_orography), source_orography_variable)
     )
 
     water_temperature_policy = validate_water_temperature_policy(
@@ -387,6 +481,39 @@ def prepare_era5_wrf(
         paths["grib"], paths["vtable"], bridge=paths["bridge"])
     decode_seconds = time.perf_counter() - decode_started
     snapshots = tuple(sorted(snapshots, key=lambda value: value.valid_time))
+    if not snapshots:
+        raise ValueError(
+            f"ERA5 decode produced no forcing snapshots from {paths['grib']}")
+    # The run initializes at start_time EXACTLY.  A series that begins
+    # earlier is data, not a defect: the leading snapshots are dropped
+    # loudly and the run proceeds (a fetch window wider than the run used
+    # to be refused as "must begin at").  A series that does not contain
+    # the start hour at all refuses by naming both facts and both fixes.
+    start_index = next(
+        (index for index, snapshot in enumerate(snapshots)
+         if snapshot.valid_time == exp.start_time), None)
+    if start_index is None:
+        first = snapshots[0].valid_time
+        last = snapshots[-1].valid_time
+        raise ValueError(
+            "ERA5 forcing must contain the experiment start_time "
+            f"{exp.start_time.isoformat()}, and the decoded series "
+            f"[{first.isoformat()} .. {last.isoformat()}] does not.  "
+            "Either fetch a window that covers the start hour (`gpuwm "
+            f"fetch --source era5 --cycle {exp.start_time:%Y-%m-%dT%H}` "
+            "writes one that begins there), or set "
+            "[experiment].start_time in "
+            f"{paths['experiment_config']} to an hour the series carries.")
+    if start_index:
+        dropped = ", ".join(
+            snapshot.valid_time.isoformat()
+            for snapshot in snapshots[:start_index])
+        print(
+            "ERA5 forcing begins before the experiment start_time; "
+            f"dropping {start_index} leading snapshot(s) ({dropped}) and "
+            f"initializing at {exp.start_time.isoformat()}.",
+            file=sys.stderr)
+        snapshots = snapshots[start_index:]
     # Optional hi-res water-temperature overlay (task #71): applied to
     # the snapshots that feed BOTH the single-domain loop and the nested
     # hierarchy, before any horizontal interpolation.  Absent, this is
@@ -394,7 +521,7 @@ def prepare_era5_wrf(
     water_overlay = (
         None if water_temperature_overlay is None
         else load_water_temperature_overlay(
-            paths["water_temperature_overlay"]))
+            Path(water_temperature_overlay)))
     snapshots, water_overlay_receipt = overlay_snapshots(
         snapshots, water_overlay)
     source_inventory = tuple(snapshots[0].fields) if snapshots else ()
@@ -405,8 +532,17 @@ def prepare_era5_wrf(
     )
     if source_terrain is None and not has_invariant_orography:
         raise ValueError(
-            "ERA5 input requires invariant SOILGEO or an explicit "
-            "source-orography artifact")
+            "ERA5 initialization needs the source model's own terrain, and "
+            f"this run has none: the decoded series from {paths['grib']} "
+            "carries no invariant SOILGEO record in every snapshot, no "
+            "--source-orography artifact was passed, and the config "
+            "declares no [case_data] source_orography.  Fix ONE of these: "
+            "fetch the combined GRIB with the invariant geopotential "
+            "included (`gpuwm fetch --source era5` writes it into "
+            "era5-combined.grib), pass --source-orography PATH "
+            "(--source-orography-variable NAME, default SOILHGT), or "
+            "declare source_orography + source_orography_variable in "
+            "[case_data] of the experiment config.")
     if source_terrain is not None and any(
             "SOILGEO" in snapshot.fields for snapshot in snapshots):
         raise ValueError(
@@ -534,18 +670,22 @@ def prepare_era5_wrf(
     # receipt is only bound into the prepared metadata/proof when at
     # least one land cell was floored (getattr: the RUC state carries
     # its own moisture and has no Noah floor receipt).
-    soil_moisture_floor = dict(getattr(soil, "moisture_floor", {}) or {})
-    soil_floor_binding = (
-        {"soil_moisture_floor": soil_moisture_floor}
-        if soil_moisture_floor else {})
+    #
     # Same discipline for the deep-soil repair: bound into the prepared
     # metadata only when at least one LAND cell took TSK for its TMN.
     # The water half of that substitution is every run's ordinary path
     # and never appears here.
-    deep_soil_repair = dict(getattr(soil, "deep_soil_repair", {}) or {})
-    if deep_soil_repair:
-        soil_floor_binding = {**soil_floor_binding,
-                              "deep_soil_repair": deep_soil_repair}
+    #
+    # Both are built from CONDITIONAL_PREPARATION_RECEIPTS, the same tuple
+    # the prepared-cache validator binds from the proof.  Keeping one list
+    # is the point: when these two sides disagreed, the front door refused
+    # the cache it had just written.
+    soil_floor_binding = {}
+    for _receipt_key in CONDITIONAL_PREPARATION_RECEIPTS:
+        _attribute = _SOIL_RECEIPT_ATTRIBUTE.get(_receipt_key, _receipt_key)
+        _receipt = dict(getattr(soil, _attribute, {}) or {})
+        if _receipt:
+            soil_floor_binding[_receipt_key] = _receipt
     initialize_seconds = time.perf_counter() - initialize_started
     input_manifest_digest = _sha256(Path(input_manifest))
     # LOUD when configured, absent when not: the overlay binding joins
@@ -555,7 +695,7 @@ def prepare_era5_wrf(
         {} if water_overlay_receipt is None
         else {"water_temperature_overlay": {
             **water_overlay_receipt,
-            "sha256": _sha256(paths["water_temperature_overlay"]),
+            "sha256": _sha256(Path(water_temperature_overlay)),
         }})
     native_source_identity = {
         "adapter": "era5-grib1-direct-v1",

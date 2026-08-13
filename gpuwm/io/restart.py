@@ -865,6 +865,12 @@ DRIVER_REBUILT_ATTRS = frozenset({
     "carriers_need_producer_refresh",
     "tendencies", "last_ysu", "refl_10cm", "microphysics",
     "nssl2_binding",
+    # The Shin-Hong passenger-repair advisory latch (task #206): a
+    # print-once flag, not state.  Rebuilt False at driver init, so a
+    # resumed run that needs the repair says so once again -- an
+    # advisory that survives a restart silently would hide the repair
+    # from the operator reading the resumed log.
+    "_shinhong_passenger_advisory",
     "bldt_seconds", "stepbl", "radt_minutes", "cudt_minutes",
     "stepra", "stepcu", "radt_seconds", "cudt_seconds",
     "rainc", "cu_nca", "cu_pratec", "cu_raincv", "cu_expiring",

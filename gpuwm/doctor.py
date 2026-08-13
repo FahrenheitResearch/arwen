@@ -49,6 +49,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 from gpuwm import bridges
 from gpuwm import rustwx
@@ -529,24 +530,297 @@ def _cupy_check() -> Check:
                  blocking=False)
 
 
-#: What to install when the device has no cuSOLVER.  Every wheel here is a
+#: Compiles two kernels and reports which one built.  The pair is the whole
+#: point, because the two failures it separates need OPPOSITE remedies:
+#:
+#: 1. a SELF-CONTAINED kernel with no ``#include`` at all -- how every gpuwm
+#:    kernel is written.  It exercises NVRTC itself, which ships INSIDE the
+#:    CuPy wheel.  If this fails, the wheel is the problem.
+#: 2. a CuPy reduction, which compiles through CuPy's own cub/jitify
+#:    preamble.  That preamble ``#include``s the CUDA runtime headers, and
+#:    those come from a TOOLKIT, found through ``CUDA_PATH``.  If this fails
+#:    while (1) passes, the headers are the problem and no wheel supplies them.
+#:
+#: THE COLD CACHE IS LOAD-BEARING.  ``CUPY_CACHE_DIR`` is redirected to an
+#: empty directory because a warm kernel cache is exactly what hides this
+#: fault: the box that produced this check compiled its reductions once under
+#: CUDA 12, moved to a CUDA-13 toolkit, and kept serving the cached cubins for
+#: weeks while every UNCACHED reduction failed.  A probe that reuses the
+#: cache reports green on a box where the next new kernel dies.
+_NVRTC_HEADER_PROBE = """
+import json, sys
+out = {}
+try:
+    import cupy
+except Exception as error:
+    sys.stdout.write(json.dumps({"cupy": repr(error)}))
+    raise SystemExit(0)
+try:
+    if cupy.cuda.runtime.getDeviceCount() < 1:
+        sys.stdout.write(json.dumps({"devices": 0}))
+        raise SystemExit(0)
+except Exception as error:
+    sys.stdout.write(json.dumps({"devices": 0, "device_error": repr(error)}))
+    raise SystemExit(0)
+try:
+    module = cupy.RawModule(code=(
+        'extern "C" __global__ '
+        'void gpuwm_probe(float* out) { out[0] = 1.0f; }'))
+    module.get_function("gpuwm_probe")
+    out["self_contained"] = "ok"
+except Exception as error:
+    out["self_contained"] = f"{type(error).__name__}: {error}"
+try:
+    total = int(cupy.arange(64, dtype=cupy.int64).sum())
+    out["toolkit_headers"] = "ok" if total == 2016 else f"wrong sum {total}"
+except Exception as error:
+    out["toolkit_headers"] = f"{type(error).__name__}: {error}"
+import os
+out["cuda_path"] = os.environ.get("CUDA_PATH") or ""
+sys.stdout.write(json.dumps(out))
+"""
+
+
+def _nvrtc_header_probe() -> dict:
+    """Run :data:`_NVRTC_HEADER_PROBE` cold, out of process; ``{}`` if not."""
+
+    if find_spec("cupy") is None:
+        return {"cupy": "not installed"}
+    with tempfile.TemporaryDirectory(prefix="gpuwm-nvrtc-probe-") as cache:
+        environment = dict(os.environ, CUPY_CACHE_DIR=cache)
+        try:
+            probe = subprocess.run(
+                [sys.executable, "-c", _NVRTC_HEADER_PROBE],
+                capture_output=True, text=True, errors="replace",
+                env=environment, timeout=_PROBE_TIMEOUT_S * 6)
+        except subprocess.TimeoutExpired:
+            # NOT a verdict.  A cold NVRTC compile on a slow or busy box
+            # can outrun this budget while being perfectly healthy, and
+            # reporting that as a missing header tree would send a reader
+            # to install a toolkit they already have.
+            return {"slow": f"no answer within {_PROBE_TIMEOUT_S * 6} s"}
+        except OSError as error:
+            return {"probe": f"did not run: {error}"}
+    try:
+        return json.loads(probe.stdout or "{}")
+    except ValueError:
+        tail = [line for line in (probe.stderr or "").strip().splitlines()
+                if line.strip()]
+        return {"probe": tail[-1] if tail else f"exit {probe.returncode}"}
+
+
+def _cuda_headers_remedy(box_major: int | None) -> tuple[str, str]:
+    """``(remedy, action)`` for a box whose CuPy cannot find CUDA headers.
+
+    NOT A WHEEL PROBLEM, SO NOT A WHEEL REMEDY.  This is the correction
+    that matters most on a fresh box: the gap used to be reported -- when
+    it was reported at all -- with ``pip install 'gpuwm[gpu-cu13]'``,
+    which reinstalls the CuPy wheel that is already present and supplies
+    no headers, because no CuPy wheel has ever carried a header tree.  A
+    buyer following it watches pip succeed and the fault survive.
+
+    The headers come from a CUDA toolkit, and CuPy reads them through
+    ``CUDA_PATH``.  conda-forge is named first because it installs the
+    toolkit and sets ``CUDA_PATH`` on activation in one step, on both
+    platforms, without administrator rights; the runtime wheel is named
+    second because it carries the same header tree for an estate that
+    has no conda.
+    """
+
+    major = box_major if box_major in _GPU_EXTRA_BY_MAJOR else None
+    pin = f"={major}" if major else ""
+    if bridges.WINDOWS_SHELL:
+        point_at_conda = "$env:CUDA_PATH = $env:CONDA_PREFIX"
+    else:
+        point_at_conda = 'export CUDA_PATH="$CONDA_PREFIX"'
+    served = (
+        f"# this box's driver serves CUDA {box_major}, so the toolkit has "
+        f"to be a CUDA {box_major} one" if box_major else
+        "# match the toolkit's major to the CUDA version nvidia-smi prints")
+    lines = [
+        "# the CuPy wheel ships NVRTC -- the COMPILER -- and no headers.",
+        "# CuPy's own reduction and sort kernels include the CUDA runtime",
+        "# headers, so they build only where a real toolkit is installed",
+        "# and CUDA_PATH points at it.  Reinstalling the gpuwm GPU extra",
+        "# cannot fix this: it reinstalls the compiler, which is present.",
+        "#",
+        "# The header tree has to MATCH that compiler's major.  Feeding",
+        "# CUDA 13 headers to a CUDA 12 NVRTC fails on cuda_fp8.hpp, and",
+        "# that pairing is the commonest way this breaks after an upgrade.",
+        "# The cupy line above keeps the wheel paired to this driver, so",
+        "# matching the toolkit to the driver matches it to the compiler.",
+        "#",
+        served,
+        f"conda install -c conda-forge cuda-toolkit{pin}",
+        "# conda-forge sets CUDA_PATH when the environment activates.  If",
+        "# it did not, or the toolkit came from NVIDIA's own installer,",
+        "# point it at the toolkit root yourself:",
+        point_at_conda,
+        "#",
+        "# no conda in this estate?  the CUDA runtime wheel carries the",
+        "# same header tree; install it and point CUDA_PATH at it:",
+        _cuda_wheel_install(("nvidia-cuda-runtime",), major or 12),
+        "python -c \"import nvidia.cuda_runtime as r,pathlib;"
+        "print(pathlib.Path(r.__file__).parent)\"",
+    ]
+    if major is None:
+        lines.insert(6, "nvidia-smi")
+    return "\n".join(lines), f"conda install -c conda-forge cuda-toolkit{pin}"
+
+
+def _cuda_headers_check() -> Check:
+    """Can CuPy COMPILE on this box, and if not, is it the wheel or headers?
+
+    A check rather than a footnote because the gap is silent by
+    construction: cupy imports, cuBLAS loads, a matmul returns the right
+    answer, and doctor called that verified -- while the first uncached
+    reduction of a real run died on a missing header.  Everything cheaper
+    than a cold compile passes on a box that cannot compile.
+
+    Never blocking.  A headers gap stops nothing gpuwm's own kernels do
+    (they are self-contained and never read the toolkit tree), and fetch,
+    import-namelist and render do not touch CUDA at all.
+    """
+
+    name = "CUDA kernel headers"
+    if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+        return Check(
+            name, "info",
+            "not judged -- compiling a kernel is device contact and "
+            "GPUWM_NO_LOCAL_GPU is set",
+            brief="device not touched", blocking=False)
+    result = _nvrtc_header_probe()
+    if "cupy" in result:
+        return Check(
+            name, "info",
+            f"not judged -- kernels compile through cupy, which is "
+            f"unavailable here ({result['cupy']})",
+            brief="needs cupy", blocking=False)
+    if "devices" in result:
+        reason = result.get("device_error") or "no CUDA device visible"
+        return Check(
+            name, "info",
+            f"not judged -- compiling needs a device: {_short(str(reason), 96)}",
+            brief="no device", blocking=False)
+    if "slow" in result:
+        return Check(
+            name, "info",
+            f"not judged -- the cold compile did not finish "
+            f"({result['slow']}); a first compile on a busy box is slow",
+            brief="compile timed out", blocking=False)
+    if "probe" in result:
+        return Check(
+            name, "missing",
+            f"the compile probe could not be run: {result['probe']}",
+            *_cuda_headers_remedy(_driver_cuda_major()),
+            brief=_short(result["probe"]), blocking=False)
+
+    self_contained = result.get("self_contained", "did not report")
+    headers = result.get("toolkit_headers", "did not report")
+    cuda_path = result.get("cuda_path") or "unset"
+    if self_contained == "ok" and headers == "ok":
+        return Check(
+            name, "verified",
+            f"a self-contained kernel and a cupy reduction both compiled "
+            f"from a COLD cache (CUDA_PATH {cuda_path})",
+            brief="kernels compile", blocking=False)
+    if self_contained == "ok":
+        # THE DISTINCTION THIS CHECK EXISTS FOR.  NVRTC works, so the
+        # wheel is fine and reinstalling it is wasted advice; what is
+        # missing is the header tree NVRTC was asked to read.
+        box_major = _driver_cuda_major()
+        remedy, action = _cuda_headers_remedy(box_major)
+        return Check(
+            name, "missing",
+            f"NVRTC works -- a self-contained kernel compiled -- but a cupy "
+            f"reduction did not: {_short(str(headers), 120)}.  That is the "
+            f"toolkit HEADER tree, which no cupy wheel ships and no wheel "
+            f"reinstall supplies (CUDA_PATH {cuda_path})",
+            remedy, action=action, brief="toolkit headers missing",
+            blocking=False)
+    # NVRTC itself did not build the simplest kernel there is, so this is
+    # the wheel, and the wheel remedy is the honest one.
+    box_major = _driver_cuda_major()
+    remedy, action = _gpu_extra_hint(box_major)
+    return Check(
+        name, "missing",
+        f"cupy could not compile even a self-contained kernel: "
+        f"{_short(str(self_contained), 120)}.  NVRTC ships inside the cupy "
+        f"wheel, so this is the wheel rather than the toolkit headers",
+        remedy, action=action, brief="nvrtc unusable", blocking=False)
+
+
+#: The CUDA libraries cuSOLVER needs present TOGETHER.  Every one is a
 #: dependency OF cusolver, not a nicety: cusolver links cublas and cusparse,
 #: and on Windows a wheel's DLLs are only visible to a compiled extension
 #: through ``os.add_dll_directory``, never through PATH.
-CUSOLVER_HINT = (
-    "# only needed for eigensolver='library', or for an ensemble larger\n"
-    "  # than this project's own kernel supports.  The default analysis\n"
-    "  # does not use cuSOLVER at all, so this is optional.\n"
-    "  #\n"
-    "  # FIRST check whether it is installed but merely unreachable, which\n"
-    "  # is the commoner fault and which installing again will not fix:\n"
-    "  python -c \"import sys,pathlib;print([str(p) for p in pathlib.Path(sys.prefix).rglob('*cusolver*') if p.is_dir()])\"\n"
-    "  # If that prints a directory, the library is present and the loader\n"
-    "  # cannot see it.  On Linux put that directory on $LD_LIBRARY_PATH;\n"
-    "  # on Windows PATH is not enough -- since Python 3.8 a compiled\n"
-    "  # extension resolves its dependants through os.add_dll_directory()\n"
-    "  # only.  If it prints nothing, install it:\n"
-    "  pip install nvidia-cusolver-cu12 nvidia-cublas-cu12 nvidia-cusparse-cu12")
+_CUSOLVER_PACKAGES = ("nvidia-cusolver", "nvidia-cublas", "nvidia-cusparse")
+
+
+def _cuda_wheel_install(packages: tuple[str, ...], major: int) -> str:
+    """The pip line that installs these CUDA libraries for ``major``.
+
+    NVIDIA DROPPED THE ``-cuXX`` SUFFIX AT CUDA 13, and the suffixed names
+    still exist as tombstones: ``pip install nvidia-cusolver-cu13``
+    resolves, downloads, reports success, and installs a package whose
+    entire content is a notice saying to use ``nvidia-cusolver`` instead.
+    A remedy that prints it leaves the box exactly as broken as before
+    while the transcript says it was fixed -- the NVRTC shadow trap with
+    extra steps.  ``--no-deps`` is what keeps the unsuffixed CUDA-13
+    packages from dragging those same tombstones back in as dependencies.
+    """
+
+    if major >= 13:
+        return "pip install --no-deps " + " ".join(packages)
+    return "pip install " + " ".join(f"{name}-cu{major}" for name in packages)
+
+
+def _cusolver_hint(box_major: int | None) -> tuple[str, str]:
+    """``(remedy, action)`` for a device whose cuSOLVER is missing.
+
+    The install line is a property of the BOX's CUDA major, read from the
+    driver, for the same reason the CuPy extra is: until this release the
+    line was a frozen ``-cu12`` spelling, so a CUDA-13 box asking doctor
+    how to get its eigensolver back was handed three tombstone packages.
+    With no major in hand both spellings are printed and neither is
+    presented as the default, because a silent default is exactly how a
+    CUDA-13 box ends up installing cu12 wheels.
+    """
+
+    preamble = (
+        "# only needed for eigensolver='library', or for an ensemble larger\n"
+        "  # than this project's own kernel supports.  The default analysis\n"
+        "  # does not use cuSOLVER at all, so this is optional.\n"
+        "  #\n"
+        "  # FIRST check whether it is installed but merely unreachable, which\n"
+        "  # is the commoner fault and which installing again will not fix:\n"
+        "  python -c \"import sys,pathlib;print([str(p) for p in pathlib.Path(sys.prefix).rglob('*cusolver*') if p.is_dir()])\"\n"
+        "  # If that prints a directory, the library is present and the loader\n"
+        "  # cannot see it.  On Linux put that directory on $LD_LIBRARY_PATH;\n"
+        "  # on Windows PATH is not enough -- since Python 3.8 a compiled\n"
+        "  # extension resolves its dependants through os.add_dll_directory()\n"
+        "  # only.  If it prints nothing, install it:")
+    if box_major is None:
+        return ("\n".join([
+            preamble,
+            "  # NVIDIA dropped the -cuXX suffix at CUDA 13, so the right",
+            "  # spelling depends on the major this box serves.  Read it:",
+            "  nvidia-smi",
+            "  # then, for a CUDA 12.x box:",
+            f"  {_cuda_wheel_install(_CUSOLVER_PACKAGES, 12)}",
+            "  # or, for a box whose CUDA is 13-only:",
+            f"  {_cuda_wheel_install(_CUSOLVER_PACKAGES, 13)}",
+        ]), "nvidia-smi  # then install the CUDA libraries for that major")
+    install = _cuda_wheel_install(_CUSOLVER_PACKAGES, box_major)
+    tombstone = (
+        "\n  # (the -cu13 spellings of these are deprecation tombstones:\n"
+        "  # they install cleanly and supply nothing)" if box_major >= 13
+        else "")
+    return ("\n".join([
+        preamble,
+        f"  # this box's driver serves CUDA {box_major}, so:{tombstone}",
+        f"  {install}",
+    ]), install)
 
 
 #: Solves one tiny symmetric eigenproblem two ways and reports which worked.
@@ -643,6 +917,9 @@ def _da_eigensolver_check() -> Check:
     either solver, and an install that does has this project's own kernel.
     """
     name = "radar-DA eigensolver"
+    # The install spelling is the BOX's property, not a constant: see
+    # _cusolver_hint.  Read once, so all four branches agree.
+    cusolver_remedy, cusolver_action = _cusolver_hint(_driver_cuda_major())
     result = _eigensolver_probe()
     if "cupy" in result:
         return Check(
@@ -654,7 +931,7 @@ def _da_eigensolver_check() -> Check:
         return Check(
             name, "missing",
             f"the probe could not be run: {result['probe']}",
-            CUSOLVER_HINT, action="pip install nvidia-cusolver-cu12",
+            cusolver_remedy, action=cusolver_action,
             brief=_short(result["probe"]), blocking=False)
 
     jacobi = result.get("jacobi", "did not report")
@@ -670,8 +947,8 @@ def _da_eigensolver_check() -> Check:
             name, "verified",
             f"this project's batched Jacobi kernel solved and reconstructed "
             f"a test batch; {extra}",
-            None if library == "ok" else CUSOLVER_HINT,
-            action=None if library == "ok" else "pip install nvidia-cusolver-cu12",
+            None if library == "ok" else cusolver_remedy,
+            action=None if library == "ok" else cusolver_action,
             brief=("jacobi kernel ok, cuSOLVER ok" if library == "ok"
                    else "jacobi kernel ok, no cuSOLVER"),
             blocking=False)
@@ -691,7 +968,7 @@ def _da_eigensolver_check() -> Check:
         f"neither solver works here -- bundled kernel: {_short(jacobi)}; "
         f"cuSOLVER: {_short(library)}.  Data assimilation cannot run on "
         "this device; forecasts are unaffected",
-        CUSOLVER_HINT, action="pip install nvidia-cusolver-cu12",
+        cusolver_remedy, action=cusolver_action,
         brief="no device eigensolver", blocking=False)
 
 
@@ -1894,6 +2171,10 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
             action="install Python 3.11 or newer",
             brief=f"{version} is below the 3.11 floor"))
     checks.append(_cupy_check())
+    # Between the wheel and the solver, because that is the order the
+    # three fail in: a wheel that will not load, then a wheel that
+    # loads but cannot compile, then a compile that cannot factor.
+    checks.append(_cuda_headers_check())
     checks.append(_da_eigensolver_check())
     checks.append(_render_extra_check())
     checks.append(_rust_renderer_check())

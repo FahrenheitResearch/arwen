@@ -34,8 +34,9 @@ use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, ResolvedUrl, SourceId};
 use net::{grib_framed, hex_digest, publish, select_contains, select_exact, Fetcher};
 use plan::{decide, Decision, Mode, ModeRequest};
 use record::{
-    CycleRecord, FetchRecord, FileRecord, LatestReport, ProbeHour, ProbeRecord, ProbeReport,
-    FETCH_RECORD_ABI, FETCH_RECORD_SCHEMA, LATEST_REPORT_SCHEMA, PROBE_REPORT_SCHEMA,
+    CycleRecord, DedupRecord, FetchRecord, FileRecord, LatestReport, ProbeHour, ProbeRecord,
+    ProbeReport, FETCH_RECORD_ABI, FETCH_RECORD_SCHEMA, LATEST_REPORT_SCHEMA,
+    PROBE_REPORT_SCHEMA,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -611,6 +612,15 @@ fn command_fetch(options: &Options) -> Result<String, String> {
             .map(|dir| dir.display().to_string()),
         files,
         payload_bytes,
+        // Read after every transfer, so it covers the whole run: one
+        // object reaches the cache under two key shapes and the second
+        // costs a reference, and a receipt that could not say so left a
+        // multiple of the payload on disk unaccounted for.
+        dedup: fetcher.cache_dedup().map(|dedup| DedupRecord {
+            cache_bytes_written: dedup.bytes_written,
+            cache_bytes_deduplicated: dedup.bytes_deduplicated,
+            reference_entries: dedup.reference_entries,
+        }),
         wall_seconds: started.elapsed().as_secs_f64(),
     };
     serde_json::to_string_pretty(&document).map_err(|error| format!("{error}"))

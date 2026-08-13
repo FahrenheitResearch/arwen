@@ -74,6 +74,23 @@ pub struct CycleRecord {
     pub hour: u8,
 }
 
+/// What the download cache cost this run.
+///
+/// One full-file object is stored under two key shapes -- URL-only and
+/// URL+ranges -- and those two entries used to be two whole copies on
+/// disk.  They now share one content-addressed payload, and this is the
+/// receipt of that: the bytes actually laid down, the bytes a `put` did
+/// not have to write because the content was already there, and how many
+/// key entries were published as references to it.  Absent (`null`) when
+/// the run was given no `--cache-dir`, which is not the same claim as
+/// "nothing was deduplicated".
+#[derive(Debug, Clone, Serialize)]
+pub struct DedupRecord {
+    pub cache_bytes_written: u64,
+    pub cache_bytes_deduplicated: u64,
+    pub reference_entries: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FetchRecord {
     pub schema: &'static str,
@@ -89,6 +106,9 @@ pub struct FetchRecord {
     pub cache_dir: Option<String>,
     pub files: Vec<FileRecord>,
     pub payload_bytes: u64,
+    /// Added after the ABI marker was fixed, so it is an ADDITION: every
+    /// key the marker lists is still here, spelled the same way.
+    pub dedup: Option<DedupRecord>,
     pub wall_seconds: f64,
 }
 

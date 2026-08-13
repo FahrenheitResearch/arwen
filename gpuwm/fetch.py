@@ -2553,11 +2553,47 @@ def _rw_fetch_hrrr(*, binary: Path, cycle: datetime, hour: int, kind: str,
             f"rw_fetch returned {len(record['files'])} files for one "
             "forecast hour")
     entry = record["files"][0]
+    # The cache's own accounting is a record-level fact, and the caller
+    # only ever sees the file entry; carry it across rather than widen
+    # every return in this route.  A backbone predating the key simply
+    # says nothing, and the manifest reports nothing for it.
+    dedup = record.get("dedup")
+    if isinstance(dedup, dict):
+        entry["dedup"] = dedup
     progress(f"fetch hrrr f{hour:02d} {kind}: {entry['name']} "
              f"{entry['bytes']:,} B in {entry['wall_seconds']:.1f} s "
              f"({entry['source']}, {entry['mode']} -- "
              f"{entry['mode_reason']})")
     return entry
+
+
+#: Cache-accounting keys the Rust backbone reports per transfer.
+_DEDUP_FIELDS = ("cache_bytes_written", "cache_bytes_deduplicated",
+                 "reference_entries")
+
+
+def _cache_dedup_summary(reports) -> dict:
+    """Sum what this run's download cache wrote versus what it reused.
+
+    One full-file object reaches the backbone's cache under two key
+    shapes and used to land as two whole copies; the second is now a
+    reference to the first, and the receipt says so in bytes.  A
+    backbone built before the key existed reports nothing, so
+    ``transfers`` is 0 and the byte columns stay honest rather than
+    claiming a saving that was never measured.
+    """
+
+    totals = {"transfers": 0}
+    totals.update({field: 0 for field in _DEDUP_FIELDS})
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        totals["transfers"] += 1
+        for field in _DEDUP_FIELDS:
+            value = report.get(field)
+            if isinstance(value, int) and not isinstance(value, bool):
+                totals[field] += value
+    return totals
 
 
 def _expand_selector(selector: str):
@@ -2641,8 +2677,12 @@ def _download_one_hrrr_product(
         dest: Path, dest_name: str, source_name: str, out: Path,
         label: str, cache_dir: Path | None, workers: int, retries: int,
         bar_kind: str, certified: int, accept_inventory_change: bool,
-        progress):
+        progress, dedup: list[dict] | None = None):
     """Download one HRRR product from one host; ``(bar, url)``.
+
+    ``dedup`` collects each Rust transfer's cache accounting, which the
+    receipt sums; the download's own answer stays the two-value pair
+    every caller unpacks.
 
     Raises
     :class:`tools.download_hrrr_native_subset.IndexInventoryError` when
@@ -2671,6 +2711,8 @@ def _download_one_hrrr_product(
             binary=engine_bin, cycle=cycle, hour=hour, kind=kind,
             host=host, mode=mode, out=out, cache_dir=cache_dir,
             progress=progress)
+        if dedup is not None and isinstance(entry.get("dedup"), dict):
+            dedup.append(entry["dedup"])
         url = entry["grib_url"]
         landed = out / entry["name"]
         if landed != dest:
@@ -2922,6 +2964,7 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
     deadline = clock() + wait_timeout_s
     files: list[dict] = []
     complete_hours: list[int] = []
+    cache_dedup: list[dict] = []
 
     def publish_manifest(recorded_hours: tuple[int, ...]) -> Path:
         # A receipt claims only files belonging to a COMPLETE hour.  An
@@ -2960,6 +3003,12 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         payload["mode"] = mode
         payload["record_bars"] = [
             bar.as_manifest() for bar in bars.values()]
+        # What the backbone's disk cache cost this run.  A full-file
+        # object is stored under two key shapes, and until those two
+        # entries shared one content-addressed payload the cache held a
+        # multiple of what was fetched with nothing on the receipt to
+        # say so.
+        payload["dedup"] = _cache_dedup_summary(cache_dedup)
         return write_fetch_manifest(out, payload)
 
     for hour in hours:
@@ -3037,7 +3086,7 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                             retries=retries, bar_kind=bar_kinds[kind],
                             certified=expected_counts[kind],
                             accept_inventory_change=accept_inventory_change,
-                            progress=progress)
+                            progress=progress, dedup=cache_dedup)
                     except range_transport.IndexInventoryError as error:
                         if not remaining:
                             raise

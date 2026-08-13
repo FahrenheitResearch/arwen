@@ -798,6 +798,30 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
     return errors
 
 
+def _config_declares_geog_root(experiment_config) -> bool:
+    """Whether the experiment config's ``[case_data]`` names a geog_root.
+
+    A courtesy peek for argument validation only: the adapter re-reads
+    the config through its own authority-bound loader and owns the real
+    refusal, so any read or parse problem here answers ``False`` and
+    leaves the full diagnostic to the front door.
+    """
+    if experiment_config is None:
+        return False
+    try:
+        import io
+        import tomllib
+
+        from gpuwm.config_authority import read_config_authority
+
+        raw = tomllib.load(
+            io.BytesIO(read_config_authority(experiment_config).payload))
+    except Exception:
+        return False
+    table = raw.get("case_data")
+    return isinstance(table, dict) and bool(table.get("geog_root"))
+
+
 def _required_era5_args(args: argparse.Namespace) -> list[str]:
     required = {
         "--grib": args.grib,
@@ -813,9 +837,15 @@ def _required_era5_args(args: argparse.Namespace) -> list[str]:
     if (args.static_input is None) != (args.static_receipt is None):
         errors.append(
             "--static-input and --static-receipt must be supplied together")
-    if args.static_input is None and args.geog_root is None:
+    if (args.static_input is None and args.geog_root is None
+            and not _config_declares_geog_root(args.experiment_config)):
+        # The one-file config `gpuwm domain --source era5` writes declares
+        # geog_root in [case_data]; demanding the flag anyway made the
+        # wizard's own emission unrunnable through this front door (#204).
         errors.append(
-            "--static-input/--static-receipt or --geog-root is required")
+            "--static-input/--static-receipt or --geog-root is required "
+            "(a geog_root declared in the experiment config's [case_data] "
+            "table also satisfies this, and this config declares none)")
     incompatible = {
         "--source-root": args.source_root,
         "--physics-profile": args.physics_profile,

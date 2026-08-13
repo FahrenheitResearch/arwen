@@ -1035,21 +1035,42 @@ def is_experiment_toml_bytes(payload: bytes) -> bool:
 def load_experiment(path: str | Path) -> ExperimentConfig:
     """Load and validate an experiment TOML (fail-loud, section A).
 
-    An advisory ``[fetch]`` hints table (emitted by ``gpuwm domain``,
-    schema owned by :func:`gpuwm.fetch.validate_fetch_hints`) is split
-    off and validated here, exactly as ``[case_data]`` is split off by
-    :func:`gpuwm.case_data.load_experiment_case`; the experiment schema
-    itself stays strict.
+    The one-file case schema's companion tables are split off and
+    VALIDATED here -- never silently dropped, and never refused as
+    unknown.  ``[fetch]`` (advisory hints, schema owned by
+    :func:`gpuwm.fetch.validate_fetch_hints`) always was; ``[case_data]``
+    and ``[static]`` now are too, against their own owners' schemas
+    (:func:`gpuwm.case_data.build_case_data` without the input-existence
+    check -- this loader answers "what experiment is this", which must
+    not require the declared inputs to be fetched yet -- and
+    :func:`gpuwm.static.highres_production.parse_static_table`).  Before
+    task #204 this loader refused the wizard's own ERA5 emission -- the
+    exact file ``gpuwm domain --source era5`` writes -- as "does not
+    have a table 'case_data'", from every front door that loads through
+    here.  Callers that CONSUME the case declarations load through
+    :func:`gpuwm.case_data.load_experiment_case` instead; the experiment
+    schema itself stays strict.
     """
     from gpuwm.config_authority import read_config_authority
 
     authority = read_config_authority(path)
     raw = tomllib.load(io.BytesIO(authority.payload))
+    source = str(authority.source)
+    base_dir = Path(authority.source).parent
     fetch_table = raw.pop("fetch", None)
     if fetch_table is not None:
         from gpuwm.fetch import validate_fetch_hints
-        validate_fetch_hints(fetch_table, source=str(authority.source))
-    return build_experiment(raw, source=str(authority.source))
+        validate_fetch_hints(fetch_table, source=source)
+    case_table = raw.pop("case_data", None)
+    if case_table is not None:
+        from gpuwm.case_data import build_case_data
+        build_case_data(case_table, source=source, base_dir=base_dir,
+                        require_inputs=False)
+    static_table = raw.pop("static", None)
+    if static_table is not None:
+        from gpuwm.static.highres_production import parse_static_table
+        parse_static_table(static_table, source=source, base_dir=base_dir)
+    return build_experiment(raw, source=source)
 
 
 def experiment_from_run_config(cfg: RunConfig,
@@ -1673,6 +1694,32 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain",
                     "relocation", "perturbation", "tiles")
+    # Companion tables of the ONE-FILE case schema: real, documented
+    # tables that belong to other owners (gpuwm.case_data, gpuwm.fetch,
+    # gpuwm.static.highres_production) and are split off by every file
+    # loader before this builder runs.  Reaching this dict-level seam
+    # with one still present is a routing defect in the CALLER, and it
+    # must never be reported as the table being unknown: task #204 was
+    # exactly that -- the ERA5 adapter told a user their wizard-written
+    # config "does not have a table 'case_data'" while the table sat in
+    # the file, present and valid.
+    companion_tables = ("case_data", "fetch", "static")
+    present_companions = [name for name in raw if name in companion_tables]
+    if present_companions:
+        named = ", ".join(f"[{name}]" for name in present_companions)
+        raise ValueError(layered(
+            f"experiment config {source} carries {named}, which is part "
+            "of the one-file case schema but was handed to the "
+            "experiment-table builder unsplit.  The table is PRESENT and "
+            "its name is valid; this loading path simply does not consume "
+            "it, which is a defect in the calling code, not in the "
+            "config.",
+            "Every file loader splits the companion tables off first: "
+            "gpuwm.experiment.load_experiment validates and detaches "
+            "[case_data]/[fetch]/[static], and "
+            "gpuwm.case_data.load_experiment_case does the same while "
+            "also returning the case declarations.  A caller building "
+            "from a raw dict must do the same before build_experiment."))
     unknown_tables = [name for name in raw if name not in known_tables]
     if unknown_tables:
         # A whole stray table is the same defect as a stray key, one

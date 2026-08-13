@@ -576,3 +576,27 @@ tests/test_streamed_frame_parity.py
 # refused in the tile-and-window numbers a user can act on.  Also pins
 # that `gpuwm check` stopped telling users the feature does not work.
 tests/test_streamed_admission.py
+
+# Task #204, the dead ERA5 direct door.  The wizard's own emission --
+# the exact file `gpuwm domain --source era5` writes -- was refused by
+# the ERA5 adapter as "does not have a table 'case_data'" while the
+# table sat in the file, and no gate anywhere fed a wizard emission to
+# the adapter that must consume it.  This is that gate, for EVERY
+# source (era5, gfs, hrrr): real wizard, real adapter seam, through
+# config validation, CPU-hermetic.  It also pins the refusal-message
+# class the incident exposed: present-but-unconsumed is a caller
+# routing defect, never "absent".
+tests/test_wizard_adapter_roundtrip.py
+
+# Task #206, the crashing shipped profile.  The composed
+# Thompson/Shin-Hong suite died on a bare 12 km case because the
+# scheme's PASSENGER TKE diagnostic went non-finite and the driver
+# validated it with the same fatality as the tendencies; stock WRF ran
+# the identical initial state to completion.  This suite pins the
+# mechanism through the float32 WRF authority (the chain can fail while
+# every tendency holds), the repair policy in both directions (passenger
+# repaired and floored, consumed outputs still fatal, first-invalid
+# ordering kept), and the floor's equality with WRF's own cold start.
+# CPU-only, under a second; the failure it guards is a crash in a
+# user-selectable profile.
+tests/test_shinhong_composed_tke_guard.py

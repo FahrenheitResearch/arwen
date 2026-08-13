@@ -33,7 +33,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
-use wx_core::download::{byte_ranges, find_entries, parse_idx, DownloadClient, DownloadConfig};
+use wx_core::download::{
+    byte_ranges, find_entries, parse_idx, CacheDedup, DownloadClient, DownloadConfig,
+};
 
 use crate::plan::{coalesce_ranges, grib2_message_length, validate_idx, IdxRow, ProbeFacts};
 use crate::record::RangeRecord;
@@ -84,6 +86,16 @@ impl Fetcher {
         }
         .map_err(|error| format!("could not build the download client: {error}"))?;
         Ok(Self { client })
+    }
+
+    /// What this run's cache wrote versus what it already held.
+    ///
+    /// `None` when no `--cache-dir` was given: nothing was cached, which is
+    /// a different statement from "nothing was deduplicated".  One full-file
+    /// object reaches the cache under two key shapes, so the receipt has to
+    /// be able to say that the second one cost a reference and not a copy.
+    pub fn cache_dedup(&self) -> Option<CacheDedup> {
+        self.client.cache().map(|cache| cache.dedup())
     }
 
     /// Fetch and strictly validate the `.idx` for one object.

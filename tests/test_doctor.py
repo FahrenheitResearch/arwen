@@ -732,6 +732,14 @@ _REMEDY_COMMANDS = frozenset({
     # and the lookup is a command, so it is printed as one.  Ships with
     # every NVIDIA driver on both platforms.
     "nvidia-smi",
+    # The CUDA-headers remedy.  A missing header tree is not a wheel
+    # problem and no `pip install` fixes it: the headers come from a
+    # toolkit, and the documented way to get one without administrator
+    # rights, on either platform, is conda-forge.
+    "conda",
+    # ...and the PowerShell half of pointing CuPy at that toolkit.  The
+    # POSIX half is `export`, which is already here.
+    "$env:CUDA_PATH",
 })
 
 #: A bare ALL-CAPS word is a placeholder the reader must expand.

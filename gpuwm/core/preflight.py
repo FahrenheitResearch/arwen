@@ -3481,7 +3481,7 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "gpuwm/core/physics.py:_validate_native_microphysics; "
         "gpuwm/core/physics.py:_validate_native_kf_result; "
         "gpuwm/core/ysu.py:validate_ysu_outputs; "
-        "gpuwm/core/shinhong.py:validate_shinhong_outputs",
+        "gpuwm/core/shinhong.py:invalid_shinhong_outputs",
         "the float32 backing is viewed as uint32 and reset before every "
         "validation launch; its blocking scalar read completes before the "
         "next sequential domain can reuse the shared-arena word"),

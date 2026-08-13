@@ -44,6 +44,24 @@ _SHINHONG_OUTPUTS = _SHINHONG_3D_FLOAT_OUTPUTS + _SHINHONG_2D_OUTPUTS
 _SHINHONG_2D_FLOAT_OUTPUTS = tuple(
     name for name in _SHINHONG_2D_OUTPUTS if name != "kpbl")
 
+#: The scheme's PASSENGER diagnostics: outputs no tendency ever reads.
+#: The SGS TKE chain (``mixlen``/``prodq2``/``vdifq``, tke_diag = 1) and
+#: its mixing length exist so ``state.e_sgs`` carries a gray-zone
+#: instrument field; WRF's own default never computes them, and WRF's
+#: arithmetic inside them divides by quantities that legitimately reach
+#: zero (prodq2's ``q2**1.5/disel`` at q2 == 0, ``mf/xkzh``, prfac2's
+#: cubes).  A non-finite CONFINED to this pair is therefore a documented
+#: hazard of the transcribed chain, not corrupted physics -- the
+#: tendencies above it are computed independently and stay finite
+#: (proven through the float32 authority in
+#: tests/test_shinhong_composed_tke_guard.py, task #206).
+SHINHONG_PASSENGER_OUTPUTS = ("tke", "el")
+
+#: WRF's shinhonginit cold-start TKE, epsq2l/2 -- the chain's own floor
+#: (the authority's EPSQ2L lives in the verification tree this module
+#: must not depend on; the pair is gated equal in the task #206 suite).
+SHINHONG_TKE_FLOOR = 0.005
+
 
 def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                     tke, *,
@@ -124,6 +142,19 @@ def validate_shinhong_outputs(
         out: Mapping[str, cp.ndarray], status: cp.ndarray) -> str | None:
     """Return the first non-finite native Shin-Hong output name, or ``None``.
 
+    The first-invalid readback in launcher order, kept for the callers
+    that want the historical scalar answer; the driver's disposition
+    policy reads :func:`invalid_shinhong_outputs` instead, because
+    "which output" decides fatality (task #206).
+    """
+    names = invalid_shinhong_outputs(out, status)
+    return names[0] if names else None
+
+
+def invalid_shinhong_outputs(
+        out: Mapping[str, cp.ndarray], status: cp.ndarray) -> tuple[str, ...]:
+    """Return EVERY non-finite native Shin-Hong output name, launcher order.
+
     ``launch_shinhong`` owns this exact output layout.  One validation kernel
     records a bit per floating-point output and one scalar readback preserves
     the driver's historical first-invalid error ordering.  The integer
@@ -173,7 +204,35 @@ def validate_shinhong_outputs(
         + tuple(out[name] for name in _SHINHONG_2D_FLOAT_OUTPUTS)
         + (status, np.int64(count_3d), np.int64(count_2d)))
     invalid = int(status[0].item())
-    for bit, name in enumerate(_SHINHONG_OUTPUTS):
-        if invalid & (1 << bit):
-            return name
-    return None
+    return tuple(name for bit, name in enumerate(_SHINHONG_OUTPUTS)
+                 if invalid & (1 << bit))
+
+
+def repair_shinhong_passenger_outputs(
+        out: dict[str, cp.ndarray]) -> dict[str, int]:
+    """Repair non-finite passenger diagnostics, rebinding ``out``'s entries.
+
+    The caller has already established (via
+    :func:`invalid_shinhong_outputs`) that every CONSUMED output is
+    finite; this replaces each non-finite ``tke`` value with the chain's
+    own cold-start floor (:data:`SHINHONG_TKE_FLOOR`, WRF's
+    ``shinhonginit`` epsq2l/2) and each non-finite ``el`` value with the
+    scheme's :673 zero, so ``state.e_sgs`` never inherits a NaN that
+    would poison every later ``mixlen`` call.  DOCUMENTED DIVERGENCE
+    from WRF: with tke_diag on, stock WRF leaves the NaN in ``TKE_PBL``
+    forever (and by default never computes the chain at all); carrying a
+    poisoned instrument field silently is the WRF-undefined behaviour
+    this repair replaces with a defined one.  Returns ``{name: repaired
+    count}`` for the driver's advisory; array-module dispatch keeps the
+    function testable on NumPy arrays without a device.
+    """
+    counts: dict[str, int] = {}
+    for name, floor in (("tke", SHINHONG_TKE_FLOOR), ("el", 0.0)):
+        value = out[name]
+        xp = cp.get_array_module(value)
+        bad = ~xp.isfinite(value)
+        repaired = int(bad.sum())
+        if repaired:
+            out[name] = xp.where(bad, value.dtype.type(floor), value)
+            counts[name] = repaired
+    return counts

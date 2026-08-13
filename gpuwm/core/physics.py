@@ -27,6 +27,7 @@ tendencies cleared near expiry (``solve_em.F:3558-3571`` ->
 from __future__ import annotations
 
 import math
+import sys
 import weakref
 from collections import abc as _abc
 from dataclasses import dataclass
@@ -118,7 +119,9 @@ from gpuwm.core.myjpbl import (MYJ_PBL_INOUT, myj_pbl_step,
                                validate_myj_pbl_outputs)
 from gpuwm.core.myjsfc import (MYJ_SFCLAY_INOUT, MYJ_SFCLAY_OUTPUTS,
                                launch_myj_sfclay)
-from gpuwm.core.shinhong import launch_shinhong, validate_shinhong_outputs
+from gpuwm.core.shinhong import (SHINHONG_PASSENGER_OUTPUTS,
+                                 invalid_shinhong_outputs, launch_shinhong,
+                                 repair_shinhong_passenger_outputs)
 from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
 from gpuwm.ingest.soil import NOAH_LAYER_THICKNESS_M
 
@@ -1794,6 +1797,10 @@ class PhysicsDriver:
         self.noahmp_geometry = noahmp_geometry
         self.noahmp_soil_thickness_m = NOAH_LAYER_THICKNESS_M
         self.last_noahmp_census: dict[str, int] | None = None
+        # One advisory per run for the Shin-Hong passenger repair
+        # (task #206); the repair itself applies on every step that
+        # needs it.
+        self._shinhong_passenger_advisory = False
         if int(cfg.sf_surface_physics) == 4:
             if noahmp_params is None:
                 raise ValueError(
@@ -3349,20 +3356,48 @@ class PhysicsDriver:
             psim=f["fm"], psih=f["fh"], xland=f["xland"],
             u10=f["u10"], v10=f["v10"], corf=self.state.f,
             dt=self.bldt_seconds, dx=cfg.dx, dy=cfg.dy, tke_diag=1)
-        # Same validation policy as YSU: one batched device kernel over
+        # Validation policy (task #206): one batched device kernel over
         # every floating-point output through the shared status scratch
-        # word, first-invalid error ordering preserved.  A NaN here is
-        # not always a port defect -- WRF's own prfac2 0/0
-        # (module_bl_shinhong.F:1010) writes NaN heat columns on
-        # purpose-built inputs and the kernel reproduces it -- so the
-        # refusal names the field instead of silently advancing
-        # corrupted state.
-        invalid = validate_shinhong_outputs(
+        # word, and the DISPOSITION depends on which outputs are bad.  A
+        # non-finite in anything a tendency or a consumer reads
+        # (du/dv/dtheta/dqv/dqc/dqi/exch_h, hpbl/wstar/delta) is fatal
+        # exactly as it always was, first-invalid ordering preserved.  A
+        # non-finite CONFINED to the passenger pair (tke, el) is the
+        # transcribed chain's own documented hazard -- WRF's arithmetic
+        # divides by quantities that legitimately reach zero there, WRF's
+        # default never computes the chain, and the tendencies beside it
+        # are finite -- so it is repaired to the chain's own floor and
+        # said out loud rather than killing a run whose physics is
+        # intact.  This is what crashed the composed
+        # Thompson/Shin-Hong/MM5/Noah/RRTMG-legacy suite on a bare 12 km
+        # GFS case while an unmodified WRF ran the same initial state to
+        # completion: the chain went non-finite in tke alone, and the old
+        # policy raised over a diagnostic no tendency reads.
+        invalid = invalid_shinhong_outputs(
             out, self.state.scratch(
                 (1,), "physics_validation_status").view(cp.uint32))
-        if invalid is not None:
+        fatal = [name for name in invalid
+                 if name not in SHINHONG_PASSENGER_OUTPUTS]
+        if fatal:
             raise FloatingPointError(
-                f"Shin-Hong returned non-finite {invalid} tendency")
+                f"Shin-Hong returned non-finite {fatal[0]} tendency")
+        if invalid:
+            repaired = repair_shinhong_passenger_outputs(out)
+            if not self._shinhong_passenger_advisory:
+                self._shinhong_passenger_advisory = True
+                described = ", ".join(
+                    f"{name} ({count} value(s))"
+                    for name, count in sorted(repaired.items()))
+                print(
+                    "shin-hong: the SGS TKE diagnostic chain returned "
+                    f"non-finite passenger values ({described}); repaired "
+                    "to the chain's own floor and continuing.  Every "
+                    "tendency this step consumed is finite; the chain is "
+                    "a diagnostic WRF's default never computes, and its "
+                    "transcribed arithmetic divides by quantities that "
+                    "legitimately reach zero.  Said once per run; the "
+                    "repair applies whenever needed.",
+                    file=sys.stderr)
         f["pblh"][...] = out["hpbl"]
         f["kpbl"][...] = out["kpbl"]
         f["exch_h"][...] = out["exch_h"]

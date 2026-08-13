@@ -6,7 +6,7 @@ pub mod idx;
 pub mod sources;
 pub mod streaming;
 
-pub use cache::{Cache, DiskCache};
+pub use cache::{Cache, CacheDedup, DiskCache};
 pub use catalog::{
     expand_var_group, expand_vars, get_group, group_names, variable_groups, VariableGroup,
 };

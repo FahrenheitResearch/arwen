@@ -1209,6 +1209,83 @@ def test_promotion_refuses_asset_changed_while_draft_was_mutable(tmp_path: Path)
     assert "immutable release asset changed during promotion" in result.stderr
 
 
+def test_promotion_pypi_proof_survives_index_lag_404_then_200(tmp_path: Path) -> None:
+    """The final-promotion index read absorbs the same lag the publish job does.
+
+    Measured live: uploads at T+0, this read 404 at T+59s while the publish
+    job's own retry loop had logged identical 404s before succeeding.  A
+    fully green cut must not halt at promotion on that propagation window.
+    """
+
+    _install_fake_endpoints(tmp_path)
+    _, asset_records = _setup_assets(tmp_path)
+    dists = _setup_dists(tmp_path)
+    draft = _release(draft=True, assets=asset_records)
+    public = _release(draft=False, assets=asset_records, immutable=True)
+    _write_json(tmp_path / "release-sequence.json", [draft])
+    _write_json(tmp_path / "release-list.json", [[draft]])
+    _write_json(tmp_path / "release-list-sequence.json", [[[draft]], [[public]]])
+    _write_json(tmp_path / "pypi-lagged.json", {"message": "Not Found"})
+    _write_json(
+        tmp_path / "pypi-exact.json",
+        {"urls": [_pypi_file(name, payload) for name, payload in dists.items()]},
+    )
+    env = _post_upload_proof_env(
+        tmp_path,
+        [
+            {"status": "404", "file": "pypi-lagged.json"},
+            {"status": "200", "file": "pypi-exact.json"},
+        ],
+    ) | {
+        "GH_RELEASE_LIST_SEQUENCE": "release-list-sequence.json",
+        "GH_RELEASE_LIST_COUNTER": "gh-list-counter.txt",
+    }
+
+    result = _run_bash(
+        tmp_path,
+        _step_script("publish the fully-proven draft"),
+        env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    # The lagged read, its retry, and the post-promotion re-proof.
+    assert len(_pypi_curl_calls(tmp_path)) == 3
+    patch_calls = [
+        call for call in _logged_calls(tmp_path / "gh.log") if "PATCH" in call
+    ]
+    assert len(patch_calls) == 1
+
+
+def test_promotion_pypi_proof_permanent_404_still_fails_after_budget(
+    tmp_path: Path,
+) -> None:
+    """Retry is bounded: an index that never lists the version still refuses,
+    and nothing is promoted."""
+
+    _install_fake_endpoints(tmp_path)
+    _, asset_records = _setup_assets(tmp_path)
+    _setup_dists(tmp_path)
+    draft = _release(draft=True, assets=asset_records)
+    _write_json(tmp_path / "release-sequence.json", [draft])
+    _write_json(tmp_path / "release-list.json", [[draft]])
+    _write_json(tmp_path / "pypi-lagged.json", {"message": "Not Found"})
+    env = _post_upload_proof_env(
+        tmp_path, [{"status": "404", "file": "pypi-lagged.json"}]
+    )
+
+    result = _run_bash(
+        tmp_path,
+        _step_script("publish the fully-proven draft"),
+        env,
+    )
+
+    assert result.returncode != 0
+    assert "final promotion PyPI artifact set changed" in result.stderr
+    # It genuinely retried before failing closed.
+    assert len(_pypi_curl_calls(tmp_path)) >= 2
+    assert not any("PATCH" in call for call in _logged_calls(tmp_path / "gh.log"))
+
+
 def test_already_public_same_id_retry_succeeds_without_patch(tmp_path: Path) -> None:
     _install_fake_endpoints(tmp_path)
     _, asset_records = _setup_assets(tmp_path)

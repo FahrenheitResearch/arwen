@@ -19,8 +19,15 @@ import pytest
 from gpuwm import doctor
 
 
-def _check(monkeypatch, payload):
+def _check(monkeypatch, payload, *, box_major=12):
+    """The check with both of its inputs forced.
+
+    ``box_major`` is forced because the remedy's install line is derived
+    from it: left to the host, these assertions would pass or fail on
+    which card the test box happens to have.
+    """
     monkeypatch.setattr(doctor, "_eigensolver_probe", lambda: payload)
+    monkeypatch.setattr(doctor, "_driver_cuda_major", lambda: box_major)
     return doctor._da_eigensolver_check()
 
 
@@ -101,9 +108,10 @@ def test_the_check_is_in_the_default_estate(monkeypatch):
                         lambda: {"jacobi": "ok", "library": "ok"})
     names = [c.name for c in doctor.collect_checks(sources=())]
     assert "radar-DA eigensolver" in names
-    # Immediately after the cupy line, so the two read together.
-    assert names.index("radar-DA eigensolver") == names.index(
-        "cupy (GPU runtime)") + 1
+    # In the GPU cluster, reading down the order the three fail in:
+    # the wheel, then compiling with it, then factoring with it.
+    assert names.index("cupy (GPU runtime)") < names.index(
+        "CUDA kernel headers") < names.index("radar-DA eigensolver")
 
 
 @pytest.mark.parametrize("payload", [
@@ -122,4 +130,62 @@ def test_every_branch_that_prints_a_remedy_prints_a_runnable_one(
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        assert stripped.split()[0] in {"pip", "python", "gpuwm", "set"}, line
+        assert stripped.split()[0] in {
+            "pip", "python", "gpuwm", "set", "nvidia-smi"}, line
+
+
+# ---------------------------------------------------------------------------
+# The install line is the BOX's, not a constant (#76-class).
+#
+# `nvidia-cusolver-cu12` on a CUDA-13 box is the NVRTC shadow trap: the
+# suffixed CUDA-13 packages exist as deprecation tombstones, so the advice
+# installs cleanly, reports success, and leaves the box exactly as broken.
+# ---------------------------------------------------------------------------
+
+_TOMBSTONES = ("nvidia-cusolver-cu13", "nvidia-cublas-cu13",
+               "nvidia-cusparse-cu13")
+
+
+@pytest.mark.parametrize("payload", [
+    {"jacobi": "ok", "library": "nope"},
+    {"jacobi": "nope", "library": "nope"},
+    {"probe": "did not run"},
+])
+def test_a_cuda13_box_is_never_told_to_install_a_tombstone_wheel(
+        monkeypatch, payload):
+    """THE regression this pair of tests exists for."""
+    check = _check(monkeypatch, payload, box_major=13)
+    assert check.remedy
+    for tombstone in _TOMBSTONES:
+        assert tombstone not in check.remedy, tombstone
+        assert tombstone not in (check.action or "")
+    # And it names the spelling that does work.
+    assert "pip install --no-deps nvidia-cusolver" in check.remedy
+    assert "nvidia-cusolver-cu12" not in check.remedy
+
+
+@pytest.mark.parametrize("payload", [
+    {"jacobi": "ok", "library": "nope"},
+    {"jacobi": "nope", "library": "nope"},
+    {"probe": "did not run"},
+])
+def test_a_cuda12_box_still_gets_the_suffixed_wheels(monkeypatch, payload):
+    """Negative control: the cu12 spelling is right on a cu12 box."""
+    check = _check(monkeypatch, payload, box_major=12)
+    assert check.remedy
+    expected = ("nvidia-cusolver-cu12 nvidia-cublas-cu12 "
+                "nvidia-cusparse-cu12")
+    assert expected in check.remedy
+    assert "--no-deps" not in check.remedy
+
+
+def test_an_unreadable_major_names_both_spellings_and_defaults_to_neither(
+        monkeypatch):
+    """A silent default is how a CUDA-13 box ends up installing cu12."""
+    check = _check(monkeypatch, {"jacobi": "nope", "library": "nope"},
+                   box_major=None)
+    assert check.remedy
+    assert "nvidia-cusolver-cu12" in check.remedy
+    assert "pip install --no-deps nvidia-cusolver" in check.remedy
+    # The one command it leads with is the lookup, not an install.
+    assert check.action.startswith("nvidia-smi")

@@ -333,6 +333,26 @@ CACHE_WRITER_KEY = "writer"
 #: existed.  Naming that is the honest answer; guessing a version is not.
 UNSTAMPED_WRITER = "a release before 1.1.1 (which stamped no version)"
 
+#: Preparation receipts a preparer binds into the cache's user metadata
+#: ONLY when the thing they record actually happened -- the SMCDRY
+#: moisture floor, the deep-soil TMN repair.  They are LOUD-when-fired,
+#: absent otherwise, and the identical receipt is bound into the
+#: preparation proof.
+#:
+#: This tuple is the single source of truth for that key set, and it
+#: exists because splitting it was a bug: the writer bound
+#: ``soil_moisture_floor`` while the reader's ``expected_user`` did not
+#: list it, and ``user != expected_user`` is an EXACT comparison -- so
+#: every preparation whose floor fired wrote a cache that it then
+#: refused to read back.  A key recorded on one side of that comparison
+#: and missing from the other is not leniency, it is a refusal.  Anything
+#: added here must be bound from the proof by the validator, so a receipt
+#: that DIFFERS from the proof still refuses.
+CONDITIONAL_PREPARATION_RECEIPTS = (
+    "soil_moisture_floor",
+    "deep_soil_repair",
+)
+
 
 def cache_writer_version(header) -> str:
     """The gpuwm that wrote this cache header, or an honest unknown."""

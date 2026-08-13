@@ -147,6 +147,27 @@ command-line bins and their 9.8 MB test fixtures.
     authenticity remains the caller's manifest digest and the GRIB
     envelope/record-count bars above this layer remain the completeness
     gate.  Audited as ArWen v1.1.1 finding F-7 / lying state LS-7.
+    The store is also CONTENT-ADDRESSED: the payload lives once, under
+    `content/`, named by the same FNV-1a-64 and length the sidecar
+    records, and each key entry is a hard link to it (a pointer file
+    naming it, where the filesystem cannot hard-link, probed rather than
+    assumed).  One full-file fetch reaches this cache under two key
+    shapes -- URL-only from `get_bytes_parallel_whole`, URL+ranges from
+    `get_ranges` -- and the source version stored two complete copies of
+    the object at two paths.  Dedup is decided on the CONTENT and never
+    on the two key shapes meaning the same thing, because a range list
+    that does not cover the object legitimately yields different bytes.
+    A reference is verified exactly as strictly as a payload: the bytes
+    it resolves to are checked against its own sidecar, and one that
+    dangles or resolves to foreign content is a miss and is set aside,
+    never a wrong-bytes hit; a canonical payload that no longer hashes to
+    its own name goes aside with it, so a refetch is not linked straight
+    back onto the poison.  `remove` now takes the whole entry: it deleted
+    the payload and left the sidecar describing a file that no longer
+    existed.  `size` counts a shared payload where it lives rather than
+    once per name.  `rw_fetch`'s record gained a `dedup` block reporting
+    bytes written, bytes deduplicated and reference entries, and ArWen's
+    HRRR fetch manifest carries the sum.
 14. `vendor/wx-core/src/download/client.rs`: the cross-process NOMADS
     rate governor fails CLOSED on its own failures.  `read_nomads_state`
     used to map an unreadable or malformed state file to `(0, 0)`,

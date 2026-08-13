@@ -488,13 +488,17 @@ def test_live_probe_reports_the_transport_decision(tmp_path):
 # which the next ordinary run then refused as well.
 
 def _install_fake_backbone(monkeypatch, atmosphere: int,
-                           soil: int | None = None):
+                           soil: int | None = None,
+                           dedup: dict | None = None):
     """Replace the Rust backbone with one that lands a payload first.
 
     That ordering is the whole point: the fixture writes the object and
     the ``.idx`` beside it, then reports a census, exactly as the real
     backbone does.  Per-product counts, so one product's inventory can
     move while the other's stays certified.
+
+    ``dedup`` is the cache accounting a current backbone reports per
+    transfer; omitting it is what an older binary looks like.
     """
 
     counts = {"atmosphere": atmosphere,
@@ -510,7 +514,7 @@ def _install_fake_backbone(monkeypatch, atmosphere: int,
         (out / name).write_bytes(_grib2_stream(records))
         (out / f"{name}.idx").write_text("1:0:d=2026072805:PRES:surface:anl:\n",
                                          encoding="ascii")
-        return {
+        entry = {
             "name": name, "idx_name": f"{name}.idx", "mode": "idx-subset",
             "mode_reason": "fixture", "bytes": records * 20,
             "wall_seconds": 0.1, "source": "aws",
@@ -519,6 +523,9 @@ def _install_fake_backbone(monkeypatch, atmosphere: int,
             "probe": {"idx_covers_object": True,
                       "idx_record_count": records},
         }
+        if dedup is not None:
+            entry["dedup"] = dict(dedup)
+        return entry
 
     monkeypatch.setattr(fetch, "_rw_fetch_hrrr", fake)
 
@@ -627,6 +634,80 @@ def test_a_resume_that_re_resolves_a_bar_records_the_new_one(tmp_path,
                       if bar["kind"] == "hrrr-atmosphere")
     assert atmosphere["derived"] == CERTIFIED_RECORD_BARS["hrrr-atmosphere"]
     assert atmosphere["inventory_change_accepted"] is False
+
+
+# ---------------------------------------------------------------------------
+# The download cache's own cost.  One full-file object reaches the backbone's
+# cache under two key shapes, and those two entries used to be two whole
+# copies on disk -- a 15.5 GB fetch left 62 GB of cache with nothing on the
+# receipt to say where it went.  The entries now share one content-addressed
+# payload and the manifest carries the arithmetic.
+# ---------------------------------------------------------------------------
+
+def test_the_manifest_carries_the_cache_dedup_summary(tmp_path, monkeypatch):
+    """Per-transfer accounting, summed over the transfers of one run."""
+
+    _install_fake_backbone(
+        monkeypatch, CERTIFIED_RECORD_BARS["hrrr-atmosphere"],
+        dedup={"cache_bytes_written": 700,
+               "cache_bytes_deduplicated": 500,
+               "reference_entries": 1})
+    out = tmp_path / "hrrr"
+    manifest = fetch.fetch_hrrr(
+        cycle=datetime(2026, 7, 28, 5), hours=(0,), area=None, out=out,
+        transport="s3", engine="rust", engine_bin=Path("rw_fetch"),
+        progress=lambda _: None)
+
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    # Two products in one forecast hour, so two transfers.
+    assert payload["dedup"] == {
+        "transfers": 2,
+        "cache_bytes_written": 1400,
+        "cache_bytes_deduplicated": 1000,
+        "reference_entries": 2,
+    }
+
+
+def test_a_record_without_a_dedup_block_still_publishes(tmp_path,
+                                                        monkeypatch):
+    """An older backbone reports nothing; the receipt claims nothing."""
+
+    _install_fake_backbone(monkeypatch,
+                           CERTIFIED_RECORD_BARS["hrrr-atmosphere"])
+    out = tmp_path / "hrrr"
+    manifest = fetch.fetch_hrrr(
+        cycle=datetime(2026, 7, 28, 5), hours=(0,), area=None, out=out,
+        transport="s3", engine="rust", engine_bin=Path("rw_fetch"),
+        progress=lambda _: None)
+
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["dedup"]["transfers"] == 0
+    assert payload["dedup"]["cache_bytes_written"] == 0
+    assert payload["dedup"]["cache_bytes_deduplicated"] == 0
+    assert payload["dedup"]["reference_entries"] == 0
+    # And the run itself is unaffected: the files and their bars landed.
+    assert (out / "hrrr.t05z.wrfnatf00.grib2").is_file()
+    assert {bar["kind"] for bar in payload["record_bars"]} == {
+        "hrrr-atmosphere", "hrrr-soil"}
+
+
+def test_a_malformed_dedup_block_is_ignored_rather_than_fatal(tmp_path,
+                                                              monkeypatch):
+    """A key of the wrong shape is not arithmetic; it is not counted."""
+
+    _install_fake_backbone(
+        monkeypatch, CERTIFIED_RECORD_BARS["hrrr-atmosphere"],
+        dedup={"cache_bytes_written": "lots", "reference_entries": 3})
+    out = tmp_path / "hrrr"
+    manifest = fetch.fetch_hrrr(
+        cycle=datetime(2026, 7, 28, 5), hours=(0,), area=None, out=out,
+        transport="s3", engine="rust", engine_bin=Path("rw_fetch"),
+        progress=lambda _: None)
+
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["dedup"]["transfers"] == 2
+    assert payload["dedup"]["cache_bytes_written"] == 0
+    assert payload["dedup"]["reference_entries"] == 6
 
 
 # ---------------------------------------------------------------------------

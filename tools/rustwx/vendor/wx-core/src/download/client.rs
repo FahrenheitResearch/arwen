@@ -837,6 +837,10 @@ impl DownloadClient {
             )));
         }
 
+        // `get_ranges` has already stored these bytes under the URL+ranges
+        // key. Storing them again under the URL-only key is what a later
+        // whole-file request looks itself up by, and it costs a reference
+        // rather than a second payload: the cache recognises the content.
         if let Some(cache) = &self.cache {
             cache.put(&key, &data);
         }
@@ -960,6 +964,14 @@ impl DownloadClient {
     /// from the URL and all ranges. Individual ranges are also cached by
     /// `get_range`, so partial overlaps with future requests benefit from the
     /// cache too.
+    ///
+    /// The combined store is not a second copy of the object. A whole-file
+    /// caller stores the same bytes again under its URL-only key, and those
+    /// two entries used to be two complete payloads at two paths -- the store
+    /// is content-addressed, so the second entry is a reference to the first.
+    /// The two keys are still distinct keys: a range list that does not cover
+    /// the object yields different bytes and gets its own payload, which is
+    /// why the cache decides this on the content and not on the key shape.
     pub fn get_ranges(&self, url: &str, ranges: &[(u64, u64)]) -> crate::error::Result<Vec<u8>> {
         let total = ranges.len();
         if total == 0 {

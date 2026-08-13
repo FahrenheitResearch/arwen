@@ -1,5 +1,68 @@
 # Changelog
 
+## 2.2.1 (2026-08-13)
+
+Fixed:
+- ERA5 preparation no longer refuses the cache it just wrote. Whenever the
+  soil-moisture floor fired, which is the common case on clipped ERA5, the
+  prepared cache recorded a receipt the reader did not expect and the run
+  stopped on its own output. ERA5 domains of 448x448 and larger could not
+  be prepared at all.
+- `gpuwm doctor` reports a missing CUDA header tree as a missing header
+  tree. It compiles two kernels from a cold cache and says whether the
+  CuPy wheel or the toolkit headers are the gap, then prints an external
+  toolkit and `CUDA_PATH` as the remedy. The previous advice reinstalled
+  the CuPy wheel, which carries the compiler and no headers, so it could
+  not fix what it named.
+- `gpuwm doctor` chooses CUDA library wheels by the CUDA major the box
+  serves. A CUDA 13 box is no longer handed the `cu12` spellings, and
+  never the `cu13` ones, which install cleanly and supply nothing.
+- The Rust fetch cache stores one copy of each object instead of two. A
+  whole-file fetch reaches the cache under two key shapes and stored two
+  complete payloads at two paths; they now share one content-addressed
+  copy, with the second key a hard link to it (a pointer file where the
+  filesystem cannot hard-link). Measured on a 193.6 MB HRRR object: the
+  cache fell from 3.00x to 2.00x the payload, and the fetch directory
+  plus its cache from 4.00x to 3.00x. The fetch record and the HRRR
+  manifest now carry a `dedup` block reporting bytes written, bytes
+  deduplicated and reference entries.
+- The ERA5 direct door accepts the config `gpuwm domain --source era5`
+  writes. The adapter loaded the experiment through a path that split
+  off `[fetch]` but refused `[case_data]`, so the wizard's own emission
+  was refused by the wizard's own source adapter. The adapter now
+  consumes `[case_data]` and uses its declarations to default the
+  matching inputs: a declared geog_root or source orography needs no
+  flag.
+- Every front door that loads only the experiment portion of a config
+  now validates and detaches `[case_data]` and `[static]` instead of
+  refusing the file they sit in.
+- A table that is present but not consumed by a loading path is reported
+  as exactly that; the "does not have a table" refusal is reserved for
+  tables that are genuinely unknown.
+- An ERA5 forcing series that begins before the experiment start hour is
+  trimmed loudly instead of refused. A series that does not contain the
+  start hour refuses by naming the decoded window, the expected hour,
+  and both fixes.
+- The ERA5 refusals for a missing source terrain and a missing geography
+  root name the exact missing input and every accepted remedy.
+- The composed Thompson + Shin-Hong suite no longer dies with a
+  non-finite TKE error on real forecast cases. Shin-Hong's SGS TKE
+  chain is a diagnostic no tendency reads, and its transcribed WRF
+  arithmetic divides by quantities that legitimately reach zero; a
+  non-finite confined to that diagnostic is now repaired to the
+  scheme's own cold-start floor with a one-line advisory, while a
+  non-finite in any consumed output still stops the run exactly as
+  before.
+- Releases no longer fail on PyPI index propagation lag: the final
+  promotion check now retries its PyPI read with the same bounded
+  backoff the publish job already uses.
+
+New:
+- A wizard-emits/adapter-accepts round-trip gate: for each source (ERA5,
+  GFS, HRRR), the config `gpuwm domain` writes must be accepted by that
+  source's own adapter through config validation. It runs in the
+  stage-1 battery on every cut.
+
 ## 2.2.0 (2026-08-13)
 
 New:

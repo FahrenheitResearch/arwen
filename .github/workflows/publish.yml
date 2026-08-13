@@ -1159,7 +1159,36 @@ jobs:
           done
 
           pypi_state="$RUNNER_TEMP/pypi-final.json"
-          pypi_status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$pypi_state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_PROJECT}/${PYPI_VERSION}/json")
+          # The same index lag the publish job absorbs on its own read of
+          # this endpoint: uploads return 200 OK a beat before PyPI's JSON
+          # API lists the new version, and this read was measured to hit
+          # that window live (uploads at T+0, a 404 here at T+59s while the
+          # publish job's retry logged the same 404s before succeeding).
+          # Retry ONLY this index read, only while it answers 404, with the
+          # same exponential backoff bounded at five minutes total.  Any
+          # other status, and every exact-state assertion below, keeps its
+          # single-shot fail-closed semantics.
+          budget="${PYPI_INDEX_RETRY_BUDGET_SECONDS:-300}"
+          delay="${PYPI_INDEX_RETRY_INITIAL_DELAY_SECONDS:-1}"
+          if [ "$delay" -lt 1 ]; then
+            delay=1
+          fi
+          elapsed=0
+          while :; do
+            pypi_status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$pypi_state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_PROJECT}/${PYPI_VERSION}/json")
+            if [ "$pypi_status" != "404" ] || [ "$elapsed" -ge "$budget" ]; then
+              break
+            fi
+            pause=$delay
+            remaining=$((budget - elapsed))
+            if [ "$pause" -gt "$remaining" ]; then
+              pause=$remaining
+            fi
+            echo "PyPI index does not list ${PYPI_PROJECT} ${PYPI_VERSION} yet (HTTP 404); retrying in ${pause}s"
+            sleep "$pause"
+            elapsed=$((elapsed + pause))
+            delay=$((delay * 2))
+          done
           if [ "$pypi_status" != "200" ] \
              || [ "$(jq '.urls | length' "$pypi_state")" -ne "${#dist_files[@]}" ]; then
             echo "final promotion PyPI artifact set changed" >&2

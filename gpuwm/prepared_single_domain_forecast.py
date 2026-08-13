@@ -68,6 +68,7 @@ from gpuwm.kernel_compile_notice import (  # noqa: E402
     COMPILING_STATUS, kernel_compile_notice,
 )
 from gpuwm.ingest.prepared_cache import (  # noqa: E402
+    CONDITIONAL_PREPARATION_RECEIPTS,
     PREPARED_CACHE_SCHEMA,
     PreparedCacheReader,
     prepared_cache_identity,
@@ -3564,6 +3565,19 @@ def _validate_cache_metadata(
                 "source_composition", {}).get("receipt_content_sha256"),
             "mapped_target_contract": proof.get("target_contract"),
         })
+    # Preparation receipts the preparer binds only when they fired.  The
+    # comparison below is exact, so a receipt the writer recorded and this
+    # list omitted made the front door refuse ITS OWN cache -- the SMCDRY
+    # floor fires on most clipped ERA5, which is why real domains at and
+    # above 448^2 could not be prepared and read back.
+    #
+    # Bound from the PROOF, which carries the identical receipt, rather
+    # than waved through: a cache whose receipt differs from its proof
+    # still refuses, and so does one that records a receipt its proof does
+    # not (and vice versa) -- each of those is a genuine inconsistency.
+    for key in CONDITIONAL_PREPARATION_RECEIPTS:
+        if key in proof or (isinstance(user, dict) and key in user):
+            expected_user[key] = proof.get(key)
     if user != expected_user:
         raise ValueError(
             "prepared cache user metadata differs from source/proof/experiment")
