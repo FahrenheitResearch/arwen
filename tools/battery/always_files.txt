@@ -98,3 +98,30 @@ tests/test_verify_release_artifacts.py
 # silently collecting zero tests, which is the exact failure a fast lane
 # would inherit and amplify.
 tests/test_module_skip_placement.py
+
+# The standalone RW-WPS wheel's staging boundary, promoted here after it
+# burned a SECOND release number (2026-08-14).  It was already a stage-1
+# entry, and stage 1 is the wrong depth for it twice over.
+#
+#   It is blind by construction.  The suite STAGES the wheel by path and
+#   AST-walks what it staged; it imports gpuwm.native_wrf_distribution and
+#   tools.build_rw_wps_release and nothing else of the product.  So it has
+#   no import edge to gpuwm/core/streaming.py -- the file whose imports it
+#   actually constrains -- and the selector cannot reach it from the edit
+#   that breaks it.  Measured on the 2.3.0 range (v2.2.1..81edc6afa): 87
+#   product files touched, streaming.py and nest_stream.py among them, 289
+#   tests selected, this suite NOT one of them.  That is the same shape as
+#   the receipt-inventory gates above and it belongs in the same list.
+#
+#   It fails only at a cut, which is the most expensive place to learn.
+#   A lane adds a function-local import to a staged module; nothing in the
+#   tree objects, because the import is correct everywhere except inside a
+#   wheel that omits its target.  Twice now the first objection has come
+#   from the publish pipeline with the tag already spent: two imports on
+#   the 1.8.8 line (the release became 1.8.9) and four on 2.3.0 (this one).
+#   Stage 1 covered both and stage 1 does not run in a lane.
+#
+# Roughly 18 s, the most expensive entry here.  That is the price of the
+# gate being run by the lane that breaks it rather than by the cut that
+# cannot afford to.
+tests/test_native_wrf_distribution.py

@@ -1,6 +1,11 @@
 # Changelog
 
-## 2.3.0 (2026-08-14)
+## 2.3.1 (2026-08-14)
+
+2.3.0 was tagged but never published: the RW-WPS staging gate refused the
+standalone preprocessing wheel, so nothing reached PyPI. The tag stays where
+it is, because tags here are forward-only. Everything 2.3.0 carried ships
+here, plus the first fix below.
 
 New:
 - Forcing a nest off a streamed parent now moves O(child footprint) per
@@ -74,6 +79,15 @@ New:
   all-resident decides all-resident still.
 
 Fixed:
+- The standalone RW-WPS preprocessing wheel builds again. The
+  nest-streaming work above gave `gpuwm/core/streaming.py`, which that
+  wheel stages, four new function-local imports of two modules it
+  deliberately does not carry, and the builder's unresolved-import scan
+  refused the staging. All four sit behind a
+  running forecast, so both modules are recorded as forecast-only in the
+  builder's exception table rather than staged. Build tooling only: no
+  product source changed and the wheel's behaviour is unchanged; it was
+  simply unbuildable at 2.3.0.
 - Two-way nest feedback runs under a streamed parent. The executor
   refused `feedback = 1` whenever the parent streamed, claiming nothing
   projects a restriction back into the store; the coupler had carried
@@ -92,13 +106,12 @@ Fixed:
 - `[tiles]` streaming starts on native Windows. Two stacked defects made
   every planner-driven streamed run refuse before the config was read:
   `autoplan.Machine.detect` sourced host RAM only from `/proc/meminfo`
-  and the cgroup files, so a Windows box -- which publishes neither --
-  took the raising branch and was told it was "containerised with no
-  cgroup memory limit", a cause the probe had already disproved; and
-  `streaming.decide` probed the machine before applying the configured
-  `vram_budget_bytes` / `host_budget_bytes` overrides, so the keys whose
-  documented purpose is to override the probe were never read where the
-  probe raised. Both halves are fixed default-on: host RAM comes from
+  and the cgroup files, so a Windows box was wrongly told it was
+  "containerised with no cgroup memory limit"; and `streaming.decide`
+  probed the machine before applying the configured `vram_budget_bytes` /
+  `host_budget_bytes` overrides, so the keys whose documented purpose is
+  to override the probe were never read where it raised. Both halves are
+  fixed default-on: host RAM comes from
   `GlobalMemoryStatusEx` (`ullTotalPhys`) on win32, and the configured
   budgets are applied before the machine is consulted, on every platform.
   Measured on an RTX 5090 at 438x350x49 with `mode = "on"` and nothing
@@ -142,12 +155,11 @@ Fixed:
   domain's BOUND Davies clock, bit-identical to the resident run.  Every
   production real-data root binds a DomainClock to its external LBC
   mirror (WRF's post-increment dtbc, `dt..T_bdy`); the streamed tile
-  hook converted each buffer to the streaming attachment and silently
-  DROPPED that binding, so the buffers fell back to the retired
-  `elapsed - interval.start` path (`0..T-dt`) and every clock-bound
-  streamed run -- `gpuwm go` with `[tiles]`, the streamed offline child
-  -- forced its boundaries ONE TIMESTEP LATE, a constant phase error
-  with no NaN and no refusal.  Measured on the offline child at
+  hook silently DROPPED that binding when it converted each buffer, so
+  the buffers fell back to the retired `0..T-dt` path and every
+  clock-bound streamed run forced its boundaries ONE TIMESTEP LATE, a
+  constant phase error with no NaN and no refusal.  Measured on the
+  offline child at
   t+15 min: 41 of 76 wrfout fields differed (W by 0.0043 m/s on a
   0.174 m/s field); at 438x350x49 with the clock bound, 9/9 carriers,
   max|d| 0.43.  The hook now rebinds the domain's clock onto every buffer
@@ -164,25 +176,21 @@ Fixed:
   whole time.  A store diagnostic with no destination on the state is
   now refused rather than silently skipped.
 - A tree whose `[tiles]` block cannot run is refused when it is read, not
-  when it has been paid for -- and the refusal now names the shape that
-  is actually unsupported. What a tree may not contain is a coupling
-  edge with BOTH ends streamed: that composition would put the
-  streamed-parent footprint corridor, the streamed-child frame corridor
-  and the per-tile table windows in one FORCE, no gate has driven it,
-  and ungated is refused rather than run. `mode = "on"` streams every
-  grid unconditionally, so on a tree it forces exactly that shape on
-  every edge, and it is refused by `build_experiment` -- the one load
-  every front door shares -- naming the mechanism and the three ways
-  out, rather than by the tile builder after the root had already pinned
-  a whole host store, a fetch and two preparations. `mode = "auto"` stays
-  accepted over a tree: streamed children and streamed parents are both
-  legal roads now, and if the pricing ever streams both ends of one edge
-  the walk refuses at DECISION time with both grids named and no builder
-  invoked. The earlier admission refused every nested `mode = "on"`
-  config for being nested and short-circuited every nest under `auto` to
-  resident without asking the planner; both are gone, so the child road
-  is reachable from the front doors that carry it and a nest's receipt
-  line carries the planner's own arithmetic.
+  when it has been paid for, and the refusal now names the shape that is
+  actually unsupported: a coupling edge with BOTH ends streamed, which no
+  gate has driven. `mode = "on"` streams every grid unconditionally, so on
+  a tree it forces exactly that shape on every edge; it is now refused by
+  `build_experiment`, the one load every front door shares, naming the
+  mechanism and the three ways out, rather than by the tile builder after
+  a fetch and two preparations had already been paid for. `mode = "auto"`
+  stays accepted over a tree: streamed children and streamed parents are
+  both legal roads now, and if the pricing ever streams both ends of one
+  edge the walk refuses at DECISION time with both grids named. The
+  earlier admission refused every nested `mode = "on"` config for being
+  nested and short-circuited every nest under `auto` to resident without
+  asking the planner; both are gone, so the child road is reachable from
+  the front doors that carry it and a nest's receipt line carries the
+  planner's own arithmetic.
 - A 1024x1024 streamed forecast now runs from a bare default command.
   `--stream-init auto` priced the resident road from the prepared cache's
   `state/*` manifest, the serialized prognostics and not a `DomainState`,
@@ -214,18 +222,15 @@ Fixed:
   working newer core with the certified one -- reported from the field
   against 0.2.38. The extra now declares the window `>=0.2.35,<0.3`: the
   floor is what the products are certified against, the ceiling is where
-  upstream is free to change the diagnostic surface. Four runtime checks
-  that compared `== "0.2.35"` and refused anything else -- the observation
-  battery's `require_science_core`, the flagship product tool's
-  import-time assertion, the cross-reader receipt's pin verdict, and
-  `gpuwm render`'s install hint -- test the same window now, sourced from
-  one module (`gpuwm/science_core.py`) instead of four copies of a string.
-  Proven at both ends of the window: the resolver leaves an existing
-  0.2.38 alone, the floor still satisfies, and the suites pass on 0.2.35
-  and 0.2.38 alike. Score files now report the version that ACTUALLY read
-  the run beside the window that was required, rather than naming the
-  floor regardless. `__version__` remains recorded and never gated:
-  wrf-rust 0.2.35 shipped the attribute reading `0.2.34`.
+  upstream is free to change the diagnostic surface. The four runtime
+  checks that compared `== "0.2.35"` and refused anything else test the
+  same window now, sourced from one module (`gpuwm/science_core.py`)
+  instead of four copies of a string. Proven at both ends: the resolver
+  leaves an existing 0.2.38 alone, and the suites pass on 0.2.35 and
+  0.2.38 alike. Score files now report the version that ACTUALLY read the
+  run beside the window that was required, rather than naming the floor
+  regardless. `__version__` remains recorded and never gated: wrf-rust
+  0.2.35 shipped the attribute reading `0.2.34`.
 - `[tiles]` streaming no longer runs in silence when only a per-domain
   table asks for it. `streaming_receipt` was keyed on the TREE-WIDE
   `[tiles]` table, so a tree whose tree-wide mode is `off` and whose child
@@ -254,43 +259,44 @@ Fixed:
   read `MISSING cupy (GPU runtime) ... Failed to find CUDA headers` and
   was offered `pip install 'gpuwm[gpu-cu13]'`: the wheel was already
   installed and no gpuwm extra has ever carried a CUDA toolkit, so pip
-  reported success and the fault survived. That branch now reads the
-  import's own message and routes on it -- the header/`CUDA_PATH`/`nvcc`
-  signature gets the toolkit remedy (`conda install -c nvidia
-  cuda-toolkit=<the major this box's driver serves>`, conda-forge and the
-  NVIDIA pip wheels named beside it), a missing shared library keeps the
-  wheel remedy, and a message carrying neither signature prints BOTH
-  labelled by symptom rather than guessing. Separately, no remedy names a
-  suffixed NVIDIA package any more: NVIDIA has deprecated `-cu12` as well
-  as `-cu13`, and both spellings install cleanly and supply nothing, so
-  the radar-DA eigensolver line and the headers fallback print
-  `nvidia-cusolver`/`nvidia-cuda-runtime`/`nvidia-cuda-nvrtc` with the
-  detected major in a version pin instead of in the package name.
-  `docs/da-nowcast-quickstart.md` still handed CUDA-12 readers the
-  tombstone spelling and claimed doctor prints it; corrected to what the
-  code emits, and the tombstone rule now covers every tracked file under
-  `docs/` over install lines rather than mentions, so a doc may warn
-  about a tombstone but may not tell anyone to install one.
+  reported success and the fault survived. That branch now routes on the
+  import's own message -- the header/`CUDA_PATH`/`nvcc` signature gets the
+  toolkit remedy (`conda install -c nvidia cuda-toolkit=<the major this
+  box's driver serves>`, conda-forge and the NVIDIA pip wheels named
+  beside it), a missing shared library keeps the wheel remedy, and a
+  message carrying neither prints BOTH labelled by symptom rather than
+  guessing. Separately, no remedy names a suffixed NVIDIA package any
+  more: NVIDIA has deprecated `-cu12` as well as `-cu13` and both
+  spellings install cleanly and supply nothing, so the affected lines now
+  print `nvidia-cusolver`/`nvidia-cuda-runtime`/`nvidia-cuda-nvrtc` with
+  the detected major in a version pin instead of in the package name.
+  `docs/da-nowcast-quickstart.md` is corrected to what the code emits, and
+  the tombstone rule now covers install lines in every tracked file under
+  `docs/`, so a doc may warn about a tombstone but may not tell anyone to
+  install one.
 
 Battery:
 - `tests/test_streaming_clock_arming.py` is registered on the GPU pytest
-  shard (`tools/battery/gpu_shard_files.txt`). It shipped with its lane
-  and was on no list, so between the lane landing and this entry the test
+  shard. It shipped with its lane on no list, so until now the test
   existed and no leg ran it.
 - The two front-door nesting legs are scripted GPU gates in
-  `tools/battery/tiles_gates.txt` (`tools/tiles_door_legs.py`, `LEG=A` and
-  `LEG=B`): each drives `gpuwm run` twice for the corruption screen, then
-  digest-compares against an all-resident control of the same tree, and
-  fails when the receipt says nothing streamed. Their case files live at
-  `configs/battery/shape_tiles_*` and carry no card budget and no
-  machine-specific path.
+  `tools/battery/tiles_gates.txt`: each drives `gpuwm run` twice for the
+  corruption screen, then digest-compares against an all-resident control
+  of the same tree, and fails when the receipt says nothing streamed.
+  Their case files carry no card budget and no machine-specific path.
 - Five more files join the CPU stage-1 list, all found on no list at the
-  cut: `tests/test_doctor_cuda_headers.py`, which holds both tombstone
-  guards and now the docs guard; the wrf-rust pin guard and its two
-  consumers (`tests/test_obs_model_source.py`,
-  `tests/test_flagship_tools.py`, `tests/test_obs_cross_reader.py`); and
-  `tests/test_gpu_shard_manifest.py`, the gate that keeps the GPU shard
-  list honest and was itself an entry on nothing.
+  cut: the CUDA-header tombstone and docs guards, the wrf-rust pin guard
+  and its two consumers, and the gate that keeps the GPU shard list
+  honest, itself an entry on nothing.
+- `tests/test_native_wrf_distribution.py` joins
+  `tools/battery/always_files.txt`, keeping its stage-1 entry, so every
+  lane runs the RW-WPS staging boundary rather than only a cut. It stages
+  the wheel by path and AST-walks the result, so it has no import edge to
+  the modules whose imports it constrains: on this release's own range, 87
+  product files touched, 289 tests selected, this suite not among them. It
+  is the gate that burned 1.8.8 and 2.3.0, both times catchable in a lane
+  in 18 seconds. `RELEASE_CHECKLIST.md` now makes stage-1 green at the
+  stamped tip, before any tag, the first per-cut item.
 
 ## 2.2.1 (2026-08-13)
 

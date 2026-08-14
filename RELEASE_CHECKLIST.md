@@ -45,6 +45,22 @@ the release state each job expects to see. Every byte proof is identical on
 both paths. The steps are listed here because a cut driven by hand has to
 reproduce them, not because their proofs are optional:
 
+- [ ] **Stage 1 is green at the stamped tip, and it ran BEFORE the tag was
+      created.**  Not the stamp guards, not the suites the version bump
+      selects: the whole of `tools/battery/stage1_files.txt`, at the commit
+      the tag will point at.  This item is first because it is the only one
+      whose cost depends on the order: everything below is recoverable at
+      any time, and a tag is not.  It has been skipped twice and cost a
+      release number both times.  On the 1.8.8 line two imports added to a
+      module the RW-WPS wheel stages pointed at modules it does not carry;
+      the publish pipeline was the first thing to say so, the tag was spent,
+      and the release became 1.8.9.  On 2.3.0 the same class recurred with
+      four imports, and that release became 2.3.1.  Both were covered by a
+      stage-1 entry that no lane runs.
+      `tests/test_native_wrf_distribution.py` has since been promoted to
+      `tools/battery/always_files.txt`, so a lane now runs the specific gate
+      those two cuts tripped over -- but the promotion closes one hole, not
+      the class.  Stage 1 is the list that catches the next one.
 - [ ] The tag and `[project].version` in `pyproject.toml` agree
       (`vX.Y.Z` and `X.Y.Z`).  That equality is a refusal: a bundle named
       for one while the wheel says the other is a download nobody can find.

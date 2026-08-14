@@ -231,6 +231,31 @@ _OPTIONAL_STAGED_IMPORTS = {
         "the reflectivity stash the streamed history writer consumes, "
         "imported inside the publish path. Same reason as gpuwm.core.dycore "
         "directly above: no config-loading path reaches it",
+    ("gpuwm/core/streaming.py", "gpuwm.core.nest_stream"):
+        "the NEST streamed transport, imported inside three functions that "
+        "each require a forecast: prepared_domain_builder.build wires the "
+        "tile hook only for a domain whose decision STREAMS, _tree_reservations "
+        "prices a live tree's coupling corridors against a VRAM budget, and "
+        "steppers_for_tree hands its result to "
+        "gpuwm.core.model.execute_experiment -- a module _FORBIDDEN_STAGED_FILES "
+        "refuses outright. This is the boundary the _CORE_MODULES entry for "
+        "streaming.py already draws in its own words: that file is staged for "
+        "the [tiles] OPTION SURFACE and NOT the streamed transport. Staging "
+        "nest_stream would cross it, and would pay for the crossing twice -- "
+        "the module's own nested imports reach gpuwm.core.preflight, which "
+        "this wheel deliberately omits, so admitting it would need a second "
+        "exception to cover the first. Nothing staged here needs a NAME from "
+        "it: experiment.py cannot define StreamingOptions without streaming.py, "
+        "but no class definition and no config-validation path reaches "
+        "nest_stream, and its only other referrer, gpuwm/core/nest.py, is not "
+        "staged at all",
+    ("gpuwm/core/streaming.py", "gpuwm.state_digest"):
+        "the canonical end-of-run digest taken from the STORE, imported "
+        "inside StreamedDomain.canonical_digest. gpuwm/state_digest.py is on "
+        "_TOP_LEVEL_EXCLUDES above by deliberate choice, and what reaches it "
+        "here is evidence a run records after it has integrated: the method "
+        "refuses outright on a domain carrying no scalars. A preprocessing "
+        "wheel steps nothing and so digests nothing",
     ("gpuwm/hrrr_prepared_bundle.py",
      "gpuwm.prepared_single_domain_forecast"):
         "physics-selection helpers on the opt-in portable-bundle branch. "
