@@ -28,6 +28,9 @@ Contract:
 """
 from __future__ import annotations
 
+# One remedy string for the whole geography stack; see geog_stack.
+from .geog_stack import geog_unavailable_detail
+
 import hashlib
 import json
 import math
@@ -674,7 +677,7 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
         from rasterio.merge import merge as rasterio_merge
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
     tiles = list(tiles)
     if not tiles:
@@ -820,7 +823,7 @@ def _soilgrids_window_m(bbox: FootprintBBox) -> tuple[float, float,
         from pyproj import Transformer
     except ImportError as exc:  # pragma: no cover - exercised without extra
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
     transformer = Transformer.from_crs("EPSG:4326", SOILGRIDS_CRS,
                                        always_xy=True)
@@ -869,7 +872,7 @@ def _densified_bounds(bbox: FootprintBBox, dst_crs, margin_m: float
         from pyproj import Transformer
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
     transformer = Transformer.from_crs("EPSG:4326", dst_crs, always_xy=True)
     lons = np.linspace(bbox.lon_min, bbox.lon_max, 41)
@@ -892,7 +895,7 @@ def derive_terrain_window(tiles, bbox: FootprintBBox,
         from rasterio.merge import merge as rasterio_merge
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
     tiles = list(tiles)
     if not tiles:
@@ -946,7 +949,7 @@ def derive_landcover_window(raster: FetchedFile, bbox: FootprintBBox,
         from rasterio.windows import from_bounds
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
     identity = hashlib.sha256(json.dumps(
         {"source": raster.sha256, "bbox": bbox.as_dict(),

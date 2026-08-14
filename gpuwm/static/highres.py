@@ -14,6 +14,9 @@ old-land cell and the exact fallback count is reported.
 """
 from __future__ import annotations
 
+# One remedy string for the whole geography stack; see geog_stack.
+from .geog_stack import geog_unavailable_detail
+
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -113,7 +116,7 @@ def _open_verified(source: BoundRaster):
         import rasterio
     except ImportError as exc:  # pragma: no cover - exercised without extra
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
     with rasterio.open(source.path) as dataset:
         yield dataset
@@ -125,7 +128,7 @@ def _grid_crs(grid):
         from pyproj import CRS
     except ImportError as exc:  # pragma: no cover - exercised without extra
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
     map_proj = getattr(grid, "map_proj", "lambert")
     if map_proj == "lambert":
@@ -166,7 +169,7 @@ def _raster_geometry(grid):
         from pyproj import Transformer
     except ImportError as exc:  # pragma: no cover - exercised without extra
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
 
     crs = _grid_crs(grid)
@@ -201,7 +204,7 @@ def _source_crs(dataset, source: BoundRaster):
         from pyproj import CRS
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
     value = dataset.crs if dataset.crs is not None else source.crs_override
     if value is None:
@@ -220,7 +223,7 @@ def resample_continuous(source: BoundRaster, grid: LambertGrid, *,
         from rasterio.warp import reproject
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
     methods = {
         "average": Resampling.average,
@@ -261,7 +264,7 @@ def _resample_category_array(values: np.ndarray, valid: np.ndarray, *,
         from rasterio.warp import reproject
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "high-resolution geography requires the optional 'geog' extra"
+            geog_unavailable_detail()
         ) from exc
 
     values = np.asarray(values, dtype=np.int16)

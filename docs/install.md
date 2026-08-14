@@ -167,9 +167,15 @@ nothing.
 `gpuwm doctor` reports exactly which pieces are missing and prints the
 command that fixes each one.
 
-Install `'.[dev,geog]'` instead when exercising the source-tree experimental
-high-resolution static raster prototype; it adds Rasterio and pyproj. That
-extra does not turn the prototype into a stock-WRF-certified static source.
+High-resolution static geography needs no extra. Rasterio and pyproj are
+ordinary dependencies of `gpuwm` as of 2.3.3, so every install line on this
+page carries them, and `gpuwm doctor` reports them as `geography stack
+(rasterio + pyproj)`. The `[geog]` extra still exists and is empty, so the
+older `'.[dev,geog]'` line keeps working; it simply adds nothing now.
+See `docs/public/HIGHRES-TERRAIN.md` for the worked example. Note that the
+international terrain path is a shipped feature, while the US full-stack
+raster overlay (land use and soil as well as terrain) remains a prototype
+and is not a stock-WRF-certified static source.
 
 Build the vendored Rust decoder and CPU preprocessing workspace without
 network access:
@@ -190,6 +196,31 @@ cache is not accepted as proof that the offline build is reproducible. The
 Linux archive supplies CPU and CUDA setup paths. The Windows x86-64 archive
 is deliberately CPU-only and uses PowerShell launchers; the named HRRR shell
 pipeline is not portable to it yet.
+
+## Optional extras
+
+Every extra `gpuwm` declares, and what naming it adds. A bare
+`pip install gpuwm` is enough for preprocessing and static geography,
+including high-resolution terrain.
+
+| Extra | Adds | Needed for |
+|---|---|---|
+| `gpuwm[gpu-cu12]` | `cupy-cuda12x` | running the model on a CUDA 12.x box |
+| `gpuwm[gpu-cu13]` | `cupy-cuda13x` | running the model on a CUDA-13-only box |
+| `gpuwm[gpu]` | alias of `gpu-cu12` | kept so existing install lines keep working |
+| `gpuwm[render]` | `wrf-rust`, `pyshp` | `gpuwm render` and the demo gallery |
+| `gpuwm[obs]` | `scipy` | scoring a forecast against observations (`gpuwm.verify.obs`) |
+| `gpuwm[dealias]` | `scipy` | radar velocity dealiasing (`--dealias`) |
+| `gpuwm[dev]` | `pytest`, `psutil` | running the test battery |
+| `gpuwm[all-cu12]` | `gpu-cu12` + `render` | one line for a CUDA 12.x forecasting box |
+| `gpuwm[all-cu13]` | `gpu-cu13` + `render` | one line for a CUDA-13-only forecasting box |
+| `gpuwm[all]` | alias of `all-cu12` | kept so existing install lines keep working |
+| `gpuwm[geog]` | nothing | **empty as of 2.3.3.** rasterio and pyproj moved into the base install; the name is kept so `pip install 'gpuwm[geog]'` does not fail |
+
+CuPy is an extra and not a dependency for one reason: it ships one wheel
+per CUDA major and pip cannot tell which major a box serves, so the choice
+has to be named rather than guessed. `gpuwm doctor` reads the major off
+the driver and prints the extra that matches.
 
 ## Sealed Linux archive
 

@@ -431,6 +431,12 @@ def main(argv: list[str] | None = None) -> int:
 
     _warn_if_interrupt_is_ignored(args.command)
 
+    # The leaf module, deliberately: highres_production re-exports this
+    # class but pulls numpy and the static builders with it, and `gpuwm
+    # version` must not pay for that.  The name is needed at except-clause
+    # time below, so it cannot be deferred into the handler itself.
+    from gpuwm.static.highres_refusal import HighresRefusal
+
     try:
         # WHICH TREE IS EXECUTING, said out loud before anything runs,
         # and a refusal when the install cannot answer consistently.
@@ -504,6 +510,20 @@ def main(argv: list[str] | None = None) -> int:
         # already one sentence -- which is most of them.
         print(f"gpuwm {args.command}: "
               + _layer(error, args), file=sys.stderr)
+        return 2
+    except HighresRefusal as error:
+        # [static.highres] refusals are user-facing documented outcomes
+        # for EVERY command that builds statics -- `static`, `go`, `run`,
+        # `setup` -- not just the fetch family below.  They subclass
+        # RuntimeError, so this clause must precede that one or the
+        # generic handler would re-raise them as tracebacks.
+        #
+        # That is exactly what 2.3.2 did: `static` is not in the
+        # fetch-family list, so a missing geography stack escaped as a
+        # raw traceback at exit 1 after a 160.7 MiB download.  Every
+        # refusal in this product is a sentence at exit 2; this one is
+        # now no exception.
+        print(f"gpuwm {args.command}: " + str(error), file=sys.stderr)
         return 2
     except RuntimeError as error:
         if args.command in ("fetch", "stream", "fetch-geog", "fetch-tables",
@@ -633,7 +653,15 @@ def _dispatch(args) -> int:
             and is_experiment_toml_bytes(config_authority.payload)):
         from gpuwm import runtime
         from gpuwm.case_data import load_experiment_case
-        exp, data = load_experiment_case(args.config)
+        # `static` builds geography only: runtime.write_static reads
+        # geog_root, the WPS namelist and the projection, and never opens
+        # the forcing GRIB or the Vtable.  Requiring those on disk made
+        # "build 30 m terrain here" refuse until a whole met cycle had
+        # been downloaded -- a gate on bytes this command does not read,
+        # sitting across the documented terrain path.  Both are still
+        # DECLARED; only their presence is scoped to the readers.
+        exp, data = load_experiment_case(
+            args.config, require_met_inputs=args.command != "static")
         if args.command == "static":
             output = runtime.write_static(exp, data, args.output)
             print(f"static {exp.name}: {output}")

@@ -429,7 +429,8 @@ def _resolve_path(base_dir: Path, value, key: str, source: str) -> Path:
     return path
 
 
-def _resolve_forcing(base_dir: Path, value, source: str) -> tuple[Path, ...]:
+def _resolve_forcing(base_dir: Path, value, source: str, *,
+                     require_match: bool = True) -> tuple[Path, ...]:
     entries = value if isinstance(value, list) else [value]
     if not entries:
         raise ValueError(
@@ -441,6 +442,14 @@ def _resolve_forcing(base_dir: Path, value, source: str) -> tuple[Path, ...]:
         if _GLOB_CHARS & set(str(entry)):
             matches = sorted(Path(hit) for hit in _glob.glob(str(path)))
             if not matches:
+                # A caller that never opens the forcing (gpuwm static)
+                # must not be refused because the cycle it does not read
+                # has not been downloaded.  The pattern still had to be
+                # declared and still had to parse; it simply expands to
+                # nothing here, and the empty tuple says so honestly
+                # rather than inventing a path that does not exist.
+                if not require_match:
+                    continue
                 raise ValueError(
                     f"forcing glob {entry!r} in [case_data] of {source} "
                     f"matched no files (resolved pattern: {path}).")
@@ -464,7 +473,8 @@ def _resolve_forcing(base_dir: Path, value, source: str) -> tuple[Path, ...]:
 
 
 def build_case_data(raw: dict, *, source: str, base_dir: Path,
-                    require_inputs: bool = True) -> CaseDataConfig:
+                    require_inputs: bool = True,
+                    require_met_inputs: bool = True) -> CaseDataConfig:
     """Validate a parsed ``[case_data]`` table dict (fail-loud).
 
     ``require_inputs`` is on by default and every run keeps it on: a
@@ -479,6 +489,16 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
     check; every schema, type and policy rule still runs, and the paths
     are still resolved, so the caller can report exactly which declared
     inputs are not there yet.
+
+    ``require_met_inputs`` is the narrower form of the same honesty, for
+    a caller that reads SOME inputs but provably not the meteorological
+    ones.  ``gpuwm static`` is that caller: it builds geography from
+    ``geog_root`` and the WPS namelist, and never opens the forcing GRIB
+    or the Vtable.  With this False those two are resolved and validated
+    but not required on disk, while ``geog_root`` and ``wps_namelist``
+    -- which the static build DOES read -- stay required as strictly as
+    ever.  Every declaration is still mandatory; this is about which
+    bytes must already be fetched, not about which keys must be written.
     """
     unknown = sorted(set(raw) - _KNOWN_KEYS)
     if unknown:
@@ -515,7 +535,8 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
             f"{missing}: every input path and policy is declared, never "
             "implicit.")
 
-    forcing = _resolve_forcing(base_dir, raw["forcing"], source)
+    forcing = _resolve_forcing(base_dir, raw["forcing"], source,
+                               require_match=require_met_inputs)
     vtable = _resolve_path(base_dir, raw["vtable"], "vtable", source)
     wps_namelist = _resolve_path(base_dir, raw["wps_namelist"],
                                  "wps_namelist", source)
@@ -579,6 +600,20 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
             base_dir, raw["water_temperature_overlay"],
             "water_temperature_overlay", source)
 
+    # `forcing` and `vtable` are the MET inputs.  A caller that only
+    # builds static geography (`gpuwm static`) never reads either one --
+    # runtime.write_static touches geog_root, the WPS namelist and the
+    # projection, and nothing else -- so requiring them to be on disk
+    # made "build 30 m terrain for this domain" refuse until a whole
+    # forecast cycle had been downloaded.  That is a gate on an input the
+    # command does not consume, and it sat directly across the
+    # documented high-resolution terrain path.
+    #
+    # The DECLARATIONS stay required in every case: the schema is the
+    # config's identity and a static build still describes the case it
+    # belongs to.  Only the existence check is scoped to the callers that
+    # actually read the bytes.
+    met_roles = {"forcing", "vtable"}
     file_inputs = [*(("forcing", path) for path in forcing),
                    ("vtable", vtable), ("wps_namelist", wps_namelist)]
     if overlay_path is not None:
@@ -591,6 +626,8 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
             for domain_id, artifact in orog_by_domain)
     if require_inputs:
         for role, path in file_inputs:
+            if not require_met_inputs and role.split(".")[0] in met_roles:
+                continue
             if not path.is_file():
                 raise ValueError(
                     f"{role} file {path} declared in [case_data] of {source} "
@@ -701,7 +738,7 @@ def load_case_data(path: str | Path) -> CaseDataConfig:
 
 def load_experiment_case_bytes(
         payload: bytes, *, source: str, base_dir: str | Path,
-        require_inputs: bool = True
+        require_inputs: bool = True, require_met_inputs: bool = True
         ) -> tuple[ExperimentConfig, CaseDataConfig]:
     """Load captured TOML bytes while retaining their original path base.
 
@@ -734,7 +771,8 @@ def load_experiment_case_bytes(
             "experiment runtime requires declared inputs (forcing, vtable, "
             "wps_namelist, geog_root, and policies).")
     data = build_case_data(table, source=source, base_dir=base,
-                           require_inputs=require_inputs)
+                           require_inputs=require_inputs,
+                           require_met_inputs=require_met_inputs)
     if static_table is not None:
         from gpuwm.static.highres_production import parse_static_table
         highres = parse_static_table(
@@ -744,16 +782,23 @@ def load_experiment_case_bytes(
     return experiment, data
 
 
-def load_experiment_case(path: str | Path
+def load_experiment_case(path: str | Path, *,
+                         require_met_inputs: bool = True
                          ) -> tuple[ExperimentConfig, CaseDataConfig]:
-    """Load one TOML into its (experiment, case-data) config pair."""
+    """Load one TOML into its (experiment, case-data) config pair.
+
+    ``require_met_inputs=False`` is for `gpuwm static`, which builds
+    geography and provably never opens the forcing GRIB or the Vtable.
+    See :func:`build_case_data`.
+    """
 
     from gpuwm.config_authority import read_config_authority
 
     authority = read_config_authority(path)
     path = authority.source
     return load_experiment_case_bytes(
-        authority.payload, source=str(path), base_dir=path.parent)
+        authority.payload, source=str(path), base_dir=path.parent,
+        require_met_inputs=require_met_inputs)
 
 
 __all__ = [

@@ -133,10 +133,12 @@ trajectory/stock-WRF gates.
 
 ## Reproducing the bounded pilot
 
-Install the optional raster dependencies and run:
+The raster dependencies (rasterio, pyproj) are ordinary dependencies of
+`gpuwm` as of 2.3.3, so a plain install carries them; the `[geog]` extra is
+still accepted and now adds nothing. Run:
 
 ```text
-python -m pip install -e ".[geog]"
+python -m pip install -e "."
 python tools/run_highres_geog_pilot.py \
   --manifest /path/to/pilot-manifest.json \
   --geog-root /path/to/WPS_GEOG \

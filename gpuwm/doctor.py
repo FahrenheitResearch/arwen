@@ -90,6 +90,12 @@ GPU_EXTRA_UNKNOWN_ACTION = ("pip install 'gpuwm[gpu-cu12]'  "
                             "# CUDA 12.x; cu13 box: gpuwm[gpu-cu13]")
 RENDER_EXTRA_HINT = ("pip install 'gpuwm[render]'\n"
                      "  # installs wrf-rust + matplotlib")
+GEOG_STACK_HINT = (
+    "pip install --upgrade gpuwm\n"
+    "  # rasterio and pyproj are ordinary runtime dependencies from\n"
+    "  # 2.3.3 on; an install missing them predates that or used\n"
+    "  # --no-deps.  To add just these to the environment you have:\n"
+    "  #   pip install --upgrade rasterio pyproj")
 GEOG_HINT = (
     "gpuwm fetch-geog\n"
     "  # downloads the nine required WPS_GEOG datasets (~1.3 GB\n"
@@ -1087,6 +1093,52 @@ def _render_extra_check() -> Check:
                  detail, RENDER_EXTRA_HINT,
                  action="pip install 'gpuwm[render]'", brief=_short(detail),
                  blocking=False)
+
+
+def _geog_stack_check() -> Check:
+    """Can this box build high-resolution terrain at all?
+
+    The check `gpuwm doctor` did not have in 2.3.2, which is why the
+    failure had to be discovered by running the feature: rasterio and
+    pyproj lived in an extra nothing documented, and the only thing that
+    reported their absence was a traceback after a 160.7 MiB download.
+    Doctor's whole job is to answer that before anything is run.
+
+    Deliberately a REAL import in a subprocess, not ``find_spec``.  Both
+    libraries are thin Python over large native stacks (GDAL, PROJ), and
+    the interesting failure on a box that has them installed is the one
+    where the shared library will not load -- an ABI mismatch, a conda
+    and pip GDAL fighting, a half-removed dist-info.  ``find_spec`` calls
+    all of those green.  The front-door refusal uses the cheap probe
+    because it runs on every build; doctor is where the expensive, honest
+    answer belongs.
+
+    ``blocking=False``: a base install that never touches
+    ``[static.highres]`` is complete without these being importable, and
+    the exit code is what installers and `gpuwm setup` read.  The line
+    still prints MISSING with its remedy either way.
+    """
+    from gpuwm.static.geog_stack import GEOG_MODULES
+
+    results = {name: _import_probe(name) for name, _role in GEOG_MODULES}
+    broken = {name: evidence for name, (ok, evidence) in results.items()
+              if not ok}
+    title = "geography stack (rasterio + pyproj)"
+    if not broken:
+        versions = ", ".join(
+            f"{name} {evidence}" for name, (_, evidence) in results.items())
+        return Check(title, "verified",
+                     f"imported in subprocesses ({versions}); "
+                     "[static.highres] can build terrain",
+                     brief=_short(versions))
+    detail = "; ".join(f"{name}: {evidence}"
+                       for name, evidence in sorted(broken.items()))
+    return Check(
+        title, "missing",
+        f"{detail} -- [static.highres] cannot build high-resolution "
+        "terrain without both",
+        GEOG_STACK_HINT, action="pip install --upgrade gpuwm",
+        brief=_short(detail), blocking=False)
 
 
 # ---------------------------------------------------------------------------
@@ -2267,6 +2319,10 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     checks.append(_cuda_headers_check())
     checks.append(_da_eigensolver_check())
     checks.append(_render_extra_check())
+    # Beside the render extra, because they are the same question asked
+    # of a different feature: can this install actually run the thing its
+    # documentation describes?
+    checks.append(_geog_stack_check())
     checks.append(_rust_renderer_check())
     checks.append(_renderer_tree_check())
     checks.append(_fetch_backbone_check())

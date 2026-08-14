@@ -666,3 +666,14 @@ tests/test_obs_cross_reader.py
 # so the instrument that keeps the shard list honest was itself unrun.  CPU
 # only -- it reads the list, it does not touch a card.
 tests/test_gpu_shard_manifest.py
+# 2.3.3: 2.3.2 shipped worldwide 30 m terrain that no documented install
+# could reach -- rasterio/pyproj were an extra [all] excluded and no
+# quickstart named.  Both halves were individually correct; only holding
+# the docs against the extras that exist catches it.
+tests/test_docs_extras_agree_with_code.py
+# 2.3.3: the same defect's ORDER half -- the dependency check ran after
+# the tile fetch, so a missing library cost 160.7 MiB and a raw traceback.
+tests/test_highres_geog_stack_refusal.py
+# 2.3.3: `gpuwm static` demanded a forcing GRIB and Vtable it never opens,
+# which put a met download in front of every terrain build.
+tests/test_static_needs_no_met_inputs.py

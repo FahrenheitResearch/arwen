@@ -105,13 +105,39 @@ _REPLACED_FIELDS = ("HGT_M", "LANDUSEF", "LANDMASK", "LU_INDEX",
 _ON_REFUSE_CHOICES = ("error", "fallback-30s")
 
 
-class HighresRefusal(RuntimeError):
-    """A named, deliberate refusal of the high-resolution path."""
+# Re-exported, not redefined: the class lives in a leaf module so the CLI
+# can name it in an except clause without importing numpy and the static
+# builders on every invocation.  Every existing
+# `from gpuwm.static.highres_production import HighresRefusal` is
+# unaffected, which is the point of re-exporting rather than moving.
+from .highres_refusal import HighresRefusal  # noqa: E402,F401
 
-    def __init__(self, reason: str, detail: str):
-        super().__init__(f"[static.highres] refused ({reason}): {detail}")
-        self.reason = reason
-        self.detail = detail
+
+def require_geography_stack() -> None:
+    """Refuse an enabled high-resolution block with no geography stack.
+
+    Called at the very top of :func:`apply_highres_statics`, BEFORE the
+    footprint is computed and long before a single tile is requested.
+    The ordering is the whole point: through 2.3.2 the only check was the
+    import inside the mosaic step, which runs *after* the fetch, so a
+    missing rasterio cost the user 160.7 MiB of downloads and then a raw
+    traceback.  Nothing about a missing library needs the network to
+    discover, so nothing about it should wait for the network.
+
+    Raised OUTSIDE the ``on_refuse`` handler on purpose.  ``on_refuse =
+    "fallback-30s"`` is a statement about *source coverage* -- "this
+    domain reaches past the published data, carry on at 30 arc-seconds"
+    -- and quietly applying it to a broken install would hand back
+    baseline terrain because a library was missing, which is the exact
+    silent degradation the rest of this module refuses.  An incomplete
+    environment is fixable in one command, so it is always reported.
+    """
+    from .geog_stack import geog_unavailable_detail, missing_geog_modules
+
+    missing = missing_geog_modules()
+    if missing:
+        raise HighresRefusal("geography-stack-missing",
+                             geog_unavailable_detail(missing))
 
 
 @dataclass(frozen=True)
@@ -582,6 +608,12 @@ def apply_highres_statics(baseline, grid, *, config, domain_id: int,
     """
     if config is None or not getattr(config, "enabled", False):
         return baseline, None
+
+    # Before the footprint, before the plan, before the first byte is
+    # requested.  See require_geography_stack: this is deliberately not
+    # inside the try below, so `on_refuse = "fallback-30s"` cannot turn a
+    # broken install into a silent 30-arc-second run.
+    require_geography_stack()
 
     receipt: dict[str, object] = {
         "schema": RECEIPT_SCHEMA,

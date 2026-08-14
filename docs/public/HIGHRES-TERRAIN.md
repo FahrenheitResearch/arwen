@@ -25,6 +25,155 @@ already asks for one set of credentials (ERA5 through CDS) and that single
 requirement is its largest source of user friction. A second one would be a
 worse product.
 
+## Install
+
+```
+pip install gpuwm
+```
+
+That is the whole install. The libraries this path needs to read and
+reproject DEM tiles (rasterio and pyproj) are ordinary dependencies of
+`gpuwm`, so every install line the project publishes carries them --
+`gpuwm`, `gpuwm[all-cu12]`, `gpuwm[all-cu13]`, `gpuwm[render]`, all of
+them. There is no extra to remember and none to forget.
+
+Check it before you run anything:
+
+```
+gpuwm doctor
+```
+
+The line to look for is `geography stack (rasterio + pyproj)`. It reports
+the two versions when the path can run, and names the exact command to fix
+it when it cannot.
+
+> **Through 2.3.2 this was not true.** Those two libraries lived in an
+> optional `geog` extra that `[all]` excluded and no quickstart named, and
+> the check for them ran *after* the tile download. Following this page on
+> a documented install fetched 160.7 MiB of Copernicus tiles and then died
+> on a bare `ModuleNotFoundError`. If you are on 2.3.2, `pip install
+> --upgrade gpuwm`.
+
+## Build terrain: a worked example
+
+One 40 x 40 km domain at 1 km over the Bernese Alps, terrain from
+Copernicus DEM GLO-30. It costs about 80 MB of tiles (two 1-degree tiles)
+and runs in well under a minute on a warm cache.
+
+You need the 30-arc-second baseline first -- high-resolution terrain
+*replaces a field inside* a baseline static build, it does not stand
+alone. Fetch it once:
+
+```
+gpuwm fetch-geog
+```
+
+Write `alps.wps`, which is where the domain's geometry is declared:
+
+```
+&share
+ max_dom = 1,
+/
+
+&geogrid
+ parent_id         = 1,
+ parent_grid_ratio = 1,
+ i_parent_start    = 1,
+ j_parent_start    = 1,
+ e_we              = 41,
+ e_sn              = 41,
+ dx = 1000.0,
+ dy = 1000.0,
+ map_proj  = 'lambert',
+ ref_lat   = 46.55,
+ ref_lon   = 7.98,
+ truelat1  = 30.0,
+ truelat2  = 60.0,
+ stand_lon = 7.98,
+/
+```
+
+Write `alps.toml` beside it. Set `geog_root` to the tree
+`gpuwm fetch-geog` wrote:
+
+```toml
+[experiment]
+name = "alps_terrain_demo"
+start_time = 2024-06-01T00:00:00
+run_seconds = 3600.0
+restart_interval_s = 0.0
+
+[projection]
+map_proj = "lambert"
+ref_lat = 46.55
+ref_lon = 7.98
+truelat1 = 30.0
+truelat2 = 60.0
+stand_lon = 7.98
+
+[shared]
+nz = 49
+ztop = 20000.0
+p_top = 10000.0
+
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = 40
+ny = 40
+dx = 1000.0
+time_step = 5
+specified = true
+nested = false
+history_interval_s = 3600.0
+
+[case_data]
+# `gpuwm static` builds geography only: it reads geog_root and the WPS
+# namelist, and never opens the forcing GRIB or the Vtable.  Both are
+# still declared -- the config describes a whole case -- but neither has
+# to be on disk to build terrain.
+forcing = ["not-read-by-gpuwm-static.grib"]
+vtable = "not-read-by-gpuwm-static.Vtable"
+wps_namelist = "alps.wps"
+geog_root = "${GPUWM_CASE_DATA_ROOT}/WPS_GEOG"
+sfcp_to_sfcp = true
+output_title = "alps terrain demo"
+
+[static.highres]
+enabled = true
+cache_root = "highres-cache"
+```
+
+Build it:
+
+```
+gpuwm static alps.toml --output alps_static.npz
+```
+
+You should see the overlay report itself, name its source, and say what it
+left alone:
+
+```
+[static.highres] d01: APPLIED (terrain only, copernicus-dem-glo30; cells replaced: 1600 of 1600; receipt .../static_highres_..._d01_auto.json)
+[static.highres] d01: land use and soil remain the 30-arc-second baseline (no global land-cover source is wired)
+static alps_terrain_demo: alps_static.npz
+```
+
+`HGT_M` in that NPZ is the terrain. Over this footprint it runs from about
+527 m in the Lauterbrunnen valleys to about 3676 m on the Jungfrau ridge --
+3149 m of relief that the 900 m baseline cannot resolve.
+
+```
+python -c "import numpy; h=numpy.load('alps_static.npz')['HGT_M']; print(h.shape, h.min(), h.max())"
+```
+
+Every run writes a receipt under `cache_root/receipts/` naming the source,
+the vertical datum, the tiles fetched and the cell count replaced.
+
 ## The honest limitation: land cover is United States only
 
 There is no global land-cover source wired, so **outside the United States a
@@ -164,15 +313,20 @@ ridges are once every seven cells.
 baseline only 86.5 %. Copernicus reproduces the US gold standard, which is
 the evidence for trusting it where no gold standard exists.
 
-You can reproduce any of this:
+You can reproduce any of this. The tool ships in the wheel, so run it as a
+module -- `python tools/...` only works from a source checkout, which a
+`pip install` does not give you:
 
 ```
-python tools/terrain_source_crossvalidation.py \
-    --cache-root <cache> --out report.json
-python tools/terrain_source_crossvalidation.py --self-test-only   # offline
+python -m tools.terrain_source_crossvalidation --cache-root <cache> --out report.json
+python -m tools.terrain_source_crossvalidation --self-test-only   # offline
 ```
 
-It costs about 540 MB of cache, most of it one 3DEP tile.
+It costs about 540 MB of cache, most of it one 3DEP tile. The self-test
+arm needs no network and no cache.
+
+It reads the 30-arc-second baseline from `$WPS_GEOG`, or from
+`$GPUWM_CASE_DATA_ROOT/WPS_GEOG`, or from `--geog-root DIR`.
 
 ## What the gates protect
 

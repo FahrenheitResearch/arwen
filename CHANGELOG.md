@@ -1,5 +1,51 @@
 # Changelog
 
+## 2.3.3 (2026-08-14)
+
+Fixed:
+- `pip install gpuwm` now carries everything the high-resolution terrain
+  path needs. 2.3.2 shipped worldwide 30 m terrain that no documented
+  install could reach: rasterio and pyproj lived in an optional `geog`
+  extra, `[all]` deliberately excluded it, and every published quickstart
+  one-liner omitted it. Following `docs/public/HIGHRES-TERRAIN.md` on a
+  documented install downloaded 160.7 MiB of Copernicus tiles and then
+  died on a bare `ModuleNotFoundError`. Both libraries are ordinary
+  runtime dependencies now, so every install line the project publishes
+  reaches the feature.
+- The terrain path refuses a missing geography stack BEFORE it fetches
+  anything, as a named `HighresRefusal` naming the exact command to run.
+  The old check sat after the download, was not a refusal type, and
+  escaped `gpuwm static` as a raw traceback at exit 1. It is one sentence
+  at exit 2 now, with nothing fetched, and `on_refuse = "fallback-30s"`
+  deliberately does not swallow it: a coverage policy must not silently
+  answer an install question with 900 m terrain.
+- `gpuwm doctor` reports `geography stack (rasterio + pyproj)`, so the
+  product can answer this before a run rather than after a download. It
+  imports both in subprocesses, which also catches an installed-but-broken
+  GDAL or PROJ that a presence check calls green.
+- `gpuwm static` no longer demands a forcing GRIB and a Vtable it never
+  opens. It builds geography from `geog_root` and the WPS namelist, so
+  requiring a whole forecast cycle on disk first was a gate on bytes the
+  command does not read, sitting across the terrain path. Both keys are
+  still declared, and `gpuwm run` still refuses absent forcing at the
+  front door.
+- `docs/public/HIGHRES-TERRAIN.md` carries an install line and a worked
+  example that produces real terrain: one 40 x 40 km Alpine domain at
+  1 km, about 80 MB of tiles, verified end to end from a PyPI install.
+  Its reproduce commands now use `python -m tools.<module>`, which works
+  off a wheel; `python tools/<file>.py` needed a source checkout nobody
+  installing from PyPI has.
+- `docs/install.md` documents every extra `gpuwm` declares, including
+  `[obs]` and `[dealias]`, which code told users to install and no
+  document mentioned.
+
+Known issues:
+- The `geog` extra is retained and empty so `pip install 'gpuwm[geog]'`
+  keeps working. It adds nothing.
+- Outside the United States a high-resolution run still replaces terrain
+  only. Land use and soil remain the 30-arc-second baseline, unchanged
+  from 2.3.2.
+
 ## 2.3.2 (2026-08-14)
 
 New:

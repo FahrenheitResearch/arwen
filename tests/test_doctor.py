@@ -91,6 +91,16 @@ def test_doctor_names_missing_extras_with_exact_remedies(monkeypatch):
     render = by_name["render extra (wrf-rust + matplotlib)"]
     assert render.status == "missing"
     assert "gpuwm[render]" in render.remedy
+    # The check 2.3.2 did not have.  rasterio and pyproj were an
+    # undocumented extra and nothing reported their absence until a
+    # terrain build had already downloaded 160.7 MiB and died.
+    geog = by_name["geography stack (rasterio + pyproj)"]
+    assert geog.status == "missing"
+    assert "pip install --upgrade gpuwm" in geog.remedy
+    assert "rasterio" in geog.remedy and "pyproj" in geog.remedy
+    # Absent-optional: it must not fail the exit code of a base install
+    # that never touches [static.highres].
+    assert geog.blocking is False
 
 
 def test_doctor_reports_missing_bridges_with_the_cargo_line(monkeypatch,
