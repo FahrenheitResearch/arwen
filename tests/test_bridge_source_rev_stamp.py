@@ -296,6 +296,12 @@ _STAMP_SOURCES = {
     "rw_fetch": "crates/rw-fetch/src/main.rs",
     "rw_wrfbatch": "crates/rw-wrfbatch/src/main.rs",
     "rw_nexrad": "crates/rw-nexrad/src/main.rs",
+    "rw_odim": "crates/rw-odim/src/bin/rw_odim.rs",
+    "rw_mrms": "crates/rw-obs/src/bin/mrms.rs",
+    "rw_stage4": "crates/rw-obs/src/bin/stage4.rs",
+    "rw_asos": "crates/rw-obs/src/bin/asos.rs",
+    "rw_opera": "crates/rw-obs/src/bin/opera.rs",
+    "rw_goes": "crates/rw-goes/src/main.rs",
 }
 
 #: The build script that injects the revision for each artifact.
@@ -303,7 +309,13 @@ _STAMP_BUILDS = {
     bridges.CRATE_RELATIVE: ("build.rs",),
     bridges.RUSTWX_CRATE_RELATIVE: ("crates/rw-fetch/build.rs",
                                     "crates/rw-wrfbatch/build.rs",
-                                    "crates/rw-nexrad/build.rs"),
+                                    "crates/rw-nexrad/build.rs",
+                                    "crates/rw-odim/build.rs",
+                                    # rw-obs builds four bins from one
+                                    # crate, so one script stamps all
+                                    # four.
+                                    "crates/rw-obs/build.rs",
+                                    "crates/rw-goes/build.rs"),
 }
 
 

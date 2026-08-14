@@ -1529,25 +1529,6 @@ def allocated_planes(state, names) -> tuple[str, ...]:
                  if existing(name[len("scratch/"):]) is not None)
 
 
-def consumer_planes() -> tuple[str, ...]:
-    """Every whole-domain plane a model consumer reads off ``node.state``.
-
-    The two UH tracking windows are the whole catalogue today, because they
-    are the only model consumers that read a PLANE rather than the
-    trajectory: :mod:`gpuwm.core.nest_spawn` (the spawn trigger) and
-    :mod:`gpuwm.core.storm_tracking` (the follow tracker) both go through
-    ``storm_tracking.signal_plane``.
-
-    A caller publishes ITS OWN consumer's slice of this, never the whole
-    thing -- the two windows exist separately precisely so that one
-    consumer's cadence cannot move the other's decision, and a boundary that
-    published both would put that coupling straight back.
-    """
-    from gpuwm.core import uh_diag
-
-    return tuple(f"scratch/{slot}" for slot in uh_diag.TRACKER_WINDOW_SLOTS)
-
-
 def make_stepper(state, cfg, options: StreamingOptions | None = None, *,
                  decision: StreamingDecision | None = None,
                  machine=None, build=None):
@@ -4824,21 +4805,6 @@ def step_health(stepper, state, cfg, *, boundary_width: int):
 # whole seam is about.
 
 
-def domain_swdown_peak(stepper, state, report=None) -> float:
-    """``runtime.py``'s per-outer-step ``max(swdown)``, for either mode."""
-    import cupy as cp
-
-    if is_streaming(stepper):
-        if report is not None and "swdown_max" in report:
-            return float(report["swdown_max"])
-        # The other arm of the fold (StreamedStability) does not carry
-        # swdown, so read it out of the STORE instead -- which is where the
-        # domain is, and correct for a field no tile writes.  What is never
-        # done is fall back to ``state.physics.fields["swdown"]``: that is
-        # the value the store was filled from.
-        return domain_field_max(stepper, state, "fields/swdown",
-                                state.physics.fields["swdown"])
-    return float(cp.max(state.physics.fields["swdown"]))
 def receipt_entry(options: StreamingOptions | None,
                   decisions: dict | None = None) -> dict:
     """What ``[tiles]`` contributes to a RUN RECEIPT: everything.

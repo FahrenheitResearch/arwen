@@ -22,6 +22,7 @@ members = [
     "crates/rw-fieldcmp",
     "crates/rw-ingest",
     "crates/rw-nexrad",
+    "crates/rw-odim",
     "crates/rw-obs",
     "crates/rw-sat",
     "crates/rw-goes",

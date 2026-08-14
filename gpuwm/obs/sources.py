@@ -6,6 +6,8 @@ protocols over packs and records the Rust front doors wrote:
 
 * :class:`MrmsCompositeSource` — ``GriddedObsSource`` for composite
   reflectivity in dBZ;
+* :class:`OperaCompositeSource` — the same quantity from the European
+  network, for domains MRMS does not cover;
 * :class:`Stage4PrecipSource` — ``GriddedObsSource`` for one accumulation
   window of precipitation in mm;
 * :class:`AsosSurfaceSource` — ``StationObsSource`` for surface reports in
@@ -350,6 +352,39 @@ class MrmsCompositeSource(_GriddedSource):
             minimum_observed_fraction=minimum_observed_fraction)
 
 
+class OperaCompositeSource(_GriddedSource):
+    """EUMETNET OPERA composite reflectivity, in dBZ, from decoded packs.
+
+    The European counterpart of :class:`MrmsCompositeSource`, and deliberately
+    the same class of thing: same seam quantity, same units, same pack schema,
+    same coverage-floor behaviour. A scorer picks between them by which
+    network covers the domain, not by which code path it has to take.
+
+    Two differences are real and both are defaults rather than logic. The
+    cadence is five minutes rather than two, so the matching window is 300 s;
+    and the product is the OPERA column-maximum composite rather than the
+    MRMS one, which is what the provenance says when a pack does not carry
+    its own.
+
+    One caveat travels with every frame and is not this class's to resolve:
+    the composite's own ``/how/comment`` can declare that part of the field
+    was produced by advection extrapolation rather than observed. The front
+    door records that note in the pack's ``production`` block. It is a
+    statement about what the numbers are, and a verification campaign should
+    read it before treating the field as ground truth.
+    """
+
+    def __init__(self, pack_paths, geo_pack, *,
+                 match_seconds: int = 300,
+                 minimum_observed_fraction: float | None = None):
+        super().__init__(
+            pack_paths, geo_pack,
+            quantity=QUANTITY_COMPOSITE_REFLECTIVITY, units="dBZ",
+            match_seconds=match_seconds, source="opera",
+            product="opera-comp-dbzh-max",
+            minimum_observed_fraction=minimum_observed_fraction)
+
+
 class Stage4PrecipSource(_GriddedSource):
     """Stage-IV precipitation for ONE accumulation window, in mm.
 
@@ -440,5 +475,6 @@ class AsosSurfaceSource:
 
 
 __all__ = ["AsosSurfaceSource", "DEFAULT_MATCH_SECONDS",
-           "MrmsCompositeSource", "QUANTITY_COMPOSITE_REFLECTIVITY",
+           "MrmsCompositeSource", "OperaCompositeSource",
+           "QUANTITY_COMPOSITE_REFLECTIVITY",
            "QUANTITY_PRECIPITATION_ACCUMULATION", "Stage4PrecipSource"]

@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import os
 import subprocess
 import sys
 import textwrap
@@ -223,10 +224,24 @@ def test_stream_controller_refuses_ambient_child_registry_override(
 
 
 def _run_stream_cli(plan: Path) -> subprocess.CompletedProcess[str]:
+    """`gpuwm stream PLAN`, with the provenance banner silenced.
+
+    Every one of these cases asserts that stderr carries the refusal and
+    NOTHING else -- one line, no traceback -- and that is only true of a
+    caller who asked for quiet.  The provenance banner is one line on
+    stderr at every front door by design, so once it landed these three
+    read as three broken refusals when the refusals were exactly right.
+    `GPUWM_PROVENANCE_BANNER=0` is the banner's own documented switch and
+    is how tests/test_hrrr_domain_cli.py pins the same property.
+    """
+
+    environment = dict(os.environ)
+    environment["GPUWM_PROVENANCE_BANNER"] = "0"
     return subprocess.run(
         [sys.executable, "-m", "gpuwm.cli", "stream", str(plan)],
         cwd=Path(__file__).resolve().parents[1], text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        env=environment)
 
 
 def test_stream_cli_missing_plan_is_one_line_exit_two(tmp_path):

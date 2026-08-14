@@ -57,6 +57,21 @@ pub const SWEEPS_SCHEMA: &str = "gpuwm-obs.radar-sweeps.v1";
 /// container did not change, so the container's version did not either.
 pub const SWEEPS_SCHEMA_CENSOR: &str = "gpuwm-obs.radar-sweeps.v2";
 
+/// The same container again, written by `rw_odim` from an ODIM_H5 polar
+/// volume.
+///
+/// A third schema string rather than `v2`, for the reason `v2` is not `v1`:
+/// the censor vocabulary is genuinely wider.  ODIM distinguishes two states
+/// NEXRAD has no word for — `NODATA` (4), the radar did not measure this
+/// gate, and `SENTINEL_AMBIGUOUS` (5), the file declares its two sentinels
+/// as the same raw value so a gate holding it may be either.  A `v2` reader
+/// handed either code would be reading a plane it cannot fully account for,
+/// and the schema string is what stops it.
+///
+/// The codes that mean the same thing are the same number, which is what
+/// lets one lookup table serve both radar families.
+pub const SWEEPS_SCHEMA_ODIM: &str = "gpuwm-obs.radar-sweeps.v3";
+
 /// `<u1` census planes, one code per gate.  Mirrors
 /// [`wx_radar::level2::censor`], plus the one code only this layer can mint.
 pub mod censor_plane {
@@ -443,6 +458,23 @@ pub struct MomentEntry {
     /// pack digest reproducible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub censor_array: Option<String>,
+    /// The producer's own name for this moment, when it differs from
+    /// `product`.
+    ///
+    /// `product` is the pack's *consumer* vocabulary and there is exactly one
+    /// of it: `REF`, `VEL`, and the superob layer keys on those two tokens.
+    /// A producer whose archive spells them differently -- ODIM's `DBZH` and
+    /// `VRADH` -- must translate, or every gate it writes is silently skipped
+    /// by a consumer that still reports the sweep as used.  This field is how
+    /// the translation stays lossless: the canonical token drives the
+    /// pipeline and the original spelling stays readable, so a reader can
+    /// still tell a `DBZH` from a `TH`.
+    ///
+    /// `Option` with `skip_serializing_if`, so a NEXRAD pack -- whose
+    /// producer already speaks the consumer vocabulary -- is byte-identical
+    /// to what it was before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_quantity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -453,8 +485,19 @@ pub struct SweepEntry {
     /// The smallest Nyquist velocity any radial in the cut reported, not
     /// the first one seen: a sweep-wide scalar must not license a gate its
     /// own radial would have rejected.
+    ///
+    /// Since the pack began carrying [`Self::nyquist_by_radial_array`] this
+    /// is *defined* as that array's minimum over its usable entries rather
+    /// than computed beside it.  Two fields claiming the same thing are a
+    /// defect the moment they can disagree, so there is one source and one
+    /// reduction, and [`decode_pack`] refuses a pack where they part.
     pub nyquist_velocity_ms: Option<f64>,
     /// True when the cut's radials did not all report that same value.
+    ///
+    /// Derivable from [`Self::nyquist_by_radial_array`] once that is
+    /// present, and kept anyway: it is what a pack written before the array
+    /// existed said, and dropping it would silently downgrade every reader
+    /// that already asks the question.
     #[serde(default)]
     pub nyquist_radials_disagree: bool,
     pub start_status: u8,
@@ -467,6 +510,48 @@ pub struct SweepEntry {
     pub azimuth_array: String,
     /// Key into `arrays`; shape `[radial_count]`.
     pub elevation_array: String,
+    /// Key into `arrays` for the Nyquist velocity each radial reported;
+    /// `<f4`, shape `[radial_count]`, in radial order, `NaN` where that
+    /// radial's Message-31 RAD block carried none.
+    ///
+    /// The fold arithmetic a dealiaser does is per radial, and a cut whose
+    /// radials sit on different Nyquist lattices cannot be described by one
+    /// number — the scalar above is a floor, which is safe but is not the
+    /// lattice.  This is the array that carries the originals.
+    ///
+    /// Absent when not one radial in the cut reported a usable value: the
+    /// scalar is `None` there too, and an array of nothing but `NaN` would
+    /// assert that originals were kept when there were none to keep.  Its
+    /// absence and an all-`NaN` array are different statements and are kept
+    /// different.  `skip_serializing_if` is load-bearing rather than tidy:
+    /// it is what keeps such a pack's metadata JSON byte-identical to the
+    /// one this build's predecessor wrote.
+    ///
+    /// The container did not change to carry it — same magic, same header,
+    /// same [`PACK_VERSION`], same schema string.  A reader that has never
+    /// heard of the key reads exactly the pack it always read, which is why
+    /// this is additive rather than a schema bump: unlike the censor planes,
+    /// it makes no new claim about any byte that was already there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nyquist_by_radial_array: Option<String>,
+    /// What granularity the source file recorded the Nyquist interval at:
+    /// `"radial"` or `"sweep"`.
+    ///
+    /// The two radar families genuinely differ here and the pack has to say
+    /// which, because the dealiaser refuses by name when the array it needs
+    /// is absent and that refusal has to be able to distinguish "this file
+    /// never had per-radial originals" from "they were dropped".  A NEXRAD
+    /// Message-31 RAD block carries one per radial; ODIM declares a single
+    /// `/datasetN/how/NI` for the whole cut, so an ODIM pack states `"sweep"`
+    /// and omits [`Self::nyquist_by_radial_array`] rather than broadcasting
+    /// one number across the radials, which would assert that originals were
+    /// kept when there was only ever one original.
+    ///
+    /// `None` on a pack written before the key existed; NEXRAD leaves it
+    /// `None` so those packs stay byte-identical, and the presence of the
+    /// per-radial array already says `"radial"` there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nyquist_granularity: Option<String>,
     pub moments: Vec<MomentEntry>,
 }
 
@@ -503,7 +588,49 @@ pub struct VolumeEntry {
     pub valid_time: String,
     pub volume_date: u16,
     pub volume_time_ms: u32,
-    pub framing: Framing,
+    /// Archive-II framing, for a volume that had any.
+    ///
+    /// `Option` rather than required because ODIM_H5 is an HDF5 container
+    /// with no LDM block table and no `AR2V` token: there is no honest
+    /// `Framing` to write for one, and inventing a placeholder would put a
+    /// claim about Archive-II layout into a file that is not Archive-II.
+    /// `skip_serializing_if` keeps every NEXRAD pack byte-identical, and the
+    /// Python reader already spelled this field `volume.get("framing") or {}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framing: Option<Framing>,
+    /// The member files, for a volume that was assembled out of several.
+    ///
+    /// `Option` for the same reason `framing` is: a NEXRAD volume is one
+    /// file, so there is nothing honest to write, and `skip_serializing_if`
+    /// keeps every NEXRAD pack byte-identical.  Some national ODIM feeds
+    /// publish one file per elevation and quantity, and for those the
+    /// `sha256` above is a manifest digest rather than a file digest -- this
+    /// block is what says so and what lets a reader name the actual bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembled: Option<AssembledEntry>,
+}
+
+/// The files an assembled volume was built from, and how they folded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssembledEntry {
+    pub files: usize,
+    /// Files whose cut identity matched an earlier member's, so their moments
+    /// joined that sweep instead of starting a new one.  `files - merged` is
+    /// the sweep count, and the ratio is a measurement of whether the feed
+    /// records its moments on one antenna pass or on several.
+    pub sweeps_merged: usize,
+    /// SHA-256 over `"<sha256>  <name>\n"` lines sorted by name.  Identifies
+    /// the member set; it is not any file's digest.
+    pub manifest_sha256: String,
+    pub members: Vec<AssembledMember>,
+}
+
+/// One member file of an assembled volume.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssembledMember {
+    pub name: String,
+    pub bytes: usize,
+    pub sha256: String,
 }
 
 /// The pack metadata block — schema, provenance, geometry, array index.
@@ -648,10 +775,13 @@ pub fn decode_pack(bytes: &[u8]) -> Result<(PackMeta, Vec<u8>), Box<dyn Error>> 
         )));
     }
     let meta: PackMeta = serde_json::from_slice(&bytes[PACK_HEADER_BYTES..meta_end])?;
-    if meta.schema != SWEEPS_SCHEMA && meta.schema != SWEEPS_SCHEMA_CENSOR {
+    if meta.schema != SWEEPS_SCHEMA
+        && meta.schema != SWEEPS_SCHEMA_CENSOR
+        && meta.schema != SWEEPS_SCHEMA_ODIM
+    {
         return Err(boxed_error(format!(
-            "radar sweep pack declares schema {:?}, expected {SWEEPS_SCHEMA:?} or \
-             {SWEEPS_SCHEMA_CENSOR:?}",
+            "radar sweep pack declares schema {:?}, expected {SWEEPS_SCHEMA:?}, \
+             {SWEEPS_SCHEMA_CENSOR:?} or {SWEEPS_SCHEMA_ODIM:?}",
             meta.schema
         )));
     }
@@ -660,7 +790,7 @@ pub fn decode_pack(bytes: &[u8]) -> Result<(PackMeta, Vec<u8>), Box<dyn Error>> 
     // plain pack that happens to be larger, and a `v2` pack without them
     // promises a distinction it cannot make; both are refused here rather
     // than left for a consumer to trip over.
-    let censored = meta.schema == SWEEPS_SCHEMA_CENSOR;
+    let censored = meta.schema == SWEEPS_SCHEMA_CENSOR || meta.schema == SWEEPS_SCHEMA_ODIM;
     for sweep in &meta.sweeps {
         for moment in &sweep.moments {
             if moment.censor_array.is_some() != censored {
@@ -689,7 +819,94 @@ pub fn decode_pack(bytes: &[u8]) -> Result<(PackMeta, Vec<u8>), Box<dyn Error>> 
             meta.content_sha256
         )));
     }
+    check_nyquist_scalars_summarise_their_arrays(&meta, &payload)?;
     Ok((meta, payload))
+}
+
+/// Tolerance the scalar must summarise its array to, in m/s.
+///
+/// The same number the Python sweep reader checks, and both are checking one
+/// `f32` widened twice, so any drift beyond rounding is a real defect rather
+/// than a formatting artefact.
+const NYQUIST_SUMMARY_TOLERANCE_MS: f64 = 1e-3;
+
+/// A sweep's `nyquist_velocity_ms` must be its per-radial array's minimum.
+///
+/// The scalar is a *reduction* of the array, not a second measurement of the
+/// same thing, so the only way a pack can carry both is if reading one back
+/// reproduces the other.  Checking it here means a writer defect is caught by
+/// the writer's own reader, on the bytes, rather than three lanes downstream
+/// by a consumer that had every right to trust the file.
+fn check_nyquist_scalars_summarise_their_arrays(
+    meta: &PackMeta,
+    payload: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    for sweep in &meta.sweeps {
+        let Some(key) = sweep.nyquist_by_radial_array.as_deref() else {
+            continue;
+        };
+        let entry = meta.arrays.get(key).ok_or_else(|| {
+            boxed_error(format!(
+                "radar sweep pack sweep {} names per-radial Nyquist array {key:?}, which is \
+                 not in the array index",
+                sweep.sweep_index
+            ))
+        })?;
+        if entry.dtype != "<f4" || entry.shape != vec![sweep.radial_count] {
+            return Err(boxed_error(format!(
+                "radar sweep pack sweep {} per-radial Nyquist array {key:?} is {} {:?}, \
+                 expected \"<f4\" [{}]",
+                sweep.sweep_index, entry.dtype, entry.shape, sweep.radial_count
+            )));
+        }
+        if entry.offset + entry.bytes > payload.len() || entry.bytes != sweep.radial_count * 4 {
+            return Err(boxed_error(format!(
+                "radar sweep pack sweep {} per-radial Nyquist array {key:?} declares \
+                 {} bytes at offset {} inside a {}-byte payload",
+                sweep.sweep_index,
+                entry.bytes,
+                entry.offset,
+                payload.len()
+            )));
+        }
+        let lowest = payload[entry.offset..entry.offset + entry.bytes]
+            .chunks_exact(4)
+            .map(|word| f32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .fold(None::<f32>, |acc, value| {
+                Some(acc.map_or(value, |a| a.min(value)))
+            });
+        match (lowest, sweep.nyquist_velocity_ms) {
+            // A present array asserts the originals were kept, so an array
+            // with nothing usable in it is a claim with no content.
+            (None, _) => {
+                return Err(boxed_error(format!(
+                    "radar sweep pack sweep {} carries a per-radial Nyquist array with no \
+                     usable value in it; a present array asserts the originals were kept",
+                    sweep.sweep_index
+                )))
+            }
+            (Some(lowest), None) => {
+                return Err(boxed_error(format!(
+                    "radar sweep pack sweep {} carries per-radial Nyquist values bottoming \
+                     out at {lowest} but declares no nyquist_velocity_ms; the scalar is \
+                     defined as that array's minimum",
+                    sweep.sweep_index
+                )))
+            }
+            (Some(lowest), Some(scalar)) => {
+                if (scalar - lowest as f64).abs() > NYQUIST_SUMMARY_TOLERANCE_MS {
+                    return Err(boxed_error(format!(
+                        "radar sweep pack sweep {} declares nyquist_velocity_ms {scalar} but \
+                         its per-radial array bottoms out at {lowest}; the scalar is defined \
+                         as that array's minimum",
+                        sweep.sweep_index
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn write_pack(path: &Path, meta: &PackMeta, payload: &[u8]) -> Result<usize, Box<dyn Error>> {
@@ -1002,7 +1219,7 @@ mod tests {
                 valid_time: "2023-05-20T20:03:56Z".to_string(),
                 volume_date: 19497,
                 volume_time_ms: 72236000,
-                framing: Framing {
+                framing: Some(Framing {
                     magic: "AR2V0006".to_string(),
                     layout: layout::LDM_BZIP2.to_string(),
                     gzip_wrapped: false,
@@ -1011,7 +1228,8 @@ mod tests {
                     message_count: 0,
                     bytes: 42,
                     source_bytes: 42,
-                },
+                }),
+                assembled: None,
             },
             params: DecodeParams {
                 moments: vec!["REF".to_string(), "VEL".to_string()],

@@ -38,8 +38,25 @@ SWEEPS_SCHEMA = "gpuwm-obs.radar-sweeps.v1"
 #: makes the extension safe rather than merely additive.
 SWEEPS_SCHEMA_CENSOR = "gpuwm-obs.radar-sweeps.v2"
 
-#: Both schemas this reader accepts.
-SWEEPS_SCHEMAS = (SWEEPS_SCHEMA, SWEEPS_SCHEMA_CENSOR)
+#: The same container again, written by ``rw_odim`` from a European
+#: ODIM_H5 polar volume.
+#:
+#: A third string rather than ``v2``, for the reason ``v2`` is not ``v1``:
+#: the censor vocabulary is genuinely wider.  ODIM distinguishes two states
+#: NEXRAD has no word for -- :data:`Censor.NODATA`, the radar did not
+#: measure this gate, and :data:`Censor.SENTINEL_AMBIGUOUS`, the file
+#: declares its two sentinels as the same raw value so a gate holding it
+#: may be either.  A ``v2`` reader handed either code would be reading a
+#: plane it cannot fully account for, and the schema string is what stops
+#: it -- which is why the code vocabulary below is checked per schema and
+#: not once for every censored pack.
+SWEEPS_SCHEMA_ODIM = "gpuwm-obs.radar-sweeps.v3"
+
+#: Every schema this reader accepts.
+SWEEPS_SCHEMAS = (SWEEPS_SCHEMA, SWEEPS_SCHEMA_CENSOR, SWEEPS_SCHEMA_ODIM)
+
+#: Schemas whose moments carry a censor plane beside every moment plane.
+CENSORED_SCHEMAS = (SWEEPS_SCHEMA_CENSOR, SWEEPS_SCHEMA_ODIM)
 
 _MAGIC = b"GPWMRDR1"
 _VERSION = 1
@@ -67,6 +84,44 @@ class Censor:
     RANGE_FOLDED = 2
     #: A radial that carried no such moment; the pack's rectangle fill.
     NOT_COLLECTED = 3
+    #: ODIM ``nodata``: the radar did not measure this gate.  Not clear air
+    #: -- the radar is not reporting an absence of echo, it is reporting an
+    #: absence of looking.  Only a :data:`SWEEPS_SCHEMA_ODIM` pack mints it.
+    NODATA = 4
+    #: ODIM declared ``nodata`` and ``undetect`` as the same raw value, so a
+    #: gate holding it may be either.  Never usable as clear air: reading it
+    #: that way would assimilate "no echo" into cells that may have one.
+    #: Measured at 721,898 gates in one Finnish volume, so this is not a
+    #: corner case.  Only a :data:`SWEEPS_SCHEMA_ODIM` pack mints it.
+    SENTINEL_AMBIGUOUS = 5
+
+
+#: Which censor codes each schema is allowed to have written.
+#:
+#: Per schema rather than one union, because that is the whole point of the
+#: version string: a ``v2`` pack carrying code 4 is not a pack with an extra
+#: code in it, it is a pack whose writer and schema disagree, and reading it
+#: would mean trusting a claim the file itself contradicts.
+_SCHEMA_CENSOR_CODES = {
+    SWEEPS_SCHEMA_CENSOR: (
+        Censor.MEASURED, Censor.BELOW_THRESHOLD,
+        Censor.RANGE_FOLDED, Censor.NOT_COLLECTED),
+    # RANGE_FOLDED is absent deliberately: ODIM has no second-trip state and
+    # rw_odim never mints code 2, so a v3 pack holding one is a defect.
+    SWEEPS_SCHEMA_ODIM: (
+        Censor.MEASURED, Censor.BELOW_THRESHOLD, Censor.NOT_COLLECTED,
+        Censor.NODATA, Censor.SENTINEL_AMBIGUOUS),
+}
+
+#: What granularity the source recorded the Nyquist interval at.
+#:
+#: NEXRAD's Message-31 RAD block carries one per radial; ODIM declares a
+#: single ``/datasetN/how/NI`` for the whole cut.  The dealiaser refuses by
+#: name when the per-radial array it wants is absent, and this is what lets
+#: that refusal distinguish "this file never had per-radial originals" from
+#: "they were dropped".
+NYQUIST_PER_RADIAL = "radial"
+NYQUIST_PER_SWEEP = "sweep"
 
 
 class RadarSweepPackError(ValueError):
@@ -132,6 +187,11 @@ class Sweep:
     #: defaults to False so a pack written before the field existed, and a
     #: sweep built by hand, both read as "nothing known to disagree".
     nyquist_radials_disagree: bool = False
+    #: :data:`NYQUIST_PER_RADIAL`, :data:`NYQUIST_PER_SWEEP`, or ``None``
+    #: for a pack written before the key existed.  ``None`` means the pack
+    #: did not say, which is different from either answer and is kept
+    #: different.
+    nyquist_granularity: str | None = None
 
     @property
     def radial_count(self) -> int:
@@ -216,7 +276,7 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
         raise RadarSweepPackError(
             f"{path.name}: declares schema {schema!r}, expected one of "
             f"{SWEEPS_SCHEMAS!r}")
-    censored = schema == SWEEPS_SCHEMA_CENSOR
+    censored = schema in CENSORED_SCHEMAS
     if meta.get("status") != "READY":
         raise RadarSweepPackError(
             f"{path.name}: status {meta.get('status')!r}, expected 'READY'")
@@ -304,16 +364,17 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
                         f"{path.name}: sweep {entry['sweep_index']} moment "
                         f"{moment['product']} censor plane disagrees with "
                         "its moment plane about which gates are numbers")
-                known = np.array(
-                    [Censor.MEASURED, Censor.BELOW_THRESHOLD,
-                     Censor.RANGE_FOLDED, Censor.NOT_COLLECTED],
-                    dtype=censor.dtype)
+                known = np.array(_SCHEMA_CENSOR_CODES[schema],
+                                 dtype=censor.dtype)
                 unknown = np.setdiff1d(np.unique(censor), known)
                 if unknown.size:
                     raise RadarSweepPackError(
                         f"{path.name}: sweep {entry['sweep_index']} moment "
                         f"{moment['product']} censor plane carries unknown "
-                        f"codes {sorted(int(c) for c in unknown)}")
+                        f"codes "
+                        f"{sorted(int(c) for c in unknown)}, which a "
+                        f"{schema!r} pack does not mint; the schema string "
+                        "and the plane must tell the same story")
             moments[moment["product"]] = Moment(
                 product=str(moment["product"]),
                 unit=str(moment["unit"]),
@@ -331,6 +392,9 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
                 else float(entry["nyquist_velocity_ms"])),
             nyquist_radials_disagree=bool(
                 entry.get("nyquist_radials_disagree", False)),
+            nyquist_granularity=(
+                None if entry.get("nyquist_granularity") is None
+                else str(entry["nyquist_granularity"])),
             start_status=int(entry["start_status"]),
             end_status=int(entry["end_status"]),
             cut_sector=int(entry["cut_sector"]),

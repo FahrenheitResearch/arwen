@@ -677,3 +677,39 @@ tests/test_highres_geog_stack_refusal.py
 # 2.3.3: `gpuwm static` demanded a forcing GRIB and Vtable it never opens,
 # which put a met download in front of every terrain build.
 tests/test_static_needs_no_met_inputs.py
+# 2.3.3: four refusals that were tracebacks, false statements, or absent --
+# the DA polygon message that named a file which was on disk, the case that
+# needs a bundle nothing ships, and the two LES modules whose --help died
+# on a config that is in no wheel.  CPU only.
+tests/test_reachability_refusals.py
+# 2.4.0: every gate this release's seven lanes added, plus the three
+# pre-existing files their fixes rewrote.  They are here for the reason
+# the list exists: each one is a claim about a FRONT DOOR -- what doctor
+# reports, what a refusal offers, what the bundle carries, what a
+# document says a command takes -- and the merge that assembled them
+# broke sixteen of these rows at once while every lane's own tip was
+# green.  Stage 1 is where that gets caught before a tag is spent.
+# All CPU only.
+tests/test_certify_reachability.py
+tests/test_certify_compile_platform.py
+tests/test_dependency_declaration_parity.py
+tests/test_verification_recipe_flags.py
+tests/test_doctor_extras.py
+tests/test_doctor_route_honesty.py
+tests/test_cli_capability_refusals.py
+tests/test_obs_front_doors_are_shipped.py
+tests/test_render_pyshp_front_door.py
+tests/test_bridge_source_rev_stamp.py
+tests/test_obs_battery_ingest.py
+# The European radar route, decoder through front door.
+tests/test_obs_cli_frontdoor.py
+tests/test_obs_opera.py
+tests/test_obs_radar_sites.py
+tests/test_obs_superob_odim.py
+tests/test_obs_surface_networks.py
+tests/test_obs_sweeps_odim_v3.py
+# Not a 2.4.0 addition: it predates this release and was never on the
+# list, and its control arm inherited PYTHONSAFEPATH from the very law
+# that says how to run it, so it failed whenever it was run correctly.
+# Fixed here, and listed so it stays fixed.
+tests/test_chain_stage_env.py

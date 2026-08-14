@@ -59,6 +59,7 @@ import os
 import sys
 from pathlib import Path
 
+from gpuwm import capabilities
 from gpuwm.adapt import register_cli as adapt_register_cli
 from gpuwm.bridge_assets import register_cli as bridge_assets_register_cli
 from gpuwm.certify.cli import register_cli as certify_register_cli
@@ -79,6 +80,7 @@ from gpuwm.geog_assets import register_cli as geog_register_cli
 from gpuwm.go_cli import register_cli as go_register_cli
 from gpuwm.ingest.preflight import register_cli as ingest_register_cli
 from gpuwm.multi_run import register_cli as multi_run_register_cli
+from gpuwm.obs.cli import register_cli as obs_register_cli
 from gpuwm.render import register_cli as render_register_cli
 from gpuwm.report_bundle import register_cli as report_register_cli
 from gpuwm.runplan import register_cli as run_plan_register_cli
@@ -276,6 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     enprod_register_cli(sub)
     downscale_register_cli(sub)
     doctor_register_cli(sub)
+    obs_register_cli(sub)
     table_assets_register_cli(sub)
     bridge_assets_register_cli(sub)
     setup_register_cli(sub)
@@ -451,6 +454,20 @@ def main(argv: list[str] | None = None) -> int:
         from gpuwm.provenance_gate import announce
 
         announce(f"gpuwm {args.command}")
+        # THE front-door capability preflight, for every subcommand, in
+        # one place.  After argparse (so `--help` is never refused) and
+        # before dispatch (so nothing has fetched, spawned or allocated
+        # yet).  A subcommand cannot forget to call it and cannot grow a
+        # private copy that drifts -- which is precisely how `gpuwm
+        # verify` came to print a clean CuPy refusal while `gpuwm run`,
+        # on the same install, relayed a raw traceback out of a worker
+        # it had already spawned.
+        #
+        # `go --dry-run` is exempt and says so on its own leg: a dry run
+        # spends nothing and prints the commands a reader would type, so
+        # refusing it would block the one gesture that costs nothing.
+        if not (args.command == "go" and getattr(args, "dry_run", False)):
+            capabilities.require_for_command(args.command)
         return _dispatch(args)
     except KeyboardInterrupt:
         # Ctrl-C.  Every subcommand gets the same bounded contract: one
@@ -466,31 +483,26 @@ def main(argv: list[str] | None = None) -> int:
               "here. Any partial output carries no completion receipt.",
               file=sys.stderr)
         return _INTERRUPT_EXIT_CODE
+    except capabilities.CapabilityMissing as error:
+        # The front-door preflight, and every deeper door that raises the
+        # same refusal.  The message already names the command, because
+        # the `python -m` doors -- which have no prefixing boundary --
+        # print the identical string.
+        print(render(str(error), explain=explain_enabled(args),
+                     command=error.command), file=sys.stderr)
+        return 2
     except ModuleNotFoundError as error:
-        # The base install ships no GPU runtime.  A missing cupy is a
-        # documented install gap with one remedy, not a traceback.
-        if (error.name or "").split(".")[0] in ("cupy", "cupy_backends"):
-            print(
-                f"gpuwm {args.command}: this command needs the GPU "
-                "runtime (CuPy), which the base install does not "
-                "include.\n"
-                # One command per line, alternatives as comments: the
-                # old single line put a parenthesised second option on
-                # the same physical line as the first, so pasting the
-                # whole remedy was a shell error in either shell.  This
-                # is doctor's form, which this message predates.
-                #
-                # Neither extra leads.  CuPy ships one wheel per CUDA
-                # major, this message cannot see which major the box
-                # serves, and the version that led with the cu12 extra
-                # was read by CUDA-13 owners as the recommendation.
-                "  # CuPy ships one wheel per CUDA major; pick yours:\n"
-                "  remedy: pip install 'gpuwm[gpu-cu12]'\n"
-                "  #   ... on a box whose CUDA is 13-only, instead:\n"
-                "  #   pip install 'gpuwm[gpu-cu13]'\n"
-                "  # `gpuwm doctor` reads the major off the driver, names\n"
-                "  # the matching extra, and checks the runtime estate.",
-                file=sys.stderr)
+        # A missing dependency is a documented install gap with a
+        # remedy, not a traceback -- and the remedy is DERIVED from the
+        # module that was missing.  The version this replaces hard-coded
+        # CuPy: every other missing module (wrf-rust, scipy, pyshp)
+        # skipped the branch and left as a raw traceback.
+        requirement = capabilities.requirement_for_module(error.name)
+        if requirement is not None:
+            print(render(capabilities.refusal(f"gpuwm {args.command}",
+                                              requirement),
+                         explain=explain_enabled(args),
+                         command=f"gpuwm {args.command}"), file=sys.stderr)
             return 2
         raise
     except ValueError as error:
@@ -527,7 +539,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except RuntimeError as error:
         if args.command in ("fetch", "stream", "fetch-geog", "fetch-tables",
-                            "fetch-bridges", "report"):
+                            "fetch-bridges", "obs", "report"):
             # fetch-family RuntimeErrors are operational outcomes
             # with a stated remedy (no complete latest cycle on the
             # mirrors; a --wait-for window that timed out with its
@@ -540,20 +552,60 @@ def main(argv: list[str] | None = None) -> int:
             # with the remedy.  Without this it printed both layers
             # glued by the explain sentinel inside a traceback, and
             # exited 1 where its own documentation promised a
-            # refusal.  Scoped to these commands: elsewhere a
+            # refusal.  `obs` is here for a third instance of the
+            # same shape: every RuntimeError it can raise comes from
+            # `gpuwm.obs.frontdoor.FrontDoor`, which is either "the
+            # decoder is not built, here is the remedy" or a refusal
+            # the decoder itself printed and this layer relayed --
+            # a directory holding two nominal times, a pack whose
+            # schema is not the one this reader knows.  All are
+            # operational outcomes with a next action in the message,
+            # and a traceback buries the sentence that carries it.
+            # Scoped to these commands: elsewhere a
             # RuntimeError (including CUDA runtime failures) must
             # keep its traceback.
             print(f"gpuwm {args.command}: "
                   + _layer(error, args), file=sys.stderr)
             return 2
+        # A supervised run relays its worker's failure as a
+        # SupervisorError, and a worker that could not import a
+        # dependency is an install gap wearing a RuntimeError's clothes.
+        # Named here with the remedy DERIVED from the module the worker
+        # said was missing; anything this registry does not recognise
+        # keeps its traceback, because a run that crashed for a real
+        # reason must not be dressed up as a usage error.
+        remedy = capabilities.remedy_for_error(error)
+        if remedy is not None:
+            print(f"gpuwm {args.command}: the run could not start because "
+                  f"a dependency is missing.\n  {error}\n" + remedy,
+                  file=sys.stderr)
+            return 2
         raise
+
+
+def case_door(record: dict) -> str:
+    """The command that runs this case.
+
+    `gpuwm cases` advertises every registered case; `gpuwm verify`
+    accepts only those carrying the `verify` capability, which is ten of
+    twenty-one.  The other eleven are reachable, but only through
+    `python -m gpuwm.verify.cases.<name>`, a form that appeared once in
+    all of the user-facing documentation.  Printing the door beside each
+    case is what makes the difference visible in the listing itself
+    rather than in a document a reader has to already know about.
+    """
+
+    name = record["name"]
+    if "verify" in record.get("capabilities", ()):
+        return f"gpuwm verify {name}"
+    return f"python -m gpuwm.verify.cases.{name}"
 
 
 def _dispatch(args) -> int:
     if args.command in ("check", "fetch", "stream", "fetch-geog", "domain", "render",
                         "enprod", "downscale", "doctor", "fetch-tables",
                         "fetch-bridges", "setup", "go", "adapt", "certify",
-                        "dual-run", "multi-run", "report", "run-plan",
+                        "dual-run", "multi-run", "obs", "report", "run-plan",
                         "update", "version"):
         return args.func(args)
 
@@ -561,11 +613,27 @@ def _dispatch(args) -> int:
         records = cases.manifest()
         if args.json:
             import json
+            for record in records:
+                record = record  # manifest records are already dicts
+                record["door"] = case_door(record)
             print(json.dumps(records, indent=2, sort_keys=True))
         else:
+            # The DOOR, not only the capability tags.  This listing
+            # advertises 21 cases while `gpuwm verify` accepts 10, and a
+            # reader had no way to tell which was which or how to reach
+            # the other 11: `script` is a tag, not an instruction.  Now
+            # every row says what to type.
+            width = max((len(r["name"]) for r in records), default=24)
             for record in records:
-                print(f"{record['name']:<24} "
-                      f"{','.join(record['capabilities'])}")
+                print(f"{record['name']:<{width}}  "
+                      f"{','.join(record['capabilities']):<14}  "
+                      f"{case_door(record)}")
+            print()
+            print("The door is the command that runs the case.  "
+                  "`gpuwm verify` grades a case against its registered "
+                  "GATES and only cases carrying the `verify` capability "
+                  "have any; a `script` case is run through its module, "
+                  "which prints its own result.")
         return 0
 
     if args.command == "verify":

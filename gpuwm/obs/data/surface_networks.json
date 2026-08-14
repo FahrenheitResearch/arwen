@@ -1,0 +1,2677 @@
+{
+ "schema": "gpuwm-obs.surface-networks.v1",
+ "source_url": "https://mesonet.agron.iastate.edu/geojson/networks.geojson",
+ "source_sha256": "44464df9b198755f284607d2515c37fede0b13961157dd1e6e3151fc84bdb22d",
+ "source_bytes": 148655,
+ "station_list_template": "https://mesonet.agron.iastate.edu/geojson/network/{network}.geojson",
+ "frozen_at": "2026-08-12T19:56:59",
+ "network_suffix": "_ASOS",
+ "edge_pad_deg": 0.1,
+ "extent_basis": "measured over each network's own station positions, with the shortest containing longitude interval so an antimeridian network does not span the globe, padded by edge_pad_deg on every side because the extent is a candidate screen that must never under-include",
+ "network_count": 266,
+ "station_count": 7521,
+ "networks_without_stations": [],
+ "networks_unreachable": [],
+ "networks": [
+  {
+   "id": "AE__ASOS",
+   "name": "United Arab Emirates ASOS",
+   "stations": 16,
+   "west": 52.22,
+   "south": 23.4237,
+   "east": 56.424,
+   "north": 25.7135,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AF__ASOS",
+   "name": "Afghanistan ASOS",
+   "stations": 52,
+   "west": 62.0667,
+   "south": 30.9,
+   "east": 71.6,
+   "north": 37.2195,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AG__ASOS",
+   "name": "Antigua and Barbuda ASOS",
+   "stations": 3,
+   "west": -62.6899,
+   "south": 17.0167,
+   "east": -61.6833,
+   "north": 17.7236,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AI__ASOS",
+   "name": "Anguilla ASOS",
+   "stations": 1,
+   "west": -63.1551,
+   "south": 18.1048,
+   "east": -62.9551,
+   "north": 18.3048,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AK_ASOS",
+   "name": "Alaska ASOS",
+   "stations": 194,
+   "west": 174.0169,
+   "south": 51.778,
+   "east": 228.5278,
+   "north": 71.3826,
+   "crosses_antimeridian": true
+  },
+  {
+   "id": "AL_ASOS",
+   "name": "Alabama ASOS",
+   "stations": 53,
+   "west": -88.3456,
+   "south": 28.95,
+   "east": -85.0289,
+   "north": 34.96,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AL__ASOS",
+   "name": "Albania ASOS",
+   "stations": 2,
+   "west": 19.6165,
+   "south": 41.3185,
+   "east": 20.5159,
+   "north": 42.1355,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AM__ASOS",
+   "name": "Armenia ASOS",
+   "stations": 3,
+   "west": 43.7593,
+   "south": 40.0473,
+   "east": 44.6297,
+   "north": 40.8504,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AN__ASOS",
+   "name": "Netherlands Antilles ASOS",
+   "stations": 4,
+   "west": -69.0598,
+   "south": 12.033,
+   "east": -62.8794,
+   "north": 18.141,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AO__ASOS",
+   "name": "Angola ASOS",
+   "stations": 19,
+   "west": 12.05,
+   "south": -17.1435,
+   "east": 20.9185,
+   "north": -5.45,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AQ__ASOS",
+   "name": "Antarctica ASOS",
+   "stations": 7,
+   "west": 166.4246,
+   "south": -90.0,
+   "east": 360.1,
+   "north": -67.4669,
+   "crosses_antimeridian": true
+  },
+  {
+   "id": "AR_ASOS",
+   "name": "Arkansas ASOS",
+   "stations": 43,
+   "west": -94.59,
+   "south": 33.121,
+   "east": -89.7332,
+   "north": 36.5042,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AR__ASOS",
+   "name": "Argentina ASOS",
+   "stations": 61,
+   "west": -72.3217,
+   "south": -64.34,
+   "east": -54.3734,
+   "north": -22.55,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AS_ASOS",
+   "name": "American Samoa ASOS",
+   "stations": 1,
+   "west": -170.8105,
+   "south": -14.431,
+   "east": -170.6105,
+   "north": -14.231,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AT__ASOS",
+   "name": "Austria ASOS",
+   "stations": 16,
+   "west": -61.4483,
+   "south": 10.4933,
+   "east": 16.6708,
+   "north": 48.5467,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AU__ASOS",
+   "name": "Australia ASOS",
+   "stations": 108,
+   "west": 96.7344,
+   "south": -45.1211,
+   "east": 168.8392,
+   "north": -0.4475,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AW__ASOS",
+   "name": "Aruba ASOS",
+   "stations": 2,
+   "west": -70.1152,
+   "south": 12.4014,
+   "east": -69.9152,
+   "north": 12.6014,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AZ_ASOS",
+   "name": "Arizona ASOS",
+   "stations": 50,
+   "west": -114.706,
+   "south": 31.3208,
+   "east": -108.9614,
+   "north": 37.0599,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "AZ__ASOS",
+   "name": "Azerbaijan ASOS",
+   "stations": 14,
+   "west": 45.2761,
+   "south": 38.6464,
+   "east": 50.1467,
+   "north": 41.6622,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BA__ASOS",
+   "name": "Bosnia and Herzegovina ASOS",
+   "stations": 2,
+   "west": 17.1167,
+   "south": 43.25,
+   "east": 17.9,
+   "north": 44.8833,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BB__ASOS",
+   "name": "Barbados ASOS",
+   "stations": 1,
+   "west": -59.5925,
+   "south": 12.9746,
+   "east": -59.3925,
+   "north": 13.1746,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BD__ASOS",
+   "name": "Bangladesh ASOS",
+   "stations": 3,
+   "west": 90.2978,
+   "south": 22.1667,
+   "east": 91.9696,
+   "north": 25.0595,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BE__ASOS",
+   "name": "Belgium ASOS",
+   "stations": 12,
+   "west": 2.5528,
+   "south": 50.1433,
+   "east": 6.2819,
+   "north": 51.2989,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BF__ASOS",
+   "name": "Burkina Faso ASOS",
+   "stations": 2,
+   "west": -4.4,
+   "south": 11.0667,
+   "east": -1.4124,
+   "north": 12.4532,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BG__ASOS",
+   "name": "Bulgaria ASOS",
+   "stations": 9,
+   "west": 23.3158,
+   "south": 42.0333,
+   "east": 28.2813,
+   "north": 43.5514,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BH__ASOS",
+   "name": "Bahrain ASOS",
+   "stations": 1,
+   "west": 50.5336,
+   "south": 26.1708,
+   "east": 50.7336,
+   "north": 26.3708,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BI__ASOS",
+   "name": "Burundi ASOS",
+   "stations": 1,
+   "west": 29.2185,
+   "south": -3.424,
+   "east": 29.4185,
+   "north": -3.224,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BJ__ASOS",
+   "name": "Benin ASOS",
+   "stations": 2,
+   "west": 1.9667,
+   "south": 6.2572,
+   "east": 2.4844,
+   "north": 7.2667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BM__ASOS",
+   "name": "Bermuda ASOS",
+   "stations": 1,
+   "west": -64.7787,
+   "south": 32.264,
+   "east": -64.5787,
+   "north": 32.464,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BO__ASOS",
+   "name": "Bolivia ASOS",
+   "stations": 35,
+   "west": -68.883,
+   "south": -22.0609,
+   "east": -57.7206,
+   "north": -10.7881,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BR__ASOS",
+   "name": "Brazil ASOS",
+   "stations": 150,
+   "west": -72.7667,
+   "south": -32.1167,
+   "east": -32.3233,
+   "north": 3.9333,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BS__ASOS",
+   "name": "Bahamas ASOS",
+   "stations": 10,
+   "west": -78.7956,
+   "south": 20.875,
+   "east": -71.0423,
+   "north": 26.6587,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BT__ASOS",
+   "name": "Bhutan ASOS",
+   "stations": 1,
+   "west": 89.3246,
+   "south": 27.3032,
+   "east": 89.5246,
+   "north": 27.5032,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BW__ASOS",
+   "name": "Botswana ASOS",
+   "stations": 7,
+   "west": 23.3275,
+   "south": -24.6552,
+   "east": 27.9288,
+   "north": -17.7329,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BY__ASOS",
+   "name": "Belarus ASOS",
+   "stations": 8,
+   "west": 23.5858,
+   "south": 52.0167,
+   "east": 31.1167,
+   "north": 55.2667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "BZ__ASOS",
+   "name": "Belize ASOS",
+   "stations": 1,
+   "west": -88.4082,
+   "south": 17.4391,
+   "east": -88.2082,
+   "north": 17.6391,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_AB_ASOS",
+   "name": "Alberta CA ASOS",
+   "stations": 96,
+   "west": -119.845,
+   "south": 48.95,
+   "east": -109.95,
+   "north": 58.8667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_ASOS",
+   "name": "California ASOS",
+   "stations": 161,
+   "west": -124.338,
+   "south": 32.4631,
+   "east": -114.5233,
+   "north": 41.8837,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_BC_ASOS",
+   "name": "British Columbia CA ASOS",
+   "stations": 96,
+   "west": -133.1583,
+   "south": 48.198,
+   "east": -114.7838,
+   "north": 59.0333,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_MB_ASOS",
+   "name": "Manitoba CA ASOS",
+   "stations": 29,
+   "west": -101.7817,
+   "south": 49.0878,
+   "east": -93.965,
+   "north": 58.8392,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_NB_ASOS",
+   "name": "New Brunswick CA ASOS",
+   "stations": 14,
+   "west": -68.4244,
+   "south": 44.9667,
+   "east": -64.5878,
+   "north": 48.09,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_NF_ASOS",
+   "name": "Newfoundland CA ASOS",
+   "stations": 29,
+   "west": -66.9742,
+   "south": 46.56,
+   "east": -52.6428,
+   "north": 60.085,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_NS_ASOS",
+   "name": "Nova Scotia CA ASOS",
+   "stations": 27,
+   "west": -66.4467,
+   "south": 43.7308,
+   "east": -59.9094,
+   "north": 47.3328,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_NT_ASOS",
+   "name": "Northwest Territories CA ASOS",
+   "stations": 45,
+   "west": -135.5439,
+   "south": 59.9261,
+   "east": -110.5167,
+   "north": 72.1,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_NU_ASOS",
+   "name": "Nunavut Canada ASOS",
+   "stations": 52,
+   "west": -119.3189,
+   "south": 56.4361,
+   "east": -61.2833,
+   "north": 82.6178,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_ON_ASOS",
+   "name": "Ontario CA ASOS",
+   "stations": 97,
+   "west": -94.4653,
+   "south": 41.7333,
+   "east": -74.7833,
+   "north": 56.1189,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_PE_ASOS",
+   "name": "Prince Edward Island Canada ASOS",
+   "stations": 7,
+   "west": -64.0986,
+   "south": 46.1333,
+   "east": -61.8667,
+   "north": 47.1581,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_QC_ASOS",
+   "name": "Quebec CA ASOS",
+   "stations": 122,
+   "west": -79.97,
+   "south": 44.75,
+   "east": -57.0853,
+   "north": 62.5173,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_SK_ASOS",
+   "name": "Saskatchewan CA ASOS",
+   "stations": 41,
+   "west": -110.0667,
+   "south": 48.95,
+   "east": -102.3617,
+   "north": 59.6667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CA_YT_ASOS",
+   "name": "Yukon Canada ASOS",
+   "stations": 15,
+   "west": -140.9675,
+   "south": 60.0164,
+   "east": -128.7225,
+   "north": 69.6948,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CD__ASOS",
+   "name": "Democratic Republic of the Congo ASOS",
+   "stations": 20,
+   "west": 12.5167,
+   "south": -11.7667,
+   "east": 29.3385,
+   "north": 3.3833,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CF__ASOS",
+   "name": "Central African Republic ASOS",
+   "stations": 5,
+   "west": 15.5378,
+   "south": 4.15,
+   "east": 22.9333,
+   "north": 7.4141,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CG__ASOS",
+   "name": "Congo ASOS",
+   "stations": 10,
+   "west": 11.7866,
+   "south": -4.916,
+   "east": 18.1667,
+   "north": 1.7167,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CH__ASOS",
+   "name": "Switzerland ASOS",
+   "stations": 20,
+   "west": 6.0278,
+   "south": 45.9015,
+   "east": 9.9789,
+   "north": 47.585,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CI__ASOS",
+   "name": "Ivory Coast ASOS",
+   "stations": 13,
+   "west": -7.6667,
+   "south": 4.3167,
+   "east": -2.68,
+   "north": 9.6,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CK__ASOS",
+   "name": "Cook Islands ASOS",
+   "stations": 10,
+   "west": -165.9454,
+   "south": -21.996,
+   "east": -157.2375,
+   "north": -10.2767,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CL__ASOS",
+   "name": "Chile ASOS",
+   "stations": 41,
+   "west": -109.5272,
+   "south": -62.2908,
+   "east": -58.8867,
+   "north": -18.2514,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CM__ASOS",
+   "name": "Cameroon ASOS",
+   "stations": 9,
+   "west": 9.6195,
+   "south": 3.55,
+   "east": 14.3574,
+   "north": 10.5514,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CN__ASOS",
+   "name": "China ASOS",
+   "stations": 110,
+   "west": 75.8833,
+   "south": 18.2029,
+   "east": 130.565,
+   "north": 50.2716,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CO_ASOS",
+   "name": "Colorado ASOS",
+   "stations": 76,
+   "west": -108.8593,
+   "south": 37.0515,
+   "east": -102.141,
+   "north": 40.8503,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CO__ASOS",
+   "name": "Colombia ASOS",
+   "stations": 54,
+   "west": -81.8112,
+   "south": -4.2667,
+   "east": -67.4,
+   "north": 13.4569,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CR__ASOS",
+   "name": "Costa Rica ASOS",
+   "stations": 5,
+   "west": -85.6444,
+   "south": 9.857,
+   "east": -82.922,
+   "north": 10.6933,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CT_ASOS",
+   "name": "Connecticut ASOS",
+   "stations": 11,
+   "west": -73.58,
+   "south": 41.0583,
+   "east": -71.95,
+   "north": 42.0381,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CU__ASOS",
+   "name": "Cuba ASOS",
+   "stations": 20,
+   "west": -82.8833,
+   "south": 19.8,
+   "east": -74.4062,
+   "north": 23.1328,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CV__ASOS",
+   "name": "Cape Verde ASOS",
+   "stations": 4,
+   "west": -25.1553,
+   "south": 14.8245,
+   "east": -22.7889,
+   "north": 16.9332,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CY__ASOS",
+   "name": "Cyprus ASOS",
+   "stations": 6,
+   "west": 32.3847,
+   "south": 34.4904,
+   "east": 33.8358,
+   "north": 35.3526,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "CZ__ASOS",
+   "name": "Czech Republic ASOS",
+   "stations": 14,
+   "west": 12.8098,
+   "south": 48.9294,
+   "east": 18.2208,
+   "north": 50.8683,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "DE_ASOS",
+   "name": "Delaware ASOS",
+   "stations": 4,
+   "west": -75.7008,
+   "south": 38.5892,
+   "east": -75.2589,
+   "north": 39.7728,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "DE__ASOS",
+   "name": "Germany ASOS",
+   "stations": 92,
+   "west": 5.9323,
+   "south": 47.5713,
+   "east": 14.2524,
+   "north": 55.0132,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "DJ__ASOS",
+   "name": "Djibouti ASOS",
+   "stations": 1,
+   "west": 43.0595,
+   "south": 11.4473,
+   "east": 43.2595,
+   "north": 11.6473,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "DK__ASOS",
+   "name": "Denmark ASOS",
+   "stations": 24,
+   "west": -7.3847,
+   "south": 54.8622,
+   "east": 14.85,
+   "north": 62.1664,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "DM__ASOS",
+   "name": "Dominica ASOS",
+   "stations": 4,
+   "west": -61.6164,
+   "south": 14.491,
+   "east": -60.9032,
+   "north": 16.3639,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "DO__ASOS",
+   "name": "Dominican Republic ASOS",
+   "stations": 11,
+   "west": -71.2204,
+   "south": 18.1517,
+   "east": -68.2634,
+   "north": 19.85,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "DZ__ASOS",
+   "name": "Algeria ASOS",
+   "stations": 46,
+   "west": -8.2671,
+   "south": 6.0431,
+   "east": 31.7756,
+   "north": 36.9222,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "EC__ASOS",
+   "name": "Ecuador ASOS",
+   "stations": 24,
+   "west": -90.3658,
+   "south": -4.0958,
+   "east": -76.7693,
+   "north": 1.0785,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "EE__ASOS",
+   "name": "Estonia ASOS",
+   "stations": 6,
+   "west": 22.4095,
+   "south": 58.1299,
+   "east": 26.7906,
+   "north": 59.5133,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "EG__ASOS",
+   "name": "Egypt ASOS",
+   "stations": 27,
+   "west": 27.1217,
+   "south": 22.2758,
+   "east": 34.8781,
+   "north": 31.4253,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ES__ASOS",
+   "name": "Spain ASOS",
+   "stations": 67,
+   "west": -17.9889,
+   "south": 27.7189,
+   "east": 5.0167,
+   "north": 43.6669,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ET__ASOS",
+   "name": "Ethiopia ASOS",
+   "stations": 6,
+   "west": 37.2216,
+   "south": 8.8779,
+   "east": 41.9573,
+   "north": 15.3918,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "FI__ASOS",
+   "name": "Finland ASOS",
+   "stations": 28,
+   "west": 19.7982,
+   "south": 60.0222,
+   "east": 29.7333,
+   "north": 68.7073,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "FJ__ASOS",
+   "name": "Fiji ASOS",
+   "stations": 13,
+   "west": 172.8167,
+   "south": -19.1581,
+   "east": 181.2838,
+   "north": 1.45,
+   "crosses_antimeridian": true
+  },
+  {
+   "id": "FK__ASOS",
+   "name": "Falkland Islands ASOS",
+   "stations": 2,
+   "west": -58.5484,
+   "south": -51.92,
+   "east": -57.6776,
+   "north": -51.5857,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "FL_ASOS",
+   "name": "Florida ASOS",
+   "stations": 113,
+   "west": -87.418,
+   "south": 24.4561,
+   "east": -79.9848,
+   "north": 30.9458,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "FM__ASOS",
+   "name": "Federated States of Micronesia ASOS",
+   "stations": 7,
+   "west": 134.3768,
+   "south": 5.2524,
+   "east": 163.0557,
+   "north": 9.5833,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "FR__ASOS",
+   "name": "France ASOS",
+   "stations": 127,
+   "west": -56.2731,
+   "south": 41.4006,
+   "east": 9.5853,
+   "north": 51.0621,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GA_ASOS",
+   "name": "Georgia ASOS",
+   "stations": 93,
+   "west": -85.3903,
+   "south": 30.6825,
+   "east": -81.046,
+   "north": 34.9544,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GA__ASOS",
+   "name": "Gabon ASOS",
+   "stations": 10,
+   "west": 8.6544,
+   "south": -1.9667,
+   "east": 13.538,
+   "north": 2.1756,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GB__ASOS",
+   "name": "Great Britain ASOS",
+   "stations": 112,
+   "west": -7.4628,
+   "south": 49.1096,
+   "east": 1.8228,
+   "north": 60.5328,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GD__ASOS",
+   "name": "Grenada ASOS",
+   "stations": 1,
+   "west": -61.8862,
+   "south": 11.9042,
+   "east": -61.6862,
+   "north": 12.1042,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GE__ASOS",
+   "name": "Georgia (Country) ASOS",
+   "stations": 6,
+   "west": 41.5,
+   "south": 41.5333,
+   "east": 45.0547,
+   "north": 43.169,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GH__ASOS",
+   "name": "Ghana ASOS",
+   "stations": 5,
+   "west": -46.165,
+   "south": 4.7961,
+   "east": -0.0668,
+   "north": 60.8658,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GI__ASOS",
+   "name": "Gibraltar ASOS",
+   "stations": 1,
+   "west": -5.4497,
+   "south": 36.0512,
+   "east": -5.2497,
+   "north": 36.2512,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GL__ASOS",
+   "name": "Greenland ASOS",
+   "stations": 14,
+   "west": -69.3167,
+   "south": 61.0605,
+   "east": -22.55,
+   "north": 77.5667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GM__ASOS",
+   "name": "Gambia ASOS",
+   "stations": 1,
+   "west": -16.7333,
+   "south": 13.1,
+   "east": -16.5333,
+   "north": 13.3,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GN__ASOS",
+   "name": "Guinea ASOS",
+   "stations": 4,
+   "west": -13.712,
+   "south": 7.6333,
+   "east": -8.733,
+   "north": 11.4261,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GP__ASOS",
+   "name": "Guadeloupe ASOS",
+   "stations": 1,
+   "west": -62.944,
+   "south": 17.8044,
+   "east": -62.744,
+   "north": 18.0044,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GQ__ASOS",
+   "name": "Equatorial Guinea ASOS",
+   "stations": 2,
+   "west": 8.6667,
+   "south": 1.8055,
+   "east": 9.9057,
+   "north": 3.85,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GR__ASOS",
+   "name": "Greece ASOS",
+   "stations": 35,
+   "west": 19.8167,
+   "south": 35.2397,
+   "east": 28.1862,
+   "north": 41.0133,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GT__ASOS",
+   "name": "Guatemala ASOS",
+   "stations": 14,
+   "west": -92.3459,
+   "south": 13.6455,
+   "east": -88.4838,
+   "north": 17.1686,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GU_ASOS",
+   "name": "Guam ASOS",
+   "stations": 5,
+   "west": 144.6972,
+   "south": 13.3839,
+   "east": 166.7419,
+   "north": 19.38,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GW__ASOS",
+   "name": "Guinea-Bissau ASOS",
+   "stations": 1,
+   "west": -15.7537,
+   "south": 11.7948,
+   "east": -15.5537,
+   "north": 11.9948,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "GY__ASOS",
+   "name": "Guyana ASOS",
+   "stations": 7,
+   "west": -60.6,
+   "south": 3.2728,
+   "east": -52.2653,
+   "north": 8.3,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "HI_ASOS",
+   "name": "Hawaii ASOS",
+   "stations": 17,
+   "west": -177.4756,
+   "south": 19.6203,
+   "east": -154.9485,
+   "north": 28.3082,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "HK__ASOS",
+   "name": "Hong Kong ASOS",
+   "stations": 1,
+   "west": 113.8219,
+   "south": 22.2094,
+   "east": 114.0219,
+   "north": 22.4094,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "HN__ASOS",
+   "name": "Honduras ASOS",
+   "stations": 20,
+   "west": -88.8833,
+   "south": 13.0794,
+   "east": -83.1972,
+   "north": 16.5667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "HR__ASOS",
+   "name": "Croatia ASOS",
+   "stations": 9,
+   "west": 13.8319,
+   "south": 42.4628,
+   "east": 18.9102,
+   "north": 45.8322,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "HT__ASOS",
+   "name": "Haiti ASOS",
+   "stations": 3,
+   "west": -72.456,
+   "south": 18.4213,
+   "east": -72.099,
+   "north": 19.8278,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "HU__ASOS",
+   "name": "Hungary ASOS",
+   "stations": 11,
+   "west": 17.0606,
+   "south": 45.8909,
+   "east": 21.79,
+   "north": 48.0795,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IA_ASOS",
+   "name": "Iowa ASOS",
+   "stations": 62,
+   "west": -96.4795,
+   "south": 40.3615,
+   "east": -90.2328,
+   "north": 43.5008,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ID_ASOS",
+   "name": "Idaho ASOS",
+   "stations": 30,
+   "west": -117.1154,
+   "south": 42.0069,
+   "east": -110.9979,
+   "north": 48.826,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ID__ASOS",
+   "name": "Indonesia ASOS",
+   "stations": 39,
+   "west": 95.32,
+   "south": -10.2716,
+   "east": 140.5833,
+   "north": 5.617,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IE__ASOS",
+   "name": "Ireland ASOS",
+   "stations": 10,
+   "west": -9.6238,
+   "south": 51.7481,
+   "east": -6.1977,
+   "north": 55.1442,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IL_ASOS",
+   "name": "Illinois ASOS",
+   "stations": 61,
+   "west": -91.2946,
+   "south": 36.9647,
+   "east": -87.4295,
+   "north": 42.5255,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IL__ASOS",
+   "name": "Israel ASOS",
+   "stations": 7,
+   "west": 34.6822,
+   "south": 29.4613,
+   "east": 35.6719,
+   "north": 33.081,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IN_ASOS",
+   "name": "Indiana ASOS",
+   "stations": 54,
+   "west": -87.6205,
+   "south": 37.9441,
+   "east": -84.7428,
+   "north": 41.82,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IN__ASOS",
+   "name": "India ASOS",
+   "stations": 145,
+   "west": 69.5572,
+   "south": 6.913,
+   "east": 96.234,
+   "north": 34.7526,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IO__ASOS",
+   "name": "British Indian Ocean Territory ASOS",
+   "stations": 1,
+   "west": 120.2667,
+   "south": -2.65,
+   "east": 120.4667,
+   "north": -2.45,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IQ__ASOS",
+   "name": "Iraq ASOS",
+   "stations": 34,
+   "west": 42.3,
+   "south": 30.4167,
+   "east": 47.8833,
+   "north": 36.4058,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IR__ASOS",
+   "name": "Iran ASOS",
+   "stations": 78,
+   "west": 44.3333,
+   "south": 25.1833,
+   "east": 61.6395,
+   "north": 39.7036,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IS__ASOS",
+   "name": "Iceland ASOS",
+   "stations": 13,
+   "west": -23.6462,
+   "south": 63.2998,
+   "east": -14.3025,
+   "north": 66.6458,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "IT__ASOS",
+   "name": "Italy ASOS",
+   "stations": 108,
+   "west": 7.2687,
+   "south": 35.3981,
+   "east": 18.4422,
+   "north": 46.9333,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "JM__ASOS",
+   "name": "Jamaica ASOS",
+   "stations": 2,
+   "west": -78.0125,
+   "south": 17.8357,
+   "east": -76.6875,
+   "north": 18.604,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "JO__ASOS",
+   "name": "Jordan ASOS",
+   "stations": 3,
+   "west": 34.9181,
+   "south": 29.5116,
+   "east": 36.0932,
+   "north": 32.0727,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "JP__ASOS",
+   "name": "Japan ASOS",
+   "stations": 119,
+   "west": 122.878,
+   "south": 24.2367,
+   "east": 145.06,
+   "north": 45.5044,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KE__ASOS",
+   "name": "Kenya ASOS",
+   "stations": 32,
+   "west": 34.6349,
+   "south": -4.1333,
+   "east": 41.9544,
+   "north": 4.0386,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KG__ASOS",
+   "name": "Kyrgyzstan ASOS",
+   "stations": 2,
+   "west": 72.69,
+   "south": 40.5083,
+   "east": 72.8933,
+   "north": 40.71,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KH__ASOS",
+   "name": "Cambodia ASOS",
+   "stations": 6,
+   "west": 103.124,
+   "south": 10.482,
+   "east": 105.0319,
+   "north": 13.5106,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KI__ASOS",
+   "name": "Kiribati ASOS",
+   "stations": 1,
+   "west": 172.82,
+   "south": 1.25,
+   "east": 173.02,
+   "north": 1.45,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KM__ASOS",
+   "name": "Comoros ASOS",
+   "stations": 14,
+   "west": 43.1718,
+   "south": -25.1381,
+   "east": 55.6286,
+   "north": -11.4337,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KN__ASOS",
+   "name": "Saint Kitts and Nevis ASOS",
+   "stations": 1,
+   "west": -62.7833,
+   "south": 17.2,
+   "east": -62.5833,
+   "north": 17.4,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KP__ASOS",
+   "name": "North Korea",
+   "stations": 1,
+   "west": 125.5702,
+   "south": 39.1241,
+   "east": 125.7702,
+   "north": 39.3241,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KR__ASOS",
+   "name": "South Korea ASOS",
+   "stations": 53,
+   "west": 124.5667,
+   "south": 33.1939,
+   "east": 129.5205,
+   "north": 38.5667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KS_ASOS",
+   "name": "Kansas ASOS",
+   "stations": 67,
+   "west": -101.98,
+   "south": 36.9008,
+   "east": -94.6311,
+   "north": 40.0042,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KW__ASOS",
+   "name": "Kuwait ASOS",
+   "stations": 6,
+   "west": 47.3167,
+   "south": 28.8,
+   "east": 48.3,
+   "north": 29.7667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KY_ASOS",
+   "name": "Kentucky ASOS",
+   "stations": 47,
+   "west": -88.8744,
+   "south": 36.5106,
+   "east": -82.4674,
+   "north": 39.1431,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KY__ASOS",
+   "name": "Grand Cayman ASOS",
+   "stations": 2,
+   "west": -81.4631,
+   "south": 19.1944,
+   "east": -79.7828,
+   "north": 19.787,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "KZ__ASOS",
+   "name": "Kazakhstan ASOS",
+   "stations": 22,
+   "west": 50.992,
+   "south": 40.5083,
+   "east": 80.3344,
+   "north": 54.8744,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LA_ASOS",
+   "name": "Louisiana ASOS",
+   "stations": 108,
+   "west": -94.621,
+   "south": 26.1367,
+   "east": -87.681,
+   "north": 32.8561,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LA__ASOS",
+   "name": "Lao ASOS",
+   "stations": 8,
+   "west": 101.3667,
+   "south": 9.9851,
+   "east": 109.3194,
+   "north": 21.15,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LB__ASOS",
+   "name": "Lebanon ASOS",
+   "stations": 1,
+   "west": 35.3884,
+   "south": 33.7209,
+   "east": 35.5884,
+   "north": 33.9209,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LC__ASOS",
+   "name": "Saint Lucia ASOS",
+   "stations": 2,
+   "west": -61.0929,
+   "south": 13.65,
+   "east": -60.85,
+   "north": 14.1202,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LK__ASOS",
+   "name": "Sri Lanka ASOS",
+   "stations": 4,
+   "west": 79.7841,
+   "south": 6.1845,
+   "east": 81.2241,
+   "north": 9.8923,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LR__ASOS",
+   "name": "Liberia ASOS",
+   "stations": 1,
+   "west": -10.4623,
+   "south": 6.1338,
+   "east": -10.2623,
+   "north": 6.3338,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LS__ASOS",
+   "name": "Lesotho ASOS",
+   "stations": 1,
+   "west": 27.4525,
+   "south": -29.5623,
+   "east": 27.6525,
+   "north": -29.3623,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LT__ASOS",
+   "name": "Lithuania ASOS",
+   "stations": 4,
+   "west": 20.9917,
+   "south": 54.5333,
+   "east": 25.3833,
+   "north": 56.0731,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LU__ASOS",
+   "name": "Luxembourg ASOS",
+   "stations": 1,
+   "west": 6.1115,
+   "south": 49.5266,
+   "east": 6.3115,
+   "north": 49.7266,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LV__ASOS",
+   "name": "Latvia ASOS",
+   "stations": 4,
+   "west": 20.9969,
+   "south": 56.4175,
+   "east": 24.9539,
+   "north": 57.4578,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "LY__ASOS",
+   "name": "Libya ASOS",
+   "stations": 13,
+   "west": 9.4,
+   "south": 24.1167,
+   "east": 24.0061,
+   "north": 33.0525,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MA_ASOS",
+   "name": "Massachusetts ASOS",
+   "stations": 24,
+   "west": -73.3892,
+   "south": 41.1531,
+   "east": -69.8933,
+   "north": 42.8172,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MA__ASOS",
+   "name": "Morocco ASOS",
+   "stations": 31,
+   "west": -16.0333,
+   "south": 23.6167,
+   "east": 9.63,
+   "north": 35.8264,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MD_ASOS",
+   "name": "Maryland ASOS",
+   "stations": 25,
+   "west": -79.4394,
+   "south": 38.046,
+   "east": -75.0239,
+   "north": 39.8078,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MD__ASOS",
+   "name": "Moldova ASOS",
+   "stations": 4,
+   "west": 27.6815,
+   "south": 45.7438,
+   "east": 29.031,
+   "north": 47.9627,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ME_ASOS",
+   "name": "Maine ASOS",
+   "stations": 22,
+   "west": -71.0479,
+   "south": 43.2939,
+   "east": -66.9127,
+   "north": 47.3855,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MG__ASOS",
+   "name": "Madagascar ASOS",
+   "stations": 8,
+   "west": 43.6283,
+   "south": -23.4833,
+   "east": 47.6789,
+   "north": -15.982,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MH__ASOS",
+   "name": "Marshall Islands ASOS",
+   "stations": 4,
+   "west": 167.6317,
+   "south": 6.965,
+   "east": 190.5716,
+   "north": 16.8326,
+   "crosses_antimeridian": true
+  },
+  {
+   "id": "MI_ASOS",
+   "name": "Michigan ASOS",
+   "stations": 79,
+   "west": -90.2314,
+   "south": 41.6358,
+   "east": -82.4289,
+   "north": 47.5674,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MK__ASOS",
+   "name": "Macedonia ASOS",
+   "stations": 2,
+   "west": 20.7,
+   "south": 41.0167,
+   "east": 21.75,
+   "north": 42.0667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ML__ASOS",
+   "name": "Mali ASOS",
+   "stations": 15,
+   "west": -11.5333,
+   "south": 11.25,
+   "east": 14.5775,
+   "north": 35.9575,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MM__ASOS",
+   "name": "Myanmar ASOS",
+   "stations": 3,
+   "west": 95.8779,
+   "south": 16.8059,
+   "east": 96.301,
+   "north": 21.8022,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MN_ASOS",
+   "name": "Minnesota ASOS",
+   "stations": 105,
+   "west": -97.043,
+   "south": 43.5212,
+   "east": -90.2457,
+   "north": 49.4183,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MN__ASOS",
+   "name": "Mongolia ASOS",
+   "stations": 2,
+   "west": 106.6666,
+   "south": 47.55,
+   "east": 106.9189,
+   "north": 47.9431,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MO_ASOS",
+   "name": "Missouri ASOS",
+   "stations": 47,
+   "west": -95.015,
+   "south": 36.1259,
+   "east": -89.4577,
+   "north": 40.4525,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MP__ASOS",
+   "name": "Northern Mariana Islands ASOS",
+   "stations": 1,
+   "west": 145.6294,
+   "south": 15.019,
+   "east": 145.8294,
+   "north": 15.219,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MR__ASOS",
+   "name": "Mauritania ASOS",
+   "stations": 9,
+   "west": -62.2933,
+   "south": 16.4,
+   "east": 113.6326,
+   "north": 22.8564,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MS_ASOS",
+   "name": "Mississippi ASOS",
+   "stations": 46,
+   "west": -91.3973,
+   "south": 28.1206,
+   "east": -88.0659,
+   "north": 35.0788,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MT_ASOS",
+   "name": "Montana ASOS",
+   "stations": 60,
+   "west": -115.5902,
+   "south": 44.55,
+   "east": -104.0926,
+   "north": 49.0738,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MU__ASOS",
+   "name": "Mauritius ASOS",
+   "stations": 3,
+   "west": 57.5836,
+   "south": -20.5344,
+   "east": 72.5111,
+   "north": -7.2133,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MV__ASOS",
+   "name": "Maldives ASOS",
+   "stations": 3,
+   "west": 73.05,
+   "south": -0.7933,
+   "east": 73.6292,
+   "north": 6.844,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MW__ASOS",
+   "name": "Malawi ASOS",
+   "stations": 5,
+   "west": 33.6667,
+   "south": -15.779,
+   "east": 35.074,
+   "north": -9.8536,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MX__ASOS",
+   "name": "Mexico ASOS",
+   "stations": 69,
+   "west": -117.0702,
+   "south": 14.6943,
+   "east": -86.7747,
+   "north": 32.7306,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MY__ASOS",
+   "name": "Malaysia ASOS",
+   "stations": 26,
+   "west": 99.6287,
+   "south": 1.117,
+   "east": 118.1595,
+   "north": 7.0225,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "MZ__ASOS",
+   "name": "Mozambique ASOS",
+   "stations": 15,
+   "west": 32.4726,
+   "south": -26.0208,
+   "east": 40.8122,
+   "north": -11.2618,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NA__ASOS",
+   "name": "Namibia ASOS",
+   "stations": 48,
+   "west": 12.9,
+   "south": -28.85,
+   "east": 24.28,
+   "north": -17.3206,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NC_ASOS",
+   "name": "North Carolina ASOS",
+   "stations": 81,
+   "west": -83.963,
+   "south": 33.8292,
+   "east": -75.5225,
+   "north": 36.56,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NC__ASOS",
+   "name": "New Caledonia ASOS",
+   "stations": 1,
+   "west": 166.1206,
+   "south": -22.1167,
+   "east": 166.3206,
+   "north": -21.9167,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ND_ASOS",
+   "name": "North Dakota ASOS",
+   "stations": 45,
+   "west": -104.0821,
+   "south": 45.9149,
+   "east": -96.5074,
+   "north": 49.0406,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NE_ASOS",
+   "name": "Nebraska ASOS",
+   "stations": 47,
+   "west": -104.095,
+   "south": 39.9788,
+   "east": -95.492,
+   "north": 42.9567,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NE__ASOS",
+   "name": "Niger ASOS",
+   "stations": 6,
+   "west": 2.0667,
+   "south": 13.2729,
+   "east": 12.7267,
+   "north": 17.0667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NF__ASOS",
+   "name": "New Zealand ASOS",
+   "stations": 9,
+   "west": 164.0472,
+   "south": -74.7875,
+   "east": 202.6167,
+   "north": 2.0833,
+   "crosses_antimeridian": true
+  },
+  {
+   "id": "NG__ASOS",
+   "name": "Nigeria ASOS",
+   "stations": 22,
+   "west": 3.2212,
+   "south": 4.75,
+   "east": 13.181,
+   "north": 13.1167,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NH_ASOS",
+   "name": "New Hampshire ASOS",
+   "stations": 13,
+   "west": -72.4042,
+   "south": 42.6818,
+   "east": -70.7233,
+   "north": 44.6761,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NI__ASOS",
+   "name": "Nicaragua ASOS",
+   "stations": 8,
+   "west": -87.2383,
+   "south": 11.3277,
+   "east": -83.2867,
+   "north": 14.1472,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NJ_ASOS",
+   "name": "New Jersey ASOS",
+   "stations": 18,
+   "west": -75.1783,
+   "south": 38.9085,
+   "east": -73.9562,
+   "north": 41.3002,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NL__ASOS",
+   "name": "Netherlands ASOS",
+   "stations": 32,
+   "west": 2.8358,
+   "south": 50.8053,
+   "east": 6.6847,
+   "north": 55.4992,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NM_ASOS",
+   "name": "New Mexico ASOS",
+   "stations": 44,
+   "west": -109.03,
+   "south": 31.7804,
+   "east": -102.9793,
+   "north": 37.0,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NO__ASOS",
+   "name": "Norway ASOS",
+   "stations": 74,
+   "west": 1.7292,
+   "south": 56.1781,
+   "east": 31.1449,
+   "north": 78.3461,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NP__ASOS",
+   "name": "Nepal ASOS",
+   "stations": 1,
+   "west": 85.2591,
+   "south": 27.5966,
+   "east": 85.4591,
+   "north": 27.7966,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NV_ASOS",
+   "name": "Nevada ASOS",
+   "stations": 29,
+   "west": -119.9764,
+   "south": 35.8475,
+   "east": -114.4264,
+   "north": 42.0532,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "NY_ASOS",
+   "name": "New York ASOS",
+   "stations": 53,
+   "west": -79.372,
+   "south": 40.5386,
+   "east": -71.8233,
+   "north": 45.0334,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "OH_ASOS",
+   "name": "Ohio ASOS",
+   "stations": 65,
+   "west": -84.8844,
+   "south": 38.7405,
+   "east": -80.5739,
+   "north": 41.878,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "OK_ASOS",
+   "name": "Oklahoma ASOS",
+   "stations": 58,
+   "west": -101.6053,
+   "south": 33.8094,
+   "east": -94.52,
+   "north": 37.0092,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "OM__ASOS",
+   "name": "Oman ASOS",
+   "stations": 8,
+   "west": 53.9246,
+   "south": 16.9387,
+   "east": 58.3844,
+   "north": 26.3106,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "OR_ASOS",
+   "name": "Oregon ASOS",
+   "stations": 44,
+   "west": -124.5249,
+   "south": 41.95,
+   "east": -116.9128,
+   "north": 46.2569,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PA_ASOS",
+   "name": "Pennsylvania ASOS",
+   "stations": 54,
+   "west": -80.5134,
+   "south": 39.629,
+   "east": -74.9134,
+   "north": 42.18,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PA__ASOS",
+   "name": "Panama ASOS",
+   "stations": 12,
+   "west": -82.6168,
+   "south": 7.8878,
+   "east": -77.3167,
+   "north": 9.5586,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PE__ASOS",
+   "name": "Peru ASOS",
+   "stations": 35,
+   "west": -81.3541,
+   "south": -18.1533,
+   "east": -69.1286,
+   "north": -3.4525,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PF__ASOS",
+   "name": "French Polynesia ASOS",
+   "stations": 4,
+   "west": -151.8525,
+   "south": -23.4654,
+   "east": -140.8458,
+   "north": -16.3437,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PG__ASOS",
+   "name": "Papua New Guinea ASOS",
+   "stations": 7,
+   "west": 141.2167,
+   "south": -10.4115,
+   "east": 150.434,
+   "north": -1.9619,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PH__ASOS",
+   "name": "Philippines ASOS",
+   "stations": 13,
+   "west": 118.659,
+   "south": 5.958,
+   "east": 125.7458,
+   "north": 18.2781,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PK__ASOS",
+   "name": "Pakistan ASOS",
+   "stations": 13,
+   "west": 62.2295,
+   "south": 24.7456,
+   "east": 82.2503,
+   "north": 34.1167,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PL__ASOS",
+   "name": "Poland ASOS",
+   "stations": 15,
+   "west": 14.5228,
+   "south": 49.9803,
+   "east": 22.12,
+   "north": 54.52,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PR_ASOS",
+   "name": "Puerto Rico ASOS",
+   "stations": 7,
+   "west": -67.2485,
+   "south": 17.9083,
+   "east": -65.5386,
+   "north": 18.5949,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PT__ASOS",
+   "name": "Portugal ASOS",
+   "stations": 19,
+   "west": -31.2314,
+   "south": 32.5979,
+   "east": -7.8255,
+   "north": 41.3333,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "PY__ASOS",
+   "name": "Paraguay ASOS",
+   "stations": 16,
+   "west": -61.65,
+   "south": -27.4,
+   "east": -54.25,
+   "north": -20.1167,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "QA__ASOS",
+   "name": "Qatar ASOS",
+   "stations": 4,
+   "west": 51.215,
+   "south": 25.0167,
+   "east": 51.7084,
+   "north": 25.3746,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "RI_ASOS",
+   "name": "Rhode Island ASOS",
+   "stations": 6,
+   "west": -71.8989,
+   "south": 41.07,
+   "east": -71.1815,
+   "north": 42.0208,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "RO__ASOS",
+   "name": "Romania ASOS",
+   "stations": 18,
+   "west": 21.1582,
+   "south": 44.2103,
+   "east": 28.8167,
+   "north": 47.8214,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "RS__ASOS",
+   "name": "Serbia and Montenegro ASOS",
+   "stations": 13,
+   "west": 18.2315,
+   "south": 42.2594,
+   "east": 22.0,
+   "north": 45.2469,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "RU__ASOS",
+   "name": "Russian Federation ASOS",
+   "stations": 106,
+   "west": 20.5167,
+   "south": 42.7167,
+   "east": 186.8567,
+   "north": 72.0772,
+   "crosses_antimeridian": true
+  },
+  {
+   "id": "RW__ASOS",
+   "name": "Rwanda ASOS",
+   "stations": 3,
+   "west": 28.808,
+   "south": -2.5622,
+   "east": 30.2328,
+   "north": -1.5772,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SA__ASOS",
+   "name": "Saudi Arabia ASOS",
+   "stations": 40,
+   "west": 35.194,
+   "south": 16.8011,
+   "east": 50.252,
+   "north": 31.7927,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SB__ASOS",
+   "name": "Solomon Islands ASOS",
+   "stations": 8,
+   "west": 156.2962,
+   "south": -11.6339,
+   "east": 165.8978,
+   "north": -6.612,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SC_ASOS",
+   "name": "South Carolina ASOS",
+   "stations": 48,
+   "west": -82.9868,
+   "south": 32.1244,
+   "east": -78.6239,
+   "north": 35.0878,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SC__ASOS",
+   "name": "Seychelles ASOS",
+   "stations": 2,
+   "west": 55.4218,
+   "south": -4.7743,
+   "east": 55.7914,
+   "north": -4.2193,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SD_ASOS",
+   "name": "South Dakota ASOS",
+   "stations": 35,
+   "west": -103.962,
+   "south": 42.6653,
+   "east": -96.466,
+   "north": 46.0187,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SD__ASOS",
+   "name": "Sudan ASOS",
+   "stations": 10,
+   "west": 24.7833,
+   "south": 4.772,
+   "east": 37.3341,
+   "north": 21.9167,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SE__ASOS",
+   "name": "Sweden ASOS",
+   "stations": 53,
+   "west": 11.7704,
+   "south": 55.4231,
+   "east": 23.1689,
+   "north": 67.9228,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SG__ASOS",
+   "name": "Singapore ASOS",
+   "stations": 3,
+   "west": 103.7667,
+   "south": 1.2604,
+   "east": 104.0833,
+   "north": 1.5167,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SH__ASOS",
+   "name": "Saint Helena ASOS",
+   "stations": 1,
+   "west": -14.5056,
+   "south": -8.07,
+   "east": -14.3056,
+   "north": -7.87,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SI__ASOS",
+   "name": "Slovenia ASOS",
+   "stations": 4,
+   "west": 13.5158,
+   "south": 45.3753,
+   "east": 15.7819,
+   "north": 46.5797,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SK__ASOS",
+   "name": "Slovakia ASOS",
+   "stations": 10,
+   "west": 17.1073,
+   "south": 48.0702,
+   "east": 22.0943,
+   "north": 49.3315,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SL__ASOS",
+   "name": "Sierra Leone ASOS",
+   "stations": 1,
+   "west": -13.2955,
+   "south": 8.5164,
+   "east": -13.0955,
+   "north": 8.7164,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SN__ASOS",
+   "name": "Senegal ASOS",
+   "stations": 13,
+   "west": -17.5902,
+   "south": 12.3102,
+   "east": -12.1203,
+   "north": 16.7497,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SO__ASOS",
+   "name": "Somalia ASOS",
+   "stations": 3,
+   "west": 43.9833,
+   "south": 1.9333,
+   "east": 49.2833,
+   "north": 11.3833,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SR__ASOS",
+   "name": "Suriname ASOS",
+   "stations": 3,
+   "west": -57.1394,
+   "south": 5.3528,
+   "east": -55.0878,
+   "north": 6.0556,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ST__ASOS",
+   "name": "Sao Tome and Principe ASOS",
+   "stations": 1,
+   "west": 6.6122,
+   "south": 0.2782,
+   "east": 6.8122,
+   "north": 0.4782,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SV__ASOS",
+   "name": "El Salvador ASOS",
+   "stations": 6,
+   "west": -89.9333,
+   "south": 13.232,
+   "east": -87.782,
+   "north": 14.0825,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SY__ASOS",
+   "name": "Syria ASOS",
+   "stations": 5,
+   "west": 35.6667,
+   "south": 33.3115,
+   "east": 41.3167,
+   "north": 37.15,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "SZ__ASOS",
+   "name": "Eswatini ASOS",
+   "stations": 18,
+   "west": 30.8121,
+   "south": -27.3667,
+   "east": 32.0841,
+   "north": -25.7844,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TC__ASOS",
+   "name": "Turks and Caicos Islands",
+   "stations": 1,
+   "west": -71.6286,
+   "south": 21.4158,
+   "east": -71.4286,
+   "north": 21.6158,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TD__ASOS",
+   "name": "Chad ASOS",
+   "stations": 5,
+   "west": 14.934,
+   "south": 8.5244,
+   "east": 20.9443,
+   "north": 18.1,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TG__ASOS",
+   "name": "Togo ASOS",
+   "stations": 8,
+   "west": 0.15,
+   "south": 6.0656,
+   "east": 1.6,
+   "north": 10.9,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TH__ASOS",
+   "name": "Thailand ASOS",
+   "stations": 39,
+   "west": 97.8744,
+   "south": 5.69,
+   "east": 104.9702,
+   "north": 20.05,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TJ__ASOS",
+   "name": "Tajikistan ASOS",
+   "stations": 4,
+   "west": 68.6833,
+   "south": 37.7667,
+   "east": 69.905,
+   "north": 40.3154,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TM__ASOS",
+   "name": "Turkmenistan ASOS",
+   "stations": 7,
+   "west": 52.9072,
+   "south": 37.5194,
+   "east": 65.24,
+   "north": 41.8611,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TN_ASOS",
+   "name": "Tennessee ASOS",
+   "stations": 55,
+   "west": -90.154,
+   "south": 34.9353,
+   "east": -82.0734,
+   "north": 36.7219,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TN__ASOS",
+   "name": "Tunisia ASOS",
+   "stations": 16,
+   "west": 8.0106,
+   "south": 31.5833,
+   "east": 11.1833,
+   "north": 37.3454,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TO__ASOS",
+   "name": "Tonga ASOS",
+   "stations": 5,
+   "west": -175.733,
+   "south": -21.3412,
+   "east": -173.691,
+   "north": -15.4708,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TR__ASOS",
+   "name": "Turkey ASOS",
+   "stations": 75,
+   "west": 25.8,
+   "south": 36.1987,
+   "east": 43.966,
+   "north": 42.1187,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TT__ASOS",
+   "name": "Trinidad and Tobago ASOS",
+   "stations": 1,
+   "west": -60.936,
+   "south": 11.0493,
+   "east": -60.736,
+   "north": 11.2493,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TW__ASOS",
+   "name": "Taiwan ASOS",
+   "stations": 8,
+   "west": 119.53,
+   "south": 22.4771,
+   "east": 121.6517,
+   "north": 25.1777,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TX_ASOS",
+   "name": "Texas ASOS",
+   "stations": 238,
+   "west": -106.48,
+   "south": 25.8146,
+   "east": -91.9333,
+   "north": 36.514,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "TZ__ASOS",
+   "name": "Tanzania ASOS",
+   "stations": 25,
+   "west": 29.5333,
+   "south": -10.7833,
+   "east": 40.2833,
+   "north": -1.2333,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "UA__ASOS",
+   "name": "Ukraine ASOS",
+   "stations": 20,
+   "west": 22.1613,
+   "south": 44.9333,
+   "east": 39.4741,
+   "north": 50.7035,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "UG__ASOS",
+   "name": "Uganda ASOS",
+   "stations": 5,
+   "west": 30.0,
+   "south": -0.7167,
+   "east": 33.7228,
+   "north": 1.8277,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "UN__ASOS",
+   "name": "Unknown / Classified Military ASOS",
+   "stations": 258,
+   "west": 21.9,
+   "south": 21.9,
+   "east": 55.55,
+   "north": 45.54,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "UT_ASOS",
+   "name": "Utah ASOS",
+   "stations": 45,
+   "west": -114.1309,
+   "south": 36.9111,
+   "east": -109.2412,
+   "north": 41.8913,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "UY__ASOS",
+   "name": "Uruguay ASOS",
+   "stations": 11,
+   "west": -58.1683,
+   "south": -34.9551,
+   "east": -54.1167,
+   "north": -30.2983,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "UZ__ASOS",
+   "name": "Uzbekistan ASOS",
+   "stations": 14,
+   "west": 59.5233,
+   "south": 37.1867,
+   "east": 72.4333,
+   "north": 42.5883,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "VA_ASOS",
+   "name": "Virginia ASOS",
+   "stations": 71,
+   "west": -83.3178,
+   "south": 36.4729,
+   "east": -75.3631,
+   "north": 39.2435,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "VC__ASOS",
+   "name": "Saint Vincent and the Grenadines ASOS",
+   "stations": 5,
+   "west": -61.5167,
+   "south": 12.5,
+   "east": -61.0603,
+   "north": 13.25,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "VE__ASOS",
+   "name": "Venezuela ASOS",
+   "stations": 49,
+   "west": -72.5397,
+   "south": 4.5,
+   "east": -61.0167,
+   "north": 11.9088,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "VG__ASOS",
+   "name": "British Virgin Islands ASOS",
+   "stations": 1,
+   "west": -64.643,
+   "south": 18.3448,
+   "east": -64.443,
+   "north": 18.5448,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "VI_ASOS",
+   "name": "Virgin Islands ASOS",
+   "stations": 2,
+   "west": -65.0734,
+   "south": 17.6,
+   "east": -64.7047,
+   "north": 18.4373,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "VN__ASOS",
+   "name": "Viet Nam ASOS",
+   "stations": 6,
+   "west": 105.7019,
+   "south": 10.7167,
+   "east": 108.2994,
+   "north": 21.3187,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "VT_ASOS",
+   "name": "Vermont ASOS",
+   "stations": 11,
+   "west": -73.3486,
+   "south": 42.7935,
+   "east": -71.918,
+   "north": 45.0403,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "VU__ASOS",
+   "name": "Vanuatu ASOS",
+   "stations": 8,
+   "west": 167.1197,
+   "south": -20.3492,
+   "east": 169.871,
+   "north": -13.7517,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "WA_ASOS",
+   "name": "Washington ASOS",
+   "stations": 54,
+   "west": -124.6626,
+   "south": 45.5186,
+   "east": -117.0096,
+   "north": 48.8927,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "WI_ASOS",
+   "name": "Wisconsin ASOS",
+   "stations": 70,
+   "west": -92.79,
+   "south": 42.495,
+   "east": -86.824,
+   "north": 46.8887,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "WS__ASOS",
+   "name": "Samoa ASOS",
+   "stations": 7,
+   "west": -176.2939,
+   "south": -19.18,
+   "east": -157.9363,
+   "north": -8.9061,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "WV_ASOS",
+   "name": "West Virginia ASOS",
+   "stations": 17,
+   "west": -82.655,
+   "south": 37.1958,
+   "east": -77.8847,
+   "north": 40.275,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "WY_ASOS",
+   "name": "Wyoming ASOS",
+   "stations": 68,
+   "west": -111.1424,
+   "south": 40.9374,
+   "east": -104.0302,
+   "north": 45.0117,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "YE__ASOS",
+   "name": "Yemen ASOS",
+   "stations": 21,
+   "west": 42.8763,
+   "south": 12.5307,
+   "east": 54.0058,
+   "north": 17.0667,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ZA__ASOS",
+   "name": "South Africa ASOS",
+   "stations": 44,
+   "west": 17.7875,
+   "south": -46.9831,
+   "east": 37.9669,
+   "north": -22.9872,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ZM__ASOS",
+   "name": "Zambia ASOS",
+   "stations": 17,
+   "west": 23.0085,
+   "south": -17.9218,
+   "east": 32.685,
+   "north": -10.1167,
+   "crosses_antimeridian": false
+  },
+  {
+   "id": "ZW__ASOS",
+   "name": "Zimbabwe ASOS",
+   "stations": 11,
+   "west": 25.739,
+   "south": -21.1081,
+   "east": 31.6786,
+   "north": -16.4198,
+   "crosses_antimeridian": false
+  }
+ ]
+}

@@ -259,12 +259,16 @@ def test_the_audit_can_fail(mutation: dict, tmp_path: Path) -> None:
     mutated = tmp_path / case.CONFIG.name
     mutated.write_text(raw, encoding="utf-8")
 
-    original = case.CONFIG
-    try:
-        case.CONFIG = mutated
-        assert case.audit() != [], f"{mutation} was not caught"
-    finally:
-        case.CONFIG = original
+    # Hand the mutated copy to `audit` rather than patching the module
+    # global.  `audit(config=...)` is the seam the case module offers, and
+    # patching `case.CONFIG` stopped reaching the audit when the config
+    # resolution became `_repo_config.locate(CONFIG_NAME) or CONFIG`: the
+    # locate wins whenever the real config is on disk, which is every run
+    # from a checkout, so the audit read the SHIPPED config, found it
+    # correct, and returned [] no matter what this test wrote.  A control
+    # that cannot fail is exactly what this test exists to forbid, so it
+    # must not be one itself.
+    assert case.audit(config=mutated) != [], f"{mutation} was not caught"
 
 
 # --- the hand-built route input set -------------------------------------

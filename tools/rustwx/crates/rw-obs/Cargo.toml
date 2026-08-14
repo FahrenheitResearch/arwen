@@ -35,6 +35,10 @@ path = "src/bin/stage4.rs"
 name = "rw_asos"
 path = "src/bin/asos.rs"
 
+[[bin]]
+name = "rw_opera"
+path = "src/bin/opera.rs"
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # `rust_backend` rather than the zlib C shim, matching rustwx-io and
@@ -46,6 +50,13 @@ serde_json.workspace = true
 sha2 = "0.10"
 ureq.workspace = true
 grib-core = { path = "../../vendor/grib-core" }
+# The pure-Rust HDF5 reader `rustwx-io` already uses for the same archive.
+# `rw_opera` needs it directly because the European composite states its two
+# sentinels, its four corner coordinates and its production notes as ODIM
+# attributes, and every one of those is a fact the seam has to carry --
+# `rustwx-io`'s ODIM entry point returns a field, not the file.  Same version
+# requirement as `rustwx-io`, so one copy resolves for both.
+hdf5-reader = "0.3"
 # The anonymous-S3 client (hardened ListObjectsV2 XML reader, content-
 # addressed cache, SHA-256 receipts).  MRMS needs it; writing a second one
 # would re-earn the bugs that client's audit already fixed.

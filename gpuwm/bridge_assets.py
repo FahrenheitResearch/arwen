@@ -2,10 +2,11 @@
 
 The pip wheel ships no compiled Rust.  Until this command existed the
 only way to get the GRIB decoders, the CPU preprocessing library, the
-fetch backbone, the batch renderer and the radar front door onto a
-wheel install was to clone
-the repository and run ``cargo build`` twice -- a Rust toolchain, a
-2.5 GB checkout and a few minutes of compiling, for ten files.
+fetch backbone, the batch renderer, the two radar front doors and the
+MRMS, Stage-IV, surface, GOES and European-composite front doors onto a
+wheel install was to clone the repository and run ``cargo build`` twice
+-- a Rust toolchain, a 2.5 GB checkout and a few minutes of compiling,
+for sixteen files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -14,7 +15,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the ten artifacts of
+One bundle per platform, holding the sixteen artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges``) -- the last rung of the
 resolution ladder every consumer already searches, so nothing else in
@@ -66,9 +67,9 @@ new bytes passing all three checks first.
 Offline and mirrors
 -------------------
 ``--from DIR`` stages from a local directory under identical
-verification: either the bundle archive itself, or the ten artifacts
-loose in that directory (what an air-gapped operator has after building
-them on a machine that does have a toolchain).
+verification: either the bundle archive itself, or the sixteen
+artifacts loose in that directory (what an air-gapped operator has
+after building them on a machine that does have a toolchain).
 ``GPUWM_BRIDGE_ASSET_URL_BASE`` overrides the download base URL; the
 bundle filename is appended to it either way.
 
@@ -85,6 +86,7 @@ refuses rather than inventing a hash to check against.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import argparse
 import hashlib
 import json
 import os
@@ -150,7 +152,7 @@ REQUIRED_ASSET_SUBDIRS = ("basemap",)
 #: .BRIDGE_ABI_MARKERS` and the renderer's ``GPUWM_INITIAL_*``
 #: attribute literals).  The Rust half lives in the workspace build
 #: scripts (``tools/grib1_bridge/build.rs`` and the ``build.rs`` of the
-#: three bundled ``tools/rustwx`` crates), which inject the checkout's
+#: six bundled ``tools/rustwx`` crates), which inject the checkout's
 #: HEAD as ``GPUWM_BRIDGE_SOURCE_REV`` for each entry point to embed.
 #:
 #: Asked of every artifact whose source moves with this checkout, which
@@ -207,14 +209,34 @@ class BundledArtifact:
     vendored: bool = False
 
 
-#: The ten artifacts a bundle carries, in build order: the five GRIB
-#: decoders and the CPU preprocessing library from the decoder
-#: workspace, then the fetch backbone, the batch renderer and the radar
-#: front door from the renderer workspace, then the region-global
-#: dealiasing library from its own vendored crate.  The environment
-#: variables are the ones the resolution ladder already honours, so a
-#: staged bundle and a hand-built tree are found by exactly the same
-#: code.
+#: The sixteen artifacts a bundle carries, in build order: the five
+#: GRIB decoders and the CPU preprocessing library from the decoder
+#: workspace, then the fetch backbone, the batch renderer, the two radar
+#: front doors and the five observation front doors from the renderer
+#: workspace, then the region-global dealiasing library from its own
+#: vendored crate.  The environment variables are the ones the
+#: resolution ladder already honours, so a staged bundle and a
+#: hand-built tree are found by exactly the same code.
+#:
+#: ``rw_odim`` joined for the reason ``rw_nexrad`` did, one continent
+#: over.  European polar-volume ingest had a complete library path, a
+#: ``gpuwm obs radar`` front door, and no way to obtain the binary that
+#: path drives without a Rust toolchain and a source checkout -- which by
+#: this project's rule means it was not shipped: a capability the engine
+#: has and the user cannot reach does not exist.  It builds ``--locked
+#: --offline`` from the same vendored closure on the same two platforms
+#: as its siblings and carries the same source-revision stamp, so
+#: bundling it costs an entry here and nothing else.
+#:
+#: ``rw_opera`` was the one door still left out when these two lanes were
+#: written apart, and for a reason that stopped being true when they were
+#: put together: ``crates/rw-obs`` carried no ``build.rs`` and none of its
+#: entry points embedded the source-revision stamp, so a cut could not
+#: prove the binary it staged.  The observation-front-door lane added that
+#: ``build.rs`` and stamped three of the crate's four entry points; the
+#: fourth, ``opera.rs``, did not exist on that lane.  Stamping it here is
+#: the whole remaining cost, so the composite ships with its siblings
+#: rather than waiting for a lane of its own.
 #:
 #: ``rw_nexrad`` joined this list once it was clear that leaving it out
 #: made ``gpuwm doctor`` pass on boxes that could not ingest a single
@@ -224,6 +246,21 @@ class BundledArtifact:
 #: closure on the same two platforms as its two workspace siblings.
 #: The alternative -- telling every user to install a Rust toolchain --
 #: is the one prerequisite this project otherwise never imposes.
+#:
+#: ``rw_mrms``, ``rw_stage4``, ``rw_asos`` and ``rw_goes`` joined for
+#: the same reason, one wave later and one wave too late.  All four were
+#: written, tested and committed; all four are resolved out of
+#: ``~/.gpuwm/bridges`` by :mod:`gpuwm.obs.frontdoor`; and none of them
+#: was in this tuple, so ``gpuwm fetch-bridges`` -- the command their
+#: own refusals named -- staged a complete bundle and the refusal
+#: repeated verbatim.  That is the ``rw_mpas_convert`` failure exactly:
+#: committed is not shipped, and a refusal naming a command that cannot
+#: help is worse than no message.  A front door that a resolver looks
+#: for and a refusal names belongs in the bundle that resolver reads.
+#: The release workspace already BUILT them -- ``cargo build --release
+#: --locked`` at ``tools/rustwx`` builds every workspace member -- so
+#: the four binaries were produced by the cut, probed by nothing, and
+#: thrown away at the end of the job.
 BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "grib1_bridge", "executable", bridges.CRATE_RELATIVE,
@@ -258,6 +295,29 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_nexrad", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_NEXRAD", "radar observation ingest (the DA nowcast)"),
+    BundledArtifact(
+        "rw_odim", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_ODIM",
+        "European polar volumes (gpuwm obs radar)"),
+    BundledArtifact(
+        "rw_mrms", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_MRMS", "MRMS composite reflectivity (gpuwm obs mrms)"),
+    BundledArtifact(
+        "rw_stage4", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_STAGE4",
+        "Stage-IV precipitation (gpuwm obs stage4)"),
+    BundledArtifact(
+        "rw_asos", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_ASOS",
+        "ASOS/METAR surface observations (gpuwm obs asos)"),
+    BundledArtifact(
+        "rw_goes", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_GOES",
+        "GOES ABI cloud-water-path packs (gpuwm obs goes)"),
+    BundledArtifact(
+        "rw_opera", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_OPERA",
+        "European composite reflectivity (gpuwm obs opera)"),
     # The dealiasing engine `--dealias` gets by default since 2026-08-12.
     # It joined this list the day it became the default and for the same
     # reason `rw_nexrad` did: a prerequisite of the shipped configuration
@@ -753,7 +813,7 @@ def classify_assets(dest: Path, bundle: BundlePin
     """(already pinned, present but different, absent) for the assets.
 
     Separate from :func:`classify_destination` because the two answer
-    different questions for the caller: nine binaries are listed
+    different questions for the caller: the binaries are listed
     individually in a report, and several dozen shapefiles are counted.
     """
 
@@ -962,8 +1022,8 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
     """Install the pinned artifacts sitting loose in ``source_dir``.
 
     What an air-gapped operator has after building on a machine that
-    does have a toolchain: ten files, no archive.  Same three checks,
-    same atomic install.
+    does have a toolchain: sixteen files, no archive.  Same three
+    checks, same atomic install.
     """
 
     absent = [pin.filename for pin in bundle.binaries
@@ -975,7 +1035,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
             f"{source_dir} carries neither {bundle.filename} nor the loose "
             f"artifacts; missing {', '.join(absent)}")
     if absent:
-        # The ten artifacts are independent; an air-gapped operator
+        # The sixteen artifacts are independent; an air-gapped operator
         # with the decoders but not the renderer gets the decoders,
         # verified, and doctor names what is still missing.
         warn(f"{source_dir} is missing {len(absent)} of "
@@ -1235,14 +1295,59 @@ def fetch_bridges_main(args) -> int:
     return 0
 
 
+def staged_artifact_summary() -> str:
+    """What a bundle carries, in one line, DERIVED from the table.
+
+    ``--help`` used to carry a hand-written parenthesis -- "GRIB
+    decoders, CPU preprocessing library, fetch backbone, batch renderer"
+    -- written when those were all there was.  ``rw_nexrad`` joined the
+    bundle and the line did not move, so the command that stages the
+    radar front door did not say it stages the radar front door, and a
+    reader looking for it had no reason to run this.  A hand-written
+    inventory of a machine-readable table drifts on the first addition
+    and stays wrong until someone notices; deriving it means the two
+    cannot disagree.
+
+    One phrase per artifact would be thirteen clauses, so the names are
+    grouped by the workspace that builds them, in the table's own order,
+    and each group names its members.  Adding an artifact adds a name
+    here on the same commit, with no second edit to remember.
+    """
+
+    decoders = [a.name for a in BUNDLED_ARTIFACTS
+                if a.crate == bridges.CRATE_RELATIVE]
+    renderer = [a.name for a in BUNDLED_ARTIFACTS
+                if a.crate != bridges.CRATE_RELATIVE]
+    return (f"{', '.join(decoders)}; {', '.join(renderer)}")
+
+
 def register_cli(subparsers) -> None:
+    summary = staged_artifact_summary()
     parser = subparsers.add_parser(
         "fetch-bridges",
-        help="download the prebuilt Rust artifacts for this platform "
-             "(GRIB decoders, CPU preprocessing library, fetch backbone, "
-             "batch renderer) into ~/.gpuwm/bridges, each one verified "
+        help="download this platform's prebuilt Rust artifacts into "
+             "~/.gpuwm/bridges -- the GRIB decoders and CPU preprocessing "
+             "library, the fetch backbone, the batch renderer, the "
+             "dealiasing engine and the radar, MRMS, Stage-IV, surface "
+             "and GOES observation front doors -- each one verified "
              "against the packaged SHA-256 pins before it is installed; "
-             "idempotent when everything is already staged")
+             "idempotent when everything is already staged",
+        # `description` and not `help` alone, because `gpuwm
+        # fetch-bridges --help` prints the description and the audit
+        # measured exactly that surface.  The artifact names are
+        # DERIVED, so the day a bridge joins the bundle is the day this
+        # text names it -- which is the property the hand-written
+        # parenthesis did not have: it still said "GRIB decoders, CPU
+        # preprocessing library, fetch backbone, batch renderer" long
+        # after rw_nexrad and the dealiasing engine had joined.
+        description=(
+            "Download this platform's prebuilt Rust artifacts into "
+            "~/.gpuwm/bridges, each verified against the packaged "
+            "SHA-256 pins before it is installed.\n\n"
+            f"This release's bundle carries: {summary}.\n\n"
+            "Idempotent: everything already staged and pin-valid is "
+            "left alone."),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--from", dest="from_dir", metavar="DIR", default=None,
         help="stage from a local directory instead of downloading "
@@ -1277,7 +1382,8 @@ __all__ = [
     "download_bundle", "embedded_source_revisions", "fetch_bundle",
     "fetch_bridges_main", "host_platform", "host_platform_description",
     "load_pins", "matches_pin", "packaged_pins_path", "parse_pins",
-    "register_cli", "sha256_file", "stage_from_bundle", "stage_from_dir",
+    "register_cli", "sha256_file", "staged_artifact_summary",
+    "stage_from_bundle", "stage_from_dir",
     "stage_from_loose_files", "staging_available", "verify_contract_marker",
     "verify_pinned_file", "verify_source_revision",
 ]

@@ -207,12 +207,17 @@ distinguishable from a run that never asked.
 
 ## Which front doors stream
 
-| door | `[tiles]` |
-|------|-----------|
-| `gpuwm run CONFIG.toml --case-data ...` | streams.  The single-domain arm builds through `standalone_domain_builder`; the tree arm builds the whole mapping through `builders_for_tree`, honouring the per-domain tables. |
-| `gpuwm.prepared_single_domain_forecast` | streams (`builders_for_tree`). |
-| `gpuwm.prepared_domain_tree_forecast` | streams (`builders_for_tree`). |
-| `gpuwm plan` / run-plan | relays whichever of the above the chain dispatches to; the `experiment` chain resolves as `tiles_delivery: tree`. |
+| door | how the table gets there | `[tiles]` |
+|------|--------------------------|-----------|
+| `gpuwm run CONFIG.toml` | the `[tiles]` table written in `CONFIG.toml` beside its `[case_data]` table.  There is no `--case-data` flag and no `--tiles` flag on this door: the config IS the argument. | streams.  The single-domain arm builds through `standalone_domain_builder`; the tree arm builds the whole mapping through `builders_for_tree`, honouring the per-domain tables. |
+| `gpuwm-prepared-forecast` (`python -m gpuwm.prepared_single_domain_forecast`) | `--tiles JSON` -- the same keys as the table, as a JSON object, validated by the same `StreamingOptions.from_mapping`.  The flag exists because this runner's hash-bound experiment cannot carry a `[tiles]` table of its own. | streams (`builders_for_tree`). |
+| `gpuwm-prepared-tree-forecast` (`python -m gpuwm.prepared_domain_tree_forecast`) | the hash-bound experiment's own `[tiles]` table. | streams (`builders_for_tree`). |
+| `gpuwm run-plan PLAN.json` | the plan's `config`, inline or by path. | relays whichever of the above the chain dispatches to; the `experiment` chain resolves as `tiles_delivery: tree`. |
+
+The `gpuwm downscale` wizard authors the child TOML for you, so a `[tiles]`
+table you wrote by hand would be overwritten.  `--tiles {on,auto}` (with
+`--child-size`) is how you ask that door for a streamed child; see
+[CLI-OPTIONS.md](CLI-OPTIONS.md#gpuwm-downscale).
 
 `gpuwm run` is also the door for **two-way feedback with `[tiles]`**.  The
 prepared-hierarchy route refuses `feedback = 1` because its artifacts are

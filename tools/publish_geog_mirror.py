@@ -15,9 +15,11 @@ This script is the only publication path:
 
 ``prepare`` refuses any tarball whose bytes do not match the pins in
 :mod:`gpuwm.geog_assets` -- the mirror must never diverge from what
-fetch-geog verifies.  ``upload`` needs ``pip install huggingface_hub``
+fetch-geog verifies.  ``upload`` needs ``pip install 'gpuwm[publish]'``
 and write access to the repo; uploads are chunked LFS commits and a
 re-run resumes/no-ops files already present with the same content.
+``[publish]`` is maintainer-only and deliberately outside ``[all]``:
+nobody without write credentials on the dataset repository can use it.
 """
 
 from __future__ import annotations
@@ -200,7 +202,7 @@ def upload(archives: Path, repo: str, private: bool) -> int:
     try:
         from huggingface_hub import HfApi
     except ImportError:
-        print("upload: pip install huggingface_hub  (and authenticate "
+        print("upload: pip install 'gpuwm[publish]'  (and authenticate "
               "with `huggingface-cli login` or HF_TOKEN)")
         return 2
     api = HfApi()

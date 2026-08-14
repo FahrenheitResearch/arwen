@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.3.3"
+version = "2.4.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -59,8 +59,52 @@ requires-python = ">=3.11"
 # marker to pick with.  rasterio and pyproj carry no such ambiguity; pip
 # resolves them correctly on every platform this project supports.  An
 # extra there would be a workaround for a problem that does not exist.
+#
+# scipy and pyshp joined them on the same reasoning, one release later,
+# for two more capabilities that were shipped-but-unreachable:
+#
+#   scipy.  Two capabilities, and the weaker of the two arguments is the
+#   one about dealiasing, so it is stated exactly: gpuwm/obs/dealias.py's
+#   `vad-region` engine labels its gate regions with
+#   scipy.sparse.csgraph.connected_components.  Since 2026-08-12 the
+#   DEFAULT engine is `region-global`, the Rust crate, so scipy is not
+#   what the default dealias run reads -- but `vad-region` is a
+#   selectable, supported, documented engine that every run before that
+#   date used, and without scipy it is not selectable at all.
+#
+#   The unconditional one is gpuwm/verify/obs/regrid.py: every remap plan
+#   the observation battery builds goes through scipy.spatial.cKDTree,
+#   with no second engine and no fallback.  That is the whole referee.
+#
+#   Both sat behind an [obs]/[dealias] pair that `pip install
+#   'gpuwm[all-cu12]'` -- the README's own recommended line -- did not
+#   pull, and that no quickstart named.
+#
+#   The ingest/decode mandate does not bind this one.  Rust-or-CUDA-only
+#   is a rule about READING and DECODING data; connected components on a
+#   sparse adjacency matrix and a k-d tree over unit vectors are
+#   arithmetic on arrays this project already carries in numpy.
+#   (rasterio/pyproj above ARE decode, are a standing exception, and are
+#   being moved into the Rust stack by the terrain lane.)
+#
+#   Cost, measured on cp313/win_amd64: 36.6 MiB of wheel.  Platform reach
+#   is unchanged -- scipy's wheel matrix is a superset of numpy's, which
+#   has been a hard dependency here since the first release.
+#
+#   pyshp.  The basemap reader.  tools/da_nowcast_render.py, the
+#   launcher's basemap endpoint and tilestream/realcase_render.py read
+#   the vendored Natural Earth shapefiles with a bare `import shapefile`
+#   -- no try/except, no front-door check -- at the very END of the DA
+#   nowcast chain, after survey, fetch, prepare, forecast and every DA
+#   cycle.  It was in [render], which is the wrong home twice over: the
+#   DEFAULT render engine is the rust one, which needs nothing from
+#   [render] at all (measured: 161 PNGs from a bare install with staged
+#   bridges), so the install that draws maps was not the install
+#   carrying the shapefile reader.  73.7 kB of pure Python with no
+#   dependencies of its own; there is no case for making anyone choose.
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
-                "jsonschema>=4.0", "rasterio>=1.3", "pyproj>=3.6"]
+                "jsonschema>=4.0", "rasterio>=1.3", "pyproj>=3.6",
+                "scipy>=1.11", "pyshp>=2.3"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 # No `License ::` classifier: PEP 639 deprecates them outright and
 # setuptools >=77 refuses to combine one with the SPDX expression above.
@@ -104,11 +148,11 @@ gpu = ["gpuwm[gpu-cu12]"]
 # against; <0.3 is the ceiling because that is where upstream is free to
 # change the diagnostic surface.  The same window is written once in
 # gpuwm/science_core.py and enforced at runtime from there.
-# pyshp: the demo/gallery renderer (tools/da_nowcast_render.py and the
-# launcher's basemap endpoint) reads the vendored Natural Earth
-# shapefiles with it -- it was imported but undeclared, proven missing
-# on a fresh env that installed exactly what the quickstart said.
-render = ["wrf-rust>=0.2.35,<0.3", "pyshp>=2.3"]
+# This extra is ONLY that window now.  pyshp moved into the runtime
+# dependencies above: see the note there for why the shapefile reader had
+# no business riding along with a science core the default render engine
+# does not even use.
+render = ["wrf-rust>=0.2.35,<0.3"]
 # RETAINED AND EMPTY ON PURPOSE.  rasterio/pyproj moved into the runtime
 # dependencies above in 2.3.3, so this extra has nothing left to add.  It
 # is kept because `pip install gpuwm[geog]` is written down in the wild --
@@ -118,17 +162,16 @@ render = ["wrf-rust>=0.2.35,<0.3", "pyshp>=2.3"]
 # discipline as the [gpu]/[all] aliases below: never invalidate an
 # install line that already works.
 geog = []
-# The observation-battery referee (gpuwm.verify.obs): the remap plans in
-# verify/obs/regrid.py build a cKDTree.  Lazily imported, so the base
-# install runs forecasts without it; scoring against observations needs it.
-obs = ["scipy>=1.11"]
-# Velocity dealiasing only. gpuwm.obs.dealias labels its gate regions
-# with scipy.sparse.csgraph.connected_components; the import is
-# function-local so an install without this extra runs every
-# masking-only path unchanged. --dealias refuses at the front door when
-# it is absent rather than dying inside the gridding loop an hour into
-# a run.
-dealias = ["scipy>=1.11"]
+# RETAINED AND EMPTY ON PURPOSE, exactly as [geog] above.  scipy moved
+# into the runtime dependencies, so neither of these has anything left to
+# add: `pip install gpuwm` now scores against observations and dealiases
+# velocity.  They are kept because both spellings are written down --
+# 2.3.3's own docs/install.md extras table names them, and until this
+# release two code remedies told readers to run them -- and pip fails an
+# install naming an extra that does not exist.  Never invalidate an
+# install line that already works.
+obs = []
+dealias = []
 # psutil: tests/test_prepare_hrrr_wrf.py's Windows arm walks the process
 # ancestry to find the cmd.exe shim that owns a decoder worker, and a
 # fresh venv running the union battery breaks on the bare import.  It is
@@ -138,6 +181,26 @@ dealias = ["scipy>=1.11"]
 # already declared where their features live: pyshp (task #65) in
 # [render] and scipy (task #78) in [obs]/[dealias].
 dev = ["pytest>=8.0", "psutil>=5.9"]
+# Maintainer-only, and both entries are the same shape: a tool that
+# REGENERATES something the wheel ships, reachable by nobody else.
+#
+# `python -m tools.publish_geog_mirror upload` pushes the WPS_GEOG mirror
+# snapshot to Hugging Face.  It needs write credentials on a dataset
+# repository nobody but the maintainers owns -- but huggingface_hub was
+# declared in NO table at all, which is the same third state pyshp and
+# scipy were in.
+#
+# `python -m tools.harvest_radar_heights` reads `/where/height` out of one
+# European polar volume per radar to fill the antenna heights in
+# `gpuwm/obs/data/radar_sites_odim.json`, which the wheel ships frozen.  A
+# user reads that table; only a maintainer rebuilds it, and rebuilding it
+# means opening HDF5 from Python.  Nothing on a user path does: the product
+# decodes ODIM through `rw_odim`, which carries its own pure-Rust reader,
+# so h5py is a build-the-table dependency and not a read-the-table one.
+#
+# Deliberately outside [all]: an extra nobody can use should not be in the
+# one-liner.
+publish = ["huggingface_hub>=0.23", "h5py>=3.10"]
 # The two extras a person running a forecast on their own card needs,
 # under one name, so the quickstart is one pip line instead of a choice
 # between two that most readers want both of.  It does not name geog
@@ -148,6 +211,21 @@ dev = ["pytest>=8.0", "psutil>=5.9"]
 # running the model -- was sound about the JOB and wrong about the
 # consequence: it left the documented terrain path unreachable from
 # every install line the project publishes.
+#
+# obs and dealias are absent for the same reason and not a different one:
+# they are empty now.  The 2.3.2 audit's H14 -- "pip install
+# 'gpuwm[all-cu12]' silently ships without velocity dealiasing" -- is
+# closed by scipy being a base dependency, NOT by aggregating a name
+# here.  Aggregation would have been the bandaid: [all] would have been
+# right and a bare `pip install gpuwm` would still have been missing the
+# default dealias engine.
+#
+# The invariant, rather than the enumeration, is what is enforced:
+# tests/test_dependency_declaration_parity.py fails if any extra that is
+# NOT dev, publish or a CUDA-major alternative ever holds a requirement
+# [all-cu12]/[all-cu13] does not.  So the day one of these regains
+# content, the aggregate covers it by construction instead of by somebody
+# remembering -- which is exactly what failed in 2.3.2.
 #
 # One [all-*] per CUDA major for the same reason [gpu-*] is split: the
 # quickstart's one-liner is the single most-followed instruction in the
@@ -209,6 +287,11 @@ gpuwm = [
     "data/**/*",
 ]
 "gpuwm.core.kernels" = ["*.cu", "*.cuh"]
+# The frozen surface-observation network table. It is the thing that turns a
+# domain anywhere on Earth into the network ids the surface front door is
+# asked for, so a wheel without it can fetch nothing outside whatever the
+# caller happened to name by hand.
+"gpuwm.obs" = ["data/**/*"]
 # The FTZ claim census is a shipped register, not a development artifact: a
 # reader who installs the wheel and finds an FTZ sentence in the docs needs
 # the record that says which measured cell backs it.

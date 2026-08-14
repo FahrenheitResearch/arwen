@@ -251,7 +251,8 @@ def build_from_clone_hint(
     return tuple(lines)
 
 
-def prebuilt_bundle_offer() -> tuple[str, ...] | None:
+def prebuilt_bundle_offer(artifact: str | None = None
+                          ) -> tuple[str, ...] | None:
     """The ``gpuwm fetch-bridges`` lead-in, or None when it would lie.
 
     Returned only when this install can actually do it: a platform key
@@ -260,6 +261,20 @@ def prebuilt_bundle_offer() -> tuple[str, ...] | None:
     artifacts on disk, so the offer is never a promise about a release
     that has not happened -- a tree whose pins name no platform gets the
     build-from-source remedy it has always got, unchanged.
+
+    ``artifact``, when given, adds the third question, and it is the one
+    whose absence cost a whole wave.  ``gpuwm.obs.frontdoor`` refused
+    with this block at its head -- "the MRMS front door (rw_mrms) is not
+    built or not found.  gpuwm fetch-bridges ..." -- because *a* bundle
+    existed for the platform.  It never asked whether ``rw_mrms`` was
+    IN that bundle, and it was not; running the offered command printed
+    "all artifacts already staged and pin-valid" and the refusal
+    repeated verbatim.  A remedy that cannot supply what the refusal is
+    about is worse than no remedy: it reads as a broken machine rather
+    than a missing feature, and it costs the reader the download before
+    it tells them nothing changed.  Named here, once, so no caller can
+    reintroduce it: an artifact the pinned bundle does not carry gets
+    the build-from-source route, which is true.
 
     Every line is a command or a ``#`` comment, because doctor prints
     these verbatim and claims exactly that of them.
@@ -275,6 +290,9 @@ def prebuilt_bundle_offer() -> tuple[str, ...] | None:
         return None
     if bundle is None:
         return None
+    if artifact is not None and not any(
+            pin.artifact == artifact for pin in bundle.binaries):
+        return None
     mib = bundle.bytes / (1024 * 1024)
     return (
         "  gpuwm fetch-bridges",
@@ -286,6 +304,23 @@ def prebuilt_bundle_offer() -> tuple[str, ...] | None:
         "  # --from DIR stages the same bundle from a local directory, "
         "offline.",
     )
+
+
+def _offer_for(artifact: str | None) -> tuple[str, ...] | None:
+    """:func:`prebuilt_bundle_offer`, called the way it has always been.
+
+    The artifact-aware parameter is an ADDITION, so a caller with
+    nothing to say about a specific artifact must still reach the
+    function through its original zero-argument shape.  ``gpuwm doctor``
+    substitutes a stand-in for this function in its own tests, and a
+    stand-in written against the old signature is not a stale test --
+    it is every out-of-tree caller that ever wrapped it.  Passing
+    ``None`` positionally would break all of them for no gain.
+    """
+
+    if artifact is None:
+        return prebuilt_bundle_offer()
+    return prebuilt_bundle_offer(artifact)
 
 
 def _as_comments(block: str) -> str:
@@ -309,10 +344,10 @@ def _as_comments(block: str) -> str:
     return "\n".join(lines)
 
 
-def _bundle_first(build_block: str) -> str:
+def _bundle_first(build_block: str, artifact: str | None = None) -> str:
     """``gpuwm fetch-bridges`` first, the source build commented after it."""
 
-    offer = prebuilt_bundle_offer()
+    offer = _offer_for(artifact)
     if offer is None:
         return build_block
     return "\n".join(offer + (
@@ -337,7 +372,8 @@ def sources_present(crate_relative: str = CRATE_RELATIVE) -> bool:
 
 
 def install_aware_build_hint(one_liner: str,
-                             crate_relative: str = CRATE_RELATIVE) -> str:
+                             crate_relative: str = CRATE_RELATIVE,
+                             artifact: str | None = None) -> str:
     """A cargo one-liner, or the whole bootstrap when there is no crate.
 
     One call site, two true answers.  Handing a pip user
@@ -355,11 +391,13 @@ def install_aware_build_hint(one_liner: str,
 
     if sources_present(crate_relative):
         return one_liner
-    return _bundle_first("\n".join(build_from_clone_hint(crate_relative)))
+    return _bundle_first("\n".join(build_from_clone_hint(crate_relative)),
+                         artifact)
 
 
 def install_aware_one_line_hint(one_liner: str,
-                                crate_relative: str = CRATE_RELATIVE) -> str:
+                                crate_relative: str = CRATE_RELATIVE,
+                                artifact: str | None = None) -> str:
     """The same two truths, for a caller that may emit only ONE line.
 
     ``install_aware_build_hint``'s pip answer is the whole bootstrap --
@@ -376,7 +414,7 @@ def install_aware_one_line_hint(one_liner: str,
 
     if sources_present(crate_relative):
         return one_liner
-    if prebuilt_bundle_offer() is not None:
+    if _offer_for(artifact) is not None:
         return ("run `gpuwm fetch-bridges`, which stages this platform's "
                 "prebuilt artifacts under the SHA-256 pins packaged with "
                 "this release (`gpuwm doctor` prints the source-build "
@@ -700,7 +738,7 @@ def bridge_abi_matches(name: str, path: Path) -> tuple[bool, str]:
 
 def artifact_remedy(*, env_var: str, filename: str, subject: str,
                     crate_relative: str = CRATE_RELATIVE,
-                    one_liner: str = "") -> str:
+                    one_liner: str = "", artifact: str | None = None) -> str:
     """The remedy for one missing built artifact, true for THIS install.
 
     Two installs, two different true answers.  In a source checkout the
@@ -727,6 +765,14 @@ def artifact_remedy(*, env_var: str, filename: str, subject: str,
     route on a platform with no bundle, and commented because a reader
     who pastes the report must not also compile what the line above
     already staged.
+
+    ``artifact`` is the bundle name of the thing being remedied, and
+    passing it is how a caller says "check that the bundle carries THIS
+    one" rather than "check that a bundle exists".  See
+    :func:`prebuilt_bundle_offer` for the wave that cost.  Callers that
+    omit it get the old behaviour, which is correct for the artifacts
+    that have always been in the bundle and is what the checkout branch
+    above does anyway.
     """
 
     crate = _package_parent() / Path(crate_relative)
@@ -749,7 +795,7 @@ def artifact_remedy(*, env_var: str, filename: str, subject: str,
         f"  # OR, instead of copying, point gpuwm at the build in place:\n"
         f"  #   {env_var}={clone_built}\n"
         f"  #   (relative to the directory you ran git clone in)")
-    offer = prebuilt_bundle_offer()
+    offer = _offer_for(artifact)
     if offer is None:
         return (
             "# this install carries no Rust sources -- the wheel ships "
@@ -798,11 +844,50 @@ def install_into_default_bridge_dir(built: str) -> str:
 
 
 def bridge_remedy(name: str) -> str:
-    """The remedy for a missing GRIB bridge, true for THIS install."""
+    """The remedy for a missing GRIB bridge, true for THIS install.
+
+    Deliberately does NOT pass ``artifact``, unlike
+    :func:`cpu_bridge_remedy` and :meth:`gpuwm.obs.frontdoor.FrontDoor
+    .remedy`.  The five GRIB decoders have been in every bundle this
+    project has published, so the membership question the parameter asks
+    has one answer for them and adding it would change no output -- while
+    it WOULD change the arity of the ``prebuilt_bundle_offer`` call, and
+    ``gpuwm doctor``'s tests substitute a zero-argument stand-in for that
+    function.  Breaking a stand-in to produce identical text is a bad
+    trade.  The doctor lane widening that stand-in is the handoff that
+    unblocks it; until then this is the historical call, unchanged.
+    """
 
     return artifact_remedy(
         env_var=BRIDGE_ENV[name], filename=executable_name(name),
         subject="the GRIB bridges")
+
+
+#: The bundled name and environment variable of the parallel CPU
+#: preprocessing library.  Declared here beside every other artifact's
+#: because :mod:`gpuwm.ingest.cpu_backend` is a numpy-importing module
+#: and its resolver's REMEDY has to be composable from this one, which
+#: imports nothing but the standard library.
+CPU_BRIDGE_ARTIFACT = "gpuwm_preprocess_cpu"
+CPU_BRIDGE_ENV = "GPUWM_CPU_PREPROCESS_BRIDGE"
+
+
+def cpu_bridge_remedy(filename: str) -> str:
+    """The remedy for a missing CPU preprocessing library.
+
+    ``ingest/cpu_backend.py``'s resolver was the one refusal in the
+    estate whose message never said how to fix it: it listed the paths
+    it searched and stopped.  Every path it lists is a rung of the same
+    ladder ``gpuwm fetch-bridges`` stages into, and the library IS in
+    the bundle -- so the answer existed the whole time and the message
+    just never carried it.  Composed from the shared builder so it says
+    what this install can actually do, exactly like the GRIB bridges'.
+    """
+
+    return artifact_remedy(
+        env_var=CPU_BRIDGE_ENV, filename=filename,
+        subject="the parallel CPU preprocessing library",
+        artifact=CPU_BRIDGE_ARTIFACT)
 
 
 #: A bridge's out-of-range refusal, as it reaches Python: the field, the
@@ -861,6 +946,7 @@ __all__ = [
     "launchable", "native_executable_format", "quiet_loader_errors",
     "BRIDGE_ABI_MARKERS", "bridge_abi_matches",
     "BRIDGE_ENV", "CARGO_BUILD_HINT", "CLONE_DIR", "CRATE_RELATIVE",
+    "CPU_BRIDGE_ARTIFACT", "CPU_BRIDGE_ENV", "cpu_bridge_remedy",
     "REPOSITORY_URL", "RUSTWX_CRATE_RELATIVE", "WINDOWS_SHELL",
     "artifact_candidates", "cargo_build_one_liner",
     "artifact_remedy", "bridge_candidates", "bridge_remedy",

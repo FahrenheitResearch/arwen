@@ -158,7 +158,14 @@ def test_a_geo_pack_comes_back_as_two_matching_float64_grids(tmp_path):
 
 def test_every_front_door_declares_a_distinct_name_env_and_abi():
     doors = list(frontdoor.FRONT_DOORS.values())
-    assert len(doors) == 3
+    # mrms, stage4, asos, goes, opera, odim. The count is asserted so a
+    # registry that quietly lost a door fails here rather than in a case
+    # that scores against one fewer instrument than it was asked for.
+    # rw_goes joined because the GOES writer had a reader
+    # (gpuwm.obs.goes_pack) and no resolver at all, so a wheel user could
+    # parse a pack and had no packaged way to obtain one; opera and odim
+    # joined as the European composite and polar-volume routes.
+    assert len(doors) == 6, sorted(frontdoor.FRONT_DOORS)
     for attribute in ("name", "env_var", "abi_marker"):
         values = [getattr(door, attribute) for door in doors]
         assert len(set(values)) == len(values), f"{attribute} is not distinct"

@@ -36,18 +36,37 @@ still reading plausibly.
 
 Run it::
 
+    python -m gpuwm.verify.cases.les_tornado_dodgecity_20160524 --help
     python -m gpuwm.verify.cases.les_tornado_dodgecity_20160524
+    python -m gpuwm.verify.cases.les_tornado_dodgecity_20160524 \\
+        --config PATH/TO/les_tornado_100m_dodgecity_20160524.toml
+
+The config is a repository file under ``configs/``, which is not a
+package and so is in no wheel.  From an installed gpuwm, name it with
+``--config`` or point ``GPUWM_CONFIGS_ROOT`` at a checkout's ``configs``
+directory; the refusal says so itself.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from datetime import datetime
 from pathlib import Path
 
-#: The config this case is the module half of.
-CONFIG = (Path(__file__).resolve().parents[3] / "configs"
-          / "les_tornado_100m_dodgecity_20160524.toml")
+from gpuwm.verify.cases import _repo_config
+
+#: This module's dotted name, correct under ``python -m`` too.
+MODULE = _repo_config.module_name(__name__, globals().get("__spec__"))
+
+#: The name of the config this case is the module half of.
+CONFIG_NAME = "les_tornado_100m_dodgecity_20160524.toml"
+
+#: Where that config lives in a source checkout.  A wheel does not ship
+#: `configs/`, so this path is a DEFAULT and a display value, never an
+#: assumption -- :func:`main` takes ``--config`` and refuses by name when
+#: neither it nor ``GPUWM_CONFIGS_ROOT`` finds the file.
+CONFIG = _repo_config.default_path(CONFIG_NAME)
 
 #: The owner ruling this case implements.
 RATIFICATION = ("docs/superpowers/specs/"
@@ -111,23 +130,45 @@ INFLOW_AMPLITUDE_SCALE = 1.0
 
 
 def _levels_below(eta, p_top: float, bl_top: float) -> int:
-    """Half levels below ``bl_top`` metres, through the shipped tool."""
+    """Half levels below ``bl_top`` metres, through the shipped tool.
 
-    sys.path.insert(0, str(CONFIG.resolve().parents[1] / "tools"))
+    ``tools`` IS a shipped package, so asking for it by name is the route
+    that works from a wheel.  The path form below still resolves under an
+    installed wheel -- ``<CONFIG>/..`` lands on site-packages and
+    ``site-packages/tools`` exists -- but only by coincidence, and while it
+    sits on ``sys.path[0]`` its 142 top-level module names shadow the
+    standard library.  It stays only as a fallback for a checkout run whose
+    repository root is not on ``sys.path``.
+    """
+
     try:
-        from build_stretched_eta_ladder import score_ladder
-    finally:
-        sys.path.pop(0)
+        from tools.build_stretched_eta_ladder import score_ladder
+    except ImportError:  # pragma: no cover - checkout-only fallback
+        sys.path.insert(0, str(_repo_config.default_path(".").parent.parent
+                               / "tools"))
+        try:
+            from build_stretched_eta_ladder import score_ladder
+        finally:
+            sys.path.pop(0)
     return score_ladder(list(eta), p_top=p_top, hybrid_opt=2, etac=0.2,
                         bl_top=bl_top)["levels_below_bl_top"]
 
 
-def audit() -> list[str]:
-    """Every way the shipped config could have drifted from the ruling."""
+def audit(config: Path | None = None) -> list[str]:
+    """Every way the shipped config could have drifted from the ruling.
+
+    ``config`` defaults to whichever readable copy :mod:`_repo_config`
+    finds; :func:`main` resolves it and refuses before calling here, so
+    reaching this function with nothing on disk is a programming error
+    rather than a user one.
+    """
 
     from gpuwm.experiment import load_experiment
 
-    exp = load_experiment(str(CONFIG))
+    if config is None:
+        config = _repo_config.locate(CONFIG_NAME) or CONFIG
+    config = Path(config)
+    exp = load_experiment(str(config))
     bad: list[str] = []
 
     if exp.start_time != START_TIME:
@@ -193,7 +234,7 @@ def audit() -> list[str]:
     # half the case's identity. Read them back off the file.
     import tomllib
 
-    with CONFIG.open("rb") as handle:
+    with config.open("rb") as handle:
         fetch = tomllib.load(handle).get("fetch", {})
     if fetch.get("source") != "hrrr":
         bad.append(f"fetch source {fetch.get('source')!r} is not hrrr")
@@ -210,10 +251,49 @@ def audit() -> list[str]:
     return bad
 
 
+def build_parser() -> argparse.ArgumentParser:
+    """This module's command line.
+
+    Built and parsed BEFORE anything is read off disk, so ``--help``
+    answers on a machine that does not have the config -- which is every
+    machine that installed a wheel.  It used to run the drift audit as
+    the first statement of ``main``, so ``--help`` itself died on a
+    missing file.
+    """
+
+    parser = argparse.ArgumentParser(
+        prog=f"python -m {MODULE}",
+        description=("Check the PARKED Dodge City 2016-05-24 LES config "
+                     "against the ratified pins.  This is the drift "
+                     "audit only: the case is PARKED and the ingest "
+                     "route refuses its cycle, so it does not run."))
+    parser.add_argument(
+        "--config", type=Path, default=None, metavar="TOML",
+        help=(f"the {CONFIG_NAME} to audit.  Omitted, it is looked for "
+              f"under ${_repo_config.CONFIG_ROOT_ENV} and then beside "
+              "the package; a wheel ships no `configs/`, so on an "
+              "installed gpuwm this flag is how the file is named"))
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
-    bad = audit()
+    args = build_parser().parse_args(argv)
+    config = args.config
+    if config is None:
+        config = _repo_config.locate(CONFIG_NAME)
+    if config is None:
+        print(f"{MODULE.rsplit('.', 1)[-1]}: "
+              + _repo_config.missing_config_message(CONFIG_NAME),
+              file=sys.stderr)
+        return 2
+    config = Path(config)
+    if not config.is_file():
+        print(f"{MODULE.rsplit('.', 1)[-1]}: --config is not a readable "
+              f"file: {config.resolve()}", file=sys.stderr)
+        return 2
+    bad = audit(config)
     print(f"case      : Dodge City, KS, {CASE_DAY:%Y-%m-%d}")
-    print(f"config    : {CONFIG.name}")
+    print(f"config    : {config}")
     print(f"ruling    : {RATIFICATION}")
     print(f"screens   : {EXPECTATIONS}")
     print(f"ingest    : {INGEST_FINDING}")
@@ -234,8 +314,9 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["CONFIG", "CASE_DAY", "CHAIN", "BOX_CENTER_LAT", "BOX_CENTER_LON",
-           "HRRR_CYCLE", "RATIFIED_NZ", "audit", "main"]
+__all__ = ["CONFIG", "CONFIG_NAME", "CASE_DAY", "CHAIN", "BOX_CENTER_LAT",
+           "BOX_CENTER_LON", "HRRR_CYCLE", "RATIFIED_NZ", "audit",
+           "build_parser", "main"]
 
 
 if __name__ == "__main__":

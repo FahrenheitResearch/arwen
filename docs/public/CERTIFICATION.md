@@ -26,6 +26,9 @@ the whole list rather than the first refusal and a rerun.
 | Condition | Refuses when |
 |---|---|
 | `capsule_validates` | the run capsule does not validate against `gpuwm.certification-capsule/v1` |
+| `kernel_manifest_records_a_compiled_module` | the capsule's kernel manifest recorded nothing, so no compiled kernel witnesses the numbers it carries |
+| `compile_platform_recorded` | the capsule cannot name the compiler that built it — the NVRTC build, its build id, the library digest, the driver, the device's compute capability, CuPy or NumPy went unmeasured |
+| `compile_platform_matches_this_process` | the compile platform moved between the capsule and this process, **or** this process cannot witness it at all |
 | `band_config_identity_matches_capsule` | the band's `config_sha256` is not the configuration the capsule records |
 | `wrf_reference_hashes_present` | the WRF reference manifest is missing any of its four hash groups |
 | `geography_input_hashed_by_content` | a declared directory input was bound by its listing (`sha256-directory-inventory`) rather than by its bytes |
@@ -33,6 +36,34 @@ the whole list rather than the first refusal and a rerun.
 | `every_metrics_column_classified` | the metrics CSV carries a column the band's `metric_coverage` does not classify |
 | `the_comparison_is_not_empty` | the run produced no metrics row, or the band gates none of the columns it did produce, so no comparison was made at all |
 | `every_banded_row_inside_its_interval` | a gated comparison row falls strictly outside its own interval |
+
+### The compile platform
+
+Every acceptance gate stated in ULP is a measurement of *the compiled kernel*,
+not of the source. On 2026-08-04 this project's kernel compiler changed
+underneath a certified table with no tracked input moving — CuPy resolved a
+different NVRTC out of `site-packages` — and a certified column moved with it.
+So `certify` re-measures the compile platform and compares it, item for item,
+against what the capsule recorded in its own pins.
+
+Two fingerprints that measured *nothing* are equal, so agreement alone proves
+nothing. The comparison is therefore only reported when both sides resolved
+every item; otherwise the verdict's `drift` field is `null` — suppressed, not
+empty — and the condition refuses. That is this document's own rule applied to
+itself: where a check cannot be made, the answer is a refusal naming the
+condition, not a pass with a caveat.
+
+The practical consequence: **run `gpuwm certify` on a process that can see the
+CUDA/NVRTC stack**, normally the box that produced the capsule. Certifying an
+archived capsule on a machine with no CUDA stack refuses
+`compile_platform_matches_this_process`, naming what it could not measure and
+what the capsule recorded. Nothing here needs a device to be *idle* — NVRTC
+reports its build without one.
+
+The verdict binds the whole `compile_platform` block — both fingerprints, the
+drift list, and whether a comparison was possible at all — so a reader
+recomputes the answer rather than trusting the label, and the `PASS` line
+names the NVRTC build it witnessed.
 
 `every_metrics_column_classified` and `every_banded_row_inside_its_interval`
 are the ones that catch drift rather than mistakes. A comparator column added

@@ -198,10 +198,19 @@ REASON_NAMES = {
 
 #: What to tell a caller who asked for dealiasing on an install that cannot
 #: do it.  Spelled out here, once, so both entry points say the same thing.
+#:
+#: It no longer offers the dealias extra.  scipy is a runtime dependency
+#: now, so that extra is an empty compatibility alias: installing it
+#: installs nothing and the next attempt fails identically.  A remedy that
+#: does not remedy is worse than none -- reaching this message means the
+#: environment lost a declared dependency, which is a different problem
+#: with a different fix.
 SCIPY_REMEDY = (
-    "velocity dealiasing needs scipy (scipy.sparse.csgraph.connected_components "
-    "labels the gate regions); install it with `pip install scipy>=1.11` or "
-    "`pip install gpuwm[dealias]`")
+    "the vad-region dealiasing engine needs scipy "
+    "(scipy.sparse.csgraph.connected_components labels the gate regions). "
+    "scipy is a required dependency of gpuwm, so this environment is "
+    "incomplete: repair it with `pip install --upgrade --force-reinstall "
+    "gpuwm`, or install the one package with `pip install 'scipy>=1.11'`")
 
 
 def scipy_available() -> bool:

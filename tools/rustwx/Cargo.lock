@@ -1741,6 +1741,7 @@ dependencies = [
  "chrono",
  "flate2",
  "grib-core",
+ "hdf5-reader",
  "rustwx-core",
  "rustwx-io",
  "rw-nexrad",
@@ -1748,6 +1749,19 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+]
+
+[[package]]
+name = "rw-odim"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hdf5-reader",
+ "rw-nexrad",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]

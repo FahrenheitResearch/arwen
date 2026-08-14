@@ -716,7 +716,8 @@ def test_captured_config_loader_keeps_original_source_and_relative_base(
         observed["experiment"] = (raw, source)
         return "experiment"
 
-    def build_case_data(raw, *, source, base_dir, require_inputs=True):
+    def build_case_data(raw, *, source, base_dir, require_inputs=True,
+                        **kwargs):
         observed["case_data"] = (raw, source, base_dir)
         observed["require_inputs"] = require_inputs
         return "case-data"
@@ -1053,7 +1054,7 @@ def test_resolved_input_hashes_records_the_algorithm_it_used(
                     case_data.ResolvedInput(role="geog_root", path=tree))
 
     monkeypatch.setattr(case_data, "load_experiment_case",
-                        lambda _path: (None, _Case()))
+                        lambda _path, **_kwargs: (None, _Case()))
     hashes = supervisor.resolved_input_hashes(
         tmp_path / "case.toml", directory_hash=mode)
     assert hashes[f"geog_root:{tree}"]["algorithm"] == \

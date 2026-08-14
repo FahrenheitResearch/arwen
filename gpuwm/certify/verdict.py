@@ -32,19 +32,27 @@ from gpuwm.certify.band import (CLASSIFICATION_BANDED, ROW_KEY_COLUMNS,
                                 BandError, place_value, validate_band)
 from gpuwm.certify.capsule import (GEOGRAPHY_INVENTORY_ALGORITHM,
                                    validate_certification_capsule)
+from gpuwm.certify.compile_platform import (compile_platform_agreement,
+                                            compile_platform_fingerprint,
+                                            describe_fingerprint,
+                                            recorded_compile_platform)
+from gpuwm.certify.kernel_manifest import manifest_is_empty
 from gpuwm.certify.pins import unresolved_pins
 from gpuwm.certify.wrf_reference import (absent_reference_hashes,
                                          reference_binding,
                                          validate_wrf_reference_manifest)
 
 VERDICT_SCHEMA_ID = "gpuwm.certification-verdict/v1"
-VERDICT_SCHEMA_VERSION = "1.1.0"
+VERDICT_SCHEMA_VERSION = "1.2.0"
 
 #: The declared refusal conditions, in the order the verdict reports them.
 #: Every one is named in F3 AC4; adding a condition means adding it here, and
 #: the verdict then carries it whether it fired or not.
 CONDITIONS: tuple[str, ...] = (
     "capsule_validates",
+    "kernel_manifest_records_a_compiled_module",
+    "compile_platform_recorded",
+    "compile_platform_matches_this_process",
     "band_config_identity_matches_capsule",
     "wrf_reference_hashes_present",
     "geography_input_hashed_by_content",
@@ -52,6 +60,19 @@ CONDITIONS: tuple[str, ...] = (
     "every_metrics_column_classified",
     "the_comparison_is_not_empty",
     "every_banded_row_inside_its_interval",
+)
+
+#: Conditions added at 1.2.0: the compile platform the run's kernels were
+#: built by, and whether the run compiled a kernel at all.  Both existed as
+#: written, tested, exported functions that NOTHING CALLED -- so
+#: ``gpuwm certify`` printed PASS for a capsule built by a different NVRTC
+#: than the one now installed, and for a capsule whose kernel manifest
+#: recorded nothing.  On 2026-08-04 exactly that compiler change moved a
+#: certified ULP table with every tracked input unchanged.
+_ADDED_AT_1_2_0: tuple[str, ...] = (
+    "kernel_manifest_records_a_compiled_module",
+    "compile_platform_recorded",
+    "compile_platform_matches_this_process",
 )
 
 #: What each published verdict schema version declared, so an older
@@ -74,8 +95,11 @@ CONDITIONS: tuple[str, ...] = (
 #: an invented one -- fails closed with its own sentence.
 CONDITIONS_BY_SCHEMA_VERSION: Mapping[str, tuple[str, ...]] = {
     "1.0.0": tuple(name for name in CONDITIONS
-                   if name != "the_comparison_is_not_empty"),
-    "1.1.0": CONDITIONS,
+                   if name != "the_comparison_is_not_empty"
+                   and name not in _ADDED_AT_1_2_0),
+    "1.1.0": tuple(name for name in CONDITIONS
+                   if name not in _ADDED_AT_1_2_0),
+    "1.2.0": CONDITIONS,
 }
 
 #: The floor under "a comparison happened at all".
@@ -322,6 +346,89 @@ def _condition(name: str, satisfied: bool, detail: str) -> dict[str, Any]:
     return {"condition": name, "satisfied": bool(satisfied), "detail": detail}
 
 
+def _kernel_manifest_condition(capsule: Mapping[str, Any]) -> dict[str, Any]:
+    """Refuse a capsule whose kernel manifest recorded no compiled module.
+
+    The same shape ``the_comparison_is_not_empty`` closes on the metrics
+    side, one layer in: ``gpuwm dual-run`` already refuses an empty screen,
+    and certification did not, so a capsule that compiled nothing -- a
+    CPU-only route, a run whose recorder was never reached -- certified as
+    PASS against a band whose intervals were measured on compiled kernels.
+
+    The manifest judged is the capsule's own, never this process's: a
+    certifier compiles no kernels.
+    """
+    manifest = capsule.get("kernel_manifest")
+    manifest = manifest if isinstance(manifest, Mapping) else {}
+    if manifest_is_empty(manifest):
+        return _condition(
+            "kernel_manifest_records_a_compiled_module", False,
+            "the capsule's kernel manifest recorded no compiled module; a "
+            "run that compiled nothing cannot be certified against a band "
+            "measured on compiled kernels.  Re-run the forecast on a route "
+            "that compiles its kernels, and certify that run's capsule")
+    keys = sorted(manifest)
+    shown = ", ".join(keys[:4]) + (f" (+{len(keys) - 4} more)"
+                                   if len(keys) > 4 else "")
+    return _condition(
+        "kernel_manifest_records_a_compiled_module", True,
+        f"the capsule's kernel manifest records {len(keys)} translation "
+        f"unit(s): {shown}")
+
+
+def _compile_platform_conditions(agreement: Mapping[str, Any]
+                                 ) -> list[dict[str, Any]]:
+    """The two platform refusals, from one evaluated agreement.
+
+    Split because they fail for different reasons and a reader is owed a
+    different sentence for each.  ``compile_platform_recorded`` is about the
+    capsule: one that cannot name the compiler that built it can never
+    witness a compiler change, and no later comparison rescues it.
+    ``compile_platform_matches_this_process`` is about the comparison, and it
+    refuses in BOTH directions of failure -- when the platform moved, and
+    when this process cannot witness the platform at all.
+
+    That second refusal is CERTIFICATION.md's own stated rule ("where a check
+    cannot be made, the answer is a refusal naming the condition, not a pass
+    with a caveat"), and it is what closes the trap: two fingerprints that
+    measured nothing are EQUAL, so a comparison attempted without a witness
+    reports agreement precisely when the instrument knows nothing.
+    """
+    recorded_missing = list(agreement["recorded_unresolved"])
+    measured_missing = list(agreement["measured_unresolved"])
+    conditions = [_condition(
+        "compile_platform_recorded", not recorded_missing,
+        (f"the capsule records a complete compile platform "
+         f"({describe_fingerprint(agreement['recorded'])})")
+        if not recorded_missing else
+        (f"the capsule records no measured value for {recorded_missing}; a "
+         f"capsule that cannot name the compiler that built it cannot "
+         f"witness a compiler change, which is what moved a certified table "
+         f"on 2026-08-04 with every tracked input unchanged"))]
+
+    if agreement["agreed"]:
+        detail = (f"this process measures the compile platform the capsule "
+                  f"records ({describe_fingerprint(agreement['measured'])})")
+    elif agreement["comparable"]:
+        detail = ("the compile platform moved between the capsule and this "
+                  "process:\n" + "\n".join(agreement["drift"]))
+    elif recorded_missing:
+        detail = (f"no comparison was attempted: the capsule records no "
+                  f"measured value for {recorded_missing}")
+    else:
+        detail = (
+            f"no comparison was attempted: this process measured nothing for "
+            f"{measured_missing}, so it cannot witness the compile platform.  "
+            f"The capsule was built by "
+            f"{describe_fingerprint(agreement['recorded'])}.  Certify on the "
+            f"box that produced the capsule, or install the CUDA/NVRTC stack "
+            f"here (pip install 'gpuwm[gpu-cu13]') so the comparison can be "
+            f"made")
+    conditions.append(_condition(
+        "compile_platform_matches_this_process", agreement["agreed"], detail))
+    return conditions
+
+
 def build_verdict(*, capsule: Mapping[str, Any], band: Mapping[str, Any],
                   wrf_reference: Mapping[str, Any],
                   metrics_fieldnames: Sequence[str],
@@ -341,6 +448,16 @@ def build_verdict(*, capsule: Mapping[str, Any], band: Mapping[str, Any],
     except Exception as error:
         conditions.append(_condition(
             "capsule_validates", False, f"{type(error).__name__}: {error}"))
+
+    conditions.append(_kernel_manifest_condition(capsule))
+
+    # The compile platform: what the capsule recorded, against what this
+    # process measures now.  Measured here rather than accepted as an
+    # argument on purpose -- a parameter would be a door through which a
+    # caller could hand certification the answer it wanted.
+    agreement = compile_platform_agreement(
+        recorded_compile_platform(capsule), compile_platform_fingerprint())
+    conditions.extend(_compile_platform_conditions(agreement))
 
     capsule_config = _capsule_config_sha256(capsule)
     band_config = band.get("config_sha256")
@@ -437,6 +554,7 @@ def build_verdict(*, capsule: Mapping[str, Any], band: Mapping[str, Any],
             "columns": list(metrics_fieldnames),
             "row_count": len(rows),
         },
+        "compile_platform": dict(agreement),
         "conditions": conditions,
         "comparisons": comparisons,
     }
@@ -456,6 +574,7 @@ BOUND_KEYS: tuple[str, ...] = (
     "band",
     "wrf_reference",
     "metrics",
+    "compile_platform",
     "conditions",
     "comparisons",
 )
@@ -514,6 +633,40 @@ def rederive_verdict_reason(verdict: Mapping[str, Any]) -> tuple[bool, str]:
                    if item.get("satisfied") is not True]
     if unsatisfied:
         return False, f"conditions not satisfied: {unsatisfied}"
+
+    # Version-AWARE, unlike the comparison-population floor above, and for a
+    # different reason.  That floor re-checks a field every version carries.
+    # This block does not exist before 1.2.0 at all, so demanding it of a
+    # genuine 1.1.0 verdict would make an older document indistinguishable
+    # from a forged one -- the very confusion CONDITIONS_BY_SCHEMA_VERSION
+    # was added to end.  A downgrade forgery is not the hole it looks like:
+    # verdict_schema_version, conditions and compile_platform are all inside
+    # the bound inventory, so stripping the block moves capsule_binding_
+    # sha256 and verify_verdict reports the binding broken.
+    if "compile_platform_matches_this_process" in expected:
+        platform = verdict.get("compile_platform")
+        if not isinstance(platform, Mapping):
+            return False, (
+                f"verdict_schema_version {declared} declares the compile-"
+                "platform conditions but the document binds no "
+                "compile_platform block, so nothing witnesses which compiler "
+                "built the run's kernels")
+        if compile_platform_agreement(platform.get("recorded"),
+                                      platform.get("measured")
+                                      ) != dict(platform):
+            return False, (
+                "the bound compile_platform block does not recompute from "
+                "its own recorded and measured fingerprints -- a relabelled "
+                "agreement, not a measured one")
+        if platform.get("agreed") is not True:
+            return False, (
+                "the bound compile_platform block does not agree: "
+                + ("no comparison was made (unresolved -- recorded "
+                   f"{list(platform.get('recorded_unresolved') or [])}, "
+                   f"measured "
+                   f"{list(platform.get('measured_unresolved') or [])})"
+                   if not platform.get("comparable")
+                   else f"drift {list(platform.get('drift') or [])}"))
     for index, comparison in enumerate(comparisons):
         if _recompute_comparison(comparison) is not bool(
                 comparison.get("inside")):

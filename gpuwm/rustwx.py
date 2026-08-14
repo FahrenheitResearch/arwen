@@ -90,6 +90,64 @@ def basemap_dir() -> Path:
     return crate_dir() / "assets" / "basemap"
 
 
+#: What to tell a caller whose install cannot read the basemap
+#: shapefiles.  Spelled out here, once, beside the resolver for the
+#: assets it reads, so every entry point says the same thing.
+#:
+#: Two halves, because a reader who installs only the package still
+#: cannot draw: ``pyshp`` reads the geometry and the vendored assets
+#: under :func:`basemap_dir` ARE the geometry, and those arrive in the
+#: bundle ``gpuwm fetch-bridges`` stages.  Naming only the pip line
+#: would send someone to a second failure one step later.
+PYSHP_REMEDY = (
+    "the map frame needs pyshp (it reads the Natural Earth and US Census "
+    "shapefiles the basemap is drawn from); install it with "
+    "`pip install pyshp>=2.3` or `pip install gpuwm[render]`, and run "
+    "`gpuwm fetch-bridges` if the vendored basemap assets are not staged "
+    "yet")
+
+
+def pyshp_available() -> bool:
+    """Whether the shapefile reader every basemap needs can be imported.
+
+    Asked at a front door rather than left to the function-local ``import
+    shapefile`` inside the renderers, for exactly the reason
+    :func:`gpuwm.obs.dealias.scipy_available` exists: the two failures are
+    not the same failure.
+
+    The DA nowcast's render stage runs DEAD LAST -- after the survey, the
+    fetch, the preparation, the free forecast and every DA cycle -- and
+    reaching that import meant a bare ``ModuleNotFoundError: No module
+    named 'shapefile'`` with no message at all, having destroyed the most
+    work of any failure in the product.  Answering here costs a
+    ``find_spec`` before the run starts.
+
+    ``find_spec`` rather than a real import: this is asked on the hot path
+    of a front door that may then not draw anything, and importing a
+    module to learn whether it exists is a side effect a capability check
+    should not have.
+    """
+
+    from importlib.util import find_spec
+
+    try:
+        return find_spec("shapefile") is not None
+    except (ImportError, ValueError):     # pragma: no cover - broken install
+        return False
+
+
+def require_pyshp() -> None:
+    """Import-time gate for a module whose whole job is drawing a map.
+
+    The named refusal the three bare ``import shapefile`` call sites
+    lacked.  ``ImportError`` keeps the class a caller would already be
+    catching around an import, and the message carries the remedy.
+    """
+
+    if not pyshp_available():
+        raise ImportError(PYSHP_REMEDY)
+
+
 #: How many ancestors of the renderer executable's own directory the
 #: renderer walks looking for ``assets/basemap``.  Mirrors
 #: ``rustwx-render``'s ``basemap_root_candidates``; a build at

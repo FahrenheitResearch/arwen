@@ -24,6 +24,43 @@ Direction 2 is the one that would have caught this release's defect
 before it shipped, and it caught two live instances when it was written
 (`gpuwm[obs]` and `gpuwm[dealias]` were named by code remedies and by no
 document at all).
+
+2.3.3 EXTENSION -- the same two directions, applied to the COMMAND LINE.
+
+An extra is one way to make a shipped feature unreachable.  A flag is the
+other, and the 2.3.2 reachability audit found the command surface in both
+failure modes at once:
+
+* Documents named doors that do not exist.  `TILES.md` told a reader to
+  run `gpuwm run CONFIG.toml --case-data ...` and `gpuwm plan`; argparse
+  answers the first with `unrecognized arguments` and the second with
+  `invalid choice: 'plan'`.  Both were born in a documentation commit and
+  never existed in code, so no user could ever have run either.
+* Code defined flags no document named.  `--parent-namelist` gated the
+  whole stock-WRF-parent route that `gpuwm downscale --help` advertises;
+  `--tiles` was the only way to stream the prepared route; `--no-memory-gate`
+  was the only escape from the pre-fetch memory gate.  Forty-six flags on
+  the `gpuwm` subcommands alone appeared in no document at all.
+
+So three more rules, holding the two halves against each other:
+
+3. Every command a user-facing document tells a reader to RUN must name a
+   real door and pass only flags that door defines.
+4. Every option every documented door defines must appear in
+   `docs/public/CLI-OPTIONS.md`, under that door.
+5. Every option `CLI-OPTIONS.md` lists must still exist in that door's
+   parser, so the page cannot outlive a removed flag.
+
+Rule 4 is the one that makes the class non-recurring: it is not possible
+to add a flag and leave it undocumented, because the page is generated
+from the parsers (`python -m tools.build_cli_options_doc`) and this test
+fails when the committed page and the parsers disagree.
+
+A sixth rule covers the same defect in configuration: every key
+`[case_data]` REQUIRES must be named by a user-facing document.
+`output_title` was required at load and appeared in no user-facing page,
+so a reader hand-authoring the table from `CONFIGURATION.md` was refused
+for a key the documentation had never mentioned.
 """
 from __future__ import annotations
 
@@ -263,3 +300,290 @@ def test_the_fence_reader_separates_commands_from_prose():
               "more prose about python tools/y.py\n")
     inside = _fenced_lines(sample)
     assert inside == ["python tools/real_command.py"], inside
+
+
+# ==========================================================================
+# 2.3.3: the command line, in the same two directions.
+# ==========================================================================
+
+# The extractor, the door registry and the resolver are SHARED.  Three
+# partial implementations of "hold a document against the code" already
+# existed when these rules were written -- VERIFICATION.md's recipe
+# parser, CERTIFICATION.md's condition binding, and the extras check
+# above -- so the mechanism lives in one module that all of them import
+# rather than being written a fourth time here.
+from doc_command_parity import (  # noqa: E402
+    FLAG as _FLAG,
+    MODE_DOORS as _MODE_DOORS,
+    code_fragments as _code_fragments,
+    door_options as _door_options,
+    doors as _doors,
+    resolve_door as _resolve_door,
+    user_facing_docs as _user_facing_docs,
+)
+
+
+# --------------------------------------------------------------------------
+# Anti-vacuous floors and instrument self-tests.
+# --------------------------------------------------------------------------
+
+def test_the_user_facing_doc_set_is_real():
+    docs = _user_facing_docs()
+    names = {p.name for p in docs}
+    assert len(docs) > 15, docs
+    for required in ("README.md", "TILES.md", "CONFIGURATION.md",
+                     "FIRST-LIGHT.md", "CLI-OPTIONS.md"):
+        assert required in names, f"{required} is not in the user-facing set"
+
+
+def test_the_door_registry_is_real():
+    doors = _doors()
+    assert len(doors) > 25, sorted(doors)
+    assert "gpuwm run" in doors and "rw-wps" in doors
+    total = sum(len(_door_options(p)) for p in doors.values())
+    assert total > 300, total
+
+
+def test_the_invocation_reader_tells_commands_from_prose():
+    """The instrument, against known answers, BOTH directions."""
+    doors = _doors()
+    assert _resolve_door("gpuwm run CONFIG.toml", doors)[0] == "gpuwm run"
+    assert _resolve_door("$ gpuwm plan --help", doors)[0] == "gpuwm plan"
+    assert _resolve_door("rw-wps --version", doors)[0] == "rw-wps"
+    assert _resolve_door(
+        "python -m gpuwm.prepared_single_domain_forecast --outdir x",
+        doors)[0] == "gpuwm-prepared-forecast"
+    # ...and NOT on prose that merely CONTAINS the program name.  The
+    # rule is positional on purpose: a code span that begins with the
+    # program name is a command, and one that mentions it mid-sentence
+    # is prose.  These four are the real shapes in the corpus -- every
+    # one of them would be a false positive under a "contains" rule.
+    assert _resolve_door(
+        "bl_mynn_mixlength=2 is outside the admitted MYNN option "
+        "identity; gpuwm implements bl_mynn_mixlength=1 only", doors) is None
+    assert _resolve_door("the tree at /path/to/gpuwm the way you got it",
+                         doors) is None
+    assert _resolve_door(
+        "--locked --offline ... which gpuwm then finds on its own",
+        doors) is None
+    # Placeholders are not a claim that a subcommand exists.
+    assert _resolve_door("gpuwm <command>", doors) is None
+    assert _resolve_door("gpuwm SUBCOMMAND", doors) is None
+
+
+def test_the_invocation_reader_catches_a_door_that_does_not_exist():
+    """The negative control: the rule must REJECT the retired shapes.
+
+    `gpuwm plan` and `gpuwm run --case-data` are the two doors TILES.md
+    printed that argparse answers with exit 2.  A guard that only ever
+    passes is not evidence of anything, so the instrument is held
+    against the exact strings the audit found.
+    """
+
+    doors = _doors()
+    name, body = _resolve_door("gpuwm plan --help", doors)
+    assert name == "gpuwm plan"
+    assert name not in doors, (
+        "`gpuwm plan` resolves to a real subcommand now; if it was "
+        "added deliberately this control needs a different retired name")
+
+    name, body = _resolve_door("gpuwm run imported_v2.toml --case-data foo",
+                               doors)
+    assert name == "gpuwm run" and name in doors
+    assert "--case-data" not in _door_options(doors[name]), (
+        "`gpuwm run` defines --case-data now; if it was added "
+        "deliberately this control needs a different retired flag")
+    assert "--case-data" in _FLAG.findall(body)
+
+
+def test_the_flag_reader_finds_flags_and_not_other_dashes():
+    assert _FLAG.findall("gpuwm run C.toml --case-data foo") == \
+        ["--case-data"]
+    assert _FLAG.findall("--a --b-c") == ["--a", "--b-c"]
+    assert _FLAG.findall("a -- b") == []
+    assert _FLAG.findall("value=-3.5 and x--y") == []
+
+
+# --------------------------------------------------------------------------
+# Rule 3: a document may only tell a reader to run a door that exists,
+# with flags that door defines.
+# --------------------------------------------------------------------------
+
+def test_every_command_the_docs_print_names_a_real_door():
+    doors = _doors()
+    root = _repo_root()
+    offenders: list[str] = []
+    for path in _user_facing_docs():
+        rel = path.relative_to(root).as_posix()
+        for lineno, fragment in _code_fragments(
+                path.read_text(encoding="utf-8")):
+            resolved = _resolve_door(fragment, doors)
+            if resolved is None:
+                continue
+            name, _ = resolved
+            if name not in doors:
+                offenders.append(
+                    f"{rel}:{lineno}: `{fragment.strip()[:80]}` -> there "
+                    f"is no `{name}`")
+    assert not offenders, (
+        "a user-facing document tells a reader to run a command that "
+        "does not exist; running it exits 2 with an argparse usage "
+        "dump:\n  " + "\n  ".join(offenders))
+
+
+def test_every_flag_the_docs_pass_is_defined_by_that_door():
+    doors = _doors()
+    root = _repo_root()
+    offenders: list[str] = []
+    for path in _user_facing_docs():
+        rel = path.relative_to(root).as_posix()
+        for lineno, fragment in _code_fragments(
+                path.read_text(encoding="utf-8")):
+            resolved = _resolve_door(fragment, doors)
+            if resolved is None:
+                continue
+            name, body = resolved
+            if name not in doors:
+                continue
+            defined = _door_options(doors[name])
+            # The mode flag NAMES the door; it is the selector, not one
+            # of the options the selected program takes.
+            defined |= {mode for mode, door in _MODE_DOORS.items()
+                        if door == name}
+            for flag in _FLAG.findall(body):
+                if flag not in defined:
+                    offenders.append(
+                        f"{rel}:{lineno}: `{name}` has no {flag}  "
+                        f"({fragment.strip()[:70]})")
+    assert not offenders, (
+        "a user-facing document passes a flag the command does not "
+        "define; the pasted command exits 2:\n  "
+        + "\n  ".join(offenders))
+
+
+# --------------------------------------------------------------------------
+# Rules 4 and 5: the reference page and the parsers, both directions.
+# --------------------------------------------------------------------------
+
+_CLI_OPTIONS_DOC = "docs/public/CLI-OPTIONS.md"
+
+
+def _documented_options() -> dict[str, set[str]]:
+    """door -> flags the committed reference page lists for it."""
+
+    text = (_repo_root() / _CLI_OPTIONS_DOC).read_text(encoding="utf-8")
+    out: dict[str, set[str]] = {}
+    current = None
+    for line in text.splitlines():
+        heading = re.match(r"^##\s+`([^`]+)`\s*$", line)
+        if heading:
+            current = heading.group(1)
+            out.setdefault(current, set())
+            continue
+        if current and line.startswith("| `"):
+            cell = line.split("|")[1].strip().strip("`")
+            for flag in _FLAG.findall(cell):
+                out[current].add(flag)
+    return out
+
+
+def test_every_option_every_door_defines_is_on_the_reference_page():
+    doors = _doors()
+    documented = _documented_options()
+    offenders: list[str] = []
+    for name, parser in sorted(doors.items()):
+        listed = documented.get(name)
+        if listed is None:
+            offenders.append(f"{name}: the page has no section for it")
+            continue
+        for flag in sorted(_door_options(parser)):
+            if flag != "--help" and flag not in listed:
+                offenders.append(f"{name} {flag}")
+    assert not offenders, (
+        f"these options exist in argparse and appear nowhere in "
+        f"{_CLI_OPTIONS_DOC}, so no document names them and no reader "
+        f"can find them.  Regenerate with "
+        f"`python -m tools.build_cli_options_doc`:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_every_option_the_reference_page_lists_still_exists():
+    doors = _doors()
+    documented = _documented_options()
+    offenders: list[str] = []
+    for name, listed in sorted(documented.items()):
+        parser = doors.get(name)
+        if parser is None:
+            continue
+        defined = _door_options(parser)
+        offenders += [f"{name} {flag}" for flag in sorted(listed)
+                      if flag not in defined]
+    assert not offenders, (
+        f"{_CLI_OPTIONS_DOC} documents flags that no longer exist; a "
+        f"reader pasting them gets exit 2.  Regenerate with "
+        f"`python -m tools.build_cli_options_doc`:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_the_reference_page_is_not_stale():
+    """The page and the parsers, byte for byte."""
+
+    from tools.build_cli_options_doc import render
+    current = (_repo_root() / _CLI_OPTIONS_DOC).read_text(encoding="utf-8")
+    assert current == render(), (
+        f"{_CLI_OPTIONS_DOC} is out of date with the parsers; run "
+        "`python -m tools.build_cli_options_doc`")
+
+
+def test_the_reference_page_names_no_developer_machine():
+    """A help string that interpolates a path must not ship one."""
+
+    text = (_repo_root() / _CLI_OPTIONS_DOC).read_text(encoding="utf-8")
+    offenders = [line.strip() for line in text.splitlines()
+                 if re.search(r"[A-Za-z]:\\Users\\|/home/[a-z]", line)]
+    assert not offenders, (
+        "the reference page names a developer's own filesystem:\n  "
+        + "\n  ".join(offenders))
+
+
+# --------------------------------------------------------------------------
+# Rule 6: a required config key must be documented.
+# --------------------------------------------------------------------------
+
+#: Where a reader hand-authoring a config is sent to learn the keys.
+_CONFIG_REFERENCE = "docs/public/CONFIGURATION.md"
+
+
+def test_every_required_case_data_key_is_documented():
+    """In the CONFIG REFERENCE, not merely somewhere in the corpus.
+
+    A key that appears only inside one worked example on another page is
+    findable by someone who already knows to look there.  The page a
+    reader is sent to in order to author the table is the page that has
+    to name every key the loader will refuse them for.
+    """
+
+    from gpuwm.case_data import _REQUIRED_KEYS
+
+    assert _REQUIRED_KEYS, "no required keys at all -- instrument is blind"
+    reference = (_repo_root() / _CONFIG_REFERENCE).read_text(encoding="utf-8")
+    offenders = [key for key in _REQUIRED_KEYS if key not in reference]
+    assert not offenders, (
+        "[case_data] REQUIRES these keys at load and "
+        f"{_CONFIG_REFERENCE} does not name them, so a reader "
+        "hand-authoring the table from the configuration reference is "
+        "refused for a key that page never mentioned:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_every_optional_case_data_key_is_documented():
+    """The optional keys too: an undocumented knob is an unreachable one."""
+
+    from gpuwm.case_data import _OPTIONAL_KEYS
+
+    reference = (_repo_root() / _CONFIG_REFERENCE).read_text(encoding="utf-8")
+    offenders = [key for key in _OPTIONAL_KEYS if key not in reference]
+    assert not offenders, (
+        f"[case_data] accepts these keys and {_CONFIG_REFERENCE} names "
+        "none of them, so the feature each one gates is reachable only "
+        "by reading the source:\n  " + "\n  ".join(offenders))

@@ -390,6 +390,34 @@ Claimed, each with its receipt above or in the linked pages:
   consequences (branch flips on subnormal inputs) and the
   countermeasures taken are recorded per scheme in the registry.
 
+## 6b. The registered cases, and which of them need data
+
+`gpuwm cases` lists every registered case and, beside each, the command
+that runs it. Two doors appear there and they are not
+interchangeable: `gpuwm verify NAME` grades a case against its
+registered `GATES`, and only cases carrying the `verify` capability have
+any; the rest are run as `python -m gpuwm.verify.cases.NAME` and print
+their own result. That is why the listing is longer than `gpuwm verify
+--help`'s choice list.
+
+Every verify case is **self-contained and needs only the GPU runtime**,
+with one exception:
+
+- **`real74_d01`** is a frozen comparison against an external WRF v4.6.1
+  run of 3 April 1974, so it needs that run's reference bundle -- its
+  `namelists/`, `met_em/`, `static/` and `wrfout_reference/` subtrees.
+  The bundle is third-party output of several gigabytes, is not
+  redistributable, and there is no `gpuwm fetch` for it. Point
+  `GPUWM_REAL74_REFERENCE_BUNDLE` at a directory holding it, or place it
+  at `~/Downloads/WRF_1974_MP55_reference_bundle`. Without it the case
+  refuses by name and says the same thing.
+
+The two LES tornado cases are the module half of a case whose other half
+is a config under the repository's `configs/` directory. `configs/` is
+not a Python package and ships in no wheel, so from an installed gpuwm
+name the file with `--config`, or point `GPUWM_CONFIGS_ROOT` at a
+checkout's `configs` directory. `--help` works either way.
+
 ## 7. Reproduce this
 
 The headline comparison (section 3) was produced as follows.

@@ -20,7 +20,9 @@ import pytest
 
 import certification_fixtures as fixtures
 from gpuwm.certify import verdict as verdict_module
-from gpuwm.certify.verdict import (BOUND_KEYS, CONDITIONS, bound_inventory,
+from gpuwm.certify.verdict import (BOUND_KEYS, CONDITIONS,
+                                   CONDITIONS_BY_SCHEMA_VERSION,
+                                   VERDICT_SCHEMA_VERSION, bound_inventory,
                                    capsule_binding_sha256, certify,
                                    rederive_verdict, verify_verdict)
 from gpuwm.cli import main
@@ -347,8 +349,15 @@ def _as_previous_schema(document: dict) -> dict:
 
     older = copy.deepcopy(document)
     older["verdict_schema_version"] = "1.0.0"
+    # Derived from the version table rather than by naming the one condition
+    # that happened to be newest when this helper was written.  1.2.0 added
+    # three more, and a helper that only knew about the eighth would have
+    # built a document claiming 1.0.0 while carrying 1.2.0's condition set --
+    # a forgery, asserted as if it were a genuine older verdict.
+    legal = set(CONDITIONS_BY_SCHEMA_VERSION["1.0.0"])
     older["conditions"] = [item for item in older["conditions"]
-                           if item["condition"] != "the_comparison_is_not_empty"]
+                           if item["condition"] in legal]
+    older.pop("compile_platform", None)
     older["capsule_binding_sha256"] = capsule_binding_sha256(older)
     return older
 
@@ -378,7 +387,7 @@ def test_a_verdict_from_the_previous_schema_version_still_rederives(tmp_path):
     from gpuwm.certify.verdict import rederive_verdict_reason
 
     document = _verdict_for(fixtures.matched_set(tmp_path))
-    assert document["verdict_schema_version"] == "1.1.0"
+    assert document["verdict_schema_version"] == VERDICT_SCHEMA_VERSION
     assert rederive_verdict(document) is True
 
     older = _as_previous_schema(document)
@@ -401,12 +410,12 @@ def test_dropping_a_condition_without_the_version_is_still_a_forgery(tmp_path):
 
     document = _verdict_for(fixtures.matched_set(tmp_path))
     forged = _as_previous_schema(document)
-    forged["verdict_schema_version"] = "1.1.0"
+    forged["verdict_schema_version"] = VERDICT_SCHEMA_VERSION
     forged["capsule_binding_sha256"] = capsule_binding_sha256(forged)
     passed, why = rederive_verdict_reason(forged)
     assert passed is False
     assert "the_comparison_is_not_empty" in why
-    assert "1.1.0" in why
+    assert VERDICT_SCHEMA_VERSION in why
 
 
 def test_an_unknown_verdict_schema_version_fails_closed_by_name(tmp_path):
@@ -418,7 +427,8 @@ def test_an_unknown_verdict_schema_version_fails_closed_by_name(tmp_path):
         candidate["verdict_schema_version"] = claimed
         passed, why = rederive_verdict_reason(candidate)
         assert passed is False, claimed
-        assert "verdict_schema_version" in why and "1.1.0" in why, why
+        assert ("verdict_schema_version" in why
+                and VERDICT_SCHEMA_VERSION in why), why
 
 
 def test_reading_the_older_set_does_not_reopen_the_empty_comparison(tmp_path):

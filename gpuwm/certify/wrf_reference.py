@@ -17,9 +17,7 @@ manifest having been committed yet.
 
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 from typing import Any, Mapping
 
 MANIFEST_SCHEMA_ID = "gpuwm.wrf-reference-manifest/v1"
@@ -95,12 +93,6 @@ def validate_wrf_reference_manifest(manifest: Mapping[str, Any]
     return dict(manifest)
 
 
-def load_wrf_reference_manifest(path: str | Path) -> dict[str, Any]:
-    """Read a manifest from disk and validate its shape."""
-    return validate_wrf_reference_manifest(
-        json.loads(Path(path).read_text(encoding="utf-8")))
-
-
 def reference_binding(manifest: Mapping[str, Any]) -> dict[str, Any]:
     """The part of the manifest a verdict binds itself to."""
     return {
@@ -120,7 +112,6 @@ __all__ = [
     "SCALAR_HASH_KEYS",
     "WrfReferenceError",
     "absent_reference_hashes",
-    "load_wrf_reference_manifest",
     "reference_binding",
     "validate_wrf_reference_manifest",
 ]

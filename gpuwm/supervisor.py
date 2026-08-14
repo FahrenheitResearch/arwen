@@ -1361,13 +1361,6 @@ def _read_worker_failure_capsule(path: Path, *, run_id: str,
     return None
 
 
-def _has_worker_failure_capsule(path: Path, *, run_id: str,
-                                worker_pid: int) -> bool:
-    """Whether the worker already published a richer capsule for this exit."""
-    return _read_worker_failure_capsule(
-        path, run_id=run_id, worker_pid=worker_pid) is not None
-
-
 #: Capsule exception types the supervisor itself authored.  Their message
 #: IS "worker exited with status N", so quoting one back into that same
 #: sentence says nothing twice.

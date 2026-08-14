@@ -21,6 +21,8 @@ from gpuwm.certify.band import (CLASSIFICATION_BANDED, ROW_KEY_COLUMNS,
                                 load_band, write_certification_json)
 from gpuwm.certify.capsule import (CAPSULE_SCHEMA_ID,
                                    GEOGRAPHY_CONTENT_ALGORITHM)
+from gpuwm.certify.compile_platform import (compile_platform_fingerprint,
+                                            unresolved_fingerprint_items)
 from gpuwm.certify.pins import PINS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -81,10 +83,44 @@ def metric_columns() -> tuple[str, ...]:
 # Capsule
 # --------------------------------------------------------------------------
 
+def _as_recorded_driver_version(measured: str):
+    """The driver version as ``gpuwm.certify.pins`` records it.
+
+    The pin stores ``int(cp.cuda.runtime.driverGetVersion())``; the
+    fingerprint renders every item as text.  Keeping the fixture on the pin's
+    side of that difference is what exercises the projection's coercion
+    instead of side-stepping it.
+    """
+    try:
+        return int(measured)
+    except (TypeError, ValueError):
+        return measured
+
+def this_process_can_witness_the_compile_platform() -> bool:
+    """Whether this interpreter resolves a complete compile-platform fingerprint.
+
+    ``gpuwm certify`` re-measures the compile platform and refuses when it
+    cannot -- CERTIFICATION.md's own rule, "where a check cannot be made, the
+    answer is a refusal naming the condition".  So a *matched* fixture, which
+    is by definition one certify has no reason to refuse, only exists on a
+    process that can make that measurement.  Tests that need the passing
+    direction ask this first; the refusing directions need no card.
+    """
+    return not unresolved_fingerprint_items(compile_platform_fingerprint())
+
+
 def matched_capsule(config_sha256: str, *,
                     emission_site: str = "runtime.run_experiment:domain-tree"
                     ) -> dict[str, Any]:
-    """A capsule certify has no reason to refuse."""
+    """A capsule certify has no reason to refuse.
+
+    The compile-platform pins are filled from this process's own live
+    measurement rather than from invented text: certify compares them against
+    what it measures, so a fixture carrying a plausible-looking NVRTC build
+    would be a fixture that pre-ordains a refusal.  Everything else stays
+    obviously synthetic.
+    """
+    fingerprint = compile_platform_fingerprint()
     stack = {}
     for pin in PINS:
         stack[pin.key] = {"value": f"fixture:{pin.key}", "source": pin.source,
@@ -92,6 +128,24 @@ def matched_capsule(config_sha256: str, *,
     stack["config_bytes"]["value"] = {"path": "configs/fixture.toml",
                                       "sha256": config_sha256}
     stack["cupy_accelerators"]["value"] = {"present": False, "value": None}
+    stack["cuda_toolkit_nvrtc"]["value"] = {
+        "cuda_runtime_version": 0,
+        "nvrtc_version": "0.0",
+        "nvrtc_build": fingerprint["nvrtc_build"],
+        "nvrtc_build_id": fingerprint["nvrtc_build_id"],
+        "nvrtc_library_sha256": fingerprint["nvrtc_library_sha256"],
+    }
+    # The real pin carries the driver version as the integer CuPy reports.
+    stack["cuda_driver_version"]["value"] = _as_recorded_driver_version(
+        fingerprint["cuda_driver_version"])
+    stack["gpu_identity"]["value"] = {
+        "name": "fixture-device",
+        "compute_capability": fingerprint["device_compute_capability"],
+        "uuid": None,
+        "device_count": 1,
+    }
+    stack["cupy_version"]["value"] = fingerprint["cupy_version"]
+    stack["numpy_version"]["value"] = fingerprint["numpy_version"]
     return {
         "schema": CAPSULE_SCHEMA_ID,
         "emission_site": emission_site,
@@ -287,5 +341,6 @@ __all__ = [
     "metrics_rows",
     "shipped_band",
     "shipped_band_paths",
+    "this_process_can_witness_the_compile_platform",
     "write_metrics_csv",
 ]

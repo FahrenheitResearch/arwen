@@ -861,7 +861,17 @@ def author_adapter(
             "--grib2-inventory and --grib2-dump must be supplied together"
         )
     if grib2_inventory is None:
-        inventory_path, dump_path = _build_grib2_tools()
+        try:
+            inventory_path, dump_path = _build_grib2_tools()
+        except FileNotFoundError as error:
+            # ValueError so the CLI boundary prints a refusal, not a
+            # traceback -- the same conversion the explicit-path branch
+            # below already makes, applied to the branch a wheel install
+            # actually takes.  Omitting the expert overrides is the
+            # DOCUMENTED default, and until the resolver ladder landed
+            # this branch shelled cargo into a directory a wheel does not
+            # have and ended in a raw NotADirectoryError.
+            raise ValueError(str(error)) from error
     else:
         inventory_path = Path(grib2_inventory).resolve()
         dump_path = Path(grib2_dump).resolve()

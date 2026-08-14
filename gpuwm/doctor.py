@@ -1,29 +1,47 @@
 """``gpuwm doctor``: verify the runtime estate, print exact remedies.
 
-The pip package deliberately splits its runtime across four estates the
-installer cannot see from ``pip install`` alone: the GPU runtime (CuPy),
-the render extra (wrf-rust + matplotlib), the compiled Rust artifacts
-(never shipped in the wheel; ``gpuwm fetch-bridges`` stages a release's
-prebuilt bundle where one exists for the platform), and the data roots
+The pip package deliberately splits its runtime across estates the
+installer cannot see from ``pip install`` alone: the GPU runtime
+(CuPy), the optional pip extras (``render``, ``obs``, ``dealias`` and
+whatever else the installed distribution declares), the compiled Rust
+artifacts (never shipped in the wheel; ``gpuwm fetch-bridges`` stages a
+release's prebuilt bundle where one exists for the platform), the
+packaged physics tables, and the data roots
 (``WPS_GEOG``/``GPUWM_CASE_DATA_ROOT``).  Doctor checks each one for
-real, not by presence: it imports CuPy/wrf/matplotlib in short-lived
-subprocesses, probe-executes every bridge executable, loads the CPU
-preprocessing library through ctypes and reads its ABI version,
-sha256-validates the packaged Thompson tables with the same routine the
-model uses at launch, parses the Noah/landuse tables with the model's
-own parsers, and requires each WPS_GEOG dataset's ``index`` file.  No
-cargo builds, no network; the only device work is two deliberate
-short-lived subprocess probes (the CuPy-wheel/box cuBLAS pairing and
-the radar-DA eigensolver), isolated so a wedged runtime cannot poison
-this process.  Every gap prints a remedy whose every line is either a
-command that runs as printed in this platform's own shell or a ``#``
-comment -- never prose fused onto a command -- instead of letting the
-user meet a raw traceback three commands later.
+real, not by presence: it imports every declared package in short-lived
+subprocesses, probe-executes every bridge and front-door executable,
+loads the CPU preprocessing library through ctypes and reads its ABI
+version, sha256-validates the packaged Thompson tables with the same
+routine the model uses at launch, parses the Noah/landuse tables with
+the model's own parsers, re-hashes every artifact a sealed manifest
+declares, resolves each data route's decoder and byte transport through
+the resolvers the route itself calls, and requires each WPS_GEOG
+dataset's ``index`` file.  No cargo builds, no network; the device work
+is three deliberate short-lived subprocess probes (the CuPy-wheel/box
+cuBLAS pairing, a cold-cache NVRTC compile, and the radar-DA
+eigensolver), isolated so a wedged runtime cannot poison this process.
+Every gap prints a remedy whose every line is either a command that
+runs as printed in this platform's own shell or a ``#`` comment --
+never prose fused onto a command -- instead of letting the user meet a
+raw traceback three commands later.
+
+**The extras are read from the INSTALLED distribution's metadata**, not
+from a checkout's ``pyproject.toml``.  What a box can do is decided by
+what pip resolved onto it, and a checkout sitting beside a wheel is
+exactly the configuration where a transcription and the truth part
+company.
 
 Statuses distinguish what was proven: ``verified`` means the deep check
-ran and passed; ``present`` is reserved for the few items where nothing
-deeper than existence can honestly be checked (and says so); ``missing``
-is a gap with a remedy; ``info`` is context.
+ran and passed; ``present`` is for the few items where nothing deeper
+than existence can honestly be checked, plus the one deep check that
+can half-pass and says which half (the radar-DA eigensolver);
+``untested`` is for a question this module deliberately does not answer
+-- it never runs cargo, so it cannot say whether a build would succeed
+-- and its detail always opens with "not tested"; ``missing`` is a gap
+with a remedy; ``info`` is context.  ``verified`` is never printed over
+a question nobody asked: two binaries once carried ``ok`` on a box
+where the command that needed them could not find them, and that is
+what ``untested`` exists to stop.
 
 The report is layered (:mod:`gpuwm.explain`).  By default every finding
 is one line -- status, subject, and THE command that closes it -- and
@@ -33,7 +51,10 @@ as six problems.  ``--explain`` prints what this module always printed:
 the evidence behind each check and the whole pasteable remedy block,
 verbatim.  Nothing was shortened; the long form moved one flag away.
 
-Exit status: 0 when nothing actionable is missing, 1 otherwise.
+Exit status: 1 when any finding is ``broken`` or ``unreachable``, 0
+otherwise.  A ``degraded`` or ``opt-in`` finding still prints MISSING
+and still prints its command; it does not fail the process.  The rule
+that assigns those four words is stated once, in :func:`blocking_gaps`.
 """
 
 from __future__ import annotations
@@ -88,8 +109,17 @@ GPU_EXTRA_HINT = ("nvidia-smi\n"
 #: one thing this line may never do is imply cu12 is simply correct.
 GPU_EXTRA_UNKNOWN_ACTION = ("pip install 'gpuwm[gpu-cu12]'  "
                             "# CUDA 12.x; cu13 box: gpuwm[gpu-cu13]")
+#: NOT "wrf-rust + matplotlib".  matplotlib is a BASE dependency, on
+#: every install already; the extra's second package is pyshp, the
+#: shapefile reader every basemap needs, and naming matplotlib here left
+#: a reader no way to learn that.  Measured wrong by the 2026-08-14
+#: reachability audit against the shipped METADATA.
 RENDER_EXTRA_HINT = ("pip install 'gpuwm[render]'\n"
-                     "  # installs wrf-rust + matplotlib")
+                     "  # installs wrf-rust (the derived-quantity core\n"
+                     "  # gpuwm enprod and --engine matplotlib import) and\n"
+                     "  # pyshp (the shapefile reader the DA nowcast's\n"
+                     "  # basemaps read).  matplotlib is NOT in this extra:\n"
+                     "  # it is a base dependency, installed already.")
 GEOG_STACK_HINT = (
     "pip install --upgrade gpuwm\n"
     "  # rasterio and pyproj are ordinary runtime dependencies from\n"
@@ -108,16 +138,63 @@ REINSTALL_HINT = (
 
 #: Bridge executables the real-data routes launch, with the consumer
 #: that fails without each one.
+#:
+#: The last two entries are worded the way they are because the obvious
+#: wording was measured false.  They used to read "20CRv3/mapped GRIB2
+#: routes", which a reader takes to mean the staged binary this report
+#: probes is what those routes use.  It is not: the mapped route and
+#: ``gpuwm adapt`` build their own copies with cargo and never consult
+#: the resolver ladder, and the 20CRv3 direct route makes the paths
+#: ``required=True``.  :func:`_mapped_grib2_route_check` reports that
+#: separately; these lines now claim only what they prove, which is that
+#: the staged file exists and runs.
 _BRIDGE_CONSUMERS = {
     "grib1_bridge": "ERA5 route (gpuwm check/run, rw-wps --source era5)",
-    "gfs_grib2_bridge": "GFS front door (rw-wps --source gfs)",
+    "gfs_grib2_bridge": "GFS front door (rw-wps --source gfs, and every "
+                        "stage of the gpuwm go chain)",
     "hrrr_grib2_bridge": "HRRR front door (rw-wps --source hrrr)",
-    "grib2_inventory": "20CRv3/mapped GRIB2 routes",
-    "grib2_dump": "20CRv3/mapped GRIB2 routes",
+    "grib2_inventory": "the 20CRv3/mapped GRIB2 routes, which resolve it "
+                       "from here (--grib2-inventory overrides) -- see the "
+                       "mapped/20CRv3 route line",
+    "grib2_dump": "the 20CRv3/mapped GRIB2 routes, which resolve it from "
+                  "here (--grib2-dump overrides) -- see the mapped/20CRv3 "
+                  "route line",
 }
+
+#: The doors a box without CuPy cannot open, and the half it keeps.
+#: Declared once because two lines report it -- the deep ``cupy (GPU
+#: runtime)`` check and the ``[gpu-cu12]``/``[gpu-cu13]`` extras lines --
+#: and a reader who found them disagreeing would be right to distrust
+#: both.  Every entry was traced to a real refusal or a real import.
+_GPU_DOORS = ("gpuwm run", "gpuwm go", "gpuwm check", "gpuwm domain",
+              "gpuwm resume", "gpuwm verify", "gpuwm stream",
+              "gpuwm multi-run", "gpuwm downscale", "gpuwm ingest",
+              "gpuwm-prepared-forecast", "gpuwm-prepared-tree-forecast",
+              "the DA nowcast")
+_GPU_STILL_WORKS = ("the whole preprocessing half -- gpuwm fetch, "
+                    "import-namelist, adapt, render, report and rw-wps")
 
 _PROBE_TIMEOUT_S = 30
 
+
+#: The four severities, and the two of them that move the exit code.
+#: ``blocking_gaps`` states the rule; these are its vocabulary.
+#:
+#: They exist because a two-valued model could not tell a reader the
+#: difference between "the ~16 GB terrain download you deliberately
+#: skipped" and "this box cannot run a forecast", and doctor printed
+#: the same ``0 of them blocking (exit 0)`` over both.
+SEVERITY_BROKEN = "broken"
+SEVERITY_UNREACHABLE = "unreachable"
+SEVERITY_DEGRADED = "degraded"
+SEVERITY_OPT_IN = "opt-in"
+
+#: There is deliberately NO ``BLOCKING_SEVERITIES`` constant.  ``broken``
+#: always blocks; ``unreachable`` blocks for a README/FIRST-LIGHT door and
+#: not for a CLI-reference-only one, so a constant equating severity with
+#: the exit code would be a false claim in the one module that exists to
+#: stop those.  ``Check.blocking`` is the authority and
+#: :func:`blocking_gaps` states the rule.
 
 @dataclass(frozen=True)
 class Check:
@@ -141,10 +218,19 @@ class Check:
     which reads as five problems.  Grouping is a *presentation* of the
     same five checks -- ``--explain`` and ``--json`` still carry each
     one by name.
+
+    ``status`` has five values and one of them is newer than the rest.
+    ``untested`` exists because a 2026-08-14 audit caught this report
+    printing ``ok`` for two binaries on a box where the command that
+    needs them could not find them: doctor had proven the FILES were
+    runnable and said nothing about the RESOLUTION, and ``ok`` is not a
+    word for a question nobody asked.  Where a check cannot exercise the
+    thing it reports on, it says ``untested`` and its detail opens with
+    "not tested".  Never ``verified``, and never a quiet omission.
     """
 
     name: str
-    status: str  # "verified" | "present" | "missing" | "info"
+    status: str  # "verified" | "present" | "untested" | "missing" | "info"
     detail: str
     remedy: str | None = None
     #: The single next command, or a short imperative when there is no
@@ -156,18 +242,45 @@ class Check:
     brief: str | None = None
     #: Fold key for the terse report; ``None`` never folds.
     group: str | None = None
-    #: Does this gap justify a nonzero exit?  ``True`` for anything
-    #: broken or integrity-suspect (a named executable that is absent,
-    #: a table that fails its hash, a manifest that fails revalidation).
-    #: ``False`` for an *absent optional* piece with a documented
-    #: fallback or a documented opt-in (CuPy on the base install, the
-    #: render extra, the rust renderer, the CPU preprocess library, the
-    #: WPS_GEOG tree nobody has fetched yet).  The report text is
-    #: identical either way -- MISSING stays MISSING and the remedy
-    #: still prints; only the exit code reads this, so a base install
-    #: that did everything its documentation asked stops failing
-    #: installers and `gpuwm setup` for gaps it was told are optional.
+    #: Does this gap justify a nonzero exit?  The rule is stated once,
+    #: in :func:`blocking_gaps`, and ``severity`` below is the word for
+    #: WHY.  The report text is identical either way -- MISSING stays
+    #: MISSING and the remedy still prints; only the exit code and the
+    #: summary line read these two.
     blocking: bool = True
+    #: Which of the four severities this finding carries:
+    #: ``"broken"`` (something present and wrong), ``"unreachable"``
+    #: (a documented command cannot run at all), ``"degraded"`` (an
+    #: optional mode is gone, a documented default still works), or
+    #: ``"opt-in"`` (an explicit choice the user has not made).  The
+    #: first two block; the last two do not.  ``None`` on a finding
+    #: that is not a gap.
+    #:
+    #: Declared as a field rather than inferred from ``blocking``
+    #: because "why does this fail my install" and "does this fail my
+    #: install" are different questions, and a boolean answering both
+    #: is how ``0 of them blocking`` came to sit over a box that could
+    #: not run a forecast.
+    #:
+    #: A gap that does not declare one gets the word its ``blocking``
+    #: flag has always meant (see ``__post_init__``), so no finding is
+    #: ever unclassified and no call site has to repeat itself.
+    severity: str | None = None
+
+    def __post_init__(self) -> None:
+        # The severities are new; ``blocking`` is not, and every legacy
+        # call site already carried the distinction in it.  Its
+        # docstring through 2.3.3 read: True for "anything broken or
+        # integrity-suspect", False for "an absent optional piece with
+        # a documented fallback or a documented opt-in".  That IS the
+        # broken/opt-in pair, so the default is a translation rather
+        # than a guess -- and the two words the boolean cannot express,
+        # `unreachable` and `degraded`, are passed explicitly by the
+        # checks that mean them.
+        if self.status == "missing" and self.severity is None:
+            object.__setattr__(
+                self, "severity",
+                SEVERITY_BROKEN if self.blocking else SEVERITY_OPT_IN)
 
 
 #: Terse-report fold keys.  Both name a crate, because that is what
@@ -516,7 +629,8 @@ def _cupy_check() -> Check:
         else:
             remedy, action = _gpu_extra_hint(_driver_cuda_major())
         return Check("cupy (GPU runtime)", "missing", detail, remedy,
-                     action=action, brief=_short(str(cublas)))
+                     action=action, brief=_short(str(cublas)),
+                     severity=SEVERITY_BROKEN)
     # No usable CuPy.  The extra to name is a property of the BOX, so it
     # is read from the driver here rather than defaulted: this is the
     # branch a fresh CUDA-13 machine lands on, and the branch that used
@@ -525,19 +639,28 @@ def _cupy_check() -> Check:
     remedy, action = _gpu_extra_hint(box_major)
     served = "" if box_major is None else f"; this box serves CUDA {box_major}"
     if evidence == "not installed":
+        # BLOCKING, and it was not until 2026-08-14.  This line used to
+        # be an "absent optional" beside `0 of them blocking (exit 0)`,
+        # on a box where `gpuwm run` -- the product's headline command,
+        # and the whole point of installing it -- dies in a raw
+        # ModuleNotFoundError after fetching gigabytes and preparing
+        # them.  A green light over that is worse than no light: an
+        # installer script that trusts the exit code ships the box, and
+        # the user meets the traceback instead of this remedy.
         return Check(
             "cupy (GPU runtime)", "missing",
-            "not installed -- gpuwm check/run and the domain wizard's "
-            "sizing estimator need it; fetch/import-namelist/render "
-            f"do not{served}", remedy,
-            action=action, brief="not installed", blocking=False)
+            "not installed -- without it this box cannot run "
+            + ", ".join(_GPU_DOORS)
+            + f".  It can still run {_GPU_STILL_WORKS}{served}", remedy,
+            action=action, brief="not installed",
+            severity=SEVERITY_UNREACHABLE)
     # CuPy IS installed and would not import.  The extra cannot be the
     # answer to every version of that -- see _cupy_import_failure_remedy,
     # which reads the import's own message and routes accordingly.
     remedy, action = _cupy_import_failure_remedy(evidence, box_major)
     return Check("cupy (GPU runtime)", "missing", evidence + served, remedy,
                  action=action, brief=_short(evidence),
-                 blocking=False)
+                 severity=SEVERITY_BROKEN)
 
 
 #: Compiles two kernels and reports which one built.  The pair is the whole
@@ -750,9 +873,14 @@ def _cuda_headers_check() -> Check:
     reduction of a real run died on a missing header.  Everything cheaper
     than a cold compile passes on a box that cannot compile.
 
-    Never blocking.  A headers gap stops nothing gpuwm's own kernels do
-    (they are self-contained and never read the toolkit tree), and fetch,
-    import-namelist and render do not touch CUDA at all.
+    Never blocking.  Most of gpuwm's own kernels are self-contained
+    source strings compiled without jitify, and fetch, import-namelist
+    and render do not touch CUDA at all.  "Never read the toolkit tree"
+    is what this docstring used to say, and it is too strong: two
+    microphysics kernels carry a ``#include <cmath>``.  What the probe
+    below separates is still the right pair -- NVRTC itself, which ships
+    inside the wheel, against the toolkit include tree CuPy's own cub
+    preamble needs -- and the finding is reported either way.
     """
 
     name = "CUDA kernel headers"
@@ -1068,31 +1196,609 @@ def _da_eigensolver_check() -> Check:
         brief="no device eigensolver", blocking=False)
 
 
-def _render_extra_check() -> Check:
-    results = {"wrf-rust": _import_probe("wrf", "wrf-rust"),
-               "matplotlib": _import_probe("matplotlib")}
-    broken = {name: evidence for name, (ok, evidence) in results.items()
-              if not ok}
-    if not broken:
-        versions = ", ".join(
-            f"{name} {evidence}" for name, (_, evidence) in results.items())
-        return Check("render extra (wrf-rust + matplotlib)", "verified",
-                     f"imported in subprocesses ({versions})",
-                     brief=_short(versions))
-    if all(evidence == "not installed" for evidence in broken.values()):
+# ---------------------------------------------------------------------------
+# The pip extras: enumerated from the INSTALLED distribution, judged by import
+# ---------------------------------------------------------------------------
+#
+# Doctor probed cupy, wrf and matplotlib and NOTHING ELSE on the Python
+# side.  A 2026-08-14 reachability audit ran `gpuwm doctor --explain` on
+# a bare install and measured the consequence: 40,351 characters of
+# report in which the strings `scipy`, `pyshp`, `shapefile`, `rasterio`
+# and `pyproj` appeared ZERO times.  Four extras -- `obs`, `dealias`,
+# `geog`, and half of `render` -- were invisible to the one command
+# whose whole job is telling a user what their install cannot do.  The
+# same report called `[render]` "wrf-rust + matplotlib" while the extra
+# is wrf-rust + pyshp and matplotlib is a BASE dependency, so the one
+# line a reader could have followed to the shapefile reader said the
+# wrong package.
+#
+# The enumeration below is therefore NOT a transcription of
+# pyproject.toml.  It is read from the installed distribution's own
+# metadata, because that is what pip resolved onto this box, and a
+# checkout sitting beside a wheel is exactly the configuration where a
+# transcription and the truth part company.  What this module still
+# declares by hand is the thing metadata cannot carry: which documented
+# command each extra is the difference between running and not.
+
+#: The distribution whose metadata declares the extras.  Named once.
+_DISTRIBUTION = "gpuwm"
+
+#: The leading name of a ``Requires-Dist`` line, and the ``extra ==``
+#: marker that assigns it to one.
+_REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+_EXTRA_MARKER = re.compile(r"""extra\s*==\s*['"]([^'"]+)['"]""")
+
+
+def _canonical(name: str) -> str:
+    """PEP 503 normalisation: one spelling two tables can agree on."""
+
+    return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
+#: pip distribution -> the name ``import`` actually uses, for every
+#: package this project declares.  The two differ often enough that
+#: guessing is how a check reports green on an absent package:
+#: ``pyshp`` imports as ``shapefile``, ``wrf-rust`` as ``wrf``,
+#: ``cupy-cuda12x`` as ``cupy``.  A distribution missing from this table
+#: is still CHECKED -- by its installed metadata -- but the report says
+#: that is all it was, rather than claiming an import nobody attempted.
+#: ``tests/test_doctor_extras.py`` fails if this project declares a
+#: requirement this table does not name.
+_IMPORT_NAME = {
+    "cupy-cuda12x": "cupy",
+    "cupy-cuda13x": "cupy",
+    "wrf-rust": "wrf",
+    "pyshp": "shapefile",
+    "scipy": "scipy",
+    "rasterio": "rasterio",
+    "pyproj": "pyproj",
+    "numpy": "numpy",
+    "netcdf4": "netCDF4",
+    "matplotlib": "matplotlib",
+    "jsonschema": "jsonschema",
+    "pytest": "pytest",
+    "psutil": "psutil",
+    "huggingface-hub": "huggingface_hub",
+    "h5py": "h5py",
+}
+
+
+#: Distribution -> the check that already judges it, deeply.  Listed
+#: here so the extras/base block NAMES the package and points at the
+#: verdict instead of publishing a second one.  Two lines disagreeing
+#: about one package is worse than one line saying less.
+#: The CuPy wheels are deliberately NOT here.  Their extras report
+#: presence without a verdict (:func:`_mutually_exclusive_extra_check`),
+#: so naming which wheel pip resolved is the whole content of those two
+#: lines; filtering them out left the line saying " not installed" about
+#: nothing at all.
+_DEEP_CHECKED = {
+    "rasterio": "geography stack (rasterio + pyproj)",
+    "pyproj": "geography stack (rasterio + pyproj)",
+}
+
+
+@dataclass(frozen=True)
+class _Requirement:
+    """One ``Requires-Dist`` line, split into the parts a check needs."""
+
+    #: PEP 503 name, which is what pip installed it under.
+    distribution: str
+    #: The requirement without its environment marker -- the half a
+    #: reader recognises (``scipy>=1.11``).
+    specifier: str
+    #: ``gpuwm[render]`` and friends: an extra that pulls another extra
+    #: rather than a package.  Reported as the alias it is.
+    alias: bool
+
+
+def _parse_requirement(text: str) -> _Requirement | None:
+    match = _REQUIREMENT_NAME.match(text)
+    if match is None:
+        return None
+    distribution = _canonical(match.group(1))
+    return _Requirement(distribution, text.split(";")[0].strip(),
+                        distribution == _canonical(_DISTRIBUTION))
+
+
+def declared_requirements() -> tuple[tuple[_Requirement, ...],
+                                     dict[str, tuple[_Requirement, ...]]] | None:
+    """``(base requirements, extra -> requirements)`` for THIS install.
+
+    ``None`` when the interpreter has no installed ``gpuwm``
+    distribution to read -- a source tree on ``PYTHONPATH`` and nothing
+    else.  That case is reported as unanswered rather than guessed at,
+    because the alternative is reading a checkout's ``pyproject.toml``
+    and calling it the estate, which is the exact substitution this
+    module exists to refuse.
+    """
+
+    try:
+        declared = importlib.metadata.requires(_DISTRIBUTION) or []
+        metadata = importlib.metadata.metadata(_DISTRIBUTION)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    base: list[_Requirement] = []
+    extras: dict[str, list[_Requirement]] = {
+        _canonical(name): []
+        for name in (metadata.get_all("Provides-Extra") or [])}
+    for text in declared:
+        requirement = _parse_requirement(text)
+        if requirement is None:
+            continue
+        marker = _EXTRA_MARKER.search(text)
+        if marker is None:
+            base.append(requirement)
+            continue
+        extras.setdefault(_canonical(marker.group(1)), []).append(requirement)
+    return tuple(base), {name: tuple(items)
+                         for name, items in extras.items()}
+
+
+@dataclass(frozen=True)
+class _ExtraFacts:
+    """What one extra is the difference between running and not.
+
+    ``doors`` are the documented commands a box WITHOUT the extra
+    cannot run at all.  ``still_works`` is what such a box can still do,
+    and it is not decoration: a reader who sees ``[render]`` reported
+    MISSING beside a working ``gpuwm render`` deserves to be told why
+    both are true (the rust engine needs no Python package; the
+    matplotlib engine and ``gpuwm enprod`` do).
+
+    ``blocking`` follows ONE rule, stated in :func:`blocking_gaps`: an
+    extra blocks exactly when a command the product's own README or
+    FIRST-LIGHT tells a user to run cannot run without it.
+    """
+
+    doors: tuple[str, ...]
+    still_works: str | None
+    blocking: bool
+    severity: str
+    #: Named when another check owns the verdict, so the extras section
+    #: reports the install line without double-counting the gap.
+    deferred_to: str | None = None
+    #: One of a set where installing every member would be the fault:
+    #: the CuPy pair, one wheel per CUDA major.  Such a line never
+    #: carries a gap, because a correctly installed box is missing the
+    #: other one by definition.
+    mutually_exclusive: bool = False
+    #: Absent is this extra's NORMAL state, so its absence is context
+    #: rather than a gap.  `[dev]` is the case: a user install is
+    #: supposed not to have pytest, and printing MISSING at every reader
+    #: who never intends to run the suite spends the word MISSING on
+    #: nothing.  The line still prints, with its install command.
+    expected_absent: bool = False
+
+
+#: Which extra unlocks what.  Hand-declared because no metadata carries
+#: it, and audited against the code in ``tests/test_doctor_extras.py``:
+#: every door named here must be a real door, and every extra the
+#: installed metadata declares must appear here.
+_EXTRA_FACTS: dict[str, _ExtraFacts] = {
+    "gpu-cu12": _ExtraFacts(
+        doors=_GPU_DOORS, still_works=_GPU_STILL_WORKS,
+        blocking=True, severity=SEVERITY_UNREACHABLE,
+        deferred_to="cupy (GPU runtime)", mutually_exclusive=True),
+    "gpu-cu13": _ExtraFacts(
+        doors=_GPU_DOORS, still_works=_GPU_STILL_WORKS,
+        blocking=True, severity=SEVERITY_UNREACHABLE,
+        deferred_to="cupy (GPU runtime)", mutually_exclusive=True),
+    # wrf-rust and pyshp gate DIFFERENT doors, which is why the old
+    # single "render extra" line could not tell the truth about either:
+    # wrf-rust is what `gpuwm enprod` and `gpuwm render --engine
+    # matplotlib` import, and pyshp is the shapefile reader every DA
+    # nowcast basemap draws with.  Nothing under `gpuwm/` imports
+    # pyshp at all -- the rust renderer reads the shapefiles itself --
+    # so a reader who is told "the render extra" and watches `gpuwm
+    # render` work anyway is entitled to think the report is wrong.
+    "render": _ExtraFacts(
+        doors=("gpuwm enprod", "gpuwm render --engine matplotlib",
+               "gpuwm go's render stage (it gates on the wrf package)",
+               "python -m tools.da_nowcast render and the launcher's "
+               "basemap endpoint (pyshp)",
+               "python -m tilestream.realcase_render (pyshp)"),
+        still_works="gpuwm render's DEFAULT rust engine, which draws from "
+                    "the rw_wrfbatch binary and needs no Python package "
+                    "from this extra",
+        blocking=True, severity=SEVERITY_UNREACHABLE),
+    "obs": _ExtraFacts(
+        doors=("python -m tools.obs_battery_score",
+               "python -m tools.obs_precampaign_controls",
+               "python -m tools.obs_battery_registration"),
+        still_works="every forecast and preprocessing route; only scoring "
+                    "a run against observations needs it",
+        blocking=False, severity=SEVERITY_DEGRADED),
+    # NOT the default engine.  region-global became the shipped
+    # --dealias-engine on 2026-08-12 and is the Rust library this report
+    # checks on its own line; scipy labels the gate regions for the OTHER
+    # engine only.  Saying otherwise would send a reader to pip for a
+    # library their default path never loads.
+    "dealias": _ExtraFacts(
+        doors=("--dealias-engine vad-region, on python -m "
+               "tools.obs_radar_grid_build / tools.obs_radar_grid_from_pack "
+               "/ tools.da_nowcast run",),
+        still_works="the shipped default --dealias-engine region-global, "
+                    "which is the Rust library reported above",
+        blocking=False, severity=SEVERITY_DEGRADED),
+    # EMPTY from 2.3.3: rasterio and pyproj became runtime dependencies,
+    # and the extra is retained so `pip install 'gpuwm[geog]'` -- written
+    # down in 2.3.2's own docs and in other people's scripts -- keeps
+    # resolving.  It is still reported, because "this extra now installs
+    # nothing, and here is where its packages went" is exactly what a
+    # reader following an older doc needs to be told.
+    "geog": _ExtraFacts(
+        doors=("a run whose config sets [static.highres] enabled = true "
+               "(gpuwm run / resume / static and both prepared runners)",),
+        still_works="the standard WPS_GEOG static-field route, which is "
+                    "what every config without that table uses",
+        blocking=False, severity=SEVERITY_OPT_IN,
+        deferred_to="geography stack (rasterio + pyproj)"),
+    "dev": _ExtraFacts(
+        doors=("pytest -- this project's own test suite",),
+        still_works="everything a user runs; this extra is for developing "
+                    "gpuwm, not for using it",
+        blocking=False, severity=SEVERITY_OPT_IN, expected_absent=True),
+    # Maintainer-only, and absent is its normal state for the same reason
+    # `[dev]`'s is: the one command behind it needs write credentials on a
+    # dataset repository nobody but the maintainers owns, so no user path
+    # can reach it.  It is reported rather than hidden because it is a
+    # declared extra, and an inventory that quietly skips one is an
+    # inventory a reader cannot trust.
+    "publish": _ExtraFacts(
+        doors=("python -m tools.publish_geog_mirror upload -- pushing the "
+               "WPS_GEOG mirror snapshot to Hugging Face",),
+        still_works="every route that READS the mirror, which is every "
+                    "user-facing one; this extra is for writing it",
+        blocking=False, severity=SEVERITY_OPT_IN, expected_absent=True),
+}
+
+#: Fold keys for the extras block.  Two, not one: a run of aliases
+#: and a run of real extras fold to the same word otherwise, and a
+#: report that prints "pip extras (3)" three times reads as one thing
+#: said three times rather than three different things.
+_GROUP_EXTRAS = "pip extras"
+_GROUP_EXTRA_ALIASES = "pip extra aliases"
+
+
+def _extra_install_line(extra: str) -> str:
+    """The one command that installs ``extra``, as it must be typed."""
+
+    return f"pip install 'gpuwm[{extra}]'"
+
+
+def _package_evidence(requirement: _Requirement,
+                      probe: dict[str, tuple[bool, str]]
+                      ) -> tuple[str, str, str]:
+    """``(state, label, evidence)`` for one required package.
+
+    ``state`` is one of ``"ok"``, ``"absent"``, ``"broken"`` or
+    ``"untested"``.  The last one is not a euphemism for ok: it is the
+    answer for a distribution whose import name this module does not
+    know, where the honest report is that its metadata was read and
+    nothing was imported.
+    """
+
+    module = _IMPORT_NAME.get(requirement.distribution)
+    try:
+        version: str | None = importlib.metadata.version(
+            requirement.distribution)
+    except importlib.metadata.PackageNotFoundError:
+        version = None
+    if module is None:
+        if version is None:
+            return ("absent", requirement.specifier, "not installed")
+        return ("untested", requirement.specifier,
+                f"{version} installed per distribution metadata; NOT "
+                "imported (doctor does not know this package's import "
+                "name)")
+    if module not in probe:
+        probe[module] = _import_probe(module, requirement.distribution)
+    ok, evidence = probe[module]
+    label = (requirement.specifier if module == requirement.distribution
+             else f"{requirement.specifier} (imports as {module})")
+    if version is None:
+        # The DISTRIBUTION is what pip resolved, and an import cannot
+        # see it: cupy-cuda12x and cupy-cuda13x both import as `cupy`,
+        # so a box with the wrong wheel for its CUDA major answers
+        # `import cupy` perfectly and is still the failure this whole
+        # module was rewritten around.  Metadata first, import second.
+        if ok:
+            return ("absent", label,
+                    f"not installed -- `import {module}` does succeed, but "
+                    "from a different distribution; this one is not what "
+                    "pip resolved here")
+        return ("absent", label, "not installed")
+    if ok:
+        return ("ok", label, f"{evidence} (distribution {version})")
+    return ("broken", label, evidence)
+
+
+#: CUDA major -> the extra whose wheel serves it.  The inverse of
+#: :data:`_GPU_EXTRA_BY_MAJOR`, used to say which of a mutually
+#: exclusive pair matches THIS box.
+_MAJOR_BY_GPU_EXTRA = {extra: major
+                       for major, extra in _GPU_EXTRA_BY_MAJOR.items()}
+
+
+def _mutually_exclusive_extra_check(name: str, extra: str, install: str,
+                                    facts: _ExtraFacts,
+                                    states: list) -> Check:
+    """One of a pair where installing BOTH would be the fault.
+
+    ``[gpu-cu12]`` and ``[gpu-cu13]`` are alternatives, one per CUDA
+    major, and a healthy CUDA-12 box has exactly one of them.  Reporting
+    the other as a MISSING gap would fail every correctly installed
+    machine, so these lines never carry a verdict: they say which wheel
+    this extra installs, whether pip resolved it here, which of the pair
+    matches the CUDA major read off this box's own driver, and the exact
+    install line.  The verdict, the remedy and the exit code stay on the
+    one deep check that judges the wheel against the box.
+    """
+
+    installed = [label for _i, state, label, _w in states if state == "ok"]
+    absent = [label for _i, state, label, _w in states if state != "ok"]
+    major = _MAJOR_BY_GPU_EXTRA.get(extra)
+    box_major = _driver_cuda_major()
+    if box_major is None:
+        fit = ("this box's CUDA major could not be read, so neither of "
+               "the pair can be called the matching one here")
+    elif major == box_major:
+        fit = f"this box's driver serves CUDA {box_major}: THIS is the pair's matching extra"
+    else:
+        fit = (f"this box's driver serves CUDA {box_major}, so the "
+               f"matching extra is "
+               f"[{_GPU_EXTRA_BY_MAJOR.get(box_major, f'cuda-{box_major}')}], "
+               "not this one")
+    held = (f"{', '.join(installed)} installed" if installed
+            else f"{', '.join(absent)} not installed")
+    return Check(
+        name, "info",
+        f"{held}.  One extra per CUDA major, and a box needs exactly one: "
+        f"{fit}.  Install line: {install}.  Needed by: "
+        + ", ".join(facts.doors)
+        + f".  The verdict and the remedy are on the `{facts.deferred_to}` "
+          "line, which judges the installed wheel against this box",
+        brief=_short(f"{held}; {fit}"), group=_GROUP_EXTRA_ALIASES)
+
+
+def _extra_check(extra: str, requirements: tuple[_Requirement, ...],
+                 probe: dict[str, tuple[bool, str]]) -> Check:
+    """One extra: what it holds, what it unlocks, and how to install it."""
+
+    name = f"pip extra [{extra}]"
+    install = _extra_install_line(extra)
+    aliases = [item for item in requirements if item.alias]
+    if aliases and len(aliases) == len(requirements):
+        resolved = ", ".join(sorted(item.specifier for item in aliases))
         return Check(
-            "render extra (wrf-rust + matplotlib)", "missing",
-            f"{' and '.join(sorted(broken))} not installed -- gpuwm "
-            "render needs the render extra", RENDER_EXTRA_HINT,
-            action="pip install 'gpuwm[render]'",
-            brief=f"{' and '.join(sorted(broken))} not installed",
-            blocking=False)
-    detail = "; ".join(f"{name}: {evidence}"
-                       for name, evidence in sorted(broken.items()))
-    return Check("render extra (wrf-rust + matplotlib)", "missing",
-                 detail, RENDER_EXTRA_HINT,
-                 action="pip install 'gpuwm[render]'", brief=_short(detail),
-                 blocking=False)
+            name, "info",
+            f"an alias: {install} resolves to {resolved}.  The verdict is "
+            "on those extras' own lines",
+            brief=f"alias for {resolved}", group=_GROUP_EXTRA_ALIASES)
+    facts = _EXTRA_FACTS.get(extra)
+    # A package a deeper check already judges is NAMED here and judged
+    # there.  An older install's metadata can still carry rasterio and
+    # pyproj inside [geog]; the geography-stack line is the one verdict
+    # about them either way, so this block never publishes a second.
+    owned = sorted({f"{item.specifier} -> `{_DEEP_CHECKED[item.distribution]}`"
+                    for item in requirements
+                    if not item.alias and item.distribution in _DEEP_CHECKED})
+    states = [(item, *_package_evidence(item, probe))
+              for item in requirements
+              if not item.alias and item.distribution not in _DEEP_CHECKED]
+    packages = ", ".join(label for _item, _state, label, _why in states)
+    if facts is not None and facts.mutually_exclusive:
+        return _mutually_exclusive_extra_check(
+            name, extra, install, facts, states)
+    if not states:
+        # An extra with nothing left for this block to judge.  `[geog]`
+        # became one in 2.3.3, deliberately: rasterio and pyproj moved
+        # into the runtime dependencies and the empty extra was kept so
+        # the install line printed in 2.3.2's own documentation keeps
+        # resolving.  Silence here would leave a reader following that
+        # documentation with no way to learn where its packages went.
+        if owned:
+            held = (f"its package(s) are judged elsewhere: "
+                    + ", ".join(owned))
+        else:
+            held = (f"declares no packages on this build, so {install} "
+                    "installs nothing and cannot fail")
+        where = (f"  The verdict is on the `{facts.deferred_to}` line"
+                 if facts is not None and facts.deferred_to and not owned
+                 else "")
+        return Check(
+            name, "info",
+            f"{held}.  The extra is retained so install lines that name "
+            f"it keep resolving.{where}",
+            brief=_short(held), group=_GROUP_EXTRA_ALIASES)
+    absent = [(label, why) for _i, state, label, why in states
+              if state == "absent"]
+    broken = [(label, why) for _i, state, label, why in states
+              if state == "broken"]
+    untested = [(label, why) for _i, state, label, why in states
+                if state == "untested"]
+
+    if facts is None:
+        # An extra this build declares and this module has never been
+        # taught.  Reported loudly rather than skipped: a silent extra is
+        # the whole defect this section closes.
+        unlocks = ("what it unlocks is NOT RECORDED in gpuwm doctor -- "
+                   "this build declares an extra doctor has not been "
+                   "taught")
+        blocking, severity = False, SEVERITY_DEGRADED
+    else:
+        unlocks = "needed by: " + ", ".join(facts.doors)
+        blocking, severity = facts.blocking, facts.severity
+
+    if broken:
+        detail = ("; ".join(f"{label}: {why}" for label, why in broken)
+                  + f".  {unlocks}")
+        return Check(
+            name, "missing", detail,
+            f"# an installed package of [{extra}] does not import; "
+            "reinstall it:\n" + install,
+            action=install, brief=_short(detail), group=_GROUP_EXTRAS,
+            blocking=True, severity=SEVERITY_BROKEN)
+
+    if absent:
+        missing = ", ".join(label for label, _why in absent)
+        detail = f"{missing} not installed.  {unlocks}"
+        if facts is not None and facts.still_works:
+            detail += f".  Without it this box still has {facts.still_works}"
+        remedy = install
+        if facts is not None and facts.deferred_to:
+            remedy = (f"# the verdict and the CUDA-major-specific remedy are "
+                      f"on the `{facts.deferred_to}` line above\n{install}")
+        if facts is not None and facts.expected_absent:
+            return Check(
+                name, "info",
+                f"{missing} not installed, which is the normal state of an "
+                f"install that is not developing gpuwm.  {unlocks}.  "
+                f"Install line: {install}",
+                brief=f"{missing} not installed (expected)",
+                group=_GROUP_EXTRAS)
+        return Check(
+            name, "missing", detail, remedy, action=install,
+            brief=f"{missing} not installed", group=_GROUP_EXTRAS,
+            blocking=blocking, severity=severity)
+
+    if untested:
+        detail = ("; ".join(f"{label}: {why}" for label, why in untested)
+                  + f".  {unlocks}")
+        return Check(name, "untested", "not tested -- " + detail,
+                     brief=_short(f"metadata only: {packages}"),
+                     group=_GROUP_EXTRAS)
+
+    return Check(name, "verified",
+                 f"{packages} imported in subprocesses.  {unlocks}",
+                 brief=_short(packages), group=_GROUP_EXTRAS)
+
+
+def _base_dependency_check(base: tuple[_Requirement, ...],
+                           probe: dict[str, tuple[bool, str]]) -> Check:
+    """The dependencies pip installs with no extra asked for.
+
+    Here because ``matplotlib`` used to be reported as half of the
+    ``[render]`` extra, which it has never been: it is a base
+    requirement, already installed on every box, and naming it in the
+    render remedy hid the package that extra actually carries.  A base
+    dependency that is absent or unimportable is not an opt-in -- it is
+    a broken install, and it blocks.
+
+    Requirements a DEEPER check already owns are named here and judged
+    there.  ``rasterio``/``pyproj`` became runtime dependencies in
+    2.3.3 and have their own geography-stack line; probing them twice
+    would put two verdicts about one fact in one report, which is how a
+    reader learns to believe neither.
+    """
+
+    name = "base dependencies (installed by `pip install gpuwm`)"
+    states = [(item, *_package_evidence(item, probe))
+              for item in base
+              if not item.alias and item.distribution not in _DEEP_CHECKED]
+    elsewhere = sorted({f"{item.specifier} -> `{_DEEP_CHECKED[item.distribution]}`"
+                        for item in base
+                        if item.distribution in _DEEP_CHECKED})
+    faults = [(label, why) for _i, state, label, why in states
+              if state in ("absent", "broken")]
+    if faults:
+        detail = "; ".join(f"{label}: {why}" for label, why in faults)
+        return Check(
+            name, "missing", detail,
+            "# these are not optional and not extras: they are what\n"
+            "  # `pip install gpuwm` itself installs, so an absent one\n"
+            "  # means a damaged install rather than a choice --\n"
+            "pip install --force-reinstall --no-deps gpuwm\n"
+            "  # then, if it persists, reinstall with its dependencies:\n"
+            "pip install --force-reinstall gpuwm",
+            action="pip install --force-reinstall gpuwm",
+            brief=_short(detail), blocking=True, severity=SEVERITY_BROKEN)
+    packages = ", ".join(label for _i, _s, label, _w in states)
+    detail = f"{packages} imported in subprocesses"
+    if elsewhere:
+        detail += ("; also required and reported on its own line: "
+                   + ", ".join(elsewhere))
+    return Check(name, "verified", detail, brief=_short(packages))
+
+
+#: Packages no extra and no base requirement NAMES, which a documented
+#: door nonetheless imports.  Each arrives transitively, and that is
+#: exactly why it needs reporting: a transitive dependency is nobody's
+#: declared contract, so nothing fails when it goes away.
+#:
+#: Pillow is here because `gpuwm render --pair`'s own refusal calls it
+#: "installed with the render extra", and it is not: `[render]` is
+#: wrf-rust + pyshp, and Pillow rides in with matplotlib, a BASE
+#: dependency.  A reader following that message installs an extra that
+#: cannot supply the package they are missing.
+_TRANSITIVE_CONSUMERS = (
+    ("PIL", "Pillow", "gpuwm render --pair",
+     "arrives with matplotlib (a base dependency), NOT with the "
+     "[render] extra"),
+)
+
+
+def _transitive_dependency_check() -> Check:
+    """Packages a documented door imports that no requirement names."""
+
+    name = "transitive dependencies (named by no requirement)"
+    faults = []
+    evidence = []
+    for module, distribution, door, provenance in _TRANSITIVE_CONSUMERS:
+        ok, why = _import_probe(module, distribution)
+        if ok:
+            evidence.append(f"{distribution} {why} ({provenance})")
+        else:
+            faults.append(f"{distribution}: {why} -- {door} needs it; "
+                          f"it {provenance}")
+    if faults:
+        detail = "; ".join(faults)
+        return Check(
+            name, "missing", detail,
+            "# these are not in any gpuwm extra, so no extra of any\n"
+            "  # name installs them.  Reinstall the base dependency that\n"
+            "  # carries them, or name the package directly:\n"
+            "pip install --force-reinstall matplotlib",
+            action="pip install --force-reinstall matplotlib",
+            brief=_short(detail), blocking=False,
+            severity=SEVERITY_DEGRADED)
+    return Check(name, "verified", "; ".join(evidence),
+                 brief=_short(", ".join(
+                     distribution
+                     for _m, distribution, _d, _p in _TRANSITIVE_CONSUMERS)))
+
+
+def _extras_checks() -> list[Check]:
+    """Every extra this INSTALLED distribution declares, plus the base.
+
+    Order is the metadata's own, which is pyproject's declaration order
+    through the wheel: the GPU pair, render, geog, obs, dealias, dev,
+    then the aliases.  A reader comparing this report against the
+    install lines in the documentation is reading them in the same
+    order the packaging declares them.
+    """
+
+    declared = declared_requirements()
+    if declared is None:
+        return [Check(
+            "pip extras", "untested",
+            "not tested -- this interpreter has no installed gpuwm "
+            "distribution to read extras from (a source tree on "
+            "PYTHONPATH declares none).  Which extras exist, and which "
+            "of them are installed, is a property of an INSTALL",
+            "# install the package, even from the checkout, so its\n"
+            "  # metadata exists to be read:\n"
+            "pip install -e .",
+            action="pip install -e .",
+            brief="no installed distribution metadata")]
+    base, extras = declared
+    probe: dict[str, tuple[bool, str]] = {}
+    checks = [_base_dependency_check(base, probe),
+              _transitive_dependency_check()]
+    for extra in extras:
+        checks.append(_extra_check(extra, extras[extra], probe))
+    return checks
 
 
 def _geog_stack_check() -> Check:
@@ -1255,6 +1961,403 @@ def _bridge_checks() -> list[Check]:
     return checks
 
 
+#: Why an ``unreachable`` finding can still exit 0.  Printed on the two
+#: that do, so the summary's severity census and its blocking count are
+#: never in unexplained disagreement.
+_REFERENCE_DOOR_NOTE = (
+    "This door is not one of the README's or FIRST-LIGHT's own first-run "
+    "steps, so it reports UNREACHABLE without failing the exit code")
+
+#: The two GRIB2 tools, and the directory the mapped/20CRv3 routes
+#: build them in.  ``mapped_source._build_grib2_tools`` spells this
+#: path as ``Path(__file__).resolve().parents[1] / "tools" /
+#: "grib1_bridge"`` from a module that lives in the same package
+#: directory as this one, so the two expressions are the same path by
+#: construction -- and ``tests/test_doctor_mapped_route.py`` binds them
+#: by capturing the ``cwd`` that function would hand to cargo.
+_GRIB2_ROUTE_TOOLS = ("grib2_inventory", "grib2_dump")
+_GRIB2_ROUTE_CRATE_RELATIVE = ("tools", "grib1_bridge")
+
+
+def _grib2_route_crate() -> Path:
+    """The directory the mapped/20CRv3 routes run ``cargo build`` in."""
+
+    return Path(__file__).resolve().parents[1].joinpath(
+        *_GRIB2_ROUTE_CRATE_RELATIVE)
+
+
+def _mapped_grib2_route_check() -> Check:
+    """Can the mapped/20CRv3 GRIB2 routes reach the tools they need?
+
+    THIS IS THE ``ok`` THIS MODULE WAS CAUGHT PRINTING, and it is now the
+    line that reports the fix.  Through 2.3.3 ``gpuwm fetch-bridges``
+    staged ``grib2_inventory`` and ``grib2_dump``, ``_bridge_checks``
+    probe-executed both and printed ``ok bridge grib2_inventory``, and
+    then::
+
+        $ gpuwm-mapped-inspect --mapping <the wheel's own authority> \\
+              --input FILE.grib2
+        NotADirectoryError: [WinError 267] The directory name is invalid
+
+    Both of doctor's statements about the FILES were true.  Neither was a
+    statement about the ROUTE, and the route is what the reader was
+    asking about: ``mapped_source._build_grib2_tools()`` never consulted
+    the staged copies, it shelled ``cargo build`` in ``<package
+    parent>/tools/grib1_bridge``, a directory no wheel contains.
+
+    That function consults :func:`gpuwm.bridges.find_bridge` FIRST now,
+    the way ``ingest/grib.py`` always did, so the staged copies ARE what
+    the default route uses.  This check still answers the route's
+    question rather than the file's -- it just has a third answer it did
+    not have before:
+
+    * both tools resolve through the ladder, and then the default route
+      reaches them.  ``verified``.  This is the state a wheel install
+      lands in after ``gpuwm fetch-bridges``, and reporting it as a gap
+      would be the same defect in the opposite direction.
+    * neither resolves, and a crate is present (a source checkout), and
+      then doctor CANNOT answer: judging the build would mean running
+      cargo, which this module never does.  ``untested``, and it says so.
+    * neither resolves and there is no crate to build in.  ``missing``,
+      and the remedy is ``gpuwm fetch-bridges`` with nothing appended to
+      it, because staging is now sufficient on its own.
+
+    It does not block.  See :func:`blocking_gaps`: the doors it closes
+    (``gpuwm-mapped-inspect``, ``gpuwm adapt --descriptor``, the 20CRv3
+    direct route) live in the CLI reference and the examples, not in the
+    README's or FIRST-LIGHT's own first-run path.
+    """
+
+    name = "mapped/20CRv3 GRIB2 route (the tools it resolves)"
+    doors = ("gpuwm-mapped-inspect, gpuwm adapt --descriptor/--input, and "
+             "the rw-wps --source mapped route")
+    staged: dict[str, Path | None] = {}
+    override_faults: list[str] = []
+    for tool in _GRIB2_ROUTE_TOOLS:
+        try:
+            staged[tool] = bridges.find_bridge(tool)
+        except FileNotFoundError as error:
+            # A set environment override naming a missing file.  The
+            # route raises on it too, by design, so it is a gap here
+            # whatever else resolves.
+            staged[tool] = None
+            override_faults.append(str(error))
+    crate = _grib2_route_crate()
+    have_crate = (crate / "Cargo.toml").is_file()
+    found = {tool: path for tool, path in staged.items() if path is not None}
+
+    if len(found) == len(_GRIB2_ROUTE_TOOLS) and not override_faults:
+        return Check(
+            name, "verified",
+            f"{', '.join(str(path) for path in found.values())} resolve "
+            f"through the same ladder {doors} use, so the default route "
+            "reaches them with no flags",
+            brief="resolves both tools", group=_GROUP_BRIDGES)
+
+    if have_crate:
+        absent = [tool for tool in _GRIB2_ROUTE_TOOLS if tool not in found]
+        note = (f"{', '.join(absent)} do not resolve through the ladder, and "
+                f"the route falls back to a cargo build in {crate}.  Doctor "
+                "never runs cargo (see this module's docstring), so whether "
+                "that build succeeds here is unknown")
+        if override_faults:
+            note += "; " + "; ".join(override_faults)
+        return Check(name, "untested", f"not tested -- {note}",
+                     brief="not tested; the route falls back to cargo",
+                     group=_GROUP_BRIDGES)
+
+    absent = [tool for tool in _GRIB2_ROUTE_TOOLS if tool not in found]
+    detail = (
+        f"{', '.join(absent)} not staged, and this install has no "
+        f"tools/grib1_bridge crate to build them in ({crate}), so "
+        f"{doors} cannot resolve either tool")
+    if override_faults:
+        detail += "; " + "; ".join(override_faults)
+    remedy_lines = [
+        "gpuwm fetch-bridges",
+        "  # stages both tools where the mapped route already looks;",
+        "  # --grib2-inventory / --grib2-dump override the resolved paths",
+        "  # and are not needed for the default route."]
+    if override_faults:
+        remedy_lines.insert(0, "# unset the environment override(s) below, "
+                               "or point them at a real build:")
+    return Check(name, "missing", f"{detail}.  {_REFERENCE_DOOR_NOTE}",
+                 "\n".join(remedy_lines),
+                 action="gpuwm fetch-bridges",
+                 brief=f"{', '.join(absent)} not resolvable by this route",
+                 group=_GROUP_BRIDGES,
+                 blocking=False, severity=SEVERITY_UNREACHABLE)
+
+
+#: One next command for every obs front door the bundle cannot supply:
+#: they share a clone and a cargo build, so a copy per door reads as
+#: several problems.  Reached only when an artifact is absent from the
+#: bundle; every one of them is IN it as of this release, so the live
+#: remedy is `gpuwm fetch-bridges`.  Kept because the branch that needs
+#: it is the branch a future front door lands on first.
+_OBS_FRONT_DOOR_ACTION = ("build the obs front doors from a clone "
+                          "of the renderer workspace")
+
+
+#: Every bundled artifact, and the check that reports it.  A SET, kept
+#: by hand and guarded by a test, because the alternative is the defect
+#: it exists to stop: each of these checks is written per artifact, so
+#: an artifact added to the bundle is invisible here until someone
+#: remembers to write its check -- which is exactly how ``rw_nexrad``
+#: and then the three observation front doors came to be absent from a
+#: report that called the estate green.
+#:
+#: :func:`_bundle_coverage_checks` turns the set into a live sweep, so a
+#: new artifact is REPORTED (as untested, never as ok) from the moment
+#: the bundle carries it, rather than waiting for this map to catch up.
+#: ``tests/test_doctor_route_honesty.py`` fails when they disagree.
+_CHECKED_ARTIFACTS = {
+    "grib1_bridge": "the `bridge ...` lines",
+    "gfs_grib2_bridge": "the `bridge ...` lines",
+    "hrrr_grib2_bridge": "the `bridge ...` lines",
+    "grib2_inventory": "the `bridge ...` and mapped/20CRv3 route lines",
+    "grib2_dump": "the `bridge ...` and mapped/20CRv3 route lines",
+    "gpuwm_preprocess_cpu": "the `cpu preprocess library` line",
+    "rw_fetch": "the `fetch backbone` line",
+    "rw_wrfbatch": "the `renderer` line",
+    "rw_nexrad": "the `radar front door` line",
+    "region_global_dealias": "the `region-global dealiasing engine` line",
+    "rw_odim": "the `obs front door` lines",
+    "rw_mrms": "the `obs front door` lines",
+    "rw_stage4": "the `obs front door` lines",
+    "rw_asos": "the `obs front door` lines",
+    "rw_goes": "the `obs front door` lines",
+    "rw_opera": "the `obs front door` lines",
+}
+
+
+def _bundle_coverage_checks() -> list[Check]:
+    """Is every artifact the bundle carries reported by some check?
+
+    The one check in this module that is ABOUT the report.  Each of the
+    others is written per artifact, so the estate's completeness has
+    always depended on somebody remembering -- and twice it did not:
+    ``rw_nexrad`` shipped outside both audited sets and doctor passed on
+    boxes where every radar route was dead, and the three observation
+    front doors did the same thing again.  A bundle that grows a
+    fourteenth artifact must not need a third incident.
+
+    An uncovered artifact is resolved through the same ladder its
+    consumer would use and then reported ``untested`` when it is there
+    -- present, unprobed, and saying so -- because doctor knows no
+    contract for a binary nobody has taught it about.  Never ``ok``.
+    """
+
+    try:
+        from gpuwm import bridge_assets
+
+        bundled = tuple(bridge_assets.BUNDLED_ARTIFACTS)
+    except Exception as error:                   # noqa: BLE001 - reported
+        return [Check(
+            "bundled artifact coverage", "untested",
+            f"not tested -- the bundle manifest could not be read "
+            f"({type(error).__name__}: {error}), so doctor cannot say "
+            "whether every artifact it carries is reported above",
+            "# reinstall so the packaged bundle manifest loads:\n"
+            + REINSTALL_HINT,
+            action="reinstall gpuwm", brief="bundle manifest unreadable")]
+
+    uncovered = [artifact for artifact in bundled
+                 if artifact.name not in _CHECKED_ARTIFACTS]
+    if not uncovered:
+        owners = sorted({_CHECKED_ARTIFACTS[artifact.name]
+                         for artifact in bundled})
+        return [Check(
+            "bundled artifact coverage", "verified",
+            f"all {len(bundled)} artifact(s) this release's bundle carries "
+            f"are reported by a check above ({'; '.join(owners)})",
+            brief=f"{len(bundled)} of {len(bundled)} bundled artifacts "
+                  "reported")]
+
+    checks: list[Check] = []
+    for artifact in uncovered:
+        name = f"bundled artifact {artifact.name} (no check of its own)"
+        try:
+            filename = bridge_assets.artifact_filename(
+                artifact, bridge_assets.host_platform() or "linux-x86_64")
+            found = bridges.find_artifact(artifact.env_var, filename)
+        except Exception as error:               # noqa: BLE001 - reported
+            checks.append(Check(
+                name, "untested",
+                f"not tested -- it is in this release's bundle and doctor "
+                f"has no check for it; resolving it also failed "
+                f"({type(error).__name__}: {error})",
+                brief="in the bundle, unresolvable, unchecked"))
+            continue
+        if found is None:
+            checks.append(Check(
+                name, "missing",
+                f"in this release's bundle and not staged here; needed by: "
+                f"{artifact.consumer}.  Doctor has no contract probe for "
+                "this artifact, so staging it is all this line can ask for",
+                "gpuwm fetch-bridges\n"
+                "  # stages every pinned artifact, this one included",
+                action="gpuwm fetch-bridges",
+                brief="bundled, not staged, and unchecked",
+                group=_GROUP_BRIDGES, blocking=False,
+                severity=SEVERITY_DEGRADED))
+            continue
+        checks.append(Check(
+            name, "untested",
+            f"not tested -- {found} is staged, and doctor has no contract "
+            f"probe for this artifact (needed by: {artifact.consumer}).  "
+            "Its presence was checked; its contract was not",
+            brief="staged; contract not probed", group=_GROUP_BRIDGES))
+    return checks
+
+
+def _obs_front_door_checks() -> list[Check]:
+    """Every observation front door, reported by name.
+
+    ``gpuwm/obs/frontdoor.py`` resolves each of these through the same
+    ladder as ``rw_nexrad`` and refuses by name when one is absent.
+    Through 2.3.3 none of them was in ``BUNDLED_ARTIFACTS``, so ``gpuwm
+    fetch-bridges`` printed "all artifacts already staged and pin-valid"
+    and the refusal repeated verbatim -- and doctor, which audited
+    exactly the bundled set, reported a fully green estate on a box
+    where every obs front door was absent.
+
+    Both halves of that are fixed now and this function is where they
+    meet.  The binaries are REPORTED, so the estate is no longer green
+    over them; and the remedy is a FUNCTION of the bundle manifest
+    rather than an assumption, so it reads ``gpuwm fetch-bridges``
+    exactly when that command can supply the artifact.  As of this
+    release every door below is bundled, so it always can -- but the
+    branch that says otherwise is kept, because the next front door to
+    land will land on it before it lands in a bundle.
+
+    Non-blocking: these doors are named in no README and no FIRST-LIGHT
+    step.
+    """
+
+    try:
+        from gpuwm.obs import frontdoor
+    except ImportError as error:                 # pragma: no cover - partial
+        return [Check(
+            "observation front doors (MRMS / Stage-IV / ASOS)", "missing",
+            f"gpuwm.obs is not importable ({error}) -- blocks every "
+            "observation front door and means this install is incomplete",
+            "# reinstall so the observation stack imports:\n"
+            + REINSTALL_HINT,
+            action="reinstall gpuwm", brief="obs stack not importable",
+            group=_GROUP_ENGINES, severity=SEVERITY_BROKEN)]
+    try:
+        from gpuwm.bridge_assets import BUNDLED_ARTIFACTS
+
+        bundled = {artifact.name for artifact in BUNDLED_ARTIFACTS}
+    except Exception:                            # noqa: BLE001 - reported
+        bundled = set()
+
+    # The door NAMED per instrument is the product subcommand, because
+    # that is the one a reader can type after `pip install gpuwm`.  The
+    # campaign drivers under tools/ are the same binaries reached the
+    # other way and are named beside the three that have one; `gpuwm
+    # obs <instrument>` is what every one of them has.
+    doors = {"mrms": "gpuwm obs mrms (and python -m tools.obs_fetch_mrms)",
+             "stage4": "gpuwm obs stage4 (and python -m "
+                       "tools.obs_fetch_stage4)",
+             "asos": "gpuwm obs asos (and python -m tools.obs_fetch_asos)",
+             "goes": "gpuwm obs goes",
+             "opera": "gpuwm obs opera",
+             "odim": "gpuwm obs odim, and every `gpuwm obs radar` "
+                     "subcommand"}
+    # Read from the resolver rather than enumerated here, so a door added
+    # to FRONT_DOORS and not to `doors` above is a loud KeyError in the
+    # test suite instead of a silently unreported binary -- which is the
+    # exact failure this whole function exists to have stopped.
+    unnamed = sorted(set(frontdoor.FRONT_DOORS) - set(doors))
+    assert not unnamed, (
+        f"gpuwm.obs.frontdoor gained {unnamed} and gpuwm.doctor does not "
+        "name the door(s) they unlock")
+    checks: list[Check] = []
+    for instrument, door in sorted(doors.items()):
+        front = frontdoor.FRONT_DOORS[instrument]
+        name = f"obs front door {front.name} ({front.subject})"
+        in_bundle = front.name in bundled
+        try:
+            found = front.find()
+        except FileNotFoundError as error:
+            checks.append(Check(
+                name, "missing", f"{error} -- {door} cannot run",
+                f"# {front.env_var} names a missing executable: point it "
+                "at a real build, or unset it --\n"
+                + bridges.install_aware_build_hint(
+                    frontdoor.CARGO_BUILD_HINT, bridges.RUSTWX_CRATE_RELATIVE),
+                action=f"unset {front.env_var}, or point it at a real build",
+                brief=f"{front.env_var} names a missing file",
+                group=_GROUP_ENGINES, blocking=False,
+                severity=SEVERITY_UNREACHABLE))
+            continue
+        if found is None:
+            # The remedy is a FUNCTION of whether the bundle can supply
+            # this artifact, read from the bundle manifest rather than
+            # assumed -- and assuming is the defect being fixed.  The
+            # resolver's own refusal opens with `gpuwm fetch-bridges`
+            # because *a* bundle exists for the platform, without ever
+            # asking whether THIS artifact is in it, so a reader ran it,
+            # was told all pinned artifacts were staged, and met the
+            # identical refusal again.  When a release does start
+            # bundling these, this line becomes that one command with no
+            # edit here.
+            if in_bundle:
+                bundle_note = ("it IS in this release's prebuilt bundle, so "
+                               "one command stages it")
+                remedy = ("gpuwm fetch-bridges\n"
+                          "  # stages every pinned artifact for this "
+                          "platform, this one included")
+                action = "gpuwm fetch-bridges"
+            else:
+                bundle_note = (
+                    "and `gpuwm fetch-bridges` will NOT supply it: this "
+                    "artifact is not in the bundle at all, so that command "
+                    "reports every pinned artifact staged and this door "
+                    "stays shut")
+                remedy = (
+                    f"# {front.name} is not a bundled artifact.  The only\n"
+                    "  # route to it is a clone and a build of the renderer\n"
+                    "  # workspace:\n"
+                    + bridges.install_aware_build_hint(
+                        frontdoor.CARGO_BUILD_HINT,
+                        bridges.RUSTWX_CRATE_RELATIVE)
+                    + f"\n  # then copy "
+                    f"{bridges.executable_name(front.name)} "
+                    f"into {bridges.default_bridge_dir()},\n"
+                    f"  # or set {front.env_var} to its full path")
+                # One action for all three, so the terse report folds
+                # them into a single line: they share one clone, one
+                # cargo build, and one reason.
+                action = _OBS_FRONT_DOOR_ACTION
+            checks.append(Check(
+                name, "missing",
+                f"not built and not staged -- {door} cannot run, "
+                f"{bundle_note}.  {_REFERENCE_DOOR_NOTE}",
+                remedy, action=action,
+                brief=f"not staged; {door} cannot run",
+                group=_GROUP_ENGINES, blocking=False,
+                severity=SEVERITY_UNREACHABLE))
+            continue
+        ok, evidence = front.probe(found)
+        if not ok:
+            checks.append(Check(
+                name, "missing", f"{found} -- {evidence}; {door} cannot run",
+                "# REBUILD it -- this is a record-contract change, so\n"
+                "  # another copy of the same vintage fails identically --\n"
+                + bridges.install_aware_build_hint(
+                    frontdoor.CARGO_BUILD_HINT, bridges.RUSTWX_CRATE_RELATIVE),
+                action=f"rebuild {front.name}", brief=_short(evidence),
+                group=_GROUP_ENGINES, blocking=False,
+                severity=SEVERITY_UNREACHABLE))
+            continue
+        checks.append(Check(name, "verified", f"{found} -- {evidence}",
+                            brief=_short(evidence), group=_GROUP_ENGINES))
+    return checks
+
+
 def _fetch_backbone_check() -> Check:
     """The vendored Rust fetch backbone: probe-execute, not stat().
 
@@ -1321,11 +2424,15 @@ def _fetch_backbone_check() -> Check:
 def _nexrad_front_door_check() -> Check:
     """The radar front door: is it here, and is it current?
 
-    The one bundled binary with **no fallback**.  A missing fetch
-    backbone leaves the Python transport and a missing renderer leaves
-    matplotlib, so both are ``info``; there is no second way to turn a
-    radar volume into observations, so an absent ``rw_nexrad`` is the
-    difference between a box that can assimilate and a box that cannot.
+    A bundled binary with **no fallback**.  A missing fetch backbone
+    leaves the Python transport, so that one is ``info``; there is no
+    second way to turn a radar volume into observations, so an absent
+    ``rw_nexrad`` is the difference between a box that can assimilate
+    and a box that cannot.  (It is not the ONLY such binary, which this
+    docstring used to claim: ``region_global_dealias`` has no fallback
+    either -- ``vad-region`` is a different solver, not a substitute --
+    and the renderer's "matplotlib fallback" turned out to need the
+    ``[render]`` extra as well.  Both were measured, 2026-08-14.)
     It is reported ``missing`` and it blocks, for the same reason the
     GRIB bridges do: it ships in the bundle ``gpuwm fetch-bridges``
     stages, so its absence means an incomplete install rather than an
@@ -1489,13 +2596,42 @@ def _region_dealias_check() -> Check:
                  brief=_short(evidence), group=_GROUP_ENGINES)
 
 
+def _matplotlib_engine_note() -> str:
+    """What ``gpuwm render`` actually falls back to, on THIS install.
+
+    This function exists because the sentence it replaces was false.
+    Doctor said "matplotlib remains the documented fallback" in three
+    places, and the matplotlib engine imports the ``wrf`` package at the
+    top of its render loop -- every product it draws is a ``wrf.getvar``
+    call -- so on an install without ``[render]`` there is no fallback
+    at all: no rust engine and no matplotlib engine, and `gpuwm render`
+    ends in a traceback rather than the second of two options.  The
+    fallback is real exactly when that extra is installed, so the
+    sentence has to be a question, asked here.
+    """
+
+    ok, _evidence = _import_probe("wrf", "wrf-rust")
+    if ok:
+        return ("gpuwm render falls back to the matplotlib engine, which "
+                "is available here (the wrf package imports)")
+    return ("gpuwm render has NO engine left here: the matplotlib engine "
+            "is not a package-free fallback -- it imports the wrf package "
+            "from the [render] extra, which is not installed (see the "
+            "`pip extra [render]` line)")
+
+
 def _rust_renderer_check() -> Check:
     """The vendored Rusty Weather renderer: probe-execute, not stat().
 
     ``gpuwm render`` defaults to this engine exactly when the check
-    passes; a missing or unrunnable binary is not a gap in the estate
-    (matplotlib remains the documented fallback), so the statuses are
-    ``verified``/``info`` rather than ``missing``.
+    passes.  Whether its absence is a gap depends on something this
+    check cannot see on its own -- the matplotlib engine needs the
+    ``[render]`` extra too -- so the status stays ``info``/``missing``
+    and non-blocking here, and the sentence about the fallback is
+    computed (:func:`_matplotlib_engine_note`) rather than asserted.
+    The blocking verdict on an absent ``[render]`` belongs to the extras
+    block, which owns that package; two lines blocking on one fact would
+    count one problem twice.
     """
 
     name = f"renderer {rustwx.RENDERER_NAME} (rust render engine)"
@@ -1518,26 +2654,30 @@ def _rust_renderer_check() -> Check:
         else:
             detail = ("no checkout crate and no prebuilt executable "
                       f"(searched {', '.join(str(c) for c in rustwx.renderer_candidates())})")
+        note = _matplotlib_engine_note()
         return Check(
-            name, "info",
-            detail + " -- gpuwm render falls back to matplotlib",
+            name, "info", f"{detail} -- {note}",
             bridges.install_aware_build_hint(
                 rustwx.CARGO_BUILD_HINT, "tools/rustwx")
             + "\n  # enables --engine rust and makes it the default",
             action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
-            brief="not built; gpuwm render uses matplotlib",
+            brief=_short(f"not built; {note}"),
             group=_GROUP_ENGINES)
     ok, evidence = rustwx.probe_renderer(found)
     if not ok:
-        # Non-blocking on the exit code, per this function's own
-        # contract: matplotlib remains the documented fallback.
+        # Non-blocking here on purpose, and NOT because "matplotlib
+        # remains the fallback" -- that sentence was false on a base
+        # install.  The extras block owns the [render] verdict; this
+        # line says what is true of the binary and names the state of
+        # the other engine.
+        note = _matplotlib_engine_note()
         return Check(
-            name, "missing", f"{found} -- {evidence}",
+            name, "missing", f"{found} -- {evidence}; {note}",
             "# it has to be replaced:\n" + bridges.install_aware_build_hint(
                 rustwx.CARGO_BUILD_HINT, "tools/rustwx"),
             action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
             brief=_short(evidence), group=_GROUP_ENGINES,
-            blocking=False)
+            blocking=False, severity=SEVERITY_DEGRADED)
     # Ask the question the renderer answers, in the renderer's own
     # order.  Probing gpuwm's checkout path alone reported "NO basemap
     # assets found" on every pip install -- including the ones where
@@ -1687,10 +2827,13 @@ def _cpu_library_check() -> Check:
         return Check(
             "cpu preprocess library", "missing",
             "gpuwm_preprocess_cpu shared library not found "
-            "(--preprocess-backend cpu needs it; the CUDA backend does "
-            f"not): {error}", remedy,
+            "(--preprocess-backend cpu needs it, and so does "
+            "--preprocess-backend auto wherever CUDA is unusable; the "
+            "radar dealiaser's coarse VAD search falls back to NumPy "
+            f"without it): {error}", remedy,
             action=_build_action(), brief="not staged",
-            group=_GROUP_BRIDGES, blocking=False)
+            group=_GROUP_BRIDGES, blocking=False,
+            severity=SEVERITY_DEGRADED)
     except (OSError, RuntimeError, AttributeError) as error:
         return Check(
             "cpu preprocess library", "missing",
@@ -2152,7 +3295,15 @@ def _non_git_import_check() -> Check:
 
 #: Doctor's per-source route checks, by the ``--source`` name.  These are
 #: public data products, not cases.
-DOCTOR_SOURCES = ("gfs", "hrrr")
+#:
+#: DERIVED from :data:`gpuwm.bridges.SOURCE_DECODERS` rather than
+#: transcribed, because the transcription was wrong: this tuple read
+#: ``("gfs", "hrrr")`` while the help text under it promised "every
+#: route this build knows", and the build knows era5 -- whose decoder
+#: doctor's own bridge line names as the ERA5 route's.  Deriving it
+#: means a fourth source added to the resolver arrives here without
+#: anyone remembering to add it.
+DOCTOR_SOURCES = tuple(sorted(bridges.SOURCE_DECODERS))
 
 #: Fold key for one source's route findings.
 _GROUP_ROUTE = "route"
@@ -2287,6 +3438,19 @@ def _source_route_checks(source: str) -> list[Check]:
         checks.append(_hrrr_fetch_path_check())
     if source == "gfs":
         checks.append(_gfs_fetch_path_check())
+    if source == "era5":
+        # No transport line, and that is the finding rather than an
+        # omission: this route has no gpuwm-driven download at all.
+        # `gpuwm fetch --source era5` writes a CDS request document for
+        # the user to submit; what doctor CAN answer is which decoder
+        # the preparation will launch, which is the line above.
+        checks.append(Check(
+            "era5 route fetch transport", "info",
+            "no gpuwm transport: `gpuwm fetch --source era5` writes a "
+            "CDS request document and the retrieval happens at the CDS, "
+            "so there is no byte transport here to report on",
+            brief="CDS request document; no gpuwm transport",
+            group=_GROUP_ROUTE))
     return checks
 
 
@@ -2318,17 +3482,36 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     # loads but cannot compile, then a compile that cannot factor.
     checks.append(_cuda_headers_check())
     checks.append(_da_eigensolver_check())
-    checks.append(_render_extra_check())
-    # Beside the render extra, because they are the same question asked
-    # of a different feature: can this install actually run the thing its
-    # documentation describes?
+    # Beside the extras, because they are the same question asked of a
+    # different feature: can this install actually run the thing its
+    # documentation describes?  This one keeps its own line because
+    # rasterio/pyproj stopped being an extra in 2.3.3 -- they are
+    # runtime dependencies now, and the extras block below defers to
+    # this check rather than probing them a second time.
     checks.append(_geog_stack_check())
+    # Every extra this INSTALL declares, in the packaging's own order.
+    # Through 2.3.2 the only Python-package line here was a single
+    # "render extra" that probed wrf and matplotlib, so `obs`,
+    # `dealias` and pyshp were absent from a 40 KB report.
+    checks.extend(_extras_checks())
     checks.append(_rust_renderer_check())
     checks.append(_renderer_tree_check())
     checks.append(_fetch_backbone_check())
     checks.append(_nexrad_front_door_check())
+    # The three front doors no bundle carries.  Absent from this report
+    # through 2.3.3, which is how a box with every radar-adjacent
+    # observation route dead could print a fully green estate.
+    checks.extend(_obs_front_door_checks())
     checks.append(_region_dealias_check())
     checks.extend(_bridge_checks())
+    # ABOUT the report, not about an artifact: does every artifact the
+    # bundle carries have a line above?  Twice it did not, and both
+    # times doctor called the estate green.
+    checks.extend(_bundle_coverage_checks())
+    # After the bridges, because it is the question the five `ok bridge`
+    # lines above do NOT answer: whether the route that needs two of
+    # them can actually reach them.
+    checks.append(_mapped_grib2_route_check())
     checks.append(_cpu_library_check())
     checks.append(_thompson_tables_check())
     checks.append(_noah_tables_check())
@@ -2349,8 +3532,11 @@ _REMEDY_LABEL = "          remedy: "
 #: Status -> the label both reports print.  One vocabulary, so a reader
 #: who runs the terse form and then ``--explain`` is reading the same
 #: four words in the same column.
+#: ``UNTESTED`` is one character wider than its four siblings and stays
+#: that way on purpose: it is the status that must not be skimmed past
+#: as though it were ``present``.
 _LABELS = {"verified": "ok     ", "present": "present",
-           "missing": "MISSING", "info": "info   "}
+           "untested": "UNTESTED", "missing": "MISSING", "info": "info   "}
 
 
 def _remedy_block(remedy: str) -> list[str]:
@@ -2427,9 +3613,10 @@ def format_report(checks: list[Check]) -> str:
         lines.append(
             f"gpuwm doctor: {gaps} gap(s), {blocking} of them blocking "
             f"(the exit code is {1 if blocking else 0})"
-            + (f"; the other {opt_in} is/are opt-in pieces this install "
-               "has not staged, each a documented choice with its own "
-               "command above" if opt_in else "")
+            + _severity_clause(checks)
+            + (f"; the other {opt_in} is/are pieces this install has not "
+               "staged or installed, each with its own command above"
+               if opt_in else "")
             + ".  Every remedy line above is either a command to run as "
               "printed, in the order printed, or a '#' comment.")
     elif presence_only:
@@ -2512,7 +3699,8 @@ def format_brief(checks: list[Check]) -> str:
         # reported 1.3.1 -> 1.4.0 "regression".
         summary = (f"gpuwm doctor: {len(gaps)} gap(s), {len(blocking)} "
                    f"of them blocking (exit "
-                   f"{1 if blocking else 0}).")
+                   f"{1 if blocking else 0})"
+                   + _severity_clause(checks) + ".")
         setup = _setup_summary(gaps)
         if setup:
             summary += " " + setup
@@ -2525,20 +3713,93 @@ def format_brief(checks: list[Check]) -> str:
 
 
 def blocking_gaps(checks: list[Check]) -> list[Check]:
-    """The gaps that justify a nonzero exit: broken or integrity-suspect
-    findings, never the absent-optional ones (see :class:`Check`).
+    """The gaps that justify a nonzero exit.  THE severity rule, once.
 
-    This split is the whole answer to the reported ``gpuwm setup`` exit
-    regression (1.3.1 exited 1 on an unfetched WPS_GEOG tree; 1.4.0 exits
-    0 on the identical gap text).  Exiting 0 is correct -- that download
-    is an explicit ~16 GB opt-in, and an install that did everything its
-    documentation asked must not fail an installer.  What was wrong was
-    that both reports printed the same "1 gap(s)" line, so the only
-    visible difference between the two versions was the exit code.  The
-    severity is printed now; the exit code did not move."""
+    A finding is one of four severities, and exactly two of them fail
+    the process:
+
+    ``broken`` (blocks)
+        Something is present and wrong: a truncated executable, a table
+        that fails its hash, a manifest artifact that fails
+        revalidation, an installed package that will not import, a CuPy
+        wheel whose cuBLAS will not load on this box.  Nobody chose
+        this, and nothing downstream can work around it.
+
+    ``unreachable`` (blocks)
+        A command the product's own README or FIRST-LIGHT tells a user
+        to run cannot run at all on this box, and no documented
+        fallback covers it.  CuPy absent is the type case: ``gpuwm
+        run`` is step 5 of First light, and without CuPy it dies in a
+        raw ``ModuleNotFoundError`` after fetching gigabytes.  The
+        ``[render]`` extra absent is the other: ``gpuwm enprod`` and
+        ``gpuwm render --engine matplotlib`` are both README doors and
+        both import the ``wrf`` package.
+
+    ``degraded`` (does not block)
+        An optional mode, engine or door is unavailable while a
+        DOCUMENTED default still works: scipy's ``vad-region``
+        dealiasing beside the shipped ``region-global`` engine, the
+        rust fetch backbone beside the Python transport, cuSOLVER
+        beside the bundled Jacobi kernel.
+
+    ``opt-in`` (does not block)
+        An explicit choice the operator has not made: the ~16 GB
+        WPS_GEOG download, the ``dev`` extra.
+
+    Two boundary cases are worth stating because they were argued.  A
+    door that is genuinely unreachable but lives only in the CLI
+    reference or the examples -- ``gpuwm-mapped-inspect``, ``python -m
+    tools.obs_fetch_mrms`` -- is reported ``unreachable`` and does NOT
+    block: the exit code tracks the paths the product's own front page
+    promises, and widening it to every module door would fail every
+    install for routes most users never open.  And a ``present`` or
+    ``untested`` finding never blocks, because neither is a claim that
+    something is wrong.
+
+    What changed on 2026-08-14, and why: CuPy's absence used to carry
+    ``blocking=False``.  A bare install therefore printed ``3 gap(s), 0
+    of them blocking (exit 0)`` -- a green light over a box that could
+    not run a forecast -- and ``gpuwm run-plan --probe`` inherited it
+    as ``"ready": true``.  An installer script that trusts an exit code
+    shipped that box.  The 1.3.1 -> 1.4.0 ``gpuwm setup`` regression
+    this function was originally written for is still handled, by the
+    ``opt-in`` severity: an unfetched WPS_GEOG tree still exits 0.
+    """
 
     return [check for check in checks
             if check.status == "missing" and check.blocking]
+
+
+def severity_census(checks: list[Check]) -> dict[str, int]:
+    """How many gaps of each severity, in the report's own vocabulary.
+
+    Printed in the summary because "how many" and "how bad" are
+    different questions, and a single number answering both is what let
+    ``0 of them blocking`` sit over a broken box.
+    """
+
+    census: dict[str, int] = {}
+    for check in checks:
+        # Every gap carries a severity: Check.__post_init__ translates
+        # a legacy `blocking` flag into one, so there is no unclassified
+        # bucket to hide a finding in.
+        if check.status != "missing" or check.severity is None:
+            continue
+        census[check.severity] = census.get(check.severity, 0) + 1
+    return census
+
+
+def _severity_clause(checks: list[Check]) -> str:
+    """``" -- 1 unreachable, 2 opt-in"``, or ``""`` when there are none."""
+
+    census = severity_census(checks)
+    ordered = [severity for severity in
+               (SEVERITY_BROKEN, SEVERITY_UNREACHABLE, SEVERITY_DEGRADED,
+                SEVERITY_OPT_IN) if census.get(severity)]
+    if not ordered:
+        return ""
+    return " -- " + ", ".join(f"{census[severity]} {severity}"
+                              for severity in ordered)
 
 
 def doctor_main(args) -> int:
@@ -2566,11 +3827,16 @@ def doctor_main(args) -> int:
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "doctor",
-        help="verify the runtime estate for real (subprocess imports of "
-             "cupy/wrf/matplotlib, bridge probe executions, ctypes load "
-             "of the CPU library, table hash/parse validation, WPS_GEOG "
+        help="verify the runtime estate for real (a subprocess import of "
+             "every package this install's own metadata declares, base "
+             "and extras alike; probe executions of every bridge, front "
+             "door and render engine; a ctypes load of the CPU library; "
+             "table hash/parse validation; sealed-manifest re-hashing; "
+             "each data route's decoder and byte transport; WPS_GEOG "
              "index files) and print one line per item with the command "
-             "that closes each gap (--explain for the full remedies)")
+             "that closes each gap (--explain for the full remedies).  "
+             "Exits 1 when a finding is broken or unreachable, 0 when "
+             "the only gaps are degraded or opt-in")
     parser.add_argument("--json", action="store_true",
                         help="emit the checks as JSON")
     parser.add_argument(
@@ -2585,6 +3851,9 @@ def register_cli(subparsers) -> None:
     return parser
 
 
-__all__ = ["Check", "DOCTOR_SOURCES", "SETUP_ACTIONS", "collect_checks",
-           "doctor_main", "format_brief", "format_report", "geography_gaps",
-           "register_cli"]
+__all__ = ["Check", "DOCTOR_SOURCES",
+           "SETUP_ACTIONS", "SEVERITY_BROKEN", "SEVERITY_DEGRADED",
+           "SEVERITY_OPT_IN", "SEVERITY_UNREACHABLE", "blocking_gaps",
+           "collect_checks", "declared_requirements", "doctor_main",
+           "format_brief", "format_report", "geography_gaps",
+           "register_cli", "severity_census"]

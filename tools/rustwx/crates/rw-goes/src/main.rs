@@ -81,12 +81,38 @@ use pack::{
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
+/// binary was built from, embedded so the gpuwm release cut can prove a
+/// staged bridge matches the commit being released by reading bytes
+/// alone (`tools/build_bridge_bundle.py pin --source-rev`).  `build.rs`
+/// injects the value; `main` references the constant so the linker
+/// cannot discard it.
+pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
+    concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
+
 pub const LIST_SCHEMA: &str = "gpuwm-obs.goes-list.v1";
 pub const FETCH_SCHEMA: &str = "gpuwm-obs.goes-fetch.v1";
 pub const BUILD_SCHEMA: &str = "gpuwm-obs.goes-cwp-build.v1";
 pub const CLOUDTOP_BUILD_SCHEMA: &str = "gpuwm-obs.goes-cloudtop-build.v1";
 pub const VERIFY_SCHEMA: &str = "gpuwm-obs.goes-cwp-verify.v1";
 pub const CLOUDTOP_VERIFY_SCHEMA: &str = "gpuwm-obs.goes-cloudtop-verify.v1";
+
+/// The exact `--abi` line the Python bridge pins, in the shape
+/// `rw_nexrad` and `rw-obs`'s three bins established: the record schema
+/// the acquisition subcommand prints, then the schemas of the two packs
+/// this bin writes.  It is not a version number -- a rebuilt-but-
+/// unchanged binary still matches, and a binary whose record or pack
+/// shapes moved does not, which is the only question the Python
+/// wrapper's probe and the release cut are asking.
+///
+/// It is a literal rather than a `concat!` of the three constants
+/// because `concat!` takes literals only and this workspace builds
+/// `--locked --offline` from a fixed vendor closure, so a const-format
+/// crate is not available to spell it. `abi_marker_names_every_contract
+/// _it_pins` below binds the literal to the three constants instead, so
+/// a schema bump that forgets this line fails the crate's own tests.
+const ABI_MARKER: &str = "gpuwm-obs.goes-fetch.v1\tgpuwm-obs.goes-cwp.v2\t\
+gpuwm-obs.goes-cloudtop.v2";
 
 /// The ABI scan mode the operational feed has run since 2019.  A flip to
 /// the contingency mode is a flag, not a rebuild.
@@ -100,7 +126,7 @@ const DEFAULT_CACHE_DIR: &str = ".rw-goes-cache";
 
 const USAGE: &str = "\
 usage: rw_goes <list|fetch|cwp|cloud-top|verify> [OPTIONS]
-       rw_goes --version | --help
+       rw_goes --version | --help | --abi
 
   list       report the ABI L2 cloud granules a (satellite, sector, product
              set, window) resolves to, grouped into scans, moving no payload
@@ -258,6 +284,7 @@ verify options
 ";
 
 fn main() -> ExitCode {
+    let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
         Ok(output) => {
@@ -278,6 +305,7 @@ fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
     match first.as_str() {
         "--help" | "-h" | "help" => return Ok(USAGE.to_string()),
         "--version" | "-V" => return Ok(format!("rw_goes {VERSION}\n")),
+        "--abi" => return Ok(format!("{ABI_MARKER}\n")),
         _ => {}
     }
     let options = Options::parse(&args[1..])?;
@@ -2151,6 +2179,23 @@ mod tests {
                 .starts_with("rw_goes ")
         );
         assert_eq!(run(&["-h".to_string()]).unwrap(), USAGE);
+        assert_eq!(run(&["--abi".to_string()]).unwrap(), format!("{ABI_MARKER}\n"));
+        assert!(USAGE.contains("--abi"), "usage must document --abi");
+    }
+
+    #[test]
+    fn abi_marker_names_every_contract_it_pins() {
+        // The marker is a literal (no const-format crate in the offline
+        // vendor closure), so this is what keeps it honest: bump a schema
+        // without touching the marker and this test is the refusal.
+        for needle in [FETCH_SCHEMA, pack::CWP_SCHEMA, cloudtop::CLOUDTOP_SCHEMA] {
+            assert!(
+                ABI_MARKER.contains(needle),
+                "--abi does not pin {needle}, so a wrapper written against \
+                 it could not tell a drifted binary from a current one"
+            );
+        }
+        assert_eq!(ABI_MARKER.split('\t').count(), 3);
     }
 
     #[test]

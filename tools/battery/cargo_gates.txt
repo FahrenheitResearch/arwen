@@ -169,6 +169,16 @@ cpu  tools/rustwx  rw-nexrad  125
 # Surface and upper-air observations.
 cpu  tools/rustwx  rw-obs  53
 
+# ODIM polar volumes: the European counterpart of rw-nexrad, and the
+# decoder `gpuwm obs radar` drives.  It carries the two-sentinel rule
+# (`undetect` is the radar reporting it looked and found nothing;
+# `nodata` is the radar reporting it did not look), the per-cut Nyquist
+# the dealias handoff reads, and the multi-file assembly a national feed
+# that publishes one file per elevation needs.  A build that collapsed
+# any of those still decodes and still prints a plausible record, which
+# is exactly the class of defect only its own tests catch.
+cpu  tools/rustwx  rw-odim  52
+
 # Satellite: the GOES ABI ingest and the L2 cloud products.  --lib is
 # the whole crate EXCEPT tests/cloud_products.rs, which is the entry
 # below; the split is by target, not by subject, so nothing is dropped

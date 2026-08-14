@@ -21,6 +21,7 @@ import numpy as np
 
 from gpuwm import runtime
 from gpuwm.case_data import SourceOrography
+from gpuwm.explain import layered
 from gpuwm.config import RunConfig
 from gpuwm.core.grid import make_vertical_coord
 from gpuwm.core.rrtmgp import RRTMGPRadiation
@@ -44,10 +45,62 @@ from gpuwm.verify.profiles import (
     Threshold, VerificationProfile)
 
 
-BUNDLE = Path(os.environ.get(
-    "GPUWM_REAL74_REFERENCE_BUNDLE",
-    Path.home() / "Downloads" / "WRF_1974_MP55_reference_bundle",
-))
+#: The environment variable that names this case's reference bundle.
+#: Case-local by construction: the name, the default and every use of it
+#: live in this module, which is the case's own home.
+BUNDLE_ENV = "GPUWM_REAL74_REFERENCE_BUNDLE"
+
+#: Where the bundle is looked for when the variable is not set.  Named
+#: separately from BUNDLE so a refusal can offer this location even when
+#: an override is in force: echoing ``BUNDLE.name`` there told a reader
+#: with GPUWM_REAL74_REFERENCE_BUNDLE=/tmp/no-bundle to "place it at
+#: ~/Downloads/no-bundle", which is not a location and not advice.
+DEFAULT_BUNDLE = Path.home() / "Downloads" / "WRF_1974_MP55_reference_bundle"
+
+BUNDLE = Path(os.environ.get(BUNDLE_ENV, DEFAULT_BUNDLE))
+
+
+def require_bundle() -> Path:
+    """The reference bundle, or a refusal that names how to get one.
+
+    This case is the only ``gpuwm verify`` case that needs external data,
+    and the data is a multi-gigabyte WRF reference bundle that ships in
+    no wheel and is downloadable from nowhere public.  Without this
+    check the first thing that touched the bundle was
+    ``Path.read_text()`` on its ``namelist.wps``, so a user who ran the
+    case that `gpuwm cases` advertises got a twenty-line
+    ``FileNotFoundError`` traceback at exit 1 with no remedy -- and got
+    it INSTEAD of the one-sentence CuPy refusal every other verify case
+    gives, because the missing file is reached three lines before the
+    first ``import cupy``.
+
+    Raising ``ValueError`` is what puts it on the refusal boundary in
+    ``gpuwm/cli.py``: one sentence, exit 2, with the explanation half
+    behind ``--explain``.
+    """
+
+    namelist = BUNDLE / "namelists" / "namelist.wps"
+    if namelist.is_file():
+        return BUNDLE
+    if BUNDLE.is_dir():
+        detail = (f"the directory {BUNDLE} exists but has no "
+                  f"namelists/namelist.wps in it")
+    else:
+        detail = f"nothing is at {BUNDLE}"
+    raise ValueError(layered(
+        f"the real74_d01 case needs its WRF reference bundle, and "
+        f"{detail}.\n"
+        f"  Point {BUNDLE_ENV} at a directory holding the bundle's "
+        f"namelists/, met_em/, static/ and wrfout_reference/ subtrees, "
+        f"or place it at {DEFAULT_BUNDLE}.",
+        "This case is a FROZEN comparison against an external WRF v4.6.1 "
+        "run of 3 April 1974.  Its inputs are that run's own met_em, "
+        "static geography and reference wrfout -- gigabytes of "
+        "third-party output that ship in no wheel and are not "
+        "redistributable, so there is no `gpuwm fetch` for them.  Every "
+        "other `gpuwm verify` case is self-contained and needs only the "
+        "GPU runtime; this one is listed by `gpuwm cases` as a case you "
+        "can run only if you already hold the bundle."))
 START_TIME = datetime(1974, 4, 3, 12)
 SOURCE_OROGRAPHY = SourceOrography(
     path=BUNDLE / "met_em" / "met_em.d01.1974-04-03_12_00_00.nc",
@@ -774,6 +827,7 @@ def summary_metrics(summary: Phase3CaseSummary) -> dict[str, object]:
 
 def run(outdir=None) -> dict[str, object]:
     """Shared verification-case entry point used by ``gpuwm verify``."""
+    require_bundle()
     if outdir is not None:
         return summary_metrics(run_phase3_case(outdir))
     import tempfile
@@ -783,6 +837,10 @@ def run(outdir=None) -> dict[str, object]:
 
 def _case_grid(cfg: RunConfig):
     """Validate the config against the registered d01 grid and return it."""
+    # The gate for the config-driven doors (`gpuwm static|ingest|run`),
+    # ahead of the namelist read on the line below that used to be the
+    # first thing to touch the bundle.
+    require_bundle()
     if cfg.case != "real74_d01":
         raise ValueError(
             f"real74_d01 pipeline requires case='real74_d01', got {cfg.case!r}")

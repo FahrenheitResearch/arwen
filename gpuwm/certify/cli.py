@@ -71,9 +71,17 @@ def _certify_main(args) -> int:
         temporary.replace(args.out_verdict)
     refused = failing_conditions(verdict)
     if not refused:
+        # The PASS line names the compiler it witnessed, for the same reason
+        # dual-run's success line carries its count: a green light with no
+        # measurement on it is indistinguishable from a green light over a
+        # check nobody ran, and that is exactly what this command was
+        # printing while its compile-platform comparison sat uncalled.
+        platform = verdict["compile_platform"]["measured"]
         print(f"certify: PASS ({len(verdict['comparisons'])} banded "
               f"comparisons, band provenance {verdict['band']['provenance']}, "
-              f"band schema {verdict['band']['band_schema_version']})")
+              f"band schema {verdict['band']['band_schema_version']}, "
+              f"compile platform nvrtc {platform['nvrtc_build']} "
+              f"{platform['nvrtc_build_id']})")
         return 0
     for item in refused:
         print(f"certify: REFUSED {item['condition']}: {item['detail']}",

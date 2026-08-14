@@ -31,6 +31,49 @@ way WRF would. Physics *selection* values and their maturity labels
 live in [PHYSICS.md](PHYSICS.md); this page covers the knobs around
 them.
 
+## `[case_data]` -- the inputs a config-driven run declares
+
+`gpuwm run CONFIG.toml` is the config-driven route, and `[case_data]` is
+where that config names the data it runs on. Every input path and every
+policy is **declared, never implicit**: the loader
+(`gpuwm/case_data.py`) refuses an unknown key and refuses a missing
+required one, listing all of them at once rather than the first it
+reached.
+
+`gpuwm domain` and `gpuwm import-namelist` write this table for you. The
+table below is for hand-authoring it, and for reading what the wizard
+wrote.
+
+**Required -- the run is refused without them.**
+
+| key | what it names |
+|---|---|
+| `forcing` | the meteorological input: one path, a list of paths, or a glob. A glob that matches nothing is refused, except under `gpuwm static`, which never opens it. |
+| `vtable` | the WPS Vtable selector authority for `forcing`. Also unread by `gpuwm static`. |
+| `wps_namelist` | the `namelist.wps` whose geometry the domains are built on. |
+| `geog_root` | the WPS_GEOG static geography tree ([DATA.md](DATA.md)). |
+| `sfcp_to_sfcp` | real-init surface-pressure policy: a knob, and `false` is a legitimate answer, so it is declared rather than defaulted. |
+| `output_title` | the `TITLE` global attribute written into every wrfout this config produces. It is required because it is provenance: a history file that cannot say which experiment wrote it is not reproducible, and there is no sensible default for the name of your own run. |
+
+**Optional.**
+
+| key | what it names |
+|---|---|
+| `forcing_interval_s` | forcing cadence, when it should not be discovered from the files. |
+| `output_domain` | which domain's history the run publishes. |
+| `source_orography` | a NetCDF file supplying source orography; without it the forcing catalog's invariant geopotential is used. |
+| `source_orography_variable` | the variable to read out of `source_orography`. |
+| `co2_vmr` | trace-gas volume mixing ratio handed to the radiation driver. |
+| `water_temperature_overlay` | a water-temperature overlay file ([water-temperature-overlay](../water-temperature-overlay.md)). |
+| `water_temperature_policy` | how that overlay is applied. |
+
+Per-domain source orography is declared as `d01`, `d02`, ... keys inside
+`[case_data.source_orography]`.
+
+`gpuwm run` on a config with **no** `[case_data]` table refuses by name
+and lists the required inputs; that refusal and this table are the same
+list.
+
 ## Tweakable knobs
 
 ### `[experiment]`

@@ -152,12 +152,15 @@ def reset_kernel_manifest() -> None:
         _MANIFEST.clear()
 
 
-def recorded_module_keys() -> tuple[str, ...]:
-    """Keys recorded so far, sorted."""
-    with _LOCK:
-        return tuple(sorted(_MANIFEST))
+def manifest_is_empty(manifest: Mapping[str, Any]) -> bool:
+    """Whether a manifest recorded nothing -- true of any CPU-only route.
 
-
-def manifest_is_empty(manifest: Mapping[str, Any] | None = None) -> bool:
-    """Whether a manifest recorded nothing -- true of any CPU-only route."""
-    return not (kernel_manifest() if manifest is None else manifest)
+    The manifest is a REQUIRED argument, and deliberately so.  This function
+    used to default to the *live* manifest of whatever process asked, which is
+    the wrong document for every one of its callers: a certifier compiles no
+    kernels, so the default would have judged the certifying process instead
+    of the capsule in front of it, and a certifier that HAD compiled something
+    would have reported every capsule full.  The guard judges the record it is
+    handed or it does not run.
+    """
+    return not manifest

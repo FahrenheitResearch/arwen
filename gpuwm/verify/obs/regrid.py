@@ -118,10 +118,16 @@ def _tree(points: np.ndarray):
     try:
         from scipy.spatial import cKDTree
     except ImportError as error:
+        # Not "install the [obs] extra" any more: scipy is a runtime
+        # dependency, so [obs] is an empty compatibility alias and running
+        # it would install nothing.  Reaching here means the environment
+        # lost a declared dependency.
         raise ImportError(
             "building a remap plan needs scipy (the cKDTree neighbour "
-            "search); install the referee's extra: pip install "
-            "'gpuwm[obs]'") from error
+            "search). scipy is a required dependency of gpuwm, so this "
+            "environment is incomplete: repair it with `pip install "
+            "--upgrade --force-reinstall gpuwm`, or install the one "
+            "package with `pip install 'scipy>=1.11'`") from error
 
     return cKDTree(points)
 

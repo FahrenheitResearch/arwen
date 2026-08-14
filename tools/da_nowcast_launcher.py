@@ -601,8 +601,15 @@ def basemap_polylines(extent: tuple[float, float, float, float], *,
     and the figures they get back are the same geography.
     """
 
+    # Named refusal before the import; see tools/da_nowcast_render.py's
+    # Basemap for the failure this replaces.
+    from gpuwm.rustwx import basemap_dir, require_pyshp
+
+    try:
+        require_pyshp()
+    except ImportError as error:
+        raise LauncherError(str(error)) from error
     import shapefile
-    from gpuwm.rustwx import basemap_dir
 
     assets = basemap_dir()
     if not assets.is_dir():

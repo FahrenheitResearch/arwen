@@ -2923,19 +2923,39 @@ def write_manifest(plan: RunPlan, *, run_dir: Path, events_path: Path,
 # ---------------------------------------------------------------------------
 
 
-#: Remedies for the failure classes whose cause is known from the class
-#: alone.  Absent is ``None``, never a guess: a wrong remedy costs a
-#: reader more than no remedy.
+#: Remedies for the failure classes whose cause REALLY is known from the
+#: class alone: a plan document that failed validation, and a declared
+#: input that is not where the config says.  Absent is ``None``, never a
+#: guess: a wrong remedy costs a reader more than no remedy.
+#:
+#: ``ModuleNotFoundError`` is deliberately NOT here any more.  It used
+#: to map to the CuPy install line, so a plan run that died on a missing
+#: ``wrf``, ``scipy`` or ``shapefile`` told the caller's event stream to
+#: install a GPU wheel -- a remedy that is wrong, and wrong in the one
+#: channel a front end shows a user verbatim.  Import failures are
+#: answered by :func:`gpuwm.capabilities.remedy_for_error`, which reads
+#: the MODULE the failure names.
 _REMEDIES = {
-    "ModuleNotFoundError": (
-        "this route needs the GPU runtime (CuPy), which the base "
-        "install does not include: pip install 'gpuwm[gpu-cu12]' on a "
-        "CUDA 12.x box, 'gpuwm[gpu-cu13]' on a CUDA-13-only one; "
-        "`gpuwm doctor` names the one this box needs"),
     "PlanError": "fix the plan document and re-run; nothing was started",
     "FileNotFoundError": "a declared input is not at the path the config "
                          "names; `gpuwm check CONFIG` names all of them",
 }
+
+
+def _remedy(error: BaseException) -> str | None:
+    """The remedy for a failed plan run: what is missing, then the class.
+
+    Order matters.  An import failure is asked about FIRST and answered
+    from the module it names, so the class table can never speak for a
+    dependency it cannot see.
+    """
+
+    from gpuwm import capabilities
+
+    derived = capabilities.remedy_for_error(error)
+    if derived is not None:
+        return derived
+    return _REMEDIES.get(type(error).__name__)
 
 
 def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
@@ -2975,9 +2995,29 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
     # cannot drift by whatever the next few resolution steps cost.
     accepted_wall = time.perf_counter()
 
-    stage = "prepare"
+    stage = "preflight"
     observer: RunObserver | None = None
     try:
+        # BEFORE the fetch, the resolve and the device.  A plan run that
+        # cannot import the runtime it is about to integrate on must say
+        # so on the first line of its event stream, not after it has
+        # spent the caller's bandwidth -- and it must say so with the
+        # remedy, because the caller here is usually a program relaying
+        # our words to somebody else.
+        #
+        # `dry_run` is exempt by the same rule `gpuwm go --dry-run` is:
+        # it resolves the plan and stops before any device work, so it
+        # is exactly the thing a reader with no runtime should be able
+        # to run.
+        if not plan.run_options.get("dry_run"):
+            from gpuwm import capabilities
+
+            capabilities.require(
+                "gpuwm run-plan", capabilities.GPU_RUNTIME,
+                before=("Refusing at plan acceptance, before the fetch "
+                        "stage downloads anything and before a device is "
+                        "selected."))
+        stage = "prepare"
         device = plan.run_options.get("device")
         if device is not None:
             # Before anything can import cupy: the mask is read at
@@ -3121,7 +3161,7 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         events.emit(
             "failed", stage=stage, error_class=type(error).__name__,
             message=str(error), run_dir=str(run_dir),
-            remedy=_REMEDIES.get(type(error).__name__),
+            remedy=_remedy(error),
             receipts=_receipts(run_dir))
         if isinstance(error, KeyboardInterrupt):
             return 130
@@ -3543,14 +3583,32 @@ def probe_environment(*, readiness: bool = True) -> dict[str, Any]:
     if not readiness:
         document["readiness"] = {
             "collected": False,
+            # Not asked is not ready.  Null, explicitly, for the same
+            # reason the error arm below is null: a consumer must be
+            # able to tell "unknown" from "no".
+            "ready": None,
             "basis": "readiness was not requested; the estate check "
                      "creates a CUDA context and this document is the "
-                     "poll-safe half"}
+                     "poll-safe half.  `ready` is null, meaning UNKNOWN"}
     else:
         try:
+            from gpuwm import capabilities
             from gpuwm.doctor import blocking_gaps, collect_checks
 
             checks = collect_checks()
+            # READY MEANS VERIFIED READY.  This field used to be
+            # `not blocking_gaps(checks)`, and doctor carries the CuPy
+            # check as non-blocking on purpose (an install that has not
+            # opted into a GPU wheel is not a broken install) -- so a
+            # bare install answered `"ready": true, "blocking_gaps": 0`
+            # to a front end whose very next call is `gpuwm run`, which
+            # then refuses.  A probe that prints a green light over a
+            # hole is worse than one that says nothing.
+            #
+            # The requirements a RUN needs are asked here directly, by
+            # the same registry the run's own front door refuses with,
+            # so the two cannot disagree.
+            unmet = capabilities.unmet_run_requirements()
             document["readiness"] = {
                 "collected": True,
                 "checks": [dataclasses.asdict(check)
@@ -3559,14 +3617,30 @@ def probe_environment(*, readiness: bool = True) -> dict[str, Any]:
                 "gaps": sum(1 for check in checks
                             if check.status == "missing"),
                 "blocking_gaps": len(blocking_gaps(checks)),
-                "ready": not blocking_gaps(checks),
+                "ready": not blocking_gaps(checks) and not unmet,
+                "unmet_run_requirements": [
+                    {"module": item.module,
+                     "distribution": item.distribution,
+                     "extras": list(item.extras),
+                     "needed_for": item.unlocks,
+                     "remedy": item.remedy} for item in unmet],
                 "basis": "gpuwm doctor's own checks, which verify by "
-                         "execution and therefore create a CUDA context",
+                         "execution and therefore create a CUDA context, "
+                         "plus the run front door's own capability "
+                         "requirements; `ready` is true only when both "
+                         "are satisfied",
             }
         except Exception as error:  # noqa: BLE001 - a probe reports, never raises
+            # UNKNOWN, never ready.  `ready` is present and null so a
+            # consumer reading the field gets a third answer rather than
+            # a missing key it might treat as false -- or, worse, an
+            # absent-means-fine default.
             document["readiness"] = {
                 "collected": False,
-                "error": f"{type(error).__name__}: {error}"}
+                "ready": None,
+                "error": f"{type(error).__name__}: {error}",
+                "basis": "readiness could not be established; `ready` is "
+                         "null, which means UNKNOWN and never READY"}
     document["routes"] = {
         name: route.summary for name, route in sorted(ROUTES.items())}
     document["schemas"] = {

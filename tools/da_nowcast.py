@@ -1997,8 +1997,10 @@ def build_parser() -> argparse.ArgumentParser:
                           "counted. Applied to the assimilated obs AND to "
                           "the verification composites, so the run is "
                           "graded against a truth field built the same "
-                          "way it was fed. Requires scipy for the default "
-                          "engine")
+                          "way it was fed. The default engine is "
+                          "`region-global`, the Rust crate `gpuwm "
+                          "fetch-bridges` stages; `--dealias-engine "
+                          "vad-region` selects the scipy one instead")
     # The same two options tools.obs_radar_grid_build takes, defined by
     # that tool and added here rather than restated: this front door
     # BUILDS that tool's argv, so a second copy of the flag names is a
@@ -2164,6 +2166,33 @@ def _stop(requested: str | None, stage: str) -> bool:
             and STAGES.index(stage) >= STAGES.index(requested))
 
 
+def run_reaches_render(args) -> bool:
+    """Will this invocation execute the render stage?
+
+    Derived from :data:`STAGES` and the same ``_stop`` predicate the run
+    itself uses, never from a hand-written list of the ``--stop-after``
+    values that happen to stop early today.  A front-door check that
+    refused a run which was never going to draw anything would be a
+    refusal for a capability the run does not need -- and one spelled a
+    second way from the loop it is guarding drifts the first time a
+    stage is inserted.
+
+    The predicate is asked of the stages BEFORE render, not of render
+    itself, because ``_stop(requested, stage)`` means "this run stops
+    having completed ``stage``" and the run checks it *after* running
+    each one.  ``--stop-after render`` therefore RUNS the renderer, and
+    the first spelling of this function -- ``not _stop(stop_after,
+    "render")`` -- read that exactly backwards and would have waved
+    through the one ``--stop-after`` value that still needs the map
+    reader.  Its own test caught it; the shape below cannot make that
+    mistake, because it asks the same question the loop asks.
+    """
+
+    requested = getattr(args, "stop_after", None)
+    before_render = STAGES[:STAGES.index("render")]
+    return not any(_stop(requested, stage) for stage in before_render)
+
+
 def _stopped_early(out: Path, receipts: Path, args, stage: str) -> int:
     """Leave the partial receipt behind, then report the stop.
 
@@ -2315,6 +2344,27 @@ def validate_analysis_flags(args) -> None:
         raise FrontDoorError(
             "--dealias-refinement/--no-dealias-refinement refines a "
             "dealiased field; pass --dealias as well, or drop it")
+    if run_reaches_render(args):
+        # THE worst failure position in the product, met at the front
+        # door.  `render` is the LAST stage -- after the survey, the
+        # fetch, the preparation, the free forecast and every DA cycle
+        # -- and `tools/da_nowcast_render.py` opened its basemap with a
+        # bare `import shapefile`.  A six-hour run therefore ended in
+        # `ModuleNotFoundError: No module named 'shapefile'` with no
+        # message at all: maximum work destroyed, minimum information
+        # given, and nothing in `gpuwm doctor` to warn of it.
+        #
+        # Same shape as the --dealias check above and for the same
+        # reason: the prerequisite is knowable in the second before the
+        # run starts, and a capability check belongs wherever it is
+        # cheapest to answer, not wherever it happens to be consumed.
+        from gpuwm.rustwx import PYSHP_REMEDY, pyshp_available
+        if not pyshp_available():
+            raise FrontDoorError(
+                "this run ends in the render stage, which draws the map "
+                f"frame: {PYSHP_REMEDY}.\n"
+                "  # Or stop before it and keep every other receipt:\n"
+                "  #   --stop-after cycle")
     # The non-radar streams. Same reasoning as the driver's own refusals,
     # met here so a six-hour run does not pay for the fetch and the
     # georeference forecast before learning it was underspecified.
@@ -2363,8 +2413,40 @@ def run_pipeline(args) -> int:
     now = datetime.now(timezone.utc)
     resolve_da_preset(args)
     validate_analysis_flags(args)
-    out: Path = args.out
+    # ABSOLUTE, and absolute BEFORE the survey downloads a byte.
+    #
+    # Every stage below runs as a subprocess with ``cwd=repo_root``,
+    # which is the directory holding the ``tools`` package -- in a wheel
+    # install that is ``site-packages``, and it is never the directory
+    # the user typed the command in.  A relative ``--out`` therefore
+    # meant two different directories in one run: this process wrote
+    # ``danow/case/domain-box.geojson`` under the CALLER's cwd, and then
+    # `gpuwm domain` looked for that same relative path under
+    # ``repo_root`` and refused "local GeoJSON file does not exist" for a
+    # file that was on disk.  Resolving here makes the child's argv
+    # absolute, so the sentence a stage prints is about the path the
+    # stage actually looked at.  ``gpuwm go`` fixed the identical defect
+    # in its own chain (``gpuwm/go_cli.py:_stage_cwd``); this front door
+    # never received it.
+    #
+    # It is done at INTAKE, ahead of ``survey_site`` below, because that
+    # is the last moment the fix is free: one line later the survey has
+    # started pulling NEXRAD volumes from S3, and a path contract that
+    # only fails after the download has already cost the user the
+    # bandwidth this ordering exists to protect.
+    out: Path = Path(args.out).resolve()
+    args.out = out
     receipts = out / "receipts"
+    # Same reason, same moment: a --domain-polygon the caller drew is not
+    # read until stage 1, but whether the file is THERE is knowable now,
+    # and "you named a missing file" is worth nothing to a user who has
+    # already paid for two Level-II volumes to hear it.
+    if args.domain_polygon is not None:
+        args.domain_polygon = Path(args.domain_polygon).resolve()
+        if not args.domain_polygon.is_file():
+            raise FrontDoorError(
+                f"--domain-polygon names a missing file: "
+                f"{args.domain_polygon}")
     # Resolved before the survey moves a byte: a contradictory radar
     # request should cost nothing to refuse.
     selection = radar_selection(args)
@@ -2419,10 +2501,8 @@ def run_pipeline(args) -> int:
         # The caller drew the domain.  Their box is copied in verbatim
         # -- not re-derived, not re-centred -- so what the wizard fits
         # is exactly the geometry they were shown when they committed.
-        if not args.domain_polygon.is_file():
-            raise FrontDoorError(
-                f"--domain-polygon names a missing file: "
-                f"{args.domain_polygon}")
+        # Existence was settled at intake, before the survey spent a
+        # byte; this read is the only thing left to do here.
         box = json.loads(
             args.domain_polygon.read_text(encoding="utf-8"))
         center = dict(center)

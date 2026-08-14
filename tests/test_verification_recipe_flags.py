@@ -106,6 +106,36 @@ def test_every_flag_is_accepted_by_the_parser_that_receives_it(index):
     _tool_parser(tokens[1]).parse_args(tokens[2:])
 
 
+def test_this_recipe_agrees_with_the_shared_door_registry():
+    """This file's check and the whole-corpus one, on one registry.
+
+    This test parses, which is stronger than the corpus-wide rule in
+    ``test_docs_extras_agree_with_code.py`` -- parsing catches a missing
+    required argument that membership cannot.  The two must nonetheless
+    resolve the same command to the same door and read the same option
+    set, or the recipe could pass here while the corpus rule called the
+    same line undocumented.  Both draw from ``doc_command_parity``.
+    """
+
+    import doc_command_parity as shared
+
+    registry = shared.doors()
+    for tokens in COMMANDS:
+        if tokens[0] != "gpuwm":
+            continue
+        line = " ".join(tokens)
+        resolved = shared.resolve_door(line, registry)
+        assert resolved is not None, line
+        name, body = resolved
+        assert name == f"gpuwm {tokens[1]}", (name, line)
+        assert name in registry, name
+        defined = shared.door_options(registry[name])
+        for flag in shared.FLAG.findall(body):
+            assert flag in defined, (
+                f"the recipe passes {flag} to `{name}`, which the shared "
+                f"registry says it does not define")
+
+
 def _comparator_tokens() -> list[str]:
     return next(tokens for tokens in COMMANDS
                 if tokens[0] == "python"

@@ -1,5 +1,97 @@
 # Changelog
 
+## 2.4.0 (2026-08-14)
+
+New:
+- European radar reaches the product. `gpuwm obs radar` decodes an ODIM
+  polar volume into the `gpuwm-obs.radar-sweeps.v3` pack the existing
+  sweeps reader accepts, reports the per-sweep Nyquist and its
+  provenance, and superobs the pack onto a model domain for the LETKF
+  adapter. The route was complete from the decoder down to the adapter
+  in 2.3.3 and had no door, which by this project's rule means it did
+  not exist. `rw_odim` is a bundled artifact now, so the whole route is
+  reachable from `pip install gpuwm` plus `gpuwm fetch-bridges`, with no
+  Rust toolchain and no source checkout.
+- The frozen European radar site table carries an antenna altitude for
+  every one of its 136 sites. The MeteoGate locations endpoint publishes
+  a 2-D point and the OSCAR/Surface registry it links answers
+  `totalCount: 0`, so every row used to read `elevation_m: null` -- and
+  beam height above ground is a function of antenna height above mean sea
+  level, so a site assimilated without one places every gate at the wrong
+  altitude with nothing that looks like a failure. The heights are read
+  out of `/where/height` in the volumes themselves. The table refuses a
+  null rather than substituting a zero.
+- Germany's split-file volumes assemble. Some national feeds publish one
+  file per elevation and quantity rather than one volume file;
+  `gpuwm obs radar pack --dir` assembles them into one volume. It refuses
+  a directory holding two nominal times without `--stamp` rather than
+  taking the newest, and an assembled pack quotes a manifest digest over
+  its members instead of a file digest it cannot have.
+- `gpuwm obs` is the door onto every observation front door. Each
+  instrument -- MRMS, Stage-IV, ASOS/METAR, GOES ABI, the European
+  composite and European polar volumes -- resolves its binary through the
+  shared ladder and takes its arguments unchanged; bare `gpuwm obs`
+  prints where each one resolved and whether it speaks this release's
+  record contract. All six are bundled artifacts, so the command their
+  refusals name can supply them.
+- `gpuwm certify` refuses an empty kernel manifest and NVRTC compile
+  drift. A manifest with no kernels in it used to satisfy every
+  comparison it was asked to make.
+
+Fixed:
+- `gpuwm doctor` detects what is missing and means its exit code. It
+  reports every extra the packaging declares, exercises every claim it
+  makes rather than inferring from presence, and reports `untested`
+  where it cannot exercise something instead of `ok`.
+- Refusals fire at the front door, before expensive work, and name
+  remedies that exist. `gpuwm go`, `gpuwm run`, `gpuwm render`,
+  `gpuwm run-plan --probe` and both prepared runners take their
+  requirements from one capability registry, so no two doors can
+  disagree about what is missing or what installs it.
+- No remedy names an extra that installs nothing. scipy is a base
+  dependency, so the messages that sent readers to `gpuwm[obs]` and
+  `gpuwm[dealias]` -- both deliberately empty and deliberately retained,
+  so install lines already written down keep resolving -- now name the
+  package. `gpuwm render --pair` no longer says Pillow comes with
+  `[render]`; it comes with matplotlib, which is base.
+- The mapped and 20CRv3 GRIB2 routes resolve `grib2_inventory` and
+  `grib2_dump` through the same ladder every other artifact uses. They
+  shelled `cargo build` into a directory no wheel contains, so
+  `gpuwm-mapped-inspect` and `gpuwm adapt` died on a bare
+  `NotADirectoryError` while both tools sat staged and pin-valid and
+  doctor reported them `ok`. Doctor reports the route, not just the
+  files.
+- `gpuwm fetch-bridges --help` names what it actually stages. The
+  inventory is derived from the artifact table, so it cannot drift on the
+  next addition.
+- Every documented flag and command is held against the parsers by test,
+  in both directions, so a page cannot name a flag that does not exist
+  and a flag cannot exist in no page.
+- scipy, pyshp, huggingface_hub and h5py are declared where they are
+  used, and the parity between what the wheel imports and what it
+  declares is a gate rather than a review step.
+
+Known issues:
+- European radar observations are assimilated and land in the right
+  place with the right footprint, but the analysis magnitude is not yet
+  validated. Proven end to end on three real KNMI Den Helder volumes:
+  97.8 percent of the increment falls within 200 km of the radar and 100
+  percent within 215 km with none beyond, localisation matches the
+  configured 12 km, all 7,475 radial-velocity observations enter the
+  solve, and a negative control returns bitwise zero. Not proven: the
+  size of the increment. The ensemble spread is constructed rather than
+  cycled -- `mean(d^2)/(spread^2 + sigma_o^2)` is 9.6 -- so the
+  increment's magnitude is not a defensible analysis. A cycled ensemble
+  is the largest remaining gap.
+- Reflectivity and clear-air assimilation are unexercised on the
+  European route: there is no host reflectivity operator at
+  `mp_physics=10`.
+- A locally built wheel ships `bridge-pins.json` declaring no platforms,
+  because pins are generated at release time, so `gpuwm setup` and
+  `gpuwm fetch-bridges` refuse on any build that did not come through
+  the release workflow. Use the published artifact, or point
+  `GPUWM_RW_WRFBATCH` at a real staged binary.
+
 ## 2.3.3 (2026-08-14)
 
 Fixed:

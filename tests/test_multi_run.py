@@ -558,7 +558,12 @@ def test_captured_config_is_only_byte_authority_through_route_check_supervisor(
     observed_payloads = []
     fake_exp = SimpleNamespace(name="captured", domains=())
 
-    def load_bytes(payload, *, source, base_dir):
+    def load_bytes(payload, *, source, base_dir, **kwargs):
+        # **kwargs so a keyword the real loader grows does not land here
+        # as a TypeError.  2.3.3 added `require_met_inputs` for `gpuwm
+        # static`, every caller kept passing it, and this double -- which
+        # is about WHICH BYTES reach the loader and about nothing else --
+        # started failing on an argument it has no opinion about.
         observed_payloads.append(payload)
         assert source == str(config.resolve())
         assert Path(base_dir) == config.parent.resolve()

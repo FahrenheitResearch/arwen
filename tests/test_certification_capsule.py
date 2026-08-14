@@ -57,6 +57,20 @@ def _schema() -> dict:
 
 
 def _stub_capsule(**kwargs):
+    """A capsule whose ONLY defect is the one the calling test introduces.
+
+    The kernel manifest is filled through the real recorder before building.
+    A test process compiles nothing, so ``build_capsule`` would otherwise
+    snapshot an empty manifest -- and the certification path now refuses
+    that on its own, which would make every refusal test below pass for the
+    wrong reason.  A guard that pre-empts the refusal a test is aiming at is
+    a test that no longer measures what it names.
+    """
+    from gpuwm.certify.kernel_manifest import record_module
+
+    record_module("gpuwm.core.kernels:stub",
+                  source="__device__ void stub() {}",
+                  options=["-std=c++17"])
     return build_capsule(emission_site="supervisor:success",
                          require_gpu=False, **kwargs)
 

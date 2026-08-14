@@ -191,8 +191,15 @@ class Basemap:
     """Clipped basemap geometry for one extent, vendored assets only."""
 
     def __init__(self, extent: tuple[float, float, float, float]):
+        # The refusal before the import, not the import's own traceback:
+        # reaching a bare `import shapefile` here is how a whole DA
+        # nowcast ended in `ModuleNotFoundError: No module named
+        # 'shapefile'` with no remedy.  tools/da_nowcast.py refuses this
+        # at its front door before the forecast; this is the same
+        # sentence for anyone who runs the renderer directly.
+        from gpuwm.rustwx import basemap_dir, require_pyshp
+        require_pyshp()
         import shapefile
-        from gpuwm.rustwx import basemap_dir
         self.extent = extent
         assets = basemap_dir()
         if not assets.is_dir():

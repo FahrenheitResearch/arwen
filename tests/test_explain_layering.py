@@ -220,7 +220,7 @@ def test_a_published_bundle_makes_the_fresh_install_summary_name_setup(
     from gpuwm import bridges
 
     monkeypatch.setattr(bridges, "prebuilt_bundle_offer",
-                        lambda: ("  gpuwm fetch-bridges",))
+                        lambda *a, **k: ("  gpuwm fetch-bridges",))
     monkeypatch.setattr(bridges, "sources_present", lambda *a, **k: False)
 
     action = doctor._build_action()
@@ -263,6 +263,16 @@ def test_every_actionable_gap_carries_a_next_command():
 #: against `git show 39984b0e:gpuwm/doctor.py`), which is what "the
 #: --explain layer is preserved verbatim" has to mean if it means
 #: anything.
+#:
+#: RENEGOTIATED ONCE, deliberately, in 2.3.3+: the summary sentence
+#: gained a severity census (`-- 1 broken`).  That is this test working
+#: as designed rather than an exception to it -- the reason for the
+#: change is that "N gap(s), M of them blocking" could not distinguish
+#: a ~16 GB download nobody opted into from a box that cannot run a
+#: forecast, and doctor printed the identical sentence over both.
+#: Everything else about the layer -- the label column, the ten-space
+#: remedy gutter, the order, the closing clause -- is unchanged and
+#: still pinned here.
 _GOLDEN_FULL_REPORT = """\
 gpuwm doctor: runtime estate
   ok      python: 3.13 on this machine
@@ -272,8 +282,8 @@ gpuwm doctor: runtime estate
           remedy: gpuwm fetch-bridges
                   # one download, verified against the packaged pins
                   # before anything is staged.
-gpuwm doctor: 1 gap(s), 1 of them blocking (the exit code is 1).  Every \
-remedy line above is either a command to run as printed, in the order \
+gpuwm doctor: 1 gap(s), 1 of them blocking (the exit code is 1) -- 1 broken.  \
+Every remedy line above is either a command to run as printed, in the order \
 printed, or a '#' comment."""
 
 

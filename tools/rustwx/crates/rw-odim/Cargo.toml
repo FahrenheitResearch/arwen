@@ -1,0 +1,45 @@
+# EUMETNET OPERA ODIM_H5 polar-volume decoder, plus the bridge that turns one
+# into the obs pack gpuwm's radar-to-LETKF path already reads.
+#
+# The decoder library is the reviewed tree from the Studio repo's
+# `lane/odim-polar-decoder` (d2bb72f), carried here unchanged except for the
+# CLI, because this workspace builds --locked --offline from `vendor/crates-io`
+# and clap is not in that closure.  The bin is therefore hand-parsed, in
+# rw-nexrad's style, and the clap-driven `inspect`/`decode`/`nyquist`/`export`
+# front end stays upstream where it builds.
+
+[package]
+name = "rw-odim"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "EUMETNET OPERA ODIM_H5 polar-volume decoder (PVOL/SCAN): per-sweep VRAD/DBZH with classified undetect/nodata planes"
+
+[dependencies]
+# Pure-Rust, read-only HDF5 decode.  Declared as a repo-relative path rather
+# than `hdf5-reader = "0.3"` so that a downstream git consumer does not have to
+# reproduce the workspace-root `[patch.crates-io]` pin -- the footgun the
+# README documents and that `crates/rustwx-io` still relies on.  Same choice,
+# and same reason, as the source workspace's `crates/rw-glm`.
+hdf5-reader = { path = "../../vendor/netcrust/vendor/hdf5-reader" }
+
+# The pack container -- magic, header, JSON metadata, payload builder -- has
+# exactly one implementation, and it is rw-nexrad's.  Depending on it rather
+# than restating it is what keeps a European pack readable by the reader that
+# was written for an American one.
+rw-nexrad = { path = "../rw-nexrad" }
+
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }
+
+# rw_odim: the thin ops CLI over the decoder.  Lives in-crate (matching
+# rw-nexrad's own bin) so the decoder ships with a runnable front end and no
+# extra crate.
+[[bin]]
+name = "rw_odim"
+path = "src/bin/rw_odim.rs"

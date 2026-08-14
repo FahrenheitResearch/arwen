@@ -475,6 +475,7 @@ def test_the_linux_host_source_is_unchanged(monkeypatch):
     assert autoplan._memtotal_source() == "/proc/meminfo MemTotal"
 
 
+@pytest.mark.gpu
 def test_an_unreadable_host_source_is_not_reported_as_a_container(
         monkeypatch):
     """The refusal must name the true limit, not the container it isn't.
@@ -482,6 +483,17 @@ def test_an_unreadable_host_source_is_not_reported_as_a_container(
     Where nothing can be read, the message said "containerised with no
     cgroup memory limit" -- on a native Windows desktop, which sent the
     reader hunting for a container that was never there.
+
+    Marked ``gpu`` because it OPENS ONE.  The subject is host memory and
+    every host probe below is stubbed, but ``Machine.detect`` reads the
+    card first -- ``cp.cuda.Device(device)`` then ``memGetInfo`` -- and
+    only then reaches the host-source logic under test.  The conftest's
+    AST detector cannot see that: this module never spells ``cupy``, so
+    the device is reached transitively and the marker was absent.  On a
+    leg with no visible device the test therefore FAILED
+    (``cudaErrorNoDevice``) instead of being deselected, and a suite that
+    cries wolf on every CPU-only run is how a real failure gets waved
+    through.
     """
     from tilestream import autoplan
 
@@ -496,6 +508,7 @@ def test_an_unreadable_host_source_is_not_reported_as_a_container(
     assert "no host-memory source" in message and "win32" in message
 
 
+@pytest.mark.gpu
 def test_a_container_with_no_cgroup_limit_is_still_refused_as_one(
         monkeypatch):
     """THE CONTROL: the container refusal it replaced must still fire.
@@ -503,6 +516,10 @@ def test_a_container_with_no_cgroup_limit_is_still_refused_as_one(
     ``/proc/meminfo`` inside a container reports the HOST's RAM (measured:
     503 GiB against a 241.7 GiB cgroup limit), so a readable MemTotal with
     no limit beside it is exactly the case that must keep refusing.
+
+    Marked ``gpu`` for the same reason as its subject above: the control
+    goes through the same ``Machine.detect``, which reads the card before
+    it reads the host.
     """
     from tilestream import autoplan
 

@@ -1,0 +1,2657 @@
+{
+ "schema": "gpuwm-obs.radar-sites.v1",
+ "source_url": "https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/locations?f=GeoJSON",
+ "source_sha256": "efd8a16264758c843fb876f5018d0c307ce3e936a3831443b9d74be3f8779d70",
+ "source_bytes": 65264,
+ "frozen_at": "2026-08-12T20:02:14",
+ "elevation_basis": "the antenna elevation is absent from the locations feed and from the WMO registry its detail link names (probed 2026-08-12: totalCount 0), so it is read from the volumes instead: ODIM carries the antenna height above mean sea level at /where/height in every polar volume. Harvested by tools/harvest_radar_heights.py, one whole file per site, each one cross-checked against this table's own position for that site so a height cannot be read out of another radar's file. A site the harvest could not reach keeps null and stays refused, because a placeholder does not make a site usable, it makes an unusable site look usable",
+ "site_count": 136,
+ "sites_with_velocity": 134,
+ "sites_with_volume_scan": 136,
+ "sites_with_elevation": 136,
+ "excluded": [
+  "0-20010-0-OPERA"
+ ],
+ "sites": [
+  {
+   "id": "0-191-0-hrbil",
+   "name": "[hrbil] Bilogora",
+   "wmo_block": "191",
+   "latitude": 45.883527,
+   "longitude": 17.20046,
+   "elevation_m": 280.0,
+   "moments": [
+    "DBZH",
+    "RHOHV",
+    "TH",
+    "VRADH",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-191-0-hrbil"
+  },
+  {
+   "id": "0-191-0-hrdeb",
+   "name": "[hrdeb] Debeljak",
+   "wmo_block": "191",
+   "latitude": 44.04516,
+   "longitude": 15.37637,
+   "elevation_m": 208.0,
+   "moments": [
+    "DBZH",
+    "RHOHV",
+    "TH",
+    "VRADH",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-191-0-hrdeb"
+  },
+  {
+   "id": "0-191-0-hrgra",
+   "name": "[hrgra] Gradiste",
+   "wmo_block": "191",
+   "latitude": 45.15917,
+   "longitude": 18.70333,
+   "elevation_m": 110.0,
+   "moments": [
+    "DBZH",
+    "RHOHV",
+    "TH",
+    "VRADH",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-191-0-hrgra"
+  },
+  {
+   "id": "0-191-0-hrpun",
+   "name": "[hrpun] Puntijarka",
+   "wmo_block": "191",
+   "latitude": 45.907814,
+   "longitude": 15.968383,
+   "elevation_m": 1030.0,
+   "moments": [
+    "DBZH",
+    "RHOHV",
+    "TH",
+    "VRADH",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-191-0-hrpun"
+  },
+  {
+   "id": "0-191-0-hrulj",
+   "name": "[hrulj] Uljenje",
+   "wmo_block": "191",
+   "latitude": 42.89439,
+   "longitude": 17.47829,
+   "elevation_m": 463.0,
+   "moments": [
+    "DBZH",
+    "RHOHV",
+    "TH",
+    "VRADH",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-191-0-hrulj"
+  },
+  {
+   "id": "0-203-0-czbrd",
+   "name": "[czbrd]",
+   "wmo_block": "203",
+   "latitude": 49.6583,
+   "longitude": 13.8178,
+   "elevation_m": 916.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRAD"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-203-0-czbrd"
+  },
+  {
+   "id": "0-203-0-czska",
+   "name": "[czska]",
+   "wmo_block": "203",
+   "latitude": 49.5011,
+   "longitude": 16.7885,
+   "elevation_m": 767.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRAD"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-203-0-czska"
+  },
+  {
+   "id": "0-208-0-dkbor",
+   "name": "[dkbor] Bornholm",
+   "wmo_block": "208",
+   "latitude": 55.11275,
+   "longitude": 14.887517,
+   "elevation_m": 171.0,
+   "moments": [
+    "DBZH",
+    "LDR",
+    "PHIDP",
+    "RHOHV",
+    "TH",
+    "VRAD",
+    "WRAD",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-208-0-dkbor"
+  },
+  {
+   "id": "0-208-0-dkrom",
+   "name": "[dkrom] Romo",
+   "wmo_block": "208",
+   "latitude": 55.173111,
+   "longitude": 8.552,
+   "elevation_m": 15.0,
+   "moments": [
+    "DBZH",
+    "LDR",
+    "PHIDP",
+    "RHOHV",
+    "TH",
+    "VRAD",
+    "WRAD",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-208-0-dkrom"
+  },
+  {
+   "id": "0-208-0-dksam",
+   "name": "[dksam] Samso",
+   "wmo_block": "208",
+   "latitude": 55.8119,
+   "longitude": 10.5853,
+   "elevation_m": 48.0,
+   "moments": [
+    "DBZH",
+    "LDR",
+    "PHIDP",
+    "RHOHV",
+    "TH",
+    "VRAD",
+    "WRAD",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-208-0-dksam"
+  },
+  {
+   "id": "0-208-0-dksin",
+   "name": "[dksin] Sindal",
+   "wmo_block": "208",
+   "latitude": 57.489306,
+   "longitude": 10.136472,
+   "elevation_m": 109.0,
+   "moments": [
+    "DBZH",
+    "LDR",
+    "PHIDP",
+    "RHOHV",
+    "TH",
+    "VRAD",
+    "WRAD",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-208-0-dksin"
+  },
+  {
+   "id": "0-208-0-dkste",
+   "name": "[dkste] Stevns",
+   "wmo_block": "208",
+   "latitude": 55.326194,
+   "longitude": 12.449278,
+   "elevation_m": 53.0,
+   "moments": [
+    "DBZH",
+    "LDR",
+    "PHIDP",
+    "RHOHV",
+    "TH",
+    "VRAD",
+    "WRAD",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-208-0-dkste"
+  },
+  {
+   "id": "0-233-0-eehar",
+   "name": "[eehar] Harku",
+   "wmo_block": "233",
+   "latitude": 59.397076,
+   "longitude": 24.60213,
+   "elevation_m": 70.0,
+   "moments": [
+    "DBZH",
+    "PHIDP",
+    "RHOHV",
+    "SQIH",
+    "TH",
+    "VRADH",
+    "WRADH",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-233-0-eehar"
+  },
+  {
+   "id": "0-246-0-fianj",
+   "name": "[fianj] Anjalankoski",
+   "wmo_block": "246",
+   "latitude": 60.90387,
+   "longitude": 27.10806,
+   "elevation_m": 139.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-fianj"
+  },
+  {
+   "id": "0-246-0-fikan",
+   "name": "[fikan] Kankaanp\u00e4\u00e4",
+   "wmo_block": "246",
+   "latitude": 61.81081,
+   "longitude": 22.50203,
+   "elevation_m": 175.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-fikan"
+  },
+  {
+   "id": "0-246-0-fikau",
+   "name": "[fikau] Kaunisp\u00e4\u00e4",
+   "wmo_block": "246",
+   "latitude": 68.43443,
+   "longitude": 27.44399,
+   "elevation_m": 463.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-fikau"
+  },
+  {
+   "id": "0-246-0-fikes",
+   "name": "[fikes] Kes\u00e4lahti",
+   "wmo_block": "246",
+   "latitude": 61.906992,
+   "longitude": 29.79772,
+   "elevation_m": 174.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-fikes"
+  },
+  {
+   "id": "0-246-0-fikor",
+   "name": "[fikor] Korpo",
+   "wmo_block": "246",
+   "latitude": 60.12847,
+   "longitude": 21.64338,
+   "elevation_m": 61.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-fikor"
+  },
+  {
+   "id": "0-246-0-fikuo",
+   "name": "[fikuo] Kuopio",
+   "wmo_block": "246",
+   "latitude": 62.8626,
+   "longitude": 27.38147,
+   "elevation_m": 268.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-fikuo"
+  },
+  {
+   "id": "0-246-0-filuo",
+   "name": "[filuo] Luosto",
+   "wmo_block": "246",
+   "latitude": 67.1391,
+   "longitude": 26.896916,
+   "elevation_m": 533.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-filuo"
+  },
+  {
+   "id": "0-246-0-finur",
+   "name": "[finur] Nurmes",
+   "wmo_block": "246",
+   "latitude": 63.83786,
+   "longitude": 29.44893,
+   "elevation_m": 323.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-finur"
+  },
+  {
+   "id": "0-246-0-fipet",
+   "name": "[fipet] Pet\u00e4j\u00e4vesi",
+   "wmo_block": "246",
+   "latitude": 62.30452,
+   "longitude": 25.44009,
+   "elevation_m": 271.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-fipet"
+  },
+  {
+   "id": "0-246-0-fiuta",
+   "name": "[fiuta] Utaj\u00e4rvi",
+   "wmo_block": "246",
+   "latitude": 64.77493,
+   "longitude": 26.31888,
+   "elevation_m": 118.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-fiuta"
+  },
+  {
+   "id": "0-246-0-fivih",
+   "name": "[fivih] Vihti",
+   "wmo_block": "246",
+   "latitude": 60.55619,
+   "longitude": 24.495592,
+   "elevation_m": 181.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-fivih"
+  },
+  {
+   "id": "0-246-0-fivim",
+   "name": "[fivim] Vimpeli",
+   "wmo_block": "246",
+   "latitude": 63.10484,
+   "longitude": 23.82086,
+   "elevation_m": 200.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-246-0-fivim"
+  },
+  {
+   "id": "0-250-0-frabb",
+   "name": "[frabb] Abbeville",
+   "wmo_block": "250",
+   "latitude": 50.13595,
+   "longitude": 1.8347,
+   "elevation_m": 83.6,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frabb"
+  },
+  {
+   "id": "0-250-0-fraja",
+   "name": "[fraja] Ajaccio",
+   "wmo_block": "250",
+   "latitude": 41.95313,
+   "longitude": 8.70054,
+   "elevation_m": 784.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-fraja"
+  },
+  {
+   "id": "0-250-0-frale",
+   "name": "[frale] Aleria",
+   "wmo_block": "250",
+   "latitude": 42.12971,
+   "longitude": 9.49639,
+   "elevation_m": 63.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frale"
+  },
+  {
+   "id": "0-250-0-frave",
+   "name": "[frave] Avesnes",
+   "wmo_block": "250",
+   "latitude": 50.12832,
+   "longitude": 3.81181,
+   "elevation_m": 208.79999999999998,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frave"
+  },
+  {
+   "id": "0-250-0-frbla",
+   "name": "[frbla] Blaisy",
+   "wmo_block": "250",
+   "latitude": 47.35515,
+   "longitude": 4.77594,
+   "elevation_m": 607.2,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frbla"
+  },
+  {
+   "id": "0-250-0-frbol",
+   "name": "[frbol] Bollene",
+   "wmo_block": "250",
+   "latitude": 44.32305,
+   "longitude": 4.76221,
+   "elevation_m": 325.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frbol"
+  },
+  {
+   "id": "0-250-0-frbor",
+   "name": "[frbor] Bordeaux",
+   "wmo_block": "250",
+   "latitude": 44.83147,
+   "longitude": -0.69188,
+   "elevation_m": 70.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frbor"
+  },
+  {
+   "id": "0-250-0-frbou",
+   "name": "[frbou] Bourges",
+   "wmo_block": "250",
+   "latitude": 47.05861,
+   "longitude": 2.35955,
+   "elevation_m": 173.5,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frbou"
+  },
+  {
+   "id": "0-250-0-frcae",
+   "name": "[frcae] Falaise",
+   "wmo_block": "250",
+   "latitude": 48.92716,
+   "longitude": -0.14955,
+   "elevation_m": 167.4,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frcae"
+  },
+  {
+   "id": "0-250-0-frcol",
+   "name": "[frcol] Collobrieres",
+   "wmo_block": "250",
+   "latitude": 43.21656,
+   "longitude": 6.37291,
+   "elevation_m": 653.7,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frcol"
+  },
+  {
+   "id": "0-250-0-frgre",
+   "name": "[frgre] Grezes",
+   "wmo_block": "250",
+   "latitude": 45.1044,
+   "longitude": 1.36967,
+   "elevation_m": 360.3,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frgre"
+  },
+  {
+   "id": "0-250-0-frmcl",
+   "name": "[frmcl] Montclar",
+   "wmo_block": "250",
+   "latitude": 43.9905,
+   "longitude": 2.60962,
+   "elevation_m": 678.7,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frmcl"
+  },
+  {
+   "id": "0-250-0-frmom",
+   "name": "[frmom] Momuy",
+   "wmo_block": "250",
+   "latitude": 43.62447,
+   "longitude": -0.6094,
+   "elevation_m": 145.7,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frmom"
+  },
+  {
+   "id": "0-250-0-frmtc",
+   "name": "[frmtc] Montancy",
+   "wmo_block": "250",
+   "latitude": 47.36861,
+   "longitude": 7.01897,
+   "elevation_m": 925.6999999999999,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frmtc"
+  },
+  {
+   "id": "0-250-0-frnan",
+   "name": "[frnan] Nancy",
+   "wmo_block": "250",
+   "latitude": 48.71576,
+   "longitude": 6.58156,
+   "elevation_m": 296.3,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frnan"
+  },
+  {
+   "id": "0-250-0-frnim",
+   "name": "[frnim] Nimes",
+   "wmo_block": "250",
+   "latitude": 43.80614,
+   "longitude": 4.50269,
+   "elevation_m": 78.1,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frnim"
+  },
+  {
+   "id": "0-250-0-frniz",
+   "name": "[frniz] StNizier",
+   "wmo_block": "250",
+   "latitude": 46.06781,
+   "longitude": 4.44535,
+   "elevation_m": 919.8,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frniz"
+  },
+  {
+   "id": "0-250-0-fropo",
+   "name": "[fropo] Opoul",
+   "wmo_block": "250",
+   "latitude": 42.91839,
+   "longitude": 2.86499,
+   "elevation_m": 718.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-fropo"
+  },
+  {
+   "id": "0-250-0-frpla",
+   "name": "[frpla] Plabennec",
+   "wmo_block": "250",
+   "latitude": 48.46088,
+   "longitude": -4.42983,
+   "elevation_m": 110.8,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frpla"
+  },
+  {
+   "id": "0-250-0-frtou",
+   "name": "[frtou] Toulouse",
+   "wmo_block": "250",
+   "latitude": 43.57432,
+   "longitude": 1.3763,
+   "elevation_m": 187.10000000000002,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frtou"
+  },
+  {
+   "id": "0-250-0-frtra",
+   "name": "[frtra] Trappes",
+   "wmo_block": "250",
+   "latitude": 48.77457,
+   "longitude": 2.00831,
+   "elevation_m": 190.2,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frtra"
+  },
+  {
+   "id": "0-250-0-frtre",
+   "name": "[frtre] Treillieres",
+   "wmo_block": "250",
+   "latitude": 47.33741,
+   "longitude": -1.65632,
+   "elevation_m": 81.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frtre"
+  },
+  {
+   "id": "0-250-0-frtro",
+   "name": "[frtro] Arcis",
+   "wmo_block": "250",
+   "latitude": 48.46213,
+   "longitude": 4.30932,
+   "elevation_m": 164.79999999999998,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-250-0-frtro"
+  },
+  {
+   "id": "0-276-0-deasb",
+   "name": "[deasb]",
+   "wmo_block": "276",
+   "latitude": 53.564129,
+   "longitude": 6.748317,
+   "elevation_m": 36.22,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-deasb"
+  },
+  {
+   "id": "0-276-0-deboo",
+   "name": "[deboo]",
+   "wmo_block": "276",
+   "latitude": 54.004381,
+   "longitude": 10.046899,
+   "elevation_m": 124.56,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-deboo"
+  },
+  {
+   "id": "0-276-0-dedrs",
+   "name": "[dedrs]",
+   "wmo_block": "276",
+   "latitude": 51.124639,
+   "longitude": 13.768639,
+   "elevation_m": 263.36,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-dedrs"
+  },
+  {
+   "id": "0-276-0-deeis",
+   "name": "[deeis]",
+   "wmo_block": "276",
+   "latitude": 49.540667,
+   "longitude": 12.402788,
+   "elevation_m": 799.08,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-deeis"
+  },
+  {
+   "id": "0-276-0-deess",
+   "name": "[deess]",
+   "wmo_block": "276",
+   "latitude": 51.405649,
+   "longitude": 6.967111,
+   "elevation_m": 185.11,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-deess"
+  },
+  {
+   "id": "0-276-0-defbg",
+   "name": "[defbg]",
+   "wmo_block": "276",
+   "latitude": 47.873611,
+   "longitude": 8.003611,
+   "elevation_m": 1516.1,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-defbg"
+  },
+  {
+   "id": "0-276-0-defld",
+   "name": "[defld]",
+   "wmo_block": "276",
+   "latitude": 51.311197,
+   "longitude": 8.801998,
+   "elevation_m": 627.88,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-defld"
+  },
+  {
+   "id": "0-276-0-dehnr",
+   "name": "[dehnr]",
+   "wmo_block": "276",
+   "latitude": 52.460083,
+   "longitude": 9.694533,
+   "elevation_m": 97.78,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-dehnr"
+  },
+  {
+   "id": "0-276-0-deisn",
+   "name": "[deisn]",
+   "wmo_block": "276",
+   "latitude": 48.174705,
+   "longitude": 12.101779,
+   "elevation_m": 677.77,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-deisn"
+  },
+  {
+   "id": "0-276-0-demem",
+   "name": "[demem]",
+   "wmo_block": "276",
+   "latitude": 48.042145,
+   "longitude": 10.219222,
+   "elevation_m": 724.4,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-demem"
+  },
+  {
+   "id": "0-276-0-deneu",
+   "name": "[deneu]",
+   "wmo_block": "276",
+   "latitude": 50.500114,
+   "longitude": 11.135034,
+   "elevation_m": 879.65,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-deneu"
+  },
+  {
+   "id": "0-276-0-denhb",
+   "name": "[denhb]",
+   "wmo_block": "276",
+   "latitude": 50.109656,
+   "longitude": 6.548328,
+   "elevation_m": 585.85,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-denhb"
+  },
+  {
+   "id": "0-276-0-deoft",
+   "name": "[deoft]",
+   "wmo_block": "276",
+   "latitude": 49.984745,
+   "longitude": 8.712933,
+   "elevation_m": 245.8,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-deoft"
+  },
+  {
+   "id": "0-276-0-depro",
+   "name": "[depro]",
+   "wmo_block": "276",
+   "latitude": 52.648667,
+   "longitude": 13.858212,
+   "elevation_m": 193.92,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-depro"
+  },
+  {
+   "id": "0-276-0-deros",
+   "name": "[deros]",
+   "wmo_block": "276",
+   "latitude": 54.17566,
+   "longitude": 12.058076,
+   "elevation_m": 37.05,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-deros"
+  },
+  {
+   "id": "0-276-0-detur",
+   "name": "[detur]",
+   "wmo_block": "276",
+   "latitude": 48.585379,
+   "longitude": 9.782675,
+   "elevation_m": 767.62,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-detur"
+  },
+  {
+   "id": "0-276-0-deumd",
+   "name": "[deumd]",
+   "wmo_block": "276",
+   "latitude": 52.160096,
+   "longitude": 11.176091,
+   "elevation_m": 185.2,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-276-0-deumd"
+  },
+  {
+   "id": "0-352-0-isbjo",
+   "name": "[isbjo] Bjolfur",
+   "wmo_block": "352",
+   "latitude": 65.265877,
+   "longitude": -14.061803,
+   "elevation_m": 1090.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-352-0-isbjo"
+  },
+  {
+   "id": "0-352-0-iskef",
+   "name": "[iskef] Keflavik",
+   "wmo_block": "352",
+   "latitude": 64.025694,
+   "longitude": -22.635361,
+   "elevation_m": 48.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-352-0-iskef"
+  },
+  {
+   "id": "0-352-0-isska",
+   "name": "[isska] Skagi",
+   "wmo_block": "352",
+   "latitude": 66.05573,
+   "longitude": -20.26798,
+   "elevation_m": 164.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-352-0-isska"
+  },
+  {
+   "id": "0-352-0-isx2",
+   "name": "[isx2] Mobile 2",
+   "wmo_block": "352",
+   "latitude": 63.869592,
+   "longitude": -20.20235,
+   "elevation_m": 42.49,
+   "moments": [
+    "DBZH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": false,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-352-0-isx2"
+  },
+  {
+   "id": "0-372-0-iedub",
+   "name": "[iedub] Dublin",
+   "wmo_block": "372",
+   "latitude": 53.4299,
+   "longitude": -6.2443,
+   "elevation_m": 99.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-372-0-iedub"
+  },
+  {
+   "id": "0-372-0-iesha",
+   "name": "[iesha] Shannon",
+   "wmo_block": "372",
+   "latitude": 52.692787,
+   "longitude": -8.919994,
+   "elevation_m": 29.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-372-0-iesha"
+  },
+  {
+   "id": "0-440-0-ltlau",
+   "name": "[ltlau] Laukuva",
+   "wmo_block": "440",
+   "latitude": 55.60904,
+   "longitude": 22.2395,
+   "elevation_m": 200.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-440-0-ltlau"
+  },
+  {
+   "id": "0-440-0-ltvil",
+   "name": "[ltvil] Vilnius",
+   "wmo_block": "440",
+   "latitude": 54.62622,
+   "longitude": 25.10678,
+   "elevation_m": 193.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-440-0-ltvil"
+  },
+  {
+   "id": "0-470-0-mtgud",
+   "name": "[mtgud] Gudja",
+   "wmo_block": "470",
+   "latitude": 35.852778,
+   "longitude": 14.474722,
+   "elevation_m": 100.0,
+   "moments": [
+    "DBZH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": false,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-470-0-mtgud"
+  },
+  {
+   "id": "0-528-0-nldhl",
+   "name": "[nldhl] Den Helder",
+   "wmo_block": "528",
+   "latitude": 52.95279,
+   "longitude": 4.79061,
+   "elevation_m": 55.0,
+   "moments": [
+    "CCORH",
+    "DBZH",
+    "PHIDP",
+    "RHOHV",
+    "SQIH",
+    "TH",
+    "VRADH",
+    "WRADH",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-528-0-nldhl"
+  },
+  {
+   "id": "0-528-0-nlhrw",
+   "name": "[nlhrw] Herwijnen",
+   "wmo_block": "528",
+   "latitude": 51.8369,
+   "longitude": 5.1381,
+   "elevation_m": 25.0,
+   "moments": [
+    "CCORH",
+    "DBZH",
+    "PHIDP",
+    "RHOHV",
+    "SQIH",
+    "TH",
+    "VRADH",
+    "WRADH",
+    "ZDR"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-528-0-nlhrw"
+  },
+  {
+   "id": "0-56-0-behel",
+   "name": "[behel] Helchteren",
+   "wmo_block": "56",
+   "latitude": 51.0702,
+   "longitude": 5.4054,
+   "elevation_m": 144.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-56-0-behel"
+  },
+  {
+   "id": "0-56-0-bejab",
+   "name": "[bejab] Jabbeke",
+   "wmo_block": "56",
+   "latitude": 51.1917,
+   "longitude": 3.0642,
+   "elevation_m": 50.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRAD"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-56-0-bejab"
+  },
+  {
+   "id": "0-56-0-bewid",
+   "name": "[bewid] Wideumont",
+   "wmo_block": "56",
+   "latitude": 49.9136,
+   "longitude": 5.5044,
+   "elevation_m": 585.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRAD"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-56-0-bewid"
+  },
+  {
+   "id": "0-578-0-noand",
+   "name": "[noand]",
+   "wmo_block": "578",
+   "latitude": 69.24139,
+   "longitude": 16.00297,
+   "elevation_m": 441.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-noand"
+  },
+  {
+   "id": "0-578-0-nober",
+   "name": "[nober]",
+   "wmo_block": "578",
+   "latitude": 70.510652,
+   "longitude": 29.018384,
+   "elevation_m": 474.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-nober"
+  },
+  {
+   "id": "0-578-0-nobml",
+   "name": "[nobml]",
+   "wmo_block": "578",
+   "latitude": 59.854,
+   "longitude": 5.09,
+   "elevation_m": 102.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-nobml"
+  },
+  {
+   "id": "0-578-0-nohas",
+   "name": "[nohas]",
+   "wmo_block": "578",
+   "latitude": 70.605194,
+   "longitude": 22.442972,
+   "elevation_m": 446.5,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-nohas"
+  },
+  {
+   "id": "0-578-0-nohfj",
+   "name": "[nohfj]",
+   "wmo_block": "578",
+   "latitude": 61.23181,
+   "longitude": 10.52731,
+   "elevation_m": 1080.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-nohfj"
+  },
+  {
+   "id": "0-578-0-nohgb",
+   "name": "[nohgb]",
+   "wmo_block": "578",
+   "latitude": 58.360145,
+   "longitude": 7.16481,
+   "elevation_m": 631.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-nohgb"
+  },
+  {
+   "id": "0-578-0-nohur",
+   "name": "[nohur]",
+   "wmo_block": "578",
+   "latitude": 59.627083,
+   "longitude": 10.564472,
+   "elevation_m": 363.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-nohur"
+  },
+  {
+   "id": "0-578-0-norsa",
+   "name": "[norsa]",
+   "wmo_block": "578",
+   "latitude": 63.69,
+   "longitude": 10.204,
+   "elevation_m": 616.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-norsa"
+  },
+  {
+   "id": "0-578-0-norsg",
+   "name": "[norsg]",
+   "wmo_block": "578",
+   "latitude": 69.218605,
+   "longitude": 23.439759,
+   "elevation_m": 604.1,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-norsg"
+  },
+  {
+   "id": "0-578-0-norst",
+   "name": "[norst]",
+   "wmo_block": "578",
+   "latitude": 67.5307,
+   "longitude": 12.0986,
+   "elevation_m": 17.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-norst"
+  },
+  {
+   "id": "0-578-0-nosmn",
+   "name": "[nosmn]",
+   "wmo_block": "578",
+   "latitude": 65.21989,
+   "longitude": 11.9926,
+   "elevation_m": 315.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-578-0-nosmn"
+  },
+  {
+   "id": "0-616-0-plbrz",
+   "name": "[plbrz] Brzuchania",
+   "wmo_block": "616",
+   "latitude": 50.394169,
+   "longitude": 20.083228,
+   "elevation_m": 434.4,
+   "moments": [
+    "DBZH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-616-0-plbrz"
+  },
+  {
+   "id": "0-616-0-plgdy",
+   "name": "[plgdy] Gdynia",
+   "wmo_block": "616",
+   "latitude": 54.500917,
+   "longitude": 18.271842,
+   "elevation_m": 261.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-616-0-plgdy"
+  },
+  {
+   "id": "0-616-0-plgsa",
+   "name": "[plgsa] Gora Sw Anny",
+   "wmo_block": "616",
+   "latitude": 50.463864,
+   "longitude": 18.153211,
+   "elevation_m": 433.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-616-0-plgsa"
+  },
+  {
+   "id": "0-616-0-plleg",
+   "name": "[plleg] Legionowo",
+   "wmo_block": "616",
+   "latitude": 52.40525,
+   "longitude": 20.96111,
+   "elevation_m": 122.3,
+   "moments": [
+    "DBZH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-616-0-plleg"
+  },
+  {
+   "id": "0-616-0-plpas",
+   "name": "[plpas] Pastewnik",
+   "wmo_block": "616",
+   "latitude": 50.89246,
+   "longitude": 16.039494,
+   "elevation_m": 691.9,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-616-0-plpas"
+  },
+  {
+   "id": "0-616-0-plpoz",
+   "name": "[plpoz] Poznan",
+   "wmo_block": "616",
+   "latitude": 52.413253,
+   "longitude": 16.796986,
+   "elevation_m": 123.3,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-616-0-plpoz"
+  },
+  {
+   "id": "0-616-0-plram",
+   "name": "[plram] Ramza",
+   "wmo_block": "616",
+   "latitude": 50.151328,
+   "longitude": 18.725094,
+   "elevation_m": 357.1,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-616-0-plram"
+  },
+  {
+   "id": "0-616-0-plrze",
+   "name": "[plrze] Rzeszow",
+   "wmo_block": "616",
+   "latitude": 50.11406,
+   "longitude": 22.037,
+   "elevation_m": 241.2,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-616-0-plrze"
+  },
+  {
+   "id": "0-616-0-plswi",
+   "name": "[plswi] Swidwin",
+   "wmo_block": "616",
+   "latitude": 53.795786,
+   "longitude": 15.836828,
+   "elevation_m": 146.6,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-616-0-plswi"
+  },
+  {
+   "id": "0-616-0-pluzr",
+   "name": "[pluzr] Uzranki",
+   "wmo_block": "616",
+   "latitude": 53.855733,
+   "longitude": 21.412331,
+   "elevation_m": 237.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-616-0-pluzr"
+  },
+  {
+   "id": "0-642-0-robar",
+   "name": "[robar]",
+   "wmo_block": "642",
+   "latitude": 47.011836,
+   "longitude": 27.582546,
+   "elevation_m": 454.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-642-0-robar"
+  },
+  {
+   "id": "0-642-0-robob",
+   "name": "[robob]",
+   "wmo_block": "642",
+   "latitude": 46.360216,
+   "longitude": 24.225228,
+   "elevation_m": 567.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-642-0-robob"
+  },
+  {
+   "id": "0-642-0-robuc",
+   "name": "[robuc]",
+   "wmo_block": "642",
+   "latitude": 44.512667,
+   "longitude": 26.077346,
+   "elevation_m": 133.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-642-0-robuc"
+  },
+  {
+   "id": "0-642-0-rocra",
+   "name": "[rocra]",
+   "wmo_block": "642",
+   "latitude": 44.310293,
+   "longitude": 23.86743,
+   "elevation_m": 218.5,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-642-0-rocra"
+  },
+  {
+   "id": "0-642-0-romed",
+   "name": "[romed]",
+   "wmo_block": "642",
+   "latitude": 44.243359,
+   "longitude": 28.250585,
+   "elevation_m": 112.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-642-0-romed"
+  },
+  {
+   "id": "0-642-0-roora",
+   "name": "[roora]",
+   "wmo_block": "642",
+   "latitude": 47.092181,
+   "longitude": 21.942893,
+   "elevation_m": 246.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-642-0-roora"
+  },
+  {
+   "id": "0-642-0-rotim",
+   "name": "[rotim]",
+   "wmo_block": "642",
+   "latitude": 45.77174,
+   "longitude": 21.257725,
+   "elevation_m": 145.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-642-0-rotim"
+  },
+  {
+   "id": "0-705-0-silis",
+   "name": "[silis] Lisca",
+   "wmo_block": "705",
+   "latitude": 46.06777,
+   "longitude": 15.2849,
+   "elevation_m": 950.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-705-0-silis"
+  },
+  {
+   "id": "0-705-0-sipas",
+   "name": "[sipas] Pasja ravan",
+   "wmo_block": "705",
+   "latitude": 46.09798,
+   "longitude": 14.22824,
+   "elevation_m": 1043.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-705-0-sipas"
+  },
+  {
+   "id": "0-724-0-esahr",
+   "name": "[esahr] Alhaurin Grande",
+   "wmo_block": "724",
+   "latitude": 36.61343,
+   "longitude": -4.65933,
+   "elevation_m": 1159.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-esahr"
+  },
+  {
+   "id": "0-724-0-esatn",
+   "name": "[esatn] Artenara",
+   "wmo_block": "724",
+   "latitude": 28.01879,
+   "longitude": -15.61454,
+   "elevation_m": 1777.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-esatn"
+  },
+  {
+   "id": "0-724-0-esbnv",
+   "name": "[esbnv] Buenavista Norte",
+   "wmo_block": "724",
+   "latitude": 28.31093,
+   "longitude": -16.82384,
+   "elevation_m": 1367.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-esbnv"
+  },
+  {
+   "id": "0-724-0-esclg",
+   "name": "[esclg] Castillo las Guardas",
+   "wmo_block": "724",
+   "latitude": 37.688683,
+   "longitude": -6.33308,
+   "elevation_m": 531.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-esclg"
+  },
+  {
+   "id": "0-724-0-esgld",
+   "name": "[esgld] Gelida",
+   "wmo_block": "724",
+   "latitude": 41.40818,
+   "longitude": 1.88489,
+   "elevation_m": 662.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-esgld"
+  },
+  {
+   "id": "0-724-0-eslid",
+   "name": "[eslid] Valladolid",
+   "wmo_block": "724",
+   "latitude": 41.99556,
+   "longitude": -4.60278,
+   "elevation_m": 887.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-eslid"
+  },
+  {
+   "id": "0-724-0-esnjr",
+   "name": "[esnjr] Nijar",
+   "wmo_block": "724",
+   "latitude": 36.83243,
+   "longitude": -2.0821,
+   "elevation_m": 499.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-esnjr"
+  },
+  {
+   "id": "0-724-0-espdg",
+   "name": "[espdg] Perdiguera",
+   "wmo_block": "724",
+   "latitude": 41.73399,
+   "longitude": -0.54594,
+   "elevation_m": 835.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-espdg"
+  },
+  {
+   "id": "0-724-0-essft",
+   "name": "[essft] Sierra Fuentes",
+   "wmo_block": "724",
+   "latitude": 39.42883,
+   "longitude": -6.28528,
+   "elevation_m": 667.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-essft"
+  },
+  {
+   "id": "0-724-0-essse",
+   "name": "[essse] SanSebastian",
+   "wmo_block": "724",
+   "latitude": 43.40333,
+   "longitude": -2.84194,
+   "elevation_m": 625.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-essse"
+  },
+  {
+   "id": "0-724-0-estjv",
+   "name": "[estjv] Torrejon Velasco",
+   "wmo_block": "724",
+   "latitude": 40.17592,
+   "longitude": -3.71368,
+   "elevation_m": 717.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-724-0-estjv"
+  },
+  {
+   "id": "0-752-0-seang",
+   "name": "[seang] \u00c4ngelholm",
+   "wmo_block": "752",
+   "latitude": 56.367451,
+   "longitude": 12.851691,
+   "elevation_m": 209.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-seang"
+  },
+  {
+   "id": "0-752-0-seatv",
+   "name": "[seatv] \u00c5tvidaberg(Vilebo)",
+   "wmo_block": "752",
+   "latitude": 58.105907,
+   "longitude": 15.936496,
+   "elevation_m": 222.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-seatv"
+  },
+  {
+   "id": "0-752-0-sebaa",
+   "name": "[sebaa] B\u00e5lsta",
+   "wmo_block": "752",
+   "latitude": 59.611019,
+   "longitude": 17.583338,
+   "elevation_m": 83.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-sebaa"
+  },
+  {
+   "id": "0-752-0-sehem",
+   "name": "[sehem] Hemse(Ase)",
+   "wmo_block": "752",
+   "latitude": 57.303467,
+   "longitude": 18.400084,
+   "elevation_m": 85.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-sehem"
+  },
+  {
+   "id": "0-752-0-sehuv",
+   "name": "[sehuv] Hudiksvall",
+   "wmo_block": "752",
+   "latitude": 61.57711,
+   "longitude": 16.714434,
+   "elevation_m": 389.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-sehuv"
+  },
+  {
+   "id": "0-752-0-sekaa",
+   "name": "[sekaa] Karlskrona",
+   "wmo_block": "752",
+   "latitude": 56.295544,
+   "longitude": 15.610225,
+   "elevation_m": 132.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-sekaa"
+  },
+  {
+   "id": "0-752-0-sekrn",
+   "name": "[sekrn] Kiruna",
+   "wmo_block": "752",
+   "latitude": 67.708755,
+   "longitude": 20.61779,
+   "elevation_m": 647.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-sekrn"
+  },
+  {
+   "id": "0-752-0-sella",
+   "name": "[sella] Lule\u00e5(Rosvik)",
+   "wmo_block": "752",
+   "latitude": 65.430885,
+   "longitude": 21.864992,
+   "elevation_m": 69.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-sella"
+  },
+  {
+   "id": "0-752-0-seoer",
+   "name": "[seoer] \u00d6rnsk\u00f6ldsvik",
+   "wmo_block": "752",
+   "latitude": 63.639469,
+   "longitude": 18.401882,
+   "elevation_m": 522.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-seoer"
+  },
+  {
+   "id": "0-752-0-seosd",
+   "name": "[seosd] \u00d6stersund",
+   "wmo_block": "752",
+   "latitude": 63.295078,
+   "longitude": 14.759105,
+   "elevation_m": 466.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-seosd"
+  },
+  {
+   "id": "0-752-0-sevax",
+   "name": "[sevax] Vara",
+   "wmo_block": "752",
+   "latitude": 58.255646,
+   "longitude": 12.826024,
+   "elevation_m": 164.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-752-0-sevax"
+  },
+  {
+   "id": "0-756-0-chalb",
+   "name": "[chalb]",
+   "wmo_block": "756",
+   "latitude": 47.284332,
+   "longitude": 8.512,
+   "elevation_m": 938.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-756-0-chalb"
+  },
+  {
+   "id": "0-756-0-chdol",
+   "name": "[chdol]",
+   "wmo_block": "756",
+   "latitude": 46.425114,
+   "longitude": 6.099415,
+   "elevation_m": 1682.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-756-0-chdol"
+  },
+  {
+   "id": "0-756-0-chlem",
+   "name": "[chlem]",
+   "wmo_block": "756",
+   "latitude": 46.04076,
+   "longitude": 8.833217,
+   "elevation_m": 1626.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-756-0-chlem"
+  },
+  {
+   "id": "0-756-0-chppm",
+   "name": "[chppm]",
+   "wmo_block": "756",
+   "latitude": 46.370647,
+   "longitude": 7.486552,
+   "elevation_m": 2937.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-756-0-chppm"
+  },
+  {
+   "id": "0-756-0-chwei",
+   "name": "[chwei]",
+   "wmo_block": "756",
+   "latitude": 46.834972,
+   "longitude": 9.794458,
+   "elevation_m": 2850.0,
+   "moments": [
+    "DBZH",
+    "TH",
+    "VRADH"
+   ],
+   "methods": [
+    "scan"
+   ],
+   "has_velocity": true,
+   "has_volume_scan": true,
+   "detail": "https://oscar.wmo.int/surface/rest/api/search/station?wigosId=0-756-0-chwei"
+  }
+ ],
+ "elevation_source": {
+  "tool": "tools/harvest_radar_heights.py",
+  "schema": "gpuwm-obs.radar-heights.v1",
+  "harvested_at": "2026-08-14T20:17:21.645477+00:00",
+  "store_base": "https://s3.waw3-1.cloudferro.com/openradar-24h",
+  "sites_attempted": 136,
+  "sites_resolved": 136,
+  "position_check_max_deg": 4.931640660288394e-07,
+  "position_tolerance_deg": 0.01
+ }
+}

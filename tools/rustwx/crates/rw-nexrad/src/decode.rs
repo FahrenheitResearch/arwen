@@ -331,6 +331,35 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
         let azimuth: Vec<f32> = sweep.radials.iter().map(|r| r.azimuth).collect();
         let elevation: Vec<f32> = sweep.radials.iter().map(|r| r.elevation).collect();
 
+        // The Nyquist velocity is a *per-radial* constant — Message 31 puts
+        // it in every radial's RAD block, and a VCP that changes PRF inside
+        // a cut changes it mid-sweep.  Reducing it to one number per sweep
+        // before Python ever sees it throws away the only thing a dealiaser
+        // can actually fold against: the lattice the gate was measured on.
+        // So the array is what is packed, and the scalar is derived from it
+        // here rather than carried in parallel — one source, one reduction,
+        // and `decode_pack` reads the bytes back and checks the reduction.
+        //
+        // `NaN` for a radial whose RAD block carried no usable value (raw 0
+        // in the Nyquist word, which the parser already reports as absent).
+        // A hole in the array is a statement, not a gap to be filled with a
+        // neighbour's number.
+        let nyquist_by_radial: Vec<f32> = sweep
+            .radials
+            .iter()
+            .map(|r| match r.nyquist_velocity {
+                Some(value) if value.is_finite() && value > 0.0 => value,
+                _ => f32::NAN,
+            })
+            .collect();
+        let nyquist_velocity_ms = nyquist_by_radial
+            .iter()
+            .copied()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .fold(None::<f32>, |acc, value| {
+                Some(acc.map_or(value, |a| a.min(value)))
+            });
+
         // Which moments does this sweep actually carry, and with what
         // geometry?  Every radial carrying a moment must agree on the gate
         // layout; a disagreement refuses the volume rather than publishing
@@ -355,6 +384,13 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
 
         let azimuth_key = builder.push_f32(&azimuth, vec![radial_count]);
         let elevation_key = builder.push_f32(&elevation, vec![radial_count]);
+        // Packed only when at least one radial reported: an all-`NaN` array
+        // would assert that originals were kept when there were none, and a
+        // cut with no Nyquist at all must serialize exactly as it did before
+        // this field existed so those packs stay digest-reproducible.
+        let nyquist_by_radial_key = nyquist_velocity_ms
+            .is_some()
+            .then(|| builder.push_f32(&nyquist_by_radial, vec![radial_count]));
 
         let mut moment_entries = Vec::new();
         for layout in layouts {
@@ -398,6 +434,9 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
                 gate_size_m: layout.gate_size_m,
                 array: key,
                 censor_array: censor_key,
+                // The RDA already speaks the pack's vocabulary; there is no
+                // second spelling to preserve.
+                source_quantity: None,
             });
         }
 
@@ -405,8 +444,12 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
             sweep_index: sweep.sweep_index,
             elevation_number: sweep.elevation_number,
             elevation_angle_deg: sweep.elevation_angle as f64,
-            nyquist_velocity_ms: sweep.nyquist_velocity.map(|v| v as f64),
+            nyquist_velocity_ms: nyquist_velocity_ms.map(|v| v as f64),
             nyquist_radials_disagree: sweep.nyquist_radials_disagree,
+            // Left unset so every NEXRAD pack stays byte-identical to the one
+            // this build's predecessor wrote; the per-radial array's presence
+            // is what says "radial" here.
+            nyquist_granularity: None,
             start_status: sweep.start_status,
             end_status: sweep.end_status,
             cut_sector: sweep.cut_sector,
@@ -415,6 +458,7 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
             radial_count,
             azimuth_array: azimuth_key,
             elevation_array: elevation_key,
+            nyquist_by_radial_array: nyquist_by_radial_key,
             moments: moment_entries,
         });
     }
@@ -462,7 +506,10 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
             valid_time: iso8601(valid_time),
             volume_date: file.volume_date,
             volume_time_ms: file.volume_time,
-            framing: request.framing.clone(),
+            framing: Some(request.framing.clone()),
+            // An Archive-II volume is one file; there is nothing to assemble
+            // and nothing honest to write here.
+            assembled: None,
         },
         params: DecodeParams {
             moments: request
@@ -528,6 +575,24 @@ mod tests {
 
     const REF: RadarProduct = RadarProduct::Reflectivity;
     const VEL: RadarProduct = RadarProduct::Velocity;
+
+    /// VOL and ELV are the verbatim constant blocks of KTLX
+    /// 2019-05-20 00:00:34Z -- generic format version 2.0 in 44 bytes,
+    /// 35.33336 N / 97.27776 W / site 370 m / VCP 32.  A hand-built VOL
+    /// block used to stand here and it declared version 1.0, a layout
+    /// nothing has read; `Level2File::parse_vol_block` now refuses that,
+    /// and these fixtures exist to exercise the strict parser rather than
+    /// to find out what it will tolerate.  See `wx_radar::level2`
+    /// `REAL_VOL_V2`/`REAL_ELV` for the same bytes and the survey they
+    /// came from.
+    const REAL_VOL_V2: [u8; 44] = [
+        0x52, 0x56, 0x4f, 0x4c, 0x00, 0x2c, 0x02, 0x00, 0x42, 0x0d, 0x55, 0x5d, 0xc2, 0xc2, 0x8e,
+        0x37, 0x01, 0x72, 0x00, 0x13, 0xc2, 0x34, 0x4a, 0x62, 0x43, 0x81, 0x2e, 0x7c, 0x43, 0x6f,
+        0x43, 0x73, 0x3d, 0xe5, 0x4f, 0x09, 0x42, 0x70, 0x00, 0x00, 0x00, 0x20, 0x00, 0x01,
+    ];
+    const REAL_ELV: [u8; 12] = [
+        0x52, 0x45, 0x4c, 0x56, 0x00, 0x0c, 0xff, 0xf4, 0xc2, 0x2f, 0x40, 0x00,
+    ];
 
     #[test]
     fn a_radial_that_changes_gate_geometry_refuses_the_sweep() {
@@ -630,24 +695,8 @@ mod tests {
             block.resize(lrtup as usize, 0);
             block
         }
-        // VOL and ELV are the verbatim constant blocks of KTLX
-        // 2019-05-20 00:00:34Z -- generic format version 2.0 in 44 bytes,
-        // 35.33336 N / 97.27776 W / site 370 m / VCP 32.  A hand-built VOL
-        // block used to stand here and it declared version 1.0, a layout
-        // nothing has read; `Level2File::parse_vol_block` now refuses that,
-        // and this fixture exists to exercise the strict parser rather than
-        // to find out what it will tolerate.  See
-        // `wx_radar::level2` `REAL_VOL_V2`/`REAL_ELV` for the same bytes and
-        // the survey they came from.
-        let real_vol_v2: [u8; 44] = [
-            0x52, 0x56, 0x4f, 0x4c, 0x00, 0x2c, 0x02, 0x00, 0x42, 0x0d, 0x55, 0x5d, 0xc2, 0xc2,
-            0x8e, 0x37, 0x01, 0x72, 0x00, 0x13, 0xc2, 0x34, 0x4a, 0x62, 0x43, 0x81, 0x2e, 0x7c,
-            0x43, 0x6f, 0x43, 0x73, 0x3d, 0xe5, 0x4f, 0x09, 0x42, 0x70, 0x00, 0x00, 0x00, 0x20,
-            0x00, 0x01,
-        ];
-        let real_elv: [u8; 12] = [
-            0x52, 0x45, 0x4c, 0x56, 0x00, 0x0c, 0xff, 0xf4, 0xc2, 0x2f, 0x40, 0x00,
-        ];
+        let real_vol_v2 = REAL_VOL_V2;
+        let real_elv = REAL_ELV;
         let mut rad_body = vec![0u8; 10];
         rad_body.extend_from_slice(&2384u16.to_be_bytes()); // 23.84 m/s
         let mut moment = Vec::from(&b"DREF"[..]);
@@ -788,7 +837,8 @@ mod tests {
         assert_eq!(meta.schema, crate::pack::SWEEPS_SCHEMA);
         assert!(!meta.params.censor_flags);
         assert!(meta.sweeps[0].moments[0].censor_array.is_none());
-        assert_eq!(meta.arrays.len(), 3); // azimuth, elevation, one moment
+        // azimuth, elevation, the per-radial Nyquist, one moment
+        assert_eq!(meta.arrays.len(), 4);
         for entry in meta.arrays.values() {
             assert_eq!(entry.dtype, "<f4");
         }
@@ -1033,5 +1083,223 @@ mod tests {
             "the table gained elevations everywhere -- delete this arm and \
              the placeholder refusal with it"
         );
+    }
+
+    /// One Archive-II cut whose radials carry the Nyquist velocities given,
+    /// in hundredths of a m/s and in radial order.
+    ///
+    /// `0` is the RDA's own spelling of "no usable value" -- the RAD block
+    /// is still there and still mandatory, its Nyquist word is just zero --
+    /// so a hole in a cut is reachable through the strict parser exactly as
+    /// a real volume would present it, without omitting a block the strict
+    /// parser is right to insist on.
+    ///
+    /// The unframed pre-2016 layout for the same reason `one_radial_volume`
+    /// uses it: messages straight after the volume header, each stepping by
+    /// what it declares, so the fixture is a shape the archive contains.
+    fn cut_with_radial_nyquists(nyquist_hundredths: &[u16]) -> Vec<u8> {
+        assert!(
+            nyquist_hundredths.len() >= 2,
+            "a cut fixture needs a start radial and an end radial"
+        );
+        let mut stream = Vec::new();
+        let last = nyquist_hundredths.len() - 1;
+        for (index, nyquist) in nyquist_hundredths.iter().enumerate() {
+            let status = match index {
+                0 => 3u8,        // start of volume
+                i if i == last => 2, // end of elevation
+                _ => 1,
+            };
+            let mut rad_body = vec![0u8; 10];
+            rad_body.extend_from_slice(&nyquist.to_be_bytes());
+            let mut rad = Vec::from(&b"RRAD"[..]);
+            rad.extend_from_slice(&28u16.to_be_bytes());
+            rad.extend_from_slice(&rad_body);
+            rad.resize(28, 0);
+
+            let mut moment = Vec::from(&b"DREF"[..]);
+            moment.extend_from_slice(&0u32.to_be_bytes());
+            moment.extend_from_slice(&4u16.to_be_bytes()); // gates
+            moment.extend_from_slice(&2125u16.to_be_bytes());
+            moment.extend_from_slice(&250u16.to_be_bytes());
+            moment.extend_from_slice(&0u16.to_be_bytes());
+            moment.push(0);
+            moment.push(0);
+            moment.extend_from_slice(&8u16.to_be_bytes());
+            moment.extend_from_slice(&2.0f32.to_be_bytes());
+            moment.extend_from_slice(&66.0f32.to_be_bytes());
+            moment.extend_from_slice(&[100u8, 101, 102, 103]);
+
+            let blocks = vec![REAL_VOL_V2.to_vec(), REAL_ELV.to_vec(), rad, moment];
+            let header_bytes = 32 + 4 * blocks.len();
+            let mut pointers = Vec::new();
+            let mut running = header_bytes as u32;
+            for block in &blocks {
+                pointers.push(running);
+                running += block.len() as u32;
+            }
+
+            let mut msg31 = Vec::from(&b"KTLX"[..]);
+            msg31.extend_from_slice(&0u32.to_be_bytes());
+            msg31.extend_from_slice(&20663u16.to_be_bytes());
+            msg31.extend_from_slice(&(index as u16 + 1).to_be_bytes()); // azimuth number
+            msg31.extend_from_slice(&(index as f32).to_be_bytes()); // azimuth angle
+            msg31.push(0); // compression
+            msg31.push(0); // spare
+            msg31.extend_from_slice(&(running as u16).to_be_bytes()); // radial length
+            msg31.push(1); // azimuth resolution: half a degree
+            msg31.push(status);
+            msg31.push(1); // elevation number
+            msg31.push(0); // cut sector
+            msg31.extend_from_slice(&0.5f32.to_be_bytes());
+            msg31.push(0);
+            msg31.push(0);
+            msg31.extend_from_slice(&(blocks.len() as u16).to_be_bytes());
+            for pointer in &pointers {
+                msg31.extend_from_slice(&pointer.to_be_bytes());
+            }
+            for block in &blocks {
+                msg31.extend_from_slice(block);
+            }
+
+            // The strict walk steps by exactly what the header declares, so
+            // the messages tile with no slack and the cut ends where the
+            // last radial does.
+            stream.extend_from_slice(&[0u8; 12]); // CTM
+            stream.extend_from_slice(&(((16 + msg31.len()) / 2) as u16).to_be_bytes());
+            stream.push(0); // channel
+            stream.push(31); // message type
+            stream.extend_from_slice(&[0u8; 12]);
+            stream.extend_from_slice(&msg31);
+        }
+
+        let mut raw = Vec::from(&b"AR2V0006."[..]);
+        raw.resize(24, 0);
+        raw[14..16].copy_from_slice(&20663u16.to_be_bytes());
+        raw[16..20].copy_from_slice(&72_196_232u32.to_be_bytes());
+        raw[20..24].copy_from_slice(b"KTLX");
+        raw.extend_from_slice(&stream);
+        raw
+    }
+
+    /// The per-radial Nyquist array of sweep 0, as the pack carries it.
+    fn packed_nyquists(meta: &PackMeta, payload: &[u8]) -> Vec<f32> {
+        let key = meta.sweeps[0]
+            .nyquist_by_radial_array
+            .clone()
+            .expect("sweep 0 carries a per-radial Nyquist array");
+        let entry = &meta.arrays[&key];
+        assert_eq!(entry.dtype, "<f4");
+        assert_eq!(entry.shape, vec![meta.sweeps[0].radial_count]);
+        assert_eq!(entry.bytes, meta.sweeps[0].radial_count * 4);
+        payload[entry.offset..entry.offset + entry.bytes]
+            .chunks_exact(4)
+            .map(|word| f32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .collect()
+    }
+
+    #[test]
+    fn a_uniform_cut_packs_the_same_nyquist_for_every_radial() {
+        // The overwhelmingly common case, and the one that must not move:
+        // four radials all on 23.84 m/s.  The array says so four times, the
+        // scalar says so once, and nothing disagrees with itself.
+        let raw = cut_with_radial_nyquists(&[2384, 2384, 2384, 2384]);
+        let (meta, payload) = build_pack(&pack_request(&raw)).unwrap();
+        assert_eq!(meta.sweeps.len(), 1);
+        assert_eq!(meta.sweeps[0].radial_count, 4);
+        assert_eq!(packed_nyquists(&meta, &payload), vec![23.84; 4]);
+        assert!((meta.sweeps[0].nyquist_velocity_ms.unwrap() - 23.84).abs() < 1e-6);
+        assert!(!meta.sweeps[0].nyquist_radials_disagree);
+
+        // Everything an existing consumer reads is exactly what it was: the
+        // v1 schema string, the same container, the same scalar, and moment
+        // planes of the same dtype and shape.  The array is beside them, not
+        // instead of any of them.
+        assert_eq!(meta.schema, crate::pack::SWEEPS_SCHEMA);
+        assert_eq!(meta.sweeps[0].moments[0].gate_count, 4);
+        assert_eq!(meta.arrays[&meta.sweeps[0].moments[0].array].shape, vec![4, 4]);
+        let bytes = crate::pack::encode_pack(&meta, &payload).unwrap();
+        let (round, _) = crate::pack::decode_pack(&bytes).unwrap();
+        assert_eq!(
+            round.sweeps[0].nyquist_velocity_ms,
+            meta.sweeps[0].nyquist_velocity_ms
+        );
+    }
+
+    #[test]
+    fn a_mixed_prf_cut_carries_both_lattices_and_the_scalar_is_the_lower() {
+        // A VCP that changes PRF inside the cut: two radials at 32.00 m/s
+        // and two at 12.00.  One number cannot describe this cut, which is
+        // the entire reason the array exists -- and the scalar has to be the
+        // floor, because 32 would license a 20 m/s gate that the radial it
+        // came from folds at 12.
+        let raw = cut_with_radial_nyquists(&[3200, 3200, 1200, 1200]);
+        let (meta, payload) = build_pack(&pack_request(&raw)).unwrap();
+        assert_eq!(
+            packed_nyquists(&meta, &payload),
+            vec![32.0, 32.0, 12.0, 12.0]
+        );
+        assert!((meta.sweeps[0].nyquist_velocity_ms.unwrap() - 12.0).abs() < 1e-6);
+        assert!(meta.sweeps[0].nyquist_radials_disagree);
+
+        // The scalar is not a second opinion: it is this array's minimum
+        // over its usable entries, and the pack's own reader proves it.
+        let bytes = crate::pack::encode_pack(&meta, &payload).unwrap();
+        crate::pack::decode_pack(&bytes).unwrap();
+    }
+
+    #[test]
+    fn a_radial_with_no_nyquist_is_a_nan_and_never_a_neighbours_number() {
+        // Middle radial's RAD block carries a zero Nyquist word.  The hole
+        // stays a hole: it is not filled from either side, it does not drag
+        // the minimum to zero, and it does make the cut disagree with itself.
+        let raw = cut_with_radial_nyquists(&[2384, 0, 2384, 1200]);
+        let (meta, payload) = build_pack(&pack_request(&raw)).unwrap();
+        let packed = packed_nyquists(&meta, &payload);
+        assert!((packed[0] - 23.84).abs() < 1e-6);
+        assert!(packed[1].is_nan(), "{packed:?}");
+        assert!((packed[2] - 23.84).abs() < 1e-6);
+        assert!((packed[3] - 12.0).abs() < 1e-6);
+        assert!((meta.sweeps[0].nyquist_velocity_ms.unwrap() - 12.0).abs() < 1e-6);
+        assert!(meta.sweeps[0].nyquist_radials_disagree);
+    }
+
+    #[test]
+    fn a_cut_no_radial_reported_for_packs_exactly_as_it_did_before() {
+        // Every RAD block carries a zero Nyquist word, so there is nothing
+        // to carry.  An all-NaN array would assert the originals were kept;
+        // the key is absent instead, the scalar stays None as it always was,
+        // and the metadata JSON is the one the previous build wrote -- which
+        // is what keeps those packs' digests reproducible.
+        let raw = cut_with_radial_nyquists(&[0, 0, 0]);
+        let (meta, _payload) = build_pack(&pack_request(&raw)).unwrap();
+        assert!(meta.sweeps[0].nyquist_velocity_ms.is_none());
+        assert!(meta.sweeps[0].nyquist_by_radial_array.is_none());
+        assert_eq!(meta.arrays.len(), 3); // azimuth, elevation, one moment
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(!json.contains("nyquist_by_radial_array"), "{json}");
+    }
+
+    #[test]
+    fn a_scalar_that_does_not_summarise_its_array_is_refused_on_read_back() {
+        // The instrument, tested in both directions.  The pack above passes;
+        // the same pack with the scalar nudged off its array's floor by more
+        // than the tolerance is refused by name, so a future writer that
+        // computes the two separately cannot ship them quietly disagreeing.
+        let raw = cut_with_radial_nyquists(&[3200, 3200, 1200, 1200]);
+        let (mut meta, payload) = build_pack(&pack_request(&raw)).unwrap();
+        crate::pack::decode_pack(&crate::pack::encode_pack(&meta, &payload).unwrap()).unwrap();
+
+        meta.sweeps[0].nyquist_velocity_ms = Some(32.0);
+        let bytes = crate::pack::encode_pack(&meta, &payload).unwrap();
+        let err = crate::pack::decode_pack(&bytes).unwrap_err().to_string();
+        assert!(err.contains("bottoms out at 12"), "{err}");
+        assert!(err.contains("defined as that array's minimum"), "{err}");
+
+        // Rounding is not disagreement: a millimetre per second of float
+        // formatting drift is inside the tolerance and passes.
+        meta.sweeps[0].nyquist_velocity_ms = Some(12.0 + 5e-4);
+        let bytes = crate::pack::encode_pack(&meta, &payload).unwrap();
+        crate::pack::decode_pack(&bytes).unwrap();
     }
 }

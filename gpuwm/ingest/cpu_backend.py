@@ -76,23 +76,36 @@ def resolve_cpu_bridge(path: Path | str | None = None) -> Path:
     configuration never silently falls through to a different library.
     """
 
-    from gpuwm.bridges import find_artifact
+    from gpuwm.bridges import cpu_bridge_remedy, find_artifact
 
+    filename = _library_names()[0]
     if path is not None:
         explicit = Path(path)
         if explicit.is_file():
             return explicit.resolve()
         raise FileNotFoundError(
             "GPUWM parallel CPU preprocessing bridge was not found; "
-            f"searched:\n  {explicit}")
-    found = find_artifact(CPU_BRIDGE_ENV, _library_names()[0])
+            f"searched:\n  {explicit}\n"
+            # An explicit path was passed, so the remedy is that path,
+            # not a download: staging a correct copy somewhere else
+            # would not make THIS argument true.
+            "  # that path was given explicitly, so nothing else was "
+            "searched;\n"
+            "  # drop the explicit path to use the resolution ladder, or "
+            "point it\n"
+            "  # at a real build.  `gpuwm doctor` reports the estate.")
+    found = find_artifact(CPU_BRIDGE_ENV, filename)
     if found is not None:
         return found
     rendered = "\n  ".join(
         str(candidate) for candidate in cpu_bridge_candidates())
+    # THE remedy this refusal used to lack.  It listed four paths and
+    # stopped -- the only resolver in the estate whose message never said
+    # how to fix it -- while the library it wants ships in the bundle
+    # `gpuwm fetch-bridges` stages into the last path on that list.
     raise FileNotFoundError(
         "GPUWM parallel CPU preprocessing bridge was not found; searched:\n  "
-        + rendered)
+        + rendered + "\n" + cpu_bridge_remedy(filename))
 
 
 def _workers(value: int | None, independent_count: int) -> int:

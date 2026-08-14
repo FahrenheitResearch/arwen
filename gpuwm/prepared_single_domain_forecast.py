@@ -5911,8 +5911,42 @@ def _resolve_clock_arguments(args) -> None:
               file=sys.stderr)
 
 
-def _parse_args(argv=None):
+def build_parser() -> argparse.ArgumentParser:
+    """This runner's forecast parser, built without parsing anything.
+
+    Separated from :func:`_parse_args` so the option surface can be READ
+    -- by ``--help``, and by the docs/CLI parity test that holds every
+    documented door against the flags it really defines.  A parser that
+    only exists inside the function that consumes it cannot be checked
+    against a document.
+    """
+
     parser = argparse.ArgumentParser(description=__doc__)
+    # The two MODE flags, declared rather than only intercepted.
+    #
+    # `main` answers both before argparse sees anything, because each is
+    # a different program with a different parser and the interception
+    # is what makes that possible.  Declaring them here changes no
+    # behaviour on the paths that work -- a mode flag in first position
+    # never reaches this parser -- and buys the thing their absence cost:
+    # `--help` now NAMES them.  FIRST-LIGHT documents
+    # `--materialize-authorities` as a step of the documented chain, and
+    # a user who lost the doc could not rediscover the step from the
+    # tool, because the only parser `--help` rendered was this one and
+    # this one had never heard of it.
+    modes = parser.add_argument_group(
+        "mode flags (each must be the FIRST argument, and selects a "
+        "different program with its own --help)")
+    modes.add_argument(
+        "--materialize-authorities", action="store_true",
+        help=("create one hash-receipted named-source experiment/WPS "
+              "authority pair for an exact physics profile, then exit.  "
+              "Run it first on the line and with --help after it for "
+              "that mode's own options"))
+    modes.add_argument(
+        "--show-capabilities", action="store_true",
+        help=("print this runner's capability JSON and exit; it must be "
+              "the only argument"))
     parser.add_argument("--source", choices=sorted(SUPPORTED_SOURCES), required=True)
     parser.add_argument("--prepared-root", type=Path, required=True)
     parser.add_argument(
@@ -6000,10 +6034,25 @@ def _parse_args(argv=None):
         "--render-dir", type=Path, default=None, metavar="DIR",
         help=("where --render-products publishes; defaults to "
               "OUTDIR/png.  Ignored without --render-products"))
-    return parser.parse_args(argv)
+    return parser
 
 
-def _parse_materialize_args(argv=None):
+#: The mode flags, and the position they are only legal in.
+MODE_FLAGS = ("--materialize-authorities", "--show-capabilities")
+
+
+def _parse_args(argv=None):
+    return build_parser().parse_args(argv)
+
+
+def build_materialize_parser() -> argparse.ArgumentParser:
+    """The ``--materialize-authorities`` mode's own parser.
+
+    A separate program with a separate option set, exposed for the same
+    reason as :func:`build_parser`: a door the documentation names has
+    to be checkable against the flags it really takes.
+    """
+
     parser = argparse.ArgumentParser(
         prog=(
             "python -m gpuwm.prepared_single_domain_forecast "
@@ -6027,7 +6076,11 @@ def _parse_materialize_args(argv=None):
     # the flag that prints its second half -- otherwise the marker
     # gpuwm/explain.py promises can never reach a terminal does.
     add_explain_flag(parser)
-    return parser.parse_args(argv)
+    return parser
+
+
+def _parse_materialize_args(argv=None):
+    return build_materialize_parser().parse_args(argv)
 
 
 def _streaming_options_argument(text: str | None):
@@ -6189,7 +6242,47 @@ def main(argv=None, *, observer=None) -> int:
             "receipt": receipt["receipt"],
         }, sort_keys=True))
         return 0
+    # A mode flag that reached here was not in first position, so no
+    # interception above could claim it.  Say that, rather than letting
+    # the forecast parser refuse it for the unrelated reason that its own
+    # required flags are missing.
+    for flag in MODE_FLAGS:
+        if flag in argv:
+            print(f"prepared_single_domain_forecast: {flag} must be the "
+                  "FIRST argument on the command line; it selects a "
+                  "different program, with its own --help and its own "
+                  "options", file=sys.stderr)
+            return 2
     args = _parse_args(argv)
+    # THE capability preflight, from the same registry `gpuwm run` and
+    # `gpuwm go` refuse with, so this documented `python -m` door cannot
+    # drift from the subcommands.  It had no handler at all: a missing
+    # GPU runtime surfaced as a raw traceback AFTER this function had
+    # claimed the output directory, written progress.json and run the
+    # whole preparation preflight -- work a reader then has to clean up
+    # for a gap that was knowable before any of it.
+    from gpuwm import capabilities
+    from gpuwm.explain import split as split_explanation
+
+    try:
+        capabilities.require(
+            "python -m gpuwm.prepared_single_domain_forecast",
+            *capabilities.COMMAND_REQUIREMENTS["run"],
+            before=("Refusing here, before the output directory is "
+                    "claimed and before the preparation preflight runs."))
+    except capabilities.CapabilityMissing as refused:
+        # The action half only, with NO ``--explain`` pointer: that flag
+        # is registered on the ``--materialize-authorities`` parser, not
+        # on this forecast one, so a pointer at it would name a flag this
+        # door rejects with a usage dump -- which is precisely the class
+        # of defect this whole change exists to remove.  Measured before
+        # it shipped: `python -m gpuwm.prepared_single_domain_forecast
+        # --explain ...` exits 2 on `unrecognized arguments`.
+        print(split_explanation(str(refused))[0], file=sys.stderr)
+        return 2
+    # After the capability gate, because the clock defaults are READ FROM
+    # THE CONFIG: a reader with no runtime should hear about the runtime,
+    # not about the shape of a file whose contents cannot matter yet.
     _resolve_clock_arguments(args)
     # Before the output directory is claimed: a malformed [tiles] is a
     # usage mistake, and refusing it after creating a run directory

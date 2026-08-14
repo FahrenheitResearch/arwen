@@ -2063,8 +2063,21 @@ def run_prepared_tree(
     return report
 
 
-def _parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
+    """This runner's parser, built without parsing anything.
+
+    Exposed so the docs/CLI parity test can read the option surface of a
+    documented door without running it.
+    """
+
     parser = argparse.ArgumentParser(description=__doc__)
+    # Declared, not merely intercepted: `main` answers this before
+    # argparse sees anything, so without the declaration `--help` never
+    # mentioned a flag the runner really has.
+    parser.add_argument(
+        "--show-capabilities", action="store_true",
+        help=("print this runner's capability JSON and exit; it must be "
+              "the only argument"))
     parser.add_argument("--prepared-root", type=Path, required=True)
     parser.add_argument("--preparation-receipt-sha256", required=True)
     parser.add_argument("--experiment-config", type=Path, required=True)
@@ -2110,7 +2123,30 @@ def main(argv=None, *, observer=None) -> int:
     if refusal is not None:
         print(f"prepared_domain_tree_forecast: {refusal}", file=sys.stderr)
         return 2
-    args = _parser().parse_args(argv)
+    if "--show-capabilities" in argv:
+        print("prepared_domain_tree_forecast: --show-capabilities must be "
+              "the only argument on the command line", file=sys.stderr)
+        return 2
+    args = build_parser().parse_args(argv)
+    # THE capability preflight, from the same registry `gpuwm run` and
+    # `gpuwm go` refuse with.  Before the output directory is claimed,
+    # for the same reason the --outdir guard below is where it is: a gap
+    # that was knowable before any work must not be discovered after it.
+    #
+    # The action half only.  This parser has no `--explain`, so a
+    # pointer at that flag would name something this door does not have.
+    from gpuwm import capabilities
+    from gpuwm.explain import split as split_explanation
+
+    try:
+        capabilities.require(
+            "python -m gpuwm.prepared_domain_tree_forecast",
+            *capabilities.COMMAND_REQUIREMENTS["run"],
+            before=("Refusing here, before the output directory is "
+                    "claimed and before the tree preflight runs."))
+    except capabilities.CapabilityMissing as refused:
+        print(split_explanation(str(refused))[0], file=sys.stderr)
+        return 2
     # A rejected --outdir is a usage mistake, not a crash: it must read as
     # one sentence naming the problem and a directory that works.  A node-8
     # pilot met this guard as a raw traceback, on a command the front door

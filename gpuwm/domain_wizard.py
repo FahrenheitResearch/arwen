@@ -1304,8 +1304,31 @@ def load_polygon_footprint(path: str | Path) -> PolygonFootprint:
             "--polygon accepts a local GeoJSON file path, not a URL")
     polygon_path = Path(path)
     if not polygon_path.is_file():
+        # The sentence names the path THIS PROCESS looked at, absolute,
+        # plus the directory a relative one was resolved against.
+        #
+        # It used to echo the argument as typed.  A caller that passes a
+        # relative path and runs the wizard in a different working
+        # directory than its own -- which is what every stage-runner
+        # subprocess does -- then produced "local GeoJSON file does not
+        # exist: danow\case\domain-box.geojson" for a file that was on
+        # disk, and sent the user hunting for it.  A refusal that states
+        # something the user can check and find false is worse than no
+        # refusal: absolute here means the claim is always true, and
+        # `cd`-shaped bugs identify themselves on the first read.
+        resolved = polygon_path.expanduser()
+        try:
+            resolved = resolved.resolve()
+        except OSError:  # pragma: no cover - unresolvable path shapes
+            resolved = polygon_path
+        where = ""
+        if not polygon_path.is_absolute():
+            where = (f" (relative to the working directory "
+                     f"{Path.cwd()})")
+        kind = ("is not a regular file"
+                if polygon_path.exists() else "does not exist")
         raise ValueError(
-            f"--polygon local GeoJSON file does not exist: {polygon_path}")
+            f"--polygon local GeoJSON file {kind}: {resolved}{where}")
     try:
         document = json.loads(polygon_path.read_text(encoding="utf-8"))
     except OSError as error:

@@ -1056,7 +1056,8 @@ def test_cli_single_domain_summary_needs_no_transition_fields(
     path.write_text("[experiment]\nname = \"single\"\n", encoding="utf-8")
     exp = SimpleNamespace(name="single")
     monkeypatch.setattr(
-        case_data, "load_experiment_case", lambda _path: (exp, object()))
+        case_data, "load_experiment_case",
+        lambda _path, **_kwargs: (exp, object()))
     monkeypatch.setattr(
         runtime, "run_experiment", lambda *_args, **_kwargs: SimpleNamespace(
             wrfout_paths=(), completed_seconds=60.0, nan_free=True))

@@ -1123,6 +1123,113 @@ def _resolve_engine(requested: str) -> tuple[str, str]:
     return "matplotlib", f"rust renderer unusable: {reason}"
 
 
+def matplotlib_engine_gap():
+    """The requirement that stops the matplotlib engine drawing, or ``None``.
+
+    The fallback engine is not a fallback until this is ``None``.  It
+    computes every derived field through ``wrf`` (pip distribution
+    ``wrf-rust``), the mandated science core, which lives behind the
+    same ``render`` extra the rust engine's documentation offers as the
+    thing to fall back FROM.  Asked without importing, so this is safe
+    to call on any path including ``--help``.
+    """
+
+    from gpuwm import capabilities
+
+    if capabilities.is_installed(capabilities.SCIENCE_CORE.module):
+        return None
+    return capabilities.SCIENCE_CORE
+
+
+def drawable_engine() -> tuple[str | None, str]:
+    """Which engine could draw here, and why -- no file, no render.
+
+    ``(None, why)`` when NEITHER engine can: the rust binary is not
+    staged (or fails its contract) AND the matplotlib fallback has no
+    science core.  That is the only state in which "this install cannot
+    draw" is true, and it is the question ``gpuwm go``'s render stage
+    must ask -- it used to ask whether ``wrf`` imported, which is a
+    question about the fallback engine on a chain that runs the rust
+    one.
+    """
+
+    try:
+        engine, why = _resolve_engine("auto")
+    except Exception as error:                              # noqa: BLE001
+        # Deliberately broad, and only here.  This function is asked by
+        # `gpuwm go` DURING a chain, purely to decide whether to run the
+        # render stage; resolving the rust engine means launching it for
+        # its contract handshake, and a launch that fails for any reason
+        # must degrade this answer, never end a forecast that has
+        # already succeeded.  The reason is carried, not swallowed.
+        engine, why = "matplotlib", f"the rust engine could not be probed: {error}"
+    if engine == "rust":
+        return "rust", why
+    if matplotlib_engine_gap() is None:
+        return "matplotlib", why
+    return None, (
+        f"the rust render engine is not available ({why}), and the "
+        f"matplotlib fallback engine needs {WRF_PACKAGE_REQUIREMENT}, "
+        "which is not installed")
+
+
+def engine_refusal(engine: str, requested: str, why: str) -> str | None:
+    """The refusal for an engine that cannot draw, or ``None``.
+
+    THE fix for the wrong-remedy-first defect.  A bare install used to
+    print ``rust render engine not available ... Build it with: gpuwm
+    fetch-bridges`` -- an advisory about the OTHER engine -- and then
+    die in a traceback whose tail carried the remedy that would actually
+    have worked.  The first line a reader sees is now the one that fixes
+    the thing that is broken.
+
+    Both routes are named, in the order that costs least: staging the
+    rust engine is one command, needs no extra, and draws the whole
+    catalog (measured 161 PNGs against 5 renderable matplotlib products
+    on the same file).  An explicit ``--engine matplotlib`` is a request
+    for the fallback, so its own remedy leads there instead.
+    """
+
+    if engine != "matplotlib":
+        return None
+    gap = matplotlib_engine_gap()
+    if gap is None:
+        return None
+    if requested == "matplotlib":
+        action = (
+            "gpuwm render --engine matplotlib: the matplotlib engine "
+            f"needs {gap.label}, which is not installed.\n"
+            "  The fallback engine computes every derived field through "
+            "it, so it needs the same extra as the rust engine it falls "
+            "back from.\n"
+            f"{gap.remedy}")
+    else:
+        action = (
+            f"gpuwm render: neither render engine can draw here.\n"
+            f"  The rust engine is not available ({why}), and the "
+            f"matplotlib fallback needs {gap.label}, which is not "
+            "installed.\n"
+            "  remedy: gpuwm setup\n"
+            "  # stages the rust render engine (no extra needed); it "
+            "draws the\n"
+            f"  # full catalog, against {len(PRODUCTS)} products for the "
+            "fallback\n"
+            "  #   ... or, for the matplotlib fallback engine:\n"
+            "  #   pip install 'gpuwm[render]'")
+    return explain.layered(action, _ENGINE_WHY)
+
+
+_ENGINE_WHY = (
+    "Refused at the front door, before a single wrfout was opened.  The "
+    "version this replaces printed an advisory naming the rust engine's "
+    "build command -- a remedy for the engine that was NOT selected -- "
+    "and then raised, so the correct install line arrived at the tail of "
+    "a traceback, below the wrong one.\n\n"
+    "`gpuwm render --list-products FILE` is deliberately not refused "
+    "here: the matplotlib catalog reads the file with netCDF4 alone and "
+    "answers correctly on an install with no render extra at all.")
+
+
 #: How many products each engine can draw, for the fallback notice.
 #: The rust catalog's 151 is its implicit-render candidate count on a
 #: typical wrfout; the matplotlib count is read from :data:`PRODUCTS`,
@@ -1245,11 +1352,35 @@ def missing_basemap_notice(renderer) -> str | None:
 
 
 def _pair_main(args: argparse.Namespace) -> int:
+    # Pillow is checked HERE, by resolution, rather than by catching the
+    # import of `gpuwm.pair_compose`.  Two defects in one line:
+    #
+    # * the message named `gpuwm[render]`, which is wrf-rust + pyshp and
+    #   has never contained Pillow.  Pillow arrives transitively with
+    #   matplotlib, a BASE dependency, so the extra it named would not
+    #   have installed it and the reader would have run the command,
+    #   waited for a wheel, and met the same refusal.
+    # * the guard was inert: `pair_compose` imports PIL inside its
+    #   functions, so this module imports cleanly with no Pillow at all
+    #   and the ImportError arrived later, from inside `compose_pairs`,
+    #   as a traceback.
+    from gpuwm import capabilities
+
+    if not capabilities.is_installed(capabilities.PILLOW.module):
+        print(explain.render(
+            capabilities.refusal("gpuwm render --pair", capabilities.PILLOW),
+            explain=explain.explain_enabled(args),
+            command="gpuwm render"), file=sys.stderr)
+        return 2
     try:
         from gpuwm.pair_compose import compose_pairs
-    except ImportError:
-        print("render: --pair needs Pillow (installed with the render "
-              "extra: pip install 'gpuwm[render]')", file=sys.stderr)
+    except ImportError as error:
+        # Kept as the floor under the resolution check above: a Pillow
+        # that resolves and then fails to import (a broken wheel, a
+        # partial uninstall) is still a refusal, not a traceback.
+        remedy = capabilities.remedy_for_error(error) or ""
+        print(f"render: --pair could not load its image toolkit: {error}\n"
+              + remedy, file=sys.stderr)
         return 2
     left, right = (Path(p) for p in args.pair)
     labels = args.pair_labels or (None, None)
@@ -1312,6 +1443,17 @@ def render_main(args: argparse.Namespace) -> int:
             str(exc), explain=explain.explain_enabled(args),
             command="gpuwm render"), file=sys.stderr)
         return 2
+    # BEFORE the fallback advisory, and before any wrfout is opened: an
+    # engine that cannot draw is refused with ITS OWN remedy first.
+    # `--list-products` is exempt because the matplotlib catalog needs
+    # only netCDF4 and is a working path on a bare install.
+    if not args.list_products:
+        refusal = engine_refusal(engine, args.engine, why)
+        if refusal is not None:
+            print(explain.render(
+                refusal, explain=explain.explain_enabled(args),
+                command="gpuwm render"), file=sys.stderr)
+            return 2
     notice = fallback_notice(engine, why)
     if notice is not None:
         print(notice, file=sys.stderr)

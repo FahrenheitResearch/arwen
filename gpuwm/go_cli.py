@@ -54,6 +54,7 @@ import threading
 import time
 from pathlib import Path
 
+from gpuwm import capabilities
 from gpuwm.explain import explain_enabled, layered, render
 
 #: The runner that owns both the authority materialization and the
@@ -758,19 +759,25 @@ def render_command(plan: dict, frames: list[Path] | None = None) -> list[str]:
 def render_extra_missing() -> str | None:
     """Why rendering cannot run here, or ``None`` when it can.
 
-    ``wrf`` (pip distribution ``wrf-rust``) is the mandated science core
-    for every derived field, and it lives behind the ``render`` extra.
-    An install without it can still produce the forecast, so a missing
-    extra is not a failed chain -- but it IS the one place the chain
-    genuinely stops, and it says so with the command that finishes the
-    job rather than falling silent.
+    Asked of the RENDER FRONT DOOR, not of the Python import table,
+    because the stage this gates is ``gpuwm render`` and that command
+    chooses between two engines.  This function used to import ``wrf``
+    and skip the stage when it was absent -- so a bare install with
+    staged bridges, on which ``gpuwm render`` selects the rust engine
+    and writes its full catalog (measured: 161 PNGs, 127 MB, no
+    ``render`` extra installed), finished a whole forecast and then
+    declined to draw it.  The gate named a package the stage it gates
+    does not need.
+
+    :func:`gpuwm.render.drawable_engine` is that one answer, shared, so
+    "can this install draw?" cannot be answered differently by the chain
+    and by the command the chain runs.
     """
 
-    try:
-        import wrf  # noqa: F401
-    except Exception as error:
-        return f"{type(error).__name__}: {error}"
-    return None
+    from gpuwm.render import drawable_engine
+
+    engine, why = drawable_engine()
+    return None if engine is not None else why
 
 
 def _render_stage(plan: dict, *, explain: bool,
@@ -798,10 +805,13 @@ def _render_stage(plan: dict, *, explain: bool,
         return False
     missing = render_extra_missing()
     if missing is not None:
-        print("  -- render skipped: this environment has no 'wrf' "
-              f"package ({missing}),")
-        print("     which every derived field comes from.")
-        print("     remedy: pip install 'gpuwm[render]', then:")
+        print(f"  -- render skipped: {missing}")
+        print("     remedy: gpuwm setup")
+        print("     # stages the rust render engine, which draws the full "
+              "catalog")
+        print("     #   ... or, for the matplotlib fallback engine:")
+        print("     #   pip install 'gpuwm[render]'")
+        print("     then:")
         print(f"       {printable(render_command(plan))}")
         return False
     frames = wrfout_frames(plan)
@@ -1213,6 +1223,7 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
 
     from gpuwm.core.preflight import (ReservePolicy, _load_experiment_any,
                                       config_forcing_source,
+                                      device_memory_probe_reason,
                                       device_memory_probe_subprocess,
                                       estimate_phases,
                                       profile_from_device_probe,
@@ -1241,7 +1252,15 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
     # the printer holds no device memory at all, and the forecast stage
     # (whose own context IS priced, in the reserve's device-overhead
     # term) gets the card the verdict described.
+    # THE seam the outside world enters through, and the only one: every
+    # caller and every test pins this function, so the gate must keep
+    # asking it rather than the private helper underneath.  The reason is
+    # asked for SEPARATELY and only when there are no numbers, which is
+    # the one path where a second probe costs nothing anybody is waiting
+    # on -- and where saying "no card here" for an uninstalled runtime
+    # was the whole defect.
     probe = device_memory_probe_subprocess()
+    probe_reason = None if probe is not None else device_memory_probe_reason()
     profile = profile_from_device_probe(probe)
     # The cadence the domain was SIZED against, from the same [fetch]
     # table the fetch stage reads, so the two cannot disagree.
@@ -1259,10 +1278,19 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
             float(cadence_h) * 3600.0 if cadence_h else None))
 
     if probe is None:
-        # No device here (a planning box, a CI runner): price the phases
-        # and print the verdict, but never refuse on a card we cannot see.
-        return {"verdict": phases.verdict(None), "refuse": False,
-                "warn": False, "free_bytes": None, "phases": phases}
+        # No numbers: price the phases and print the verdict, but never
+        # refuse on a card we cannot see.
+        #
+        # The verdict now SAYS WHY there are no numbers.  It used to say
+        # "no card here" for every cause including an uninstalled CuPy,
+        # which is how this gate swallowed the one gap that stops the
+        # chain dead.  The front door refuses that case before this
+        # function is reached; the reason is still carried here so a
+        # caller reading the gate's own dict is not told a fiction.
+        return {"verdict": f"{phases.verdict(None)} ({probe_reason})"
+                           if probe_reason else phases.verdict(None),
+                "refuse": False, "warn": False, "free_bytes": None,
+                "probe_reason": probe_reason, "phases": phases}
     free = int(probe["free_bytes"])
     reserve = ReservePolicy.n0_alloc(
         exp, profile=profile,
@@ -1292,6 +1320,10 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
         "warn": peak > budget,
         "free_bytes": free,
         "budget_bytes": budget,
+        # Present on every return of this function, so a caller never
+        # has to distinguish "the key is absent" from "there was no
+        # reason"; None means the probe answered.
+        "probe_reason": None,
         "phases": phases,
     }
 
@@ -1400,6 +1432,33 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
     from gpuwm.geog_assets import default_geog_root
 
     explain = explain_enabled(args)
+    # THE first thing this chain does, before it reads a config, resolves
+    # a bridge, downloads a byte or writes a directory.
+    #
+    # `gpuwm.cli.main` has normally already asked the same question
+    # through the same table; it is asked again here because this
+    # function is also `gpuwm run-plan`'s go route, which enters without
+    # that boundary.  Two doors, one preflight, one message.
+    #
+    # What it replaces was measured: the memory gate below reads the
+    # card through a subprocess that exits 3 for ANY failure, so a
+    # missing CuPy was indistinguishable from a machine with no card and
+    # the gate said "no card here" and waved the chain on.  It then ran
+    # authority -> fetch (gigabytes) -> manifest -> prepare (large disk
+    # writes) and died at the forecast stage relaying the child's raw
+    # traceback, in which no extra was ever named.
+    unmet = capabilities.missing(
+        capabilities.COMMAND_REQUIREMENTS.get("go", ()))
+    if getattr(args, "dry_run", False):
+        # A dry run spends nothing, so it prints rather than refuses --
+        # but it must not print six stages as though they would run.
+        for requirement in unmet:
+            print(f"go: WARNING -- this install cannot run stage 5 "
+                  f"(forecast): {requirement.label} is not installed.",
+                  file=sys.stderr)
+            print(requirement.remedy, file=sys.stderr)
+    else:
+        capabilities.require_for_command("go")
     plan = plan_from_config(args.config,
                             outdir=getattr(args, "outdir", None),
                             data_dir=getattr(args, "data_dir", None),

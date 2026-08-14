@@ -52,6 +52,15 @@ use rustwx_core::{CanonicalField, FieldSelector};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
+/// binary was built from, embedded so the gpuwm release cut can prove a
+/// staged bridge matches the commit being released by reading bytes
+/// alone (`tools/build_bridge_bundle.py pin --source-rev`).  `build.rs`
+/// injects the value; `main` references the constant so the linker
+/// cannot discard it.
+pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
+    concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
+
 /// The AWS Open Data bucket. Probed 2026-08-03: anonymous `ListObjectsV2`
 /// and anonymous GET both answered 200 for keys from 2020 through 2026.
 const DEFAULT_BUCKET: &str = "noaa-mrms-pds";
@@ -133,6 +142,7 @@ verify options
 ";
 
 fn main() -> ExitCode {
+    let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
         Ok(output) => {

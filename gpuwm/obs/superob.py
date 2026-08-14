@@ -48,6 +48,18 @@ collected", and the first of those becomes what it always was in the
 signal: a measurement of nothing.  Pass ``clear_air_from_censor=True`` to
 :func:`superob_volume` to use it.
 
+**The ODIM regime** (:data:`CLEAR_AIR_SOURCE_ODIM`), the same flag over a
+``gpuwm-obs.radar-sweeps.v3`` pack written by ``rw_odim pack``.  ODIM
+reserves ``undetect`` for "looked, found nothing" and it arrives as the same
+code 1, so the admission test does not change; what changes is the *name*
+written into the product, because the claim behind it was made by a European
+national processor and not by an RDA, and a consumer reading
+``clear_air_source`` is entitled to know which.  ODIM also mints two states
+NEXRAD has no word for, and the regime's substance is that neither is
+admitted: ``NODATA`` is the radar reporting it did not look, and
+``SENTINEL_AMBIGUOUS`` is a file that gave both sentinels the same raw value
+so the gate may be either.  Both are counted and refused.
+
 **Range-folded gates are never clear air, in either regime.**  Raw code 1
 means the radar cannot say which trip the return came from, and the answer
 may be a storm.  It is admitted by no configuration of this module: the
@@ -175,7 +187,7 @@ from gpuwm.obs.dealias import (ENGINE_VAD_REGION, STATE_REJECTED,
                                DealiasParams, DealiasParamsError,
                                dealias_sweep, volume_wind_profile)
 from gpuwm.obs.geometry import (REFRACTION_FACTOR, gate_locations)
-from gpuwm.obs.sweeps import Censor, RadarVolume
+from gpuwm.obs.sweeps import SWEEPS_SCHEMA_ODIM, Censor, RadarVolume
 from gpuwm.obs.target_grid import TargetGrid
 from gpuwm.static.projection import EARTH_RADIUS_M
 
@@ -199,8 +211,34 @@ VELOCITY = "VEL"
 CLEAR_AIR_SOURCE = "finite_below_floor"
 CLEAR_AIR_SOURCE_CENSOR = "below_threshold_and_finite_below_floor"
 
+#: The censored regime over an ODIM pack (``gpuwm-obs.radar-sweeps.v3``).
+#:
+#: A separate value from :data:`CLEAR_AIR_SOURCE_CENSOR` even though the same
+#: gate code carries it, because the two are different *claims* by different
+#: instruments. NEXRAD's code 1 is the RDA reporting a return below its
+#: significance threshold; ODIM's is the writer's ``undetect``, the value the
+#: national processor reserves for "this gate was looked at and held no
+#: echo". They coincide in meaning and not in provenance, and a product's
+#: ``clear_air_source`` exists so a consumer can tell what it is holding --
+#: which it could not do if a Finnish volume and an Oklahoma one wrote the
+#: same string.
+#:
+#: The prohibition matters more than the addition. ODIM mints two codes NEXRAD
+#: has no word for and **neither is ever clear air**:
+#: :data:`~gpuwm.obs.sweeps.Censor.NODATA` is the radar reporting it did not
+#: look, and :data:`~gpuwm.obs.sweeps.Censor.SENTINEL_AMBIGUOUS` is a file
+#: that declared ``nodata`` and ``undetect`` as the same raw value, so the
+#: gate may be either. Finnish ``VRADH`` does exactly that -- 721,898 gates in
+#: one measured volume, 76 % of a single sweep -- and reading them as clear
+#: air would assimilate "no echo" into cells that may hold one. The admission
+#: test below is equality with one code, so no configuration of this module
+#: admits 4 or 5, and both are counted so the refusal is visible in
+#: provenance rather than merely asserted here.
+CLEAR_AIR_SOURCE_ODIM = "undetect_and_finite_below_floor"
+
 #: Every value :data:`CLEAR_AIR_SOURCE` may take.
-CLEAR_AIR_SOURCES = (CLEAR_AIR_SOURCE, CLEAR_AIR_SOURCE_CENSOR)
+CLEAR_AIR_SOURCES = (CLEAR_AIR_SOURCE, CLEAR_AIR_SOURCE_CENSOR,
+                     CLEAR_AIR_SOURCE_ODIM)
 
 #: Radials processed per geometry pass.  Peak memory, not correctness.
 _RADIAL_BLOCK = 120
@@ -730,6 +768,22 @@ class CensorCounts:
     #: entirely refused: this number exists so the refusal is visible in
     #: provenance rather than merely asserted in a docstring.
     range_folded_gates_refused: int = 0
+    #: The two ODIM-only states, counted on reflectivity, and the total of
+    #: state 5 across every moment.  ``None`` on a NEXRAD pack, which cannot
+    #: mint either code: an all-zero record would say "we looked and there
+    #: were none", which is a different statement from "this schema has no
+    #: such state", and ``to_payload`` omits them so a v2 pack's provenance
+    #: -- and therefore every committed observation digest -- is byte-for-byte
+    #: what it was before this field existed.
+    #:
+    #: Their purpose is arithmetic, not decoration.  Without them an ODIM
+    #: census does not add up: measured + below_threshold + range_folded +
+    #: not_collected falls short of the gate count by exactly the gates that
+    #: were refused, and a census that silently does not close is how a
+    #: refusal becomes invisible.
+    reflectivity_nodata: int | None = None
+    reflectivity_sentinel_ambiguous: int | None = None
+    sentinel_ambiguous_gates_refused: int | None = None
 
 
 @dataclass
@@ -815,7 +869,8 @@ class SuperobCounts:
                    if key != "censor"}
         if self.censor is not None:
             payload["censor"] = {key: int(value) for key, value
-                                 in asdict(self.censor).items()}
+                                 in asdict(self.censor).items()
+                                 if value is not None}
         return payload
 
 
@@ -931,6 +986,15 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                 "censored regime's clear_air_source, which claims a "
                 "coverage it does not have")
         censor_counts = CensorCounts()
+        if volume.pack_schema == SWEEPS_SCHEMA_ODIM:
+            # Arm the ODIM-only counters at zero. Zero and absent are
+            # different statements and the pack schema is what decides
+            # which one is honest here: a v3 pack can mint 4 and 5, so
+            # "none were seen" is a measurement; a v2 pack cannot, so the
+            # keys stay out of its provenance entirely.
+            censor_counts.reflectivity_nodata = 0
+            censor_counts.reflectivity_sentinel_ambiguous = 0
+            censor_counts.sentinel_ambiguous_gates_refused = 0
 
     dealias_params = params.dealias
     # The volume-wide wind profile is the VAD engine's anchor and nothing
@@ -990,6 +1054,8 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
     vr_rejected = np.zeros(shape, dtype=np.int64)
 
     fold_suspicion: list[dict] = []
+    #: Moment names this pass declined to read, kept for the refusal below.
+    skipped_products: set[str] = set()
     counts.censor = censor_counts
     dealias_records: list[dict] = []
     dealias_totals = _DealiasTotals()
@@ -1004,8 +1070,16 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
 
     site = volume.site
     max_range_m = params.max_range_km * 1000.0
-    clear_air_source = (CLEAR_AIR_SOURCE_CENSOR if clear_air_from_censor
-                        else CLEAR_AIR_SOURCE)
+    # Which regime's zeroes these are, decided by the pack that produced
+    # them rather than by the caller: the flag says "use the decoder's own
+    # gate codes", and which vocabulary those codes belong to is a property
+    # of the file.
+    if not clear_air_from_censor:
+        clear_air_source = CLEAR_AIR_SOURCE
+    elif volume.pack_schema == SWEEPS_SCHEMA_ODIM:
+        clear_air_source = CLEAR_AIR_SOURCE_ODIM
+    else:
+        clear_air_source = CLEAR_AIR_SOURCE_CENSOR
 
     grid_timing = perf_timing.phases("obs.superob")
     grid_timing.mark("sweep_loop", sweeps=len(volume.sweeps))
@@ -1056,6 +1130,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
 
         for product, moment in sweep.moments.items():
             if product not in (REFLECTIVITY, VELOCITY):
+                skipped_products.add(str(product))
                 continue
             ranges = moment.slant_range_m()                     # (gates,)
             in_range = ranges <= max_range_m
@@ -1088,6 +1163,14 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                     folded = codes == Censor.RANGE_FOLDED
                     censor_counts.range_folded_gates_refused += int(
                         folded.sum())
+                    if censor_counts.sentinel_ambiguous_gates_refused \
+                            is not None:
+                        # Counted on every moment, like range-folded, and
+                        # refused on every one: a gate whose file could not
+                        # tell "nothing there" from "did not look" is not an
+                        # observation of either.
+                        censor_counts.sentinel_ambiguous_gates_refused += int(
+                            (codes == Censor.SENTINEL_AMBIGUOUS).sum())
                     if product == REFLECTIVITY:
                         # Equality with ONE code, never "not an echo".  This
                         # is the line that keeps range-folded gates out of
@@ -1102,6 +1185,12 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                             folded.sum())
                         censor_counts.reflectivity_not_collected += int(
                             (codes == Censor.NOT_COLLECTED).sum())
+                        if censor_counts.reflectivity_nodata is not None:
+                            censor_counts.reflectivity_nodata += int(
+                                (codes == Censor.NODATA).sum())
+                            censor_counts.reflectivity_sentinel_ambiguous \
+                                += int((codes
+                                        == Censor.SENTINEL_AMBIGUOUS).sum())
                 # Where dealiasing ran, the velocities from here down are the
                 # unfolded ones -- including the shear scan, which now sees a
                 # field whose folds have been removed and so measures what
@@ -1400,6 +1489,29 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
               & np.isfinite(nyquist_min)
               & (spread > params.nyquist_spread_fraction * nyquist_min))
     counts.velocity_cells_rejected_spread = int(folded.sum())
+
+    # A volume whose sweeps were all used and whose gates were all skipped is
+    # not a thin product, it is a mismatch: this pass and the pack that wrote
+    # it do not agree on what a moment is called.  It happened, on the first
+    # real European volume ever put through here -- `rw_odim` wrote ODIM's own
+    # `DBZH`/`VRADH` where this filter tests for `REF`/`VEL`, so every one of
+    # 8.5 million gates was skipped, `sweeps_used` still counted fifteen, the
+    # observation file wrote successfully, and the record it printed was
+    # entirely zeros.  Nothing failed; there was simply nothing in it.
+    #
+    # So the contradiction is now a refusal.  It names what the pack called
+    # its moments, because that is the whole diagnosis and looking for it
+    # otherwise means reading a binary pack by hand.
+    if counts.sweeps_used and not counts.gates_considered:
+        detail = (f"; the pack's moments are named "
+                  f"{sorted(skipped_products)!r} and this stage reads "
+                  f"{[REFLECTIVITY, VELOCITY]!r}"
+                  if skipped_products else "")
+        raise ValueError(
+            f"{volume.pack_path.name}: {counts.sweeps_used} sweeps were read "
+            f"and not one gate was considered{detail}. An observation file "
+            "built from this would be empty, well-formed and silent about "
+            "it, so it is refused here instead")
     if np.any(folded):
         vr_rejected[folded] += vr_count[folded]
         for array in (vr_sum, vr_sumsq, beam_east, beam_north, beam_up):

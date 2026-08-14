@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 from types import MappingProxyType
 from typing import Iterable, Mapping, Sequence
@@ -1703,23 +1704,78 @@ def _parse_optional_int(value: str) -> int | None:
 
 
 def _build_grib2_tools() -> tuple[Path, Path]:
+    """The GRIB2 inventory and dump executables, resolved then built.
+
+    Ladder first, cargo second, and that order is the whole fix.  This
+    used to open by shelling ``cargo build`` in
+    ``<package parent>/tools/grib1_bridge`` -- a directory a wheel does
+    not have -- so ``gpuwm-mapped-inspect`` and ``gpuwm adapt`` died on
+    a raw ``NotADirectoryError: [WinError 267] The directory name is
+    invalid`` in 0.3 s on every pip install, with no message, while
+    ``grib2_inventory`` and ``grib2_dump`` sat staged and pin-valid in
+    ``~/.gpuwm/bridges`` and ``gpuwm doctor`` reported both ``ok``.  A
+    green light over a hole, and the two binaries the command needed
+    were on the disk the whole time.
+
+    :mod:`gpuwm.ingest.grib` had this right already -- it builds from a
+    checkout crate when there is one and falls back to
+    :func:`gpuwm.bridges.find_bridge` otherwise -- so this is that
+    module's shape, not a new one.  The one deliberate difference is
+    which comes first: ``find_bridge`` already puts a checkout's own
+    ``target/release`` build ahead of the staged copy, so consulting
+    the ladder first still gives a developer their own rebuild and
+    saves everyone else a cargo invocation that cannot succeed.
+
+    The refusal at the end names the remedy this install can actually
+    take (the staged bundle, or a clone and a build) instead of
+    relaying a cargo error about a missing directory.
+    """
+
+    from gpuwm import bridges
+
+    found = {}
+    for name in ("grib2_inventory", "grib2_dump"):
+        # A set environment override naming a missing file raises here,
+        # by design: explicit configuration fails loudly rather than
+        # falling through to a build that would shadow it.
+        found[name] = bridges.find_bridge(name)
+    if found["grib2_inventory"] is not None and found["grib2_dump"] is not None:
+        return found["grib2_inventory"], found["grib2_dump"]
+
     crate = Path(__file__).resolve().parents[1] / "tools" / "grib1_bridge"
-    command = [
-        "cargo", "build", "--locked", "--offline", "--release",
-        "--bin", "grib2_inventory", "--bin", "grib2_dump",
-    ]
-    completed = subprocess.run(
-        command, cwd=crate, text=True, capture_output=True, check=False
-    )
-    if completed.returncode:
-        detail = (completed.stderr or completed.stdout).strip()
-        raise RuntimeError(f"failed to build vendored GRIB2 tools: {detail}")
-    suffix = ".exe" if os.name == "nt" else ""
-    inventory = crate / "target" / "release" / f"grib2_inventory{suffix}"
-    dump = crate / "target" / "release" / f"grib2_dump{suffix}"
-    if not inventory.is_file() or not dump.is_file():
-        raise RuntimeError("cargo succeeded but the GRIB2 tools are missing")
-    return inventory, dump
+    if (crate / "Cargo.toml").is_file():
+        command = [
+            "cargo", "build", "--locked", "--offline", "--release",
+            "--bin", "grib2_inventory", "--bin", "grib2_dump",
+        ]
+        completed = subprocess.run(
+            command, cwd=crate, text=True, capture_output=True, check=False
+        )
+        if completed.returncode:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise RuntimeError(
+                f"failed to build vendored GRIB2 tools: {detail}")
+        suffix = ".exe" if os.name == "nt" else ""
+        inventory = crate / "target" / "release" / f"grib2_inventory{suffix}"
+        dump = crate / "target" / "release" / f"grib2_dump{suffix}"
+        if not inventory.is_file() or not dump.is_file():
+            raise RuntimeError(
+                "cargo succeeded but the GRIB2 tools are missing")
+        return inventory, dump
+
+    absent = [name for name in ("grib2_inventory", "grib2_dump")
+              if found[name] is None]
+    searched = ", ".join(
+        str(candidate) for candidate in bridges.bridge_candidates(absent[0]))
+    raise FileNotFoundError(
+        "the GRIB2 inventory/dump tools this route needs are not "
+        f"installed here: {', '.join(absent)} not found, and this "
+        "installation has no tools/grib1_bridge crate to build them from "
+        "(pip wheels ship no compiled Rust).  Searched, in order: "
+        + searched + "\n" + bridges.bridge_remedy(absent[0])
+        + "\n  # `gpuwm doctor` checks this estate."
+        + "\n  # --grib2-inventory / --grib2-dump override the resolved "
+        "paths.")
 
 
 _GRIB2_INVENTORY_REQUIRED_COLUMNS = frozenset({
@@ -3082,8 +3138,12 @@ def mapped_frame_receipt(
     }
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Inspect mapped source bytes without enabling production export."""
+def build_parser() -> argparse.ArgumentParser:
+    """This console script's parser, built without parsing anything.
+
+    Exposed so the docs/CLI parity test can read the option surface of a
+    documented door without running it.
+    """
 
     parser = argparse.ArgumentParser(
         prog="gpuwm-mapped-inspect",
@@ -3102,25 +3162,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--grib1-bridge", type=Path)
     parser.add_argument("--grib2-inventory", type=Path)
     parser.add_argument("--grib2-dump", type=Path)
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Inspect mapped source bytes without enabling production export."""
+
+    args = build_parser().parse_args(argv)
     # The evidence this prints is only as bindable as the tree that
     # produced it, so the tree is named before the evidence.
-    import sys
-
     from gpuwm.provenance_gate import announce_for_main
 
     refusal = announce_for_main("gpuwm-mapped-inspect")
     if refusal is not None:
         print(f"gpuwm-mapped-inspect: {refusal}", file=sys.stderr)
         return 2
-    report = inspect_mapped_source(
-        args.mapping, args.inputs,
-        input_manifest=args.input_manifest,
-        input_manifest_sha256=args.input_manifest_sha256,
-        grib1_bridge=args.grib1_bridge,
-        grib2_inventory=args.grib2_inventory,
-        grib2_dump=args.grib2_dump,
-    )
+    try:
+        report = inspect_mapped_source(
+            args.mapping, args.inputs,
+            input_manifest=args.input_manifest,
+            input_manifest_sha256=args.input_manifest_sha256,
+            grib1_bridge=args.grib1_bridge,
+            grib2_inventory=args.grib2_inventory,
+            grib2_dump=args.grib2_dump,
+        )
+    except FileNotFoundError as error:
+        # A named artifact or input that is not on this machine, with a
+        # remedy already composed by whichever resolver refused.  Exit 2
+        # (argparse's usage-error convention) and one message, never a
+        # traceback: this is the layer a console script owes a reader,
+        # and this command had none -- it relayed a raw
+        # `NotADirectoryError` from a cargo invocation instead.
+        print(f"gpuwm-mapped-inspect: {error}", file=sys.stderr)
+        return 2
     print(json.dumps(report, sort_keys=True, indent=2, allow_nan=False))
     return 0
 

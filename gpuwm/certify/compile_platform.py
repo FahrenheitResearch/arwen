@@ -33,6 +33,7 @@ import hashlib
 import os
 import re
 import sys
+from typing import Any, Mapping
 
 #: Status of an item this process measured.
 STATUS_RESOLVED = "resolved"
@@ -166,6 +167,22 @@ def _loaded_library_path_win32() -> str:
     return ""
 
 
+#: The fingerprint's key set, in the order a diff should read: the two items
+#: that actually generate code first, then the runtime that loads it, then the
+#: host libraries that feed it.  Declared once so the measurement, the
+#: projection out of a capsule, and the completeness test cannot drift apart --
+#: a key that only one of the three knows about is a key nothing compares.
+FINGERPRINT_KEYS: tuple[str, ...] = (
+    "nvrtc_build",
+    "nvrtc_build_id",
+    "nvrtc_library_sha256",
+    "cuda_driver_version",
+    "device_compute_capability",
+    "cupy_version",
+    "numpy_version",
+)
+
+
 def compile_platform_fingerprint() -> dict[str, str]:
     """Everything that decides what SASS this process runs, in one dict.
 
@@ -232,6 +249,12 @@ def describe_drift(recorded, measured) -> list[str]:
     Empty when the two agree on every key they share.  Keys present in only
     one side are reported too: a fingerprint that grew a field is itself a
     change worth naming rather than silently ignoring.
+
+    An empty return means "these two agree", which is NOT the same claim as
+    "the platform is verified": two fingerprints that resolved nothing agree
+    on every key.  :func:`compile_platform_agreement` is the caller that owes
+    the distinction, and it refuses to reach a verdict at all until
+    :func:`unresolved_fingerprint_items` is empty on both sides.
     """
     lines = []
     for key in sorted(set(recorded) | set(measured)):
@@ -240,3 +263,153 @@ def describe_drift(recorded, measured) -> list[str]:
         if was != now:
             lines.append(f"  {key}: recorded {was} -> measured {now}")
     return lines
+
+
+def unresolved_fingerprint_items(fingerprint: Mapping[str, Any] | None
+                                 ) -> tuple[str, ...]:
+    """Fingerprint keys nothing measured, in declared order.
+
+    Positive evidence of work, stated as its absence.  A key is unresolved
+    when it is missing, empty, ``None`` or carries :data:`UNRESOLVED`.  An
+    empty return is the only thing that licenses a comparison: without it a
+    ``describe_drift`` of ``[]`` is "compared nothing", not "found nothing".
+    """
+    if not isinstance(fingerprint, Mapping):
+        return FINGERPRINT_KEYS
+    unresolved = []
+    for key in FINGERPRINT_KEYS:
+        value = fingerprint.get(key)
+        if value is None or value == "" or value == UNRESOLVED:
+            unresolved.append(key)
+    return tuple(unresolved)
+
+
+def recorded_compile_platform(capsule: Mapping[str, Any]) -> dict[str, str]:
+    """The fingerprint a capsule already recorded, in fingerprint shape.
+
+    The capsule does not carry this dict verbatim and must not start to: the
+    same values are already published as pins, and a second copy is how two
+    halves of one receipt end up disagreeing.  This projects the pins the
+    published table names -- the NVRTC block of ``cuda_toolkit_nvrtc``, the
+    driver, the device's compute capability, CuPy and NumPy -- onto the key
+    set :func:`compile_platform_fingerprint` measures, so the two can be
+    compared key for key.
+
+    A pin whose status is not ``resolved``, or whose value does not carry the
+    item, projects to :data:`UNRESOLVED`.  Nothing is inferred and nothing is
+    omitted: a missing key would silently shrink the comparison, which is the
+    failure this whole module exists to make impossible.
+    """
+    stack = capsule.get("numerical_stack")
+    if not isinstance(stack, Mapping):
+        stack = {}
+
+    def pin_value(key: str) -> Any:
+        entry = stack.get(key)
+        if not isinstance(entry, Mapping):
+            return None
+        if entry.get("status") != STATUS_RESOLVED:
+            return None
+        return entry.get("value")
+
+    def text(value: Any) -> str:
+        if value is None or isinstance(value, (Mapping, list, tuple)):
+            return UNRESOLVED
+        rendered = str(value)
+        return rendered if rendered and rendered != UNRESOLVED else UNRESOLVED
+
+    toolkit = pin_value("cuda_toolkit_nvrtc")
+    toolkit = toolkit if isinstance(toolkit, Mapping) else {}
+    identity = pin_value("gpu_identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    return {
+        "nvrtc_build": text(toolkit.get("nvrtc_build")),
+        "nvrtc_build_id": text(toolkit.get("nvrtc_build_id")),
+        "nvrtc_library_sha256": text(toolkit.get("nvrtc_library_sha256")),
+        # The pin stores the CUDA driver version as the integer CuPy reports;
+        # the fingerprint stores every value as text so it survives a JSON
+        # round trip.  Same measurement, one rendering.
+        "cuda_driver_version": text(pin_value("cuda_driver_version")),
+        "device_compute_capability": text(identity.get("compute_capability")),
+        "cupy_version": text(pin_value("cupy_version")),
+        "numpy_version": text(pin_value("numpy_version")),
+    }
+
+
+def compile_platform_agreement(recorded: Mapping[str, Any] | None,
+                               measured: Mapping[str, Any] | None
+                               ) -> dict[str, Any]:
+    """Whether a recorded compile platform and a measured one are the same.
+
+    Fail-closed, and -- the part that matters -- **verdict-suppressing**.
+    ``drift`` is ``None``, not ``[]``, whenever either side is incomplete:
+    two fingerprints that resolved nothing are equal, so a comparison run on
+    partial data would report "no drift" and launder an unverified platform
+    as a verified one.  That is the shape this project has already been burned
+    by (a nonzero delta from two arms that executed no steps), so the
+    comparison is not attempted rather than attempted on whatever is there.
+
+    ``agreed`` is true only when both sides resolved every item AND nothing
+    differs.  The returned block is what a verdict binds, so a reader can see
+    the measurement that licensed the answer instead of only the answer.
+    """
+    recorded_missing = unresolved_fingerprint_items(recorded)
+    measured_missing = unresolved_fingerprint_items(measured)
+    recorded_block = {key: str((recorded or {}).get(key, UNRESOLVED))
+                      for key in FINGERPRINT_KEYS}
+    measured_block = {key: str((measured or {}).get(key, UNRESOLVED))
+                      for key in FINGERPRINT_KEYS}
+    if recorded_missing or measured_missing:
+        return {
+            "recorded": recorded_block,
+            "measured": measured_block,
+            "recorded_unresolved": list(recorded_missing),
+            "measured_unresolved": list(measured_missing),
+            "drift": None,
+            "comparable": False,
+            "agreed": False,
+        }
+    drift = describe_drift(dict(recorded_block), dict(measured_block))
+    return {
+        "recorded": recorded_block,
+        "measured": measured_block,
+        "recorded_unresolved": [],
+        "measured_unresolved": [],
+        "drift": drift,
+        "comparable": True,
+        "agreed": not drift,
+    }
+
+
+def describe_fingerprint(fingerprint: Mapping[str, Any] | None) -> str:
+    """One line naming the compiler a fingerprint identifies.
+
+    Used in a satisfied condition's detail so a PASS carries the evidence
+    that something was measured, rather than a bare boolean a reader has to
+    take on trust.
+    """
+    values = fingerprint or {}
+    return (f"nvrtc_build {values.get('nvrtc_build', UNRESOLVED)}, "
+            f"build id {values.get('nvrtc_build_id', UNRESOLVED)}, "
+            f"library sha256 "
+            f"{str(values.get('nvrtc_library_sha256', UNRESOLVED))[:16]}, "
+            f"cupy {values.get('cupy_version', UNRESOLVED)}, "
+            f"numpy {values.get('numpy_version', UNRESOLVED)}")
+
+
+__all__ = [
+    "FINGERPRINT_KEYS",
+    "STATUS_RESOLVED",
+    "STATUS_UNAVAILABLE",
+    "UNRESOLVED",
+    "compile_platform_agreement",
+    "compile_platform_fingerprint",
+    "describe_drift",
+    "describe_fingerprint",
+    "nvrtc_banner",
+    "nvrtc_build",
+    "nvrtc_build_id",
+    "nvrtc_library",
+    "recorded_compile_platform",
+    "unresolved_fingerprint_items",
+]

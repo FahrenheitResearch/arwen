@@ -5927,16 +5927,27 @@ def live_device_local_memory_profile() -> DeviceLocalMemoryProfile | None:
 #: What :func:`device_memory_probe_subprocess` runs in its short-lived
 #: interpreter: both device questions -- the free/total VRAM the budget
 #: subtracts from, and the local-memory profile the non-pool terms are
-#: priced against -- answered in one process that then exits.  Any
-#: failure (no cupy, no device, a wedged driver) is exit 3 with nothing
-#: on stdout, which the parent reads as "no card here".
+#: priced against -- answered in one process that then exits.
+#:
+#: TWO exit codes, not one.  Exit 3 is "a card could not be read"; exit
+#: :data:`PROBE_EXIT_NO_RUNTIME` is "there is no CuPy here to read it
+#: with", and the last stderr line names the module.  They were one code
+#: until 2.3.3, and that is how `gpuwm go`'s memory gate came to swallow
+#: a missing GPU runtime: the probe exited 3, the gate read "no card
+#: here", declined to refuse on a card it could not see, and let the
+#: chain fetch gigabytes for a run that could never start.  A gate that
+#: hides the reason a run cannot begin is worse than no gate.
 _DEVICE_MEMORY_PROBE_SOURCE = """\
 import json
 import sys
 
 try:
     import cupy as cp
-
+except ImportError as error:
+    sys.stderr.write("no-runtime: %s\\n" % (getattr(error, "name", None)
+                                            or error))
+    sys.exit(4)
+try:
     free, total = cp.cuda.runtime.memGetInfo()
     props = cp.cuda.runtime.getDeviceProperties(0)
     name = props["name"]
@@ -5963,6 +5974,54 @@ print(json.dumps(payload))
 #: only ever under-promises (nothing refuses on a card it cannot see).
 DEVICE_MEMORY_PROBE_TIMEOUT_SECONDS = 120.0
 
+#: The probe's exit code for "this interpreter has no CuPy at all",
+#: distinct from the exit 3 that means "a card could not be read".
+PROBE_EXIT_NO_RUNTIME = 4
+
+
+def device_memory_probe_reason(*, run=None) -> str | None:
+    """Why :func:`device_memory_probe_subprocess` has no numbers, or ``None``.
+
+    ``None`` when the probe answered.  Otherwise one short phrase naming
+    the CAUSE, so a caller can say something truer than "no card here"
+    -- which is what the single-exit-code version forced every caller to
+    say, including on a box whose only problem was an uninstalled
+    runtime.
+    """
+
+    payload, reason = _device_memory_probe(run=run)
+    return None if payload is not None else reason
+
+
+def _device_memory_probe(*, run=None) -> tuple[dict | None, str | None]:
+    """``(payload, reason)`` -- the probe result and, when absent, why."""
+
+    import subprocess
+
+    runner = subprocess.run if run is None else run
+    try:
+        completed = runner(
+            [sys.executable, "-c", _DEVICE_MEMORY_PROBE_SOURCE],
+            capture_output=True, text=True,
+            timeout=DEVICE_MEMORY_PROBE_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, f"the probe subprocess did not run ({error})"
+    if completed.returncode == PROBE_EXIT_NO_RUNTIME:
+        return None, "the GPU runtime (CuPy) is not installed"
+    if completed.returncode != 0:
+        return None, "no CUDA device answered"
+    lines = (completed.stdout or "").strip().splitlines()
+    if not lines:
+        return None, "the probe printed nothing"
+    try:
+        payload = json.loads(lines[-1])
+    except ValueError:
+        return None, "the probe printed something that is not its JSON"
+    free = payload.get("free_bytes") if isinstance(payload, dict) else None
+    if not isinstance(free, int) or isinstance(free, bool):
+        return None, "the probe reported no free-memory figure"
+    return payload, None
+
 
 def device_memory_probe_subprocess(*, run=None) -> dict | None:
     """Free/total VRAM and this card's local-memory profile, measured in
@@ -5986,31 +6045,13 @@ def device_memory_probe_subprocess(*, run=None) -> dict | None:
     runs ``sys.executable``, so it resolves the same CuPy), which is
     what keeps this gate and ``gpuwm check`` from disagreeing about one
     card.  ``run`` is the ``subprocess.run`` seam, for tests.
+
+    The numbers only.  A caller that must distinguish "no card" from "no
+    runtime" -- the memory gate does, because those two answers licence
+    opposite behaviour -- asks :func:`device_memory_probe_reason`.
     """
 
-    import subprocess
-
-    runner = subprocess.run if run is None else run
-    try:
-        completed = runner(
-            [sys.executable, "-c", _DEVICE_MEMORY_PROBE_SOURCE],
-            capture_output=True, text=True,
-            timeout=DEVICE_MEMORY_PROBE_TIMEOUT_SECONDS)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if completed.returncode != 0:
-        return None
-    lines = (completed.stdout or "").strip().splitlines()
-    if not lines:
-        return None
-    try:
-        payload = json.loads(lines[-1])
-    except ValueError:
-        return None
-    free = payload.get("free_bytes") if isinstance(payload, dict) else None
-    if not isinstance(free, int) or isinstance(free, bool):
-        return None
-    return payload
+    return _device_memory_probe(run=run)[0]
 
 
 def profile_from_device_probe(payload) -> DeviceLocalMemoryProfile | None:

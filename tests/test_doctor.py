@@ -88,9 +88,14 @@ def test_doctor_names_missing_extras_with_exact_remedies(monkeypatch):
     # Undetectable major: BOTH extras, neither presented as the default.
     assert "gpuwm[gpu-cu12]" in cupy.remedy
     assert "gpuwm[gpu-cu13]" in cupy.remedy
-    render = by_name["render extra (wrf-rust + matplotlib)"]
+    # The render extra moved into the metadata-driven extras block and
+    # stopped claiming matplotlib is part of it (it is a base
+    # dependency; the extra's second package is pyshp).  See
+    # tests/test_doctor_extras.py for the whole extras contract.
+    render = by_name["pip extra [render]"]
     assert render.status == "missing"
     assert "gpuwm[render]" in render.remedy
+    assert "matplotlib" not in render.remedy
     # The check 2.3.2 did not have.  rasterio and pyproj were an
     # undocumented extra and nothing reported their absence until a
     # terrain build had already downloaded 160.7 MiB and died.
@@ -146,11 +151,14 @@ def test_doctor_cli_exit_codes_and_report_shape(monkeypatch, capsys,
 
     monkeypatch.setattr(doctor, "find_spec", lambda name: None)
     rc = cli.main(argv)
-    # Warn-not-block: an absent optional extra (cupy, the render pair)
-    # is REPORTED as MISSING with its remedy, but does not move the
-    # exit code -- only broken/integrity-suspect findings do, and
-    # un-importing the extras breaks nothing else in the estate.
-    assert rc == rc_healthy_or_not
+    # Un-importing every package is not "warn-not-block" any more, and
+    # this assertion is the one that used to say it was.  A box whose
+    # CuPy will not import cannot run `gpuwm run`, which is First
+    # light step 5; a box whose wrf package will not import cannot run
+    # `gpuwm enprod`.  Both are broken/unreachable, so the exit code
+    # moves to 1 -- while a WPS_GEOG tree nobody fetched still does
+    # not move it (tests/test_doctor_extras.py holds both directions).
+    assert rc == 1
     out = capsys.readouterr().out
     assert "MISSING" in out
     if explain:
@@ -656,7 +664,12 @@ def test_the_unpinned_pip_bootstrap_wires_what_it_builds(
     monkeypatch.setattr(bridges, "crate_dir",
                         lambda: tmp_path / "tools" / "grib1_bridge")
     monkeypatch.setattr(bridges, "cargo_is_installed", lambda: True)
-    monkeypatch.setattr(bridges, "prebuilt_bundle_offer", lambda: None)
+    # `*a, **k`, not `()`: the offer is becoming artifact-aware
+    # (silent when the bundle cannot supply the artifact being asked
+    # about), and a stand-in that only accepts the old arity turns
+    # that improvement into a TypeError in an unrelated test.
+    monkeypatch.setattr(bridges, "prebuilt_bundle_offer",
+                        lambda *a, **k: None)
     remedy = bridges.bridge_remedy("grib1_bridge")
     _assert_remedy_lines_are_commands_or_comments(remedy, windows=windows)
 
@@ -2331,6 +2344,13 @@ def _extras() -> dict[str, list[str]]:
         return tomllib.load(stream)["project"]["optional-dependencies"]
 
 
+def _runtime_dependencies() -> list[str]:
+    import tomllib
+
+    with (Path(__file__).parents[1] / "pyproject.toml").open("rb") as stream:
+        return tomllib.load(stream)["project"]["dependencies"]
+
+
 def _resolve_extra(extras: dict[str, list[str]], name: str) -> set[str]:
     """Every concrete requirement ``pip install 'gpuwm[name]'`` reaches.
 
@@ -2391,9 +2411,22 @@ def test_the_gpu_extras_pin_one_cupy_wheel_per_cuda_major():
         resolved = _resolve_extra(extras, f"all-cu{major}")
         assert _cupy_wheels(resolved) == {wheel}
         assert any(dep.startswith("wrf-rust") for dep in resolved)
-    # The demo/gallery renderer's shapefile reader rides the extra the
-    # quickstart installs (proven missing on a fresh env without it).
-    assert any(dep.startswith("pyshp") for dep in extras["render"])
+    # The demo/gallery renderer's shapefile reader is reachable from a BARE
+    # install now, not from [render].  It used to ride that extra, on the
+    # reasoning that the quickstart installs it -- but the DEFAULT render
+    # engine is the rust one, which needs nothing from [render] at all, so
+    # the install that draws maps was not the install carrying the reader.
+    # Base is strictly stronger than what this line used to assert; the
+    # property it protects (a fresh env can read the vendored Natural Earth
+    # shapefiles) is what is checked, not the address it used to live at.
+    runtime = _runtime_dependencies()
+    assert any(dep.startswith("pyshp") for dep in runtime), (
+        "pyshp is not a runtime dependency, so a bare `pip install gpuwm` "
+        "cannot draw a coastline and every DA nowcast run dies on "
+        "`import shapefile` after the forecast")
+    assert not any(dep.startswith("pyshp") for dep in extras["render"]), (
+        "pyshp is declared twice; it belongs in the runtime dependencies "
+        "only, so there is one place it is pinned")
 
 
 def test_every_cuda_major_doctor_names_has_an_extra_that_exists():
@@ -2427,7 +2460,12 @@ def _absent_cupy(monkeypatch, box_major):
 def test_a_cuda13_box_with_no_cupy_is_told_to_install_the_cu13_extra(
         monkeypatch):
     check = _absent_cupy(monkeypatch, 13)
-    assert check.status == "missing" and not check.blocking
+    # BLOCKING since 2.3.3, and the severity says why: `gpuwm run` is
+    # First light step 5 and cannot run at all without this.  The
+    # policy and both its directions live in
+    # tests/test_doctor_extras.py::test_the_cupy_gap_blocks_and_the_geog_tree_does_not
+    assert check.status == "missing" and check.blocking
+    assert check.severity == doctor.SEVERITY_UNREACHABLE
     assert check.action == "pip install 'gpuwm[gpu-cu13]'"
     assert "gpu-cu12" not in check.remedy
     assert "CUDA 13" in check.remedy

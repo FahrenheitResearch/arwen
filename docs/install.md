@@ -200,22 +200,29 @@ pipeline is not portable to it yet.
 ## Optional extras
 
 Every extra `gpuwm` declares, and what naming it adds. A bare
-`pip install gpuwm` is enough for preprocessing and static geography,
-including high-resolution terrain.
+`pip install gpuwm` is enough for preprocessing, static geography
+including high-resolution terrain, radar velocity dealiasing, the
+observation battery and the demo gallery's basemaps.
 
 | Extra | Adds | Needed for |
 |---|---|---|
 | `gpuwm[gpu-cu12]` | `cupy-cuda12x` | running the model on a CUDA 12.x box |
 | `gpuwm[gpu-cu13]` | `cupy-cuda13x` | running the model on a CUDA-13-only box |
 | `gpuwm[gpu]` | alias of `gpu-cu12` | kept so existing install lines keep working |
-| `gpuwm[render]` | `wrf-rust`, `pyshp` | `gpuwm render` and the demo gallery |
-| `gpuwm[obs]` | `scipy` | scoring a forecast against observations (`gpuwm.verify.obs`) |
-| `gpuwm[dealias]` | `scipy` | radar velocity dealiasing (`--dealias`) |
+| `gpuwm[render]` | `wrf-rust` | `gpuwm render`'s matplotlib engine, `gpuwm enprod`, and derived quantities. The default rust engine needs none of it |
 | `gpuwm[dev]` | `pytest`, `psutil` | running the test battery |
+| `gpuwm[publish]` | `huggingface_hub` | maintainers only: publishing the WPS_GEOG mirror snapshot. Needs write credentials nobody else has, so it is deliberately outside `[all]` |
 | `gpuwm[all-cu12]` | `gpu-cu12` + `render` | one line for a CUDA 12.x forecasting box |
 | `gpuwm[all-cu13]` | `gpu-cu13` + `render` | one line for a CUDA-13-only forecasting box |
 | `gpuwm[all]` | alias of `all-cu12` | kept so existing install lines keep working |
 | `gpuwm[geog]` | nothing | **empty as of 2.3.3.** rasterio and pyproj moved into the base install; the name is kept so `pip install 'gpuwm[geog]'` does not fail |
+| `gpuwm[obs]` | nothing | **empty as of 2.4.0.** scipy moved into the base install, so scoring a forecast against observations (`gpuwm.verify.obs`) works from `pip install gpuwm`; the name is kept so the old line does not fail |
+| `gpuwm[dealias]` | nothing | **empty as of 2.4.0.** scipy moved into the base install, so the `vad-region` dealiasing engine is selectable from `pip install gpuwm`; the name is kept so the old line does not fail |
+
+`pyshp` moved into the base install alongside `scipy` for the same
+reason: `tools/da_nowcast_render.py` and the launcher's basemap endpoint
+import it bare, at the very end of a DA nowcast run, and it is 74 kB of
+pure Python. Nobody should have to choose an extra to get a coastline.
 
 CuPy is an extra and not a dependency for one reason: it ships one wheel
 per CUDA major and pip cannot tell which major a box serves, so the choice

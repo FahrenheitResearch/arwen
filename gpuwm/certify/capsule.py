@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from gpuwm.certify.kernel_manifest import kernel_manifest
+from gpuwm.certify.kernel_manifest import kernel_manifest, manifest_is_empty
 from gpuwm.certify.pins import (PIN_KEYS, STATUS_RESOLVED, STATUS_UNAVAILABLE,
                                 resolve_pins, unresolved_pins)
 from gpuwm.gpu_stack_identity import gpu_cuda_stack_identity
@@ -134,10 +134,12 @@ def validate_certification_capsule(
         certification_path: bool = False) -> dict[str, Any]:
     """Check a capsule against the schema, and against the certification path.
 
-    Schema validation is structural.  ``certification_path`` adds the two
-    ratified refusals: every pin must be ``resolved``, and every directory
-    input must be hashed by content -- an inventory digest is a listing, not
-    the bytes, and cannot carry a byte-identity claim.
+    Schema validation is structural.  ``certification_path`` adds the ratified
+    refusals: every pin must be ``resolved``, every directory input must be
+    hashed by content -- an inventory digest is a listing, not the bytes, and
+    cannot carry a byte-identity claim -- and the kernel manifest must record
+    at least one compiled module, because a capsule that compiled nothing
+    cannot witness which kernels produced the numbers it carries.
     """
     try:
         import jsonschema
@@ -162,6 +164,11 @@ def validate_certification_capsule(
     if not certification_path:
         return dict(capsule)
 
+    if manifest_is_empty(capsule["kernel_manifest"]):
+        raise CapsuleValidationError(
+            "the certification path refuses a capsule whose kernel manifest "
+            "recorded no compiled module: a run that compiled nothing cannot "
+            "witness the kernels its numbers came from")
     unresolved = unresolved_pins(capsule["numerical_stack"])
     if unresolved:
         raise CapsuleValidationError(

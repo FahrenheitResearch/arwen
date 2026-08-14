@@ -663,13 +663,24 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def build_parser() -> argparse.ArgumentParser:
+    """This console script's parser, built without parsing anything.
+
+    Exposed so the docs/CLI parity test can read the option surface of a
+    documented door without running it.
+    """
+
+    parser = argparse.ArgumentParser(prog="gpuwm-wrf-runtime-check",
+                                     description=__doc__)
     parser.add_argument("--bridge-dir", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--contract", action="store_true")
     parser.add_argument("--skip-gpu", action="store_true")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     # A runtime check whose own runtime is unnamed is not a check.
     from gpuwm.provenance_gate import announce_for_main
 

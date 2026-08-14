@@ -44,9 +44,20 @@ def test_a_poisoned_working_directory_cannot_hijack_a_stage_import(
         "raise SystemExit('HIJACKED')\n", encoding="utf-8")
     probe = ["-c", "import json; print(json.__name__)"]
 
+    # The control arm has to be genuinely UNPROTECTED, which means
+    # stripping PYTHONSAFEPATH out of the inherited environment rather
+    # than inheriting it.  This project's own pytest law sets
+    # PYTHONSAFEPATH=1, so `{**os.environ}` handed the control arm the
+    # exact protection it exists to demonstrate the absence of: both
+    # arms printed "json", the assertion that the poison fires failed,
+    # and the test reported a fault in the fix whenever it was run the
+    # documented way.  A control that inherits the treatment measures
+    # nothing.
+    unprotected = {**os.environ}
+    unprotected.pop("PYTHONSAFEPATH", None)
     poisoned = subprocess.run(
         [sys.executable, *probe], cwd=str(tmp_path), text=True,
-        capture_output=True, env={**os.environ})
+        capture_output=True, env=unprotected)
     protected = subprocess.run(
         [sys.executable, *probe], cwd=str(tmp_path), text=True,
         capture_output=True, env=go_cli._stage_env())

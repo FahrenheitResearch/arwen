@@ -200,7 +200,10 @@ def test_cli_resume_resolves_then_dispatches_as_run(tmp_path, monkeypatch,
 
     seen = {}
 
-    def fake_load(path):
+    def fake_load(path, **kwargs):
+        # **kwargs for the same reason as every other double of this
+        # loader: this test is about resume RESOLVING a restart and
+        # dispatching as a run, not about the loader's options.
         from types import SimpleNamespace
         seen["config"] = path
         return SimpleNamespace(name="stub-exp"), object()
