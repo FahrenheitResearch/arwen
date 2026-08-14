@@ -167,7 +167,8 @@ def test_parse_static_table_accepts_and_resolves(tmp_path):
         on_refuse="fallback-30s")
     assert config.echo() == {
         "enabled": "true", "cache_root": str(tmp_path / "hr-cache"),
-        "on_refuse": "fallback-30s"}
+        "on_refuse": "fallback-30s", "terrain_source": "auto",
+        "fields": "auto"}
 
 
 def test_parse_static_table_refuses_unknown_key(tmp_path):
@@ -245,12 +246,14 @@ def test_apply_refuses_outside_us_coverage(tmp_path):
     grid = LambertGrid(
         ref_lat=52.0, ref_lon=-98.0, truelat1=30.0, truelat2=60.0,
         stand_lon=-98.0, dx=3000.0, dy=3000.0, e_we=41, e_sn=41)
-    config = HighresStaticConfig(enabled=True, cache_root=tmp_path)
+    config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                                 terrain_source="usgs-3dep-13as")
     with pytest.raises(HighresRefusal) as failure:
         apply_highres_statics(
             _baseline(40, 40), grid, config=config, domain_id=1,
             case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS)
-    assert failure.value.reason == "outside-us-coverage"
+    assert failure.value.reason == "outside-source-coverage"
+    assert "usgs-3dep-13as" in failure.value.detail
 
 
 def test_apply_refuses_coastal_footprint_naming_method(tmp_path):
@@ -283,7 +286,8 @@ def test_fallback_30s_returns_identical_baseline_with_receipt(tmp_path):
     baseline = _baseline(40, 40)
     frozen = {name: value.copy() for name, value in baseline.items()}
     config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
-                                 on_refuse="fallback-30s")
+                                 on_refuse="fallback-30s",
+                                 terrain_source="usgs-3dep-13as")
     fields, receipt = apply_highres_statics(
         baseline, grid, config=config, domain_id=2,
         case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS)
@@ -291,7 +295,7 @@ def test_fallback_30s_returns_identical_baseline_with_receipt(tmp_path):
     for name, value in frozen.items():
         np.testing.assert_array_equal(fields[name], value)
     assert receipt["status"] == "REFUSED"
-    assert receipt["refusal"]["reason"] == "outside-us-coverage"
+    assert receipt["refusal"]["reason"] == "outside-source-coverage"
     written = Path(receipt["receipt_path"])
     assert written.is_file()
     payload = json.loads(written.read_text(encoding="utf-8"))

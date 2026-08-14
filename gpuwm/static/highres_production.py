@@ -8,17 +8,30 @@ science -- area averaging to WPS spherical grids, the NLCD->MODIS-21
 crosswalk, the USDA soil-texture triangle, the water-mask merge with donor
 climatology fill and TMN recompute -- is reused wholesale, not rewritten.
 
-Scope (deliberate, refuse-loudly outside it):
+Scope (deliberate, refuse-loudly outside it).  There are two modes, and
+which one runs is stated in the console line, the receipt and the docs --
+never inferred by the reader:
 
-- US-interior footprints only.  A footprint outside the joint 3DEP/Annual
-  NLCD coverage envelope refuses; a footprint whose 30-arc-second baseline
-  land use reports WRF ocean category anywhere refuses, because the
-  pilot's inland-water rule (NLCD open water -> WRF lake 21) is not
-  coast-safe.  ``on_refuse`` selects between a hard error (default) and an
-  explicit, receipted fallback to the unchanged 30s baseline.
-- Replaced fields are exactly the pilot's split: terrain, land-use
-  fractions/index/mask, and soil fractions/categories.  Monthly
-  climatologies stay 30s with counted donor fill; TMN is recomputed.
+- ``fields = "all"`` replaces terrain, land use and soil.  It needs the
+  United States collections (3DEP terrain, Annual NLCD land cover) and
+  refuses outside their joint envelope, naming the source and the
+  overshoot.  A footprint whose 30-arc-second baseline land use reports
+  WRF ocean category anywhere also refuses, because the crosswalk's
+  inland-water rule (NLCD open water -> WRF lake 21) is not coast-safe.
+- ``fields = "terrain"`` replaces terrain ONLY, from a near-global source
+  (Copernicus DEM GLO-30 by default, SRTM 1 arc-second on request), and
+  leaves land use, soil and every climatology on the 30-arc-second
+  baseline.  It works internationally.  Because it runs no land-use rule
+  it never makes the ocean/lake distinction, so the coast gate does not
+  apply to it and is deliberately not run.
+- Coverage is per source, not per program: each source declares its own
+  envelope (:data:`gpuwm.static.highres_fetch.TERRAIN_SOURCES`) and the
+  footprint is checked against the source actually selected, so a refusal
+  names which dataset does not reach where.
+- ``on_refuse`` selects between a hard error (default) and an explicit,
+  receipted fallback to the unchanged 30s baseline.
+- TMN is recomputed in both modes; monthly climatologies stay 30s with
+  counted donor fill in the full mode and untouched in terrain-only.
 - An enabled block that ends up replacing zero cells is itself a refusal:
   an enabled feature that did nothing must never look like it ran.
 """
@@ -27,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -35,26 +49,50 @@ import numpy as np
 
 from .build import HALO
 from .highres import (BoundRaster, NLCD_TO_MODIS21_INLAND,
-                      build_highres_overrides, merge_highres_overrides)
+                      build_highres_overrides, build_terrain_override,
+                      merge_highres_overrides, merge_terrain_override)
 from .highres_fetch import (ANNUAL_NLCD_SOURCE_URL, ANNUAL_NLCD_LICENSE,
+                            COPERNICUS_DEM_VERTICAL_DATUM, LANDCOVER_SOURCES,
                             SOILGRIDS_COMPONENTS, SOILGRIDS_CRS,
                             SOILGRIDS_DEPTHS, SOILGRIDS_LICENSE,
                             SOILGRIDS_NODATA, SOILGRIDS_SCALE,
-                            SOILGRIDS_SOURCE_URL, THREE_DEP_LICENSE,
+                            SOILGRIDS_SOURCE_URL, TERRAIN_SOURCES,
+                            THREE_DEP_LICENSE,
                             THREE_DEP_SOURCE_URL, CoverageError,
+                            SRTM_GL1_NODATA, SRTM_GL1_VERTICAL_DATUM,
+                            derive_global_terrain_window,
+                            fetch_srtm_gl1_tiles, one_degree_tile_bbox,
                             derive_landcover_window, derive_terrain_window,
                             domain_footprint, fetch_annual_nlcd,
+                            fetch_copernicus_dem_tiles,
                             fetch_soilgrids, fetch_three_dep_tiles,
-                            nlcd_year_for, FootprintBBox)
+                            nlcd_year_for, terrain_source_coverage,
+                            FootprintBBox)
 from .lambert import LambertGrid
 
 RECEIPT_SCHEMA = "gpuwm-static-highres-receipt-v1"
 
-#: Envelope where the declared sources are JOINTLY published: 3DEP staged
-#: 1/3 arc-second tiles and the Annual NLCD conterminous-US collection.
-#: This is a source-coverage constant, not a policy taste bound.
+#: Envelope where the declared US sources are JOINTLY published: 3DEP
+#: staged 1/3 arc-second tiles and the Annual NLCD conterminous-US
+#: collection.  This is a source-coverage constant, not a policy taste
+#: bound.  It is now the *full-stack* envelope specifically: terrain has a
+#: near-global source, land cover does not, so this box is where all three
+#: replaced groups can be sourced at high resolution at once.  Per-source
+#: envelopes live in :data:`gpuwm.static.highres_fetch.TERRAIN_SOURCES` and
+#: :data:`~gpuwm.static.highres_fetch.LANDCOVER_SOURCES`.
 US_COVERAGE_ENVELOPE = FootprintBBox(
     lat_min=24.0, lat_max=49.5, lon_min=-125.0, lon_max=-66.5)
+
+#: ``fields`` choices.  "all" replaces terrain + land use + soil (the
+#: original overlay); "terrain" replaces terrain alone and says so
+#: everywhere; "auto" picks "all" inside the full-stack envelope and
+#: "terrain" outside it, because that is the only honest thing available
+#: there.
+_FIELDS_CHOICES = ("auto", "all", "terrain")
+_TERRAIN_SOURCE_CHOICES = ("auto",) + tuple(sorted(TERRAIN_SOURCES))
+
+#: Fields each mode replaces.
+_REPLACED_FIELDS_TERRAIN = ("HGT_M",)
 
 #: The crosswalk targets WRF's MODIS 21-category inventory with these two
 #: water categories; a baseline using any other inventory cannot be merged.
@@ -83,12 +121,16 @@ class HighresStaticConfig:
     enabled: bool
     cache_root: Path
     on_refuse: str = "error"
+    terrain_source: str = "auto"
+    fields: str = "auto"
 
     def echo(self) -> dict[str, str]:
         return {
             "enabled": "true" if self.enabled else "false",
             "cache_root": str(self.cache_root),
             "on_refuse": self.on_refuse,
+            "terrain_source": self.terrain_source,
+            "fields": self.fields,
         }
 
 
@@ -123,7 +165,8 @@ def parse_static_table(raw, *, source: str, base_dir
         raise ValueError(
             f"[static.highres] of {source} must be a table, got {table!r}.")
 
-    known = ("enabled", "cache_root", "on_refuse")
+    known = ("enabled", "cache_root", "on_refuse", "terrain_source",
+             "fields")
     unknown = sorted(set(table) - set(known))
     if unknown:
         named = ", ".join(
@@ -163,8 +206,30 @@ def parse_static_table(raw, *, source: str, base_dir
             "stops the case at a refusal; 'fallback-30s' proceeds on the "
             "unchanged 30-arc-second baseline and says so in the receipt.")
 
+    terrain_source = table.get("terrain_source", "auto")
+    if terrain_source not in _TERRAIN_SOURCE_CHOICES:
+        raise ValueError(
+            f"terrain_source in [static.highres] of {source} must be one of "
+            f"{list(_TERRAIN_SOURCE_CHOICES)}, got {terrain_source!r}.  "
+            "'auto' uses USGS 3DEP inside the conterminous United States "
+            "and Copernicus DEM GLO-30 everywhere else; naming a source "
+            "pins it and refuses if the domain leaves that source's "
+            "published coverage.")
+
+    fields = table.get("fields", "auto")
+    if fields not in _FIELDS_CHOICES:
+        raise ValueError(
+            f"fields in [static.highres] of {source} must be one of "
+            f"{list(_FIELDS_CHOICES)}, got {fields!r}.  'all' replaces "
+            "terrain, land use and soil and needs the United States "
+            "sources; 'terrain' replaces terrain only and works "
+            "internationally; 'auto' picks 'all' inside the United States "
+            "envelope and 'terrain' outside it.")
+
     return HighresStaticConfig(enabled=enabled, cache_root=cache_root,
-                               on_refuse=str(on_refuse))
+                               on_refuse=str(on_refuse),
+                               terrain_source=str(terrain_source),
+                               fields=str(fields))
 
 
 # ---------------------------------------------------------------------------
@@ -193,16 +258,77 @@ def _require_modis21(landuse_attrs) -> None:
             f"ISLAKE={islake}")
 
 
-def _require_us_interior(bbox: FootprintBBox, baseline, *,
-                         iswater: int) -> None:
-    if not US_COVERAGE_ENVELOPE.contains(bbox):
+def _require_single_lobe(bbox: FootprintBBox) -> None:
+    """Refuse an antimeridian wrap, which a min/max bbox cannot express.
+
+    A domain straddling 180 degrees yields lon_min ~ -180 and lon_max ~
+    +180 from the corner mesh, i.e. a bounding box that claims the whole
+    planet.  Inside the United States that was unreachable; with a global
+    source it is one Pacific domain away, and a silently enormous fetch is
+    exactly the failure this program refuses.
+    """
+    span = bbox.lon_max - bbox.lon_min
+    if span > 180.0:
         raise HighresRefusal(
-            "outside-us-coverage",
-            f"domain+halo footprint {bbox.as_dict()} leaves the joint "
-            "publication envelope of USGS 3DEP 1/3 arc-second staged tiles "
-            "and the Annual NLCD conterminous-US collection "
-            f"({US_COVERAGE_ENVELOPE.as_dict()}); the declared sources do "
-            "not exist there")
+            "antimeridian-footprint",
+            f"domain+halo footprint {bbox.as_dict()} spans {span:.1f} "
+            "degrees of longitude, which is a bounding box wrapped across "
+            "the antimeridian rather than a domain.  High-resolution "
+            "statics cannot enumerate tiles for it; move the domain off "
+            "180 degrees, or leave [static.highres] disabled and run on "
+            "the 30-arc-second baseline, which has no such limit")
+
+
+def _resolve_plan(config: HighresStaticConfig, bbox: FootprintBBox
+                  ) -> tuple[str, object]:
+    """Decide (mode, terrain coverage) for one footprint; refuse by name."""
+    inside_full_stack = US_COVERAGE_ENVELOPE.contains(bbox)
+
+    if config.fields == "auto":
+        mode = "all" if inside_full_stack else "terrain"
+    else:
+        mode = config.fields
+    if mode == "all" and not inside_full_stack:
+        landcover = LANDCOVER_SOURCES["annual-nlcd"]
+        raise HighresRefusal(
+            "landcover-source-missing",
+            f"fields = \"all\" needs high-resolution land cover, and the "
+            f"only wired land-cover source {landcover.source_id!r} is "
+            f"published over {landcover.envelope.as_dict()}; the "
+            f"domain+halo footprint {bbox.as_dict()} leaves it by "
+            f"{landcover.outside(bbox)}.  {landcover.note}  Set fields = "
+            "\"terrain\" to take high-resolution terrain here and keep "
+            "land use and soil on the 30-arc-second baseline")
+
+    if config.terrain_source == "auto":
+        source_id = ("usgs-3dep-13as" if inside_full_stack
+                     else "copernicus-dem-glo30")
+    else:
+        source_id = config.terrain_source
+    try:
+        coverage = terrain_source_coverage(source_id)
+    except CoverageError as error:
+        raise HighresRefusal("unknown-terrain-source", str(error)) from error
+    try:
+        coverage.check(bbox)
+    except CoverageError as error:
+        raise HighresRefusal("outside-source-coverage", str(error)) from error
+    return mode, coverage
+
+
+def _require_coast_free(bbox: FootprintBBox, baseline, *,
+                        iswater: int) -> None:
+    """Refuse a coastal footprint -- for the LAND-USE replacement only.
+
+    This gate belongs to the land-cover leg, not to the overlay as a whole:
+    it exists because the crosswalk maps NLCD open water to WRF lake
+    category 21, which is wrong at an ocean coast.  The terrain-only mode
+    runs no land-use rule at all -- LANDUSEF, LANDMASK and LU_INDEX come
+    through from the 30-arc-second baseline untouched, so the ocean/lake
+    distinction is never made and there is nothing for this gate to
+    protect.  It is therefore applied in ``fields = "all"`` and skipped in
+    ``fields = "terrain"``, deliberately.
+    """
     lu_index = np.asarray(baseline["LU_INDEX"])
     ocean_cells = int(np.count_nonzero(lu_index == float(iswater)))
     if ocean_cells:
@@ -235,16 +361,107 @@ def _bound(fetched, *, source_id: str, role: str, source_url: str,
         scale_factor=scale_factor)
 
 
+def _absent_tiles_over_land(absent, grid, baseline) -> dict[str, int]:
+    """Cells of baseline LAND that fall inside an unpublished DEM tile.
+
+    Neither Copernicus DEM GLO-30 nor SRTM publishes all-water tiles, so
+    an absent tile is a product statement that the square is open water.  That is a
+    claim from one source about another source's mask, and this program
+    does not take such a claim on trust: every absent tile is intersected
+    with the domain's own 30-arc-second land mask, and any land cell found
+    underneath one is reported by count and by tile.
+    """
+    landmask = np.asarray(baseline["LANDMASK"])
+    ny, nx = landmask.shape
+    xc, yc = np.meshgrid(np.arange(nx, dtype=np.float64) + 0.5,
+                         np.arange(ny, dtype=np.float64) + 0.5)
+    lat, lon = grid.ij_to_latlon(xc, yc)
+    land = landmask > 0.5
+    hits: dict[str, int] = {}
+    for tile in absent:
+        box = one_degree_tile_bbox(tile)
+        inside = ((lat >= box.lat_min) & (lat < box.lat_max)
+                  & (lon >= box.lon_min) & (lon < box.lon_max))
+        count = int(np.count_nonzero(inside & land))
+        if count:
+            hits[tile] = count
+    return hits
+
+
+def _fetch_terrain(bbox: FootprintBBox, cache_root: Path, coverage, *,
+                   grid=None, baseline=None, urlopen=None):
+    """Fetch/derive terrain for the selected source; return (bound, manifest)."""
+    if coverage.source_id == "usgs-3dep-13as":
+        tiles = fetch_three_dep_tiles(bbox, cache_root, urlopen=urlopen)
+        window = derive_terrain_window(tiles, bbox, cache_root)
+        bound = _bound(
+            window, source_id=coverage.source_id, role="terrain",
+            source_url=THREE_DEP_SOURCE_URL,
+            license_id=THREE_DEP_LICENSE[0],
+            license_url=THREE_DEP_LICENSE[1],
+            nominal_resolution=coverage.nominal_resolution)
+        return bound, {"terrain_source": coverage.source_id,
+                       "terrain_tiles": [item.receipt() for item in tiles],
+                       "terrain_window": window.receipt(),
+                       "terrain_bytes_fetched": sum(
+                           item.bytes for item in tiles
+                           if not item.cache_hit)}
+
+    if coverage.source_id == "copernicus-dem-glo30":
+        tiles, absent = fetch_copernicus_dem_tiles(bbox, cache_root,
+                                                   urlopen=urlopen)
+        datum = COPERNICUS_DEM_VERTICAL_DATUM
+        nodata = None
+    elif coverage.source_id == "srtm-gl1":
+        tiles, absent = fetch_srtm_gl1_tiles(bbox, cache_root,
+                                             urlopen=urlopen)
+        datum = SRTM_GL1_VERTICAL_DATUM
+        nodata = SRTM_GL1_NODATA
+    else:  # pragma: no cover - registry and dispatch are edited together
+        raise HighresRefusal(
+            "terrain-source-unavailable",
+            f"no fetcher is wired for terrain source "
+            f"{coverage.source_id!r}")
+
+    if absent and grid is not None and baseline is not None:
+        over_land = _absent_tiles_over_land(absent, grid, baseline)
+        if over_land:
+            raise HighresRefusal(
+                "terrain-tile-absent-over-land",
+                "Copernicus DEM GLO-30 does not publish tile(s) "
+                f"{sorted(over_land)}, which the product uses to mean open "
+                "water -- but the domain's own 30-arc-second land mask "
+                "reports land under them: "
+                + ", ".join(f"{tile}: {count} land cell(s)"
+                            for tile, count in sorted(over_land.items()))
+                + ".  Filling those cells with sea level would flatten real "
+                "terrain, so this path refuses rather than guess which "
+                "source is right")
+    window, window_audit = derive_global_terrain_window(
+        tiles, bbox, cache_root, source_nodata=nodata)
+    bound = _bound(
+        window, source_id=coverage.source_id, role="terrain",
+        source_url=coverage.source_url, license_id=coverage.license_id,
+        license_url=coverage.license_url,
+        nominal_resolution=coverage.nominal_resolution)
+    return bound, {
+        "terrain_source": coverage.source_id,
+        "terrain_tiles": [item.receipt() for item in tiles],
+        "terrain_tiles_absent_treated_as_water": list(absent),
+        "terrain_window": window.receipt(),
+        "terrain_window_audit": window_audit,
+        "terrain_vertical_datum": datum,
+        "terrain_bytes_fetched": sum(item.bytes for item in tiles
+                                     if not item.cache_hit),
+    }
+
+
 def _fetch_and_bind(bbox: FootprintBBox, cache_root: Path, case_date: date,
-                    *, urlopen=None):
+                    *, coverage, grid=None, baseline=None, urlopen=None):
     """Fetch/cache everything one footprint needs; return bound sources."""
-    tiles = fetch_three_dep_tiles(bbox, cache_root, urlopen=urlopen)
-    terrain_window = derive_terrain_window(tiles, bbox, cache_root)
-    terrain = _bound(
-        terrain_window, source_id="usgs-3dep-13as", role="terrain",
-        source_url=THREE_DEP_SOURCE_URL, license_id=THREE_DEP_LICENSE[0],
-        license_url=THREE_DEP_LICENSE[1],
-        nominal_resolution="1/3 arc-second (~10 m)")
+    terrain, terrain_manifest = _fetch_terrain(
+        bbox, cache_root, coverage, grid=grid, baseline=baseline,
+        urlopen=urlopen)
 
     year, anachronism_years = nlcd_year_for(case_date)
     bundle, raster = fetch_annual_nlcd(year, cache_root, urlopen=urlopen)
@@ -268,8 +485,7 @@ def _fetch_and_bind(bbox: FootprintBBox, cache_root: Path, case_date: date,
         for key, item in soil_fetched.items()
     }
     fetch_manifest = {
-        "three_dep_tiles": [item.receipt() for item in tiles],
-        "terrain_window": terrain_window.receipt(),
+        **terrain_manifest,
         "annual_nlcd_bundle": bundle.receipt(),
         "annual_nlcd_raster": raster.receipt(),
         "landcover_window": landcover_window.receipt(),
@@ -278,11 +494,11 @@ def _fetch_and_bind(bbox: FootprintBBox, cache_root: Path, case_date: date,
             for component in SOILGRIDS_COMPONENTS
             for depth in SOILGRIDS_DEPTHS
         },
-        "bytes_fetched": sum(
-            item.bytes for item in (*tiles, bundle)
-            if not item.cache_hit) + sum(
-            item.bytes for item in soil_fetched.values()
-            if not item.cache_hit),
+        "bytes_fetched": (
+            terrain_manifest["terrain_bytes_fetched"]
+            + (0 if bundle.cache_hit else bundle.bytes)
+            + sum(item.bytes for item in soil_fetched.values()
+                  if not item.cache_hit)),
         "nlcd_year": year,
         "nlcd_anachronism_years": anachronism_years,
     }
@@ -293,9 +509,10 @@ def _fetch_and_bind(bbox: FootprintBBox, cache_root: Path, case_date: date,
 # Application
 # ---------------------------------------------------------------------------
 
-def _replacement_counts(baseline, merged) -> dict[str, int]:
+def _replacement_counts(baseline, merged, names=_REPLACED_FIELDS
+                        ) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for name in _REPLACED_FIELDS:
+    for name in names:
         before = np.asarray(baseline[name])
         after = np.asarray(merged[name])
         changed = before != after
@@ -317,12 +534,31 @@ def _grid_identity(grid, domain_id: int) -> dict[str, object]:
     }
 
 
+#: Filename-safe rendering of a configured source/fields token.
+_RECEIPT_TOKEN_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
 def _write_receipt(config: HighresStaticConfig, receipt: dict) -> Path:
+    """Write one run's receipt; one path per (grid, domain, request).
+
+    The identity deliberately covers what was ASKED FOR as well as which
+    grid it was asked of.  Building one domain through two terrain sources
+    is the documented way to find out what changing ``terrain_source``
+    does, and both runs have to survive it: keying on the grid alone made
+    the second run silently destroy the first run's provenance, which is
+    the one artifact that says which DEM produced which terrain.  The
+    requested source is also spelled into the filename so the pair is
+    legible without opening either file.
+    """
     identity = hashlib.sha256(json.dumps(
-        receipt["grid"], sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        {"grid": receipt["grid"],
+         "terrain_source": config.terrain_source,
+         "fields": config.fields},
+        sort_keys=True).encode("utf-8")).hexdigest()[:16]
     domain_id = int(receipt["grid"]["domain_id"])
+    token = _RECEIPT_TOKEN_SAFE.sub("_", str(config.terrain_source))
     path = (Path(config.cache_root) / "receipts"
-            / f"static_highres_{identity}_d{domain_id:02d}.json")
+            / f"static_highres_{identity}_d{domain_id:02d}_{token}.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(receipt, indent=2, sort_keys=True,
                          allow_nan=False) + "\n"
@@ -362,10 +598,20 @@ def apply_highres_statics(baseline, grid, *, config, domain_id: int,
         receipt.update(detail)
         receipt["status"] = "APPLIED"
         path = _write_receipt(config, receipt)
+        scope = ("terrain only, "
+                 f"{detail['terrain_source']['source_id']}"
+                 if detail.get("mode") == "terrain"
+                 else "terrain+land use+soil, "
+                      f"{detail['terrain_source']['source_id']}")
         print(f"[static.highres] d{int(domain_id):02d}: APPLIED "
-              f"(cells replaced: {detail['cells_replaced']['total']} of "
+              f"({scope}; cells replaced: "
+              f"{detail['cells_replaced']['total']} of "
               f"{detail['cells_replaced']['cell_count']}; "
               f"receipt {path})")
+        if detail.get("mode") == "terrain":
+            print("[static.highres] d%02d: land use and soil remain the "
+                  "30-arc-second baseline (no global land-cover source is "
+                  "wired)" % int(domain_id))
         return fields, receipt
     except HighresRefusal as refusal:
         receipt["status"] = "REFUSED"
@@ -385,16 +631,88 @@ def apply_highres_statics(baseline, grid, *, config, domain_id: int,
         return baseline, receipt
 
 
+
+def _apply_terrain_only(baseline, grid, *, config: HighresStaticConfig,
+                        coverage, bbox: FootprintBBox, urlopen=None):
+    """Replace terrain alone from a near-global source.
+
+    Land use, soil and every monthly climatology stay exactly as the
+    30-arc-second baseline built them, and the receipt says so in
+    ``fields_retained_30s`` so nobody can read this as a full overlay.
+    """
+    try:
+        terrain, fetch_manifest = _fetch_terrain(
+            bbox, config.cache_root, coverage, grid=grid, baseline=baseline,
+            urlopen=urlopen)
+    except CoverageError as error:
+        raise HighresRefusal("missing-source-coverage", str(error))             from error
+
+    overrides, source_audit = build_terrain_override(
+        grid, terrain=terrain, halo=HALO)
+    merged, merge_audit = merge_terrain_override(baseline, overrides)
+
+    counts = _replacement_counts(baseline, merged, _REPLACED_FIELDS_TERRAIN)
+    cell_count = int(np.asarray(baseline["HGT_M"]).size)
+    total_changed = counts["HGT_M"]
+    if total_changed == 0:
+        raise HighresRefusal(
+            "zero-cells-replaced",
+            f"the enabled high-resolution terrain overlay "
+            f"({coverage.source_id}) produced HGT_M identical to the "
+            "30-arc-second baseline on every one of "
+            f"{cell_count} cells; an enabled block that changes nothing "
+            "must not present itself as applied")
+
+    fetch_manifest["bytes_fetched"] = fetch_manifest["terrain_bytes_fetched"]
+    detail = {
+        "mode": "terrain",
+        "terrain_source": coverage.echo(),
+        "footprint": bbox.as_dict(),
+        "halo_cells": HALO,
+        "fetch": fetch_manifest,
+        "sources": source_audit.pop("sources"),
+        "override_audit": source_audit,
+        "merge_audit": merge_audit,
+        "cells_replaced": {**counts, "total": total_changed,
+                           "cell_count": cell_count},
+        "fields_replaced": list(_REPLACED_FIELDS_TERRAIN) + ["TMN"],
+        "fields_retained_30s": [
+            "LANDUSEF", "LANDMASK", "LU_INDEX", "SOILCTOP", "SCT_DOM",
+            "SOILCBOT", "SCB_DOM", "GREENFRAC", "LAI12M", "ALBEDO12M",
+            "SNOALB", "SOILTEMP"],
+        "scope_statement": (
+            "TERRAIN ONLY.  Land use, soil and the monthly climatologies "
+            "are the unchanged 30-arc-second baseline: the only wired "
+            "high-resolution land-cover source is a United States "
+            "collection, and no global replacement is wired.  Do not read "
+            "this run as high-resolution land use."),
+        "attribution": coverage.attribution,
+        "tmn": "recomputed from baseline SOILTEMP over the new HGT_M",
+    }
+    return merged, detail
+
+
 def _apply(baseline, grid, *, config: HighresStaticConfig,
            case_date: date, landuse_attrs, urlopen=None):
     _require_lambert(grid)
-    _require_modis21(landuse_attrs)
     bbox = domain_footprint(grid, HALO)
-    _require_us_interior(bbox, baseline, iswater=_MODIS21_ISWATER)
+    _require_single_lobe(bbox)
+    mode, coverage = _resolve_plan(config, bbox)
+    if mode == "all":
+        # Both gates below belong to the land-use leg: the crosswalk targets
+        # one inventory, and its inland-water rule is not coast-safe.
+        _require_modis21(landuse_attrs)
+        _require_coast_free(bbox, baseline, iswater=_MODIS21_ISWATER)
+
+    if mode == "terrain":
+        return _apply_terrain_only(baseline, grid, config=config,
+                                   coverage=coverage, bbox=bbox,
+                                   urlopen=urlopen)
 
     try:
         terrain, landcover, soil_sources, fetch_manifest = _fetch_and_bind(
-            bbox, config.cache_root, case_date, urlopen=urlopen)
+            bbox, config.cache_root, case_date, coverage=coverage, grid=grid,
+            baseline=baseline, urlopen=urlopen)
     except CoverageError as error:
         raise HighresRefusal("missing-source-coverage", str(error)) \
             from error
@@ -426,6 +744,8 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
             "that changes nothing must not present itself as applied")
 
     detail = {
+        "mode": "all",
+        "terrain_source": coverage.echo(),
         "footprint": bbox.as_dict(),
         "halo_cells": HALO,
         "fetch": fetch_manifest,
@@ -434,9 +754,13 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
         "merge_audit": merge_audit,
         "cells_replaced": {**counts, "total": total_changed,
                            "cell_count": cell_count},
-        "fields_replaced": list(_REPLACED_FIELDS),
+        "fields_replaced": list(_REPLACED_FIELDS) + ["TMN"],
         "fields_retained_30s": ["GREENFRAC", "LAI12M", "ALBEDO12M",
                                 "SNOALB", "SOILTEMP"],
+        "scope_statement": (
+            "Terrain, land use and soil all replaced from high-resolution "
+            "sources."),
+        "attribution": coverage.attribution,
         "tmn": "recomputed from merged SOILTEMP/HGT_M over the new mask",
     }
     year = fetch_manifest["nlcd_year"]

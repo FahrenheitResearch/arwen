@@ -555,6 +555,92 @@ def build_highres_overrides(
     return fields, audit
 
 
+def build_terrain_override(grid: LambertGrid, *, terrain: BoundRaster,
+                           halo: int = HALO
+                           ) -> tuple[dict[str, np.ndarray], dict[str, object]]:
+    """Build ONLY the terrain field for one domain, from one bound raster.
+
+    This is the same terrain science :func:`build_highres_overrides` runs --
+    area-average onto the halo-extended WPS grid, one WPS smooth-desmooth
+    pass, crop -- with the land-cover and soil legs left out entirely.  It
+    exists because terrain is the one high-resolution field with a
+    near-global source: outside the United States there is no wired land
+    cover, and a terrain-only replacement is a real, useful product as long
+    as nobody is led to believe they also got high-resolution land use.
+
+    Because no land-use rule runs, this path never classifies water and
+    therefore never needs the ocean/lake distinction that constrains the
+    full overlay.
+    """
+    extended = _extended_grid(grid, halo)
+    crop = (slice(halo, halo + grid.e_sn - 1),
+            slice(halo, halo + grid.e_we - 1))
+    terrain_extended = resample_continuous(terrain, extended, method="average")
+    _require_coverage("terrain", terrain_extended)
+    terrain_extended = smth_desmth_special(terrain_extended, passes=1)
+    hgt = terrain_extended[crop]
+    audit = {
+        "method": (
+            "hash-bound GeoTIFF reprojection to the WRF spherical "
+            f"{getattr(grid, 'map_proj', 'lambert')} grid; area-average; "
+            "one WPS smooth-desmooth terrain pass (terrain only -- land "
+            "use and soil are untouched)"),
+        "halo_cells": halo,
+        "terrain": {"min_m": float(hgt.min()), "max_m": float(hgt.max()),
+                    "mean_m": float(hgt.mean())},
+        "sources": [terrain.receipt()],
+    }
+    return {"HGT_M": hgt}, audit
+
+
+def merge_terrain_override(
+        baseline: Mapping[str, np.ndarray],
+        overrides: Mapping[str, np.ndarray]) -> tuple[dict[str, np.ndarray],
+                                                      dict[str, int]]:
+    """Replace terrain only; recompute TMN; leave the land/water mask alone.
+
+    TMN is not an independent field: the baseline's deep-soil temperature
+    was lapsed to the baseline's terrain height.  Swapping HGT_M without
+    recomputing it would leave the two disagreeing by 6.5 K per kilometre
+    of terrain change, so the same lapse the full path applies is applied
+    here.  Nothing else moves, so there is no newly-land climatology fill
+    to do and none is reported.
+    """
+    required = {"HGT_M", "LANDMASK", "SOILTEMP"}
+    missing = sorted(required - set(baseline))
+    if missing:
+        raise KeyError(f"baseline static fields missing {missing}")
+    if "HGT_M" not in overrides:
+        raise KeyError("terrain-only overrides missing ['HGT_M']")
+    extra = sorted(set(overrides) - {"HGT_M"})
+    if extra:
+        raise KeyError(
+            f"terrain-only overrides carry non-terrain field(s) {extra}; "
+            "use merge_highres_overrides for the full overlay")
+
+    out = {name: np.array(value, copy=True)
+           for name, value in baseline.items()}
+    out["HGT_M"] = np.array(overrides["HGT_M"], copy=True)
+    if out["HGT_M"].shape != np.asarray(baseline["HGT_M"]).shape:
+        raise ValueError(
+            f"terrain override shape {out['HGT_M'].shape} differs from "
+            f"baseline {np.asarray(baseline['HGT_M']).shape}")
+    land = np.asarray(baseline["LANDMASK"]) > 0.5
+    out["TMN"] = np.where(land, out["SOILTEMP"] - 0.0065 * out["HGT_M"],
+                          out["SOILTEMP"])
+    for name, value in out.items():
+        if isinstance(value, np.ndarray) and not np.isfinite(value).all():
+            raise ValueError(f"merged terrain-only field {name} is non-finite")
+    audit = {
+        "terrain_cells_changed": int(np.count_nonzero(
+            np.asarray(baseline["HGT_M"]) != out["HGT_M"])),
+        "land_water_cells_unchanged": int(land.size),
+        "newly_land_nearest_climatology_fallback_cells": 0,
+        "newly_water_masked_cells": 0,
+    }
+    return out, audit
+
+
 def _nearest_donors(valid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Deterministic Manhattan-nearest donor indices for every 2-D cell."""
 
@@ -728,7 +814,8 @@ def merge_highres_overrides(
 
 __all__ = [
     "BoundRaster", "NLCD_TO_MODIS21_INLAND", "SOILGRIDS_DEPTH_WEIGHTS",
-    "build_highres_overrides", "merge_highres_overrides",
+    "build_highres_overrides", "build_terrain_override",
+    "merge_highres_overrides", "merge_terrain_override",
     "resample_continuous", "resample_mapped_categories", "sha256_file",
     "usda_texture_category",
 ]

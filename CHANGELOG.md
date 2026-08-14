@@ -1,5 +1,62 @@
 # Changelog
 
+## 2.3.2 (2026-08-14)
+
+New:
+- High-resolution terrain now works anywhere in the world. Copernicus DEM
+  GLO-30 is the default outside the United States: 30 m ground sampling
+  from 90 S to 84 N, fetched anonymously, with no account, no registration
+  and no API key. Inside the conterminous United States nothing changes --
+  `terrain_source = "auto"` still selects USGS 3DEP, and every existing
+  domain builds exactly the bytes it built before.
+- `terrain_source` in `[static.highres]` selects the elevation source by
+  name: `auto`, `copernicus-dem-glo30`, `srtm-gl1` or `usgs-3dep-13as`.
+  SRTM is served through OpenTopography's anonymous mirror and declares
+  its own limits, so asking for it above 60 N or below 56 S is refused by
+  name rather than answered with a hole.
+- Coverage is checked against the source you actually asked for instead of
+  one fixed footprint. A domain that runs off the edge is refused with the
+  source named, the source's own footprint printed, and the overshoot given
+  per edge, so the message says which way to move and by how much.
+- Every run records which elevation source it used and which geoid that
+  source's heights are measured against: Copernicus DEM on EGM2008, SRTM on
+  EGM96, USGS 3DEP on NAVD88. The three differ regionally, so the receipt
+  keeps them apart instead of treating the numbers as one quantity.
+- Outside the United States, terrain is upgraded and land cover is not.
+  Land use and soil stay at the older global data, deliberately: no freely
+  licensed worldwide land-cover set separates an inland lake from the open
+  sea, and getting that wrong at a coastline does more damage to a forecast
+  than coarse land use does. The console line, the run's receipt and
+  `docs/public/HIGHRES-TERRAIN.md` all say so at the point of use, so a
+  30 m terrain map is never mistaken for a 30 m land-use map.
+- `docs/public/HIGHRES-TERRAIN.md` documents the sources, their limits,
+  their datums and what changing between them does to a real domain,
+  measured on one 50 x 50 km domain at 500 m over the Colorado Front Range
+  built three ways. Copernicus reads about 3.5 m higher than 3DEP under
+  forest and 7 cm lower above treeline, because Copernicus sees the canopy
+  and 3DEP sees the ground; once that one offset is removed, 9,999 of
+  10,000 cells agree within 20 m, median slopes agree to 0.09 %, and the
+  two datasets place ridges and valleys the same way in 99.06 % of cells.
+  Both disagree with the 900 m global baseline they replace in one cell out
+  of seven.
+
+Fixed:
+- Building one domain through two different elevation sources keeps both
+  receipts. The receipt path was keyed on the grid and the domain only, so
+  the second build silently overwrote the first build's provenance -- and
+  building the same domain twice to compare sources is exactly what the
+  documentation tells you to do. The source is part of the key now.
+- The documentation described USGS 3DEP as a surface model. It is bare
+  earth. That is corrected, and it is the difference the canopy measurement
+  above rests on.
+
+Known issues:
+- The worldwide default is a surface model, so a forested domain built from
+  Copernicus DEM sits roughly 3.5 m higher than bare ground, tracking the
+  canopy and vanishing above treeline. There is no freely licensed global
+  bare-earth elevation set at this resolution; inside the United States,
+  `usgs-3dep-13as` is bare earth and remains the default there.
+
 ## 2.3.1 (2026-08-14)
 
 2.3.0 was tagged but never published: the RW-WPS staging gate refused the

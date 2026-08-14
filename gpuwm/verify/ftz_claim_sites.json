@@ -106,7 +106,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 404,
+      "line": 461,
       "kind": "prose",
       "anchor": "1e-20 sentinel itself, subnormal operands, NaN donors and overflowing",
       "anchor_sha256": "df033327abd8d87b5c75c7aba9e952c97dca515ac1171af97cd1c5eeb9164b9a",
@@ -117,7 +117,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 409,
+      "line": 466,
       "kind": "prose",
       "anchor": "which flushes subnormal operands; the projected entry uses the host",
       "anchor_sha256": "e3787394d238ab20ac55a8587e014fbbc6d303f32bb51a36b5790cd953b2bf54",
@@ -128,7 +128,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 412,
+      "line": 469,
       "kind": "prose",
       "anchor": "point. They differ only when an operand is subnormal or infinite and",
       "anchor_sha256": "7733565a4cc90371b7e5a0fcaa86dc9992c235506c80b7adb7b0d2e7042bfcff",
@@ -139,7 +139,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 424,
+      "line": 481,
       "kind": "prose",
       "anchor": "a subnormal countermeasure that emulated every FP32 operation through",
       "anchor_sha256": "85ed9c0b321942ac6708c466a97265b881d38894d01e35d643993fb1993dcf85",
@@ -150,7 +150,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 425,
+      "line": 482,
       "kind": "prose",
       "anchor": "FP64: decode a possibly subnormal operand from its bits, do the work in",
       "anchor_sha256": "14dfde0e1ed0c25bc246cdb49f012050e53ceea0e0e25f71f142329ff67ed8ed",
@@ -161,7 +161,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 428,
+      "line": 485,
       "kind": "prose",
       "anchor": "`sub.rn.f32` and `mul.rn.f32` written as inline PTX without the `.ftz`",
       "anchor_sha256": "b970d9e3b51fbb988c89325a44c9abc97cf299dfc3b3ad89eadb35990d82d0ca",
@@ -172,7 +172,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 440,
+      "line": 497,
       "kind": "prose",
       "anchor": "how often it sees or makes a subnormal, and whether the PTX and FP64",
       "anchor_sha256": "0991b5df9dfe9ce6c5914e7d1474d902aea0bc53b97c9c5c160e7ebd1cf39e60",
@@ -183,7 +183,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 443,
+      "line": 500,
       "kind": "prose",
       "anchor": "subnormal operand, 1,659,113 producing a subnormal result, and zero",
       "anchor_sha256": "50e90e32245a5af722f01f71a1689aac0704b2de0cc03d44367bd2cd7a9ea258",
@@ -194,7 +194,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 444,
+      "line": 501,
       "kind": "prose",
       "anchor": "mismatches between the two arms. The subnormals are real and they are",
       "anchor_sha256": "842948825d6fea956e6c40a776b10c65e7dd63adb5dea70450e3b9d67b6d9e7a",
@@ -205,7 +205,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 452,
+      "line": 509,
       "kind": "prose",
       "anchor": "operand classes, an exhaustive sweep of the low-order subnormal range,",
       "anchor_sha256": "69ab17c770b5d52b7ffa3d353fd0a308ad08c4239ec79d1b7c856ac88c0cb778",
@@ -216,7 +216,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 453,
+      "line": 510,
       "kind": "prose",
       "anchor": "a mantissa sweep that lands products on subnormal rounding ties, and a",
       "anchor_sha256": "6318a752c383867b3ee11478c2b9c7bb88d0a75fa71e3561f3a6fe84e39e975d",
@@ -227,7 +227,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 511,
+      "line": 568,
       "kind": "prose",
       "anchor": "subnormals. `tools/ftz_receipt` measures that every compiler-emitted",
       "anchor_sha256": "3b1eeb4a1d080cc19badbe1b27d0a7aba552a44cc46845c41166f559f9993559",
@@ -238,7 +238,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 512,
+      "line": 569,
       "kind": "prose",
       "anchor": "FP32 instruction flushes under CuPy's appended `-ftz=true`, and that",
       "anchor_sha256": "f139074a697701306da30e3ecacdcbf9f6d9710edf2805750456bb008b35617c",
@@ -249,7 +249,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 513,
+      "line": 570,
       "kind": "prose",
       "anchor": "inline PTX without `.ftz` does not. The module currently escapes the",
       "anchor_sha256": "8c518594e9326ce58715a434db87f326a9f20b519b0323c9421dacaf7d9d6bf5",
@@ -260,7 +260,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 518,
+      "line": 575,
       "kind": "prose",
       "anchor": "instructions as PTX makes the subnormal contract a property of the",
       "anchor_sha256": "aa6b7fbbce8527a171f30d9ad9e52b697428a89a3080c32c587f3f4d45af8f02",
@@ -271,7 +271,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2748,
+      "line": 2805,
       "kind": "prose",
       "anchor": "- Two silent wrong answers on sm_120, where FP32 subnormals are flushed",
       "anchor_sha256": "bcc677ec38d515737f2fb65993dfd2d0c0ff7f019725b8552b6e232d1668e1ad",
@@ -282,7 +282,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2750,
+      "line": 2807,
       "kind": "prose",
       "anchor": "whose cube is subnormal and flushes to zero, turning a quotient into",
       "anchor_sha256": "d16d72f334e8d30903c3d85abea785c1573abd77b9da707e1a4a5721f5997048",
@@ -293,7 +293,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3008,
+      "line": 3065,
       "kind": "prose",
       "anchor": "FP32 subnormal flushing on sm_120 was described as a hardware property no",
       "anchor_sha256": "9845ca444fc2d1b5f5725fdb68f0b92434646fa1c15e917f719b3d7da391d204",
@@ -304,7 +304,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3010,
+      "line": 3067,
       "kind": "prose",
       "anchor": "the same source built without an appended `-ftz=true` keeps full IEEE",
       "anchor_sha256": "2e9db2d996710d5597910bd049935b00c288546c51893027e4da7cb352f1b818",
@@ -315,7 +315,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3011,
+      "line": 3068,
       "kind": "prose",
       "anchor": "subnormals on the same card. The CPU reference binary was described as an Intel",
       "anchor_sha256": "af90298485911dcdd5f05cf5efa704c8500e4a6f04ac8f3be6cd3da1092f68e1",
@@ -326,7 +326,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 4113,
+      "line": 4170,
       "kind": "prose",
       "anchor": "functions, FP32 subnormal flushing), what each compared surface covers",
       "anchor_sha256": "2e3226a8e81d2f609a854e0ef0205ff199a9b03595eeb01dd045446a32e6cb6b",
