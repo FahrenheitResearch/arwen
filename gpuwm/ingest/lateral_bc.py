@@ -171,6 +171,20 @@ class _DeviceLateralBoundaries:
     active_host_interval_id: int | None = None
     packed_forcing: object | None = None
     external_reload_count: int = 0
+    #: Monotonic per state, bumped by every ``attach_nest_boundaries`` --
+    #: i.e. every FORCE.  It exists for the streamed-child corridor: a tile
+    #: buffer's packed table windows record the generation they were copied
+    #: from and re-copy at kernel-launch time when it moves, which is what
+    #: makes a buffer that never changes tiles (nbuffers >= ntiles, so its
+    #: tile hook fires exactly once) structurally unable to apply a
+    #: previous interval's forcing.
+    rolling_generation: int = 0
+    #: The launch-time refresh for a per-tile ROLLING attachment, or
+    #: ``None`` for every attachment that is not one (which is every
+    #: attachment outside a streamed child's tile buffers).  Called with
+    #: the owning state by ``_active_device_interval`` before the nested
+    #: interval is served.
+    nested_reload: object | None = None
 
 
 def _seconds(times: Sequence[datetime | float]) -> np.ndarray:
@@ -389,6 +403,17 @@ def _active_device_interval(state, cfg):
             raise RuntimeError("nested boundary tables are invalid before FORCE")
         if resident.clock is None:
             raise RuntimeError("nested boundary attachment has no child clock")
+        reload_tables = getattr(resident, "nested_reload", None)
+        if reload_tables is not None:
+            # A streamed child's tile buffer serves PACKED COPIES of the
+            # domain's rolling tables (raw CUDA kernels need contiguous
+            # operands, so views cannot stand here).  The copies are
+            # refreshed HERE, at launch time, whenever the domain's
+            # rolling generation has moved -- the tile hook fires only
+            # when a buffer changes tiles, which for nbuffers >= ntiles
+            # is once per run, so a hook-time refresh would serve the
+            # first FORCE's forcing forever.
+            reload_tables(state)
         return (resident.intervals[0], resident.clock.dtbc_launch_fp32,
                 resident.clock.spec.dt_fp32, 0.0)
     boundaries = state.lateral_boundaries
@@ -1048,8 +1073,16 @@ def attach_lateral_boundaries(state, boundaries: LateralBoundaries) -> None:
     used.  Reattachment releases those registered buffers and rebuilds the
     mirrors.  A copied or deserialized state must likewise call this function
     to establish its device-resident attachment.
+
+    Reattachment PRESERVES an existing external clock binding (task #219):
+    a state that consumed WRF's post-increment ``dtbc`` recurrence must not
+    silently revert to the retired elapsed-based path because its forcing
+    tables were rebuilt -- ``bind_lateral_boundary_clock``'s contract is
+    that the two semantics can never be mixed unannounced.  A state never
+    bound keeps ``clock=None`` exactly as before.
     """
     _validate_lateral_attachment(state, boundaries)
+    carried_clock = _carried_external_clock(state)
     total_values = sum(
         array.size
         for interval in boundaries.intervals
@@ -1096,9 +1129,23 @@ def attach_lateral_boundaries(state, boundaries: LateralBoundaries) -> None:
         tuple(device_intervals),
         MappingProxyType({id(interval): index for index, interval in
                           enumerate(boundaries.intervals)}),
-        {}, {forcing_slot}, int(packed.nbytes))
+        {}, {forcing_slot}, int(packed.nbytes), clock=carried_clock)
     state.lateral_boundaries = boundaries
     state.elapsed_seconds = 0.0
+
+
+def _carried_external_clock(state):
+    """The clock an EXTERNAL re-attachment must preserve (task #219).
+
+    ``None`` for a first attachment, for a never-bound mirror, and for a
+    ROLLING (nested) attachment -- nested clocks are passed explicitly to
+    ``attach_nest_boundaries`` at every FORCE and are not this function's
+    business.
+    """
+    previous = getattr(state, "_lateral_boundary_device", None)
+    if previous is None or getattr(previous, "rolling", False):
+        return None
+    return previous.clock
 
 
 def attach_streaming_lateral_boundaries(
@@ -1112,8 +1159,17 @@ def attach_streaming_lateral_boundaries(
     offline-child archives where eager residency scales as
     ``interval_count * perimeter``; :func:`attach_lateral_boundaries` retains
     its established eager behavior.
+
+    Reattachment preserves an existing external clock binding, for the
+    reason :func:`attach_lateral_boundaries` states (task #219).  A tile
+    buffer's FIRST conversion to this attachment starts unbound -- its
+    factory attachment never had a clock -- so the streamed-domain tile
+    hook (:func:`gpuwm.core.streaming.make_tile_hook`) additionally rebinds
+    the DOMAIN's clock right after converting; this function's preservation
+    covers every later re-attachment on the same state.
     """
     _validate_lateral_attachment(state, boundaries)
+    carried_clock = _carried_external_clock(state)
     first = boundaries.intervals[0]
     inventory = tuple(first.fields)
 
@@ -1159,7 +1215,7 @@ def attach_streaming_lateral_boundaries(
     device_interval = _DeviceBoundaryInterval(MappingProxyType(fields))
     state._lateral_boundary_device = _DeviceLateralBoundaries(
         (device_interval,), MappingProxyType({}), {}, {forcing_slot},
-        int(packed.nbytes), streaming_external=True,
+        int(packed.nbytes), clock=carried_clock, streaming_external=True,
         packed_forcing=packed)
     state.lateral_boundaries = boundaries
     state.elapsed_seconds = 0.0
@@ -1242,13 +1298,21 @@ def attach_nest_boundaries(state, fields: Mapping[str, Mapping[str, tuple]],
         scratch_slots = existing.scratch_slots
         next_weight_slot = existing.next_weight_slot
         device_nbytes = existing.device_nbytes
+        generation = existing.rolling_generation + 1
     else:
         weights, scratch_slots, next_weight_slot, device_nbytes = {}, set(), 0, 0
+        generation = 1
     state._lateral_boundary_device = _DeviceLateralBoundaries(
         (_DeviceBoundaryInterval(MappingProxyType(converted)),),
         MappingProxyType({}), weights, scratch_slots, device_nbytes,
         next_weight_slot=next_weight_slot, rolling=True, clock=clock,
-        valid=True)
+        valid=True,
+        # Bumped every FORCE (this function is FORCE's attach), so a
+        # streamed child's per-tile packed table windows can tell the
+        # interval they were copied from apart from the one that is live.
+        # An object id cannot stand here: a freed interval's id can be
+        # recycled by the very attach that replaced it.
+        rolling_generation=generation)
     state.lateral_boundaries = RollingNestBoundaries(
         frame_width, int(spec_zone), int(relax_zone))
 

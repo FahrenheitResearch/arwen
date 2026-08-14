@@ -48,6 +48,42 @@ as UNAVAILABLE rather than dropping it.  Four classes come out:
     two full 3-D fields).  Without the scatter the published field is the
     last tile's, wrong over 3 of 4 tiles at a 2x2 decomposition.
 
+WHEN THERE IS NO DOMAIN-SHAPED STATE TO CLASSIFY AGAINST
+---------------------------------------------------------
+:func:`frame_plan` needs a live state, and a STORE-DIRECT run never builds
+one.  ``gpuwm.ingest.prepared_store`` fills the store a ROW SLAB at a time
+precisely so that no domain-shaped device array is ever allocated, and it
+keeps the last slab as a template; the tallest state that exists in such a
+run is ``rows`` deep in y.
+
+That template CLASSIFIES the frame perfectly.  The class of a field is a
+question about which scheme published it and which object owns the array,
+and neither answer varies with how many rows the state has: the ``id()``
+match is against the same state's own carrier manifest, so it is internally
+consistent at any height.  It SIZES the frame wrong, because ``frame_plan``
+records ``np.shape`` of the arrays it matched and those are the slab's.
+
+Only three consumers of ``FramePlan.shape`` exist and all three are in
+:class:`StoreFrame`'s constructor: the ``T``/``P`` derive destinations, the
+structural-zero rows, and the ``overlap=True`` snapshot buffers.  Nothing
+reads a CARRIER's or a SETUP field's recorded shape at all -- a carrier is
+served as the store's own array and a setup field comes from
+``DomainSetup.output_statics(nz, ny, nx)``, both already at domain extents,
+and ``PSFC``'s work plane is sized from ``cfg``.  So a slab-height plan does
+not quietly write a subtly wrong frame; it dies with ``non-broadcastable
+output operand`` on the first derive, or publishes a ``(rows, nx)``
+``RAINNC`` into a ``(ny, nx)`` file.
+
+:func:`domain_frame_plan` is the fix and it invents nothing.  The
+classification, the field order and the dtypes are the template's; every
+shape is re-read from the STORE for carriers -- definitive, since that array
+IS what the frame will hand the writer -- and for everything else mapped onto
+``cfg``'s extents by the one rule the whole store rests on, that the
+horizontal axes are the last two and an extent one greater than the mass
+count is a staggered face.  :func:`store_frame_plan` is the two together.
+The gate is that a domain small enough to run both ways gives the identical
+frame, which is a statement about bytes and is checked as one.
+
 THE TWO WAYS TO GET THE DERIVE WRONG, BOTH MEASURED
 ---------------------------------------------------
 1. **Reassociating the arithmetic.**  The device computes
@@ -163,8 +199,10 @@ __all__ = [
     "derive_t",
     "diagnostic_inventory",
     "diagnostic_members",
+    "domain_frame_plan",
     "frame_plan",
     "scatter_cost",
+    "store_frame_plan",
     "write_frame",
 ]
 
@@ -357,6 +395,124 @@ def _diagnostic_origin(state, value) -> str:
                 if item is value:
                     return f"driver.{attr}[{key!r}]"
     return "unknown"
+
+
+# --------------------------------------------------------------------------
+# the same classification, from a state that is not the domain
+# --------------------------------------------------------------------------
+
+def store_frame_plan(template, store, cfg, *,
+                     include_diagnostic_pressure: bool = True,
+                     extra_available=()) -> FramePlan:
+    """:func:`frame_plan` for a run whose only state is a SLAB.
+
+    The plan a store-direct forecast publishes its history from.  ``template``
+    is :attr:`gpuwm.ingest.prepared_store.PreparedStore.template` -- the last
+    row slab the store was built out of, carrying the same schemes, the same
+    driver and the same vertical coordinate as the domain and a fraction of
+    its rows.  ``store`` is the full-domain carrier store and ``cfg`` is the
+    domain's config; between them they are where every shape comes from.
+
+    The template's own horizontal extents are read off ``template.mup``, which
+    is not a guess: ``wrfout._device_state_frame`` opens with
+    ``ny, nx = state.mup.shape`` and sizes the frame it builds from exactly
+    those two numbers, so they are the extents the recorded shapes are in.
+    """
+    plan = frame_plan(template,
+                      include_diagnostic_pressure=include_diagnostic_pressure,
+                      extra_available=extra_available)
+    return domain_frame_plan(plan, store, cfg,
+                             template_shape=np.shape(template.mup))
+
+
+def domain_frame_plan(plan: FramePlan, store, cfg, *,
+                      template_shape) -> FramePlan:
+    """``plan``'s classification, re-sized to the DOMAIN the store holds.
+
+    Split out from :func:`store_frame_plan` because it is the whole content of
+    the fix and it touches no device: given a plan built on a state whose
+    horizontal extents are ``template_shape``, return the plan the same
+    configuration would have produced at ``cfg``'s.  ``order``, ``source``,
+    ``origin`` and ``dtype`` cross over unchanged -- they answer questions a
+    domain's height cannot affect -- and only ``shape`` is recomputed, by two
+    rules with different standing:
+
+    CARRIERS take the store's own array shape.  That is not a mapping at all,
+    it is a read of the very array :meth:`StoreFrame.fields` will hand the
+    writer, so it cannot disagree with what is published even if a store were
+    laid out in some way this function has never heard of.
+
+    EVERYTHING ELSE is mapped axis by axis, on the one rule the store, the
+    tile plan and ``prepared_store._row_window`` all already rest on: the
+    horizontal axes are the LAST TWO, an extent equal to the template's mass
+    count is a mass axis, and an extent one greater is the closing staggered
+    face.  A row of fewer than two dimensions is a column or a scalar and is
+    left alone -- ``ZNU``, ``ZNW`` and ``P_TOP`` are the shipped examples, and
+    all three are served out of ``output_statics`` rather than from this
+    shape anyway.
+
+    An extent that is neither is REFUSED for the rows the frame materialises,
+    because those are the three classes the constructor allocates from and a
+    wrong guess there is a wrong file.  For a ``driver-diagnostic`` row --
+    which :meth:`StoreFrame.fields` skips and the constructor never allocates
+    -- the template's own shape is kept instead: that row is REPORTED, never
+    built, and taking a whole forecast's history down over the recorded extent
+    of a field it was never going to publish would be a refusal with no
+    failure behind it.
+    """
+    inner = getattr(store, "arrays", None)
+    arrays = inner if isinstance(inner, dict) else store
+    template_hw = (int(template_shape[-2]), int(template_shape[-1]))
+    domain_hw = (int(cfg.ny), int(cfg.nx))
+    shape: dict[str, tuple[int, ...]] = {}
+    for name in plan.order:
+        held = (arrays.get(plan.origin[name])
+                if plan.source[name] == SOURCE_CARRIER else None)
+        if held is not None:
+            shape[name] = tuple(int(s) for s in np.shape(held))
+            continue
+        try:
+            shape[name] = _domain_row_shape(plan.shape[name], template_hw,
+                                            domain_hw)
+        except ValueError:
+            if plan.source[name] != SOURCE_DRIVER_DIAGNOSTIC:
+                raise ValueError(
+                    f"frame field {name} is {tuple(plan.shape[name])} on a "
+                    f"template of {template_hw[0]} mass rows x "
+                    f"{template_hw[1]} columns, which is neither mass- nor "
+                    "staggered-shaped on its last two axes, so its extent at "
+                    f"the domain's {domain_hw[0]}x{domain_hw[1]} is "
+                    f"undefined.  It is a {plan.source[name]} row, which "
+                    "StoreFrame allocates from this shape, so guessing would "
+                    "publish a wrongly-sized variable rather than fail"
+                ) from None
+            shape[name] = tuple(int(s) for s in plan.shape[name])
+    return FramePlan(order=plan.order, source=dict(plan.source),
+                     origin=dict(plan.origin), shape=shape,
+                     dtype=dict(plan.dtype))
+
+
+def _domain_row_shape(shape, template_hw, domain_hw) -> tuple[int, ...]:
+    """One row's shape, moved from a template's extents to a domain's.
+
+    Each horizontal axis is resolved against ITS OWN template extent and never
+    against the other's, so a square template over a non-square domain -- or
+    the ``rows + 1 == nx`` coincidence -- cannot cross the two axes over.
+    """
+    out = [int(s) for s in shape]
+    if len(out) < 2:
+        return tuple(out)
+    for axis, small, full in ((-2, template_hw[0], domain_hw[0]),
+                              (-1, template_hw[1], domain_hw[1])):
+        if out[axis] == small:
+            out[axis] = full
+        elif out[axis] == small + 1:
+            out[axis] = full + 1
+        else:
+            raise ValueError(
+                f"axis {axis} extent {out[axis]} is neither {small} nor "
+                f"{small + 1}")
+    return tuple(out)
 
 
 # --------------------------------------------------------------------------

@@ -1,5 +1,297 @@
 # Changelog
 
+## 2.3.0 (2026-08-14)
+
+New:
+- Forcing a nest off a streamed parent now moves O(child footprint) per
+  parent step, not O(parent). The coupler pulls exactly the two windows
+  FORCE reads -- the field and the coupling mass over the child's
+  footprint plus an 8-parent-cell halo -- through the store seam, and the
+  executor's duplicate projection is gone, so a relocation moves the
+  window by rewriting the child's placement and nothing else. Measured on
+  the 5070 Ti through `execute_experiment` (256x256x49 streamed parent,
+  72x72 child at 3:1, 12 parent steps): bit-identical to the all-resident
+  tree in every carrier of both domains, one-way and two-way, the parent
+  store bitwise unchanged by nest presence, and the corridor moved
+  58.0 MiB where whole-parent pulls would have moved 2352 MiB, a 40.5x
+  reduction that grows with the parent. A halo-starved window is the
+  negative control, and every run carries the traffic in
+  `coupler.force_sync_bytes` as a receipt.
+- The second concurrent-nesting shape streams: a RESIDENT parent can
+  drive a TILE-STREAMED child, one run, coupled every parent step, one-way
+  or two-way. FORCE pulls only the child's boundary frame from its pinned
+  host store (four strips, `spec_bdy_width + 8` cells, the child-side
+  mirror of the streamed-parent footprint corridor;
+  `coupler.force_sync_bytes` is the receipt) and writes the same
+  full-perimeter rolling tables the resident path writes; the child's tile
+  buffers consume them through per-buffer packed table windows
+  (`gpuwm.core.nest_stream`) that re-copy at kernel-launch time whenever
+  the FORCE generation moves, so a buffer can never apply a previous
+  interval's forcing. Two-way feedback restricts out of the child's store
+  into the resident parent. Gated bit-identical to the all-resident tree
+  through `execute_experiment` in every carrier of both domains, with
+  stale-store, stale-tables and starved-frame negative controls firing in
+  both directions.
+- Roads are assigned per domain, and the tree is priced together.
+  `steppers_for_tree` prices each domain against the budget its
+  predecessors left: resident claims, streamed tile working sets, and the
+  coupling corridor's slots. Every decision's receipt names its road, its
+  claim and the budget spent before it, so a tree that cannot fit refuses
+  with the arithmetic instead of dying at the allocation. A pinned tiling
+  still asks no planner and probes no card. What remains refused by name:
+  a coupling edge with BOTH ends streamed (ungated), a nest that also
+  carries a tabulated boundary series, and `[relocation]` targeting a
+  streamed child.
+- The offline child can be asked to stream. `[tiles]` joins the tables a
+  RunConfig TOML may carry -- the `gpuwm downscale` child schema refused
+  it as unknown, so the route whose domain most outgrows its card was
+  the one route that could not ask -- and the child route wires the seam
+  exactly as the prepared single-domain runner does: decide once, hand
+  the decision to `make_stepper`, record it. The three observers are
+  wired with it (refresh on the history cadence and before the final
+  read; a store-aware stability observer), `report.json` gains a `tiles`
+  verdict, and `gpuwm downscale --tiles {on,auto}` writes the block into
+  the config `--point` derives -- mode only, never a tiling, because the
+  plan belongs to the card the run meets and not to the machine that
+  derived it. A child that configures nothing is byte-for-byte the run it
+  was.
+- The last two nesting shapes are reachable from the product front door.
+  `[tiles]` is now a PER-DOMAIN surface as well as a tree-wide one: a
+  `[[domain]]` row carries its own `tiles = { ... }`, and the override
+  replaces rather than merges, so "stream the parent, keep the child
+  resident" and its roles-flipped twin are both things a user can write in
+  a config instead of shapes that only a test could reach. Both run
+  through `gpuwm run <config> --outdir <dir>` with no workaround flags and
+  with `feedback = 1`. Run-plan delivers the same surface, and
+  `docs/public/TILES.md` documents it.
+- The tree decision RESERVES its children before a streamed parent picks
+  its tile. A streamed parent's tile search maximises the compute window
+  against whatever budget it is shown, so pricing parent-first let it take
+  the largest clean tile that fit the whole card (3.94 of 4.00 GiB, 98.5%)
+  and its resident child then met "no tile fits in 0.06 GiB". Only the
+  order of the arithmetic made that shape unreachable. The reservation
+  constrains the TILE, never the VERDICT, so a tree that decided
+  all-resident decides all-resident still.
+
+Fixed:
+- Two-way nest feedback runs under a streamed parent. The executor
+  refused `feedback = 1` whenever the parent streamed, claiming nothing
+  projects a restriction back into the store; the coupler had carried
+  exactly that projection since the same merge, proven bit-identical at
+  the coupler level, and the two truths were never in one gate. The
+  refusal is gone and the dispatch is mode-blind. Measured through
+  `execute_experiment` on a 5070 Ti (256x256x49 parent streamed from a
+  pinned host store at tile 128, 72x72 child at 3:1, 12 parent steps,
+  radiation/cumulus/PBL/LSM firing on both sides): one-way and two-way
+  runs are bit-identical to the all-resident tree in every carrier of
+  both domains, the feedback arms demonstrably differ from the one-way
+  arms, a stale-coupler negative control diverges, and the parent's store
+  is bitwise unchanged by the presence of a one-way nest. What a streamed
+  parent genuinely cannot do still refuses by name in the coupler: a
+  cross-scheme microphysics edge, and a streamed child.
+- `[tiles]` streaming starts on native Windows. Two stacked defects made
+  every planner-driven streamed run refuse before the config was read:
+  `autoplan.Machine.detect` sourced host RAM only from `/proc/meminfo`
+  and the cgroup files, so a Windows box -- which publishes neither --
+  took the raising branch and was told it was "containerised with no
+  cgroup memory limit", a cause the probe had already disproved; and
+  `streaming.decide` probed the machine before applying the configured
+  `vram_budget_bytes` / `host_budget_bytes` overrides, so the keys whose
+  documented purpose is to override the probe were never read where the
+  probe raised. Both halves are fixed default-on: host RAM comes from
+  `GlobalMemoryStatusEx` (`ullTotalPhys`) on win32, and the configured
+  budgets are applied before the machine is consulted, on every platform.
+  Measured on an RTX 5090 at 438x350x49 with `mode = "on"` and nothing
+  else, planner-chosen 219x175 x3 buffers: dry and full-physics rungs
+  both bit-exact against the resident run, twice per rung on this no-ECC
+  card with matching state digests.
+- The ERA5 direct door's soil hand-off resolves the orography the GRIB
+  carries. `rw-wps --source era5` accepted the wizard's config since the
+  `[case_data]` fix, decoded the GRIB and built the statics, then died
+  in `preprocess_noah_soil` with "terrain and source_orography must be
+  provided together": `gpuwm fetch --source era5` writes the invariant
+  geopotential INTO `era5-combined.grib`, so the route declares no
+  separate orography artifact and the soil call forwarded a None beside
+  a real HGT_M. The horizontal stage had already remapped SOILGEO onto
+  the mass grid as SOURCE_OROGRAPHY; `soil_source_orography()` now
+  resolves exactly that field once, beside the guard that depends on it.
+  The declared artifact still outranks the embedded record.
+- The root runtime and the nested child stop dropping the same
+  orography. Both gated the pair defensively, so where the direct door
+  refused loudly they silently skipped WRF's `adjust_soil_temp_new`
+  altogether while their own met fields carried SOURCE_OROGRAPHY. Nests
+  feel this hardest: the finest grids carry the sharpest terrain
+  disagreement with a ~31 km source. Both now resolve through
+  `soil_source_orography`; a source that declares no orography anywhere
+  keeps the historical no-adjustment path. The direct door and the
+  wizard chain are now bit-identical in TSK and TSLB on the case that
+  exposed the gap, and the chain route's land TSLB moves by the
+  expected -5.28..+3.70 K (rms 0.46 K).
+- gpuwm's own wrfout warm-starts gpuwm's own child. The history writer
+  published six fields of a surface source; ISLTYP, TMN and VEGFRA --
+  required by `--child-surface-from`'s reader -- were never named, so
+  `gpuwm downscale` refused gpuwm output as a child surface source.
+  Fixed at the source: five rows join the history inventory behind the
+  land-surface-scheme gate the soil rows already sit behind, IVGTYP and
+  SEAICE ride along (an absent SEAICE was substituted with zeros, so
+  ice-covered columns warm-started ice-free with nothing said), every
+  string is transcribed from the pinned WRF v4.6.1 Registry, and
+  ISOILWATER joins the global attributes stock WRF writes. A child's own
+  history is itself a valid `--child-surface-from` file now.
+- A streamed `[tiles]` domain consumes its lateral boundaries on the
+  domain's BOUND Davies clock, bit-identical to the resident run.  Every
+  production real-data root binds a DomainClock to its external LBC
+  mirror (WRF's post-increment dtbc, `dt..T_bdy`); the streamed tile
+  hook converted each buffer to the streaming attachment and silently
+  DROPPED that binding, so the buffers fell back to the retired
+  `elapsed - interval.start` path (`0..T-dt`) and every clock-bound
+  streamed run -- `gpuwm go` with `[tiles]`, the streamed offline child
+  -- forced its boundaries ONE TIMESTEP LATE, a constant phase error
+  with no NaN and no refusal.  Measured on the offline child at
+  t+15 min: 41 of 76 wrfout fields differed (W by 0.0043 m/s on a
+  0.174 m/s field); at 438x350x49 with the clock bound, 9/9 carriers,
+  max|d| 0.43.  The hook now rebinds the domain's clock onto every buffer
+  it converts, and both external attach functions preserve an existing
+  binding across re-attachment.  The unbound compatibility semantics
+  (direct era5/gfs routes without a DomainClock) are proven unmoved, and
+  nested children were never affected.
+- A streamed domain's `refresh_state` lands the scattered `diag/*`
+  members back on the physics driver, so routes that publish frames off
+  the DomainState (`gpuwm.io.wrfout.state_frame`; the offline child)
+  emit the OLR the tiles computed instead of the snapshot's zeros --
+  measured: streamed OLR max 0.0 against 292.77 W/m2 resident, with the
+  production StoreFrame route publishing the same store correctly the
+  whole time.  A store diagnostic with no destination on the state is
+  now refused rather than silently skipped.
+- A tree whose `[tiles]` block cannot run is refused when it is read, not
+  when it has been paid for -- and the refusal now names the shape that
+  is actually unsupported. What a tree may not contain is a coupling
+  edge with BOTH ends streamed: that composition would put the
+  streamed-parent footprint corridor, the streamed-child frame corridor
+  and the per-tile table windows in one FORCE, no gate has driven it,
+  and ungated is refused rather than run. `mode = "on"` streams every
+  grid unconditionally, so on a tree it forces exactly that shape on
+  every edge, and it is refused by `build_experiment` -- the one load
+  every front door shares -- naming the mechanism and the three ways
+  out, rather than by the tile builder after the root had already pinned
+  a whole host store, a fetch and two preparations. `mode = "auto"` stays
+  accepted over a tree: streamed children and streamed parents are both
+  legal roads now, and if the pricing ever streams both ends of one edge
+  the walk refuses at DECISION time with both grids named and no builder
+  invoked. The earlier admission refused every nested `mode = "on"`
+  config for being nested and short-circuited every nest under `auto` to
+  resident without asking the planner; both are gone, so the child road
+  is reachable from the front doors that carry it and a nest's receipt
+  line carries the planner's own arithmetic.
+- A 1024x1024 streamed forecast now runs from a bare default command.
+  `--stream-init auto` priced the resident road from the prepared cache's
+  `state/*` manifest, the serialized prognostics and not a `DomainState`,
+  so at 1024x1024x49 it read 4 716 B per column where the state alone
+  measures 11 276.5: auto called a 6.45 GiB fit and the resident road died
+  with 16 276 726 272 B allocated, with nothing re-routing after the
+  refusal. Auto now prices this domain's own columns at the cost the whole
+  route was measured at, 15 780 B per column at nz = 49, and takes the
+  larger of that and the manifest term. The measured term predicts that
+  refusal to 0.4%. 384x384 still prices at 2.17 GiB and still takes the
+  resident road; the crossover on a 16 GB card sits near 768x768, and the
+  receipt names which term set the price.
+- The store-direct road runs the full-state health gate. It used to arm
+  only the per-step stability fold -- u, w and theta finiteness plus the
+  two Courant terms -- and declare the descriptor gate's per-field bounds
+  out of reach. The domain is in the pinned host store, so the gate runs
+  there instead, over the same fields under the same `rule_for_field`
+  rules: moisture ranges, coupled-mass positivity, the geopotential and
+  specific-volume limits, the soil bounds, and `gpu_integer_policy`'s
+  exclusions and its refusal of an undeclared integer dtype. Armed at
+  `initialized.d01` and `final.d01`, where the resident road runs it, and
+  a failure is terminal on both. A store that turned out to be slab-height
+  rather than domain-shaped is refused rather than reported as a pass. The
+  executor's periodic full-state gate stays unarmed on cost, with the
+  measured cost of one whole-store pass in the receipt beside the reason.
+- Installing gpuwm no longer DOWNGRADES a user's wrf-rust. The `[render]`
+  extra pinned `wrf-rust==0.2.35`, so `pip install 'gpuwm[render]'` (and
+  `[all]`, `[all-cu12]`, `[all-cu13]`, which route through it) replaced a
+  working newer core with the certified one -- reported from the field
+  against 0.2.38. The extra now declares the window `>=0.2.35,<0.3`: the
+  floor is what the products are certified against, the ceiling is where
+  upstream is free to change the diagnostic surface. Four runtime checks
+  that compared `== "0.2.35"` and refused anything else -- the observation
+  battery's `require_science_core`, the flagship product tool's
+  import-time assertion, the cross-reader receipt's pin verdict, and
+  `gpuwm render`'s install hint -- test the same window now, sourced from
+  one module (`gpuwm/science_core.py`) instead of four copies of a string.
+  Proven at both ends of the window: the resolver leaves an existing
+  0.2.38 alone, the floor still satisfies, and the suites pass on 0.2.35
+  and 0.2.38 alike. Score files now report the version that ACTUALLY read
+  the run beside the window that was required, rather than naming the
+  floor regardless. `__version__` remains recorded and never gated:
+  wrf-rust 0.2.35 shipped the attribute reading `0.2.34`.
+- `[tiles]` streaming no longer runs in silence when only a per-domain
+  table asks for it. `streaming_receipt` was keyed on the TREE-WIDE
+  `[tiles]` table, so a tree whose tree-wide mode is `off` and whose child
+  carries `tiles = { mode = "on" }` streamed that grid and produced an
+  EMPTY receipt: no line named the grid that tiled. The receipt is keyed
+  on the per-domain DECISIONS now -- the tree-wide table is a default, not
+  the answer. Where the tree-wide mode did not ask for what happened, the
+  summary names the domains that overrode it. A tree the tree-wide table
+  governs keeps its existing receipt bytes exactly.
+- Four files reached the release line with CRLF line endings after a lane
+  edited them on a Windows worktree, three of them product source
+  (`gpuwm/core/streaming.py`, `gpuwm/experiment.py`, `gpuwm/runtime.py`).
+  `.gitattributes` says `* -text`, so the flip entered the object database
+  and every hash the product takes of those files would have disagreed
+  with a Linux clone's. Normalised back to LF.
+
+- The red-on-revert harness graded the tree it was written in rather than
+  the tree it was run from: it opened with an absolute path to its lane
+  worktree, so a copy carried onto any other checkout kept reverting and
+  testing the ORIGINAL source and reporting PROVEN about it. It now
+  derives the tree from its own location and refuses if `gpuwm` resolves
+  outside it, and its restore leg round-trips bytes instead of writing
+  back a CRLF copy of every LF file it touched.
+
+- `gpuwm doctor`'s CUDA advice is installable. A support case on Ubuntu
+  read `MISSING cupy (GPU runtime) ... Failed to find CUDA headers` and
+  was offered `pip install 'gpuwm[gpu-cu13]'`: the wheel was already
+  installed and no gpuwm extra has ever carried a CUDA toolkit, so pip
+  reported success and the fault survived. That branch now reads the
+  import's own message and routes on it -- the header/`CUDA_PATH`/`nvcc`
+  signature gets the toolkit remedy (`conda install -c nvidia
+  cuda-toolkit=<the major this box's driver serves>`, conda-forge and the
+  NVIDIA pip wheels named beside it), a missing shared library keeps the
+  wheel remedy, and a message carrying neither signature prints BOTH
+  labelled by symptom rather than guessing. Separately, no remedy names a
+  suffixed NVIDIA package any more: NVIDIA has deprecated `-cu12` as well
+  as `-cu13`, and both spellings install cleanly and supply nothing, so
+  the radar-DA eigensolver line and the headers fallback print
+  `nvidia-cusolver`/`nvidia-cuda-runtime`/`nvidia-cuda-nvrtc` with the
+  detected major in a version pin instead of in the package name.
+  `docs/da-nowcast-quickstart.md` still handed CUDA-12 readers the
+  tombstone spelling and claimed doctor prints it; corrected to what the
+  code emits, and the tombstone rule now covers every tracked file under
+  `docs/` over install lines rather than mentions, so a doc may warn
+  about a tombstone but may not tell anyone to install one.
+
+Battery:
+- `tests/test_streaming_clock_arming.py` is registered on the GPU pytest
+  shard (`tools/battery/gpu_shard_files.txt`). It shipped with its lane
+  and was on no list, so between the lane landing and this entry the test
+  existed and no leg ran it.
+- The two front-door nesting legs are scripted GPU gates in
+  `tools/battery/tiles_gates.txt` (`tools/tiles_door_legs.py`, `LEG=A` and
+  `LEG=B`): each drives `gpuwm run` twice for the corruption screen, then
+  digest-compares against an all-resident control of the same tree, and
+  fails when the receipt says nothing streamed. Their case files live at
+  `configs/battery/shape_tiles_*` and carry no card budget and no
+  machine-specific path.
+- Five more files join the CPU stage-1 list, all found on no list at the
+  cut: `tests/test_doctor_cuda_headers.py`, which holds both tombstone
+  guards and now the docs guard; the wrf-rust pin guard and its two
+  consumers (`tests/test_obs_model_source.py`,
+  `tests/test_flagship_tools.py`, `tests/test_obs_cross_reader.py`); and
+  `tests/test_gpu_shard_manifest.py`, the gate that keeps the GPU shard
+  list honest and was itself an entry on nothing.
+
 ## 2.2.1 (2026-08-13)
 
 Fixed:

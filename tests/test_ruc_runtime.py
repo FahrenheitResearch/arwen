@@ -83,6 +83,27 @@ _CARRIED = (*RUC_STATE_2D, *RUC_STATE_3D,
             "acsnom", "smstav", "smstot", "chklowq", "t2", "th2", "q2")
 
 
+def _host_frame_value(value):
+    """One frame field on the host, KEEPING ITS TYPE.
+
+    These two writer tests used to coerce every field to ``float32`` on the
+    way out, which was invisible while the frame was all reals and became a
+    refusal the moment the land-identity rows joined it: WRF declares
+    ISLTYP/IVGTYP ``integer`` (Registry.EM_COMMON:857-858) and
+    ``WrfoutWriter`` refuses a float array for an integer-declared variable
+    rather than truncate every category.  The blanket cast was the test's
+    own artifact -- the production frame builders hand ``state_frame``'s
+    output to the writer unchanged, integers included -- so the cast is
+    narrowed to the floats it was ever meant for.
+    """
+    import numpy as _np
+
+    array = _np.asarray(value)
+    if array.dtype.kind in "iu":
+        return array
+    return _np.asarray(array, dtype=_np.float32)
+
+
 def _maxsmc(soiltyp: int) -> float:
     """MAXSMC for one STAS-RUC row, read from the packaged table.
 
@@ -1328,8 +1349,7 @@ def test_a_real_wrfout_carries_nine_soil_layers_and_rucs_own_fields(tmp_path):
     writer = WrfoutWriter(path, nx=cfg.nx, ny=cfg.ny, nz=cfg.nz,
                           dx=cfg.dx, dy=cfg.dy,
                           soil_layers=soil_layer_count(cfg))
-    host = {name: np.asarray(value, dtype=np.float32)
-            for name, value in frame.items()}
+    host = {name: _host_frame_value(value) for name, value in frame.items()}
     writer.write_frame("2026-07-01_18:00:48", host)
     writer.close()
 
@@ -1385,7 +1405,7 @@ def test_a_noah_wrfout_gains_no_ruc_variables(tmp_path):
     writer = WrfoutWriter(path, nx=cfg.nx, ny=cfg.ny, nz=cfg.nz,
                           dx=cfg.dx, dy=cfg.dy, soil_layers=4)
     writer.write_frame("2026-07-01_18:00:00",
-                       {name: np.asarray(value, dtype=np.float32)
+                       {name: _host_frame_value(value)
                         for name, value in frame.items()})
     writer.close()
     with netCDF4.Dataset(path) as ds:

@@ -301,8 +301,8 @@ class StorePoison:
             def __enter__(self):
                 self.real = module.make_tile_hook
 
-                def patched(per_tile):
-                    inner = self.real(per_tile)
+                def patched(per_tile, **kwargs):
+                    inner = self.real(per_tile, **kwargs)
 
                     def hook(tile_state, tspec, itile, stream):
                         inner(tile_state, tspec, itile, stream)

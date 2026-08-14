@@ -21,7 +21,12 @@ import time
 import netCDF4
 import numpy as np
 
-from gpuwm.config import load_config, radiation_scheme_ids, soil_layer_count
+from gpuwm.config import (
+    load_config,
+    load_streaming_options,
+    radiation_scheme_ids,
+    soil_layer_count,
+)
 from gpuwm.io.wrfout import INITIAL_CONDITION_GLOBAL_ATTRS
 from gpuwm.offline_child import (
     OfflineChildContractError,
@@ -75,6 +80,13 @@ _CAPABILITIES = {
     # surface source (ndown-equivalent contract); mp-only children run
     # without one.
     "full_physics_surface_source": "child-grid-file-required",
+    # ``[tiles]`` in the child config: this route wires a streamed-domain
+    # builder, so it HONORS the block rather than refusing it.  A child
+    # refined out of an archived parent is the domain most likely to outgrow
+    # the card it is being run on, and until this it was the one route that
+    # could not ask to stream -- the RunConfig schema refused the table
+    # outright as unknown.
+    "tiles": "honored",
 }
 
 
@@ -337,7 +349,8 @@ def _parent_grid_metadata(path: Path) -> tuple[float, float, dict[str, object]]:
     return dx, dy, attrs
 
 
-def _output_fields(state, initial, refl_field=None) -> dict[str, np.ndarray]:
+def _output_fields(state, initial, refl_field=None,
+                   surface=None) -> dict[str, np.ndarray]:
     import cupy as cp
     from gpuwm.io.wrfout import state_frame
 
@@ -355,15 +368,45 @@ def _output_fields(state, initial, refl_field=None) -> dict[str, np.ndarray]:
         "XLAT": np.asarray(initial.fields["XLAT"], dtype=np.float32),
         "XLONG": np.asarray(initial.fields["XLONG"], dtype=np.float32),
     })
+    if surface is not None:
+        # The two static land fields the experiment routes take from the
+        # geography (gpuwm.runtime._metadata_frame) and this route has no
+        # geography for.  It has something better: the child-grid surface
+        # source it was warm-started from, which is where its land identity
+        # legitimately comes from.  Written verbatim, so a child's own
+        # history is itself a valid --child-surface-from file -- the same
+        # completeness the parent's history now has, one generation down.
+        result.update({
+            "LANDMASK": np.asarray(surface.fields["LANDMASK"],
+                                   dtype=np.float32),
+            "LU_INDEX": np.asarray(surface.fields["LU_INDEX"],
+                                   dtype=np.float32),
+        })
     return result
 
 
 def _write_frame(path: Path, state, cfg, initial, valid_time,
                  projection_attrs: dict[str, object], placement,
-                 refl_field=None) -> None:
+                 refl_field=None, surface=None) -> None:
     from gpuwm.io.wrfout import WrfoutWriter
 
     attrs = dict(projection_attrs)
+    if surface is not None:
+        # The land-use table identity, forwarded from the child's own
+        # surface source.  read_child_surface_state requires these four as
+        # EVIDENCE rather than assuming a table, so a child history file
+        # that omitted them could not seed a grandchild however complete its
+        # fields were -- and inventing them here would be exactly the
+        # assumption that refusal exists to prevent.  ISOILWATER rides along
+        # because stock WRF writes it too (share/output_wrf.F:973).
+        identity = surface.identity
+        attrs.update({
+            "MMINLU": str(identity["MMINLU"]),
+            "ISWATER": np.int32(identity["ISWATER"]),
+            "ISLAKE": np.int32(identity["ISLAKE"]),
+            "ISICE": np.int32(identity["ISICE"]),
+            "ISOILWATER": np.int32(identity["ISOILWATER"]),
+        })
     attrs.update({
         "GRID_ID": np.int32(cfg.grid_id),
         "PARENT_ID": np.int32(0),
@@ -388,12 +431,13 @@ def _write_frame(path: Path, state, cfg, initial, valid_time,
             soil_layers=soil_layer_count(cfg)) as writer:
         writer.write_frame(
             valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
-            _output_fields(state, initial, refl_field=refl_field))
+            _output_fields(state, initial, refl_field=refl_field,
+                           surface=surface))
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
     import cupy as cp
-    from gpuwm.core.dycore import stability_report, step
+    from gpuwm.core import streaming
     from gpuwm.core.refl import consume_refl_10cm, refl_10cm_is_stashed
     from gpuwm.ingest.lateral_bc import (
         attach_streaming_lateral_boundaries,
@@ -407,6 +451,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     started = time.perf_counter()
     outdir = _create_output_root(args.outdir)
     cfg = load_config(args.child_config)
+    # Read at ADMISSION, beside the config it belongs to, and before any
+    # parent frame is opened: mode = 'on' streams unconditionally and needs
+    # no card to be knowable, so a malformed block fails here rather than
+    # after the whole archive has been interpolated.
+    tiles = load_streaming_options(args.child_config)
     if not cfg.specified or cfg.nested:
         raise OfflineChildContractError(
             "child config must set specified=true and nested=false")
@@ -490,6 +539,31 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     _initialize_child_physics(child, cfg, initial, surface,
                               initial.valid_time)
     cp.cuda.runtime.deviceSynchronize()
+    # ``[tiles]``, wired exactly the way the prepared front doors wire it
+    # (gpuwm.prepared_single_domain_forecast: decide ONCE, hand the decision
+    # to make_stepper, record it).  With no block this is
+    # ``gpuwm.core.dycore.step`` ITSELF -- the same function object the loop
+    # below has always called -- so a child that configures nothing is
+    # byte-for-byte the run it was before this seam existed.
+    #
+    # AFTER the physics driver is attached, never before: the builder fills
+    # the store from the PREPARED state and builds every tile buffer with the
+    # domain's own physics selectors, so a stepper made against a bare
+    # DomainState would carry a different inventory than the domain it is
+    # meant to be.
+    streaming_decision = streaming.decide(cfg, tiles)
+    stepper = streaming.make_stepper(
+        child, cfg, tiles, decision=streaming_decision,
+        build=streaming.standalone_domain_builder(grid_id=int(cfg.grid_id)))
+    streaming_report = streaming.streaming_receipt(
+        tiles, {int(cfg.grid_id): streaming_decision})
+    if streaming_report:
+        _log("child_tiles", **streaming_report)
+    # ``stability_report`` ITSELF when resident; the per-tile fold when
+    # streamed.  The state is not where a streamed domain lives, so the
+    # whole-field reduction would inspect the snapshot that filled the store
+    # and pass forever.
+    child_stability = streaming.stability_observer(stepper)
     boundary_bytes = lateral_boundary_resident_bytes(child)
     child_memory_initial = _memory_snapshot(cp)
     child_pool_reserved_peak = child_memory_initial["pool_reserved_bytes"]
@@ -504,11 +578,19 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     def emit_output() -> None:
         valid = initial.valid_time + timedelta(
             seconds=float(clock.elapsed_seconds))
+        # THE HISTORY CADENCE, which is where StreamedDomain.refresh_state
+        # says this belongs.  A streamed domain's forecast is in the pinned
+        # host store and this DomainState is the snapshot that filled it, so
+        # without the copy every frame after the cold-start one would be the
+        # initial condition under a later timestamp -- correct inventory,
+        # correct Times, no forecast.  Zero and a getattr when resident.
+        streaming.refresh_streamed_state(stepper, child)
         refl = (consume_refl_10cm(child)
                 if refl_10cm_is_stashed(child) else None)
         path = outdir / wrfout_filename(valid, domain_id=cfg.grid_id)
         _write_frame(path, child, cfg, initial, valid,
-                     projection_attrs, placement, refl_field=refl)
+                     projection_attrs, placement, refl_field=refl,
+                     surface=surface)
         output_paths.append(path)
         # History-interval reset of the UP_HELI_MAX window (no-op unless
         # the child config enables nwp_diagnostics; the synchronous
@@ -520,7 +602,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 
     emit_output()
     step_seconds = []
-    child_health = stability_report(child, cfg)
+    child_health = child_stability(child, cfg)
     for step_index in range(1, steps + 1):
         # The executor's exact per-step recurrence (core/clock.py
         # execute_schedule): dtbc zeroes at every external interval seam
@@ -532,12 +614,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         clock.prepare_step()
         output_due = step_index % output_steps == 0 or step_index == steps
         step_started = time.perf_counter()
-        step(child, cfg, refl_10cm_due=output_due)
+        stepper(child, cfg, refl_10cm_due=output_due)
         cp.cuda.runtime.deviceSynchronize()
         step_seconds.append(time.perf_counter() - step_started)
         clock.advance()
         if step_index % health_steps == 0 or step_index == steps:
-            child_health = stability_report(child, cfg)
+            child_health = child_stability(child, cfg)
             memory = _memory_snapshot(cp)
             child_pool_reserved_peak = max(
                 child_pool_reserved_peak, memory["pool_reserved_bytes"])
@@ -554,6 +636,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                     f"offline child became non-finite at step {step_index}")
         if output_due:
             emit_output()
+    # "and once more before its final read" -- the checkpoint and every
+    # summary field below read the DomainState, and the last emit_output
+    # refreshed it only because the final step is always output-due.  Stated
+    # here rather than inferred from that coincidence: a run whose cadence
+    # changed would otherwise checkpoint the analysis.
+    carriers_refreshed = streaming.refresh_streamed_state(stepper, child)
     restart = write_restart(
         outdir / f"gpuwmrst_d{cfg.grid_id:02d}_final.npz", child, cfg)
     sample = np.asarray(step_seconds, dtype=np.float64)
@@ -604,6 +692,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             None if surface is None else dict(surface.receipt)),
         "child_surface_file_receipts": surface_file_receipts,
         "preparation_seconds": prepared.preparation_seconds,
+        # ``{}`` for a child that configures no [tiles], which is what keeps
+        # every report written before this seam existed byte-identical.  A
+        # configured child gets the per-grid verdict, and ``streamed_any``
+        # is the field to assert on: a mode='auto' child that declined and
+        # an unconfigured one are otherwise indistinguishable.
+        "tiles": streaming_report,
+        "streamed_carriers_refreshed": carriers_refreshed,
         "boundary_intervals": len(prepared.boundaries.intervals),
         "boundary_device_resident_bytes": boundary_bytes,
         "boundary_device_reload_count": lateral_boundary_reload_count(child),

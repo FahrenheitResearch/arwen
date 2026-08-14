@@ -181,3 +181,30 @@ cpu  tilestream.test_overlap
 # the visible cards, so a one-card box gates the full geometry and
 # forcing arithmetic; the transport degenerates to same-device copies.
 gpu  tilestream.test_forced_gate
+
+# THE TWO FRONT-DOOR NESTING LEGS (2.3.0 round 2, task #223).  Every gate
+# above reaches the transport through `gpuwm.core.streaming` or
+# `tilestream`, and so cannot see the defect class that made 2.3.0 a re-cut:
+# the shape RUNS and no user can REACH it.  Task #196's headline was exactly
+# that -- streaming worked and every product front door refused it -- and
+# after that fix two nesting shapes were still unreachable.  These two legs
+# type what the documentation tells a user to type, `gpuwm run <config>
+# --outdir <dir>`, with zero workaround flags, and fail if the door refuses.
+#
+# Both carry feedback = 1 (two-way), both dual-run for the corruption
+# screen, and both are digest-compared against an all-resident control of
+# the same tree.  The control is not decoration: a leg that quietly declined
+# to stream matches its own second run perfectly, so the dual run alone
+# cannot tell streaming from a no-op.  The receipt's `streamed_any` is
+# asserted for the same reason and fails the gate when false.
+#
+# LEG A is a STREAMED PARENT over a RESIDENT CHILD; LEG B is the roles-
+# flipped twin, and B is the shape whose receipt was empty until the round-2
+# rider re-keyed `streaming_receipt` on the per-domain decisions.
+#
+# The case templates are configs/battery/shape_tiles_*.toml.tmpl and carry
+# no card budget: vram_budget_bytes is a fact about a card, so the gate
+# substitutes it (GPUWM_TILES_VRAM_BUDGET_BYTES, else the planner's probe).
+# GPUWM_CASE_DATA_ROOT must point at the directory holding WPS_GEOG.
+gpu  tools.tiles_door_legs  LEG=A
+gpu  tools.tiles_door_legs  LEG=B

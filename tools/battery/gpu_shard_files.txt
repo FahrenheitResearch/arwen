@@ -113,6 +113,28 @@ tests/test_pd_advection.py
 tests/test_wrfout_conformance.py
 
 # ---------------------------------------------------------------------------
+# SHARD 1d: the streamed production clock, ARMED.
+#
+# `pytestmark = requires_gpu` on the whole module, so it is 100% skipped on
+# a CPU box and belongs here by the same rule as 1a.
+#
+# It earns the per-cut leg rather than the weekly one because of WHAT it
+# asserts.  The three bound roads -- streamed parent, streamed child,
+# per-domain [tiles] -- meet one carrier inventory here, and the property
+# is that the production clock is ARMED on each of them.  A streamed run
+# whose clock never arms does not crash: it produces a forecast, and the
+# lateral boundaries lag it by a timestep (task #219, where the gate suite
+# was structurally blind to exactly this).  Silent-wrong-answer coverage is
+# the last thing to run weekly.
+#
+# Registered at the 2.3.0 round-2 assembly.  lane/reach-223 shipped the
+# file and did not list it, so between the lane landing and this line the
+# test existed and no leg ran it -- the "a gate nobody can enumerate"
+# failure tools/battery/tiles_gates.txt names in its own header.
+# ---------------------------------------------------------------------------
+tests/test_streaming_clock_arming.py
+
+# ---------------------------------------------------------------------------
 # SHARD 2 (WEEKLY, not per-cut): the GF cumulus family.
 #
 # The audit's shard-design finding is that defect density is inverted

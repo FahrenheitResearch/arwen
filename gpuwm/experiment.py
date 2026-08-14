@@ -255,6 +255,12 @@ _DOMAIN_KEYS = frozenset({
     # carrying `spawn = {...}` is declared, reserved in the memory plan,
     # and integrates nothing until its trigger fires mid-run.
     "spawn",
+    # The per-domain [tiles] override (gpuwm/core/streaming.py): a domain
+    # carrying `tiles = {...}` chooses its OWN road, and the tree-wide
+    # [tiles] table is the default for every domain that does not.  This
+    # is how "stream the parent, keep the child resident" -- and its
+    # inverse -- are said explicitly rather than left to the planner.
+    "tiles",
     *_DOMAIN_RUN_OVERRIDES,
 })
 _DOMAIN_REQUIRED = ("grid_id", "parent_id", "i_parent_start",
@@ -641,6 +647,18 @@ class DomainConfig:
     #: plan's and the manual time-trigger's), and the fired placement is
     #: chosen at trigger time (:func:`active_experiment`).
     spawn: "object | None" = None
+    #: This domain's own ``[tiles]`` road (:class:`gpuwm.core.streaming
+    #: .StreamingOptions`), or ``None`` to take the tree-wide table.
+    #: ``None`` is the inherit contract and drops out of the restart
+    #: identity, so every experiment written before the per-domain
+    #: surface existed keeps its exact fingerprint.
+    #:
+    #: Unlike ``spawn``, a DECLARED value binds nothing either: ``[tiles]``
+    #: is an execution choice whose entire claim is that it changes no
+    #: bytes, so a domain that streamed must resume resident and a domain
+    #: that ran resident must resume streamed.  See
+    #: ``streaming.identity_payload_entry``.
+    tiles: "object | None" = None
 
 
 @dataclass(frozen=True)
@@ -2141,6 +2159,42 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             spawn_cfg = build_spawn_config(
                 dict(dom["spawn"]), source, grid_id=grid_id)
 
+        # --- tiles: this domain's own road -------------------------------
+        # Validated by the SAME parser the tree-wide table uses, so one
+        # vocabulary of keys, one set of value refusals, one place a new
+        # knob is added.  A domain that says nothing takes the tree-wide
+        # table; a domain that speaks overrides it entirely rather than
+        # merging key-by-key, because a half-inherited tiling ("mode from
+        # the tree, store from the domain") is a configuration nobody can
+        # read off the file.
+        domain_tiles = None
+        if "tiles" in dom:
+            if not isinstance(dom["tiles"], dict):
+                raise ValueError(
+                    f"tiles on [[domain]] grid_id = {grid_id} of {source} "
+                    "must be an inline TABLE, e.g. tiles = { mode = "
+                    f"\"auto\" }}, got {dom['tiles']!r}.")
+            # The two budget keys name a CARD, not a domain, and the tree
+            # decision subtracts every domain's claim from one number.
+            # Per-domain copies of it would be several answers to "how
+            # much VRAM is there", and the walk would have to pick one --
+            # so they are refused here, where the fix is obvious, rather
+            # than silently overridden where it is not.
+            card_keys = sorted({"vram_budget_bytes", "host_budget_bytes"}
+                               & set(dom["tiles"]))
+            if card_keys:
+                raise ValueError(
+                    f"tiles on [[domain]] grid_id = {grid_id} of {source} "
+                    f"sets {card_keys}, which name the CARD and not this "
+                    "domain: the tree decision prices every domain against "
+                    "one budget, so a per-domain copy would be a second "
+                    "answer to how much VRAM there is.  Set them on the "
+                    "tree-wide [tiles] table instead; the per-domain table "
+                    "chooses this domain's ROAD.")
+            domain_tiles = streaming_module.StreamingOptions.from_mapping(
+                dict(dom["tiles"]),
+                source=f"[[domain]] grid_id = {grid_id} of {source}")
+
         # Flags: root takes external specified LBCs, children are nested
         # -- WRF &bdy_control, bundle namelist.input specified=T,F,F,F /
         # nested=F,T,T,T; mutually exclusive by construction.
@@ -2480,7 +2534,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             history_interval_s=history_interval_s, run=run,
             time_step=time_step, time_step_fract_num=fract_num,
             time_step_fract_den=fract_den, start_time=domain_start,
-            spawn=spawn_cfg)
+            spawn=spawn_cfg, tiles=domain_tiles)
         domains.append(dc)
         by_id[grid_id] = dc
         dt_by_id[grid_id] = dt_ex
@@ -2575,6 +2629,21 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         physics_mode=physics_mode,
         perturbation=perturbation,
         tiles=tiles)
+    # [tiles] against the TREE, and it needs the assembled experiment
+    # because neither half of the question is answerable alone: the block
+    # is parsed hundreds of lines above, the parent_id edges hundreds of
+    # lines below, and only here are both in hand.  mode = 'on' streams
+    # every grid, so on a tree every coupling edge would have BOTH ends
+    # streamed -- the one concurrent-nesting shape the coupler refuses --
+    # and the combination is refused from the config text, at the one load
+    # every front door shares, rather than at the first FORCE, which on a
+    # prepared tree is a fetch, two preparations and a whole tree
+    # downstream of a fact that was legible in the TOML.  mode = 'auto' is
+    # deliberately NOT refused: streamed children and streamed parents are
+    # both legal roads, the planner prices each domain against the budget
+    # its predecessors left, and steppers_for_tree refuses a both-streamed
+    # edge at decision time, before anything is built.
+    streaming_module.refuse_streamed_nests(experiment, source=source)
     from gpuwm.physics_compat import (
         constant_longwave_refusal,
         nocturnal_radiation_refusal,

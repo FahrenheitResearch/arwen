@@ -257,6 +257,37 @@ def _remap_declared_soil(
     raise ValueError(f"unsupported soil remap kind {remap['kind']!r}")
 
 
+def soil_source_orography(declared, fields):
+    """The terrain the SOURCE model's soil fields were defined on.
+
+    ONE resolution for every route, for the same reason the per-source
+    evidence spellings live in this module: the root, the nested child, and
+    the ERA5 direct door each answered this question separately and drifted.
+    A met source declares its own orography two ways -- an explicit
+    artifact the case points at, or an invariant record inside the forcing
+    itself, which the horizontal stage remaps onto the mass grid as
+    ``SOURCE_OROGRAPHY`` (ERA5's SOILGEO geopotential, HRRR's SOILHGT).
+    Every route resolved only the first, so a case whose orography rode
+    inside its GRIB silently lost WRF's ``adjust_soil_temp_new`` elevation
+    lapse -- and the ERA5 direct door, which passes ``terrain``
+    unconditionally, died on :func:`preprocess_noah_soil`'s all-or-none
+    guard instead.
+
+    ``None`` is returned only when the route genuinely has neither, which
+    stays the historical no-adjustment path for sources that declare no
+    orography at all.  Callers that have already refused that case treat
+    ``None`` as an internal inconsistency.
+
+    This deliberately does NOT mirror ``initialize_real``'s refusal of a
+    declared artifact beside an embedded record: the routes refuse that
+    conflict upstream, where the declaration is still attributable to the
+    config line that made it.
+    """
+    if declared is not None:
+        return declared
+    return fields.get("SOURCE_OROGRAPHY")
+
+
 def _soil_temperature_elevation_delta(terrain, source_orography, terrestrial):
     """WRF ``adjust_soil_temp_new`` lapse increment (module_soil_pre.F:993-1073).
 
@@ -982,4 +1013,4 @@ __all__ = ["ERA5_LAYER_BOTTOMS_M", "HRRR_SOIL_NODE_DEPTHS_M",
            "NOAH_LAYER_THICKNESS_M", "NoahSoilState",
            "SOIL_TEMPERATURE_RECONCILER_NAMES", "SST_RECONCILER_NAMES",
            "preprocess_noah_soil", "reconciler_soil_temperature",
-           "reconciler_sst"]
+           "reconciler_sst", "soil_source_orography"]

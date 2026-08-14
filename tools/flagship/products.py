@@ -22,8 +22,16 @@ import netCDF4
 import numpy as np
 from wrf import WrfFile, getvar, interplevel
 
+from gpuwm.science_core import (
+    SCIENCE_CORE_FLOOR, SCIENCE_CORE_REQUIREMENT, version_supported,
+)
 
-PINNED_WRF_RUST_VERSION = "0.2.35"
+
+#: The floor of the certified window, re-exported from the one module that
+#: writes it.  The name survives because a receipt field and a cross-tree
+#: drift test both quote it; the CHECK below is the window, not equality,
+#: so a newer 0.2.x wrf-rust runs instead of being refused at import.
+PINNED_WRF_RUST_VERSION = SCIENCE_CORE_FLOOR
 _DOMAIN_RE = re.compile(r"^wrfout_(d\d{2})(?:_|$)", re.IGNORECASE)
 _FILENAME_TIME_RE = re.compile(
     r"wrfout_d\d{2}_(\d{4}-\d{2}-\d{2})[_T](\d{2})[:_](\d{2})[:_](\d{2})",
@@ -47,9 +55,9 @@ def _assert_wrf_rust_version() -> str:
         installed = importlib_metadata.version("wrf-rust")
     except importlib_metadata.PackageNotFoundError as exc:
         raise RuntimeError("required science core wrf-rust is not installed") from exc
-    if installed != PINNED_WRF_RUST_VERSION:
+    if not version_supported(installed):
         raise RuntimeError(
-            f"wrf-rust version mismatch: required {PINNED_WRF_RUST_VERSION}, "
+            f"wrf-rust version mismatch: required {SCIENCE_CORE_REQUIREMENT}, "
             f"found {installed}")
     return installed
 

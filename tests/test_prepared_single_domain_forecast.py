@@ -1900,13 +1900,15 @@ def test_unnamed_forecast_main_reaches_execution_and_states_the_status(
 
     # The double tracks the real signature, including `first_products`
     # -- the runner's own early render, which `main` now arms before the
-    # preflight.  A stub that swallowed **kwargs instead would keep
+    # preflight -- and `stream_init`, the initialization road a streamed
+    # forecast takes.  A stub that swallowed **kwargs instead would keep
     # passing while the argument it was handed went nowhere.
     def fake_run(inputs, *, output_directory, observer=None,
-                 first_products=None):
+                 first_products=None, stream_init="auto"):
         observed["inputs"] = inputs
         observed["observer"] = observer
         observed["first_products"] = first_products
+        observed["stream_init"] = stream_init
         return {
             "schema": runner.REPORT_SCHEMA,
             "status": "PASS",

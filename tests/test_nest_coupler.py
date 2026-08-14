@@ -725,19 +725,21 @@ def _publish(state, arrays):
             {f"state/{name}": value for name, value in arrays.items()})
 
 
-def test_force_refuses_a_streamed_child_rather_than_forcing_a_ghost():
-    """A streamed CHILD is unimplemented, so it must REFUSE, not proceed.
+def test_force_refuses_an_edge_with_both_ends_streamed():
+    """BOTH-streamed composes two gated corridors no gate has driven.
 
-    ``attach_nest_boundaries`` installs a device descriptor on the child's
-    ``DomainState``; a streamed child is stepped as tile buffers whose only
-    boundary hook is ``streaming.make_tile_hook``, which knows
-    ``attach_lateral_boundaries`` and nothing about nest tables.  Proceeding
-    would step the child with no nest forcing at all.
+    A streamed CHILD alone is the mirrored corridor and proceeds
+    (tests/test_streamed_child.py holds its units, tilestream/
+    test_streamed_child.py its gate); a streamed PARENT alone is the
+    inverse lane's gated corridor.  One edge with both ends streamed
+    would compose the footprint window, the frame window and the per-tile
+    table windows in a single FORCE, and ungated is refused, not run.
     """
-    _parent, child = _nodes()
+    parent, child = _nodes()
     coupler = NestCoupler(child)
     _publish(child.state, {"mup": child.state.mup.copy()})
-    with pytest.raises(RuntimeError, match="STREAMED child"):
+    _publish(parent.state, {"mup": parent.state.mup.copy()})
+    with pytest.raises(RuntimeError, match="BOTH ends streamed"):
         coupler.force(child)
     assert coupler.force_count == 0
 
@@ -768,35 +770,25 @@ def test_force_reads_the_parent_STORE_and_not_the_frozen_state(monkeypatch):
 
     swept = parent.state.mup.copy() + np.float32(7.0)
     _publish(parent.state, {"mup": swept})
-    # ``refresh_from_store`` is written for CuPy arrays (``ndarray.set``);
-    # on the host mirror the assignment is the same operation.  The
-    # RESIDENT no-op is reproduced too, and it is not decoration: ``force``
-    # syncs the CHILD as well as the parent, the child here is resident, and
-    # a stand-in that assumed every state had a store made this test raise
-    # AttributeError from inside the coupler -- which is a bug in the double,
-    # not in the coupler.
-    def _fake_refresh(state, attrs):
-        store = getattr(state, "_streamed_store", None)
-        if store is None:
-            return 0
-        moved = 0
-        for a in attrs:
-            src = store.get(f"state/{a}")
-            if src is None:
-                continue
-            dst = getattr(state, a)
-            dst[...] = src
-            moved += int(dst.nbytes)
-        return moved
-
-    monkeypatch.setattr("gpuwm.core.streaming.refresh_from_store",
-                        _fake_refresh)
+    # The REAL seam, no stand-in.  ``refresh_from_store`` used to be
+    # CuPy-only (``ndarray.set``), which is why a fake stood here; the
+    # windowed corridor gave it a host-mirror branch, so the seam under
+    # test is the seam that ships -- window arithmetic, clamp rule and the
+    # resident no-op included.  The probe cell (0, 0) is INSIDE the
+    # clamped footprint window of this fixture's geometry (child origin 3,
+    # span 10, halo 8 on a 16^2 parent covers the whole parent), so a
+    # windowed pull must still deliver the store's number there; the
+    # windowed-vs-stale distinction has its own GPU gate
+    # (tilestream/test_nest_executor.py, halo-starved control).
 
     coupler.force(child)
     parent_mu = [mu for kind, mu in seen if kind == "mu"]
     assert parent_mu, "no parent field was coupled"
     assert parent_mu[0] == pytest.approx(float(swept[0, 0]))
     assert coupler.force_count == 1
+    assert coupler.force_sync_bytes > 0, (
+        "the FORCE corridor moved no bytes for a published store; the "
+        "receipt is dead and the windowed pull cannot be audited")
 
 
 def test_resident_domains_never_consult_a_store():

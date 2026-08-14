@@ -223,3 +223,84 @@ def test_era5_geometry_receipt_has_portable_cache_reference(tmp_path):
     receipt = json.loads(receipt_path.read_text())
     assert receipt["cache"]["path"] == "native-static.npz"
     assert receipt["cache"]["sha256"] == _sha256(cache)
+
+
+# ---------------------------------------------------------------------------
+# the soil hand-off on the route whose orography rides inside the GRIB
+#
+# The wizard emits a case with no source-orography artifact, because `gpuwm
+# fetch --source era5` writes the invariant geopotential INTO
+# era5-combined.grib.  On that route `source_terrain` is None by
+# construction, and the soil call used to forward that None beside a real
+# HGT_M -- so preprocess_noah_soil's all-or-none guard refused the whole
+# preparation.  initialize_real had resolved the same field for itself one
+# screen earlier; only the soil hand-off had not.
+
+_ERA5_TEMP_NAMES = ("ST000007", "ST007028", "ST028100", "ST100289")
+_ERA5_MOIST_NAMES = ("SM000007", "SM007028", "SM028100", "SM100289")
+
+
+def _era5_land_fields(shape=(3, 4), *, skin=290.0, orography=200.0):
+    """What interpolate_era5_to_lambert emits on the SOILGEO route.
+
+    SOURCE_OROGRAPHY is the renamed, remapped SOILGEO record: ERA5's own
+    terrain on the target mass grid, in metres.
+    """
+    fields = {
+        "LANDSEA": np.ones(shape),
+        "SKINTEMP": np.full(shape, skin),
+    }
+    fields.update({name: np.full(shape, 288.0) for name in _ERA5_TEMP_NAMES})
+    fields.update({name: np.full(shape, 0.30) for name in _ERA5_MOIST_NAMES})
+    fields["SOURCE_OROGRAPHY"] = np.full(shape, orography)
+    return fields
+
+
+def test_the_gribs_own_orography_is_what_the_soil_hand_off_lapses_from():
+    fields = _era5_land_fields(orography=200.0)
+    resolved = era5_direct._soil_source_orography(None, fields)
+    # The SOURCE terrain, not the target HGT_M and not None.
+    assert resolved is fields["SOURCE_OROGRAPHY"]
+    assert float(np.asarray(resolved).flat[0]) == 200.0
+
+
+def test_a_declared_artifact_still_outranks_the_embedded_record():
+    fields = _era5_land_fields(orography=200.0)
+    declared = np.full((3, 4), 640.0)
+    assert era5_direct._soil_source_orography(declared, fields) is declared
+
+
+def test_a_route_carrying_neither_source_orography_is_refused_by_name():
+    fields = _era5_land_fields()
+    del fields["SOURCE_OROGRAPHY"]
+    with pytest.raises(ValueError, match="no source orography"):
+        era5_direct._soil_source_orography(None, fields)
+
+
+def test_the_soilgeo_route_reaches_past_the_all_or_none_soil_guard():
+    """The wall itself: this raised ValueError before the resolver existed.
+
+    Reverting `_soil_source_orography(source_terrain, initial_met.fields)`
+    to a bare `source_terrain` puts this back to
+    "terrain and source_orography must be provided together".
+    """
+    from gpuwm.ingest.soil import preprocess_noah_soil
+
+    shape = (3, 4)
+    fields = _era5_land_fields(shape, skin=290.0, orography=200.0)
+    terrain = np.full(shape, 700.0)
+
+    state = preprocess_noah_soil(
+        fields,
+        soil_type=np.full(shape, 6),
+        deep_soil_temperature=np.full(shape, 285.0),
+        landmask=np.ones(shape),
+        terrain=terrain,
+        source_orography=era5_direct._soil_source_orography(None, fields),
+    )
+
+    # And the adjustment is real, not merely tolerated: WRF's
+    # adjust_soil_temp_new lapse over the 500 m the model grid climbs
+    # above ERA5's own terrain is -0.0065 * 500 = -3.25 K on land skin.
+    assert np.allclose(np.asarray(state.tsk), 290.0 - 3.25)
+    assert np.allclose(np.asarray(state.soil_temperature), 288.0 - 3.25)

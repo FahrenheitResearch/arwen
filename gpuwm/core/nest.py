@@ -92,6 +92,39 @@ def _state_attr(kind: str) -> str:
     return {"t": "thp", "ph": "php", "mu": "mup"}.get(kind, kind)
 
 
+#: How far outside a child's parent-cell footprint the coupler reaches, in
+#: PARENT cells.  ``register_nest``'s SINT stencil is +-2 and the
+#: specified/relaxation zone the force tables fill is ``spec_bdy_width``
+#: CHILD cells; add one for ``couple_nest_field``'s u/v face averages of
+#: ``mup`` and 8 bounds all of it at every ratio this tree admits.  A
+#: superset is free (the reader ignores what it does not need) while a
+#: subset is a stale cell inside the zone the reader does use -- and stale
+#: is the failure mode of this whole subsystem: finite, plausible and
+#: silent.  Lived in ``gpuwm.core.model`` while the executor projected the
+#: window on the coupler's behalf; it moved here when the coupler took
+#: ownership of its own reads, so a relocation (which rewrites the child's
+#: cfg this is computed from) moves the window with no second copy of the
+#: geometry to forget.
+NEST_FORCE_HALO_PARENT_CELLS = 8
+
+
+def parent_footprint_window(dc) -> tuple:
+    """The child's padded footprint on its parent, 0-based parent MASS cells.
+
+    ``(j0, j1, i0, i1)``, unclamped: the negative edge of a child that sits
+    against the parent's boundary is clamped by
+    :func:`gpuwm.core.streaming.window_slices`, the one slice rule every
+    consumer of a footprint window shares.
+    """
+    ratio = int(dc.parent_grid_ratio)
+    i0 = int(dc.i_parent_start) - 1
+    j0 = int(dc.j_parent_start) - 1
+    span_i = -(-int(dc.run.nx) // ratio)
+    span_j = -(-int(dc.run.ny) // ratio)
+    pad = NEST_FORCE_HALO_PARENT_CELLS
+    return (j0 - pad, j0 + span_j + pad, i0 - pad, i0 + span_i + pad)
+
+
 #: What ``gpuwm.core.diagnostics.update_diagnostics`` reads that is not setup
 #: geometry.  ``feedback_finalize`` re-runs it over the WHOLE parent, so a
 #: streamed parent needs these four correct everywhere -- not just inside the
@@ -103,11 +136,20 @@ _DIAGNOSTIC_INPUTS = ("mup", "thp", "php", "qv")
 _DIAGNOSTIC_OUTPUTS = ("p", "al", "alt")
 
 
-def _sync_in(state, attrs) -> int:
-    """Pull ``attrs`` from a streamed domain's store; no-op when resident."""
+def _sync_in(state, attrs, window=None) -> int:
+    """Pull ``attrs`` from a streamed domain's store; no-op when resident.
+
+    ``window`` narrows the pull to a footprint window
+    (:func:`parent_footprint_window`); the FORCE path uses it, because its
+    reads are bounded and a streamed parent is large by definition.  The
+    feedback path deliberately does not: ``feedback_finalize`` re-runs
+    ``update_diagnostics`` over the WHOLE parent, so its inputs must be
+    correct everywhere, and a windowed pull there would hand the
+    whole-parent kernel stale columns outside the rectangle.
+    """
     from gpuwm.core.streaming import refresh_from_store
 
-    return refresh_from_store(state, attrs)
+    return refresh_from_store(state, attrs, window=window)
 
 
 def _sync_out(state, attrs) -> int:
@@ -183,6 +225,12 @@ class NestCoupler:
         # without the mechanism (INFLOW-GENERATOR-ACCEPTANCE-V2 G1).
         self.inflow_perturbation = build_inflow_perturbation(child_node)
         self.force_count = 0
+        #: H2D bytes the FORCE corridor has pulled through the store seam,
+        #: cumulative.  A receipt, not a control: the honest cost of
+        #: forcing a nest off a streamed parent is a number the run should
+        #: be able to print, and the windowed corridor's whole claim is
+        #: that this grows with the CHILD's footprint, not the parent.
+        self.force_sync_bytes = 0
         self.first_parent_ticks = None
         self.last_parent_ticks = None
         self._geometry_bound = False
@@ -332,7 +380,21 @@ class NestCoupler:
                     "finite and plausible.")
             shape = transition_parent_field_shape(parent_state, kind)
         else:
-            _sync_in(parent_state, ("mup", _state_attr(kind)))
+            # WINDOWED, and this is the FORCE corridor's traffic bound:
+            # ``bdy_interp1`` only ever reads the parent inside the child's
+            # footprint plus the halo above, ``couple_nest_field`` is
+            # pointwise plus one-cell face averages, and everything else it
+            # touches is geography the transport never scatters.  So the
+            # pull is two windows, not two fields -- O(child footprint) per
+            # kind per parent step where it was O(parent).  The coupled
+            # values OUTSIDE the window are computed from whatever the
+            # state held (attach-time air); they are never read, because
+            # the donor maps cannot reach past the stencil the halo
+            # bounds.  ``tilestream/test_nest_executor.py`` holds the
+            # bitwise proof and the halo-starved negative control.
+            self.force_sync_bytes += _sync_in(
+                parent_state, ("mup", _state_attr(kind)),
+                window=parent_footprint_window(self.child_node.cfg))
             shape = _field_shape(parent_state, kind)
         backing = self._scratch("nest_parent_field")
         count = math.prod(shape)
@@ -397,7 +459,7 @@ class NestCoupler:
             ]
         return MappingProxyType(receipt)
 
-    def _coupled_child_field(self, kind: str):
+    def _coupled_child_field(self, kind: str, *, frame: bool = False):
         """Overwrite and return F16's one full-child arena prefix.
 
         ``bdy_interp1`` validates both full extents.  The child copy therefore
@@ -408,9 +470,28 @@ class NestCoupler:
         required because parent and child copies are simultaneously live in
         ``bdy_interp1``.  This also supports valid skinny grids where U or V
         is larger than W.
+
+        ``frame=True`` is the FORCE path on a STREAMED child, and it is the
+        child-side mirror of the parent corridor's footprint window:
+        ``bdy_interp1`` reads the child only inside its boundary zone, so
+        the store pull is four frame strips
+        (:func:`gpuwm.core.nest_stream.child_frame_windows`), not a domain
+        -- O(perimeter) per kind per parent step where a streamed child is
+        large by definition.  The coupled values OUTSIDE the strips are
+        computed from whatever the state held and are never read.  The
+        FEEDBACK path deliberately does not window: the restriction reads
+        the whole child interior, so its whole-field pull is the honest
+        cost of two-way feedback, not a miss.
         """
         state = self.child_node.state
-        _sync_in(state, ("mup", _state_attr(kind)))
+        if frame and _is_streamed(state):
+            from gpuwm.core.nest_stream import child_frame_windows
+
+            for window in child_frame_windows(self.child_node.cfg.run):
+                self.force_sync_bytes += _sync_in(
+                    state, ("mup", _state_attr(kind)), window=window)
+        else:
+            _sync_in(state, ("mup", _state_attr(kind)))
         shape = _field_shape(state, kind)
         backing = self._scratch("nest_child_field")
         count = math.prod(shape)
@@ -451,25 +532,31 @@ class NestCoupler:
                 f"parent must lead child by one parent interval before FORCE; "
                 f"lead={lead}, interval={parent_interval_ticks}")
 
-        if _is_streamed(node.state):
+        if _is_streamed(node.state) and _is_streamed(parent.state):
             raise RuntimeError(
-                "a STREAMED child cannot be forced: the rolling nest tables "
-                "attach to the child's DomainState "
-                "(lateral_bc.attach_nest_boundaries installs a device "
-                "descriptor on it), while a streamed domain is stepped as "
-                "tile buffers whose only boundary hook is "
-                "streaming.make_tile_hook -> attach_lateral_boundaries.  "
-                "There is no per-tile windowing of nest boundary tables at "
-                "all, so a streamed child is not untested, it is "
-                "unimplemented.  Stream the PARENT instead, or run the "
-                "child resident.")
+                "a coupling edge with BOTH ends streamed is refused: it "
+                "would compose the streamed-parent footprint corridor with "
+                "the streamed-child frame corridor and the per-tile table "
+                "windows in one FORCE, and no gate has driven that "
+                "composition.  Each shape is gated alone "
+                "(tilestream/test_nest_executor.py streams the parent, "
+                "tilestream/test_streamed_child.py streams the child); "
+                "ungated is refused, not run.  Leave one end resident.")
+        # A streamed CHILD alone is the mirrored corridor: FORCE pulls the
+        # child's boundary FRAME from its store (windowed _sync_in below),
+        # writes the same full-perimeter rolling tables the resident path
+        # writes, and the child's tile passes consume them through
+        # gpuwm.core.nest_stream's per-buffer packed windows, re-copied at
+        # kernel-launch time when the rolling generation moves.  A refusal
+        # used to stand here ("no per-tile windowing of nest boundary
+        # tables at all"); the corridor posed and gated it.
 
         self._bind_geometry()
         fields = {}
         run = node.cfg.run
         for kind in nest_field_kinds(run):
             parent_field = self._coupled_parent_field(kind)
-            child_field = self._coupled_child_field(kind)
+            child_field = self._coupled_child_field(kind, frame=True)
             stagger = _STAGGER.get(kind, "m")
             out = self._rolling_out(kind)
             bdy_interp1(

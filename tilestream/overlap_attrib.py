@@ -161,8 +161,8 @@ def install() -> None:
 
     real_make_hook = streaming.make_tile_hook
 
-    def make_tile_hook(per_tile):
-        hook = real_make_hook(per_tile)
+    def make_tile_hook(per_tile, **kwargs):
+        hook = real_make_hook(per_tile, **kwargs)
         return _timed_host("tile_hook", hook)
 
     streaming.make_tile_hook = make_tile_hook

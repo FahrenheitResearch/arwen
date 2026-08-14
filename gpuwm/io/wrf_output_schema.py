@@ -684,6 +684,72 @@ THOMPSON_AEROSOL_OUTPUT_FIELDS: dict[str, WrfOutputField] = {
 }
 
 
+#: The land/soil IDENTITY a land-surface run carries as model state, keyed by
+#: the name that reaches the NetCDF file.
+#:
+#: These are the fields that say WHAT THE GROUND IS, as opposed to what it is
+#: currently doing: the dominant soil and vegetation categories, the deep-soil
+#: lower boundary temperature, the vegetation fraction, and the sea-ice flag.
+#: gpuwm has always CARRIED all five -- they are ``PhysicsDriver.fields``
+#: entries, they are in the restart manifest, and every land-surface scheme
+#: reads them every step -- and until now it published none of them.
+#:
+#: WHY THAT WAS A DEFECT AND NOT A CHOICE.  A wrfout is the boundary of this
+#: product: it is what the offline child (``gpuwm downscale``) reads back as
+#: its ``--child-surface-from`` source, and what a stock-WRF-compatible
+#: consumer reads.  ``gpuwm.offline_child._SURFACE_REQUIRED_FIELDS`` names
+#: ISLTYP, TMN and VEGFRA among the nine fields a child-grid surface source
+#: must carry, so gpuwm's own history could not seed gpuwm's own child --
+#: measured at the 2.2.1 cut on a real 12 km parent and again on a nested
+#: d02.  The fields existed in state the whole time; only the writer's
+#: inventory was short.
+#:
+#: They are model-state rows, not physics-driver diagnostics -- no
+#: ``PhysicsDriver.fields`` key names them as an OUTPUT, and WRF declares all
+#: five in the core ``misc`` use column rather than behind a package gate --
+#: so they join :data:`HISTORY_FIELDS_BY_NETCDF_NAME` on the same terms
+#: mp=28's aerosol carriers do, and the selector-driven cardinality pin over
+#: :data:`OUTPUT_FIELDS_BY_NETCDF_NAME` keeps meaning what it says.
+#:
+#: Every string below is transcribed from the pinned WRF v4.6.1
+#: ``Registry/Registry.EM_COMMON`` and confirmed field-by-field against the
+#: group's own stock v4.6.1 wrfout (dtype, ``FieldType``, description, units,
+#: ``stagger``).  ``xice``'s external name is ``SEAICE``: WRF's Registry
+#: ``dname`` column is what reaches the file, and for this row the symbol and
+#: the dname differ.  The four empty units strings are WRF's own.
+#:
+#: WRITTEN ONLY WHEN A LAND-SURFACE SCHEME IS ROUTED, which is the gate
+#: ``SNOW``/``SNOWH``/``TSLB``/``SMOIS``/``SH2O`` already sit behind in
+#: ``gpuwm.io.wrfout._live_state_history_fields``.  On a run with no LSM these
+#: arrays hold ``initialize_physics``'s scalar cold-start defaults (soil
+#: category 6, vegetation fraction 50, 285 K) -- which nothing consumed and
+#: nothing should read as an answer -- and an idealized run's inventory is
+#: unchanged.  A run that HAS an LSM has real values in all five, and they
+#: are exactly what its own child needs.
+SURFACE_IDENTITY_OUTPUT_FIELDS: dict[str, WrfOutputField] = {
+    "ISLTYP": WrfOutputField(
+        "ISLTYP", "i4", "",
+        "DOMINANT SOIL CATEGORY",
+        "", "Registry.EM_COMMON:858", wrf_history=True),
+    "IVGTYP": WrfOutputField(
+        "IVGTYP", "i4", "",
+        "DOMINANT VEGETATION CATEGORY",
+        "", "Registry.EM_COMMON:857", wrf_history=True),
+    "TMN": WrfOutputField(
+        "TMN", "f4", "",
+        "SOIL TEMPERATURE AT LOWER BOUNDARY",
+        "K", "Registry.EM_COMMON:1939", wrf_history=True),
+    "VEGFRA": WrfOutputField(
+        "VEGFRA", "f4", "",
+        "VEGETATION FRACTION",
+        "", "Registry.EM_COMMON:859", wrf_history=True),
+    "SEAICE": WrfOutputField(
+        "SEAICE", "f4", "",
+        "SEA ICE FLAG",
+        "", "Registry.EM_COMMON:842", wrf_history=True),
+}
+
+
 @dataclass(frozen=True)
 class WrfSelectorGlobal:
     """One WRF physics selector that stock WRF stamps into every history file.
@@ -804,7 +870,8 @@ for _group in (SCHEME_OUTPUT_FIELDS, PRECIPITATION_OUTPUT_FIELDS):
 #: members, plus two ``misc`` 2-D surface fields), not scheme diagnostics,
 #: so only the second question includes them.
 HISTORY_FIELDS_BY_NETCDF_NAME: dict[str, WrfOutputField] = {}
-for _group in (OUTPUT_FIELDS_BY_NETCDF_NAME, THOMPSON_AEROSOL_OUTPUT_FIELDS):
+for _group in (OUTPUT_FIELDS_BY_NETCDF_NAME, THOMPSON_AEROSOL_OUTPUT_FIELDS,
+               SURFACE_IDENTITY_OUTPUT_FIELDS):
     for _key, _field in _group.items():
         _clash = HISTORY_FIELDS_BY_NETCDF_NAME.get(_field.netcdf_name)
         if _clash is not None and _clash != _field:
@@ -831,6 +898,7 @@ __all__ = [
     "PRECIPITATION_OUTPUT_FIELDS",
     "RUC_OUTPUT_FIELDS",
     "SCHEME_OUTPUT_FIELDS",
+    "SURFACE_IDENTITY_OUTPUT_FIELDS",
     "THOMPSON_AEROSOL_OUTPUT_FIELDS",
     "WRF_FIELD_TYPE_INTEGER",
     "WRF_FIELD_TYPE_REAL",

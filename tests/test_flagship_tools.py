@@ -214,8 +214,12 @@ def test_products_use_wrf_rust_and_render_outer_inventory(
     summary = products.generate_products(run, output, domains=["d01"])
 
     assert summary["schema"] == 2
+    # The version reported is the one INSTALLED here, not a literal: the
+    # certified window is a range (>=0.2.35,<0.3), so hard-coding the floor
+    # would red this suite on every box running a newer core.
     assert summary["science_core"] == {
-        "distribution": "wrf-rust", "version": "0.2.35"}
+        "distribution": "wrf-rust", "version": products.WRF_RUST_VERSION}
+    assert products.version_supported(products.WRF_RUST_VERSION)
     assert summary["input_identity"]["root"] == "."
     assert len(summary["input_identity"]["sha256"]) == 64
     assert "run_dir_absolute" in summary["diagnostics"]
@@ -249,7 +253,7 @@ def test_products_use_wrf_rust_and_render_outer_inventory(
             "temp", "uvmet"} <= set(requested)
     assert "U10" not in requested and "V10" not in requested and "PSFC" not in requested
     assert fake_wrf_rust["interpolation_calls"] == [500.0] * 12
-    assert all(item["wrf_rust_version"] == "0.2.35"
+    assert all(item["wrf_rust_version"] == products.WRF_RUST_VERSION
                for item in summary["product_artifacts"])
     for artifact in summary["product_artifacts"]:
         path = output / artifact["relative_path"]

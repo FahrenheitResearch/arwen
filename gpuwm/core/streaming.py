@@ -205,7 +205,10 @@ class StreamingOptions:
     ``vram_budget_bytes`` / ``host_budget_bytes``
         Override what :func:`tilestream.autoplan.Machine.detect` found.
         ``/proc/meminfo`` reports the HOST's RAM inside a container and is
-        not a budget.
+        not a budget.  ``host_budget_bytes`` is read BEFORE the machine is
+        probed and supplies the host figure to the probe, so it stands in
+        for a host source that cannot be read at all rather than merely
+        correcting one that can -- see :func:`decide`.
     """
 
     mode: StreamingMode = "off"
@@ -406,7 +409,21 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
 
     from tilestream import autoplan
 
-    machine = autoplan.Machine.detect() if machine is None else machine
+    # The configured budget is read BEFORE the machine is probed, and handed
+    # to the probe, because ``detect`` skips the host-memory read entirely
+    # when it is told what the host budget is.  Probing first and overriding
+    # afterwards made the override unreachable exactly when it was needed:
+    # ``detect`` RAISES where it can find no host source, so on Windows --
+    # no procfs, no cgroups -- every ``[tiles]`` configuration was refused
+    # before this function ever looked at ``host_budget_bytes``, including
+    # the ones that set it to the very number the refusal asked for.  On a
+    # box where detection works this changes nothing: ``host_bytes`` is
+    # replaced with the same value either way and ``pinned_fraction`` is
+    # still forced to 1.0 below, so the resulting budget is identical.
+    if machine is None:
+        machine = autoplan.Machine.detect(
+            host_bytes=(None if options.host_budget_bytes is None
+                        else int(options.host_budget_bytes)))
     # Both overrides name a BUDGET, so they must land on the budget, and
     # ``Machine`` reaches its budgets through two multipliers:
     # ``vram_budget_bytes = vram_bytes * (1 - vram_headroom)`` and
@@ -445,7 +462,9 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
             "1.2x-1.4x even at the best tile size",
             resident_bytes=int(plan.vram_bytes),
             budget_bytes=int(plan.vram_budget_bytes),
-            detail={"plan": plan.explain()})
+            # A resident domain pins NO host store; recorded as zero rather
+            # than absent so the tree walk's host ledger never has to guess.
+            detail={"plan": plan.explain(), "host_claim_bytes": 0})
     return StreamingDecision(
         True,
         ("the resident domain does not fit on this card"
@@ -454,7 +473,14 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
         options.store, options.write_mode,
         resident_bytes=int(plan.vram_bytes),
         budget_bytes=int(plan.vram_budget_bytes),
-        detail={"plan": plan.explain()})
+        # THE OTHER BUDGET.  A streamed domain's pinned host store plus its
+        # arena is the binding constraint at every capacity limit measured,
+        # and it is a per-domain claim on ONE box -- so the tree walk has to
+        # subtract it for the next domain exactly as it subtracts VRAM.  It
+        # is carried here, from the planner's own arithmetic, rather than
+        # re-derived by the walk from a second model of the same thing.
+        detail={"plan": plan.explain(),
+                "host_claim_bytes": int(plan.host_bytes)})
 
 
 @dataclass(frozen=True)
@@ -570,40 +596,22 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
 def _host_total_bytes() -> int | None:
     """This box's RAM, or ``None`` rather than a guess.
 
-    ``autoplan.Machine.detect`` reads ``/proc/meminfo``, which is the right
-    source on the Linux nodes and does not exist on the Windows box the
-    product's own front door runs on.  A gate that raised there would be a
-    worse failure than not pricing host RAM at all, so this answers ``None``
-    and :meth:`StreamedEnvelope.summary` simply omits the budget.
-    """
-    import sys
+    The same two sources :meth:`autoplan.Machine.detect` reads, and
+    deliberately the SAME functions: this used to carry its own private
+    ``GlobalMemoryStatusEx`` probe because ``autoplan`` knew only
+    ``/proc/meminfo``, so the PRICING path could see the Windows box's RAM
+    while the PLANNING path could not and refused.  One probe, in the lower
+    layer, is what keeps those two answers from disagreeing again.
 
+    Unlike ``detect`` this still answers ``None`` rather than raising when
+    nothing can be read: its caller is
+    :meth:`StreamedEnvelope.summary`, which then simply omits the budget
+    line, and a report that cannot price host RAM should not be fatal.
+    """
     from tilestream.autoplan import _cgroup_memory_limit, _host_memtotal
 
     limit = _cgroup_memory_limit()
     total = _host_memtotal()
-    if sys.platform == "win32" and total is None:
-        import ctypes
-
-        class _Status(ctypes.Structure):
-            _fields_ = [("dwLength", ctypes.c_ulong),
-                        ("dwMemoryLoad", ctypes.c_ulong),
-                        ("ullTotalPhys", ctypes.c_ulonglong),
-                        ("ullAvailPhys", ctypes.c_ulonglong),
-                        ("ullTotalPageFile", ctypes.c_ulonglong),
-                        ("ullAvailPageFile", ctypes.c_ulonglong),
-                        ("ullTotalVirtual", ctypes.c_ulonglong),
-                        ("ullAvailVirtual", ctypes.c_ulonglong),
-                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-
-        status = _Status()
-        status.dwLength = ctypes.sizeof(_Status)
-        try:
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(
-                    ctypes.byref(status)):
-                total = int(status.ullTotalPhys)
-        except (AttributeError, OSError):
-            total = None
     if limit is not None and total is not None:
         return min(limit, total)
     return limit if total is None else total
@@ -634,12 +642,24 @@ class StreamedDomain:
 
     def __init__(self, run, decision: StreamingDecision, *, state=None,
                  scalars=None, host_store=None, stability=None,
-                 geography=None, boundaries=None):
+                 geography=None, boundaries=None, template=None,
+                 inventory_fn=None):
         self._run = run
         self.decision = decision
         self._state = state
         self.scalars = scalars
         self.host_store = host_store
+        #: THE RUN'S OWN INVENTORY RULE -- the one ``attach`` built the store
+        #: with and handed ``TiledRun`` for the buffers.  Held so that
+        #: :meth:`refresh_state` harvests the state by the same rule the
+        #: store was filled by.  Harvesting with the plain
+        #: ``carrier_inventory`` instead left the one carrier only the rule
+        #: adds -- ``scratch/refl_10cm``, REBUILT scratch, excluded from the
+        #: plain manifest by construction -- uncopied: MEASURED, the store
+        #: held a 69 dBZ field while the refreshed state's slot stayed
+        #: all-zero, and the resident road's final_state_digest attested the
+        #: zeros.
+        self.inventory_fn = inventory_fn
         #: The folded stability record, or ``None`` when nothing asked for
         #: one.  :func:`stability_observer` returns this to the run loop in
         #: place of ``dycore.stability_report``, which under a host store
@@ -652,7 +672,17 @@ class StreamedDomain:
         #: :meth:`restart_setup`.
         self._geography = geography
         self._boundaries = boundaries
+        #: The SLAB-HEIGHT state a store-direct domain was built through, or
+        #: ``None``.  It is not a spare copy of the domain and must never be
+        #: read as one: its carriers are the last row slab's and its
+        #: horizontally-varying setup is that slab's window.  What it is for
+        #: is the two questions whose answers do not vary with height -- which
+        #: schemes publish which frame fields (:meth:`history_fields`), and
+        #: what the vertical coordinate is (:meth:`restart_setup`) -- and
+        #: every use of it here is one of those.
+        self._template = template
         self._setup = None
+        self._statics_setup = None
         self.steps = 0
         self.report: dict = {}
         self._frame = None
@@ -695,6 +725,16 @@ class StreamedDomain:
         and :mod:`tilestream.receipts` is what reads it.
         """
         return self._state
+
+    @property
+    def template(self):
+        """The slab-height state a store-direct domain classifies against.
+
+        ``None`` for a domain attached to a resident state, which needs no
+        stand-in.  See :attr:`_template` for what may and may not be read off
+        it.
+        """
+        return self._template
 
     def __call__(self, state, cfg, **step_kwargs) -> None:
         """``dycore.step``'s signature.  One model step of the DOMAIN.
@@ -791,21 +831,44 @@ class StreamedDomain:
         ``tests/test_streamed_frame_parity.py`` is what keeps the two
         honest by comparing the streamed and resident FIELD SETS rather
         than trusting either description.
+
+        TWO ROADS TO THE PLAN, ONE FRAME.  With a prepared resident state the
+        plan is measured against that state directly, which is what every
+        streamed run has always done.  A STORE-DIRECT domain has no such
+        object -- and above the card's ceiling cannot have one -- so the plan
+        is measured against the slab-height :attr:`template` and re-sized onto
+        the store by :func:`tilestream.output.store_frame_plan`; the setup
+        statics come from the DOMAIN geography rather than from the slab's
+        window of it (:meth:`output_setup`).  Neither substitution is a
+        different frame: the classification is a question about schemes and
+        the statics are the domain's own arrays, and the gate is that a domain
+        small enough to run both ways publishes byte-identical files.
         """
         if self._frame is None:
-            from tilestream import checkpoint as _checkpoint
             from tilestream import output as _output
 
-            if self._state is None:
+            if self._state is not None:
+                plan = _output.frame_plan(
+                    self._state, extra_available=self._run.store.keys())
+            elif self._template is not None:
+                plan = _output.store_frame_plan(
+                    self._template, self._run.store, self._run.cfg,
+                    extra_available=self._run.store.keys())
+            else:
                 raise StreamingRefused(
-                    "this streamed domain was attached without a resident "
-                    "state, so there is nothing to take the frame plan and "
-                    "the domain setup from")
-            plan = _output.frame_plan(
-                self._state, extra_available=self._run.store.keys())
-            setup = _checkpoint.DomainSetup.capture(self._state,
-                                                    self._run.cfg)
-            self._frame = _output.StoreFrame(plan, self._run.store, setup,
+                    "this streamed domain was attached with neither a "
+                    "resident state nor a template state, so there is "
+                    "nothing to measure the frame plan against.  Which "
+                    "fields a wrfout frame carries and where each of them "
+                    "comes from is read off a LIVE state by "
+                    "tilestream.output.frame_plan -- deliberately, so that a "
+                    "scheme publishing a new diagnostic cannot drift a "
+                    "transcribed table -- and a store on its own says only "
+                    "which carriers exist, not which of them the writer "
+                    "wants under which name.  Pass attach(template=...) the "
+                    "slab the store was built through.")
+            self._frame = _output.StoreFrame(plan, self._run.store,
+                                             self.output_setup(),
                                              self._run.cfg)
         # The frame's non-derived rows are zero-copy VIEWS of the pinned
         # store, so under the deferred sweep seam the previous step's
@@ -870,8 +933,23 @@ class StreamedDomain:
         D2H/H2D of the whole carrier set, so it belongs on the HISTORY
         cadence and at the end of the run, never per step: at 229 B/cell it
         is one domain-sized copy, which is what one history frame already
-        costs.  Returns the number of carriers copied, so a caller can
+        costs.  Returns the number of members copied -- the carrier set
+        plus the scattered ``diag/*`` producers below -- so a caller can
         assert it moved the whole manifest rather than a lucky subset.
+
+        The ``diag/*`` members ride along (task #219, second finding).
+        Output-only driver diagnostics -- ``OLR`` at every shipped rung,
+        the eddy-viscosity pair under ``cfg.hmix_k_diag``, the SASE flux
+        rows under SASE -- are correctly absent from the carrier manifest
+        (nothing reads them back into the trajectory), but the sweep
+        gathers and scatters them into the store precisely so they can be
+        published.  A refresh that moved only carriers left the DRIVER's
+        copies at the snapshot's zeros, so every route that publishes
+        frames off the state (``gpuwm.io.wrfout.state_frame``; the offline
+        child) emitted OLR = 0 for the whole forecast while the store held
+        the sky the tiles computed -- MEASURED: streamed OLR max 0.0
+        against ~292 W/m2 resident, with the production StoreFrame route
+        publishing the same store correctly the whole time.
         """
         import cupy as cp
 
@@ -885,9 +963,21 @@ class StreamedDomain:
             raise StreamingRefused(
                 "refresh_state() needs the DomainState to copy into; this "
                 "streamed domain was attached without one")
+        from tilestream import output as _output
         from tilestream import physics_inventory as _physics
 
-        live = _physics.carrier_inventory(target, None)
+        # THE RUN'S RULE, not the plain carrier manifest.  The store was
+        # filled by ``inventory_fn(state, None)`` at attach, so a refresh
+        # harvesting the state with anything narrower copies back a strict
+        # subset and leaves the remainder AT WHATEVER THE STATE LAST HELD.
+        # For ``scratch/refl_10cm`` -- present only under the run's rule --
+        # that remainder was the primed zeros, and the final health gate and
+        # ``canonical_state_digest`` then attested a zeroed reflectivity
+        # field for a run whose store held the real one.  The fallback keeps
+        # a hand-constructed StreamedDomain (the CPU tests') refreshing the
+        # way it always did.
+        take = self.inventory_fn or _physics.carrier_inventory
+        live = take(target, None)
         store = self._run.store
         missing = sorted(set(live) - set(store))
         if missing:
@@ -895,17 +985,36 @@ class StreamedDomain:
                 f"the store is missing {len(missing)} carrier(s) the state "
                 f"holds ({missing[:6]}); refusing a partial refresh, which "
                 "would leave the state half at t=0 and half at t=n")
-        for name, dst in live.items():
+        # The scattered output-only diagnostics, addressed by the SAME
+        # naming their gather used (tilestream.output.diagnostic_members;
+        # its inverse is what the frame plan reads).  Keys are taken from
+        # the STORE -- what the sweep actually carried -- and a carried
+        # member with no destination on this state is refused for the same
+        # reason a missing carrier is: the silent version publishes zeros
+        # for a field the sweep demonstrably computed.
+        diag = {name: array for name, array in
+                _output.diagnostic_members(target).items()
+                if name in store}
+        missing_diag = sorted(
+            name for name in store
+            if name.startswith("diag/") and name not in diag)
+        if missing_diag:
+            raise StreamingRefused(
+                f"the store carries {len(missing_diag)} scattered driver "
+                f"diagnostic(s) ({missing_diag[:6]}) with no destination "
+                "on this state; refusing a refresh that would publish "
+                "zeros for fields the sweep computed")
+        for name, dst in {**live, **diag}.items():
             src = store[name]
             if tuple(dst.shape) != tuple(src.shape):
                 raise StreamingRefused(
-                    f"carrier {name!r} is {tuple(dst.shape)} on the state "
+                    f"member {name!r} is {tuple(dst.shape)} on the state "
                     f"and {tuple(src.shape)} in the store")
             dst[...] = cp.asarray(src, dtype=dst.dtype)
         if self.scalars is not None:
             _physics.set_carrier_scalars(target, self.scalars)
         cp.cuda.Stream.null.synchronize()
-        return len(live)
+        return len(live) + len(diag)
 
     def carrier_provenance(self) -> dict | None:
         """The surface-radiation carrier ledger AS OF THE LAST SWEEP.
@@ -1044,6 +1153,64 @@ class StreamedDomain:
                     "produce a checkpoint no run can ever resume.")
         return self._setup
 
+    def output_setup(self):
+        """Where a history FRAME's setup statics come from.
+
+        A :class:`tilestream.checkpoint.DomainSetup`.  ``StoreFrame`` reads
+        exactly four things off one:
+        ``output_statics(nz, ny, nx)`` -- which is ``MUB``, ``HGT``, ``ZNU``,
+        ``ZNW``, ``P_TOP`` and the ``PB``/``PHB`` column broadcasts -- plus
+        ``thb``, ``pb`` and ``phb`` for the ``T`` and ``P`` derives.  ``MUB``
+        and ``HGT`` are horizontal PLANES, and the base state joins them
+        whenever ``terrain_opt`` makes it 3-D; the rest are columns and one
+        scalar.  That is the whole reason this cannot be taken off a slab: a
+        slab's ``mub2d`` and ``ht`` are its own rows of the domain's, so a
+        frame built from them would publish one band of the terrain over the
+        entire map -- with every column of that band correct, which is what
+        makes it hard to see.
+
+        With a resident state it is captured from that state, unchanged.
+        Without one it is assembled from the same two sources
+        :meth:`restart_setup` assembles the restart header's from -- the
+        DOMAIN geography store for everything horizontal, a tile buffer for
+        the purely vertical arrays -- and that assembly is CHECKED rather than
+        assumed: ``restart_stream.assert_setup_identical`` fingerprints it
+        against a monolithic state's, and a wrong reassembly moves
+        ``setup_fingerprint`` and is refused at restore.  Reusing it here
+        means a frame and a checkpoint of the same instant cannot disagree
+        about the terrain they were taken over.
+
+        No physics identity is attached (``physics_setup=None``): it is
+        resolved scheme fingerprints for a restart HEADER, an output frame
+        reads none of it, and deriving it would need the domain's radiation
+        lat/lon grid for nothing.  A checkpoint takes :meth:`restart_setup`,
+        which does carry it.
+        """
+        from tilestream import checkpoint as _checkpoint
+
+        if self._statics_setup is None:
+            if self._state is not None:
+                self._statics_setup = _checkpoint.DomainSetup.capture(
+                    self._state, self._run.cfg)
+            else:
+                stream_setup = self.restart_setup()
+                # The two DomainSetup classes name the same three
+                # passthroughs differently (``restart_stream.DomainSetup`` is
+                # a dataclass, ``checkpoint.DomainSetup`` duck-types a
+                # DomainState), so the translation is spelled here rather
+                # than assumed; ``checkpoint._SETUP_PASSTHROUGH`` is the list
+                # being satisfied and a name it gains later resolves to
+                # ``None``, which is what a domain without one has.
+                self._statics_setup = _checkpoint.DomainSetup(
+                    self._run.cfg, stream_setup.arrays, stream_setup.scalars,
+                    None,
+                    {"lateral_boundaries": stream_setup.lateral_boundaries,
+                     "_lateral_boundary_device":
+                         stream_setup.lateral_boundary_device,
+                     "_nest_restart_classification":
+                         stream_setup.nest_classification})
+        return self._statics_setup
+
     def write_restart(self, path, cfg, *, run_trackers=None):
         """Write a gpuwm restart file from the store.  No device state.
 
@@ -1089,6 +1256,42 @@ class StreamedDomain:
         if self.scalars is not None:
             self._run.reseed_clock(self.scalars)
         return info
+
+    def canonical_digest(self, clock, *, scope: str = "trajectory") -> dict:
+        """``canonical_state_digest`` of this domain, taken from the STORE.
+
+        The end-of-run evidence every route records, and the third whole-domain
+        reader -- after the history frame and the checkpoint -- that cannot be
+        pointed at a ``DomainState`` a streamed run does not step.  Pointed at
+        one anyway it does not fail: ``state_digest.canonical_state_digest``
+        walks the state's manifest, finds every member allocated and finite,
+        and returns a complete, correctly-framed digest OF THE ANALYSIS,
+        stamped with the forecast's final clock.  That is the same failure
+        ``write_restart`` exists to prevent one artefact over, and it is worse
+        here, because a digest is exactly the thing a reader trusts to tell
+        two trajectories apart.
+
+        ``gpuwm.state_digest.canonical_store_digest`` is the same document
+        assembled off ``self.store`` and ``self.scalars``, member for member
+        and byte for byte; see that module's docstring for the three things
+        that make the equality hold rather than merely be intended.  A domain
+        that carries no scalars refuses rather than digesting with a zero
+        clock -- ``attach(scalars=None)`` is the gate's CARRY NOTHING control
+        and its final digest would otherwise claim model second zero for a run
+        that integrated.
+        """
+        from gpuwm.state_digest import canonical_store_digest
+
+        if self.scalars is None:
+            raise StreamingRefused(
+                "this streamed domain carries no scalars, so its canonical "
+                "digest would be stamped with an elapsed time and physics "
+                "call counts of nothing -- attach(scalars=None) is the "
+                "gate's CARRY NOTHING control and must not be digested as a "
+                "forecast")
+        return canonical_store_digest(self.store, self.scalars, clock,
+                                      scope=scope)
+
     def impose_clock(self, seconds: float) -> None:
         """Set the DOMAIN clock the next sweep imposes on every tile.
 
@@ -1158,20 +1361,8 @@ class StreamedDomain:
 
     @staticmethod
     def _window_slices(shape, window) -> tuple:
-        """``window`` = ``(j0, j1, i0, i1)`` in MASS cells, on any staggering.
-
-        Staggered arrays carry one extra face on their own axis, so the
-        window is widened by one there and clamped to the array -- a
-        superset is always safe (it copies a cell the reader will not use)
-        and a subset is a stale face inside the zone the reader WILL use.
-        """
-        if window is None or len(shape) < 2:
-            return (Ellipsis,)
-        j0, j1, i0, i1 = (int(v) for v in window)
-        ny, nx = int(shape[-2]), int(shape[-1])
-        return (Ellipsis,
-                slice(max(0, j0), min(ny, j1 + 1)),
-                slice(max(0, i0), min(nx, i1 + 1)))
+        """One slice rule for every consumer; see :func:`window_slices`."""
+        return window_slices(shape, window)
 
     def sync_to_state(self, names=None, *, window=None) -> int:
         """Copy the store onto the attached state.  Returns arrays copied.
@@ -1926,7 +2117,14 @@ def tile_boundary_tables(bnd, specs, *, seam: str = "zeros", snapshot=None):
             for s in specs]
 
 
-def make_tile_hook(per_tile):
+#: ``external_clock=`` sentinel: "derive the clock from ``domain_state``".
+#: Distinct from ``None``, which is now a POLICY -- legacy elapsed-seconds
+#: compatibility, stated on purpose -- rather than the absence of one.
+DERIVE_CLOCK = object()
+
+
+def make_tile_hook(per_tile, *, domain_state=None,
+                   external_clock=DERIVE_CLOCK):
     """A ``TiledRun`` ``tile_hook`` that binds tile ``itile``'s forcing.
 
     LAZILY, which is a measured fix and not a preference.  The eager
@@ -1953,15 +2151,69 @@ def make_tile_hook(per_tile):
     streaming attachment gone refuses: something re-attached behind the
     hook's back, and swapping tables under an eager attachment would leave
     the device serving the OLD tile's forcing with no error anywhere.
+
+    ``domain_state`` is the DOMAIN's own prepared state, and it is here to
+    carry the Davies CLOCK BINDING onto every buffer (task #219).  Every
+    production driver-forced root binds a ``DomainClock`` to its external
+    LBC mirror (``bind_lateral_boundary_clock``), which switches Davies
+    consumers to WRF's post-increment ``dtbc`` recurrence (``dt..T_bdy``).
+    The buffers this hook converts start with NO binding -- their factory
+    attachment never had one -- so without the rebind below every tile
+    step fell back to the retired ``elapsed - interval.start`` path
+    (``0..T-dt``) and a streamed domain consumed its lateral boundaries
+    ONE TIMESTEP LATE whenever the production clock was bound.  MEASURED
+    on the offline child at t+15 min: 41 of 76 wrfout fields differed, W
+    by 0.0043 m/s on a 0.174 m/s field, a constant one-step phase error.
+    The clock is read LAZILY, at first bind, because binding order is a
+    route decision this module must not constrain; a domain with no bound
+    clock binds nothing and the buffers keep the compatibility semantics,
+    which is what keeps the legacy direct routes bit-for-bit.
+
+    ``external_clock`` IS THE POLICY, and it exists because lazy derivation
+    was the wrong abstraction for a domain that never had a state.
+    ``DERIVE_CLOCK`` (the default) is the behaviour above: read the binding
+    off ``domain_state`` at first bind, which is right for a re-attached
+    resident domain and is what keeps the legacy direct routes bit-exact.
+    A ``DomainClock`` binds THAT clock unconditionally and needs no state.
+    ``None`` selects legacy elapsed-seconds compatibility EXPLICITLY.
+
+    The distinction is not decorative.  ``store_domain_builder`` attaches
+    with no state at all, so ``domain_state`` is ``None``, ``domain_clock()``
+    returned ``None``, and ``converted[id(tile_state)]`` latched on the first
+    bind and was never revisited -- so every buffer of a store-direct
+    forecast took ``elapsed - interval.start`` (``0..T-dt``) while its
+    resident twin took ``dtbc`` (``dt..T_bdy``).  That is the #219 one-step
+    phase error, on the road the LARGEST domains take and the one least
+    likely to have a resident control beside it.  Deriving nothing from
+    nothing cannot be distinguished from deciding to derive nothing, so the
+    decision is made a parameter and the store-direct road passes the node's
+    own clock.
+
+    And it is checked PER LAUNCH, not only at conversion: a buffer whose
+    bound clock is not the expected object is refused rather than stepped.
+    A latch that is set once and trusted forever is exactly how the first
+    defect survived a gate.
     """
-    from gpuwm.ingest.lateral_bc import attach_streaming_lateral_boundaries
+    from gpuwm.ingest.lateral_bc import (attach_streaming_lateral_boundaries,
+                                         bind_lateral_boundary_clock)
 
     converted: dict[int, bool] = {}
+
+    def domain_clock():
+        if external_clock is not DERIVE_CLOCK:
+            return external_clock
+        resident = getattr(domain_state, "_lateral_boundary_device", None)
+        if resident is None or getattr(resident, "rolling", False):
+            return None
+        return resident.clock
 
     def hook(tile_state, tspec, itile, stream):
         lb = per_tile[itile]
         if not converted.get(id(tile_state)):
             attach_streaming_lateral_boundaries(tile_state, lb)
+            clock = domain_clock()
+            if clock is not None:
+                bind_lateral_boundary_clock(tile_state, clock)
             converted[id(tile_state)] = True
             return
         resident = getattr(tile_state, "_lateral_boundary_device", None)
@@ -1972,6 +2224,21 @@ def make_tile_hook(per_tile):
                 "lateral attachment no longer carries it; refusing to swap "
                 "tables under an eager attachment, which would serve the "
                 "previous tile's forcing silently")
+        # THE CLOCK, EVERY LAUNCH.  The conversion latch above records that
+        # a buffer was bound; it cannot record that the binding SURVIVED,
+        # and a buffer that lost its clock keeps integrating with the
+        # legacy elapsed-seconds recurrence and says nothing -- a constant
+        # one-timestep phase error in the lateral forcing, which is a
+        # plausible forecast rather than a failure.
+        expected = domain_clock()
+        if getattr(resident, "clock", None) is not expected:
+            raise StreamingRefused(
+                "a tile buffer's bound Davies clock is not the one this "
+                f"attachment was built with (expected {expected!r}, found "
+                f"{getattr(resident, 'clock', None)!r}).  Stepping it would "
+                "consume the lateral boundaries one timestep out of phase "
+                "with the domain, which is a healthy-looking wrong "
+                "forecast, so it is refused instead.")
         tile_state.lateral_boundaries = lb
         # Force the next _resident_interval() to refill the packed slot
         # from THIS tile's tables.  Without it a buffer keeps serving the
@@ -2193,6 +2460,39 @@ def diagnostic_inventory(base):
     return inventory
 
 
+def streamed_store_inventory():
+    """THE inventory rule a streamed domain's store and its buffers share.
+
+    One expression, stated once, because the two things it builds are
+    compared against each other before the first step:
+    :class:`tilestream.driver.TiledRun` refuses to run when a tile buffer's
+    inventory and the store's differ by a single key, and both are produced
+    by whatever ``inventory_fn`` this seam hands out.  Written out twice it
+    was already wrong once -- ``store_from_prepared_cache`` harvested its
+    slabs with the plain ``physics_inventory.carrier_inventory`` while the
+    builders handed ``attach`` this rule, and the store came out one carrier
+    short: ``tile state inventory [143] != store inventory [142] ... in TILE
+    not in STORE: ['scratch/refl_10cm']``.
+
+    ``streaming_inventory`` rather than ``carrier_inventory`` because the
+    sweep's carrier set is the streamed one (see that function's docstring
+    on RESTART_ONLY_DRIVER_SLOTS), and :func:`refl_inventory` on top because
+    REFL_10CM is REBUILT scratch that no manifest carries by construction --
+    the slot the tiles compute into and the store must join.
+
+    :func:`diagnostic_inventory` outermost, for the same one-expression
+    reason: the output-only driver diagnostics (``OLR``, and
+    ``XKMH``/``XKHH`` under ``hmix_k_diag``) joined the sweep's gather and
+    scatter at 2.2.2, and a store built without them would differ from the
+    tile buffers by exactly those keys -- the key-for-key comparison this
+    function exists to keep green would refuse the run before the first
+    step.
+    """
+    from tilestream import physics_inventory as _physinv
+
+    return diagnostic_inventory(refl_inventory(_physinv.streaming_inventory))
+
+
 def refl_handoff_hook():
     """A ``TiledRun`` ``post_step_hook`` that clears each tile's REFL stash.
 
@@ -2270,10 +2570,13 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
            geography=None, boundaries=None, boundary_tables=None,
            seam: str = "zeros",
            snapshot=None, inventory_fn=None, scalars=UNSET, nz=None,
+           store=None, template=None,
            check_geography: bool = True,
            observe_stability: bool = True,
            stability_window: str = "interior",
-           health_fold: bool | None = None) -> StreamedDomain:
+           health_fold: bool | None = None,
+           external_clock=DERIVE_CLOCK,
+           tile_hook=None) -> StreamedDomain:
     """Move a prepared domain into a store and wrap it in a sweeper.
 
     ``state`` is the prepared, resident :class:`~gpuwm.core.state.DomainState`
@@ -2282,6 +2585,18 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
     carriers are copied into the store; with ``decision.store == "host"``
     that store is pinned host RAM, which is the point.
 
+    ``store`` is the other road, and it exists because the first one caps the
+    domain at the size of the card rather than at the size of the machine.
+    Pass an already-built full-domain carrier store -- as
+    :func:`gpuwm.ingest.prepared_store.store_from_prepared_cache` builds one,
+    slab by slab, with no domain-shaped device array anywhere -- and nothing
+    is copied off a resident state because there is no resident state to copy
+    off.  ``state`` may then be ``None``, and ``scalars`` must be given
+    explicitly since there is nothing to read them from.  Everything
+    downstream is unchanged: :class:`tilestream.driver.TiledRun` has always
+    taken a bare ``{carrier key: array}`` dict and never touched a
+    ``DomainState``.
+
     ``tile_state_factory(tile_cfg)`` must build a state with THE SAME PHYSICS
     SELECTORS the domain was prepared with, already warmed by one step.  Both
     conditions are load-bearing and both are checked rather than trusted: a
@@ -2289,6 +2604,20 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
     comparison refuses it, and two carriers (Kain-Fritsch's ``cumulus/w0avg``
     above all) are allocated LAZILY on first use, so an unwarmed buffer is
     missing arrays the store holds.
+
+    ``template`` is the state a STORE-DIRECT domain answers height-invariant
+    questions with, and it is the second half of the ``store`` road rather
+    than an option on it.  Two consumers here take a live state and neither
+    can be handed a tile buffer: ``tilestream.output.frame_plan`` MEASURES
+    which wrfout fields exist and where each comes from by building the real
+    device frame and matching object identity (a transcribed table would drift
+    the first time a scheme published a new diagnostic), and the restart
+    header's vertical setup arrays are rebuilt from ``nz``/``hybrid_opt``/
+    ``etac``/``p_top``.  Both answers are the same at every height and neither
+    is the same on a tile whose config is not the domain's.  So a store built
+    slab by slab keeps its LAST SLAB (``PreparedStore.template``) and that is
+    what belongs here; without it a store-direct domain still integrates,
+    checkpoints and folds its health, and refuses at the first history frame.
 
     ``geography`` is the DOMAIN's :func:`tilestream.driver.geography_inventory`
     -- it is INPUT, gathered per buffer and never scattered.
@@ -2310,6 +2639,12 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
             "attach() called on a decision that does not stream; the run "
             "loop must bind gpuwm.core.dycore.step itself in that case, so "
             "that the resident path has no wrapper at all")
+    if tile_hook is not None and (boundary_tables is not None
+                                  or boundaries is not None):
+        raise StreamingRefused(
+            "attach() was handed BOTH lateral forcing tables and an "
+            "explicit tile_hook; one domain has one lateral forcing "
+            "mechanism, so one of these is wrong")
 
     # streaming_inventory, not carrier_inventory: restart's manifest is the
     # right answer to "what survives a file" and the WRONG answer to "what
@@ -2319,24 +2654,59 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
     # does to a spawn trigger.
     inventory_fn = inventory_fn or _physics.streaming_inventory
     nz = int(cfg.nz) if nz is None else int(nz)
+    if state is None and store is None:
+        raise StreamingRefused(
+            "attach() was given neither a resident state to take a store "
+            "from nor a prebuilt store to run on, so there is no domain "
+            "here at all")
+    if state is None and isinstance(scalars, _Unset):
+        raise StreamingRefused(
+            "attach() on a store-direct domain needs its carrier scalars "
+            "passed explicitly: there is no resident state to read them "
+            "from, and defaulting them to nothing would silently reset the "
+            "physics clocks a store-built domain already carries")
     # ``UNSET`` means "take the domain's"; an explicit ``None`` means CARRY
     # NOTHING and is the gate's clock control.
     scalars = (_physics.carrier_scalars(state)
                if isinstance(scalars, _Unset) else scalars)
 
-    live = inventory_fn(state, None)
-    if decision.store == "host":
-        store = {name: _gather.pinned_copy(arr) for name, arr in live.items()}
-    else:
-        store = live
+    if store is None:
+        live = inventory_fn(state, None)
+        if decision.store == "host":
+            store = {name: _gather.pinned_copy(arr)
+                     for name, arr in live.items()}
+        else:
+            store = live
 
-    tile_hook = None
+    # ``tile_hook`` may arrive explicitly -- a NESTED domain's forcing is
+    # not a windowable series, so its route wires a hook of its own
+    # (gpuwm.core.nest_stream.make_nest_tile_hook) -- or be built here from
+    # the tabulated tables.  Never both: a hook that swapped specified
+    # tables under a nested attachment would serve the wrong subsystem's
+    # forcing with no error anywhere.
     if boundary_tables is None and boundaries is not None:
         boundary_tables = tile_boundary_tables(
             boundaries, tile_specs(cfg, decision), seam=seam,
             snapshot=snapshot)
     if boundary_tables is not None:
-        tile_hook = make_tile_hook(boundary_tables)
+        # ``domain_state=state``: the hook carries the domain's Davies clock
+        # binding onto every buffer it converts (task #219; the docstring on
+        # make_tile_hook has the measurement).  ``external_clock`` overrides
+        # that derivation, and a STATE-LESS attachment must use it: there is
+        # no ``state`` to derive from, so the default would silently select
+        # the legacy elapsed-seconds recurrence.
+        if state is None and external_clock is DERIVE_CLOCK:
+            raise StreamingRefused(
+                "attach() was given tabulated lateral boundaries and NO "
+                "state, so there is nothing to derive the Davies clock "
+                "binding from, and deriving nothing would put every tile "
+                "buffer on the retired elapsed-seconds recurrence -- one "
+                "timestep out of phase with the domain, for the whole "
+                "forecast, with nothing in the log.  Pass external_clock= "
+                "explicitly: the domain's DomainClock to bind it, or None "
+                "to select the legacy compatibility semantics on purpose.")
+        tile_hook = make_tile_hook(boundary_tables, domain_state=state,
+                                   external_clock=external_clock)
 
     # The run loop's per-substep safety gate, folded per tile out of the
     # store.  Without it ``integrate_prepared_case``'s
@@ -2374,9 +2744,14 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
     # see :func:`live_scratch` for the diagnostic that lost its meaning when
     # it could not.  Bound here rather than in ``StreamedDomain.__init__``
     # because attach is the moment the state stops owning the domain.
-    setattr(state, STREAMED_SCRATCH_ATTR,
-            {name.split("/", 1)[1]: arr for name, arr in store.items()
-             if name.startswith("scratch/")})
+    # Skipped without a resident state, which is not a gap: the marker exists
+    # so a whole-domain consumer holding the STATE can still find the
+    # scratch arrays, and a store-direct domain has handed no such object to
+    # anybody.  Its consumers read StreamedDomain.store directly.
+    if state is not None:
+        setattr(state, STREAMED_SCRATCH_ATTR,
+                {name.split("/", 1)[1]: arr for name, arr in store.items()
+                 if name.startswith("scratch/")})
     stability = None
     if observe_stability and not health_fold:
         # Attached AFTER the run exists, because the fold is sized from the
@@ -2399,7 +2774,18 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
                           # cannot supply, and above the card's ceiling
                           # there is no resident state to fall back to.
                           # See StreamedDomain.restart_setup.
-                          geography=geography, boundaries=boundaries)
+                          geography=geography, boundaries=boundaries,
+                          # Carried for the same reason and by the same rule:
+                          # a store-direct domain's frame plan and vertical
+                          # setup have to come from SOME live state, and the
+                          # slab is the only one that is the domain's in every
+                          # respect that does not vary with height.
+                          template=template,
+                          # The rule the store above was filled by, so
+                          # refresh_state copies back the SAME key set --
+                          # see that method for the carrier a narrower
+                          # harvest silently left at t=0.
+                          inventory_fn=inventory_fn)
 
 
 def _is_periodic(cfg) -> bool:
@@ -2943,14 +3329,16 @@ def prepared_domain_builder(node, *, seam: str = "zeros",
     ``tile_state_factory``
         :func:`prepared_tile_state_factory`.
 
-    A CHILD domain is refused.  A nest does not hold a
-    ``LateralBoundaries``: its lateral forcing is rebuilt from the parent by
-    ``NestCoupler.force`` every parent step, into a ``RollingNestBoundaries``
-    whose tables are regenerated rather than tabulated, and windowing THOSE
-    per tile is a different problem from windowing a specified series.
-    Streaming a nest is therefore not "not implemented here", it is unposed
-    -- and a silent resident nest under a tree that asked to stream is the
-    out-of-memory death the mode exists to avoid.
+    A CHILD domain streams through its own forcing door.  A nest does not
+    hold a ``LateralBoundaries``: its lateral forcing is rebuilt from the
+    parent by ``NestCoupler.force`` every parent step into full-perimeter
+    rolling device tables, so instead of windowing a tabulated series once,
+    the builder wires :func:`gpuwm.core.nest_stream.make_nest_tile_hook` --
+    per-buffer packed table windows, re-filled at kernel-launch time
+    whenever the rolling generation moves.  A refusal used to stand here
+    asserting the per-tile windowing of nest tables was unposed; the
+    streamed-child corridor posed and gated it
+    (``tilestream/test_streamed_child.py``).
     """
     def build(state, cfg, decision):
         from gpuwm.ingest.lateral_bc import LateralBoundaries
@@ -2958,24 +3346,28 @@ def prepared_domain_builder(node, *, seam: str = "zeros",
 
         # Inside build, not beside it: build runs only for a domain whose
         # decision STREAMS, so a tree that configures mode = "auto" and
-        # whose nests fit resident is not refused for having nests.
-        if getattr(node, "parent", None) is not None:
-            raise StreamingRefused(
-                f"[tiles] fired on grid {int(node.cfg.grid_id)}, which "
-                "is a NEST.  A nested domain's lateral forcing is rebuilt "
-                "from its parent every parent step (NestCoupler.force -> "
-                "RollingNestBoundaries) rather than tabulated as a "
-                "LateralBoundaries series, so there is nothing for "
-                "tile_boundary_tables to window and no per-tile forcing to "
-                "attach.  Stream the root and leave the nests resident, or "
-                "leave [tiles] off.")
+        # whose nests fit resident pays nothing for having nests.
+        nested = getattr(node, "parent", None) is not None
 
         geography = _driver.geography_store(
             state, host=True if decision.store == "host" else None)
 
         boundaries = getattr(state, "lateral_boundaries", None)
         tables = None
-        if boundaries is not None:
+        nest_hook = None
+        if nested:
+            if isinstance(boundaries, LateralBoundaries):
+                raise StreamingRefused(
+                    f"grid {int(node.cfg.grid_id)} is a NEST and also "
+                    "carries a tabulated LateralBoundaries series.  A "
+                    "nested domain's forcing is rebuilt from its parent "
+                    "every parent step (NestCoupler.force), so these two "
+                    "attachments contradict each other and one of them "
+                    "would be silently ignored.")
+            from gpuwm.core.nest_stream import make_nest_tile_hook
+
+            nest_hook = make_nest_tile_hook(node)
+        elif boundaries is not None:
             if not isinstance(boundaries, LateralBoundaries):
                 raise StreamingRefused(
                     "the domain carries lateral forcing of type "
@@ -3004,7 +3396,6 @@ def prepared_domain_builder(node, *, seam: str = "zeros",
         factory = prepared_tile_state_factory(
             state, cfg, tables0=(None if tables is None else tables[0]),
             seed=tile_seed, warmup=warmup)
-        from tilestream import physics_inventory as _physinv
         # THE FRAME'S FIELD SET, not just its trajectory.  refl_inventory
         # alone carries the reflectivity slot and leaves every OTHER
         # output-only driver diagnostic behind, so a streamed frame
@@ -3013,11 +3404,15 @@ def prepared_domain_builder(node, *, seam: str = "zeros",
         # 2.2.0 cut, 438x350x49 through `gpuwm go`).  diagnostic_inventory
         # carries the rest; StoreFrame refuses a plan that still cannot
         # publish one, so this can no longer fail quietly.
+        #
+        # streamed_store_inventory, not the expression spelled out here: the
+        # store-direct road builds its store with the same call, and the two
+        # inventories are compared key for key before the first step.
         streamed = attach(state, cfg, decision, tile_state_factory=factory,
                           geography=geography, boundary_tables=tables,
                           check_geography=check_geography,
-                          inventory_fn=diagnostic_inventory(refl_inventory(
-                              _physinv.streaming_inventory)))
+                          tile_hook=nest_hook,
+                          inventory_fn=streamed_store_inventory())
         if decision.store == "host":
             import warnings
 
@@ -3050,6 +3445,205 @@ def prepared_domain_builder(node, *, seam: str = "zeros",
     return build
 
 
+@dataclass(frozen=True)
+class _StandaloneNodeCfg:
+    grid_id: int
+
+
+@dataclass(frozen=True)
+class _StandaloneNode:
+    """The two facts :func:`prepared_domain_builder` reads off a tree node.
+
+    A ``DomainNode`` is a position in a tree, and the builder asks it exactly
+    two questions: is this domain a NEST (``parent``), and what is its grid id
+    (for one refusal message).  A domain that is its own root answers both
+    without a tree, and saying so in six lines is honest, whereas building a
+    one-node tree to satisfy an attribute lookup would not be.
+    """
+
+    cfg: _StandaloneNodeCfg
+    parent: None = None
+
+
+def standalone_domain_builder(*, grid_id: int, **kwargs):
+    """The ``build`` :func:`make_stepper` needs for a ROOT domain with no tree.
+
+    :func:`prepared_domain_builder` is the whole builder and this adds nothing
+    to it -- same store fill, same tile buffers with the domain's own physics
+    selectors, same per-tile windowing of the domain's own
+    ``LateralBoundaries``.  What it adds is a way to ASK for it from a route
+    that never builds a :class:`gpuwm.core.model.DomainModel`.
+
+    :mod:`gpuwm.offline_child_run` is that route, and it is a specified-
+    boundary root by construction: the offline child stamps ``parent_id = 0``
+    on its own ``DomainTicks`` precisely because no parent domain is resident,
+    and its forcing is the tabulated series ``build_offline_lateral_boundaries``
+    prepared out of the parent archive.  So it takes the builder's non-nested
+    branch, which is the same branch ``gpuwm go``'s d01 takes -- the arm the
+    bit-exactness gate (``tilestream/test_join.py``) and the 2.2.2 planner-driven
+    GPU leg both cover.
+    """
+    return prepared_domain_builder(
+        _StandaloneNode(cfg=_StandaloneNodeCfg(grid_id=int(grid_id))),
+        **kwargs)
+
+
+def store_domain_builder(bundle, *, clock=DERIVE_CLOCK, seam: str = "zeros",
+                         tile_seed: int = 4242, warmup: int = 0,
+                         check_geography: bool = True):
+    """The ``build`` :func:`make_stepper` needs, for a STORE-DIRECT domain.
+
+    :func:`prepared_domain_builder`'s counterpart for a domain that was never
+    resident.  ``bundle`` is a
+    :class:`gpuwm.ingest.prepared_store.PreparedStore`: its carriers and its
+    geography are already full-domain pinned host arrays, built slab by slab
+    off the prepared cache, and its lateral forcing is the domain's own
+    series held on the host.
+
+    Everything the resident builder reads off ``node.state`` is read off the
+    bundle instead, and the substitution is exact rather than approximate in
+    all three places:
+
+    ``geography``
+        the bundle's, which was scattered from the same per-slab
+        ``geography_inventory`` the resident road gathers from a whole
+        domain.
+
+    ``boundary_tables``
+        windowed from the bundle's ``LateralBoundaries`` by the same
+        :func:`tile_boundary_tables`.  The tables are never attached to a
+        domain-shaped state -- there is none -- so the only lateral forcing
+        that reaches the card is one tile's edge.
+
+    ``tile_state_factory``
+        :func:`prepared_tile_state_factory` on the bundle's SLAB-HEIGHT
+        template.  The factory reads exactly three things from it -- the
+        scheme adapters to twin, the vertical coordinate, and the
+        ``ndim < 2`` setup arrays -- and none of the three varies with
+        height, which is why a slab may stand in for the domain.  The
+        horizontally-varying setup is gathered per tile from ``geography``,
+        as it always was.
+
+    The same slab is ALSO handed to ``attach(template=...)`` and kept on the
+    domain, because two whole-domain readers downstream take a live state for
+    the same height-invariant reasons the factory does: the history frame's
+    plan is measured against one (``tilestream.output.store_frame_plan``) and
+    the restart header's vertical setup arrays are rebuilt from one
+    (:meth:`StreamedDomain.restart_setup`).  Passing it is what makes a
+    store-direct forecast able to publish wrfout at all -- without it the run
+    integrates and checkpoints correctly and refuses at its first history
+    frame, which is an hour into an otherwise healthy forecast.
+
+    ``prime_lazy_carriers`` is not called on a domain here because there is
+    no domain-shaped object to call it on; it ran on every SLAB as the store
+    was built, which is the same set of keys reached the same way.  The
+    buffers are primed in the factory as before, and ``TiledRun``'s
+    inventory comparison still refuses any disagreement between a buffer and
+    the store -- the check that would catch it if this reasoning were wrong.
+    """
+    def build(state, cfg, decision):
+        from gpuwm.ingest.lateral_bc import LateralBoundaries
+
+        if getattr(cfg, "grid_id", 1) and state is not None \
+                and getattr(state, "parent", None) is not None:
+            raise StreamingRefused(
+                "a store-direct domain cannot be a NEST: a nested domain's "
+                "lateral forcing is rebuilt from its parent every parent "
+                "step rather than tabulated, so there is nothing for "
+                "tile_boundary_tables to window")
+        boundaries = bundle.boundaries
+        tables = None
+        if boundaries is not None:
+            if not isinstance(boundaries, LateralBoundaries):
+                raise StreamingRefused(
+                    "the prepared store carries lateral forcing of type "
+                    f"{type(boundaries).__name__}, which is not the "
+                    "tabulated LateralBoundaries series tile_boundary_tables "
+                    "windows")
+            tables = tile_boundary_tables(
+                boundaries, tile_specs(cfg, decision), seam=seam)
+        elif bool(getattr(cfg, "specified", False)):
+            raise StreamingRefused(
+                "cfg.specified is set but the prepared store carries no "
+                "LateralBoundaries, so no per-tile forcing can be windowed "
+                "and no buffer could take its warmup step")
+
+        factory = prepared_tile_state_factory(
+            bundle.template, cfg,
+            tables0=(None if tables is None else tables[0]),
+            seed=tile_seed, warmup=warmup)
+        # The SAME call ``store_from_prepared_cache`` defaults to when it
+        # harvests each slab, so the store handed in here and the buffers
+        # built from it carry the same keys BY CONSTRUCTION rather than by
+        # two literals happening to agree.
+        # THE CLOCK IS PASSED, NEVER DERIVED.  ``attach(None, ...)`` has no
+        # state to read a binding off, so the derivation this road used to
+        # inherit returned None on every buffer and latched -- see
+        # make_tile_hook.  Required here rather than defaulted: a
+        # store-direct domain is a specified-boundary root, its route holds
+        # the DomainClock, and the failure of guessing is a silently
+        # one-step-late forecast.
+        if tables is not None and clock is DERIVE_CLOCK:
+            raise StreamingRefused(
+                "store_domain_builder was given a prepared store with "
+                "tabulated lateral boundaries and no clock=.  A store-direct "
+                "domain is never resident, so there is no DomainState to "
+                "derive the Davies binding from and every tile buffer would "
+                "take the retired elapsed-seconds recurrence -- the forecast "
+                "would consume its lateral boundaries ONE TIMESTEP LATE, for "
+                "its whole length, and look healthy doing it.  Pass the "
+                "node's clock, or clock=None to ask for the legacy "
+                "semantics deliberately.")
+        return attach(None, cfg, decision, tile_state_factory=factory,
+                      store=bundle.store, scalars=bundle.scalars,
+                      geography=bundle.geography, boundary_tables=tables,
+                      boundaries=boundaries, template=bundle.template,
+                      check_geography=check_geography,
+                      external_clock=(None if clock is DERIVE_CLOCK
+                                      else clock),
+                      inventory_fn=streamed_store_inventory())
+
+    return build
+
+
+def options_for_domain(domain_cfg, tree_options: "StreamingOptions | None"
+                       ) -> "StreamingOptions":
+    """The ``[tiles]`` table that governs ONE domain.
+
+    A domain carrying its own ``tiles = {...}`` table takes it; every other
+    domain takes the tree-wide ``[tiles]``.  The override REPLACES rather
+    than merges, because a half-inherited tiling -- mode from the tree,
+    store from the domain -- is a configuration nobody can read off the
+    file.
+
+    This is the whole of the per-domain surface as far as the engine is
+    concerned: everything downstream keeps asking for "the options of this
+    domain" and gets one :class:`StreamingOptions`, so the roads that
+    already work on a tree-wide table work per domain with no second
+    vocabulary.
+    """
+    own = getattr(domain_cfg, "tiles", None)
+    if own is not None:
+        return own
+    return OFF if tree_options is None else tree_options
+
+
+def tree_streams_anywhere(model, options: "StreamingOptions | None") -> bool:
+    """Whether ANY domain of ``model`` has ``[tiles]`` enabled.
+
+    The short-circuit both tree entry points open with.  It cannot be
+    ``options.enabled`` any more: a tree whose ``[tiles]`` table is absent
+    entirely, but one of whose ``[[domain]]`` rows carries ``tiles = {mode
+    = "auto"}``, IS a configured run, and returning early on the tree-wide
+    table would run it resident in silence -- the one failure this module
+    exists to remove.
+    """
+    if options is not None and options.enabled:
+        return True
+    return any(options_for_domain(node.cfg, options).enabled
+               for node in model.walk_parent_first())
+
+
 def builders_for_tree(model, options: StreamingOptions | None = None, **kwargs
                       ) -> dict:
     """``{grid_id: build}`` for a whole tree; the routes' half of the seam.
@@ -3066,10 +3660,15 @@ def builders_for_tree(model, options: StreamingOptions | None = None, **kwargs
     same reason.
     """
     options = OFF if options is None else options
-    if not options.enabled:
+    if not tree_streams_anywhere(model, options):
         return {}
+    # Every domain whose OWN options are enabled gets a builder.  A domain
+    # the tree-wide table leaves off, and that says nothing itself, gets
+    # none -- it can never reach a STREAM decision, and handing it a
+    # builder would only make an unreachable road look wired.
     return {int(node.cfg.grid_id): prepared_domain_builder(node, **kwargs)
-            for node in model.walk_parent_first()}
+            for node in model.walk_parent_first()
+            if options_for_domain(node.cfg, options).enabled}
 
 
 def _periodic_axes(cfg) -> tuple[bool, bool]:
@@ -3144,10 +3743,18 @@ def refuse_unrouted_streaming(exp, route: str, *,
     from gpuwm.explain import layered
 
     options = getattr(exp, "tiles", None) or OFF
-    if options.mode == "off":
+    # Every mode this config asks for ANYWHERE, tree-wide or on a
+    # [[domain]] row.  Reading only the tree-wide table would let a config
+    # whose streaming lives entirely in per-domain tables through an
+    # admission whose whole job is to catch it.
+    modes = {options.mode} | {
+        options_for_domain(dc, options).mode
+        for dc in (getattr(exp, "domains", ()) or ())}
+    if modes <= {"off"}:
         return
-    if options.mode != "on" and consults_the_seam:
+    if "on" not in modes and consults_the_seam:
         return
+    asked = "/".join(sorted(m for m in modes if m != "off"))
     unread = ("" if consults_the_seam else
               "  This route does not read [tiles] at ANY point, so "
               "mode = 'auto' is refused here too: it would not be decided "
@@ -3163,7 +3770,7 @@ def refuse_unrouted_streaming(exp, route: str, *,
         "because this route never consults the seam at all: there is no "
         "point at which it would notice the answer.")
     raise StreamingRefused(layered(
-        f"[tiles] mode = '{options.mode}' asks the {route} route to "
+        f"[tiles] mode = '{asked}' asks the {route} route to "
         "integrate out of a pinned host store, and that route wires no "
         "streamed-domain builder, so it cannot.  Refusing here, at "
         "admission, rather than after the preparation has been restored and "
@@ -3183,6 +3790,230 @@ def refuse_unrouted_streaming(exp, route: str, *,
         "field by field, which tilestream/REAL-DATA.md names as the one "
         "piece of work out-of-core still needs.\n\n"
         + auto_note))
+
+
+def refuse_streamed_nests(exp, *, source: str = "<config>") -> None:
+    """``[tiles] mode = "on"`` over a config that declares a NEST: refused.
+
+    THE PLACEMENT IS THE POINT, and it is the same argument
+    :func:`refuse_unrouted_streaming` makes one function up.  ``mode =
+    "on"`` streams EVERY grid unconditionally, so on a tree every
+    parent-child coupling edge would have BOTH ends streamed -- and that
+    is the one concurrent-nesting shape the coupler refuses
+    (``gpuwm.core.nest.NestCoupler.force``): it would compose the
+    streamed-parent footprint corridor with the streamed-child frame
+    corridor and the per-tile table windows in one FORCE, and no gate has
+    driven that composition.  Ungated is refused, not run.  Without this
+    check the fact is discovered mid-run, at the first FORCE -- after the
+    fetch, after the preparation, after the whole tree is built -- so the
+    same fact is asked here, at ``build_experiment``, the one load every
+    front door shares (``run``/``go``/``check``, both prepared runners,
+    the DA drivers, the wizard's candidate loop).  The coupler's refusal
+    stays exactly where it is, as the backstop for a caller that
+    assembles an :class:`~gpuwm.experiment.ExperimentConfig` without
+    going through the loader.
+
+    WHAT THIS DOES NOT SAY -- because it stopped being true when the
+    per-domain roads landed -- is that a nested domain cannot stream.  A
+    resident parent can drive a tile-streamed child
+    (``tilestream/test_streamed_child.py``), a streamed parent can drive
+    a resident child (``tilestream/test_nest_executor.py``), and
+    :func:`steppers_for_tree` prices both roads against one budget.  Only
+    an EDGE with both ends streamed is unsupported, which is exactly the
+    shape ``mode = "on"`` forces on every edge of a tree.
+
+    ``mode = "auto"`` IS NOT REFUSED HERE, and that is load-bearing
+    rather than an omission: ``auto`` is a request to stream only what
+    does not fit, the planner prices each domain against the budget its
+    predecessors left, and any mixed shape it produces is legal.  The
+    walk itself refuses the one shape that is not, at decision time,
+    before anything is built.
+    """
+    from gpuwm.explain import layered
+
+    options = getattr(exp, "tiles", None) or OFF
+    domains = tuple(getattr(exp, "domains", ()) or ())
+    # THE EDGE, NOT THE TABLE.  This used to refuse on the tree-wide mode
+    # alone, which was exact while ``[tiles]`` was tree-wide and one
+    # ``mode = "on"`` really did put both ends of every edge on the
+    # streamed road.  With the per-domain surface it is no longer exact:
+    # `mode = "on"` over the tree with `tiles = { mode = "off" }` on the
+    # nest is "stream the parent, keep the child resident", which is a
+    # legal shape and now a reachable one.  So the question asked here is
+    # the one the coupler actually answers -- does any single EDGE have
+    # both ends unconditionally streamed -- and a tree that says something
+    # per domain is judged on what it said.
+    mode_by_gid = {int(dc.grid_id): options_for_domain(dc, options).mode
+                   for dc in domains}
+    both_on = tuple(
+        (int(getattr(dc, "parent_id", 0)), int(dc.grid_id))
+        for dc in domains
+        if int(getattr(dc, "parent_id", 0)) != 0
+        and mode_by_gid.get(int(dc.grid_id)) == "on"
+        and mode_by_gid.get(int(getattr(dc, "parent_id", 0))) == "on")
+    if not both_on:
+        return
+    nests = tuple(gid for _parent, gid in both_on)
+    roots = tuple(int(dc.grid_id) for dc in domains
+                  if int(getattr(dc, "parent_id", 0)) == 0)
+    root = roots[0] if roots else 1
+    # A domain that MOVES is a nest by construction, and it is worth
+    # naming separately: a reader who configured [relocation] is thinking
+    # about the follow domain, not about the parent_id that makes it a
+    # nest, and would otherwise read this refusal as being about some
+    # other grid.
+    relocation = getattr(exp, "relocation", None)
+    moving = (None if relocation is None
+              or not getattr(relocation, "enabled", False)
+              else int(relocation.grid_id))
+    named = ", ".join(f"d{gid:02d}" for gid in nests)
+    edges = ", ".join(f"d{p:02d} -> d{c:02d}" for p, c in both_on)
+    first_child = int(both_on[0][1])
+    first_parent = int(both_on[0][0])
+    moving_note = (
+        "" if moving is None or moving not in nests else
+        f"  d{moving:02d} is also this config's [relocation] follow "
+        "domain, which carries a SECOND reason it cannot be the streamed "
+        "end: relocating a streamed child would rebuild its store, its "
+        "tile plan, its geography gathers and its packed nest-table "
+        "windows on a new footprint mid-run, and none of that is built "
+        "or gated -- gpuwm.core.model refuses it at the first move.  Run "
+        "the moving child RESIDENT and stream its parent instead.")
+    raise StreamingRefused(layered(
+        f"[tiles] mode = 'on' leaves {len(both_on)} coupling edge(s) of "
+        f"{source} with BOTH ends streamed ({edges}; the streamed nest(s) "
+        f"are {named}) -- the one concurrent-nesting shape that is "
+        "refused (gpuwm.core.nest.NestCoupler.force), because it composes "
+        "the streamed-parent footprint corridor with the streamed-child "
+        "frame corridor and the per-tile table windows in one FORCE, and "
+        "no gate has driven that composition.  Refused here, at config "
+        "validation, rather than at the first FORCE -- which is a fetch, "
+        "the preparations and a whole tree construction into a run that "
+        f"was never going to finish.{moving_note}\n\n"
+        "  remedy, and there are three.  SAY WHICH END STREAMS, which is "
+        "the direct answer and the one most configs want: [tiles] is "
+        "per-domain, so put `tiles = { mode = \"off\" }` on [[domain]] "
+        f"grid_id = {first_child} to run it resident under a streamed "
+        f"d{first_parent:02d} -- or the inverse, `tiles = {{ mode = "
+        f"\"off\" }}` on the parent and leave the nest streaming.  Or set "
+        "mode = 'auto', which prices each domain against one budget, "
+        "reserves what the domains below it need before a streamed domain "
+        "picks its tile, and streams only what does not fit.  Or delete "
+        "the [tiles] table and run RESIDENT, which is what this tree did "
+        f"before the mode existed.  If it is d{root:02d}, the root, you "
+        "need to stream unconditionally -- a benchmark, or a "
+        "bit-exactness proof -- run it alone: one [[domain]] table.",
+        "Each single-streamed shape is gated alone "
+        "(tilestream/test_nest_executor.py streams the parent, "
+        "tilestream/test_streamed_child.py streams the child); an edge "
+        "with both ends streamed is ungated, and ungated is refused, not "
+        "run.\n\n"
+        "A STREAMED PARENT OVER RESIDENT NESTS IS REACHABLE, and it is "
+        "reachable two ways: name it per domain as above, or let mode = "
+        "'auto' find it -- the tree decision reserves every undecided "
+        "domain's claim before a streamed parent chooses its tile, so the "
+        "parent takes a smaller tile instead of the largest one that fits "
+        "and its children keep the card they need.  What remains refused "
+        "is only the EDGE with both ends streamed, never the tree that "
+        "contains a streamed domain."))
+
+
+def _CannotPlan():
+    """``tilestream.autoplan.CannotPlan``, imported where it is caught.
+
+    Function-local like every other ``tilestream`` reach in this module:
+    an unconfigured run must not import the planner at all.
+    """
+    from tilestream.autoplan import CannotPlan
+
+    return CannotPlan
+
+
+def _minimum_claim_bytes(node, total_budget: int) -> int:
+    """The LEAST VRAM ``node`` can run in, for a reservation.
+
+    A reservation must be a floor, never a wish: too small and it fails to
+    protect the domain it was taken for, too large and it refuses a tree
+    that would have run.  So each undecided domain is priced at the
+    cheapest road actually open to it.
+
+    A domain whose resident price fits the whole card will be RESIDENT --
+    under a streamed ancestor it has no choice, because the both-ends law
+    below refuses the alternative -- and a resident domain's floor is its
+    resident price exactly: it does not shrink.  A domain too big to sit
+    resident on the whole card must stream, and a streamed domain's floor
+    is one buffer of the smallest legal compute window, the same number
+    ``autoplan.plan`` reports when it says no tile fits.  Reserving that
+    instead of an unaffordable resident price is what lets the walk reach
+    the both-ends refusal -- which names the shape -- rather than dying at
+    the planner's "no tile fits in 0.02 GiB", which names an arithmetic
+    nobody wrote.
+    """
+    from tilestream import autoplan
+
+    cfg = node.cfg.run
+    fp = autoplan.footprint_for(cfg)
+    nz = int(cfg.nz)
+    cells = int(cfg.nx) * int(cfg.ny) * nz
+    resident = int(fp.resident_bytes(cells))
+    if resident <= int(total_budget):
+        return resident
+    halo = _halo_for(cfg)
+    return int(fp.vram_bytes((2 * halo + 1) ** 2 * nz, 1))
+
+
+def _decision_claim_bytes(node, decision, total_budget: int) -> int:
+    """What the road this domain DECIDED on actually claims on the card.
+
+    ``decision.resident_bytes`` is the planner's own number and is used
+    wherever the planner was consulted.  The two roads that never consult
+    it still occupy the card and still have to be paid for, or the next
+    domain in the walk is handed their bytes a second time:
+
+    * a PINNED tiling is priced at its own compute window -- the tile plus
+      halo on both axes, times the buffers it pinned;
+    * a domain whose ``[tiles]`` is OFF, which is now reachable inside a
+      configured tree because the surface is per-domain, is priced
+      resident, which is what it is.
+    """
+    if decision.resident_bytes is not None:
+        return int(decision.resident_bytes)
+    from tilestream import autoplan
+
+    cfg = node.cfg.run
+    fp = autoplan.footprint_for(cfg)
+    nz = int(cfg.nz)
+    if decision.stream and decision.tile_nx:
+        halo = int(decision.halo or 0)
+        window = ((int(decision.tile_nx) + 2 * halo)
+                  * (int(decision.tile_ny) + 2 * halo) * nz)
+        return int(fp.vram_bytes(window, int(decision.nbuffers or 1)))
+    return _minimum_claim_bytes(node, total_budget)
+
+
+def _tree_reservations(nodes, total_budget: int) -> list:
+    """``[(reserved_bytes, [grid_id, ...]), ...]``, aligned with ``nodes``.
+
+    Entry ``i`` is what the domains still UNDECIDED after ``nodes[i]`` need
+    between them: the sum of their floors plus, for each of them that is a
+    child, the coupling corridor its edge costs.  The corridor is priced in
+    its RESIDENT form (``corridor_claim_bytes`` with no decision), which is
+    the form a reserved domain will be in.
+    """
+    from gpuwm.core.nest_stream import corridor_claim_bytes
+
+    floors = []
+    for node in nodes:
+        claim = _minimum_claim_bytes(node, total_budget)
+        if getattr(node, "parent", None) is not None:
+            claim += int(corridor_claim_bytes(node))
+        floors.append(int(claim))
+    out = []
+    for index, node in enumerate(nodes):
+        rest = range(index + 1, len(nodes))
+        out.append((sum(floors[j] for j in rest),
+                    [int(nodes[j].cfg.grid_id) for j in rest]))
+    return out
 
 
 def steppers_for_tree(model, options: StreamingOptions | None = None, *,
@@ -3206,6 +4037,16 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     resident: the failure that silence produces is an out-of-memory death at
     the allocation the mode existed to avoid, with nothing in the log to say
     the mode never engaged.
+
+    A NEST streams through its own road (``gpuwm.core.nest_stream``), and
+    the walk prices it like any domain -- what a tree may NOT contain is a
+    coupling edge with BOTH ends streamed, the composition no gate has
+    driven.  The walk refuses that shape at DECISION time, before any
+    builder runs, so a tree that cannot run is a refusal with names
+    instead of a root store filled and a coupler error at the first
+    FORCE.  ``mode = "on"`` over a tree is the guaranteed form of it and
+    is refused from the config text itself by
+    :func:`refuse_streamed_nests`, long before a model exists to walk.
 
     ``decisions`` IS NOT OPTIONAL DECORATION -- IT IS THE OTHER FAILURE
     ------------------------------------------------------------------
@@ -3245,23 +4086,235 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     an estimate priced for a whole resident domain.
     """
     options = OFF if options is None else options
-    if not options.enabled:
+    if not tree_streams_anywhere(model, options):
         return {}
+    import dataclasses
+
     builders = dict(builders or {})
     out = {}
-    for node in model.walk_parent_first():
+    # THE TREE IS PRICED TOGETHER.  A per-domain decision that hands every
+    # grid the whole card is how a resident parent and a streamed child
+    # both plan against the same bytes and meet as an OOM mid-run instead
+    # of a refusal.  Walking parent-first, every domain's decision is made
+    # against the budget its predecessors LEFT: a resident domain's claim
+    # is autoplan's own resident price, a streamed domain's is its tile
+    # working set (both carried on the decision as ``resident_bytes``), and
+    # a coupled child adds its corridor claim (rolling tables, coupling
+    # slots, packed per-tile table windows).  Each decision's ``detail``
+    # records the road and the arithmetic -- the receipt an operator reads
+    # to see which claims consumed the card.
+    #
+    # Only when the planner is consulted: a PINNED tiling asks no question
+    # and probes no card (the bit-exactness gates depend on that), so it
+    # gets roads recorded and no budget arithmetic.  Per domain now, so a
+    # tree pinned end to end still probes nothing, and a tree with one
+    # planner-driven domain in it does the arithmetic for all of them --
+    # a pinned domain occupies the card whether or not it asked a
+    # question, and leaving it out of the budget would hand its bytes to
+    # the next domain twice.
+    nodes = list(model.walk_parent_first())
+    per_domain = [options_for_domain(node.cfg, options) for node in nodes]
+    consults_planner = any(o.enabled and o.tile_nx is None
+                           for o in per_domain)
+    machine0 = machine
+    if consults_planner and machine0 is None:
+        from tilestream import autoplan
+
+        # Detected ONCE for the whole walk, not once per grid: the free
+        # VRAM the budget subtracts from must be one number or the
+        # claims below double-count whatever moved between probes.
+        #
+        # ``host_bytes=`` IS HANDED TO THE PROBE, on the same law
+        # :func:`decide` states at length: ``detect`` skips the host-memory
+        # read entirely when it is told the budget, and RAISES where it can
+        # find no host source -- so a bare ``detect()`` here refused every
+        # [tiles] tree on a box with no procfs and no cgroups, including
+        # the ones whose ``host_budget_bytes`` supplied the very number the
+        # refusal asked for.  ``decide``'s own override could not save it:
+        # that arm runs only when no machine is passed, and this wrapper
+        # passes one.  This is the PRODUCTION door to the planner, so the
+        # fix has to be here as well as there.
+        machine0 = autoplan.Machine.detect(
+            host_bytes=(None if options.host_budget_bytes is None
+                        else int(options.host_budget_bytes)))
+    # THE CONFIGURED BUDGETS ARE FOLDED INTO THE MACHINE, ONCE.  They name a
+    # CARD and a BOX, not a domain, so they cannot ride on the per-domain
+    # tables (the loader refuses them there) and they must not ride on the
+    # options handed to ``decide`` either: ``decide`` re-applies them to
+    # whatever machine it is given, which would clobber every reduction this
+    # walk makes -- both the predecessors' spend and the successors'
+    # reservation.  Folding them in here leaves exactly one place each
+    # number lives.
+    if consults_planner and options.vram_budget_bytes is not None:
+        machine0 = dataclasses.replace(
+            machine0, vram_bytes=int(options.vram_budget_bytes),
+            vram_headroom=0.0)
+    if consults_planner and options.host_budget_bytes is not None:
+        machine0 = dataclasses.replace(
+            machine0, host_bytes=int(options.host_budget_bytes),
+            pinned_fraction=1.0)
+    if consults_planner:
+        per_domain = [dataclasses.replace(o, vram_budget_bytes=None,
+                                          host_budget_bytes=None)
+                      if (o.vram_budget_bytes is not None
+                          or o.host_budget_bytes is not None) else o
+                      for o in per_domain]
+    # DECIDE THE WHOLE TREE, THEN BUILD IT.  Two passes, not one, and the
+    # split is the refusal's timing: parent-first, the ROOT's stepper used
+    # to be built -- its whole pinned host store filled -- before the
+    # child's decision was even taken, so a tree whose decisions could not
+    # run together paid the entire run-up to learn a fact the decisions
+    # already contained.  With every decision in hand first, an
+    # unbuildable tree refuses before a single byte is pinned.
+    #
+    # TWO LEDGERS, NOT ONE.  VRAM and pinned HOST RAM are separate finite
+    # pools and a streamed domain spends both -- its tile buffers on the
+    # card, its whole-domain store and arena on the box.  A single total
+    # subtracted only the VRAM, so a resident root with two streamed
+    # siblings priced EACH child against the entire host budget: both plans
+    # were accepted, both stores were pinned, and the second one met
+    # cudaHostAlloc instead of the planner refusal that exists to prevent
+    # exactly that.  Host RAM is the binding constraint at every capacity
+    # limit measured, so it is the ledger that most needs keeping.
+    spent = 0
+    host_spent = 0
+    decided: list = []
+    decided_by_gid: dict[int, object] = {}
+
+    def reduced(by: int, host_by: int = 0):
+        """``machine0`` with ``by`` VRAM and ``host_by`` host bytes spent."""
+        if not (consults_planner and (by or host_by)):
+            return machine0
+        reduced_machine = machine0
+        if by:
+            reduced_machine = dataclasses.replace(
+                reduced_machine,
+                vram_bytes=max(0, machine0.vram_budget_bytes - by),
+                vram_headroom=0.0)
+        if host_by:
+            # ``pinned_fraction`` is forced to 1.0 for the same reason
+            # ``vram_headroom`` is zeroed above: the number handed on IS the
+            # budget, so a multiplier applied on top of it would shrink the
+            # remainder a second time.
+            reduced_machine = dataclasses.replace(
+                reduced_machine,
+                host_bytes=max(0, machine0.host_budget_bytes - host_by),
+                pinned_fraction=1.0)
+        return reduced_machine
+
+    # RESERVE BEFORE THE GREEDY CHOOSE.  Walking parent-first prices each
+    # domain against what its PREDECESSORS left, which is the right law for
+    # a resident domain -- its claim is fixed and it takes what it needs.
+    # It is the wrong law for a STREAMED one, because a streamed domain's
+    # claim is not fixed: the tile search maximises the compute window
+    # against whatever budget it is shown, so a streamed parent took the
+    # largest clean tile that fit the whole card -- MEASURED at 3.94 of
+    # 4.00 GiB, 98.5% -- and its resident child then met the planner's
+    # "no tile fits in 0.06 GiB".  STREAMED PARENT + RESIDENT CHILD is a
+    # shape the engine runs bit-identically; only the order of the
+    # arithmetic made it unreachable.
+    #
+    # So the successors are priced FIRST, at the floor each of them can
+    # run in, and a streamed domain's tile search sees budget-minus-
+    # successors.  A parent on a smaller tile is a slower parent; a
+    # starved child is no run at all, and the tiling tax is 1.2x-1.4x
+    # against a refusal.
+    #
+    # The reservation constrains the TILE, never the VERDICT: the
+    # stream-or-resident question is still asked against the budget the
+    # predecessors left, exactly as before, so a tree that ran all-resident
+    # decides all-resident still and no existing road moves.
+    total_budget = (int(machine0.vram_budget_bytes) if consults_planner
+                    else 0)
+    reservations = (_tree_reservations(nodes, total_budget)
+                    if consults_planner else [(0, [])] * len(nodes))
+    for node, node_options, (reserve, reserved_for) in zip(
+            nodes, per_domain, reservations):
         gid = int(node.cfg.grid_id)
         cfg = node.cfg.run
+        node_machine = reduced(spent, host_spent)
         # Decided ONCE and handed to make_stepper, rather than letting
         # make_stepper decide again: `auto` consults the planner, and a
         # second consultation on a card whose free VRAM moved in between
         # could answer differently from the one that got recorded.  The
         # receipt would then describe a run that did not happen.
-        decision = decide(cfg, options, machine=machine)
+        decision = decide(cfg, node_options, machine=node_machine)
+        if decision.stream and reserve:
+            budget_before = int(decision.budget_bytes or 0)
+            tile_machine = reduced(spent + int(reserve), host_spent)
+            try:
+                decision = decide(cfg, node_options, machine=tile_machine)
+            except _CannotPlan() as exc:
+                raise StreamingRefused(
+                    f"d{gid:02d} streams, and the domains still undecided "
+                    f"below it ({', '.join(f'd{g:02d}' for g in reserved_for)}"
+                    f") need {reserve / (1024 ** 3):.2f} GiB between them, "
+                    f"which leaves nothing to tile d{gid:02d} with: "
+                    f"{budget_before / (1024 ** 3):.2f} GiB was free at this "
+                    f"point in the walk and the reservation takes "
+                    f"{reserve / (1024 ** 3):.2f} GiB of it.  The "
+                    "reservation is not optional -- without it d"
+                    f"{gid:02d} would take the largest tile that fits and "
+                    "its own children would then have no card left, which "
+                    "is a refusal one domain later instead of here.  "
+                    "Raise [tiles] vram_budget_bytes or free VRAM, shrink "
+                    "the tree, or run it resident by deleting the [tiles] "
+                    f"table.  The planner's own words: {exc}") from exc
+            decision.detail.update(
+                reserved_bytes=int(reserve), reserved_for=list(reserved_for),
+                budget_before_reserve_bytes=budget_before)
+        claim = _decision_claim_bytes(node, decision, total_budget)
+        corridor = 0
+        if getattr(node, "parent", None) is not None:
+            from gpuwm.core.nest_stream import corridor_claim_bytes
+
+            corridor = corridor_claim_bytes(node, decision=decision)
+        host_claim = int(decision.detail.get("host_claim_bytes") or 0)
+        decision.detail.update(
+            road=("streamed" if decision.stream else "resident"),
+            claim_bytes=claim, corridor_claim_bytes=corridor,
+            budget_spent_before_bytes=int(spent),
+            host_spent_before_bytes=int(host_spent),
+            configured_mode=node_options.mode)
+        if consults_planner:
+            spent += claim + corridor
+            host_spent += host_claim
         if decisions is not None:
             decisions[gid] = decision
-        stepper = make_stepper(node.state, cfg, options, decision=decision,
-                               machine=machine, build=builders.get(gid))
+        # A coupling edge with BOTH ends streamed is refused at DECISION
+        # time -- the same law gpuwm.core.nest.NestCoupler.force enforces
+        # at every FORCE, asked here where it costs a sentence instead of
+        # a run.  Each single-streamed shape is gated alone
+        # (tilestream/test_nest_executor.py streams the parent,
+        # tilestream/test_streamed_child.py streams the child); the
+        # composition is ungated, and ungated is refused, not run.
+        parent = getattr(node, "parent", None)
+        if parent is not None and decision.stream:
+            pgid = int(parent.cfg.grid_id)
+            pdecision = decided_by_gid.get(pgid)
+            if pdecision is not None and pdecision.stream:
+                raise StreamingRefused(
+                    f"the coupling edge d{pgid:02d} -> d{gid:02d} has BOTH "
+                    "ends streamed: it would compose the streamed-parent "
+                    "footprint corridor with the streamed-child frame "
+                    "corridor and the per-tile table windows in one FORCE, "
+                    "and no gate has driven that composition.  Ungated is "
+                    "refused, not run -- and refused here, at decision "
+                    "time, rather than by NestCoupler.force after the "
+                    "whole tree is built.  Leave one end resident: say so "
+                    f"explicitly with a per-domain table (tiles = {{ mode = "
+                    f"\"off\" }} on [[domain]] grid_id = {gid}, which runs "
+                    f"d{gid:02d} resident under a streamed d{pgid:02d}), or "
+                    "raise [tiles] vram_budget_bytes or free VRAM so one of "
+                    "the two fits resident, or pin the whole run resident "
+                    "by deleting the [tiles] table.")
+        decided.append((node, cfg, node_options, node_machine, decision))
+        decided_by_gid[gid] = decision
+    for node, cfg, node_options, node_machine, decision in decided:
+        gid = int(node.cfg.grid_id)
+        stepper = make_stepper(node.state, cfg, node_options,
+                               decision=decision, machine=node_machine,
+                               build=builders.get(gid))
         if is_streaming(stepper):
             out[gid] = stepper
     return out
@@ -3297,9 +4350,30 @@ def streaming_receipt(options: StreamingOptions | None,
     differing is the entire failure: ``mode='auto'`` is a request, not an
     outcome, and a log that echoes only the request is a log that will be
     read as an outcome.
+
+    KEYED ON THE DECISIONS, NOT ON THE TREE-WIDE TABLE
+    --------------------------------------------------
+    This function used to open with ``not options.enabled`` and return
+    ``{}``, which made the TREE-WIDE ``[tiles]`` table the authority on
+    whether anything streamed.  It is not the authority -- it is the
+    DEFAULT.  Since the surface went per domain, a tree whose tree-wide
+    mode is ``off`` and one of whose ``[[domain]]`` rows carries ``tiles =
+    {mode = "on"}`` streams that grid, and every such run produced an
+    EMPTY receipt: the operator got no line naming which grid had tiled.
+    That is the same class of defect :func:`tree_streams_anywhere` exists
+    to close -- a per-domain road the tree-wide table cannot see -- and it
+    is closed the same way, by reading what the domains DECIDED.
+
+    ``decisions`` is the right key because it is filled by
+    :func:`steppers_for_tree` for EVERY grid walked and only for a tree
+    that is configured somewhere: an unconfigured tree returns early on
+    ``tree_streams_anywhere`` and never fills it, so the empty receipt
+    that keeps pre-``[tiles]`` runs byte-identical still comes out empty.
     """
-    if options is None or not options.enabled or not decisions:
+    if not decisions:
         return {}
+    if options is None:
+        options = OFF
     domains: dict[str, dict] = {}
     for gid in sorted(decisions):
         d = decisions[gid]
@@ -3312,6 +4386,24 @@ def streaming_receipt(options: StreamingOptions | None,
             entry["resident_bytes"] = int(d.resident_bytes)
         if d.budget_bytes is not None:
             entry["budget_bytes"] = int(d.budget_bytes)
+        # The reservation, where one was taken.  A domain that held budget
+        # back for its successors chose a SMALLER tile than the card could
+        # hold, and without this an operator reading that tile has no way
+        # to tell a reservation from a bad plan.  Absent, not zero, where
+        # nothing was reserved: every receipt written before the joint
+        # decision existed stays byte-identical.
+        if d.detail.get("reserved_bytes"):
+            entry["reserved_bytes"] = int(d.detail["reserved_bytes"])
+            entry["reserved_for"] = [int(g) for g in
+                                     d.detail.get("reserved_for", ())]
+        # The mode THIS domain was configured with, recorded only where it
+        # differs from the tree-wide one.  A per-domain table is how a user
+        # says "stream the parent, keep the child resident", and a receipt
+        # that echoed only the tree-wide mode would describe a different
+        # configuration from the one on disk.
+        own_mode = d.detail.get("configured_mode")
+        if own_mode is not None and own_mode != options.mode:
+            entry["configured_mode"] = str(own_mode)
         domains[str(int(gid))] = entry
     streamed = sorted(g for g in decisions if decisions[g].stream)
     resident = sorted(g for g in decisions if not decisions[g].stream)
@@ -3323,10 +4415,32 @@ def streaming_receipt(options: StreamingOptions | None,
         first = decisions[resident[0]]
         what = (f"NO domain streamed; grid(s) {resident} ran resident "
                 f"because {first.reason}")
+    # WHERE THE TREE-WIDE MODE DID NOT ASK FOR THIS, SAY WHO DID.  With the
+    # tree-wide table disabled, "[tiles] mode='off': grid(s) [2] streamed"
+    # is accurate and reads like a contradiction -- an operator has no way
+    # to tell it from a receipt that is simply wrong.  Naming the domains
+    # that overrode the default turns it into a sentence.
+    #
+    # Scoped to `not options.enabled` on purpose: that is exactly the case
+    # which printed NOTHING before, so there is no shipped byte here to
+    # move.  A tree the tree-wide table governs keeps the line it has
+    # always printed, which
+    # tests/test_streaming.py::test_the_per_domain_receipt_fix_moves_no
+    # _shipped_receipt_byte pins literally.
+    prefix = f"[tiles] mode={options.mode!r}"
+    if not options.enabled:
+        overrides = [f"d{int(gid):02d} mode="
+                     f"{str(decisions[gid].detail.get('configured_mode'))!r}"
+                     for gid in sorted(decisions)
+                     if decisions[gid].detail.get("configured_mode")
+                     not in (None, options.mode)]
+        if overrides:
+            prefix = (f"{prefix} tree-wide, overridden per domain "
+                      f"({', '.join(overrides)})")
     return {"configured_mode": options.mode,
             "streamed_any": bool(streamed),
             "domains": domains,
-            "summary": f"[tiles] mode={options.mode!r}: {what}"}
+            "summary": f"{prefix}: {what}"}
 
 
 def _drain_streamed(state) -> None:
@@ -3471,6 +4585,59 @@ def domain_store(state):
     return getattr(state, _STORE_ATTR, None)
 
 
+def window_slices(shape, window) -> tuple:
+    """``window`` = ``(j0, j1, i0, i1)`` in MASS cells, on any staggering.
+
+    Staggered arrays carry one extra face on their own axis, so the
+    window is widened by one there and clamped to the array -- a
+    superset is always safe (it copies a cell the reader will not use)
+    and a subset is a stale face inside the zone the reader WILL use.
+    The widening is applied on BOTH axes unconditionally rather than per
+    stagger, for the same superset-is-free reason: one rule, no per-field
+    geometry to get wrong.
+
+    ``window=None`` -- and any array too flat to window -- is the whole
+    array, so a caller that windows nothing executes the path it always
+    did.
+    """
+    if window is None or len(shape) < 2:
+        return (Ellipsis,)
+    j0, j1, i0, i1 = (int(v) for v in window)
+    ny, nx = int(shape[-2]), int(shape[-1])
+    return (Ellipsis,
+            slice(max(0, j0), min(ny, j1 + 1)),
+            slice(max(0, i0), min(nx, i1 + 1)))
+
+
+def frame_windows(ny: int, nx: int, width: int) -> tuple:
+    """The four boundary-frame strips of a domain, as ``window_slices`` windows.
+
+    ``((j0, j1, i0, i1) x 4)`` in MASS cells: west/east strips full-height,
+    south/north strips full-width, each ``width`` cells deep.  The corners
+    are covered TWICE, deliberately: the superset rule that governs every
+    window in this subsystem makes an overlapping copy idempotent and a
+    missing one a stale cell inside the zone the reader uses.  Each window
+    is then sliced by :func:`window_slices` -- the same +1 staggered-face
+    widening and clamp every other consumer applies -- so the frame rule
+    adds no second slice arithmetic to get wrong.
+
+    This is the CHILD-side mirror of the FORCE corridor's footprint window:
+    ``bdy_interp1`` reads the child only inside its boundary zone (the
+    kernel writes ``nz*sz*(nyc|nxc)`` table cells per side and reads the
+    child field at exactly those positions), so a streamed child's FORCE
+    pull needs four strips, not a domain.
+    """
+    ny, nx, width = int(ny), int(nx), int(width)
+    if width < 1:
+        raise ValueError("frame width must be at least one cell")
+    return (
+        (0, ny, 0, width),           # west
+        (0, ny, nx - width, nx),     # east
+        (0, width, 0, nx),           # south
+        (ny - width, ny, 0, nx),     # north
+    )
+
+
 def _carrier_key(attr: str) -> str:
     """``mup`` -> ``state/mup``: the restart member name a store is keyed by.
 
@@ -3482,19 +4649,30 @@ def _carrier_key(attr: str) -> str:
     return f"state/{attr}"
 
 
-def refresh_from_store(state, attrs) -> int:
+def refresh_from_store(state, attrs, *, window=None) -> int:
     """Copy named carriers STORE -> the state's own device arrays, in place.
 
     Returns the bytes moved, so a caller can report the traffic it is paying
     instead of hiding it.  A resident state moves nothing and returns 0.
+
+    ``window`` is ``(j0, j1, i0, i1)`` in parent MASS cells, sliced by
+    :func:`window_slices` -- the same superset rule every other consumer of
+    a footprint window applies.  It exists for the FORCE corridor: the nest
+    coupler reads the parent only inside the child's footprint plus its
+    stencil, and a domain is streamed BECAUSE it does not fit, so pulling
+    whole fields per parent step is O(parent) traffic where O(child
+    footprint) is what the read needs.  ``None`` is the whole field, which
+    is what a whole-domain consumer (feedback's finalize diagnostics) still
+    wants.
 
     This repairs a desync; it does not create a device allocation.  The
     arrays written are the ones ``attach`` copied FROM, so this is only
     available while the route still holds a resident prepared state --
     which every route does today (``attach`` copies out of it and nothing
     frees it).  A future route that initialises straight into the host store
-    has no such arrays and needs the windowed read this function stands in
-    for; see :class:`gpuwm.core.nest.NestCoupler`.
+    has no such arrays; the windowed read here is the traffic half of that
+    corridor, and the slot half (window-shaped device buffers) is the piece
+    still standing in front of store-direct nesting.
     """
     store = domain_store(state)
     if store is None:
@@ -3518,15 +4696,30 @@ def refresh_from_store(state, attrs) -> int:
             raise StreamingRefused(
                 f"store {attr!r} has shape {tuple(src.shape)}, state has "
                 f"{tuple(dst.shape)}")
-        if isinstance(src, _np.ndarray):
+        sl = window_slices(dst.shape, window)
+        if not isinstance(src, _np.ndarray):
+            dst[sl] = src[sl]                      # device-store mode
+        elif isinstance(dst, _np.ndarray):
+            dst[sl] = src[sl]                      # host stand-in (tests)
+        elif window is None:
+            # Whole-field host -> device.  ``dst[...] = host`` routes
+            # through cupy's fill and raises; ndarray.set is the documented
+            # door and needs a contiguous destination, which a whole array
+            # is.
             dst.set(_np.ascontiguousarray(src))
         else:
-            dst[...] = src
-        moved += int(dst.nbytes)
+            # Windowed host -> device.  The window view of ``dst`` is not
+            # contiguous, so it cannot take ``set``; stage the window on
+            # the device and assign device-to-device, exactly as
+            # ``StreamedDomain.sync_to_state`` does.
+            import cupy as _cp
+
+            dst[sl] = _cp.asarray(_np.ascontiguousarray(src[sl]))
+        moved += int(src[sl].nbytes if window is not None else dst.nbytes)
     return moved
 
 
-def commit_to_store(state, attrs) -> int:
+def commit_to_store(state, attrs, *, window=None) -> int:
     """Copy named carriers the state's device arrays -> the STORE, in place.
 
     The write half of :func:`refresh_from_store`, for the one caller that
@@ -3535,6 +4728,14 @@ def commit_to_store(state, attrs) -> int:
     (:meth:`gpuwm.core.nest.NestCoupler.feedback_commit`).  Without this the
     next sweep gathers from the store and the feedback is silently discarded
     -- the parent integrates on as though the child had never run.
+
+    ``window`` narrows the write to the child's footprint window under the
+    same rule as the read half.  A windowed commit is complete exactly when
+    everything the caller CHANGED lies inside the window -- which is the
+    feedback restriction's defining property (``feedback_parent_bounds``
+    excludes even the child's own specified zone) -- and a window that did
+    not cover a write would silently discard it, so the caller names its
+    ground and the seam moves only that.
     """
     store = domain_store(state)
     if store is None:
@@ -3553,11 +4754,18 @@ def commit_to_store(state, attrs) -> int:
         if src is None:
             raise StreamingRefused(
                 f"the store carries {attr!r} but the state does not")
-        if isinstance(dst, _np.ndarray):
+        sl = window_slices(_np.shape(dst), window)
+        if not isinstance(dst, _np.ndarray):
+            dst[sl] = src[sl]                      # device-store mode
+        elif isinstance(src, _np.ndarray):
+            dst[sl] = src[sl]                      # host stand-in (tests)
+        elif window is None:
             src.get(out=dst)
         else:
-            dst[...] = src
-        moved += int(dst.nbytes)
+            # ``.get()`` on a device view makes its own contiguous host
+            # copy, so the strided store write is host-side numpy.
+            dst[sl] = src[sl].get()
+        moved += int(dst[sl].nbytes if window is not None else dst.nbytes)
     return moved
 
 

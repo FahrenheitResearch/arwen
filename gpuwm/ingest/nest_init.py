@@ -61,7 +61,7 @@ from gpuwm.ingest.hrrr import (HrrrNativeSnapshot,
 from gpuwm.ingest.real import RealInitResult, initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.ingest.soil import (NoahSoilState, reconciler_soil_temperature,
-                               reconciler_sst)
+                               reconciler_sst, soil_source_orography)
 from gpuwm.ingest.water_temperature import WaterTemperatureStatics
 from gpuwm.static.build import (build_static_for_domain,
                                 geog_selection_from_catalog)
@@ -931,7 +931,15 @@ def finalize_prepared_child(
     # initialize_real deliberately leaves EOS diagnostics to its caller.
     # adjust_tempqv needs the pre-blend perturbation pressure.
     update_diagnostics(state, cfg.hypsometric_opt)
-    child_orography = prepared.declared_orography
+    # The child's own horizontal fields carry the forcing's embedded
+    # orography (nest_init passes the catalog to the interpolation above),
+    # so a nested ERA5 case whose SOILGEO rides in the GRIB gets the same
+    # elevation lapse the root does.  Resolving only prepared.declared_
+    # orography skipped it on exactly the cases the root skipped it on --
+    # and nests, being the finest grids, carry the sharpest terrain
+    # disagreement with a ~31 km source and feel it most.
+    child_orography = soil_source_orography(
+        prepared.declared_orography, horizontal.fields)
     # ONE RULEBOOK (Drew's ruling, 2026-08-06): build the child's soil
     # column and its SH2O with the SAME reconciled ISLTYP the child's Noah
     # integrates, exactly as the root path does.  Nests are the finest

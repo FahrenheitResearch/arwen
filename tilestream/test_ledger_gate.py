@@ -147,42 +147,49 @@ def test_mode_off_and_auto_are_not_refused():
     return "off, auto and a streaming-less object are all admitted"
 
 
-def test_a_route_that_never_reads_streaming_refuses_auto_too():
-    """``gpuwm run`` drops ``[tiles]`` on the floor, so it must refuse it.
+def test_the_run_route_streams_instead_of_refusing():
+    """``gpuwm run`` reads ``[tiles]`` now, so the relay must not refuse it.
 
-    ``runtime.run_experiment`` calls ``integrate_prepared_case`` with
+    THE REFUSAL THIS REPLACES WAS TRUE WHEN IT WAS WRITTEN.
+    ``runtime.run_experiment`` called ``integrate_prepared_case`` with
     ``stepper=None`` on its single-domain arm and ``execute_experiment`` /
-    ``walk_spawn_legs`` with no ``steppers=`` on both tree arms.  It never
-    reads ``exp.tiles``.  A configured ``auto`` there is not decided and
-    found resident -- it is never asked -- so the run integrates resident
-    with nothing said, which is the one outcome this module exists to
-    prevent.  And ``off`` must still be admitted, or the check is a blanket
-    refusal again.
+    ``walk_spawn_legs`` with no ``steppers=`` on both tree arms, so a
+    configured mode was read, validated, echoed into the resolved-config
+    report and then dropped -- a resident run with nothing said.  The
+    remedy for that was never a permanent refusal; it was the wiring, and
+    the refusal's own message named it (``streaming.builders_for_tree``).
+
+    Both arms are wired.  What is checked here is that the two readers of
+    that fact agree: the route itself, and run-plan's delivery table,
+    which relays the core's sentence at resolve time and would otherwise
+    go on refusing -- before the run directory -- a config the route runs.
+
+    ``refuse_unrouted_streaming`` is NOT deleted and is still exercised:
+    it is the right answer for any route that genuinely reads nothing,
+    and ``test_mode_on_is_refused_at_admission`` above holds its words.
     """
-    for mode in ("on", "auto"):
-        try:
-            streaming.refuse_unrouted_streaming(
-                _exp(448, mode), "gpuwm run", consults_the_seam=False)
-        except streaming.StreamingRefused as error:
-            assert "does not read [tiles] at ANY point" in str(error)
-        else:
-            raise AssertionError(f"mode={mode!r} admitted by a route that "
-                                 "drops it")
-    streaming.refuse_unrouted_streaming(
-        _exp(448, "off"), "gpuwm run", consults_the_seam=False)
-    # The refusal has to be inside run_experiment and ahead of the ingest,
-    # so read that ONE function's source rather than the module's.
     import inspect
 
-    from gpuwm import runtime
+    from gpuwm import runplan, runtime
 
-    text = inspect.getsource(runtime.run_experiment)
-    call = text.index('refuse_unrouted_streaming(exp, "gpuwm run"')
-    ingest = text.index("prepare_experiment_case(")
-    build = text.index("build_experiment(exp, data)")
-    assert call < ingest and call < build, (call, ingest, build)
-    return ("gpuwm run refuses both 'on' and 'auto', admits 'off', and does "
-            "it before prepare_experiment_case and build_experiment")
+    src = inspect.getsource(runtime.run_experiment)
+    assert 'refuse_unrouted_streaming(exp, "gpuwm run"' not in src, (
+        "gpuwm run still refuses [tiles] at its front door while wiring "
+        "the builders behind it")
+    # The tree arm and the single-domain arm, both.
+    assert "builders=_streaming.builders_for_tree(model, exp.tiles)" in src
+    assert "standalone_domain_builder(" in src
+    assert "stepper=single_stepper" in src
+    # And the relay agrees.  "unrouted" here would refuse at resolve time.
+    assert runplan._STREAMING_DELIVERY["experiment"] == "tree", (
+        runplan._STREAMING_DELIVERY)
+    decision = runplan.streaming_decision(_exp(448, "auto"),
+                                          chain="experiment")
+    assert decision["refusal"] is None, decision["refusal"]
+    assert decision["delivery"] == "tree", decision
+    return ("gpuwm run wires builders_for_tree and standalone_domain_builder "
+            "instead of refusing, and run-plan's 'experiment' chain relays "
+            "a 'tree' delivery with no refusal")
 
 
 def test_the_refusal_precedes_every_allocation_in_the_route():
@@ -367,7 +374,7 @@ TESTS = [
     test_the_drift_guard_quantities_are_identical_with_streaming_on,
     test_mode_on_is_refused_at_admission,
     test_mode_off_and_auto_are_not_refused,
-    test_a_route_that_never_reads_streaming_refuses_auto_too,
+    test_the_run_route_streams_instead_of_refusing,
     test_gpuwm_go_refuses_before_the_download,
     test_the_refusal_precedes_every_allocation_in_the_route,
     test_the_off_receipt_is_empty,

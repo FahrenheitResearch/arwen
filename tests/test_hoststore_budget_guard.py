@@ -61,6 +61,69 @@ def test_the_slabbed_builder_prices_and_checks_before_allocating():
     assert "budget_bytes=budget_bytes" in src
 
 
+def _call_lines(func, name: str) -> list[int]:
+    """Line numbers of every call to ``name`` inside ``func``'s own source.
+
+    By AST rather than by ``str.index``, for two reasons.  The weaker one is
+    that prose gets in the way: ``store_from_prepared_cache``'s docstring
+    names both functions, in the WRONG order, seventy lines above the code,
+    and escapes a substring search today only because it happens to write
+    them without their parentheses -- which is not a property anyone should
+    have to preserve while editing a docstring.
+
+    The stronger one is that ``index`` finds the FIRST allocation and the
+    assertion wants the first of ALL of them.  Both builders allocate in two
+    separate loops (carriers, then geography); a guard moved between them
+    would still pass a first-occurrence test while pinning the whole carrier
+    set unpriced.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    return sorted(node.lineno for node in ast.walk(tree)
+                  if isinstance(node, ast.Call)
+                  and (getattr(node.func, "attr", None) == name
+                       or getattr(node.func, "id", None) == name))
+
+
+def test_the_prepared_cache_loader_prices_and_checks_before_allocating():
+    """The same guarantee, for the second slabbed road to a pinned store.
+
+    ``gpuwm.ingest.prepared_store.store_from_prepared_cache`` reads a
+    prepared cache one row slab at a time into the same kind of full-domain
+    pinned store, sizing the whole request from the manifest the first slab
+    reveals.  It is the same defect class this file exists for -- a newer
+    engineering path beside an older one that carries the guard -- so the
+    ordering is asserted here, next to the builder it is modelled on, rather
+    than in the new module's own tests.  A third slabbed loader should find
+    every instance of this promise in one file.
+
+    Held as source because the behavioural half needs a card, a cache on
+    disk and a domain: this function's first act is to build a slab-height
+    ``DomainState`` and attach physics to it.
+    """
+    import inspect
+
+    from gpuwm.ingest import prepared_store
+
+    loader = prepared_store.store_from_prepared_cache
+    checks = _call_lines(loader, "check_allocatable")
+    allocs = _call_lines(loader, "alloc_pinned_array")
+    assert checks and allocs, (
+        f"store_from_prepared_cache calls check_allocatable at {checks} and "
+        f"alloc_pinned_array at {allocs}; it must do both")
+    assert max(checks) < min(allocs), (
+        f"store_from_prepared_cache allocates pinned memory (line "
+        f"{min(allocs)}) before checking the budget (line {max(checks)}); a "
+        f"guard that fires on the way up has already taken most of what it "
+        f"is refusing, and pinned pages cannot be swapped")
+    assert "budget_bytes=budget_bytes" in inspect.getsource(loader), (
+        "the caller's budget is not forwarded to check_allocatable, so the "
+        "explicit cap is silently inert")
+
+
 def test_a_request_over_the_budget_refuses_naming_the_budget():
     with pytest.raises(hoststore.BudgetExceeded) as excinfo:
         hoststore.check_allocatable(4 * GIB, budget_bytes=1 * GIB)

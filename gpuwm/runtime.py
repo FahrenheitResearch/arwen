@@ -708,7 +708,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                                     reconciled_soil_category)
     from gpuwm.core.physics import initialize_physics
     from gpuwm.ingest.soil import (reconciler_soil_temperature,
-                                   reconciler_sst)
+                                   reconciler_sst, soil_source_orography)
 
     times = tuple(forcing_times)
     if not times or times[0] != start_time:
@@ -852,6 +852,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     # gpuwm/ingest/nest_init.py cannot drift apart again: an inline chain
     # here knew only the mapped and classic per-layer names, which is the
     # same gap that aborted the native-HRRR and nested-GFS lanes.
+    soil_orography = soil_source_orography(source_orography, soil_fields)
     reconciled_soil_type = reconciled_soil_category(
         static["LU_INDEX"], soil_type=static["SCT_DOM"],
         xice=soil_fields.get("XICE", 0.0),
@@ -865,8 +866,16 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         soil_type=reconciled_soil_type,
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"],
-        terrain=static["HGT_M"] if source_orography is not None else None,
-        source_orography=source_orography,
+        # The declared artifact OR the orography the forcing carries inside
+        # itself, which the horizontal stage already remapped onto this grid
+        # as SOURCE_OROGRAPHY.  Resolving only the declaration silently
+        # dropped WRF's adjust_soil_temp_new lapse on every case whose
+        # orography rides in its GRIB -- the ordinary ERA5 route, since
+        # `gpuwm fetch --source era5` writes the invariant geopotential into
+        # the combined file.  Still all-or-none: a source that declares no
+        # orography at all keeps the historical no-adjustment path.
+        terrain=static["HGT_M"] if soil_orography is not None else None,
+        source_orography=soil_orography,
         # The finished water temperature the ingest assembled: one provider
         # per connected body of water, never a per-cell choice between two
         # differently-mapped fields.  The policy and the route name travel
@@ -3107,45 +3116,31 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     runs the extracted prepare/integrate pipeline with every input and
     policy drawn from the config pair.
     """
-    from gpuwm.core.streaming import refuse_unrouted_streaming
     from gpuwm.io.wrfout import quarantine_orphan_wrfouts
 
-    # BEFORE the ingest, on the same governance as the relocation and spawn
-    # refusals below.  Neither this route's single-domain arm (which calls
-    # integrate_prepared_case with stepper=None) nor either of its tree arms
-    # (execute_experiment / walk_spawn_legs, both without steppers=) reads
-    # exp.tiles at all -- so a [tiles] block here does not decide
-    # anything, it is simply dropped, and the run integrates resident with
-    # nothing in the log to say the mode never engaged.  That is the one
-    # outcome gpuwm.core.streaming exists to prevent.
-    refuse_unrouted_streaming(exp, "gpuwm run", consults_the_seam=False)
-
+    # THE REFUSAL THAT USED TO STAND HERE IS LIFTED.  It said this route
+    # "wires no streamed-domain builder", and for two releases that was
+    # true: the single-domain arm called integrate_prepared_case with
+    # stepper=None and both tree arms called the executor with no
+    # steppers=, so a [tiles] block was read, validated, echoed into the
+    # resolved-config report and then dropped.  Both arms wire the builder
+    # now (streaming.standalone_domain_builder below, builders_for_tree on
+    # the tree), so the honest answer is the run, not the refusal.
+    #
+    # THIS IS THE ROUTE THE UNION HAD TO LAND ON.  Two-way feedback and
+    # [tiles] were disjoint: `gpuwm run` refused [tiles] here by name,
+    # and the prepared-hierarchy route refuses feedback=1 at PREPARATION
+    # (gpuwm/source_hierarchy.py), because its artifacts are written
+    # one-way and read one-way and it executes with skip_feedback_path.
+    # Only one of those two refusals is about wiring.  The hierarchy's is
+    # about the shape of what it exports, and its own message already
+    # redirects two-way users here -- "runs on the native experiment-
+    # runner route, `gpuwm run`, which builds its domain tree in-process".
+    # That sentence was only half true while this route could not stream.
+    # Wiring the builders here makes it true and leaves the export format
+    # alone.
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    if exp.tiles.enabled:
-        # [tiles] is SILENTLY IGNORED on this route, and silence is the
-        # dangerous direction.  Neither branch below consults it: the
-        # single-domain branch calls integrate_prepared_case, whose
-        # `stepper` argument no caller in this checkout ever supplies, and
-        # the tree branch calls execute_experiment with no `steppers`, so
-        # both bind gpuwm.core.dycore.step unconditionally.  A user who
-        # asked for out-of-core and got a resident run would find out at
-        # the allocation the mode existed to avoid, with nothing in the log
-        # to say the mode never engaged -- exactly the failure
-        # streaming.make_stepper refuses rather than produces.
-        #
-        # Named at the front door, before minutes of ingest, on the same
-        # precedent as the [relocation] follow-source refusal below.
-        raise ValueError(
-            "[tiles] is configured but this route cannot honour it: "
-            "gpuwm.runtime.run_experiment binds gpuwm.core.dycore.step for "
-            "every domain and never consults exp.tiles, so the run "
-            "would be RESIDENT with no indication that the mode did not "
-            "engage.  The routes that stream are "
-            "gpuwm.prepared_single_domain_forecast and "
-            "gpuwm.prepared_domain_tree_forecast, which wire "
-            "streaming.builders_for_tree; delete the [tiles] table to "
-            "run here.")
     follow_configured = exp.relocation.enabled and (
         exp.relocation.follow is not None or exp.relocation.moves)
     if follow_configured and len(exp.domains) == 1:
@@ -3173,29 +3168,10 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             "[[domain]] spawn = {...} on a single-domain experiment: a "
             "dormant nest needs a parent to be born from, and the "
             "single-domain path runs no tree walk.")
-    # [tiles] is READ by the experiment loader, validated, echoed into
-    # the resolved-config report -- and this route builds no stepper for it,
-    # so before this refusal a configured `mode = "on"` integrated the domain
-    # RESIDENT and said nothing.  Every other surface in this loader refuses
-    # a knob it cannot honour ([relocation] on a single domain, a spawn on a
-    # route with no walk) for the same reason: a configuration that silently
-    # does nothing is discovered when the run dies at the allocation the
-    # mode was turned on to avoid, or -- worse -- does not die and is quietly
-    # a different experiment from the one that was asked for.  Streaming
-    # needs a per-domain builder (store filled from the prepared state, tile
-    # buffers on the domain's own physics selectors, geography inventoried,
-    # boundary tables windowed per tile), which `gpuwm.core.streaming
-    # .steppers_for_tree` takes as `builders=` and this route does not yet
-    # supply.  Until it does, say so.
-    if exp.tiles.enabled:
-        raise ValueError(
-            f"[tiles] mode = {exp.tiles.mode!r} is configured, but "
-            "gpuwm.runtime.run_experiment wires no streamed-domain builder "
-            "and would have integrated this experiment RESIDENT without "
-            "saying so.  [tiles] is reachable today only "
-            "through gpuwm.core.streaming.make_stepper with a route-owned "
-            "build= callable (see tilestream/test_join.py); remove the "
-            "[tiles] block to run resident.")
+    # (The second [tiles] refusal that stood here is lifted with the first;
+    # see the note at the head of this function.  What is NOT lifted is
+    # streaming.make_stepper's own refusal of a STREAM decision with no
+    # builder behind it -- that one is the backstop, and it stays.)
     # The land-state refusal that used to stand here is LIFTED (2026-08-07).
     # It named one gap -- "a newborn real-data nest has no defined
     # soil/land state, and how it should get one is an open physics
@@ -3237,6 +3213,27 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             outdir, exp,
             ([prepared.initial_result.initial_perturbation]
              if exp.perturbation is not None else ()))
+        # [tiles] on the single-domain arm.  integrate_prepared_case has
+        # taken a `stepper` since the mode existed and is streaming-aware
+        # throughout -- the observers are asked of the stepper, the health
+        # arming, the UP_HELI_MAX reset and the restart restore all branch
+        # on it -- and no caller ever supplied one.  This is that caller.
+        # A domain with no tree is exactly what standalone_domain_builder
+        # is for: it is a specified-boundary ROOT, the same non-nested
+        # branch of prepared_domain_builder gpuwm go's d01 takes.
+        # Unconfigured, make_stepper returns gpuwm.core.dycore.step ITSELF
+        # and this run is byte-for-byte the run it always was.
+        from gpuwm.core import streaming as _streaming
+
+        single_tiles = _streaming.options_for_domain(dc, exp.tiles)
+        single_decision = _streaming.decide(prepared.cfg, single_tiles)
+        single_stepper = _streaming.make_stepper(
+            prepared.initial_result.state, prepared.cfg, single_tiles,
+            decision=single_decision,
+            build=_streaming.standalone_domain_builder(
+                grid_id=int(dc.grid_id)))
+        if single_tiles.enabled:
+            print(single_decision.explain())
         summary = integrate_prepared_case(
             outdir, prepared, start_time=exp.start_time,
             output_title=data.output_title, domain_id=data.output_domain,
@@ -3244,7 +3241,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             history_interval_s=dc.history_interval_s,
             restart_interval_s=exp.restart_interval_s,
             restart_path=restart, progress_callback=progress_callback,
-            health_debug=health_debug, feedback=experimental_feedback)
+            health_debug=health_debug, feedback=experimental_feedback,
+            stepper=single_stepper)
         _write_feedback_provenance_receipt(
             outdir, exp, resumed=restart is not None)
         _emit_front_door_capsule(
@@ -3291,6 +3289,15 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             relocation_runner.on_child_built.attach_writers(writers)
 
         def history_handler(tree, node, ticks):
+            # A STREAMED domain's forecast is in its pinned host store and
+            # node.state is the snapshot that filled it, so without this
+            # copy every frame after the cold-start one would be the
+            # initial condition under a later timestamp: correct inventory,
+            # correct Times, no forecast.  The history cadence is where
+            # StreamedDomain.refresh_state says the copy belongs, and it is
+            # a getattr and a zero for every resident domain.
+            _streaming.refresh_streamed_state(
+                steppers.get(int(node.cfg.grid_id)), node.state)
             _submit_tree_history_frame(writers, node, ticks)
 
         def restart_handler(tree, ticks):
@@ -3311,7 +3318,15 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         # anywhere saying the mode never engaged.
         from gpuwm.core import streaming as _streaming
 
-        steppers = _streaming.steppers_for_tree(model, exp.tiles)
+        streaming_decisions: dict = {}
+        steppers = _streaming.steppers_for_tree(
+            model, exp.tiles,
+            builders=_streaming.builders_for_tree(model, exp.tiles),
+            decisions=streaming_decisions)
+        streaming_report = _streaming.streaming_receipt(
+            exp.tiles, streaming_decisions)
+        if streaming_report:
+            print(f"  [tiles] {streaming_report['summary']}")
         if spawn_runner is None:
             execute_experiment(
                 model, history_handler=history_handler,
@@ -3347,6 +3362,14 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     if trajectory_digest_enabled():
         from gpuwm.state_digest import canonical_state_digest
 
+        # AT THE END OF THE RUN, the other half of refresh_state's stated
+        # cadence.  A whole-trajectory hash taken over a streamed domain's
+        # unrefreshed DomainState is the hash of the ANALYSIS -- the digest
+        # would compare equal across runs that diverged, which is the one
+        # thing a digest exists to catch.  Zero and a getattr when resident.
+        for grid_id, node in sorted(model.nodes_by_grid_id.items()):
+            _streaming.refresh_streamed_state(
+                steppers.get(int(grid_id)), node.state)
         trajectory_digest = {
             f"d{grid_id:02d}": canonical_state_digest(
                 node.state, node.clock, scope="trajectory")

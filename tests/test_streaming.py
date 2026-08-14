@@ -129,6 +129,137 @@ def test_a_bound_stepper_replaces_the_dycore_step_for_that_grid_only(
     assert any(due for _gid, due in streamed_calls)
 
 
+def test_two_way_feedback_reaches_the_coupler_under_a_streamed_parent(
+        monkeypatch):
+    """``feedback = 1`` + streamed parent flows TO the coupler, not a refusal.
+
+    The executor used to raise here, claiming "nothing projects a write
+    back".  That sentence stopped being true in the same merge that landed
+    it: ``NestCoupler.feedback_commit`` starts its transaction from the
+    parent's store and ends it there (``_sync_in``/``_sync_out`` ->
+    ``streaming.refresh_from_store``/``commit_to_store``), and
+    ``tilestream/test_nest.py`` leg 3 measures that path bit-identical to
+    the all-resident run with both feedback controls firing.  The executor
+    and the coupler came from different lanes of the three-way merge
+    2358b3c06 and the merge kept the refusal beside the capability it
+    refused.
+
+    The refusal was reachable ONLY through ``execute_experiment`` -- the
+    coupler gate drives ``feedback_commit`` directly -- which is why no gate
+    ever caught the contradiction.  This test is the executor-level pin:
+    the schedule's FEEDBACK edges must dispatch into the coupler for a
+    parent whose stepper streams, exactly as they do for a resident one.
+    The ownership question (who moves the bytes) is the coupler's, and its
+    streamed arm is proven where the store actually exists -- on the GPU
+    gate ``tilestream/test_nest_executor.py``.
+    """
+    from types import SimpleNamespace
+
+    from test_model import _model                      # noqa: PLC0415
+    from gpuwm.core.model import execute_experiment
+
+    monkeypatch.setattr("gpuwm.core.dycore.step",
+                        lambda state, cfg, **kw: None)
+    _exp, model = _model()
+    child = model.node(2)
+    # The stub coupler records its dispatches; giving it ``feedback = 1``
+    # makes it a two-way coupler as far as the executor's dispatch is
+    # concerned, which is the object under test here.
+    child.coupler.feedback = 1
+    run = SimpleNamespace(cfg=model.root.cfg.run, store={},
+                          sweep=lambda *a, **k: None)
+    stepper = StreamedDomain(
+        run, streaming.StreamingDecision(True, "pinned by the test"),
+        scalars={})
+    assert is_streaming(stepper)
+    execute_experiment(model, validate_state=False,
+                       pool_trim_per_period=False,
+                       steppers={1: stepper})
+    calls = child.coupler.calls
+    assert "commit" in calls, (
+        "the executor never dispatched feedback_commit for a streamed "
+        "parent -- the stale refusal is back, or the dispatch moved")
+    assert "finalize" in calls
+    # Dispatch order within one edge is prepare -> commit -> finalize.
+    assert calls.index("prepare") < calls.index("commit") \
+        < calls.index("finalize")
+
+
+def test_the_store_seam_moves_only_the_window_when_given_one():
+    """``refresh_from_store``/``commit_to_store`` take the coupler's window.
+
+    The FORCE corridor's capacity claim is that traffic per parent step is
+    O(child footprint), not O(parent).  That is only true if the seam the
+    coupler pulls through can be told the window -- and the slice rule must
+    be the same superset rule ``StreamedDomain._window_slices`` applies
+    (widen by one for a staggered face, clamp to the array), or the two
+    sides of the same window disagree about a face on the window's edge.
+    """
+    import numpy as np
+
+    state = type("S", (), {})()
+    state.thp = np.zeros((3, 8, 8), dtype=np.float32)
+    store = {"state/thp": np.arange(3 * 8 * 8, dtype=np.float32)
+             .reshape(3, 8, 8)}
+    setattr(state, "_streamed_store", store)
+
+    moved = streaming.refresh_from_store(state, ("thp",), window=(2, 5, 3, 6))
+    # The superset rule: rows 2..5 and columns 3..6 INCLUSIVE (the +1 is
+    # the staggered-face widening, applied unconditionally because a
+    # superset is always safe), everything else untouched.
+    expect = np.zeros((3, 8, 8), dtype=np.float32)
+    expect[:, 2:6, 3:7] = store["state/thp"][:, 2:6, 3:7]
+    assert np.array_equal(state.thp, expect)
+    assert moved == expect[:, 2:6, 3:7].nbytes
+
+    # The write half, same rule: only the window lands in the store.
+    state.thp = np.full((3, 8, 8), 7.0, dtype=np.float32)
+    before = store["state/thp"].copy()
+    moved = streaming.commit_to_store(state, ("thp",), window=(2, 5, 3, 6))
+    assert np.all(store["state/thp"][:, 2:6, 3:7] == 7.0)
+    outside = np.ones((8, 8), dtype=bool)
+    outside[2:6, 3:7] = False
+    assert np.array_equal(store["state/thp"][:, outside], before[:, outside])
+    assert moved == before[:, 2:6, 3:7].nbytes
+
+    # window=None is the whole-field path, byte-identical to before the
+    # parameter existed.
+    state.thp = np.zeros((3, 8, 8), dtype=np.float32)
+    assert streaming.refresh_from_store(state, ("thp",)) \
+        == store["state/thp"].nbytes
+    assert np.array_equal(state.thp, store["state/thp"])
+
+
+def test_the_parent_footprint_window_is_the_couplers_own():
+    """The window is computed where the reads happen, from the live cfg.
+
+    ``model.py`` used to hold this arithmetic beside a projection the
+    executor did on the coupler's behalf; the corridor moves both into the
+    coupler so a relocation (which rewrites the child's cfg) moves the
+    window with no second copy of the geometry to forget.  The halo bound
+    and the derivation stay exactly what the executor carried: SINT +-2,
+    spec_bdy_width child cells, u/v face averages, 8 bounds all of it at
+    every admitted ratio, superset free / subset stale.
+    """
+    from types import SimpleNamespace
+
+    from gpuwm.core.nest import (NEST_FORCE_HALO_PARENT_CELLS,
+                                 parent_footprint_window)
+
+    dc = SimpleNamespace(parent_grid_ratio=3, i_parent_start=81,
+                         j_parent_start=81,
+                         run=SimpleNamespace(nx=96, ny=96))
+    assert NEST_FORCE_HALO_PARENT_CELLS == 8
+    # 0-based origin 80, span ceil(96/3) = 32, padded by 8 each side.
+    assert parent_footprint_window(dc) == (72, 120, 72, 120)
+    # Near an edge the window goes negative and the SLICE clamps -- the
+    # split the executor used: raw window here, clamp in _window_slices.
+    dc_edge = SimpleNamespace(parent_grid_ratio=3, i_parent_start=2,
+                              j_parent_start=2,
+                              run=SimpleNamespace(nx=96, ny=96))
+    assert parent_footprint_window(dc_edge) == (-7, 41, -7, 41)
+
+
 def test_the_single_domain_loop_defaults_to_the_dycore_step():
     """``integrate_prepared_case`` binds ``step`` when handed no stepper."""
     import inspect
@@ -226,6 +357,184 @@ def test_a_short_halo_warns_loudly():
     with pytest.warns(RuntimeWarning, match="how this defect hides"):
         decide(_cfg(), StreamingOptions(mode="on", tile_nx=64, tile_ny=64,
                                         halo=4))
+
+
+# --------------------------------------------------------------------------
+# the host-memory source, and the order the budget is read in
+#
+# Streaming could not start AT ALL on Windows through the 2.2.x line, and it
+# took two independent defects to do it.  ``autoplan`` knew only
+# ``/proc/meminfo``, which that OS does not have, so ``Machine.detect``
+# raised there; and ``decide`` probed the machine BEFORE it read
+# ``host_budget_bytes``, so the one key that could have supplied the missing
+# number was unreachable behind the refusal that asked for it.  Every one of
+# these runs CPU-only and on every platform: the defects are in the ordering
+# and in the source selection, and neither needs a Windows box to state.
+# --------------------------------------------------------------------------
+
+def _detect_that_needs_a_host_figure(calls):
+    """A stand-in for ``Machine.detect`` on a box with no readable RAM.
+
+    It reproduces the REAL contract rather than failing unconditionally --
+    ``host_bytes=`` supplied means no host source is consulted, so the call
+    succeeds; ``host_bytes=None`` means it must be read, and here it cannot
+    be.  A fake that raised either way would pass a ``decide`` that had been
+    fixed and one that had not.
+    """
+    from tilestream.autoplan import CannotPlan, Machine
+
+    def fake_detect(*, host_bytes=None, device=0, use_free_vram=True):
+        calls.append(host_bytes)
+        if host_bytes is None:
+            raise CannotPlan("no host-memory source on this platform", "host")
+        return Machine(vram_bytes=24 * 2 ** 30, host_bytes=int(host_bytes),
+                       name="test", host_source="explicit")
+
+    return fake_detect
+
+
+def test_the_configured_host_budget_is_read_before_the_machine_is_probed(
+        monkeypatch):
+    """``host_budget_bytes`` must reach the probe, not arrive after it.
+
+    THE WINDOWS DEFECT, stated without a Windows box.  ``decide`` called
+    ``Machine.detect()`` with no arguments and applied the configured budget
+    four lines later, so where detection raised -- which on Windows was
+    always -- the configured budget was never read at all.
+    """
+    from tilestream import autoplan
+
+    calls = []
+    monkeypatch.setattr(autoplan.Machine, "detect",
+                        _detect_that_needs_a_host_figure(calls))
+    got = decide(_cfg(), StreamingOptions(mode="on",
+                                          host_budget_bytes=48 * 2 ** 30))
+    assert got.stream is True
+    assert calls == [48 * 2 ** 30], (
+        "detect was probed without the configured host figure; the budget "
+        "is still being applied after the probe instead of supplied to it")
+
+
+def test_a_configured_budget_is_still_the_budget_when_detection_works(
+        monkeypatch):
+    """THE CONTROL for the reordering: a box that CAN detect is unchanged.
+
+    Supplying ``host_bytes=`` to the probe must not double-apply the pinning
+    fraction or otherwise move the number, or the fix would have bought
+    Windows a plan by silently repricing every Linux node.
+    """
+    from tilestream import autoplan
+
+    seen = {}
+    real_machine = autoplan.Machine(
+        vram_bytes=24 * 2 ** 30, host_bytes=512 * 2 ** 30, name="test",
+        host_source="explicit")
+    real_plan = autoplan.plan          # bound before the patch, not through it
+
+    def fake_plan(cfg, machine, **kwargs):
+        seen["host_budget"] = machine.host_budget_bytes
+        return real_plan(cfg, machine, **kwargs)
+
+    monkeypatch.setattr(autoplan, "plan", fake_plan)
+    decide(_cfg(), StreamingOptions(mode="on",
+                                    host_budget_bytes=48 * 2 ** 30),
+           machine=real_machine)
+    assert seen["host_budget"] == 48 * 2 ** 30, (
+        "the configured host budget was multiplied by pinned_fraction "
+        "instead of being taken as the budget it names")
+
+
+def test_the_planner_reads_host_ram_on_windows_not_only_on_linux(monkeypatch):
+    """``_host_memtotal`` must have a source on the product's own platform.
+
+    Windows has no procfs, and treating that absence as "unknowable" is what
+    made ``Machine.detect`` raise on every Windows box.  The probe is
+    selected by platform, so this states the selection rather than the Win32
+    call: on ``win32`` the answer must come from the Windows probe.
+    """
+    from tilestream import autoplan
+
+    monkeypatch.setattr(autoplan.sys, "platform", "win32")
+    monkeypatch.setattr(autoplan, "_windows_memtotal", lambda: 95 * 2 ** 30)
+    assert autoplan._host_memtotal() == 95 * 2 ** 30
+    assert "GlobalMemoryStatusEx" in autoplan._memtotal_source()
+
+
+def test_the_linux_host_source_is_unchanged(monkeypatch):
+    """THE CONTROL for the platform switch: Linux still reads procfs.
+
+    A fix that routed every platform through the Windows probe would satisfy
+    the test above and would break every node the campaigns run on.
+    """
+    from tilestream import autoplan
+
+    monkeypatch.setattr(autoplan.sys, "platform", "linux")
+    monkeypatch.setattr(autoplan, "_windows_memtotal",
+                        lambda: pytest.fail("Linux consulted the Win32 probe"))
+    autoplan._host_memtotal()          # reads /proc/meminfo, or answers None
+    assert autoplan._memtotal_source() == "/proc/meminfo MemTotal"
+
+
+def test_an_unreadable_host_source_is_not_reported_as_a_container(
+        monkeypatch):
+    """The refusal must name the true limit, not the container it isn't.
+
+    Where nothing can be read, the message said "containerised with no
+    cgroup memory limit" -- on a native Windows desktop, which sent the
+    reader hunting for a container that was never there.
+    """
+    from tilestream import autoplan
+
+    monkeypatch.setattr(autoplan, "_cgroup_memory_limit", lambda: None)
+    monkeypatch.setattr(autoplan, "_host_memtotal", lambda: None)
+    monkeypatch.setattr(autoplan, "_in_container", lambda: False)
+    monkeypatch.setattr(autoplan.sys, "platform", "win32")
+    with pytest.raises(autoplan.CannotPlan) as caught:
+        autoplan.Machine.detect(device=0)
+    message = str(caught.value)
+    assert "containerised" not in message, message
+    assert "no host-memory source" in message and "win32" in message
+
+
+def test_a_container_with_no_cgroup_limit_is_still_refused_as_one(
+        monkeypatch):
+    """THE CONTROL: the container refusal it replaced must still fire.
+
+    ``/proc/meminfo`` inside a container reports the HOST's RAM (measured:
+    503 GiB against a 241.7 GiB cgroup limit), so a readable MemTotal with
+    no limit beside it is exactly the case that must keep refusing.
+    """
+    from tilestream import autoplan
+
+    monkeypatch.setattr(autoplan, "_cgroup_memory_limit", lambda: None)
+    monkeypatch.setattr(autoplan, "_host_memtotal", lambda: 503 * 2 ** 30)
+    monkeypatch.setattr(autoplan, "_in_container", lambda: True)
+    with pytest.raises(autoplan.CannotPlan, match="containerised"):
+        autoplan.Machine.detect(device=0)
+
+
+def test_the_pricing_and_planning_paths_read_one_host_probe():
+    """They disagreed, and that disagreement WAS the bug.
+
+    ``gpuwm.core.streaming._host_total_bytes`` carried its own Win32 probe,
+    so the memory gate could price host RAM on Windows while the planner
+    refused to plan on the same box.  One source, in the lower layer.
+    """
+    import inspect
+
+    from gpuwm.core import streaming as streaming_module
+
+    source = inspect.getsource(streaming_module._host_total_bytes)
+    # The BODY, not the prose: the docstring names the probe it no longer
+    # carries, and a substring check that read the docstring would fire on
+    # the explanation of the fix.  Split on the docstring's own delimiters
+    # rather than subtracting ``getdoc``, which returns it dedented and so
+    # matches nothing in the raw source.
+    body = source.split('"""')[2]
+    assert "ctypes" not in body and "GlobalMemoryStatusEx" not in body, (
+        "the pricing path grew a second host probe again; it must delegate "
+        "to tilestream.autoplan so the two answers cannot diverge")
+    assert "_host_memtotal" in body
 
 
 # --------------------------------------------------------------------------
@@ -701,22 +1010,806 @@ def test_builders_for_tree_covers_every_grid():
     assert all(callable(b) for b in builders.values())
 
 
-def test_a_nest_that_fires_is_refused_rather_than_windowed_wrong():
-    """A nest holds no LateralBoundaries, so there is nothing to window.
+def test_a_nest_that_fires_builds_its_own_forcing_door():
+    """A nest streams through the nest tile hook, not a windowed series.
 
-    Refused at BUILD time, not at builders_for_tree time: a tree with
-    mode = "auto" whose nests fit resident must not be refused for having
-    nests at all.
+    The categorical "is a NEST" refusal that stood here is gone: the
+    streamed-child corridor windows the rolling nest tables per tile
+    (gpuwm.core.nest_stream), so the builder wires that hook instead of
+    refusing.  What remains refused is the genuine contradiction -- a nest
+    that ALSO carries a tabulated LateralBoundaries series, two forcing
+    mechanisms for one domain.  Both directions are held here: the
+    contradiction fires by name, and the bare nest gets PAST the nest gate
+    (this stand-in tree then fails at the vertical-coordinate check, which
+    is a statement about the fixture's state, not about nests).
     """
     from test_model import _model                      # noqa: PLC0415
+
+    from gpuwm.ingest.lateral_bc import (BoundaryInterval,
+                                         LateralBoundaries)
 
     _exp, model = _model()
     builders = streaming.builders_for_tree(
         model, StreamingOptions(mode="on", tile_nx=32, tile_ny=32))
     child = model.node(2)
-    with pytest.raises(StreamingRefused, match="is a NEST"):
-        builders[2](child.state, child.cfg.run,
-                    streaming.StreamingDecision(True, "test", 32, 32, 2, 16))
+    decision = streaming.StreamingDecision(True, "test", 32, 32, 2, 16)
+
+    child.state.lateral_boundaries = LateralBoundaries(
+        (BoundaryInterval(0.0, 3600.0, {}),))
+    with pytest.raises(StreamingRefused, match="also.*carries a tabulated|"
+                                               "contradict"):
+        builders[2](child.state, child.cfg.run, decision)
+
+    child.state.lateral_boundaries = None
+    try:
+        builders[2](child.state, child.cfg.run, decision)
+    except StreamingRefused as err:
+        assert "NEST" not in str(err), (
+            "the categorical nest refusal is back; the streamed-child "
+            "corridor is unreachable through the production builder")
+        assert "znw" in str(err) or "vertical" in str(err)
+
+
+# --------------------------------------------------------------------------
+# a NEST and [tiles]: per-domain roads, and the one edge shape that refuses
+# --------------------------------------------------------------------------
+#
+# Nested domains CAN stream, each through its own road: a streamed parent
+# drives a resident child (tilestream/test_nest_executor.py) and a resident
+# parent drives a tile-streamed child (tilestream/test_streamed_child.py),
+# both gated bit-identical to the all-resident tree.  What no gate has
+# driven is a coupling edge with BOTH ends streamed -- that composition is
+# refused, not run (gpuwm.core.nest.NestCoupler.force is the run-time law).
+#
+# The admission gates make that law cheap to meet:
+#
+#   mode = "on"    forces both ends of every edge streamed, so a tree is
+#                  refused at config validation, by build_experiment.
+#   mode = "auto"  prices every domain -- nests included -- against the
+#                  budget its predecessors left; if the arithmetic ever
+#                  streams both ends of an edge, steppers_for_tree refuses
+#                  at DECISION time, before anything is built.
+
+def _raw_nested_experiment() -> dict:
+    """:func:`_raw_experiment` plus one child, valid at every guard.
+
+    The placement is not arbitrary: i/j_parent_start = 11 is the first
+    origin that clears spec_bdy_width + blend_width = 10 parent rows, and
+    nx = ny = 39 is a multiple of parent_grid_ratio = 3 (WPS requires
+    e_we = n * ratio + 1).  Both were found by running the loader, not
+    guessed -- a fixture that fails an unrelated guard would test that
+    guard instead of this one.
+    """
+    raw = _raw_experiment()
+    raw["domain"] = list(raw["domain"]) + [{
+        "grid_id": 2, "parent_id": 1, "i_parent_start": 11,
+        "j_parent_start": 11, "parent_grid_ratio": 3,
+        "parent_time_step_ratio": 3, "nx": 39, "ny": 39,
+        "time_step": 20, "dx": 4000.0, "specified": False,
+        "nested": True, "history_interval_s": 300.0,
+    }]
+    return raw
+
+
+def _build(raw):
+    from gpuwm.experiment import build_experiment
+
+    return build_experiment(raw, source="<test>")
+
+
+def test_a_nested_config_that_asks_to_stream_is_refused_at_config_time():
+    """Requirement 1: the TOML never reaches a card.
+
+    Asserted through ``build_experiment`` rather than through a route,
+    because that is the ONE load every front door shares -- run, go, check,
+    both prepared runners, the DA drivers and the wizard's candidate loop.
+    A gate on any single route is a gate the next door walks around.
+    """
+    raw = _raw_nested_experiment()
+    raw["tiles"] = {"mode": "on"}
+    with pytest.raises(StreamingRefused) as refusal:
+        _build(raw)
+    text = str(refusal.value)
+    # By CONTENT, not by equality: the message is long and will be edited,
+    # but these facts are the contract.
+    assert "d02" in text                       # WHICH domain
+    assert "BOTH ends streamed" in text        # WHY: the edge shape
+    assert "delete the [tiles] table" in text  # way out 1
+    assert "RESIDENT" in text                  # way out 2
+    assert "mode = 'auto'" in text             # way out 3
+    # And it names the mechanism rather than asserting a policy.
+    assert "NestCoupler.force" in text
+
+
+def test_the_pinned_form_is_refused_too_and_names_the_root_that_can_stream():
+    """A tiling in the table does not make a nest streamable.
+
+    ``decide`` short-circuits a pinned tiling without consulting the
+    planner, so this is the arm that reaches the tile builder soonest --
+    and it is the arm a benchmark writes.
+    """
+    raw = _raw_nested_experiment()
+    raw["tiles"] = {"mode": "on", "tile_nx": 32, "tile_ny": 32}
+    with pytest.raises(StreamingRefused) as refusal:
+        _build(raw)
+    text = str(refusal.value)
+    assert "d01" in text and "root" in text
+    assert "one [[domain]] table" in text
+
+
+def test_the_moving_domain_is_named_because_a_domain_that_moves_is_a_nest():
+    """A [relocation] reader is thinking about the follow domain.
+
+    Without this clause the refusal quotes a parent_id they never typed,
+    and reads as being about some other grid.
+    """
+    raw = _raw_nested_experiment()
+    raw["tiles"] = {"mode": "on"}
+    raw["relocation"] = {
+        "enabled": True, "grid_id": 2,
+        "move": [{"at_seconds": 120.0, "di_parent_cells": 1,
+                  "dj_parent_cells": 0}]}
+    with pytest.raises(StreamingRefused) as refusal:
+        _build(raw)
+    text = str(refusal.value)
+    assert "[relocation] follow domain" in text
+    assert "d02 is also" in text
+
+
+def test_a_single_domain_config_still_streams_on_demand():
+    """The negative control for requirement 1, and it is not optional.
+
+    A refusal keyed on ``mode == "on"`` alone would pass every assertion
+    above while breaking the mode entirely.  One [[domain]] table is the
+    shape [tiles] exists for.
+    """
+    raw = _raw_experiment()
+    raw["tiles"] = {"mode": "on", "tile_nx": 64, "tile_ny": 64}
+    exp = _build(raw)
+    assert exp.tiles.mode == "on"
+    assert exp.tiles.tile_nx == 64
+
+
+def test_a_nested_config_on_auto_loads_rather_than_being_refused():
+    """The property requirement 2 DEPENDS on, held explicitly.
+
+    ``auto`` over a tree is the only expressible form of "stream d01, keep
+    the nests resident" -- [tiles] is a tree-wide block with no per-domain
+    key -- so refusing it for having nests at all would remove the shape a
+    storm-following run wants.
+    """
+    raw = _raw_nested_experiment()
+    raw["tiles"] = {"mode": "auto"}
+    exp = _build(raw)
+    assert exp.tiles.mode == "auto"
+    assert len(exp.domains) == 2
+
+
+def test_a_nested_config_with_no_tiles_table_is_untouched():
+    """The emptiness contract: a tree that never mentions [tiles] is OFF."""
+    exp = _build(_raw_nested_experiment())
+    assert exp.tiles is OFF
+    assert all(dc.tiles is None for dc in exp.domains)
+
+
+# ---- the per-domain surface: saying which end streams --------------------
+
+def test_a_nest_that_opts_out_makes_a_streamed_parent_expressible():
+    """'Stream d01, keep d02 resident' -- said, not inferred.
+
+    ``mode = "on"`` over a tree used to be refused unconditionally, and
+    the refusal's own words were that the shape "is not expressible as
+    mode = 'on'" because ``[tiles]`` was a tree-wide block.  It is
+    expressible now: the nest carries its own table and says OFF, so the
+    edge d01 -> d02 no longer has both ends streamed and there is nothing
+    left to refuse.
+    """
+    raw = _raw_nested_experiment()
+    raw["tiles"] = {"mode": "on"}
+    raw["domain"][1]["tiles"] = {"mode": "off"}
+    exp = _build(raw)
+    assert exp.tiles.mode == "on"
+    assert exp.domains[0].tiles is None          # inherits the tree's 'on'
+    assert exp.domains[1].tiles.mode == "off"
+    assert streaming.options_for_domain(exp.domains[0], exp.tiles).mode == "on"
+    assert streaming.options_for_domain(exp.domains[1], exp.tiles).mode == "off"
+
+
+def test_the_inverse_shape_is_expressible_too_with_no_tree_wide_table():
+    """A streamed CHILD under a resident parent, with [tiles] absent.
+
+    The per-domain table is a complete surface, not a modifier: a config
+    with no tree-wide ``[tiles]`` at all still streams the one domain that
+    asks to.  The tree entry points must notice, which is what
+    ``tree_streams_anywhere`` exists for -- reading only the tree-wide
+    table here would run the domain resident in silence.
+    """
+    import types as _types
+
+    raw = _raw_nested_experiment()
+    raw["domain"][1]["tiles"] = {"mode": "on", "tile_nx": 13, "tile_ny": 13}
+    exp = _build(raw)
+    assert exp.tiles is OFF
+    assert streaming.options_for_domain(exp.domains[0], exp.tiles) is OFF
+    assert streaming.options_for_domain(exp.domains[1], exp.tiles).mode == "on"
+
+    nodes = [_types.SimpleNamespace(cfg=dc, state=object(), parent=None)
+             for dc in exp.domains]
+    nodes[1].parent = nodes[0]
+    model = _types.SimpleNamespace(walk_parent_first=lambda: nodes)
+    assert streaming.tree_streams_anywhere(model, exp.tiles) is True
+
+
+def _decisions_for(exp):
+    """``{grid_id: StreamingDecision}``, the way ``steppers_for_tree`` builds it.
+
+    Only the two steps the RECEIPT reads are mirrored: the per-domain
+    options and the decision they produce, plus the ``configured_mode``
+    stamp the walk leaves on each decision's ``detail``.  The walk's other
+    half -- the budget arithmetic -- prices every domain through
+    ``tilestream.autoplan``, which imports ``gpuwm.core.physics`` and so
+    needs cupy, and the receipt does not read a single one of those
+    numbers.  Mirroring the whole walk here would put this test behind a
+    card for no coverage; ``tests/test_streaming_clock_arming.py`` drives
+    the real walk on one.
+
+    Pinned tilings throughout (``tile_nx``/``tile_ny`` given), so ``decide``
+    consults no planner and probes no card.
+    """
+    out = {}
+    for domain_cfg in exp.domains:
+        options = streaming.options_for_domain(domain_cfg, exp.tiles)
+        decision = streaming.decide(domain_cfg.run, options)
+        decision.detail.update(configured_mode=options.mode)
+        out[int(domain_cfg.grid_id)] = decision
+    return out
+
+
+def test_the_receipt_names_a_grid_that_only_a_per_domain_table_streamed():
+    """Tree-wide ``off`` plus a per-domain ``on`` STREAMS, so it must say so.
+
+    The receipt was keyed on the TREE-WIDE ``[tiles]`` table: ``options``
+    not enabled meant an empty dict, whatever the domains had decided.  So
+    a tree whose tree-wide mode is ``off`` and whose child carries ``tiles
+    = {mode = "on"}`` streamed IN SILENCE -- the run tiled a grid and the
+    operator got no line naming which one.
+
+    That is exactly the class ``tree_streams_anywhere`` exists to close: a
+    per-domain road the tree-wide table cannot see.  The remedy is the
+    same one, applied to the receipt -- read the DECISIONS, which carry
+    what actually happened, and treat the tree-wide table as the default
+    it is rather than the answer.
+    """
+    raw = _raw_nested_experiment()
+    raw["domain"][1]["tiles"] = {"mode": "on", "tile_nx": 13, "tile_ny": 13}
+    exp = _build(raw)
+    assert exp.tiles is OFF                    # nothing tree-wide says stream
+
+    decisions = _decisions_for(exp)
+    assert decisions[1].stream is False
+    assert decisions[2].stream is True         # ... and yet a grid streams
+
+    receipt = streaming.streaming_receipt(exp.tiles, decisions)
+    assert receipt != {}, \
+        "a grid streamed and the receipt was empty -- silent streaming"
+    assert receipt["streamed_any"] is True
+    assert receipt["domains"]["2"]["streamed"] is True
+    assert receipt["domains"]["1"]["streamed"] is False
+    # The per-domain entry keeps saying which table decided it, because the
+    # tree-wide mode in `configured_mode` disagrees with what d02 did.
+    assert receipt["domains"]["2"]["configured_mode"] == "on"
+    # THE LINE THE OPERATOR READS.  It has to NAME the streamed grid; a
+    # summary that said only "mode='off'" would be the silence again.
+    assert "[2] streamed" in receipt["summary"], receipt["summary"]
+
+
+def test_the_per_domain_receipt_says_the_tree_wide_mode_was_overridden():
+    """The summary must not read as a plain contradiction.
+
+    ``mode='off'`` next to ``grid(s) [2] streamed`` is accurate and, on its
+    own, looks like a bug in the receipt rather than a per-domain table
+    doing its job.  So the line says which grids overrode the tree-wide
+    default.  This text is NEW -- the shape printed nothing at all before
+    -- so pinning it moves no shipped byte.
+    """
+    raw = _raw_nested_experiment()
+    raw["domain"][1]["tiles"] = {"mode": "on", "tile_nx": 13, "tile_ny": 13}
+    exp = _build(raw)
+    receipt = streaming.streaming_receipt(exp.tiles, _decisions_for(exp))
+    assert receipt["summary"] == (
+        "[tiles] mode='off' tree-wide, overridden per domain "
+        "(d02 mode='on'): grid(s) [2] streamed, [1] ran resident")
+
+
+def test_the_per_domain_receipt_fix_moves_no_shipped_receipt_byte():
+    """A tree the tree-wide table already governed keeps its exact line.
+
+    Leg A of the release gate -- a streamed parent over a resident child,
+    named tree-wide -- prints this line today, and a receipt an operator
+    has learned to read is a shipped interface.  Pinned literally, not by
+    content: the whole risk of re-keying the receipt is that it rewrites
+    the receipts that were already right.
+    """
+    raw = _raw_nested_experiment()
+    raw["tiles"] = {"mode": "on", "tile_nx": 13, "tile_ny": 13}
+    raw["domain"][1]["tiles"] = {"mode": "off"}
+    exp = _build(raw)
+    receipt = streaming.streaming_receipt(exp.tiles, _decisions_for(exp))
+    assert receipt["summary"] == (
+        "[tiles] mode='on': grid(s) [1] streamed, [2] ran resident")
+    assert receipt["configured_mode"] == "on"
+    assert receipt["streamed_any"] is True
+    assert receipt["domains"] == {
+        "1": {"streamed": True, "reason": "[tiles] pins the tiling",
+              "tile_nx": 13, "tile_ny": 13, "nbuffers": 2, "halo": 16,
+              "store": "host"},
+        "2": {"streamed": False, "reason": "[tiles] mode = 'off'",
+              "configured_mode": "off"}}
+
+
+def test_an_unconfigured_run_still_contributes_no_receipt_at_all():
+    """The emptiness that keeps pre-``[tiles]`` receipts byte-identical.
+
+    Re-keying on the decisions must not turn "nobody asked" into a line.
+    A tree with no ``[tiles]`` anywhere never fills a decisions mapping --
+    both tree entry points return early on ``tree_streams_anywhere`` -- so
+    the receipt stays empty, and that is asserted here rather than assumed
+    because it is the one property the fix could plausibly break.
+    """
+    raw = _raw_nested_experiment()
+    exp = _build(raw)
+    assert exp.tiles is OFF
+    assert streaming.streaming_receipt(exp.tiles, {}) == {}
+    assert streaming.streaming_receipt(None, {}) == {}
+
+
+def test_both_ends_explicitly_on_is_still_the_refused_shape():
+    """The taxonomy does not move: an EDGE with both ends on is refused.
+
+    Said per domain rather than tree-wide, so the refusal has to be
+    computed from the edge and not from the tree-wide mode.
+    """
+    raw = _raw_nested_experiment()
+    raw["domain"][0]["tiles"] = {"mode": "on"}
+    raw["domain"][1]["tiles"] = {"mode": "on"}
+    with pytest.raises(StreamingRefused) as refusal:
+        _build(raw)
+    text = str(refusal.value)
+    assert "BOTH ends streamed" in text
+    assert "d01 -> d02" in text
+
+
+def test_a_per_domain_table_may_not_name_the_card():
+    """The budget names a CARD; a per-domain copy is a second answer."""
+    raw = _raw_nested_experiment()
+    raw["domain"][1]["tiles"] = {"mode": "auto",
+                                 "vram_budget_bytes": 1 << 30}
+    with pytest.raises(ValueError) as refusal:
+        _build(raw)
+    text = str(refusal.value)
+    assert "vram_budget_bytes" in text and "name the CARD" in text
+
+
+def test_a_per_domain_table_meets_the_same_key_and_value_guards():
+    """One parser, one vocabulary: the tree-wide refusals apply per domain."""
+    raw = _raw_nested_experiment()
+    raw["domain"][1]["tiles"] = {"mdoe": "auto"}
+    with pytest.raises(ValueError) as refusal:
+        _build(raw)
+    assert "unknown key" in str(refusal.value)
+
+    raw = _raw_nested_experiment()
+    raw["domain"][1]["tiles"] = "auto"
+    with pytest.raises(ValueError) as refusal:
+        _build(raw)
+    assert "inline TABLE" in str(refusal.value)
+
+
+def test_a_per_domain_road_binds_nothing_in_the_restart_identity():
+    """[tiles] changes no bytes, so it may not change the identity either.
+
+    The tree-wide table has always been excluded; the per-domain one has
+    to be excluded on the same law, and UNCONDITIONALLY -- unlike ``spawn``
+    beside it, which binds when declared.  A domain that streamed must
+    resume resident and a domain that outgrew its card must resume
+    streamed, which is the whole reason to stream at all.
+    """
+    from gpuwm.core.model import restart_identity_payload
+
+    plain = _build(_raw_nested_experiment())
+    raw = _raw_nested_experiment()
+    raw["tiles"] = {"mode": "on"}
+    raw["domain"][1]["tiles"] = {"mode": "off"}
+    tiled = _build(raw)
+
+    assert restart_identity_payload(plain) == restart_identity_payload(tiled)
+    assert all("tiles" not in d
+               for d in restart_identity_payload(tiled)["domains"])
+
+
+# ---- and the seam, for the mode that is NOT refused ----------------------
+
+def _tree_nodes():
+    """A parent and its child, in the only shape the seam reads.
+
+    Deliberately not ``test_model._model()``: that builds real
+    ``DomainState`` objects and imports the dycore, which needs a card.
+    The NODES are namespaces, because the walk reads only ``node.parent``,
+    ``node.cfg`` and ``node.state`` off them -- but ``node.cfg`` is a real
+    :class:`~gpuwm.experiment.DomainConfig` and not a namespace, because
+    the walk's surface WIDENED when roads became per-domain: pricing a
+    child's coupling corridor reaches ``nest_slot_shapes``, which reads
+    ``parent_grid_ratio`` and the placement off the domain config.  A
+    namespace stub would answer that question by AttributeError, which is
+    the fixture lying about the seam rather than the seam being wrong.
+    None of it needs a card.
+    """
+    import types
+
+    from gpuwm.config import RunConfig
+    from gpuwm.experiment import DomainConfig
+
+    parent_cfg = DomainConfig(
+        grid_id=1, parent_id=0, i_parent_start=1, j_parent_start=1,
+        parent_grid_ratio=1, parent_time_step_ratio=1,
+        history_interval_s=3600.0, run=_cfg())
+    parent = types.SimpleNamespace(cfg=parent_cfg, state=object(),
+                                   parent=None)
+    child_run = RunConfig(nx=192, ny=192, nz=49, dx=4000.0, dy=4000.0,
+                          ztop=20000.0, dt=20.0, run_seconds=600.0,
+                          grid_id=2, nested=True, specified=False)
+    child_cfg = DomainConfig(
+        grid_id=2, parent_id=1, i_parent_start=30, j_parent_start=30,
+        parent_grid_ratio=3, parent_time_step_ratio=3,
+        history_interval_s=3600.0, run=child_run)
+    child = types.SimpleNamespace(cfg=child_cfg, state=object(),
+                                  parent=parent)
+    return parent, child
+
+
+def test_auto_consults_the_planner_about_a_child_and_prices_it():
+    """The INVERSION the per-domain roads demanded, held explicitly.
+
+    A nest used to short-circuit to RESIDENT under ``auto`` without the
+    planner being asked, because the builder could not stream it.  The
+    builder streams it now (``gpuwm.core.nest_stream``), so the honest
+    decision is the planner's own, with its arithmetic on the decision --
+    a child priced like any domain.  The machine is fabricated, not
+    detected, so the test needs no card and no cupy probe.
+    """
+    from tilestream.autoplan import Machine
+
+    _parent, child = _tree_nodes()
+    machine = Machine(vram_bytes=64 << 30, host_bytes=128 << 30)
+    decision = streaming.decide(child.cfg.run,
+                                StreamingOptions(mode="auto"),
+                                machine=machine)
+    # 192x192x49 fits a 64 GiB budget comfortably: resident, with the
+    # planner's own numbers on the decision -- the short-circuit reported
+    # neither.
+    assert decision.stream is False
+    assert decision.resident_bytes is not None
+    assert "NESTED" not in decision.reason
+
+
+def test_on_over_a_nest_is_not_quietly_turned_into_a_resident_run():
+    """``on`` is refused from the config; it is never silently declined.
+
+    A caller that assembled its own ExperimentConfig and skipped the
+    loader must still meet the loud refusals downstream (the walk's edge
+    check, the coupler's FORCE law).  Silently declining to stream is the
+    failure this whole module was written to remove -- the run dies at
+    the allocation the mode existed to avoid, with nothing in the log to
+    say the mode never engaged.
+    """
+    _parent, child = _tree_nodes()
+    decision = streaming.decide(
+        child.cfg.run, StreamingOptions(mode="on", tile_nx=32, tile_ny=32))
+    assert decision.stream is True
+
+
+def test_a_both_streamed_edge_is_refused_at_decision_time_before_any_build():
+    """The walk enforces the coupler's law where it costs a sentence.
+
+    ``mode = "on"`` (and ``auto`` with a pinned tiling, used here so no
+    planner and no card is needed) streams both ends of the d01->d02
+    edge.  ``NestCoupler.force`` would refuse that composition at the
+    first FORCE -- after the root's whole pinned store was filled.  The
+    walk must refuse at DECISION time instead: named grids, and no
+    builder invoked for ANY domain, including the root that decides
+    first.
+    """
+    import types as _types
+
+    parent, child = _tree_nodes()
+    calls: list = []
+
+    def build(state, cfg, decision):
+        calls.append(cfg)
+        raise AssertionError("no builder may run for an unbuildable tree")
+
+    model = _types.SimpleNamespace(
+        walk_parent_first=lambda: [parent, child])
+    options = StreamingOptions(mode="auto", tile_nx=32, tile_ny=32)
+    decisions: dict = {}
+    with pytest.raises(StreamingRefused) as refusal:
+        streaming.steppers_for_tree(model, options,
+                                    builders={1: build, 2: build},
+                                    decisions=decisions)
+    text = str(refusal.value)
+    assert "d01" in text and "d02" in text and "BOTH ends streamed" in text
+    assert calls == []          # decided first, built never
+    assert decisions[1].stream and decisions[2].stream
+
+
+def test_the_child_road_is_admitted_at_the_walk_and_priced():
+    """A streamed CHILD under a resident parent is legal -- the walk says so.
+
+    The child alone is walked (its parent resident outside the decision
+    set), with a pinned tiling so no planner runs.  The decision must
+    stream, carry the child's corridor claim in its detail, and the only
+    refusal left standing must be the harness's own missing builder --
+    NOT a refusal about the domain being a nest, which is what the
+    pre-roads admission raised here.
+    """
+    import types as _types
+
+    _parent, child = _tree_nodes()
+    model = _types.SimpleNamespace(walk_parent_first=lambda: [child])
+    options = StreamingOptions(mode="auto", tile_nx=32, tile_ny=32)
+    decisions: dict = {}
+    with pytest.raises(StreamingRefused) as refusal:
+        streaming.steppers_for_tree(model, options, decisions=decisions)
+    text = str(refusal.value)
+    assert "builder" in text and "NEST" not in text
+    assert decisions[2].stream is True
+    assert decisions[2].detail["road"] == "streamed"
+    assert decisions[2].detail["corridor_claim_bytes"] > 0
+
+
+# ---- the joint decision: a streamed parent may not starve its children ---
+
+def _starving_tree_nodes():
+    """A parent too big to sit resident, over a child that comfortably fits.
+
+    1536^2 x 49 dry prices at 8.41 GiB resident, so against a 4 GiB budget
+    the parent MUST stream; 192^2 x 49 prices at 0.82 GiB, so the child
+    must not.  These are the numbers the starvation was measured on: the
+    parent's largest clean tile takes 3.94 of the 4.00 GiB it is shown
+    (98.5%), which leaves 0.06 GiB -- an order of magnitude less than the
+    child needs.
+    """
+    import types
+
+    from gpuwm.config import RunConfig
+    from gpuwm.experiment import DomainConfig
+
+    parent_run = RunConfig(nx=1536, ny=1536, nz=49, dx=12000.0, dy=12000.0,
+                           ztop=20000.0, dt=60.0, run_seconds=600.0)
+    parent_cfg = DomainConfig(
+        grid_id=1, parent_id=0, i_parent_start=1, j_parent_start=1,
+        parent_grid_ratio=1, parent_time_step_ratio=1,
+        history_interval_s=3600.0, run=parent_run)
+    parent = types.SimpleNamespace(cfg=parent_cfg,
+                                   state=types.SimpleNamespace(),
+                                   parent=None)
+    child_run = RunConfig(nx=192, ny=192, nz=49, dx=4000.0, dy=4000.0,
+                          ztop=20000.0, dt=20.0, run_seconds=600.0,
+                          grid_id=2, nested=True, specified=False)
+    child_cfg = DomainConfig(
+        grid_id=2, parent_id=1, i_parent_start=30, j_parent_start=30,
+        parent_grid_ratio=3, parent_time_step_ratio=3,
+        history_interval_s=3600.0, run=child_run)
+    child = types.SimpleNamespace(cfg=child_cfg,
+                                  state=types.SimpleNamespace(),
+                                  parent=parent)
+    return parent, child
+
+
+def _fake_streamed():
+    """A StreamedDomain shell with the one attribute make_stepper reads.
+
+    ``publish_store`` marks the resident state with the streamed store; the
+    decision arithmetic under test never touches a device.
+    """
+    import types
+
+    obj = StreamedDomain.__new__(StreamedDomain)
+    obj._run = types.SimpleNamespace(store={})
+    return obj
+
+
+def test_a_streamed_parent_reserves_its_children_before_it_picks_a_tile(
+        monkeypatch):
+    """STREAMED PARENT + RESIDENT CHILD, the shape that could not be reached.
+
+    The walk already decided the whole tree before building it, but the
+    DECISION was parent-greedy: the tile search maximises the compute
+    window against whatever budget it is shown, so a streamed root took
+    98.5% of the card and the child's decision then met
+    ``CannotPlan: no tile fits in 0.06 GiB``.  The engine runs this shape
+    bit-identically; only the arithmetic that chose the tile made it
+    unreachable.
+
+    The fix is an ordering one: every domain still undecided is priced
+    FIRST, and the streamed parent's tile search sees budget-minus-
+    children.  A smaller clean tile is a slower parent; a starved child is
+    no run at all.
+    """
+    import sys
+    import types as _types
+
+    from tilestream.autoplan import Machine
+
+    gib = 1024 ** 3
+    parent, child = _starving_tree_nodes()
+    stub = _types.ModuleType("gpuwm.core.dycore")
+    stub.step = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "gpuwm.core.dycore", stub)
+
+    built: list = []
+
+    def build(state, cfg, decision):
+        built.append(int(cfg.nx))
+        return _fake_streamed()
+
+    model = _types.SimpleNamespace(
+        walk_parent_first=lambda: [parent, child])
+    machine = Machine(vram_bytes=4 * gib, host_bytes=256 * gib,
+                      vram_headroom=0.0)
+    options = StreamingOptions(mode="auto")
+    decisions: dict = {}
+    streaming.steppers_for_tree(model, options, machine=machine,
+                                builders={1: build}, decisions=decisions)
+
+    # The shape itself: parent streamed, child resident.  Before the fix
+    # the second of these never happened -- the walk raised instead.
+    assert decisions[1].stream is True
+    assert decisions[2].stream is False
+
+    # The RESERVATION is on the receipt, not merely in the outcome: the
+    # parent's decision has to say how much of the card it was holding
+    # back and for whom, or an operator reading a smaller-than-expected
+    # tile has no way to tell a reservation from a bad plan.
+    reserved = decisions[1].detail["reserved_bytes"]
+    assert reserved >= int(decisions[2].detail["claim_bytes"])
+    assert decisions[1].detail["reserved_for"] == [2]
+    assert (decisions[1].detail["budget_before_reserve_bytes"]
+            - reserved == decisions[1].budget_bytes)
+
+    # And the parent's tile is genuinely SMALLER than the greedy one it
+    # would have taken: 3.94 GiB was the greedy claim at this shape.
+    assert decisions[1].detail["claim_bytes"] < int(3.5 * gib)
+
+    # The whole tree still fits the card it was priced against.
+    spent = sum(int(d.detail["claim_bytes"])
+                + int(d.detail["corridor_claim_bytes"])
+                for d in decisions.values())
+    assert spent <= machine.vram_budget_bytes
+
+
+def test_the_reservation_reaches_the_receipt_an_operator_reads():
+    """``streaming_receipt`` carries the reservation, not just the tile.
+
+    The receipt is the artifact a run leaves behind.  A parent that chose
+    a smaller tile than the card could hold is indistinguishable from a
+    planner bug unless the number it held back, and the grids it held it
+    back for, are recorded beside the tile.
+    """
+    import sys
+    import types as _types
+
+    from tilestream.autoplan import Machine
+
+    gib = 1024 ** 3
+    parent, child = _starving_tree_nodes()
+    stub = _types.ModuleType("gpuwm.core.dycore")
+    stub.step = lambda *a, **kw: None
+    sys.modules.setdefault("gpuwm.core.dycore", stub)
+
+    model = _types.SimpleNamespace(
+        walk_parent_first=lambda: [parent, child])
+    machine = Machine(vram_bytes=4 * gib, host_bytes=256 * gib,
+                      vram_headroom=0.0)
+    decisions: dict = {}
+    options = StreamingOptions(mode="auto")
+    try:
+        streaming.steppers_for_tree(
+            model, options, machine=machine,
+            builders={1: lambda s, c, d: _fake_streamed()},
+            decisions=decisions)
+    finally:
+        if sys.modules.get("gpuwm.core.dycore") is stub:
+            del sys.modules["gpuwm.core.dycore"]
+
+    receipt = streaming.streaming_receipt(options, decisions)
+    assert receipt["domains"]["1"]["streamed"] is True
+    assert receipt["domains"]["1"]["reserved_bytes"] > 0
+    assert receipt["domains"]["1"]["reserved_for"] == [2]
+    # The child reserved nothing: it is last in the walk, and a
+    # reservation for nobody must be absent rather than zero, so the
+    # receipts of trees that reserve nothing are untouched.
+    assert "reserved_bytes" not in receipt["domains"]["2"]
+
+
+def test_a_tree_that_cannot_fit_after_reserving_refuses_with_both_numbers():
+    """The honest refusal: what was left, and what the reservation took.
+
+    Reserving is not a licence to pretend.  When the children's claims
+    genuinely leave the parent nothing to tile with, the walk must refuse
+    naming BOTH numbers -- the budget it started from and the reservation
+    that consumed it -- rather than emit the planner's bare "no tile fits
+    in 0.02 GiB", which describes an arithmetic the operator never wrote.
+    """
+    import types as _types
+
+    from tilestream.autoplan import Machine
+
+    gib = 1024 ** 3
+    parent, child = _starving_tree_nodes()
+    model = _types.SimpleNamespace(
+        walk_parent_first=lambda: [parent, child])
+    # 1.0 GiB: the child's 0.82 GiB resident claim leaves the streamed
+    # parent well under the dry rung's per-process floor.
+    machine = Machine(vram_bytes=1 * gib, host_bytes=256 * gib,
+                      vram_headroom=0.0)
+    with pytest.raises(StreamingRefused) as refusal:
+        streaming.steppers_for_tree(model, StreamingOptions(mode="auto"),
+                                    machine=machine, decisions={})
+    text = str(refusal.value)
+    assert "reserv" in text.lower()
+    assert "d01" in text and "d02" in text
+    # Both numbers, in the units the operator configured.
+    assert "1.00 GiB" in text and "0.8" in text
+
+
+def test_the_receipt_records_every_grid_of_the_tree_with_its_road(
+        monkeypatch):
+    """The receipt half, and it is the half that can rot.
+
+    A grid that declined to stream is ABSENT from the stepper dict, and
+    absent is exactly what a grid looks like under a [tiles] that was
+    never configured -- so without the receipt an operator cannot tell a
+    tree that was asked and priced resident from a run that never asked.
+    Both grids are decided by the PLANNER against a fabricated machine
+    large enough that the whole tree fits resident: the legal shape, and
+    the one the old short-circuit misdescribed for the child.
+
+    ``gpuwm.core.dycore`` is stubbed because ``make_stepper`` returns that
+    module's ``step`` for every domain that does not stream, and importing
+    it needs cupy.  Nothing under test is in it: the subject is which
+    DECISION was taken and what the receipt says about it.
+    """
+    import sys
+    import types as _types
+
+    from tilestream.autoplan import Machine
+
+    parent, child = _tree_nodes()
+    stub = _types.ModuleType("gpuwm.core.dycore")
+    stub.step = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "gpuwm.core.dycore", stub)
+
+    model = _types.SimpleNamespace(
+        walk_parent_first=lambda: [parent, child])
+    options = StreamingOptions(mode="auto")
+    machine = Machine(vram_bytes=64 << 30, host_bytes=128 << 30)
+    decisions: dict = {}
+    steppers = streaming.steppers_for_tree(model, options, machine=machine,
+                                           decisions=decisions)
+
+    assert steppers == {}                       # the tree ran resident ...
+    assert set(decisions) == {1, 2}             # ... and BOTH were decided
+    assert decisions[2].detail["road"] == "resident"
+    assert decisions[2].detail["corridor_claim_bytes"] > 0
+    receipt = streaming.streaming_receipt(options, decisions)
+    assert receipt["configured_mode"] == "auto"      # it WAS configured
+    assert receipt["streamed_any"] is False          # it was NOT taken
+    assert receipt["domains"]["2"]["streamed"] is False
+    # The other receipt surface, the one the run's memory block carries.
+    explained = streaming.receipt_entry(options, decisions)
+    assert explained["any_streamed"] is False
+    assert "d02" in explained["decisions"]
 
 
 def test_a_scheme_that_cannot_be_twinned_is_refused_not_shared():
@@ -1000,18 +2093,50 @@ def test_the_routes_that_stream_do_not_refuse_the_mode_that_asks_for_it():
             f"wires a streamed-domain builder: {calls}")
 
 
-def test_the_route_that_never_reads_tiles_still_refuses():
-    """The guard is REMOVED where it lied, not deleted where it is true."""
+def test_the_run_route_reads_tiles_instead_of_refusing_it():
+    """``gpuwm run`` streams now, so its front-door refusal is GONE.
+
+    The refusal it replaced was honest while it stood: the route wired no
+    builder, so a [tiles] block was read, validated, echoed into the
+    resolved-config report and dropped, and the run went resident saying
+    nothing.  The remedy for that was never a permanent refusal -- it was
+    the wiring, and the refusal's own message said which wiring
+    (``streaming.builders_for_tree``).
+
+    Asserted as the presence of the seam rather than the absence of the
+    refusal, because absence is what a deletion also looks like.
+    """
     import inspect
 
-    import gpuwm.runtime as runtime
+    from gpuwm import runtime
 
-    src = inspect.getsource(runtime)
-    assert "refuse_unrouted_streaming(exp, \"gpuwm run\", " \
-        "consults_the_seam=False)" in src, (
-            "gpuwm run reads [tiles] at no point; dropping its refusal would "
-            "make it silently integrate resident, which is the silence the "
-            "module forbids")
+    src = inspect.getsource(runtime.run_experiment)
+    assert "builders=_streaming.builders_for_tree(model, exp.tiles)" in src
+    assert "refuse_unrouted_streaming(exp, \"gpuwm run\"" not in src
+    # The single-domain arm is wired too, through the same builder the
+    # offline child uses -- a root with no tree.
+    assert "standalone_domain_builder(" in src
+    assert "stepper=single_stepper" in src
+
+
+def test_the_run_route_refreshes_a_streamed_domain_before_reading_it():
+    """The read-back, without which every frame is the initial condition.
+
+    A streamed domain's forecast lives in its pinned host store and the
+    ``DomainState`` the writers and the digest hold is the snapshot that
+    filled it.  Both readers on this route have to be given the copy, and
+    the two places are exactly the cadence ``refresh_state`` publishes:
+    the history frame, and the end of the run.
+    """
+    import inspect
+
+    from gpuwm import runtime
+
+    src = inspect.getsource(runtime.run_experiment)
+    assert src.count("_streaming.refresh_streamed_state(") == 2
+    history = inspect.getsource(runtime.run_experiment)
+    assert history.index("_streaming.refresh_streamed_state(") < \
+        history.index("_submit_tree_history_frame(writers, node, ticks)")
 
 
 # --------------------------------------------------------------------------
@@ -1080,6 +2205,17 @@ def test_the_prepared_builder_primes_and_carries_the_reflectivity_slot():
     The defect was an absent call -- the sweep refused the first DUE frame,
     which on an hourly cadence is an hour into a healthy forecast.
 
+    The inventory rule is NAMED (``streamed_store_inventory``) rather
+    than spelled out at each call site, because it is handed to three
+    things that are compared against each other -- the domain at attach,
+    the tile buffers, and the store the store-direct road builds slab by
+    slab.  Spelled out, it was already wrong in the third: the store came
+    out one carrier short and TiledRun refused the pair with "in TILE not
+    in STORE: ['scratch/refl_10cm']".  So the assertion is that the
+    builders CALL the shared rule, plus behavioural checks on the shared
+    rule itself -- the source check alone would pass if that function
+    stopped adding the slots.
+
     The OUTER wrapper is asserted too, and for a harsher reason: leaving it
     off is not refused anywhere, it publishes a frame short of OLR and
     reports validity PASS.  That is what shipped until 2.2.0, so the
@@ -1090,9 +2226,28 @@ def test_the_prepared_builder_primes_and_carries_the_reflectivity_slot():
 
     src = inspect.getsource(streaming.prepared_domain_builder)
     assert "prime_lazy_carriers(state, cfg)" in src
-    assert "inventory_fn=diagnostic_inventory(refl_inventory(" in src
+    assert "inventory_fn=streamed_store_inventory()" in src
+    store_src = inspect.getsource(streaming.store_domain_builder)
+    assert "inventory_fn=streamed_store_inventory()" in store_src
+    shared_src = inspect.getsource(streaming.streamed_store_inventory)
+    assert "diagnostic_inventory(refl_inventory(" in shared_src
     factory_src = inspect.getsource(streaming.prepared_tile_state_factory)
     assert "prime_lazy_carriers(tile, tile_cfg)" in factory_src
+
+    class _Streamed(_ScratchState):
+        """``arrays`` takes streaming_inventory's mapping branch.
+
+        Which is what lets the rule be exercised without a DomainState:
+        the store the loader fills is itself a mapping, and this is the
+        same branch it takes.
+        """
+
+        arrays = {"state/thp": 1}
+
+    inventory = streaming.streamed_store_inventory()(
+        _Streamed(refl_10cm=("array", (2, 3, 4))), None)
+    assert streaming.REFL_STORE_KEY in inventory
+    assert "state/thp" in inventory
 
 
 def test_the_diagnostic_wrapper_adds_the_output_only_rows_over_any_base():
@@ -1496,16 +2651,22 @@ def test_write_mode_reaches_the_transport_instead_of_being_ignored():
                                            tile_ny=64)).write_mode == "ring"
 
 
-def test_the_case_data_route_refuses_streaming_instead_of_ignoring_it():
-    """``gpuwm.runtime.run_experiment`` cannot stream, so it must say so.
+def test_the_case_data_route_supplies_the_stepper_it_used_to_refuse_for():
+    """The replacement this file asked for, in the words it asked for it.
 
-    It never reads ``exp.tiles``: its single-domain branch calls
-    ``integrate_prepared_case`` without the ``stepper`` argument no caller
-    in this checkout supplies, and its tree branch calls
-    ``execute_experiment`` without ``steppers``.  Both therefore bind
-    ``dycore.step`` unconditionally.  Silently running RESIDENT is the
-    dangerous direction -- the user finds out at the allocation the mode
-    existed to avoid -- so this refuses at the front door.
+    The test that stood here asserted ``gpuwm run`` still refused
+    ``[tiles]``, and said in its own body that if a caller ever supplied
+    ``integrate_prepared_case``'s ``stepper`` the refusal "may be
+    replaceable" and the test "should be replaced by a real streamed run,
+    not deleted".  A caller supplies it now: the single-domain arm builds
+    one through ``standalone_domain_builder`` and the tree arm builds the
+    whole mapping through ``builders_for_tree``.
+
+    The real streamed runs are the GPU legs (the streamed-child corridor
+    gate and the two-way leg on the card); what is held HERE, on the CPU,
+    is that the loop is given something to stream WITH -- because a route
+    that decides to stream and then hands the loop nothing is the silent
+    resident run all over again.
     """
     import inspect
     import io
@@ -1513,32 +2674,202 @@ def test_the_case_data_route_refuses_streaming_instead_of_ignoring_it():
 
     from gpuwm import runtime
 
-    src = inspect.getsource(runtime.run_experiment)
-    assert "exp.tiles.enabled" in src, (
-        "run_experiment no longer refuses a [tiles] configuration it "
-        "cannot honour; it will run resident and say nothing")
-    # And the reason the refusal is still needed: nobody hands the loop a
-    # stepper.  If that ever changes, this test should be replaced by a
-    # real streamed run, not deleted.
-    #
-    # COMMENTS ARE STRIPPED FIRST.  The question is whether a CALLER supplies
-    # the argument, which is a property of the code; prose that names the
-    # keyword while explaining that nothing passes it -- runtime.py has such a
-    # comment, beside the front-door refusal itself -- is the opposite of the
-    # thing being looked for, and matching it made this assertion fire on a
-    # change that strengthened what it guards.
     source = inspect.getsource(runtime)
     rows = source.splitlines(keepends=True)
     for kind, _text, (r0, c0), (_r1, c1), _l in tokenize.generate_tokens(
             io.StringIO(source).readline):
         if kind == tokenize.COMMENT:
-            # Blanked IN PLACE rather than dropped, so every other byte --
-            # spacing included -- is still the source's own and the literal
-            # `.replace` below keeps matching.
             line = rows[r0 - 1]
             rows[r0 - 1] = line[:c0] + " " * (c1 - c0) + line[c1:]
     whole = "".join(rows)
-    assert "stepper=" not in whole.replace(
-        "feedback=None, stepper=None", ""), (
-        "a caller now supplies integrate_prepared_case's stepper; the "
-        "front-door refusal above may be replaceable")
+    # The definition itself does not count as a caller.
+    assert "stepper=single_stepper" in whole.replace(
+        "feedback=None, stepper=None", "")
+    # And the decision that chose it is the one the loop runs on: decided
+    # once, handed over, never re-derived inside make_stepper.
+    src = inspect.getsource(runtime.run_experiment)
+    assert "decision=single_decision" in src
+
+
+# ---- bundle-07 adversarial review: the three findings in this lane's code --
+
+def test_the_tree_wrapper_hands_the_configured_host_budget_to_the_probe():
+    """Finding 2: #215 reopened at the PRODUCTION door to the planner.
+
+    ``decide`` reads ``host_budget_bytes`` BEFORE probing and hands it to
+    ``Machine.detect``, because ``detect`` skips the host-memory read
+    entirely when it is told the budget and RAISES where it can find no
+    host source.  That arm runs only when no machine was supplied, and
+    ``steppers_for_tree`` supplied one: it probed bare and overrode
+    afterwards, so on a box with no procfs and no cgroups every [tiles]
+    tree was refused before the override was ever consulted -- including
+    the ones that set the key to the number the refusal asked for.
+
+    Held by making detection FAIL unless it is told, which is exactly the
+    box the defect was reachable on.
+    """
+    from tilestream import autoplan
+
+    seen = []
+    real_detect = autoplan.Machine.detect
+
+    def picky_detect(*, host_bytes=None, **kwargs):
+        seen.append(host_bytes)
+        if host_bytes is None:
+            raise RuntimeError("no host memory source on this box")
+        return autoplan.Machine(vram_bytes=64 << 30,
+                                host_bytes=int(host_bytes))
+
+    model = _one_grid_model()
+    options = StreamingOptions(mode="auto", host_budget_bytes=17 << 30)
+    autoplan.Machine.detect = staticmethod(picky_detect)
+    try:
+        streaming.steppers_for_tree(model, options)
+    finally:
+        autoplan.Machine.detect = real_detect
+    assert seen == [17 << 30], seen
+
+
+def test_two_streamed_siblings_do_not_each_get_the_whole_host_budget():
+    """Finding 5: the walk keeps a HOST ledger as well as a VRAM one.
+
+    A streamed domain spends both pools -- tile buffers on the card, a
+    whole-domain pinned store plus arena on the box -- and the single
+    ``spent`` total only ever subtracted the VRAM.  So a later streamed
+    domain was priced against the ENTIRE host budget, its plan was
+    accepted, and the run met ``cudaHostAlloc`` where a planner refusal
+    belonged.  Host RAM is the binding constraint at every capacity limit
+    measured, so this is the ledger that most needs keeping.
+
+    TWO domains that both STREAM, which is what makes the ledger visible:
+    a resident domain pins no store, so a fixture where everything fits
+    reports zero either way and proves nothing.
+    """
+    import types as _types
+
+    from gpuwm.config import RunConfig
+    from gpuwm.experiment import DomainConfig
+    from tilestream.autoplan import Machine
+
+    def big(grid_id):
+        run = RunConfig(nx=2048, ny=2048, nz=49, dx=3000.0, dy=3000.0,
+                        ztop=20000.0, dt=15.0, run_seconds=600.0,
+                        grid_id=grid_id, specified=True)
+        cfg = DomainConfig(
+            grid_id=grid_id, parent_id=0, i_parent_start=1, j_parent_start=1,
+            parent_grid_ratio=1, parent_time_step_ratio=1,
+            history_interval_s=3600.0, run=run)
+        return _types.SimpleNamespace(
+            cfg=cfg, state=_types.SimpleNamespace(), parent=None)
+
+    class _Streamed:
+        """The least a builder may return: callable, and it has a store."""
+
+        store = {}
+
+        def __call__(self, *args, **kwargs):
+            return None
+
+    first, second = big(1), big(2)
+    model = _types.SimpleNamespace(
+        walk_parent_first=lambda: [first, second],
+        nodes_by_grid_id={1: first, 2: second})
+    machine = Machine(vram_bytes=8 << 30, host_bytes=512 << 30)
+    decisions = {}
+    streaming.steppers_for_tree(
+        model, StreamingOptions(mode="auto"), machine=machine,
+        decisions=decisions,
+        builders={1: lambda *a, **k: _Streamed(),
+                  2: lambda *a, **k: _Streamed()})
+
+    assert set(decisions) == {1, 2}
+    assert all(d.stream for d in decisions.values()), {
+        g: d.reason for g, d in decisions.items()}
+    for gid, d in decisions.items():
+        assert "host_claim_bytes" in d.detail, (gid, d.detail)
+        assert "host_spent_before_bytes" in d.detail, (gid, d.detail)
+    first_claim = int(decisions[1].detail["host_claim_bytes"])
+    # A streamed domain's pinned store is not free, and the SECOND domain
+    # was priced only after it was subtracted.  Before the host ledger both
+    # numbers were zero and each sibling saw the whole box.
+    assert first_claim > 0, decisions[1].detail
+    assert decisions[1].detail["host_spent_before_bytes"] == 0
+    assert decisions[2].detail["host_spent_before_bytes"] == first_claim
+
+
+def test_a_state_less_attachment_must_state_its_clock_policy():
+    """Finding 1, CRITICAL: no bare-None clock on the store-direct road.
+
+    ``store_domain_builder`` called ``attach(None, ...)``.  With no state,
+    ``make_tile_hook``'s lazy ``domain_clock()`` returned ``None`` on the
+    first buffer conversion, ``converted[id(tile_state)]`` latched, and
+    every buffer for the rest of the forecast took the retired
+    ``elapsed - interval.start`` recurrence instead of the bound
+    ``DomainClock``'s ``dtbc`` -- the #219 one-timestep phase error, back
+    on the road the LARGEST domains take and the one least likely to have
+    a resident control beside it.
+
+    Deriving nothing from nothing is indistinguishable from deciding to
+    derive nothing, so the decision is a parameter now, and the seam
+    refuses rather than defaults.
+    """
+    import inspect
+
+    src = inspect.getsource(streaming.store_domain_builder)
+    assert "ONE TIMESTEP LATE" in src
+    attach_src = inspect.getsource(streaming.attach)
+    assert "state is None and external_clock is DERIVE_CLOCK" in attach_src
+    hook_src = inspect.getsource(streaming.make_tile_hook)
+    assert "expected = domain_clock()" in hook_src
+    assert "is not expected" in hook_src
+    import pathlib
+
+    route = (pathlib.Path(streaming.__file__).parents[1]
+             / "prepared_single_domain_forecast.py").read_text(
+                 encoding="utf-8")
+    assert "bundle, clock=node.clock)" in route, (
+        "the store-direct route must bind the node's own clock")
+
+
+def test_the_tile_hook_binds_the_clock_it_was_given_with_no_state():
+    """The behaviour behind the policy, exercised without a card.
+
+    ``external_clock=`` binds THAT object on a state-less attachment, and
+    a buffer that loses the binding is refused on its next launch rather
+    than stepped one timestep out of phase with the domain.
+    """
+    import types as _types
+
+    import gpuwm.ingest.lateral_bc as lbc
+
+    clock = object()
+    bound = []
+    real_attach = lbc.attach_streaming_lateral_boundaries
+    real_bind = lbc.bind_lateral_boundary_clock
+
+    def fake_attach(tile_state, lb):
+        tile_state._lateral_boundary_device = _types.SimpleNamespace(
+            streaming_external=True, clock=None, active_host_interval_id=7)
+
+    def fake_bind(tile_state, c):
+        bound.append(c)
+        tile_state._lateral_boundary_device.clock = c
+
+    lbc.attach_streaming_lateral_boundaries = fake_attach
+    lbc.bind_lateral_boundary_clock = fake_bind
+    try:
+        hook = streaming.make_tile_hook(
+            {0: "tables0", 1: "tables1"}, domain_state=None,
+            external_clock=clock)
+        buf = _types.SimpleNamespace()
+        hook(buf, None, 0, None)
+        assert bound == [clock], bound
+        hook(buf, None, 1, None)
+        assert buf._lateral_boundary_device.active_host_interval_id is None
+        buf._lateral_boundary_device.clock = object()
+        with pytest.raises(streaming.StreamingRefused) as refusal:
+            hook(buf, None, 0, None)
+        assert "out of phase" in str(refusal.value)
+    finally:
+        lbc.attach_streaming_lateral_boundaries = real_attach
+        lbc.bind_lateral_boundary_clock = real_bind

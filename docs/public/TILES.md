@@ -25,7 +25,11 @@ projection with real terrain and specified lateral boundaries.
 mode = "auto"
 ```
 
-That is the whole configuration for a normal run.  Three modes:
+That is the whole configuration for a normal run — and it is also the
+per-domain configuration: the same table may sit inline on a `[[domain]]`
+as `tiles = { mode = "auto" }`, which overrides the tree-wide one for that
+domain (see [Saying which end streams](#saying-which-end-streams-tiles-is-per-domain)).
+Three modes:
 
 | `mode`  | what happens |
 |---------|--------------|
@@ -125,17 +129,100 @@ refuted — predicted 91% and 7.3×, measured 52.6% and 4.21×.
 `tilestream/NO-DRY-NUMBERS.md` lists the specific values that may not be
 quoted and why, and it governs this page.
 
-## Where it is not finished
+## One end of a coupling edge streams, never both
 
-The seam (`gpuwm.core.streaming.make_stepper`) is wired into both prepared
-forecast routes, and a configured domain that must stream gets either a
-streamed stepper or a loud refusal.  Building that stepper needs a
-domain-specific constructor — the store filled from the prepared state, tile
-buffers built with the domain's own physics selectors, the geography
-inventoried and the boundary tables windowed per tile.  `streaming.attach`
-does all of it and `tilestream/test_join.py` drives it end to end, but the
-real-data preparation route does not yet hand one in, so a real-data run with
-`mode = "auto"` on an oversized domain currently **refuses with an
-explanation** instead of streaming.  Refusing is the deliberate half of that:
-the alternative failure mode is a silent resident run that dies at the
-allocation the mode was turned on to avoid.
+Nested domains CAN stream, each through its own road: a streamed parent
+can drive a resident child (the footprint corridor,
+`tilestream/test_nest_executor.py`), and a resident parent can drive a
+tile-streamed child (the frame corridor and per-tile rolling-table
+windows, `tilestream/test_streamed_child.py`).  Both roads are gated
+bit-identical to the all-resident tree.  What no gate has driven is a
+coupling edge with BOTH ends streamed -- that composition is refused, not
+run.
+
+### Saying which end streams: `[tiles]` is per domain
+
+`[tiles]` is a **tree-wide default with a per-domain override**.  Any
+`[[domain]]` may carry its own inline table, and it replaces the tree-wide
+one for that domain entirely — it does not merge key by key, because a
+half-inherited tiling ("mode from the tree, store from the domain") is a
+configuration nobody can read off the file.
+
+```toml
+[tiles]
+mode = "on"                    # the default for every domain below
+
+[[domain]]
+grid_id = 1
+# ... inherits mode = "on": the parent streams
+
+[[domain]]
+grid_id = 2
+parent_id = 1
+tiles = { mode = "off" }       # ... and the child stays resident
+```
+
+That is a **streamed parent over a resident nest**, said rather than
+inferred, and the inverse — `tiles = { mode = "on" }` on the nest alone,
+with no tree-wide `[tiles]` at all — is a **streamed child under a resident
+parent**.  Both roads are gated bit-identical to the all-resident tree
+(`tilestream/test_nest_executor.py`, `tilestream/test_streamed_child.py`).
+
+The two budget keys, `vram_budget_bytes` and `host_budget_bytes`, are
+**refused** on a per-domain table: they name a card, not a domain, and the
+tree decision prices every domain against one number.  Set them on the
+tree-wide table.
+
+A per-domain road contributes nothing to the restart identity, on the same
+law as the tree-wide one: a domain that streamed must be able to resume
+resident, and one that outgrew its card must be able to resume streamed.
+
+### What is refused is the EDGE, not the tree
+
+`mode = "on"` with nothing said per domain streams every grid, so on a tree
+it puts both ends of every coupling edge on the streamed road — the one
+composition no gate has driven.  That is **refused when the config is read**,
+before anything is fetched or prepared, and the refusal names the edges by
+both ends and the three ways out: say which end streams with a per-domain
+table, set `mode = "auto"`, or delete `[tiles]` and run resident.  A tree
+that merely *contains* a streamed domain is not refused and never was.
+
+`mode = "auto"` on a tree is accepted and prices each domain against one
+budget.  It is a **joint** decision, not a first-come one: before a streamed
+domain chooses its tile, the walk reserves what every domain still undecided
+below it needs — a resident price where the domain fits the card, one buffer
+of the smallest legal compute window where it does not, plus each child's
+coupling corridor.  Without that reservation the parent's tile search took
+the largest window that fit (measured: 3.98 of 4.00 GiB, 99.5%) and the child
+then met "no tile fits in 0.02 GiB".  The reservation constrains the **tile**
+and never the stream-or-resident **verdict**, so an all-resident tree decides
+all-resident exactly as before.  If the arithmetic ever decides both ends of
+an edge should stream, the walk refuses at decision time, before anything is
+built.
+
+The run receipt's `tiles` block records every grid's decision, its road, its
+claim, and — where a reservation was taken — `reserved_bytes` and
+`reserved_for`, so a domain that was asked and left resident is
+distinguishable from a run that never asked.
+
+## Which front doors stream
+
+| door | `[tiles]` |
+|------|-----------|
+| `gpuwm run CONFIG.toml --case-data ...` | streams.  The single-domain arm builds through `standalone_domain_builder`; the tree arm builds the whole mapping through `builders_for_tree`, honouring the per-domain tables. |
+| `gpuwm.prepared_single_domain_forecast` | streams (`builders_for_tree`). |
+| `gpuwm.prepared_domain_tree_forecast` | streams (`builders_for_tree`). |
+| `gpuwm plan` / run-plan | relays whichever of the above the chain dispatches to; the `experiment` chain resolves as `tiles_delivery: tree`. |
+
+`gpuwm run` is also the door for **two-way feedback with `[tiles]`**.  The
+prepared-hierarchy route refuses `feedback = 1` because its artifacts are
+written one-way and read one-way, and its refusal redirects two-way users to
+`gpuwm run`, "which builds its domain tree in-process".  That sentence used
+to be half true: `gpuwm run` refused `[tiles]` in turn, so the two-way +
+streamed shape was expressible in neither door.  Wiring the builders here
+closes it and leaves the hierarchy's export format alone.
+
+A route that reads `[tiles]` at no point still **refuses** an enabled mode at
+admission (`gpuwm.core.streaming.refuse_unrouted_streaming`), and that is the
+deliberate half: the alternative failure mode is a silent resident run that
+dies at the allocation the mode was turned on to avoid.

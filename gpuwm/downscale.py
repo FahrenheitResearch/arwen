@@ -231,8 +231,14 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
     return merged
 
 
-def _render_child_toml(config: dict) -> str:
-    """Render one derived RunConfig as a legacy [grid]/[run] TOML."""
+def _render_child_toml(config: dict, *, tiles_mode: str | None = None) -> str:
+    """Render one derived RunConfig as a legacy [grid]/[run] TOML.
+
+    ``tiles_mode`` appends the ``[tiles]`` block ``--tiles`` asked for.  Only
+    the mode is written: the tiling itself is :mod:`tilestream.autoplan`'s
+    answer for the card in front of the run, and a derived config that pinned
+    ``tile_nx``/``nbuffers`` would carry this machine's plan to the next one.
+    """
     def value(item):
         if isinstance(item, bool):
             return "true" if item else "false"
@@ -256,6 +262,8 @@ def _render_child_toml(config: dict) -> str:
         if key in grid_keys:
             continue
         lines.append(f"{key} = {value(config[key])}")
+    if tiles_mode is not None:
+        lines += ["", "[tiles]", f"mode = {json.dumps(str(tiles_mode))}"]
     lines.append("")
     return "\n".join(lines)
 
@@ -399,6 +407,12 @@ def downscale_main(args) -> int:
             warn("--hours/--output-interval-seconds are ignored with "
                  "--child-config; the TOML's run_seconds and "
                  "output_interval_s are used")
+        if args.tiles is not None:
+            raise OfflineChildContractError(
+                "--tiles writes a [tiles] block into a config this command "
+                "DERIVES, and --child-config supplies its own.  Put "
+                "[tiles] in that file instead; the child route reads it "
+                "there and honors it.")
         child_config = Path(args.child_config)
         ratio = int(args.ratio)
         i_start, j_start = int(args.i_parent_start), int(args.j_parent_start)
@@ -445,8 +459,9 @@ def downscale_main(args) -> int:
         outdir = Path(args.out)
         child_config = outdir.parent / (outdir.name + ".child.toml")
         child_config.parent.mkdir(parents=True, exist_ok=True)
-        child_config.write_text(_render_child_toml(merged),
-                                encoding="utf-8", newline="\n")
+        child_config.write_text(
+            _render_child_toml(merged, tiles_mode=args.tiles),
+            encoding="utf-8", newline="\n")
         i_start, j_start = placement.i_parent_start, placement.j_parent_start
         print(f"gpuwm downscale: derived child {child_nx}x{child_ny} at "
               f"dx={merged['dx']:g} m (ratio {ratio}) centered on "
@@ -476,8 +491,14 @@ def downscale_main(args) -> int:
                  "parent's history, so the child is no closer to an "
                  "analysis than its parent was.")
 
+    from gpuwm.config import load_streaming_options
+
     plan = {
         "parent_frames": [str(path) for path in frames],
+        # Read off the config that will actually be run, whether this
+        # command derived it or the caller supplied it, so --dry-run reports
+        # the mode the child will use rather than the flag that was typed.
+        "tiles": load_streaming_options(child_config).to_json(),
         "initial_condition": lineage,
         "cadence_seconds": contract.interval_seconds,
         "max_boundary_interval_seconds": max_interval,
@@ -550,6 +571,17 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--j-parent-start", type=int, default=None)
     parser.add_argument("--child-size", default=None, metavar="NX[,NY]",
                         help="explicit child extent for --point")
+    # THE DERIVED CONFIG'S [tiles] BLOCK, and only for --point: with
+    # --child-config the block belongs in the caller's own file, which the
+    # child route reads and honors.  A refined child is the domain most
+    # likely to outgrow the card it is run on -- --card sizes it to fit
+    # RESIDENT, and this is how a caller asks for the larger child instead.
+    parser.add_argument("--tiles", choices=("on", "auto"), default=None,
+                        help="write [tiles] mode into the config --point "
+                             "derives, so the child integrates out of a "
+                             "pinned host store instead of resident "
+                             "('on' always, 'auto' when tilestream.autoplan "
+                             "says it does not fit)")
     # THE tier list, not a copy of it.  This tuple used to be written
     # out by hand as ("16gb", "24gb", "32gb") while `gpuwm domain` took
     # its choices from CARD_VRAM_GIB -- so `--card 12gb`, a tier the

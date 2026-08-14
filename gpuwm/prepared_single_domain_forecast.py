@@ -3877,8 +3877,11 @@ def preflight_prepared_forecast(
     # mode that asks for streaming unconditionally -- with a message saying
     # the route "wires no streamed-domain builder" -- while mode = 'auto'
     # went through the very builder it said did not exist.
-    # refuse_unrouted_streaming is still correct for gpuwm run, which reads
-    # [tiles] at no point; see its docstring.
+    # refuse_unrouted_streaming is still the right answer for a route that
+    # genuinely reads nothing -- see its docstring -- but `gpuwm run` is no
+    # longer such a route: it wires builders_for_tree on its tree arm and
+    # standalone_domain_builder on its single-domain arm, so its own copy
+    # of this refusal is gone too.
     layout = _resolve_prepared_layout(
         source=source, prepared_root=prepared_root, proof=proof,
         source_exp=source_exp, domain_bundle=domain_bundle)
@@ -4428,9 +4431,517 @@ class _LandingObservers:
                 pass
 
 
+# ---------------------------------------------------------------------------
+# which initialization road a STREAMED forecast takes
+# ---------------------------------------------------------------------------
+#
+# A streamed forecast integrates out of a pinned host store and never reads
+# the resident ``DomainState`` again: ``gpuwm.core.streaming.attach`` copies
+# it carrier by carrier into that store and every sweep afterwards writes only
+# the store.  Building the state first is nevertheless what this route has
+# always done, and it is the CEILING.  MEASURED on a 16 GB card at nz = 49,
+# the bare state costs 11 276.5 B per column and the prepared case -- state
+# plus physics plus geography plus boundary tables -- about 15 780, so
+# 1024 x 1024 is refused inside ``initialize_physics`` while the streamed
+# forecast that state would have fed needs about 6 GiB and runs comfortably.
+# The streamed engine on the same card has stepped 2624 x 2624.
+#
+# ``gpuwm.ingest.prepared_store.store_from_prepared_cache`` fills the same
+# store one ROW SLAB at a time -- slab-height state, physics attached to THAT,
+# scattered into full-domain pinned host arrays -- so no domain-shaped device
+# array is ever allocated and the domain the card can carry stops being a
+# property of the card.  ``--stream-init`` chooses between the two roads.
+#
+# ``auto`` prefers the RESIDENT road wherever it comfortably fits, and that
+# preference is deliberate rather than conservative: the resident road is the
+# one every existing receipt was written by, and the two roads' agreement is
+# proven by running a domain small enough for both and comparing frames.  The
+# store-direct road is taken when the priced resident state does not fit,
+# which is precisely the case the resident road cannot serve at all.
+
+#: MEASURED bytes per column at nz = 49 on this route
+#: (``Downloads/node1-streaming/STREAMED-CEILING.md`` section 2): a bare
+#: ``DomainState`` costs 11 276.5 B/column, and the prepared case -- the same
+#: state plus everything ``initialize_prepared_physics`` puts on the card
+#: beside it (the physics carriers, the geography inventory and the lateral
+#: boundary tables) -- about 15 780 B/column.
+_MEASURED_BARE_STATE_BYTES_PER_COLUMN = 11276.5
+_MEASURED_PREPARED_BYTES_PER_COLUMN = 15780.0
+
+#: The ``nz`` both per-column measurements were taken at.  They are scaled
+#: LINEARLY in ``nz`` off this reference, which is the honest reading of one
+#: measurement at one height: the prepared case is overwhelmingly 3-D arrays,
+#: and the 2-D surface inventory that does not scale is a small enough share
+#: that pretending it does costs a slight OVER-price below nz = 49 and a
+#: slight under-price above it -- both inside the fit fraction's margin.
+_MEASURED_BYTES_PER_COLUMN_NZ = 49
+
+#: What the prepared case costs as a multiple of the state the cache carries
+#: (1.40).  DERIVED from the two measurements above rather than written as a
+#: bare 1.4, so that a later measurement moves the number and the evidence for
+#: it in one edit and neither can drift away from the other.
+#:
+#: THIS RATIO IS NOT THE PRICE OF THE RESIDENT ROAD, and reading it as one is
+#: the defect the pricing below was rebuilt to remove.  It relates the prepared
+#: case to a BARE ``DomainState``; the cache's ``state/*`` manifest is not a
+#: bare DomainState but the far smaller ``STATE_SERIALIZED_ATTRS`` subset --
+#: the dynamics and microphysics prognostics only, with none of the RK and
+#: dycore working arrays a ``DomainState`` allocates beside them and none of
+#: what ``initialize_prepared_physics`` then puts on the card.  MEASURED on the
+#: 1024 x 1024 x 49 gate cache: ``state/*`` is 4 945 485 824 B, which is
+#: 4 716.4 B per column against the bare state's 11 276.5 -- the manifest
+#: undercounts the state alone by 2.39x, and ``manifest x 1.40`` therefore
+#: priced the whole prepared case at 6.45 GiB when the resident road went on to
+#: die with 16 276 726 272 B allocated.
+_PREPARED_RESIDENT_HEADROOM = (_MEASURED_PREPARED_BYTES_PER_COLUMN
+                               / _MEASURED_BARE_STATE_BYTES_PER_COLUMN)
+
+#: How much of the card's FREE memory the priced resident state may claim
+#: before ``auto`` stops calling the fit comfortable.  A margin, not a
+#: fudge: the priced number is the state at REST, and the run puts the tile
+#: buffers, the NVRTC module images and the allocator's own fragmentation on
+#: the same card immediately afterwards.  A decision taken at 100% of free
+#: VRAM therefore fits and then dies at the first tile buffer, which is the
+#: out-of-memory death the mode exists to avoid, arrived at through the mode.
+#: 20% of a 16 GB card is 3.2 GiB, which covers the default buffer set with
+#: room to spare.
+_AUTO_RESIDENT_FIT_FRACTION = 0.80
+
+#: ``--stream-init``'s values.  ``auto`` is the default and is the only one
+#: that decides anything; the other two force a road so that a gate can run
+#: both over the same domain and compare.
+STREAM_INIT_CHOICES = ("auto", "resident", "store")
+
+#: The schema/status ``store_from_prepared_cache`` stamps on its receipt.
+#: Pinned here for the same reason ``_validate_restored_cache_receipt`` pins
+#: ``PREPARED_CACHE_SCHEMA``: the receipt is re-checked against the caller's
+#: content digest, and a receipt of some other shape must not be able to
+#: satisfy that check by carrying the right key by accident.
+_PREPARED_STORE_SCHEMA = "gpuwm-prepared-store-v1"
+
+_GIB = float(1 << 30)
+
+
+def _prepared_state_manifest_bytes(reader) -> int:
+    """The EXACT device cost of restoring a prepared cache's prognostics.
+
+    ``restore_prepared_cache`` allocates one ``DomainState`` and then runs
+    ``target[...] = cp.asarray(host)`` once per ``state/*`` array, so the
+    device bytes that restore takes for the trajectory are the sum of those
+    arrays' own ``nbytes`` -- a number the cache HEADER already carries per
+    array, and one the reader already checked against that array's ``shape``
+    and ``dtype`` when it opened the bundle.
+
+    Read, never probed.  The question is asked before anything has been
+    allocated, and an answer obtained by trying the allocation would be the
+    allocation it exists to avoid.
+    """
+
+    return int(sum(int(spec["nbytes"])
+                   for key, spec in reader.arrays.items()
+                   if str(key).startswith("state/")))
+
+
+def _stream_init_pricing(state_bytes: int, free_bytes: int, total_bytes: int,
+                         *, columns: int | None = None,
+                         nz: int | None = None) -> dict[str, object]:
+    """Price the resident road against the card, with no device work at all.
+
+    Separated from the device query so the RULE is testable on a machine with
+    no GPU: everything below is arithmetic over a handful of integers, and
+    :func:`_free_device_bytes` is the only part that needs a card.
+
+    TWO ESTIMATES, AND THE LARGER WINS, because they bound different things
+    and each is blind where the other sees.
+
+    ``manifest`` -- the cache's own ``state/*`` bytes times the physics
+    headroom -- is the only term that knows what THIS cache holds, so a
+    configuration carrying far more prognostics than the one measured below
+    (a bigger microphysics scheme, more tracers) raises the price through it.
+    On its own it is not a price for the resident road at all: the manifest is
+    the SERIALIZED subset, not a ``DomainState``, and it undercounted the
+    1024 x 1024 gate case by 2.38x -- 6.45 GiB priced, 15.16 GiB allocated at
+    the refusal.  That is the number ``auto`` used to say ``fits: true`` on and
+    then die inside ``initialize_physics``.
+
+    ``measured`` -- ``_MEASURED_PREPARED_BYTES_PER_COLUMN`` over this domain's
+    columns, scaled by ``nz`` -- is the only term that knows what the ROUTE
+    costs: the state plus everything ``initialize_prepared_physics`` builds
+    beside it.  It is a whole-route measurement rather than a model, and it
+    predicts the refusal it was checked against to 0.4%: 15.41 GiB priced
+    against 15.35 GiB at the out-of-memory throw.
+
+    ``max`` rather than a sum: they overlap almost entirely -- both are
+    dominated by the same prognostics -- so adding them would double-count the
+    state and refuse domains that fit.  ``columns``/``nz`` absent leaves the
+    manifest term alone, which is the pre-existing rule; every caller in this
+    module supplies them.
+    """
+
+    manifest_priced = int(round(float(state_bytes)
+                                * _PREPARED_RESIDENT_HEADROOM))
+    measured_priced = None
+    if columns and nz:
+        measured_priced = int(round(
+            _MEASURED_PREPARED_BYTES_PER_COLUMN * float(columns)
+            * float(nz) / float(_MEASURED_BYTES_PER_COLUMN_NZ)))
+    priced = (manifest_priced if measured_priced is None
+              else max(manifest_priced, measured_priced))
+    allowance = int(float(free_bytes) * _AUTO_RESIDENT_FIT_FRACTION)
+    return {
+        "state_manifest_bytes": int(state_bytes),
+        "physics_headroom_factor": round(_PREPARED_RESIDENT_HEADROOM, 4),
+        "manifest_priced_bytes": manifest_priced,
+        "measured_priced_bytes": measured_priced,
+        "priced_from": ("manifest" if measured_priced is None
+                        or manifest_priced >= measured_priced
+                        else "measured-per-column"),
+        "columns": None if not columns else int(columns),
+        "nz": None if not nz else int(nz),
+        "priced_resident_bytes": priced,
+        "device_free_bytes": int(free_bytes),
+        "device_total_bytes": int(total_bytes),
+        "fit_fraction": _AUTO_RESIDENT_FIT_FRACTION,
+        "fit_allowance_bytes": allowance,
+        "fits": bool(priced <= allowance),
+    }
+
+
+def _free_device_bytes() -> tuple[int, int]:
+    """``(free, total)`` device memory as the DRIVER reports it right now.
+
+    Not the planner's budget and not a nameplate capacity: the question the
+    pricing asks is whether this allocation would succeed on this card in this
+    process, and the only honest source for that is what is free at the
+    instant the decision is taken.
+    """
+
+    import cupy as cp
+
+    free, total = cp.cuda.Device().mem_info
+    return int(free), int(total)
+
+
+def _choose_stream_init_road(mode: str, *, decision, reader, cfg=None,
+                             device_memory=None) -> tuple[str, dict | None]:
+    """Which road this forecast initializes on, and the numbers behind it.
+
+    Returns ``("resident", None)`` -- today's road, with nothing at all
+    changed and no device queried -- for every run that does not STREAM.  The
+    flag has meaning only for a streamed forecast: with ``[tiles]`` off the
+    resident state is not an intermediary the run could skip, it is the
+    domain, and there is no second road to choose.
+
+    ``resident`` and ``store`` force a road.  ``store`` is forced by the
+    bit-parity gate, which needs the store-direct road to run on a domain that
+    WOULD have fitted so the two can be compared frame for frame; ``resident``
+    on a domain that cannot fit fails exactly where it fails today, inside the
+    allocation, rather than being silently rescued into a mode the caller
+    asked not to be in.
+    """
+
+    if mode not in STREAM_INIT_CHOICES:
+        raise ValueError(
+            f"--stream-init must be one of {', '.join(STREAM_INIT_CHOICES)}, "
+            f"got {mode!r}")
+    streams = decision is not None and bool(decision.stream)
+    if not streams:
+        if mode == "store":
+            raise ValueError(
+                "--stream-init store asks this forecast to build its domain "
+                "straight into a pinned host store and integrate out of it, "
+                "but this run does not stream"
+                + ("" if decision is None else f" ({decision.explain()})")
+                + ".  The store is only ever read by the tiling sweep, so a "
+                "resident forecast initialized into one would have no domain "
+                "to step.  Configure [tiles] (mode = 'on', or 'auto' on a "
+                "domain that does not fit) or drop the flag.")
+        return "resident", None
+
+    pricing = _stream_init_pricing(
+        _prepared_state_manifest_bytes(reader),
+        *(device_memory if device_memory is not None
+          else _free_device_bytes()),
+        columns=(None if cfg is None else int(cfg.nx) * int(cfg.ny)),
+        nz=(None if cfg is None else int(cfg.nz)))
+    priced = pricing["priced_resident_bytes"] / _GIB
+    free = pricing["device_free_bytes"] / _GIB
+    total = pricing["device_total_bytes"] / _GIB
+    manifest = pricing["state_manifest_bytes"] / _GIB
+    allowance = pricing["fit_allowance_bytes"] / _GIB
+    # WHICH TERM SET THE PRICE, in the sentence itself.  A receipt that
+    # printed only the winning number would leave a reader unable to tell a
+    # cache-driven price from a route-driven one, and the two are answers to
+    # different questions.
+    if pricing["priced_from"] == "measured-per-column":
+        priced_as = (
+            f"the prepared resident case prices at {priced:.2f} GiB "
+            f"({pricing['columns']} columns x {int(pricing['nz'])} levels at "
+            f"{_MEASURED_PREPARED_BYTES_PER_COLUMN:.0f} B/column/"
+            f"{_MEASURED_BYTES_PER_COLUMN_NZ} levels MEASURED for this route, "
+            f"over {manifest:.2f} GiB of state/* in the cache manifest x "
+            f"{_PREPARED_RESIDENT_HEADROOM:.2f} = "
+            f"{pricing['manifest_priced_bytes'] / _GIB:.2f} GiB) against "
+            f"{free:.2f} GiB free of {total:.2f} GiB on the card")
+    else:
+        priced_as = (
+            f"the prepared resident case prices at {priced:.2f} GiB "
+            f"({manifest:.2f} GiB of state/* in the cache manifest x "
+            f"{_PREPARED_RESIDENT_HEADROOM:.2f} measured physics headroom, "
+            f"over this route's measured "
+            f"{_MEASURED_PREPARED_BYTES_PER_COLUMN:.0f} B/column) against "
+            f"{free:.2f} GiB free of {total:.2f} GiB on the card")
+    if mode == "resident":
+        road = "resident"
+        why = (f"--stream-init resident was asked for, so the resident state "
+               f"is built whether or not it fits; {priced_as}")
+    elif mode == "store":
+        road = "store"
+        why = (f"--stream-init store was asked for, so the store is filled "
+               f"slab by slab and no domain-shaped device array is "
+               f"allocated; {priced_as}")
+    elif pricing["fits"]:
+        road = "resident"
+        why = (f"--stream-init auto: {priced_as}, which fits inside the "
+               f"{allowance:.2f} GiB this rule allows "
+               f"({_AUTO_RESIDENT_FIT_FRACTION:.0%} of free), so the resident "
+               f"road runs -- it is the faster one and it is the one the "
+               f"parity proof is written against")
+    else:
+        road = "store"
+        why = (f"--stream-init auto: {priced_as}, which does NOT fit inside "
+               f"the {allowance:.2f} GiB this rule allows "
+               f"({_AUTO_RESIDENT_FIT_FRACTION:.0%} of free), so the store is "
+               f"filled slab by slab and no domain-shaped device array is "
+               f"allocated")
+    receipt = {
+        "requested": mode,
+        "road": road,
+        "why": why,
+        "measured_bare_state_bytes_per_column":
+            _MEASURED_BARE_STATE_BYTES_PER_COLUMN,
+        "measured_prepared_bytes_per_column":
+            _MEASURED_PREPARED_BYTES_PER_COLUMN,
+        **pricing,
+    }
+    return road, receipt
+
+
+def _validate_store_bundle_receipt(
+        receipt: Mapping[str, object], expected_content_sha256: str,
+) -> None:
+    """Recheck the caller's content pin immediately after the store is built.
+
+    :func:`_validate_restored_cache_receipt`'s store-direct twin, at the same
+    instant and for the same reason: the loader that just read the bundle
+    states which bytes it read, and that statement is compared against the
+    digest the caller hash-bound before the run began.  A cache swapped
+    between preflight and load is refused here rather than integrated.
+    """
+
+    if (not isinstance(receipt, Mapping)
+            or receipt.get("schema") != _PREPARED_STORE_SCHEMA
+            or receipt.get("status") != "LOADED"
+            or receipt.get("content_sha256") != expected_content_sha256):
+        raise ValueError(
+            "prepared store differs from the caller-pinned cache content")
+
+
+def _validate_store_direct_vertical_contract(reader, cfg, bundle) -> None:
+    """The host-side cache checks the slab loader does not make itself.
+
+    ``restore_prepared_cache`` validates the vertical contract while it has
+    the whole domain in hand: the coordinate arrays' shapes against ``nz``,
+    and the explicit eta grid against ``p_top``.  Neither needs a device or a
+    domain -- both are functions of the cache header and the 1-D coordinate
+    the bundle already carries -- so both are made here rather than dropped
+    on the way to the store.  What genuinely CANNOT be reproduced is named in
+    the receipt instead; see ``_store_direct_gaps``.
+    """
+
+    from gpuwm.ingest.prepared_cache import PreparedCacheMismatchError
+    from gpuwm.vertical_contract import (
+        validate_coordinate_shapes, validate_explicit_eta_grid,
+    )
+
+    metadata = reader.header["metadata"]
+    coord_shapes = {
+        name: reader.arrays[f"coord/{name}"]["shape"]
+        for name in metadata["coord_arrays"]
+        if f"coord/{name}" in reader.arrays
+    }
+    try:
+        validate_coordinate_shapes(
+            coord_shapes, nz=cfg.nz, context="prepared-store load")
+        validate_explicit_eta_grid(
+            bundle.coord.znw, nz=cfg.nz, p_top=bundle.base.p_top,
+            context="prepared-store load")
+    except (TypeError, ValueError) as exc:
+        raise PreparedCacheMismatchError(str(exc)) from exc
+
+
+def _store_direct_gaps(reader) -> dict[str, object]:
+    """What the store-direct road does NOT check, said out loud in a receipt.
+
+    Named rather than quietly dropped, because a check that stops running
+    without saying so is indistinguishable from a check that keeps passing.
+    One entry only, and it is a real one: ``restore_prepared_cache`` rebuilds
+    the domain's setup arrays and compares ``setup_fingerprint(state)`` with
+    the cache's, which needs a domain-shaped state -- exactly the object this
+    road exists not to build.
+
+    What still holds in its place is stated beside it rather than implied: the
+    reader verified the header's content digest and every array against its
+    own SHA-256 as it was read, and the cache identity was compared against
+    the caller's before a byte was loaded, so the BYTES and the experiment
+    they belong to are both pinned.  What is not re-derived is that the active
+    config reconstructs the same map factors, Coriolis and base state from
+    them.
+    """
+
+    return {
+        "setup_fingerprint": {
+            "checked": False,
+            "why": ("setup_fingerprint is taken over a whole domain's "
+                    "reconstructed setup arrays, and this road never builds "
+                    "a domain-shaped state"),
+            "instead": ("the cache identity, the header content digest and "
+                        "every array's own SHA-256 were verified on the way "
+                        "into the store"),
+            "cache_content_sha256": reader.content_sha256,
+        },
+    }
+
+
+def _store_health_auxiliaries(bundle, cfg) -> dict[str, object]:
+    """The DOMAIN-shaped form of the two gated fields' auxiliary arrays.
+
+    ``collect_state_fields`` checks ``thp`` against the base-state theta and
+    ``mup`` against the base-state dry mass, and on the store-direct road the
+    descriptors come off the slab-height template, so both auxiliaries arrive
+    one slab tall.  The domain's own are in ``bundle.base``, which
+    :class:`gpuwm.ingest.prepared_store.PreparedStore` publishes un-windowed
+    for exactly this kind of reader.
+
+    float32 and not float64, because :meth:`gpuwm.core.state.DomainState
+    .load_base` is what put these numbers on the card on the resident road and
+    it casts them: comparing the same field against an FP64 auxiliary would be
+    a second instrument, one rounding apart from the one being matched.
+    """
+
+    base = bundle.base
+    out: dict[str, object] = {}
+    thb = getattr(base, "thb", None)
+    if thb is not None:
+        out["thp"] = np.asarray(thb, dtype=np.float32)
+    mub = getattr(base, "mub", None)
+    if mub is not None:
+        # ``load_base``'s own branch: flat terrain carries a SCALAR dry mass
+        # and fills the (ny, nx) plane with it, terrain carries the plane.
+        out["mup"] = (np.full((int(cfg.ny), int(cfg.nx)), float(mub),
+                              dtype=np.float32) if np.ndim(mub) == 0
+                      else np.asarray(mub, dtype=np.float32))
+    return out
+
+
+def _store_full_state_health(bundle, cfg, *, phase: str) -> dict[str, object]:
+    """The full-state descriptor gate over the store, as a health record.
+
+    ARMED, where this road used to declare the gate unarmed.  The reason it
+    was unarmed was true and is not a reason to leave it so: the CUDA gate is
+    one block per whole FIELD and needs a domain-shaped device state, which
+    this road never builds -- but the domain exists, in the pinned host store,
+    and :func:`gpuwm.core.health.validate_store_fields` runs the production
+    rule set over it there.  The instrument differs from the resident road's
+    (NumPy over host memory rather than one kernel launch over device memory);
+    the RULES do not, because both sides read them out of
+    :func:`gpuwm.core.health.rule_for_field`.
+
+    Same key shape as the resident road's ``vars(ValidationReport)`` so that
+    one reader handles both receipts, with the coverage record added rather
+    than substituted: what the gate saw is a count, and what it did not see is
+    a list of names.
+    """
+
+    from gpuwm.core.health import validate_store_fields
+    from gpuwm.core.streaming import streamed_store_inventory
+
+    template = bundle.template
+    report, coverage = validate_store_fields(
+        template,
+        # The RUN's own inventory rule, harvested off the same template the
+        # descriptors are collected from, so the two walkers join by object
+        # identity.  ``streamed_store_inventory`` and not the plain carrier
+        # inventory for the reason ``store_from_prepared_cache`` gives: it is
+        # the rule the store itself was built by, and REFL_10CM is the key the
+        # two disagreed on.
+        streamed_store_inventory()(template, None),
+        bundle.store,
+        domain_shape=(int(cfg.ny), int(cfg.nx)),
+        auxiliaries=_store_health_auxiliaries(bundle, cfg),
+        phase=phase)
+    record = _strict_json(vars(report))
+    record["armed"] = True
+    record["instrument"] = (
+        "full-state descriptor gate over the pinned host store "
+        "(gpuwm.core.health.validate_store_fields)")
+    record["covers"] = (
+        f"{coverage['fields_checked']} gated fields over the whole domain, "
+        "each under the rule gpuwm.core.health.rule_for_field gives it -- the "
+        "same per-field bounds the resident road's kernel applies")
+    record["coverage"] = {
+        key: value for key, value in coverage.items() if key != "covered"}
+    return record
+
+
+def _announce_kernel_compile(progress_path: Path, inputs, exp) -> None:
+    """Flip the published status when the NVRTC compile is actually coming.
+
+    Physics initialization is where a first run pays its one-time NVRTC
+    compile (~100 s on a modern card), and it used to pay it under the stale
+    RESTORING status -- the first field run of the published wheel watched
+    that silence and concluded a hang.  One line and one status flip, only
+    when the kernel cache says the compile is really about to happen.
+
+    Shared by both initialization roads: the store-direct road pays the same
+    compile inside its first slab, and a road that skipped this would
+    reintroduce exactly the silence for the runs most likely to be long.
+    """
+
+    compile_notice = kernel_compile_notice()
+    if compile_notice is not None:
+        print(compile_notice, flush=True)
+        _atomic_json(progress_path, {
+            "schema": PROGRESS_SCHEMA,
+            "status": COMPILING_STATUS,
+            "source": inputs.source,
+            "model_elapsed_seconds": 0.0,
+            "requested_run_seconds": float(exp.run_seconds),
+        })
+
+
+def _store_domain_extreme(store: Mapping[str, object], key: str,
+                          reducer) -> float | None:
+    """One reduction over a whole-domain carrier, read where the domain is.
+
+    The receipt's ``swdown``/``rainnc`` numbers are reductions over a physics
+    field, and on this road there is no domain-shaped state to take them from
+    -- the only domain-shaped copy of those fields is the store, which is
+    also the one the sweep keeps current.  ``None`` for a key the store does
+    not carry, so a missing diagnostic is a hole in the receipt rather than
+    an exception at the end of a completed forecast; the caller records WHICH
+    key was missing beside it.
+    """
+
+    array = store.get(key)
+    if array is None:
+        return None
+    return float(reducer(np.asarray(array)))
+
+
 def run_prepared_forecast(
         inputs: PreparedForecastInputs, *, output_directory: Path,
-        observer=None, first_products=None,
+        observer=None, first_products=None, stream_init: str = "auto",
 ) -> dict[str, object]:
     """Restore, integrate, and publish hash-bound source-neutral history.
 
@@ -4453,6 +4964,17 @@ def run_prepared_forecast(
     polling the frames for ``GPUWM_WRITE_COMPLETE``, which is a watcher
     reimplementing a hook the writer already raises.  ``None`` -- and
     every invocation that names no products -- changes nothing.
+
+    ``stream_init`` is ``--stream-init``: which road a STREAMED forecast
+    builds its domain on.  ``"auto"`` (the default) prices the resident
+    road against the card's free memory -- from this domain's own columns
+    at the route's MEASURED cost per column, and from the cache manifest,
+    whichever is larger -- and takes it wherever it comfortably fits,
+    otherwise the store; ``"resident"`` and ``"store"`` force one.  A
+    forecast that does not stream ignores it entirely -- there is no
+    second road when the resident state IS the domain -- so a run without
+    ``[tiles]`` executes byte for byte what it executed before this
+    parameter existed, through the same calls.
     """
 
     _verify_thompson_runtime_environment(inputs.physics_receipt)
@@ -4491,49 +5013,120 @@ def run_prepared_forecast(
         "requested_run_seconds": float(exp.run_seconds),
     })
 
-    started = time.perf_counter()
-    restored = restore_prepared_cache(
-        inputs.prepared_cache_path,
-        expected_identity=inputs.cache_identity,
-        cfg=cfg, static=inputs.static)
-    timing["restore_prepared_cache"] = time.perf_counter() - started
-    _validate_restored_cache_receipt(
-        restored.receipt, inputs.cache_reader.content_sha256)
-    if restored.surface is None:
-        raise ValueError(
-            "prepared cache has no source-neutral canonical surface state")
-    _validate_restored_source_adapter(restored.metadata, inputs.source)
+    # WHICH INITIALIZATION ROAD, decided before a byte is loaded.  The
+    # decision is only ever made for a forecast that will actually stream:
+    # ``exp.tiles`` unconfigured means ``decide`` is never called, no card is
+    # queried, ``bundle`` stays None and everything below is the resident
+    # route exactly as it was.  The decision is taken here rather than after
+    # the restore because the whole point of the store road is that the
+    # restore does not happen.
+    tiles_options = getattr(exp, "tiles", None)
+    stream_decision = (streaming.decide(cfg, tiles_options)
+                       if tiles_options is not None and tiles_options.enabled
+                       else None)
+    init_road, init_receipt = _choose_stream_init_road(
+        stream_init, decision=stream_decision, reader=inputs.cache_reader,
+        cfg=cfg)
+    if init_receipt is not None:
+        print(f"prepared forecast: {init_receipt['why']}", flush=True)
 
-    # Physics initialization is where a first run pays its one-time
-    # NVRTC compile (~100 s on a modern card), and it used to pay it
-    # under the stale RESTORING status above -- the first field run of
-    # the published wheel watched that silence and concluded a hang.
-    # One line and one status flip, only when the kernel cache says the
-    # compile is actually coming.
-    compile_notice = kernel_compile_notice()
-    if compile_notice is not None:
-        print(compile_notice, flush=True)
-        _atomic_json(progress_path, {
-            "schema": PROGRESS_SCHEMA,
-            "status": COMPILING_STATUS,
-            "source": inputs.source,
-            "model_elapsed_seconds": 0.0,
-            "requested_run_seconds": float(exp.run_seconds),
-        })
+    bundle = None
+    if init_road == "store":
+        # THE STORE-DIRECT ROAD.  ``store_from_prepared_cache`` reads the
+        # cache one row slab at a time, attaches physics to a slab-height
+        # state, and scatters the result into full-domain PINNED HOST arrays
+        # -- the same store ``attach`` would have copied a resident domain
+        # into, arrived at without ever allocating a domain-shaped device
+        # array.  The three validations the resident road makes at this
+        # instant are made here too, against the same caller-pinned digest:
+        # what cannot be reproduced without a domain state is named in the
+        # receipt rather than dropped in silence.
+        from gpuwm.ingest.prepared_store import store_from_prepared_cache
 
-    started = time.perf_counter()
-    driver = initialize_prepared_physics(
-        restored.initial_result, cfg, restored.met, restored.surface,
-        inputs.static, inputs.landuse_identity, inputs.grid, exp.start_time,
-        constant_glw_wm2=declared_constant_glw(exp))
-    timing["initialize_physics"] = time.perf_counter() - started
+        _announce_kernel_compile(progress_path, inputs, exp)
+        started = time.perf_counter()
+        bundle = store_from_prepared_cache(
+            inputs.prepared_cache_path,
+            expected_identity=inputs.cache_identity,
+            cfg=cfg, static=inputs.static,
+            landuse_attrs=inputs.landuse_identity, grid=inputs.grid,
+            valid_time=exp.start_time,
+            # The user's own pinned-host budget when [tiles] carries one, so
+            # the store's pre-allocation guard refuses against the number the
+            # operator set rather than against the machine's whole RAM.
+            budget_bytes=getattr(tiles_options, "host_budget_bytes", None),
+            constant_glw_wm2=declared_constant_glw(exp),
+            log=lambda line: print(line, flush=True))
+        # Named for the resident road's key, because it is the same work
+        # measured: get the prepared case off disk and onto the machine.
+        timing["restore_prepared_cache"] = time.perf_counter() - started
+        timing["initialize_physics"] = 0.0
+        _validate_store_bundle_receipt(
+            bundle.receipt, inputs.cache_reader.content_sha256)
+        _validate_store_direct_vertical_contract(
+            inputs.cache_reader, cfg, bundle)
+        if not inputs.cache_reader.metadata.get("surface_fields"):
+            raise ValueError(
+                "prepared cache has no source-neutral canonical surface state")
+        if bundle.boundaries is None:
+            raise ValueError(
+                "prepared cache carries no lateral boundary series; a "
+                "specified root cannot be integrated without one")
+        # ``restored.metadata`` is the cache's ``metadata['user']`` block, and
+        # the reader this route already holds is where it comes from -- so the
+        # same optional source-adapter hint is cross-checked on both roads
+        # without the store loader having to carry it.
+        _validate_restored_source_adapter(
+            inputs.cache_reader.metadata.get("user", {}), inputs.source)
+        # The SLAB-HEIGHT template's driver.  Its scheme selection, its
+        # radiation carrier policy and its per-carrier provenance are
+        # properties of the configuration and identical at every height; its
+        # ARRAYS are one slab's and are never read for a domain quantity (see
+        # the receipt's swdown/rainnc reductions, which come off the store).
+        driver = bundle.template.physics
+        domain_state = bundle.template
+    else:
+        started = time.perf_counter()
+        restored = restore_prepared_cache(
+            inputs.prepared_cache_path,
+            expected_identity=inputs.cache_identity,
+            cfg=cfg, static=inputs.static)
+        timing["restore_prepared_cache"] = time.perf_counter() - started
+        _validate_restored_cache_receipt(
+            restored.receipt, inputs.cache_reader.content_sha256)
+        if restored.surface is None:
+            raise ValueError(
+                "prepared cache has no source-neutral canonical surface state")
+        _validate_restored_source_adapter(restored.metadata, inputs.source)
+
+        _announce_kernel_compile(progress_path, inputs, exp)
+
+        started = time.perf_counter()
+        driver = initialize_prepared_physics(
+            restored.initial_result, cfg, restored.met, restored.surface,
+            inputs.static, inputs.landuse_identity, inputs.grid,
+            exp.start_time,
+            constant_glw_wm2=declared_constant_glw(exp))
+        timing["initialize_physics"] = time.perf_counter() - started
+        domain_state = restored.initial_result.state
 
     tick_clock = resolve_clock(
         exp, lbc_interval_s=float(inputs.boundary_interval_seconds))
     schedule = build_schedule(exp, tick_clock)
     clocks = tick_clock.clocks()
+    # ON THE STORE ROAD ``node.state`` IS THE SLAB-HEIGHT TEMPLATE, and this
+    # is the least-invasive correct answer rather than a convenience.
+    # ``execute_experiment`` requires a state object for three things and only
+    # three: ``refresh_model_time`` writes ``elapsed_seconds`` onto it,
+    # ``impose_clock`` reads that value back, and the stepper is called with
+    # it (``StreamedDomain.__call__`` accepts it and, attached without a
+    # state, checks nothing against it).  The template satisfies all three,
+    # costs one slab, and carries the physics driver the REFL_10CM handoff and
+    # the writer's carrier provenance need.  What it must NEVER be used for is
+    # a domain-sized READ -- its arrays are 64 rows of the analysis -- and
+    # every such reader on this route is routed to the store below, by name.
     node = DomainNode(
-        exp.root, inputs.grid, restored.initial_result.state, clocks[1],
+        exp.root, inputs.grid, domain_state, clocks[1],
         None, [], None)
     fingerprint = hashlib.sha256(_canonical({
         "schema": REPORT_SCHEMA,
@@ -4553,16 +5146,51 @@ def run_prepared_forecast(
     model._io_manager = None
     model._last_checkpoint = None
     model._prepared_by_grid_id = MappingProxyType({
+        # The wrfout writers read exactly two things off this: the static
+        # fields for the metadata frame and ``initial_result.coord`` for the
+        # global attributes.  The store road has no ``CachedInitialResult``
+        # -- there is no domain state to put in one -- and both of those are
+        # domain-invariant, so the bundle supplies them directly.
         1: SimpleNamespace(
             static_fields=inputs.static, geog_selection=None,
-            initial_result=restored.initial_result),
+            initial_result=(
+                restored.initial_result if bundle is None
+                else SimpleNamespace(coord=bundle.coord, base=bundle.base,
+                                     state=None))),
     })
 
-    initial_health = _strict_json(vars(
-        StateHealthValidator(node.state).validate(phase="initialized.d01")))
-    if not initial_health["ok"]:
-        raise FloatingPointError(
-            f"prepared forecast initial health failed: {initial_health}")
+    if bundle is None:
+        initial_health = _strict_json(vars(
+            StateHealthValidator(node.state).validate(
+                phase="initialized.d01")))
+        if not initial_health["ok"]:
+            raise FloatingPointError(
+                f"prepared forecast initial health failed: {initial_health}")
+    else:
+        # ARMED ON THIS ROAD TOO.  The gate needs a DOMAIN, not a device: the
+        # CUDA validator is one block per whole field and cannot be pointed at
+        # the slab-height template without reporting one slab as the analysis,
+        # but the domain is right here in the pinned host store, and the rule
+        # set the kernel applies is the same one ``validate_fields_cpu`` reads
+        # out of ``rule_for_field``.  So the per-field bounds -- the moisture
+        # ranges, the coupled-mass positivity, the geopotential and specific-
+        # volume limits -- are checked over the whole 1024 x 1024 analysis
+        # rather than declared out of reach.  A failure is terminal here
+        # exactly as it is on the resident road.
+        initial_health = _store_full_state_health(
+            bundle, cfg, phase="initialized.d01")
+        if not initial_health["ok"]:
+            raise FloatingPointError(
+                f"prepared forecast initial health failed: {initial_health}")
+        coverage = initial_health["coverage"]
+        print("prepared forecast: store-direct initialization -- the "
+              "initialized.d01 full-state health gate IS armed, over the "
+              f"store: {coverage['fields_checked']} fields, "
+              f"{coverage['bytes_checked'] / _GIB:.2f} GiB, in "
+              f"{coverage['seconds']:.1f}s"
+              + ("" if not coverage["not_in_store"] else
+                 "; gated fields the store does not carry: "
+                 + ", ".join(coverage["not_in_store"])), flush=True)
 
     history = []
     # Boundary-only sampling under-reported the peak: the executor trims
@@ -4601,18 +5229,40 @@ def run_prepared_forecast(
         # ``stability_observer`` returns ``dycore.stability_report`` itself
         # for a resident domain, so nothing changes for a run that
         # configures no [tiles].
-        report = streaming.stability_observer(
-            steppers.get(int(current.cfg.grid_id)))(
+        stepper = steppers.get(int(current.cfg.grid_id))
+        # THE ANALYSIS FRAME ON THE STORE-DIRECT ROAD.  Before the first
+        # sweep there is no fold, and ``StreamedStability`` answers that one
+        # instant from the resident state instead -- correct for a domain
+        # attached FROM a state, because attach copied it and neither has
+        # moved since.  Here the only state is the slab-height template, so
+        # that same branch would report the last slab's maxima as the
+        # domain's: a plausible number that is not this domain's, in the
+        # receipt, on the exact axis the fold exists to stop lying about.
+        # Refused by name instead, and the gate is skipped for this one frame
+        # rather than run on the wrong memory -- there is nothing to catch
+        # yet, because nothing has been integrated.
+        if bundle is not None and int(getattr(stepper, "steps", 0)) == 0:
+            report = {
+                "folded": False,
+                "why": ("the store-direct road has no domain-shaped state to "
+                        "reduce and the per-tile fold has no record before "
+                        "the first sweep, so the analysis frame carries no "
+                        "stability sample rather than the slab template's"),
+            }
+            gate_failed = False
+        else:
+            report = streaming.stability_observer(stepper)(
                 current.state, current.cfg.run,
                 boundary_width=current.cfg.run.spec_bdy_width)
+            gate_failed = stability_gate_failed(
+                report, max_cfl=10.0, max_w_ms=150.0)
         sample = {
             "ticks": int(ticks),
             "elapsed_seconds": float(current.clock.elapsed_seconds),
             **report,
         }
         history.append(_strict_json(sample))
-        if stability_gate_failed(
-                report, max_cfl=10.0, max_w_ms=150.0):
+        if gate_failed:
             raise FloatingPointError(
                 "prepared forecast stability threshold failed: "
                 + _stability_diagnosis(sample, current.state, current.cfg.run)
@@ -4715,19 +5365,81 @@ def run_prepared_forecast(
     streaming_decisions: dict = {}
     steppers = streaming.steppers_for_tree(
         model, exp.tiles,
-        builders=streaming.builders_for_tree(model, exp.tiles),
+        # ``store_domain_builder`` is ``prepared_domain_builder``'s
+        # counterpart for a domain that was never resident: it reads the
+        # geography, the lateral tables and the tile-state template off the
+        # BUNDLE instead of off ``node.state``, and calls ``attach`` with the
+        # store already built and no state at all.
+        #
+        # UNPARENTHESISED, deliberately.  The resident half must read as the
+        # literal ``builders=streaming.builders_for_tree(``: that string is
+        # what tests/test_streaming.py greps both production routes for, and
+        # it greps rather than calls because the defect it guards was an
+        # ABSENT argument -- a route that stops passing builders refuses
+        # every streaming configuration and behaves identically otherwise.
+        # Wrapping this expression in one extra paren was enough to make the
+        # guard stop seeing the call it is guarding.
+        builders=streaming.builders_for_tree(model, exp.tiles)
+        if bundle is None
+        # ``clock=node.clock`` IS NOT OPTIONAL and the builder refuses
+        # without it.  ``attach(None, ...)`` has no DomainState, so the
+        # lazy binding every other road relies on derived None here, latched
+        # on the first buffer conversion and put the whole store-direct
+        # forecast on the retired elapsed-seconds Davies recurrence -- the
+        # #219 one-timestep phase error, reopened on the road the LARGEST
+        # domains take.  This is the domain's own clock, the same object
+        # ``bind_lateral_boundary_clock`` binds to the resident mirror.
+        else {int(node.cfg.grid_id): streaming.store_domain_builder(
+            bundle, clock=node.clock)},
         decisions=streaming_decisions)
     streaming_report = streaming.streaming_receipt(
         exp.tiles, streaming_decisions)
     if streaming_report:
         print(f"prepared forecast: {streaming_report['summary']}", flush=True)
+    if bundle is not None:
+        # ``decide`` was consulted twice -- once above to choose the road,
+        # once inside ``steppers_for_tree`` -- and under ``auto`` it is a
+        # function of the free VRAM at the instant it was taken, so the two
+        # can legitimately disagree on a card whose memory moved in between.
+        # On this road a disagreement is fatal rather than cosmetic: the
+        # domain is in the store and there is no resident state for
+        # ``dycore.step`` to integrate, so a second answer of "resident"
+        # would step the slab template and publish it as the forecast.
+        # Checked, not assumed.
+        if int(node.cfg.grid_id) not in steppers:
+            raise RuntimeError(
+                "the store-direct road built this domain straight into a "
+                "pinned host store, and the streaming seam then decided this "
+                "grid should run RESIDENT -- there is no resident domain to "
+                "run.  [tiles] mode = 'auto' re-decides against the free VRAM "
+                "at the instant it is asked; pin the mode ([tiles] mode = "
+                "'on') for a run that must stream.")
+        # THE MARKER, and it is what routes three whole-domain consumers to
+        # the store instead of to the template.  ``attach`` sets it on the
+        # state it takes over, and a store-direct attach has no such state --
+        # so it is set here, on the object the model actually holds:
+        # ``PerDomainWrfoutWriters.submit`` asks the state for it before
+        # taking a history frame (without it the frame would be the slab
+        # template's), and ``streaming.live_scratch`` follows it to the
+        # store's ``scratch/up_heli_max`` so the history-interval UH reset
+        # lands on the accumulator the tiles are actually folding into.
+        node.state._streamed_domain = steppers[int(node.cfg.grid_id)]
 
     try:
         memory_watch.start()
         with writers:
             execution = execute_experiment(
                 model, history_handler=history_handler,
-                progress_callback=progress_callback, validate_state=True,
+                progress_callback=progress_callback,
+                # NOT ARMED ON THE STORE ROAD, for the reason the unarmed
+                # initialized.d01 gate gives: the executor's validators are
+                # constructed on ``node.state``, which here is the
+                # slab-height template, and would report a pass over 1/16th
+                # of the analysis every fourth root step for the whole
+                # forecast.  A gate that cannot fail is worse than no gate,
+                # because it is read as one.  The per-step stability fold
+                # over the STORE stays armed and is what guards the run.
+                validate_state=(bundle is None),
                 skip_feedback_path=True, pool_trim_per_period=True,
                 steppers=steppers)
             cp.cuda.Stream.null.synchronize()
@@ -4770,20 +5482,78 @@ def run_prepared_forecast(
     # final digest that was the initial condition.  The note was here and
     # the fix was not; this is the fix.  Zero and a getattr on a resident
     # run, so nothing changes for a forecast that configures no [tiles].
-    carriers_refreshed = streaming.refresh_streamed_state(
-        steppers.get(int(node.cfg.grid_id)), node.state)
-    final_health = _strict_json(vars(
-        StateHealthValidator(node.state).validate(phase="final.d01")))
-    final_stability = _strict_json(streaming.stability_observer(
-        steppers.get(int(node.cfg.grid_id)))(
-            node.state, cfg, boundary_width=cfg.spec_bdy_width))
-    if not final_health["ok"]:
-        raise FloatingPointError(
-            f"prepared forecast final health failed: {final_health}")
-    started = time.perf_counter()
-    final_digest = canonical_state_digest(
-        node.state, node.clock, scope="trajectory")
-    timing["canonical_final_state_digest"] = time.perf_counter() - started
+    if bundle is None:
+        carriers_refreshed = streaming.refresh_streamed_state(
+            steppers.get(int(node.cfg.grid_id)), node.state)
+        final_health = _strict_json(vars(
+            StateHealthValidator(node.state).validate(phase="final.d01")))
+        final_stability = _strict_json(streaming.stability_observer(
+            steppers.get(int(node.cfg.grid_id)))(
+                node.state, cfg, boundary_width=cfg.spec_bdy_width))
+        if not final_health["ok"]:
+            raise FloatingPointError(
+                f"prepared forecast final health failed: {final_health}")
+        started = time.perf_counter()
+        final_digest = canonical_state_digest(
+            node.state, node.clock, scope="trajectory")
+        timing["canonical_final_state_digest"] = time.perf_counter() - started
+    else:
+        # THE STORE-DIRECT FINAL READS, none of which may touch node.state.
+        # There is nothing to refresh: ``refresh_state`` copies the store onto
+        # a resident domain, and this road never built one -- calling it would
+        # refuse on the first carrier's shape (domain against slab), which is
+        # the right refusal and the wrong question.
+        stepper = steppers[int(node.cfg.grid_id)]
+        carriers_refreshed = 0
+        # The last sweep's record, folded per tile out of the STORE and
+        # bit-equal to what ``stability_report`` returns for the same domain
+        # integrated resident: max is associative and exact, the NaN classes
+        # are a bitwise OR, and the argmax carries a DOMAIN flat index.  It
+        # RAISES rather than returning a stale record if the sweep produced
+        # none, which is the behaviour a final gate must have.
+        final_stability = _strict_json(stepper.health)
+        # TWO INSTRUMENTS, BOTH ARMED, over the same store the sweep has been
+        # writing.  The fold answers the question a run loop has to ask every
+        # step and answers it cheaply; the descriptor gate answers the one the
+        # resident road asks HERE, at the same instant, over the same fields
+        # and under the same per-field bounds.  Neither substitutes for the
+        # other and neither is inferred from the other's silence.
+        final_health = _store_full_state_health(bundle, cfg, phase="final.d01")
+        final_health["stability_fold"] = {
+            "ok": not bool(final_stability.get("nan")),
+            "instrument": "streamed store fold (StreamedDomain.health)",
+            "covers": ("u, w and theta-perturbation finiteness and the two "
+                       "Courant terms, over the whole domain in the store"),
+        }
+        if not final_health["stability_fold"]["ok"]:
+            raise FloatingPointError(
+                f"prepared forecast final stability fold failed: "
+                f"{final_health['stability_fold']}; "
+                f"stability {final_stability}")
+        if not final_health["ok"]:
+            raise FloatingPointError(
+                f"prepared forecast final health failed: {final_health}; "
+                f"stability {final_stability}")
+        # THE DIGEST MUST BE TAKEN OVER THE STORE, or it is not this run's.
+        # ``canonical_state_digest(node.state, ...)`` would hash the
+        # slab-height template -- the right shape of answer over 1/16th of the
+        # analysis -- and the receipt would carry a trajectory digest for a
+        # trajectory that never happened.  Refused by name rather than
+        # substituted, because a wrong digest is indistinguishable from a
+        # right one until two runs are compared.
+        digest_from_store = getattr(stepper, "canonical_digest", None)
+        if digest_from_store is None:
+            raise RuntimeError(
+                "this build's StreamedDomain has no canonical_digest(clock, "
+                "scope=...), so a store-direct run has no way to produce its "
+                "final trajectory digest over the memory it integrated.  "
+                "gpuwm.state_digest.canonical_state_digest is NOT a fallback "
+                "here: the only state this road holds is the slab-height "
+                "template, and digesting it would publish a hash of one slab "
+                "of the analysis as the forecast's trajectory.")
+        started = time.perf_counter()
+        final_digest = digest_from_store(node.clock, scope="trajectory")
+        timing["canonical_final_state_digest"] = time.perf_counter() - started
 
     _verify_inputs_unchanged(inputs)
     if _runtime_source_identity() != runtime_source_identity:
@@ -4851,9 +5621,32 @@ def run_prepared_forecast(
             "radiation_update_count": _physics_update_count(
                 driver.radiation_callable),
             "microphysics_update_count": int(driver.microphysics_updates),
-            "swdown_min_wm2": float(cp.min(driver.fields["swdown"]).get()),
-            "swdown_max_wm2": float(cp.max(driver.fields["swdown"]).get()),
-            "rainnc_max_mm": float(cp.max(driver.microphysics.rainnc).get()),
+            # READ WHERE THE DOMAIN IS.  On the resident road these are
+            # reductions over the driver's own device fields, unchanged.  On
+            # the store-direct road the driver is the SLAB template's, so the
+            # same three expressions would report one slab's sky and one
+            # slab's rain as the domain's -- three plausible numbers that are
+            # not this domain's.  The store holds the full-domain arrays and
+            # is what the sweep keeps current, so the reductions are taken
+            # there; a key the store does not carry gives None and names
+            # itself, rather than raising at the end of a finished forecast.
+            **({
+                "swdown_min_wm2": float(cp.min(driver.fields["swdown"]).get()),
+                "swdown_max_wm2": float(cp.max(driver.fields["swdown"]).get()),
+                "rainnc_max_mm": float(
+                    cp.max(driver.microphysics.rainnc).get()),
+            } if bundle is None else {
+                "swdown_min_wm2": _store_domain_extreme(
+                    bundle.store, "fields/swdown", np.min),
+                "swdown_max_wm2": _store_domain_extreme(
+                    bundle.store, "fields/swdown", np.max),
+                "rainnc_max_mm": _store_domain_extreme(
+                    bundle.store, "scratch/mp_rainnc", np.max),
+                "domain_reductions_read_from": "store",
+                "domain_reductions_missing_keys": sorted(
+                    key for key in ("fields/swdown", "scratch/mp_rainnc")
+                    if key not in bundle.store),
+            }),
             # PER-CARRIER PROVENANCE (gpuwm/core/radiation_carriers.py):
             # one row per radiative carrier -- its source, the model
             # second its producer last wrote it, and a representative
@@ -4950,6 +5743,41 @@ def run_prepared_forecast(
     # streaming.identity_payload_entry.
     if streaming_report:
         report["tiles"] = streaming_report
+    # WHICH INITIALIZATION ROAD RAN, and the numbers it was chosen on.
+    # Present only for a run that streams -- ``init_receipt`` is None for
+    # every other -- on the same emptiness contract as report["tiles"]: a
+    # forecast that configures no [tiles] must write the receipt it wrote
+    # before this flag existed, key for key, so that every stored receipt and
+    # every hash taken over one stays valid.
+    if init_receipt is not None:
+        report["stream_init"] = dict(init_receipt)
+    if bundle is not None:
+        report["stream_init"]["store"] = dict(bundle.receipt)
+        report["stream_init"]["unchecked"] = _store_direct_gaps(
+            inputs.cache_reader)
+        # WHICH GATES WERE ARMED, said in the receipt and not only on the
+        # terminal.  Four of this route's five whole-domain gates are armed;
+        # the one that is not says why, with the measured number behind the
+        # reason, so a reader holding this receipt can see it without
+        # re-deriving it from an absence.
+        one_pass = float(
+            report["health"]["final"].get("coverage", {}).get("seconds", 0.0))
+        report["health"]["gates"] = {
+            "initialized_d01_full_state": True,
+            "executor_periodic_full_state": False,
+            "per_step_stability_fold": True,
+            "final_d01_full_state": True,
+            "final_stability_fold": True,
+            "why": (
+                "the two BOUNDARY full-state gates run over the pinned host "
+                "store, where the domain is, under the same per-field rules "
+                "the resident road's kernel applies; the executor's PERIODIC "
+                "full-state gate stays unarmed on cost rather than on reach "
+                f"-- one whole-store pass measured {one_pass:.1f}s here and "
+                "the executor would take it every fourth root step, against a "
+                "per-step stability fold that is already armed on every step "
+                "and is bit-equal to the resident reduction"),
+        }
     # The early render, collected before this process may exit.  Its
     # worker is a DAEMON thread -- it has to be, so a wedged render can
     # never hold a finished forecast open -- and a daemon thread is
@@ -5131,6 +5959,33 @@ def _parse_args(argv=None):
               "Validated by the same StreamingOptions.from_mapping the "
               "config front door uses, and binds no identity -- omitted, "
               "the hash-bound experiment's own table (usually none) runs"))
+    parser.add_argument(
+        "--stream-init", choices=STREAM_INIT_CHOICES, default="auto",
+        help=("which road a STREAMED forecast builds its domain on.  "
+              "`resident` restores the prepared cache into one full-domain "
+              "DomainState, attaches physics to it and lets the streaming "
+              "seam copy it into the pinned host store -- the road with the "
+              "parity proof, and the one that caps the domain at the size of "
+              "the CARD rather than of the machine (MEASURED at nz = 49: the "
+              "prepared case costs about 15 780 B/column, so 1024x1024 is "
+              "refused on a 16 GB card while the streamed forecast it would "
+              "have fed needs about 6 GiB).  `store` fills the same store one "
+              "ROW SLAB at a time and never allocates a domain-shaped device "
+              "array, so the ceiling is the machine's pinned RAM.  `auto`, "
+              "the default, prices the resident state from the cache's own "
+              "state/* manifest times the measured physics headroom and "
+              "takes the resident road wherever it fits inside "
+              # NOT a percent sign.  argparse interpolates every help string
+              # (`self._get_help_string(action) % params`), so a literal "%"
+              # here is read as a conversion -- "80% of" parses as "% o",
+              # octal with the space flag, and --help dies with "%o format:
+              # an integer is required, not dict" for every option in the
+              # parser rather than just this one.  A fraction says the same
+              # thing and cannot be misread.
+              f"{_AUTO_RESIDENT_FIT_FRACTION:.2f} of the card's free "
+              "memory.  "
+              "Meaningful only when the run streams: with [tiles] off the "
+              "resident state IS the domain and this flag changes nothing"))
     parser.add_argument(
         "--render-products", default=None, metavar="SPEC",
         help=("`gpuwm render --products`' own spec -- a comma-separated "
@@ -5392,7 +6247,8 @@ def main(argv=None, *, observer=None) -> int:
                   file=sys.stderr)
         report = run_prepared_forecast(inputs, output_directory=outdir,
                                        observer=observer,
-                                       first_products=first_products)
+                                       first_products=first_products,
+                                       stream_init=args.stream_init)
     except BaseException as error:
         model_elapsed_seconds = 0.0
         try:

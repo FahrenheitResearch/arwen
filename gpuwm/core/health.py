@@ -584,6 +584,121 @@ def validate_state_cpu(state: Any, *, phase: str | None = None,
     return report
 
 
+def validate_store_fields(state: Any, carriers: Mapping[str, Any],
+                          store: Mapping[str, Any], *,
+                          domain_shape: tuple[int, int],
+                          auxiliaries: Mapping[str, Any] | None = None,
+                          phase: str | None = None,
+                          extra_tables: Mapping[str, Any] | None = None
+                          ) -> tuple[ValidationReport, dict[str, Any]]:
+    """THE FULL-STATE GATE, over a streamed domain's pinned HOST store.
+
+    :class:`StateHealthValidator` needs a domain-shaped DEVICE state, which is
+    precisely the object the store-direct road exists not to build -- and a
+    verdict taken on the slab-height template instead would report one slab as
+    the domain.  That is why the gate was left unarmed on that road.  It is not
+    why it has to stay unarmed: a streamed domain IS domain-shaped, in pinned
+    host memory, and :func:`validate_fields_cpu` is the production rule set
+    already, sharing :func:`rule_for_field` and :func:`_bad_mask` with the
+    kernel rather than restating them.  So the gate runs where the domain is.
+
+    THE FIELD LIST IS NOT REBUILT HERE, and that is the whole design.  Two
+    production walkers are run over the SAME slab-height template --
+    :func:`collect_state_fields`, which says which arrays are gated and under
+    which rule, and the run's own carrier inventory, which says what each array
+    is called in the store -- and they are joined by ``id()``, because both
+    return references to the same objects.  A field added to either side is
+    therefore carried the day it is added; nothing here is a second list that
+    can drift from the first.  ``backend="gpu"`` because the resident road's
+    verdict is the one this must be comparable with, down to
+    :func:`gpu_integer_policy`'s documented exclusions and its refusal of an
+    undeclared integer dtype.
+
+    ``domain_shape`` is ``(ny, nx)`` and is CHECKED against every substituted
+    array rather than trusted, because a store accidentally holding slab-height
+    arrays is exactly the silent pass this seam exists to prevent.
+
+    ``auxiliaries`` supplies the DOMAIN-shaped form of the two descriptors that
+    carry one -- ``thp``'s base-state theta and ``mup``'s base-state dry mass.
+    A descriptor whose auxiliary has no domain-shaped substitute is refused
+    rather than validated against the template's slab.
+
+    Returns the report and a coverage record naming every gated field the store
+    does not carry, so what the gate did NOT see is a number in a receipt
+    instead of an absence a reader has to infer.
+    """
+    auxiliaries = {} if auxiliaries is None else auxiliaries
+    ny, nx = int(domain_shape[0]), int(domain_shape[1])
+    key_by_id = {id(array): key for key, array in carriers.items()}
+    descriptors: list[HealthField] = []
+    covered: list[str] = []
+    uncovered: list[str] = []
+    excluded: list[str] = []
+    seen: set[tuple] = set()
+    for field in collect_state_fields(state, backend="gpu",
+                                      extra_tables=extra_tables):
+        if gpu_integer_policy(field.name, field.values.dtype) is None:
+            excluded.append(field.name)
+            continue
+        key = key_by_id.get(id(field.values))
+        values = None if key is None else store.get(key)
+        if values is None:
+            uncovered.append(field.name)
+            continue
+        values = np.asarray(values)
+        if (values.ndim != int(getattr(field.values, "ndim", values.ndim))
+                or np.dtype(values.dtype) != np.dtype(field.values.dtype)):
+            raise ValueError(
+                f"store carrier {key!r} is {values.ndim}-D {values.dtype} "
+                f"against a gated field {field.name!r} of "
+                f"{getattr(field.values, 'ndim', '?')}-D {field.values.dtype}")
+        if values.ndim >= 2 and (
+                int(values.shape[-2]) not in (ny, ny + 1)
+                or int(values.shape[-1]) not in (nx, nx + 1)):
+            raise ValueError(
+                f"store carrier {key!r} is {tuple(values.shape)}, whose "
+                f"horizontal extent is not this domain's {(ny, nx)}: the "
+                "full-state gate must not report a verdict taken over one "
+                "slab as a verdict over the domain")
+        auxiliary, aux_mode, plane = field.auxiliary, field.aux_mode, 0
+        if auxiliary is not None:
+            if field.name not in auxiliaries:
+                raise ValueError(
+                    f"gated field {field.name!r} is checked against an "
+                    "auxiliary array and no domain-shaped substitute for it "
+                    "was supplied; validating a domain field against the "
+                    "template's slab is the defect this gate exists to avoid")
+            auxiliary = np.asarray(auxiliaries[field.name])
+            # collect_state_fields' own rule, restated over the substituted
+            # pair rather than inherited: a 1-D auxiliary broadcasts over each
+            # horizontal plane, and the plane is the DOMAIN's, not the slab's.
+            if auxiliary.ndim == 1:
+                aux_mode = "level"
+                plane = int(np.prod(values.shape[1:], dtype=np.int64))
+            else:
+                aux_mode = "direct"
+        key_tuple = (key, values.shape, field.rule, id(auxiliary), aux_mode,
+                     plane)
+        if key_tuple in seen:
+            continue
+        seen.add(key_tuple)
+        descriptors.append(HealthField(field.name, values, field.rule,
+                                       auxiliary, aux_mode, plane))
+        covered.append(field.name)
+    started = time.perf_counter()
+    report = validate_fields_cpu(descriptors, phase=phase)
+    coverage = {
+        "fields_checked": len(descriptors),
+        "elements_checked": int(sum(int(f.values.size) for f in descriptors)),
+        "bytes_checked": int(sum(int(f.values.nbytes) for f in descriptors)),
+        "seconds": time.perf_counter() - started,
+        "covered": tuple(covered),
+        "not_in_store": tuple(uncovered),
+        "excluded_integer_fields": tuple(excluded),
+    }
+    return report, coverage
+
+
 def cuda_source() -> str:
     """Complete NVRTC source for offline compilation (no device needed)."""
     from gpuwm.core.kernels import _preamble
@@ -805,6 +920,6 @@ __all__ = [
     "FieldRule", "HealthCheckError", "HealthField", "MAX_HEALTH_FIELDS",
     "STATUS_BITS", "StateHealthValidator", "ValidationReport",
     "benchmark_validator", "collect_state_fields", "cuda_source",
-    "field_from_array", "rule_for_field", "validate_fields_cpu",
-    "validate_state_cpu",
+    "field_from_array", "gpu_integer_policy", "rule_for_field",
+    "validate_fields_cpu", "validate_state_cpu", "validate_store_fields",
 ]

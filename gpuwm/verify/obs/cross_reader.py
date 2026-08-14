@@ -65,14 +65,20 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from gpuwm import science_core as _pin
+
 SCHEMA_ID = "gpuwm.obs-cross-reader/v1"
 
 #: The mandated science core, named by distribution.  ``importlib.metadata``
 #: answers for the distribution; the module's own ``__version__`` attribute
 #: is recorded beside it but is not the authority, because an attribute the
 #: upstream forgets to bump would silently become the pin.
-SCIENCE_CORE_DISTRIBUTION = "wrf-rust"
-SCIENCE_CORE_VERSION = "0.2.35"
+SCIENCE_CORE_DISTRIBUTION = _pin.SCIENCE_CORE_DISTRIBUTION
+#: The floor of the certified window.  Kept under the old name because
+#: receipts quote it; the verdict below tests the WINDOW, so a newer
+#: wrf-rust inside 0.2.x passes instead of failing a receipt for being new.
+SCIENCE_CORE_VERSION = _pin.SCIENCE_CORE_FLOOR
+SCIENCE_CORE_REQUIREMENT = _pin.SCIENCE_CORE_REQUIREMENT
 SCIENCE_CORE_IMPORT = "wrf"
 
 #: Frames carry one record each in every writer the battery consumes; when a
@@ -835,19 +841,19 @@ def check_pairing(sides: Mapping[str, Mapping[str, object]],
 
 def check_science_core_pin(provenance: Mapping[str, object]
                            ) -> dict[str, object]:
-    """Is the module that answered the pinned distribution version?"""
+    """Is the module that answered inside the certified version window?"""
     version = provenance.get("distribution_version")
     if version is None:
         return {
             "status": "unresolved",
             "ok": False,
-            "expected": SCIENCE_CORE_VERSION,
+            "expected": SCIENCE_CORE_REQUIREMENT,
             "observed": None,
             "reason": (f"{SCIENCE_CORE_DISTRIBUTION} is not an installed "
                        "distribution here, so the reader that answered "
                        "cannot be named"),
         }
-    ok = str(version) == SCIENCE_CORE_VERSION
+    ok = _pin.version_supported(version)
     attribute = provenance.get("module_version_attribute")
     note = None
     if attribute is not None and str(attribute) != str(version):
@@ -858,11 +864,11 @@ def check_science_core_pin(provenance: Mapping[str, object]
     return {
         "status": "pinned" if ok else "mismatch",
         "ok": ok,
-        "expected": SCIENCE_CORE_VERSION,
+        "expected": SCIENCE_CORE_REQUIREMENT,
         "observed": str(version),
         "reason": (None if ok else
-                   f"the battery pins {SCIENCE_CORE_DISTRIBUTION}=="
-                   f"{SCIENCE_CORE_VERSION}; {version} answered"),
+                   f"the battery requires {SCIENCE_CORE_REQUIREMENT}; "
+                   f"{version} answered"),
         "version_attribute_note": note,
     }
 
@@ -1057,6 +1063,7 @@ __all__ = [
     "SCHEMA_ID",
     "SCIENCE_CORE_DISTRIBUTION",
     "SCIENCE_CORE_IMPORT",
+    "SCIENCE_CORE_REQUIREMENT",
     "SCIENCE_CORE_VERSION",
     "SCOPE_BATTERY_CASE",
     "SCOPE_READER_QUALIFICATION",

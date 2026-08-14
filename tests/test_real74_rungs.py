@@ -308,13 +308,23 @@ def test_production_binds_root_boundary_clock_at_sanctioned_sites_only():
     hierarchy runner also constructs DomainNodes without build_experiment,
     so it binds its root's already-attached external mirror before restart
     validation or the first solve.  Same semantics, fourth sanctioned
-    site; the sealed-extension route makes this path production-visible."""
+    site; the sealed-extension route makes this path production-visible.
+
+    Adjudicated task #219 (2026-08-13): core/streaming.py.  The streamed
+    tile hook rebinds the DOMAIN's already-bound clock onto every tile
+    buffer it converts to the streaming attachment -- no new clock, no
+    new semantics, just the root's adjudicated binding carried across the
+    buffer re-attach that used to drop it (measured: a streamed [tiles]
+    run consumed its lateral boundaries one timestep late whenever the
+    production clock was bound; 41/76 offline-child fields differed at
+    t+15 min)."""
     import ast
 
     package_root = Path(real74_d02.REPOSITORY_ROOT) / "gpuwm"
     sanctioned = {
         package_root / "ingest" / "lateral_bc.py",
         package_root / "core" / "model.py",
+        package_root / "core" / "streaming.py",
         package_root / "verify" / "cases" / "real74_n5s.py",
         package_root / "offline_child_run.py",
         package_root / "prepared_domain_tree_forecast.py",

@@ -22,6 +22,10 @@ are the ones a reader in trouble will actually see.
 
 from __future__ import annotations
 
+import pathlib
+import re
+import subprocess
+
 import pytest
 
 from gpuwm import doctor
@@ -106,9 +110,12 @@ def test_headers_missing_is_named_as_headers_and_never_as_a_wheel(
     assert "gpuwm[gpu-cu13]" not in check.remedy
     assert "gpuwm[gpu-" not in (check.action or "")
     # The real remedy: an external toolkit, and CUDA_PATH pointed at it.
+    # The `nvidia` channel leads because that is the line that fixed a real
+    # 2.2.1 box; conda-forge survives as the named equivalent.
+    assert "conda install -c nvidia cuda-toolkit" in check.remedy
     assert "conda install -c conda-forge cuda-toolkit" in check.remedy
     assert "CUDA_PATH" in check.remedy
-    assert check.action.startswith("conda install -c conda-forge cuda-toolkit")
+    assert check.action.startswith("conda install -c nvidia cuda-toolkit")
 
 
 @pytest.mark.parametrize("box_major", (12, 13))
@@ -129,24 +136,24 @@ def test_an_unreadable_major_tells_the_reader_to_look_it_up(monkeypatch):
     assert "cuda-toolkit=13" not in check.remedy
 
 
-def test_a_cuda13_box_is_never_told_to_install_a_tombstone_wheel(monkeypatch):
+@pytest.mark.parametrize("box_major", (12, 13))
+def test_no_box_is_ever_told_to_install_a_tombstone_wheel(monkeypatch,
+                                                          box_major):
     """The shadow trap, in the fallback half of the headers remedy.
 
-    The pip alternative names a CUDA runtime wheel.  At CUDA 13 the
-    ``-cu13`` spelling of that wheel is a deprecation tombstone that
-    installs cleanly and supplies nothing.
+    The pip alternative names the CUDA runtime and NVRTC wheels.  NVIDIA
+    has deprecated BOTH suffixed spellings of those, and a deprecation
+    tombstone installs cleanly and supplies nothing.
     """
-    check = _check(monkeypatch, _HEADERS_MISSING, box_major=13)
-    assert "nvidia-cuda-runtime-cu13" not in check.remedy
-    assert "nvidia-cuda-runtime-cu12" not in check.remedy
-    assert "pip install --no-deps nvidia-cuda-runtime" in check.remedy
-
-
-def test_a_cuda12_box_gets_the_suffixed_runtime_wheel(monkeypatch):
-    """Negative control: the suffix is correct at 12."""
-    check = _check(monkeypatch, _HEADERS_MISSING, box_major=12)
-    assert "pip install nvidia-cuda-runtime-cu12" in check.remedy
-    assert "--no-deps" not in check.remedy
+    check = _check(monkeypatch, _HEADERS_MISSING, box_major=box_major)
+    for name in ("nvidia-cuda-runtime", "nvidia-cuda-nvrtc"):
+        assert f"{name}-cu13" not in check.remedy
+        assert f"{name}-cu12" not in check.remedy
+        # The unsuffixed name, pinned to the major the box actually serves.
+        assert f'"{name}=={box_major}.*"' in check.remedy
+    assert "pip install --no-deps " in check.remedy
+    other = 12 if box_major == 13 else 13
+    assert f"=={other}.*" not in check.remedy
 
 
 def test_a_broken_wheel_is_named_as_the_wheel_and_gets_the_wheel_remedy(
@@ -203,8 +210,8 @@ def test_a_probe_that_would_not_run_still_prints_the_real_remedy(monkeypatch):
                    box_major=13)
     assert check.status == "missing"
     assert not check.blocking
-    assert "conda install -c conda-forge cuda-toolkit=13" in check.remedy
-    assert check.action == "conda install -c conda-forge cuda-toolkit=13"
+    assert "conda install -c nvidia cuda-toolkit=13" in check.remedy
+    assert check.action == "conda install -c nvidia cuda-toolkit=13"
 
 
 def test_the_check_is_in_the_default_estate(monkeypatch):
@@ -214,18 +221,26 @@ def test_the_check_is_in_the_default_estate(monkeypatch):
     assert "CUDA kernel headers" in names
 
 
-def test_no_doctor_remedy_recommends_a_cuda13_tombstone_wheel(monkeypatch):
+@pytest.mark.parametrize("box_major", (12, 13, None))
+def test_no_doctor_remedy_recommends_a_tombstone_wheel(monkeypatch, box_major):
     """The class sweep for (c): audit EVERY remedy, not just the two fixed.
 
-    On a CUDA-13 box no remedy doctor can assemble may name a ``-cu13``
-    NVIDIA library wheel, because every one of them is a tombstone.
+    No remedy doctor can assemble, at any detected major, may name a
+    SUFFIXED NVIDIA package: ``-cu13`` was a tombstone from the start and
+    NVIDIA has since deprecated ``-cu12`` the same way, so both spellings
+    now install cleanly and supply nothing.  ``gpuwm[gpu-cu12]`` is
+    deliberately NOT caught here -- that is this project's own extra, it
+    resolves, and it installs the CuPy wheel it names.
     """
-    monkeypatch.setattr(doctor, "_driver_cuda_major", lambda: 13)
+    monkeypatch.setattr(doctor, "_driver_cuda_major", lambda: box_major)
     offenders = []
     for check in doctor.collect_checks(sources=()):
         for text in (check.remedy or "", check.action or ""):
-            for token in text.split():
-                if token.startswith("nvidia-") and token.endswith("-cu13"):
+            for token in text.replace('"', " ").split():
+                token = token.strip("'\"(),")
+                if not token.startswith("nvidia-"):
+                    continue
+                if token.endswith("-cu13") or token.endswith("-cu12"):
                     offenders.append((check.name, token))
     assert not offenders, offenders
 
@@ -269,3 +284,164 @@ def test_the_cusolver_remedy_is_shell_correct_on_both_platforms(
     _force_shell(monkeypatch, windows)
     remedy, action = doctor._cusolver_hint(box_major)
     _assert_remedy_lines_are_commands_or_comments(remedy, windows=windows)
+
+
+# --------------------------------------------------------------------------
+# The cupy LINE's own remedy, which is where a fresh box meets this fault
+# first.  A 2.2.1 user on Ubuntu got
+#
+#     MISSING  cupy (GPU runtime)  ... Failed to find CUDA headers ...
+#     remedy:  pip install 'gpuwm[gpu-cu13]'
+#
+# The wheel was already installed.  What was missing was the toolkit, which
+# no gpuwm extra has ever carried, so pip reported success and the fault
+# survived.  The CUDA-kernel-headers line above cannot cover this case: it
+# declines to judge when cupy will not import, which is exactly when this
+# one speaks.
+# --------------------------------------------------------------------------
+
+def _cupy_check_with(monkeypatch, evidence, *, box_major=13):
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+    monkeypatch.setattr(doctor, "_import_probe",
+                        lambda module, distribution=None: (False, evidence))
+    monkeypatch.setattr(doctor, "_driver_cuda_major", lambda: box_major)
+    return doctor._cupy_check()
+
+
+_FIELD_EVIDENCE = ("installed but failed to import: RuntimeError: CuPy is "
+                   "not correctly installed. Failed to find CUDA headers")
+
+
+@pytest.mark.parametrize("box_major", (12, 13, None))
+def test_the_field_case_gets_the_toolkit_and_not_the_gpuwm_extra(
+        monkeypatch, box_major):
+    """THE 2.2.1 correction, on the line the user actually read."""
+    check = _cupy_check_with(monkeypatch, _FIELD_EVIDENCE,
+                             box_major=box_major)
+    assert check.status == "missing"
+    assert "conda install -c nvidia cuda-toolkit" in check.remedy
+    assert check.action.startswith("conda install -c nvidia cuda-toolkit")
+    # The advice that could not work is gone from this branch entirely.
+    assert "gpuwm[gpu-" not in check.remedy
+    assert "gpuwm[gpu-" not in check.action
+
+
+def test_a_missing_shared_library_still_gets_the_wheel_remedy(monkeypatch):
+    """The other half of the distinction: this one IS a wheel fault."""
+    check = _cupy_check_with(
+        monkeypatch,
+        "installed but failed to import: ImportError: libcublas.so.12: "
+        "cannot open shared object file")
+    assert "gpuwm[gpu-cu13]" in check.remedy
+    assert "conda install" not in check.remedy
+
+
+def test_an_absent_cupy_still_gets_the_wheel_extra(monkeypatch):
+    """The regression guard on the branch that was always right."""
+    check = _cupy_check_with(monkeypatch, "not installed")
+    assert check.action == "pip install 'gpuwm[gpu-cu13]'"
+    assert "conda install" not in check.remedy
+
+
+def test_an_unrecognised_import_failure_prints_both_labelled_by_symptom(
+        monkeypatch):
+    """No signature in the message is not licence to guess one."""
+    check = _cupy_check_with(
+        monkeypatch, "installed but failed to import: RuntimeError: boom")
+    assert "SYMPTOM" in check.remedy
+    assert "conda install -c nvidia cuda-toolkit" in check.remedy
+    assert "gpuwm[gpu-cu13]" in check.remedy
+
+
+@pytest.mark.parametrize("windows", (False, True))
+@pytest.mark.parametrize("evidence", (
+    _FIELD_EVIDENCE,
+    "installed but failed to import: RuntimeError: boom",
+))
+def test_the_cupy_import_remedy_is_shell_correct_on_both_platforms(
+        monkeypatch, windows, evidence):
+    """Including the two-remedy block, which is assembled by concatenation."""
+    _force_shell(monkeypatch, windows)
+    remedy, action = doctor._cupy_import_failure_remedy(evidence, 13)
+    _assert_remedy_lines_are_commands_or_comments(remedy, windows=windows)
+    _assert_remedy_lines_are_commands_or_comments(action, windows=windows)
+
+
+# --------------------------------------------------------------------------
+# The shipped documentation, which no remedy guard could ever see.
+# --------------------------------------------------------------------------
+#
+# The guards above grep doctor's REMEDY STRINGS.  They cannot see a doc, and
+# 2.3.0 shipped its doctor fix beside a public quickstart still telling a
+# CUDA-12 reader to `pip install nvidia-cusolver-cu12 ...` -- the exact
+# tombstone the release removed from the code.  A user follows the doc, pip
+# reports success, and the fault survives: "fixed" that a default reader
+# still hits is not fixed.  So the rule extends over docs/.
+#
+# The rule is about INSTRUCTIONS, not mentions: a doc may name a tombstone to
+# warn against it (the quickstart does), but no line that installs may name
+# one.
+
+_TOMBSTONE_NAMES = re.compile(r"nvidia-[a-z0-9-]+-cu1[23]")
+
+
+def _repo_root():
+    """Derived from this file, never an absolute path baked in at write time.
+
+    A path pinned to the tree the test was written in grades that tree from
+    wherever it is copied -- the wrong-tree failure the battery's PYTHONPATH
+    discipline exists to prevent.
+    """
+    return pathlib.Path(__file__).resolve().parent.parent
+
+
+def _tracked_docs():
+    root = _repo_root()
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "docs"],
+        cwd=root, capture_output=True, check=True)
+    return [root / name
+            for name in out.stdout.decode("utf-8").split("\0") if name]
+
+
+def test_the_docs_tree_is_tracked_and_non_empty():
+    """A guard over an empty list passes forever and proves nothing."""
+    docs = _tracked_docs()
+    assert len(docs) > 5, docs
+    assert any(d.name == "da-nowcast-quickstart.md" for d in docs)
+
+
+def test_no_shipped_doc_tells_a_reader_to_install_a_tombstone_wheel():
+    offenders = []
+    for path in _tracked_docs():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if "pip install" not in line:
+                continue
+            for hit in _TOMBSTONE_NAMES.findall(line):
+                offenders.append(
+                    "{}:{}: {}".format(
+                        path.relative_to(_repo_root()).as_posix(),
+                        lineno, hit))
+    assert not offenders, (
+        "shipped docs install a deprecation tombstone:\n"
+        + "\n".join(offenders))
+
+
+def test_the_docs_guard_would_catch_the_line_that_shipped():
+    """The instrument, tested against the known answer, both directions."""
+    shipped = ("pip install nvidia-cusolver-cu12 nvidia-cublas-cu12"
+               " nvidia-cusparse-cu12")
+    assert "pip install" in shipped
+    assert _TOMBSTONE_NAMES.findall(shipped) == [
+        "nvidia-cusolver-cu12", "nvidia-cublas-cu12", "nvidia-cusparse-cu12"]
+    # And the spelling that replaced it is clean.
+    fixed = ('pip install --no-deps "nvidia-cusolver==12.*"'
+             ' "nvidia-cublas==12.*" "nvidia-cusparse==12.*"')
+    assert _TOMBSTONE_NAMES.findall(fixed) == []
+    # A prose mention carries no install and must NOT be flagged.
+    prose = "`nvidia-cusolver-cu12` resolves as a deprecation tombstone."
+    assert "pip install" not in prose

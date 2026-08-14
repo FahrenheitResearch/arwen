@@ -142,12 +142,24 @@ while ``/sys/fs/cgroup/memory.max`` says 241.7 GiB, and a store sized from
 the first number is a plan to be OOM-killed.  :meth:`Machine.detect` reads
 the cgroup limit first, takes the smaller of the two, and refuses to guess at
 all if it can see it is containerised and there is no limit to read.
+
+``/proc/meminfo`` is the LINUX source, not the only one.  Windows has no
+procfs, so :func:`_host_memtotal` asks the OS directly there
+(``GlobalMemoryStatusEx``/``ullTotalPhys``), and the cgroup reads simply
+find nothing and answer ``None`` -- which is the correct answer for a box
+that is not containerised.  A planner that had no host source on Windows
+did not fall back to a guess, it RAISED, and because
+:func:`gpuwm.core.streaming.decide` probes the machine before it reads the
+configured budget, that refusal stood in front of every ``[tiles]`` run on
+the platform the product's own front door ships on -- including the ones
+that configured ``host_budget_bytes`` precisely to say what the budget was.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import sys
 from typing import Any, Sequence
 
 from tilestream import harness as _harness
@@ -492,26 +504,82 @@ class Machine:
         if host_bytes is None:
             limit = _cgroup_memory_limit()
             meminfo = _host_memtotal()
+            memsource = _memtotal_source()
             if limit is not None and meminfo is not None:
                 host_bytes = min(limit, meminfo)
-                source = ("cgroup limit" if limit <= meminfo
-                          else "/proc/meminfo MemTotal")
+                source = ("cgroup limit" if limit <= meminfo else memsource)
             elif limit is not None:
                 host_bytes, source = limit, "cgroup limit"
             elif meminfo is not None and not _in_container():
-                host_bytes, source = meminfo, "/proc/meminfo MemTotal"
-            else:
+                host_bytes, source = meminfo, memsource
+            elif meminfo is not None:
                 raise CannotPlan(
                     "containerised with no cgroup memory limit to read, so "
-                    "/proc/meminfo describes the HOST and not this container "
+                    f"{memsource} describes the HOST and not this container "
                     "-- pass host_bytes= explicitly rather than letting a "
                     "pinned store be sized from someone else's RAM",
+                    "host")
+            else:
+                # NOT the container case: nothing readable answered at all.
+                # Saying "containerised" here was wrong on every Windows box
+                # -- where the only unreadable source was procfs, which that
+                # OS does not have -- and the wrong word sent the reader
+                # looking for a container that was not there.
+                raise CannotPlan(
+                    f"no host-memory source on this platform ({sys.platform}): "
+                    f"{memsource} could not be read and no cgroup limit is "
+                    "published -- pass host_bytes= explicitly rather than "
+                    "letting a pinned store be sized from a guess",
                     "host")
         return cls(vram_bytes=int(free if use_free_vram else total),
                    host_bytes=int(host_bytes), name=name, host_source=source)
 
 
+def _windows_memtotal() -> int | None:
+    """This Windows box's physical RAM, via ``GlobalMemoryStatusEx``.
+
+    The Win32 equivalent of ``MemTotal``, and the reason it is needed here:
+    Windows has no ``/proc``, so the procfs read below finds nothing and a
+    planner that treated "no procfs" as "unknowable" refused every streamed
+    run on the platform.  ``ullTotalPhys`` is physical RAM exactly as
+    ``MemTotal`` is, so the 47% pinning fraction applies to it unchanged.
+    """
+    import ctypes
+
+    class _MemoryStatusEx(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    status = _MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+    try:
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                ctypes.byref(status)):
+            return None
+    except (AttributeError, OSError):
+        # No windll (non-Windows), or the call was refused.  Answering None
+        # keeps the "refuse rather than guess" contract intact.
+        return None
+    total = int(status.ullTotalPhys)
+    return total if total > 0 else None
+
+
 def _host_memtotal() -> int | None:
+    """This box's physical RAM, from whichever source this OS has.
+
+    Windows first, because on Windows the procfs read below cannot succeed
+    and its failure is not evidence of anything.  Everywhere else this is
+    ``/proc/meminfo``'s ``MemTotal``, unchanged.
+    """
+    if sys.platform == "win32":
+        return _windows_memtotal()
     try:
         with open("/proc/meminfo", "r", encoding="ascii") as handle:
             for line in handle:
@@ -520,6 +588,12 @@ def _host_memtotal() -> int | None:
     except OSError:
         return None
     return None
+
+
+def _memtotal_source() -> str:
+    """What :func:`_host_memtotal` read, named for a receipt."""
+    return ("GlobalMemoryStatusEx ullTotalPhys" if sys.platform == "win32"
+            else "/proc/meminfo MemTotal")
 
 
 # --------------------------------------------------------------------------

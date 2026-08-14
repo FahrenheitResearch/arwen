@@ -401,6 +401,16 @@ def restart_identity_payload(exp) -> dict:
         # declaration is what keeps that a refusal rather than a shrug.
         if domain.get("spawn") is None:
             domain.pop("spawn", None)
+        # The per-domain [tiles] road leaves the identity UNCONDITIONALLY,
+        # declared or not -- the one place this file's absent-stays-absent
+        # convention is not enough.  A declared spawn binds because a
+        # restart across a spawn promises nothing; a declared tiling binds
+        # NOTHING because its entire claim is that it changes no bytes, and
+        # binding it would refuse the operation it exists for: a domain
+        # that streamed resuming resident, or a domain that outgrew its
+        # card resuming streamed.  Same law as the tree-wide table above
+        # (RESTART_TOLERATED_EXPERIMENT_FIELDS "tiles").
+        domain.pop("tiles", None)
         run = domain.get("run", {})
         for name in RESTART_TOLERATED_RUN_FIELDS:
             run.pop(name, None)
@@ -879,6 +889,17 @@ def execute_experiment(
         parent_stream = None
         if relocation_runner.is_due(model, clocks):
             target = model.node(int(relocation_runner.config.grid_id))
+            if _streamed(target.cfg.grid_id) is not None:
+                raise RuntimeError(
+                    f"[relocation] targets grid {int(target.cfg.grid_id)}, "
+                    "which is STREAMED.  Relocating a streamed child means "
+                    "rebuilding its store, its tile plan, its geography "
+                    "gathers and its packed nest-table windows on a new "
+                    "footprint mid-run, and none of that is built or "
+                    "gated; a relocation that replaced node.state under a "
+                    "live TiledRun would integrate a domain that no longer "
+                    "exists.  Run the moving child resident (stream the "
+                    "parent instead), or turn [relocation] off.")
             if target.parent is not None:
                 parent_stream = _streamed(target.parent.cfg.grid_id)
             if parent_stream is not None:
@@ -997,25 +1018,6 @@ def execute_experiment(
                 # 15-sim-min run). Same byte-inert release, per STEP op.
                 _trim_default_pool()
 
-    #: How far outside a child's parent-cell footprint the coupler reaches,
-    #: in PARENT cells.  ``register_nest``'s SINT stencil is +-2 and the
-    #: specified/relaxation zone the force tables fill is ``spec_bdy_width``
-    #: CHILD cells; 8 bounds both at every ratio this tree admits, and a
-    #: superset is free (the reader ignores what it does not need) while a
-    #: subset is a stale cell inside the zone the reader does use.
-    _FORCE_HALO_PARENT_CELLS = 8
-
-    def _footprint_window(node) -> tuple:
-        """The child's footprint on the parent, in 0-based parent mass cells."""
-        dc = node.cfg
-        ratio = int(dc.parent_grid_ratio)
-        i0 = int(dc.i_parent_start) - 1
-        j0 = int(dc.j_parent_start) - 1
-        span_i = -(-int(dc.run.nx) // ratio)
-        span_j = -(-int(dc.run.ny) // ratio)
-        pad = _FORCE_HALO_PARENT_CELLS
-        return (j0 - pad, j0 + span_j + pad, i0 - pad, i0 + span_i + pad)
-
     def on_force(child_id, parent_id, child_clock, parent_clock) -> None:
         with domain_turn(("FORCE", child_id, parent_id)):
             node = model.node(child_id)
@@ -1024,18 +1026,16 @@ def execute_experiment(
                     "schedule FORCE edge differs from domain tree")
             status.pending_force = status.pending_force + 1
             status.prior_feedback_committed = False
-            # A STREAMED parent's arrays are in its store; the coupler
-            # interpolates the child's boundaries out of ``parent.state``.
-            # With a host store that state is frozen at attach time, so
-            # without this the nest is forced by t=0 air for the whole run --
-            # silently, because t=0 air is perfectly well-formed air.  Only
-            # the footprint plus the coupler's reach is copied: the domain is
-            # streamed BECAUSE it does not fit, and a whole-state projection
-            # per parent step would be the allocation the mode exists to
-            # avoid, paid again every step.
-            parent_stream = _streamed(parent_id)
-            if parent_stream is not None:
-                parent_stream.sync_to_state(window=_footprint_window(node))
+            # NO store projection here, any more.  The coupler owns its own
+            # reads: ``NestCoupler._coupled_parent_field`` pulls exactly the
+            # two windows FORCE needs through the store seam
+            # (``streaming.refresh_from_store`` with
+            # ``nest.parent_footprint_window``), so the executor projecting
+            # a window of EVERY carrier on the coupler's behalf was the same
+            # bytes moved twice -- and a second copy of the footprint
+            # geometry that a relocation could leave behind.  The window
+            # arithmetic and its halo bound moved to ``gpuwm.core.nest``
+            # with the reads.
             try:
                 node.coupler.force(node)
                 if validators and health_debug:
@@ -1057,30 +1057,26 @@ def execute_experiment(
         node = model.node(child_id)
         # Two-way feedback is the one nest op that WRITES the parent, and a
         # streamed parent's writes have to land in its store or they are
-        # thrown away at the next sweep.  Projecting a restriction back is a
-        # different piece of work from projecting a read forward -- the
-        # sweep would have to be told not to overwrite it -- and none of it
-        # is done, so this refuses by name rather than integrating a
-        # two-way nest whose feedback silently never arrives.  ``feedback =
-        # 0``, the production one-way path, walks a dormant transaction and
-        # is unaffected.
-        # Attribute access in a try, never reflection: this module is
-        # AST-audited against getattr/setattr
-        # (tests/test_clock.py::test_no_float_elapsed_accumulation_audit),
-        # and the only couplers without the attribute are the stub objects
-        # in the refusal tests, for which no carve-out applies.
-        try:
-            two_way = int(node.coupler.feedback) == 1
-        except AttributeError:
-            two_way = False
-        if two_way and _streamed(parent_id) is not None:
-            raise RuntimeError(
-                f"d{parent_id:02d} is STREAMED and d{child_id:02d} runs "
-                "two-way feedback (feedback = 1).  The restriction writes "
-                "the parent's state, a streamed parent's state is a "
-                "projection of its store, and nothing projects a write "
-                "back -- the feedback would be discarded by the next "
-                "sweep.  Run the parent resident, or set feedback = 0.")
+        # thrown away at the next sweep.  The COUPLER owns that transaction:
+        # ``NestCoupler.feedback_commit`` starts from the store and ends in
+        # it (``_sync_in``/``_sync_out`` -> ``streaming.refresh_from_store``
+        # / ``commit_to_store``, both of which drain the in-flight sweep
+        # tail first), and ``feedback_finalize`` carries the whole-parent
+        # diagnostics back the same way.  MEASURED bit-identical to the
+        # all-resident run, with both feedback controls firing:
+        # ``tilestream/test_nest.py`` leg 3 (coupler-driven) and
+        # ``tilestream/test_nest_executor.py`` (this dispatch, through
+        # execute_experiment).
+        #
+        # A refusal used to stand here, asserting "nothing projects a write
+        # back".  It arrived in the same three-way merge (2358b3c06) as the
+        # coupler arm it contradicted -- two lanes, one merged truth
+        # missing -- and no gate drove this dispatch with a streamed parent,
+        # so the contradiction sat unexercised.  The dispatch is now the
+        # same for both modes; what an edge genuinely cannot do is refused
+        # where the capability lives, by the coupler (cross-scheme edges
+        # off a streamed parent in ``_coupled_parent_field``, an edge with
+        # BOTH ends streamed in ``force``).
         status.mutation_in_progress = True
         try:
             node.coupler.feedback_commit(node)

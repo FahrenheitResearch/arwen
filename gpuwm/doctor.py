@@ -525,6 +525,10 @@ def _cupy_check() -> Check:
             "sizing estimator need it; fetch/import-namelist/render "
             f"do not{served}", remedy,
             action=action, brief="not installed", blocking=False)
+    # CuPy IS installed and would not import.  The extra cannot be the
+    # answer to every version of that -- see _cupy_import_failure_remedy,
+    # which reads the import's own message and routes accordingly.
+    remedy, action = _cupy_import_failure_remedy(evidence, box_major)
     return Check("cupy (GPU runtime)", "missing", evidence + served, remedy,
                  action=action, brief=_short(evidence),
                  blocking=False)
@@ -620,11 +624,13 @@ def _cuda_headers_remedy(box_major: int | None) -> tuple[str, str]:
     buyer following it watches pip succeed and the fault survive.
 
     The headers come from a CUDA toolkit, and CuPy reads them through
-    ``CUDA_PATH``.  conda-forge is named first because it installs the
-    toolkit and sets ``CUDA_PATH`` on activation in one step, on both
-    platforms, without administrator rights; the runtime wheel is named
-    second because it carries the same header tree for an estate that
-    has no conda.
+    ``CUDA_PATH``.  A conda toolkit is named first because it installs the
+    toolkit into the environment that is already active, on both platforms,
+    without administrator rights; the ``nvidia`` channel leads because that
+    is the line a 2.2.1 user's box was actually fixed with, and conda-forge
+    follows as the equivalent that also sets ``CUDA_PATH`` on activation.
+    The pip wheels are named last because they carry the same header tree
+    for an estate that has no conda.
     """
 
     major = box_major if box_major in _GPU_EXTRA_BY_MAJOR else None
@@ -651,21 +657,82 @@ def _cuda_headers_remedy(box_major: int | None) -> tuple[str, str]:
         "# matching the toolkit to the driver matches it to the compiler.",
         "#",
         served,
-        f"conda install -c conda-forge cuda-toolkit{pin}",
-        "# conda-forge sets CUDA_PATH when the environment activates.  If",
-        "# it did not, or the toolkit came from NVIDIA's own installer,",
-        "# point it at the toolkit root yourself:",
+        f"conda install -c nvidia cuda-toolkit{pin}",
+        "# ...into the environment that is active now.  conda-forge carries",
+        "# the same toolkit and sets CUDA_PATH when the environment",
+        "# activates, if that channel is the one this estate uses:",
+        f"# conda install -c conda-forge cuda-toolkit{pin}",
+        "# If CUDA_PATH did not get set, or the toolkit came from NVIDIA's",
+        "# own installer, point it at the toolkit root yourself:",
         point_at_conda,
         "#",
-        "# no conda in this estate?  the CUDA runtime wheel carries the",
-        "# same header tree; install it and point CUDA_PATH at it:",
-        _cuda_wheel_install(("nvidia-cuda-runtime",), major or 12),
+        "# no conda in this estate?  the NVIDIA pip wheels carry the same",
+        "# header tree; install them and point CUDA_PATH at them:",
+        _cuda_wheel_install(_CUDA_TOOLKIT_PACKAGES, major),
         "python -c \"import nvidia.cuda_runtime as r,pathlib;"
         "print(pathlib.Path(r.__file__).parent)\"",
     ]
     if major is None:
         lines.insert(6, "nvidia-smi")
-    return "\n".join(lines), f"conda install -c conda-forge cuda-toolkit{pin}"
+    return "\n".join(lines), f"conda install -c nvidia cuda-toolkit{pin}"
+
+
+#: Markers in a failed ``import cupy`` that name the TOOLKIT, not the
+#: wheel.  CuPy's import-time installation check says so in these words --
+#: ``Failed to find CUDA headers``, or the ``CUDA_PATH``/``nvcc`` it
+#: consulted looking for them.
+_TOOLKIT_IMPORT_MARKERS = ("cuda headers", "cuda_path", "cuda_home",
+                           "nvcc", "cuda toolkit")
+
+#: ...and the markers that name the WHEEL: a shared library the wheel
+#: hard-codes and the loader could not produce.
+_WHEEL_IMPORT_MARKERS = ("no module named", "cannot open shared object",
+                         "libcublas", "libnvrtc", "libcudart",
+                         "dll load failed")
+
+
+def _cupy_import_failure_remedy(evidence: str,
+                                box_major: int | None) -> tuple[str, str]:
+    """``(remedy, action)`` for a CuPy that is INSTALLED and will not import.
+
+    THE 2.2.1 FIELD CASE, on Ubuntu.  Doctor printed ``MISSING cupy --
+    ... Failed to find CUDA headers ...`` and offered ``pip install
+    'gpuwm[gpu-cu13]'``.  The wheel was already installed; what was absent
+    was the CUDA TOOLKIT, and no gpuwm extra has ever carried one, so the
+    reader watched pip report success and the fault survive.  The line that
+    actually fixed that box was a toolkit install.
+
+    The two faults are separable from the import's own message, cheaply
+    and without a second probe: CuPy names the header tree or the
+    ``CUDA_PATH``/``nvcc`` it consulted when the toolkit is what is
+    missing, and names a shared library it could not load when the wheel
+    is.  Where neither signature appears the symptom really is ambiguous,
+    so BOTH remedies print, each LABELLED by the symptom it answers --
+    never one of them silently chosen, which is how this bug read to the
+    user who hit it.  The single action stays the toolkit line, because
+    that is the branch a fresh box lands on and the branch the wheel
+    remedy cannot fix.
+    """
+
+    lowered = evidence.lower()
+    if any(marker in lowered for marker in _TOOLKIT_IMPORT_MARKERS):
+        return _cuda_headers_remedy(box_major)
+    if any(marker in lowered for marker in _WHEEL_IMPORT_MARKERS):
+        return _gpu_extra_hint(box_major)
+    headers_remedy, headers_action = _cuda_headers_remedy(box_major)
+    wheel_remedy, _ = _gpu_extra_hint(box_major)
+    return "\n".join([
+        "# This import failed for one of two reasons and its message names",
+        "# neither, so both remedies are printed.  Match yours by symptom.",
+        "#",
+        "# SYMPTOM: the message names a header, CUDA_PATH or nvcc.  The CUDA",
+        "# TOOLKIT is missing, and no wheel or gpuwm extra supplies one:",
+        headers_remedy,
+        "#",
+        "# SYMPTOM: the message names a shared library or a missing module.",
+        "# The CuPy wheel itself is absent or wrong for this box:",
+        wheel_remedy,
+    ]), headers_action
 
 
 def _cuda_headers_check() -> Check:
@@ -756,23 +823,42 @@ def _cuda_headers_check() -> Check:
 #: through ``os.add_dll_directory``, never through PATH.
 _CUSOLVER_PACKAGES = ("nvidia-cusolver", "nvidia-cublas", "nvidia-cusparse")
 
+#: The toolkit pieces a header gap needs from pip when the estate has no
+#: conda: the CUDA runtime, whose wheel carries the header tree CuPy's own
+#: reduction kernels include, and NVRTC beside it so the compiler and the
+#: headers it reads come from the same major.
+_CUDA_TOOLKIT_PACKAGES = ("nvidia-cuda-runtime", "nvidia-cuda-nvrtc")
 
-def _cuda_wheel_install(packages: tuple[str, ...], major: int) -> str:
+
+def _cuda_wheel_install(packages: tuple[str, ...], major: int | None) -> str:
     """The pip line that installs these CUDA libraries for ``major``.
 
-    NVIDIA DROPPED THE ``-cuXX`` SUFFIX AT CUDA 13, and the suffixed names
-    still exist as tombstones: ``pip install nvidia-cusolver-cu13``
-    resolves, downloads, reports success, and installs a package whose
-    entire content is a notice saying to use ``nvidia-cusolver`` instead.
-    A remedy that prints it leaves the box exactly as broken as before
-    while the transcript says it was fixed -- the NVRTC shadow trap with
-    extra steps.  ``--no-deps`` is what keeps the unsuffixed CUDA-13
-    packages from dragging those same tombstones back in as dependencies.
+    NVIDIA HAS DEPRECATED THE ``-cuXX`` SUFFIXED NAMES -- ``-cu12`` as well
+    as ``-cu13`` -- and the suffixed distributions survive as tombstones:
+    ``pip install nvidia-cusolver-cu13`` resolves, downloads, reports
+    success, and installs a package whose entire content is a notice saying
+    to use ``nvidia-cusolver`` instead.  A remedy that prints one leaves the
+    box exactly as broken as before while the transcript says it was fixed
+    -- the NVRTC shadow trap with extra steps.  So every name printed here
+    is the unsuffixed one, at EVERY major; a remedy that spelled the suffix
+    for 12 and dropped it for 13 was one NVIDIA deprecation away from being
+    wrong again, and that deprecation has now landed.
+
+    The major does not disappear with the suffix, it MOVES: out of the
+    package name and into a version pin, ``nvidia-cusolver=="12.*"``, so
+    the line still matches the box it was generated for.  The pin is
+    derived from the detected driver and never hardcoded; with no major in
+    hand the line carries no pin and the caller prints the lookup that
+    finds one.  Double quotes, because ``12.*`` is a glob to sh and a
+    string to PowerShell only when it is quoted, and the same spelling has
+    to survive both.  ``--no-deps`` is what keeps the unsuffixed packages
+    from dragging those same tombstones back in as dependencies.
     """
 
-    if major >= 13:
+    if major is None:
         return "pip install --no-deps " + " ".join(packages)
-    return "pip install " + " ".join(f"{name}-cu{major}" for name in packages)
+    pins = " ".join(f'"{name}=={major}.*"' for name in packages)
+    return "pip install --no-deps " + pins
 
 
 def _cusolver_hint(box_major: int | None) -> tuple[str, str]:
@@ -782,9 +868,11 @@ def _cusolver_hint(box_major: int | None) -> tuple[str, str]:
     driver, for the same reason the CuPy extra is: until this release the
     line was a frozen ``-cu12`` spelling, so a CUDA-13 box asking doctor
     how to get its eigensolver back was handed three tombstone packages.
-    With no major in hand both spellings are printed and neither is
-    presented as the default, because a silent default is exactly how a
-    CUDA-13 box ends up installing cu12 wheels.
+    The names are unsuffixed now at every major (see
+    :func:`_cuda_wheel_install`), so the major rides in the version pin;
+    with no major in hand both pins are printed and neither is presented
+    as the default, because a silent default is exactly how a CUDA-13 box
+    ends up installing CUDA 12 libraries.
     """
 
     preamble = (
@@ -800,25 +888,27 @@ def _cusolver_hint(box_major: int | None) -> tuple[str, str]:
         "  # on Windows PATH is not enough -- since Python 3.8 a compiled\n"
         "  # extension resolves its dependants through os.add_dll_directory()\n"
         "  # only.  If it prints nothing, install it:")
+    tombstone = (
+        "  # (the -cu12 and -cu13 spellings of these are deprecation\n"
+        "  # tombstones: they install cleanly and supply nothing)")
     if box_major is None:
         return ("\n".join([
             preamble,
-            "  # NVIDIA dropped the -cuXX suffix at CUDA 13, so the right",
-            "  # spelling depends on the major this box serves.  Read it:",
+            "  # NVIDIA has deprecated the -cuXX suffixes, so the package",
+            "  # names no longer carry the major -- the version pin does,",
+            "  # and it has to match the major this box serves.  Read it:",
             "  nvidia-smi",
             "  # then, for a CUDA 12.x box:",
             f"  {_cuda_wheel_install(_CUSOLVER_PACKAGES, 12)}",
             "  # or, for a box whose CUDA is 13-only:",
             f"  {_cuda_wheel_install(_CUSOLVER_PACKAGES, 13)}",
+            tombstone,
         ]), "nvidia-smi  # then install the CUDA libraries for that major")
     install = _cuda_wheel_install(_CUSOLVER_PACKAGES, box_major)
-    tombstone = (
-        "\n  # (the -cu13 spellings of these are deprecation tombstones:\n"
-        "  # they install cleanly and supply nothing)" if box_major >= 13
-        else "")
     return ("\n".join([
         preamble,
-        f"  # this box's driver serves CUDA {box_major}, so:{tombstone}",
+        f"  # this box's driver serves CUDA {box_major}, so:",
+        tombstone,
         f"  {install}",
     ]), install)
 

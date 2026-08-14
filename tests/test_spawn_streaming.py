@@ -182,9 +182,18 @@ def test_the_spawn_route_now_consults_the_streaming_block():
     from gpuwm import runtime
 
     src = inspect.getsource(runtime.run_experiment)
-    assert "steppers_for_tree(model, exp.tiles)" in src, (
+    assert "_streaming.steppers_for_tree(" in src, (
         "the domain-tree route must adjudicate [tiles]; without this "
         "call the block is parsed, echoed and then ignored")
+    # And it must adjudicate with BUILDERS behind it.  The call alone was
+    # enough while the route refused an enabled mode at its front door --
+    # every decision it could reach was "resident".  With the refusal
+    # lifted the call can now return a STREAM decision, and a mapping
+    # decided with no builder is make_stepper's own refusal at the end of
+    # the route rather than a streamed run.
+    assert "builders=_streaming.builders_for_tree(model, exp.tiles)" in src, (
+        "the tree route decides [tiles] but wires no builder, so every "
+        "streamed decision it reaches dies at make_stepper")
     assert src.count("steppers=steppers") == 2, (
         "both arms of the tree branch -- the plain executor and the spawn "
         "leg walk -- must carry the mapping")

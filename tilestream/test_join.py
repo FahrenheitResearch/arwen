@@ -305,23 +305,58 @@ class UnstableReference(RuntimeError):
     """The reference run itself went non-finite, so there is no comparison."""
 
 
+def bound_lbc_clock(cfg, *, nsteps: int,
+                    lbc_interval_seconds: float = BDY_SECONDS):
+    """One production integer-tick DomainClock, ready to bind (task #219).
+
+    The exact constructor the offline child binds its root with; every
+    production driver-forced root gets the same shape from the tree build.
+    A FRESH instance per arm: the clock is mutable per-step state.
+    """
+    from gpuwm.offline_child_run import _child_boundary_clock
+
+    return _child_boundary_clock(
+        cfg, lbc_interval_seconds=float(lbc_interval_seconds),
+        steps=int(nsteps), output_steps=int(nsteps))
+
+
+def _drive(stepper, state, cfg, clock, nsteps) -> None:
+    """One loop for BOTH arms.  With a clock this is the executor's exact
+    per-step recurrence (core/clock.py execute_schedule; the offline child
+    runs the same lines): seam reset -> prepare_step -> solve -> advance.
+    Without one it is the loop this gate has always run, byte for byte."""
+    for _ in range(int(nsteps)):
+        if clock is not None:
+            if clock.lbc_reset_due():
+                clock.mark_force()
+            clock.prepare_step()
+        stepper(state, cfg, refl_10cm_due=False)
+        if clock is not None:
+            clock.advance()
+
+
 def monolithic(cfg, nsteps, *, seed=SEED, boundaries=None, warmup=1,
-               periodic_faces=False) -> dict:
+               periodic_faces=False, clock=None) -> dict:
     """The reference: one resident domain, ArWen's ordinary ``dycore.step``.
 
     Deliberately the SAME loop shape as the streamed run below, so the only
     difference between the two is which callable ``make_stepper`` returned.
+    ``clock`` binds the production DomainClock to the external LBC mirror
+    (WRF's post-increment dtbc, the semantics every real-data root runs
+    under); ``None`` keeps the retired elapsed-based compatibility path.
     """
     from gpuwm.core.dycore import step as dycore_step
+    from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
 
     state, _geo = build_domain(cfg, seed=seed, boundaries=boundaries,
                                warmup=warmup, periodic_faces=periodic_faces)
+    if clock is not None:
+        bind_lateral_boundary_clock(state, clock)
     stepper = streaming.make_stepper(state, cfg, streaming.OFF)
     assert stepper is dycore_step, (
         "the resident reference must run the dycore's own step, not a "
         "wrapper around it")
-    for _ in range(int(nsteps)):
-        stepper(state, cfg, refl_10cm_due=False)
+    _drive(stepper, state, cfg, clock, nsteps)
     import cupy as cp
     cp.cuda.runtime.deviceSynchronize()
     out = {name: _as_numpy(arr)
@@ -342,17 +377,24 @@ def monolithic(cfg, nsteps, *, seed=SEED, boundaries=None, warmup=1,
 def streamed(cfg, nsteps, tile_nx, tile_ny, *, seed=SEED, boundaries=None,
              warmup=1, nbuffers=2, halo=None, seam="zeros", snapshot=None,
              store="host", periodic_faces=False, geography=True,
-             carry_clock=True, window_tables=True,
+             carry_clock=True, window_tables=True, clock=None,
              report: dict | None = None) -> dict:
     """The streamed run, driven one sweep per model step through the seam.
 
     ``geography=False``, ``carry_clock=False``, ``window_tables=False``,
     ``periodic_faces=True`` and a short ``halo`` are the negative controls;
     each disables exactly one capability and each MUST make the answer
-    differ.
+    differ.  ``clock`` binds the production DomainClock to the DOMAIN's
+    external mirror BEFORE the streamed domain is built, exactly where the
+    production routes bind theirs -- the tile hook must then carry that
+    binding onto every buffer (task #219).
     """
+    from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
+
     domain, geo = build_domain(cfg, seed=seed, boundaries=boundaries,
                                warmup=warmup, periodic_faces=periodic_faces)
+    if clock is not None:
+        bind_lateral_boundary_clock(domain, clock)
     options = streaming.StreamingOptions(
         mode="on", tile_nx=int(tile_nx), tile_ny=int(tile_ny),
         nbuffers=int(nbuffers), halo=halo, store=store)
@@ -365,8 +407,7 @@ def streamed(cfg, nsteps, tile_nx, tile_ny, *, seed=SEED, boundaries=None,
     stepper = streaming.make_stepper(domain, cfg, options, decision=decision,
                                      build=build)
     assert streaming.is_streaming(stepper)
-    for _ in range(int(nsteps)):
-        stepper(domain, cfg, refl_10cm_due=False)
+    _drive(stepper, domain, cfg, clock, nsteps)
     if report is not None:
         report.update(stepper.report)
         report["decision"] = stepper.decision.explain()
@@ -548,6 +589,68 @@ def main(argv=None) -> int:
         print(_line(f"seam={seam}", ok,
                     f"ndiff={res['ndiff']}, nonfinite={res['nonfinite']}"))
         del got
+
+    # ------------------------------------------- the BOUND clock (task #219)
+    #
+    # Every production driver-forced root binds a DomainClock to its external
+    # LBC mirror, switching Davies consumers to WRF's post-increment dtbc
+    # (dt..T_bdy).  This gate ran BOTH arms unbound (0..T-dt) for its whole
+    # life, so a tile hook that silently dropped a binding -- which is what
+    # shipped -- passed it bit-exact while every clock-bound route forced one
+    # step late.  Both arms are warmup=0 here: a one-step warmup shifts the
+    # retired path's dtbc by exactly +dt and makes the two semantics
+    # numerically coincide at dt-multiple times, which would quietly disarm
+    # all three checks below.
+    print()
+    print("-- THE BOUND CLOCK (production dtbc semantics; both arms warmup=0)")
+    ref_bound = monolithic(cfg, NSTEPS, boundaries=bnd, warmup=0,
+                           clock=bound_lbc_clock(cfg, nsteps=NSTEPS))
+    got_bound = streamed(cfg, NSTEPS, TX, TY, boundaries=bnd, warmup=0,
+                         clock=bound_lbc_clock(cfg, nsteps=NSTEPS))
+    res = compare(ref_bound, got_bound)
+    ok = res["bitexact"] and res["nonfinite"] == 0
+    if not ok:
+        failures.append(
+            f"clock-bound streamed differs from clock-bound resident on "
+            f"{res['ndiff']}/{res['ntotal']} carriers -- the tile buffers "
+            "are not consuming the bound dtbc recurrence")
+    print(_line("bound both arms (must be bit-exact)", ok,
+                f"ndiff={res['ndiff']}/{res['ntotal']}, "
+                f"max|d|={res['max_abs']:.4g}, "
+                f"nonfinite={res['nonfinite']}"))
+    del got_bound
+    ref_unbound = monolithic(cfg, NSTEPS, boundaries=bnd, warmup=0)
+    res = compare(ref_bound, ref_unbound)
+    differs = not res["bitexact"]
+    if not differs:
+        failures.append(
+            "bound and unbound resident references are bit-identical; the "
+            "dtbc semantics is disarmed and the bound-clock checks above "
+            "prove nothing")
+    print(_line("bound vs unbound semantics (must differ)", differs,
+                f"ndiff={res['ndiff']}/{res['ntotal']}, "
+                f"max|d|={res['max_abs']:.4g}"))
+    got_unbound = streamed(cfg, NSTEPS, TX, TY, boundaries=bnd, warmup=0)
+    res = compare(ref_unbound, got_unbound)
+    ok = res["bitexact"] and res["nonfinite"] == 0
+    if not ok:
+        failures.append(
+            f"UNBOUND streamed stopped matching unbound resident "
+            f"({res['ndiff']}/{res['ntotal']} differ); the legacy "
+            "compatibility semantics moved")
+    print(_line("unbound both arms (must stay bit-exact)", ok,
+                f"ndiff={res['ndiff']}/{res['ntotal']}"))
+    res = compare(ref_bound, got_unbound)
+    differs = not res["bitexact"]
+    if not differs:
+        failures.append(
+            "a streamed arm with NO binding matched the bound reference; "
+            "this gate cannot see a dropped clock binding at all")
+    print(_line("dropped binding on the streamed arm (must differ)", differs,
+                f"ndiff={res['ndiff']}/{res['ntotal']}, "
+                f"max|d|={res['max_abs']:.4g}"))
+    del ref_bound, ref_unbound, got_unbound
+    cp.get_default_memory_pool().free_all_blocks()
 
     # ------------------------------------------------------- the negatives
     print()

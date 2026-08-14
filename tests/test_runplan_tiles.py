@@ -502,11 +502,15 @@ def test_a_plan_that_configures_no_tiles_says_nothing_about_them(
 
 def test_a_nested_plan_that_asks_every_grid_to_stream_is_refused_by_name(
         tmp_path):
-    """``mode = "on"`` streams unconditionally, and a nest cannot.
+    """``mode = "on"`` streams unconditionally, and a TREE cannot.
 
-    Without this the plan fetches, prepares twice, builds the whole
-    resident tree and THEN stops at the tile builder -- a refusal that
-    was knowable from the config before anything was downloaded.
+    Not because a nest cannot stream -- since the per-domain roads it
+    can -- but because ``on`` streams every grid, which puts BOTH ends of
+    every coupling edge on a streamed road, and that composition is the
+    one shape no gate has driven.  Without this the plan fetches,
+    prepares twice, builds the whole tree and THEN stops at the first
+    FORCE -- a refusal that was knowable from the config before anything
+    was downloaded.
     """
 
     plan = _plan(tmp_path, _config(tmp_path, tiles=_ON, nested=True))
@@ -514,8 +518,10 @@ def test_a_nested_plan_that_asks_every_grid_to_stream_is_refused_by_name(
         resolve_plan(plan, require_inputs=False)
     text = str(refusal.value)
 
-    assert "d02" in text and "NEST" in text
-    assert "d01" in text          # what CAN stream, named
+    assert "d02" in text                      # WHICH domain
+    assert "BOTH ends streamed" in text       # WHY: the edge shape
+    assert "NestCoupler.force" in text        # the mechanism, not a policy
+    assert "d01" in text          # what CAN stream alone, named
     assert "mode = 'auto'" in text and "one [[domain]] table" in text
 
 
@@ -582,12 +588,18 @@ def test_a_single_domain_plan_streams_and_the_document_says_which_grid(
     assert "restart identity" in entry["note"]
 
 
-def test_the_config_driven_route_refuses_in_the_cores_own_words(tmp_path):
-    """``gpuwm run`` reads exp.tiles at NO point, so auto is refused too.
+def test_the_config_driven_route_resolves_as_a_streaming_chain(tmp_path):
+    """``gpuwm run`` streams now, so this front door must stop refusing.
 
-    The sentence is ``streaming.refuse_unrouted_streaming``'s, raised
-    rather than restated: a route that learns to stream stops refusing
-    here on the day it stops refusing there.
+    The prophecy in the old test's docstring, kept: "a route that learns
+    to stream stops refusing here on the day it stops refusing there."
+    It learned.  ``runtime.run_experiment`` wires
+    ``streaming.builders_for_tree`` on its tree arm and
+    ``standalone_domain_builder`` on its single-domain arm, so the
+    ``experiment`` chain's delivery is ``tree`` and a configured mode
+    resolves instead of raising -- which matters HERE and not only at the
+    route, because run-plan refuses at resolve time, before the run
+    directory and the fetch.
     """
 
     from test_case_data import make_case_toml
@@ -602,11 +614,18 @@ def test_the_config_driven_route_refuses_in_the_cores_own_words(tmp_path):
          "output_root": str(tmp_path / "run")},
         source="plan.json", base_dir=tmp_path, sha256="0" * 64)
 
-    with pytest.raises(PlanError) as refusal:
-        resolve_plan(plan, require_inputs=False)
-    text = str(refusal.value)
-    assert "does not read [tiles] at ANY point" in text
-    assert "'experiment'" in text
+    resolution, _exp, _data = resolve_plan(plan, require_inputs=False)
+    assert resolution["tiles"]["delivery"] == "tree"
+    # A resolved plan carries no "refusal" key at all -- resolve_plan
+    # raises on one -- so reaching this line IS the absence of a refusal.
+    assert "refusal" not in resolution["tiles"]
+    entry = next(e for e in resolution["automatic_resolutions"]
+                 if e["key"] == "tiles_delivery")
+    assert entry["value"] == "auto"
+    assert "streams for real" in entry["note"]
+    assert "ANY grid can stream" in entry["note"]
+    # The one shape still refused is named where an operator reads it.
+    assert "BOTH ends streamed" in entry["note"]
 
 
 def test_the_prepared_chains_are_not_refused_for_having_a_nest_under_auto(

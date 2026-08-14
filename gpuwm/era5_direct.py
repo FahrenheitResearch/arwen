@@ -55,6 +55,7 @@ from gpuwm.ingest.preprocess_backend import (
 )
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+from gpuwm.ingest.soil import soil_source_orography
 from gpuwm.ingest.water_overlay import (
     load_water_temperature_overlay,
     overlay_snapshots,
@@ -277,6 +278,37 @@ def _load_source_orography(path: Path, variable: str) -> np.ndarray:
     if not np.isfinite(value).all():
         raise ValueError("source orography contains non-finite values")
     return value
+
+
+def _soil_source_orography(declared, fields):
+    """The terrain the SOURCE model's soil fields were defined on.
+
+    WRF's ``adjust_soil_temp_new`` shifts land skin and soil temperature by
+    ``-0.0065 * (HGT_M - toposoil)``, where ``toposoil`` is the source
+    model's own orography -- for ERA5 that is ERA5's terrain, never the
+    target ``HGT_M``.  This route accepts it two ways, and refuses both at
+    once well upstream: an explicit ``--source-orography`` artifact, or the
+    invariant SOILGEO record the combined GRIB carries, which
+    :func:`gpuwm.ingest.horiz.interpolate_era5_to_lambert` bilinearly remaps
+    onto the mass grid and divides by WPS gravity as ``SOURCE_OROGRAPHY``.
+
+    ``initialize_real`` already makes exactly this choice for itself
+    (gpuwm/ingest/real.py:2478-2484).  The soil hand-off never did, so a
+    wizard case whose orography rides inside the GRIB -- which is what
+    ``gpuwm fetch --source era5`` writes and what the domain wizard emits --
+    reached ``preprocess_noah_soil`` with ``terrain`` set and its partner
+    ``None`` and died on that function's all-or-none guard.  The guard was
+    right; the argument was missing.
+    """
+    resolved = soil_source_orography(declared, fields)
+    if resolved is None:
+        raise ValueError(
+            "ERA5 soil preparation has no source orography: neither a "
+            "declared source-orography artifact nor the SOURCE_OROGRAPHY "
+            "field the invariant SOILGEO record resolves to is present, so "
+            "the soil-temperature elevation adjustment has no source "
+            "terrain to lapse from")
+    return resolved
 
 
 def prepare_era5_wrf(
@@ -659,7 +691,10 @@ def prepare_era5_wrf(
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"],
         terrain=static["HGT_M"],
-        source_orography=source_terrain,
+        # Declared artifact XOR the GRIB's own invariant SOILGEO, resolved
+        # the same way initialize_real resolves it a few lines above.
+        source_orography=_soil_source_orography(
+            source_terrain, initial_met.fields),
         # getattr on every route, so a stand-in snapshot is refused by
         # the router on its merits rather than by an AttributeError.
         water_temperature=getattr(

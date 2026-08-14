@@ -444,11 +444,21 @@ def streaming_advisory(exp) -> str | None:
     mode = getattr(options, "mode", "off")
     if mode == "off":
         return None
+    nested_note = ""
+    if len(getattr(exp, "domains", ()) or ()) > 1:
+        nested_note = (
+            "  This tree is NESTED: roads are assigned per domain "
+            "(streaming.steppers_for_tree walks parent-first, prices each "
+            "domain against the budget its predecessors left -- resident "
+            "claims, tile working sets and the coupling corridor's slots "
+            "-- and records each domain's road and claim in its decision "
+            "receipt), so a refusal or a fit below describes the resident "
+            "tree, not the mixed-road one the run will take.")
     envelope = streamed_forecast_envelope(exp)
     if envelope is not None:
         return (f"[tiles] mode = '{mode}' streams this domain, so the memory "
                 "numbers in this report price the STREAMED allocation and "
-                f"not a resident one: {envelope.summary()}.")
+                f"not a resident one: {envelope.summary()}." + nested_note)
     if mode == "auto":
         return (
             "[tiles] mode = 'auto' is configured, so whether this domain "
@@ -457,13 +467,13 @@ def streaming_advisory(exp) -> str | None:
             "RESIDENT allocation, which is the branch auto takes when the "
             "domain fits; if it does not fit, the run streams instead and "
             "holds a few tile buffers rather than the whole domain, so a "
-            "refusal here is not the last word.")
+            "refusal here is not the last word." + nested_note)
     return (
         f"[tiles] mode = '{mode}' is configured but no streamed envelope "
         "could be priced for this domain, so the numbers below price the "
         "RESIDENT allocation.  That happens when the planner can fit no "
         "tile in this card's budget at all, in which case streaming would "
-        "not have saved the run either.")
+        "not have saved the run either." + nested_note)
 
 
 def check_advisories(exp, config_path=None) -> list[str]:

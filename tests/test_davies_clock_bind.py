@@ -46,9 +46,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 #: hardening (no aliased/getattr caller can slip in an unadjudicated bind
 #: site) while inverting the old negative pin into the positive
 #: production contract.
+#: Adjudicated task #219 (2026-08-13): ``core/streaming.py``.  The streamed
+#: tile hook REBINDS the domain's already-bound clock onto every tile
+#: buffer it converts -- it introduces no new clock and no new semantics,
+#: it carries the root's adjudicated binding across the buffer re-attach
+#: that used to drop it (measured: streamed runs consumed their lateral
+#: boundaries one timestep late whenever the production clock was bound).
 SANCTIONED_BINDER_MODULES = (
     Path("ingest") / "lateral_bc.py",
     Path("core") / "model.py",
+    Path("core") / "streaming.py",
     Path("prepared_domain_tree_forecast.py"),
     Path("verify") / "cases" / "real74_n5s.py",
     Path("offline_child_run.py"),

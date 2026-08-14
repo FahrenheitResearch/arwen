@@ -600,3 +600,69 @@ tests/test_wizard_adapter_roundtrip.py
 # CPU-only, under a second; the failure it guards is a crash in a
 # user-selectable profile.
 tests/test_shinhong_composed_tke_guard.py
+
+# 2.3 streamed-child lane: the CPU-hermetic half of the resident-parent +
+# tile-streamed-child corridor -- the frame rule and its slice-rule
+# composition, the coupler's frame pull off the child's store (real
+# host-mirror seam, with the unpublished-store negative), the per-tile
+# packed rolling-table windows with the launch-time generation reload and
+# its disarmable stale-tables control, and the per-domain road walk's
+# budget arithmetic and receipts.  Deliberately importable without cupy.
+# The stepped bit-identity half is tilestream/test_streamed_child.py on
+# the GPU shard.
+tests/test_streamed_child.py
+
+# The stream-attach lanes: the store-direct initialization road.
+
+# Which INITIALIZATION ROAD a streamed forecast takes, and the pricing rule
+# `--stream-init auto` decides it on.  On this list because the rule decides
+# whether a run lives or dies before it allocates anything, and because the
+# way it failed once was silent: it priced the resident road from the prepared
+# cache's serialized-state manifest, called a 6.45 GiB fit at 1024x1024, and
+# the road it chose then died with 16 276 726 272 B allocated.  Every
+# assertion here is arithmetic over integers with no card anywhere, and the
+# 1024 case is pinned to the byte in both directions, so a return to the
+# manifest-only rule goes red on every commit rather than at a cut.
+tests/test_stream_init.py
+# The full-state health gate over a streamed domain's pinned HOST store.
+# CPU-hermetic by construction -- the whole point is that a gate which used
+# to need a domain-shaped DEVICE state can be held to the same per-field
+# bounds where the domain actually is.  Each rule class is tripped in the
+# store's LAST row, so a gate that quietly read one slab and reported the
+# domain goes red here rather than after a forecast.
+tests/test_store_health_gate.py
+
+# The two front-door nesting legs, graded without a card (2.3.0 round 2,
+# task #223).  The legs themselves are scripted GPU gates in
+# tools/battery/tiles_gates.txt -- they drive `gpuwm run <config> --outdir
+# <dir>` and compare whole forecasts, which this list cannot express.  This
+# entry is the CPU half: it holds the two entries' LEG= environment (without
+# it the battery would run leg A twice and report two passes), keeps a card
+# budget out of the committed case files, and pins the two SHAPES, which are
+# written down nowhere else in the tree.
+tests/test_tiles_door_legs.py
+
+# Five files central to the 2.3.0 riders that sat on NO list (found by the
+# 2.3.0 cut gate, the same "a gate nobody can enumerate" class that earned
+# test_streaming_clock_arming.py its registration this round).  All five are
+# CPU-hermetic and about 24 s combined.
+#
+# test_doctor_cuda_headers.py holds BOTH tombstone regression guards -- the
+# guard against the very defect the doctor rider fixed ran on no leg -- plus
+# the docs guard added at the cut, after the release was found shipping a
+# public quickstart telling CUDA-12 readers to install the exact wheel names
+# the code had just stopped printing.
+tests/test_doctor_cuda_headers.py
+# The wrf-rust pin rider's core guard and its two consumers.  The pin moved
+# from four copies of `== "0.2.35"` to one window in gpuwm/science_core.py;
+# these are what refuse a return to a hard equality pin, and what prove a
+# score file reports the version that ACTUALLY read the run.
+tests/test_obs_model_source.py
+tests/test_flagship_tools.py
+tests/test_obs_cross_reader.py
+# The GPU shard list's own gate: it checks every path on
+# tools/battery/gpu_shard_files.txt resolves and every entry is real.  It is
+# named in that file's comments as "the gate" and was an entry on no list,
+# so the instrument that keeps the shard list honest was itself unrun.  CPU
+# only -- it reads the list, it does not touch a card.
+tests/test_gpu_shard_manifest.py

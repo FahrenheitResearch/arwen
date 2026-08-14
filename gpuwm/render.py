@@ -70,9 +70,12 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm import explain
+from gpuwm.science_core import SCIENCE_CORE_REQUIREMENT
 
-#: The pip distribution/version the render products are certified against.
-WRF_PACKAGE_REQUIREMENT = "wrf-rust==0.2.35"
+#: The pip requirement the render products are certified against, quoted
+#: verbatim in the install hint below.  Sourced from gpuwm.science_core so
+#: the hint and the pyproject extra cannot drift apart.
+WRF_PACKAGE_REQUIREMENT = SCIENCE_CORE_REQUIREMENT
 
 #: Standard NWS 5-dBZ-step reflectivity scale (5..75), as in
 #: tools/matched_wrfout_refl_figures.py (domain convention).

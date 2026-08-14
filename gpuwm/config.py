@@ -1354,7 +1354,48 @@ def validate_p3_radiation(cfg: RunConfig) -> None:
             "ra_lw_physics=0/ra_sw_physics=1 (Dudhia).")
 
 
-_KNOWN_TABLES = ("grid", "dynamics", "run")
+#: Tables whose keys merge into :class:`RunConfig` field by field.
+_RUN_CONFIG_TABLES = ("grid", "dynamics", "run")
+
+#: Every table a RunConfig TOML may legally carry.
+#:
+#: ``[tiles]`` is here and NOT in :data:`_RUN_CONFIG_TABLES`, because it is
+#: not a RunConfig table: it is an EXECUTION choice whose entire claim is
+#: that it changes nothing about the forecast
+#: (:func:`gpuwm.core.streaming.identity_payload_entry`), so its keys belong
+#: to :class:`gpuwm.core.streaming.StreamingOptions` rather than to the
+#: config whose fields a restart identity binds.  Read with
+#: :func:`load_streaming_options`.
+#:
+#: It was absent from both lists until now, which is the defect: the
+#: experiment TOML the multi-domain front doors read has accepted ``[tiles]``
+#: since 2.2.0, and this schema -- the one ``gpuwm downscale`` hands to the
+#: offline child -- refused the block outright as an unknown table.  So the
+#: one route whose domains are MOST likely to outgrow the card, a child
+#: refined out of an archived parent, was the one route that could not ask
+#: to stream.
+_KNOWN_TABLES = (*_RUN_CONFIG_TABLES, "tiles")
+
+
+def load_streaming_options(path: str | Path):
+    """The ``[tiles]`` block of a RunConfig TOML, or the shared OFF object.
+
+    Separate from :func:`load_config` and not a field on what it returns:
+    ``RunConfig``'s fields are bound into every restart identity, and
+    ``[tiles]`` is the one surface that must NOT bind -- a checkpoint
+    written resident has to resume streamed and back again, which is the
+    operation the mode exists for.  Both readers go through the same config
+    authority, so they read the same bytes of the same file.
+    """
+    import io
+
+    from gpuwm.config_authority import read_config_authority
+    from gpuwm.core.streaming import StreamingOptions
+
+    authority = read_config_authority(path)
+    raw = tomllib.load(io.BytesIO(authority.payload))
+    return StreamingOptions.from_mapping(raw.get("tiles"), source=str(path))
+
 
 def load_config(path: str | Path) -> RunConfig:
     import io
@@ -1369,10 +1410,17 @@ def load_config(path: str | Path) -> RunConfig:
             f"unknown table(s)/top-level key(s) {unknown_tables} in config "
             f"file {path}; known tables: {list(_KNOWN_TABLES)}."
         )
+    # Validated here as well as in load_streaming_options, and discarded:
+    # [tiles] is refused key by key by StreamingOptions on the
+    # [relocation]/[perturbation] precedent -- a misspelled knob that
+    # silently does nothing is how a run gets configured for a mode it is
+    # not in -- and a caller that reads only the RunConfig must not be the
+    # reason a typo survives admission.
+    load_streaming_options(path)
     known_keys = {f.name for f in fields(RunConfig)}
     merged: dict = {}
     key_table: dict[str, str] = {}
-    for table in _KNOWN_TABLES:
+    for table in _RUN_CONFIG_TABLES:
         entries = raw.get(table, {})
         unknown_keys = [key for key in entries if key not in known_keys]
         if unknown_keys:

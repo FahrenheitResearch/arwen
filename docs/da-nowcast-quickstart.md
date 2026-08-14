@@ -177,22 +177,18 @@ resolves its dependants through `os.add_dll_directory()` only.  If it
 prints nothing, install it:
 
 ```bash
-# CUDA 12.x box:
-pip install nvidia-cusolver-cu12 nvidia-cublas-cu12 nvidia-cusparse-cu12
+# CUDA 12.x box (put 13 in the pin on a CUDA 13 box):
+pip install --no-deps "nvidia-cusolver==12.*" "nvidia-cublas==12.*" "nvidia-cusparse==12.*"
 ```
 
-On a **CUDA 13** box those are the wrong names.  NVIDIA dropped the
-`-cuXX` suffix at 13, and `nvidia-cusolver-cu13` still resolves as a
-deprecation tombstone: it installs cleanly, reports success, and
-supplies nothing.  Use the unsuffixed packages instead:
+The CUDA major belongs in the version pin, never in the package name.
+NVIDIA has deprecated the `-cuXX` spellings, `-cu12` as well as `-cu13`:
+`nvidia-cusolver-cu13` and `nvidia-cusolver-cu12` both resolve as
+deprecation tombstones that install cleanly, report success, and supply
+nothing.  Never install a suffixed name.
 
-```bash
-# CUDA 13 box:
-pip install --no-deps nvidia-cusolver nvidia-cublas nvidia-cusparse
-```
-
-`gpuwm doctor` reads the major off the driver and prints whichever of
-these two lines matches the box, so you do not have to choose.
+`gpuwm doctor` reads the major off the driver and prints this line with
+the pin already filled in, so you do not have to choose.
 
 Background, including why the same box can answer "is cuSOLVER
 available?" differently depending on what the process did first, is in

@@ -258,12 +258,25 @@ _Z_STAGGERED_MASS_FIELDS = frozenset(
 _SOIL_LAYER_FIELDS = frozenset({"TSLB", "SMOIS", "SH2O",
                                 "SMFR3D", "KEEPFR3DFLAG"})
 
+#: The land-use table identity stamped on every history file.
+#:
+#: ``ISOILWATER`` is the water category of the SOIL table, and it is 14 for
+#: every MODIS/Noah run gpuwm makes -- but it was the one member of the group
+#: this writer left out, while stock WRF writes it in every wrfout
+#: (``share/output_wrf.F:973``, an explicit ``wrf_put_dom_ti_integer`` rather
+#: than a Registry ``h`` flag, which is why it is easy to miss).  Its absence
+#: was not inert: ``gpuwm.offline_child.read_child_surface_state`` reads the
+#: four attributes below as REQUIRED evidence precisely so category semantics
+#: are never assumed, and then quietly assumed 14 for this one because gpuwm's
+#: own files never carried it.  Writing it makes the file say what the reader
+#: had to guess.
 _DEFAULT_LANDUSE_ATTRS = {
     "MMINLU": "MODIFIED_IGBP_MODIS_NOAH",
     "ISWATER": 17,
     "ISLAKE": 21,
     "ISICE": 15,
     "ISURBAN": 13,
+    "ISOILWATER": 14,
 }
 
 
@@ -811,7 +824,27 @@ def _live_state_history_fields(state) -> dict[str, object]:
     for output_name, field_name in (
             ("SNOW", "snow"), ("SNOWH", "snowh"),
             ("SNOWC", "snowc"), ("TSLB", "tslb"),
-            ("SMOIS", "smois"), ("SH2O", "sh2o")):
+            ("SMOIS", "smois"), ("SH2O", "sh2o"),
+            # The land/soil IDENTITY the five rows above are the STATE of.
+            # Same gate, same dict, same presence guard -- and the reason
+            # they are here rather than left in memory is that a wrfout is
+            # this product's boundary: gpuwm's own offline child reads a
+            # child-grid history file back as its --child-surface-from
+            # source and requires ISLTYP, TMN and VEGFRA among the nine
+            # fields it will not fabricate (gpuwm.offline_child
+            # ._SURFACE_REQUIRED_FIELDS).  Without these rows gpuwm's
+            # history could not seed gpuwm's own child, which is how this
+            # was found: on a real 12 km parent, and again on a nested d02.
+            #
+            # IVGTYP and SEAICE ride the same commit because they are the
+            # same class and the same fix -- WRF core `misc` land identity
+            # this driver has always carried and never published.  SEAICE
+            # in particular closes a silent hole on the reader side: the
+            # child's surface reader treats it as optional and substitutes
+            # ZEROS when absent, so an ice-covered child was being warm-
+            # started ice-free with nothing said.
+            ("ISLTYP", "isltyp"), ("IVGTYP", "ivgtyp"),
+            ("TMN", "tmn"), ("VEGFRA", "vegfra"), ("SEAICE", "xice")):
         if field_name in live_surface:
             fields[output_name] = live_surface[field_name]
     return fields

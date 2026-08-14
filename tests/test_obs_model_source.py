@@ -11,6 +11,8 @@ kind of error that survives an entire campaign.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -94,6 +96,40 @@ def test_the_pin_here_is_the_same_pin_the_tree_already_carries():
     from tools.flagship.products import PINNED_WRF_RUST_VERSION
 
     assert model_source.PINNED_WRF_RUST_VERSION == PINNED_WRF_RUST_VERSION
+
+
+def test_the_window_accepts_a_newer_core_and_still_refuses_an_older_one():
+    """The pin is a WINDOW, not an equality.
+
+    An exact ``==0.2.35`` did two harmful things at once: pip DOWNGRADED a
+    user who already ran a newer wrf-rust, and these runtime checks refused
+    the newer core if they kept it.  Both directions are asserted here so a
+    future edit cannot quietly restore the equality.
+    """
+    from gpuwm import science_core
+
+    assert science_core.version_supported("0.2.35")   # the floor holds
+    assert science_core.version_supported("0.2.38")   # the reported case
+    assert science_core.version_supported("0.2.99")
+    assert not science_core.version_supported("0.2.34")  # below the floor
+    assert not science_core.version_supported("0.3.0")   # at the ceiling
+    assert not science_core.version_supported("1.0.0")
+    # An unnameable reader is refused rather than silently accepted.
+    assert not science_core.version_supported(None)
+    assert not science_core.version_supported("0.0.1-not-the-pin")
+
+
+def test_the_requirement_string_is_the_one_pyproject_installs():
+    """One window, written once: the extra and the runtime check agree."""
+    import tomllib
+
+    from gpuwm import science_core
+
+    root = Path(__file__).resolve().parent.parent
+    data = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
+    render = data["project"]["optional-dependencies"]["render"]
+    declared = [item for item in render if item.startswith("wrf-rust")]
+    assert declared == [science_core.SCIENCE_CORE_REQUIREMENT]
 
 
 # --------------------------------------------------------------------------

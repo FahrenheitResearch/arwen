@@ -42,12 +42,20 @@ from gpuwm.verify.obs.contracts import (
     normalize_longitude,
 )
 from gpuwm.verify.obs.stations import StationPosition
+from gpuwm.science_core import (
+    SCIENCE_CORE_FLOOR, SCIENCE_CORE_REQUIREMENT,
+    installed_science_core_version, version_supported,
+)
 
-#: The certified science-core version.  Matching the pin elsewhere in the
-#: tree on purpose: two pins that can drift apart are one pin too many, and
-#: this one is checked at construction rather than at import so a scoring
-#: module can be imported in an environment that never opens a forecast.
-PINNED_WRF_RUST_VERSION = "0.2.35"
+#: The certified science-core floor, re-exported from the one module that
+#: writes the window (gpuwm.science_core): two pins that can drift apart are
+#: one pin too many.  The name is kept because the battery's registration
+#: receipt carries it as ``pinned_distribution_version``; what changed is
+#: the CHECK, which is now the window ``>=floor,<ceiling`` rather than
+#: ``==floor``, so a user's newer wrf-rust is accepted instead of refused.
+#: Checked at construction rather than at import so a scoring module can be
+#: imported in an environment that never opens a forecast.
+PINNED_WRF_RUST_VERSION = SCIENCE_CORE_FLOOR
 
 #: Seam variable -> (core diagnostic name, multiplicative factor, offset).
 #: The conversion is ``value * factor + offset`` into the seam unit.  Every
@@ -66,7 +74,7 @@ _FRAME_RE = re.compile(
 
 
 def require_science_core():
-    """Import the mandated core and refuse a version that is not the pin."""
+    """Import the mandated core; refuse a version outside the window."""
     from importlib import metadata
 
     try:
@@ -76,10 +84,10 @@ def require_science_core():
             "the mandated science core wrf-rust is not installed; the "
             "battery's surface diagnostics and reflectivity cross-check "
             "come from it and are not reimplemented here") from exc
-    if installed != PINNED_WRF_RUST_VERSION:
+    if not version_supported(installed):
         raise RuntimeError(
             f"wrf-rust version mismatch: the battery is certified against "
-            f"{PINNED_WRF_RUST_VERSION}, found {installed}")
+            f"{SCIENCE_CORE_REQUIREMENT}, found {installed}")
     import wrf
 
     return wrf
@@ -276,7 +284,15 @@ class WrfHistorySource:
             "reflectivity_reduction": "column maximum over k",
             "precipitation_variables": list(self._precipitation_variables),
             "science_core": "wrf-rust",
-            "science_core_version": PINNED_WRF_RUST_VERSION,
+            # The version that ACTUALLY read this run, not the floor: with
+            # a version window rather than an exact pin these can differ,
+            # and a score file that names the floor while a newer core did
+            # the reading is the wrong number to hand someone debugging.
+            # The window is recorded beside it so the receipt still says
+            # what was required.
+            "science_core_version": (installed_science_core_version()
+                                     or PINNED_WRF_RUST_VERSION),
+            "science_core_requirement": SCIENCE_CORE_REQUIREMENT,
             "unit_conversions": {
                 key: {"diagnostic": value[0], "factor": value[1],
                       "offset": value[2]}

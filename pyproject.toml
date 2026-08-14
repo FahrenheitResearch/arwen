@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.2.1"
+version = "2.3.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -64,12 +64,19 @@ gpu-cu12 = ["cupy-cuda12x>=13.0"]
 gpu-cu13 = ["cupy-cuda13x>=13.6"]
 gpu = ["gpuwm[gpu-cu12]"]
 # gpuwm render's mandated science core: derived quantities come from the
-# wrf package (pip distribution wrf-rust), pinned to the certified version.
+# wrf package (pip distribution wrf-rust).  A RANGE, not an exact pin:
+# `==0.2.35` made `pip install gpuwm[render]` DOWNGRADE a user who already
+# ran a newer wrf-rust (field report: 0.2.38 -> 0.2.35), which is a
+# hostile thing to do to the co-developed core on someone else's box.
+# 0.2.35 is the floor because it is what the products are certified
+# against; <0.3 is the ceiling because that is where upstream is free to
+# change the diagnostic surface.  The same window is written once in
+# gpuwm/science_core.py and enforced at runtime from there.
 # pyshp: the demo/gallery renderer (tools/da_nowcast_render.py and the
 # launcher's basemap endpoint) reads the vendored Natural Earth
 # shapefiles with it -- it was imported but undeclared, proven missing
 # on a fresh env that installed exactly what the quickstart said.
-render = ["wrf-rust==0.2.35", "pyshp>=2.3"]
+render = ["wrf-rust>=0.2.35,<0.3", "pyshp>=2.3"]
 geog = ["rasterio>=1.3", "pyproj>=3.6"]
 # The observation-battery referee (gpuwm.verify.obs): the remap plans in
 # verify/obs/regrid.py build a cKDTree.  Lazily imported, so the base

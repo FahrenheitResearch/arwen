@@ -183,7 +183,19 @@ _RUNG = dict(moist=True, mp_physics=10, ztop=20000.0,
              km_opt=4, sf_sfclay_physics=91, bl_pbl_physics=1, bldt=0.0,
              sf_surface_physics=2,
              ra_sw_physics=90, ra_lw_physics=90, radt_minutes=2.0,
-             cu_physics=1, cudt_minutes=1.0)
+             cu_physics=1, cudt_minutes=1.0,
+             # The 2.0 carrier contract refuses Noah consuming a GLW no
+             # producer ever wrote, and the analytic ra_*=90 proxy is not
+             # in GLW's producer ledger -- so the RESIDENT control of this
+             # matrix died at model second 150 and every comparison with
+             # it was void (measured on the base tree, gatelogs/
+             # moving_nest_base.log).  This harness runs a seeded synthetic
+             # state, which is exactly the case the contract's remedy (3)
+             # names: the policy consumes unsourced carriers at their
+             # allocation fill -- the SAME zeros the pre-contract tree
+             # consumed silently -- and labels them in the receipt.  Both
+             # sides of every leg carry it, so no comparison is skewed.
+             surface_radiation_policy="wrf_compat_zero")
 
 #: The follow block.  ``max_shift_cells`` / ``max_move_parent_cells`` are 12
 #: -- HALF the child's 24-parent-cell footprint -- because a move as large as
@@ -424,11 +436,29 @@ def parent_builder(domain, geo, boundaries, *, seam="zeros"):
                    driver.geography_inventory(domain).items()}
         per_tile = streaming.tile_boundary_tables(
             boundaries, streaming.tile_specs(run_cfg, decision), seam=seam)
-        factory = test_join.tile_factory(run_cfg, per_tile[0])
+        # REFL priming + the refl-carrying inventory, exactly as the
+        # production builder (streaming.prepared_domain_builder) does.
+        # The 2.2 train made a refl-due sweep REFUSE when the store has no
+        # 'scratch/refl_10cm' to join the tiles' windows into; this
+        # harness's history handler raises refl_10cm_due on the history
+        # cadence, so without the priming every streamed leg of the matrix
+        # died at its first due step -- on the untouched base tree too
+        # (gatelogs/moving_nest_base.log), which is what dates the break
+        # to the refusal, not to this lane.
+        streaming.prime_lazy_carriers(state, run_cfg)
+        base_make = test_join.tile_factory(run_cfg, per_tile[0])
+
+        def factory(tile_cfg):
+            buffer_state = base_make(tile_cfg)
+            streaming.prime_lazy_carriers(buffer_state, tile_cfg)
+            return buffer_state
+
         return streaming.attach(
             state, run_cfg, decision, tile_state_factory=factory,
             geography=geo_inv, boundary_tables=per_tile,
-            scalars=physinv.carrier_scalars(state), check_geography=False)
+            scalars=physinv.carrier_scalars(state), check_geography=False,
+            inventory_fn=streaming.refl_inventory(
+                physinv.streaming_inventory))
 
     return build
 
@@ -515,10 +545,35 @@ def digests(arrays) -> dict:
 
 
 def carrier_digest(obj) -> tuple[str, dict]:
-    """One SHA-256 over a whole carrier set, plus the per-field map."""
+    """One SHA-256 over a whole carrier set, plus the per-field map.
+
+    ONE DIGEST BASIS FOR BOTH REPRESENTATIONS OF A DOMAIN.  A resident
+    domain is digested off its state, whose ``carrier_manifest`` already
+    excludes REBUILD-class scratch by the restart classifier; a streamed
+    domain is digested off its STORE, a plain mapping whose keys pass
+    through ``carrier_inventory`` unfiltered -- and since f54558672
+    brought the harness builders to production parity, that mapping
+    legitimately carries ``scratch/refl_10cm``: a primed, transport-owned
+    REBUILD slot the state-side digest never sees.  Measured on the 5080
+    (streamed-child matrix run 2): every one of 158 classified carriers
+    bit-identical in both domains, both coupling directions, host AND
+    device store, with this one-sided rebuild row the only difference --
+    three FAIL rows about a field that is not trajectory state.  So the
+    mapping side now applies the SAME production classifier the state
+    side always applied.  This cannot mask a real defect: rebuild-class
+    scratch is recomputed before every legitimate consume, and the
+    streamed REFL transport has its own dedicated gates
+    (``parent_bitexact --refl-due-every`` and the 2.2 frame field-set
+    gate).
+    """
     import hashlib
 
+    from gpuwm.io.restart import classify_scratch_slot
+
     per = digests(physinv.carrier_inventory(obj))
+    per = {name: value for name, value in per.items()
+           if not (name.startswith("scratch/") and classify_scratch_slot(
+               name.split("/", 1)[1]) == "rebuild")}
     h = hashlib.sha256()
     for name in sorted(per):
         h.update(name.encode())
@@ -845,6 +900,15 @@ def parent_bitexact(steps=8, *, refl_due_every=0, store="host",
         except RuntimeError as err:
             refl_errors.append(str(err))
             raise
+        if due(n):
+            # The stash contract both sides are under: a due step's field
+            # is consumed before the next due step, which is what every
+            # history call site does.  The RESIDENT arm above already
+            # consumes; without this the STREAMED arm died at its second
+            # due step on the stash-reuse guard -- an asymmetry in the
+            # CONTROL, not in the transport it isolates.
+            from gpuwm.core.refl import consume_refl_10cm
+            consume_refl_10cm(state)
     cp.cuda.runtime.deviceSynchronize()
     got = {k: test_join._as_numpy(v) for k, v in stepper.store.items()}
     cmp = test_join.compare(ref, got)

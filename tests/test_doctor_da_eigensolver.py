@@ -63,7 +63,7 @@ def test_no_cusolver_is_still_verified_and_says_the_default_does_not_need_it(
     assert not check.blocking
     assert "cuSOLVER unavailable" in check.detail
     assert "the default analysis does not need" in check.detail
-    assert check.remedy and "nvidia-cusolver-cu12" in check.remedy
+    assert check.remedy and "nvidia-cusolver" in check.remedy
 
 
 def test_the_bundled_kernel_failing_is_reported_even_when_cusolver_works(
@@ -138,30 +138,35 @@ def test_every_branch_that_prints_a_remedy_prints_a_runnable_one(
 # The install line is the BOX's, not a constant (#76-class).
 #
 # `nvidia-cusolver-cu12` on a CUDA-13 box is the NVRTC shadow trap: the
-# suffixed CUDA-13 packages exist as deprecation tombstones, so the advice
-# installs cleanly, reports success, and leaves the box exactly as broken.
+# suffixed packages exist as deprecation tombstones, so the advice installs
+# cleanly, reports success, and leaves the box exactly as broken.  NVIDIA
+# has now deprecated the cu12 suffix too, so BOTH spellings are tombstones
+# and the major rides in the version pin instead of the package name.
 # ---------------------------------------------------------------------------
 
 _TOMBSTONES = ("nvidia-cusolver-cu13", "nvidia-cublas-cu13",
-               "nvidia-cusparse-cu13")
+               "nvidia-cusparse-cu13", "nvidia-cusolver-cu12",
+               "nvidia-cublas-cu12", "nvidia-cusparse-cu12")
 
 
+@pytest.mark.parametrize("box_major", (12, 13))
 @pytest.mark.parametrize("payload", [
     {"jacobi": "ok", "library": "nope"},
     {"jacobi": "nope", "library": "nope"},
     {"probe": "did not run"},
 ])
-def test_a_cuda13_box_is_never_told_to_install_a_tombstone_wheel(
-        monkeypatch, payload):
+def test_no_box_is_ever_told_to_install_a_tombstone_wheel(
+        monkeypatch, payload, box_major):
     """THE regression this pair of tests exists for."""
-    check = _check(monkeypatch, payload, box_major=13)
+    check = _check(monkeypatch, payload, box_major=box_major)
     assert check.remedy
     for tombstone in _TOMBSTONES:
         assert tombstone not in check.remedy, tombstone
         assert tombstone not in (check.action or "")
-    # And it names the spelling that does work.
-    assert "pip install --no-deps nvidia-cusolver" in check.remedy
-    assert "nvidia-cusolver-cu12" not in check.remedy
+    # And it names the spelling that does work: unsuffixed names, with the
+    # box's major in the version pin.
+    assert 'pip install --no-deps "nvidia-cusolver=={}.*"'.format(
+        box_major) in check.remedy
 
 
 @pytest.mark.parametrize("payload", [
@@ -169,23 +174,24 @@ def test_a_cuda13_box_is_never_told_to_install_a_tombstone_wheel(
     {"jacobi": "nope", "library": "nope"},
     {"probe": "did not run"},
 ])
-def test_a_cuda12_box_still_gets_the_suffixed_wheels(monkeypatch, payload):
-    """Negative control: the cu12 spelling is right on a cu12 box."""
+def test_the_pin_is_the_boxs_major_and_never_the_other_one(
+        monkeypatch, payload):
+    """A CUDA-12 box must not be pinned to CUDA 13 libraries, or the reverse."""
     check = _check(monkeypatch, payload, box_major=12)
     assert check.remedy
-    expected = ("nvidia-cusolver-cu12 nvidia-cublas-cu12 "
-                "nvidia-cusparse-cu12")
+    expected = ('"nvidia-cusolver==12.*" "nvidia-cublas==12.*" '
+                '"nvidia-cusparse==12.*"')
     assert expected in check.remedy
-    assert "--no-deps" not in check.remedy
+    assert "==13.*" not in check.remedy
 
 
-def test_an_unreadable_major_names_both_spellings_and_defaults_to_neither(
+def test_an_unreadable_major_names_both_pins_and_defaults_to_neither(
         monkeypatch):
     """A silent default is how a CUDA-13 box ends up installing cu12."""
     check = _check(monkeypatch, {"jacobi": "nope", "library": "nope"},
                    box_major=None)
     assert check.remedy
-    assert "nvidia-cusolver-cu12" in check.remedy
-    assert "pip install --no-deps nvidia-cusolver" in check.remedy
+    assert '"nvidia-cusolver==12.*"' in check.remedy
+    assert '"nvidia-cusolver==13.*"' in check.remedy
     # The one command it leads with is the lookup, not an install.
     assert check.action.startswith("nvidia-smi")

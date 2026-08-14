@@ -838,6 +838,16 @@ def _follow_unsupported_refusal(chain: str, grid_id: int) -> str:
 #:                  rather than tabulated as a ``LateralBoundaries``
 #:                  series, so there is nothing for
 #:                  ``tile_boundary_tables`` to window.
+#: ``"tree"``       the chain's forecast stage wires a builder for EVERY
+#:                  grid the config asks to stream -- root through
+#:                  :func:`~gpuwm.core.streaming.standalone_domain_builder`
+#:                  or :func:`~gpuwm.core.streaming.prepared_domain_builder`,
+#:                  nests through the latter's child road (per-buffer
+#:                  packed nest tables, ``nest_stream.make_nest_tile_hook``)
+#:                  -- and it honours the per-domain ``[tiles]`` table, so
+#:                  which end of a coupling edge streams is the config's
+#:                  choice.  Only the edge with BOTH ends streamed is
+#:                  refused, and the core refuses it.
 #: ``"unrouted"``   the chain reads ``exp.tiles`` at NO point, so any
 #:                  enabled mode is a request nothing will ever act on.
 #:
@@ -845,12 +855,14 @@ def _follow_unsupported_refusal(chain: str, grid_id: int) -> str:
 #: fails if one does not, so a chain cannot be added without answering
 #: "and what does [tiles] do on it?".
 _STREAMING_DELIVERY: dict[str, str] = {
-    # gpuwm.runtime.run_experiment reads exp.tiles nowhere and says so
-    # itself, by calling refuse_unrouted_streaming(consults_the_seam=
-    # False).  Named here so the same refusal arrives at resolve time --
-    # before the run directory, the fetch and the ingest -- in the core's
-    # own words rather than in a second copy of them.
-    "experiment": "unrouted",
+    # WAS "unrouted", and the word was earned: gpuwm.runtime.run_experiment
+    # read exp.tiles nowhere and refused it at its own front door.  It
+    # wires the builders now -- builders_for_tree on the tree arm,
+    # standalone_domain_builder on the single-domain arm -- so this front
+    # door must stop relaying a refusal the route no longer raises.  A
+    # stale "unrouted" here would refuse at resolve time, before the run
+    # directory, a config the route would have run.
+    "experiment": "tree",
     "prepared:go": "root_only",
     "prepared:hrrr": "root_only",
 }
@@ -905,29 +917,41 @@ def streaming_decision(exp, *, chain: str) -> dict[str, Any] | None:
         "mode": options.mode,
         "store": options.store,
         "streamable_grid_id": None if delivery == "unrouted" else root,
-        "resident_grid_ids": list(nests),
+        # The nests this chain CANNOT stream.  On a "tree" delivery that
+        # is none of them -- the child road is wired and which end streams
+        # is the per-domain [tiles] table's answer, not this table's.
+        "resident_grid_ids": [] if delivery == "tree" else list(nests),
         "relocation_grid_id": moving,
+        # ``moving`` is reported above but not passed down: the moving
+        # domain's own sentence now belongs to the core refusal, which
+        # reads exp.relocation itself rather than being told about it.
         "refusal": _streaming_refusal(
-            chain, delivery, options, root=root, nests=nests, moving=moving),
+            exp, chain, delivery, options, root=root, nests=nests),
     }
 
 
-def _streaming_refusal(chain: str, delivery: str, options, *, root: int,
-                       nests: tuple[int, ...], moving: int | None
-                       ) -> str | None:
+def _streaming_refusal(exp, chain: str, delivery: str, options, *, root: int,
+                       nests: tuple[int, ...]) -> str | None:
     """Why this ``[tiles]`` cannot run on this chain, or ``None``.
 
     ``mode = "on"`` is the only mode refused on a chain that streams,
     and that asymmetry is
     :func:`gpuwm.core.streaming.refuse_unrouted_streaming`'s, not a new
     one: ``on`` streams unconditionally and is therefore decidable from
-    the config alone, while ``auto`` asks :mod:`tilestream.autoplan`
-    about a specific card and legitimately answers "resident" for a nest
-    that fits.  Asking that question here would stand a CUDA primary
-    context up inside a front door that has not decided to use the
-    device yet.  What ``auto`` does to a nest that does NOT fit is the
-    same unfixed gap that function names, and it is named below rather
-    than papered over.
+    the config alone -- on a tree it forces BOTH ends of every coupling
+    edge streamed, the shape the coupler refuses -- while ``auto`` asks
+    :mod:`tilestream.autoplan` about a specific card and legitimately
+    answers "resident" or "streamed" per domain.  Asking that question
+    here would stand a CUDA primary context up inside a front door that
+    has not decided to use the device yet; the walk itself
+    (:func:`gpuwm.core.streaming.steppers_for_tree`) refuses a
+    both-streamed edge at decision time, before anything is built.
+
+    BOTH arms now call the core rather than restating it.  The nest arm
+    used to carry its own copy of the sentence, written when
+    ``build_experiment`` did not ask the question -- so a config loaded
+    by any door OTHER than run-plan reached the tile builder anyway, and
+    two spellings of one refusal could drift.
     """
     if delivery == "unrouted":
         # The core's own sentence, raised as this front door's refusal.
@@ -961,37 +985,31 @@ def _streaming_refusal(chain: str, delivery: str, options, *, root: int,
             "_STREAMING_RESOLUTION_NOTE saying which grid it can stream.")
     if options.mode != "on" or not nests:
         return None
-    grids = ", ".join(f"d{grid:02d}" for grid in nests)
-    moving_note = (
-        "" if moving is None else
-        f"  d{moving:02d} is also this config's [relocation] follow "
-        "domain, and a domain that MOVES is a nest by construction -- "
-        "its footprint is re-sited from the parent at each move, so "
-        "there is no fixed tabulated forcing series for it to stream "
-        "out of.")
-    return layered(
-        f"[tiles] mode = 'on' asks every grid in this config to stream, "
-        f"and this config has {len(nests)} nest(s) ({grids}).  Only "
-        f"d{root:02d} can stream on the {chain!r} chain: "
-        "gpuwm.core.streaming.prepared_domain_builder refuses a nest "
-        "outright, so this plan would fetch, prepare, build the whole "
-        "resident tree and THEN stop with \"[tiles] fired on grid "
-        f"{nests[0]}, which is a NEST\".  Refused here instead, from the "
-        f"config alone.{moving_note}",
-        "A nest's lateral forcing is rebuilt from its parent every "
-        "parent step (NestCoupler.force -> RollingNestBoundaries) rather "
-        "than tabulated as a LateralBoundaries series, so there is "
-        "nothing for tile_boundary_tables to window and no per-tile "
-        "forcing to attach.  Streaming a nest is not 'not implemented "
-        "here', it is unposed.\n\n"
-        "  remedy: run the root alone -- one [[domain]] table, which is "
-        "the shape [tiles] exists for, since the root is the domain that "
-        "outgrows the card; or set mode = 'auto', which streams "
-        f"d{root:02d} when tilestream.autoplan says it does not fit and "
-        "leaves the nests resident wherever autoplan says THEY do.  Note "
-        "that 'auto' is accepted rather than proven: a nest autoplan "
-        "says does not fit reaches the same refusal, after the resident "
-        "allocation it was trying to avoid.")
+    # The core's own sentence again, on the same terms as the unrouted arm
+    # above.  ``build_experiment`` raises this for every door, so by the
+    # time a run-plan holds an ExperimentConfig the refusal has already
+    # fired and ``resolve_plan`` has translated it into a PlanError; what
+    # remains reachable here is a caller that assembled an experiment
+    # itself and asks this function directly -- and it must get the same
+    # words, not a second author's paraphrase of them.
+    from gpuwm.core import streaming
+
+    try:
+        streaming.refuse_streamed_nests(exp, source="this config")
+    except streaming.StreamingRefused as refusal:
+        return str(refusal)
+    # It did not refuse, and that is now a LEGITIMATE answer rather than a
+    # disagreement.  While [tiles] was tree-wide, a mode = 'on' config with
+    # nests in it put both ends of every coupling edge on the streamed
+    # road and the core always refused -- so reaching this line meant one
+    # of the two readers was stale, and refusing was right.  The table is
+    # per-domain now: `mode = "on"` over the tree with `tiles = { mode =
+    # "off" }` on the nest is "stream the parent, keep the child
+    # resident", which is a shape the core deliberately admits.  The core
+    # asks the question about the EDGE and it is the only reader that can;
+    # counting nests here cannot tell the two configs apart, so this arm
+    # defers instead of second-guessing it.
+    return None
 
 
 #: What ``automatic_resolutions`` says about a configured ``[tiles]``.
@@ -1010,6 +1028,23 @@ _STREAMING_RESOLUTION_NOTE = {
         "streaming.identity_payload_entry contributes nothing on purpose, "
         "so a checkpoint written streamed resumes resident and one "
         "written resident resumes streamed",
+    "tree":
+        "[tiles] mode = '{mode}' (store = '{store}') is carried to the "
+        "forecast stage of the {chain} chain, which wires "
+        "streaming.builders_for_tree over the whole domain tree and "
+        "streams for real.  ANY grid can stream here, d{root:02d} "
+        "included: the root through its own tabulated boundaries, a nest "
+        "through the child road (per-buffer packed nest tables refilled "
+        "when the rolling generation moves).  Which end of a coupling "
+        "edge streams is this config's choice -- put `tiles = {{ mode = "
+        "\"off\" }}` on the [[domain]] you want resident -- and mode = "
+        "'auto' answers it by pricing every domain against one budget, "
+        "reserving what the domains below it need before a streamed "
+        "domain picks its tile.  The only refused shape is an edge with "
+        "BOTH ends streamed.{nests}  Nothing here binds the restart "
+        "identity -- streaming.identity_payload_entry contributes nothing "
+        "on purpose, so a checkpoint written streamed resumes resident "
+        "and one written resident resumes streamed",
 }
 
 
@@ -1934,24 +1969,42 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                         if plan.config_path is not None
                         else plan.config_base_dir)
 
-        warnings: list[dict[str, str]] = list(warnings_generated)
-        with collect_warnings(warnings):
-            if ROUTES[plan.route].needs_case_data:
-                exp, data = load_experiment_case_bytes(
-                    payload, source=config_source, base_dir=base_dir,
-                    require_inputs=require_inputs)
-            else:
-                # The prepared route's configs declare no [case_data]:
-                # their inputs are bound by the prepared cache, not
-                # named in the TOML.  experiment_from_text is the
-                # wizard's own round-trip loader for exactly that shape
-                # -- same build_experiment seam, [fetch] validated,
-                # [case_data] split off if present.
-                from gpuwm.domain_wizard import experiment_from_text
+        # Imported here rather than at module scope, on this file's own
+        # convention for gpuwm.core.streaming: the run-plan front door is
+        # reached by every route, and the streaming module must stay a
+        # thing a resident plan never pays for.
+        from gpuwm.core.streaming import StreamingRefused
 
-                exp = experiment_from_text(
-                    payload.decode("utf-8"), source=config_source)
-                data = None
+        warnings: list[dict[str, str]] = list(warnings_generated)
+        try:
+            with collect_warnings(warnings):
+                if ROUTES[plan.route].needs_case_data:
+                    exp, data = load_experiment_case_bytes(
+                        payload, source=config_source, base_dir=base_dir,
+                        require_inputs=require_inputs)
+                else:
+                    # The prepared route's configs declare no [case_data]:
+                    # their inputs are bound by the prepared cache, not
+                    # named in the TOML.  experiment_from_text is the
+                    # wizard's own round-trip loader for exactly that shape
+                    # -- same build_experiment seam, [fetch] validated,
+                    # [case_data] split off if present.
+                    from gpuwm.domain_wizard import experiment_from_text
+
+                    exp = experiment_from_text(
+                        payload.decode("utf-8"), source=config_source)
+                    data = None
+        except StreamingRefused as refusal:
+            # build_experiment refuses [tiles] mode = 'on' over a nested
+            # tree, and it does so as StreamingRefused -- a RuntimeError,
+            # which this front door would print as a traceback.  Every
+            # other refusal here travels as PlanError (a ValueError) so
+            # that gpuwm.cli.main prints one sentence and exits 2, and a
+            # config-shaped refusal must not be the exception.  The
+            # message is carried verbatim: it is the core's sentence, and
+            # restating it here is exactly the drift _streaming_refusal
+            # below already refuses to introduce.
+            raise PlanError(str(refusal)) from None
         raw = tomllib.load(io.BytesIO(payload))
     finally:
         if scratch is not None:
