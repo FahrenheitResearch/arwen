@@ -1,6 +1,22 @@
 # Changelog
 
-## 2.4.0 (2026-08-14)
+## 2.4.1 (2026-08-14)
+
+2.4.0 was tagged but never published: the publish workflow's own test job
+refused it on two rows of the CLI suite that assert `gpuwm verify` and
+`gpuwm run` exit 0, on a runner with no GPU extra installed, where both
+now correctly refuse at exit 2. Nothing reached PyPI and no asset was
+written. The tag stays where it is, because tags here are forward-only.
+Everything 2.4.0 carried ships here, plus the fix below.
+
+Fixed:
+- Those two tests declare the capability estate they are about, instead
+  of measuring the runner's. The refusals they tripped over are the
+  headline of this release and are correct; the tests were asserting the
+  pre-refusal exit codes. The workflow's own test list now sits on the
+  release battery's stage-1 list, and the checklist gained the leg that
+  runs it with no GPU extra installed, which is the only environment in
+  which that class is visible.
 
 New:
 - European radar reaches the product. `gpuwm obs radar` decodes an ODIM

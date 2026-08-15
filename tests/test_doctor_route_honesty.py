@@ -267,7 +267,7 @@ def test_the_obs_front_doors_are_in_the_bundle_doctor_audits():
     Through 2.3.3 this asserted the opposite, and that WAS the finding:
     every obs front door was resolved by name, refused by name, and
     carried by no bundle, so the command the refusal named could not
-    supply it.  Both halves landed in 2.4.0 -- the artifacts joined the
+    supply it.  Both halves landed in 2.4.1 -- the artifacts joined the
     table, and the crates gained the source-revision stamp a release cut
     needs in order to pin them -- so the honest premise is now this one.
     If a door ever leaves the bundle, this fails and the remedy gets
@@ -388,7 +388,7 @@ def test_an_obs_front_door_the_bundle_lacks_still_gets_the_build_route(
         monkeypatch, tmp_path):
     """The branch no shipped door takes today, kept proven for the next one.
 
-    Every obs front door is bundled as of 2.4.0, so the live report never
+    Every obs front door is bundled as of 2.4.1, so the live report never
     reaches the clone-and-build remedy.  A branch nothing exercises is a
     branch that rots, and the next front door to be written will land on
     it before it lands in a bundle -- which is exactly the state that

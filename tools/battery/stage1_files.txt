@@ -713,3 +713,17 @@ tests/test_obs_sweeps_odim_v3.py
 # that says how to run it, so it failed whenever it was run correctly.
 # Fixed here, and listed so it stays fixed.
 tests/test_chain_stage_env.py
+# 2.4.1: the publish workflow's own `test` job list.  It ran on a runner
+# with no GPU extra and refused v2.4.0 on two rows this list did not
+# carry, and the tag was already public.  Stage 1 on a development box
+# cannot see those rows on its own -- GPUWM_NO_LOCAL_GPU=1 does not
+# uninstall CuPy, so `capabilities.is_installed("cupy")` is still true
+# here and the refusals that fire only where CuPy is ABSENT never fire.
+# Listing the files is half the fix; the other half is the checklist item
+# that runs them with no GPU extra installed.
+tests/test_cli.py
+tests/test_bridge_fetch.py
+tests/test_table_fetch.py
+tests/test_source_adapters.py
+tests/test_namelist_compat.py
+tests/test_bridge_bundle_adopt.py

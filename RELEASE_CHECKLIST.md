@@ -61,6 +61,26 @@ reproduce them, not because their proofs are optional:
       `tools/battery/always_files.txt`, so a lane now runs the specific gate
       those two cuts tripped over -- but the promotion closes one hole, not
       the class.  Stage 1 is the list that catches the next one.
+- [ ] **The publish workflow's own `test` job list, run with NO GPU extra
+      installed, BEFORE the tag.**  A second item about order, for a second
+      reason: stage 1 above proves the tip on the box it runs on, and that
+      box has CuPy.  `GPUWM_NO_LOCAL_GPU=1` does not uninstall it, so
+      `gpuwm.capabilities.is_installed("cupy")` stays true and every refusal
+      that fires only where CuPy is ABSENT is invisible locally -- while
+      being the state of every CI runner and every user who has not
+      installed a GPU extra.  That is how v2.4.0 was tagged and then refused
+      by its own `test` job on two rows of `tests/test_cli.py`, and the tag
+      was spent.  The reproduction is a venv with `pip install -e ".[dev]"`
+      and nothing else, which is exactly what the workflow installs:
+
+          python -m venv <scratch>/venv-ci
+          <scratch>/venv-ci/Scripts/python -m pip install -e ".[dev]"
+          cd <worktree> && PYTHONNOUSERSITE=1 <scratch>/venv-ci/Scripts/python               -m pytest -q -m "not gpu and not slow and not network" <the list>
+
+      The list is the one in `.github/workflows/publish.yml`; its files are
+      on `tools/battery/stage1_files.txt` so a lane runs them too, but the
+      list alone does not close this -- running them WITHOUT CuPy is the
+      half that catches the class.
 - [ ] The tag and `[project].version` in `pyproject.toml` agree
       (`vX.Y.Z` and `X.Y.Z`).  That equality is a refusal: a bundle named
       for one while the wheel says the other is a download nobody can find.

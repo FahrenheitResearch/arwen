@@ -76,6 +76,17 @@ def test_cli_exit_codes(monkeypatch, capsys):
     """main() returns 0 when every gate passes and 1 naming the failing
     gate on stderr -- exercised CPU-only through a stubbed case runner
     (the real gate table stays in force)."""
+    # This box's GPU estate is not this test's subject.  `gpuwm verify`
+    # and `gpuwm run` take a capability preflight from
+    # gpuwm.capabilities and refuse at exit 2 without CuPy, which is
+    # correct and is what tests/test_cli_capability_refusals.py proves.
+    # Here it would measure the runner instead of the code: green on a
+    # development box, red on every CI runner and every user install
+    # without a GPU extra.  Declaring the estate satisfied is the seam
+    # that lane uses for exactly this.
+    from gpuwm import capabilities
+
+    monkeypatch.setattr(capabilities, "is_installed", lambda module: True)
     good = _passing_straka()
     monkeypatch.setitem(cli._CASES, "straka",
                         SimpleNamespace(run=lambda outdir: dict(good)))
@@ -120,6 +131,17 @@ def test_real_case_subcommands_dispatch_loaded_config(monkeypatch, tmp_path,
     )
     monkeypatch.setattr(cli, "load_config", lambda path: cfg)
     monkeypatch.setitem(cli._REAL_CASES, "real74_d01", fake)
+    # This box's GPU estate is not this test's subject.  `gpuwm verify`
+    # and `gpuwm run` take a capability preflight from
+    # gpuwm.capabilities and refuse at exit 2 without CuPy, which is
+    # correct and is what tests/test_cli_capability_refusals.py proves.
+    # Here it would measure the runner instead of the code: green on a
+    # development box, red on every CI runner and every user install
+    # without a GPU extra.  Declaring the estate satisfied is the seam
+    # that lane uses for exactly this.
+    from gpuwm import capabilities
+
+    monkeypatch.setattr(capabilities, "is_installed", lambda module: True)
     config_path = tmp_path / "real74.toml"
     # A real regular file, because the CLI now decides the KIND of a
     # config path before anything opens it: a path that is not a

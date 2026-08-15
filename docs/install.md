@@ -216,8 +216,8 @@ observation battery and the demo gallery's basemaps.
 | `gpuwm[all-cu13]` | `gpu-cu13` + `render` | one line for a CUDA-13-only forecasting box |
 | `gpuwm[all]` | alias of `all-cu12` | kept so existing install lines keep working |
 | `gpuwm[geog]` | nothing | **empty as of 2.3.3.** rasterio and pyproj moved into the base install; the name is kept so `pip install 'gpuwm[geog]'` does not fail |
-| `gpuwm[obs]` | nothing | **empty as of 2.4.0.** scipy moved into the base install, so scoring a forecast against observations (`gpuwm.verify.obs`) works from `pip install gpuwm`; the name is kept so the old line does not fail |
-| `gpuwm[dealias]` | nothing | **empty as of 2.4.0.** scipy moved into the base install, so the `vad-region` dealiasing engine is selectable from `pip install gpuwm`; the name is kept so the old line does not fail |
+| `gpuwm[obs]` | nothing | **empty as of 2.4.1.** scipy moved into the base install, so scoring a forecast against observations (`gpuwm.verify.obs`) works from `pip install gpuwm`; the name is kept so the old line does not fail |
+| `gpuwm[dealias]` | nothing | **empty as of 2.4.1.** scipy moved into the base install, so the `vad-region` dealiasing engine is selectable from `pip install gpuwm`; the name is kept so the old line does not fail |
 
 `pyshp` moved into the base install alongside `scipy` for the same
 reason: `tools/da_nowcast_render.py` and the launcher's basemap endpoint
