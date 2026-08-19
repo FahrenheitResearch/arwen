@@ -94,7 +94,7 @@ tools/rrtmg_wrf461_oracle/sw_fixtures/sw-oracle-sha256sums.txt
 # SHA-256-verified against gpuwm/core/thompson_contract.py, and the
 # install scripts run that automatically; the development tree keeps
 # the file tracked as the source of truth for the release asset.
-gpuwm/data/thompson/tables/freezeH2O.dat
+gpuwm-data/gpuwm_data/data/thompson/tables/freezeH2O.dat
 
 # Raw test-run transcripts must never ship at repo root: they are triage
 # working evidence (the 1.4.1 battery evidence deliberately lived beside
