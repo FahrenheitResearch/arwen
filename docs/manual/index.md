@@ -1,8 +1,5 @@
 # ArWen 2.5 Scientific Manual
 
-**DRAFT for internal review. Nothing in this document is published, posted, or
-submitted anywhere. Author list and any venue are Drew's decision.**
-
 ArWen is an independent, GPU-native implementation of a WRF-ARW-class regional
 atmospheric model. It is not affiliated with or endorsed by NCAR or UCAR. The name is
 a wordmark for "the ARW solver, GPU-native"; the Python package is named `gpuwm`
