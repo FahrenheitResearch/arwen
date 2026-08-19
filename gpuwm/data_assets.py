@@ -313,6 +313,63 @@ def _check_version() -> None:
         f"    {companion_install_command()}")
 
 
+class CompanionDataMissing(FileNotFoundError):
+    """A companion that imports, version-checks, and lost a member.
+
+    The third companion state, beside "missing" and "skewed", and it is
+    the one the other two refusals cannot see: :func:`companion_root`'s
+    check is directory-level, so an importable package carrying a
+    ``data/`` directory answers even when a member a run needs is not in
+    it.  Real, not hypothetical: the first public-tree CI build shipped
+    a companion wheel with no ``rrtmgp/*.nc`` in it (a repository-wide
+    ``*.nc`` gitignore rule swallowed them when the release snapshot was
+    staged), and every front door died in a bare ``FileNotFoundError``
+    out of a NetCDF open mid-preflight.
+
+    ``FileNotFoundError`` so that ``errno``-minded callers keep working;
+    its own class so :func:`gpuwm.cli.main` can print it as the refusal
+    it is instead of relaying fifteen frames.
+    """
+
+
+def require_companion_member(relative: str | Path) -> Path:
+    """Resolve a companion-owned path and refuse BY NAME if it is absent.
+
+    The named refusal for the state :class:`CompanionDataMissing`
+    documents.  Loaders that open companion members directly call this
+    instead of joining onto a directory, so an incomplete companion is a
+    sentence with the member's name and the pip line -- at the front
+    door, before any traceback -- rather than a NetCDF open error.
+    """
+
+    posix = str(relative).replace("\\", "/").strip("/")
+    path = data_path(posix)
+    if path.is_file():
+        return path
+    if _required_companion_version() == _UNKNOWN_VERSION:
+        # An uninstalled source tree: the sibling checkout directory is
+        # answering, and the file is gone from it.
+        raise CompanionDataMissing(
+            f"gpuwm REFUSES to read packaged reference data: {posix} is "
+            f"absent from the {COMPANION_DISTRIBUTION} data tree at "
+            f"{path.parent}.  This gpuwm is an uninstalled source tree "
+            f"answering out of its sibling gpuwm-data/ directory, and a "
+            f"checkout always carries this member -- this one lost it.  "
+            f"Restore the file from the repository, or install the "
+            f"companion:\n    {companion_install_command()}")
+    remedy = companion_install_command().replace(
+        "pip install", "pip install --force-reinstall", 1)
+    raise CompanionDataMissing(
+        f"gpuwm REFUSES to read packaged reference data: {posix} is "
+        f"absent from the {COMPANION_DISTRIBUTION} data tree at "
+        f"{path.parent}.  The companion is importable and its version "
+        f"matches, but this member is not in it, so the scheme that "
+        f"reads it fails at table load -- an intact "
+        f"{COMPANION_DISTRIBUTION} always carries it, which means this "
+        f"install was edited or its wheel was built from an incomplete "
+        f"tree.  Fix it:\n    {remedy}")
+
+
 def _is_companion(relative: str) -> bool:
     posix = relative.replace("\\", "/").strip("/")
     return any(posix == tree or posix.startswith(tree + "/")
@@ -350,5 +407,7 @@ def thompson_table_dir() -> Path:
 
 
 __all__ = ["COMPANION_DISTRIBUTION", "COMPANION_PACKAGE", "COMPANION_TREES",
-           "companion_install_command", "companion_root", "data_path",
-           "package_data_root", "rrtmgp_data_dir", "thompson_table_dir"]
+           "CompanionDataMissing", "companion_install_command",
+           "companion_root", "data_path", "package_data_root",
+           "require_companion_member", "rrtmgp_data_dir",
+           "thompson_table_dir"]

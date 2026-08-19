@@ -332,6 +332,20 @@ def _link_directory(source: Path, link: Path) -> None:
         "package instead is 107 MiB per run")
 
 
+def _link_file(source: Path, link: Path) -> None:
+    """One member without the copy: hardlink where the volume allows it.
+
+    Hardlinks need no privilege on NTFS and the tables are the whole cost
+    -- ``rrtmgp-gas-sw-g224.nc`` alone is 10.6 MiB.  A cross-volume tmpdir
+    falls back to a real copy rather than skipping.
+    """
+
+    try:
+        os.link(source, link)
+    except OSError:
+        shutil.copy2(source, link)
+
+
 def _installed_shaped_tree(destination: Path) -> Path:
     """``<site-packages>/gpuwm`` serving THIS working tree's code.
 
@@ -491,6 +505,64 @@ def test_a_front_door_without_the_companion_refuses_without_a_traceback(
         f"remedy: {data_assets.companion_install_command()}"), (
         "the refusal must END in the command that fixes it; its last line "
         f"is {spoken[-1]!r}\n{output}")
+
+
+def test_a_front_door_with_an_incomplete_companion_refuses_without_a_traceback(
+    tmp_path: Path,
+) -> None:
+    """Present but incomplete is the THIRD companion state, and it is real.
+
+    The first public-tree CI run produced it: a repository-wide ``*.nc``
+    gitignore rule swallowed every ``data/rrtmgp/*.nc`` when the release
+    snapshot was ``git add``-ed, so the companion wheel built from that
+    checkout was importable, versioned correctly, carried a ``data/``
+    directory -- and had no k-distributions in it.  ``gpuwm domain`` died
+    with a bare ``FileNotFoundError`` out of a NetCDF open deep in the
+    preflight's radiation sizing: a traceback that names no distribution
+    and no remedy, which is exactly the shape the module docstring above
+    promises cannot happen.
+
+    The missing-companion and decoy tests cannot catch it: both remove or
+    replace the whole package, and ``companion_root()``'s directory-level
+    check passes an incomplete tree.  So the state is arranged exactly --
+    a real companion beside the install with ONE member absent -- and the
+    door must refuse with the member's name and the pip line, tracebackless.
+    """
+
+    root = _installed_shaped_tree(tmp_path / "site-packages")
+    # The companion must IMPORT here -- incomplete, not hidden.
+    (root / "sitecustomize.py").unlink()
+    source = COMPANION_ROOT / data_assets.COMPANION_PACKAGE
+    package = root / data_assets.COMPANION_PACKAGE
+    rrtmgp = package / "data" / "rrtmgp"
+    rrtmgp.mkdir(parents=True)
+    shutil.copy2(source / "__init__.py", package / "__init__.py")
+    shutil.copy2(source / "VERSION", package / "VERSION")
+    absent = "rrtmgp-gas-lw-g256.nc"
+    for entry in sorted((source / "data" / "rrtmgp").iterdir()):
+        if entry.name != absent:
+            _link_file(entry, rrtmgp / entry.name)
+    _link_directory(source / "data" / "thompson",
+                    package / "data" / "thompson")
+
+    result = _run_front_door(root, tmp_path, *_DOMAIN_ARGV,
+                             "--out", str(tmp_path / "case.toml"))
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0, (
+        "gpuwm domain exited 0 against a companion missing "
+        f"{absent}:\n{output}")
+    frames = _traceback_frames(output)
+    assert "Traceback (most recent call last)" not in output and not frames, (
+        f"gpuwm domain relayed a traceback ({len(frames)} frames) instead "
+        f"of refusing the incomplete companion:\n{output}")
+    assert data_assets.COMPANION_DISTRIBUTION in result.stderr, (
+        f"the refusal does not name the companion:\n{output}")
+    assert absent in result.stderr, (
+        f"the refusal does not name the absent member:\n{output}")
+    assert "REFUS" in result.stderr.upper(), output
+    assert "pip install" in result.stderr, (
+        f"the refusal does not end in the command that fixes it:\n{output}")
 
 
 def test_an_installed_wheel_refuses_a_decoy_companion_beside_it(

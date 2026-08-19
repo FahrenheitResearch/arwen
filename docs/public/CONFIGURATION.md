@@ -138,12 +138,13 @@ exactly, chained in float32 exactly as WRF chains it.
 steps. The adaptive time step (`use_adaptive_time_step`) is refused.
 
 Each `[[domain]]` may also carry an offset-free `start_time`. It defaults to
-`[experiment].start_time`; d01 must equal that root start. A delayed child is
-dormant until its timestamp, then follows the ordinary parent-state nest
-initialization path. The timestamp must be an exact boundary of its parent's
-step clock and an exact external-forcing seam. Restart headers persist
-`STARTED`/`NOT_STARTED` lifecycle state, so resuming before the timestamp does
-not initialize the child early.
+`[experiment].start_time`; d01 must equal that root start -- and, in this
+release, so must every child. Delayed nest activation is refused at load: a
+run that accepted it died at the activation epoch, where the child's first
+history frame is due before any microphysics step has stashed its
+microphysics-time REFL_10CM field. Start every domain at the experiment start.
+A delayed `start_time` that is also off its parent's step clock or an
+external-forcing seam keeps its more specific structural refusal.
 
 External boundary cadence has no whole-hour rule. It must be a positive,
 uniform whole-second interval and an exact integer number of d01 steps because

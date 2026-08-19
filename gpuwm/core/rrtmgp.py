@@ -45,6 +45,20 @@ from gpuwm.core.mynn_radiation import (
 DATA_DIR = data_assets.rrtmgp_data_dir()
 DTYPE = np.float32
 
+
+def _table(filename: str):
+    """One member, resolved through the refusal that can name it.
+
+    ``Dataset(DATA_DIR / filename)`` on an absent member is a bare
+    ``FileNotFoundError`` fifteen frames deep in whatever asked for
+    radiation -- measured at the front door when the first public-tree
+    companion wheel shipped without its ``rrtmgp/*.nc``.  The resolver
+    turns the same absence into ``data_assets.CompanionDataMissing``,
+    which ``gpuwm.cli.main`` prints as the sentence it is.
+    """
+
+    return data_assets.require_companion_member(f"rrtmgp/{filename}")
+
 # ---------------------------------------------------------------------------
 # Radiation-facing effective radii are contracted in MICRONS across every
 # microphysics writer (state.py background fills, thompson_contract.py,
@@ -1004,7 +1018,7 @@ def load_gas_tables(kind: str) -> GasTables:
         raise ValueError("kind must be 'lw' or 'sw'")
     filename = ("rrtmgp-gas-lw-g256.nc" if kind == "lw"
                 else "rrtmgp-gas-sw-g224.nc")
-    with Dataset(DATA_DIR / filename, "r") as nc:
+    with Dataset(_table(filename), "r") as nc:
         gas_names = _strings(nc["gas_names"])
         gas_minor = _strings(nc["gas_minor"])
         identifier_minor = _strings(nc["identifier_minor"])
@@ -1114,7 +1128,7 @@ def load_cloud_tables(kind: str) -> CloudTables:
     kind = kind.lower()
     if kind not in ("lw", "sw"):
         raise ValueError("kind must be 'lw' or 'sw'")
-    with Dataset(DATA_DIR / f"rrtmgp-clouds-{kind}-bnd.nc", "r") as nc:
+    with Dataset(_table(f"rrtmgp-clouds-{kind}-bnd.nc"), "r") as nc:
         return CloudTables(
             kind=kind,
             nband=len(nc.dimensions["nband"]),
@@ -1897,7 +1911,7 @@ class RRTMGPRadiation:
                 "above-model column adapter")
         self.lw_cloud_tables = load_cloud_tables("lw")
         self.sw_cloud_tables = load_cloud_tables("sw")
-        with Dataset(DATA_DIR / "rfmip-clear-sky-inputs.nc", "r") as ncfile:
+        with Dataset(_table("rfmip-clear-sky-inputs.nc"), "r") as ncfile:
             ncfile.set_auto_mask(False)
             for gas, rfmip_name in _RFMIP_GAS_NAMES.items():
                 variable = ncfile[rfmip_name + "_GM"]
@@ -2955,7 +2969,7 @@ def _planck_sources(tables: GasTables, play, plev, tlay, tlev, tsfc,
 def _rfmip_profiles(tables, sites, experiments):
     sites = np.asarray(sites, dtype=np.intp)
     experiments = np.asarray(experiments, dtype=np.intp)
-    with Dataset(DATA_DIR / "rfmip-clear-sky-inputs.nc", "r") as nc:
+    with Dataset(_table("rfmip-clear-sky-inputs.nc"), "r") as nc:
         nc.set_auto_mask(False)
         nsite, nexp = sites.size, experiments.size
         play_site = np.asarray(nc["pres_layer"][sites], np.float64)

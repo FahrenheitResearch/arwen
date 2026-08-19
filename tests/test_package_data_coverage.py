@@ -686,6 +686,59 @@ def test_runtime_data_assets_survive_the_globs(
         )
 
 
+def test_no_shipped_data_file_is_swallowed_by_gitignore() -> None:
+    """A shipped data file that .gitignore matches is a sprung trap, not a
+    hypothetical.
+
+    The first public-tree CI run (32280494350) paid for it: the release
+    snapshot carries this repository's .gitignore, whose repo-wide
+    ``*.nc`` rule (written for model OUTPUT) matched the companion's nine
+    ``data/rrtmgp/*.nc``.  In the private repository they are tracked --
+    force-added once, so nothing here ever noticed -- but any fresh
+    ``git add`` of the snapshot silently drops them, and the public
+    repository was born without its k-distributions: the companion wheel
+    built from that checkout imports, version-checks, and dies at the
+    first radiation table load.
+
+    So the rule: every data file the two wheels ship must be invisible
+    to .gitignore.  ``--no-index``, because check-ignore consults the
+    index by default and a TRACKED-but-ignored file -- the exact trap --
+    reports clean without it.  The remedy is a negation beside the rule
+    that matches (the crate goldens' ``!*.nc`` is the precedent), never
+    untracking the file.
+    """
+
+    _require_source_tree()
+    _require_companion_tree()
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("no .git here, so there is no ignore machinery to "
+                    "spring; the gate runs in every real checkout")
+    import subprocess
+
+    candidates = sorted(_files_on_disk()
+                        | _files_on_disk(COMPANION_PACKAGE_ROOT, REPO_ROOT))
+    assert candidates, "found no data files at all -- the walk is broken"
+    # NUL-terminated bytes, deliberately: a text-mode pipe on Windows
+    # rewrites "\n" to "\r\n" on the way in, git then finds no path that
+    # ends in a carriage return, and the gate reports clean over a probe
+    # that measured nothing -- the exact vacuous green it exists to end.
+    probe = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--stdin", "-z"],
+        cwd=str(REPO_ROOT),
+        input="\0".join(candidates).encode("utf-8"),
+        capture_output=True)
+    # 0 = some matched, 1 = none matched; anything else is git failing.
+    assert probe.returncode in (0, 1), probe.stderr.decode(errors="replace")
+    swallowed = [entry for entry in
+                 probe.stdout.decode("utf-8").split("\0") if entry]
+    assert not swallowed, (
+        f"{len(swallowed)} shipped data file(s) are matched by .gitignore, "
+        "so a fresh `git add` of a release snapshot drops them and the "
+        "published tree ships a companion that dies at table load.  Add a "
+        "negation beside the rule that matches (see the crate goldens' "
+        "!*.nc for the shape):\n  " + "\n  ".join(swallowed))
+
+
 def test_the_thompson_aerosol_table_reaches_the_wheel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

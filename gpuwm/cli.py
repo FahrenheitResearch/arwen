@@ -60,6 +60,7 @@ import sys
 from pathlib import Path
 
 from gpuwm import capabilities
+from gpuwm import data_assets
 from gpuwm.adapt import register_cli as adapt_register_cli
 from gpuwm.bridge_assets import register_cli as bridge_assets_register_cli
 from gpuwm.certify.cli import register_cli as certify_register_cli
@@ -611,6 +612,15 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
                          command=f"gpuwm {args.command}"), file=sys.stderr)
             return 2
         raise
+    except data_assets.CompanionDataMissing as error:
+        # The companion's THIRD failure state: importable, version-matched,
+        # and missing a member.  The branch above cannot see it (nothing is
+        # unimportable) and a generic handler would relay the NetCDF open's
+        # fifteen frames -- measured at this door when the first public-tree
+        # companion wheel shipped without its rrtmgp/*.nc.  The message
+        # already names the member, the breakage, and the pip line.
+        print(f"gpuwm {args.command}: {error}", file=sys.stderr)
+        return 2
     except ValueError as error:
         # Documented refusals (the wizard's latitude/antimeridian
         # windows, fetch's source contracts, downscale's cadence and

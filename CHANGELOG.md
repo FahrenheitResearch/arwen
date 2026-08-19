@@ -210,17 +210,18 @@ Fixed:
   through 3.14 install.
 - `gpuwm doctor` derives its wheel-matrix sentence from the recorded
   interpreter ceiling, not a constant beside it.
-- A moving nest cold-restarted every driver-held per-column physics array
-  at each relocation, wiping precipitation and convection memory; also in
-  2.4.1. The continuation moves with the nest now; only the newly exposed
-  strip cold-starts. Default-on.
+- A moving nest cold-restarted every driver-held physics array at
+  relocation, wiping precipitation memory (also 2.4.1). Continuation
+  moves with the nest; only the exposed strip cold-starts. Default-on.
+- A nested domain starting later than the experiment refuses at config
+  load, naming the activation-epoch crash.
 - A cross-domain wrfout writer abort names its own root cause, and a
   missing-Rust-artifact remedy names its own crate.
 - `gpuwm.hrrr_hierarchy_direct` grew `--ack`, so the shortwave-only profiles
   no longer refuse their own wizard-emitted namelists.
-- The preparation front door owns its refusals: out-of-coverage grids and
-  too-short staged series are their own classes now, sentence plus remedy
-  on stderr, exit `78`, not `ValueError` tracebacks.
+- The preparation door owns its refusals: out-of-coverage grids and
+  short staged series are their own classes, sentence plus remedy on
+  stderr, exit `78`, not tracebacks.
 - `--source gem` selects the Canadian global route by the model's common
   name; it is an alias row now, and the CLI reference carries the
   alias table.

@@ -1311,37 +1311,36 @@ def test_cycle_selection_refuses_leapfrog_and_stale_active(tmp_path):
         stream._select_cycle(plan, backend, after_cycle=after)
 
 
-def test_materialized_namelists_preserve_delayed_child_start(tmp_path):
-    plan = _make_plan(
-        tmp_path, cycle_count=1, target_lead=1, delayed_child=True)
-    cycle = datetime(2026, 7, 23, 10)
-    backend = FakeBackend([cycle])
-
-    stream.run_stream(plan, backend=backend, progress=lambda _: None)
-
-    configs = (
-        plan.work_root / "cycles" / cycle.strftime("%Y%m%dT%H")
-        / "legs" / "f001" / "configs")
-    materialized = load_experiment(configs / "experiment.toml")
-    assert materialized.domain_start_time(2) == datetime(2026, 7, 23, 10, 30)
-    for name in ("namelist.input", "namelist.stock.input"):
-        time_control = parse_namelist(configs / name)["time_control"]
-        assert time_control["start_hour"] == [10, 10]
-        assert time_control["start_minute"] == [0, 30]
-        assert time_control["end_hour"] == [11, 11]
+def test_a_delayed_child_stream_plan_refuses_at_plan_load(tmp_path):
+    """Task #205 flipped this pin.  This test used to run a full cycle
+    and assert the materialized experiment.toml and namelists PRESERVED
+    the delayed child start -- acceptance that ended at the activation
+    epoch with "REFL_10CM output is due but no microphysics-time field
+    is stashed".  The stream plan now refuses at load, before any cycle
+    spends anything; the materialization contract returns when delayed
+    activation gains its activation-epoch stash."""
+    with pytest.raises(ValueError, match="delayed nest activation"):
+        _make_plan(
+            tmp_path, cycle_count=1, target_lead=1, delayed_child=True)
 
 
 def test_child_start_at_first_leg_endpoint_is_refused(tmp_path):
-    plan = _make_plan(
-        tmp_path, cycle_count=1, target_lead=1, delayed_child=True)
+    """The leg-endpoint case now sits behind the categorical task #205
+    refusal: every delayed child refuses at plan load, endpoint
+    included.  The stream-side endpoint gate ("start before the first
+    one-hour stream leg ends") stays in the source for the day the
+    categorical refusal lifts."""
+    plan = _make_plan(tmp_path, cycle_count=1, target_lead=1)
     source = plan.experiment_config
     source.write_text(
         source.read_text(encoding="utf-8").replace(
             "run_seconds = 3600.0", "run_seconds = 7200.0").replace(
-            "2026-07-23T00:30:00", "2026-07-23T01:00:00"),
+            "parent_time_step_ratio = 3",
+            "parent_time_step_ratio = 3\n"
+            "start_time = 2026-07-23T01:00:00"),
         encoding="utf-8")
 
-    with pytest.raises(ValueError, match="start before the first one-hour"):
+    with pytest.raises(ValueError, match="delayed nest activation"):
         stream.load_stream_plan(plan.path)
 
 

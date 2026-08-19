@@ -16,6 +16,14 @@ gpuwm/libexec/
 # once (they had to be force-added at 4dd3e82).  Output/scratch NetCDF
 # stays ignored; anything under configs/ is a deliberate, reviewed asset.
 !configs/**/*.nc
+# The companion's shipped reference tables are NetCDF too, and the same
+# rule sprang again: a fresh `git add` of the public release snapshot
+# silently dropped all nine data/rrtmgp/*.nc, so the published tree's
+# companion wheel imported, version-checked, and had no k-distributions
+# in it (first public-tree CI run, 32280494350).  The development copies
+# are force-added; this negation is what makes the NEXT fresh add keep
+# them, and tests/test_package_data_coverage.py gates it.
+!gpuwm-data/gpuwm_data/data/**/*.nc
 # Externalized table asset: published as a GitHub release asset and
 # staged by `gpuwm fetch-tables` (never in the public git history --
 # GitHub rejects blobs over 100 MiB).  The development tree force-tracks

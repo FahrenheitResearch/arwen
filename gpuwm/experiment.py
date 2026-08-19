@@ -2211,6 +2211,43 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                     f"{dt_by_id[parent_id]} s exactly, "
                     f"(child-parent start offset)/dt = "
                     f"{parent_steps}.")
+            # Task #205: delayed nest activation passed every gate here
+            # and then deterministically killed the run at the activation
+            # epoch, hours of integration in.  Ordering is deliberate --
+            # the structural refusals above (window, parent precedence,
+            # step alignment) stay first, because those configs remain
+            # invalid even once delayed activation gains its
+            # activation-epoch stash and this refusal is lifted.  A
+            # domain that also declares spawn is left for the spawn
+            # block's own refusal below ("activation time belongs to its
+            # trigger"), which names that conflict more precisely than
+            # this one can.
+            if domain_start != start_time and "spawn" not in dom:
+                raise ValueError(layered(
+                    "delayed nest activation is refused: start_time = "
+                    f"{domain_start.isoformat()} on d{grid_id:02d} of "
+                    f"{source} is later than [experiment].start_time = "
+                    f"{start_time.isoformat()}, and a run that accepts "
+                    "it dies at the activation epoch, where the child's "
+                    "first history frame is due before any microphysics "
+                    "step has stashed its microphysics-time REFL_10CM "
+                    "field. Start every [[domain]] at "
+                    "[experiment].start_time (remove this start_time "
+                    "key).",
+                    "The tree history writer consumes a "
+                    "microphysics-time REFL_10CM stash for every frame "
+                    "after the experiment's own t = 0 "
+                    "(gpuwm.runtime._submit_tree_history_frame -> "
+                    "gpuwm.core.refl.consume_refl_10cm), and the stash "
+                    "is produced only inside a microphysics step of the "
+                    "same domain.  A delayed child's first history frame "
+                    "is due AT its activation epoch, before any of its "
+                    "steps has run, so the consume raises 'REFL_10CM "
+                    "output is due but no microphysics-time field is "
+                    "stashed' and the run dies there, deterministically. "
+                    "Refusing upfront replaces accepting the config and "
+                    "burning the run; a config whose domains all start "
+                    "together at [experiment].start_time is unaffected."))
 
         # --- spawn: the dormant-nest declaration ------------------------
         spawn_cfg = None
