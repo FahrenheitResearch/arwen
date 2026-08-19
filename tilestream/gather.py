@@ -6,8 +6,9 @@ operations and nothing else::
     gather_tile(store, tile_state, spec, stream=None)   # domain -> tile
     scatter_tile(tile_state, store, spec, stream=None)  # tile interior -> domain
 
-``store`` holds the full domain's persisted inventory -- the 41 names in
-``gpuwm.state_serialization_contract.STATE_SERIALIZED_ATTRS`` -- as arrays that
+``store`` holds the full domain's persisted inventory -- the names in
+``gpuwm.state_serialization_contract.STATE_SERIALIZED_ATTRS`` (47 as of the
+mp9/P3 restart fixes; ``test_gather`` pins the exact count) -- as arrays that
 may live in PINNED host RAM (the out-of-core case) or on the device (the
 in-core gate).  ``tile_state`` is a ``DomainState`` built on the tile config.
 ``spec`` is a ``TileSpec`` from ``tilestream.spec`` (see "Spec contract").
@@ -286,7 +287,7 @@ class HostStore:
     """A pinned host mirror of a state's persisted inventory.
 
     Exposes each held field as an attribute (``store.thp``) so it satisfies
-    the "``store`` exposes the 41 ``STATE_SERIALIZED_ATTRS``" contract, and
+    the "``store`` exposes the ``STATE_SERIALIZED_ATTRS``" contract, and
     also behaves as a read-only mapping.  Names the configuration did not
     allocate are simply absent -- that is the serialization contract's own
     convention (``getattr(state, name, None) is None``), and

@@ -45,6 +45,23 @@ Practicalities:
   build the Rust workspace with
   `cargo build --release --locked --offline` from `tools/grib1_bridge`
   (the vendored, locked build is the supported one).
+- This repository builds **two** distributions. `pyproject.toml` at the
+  root builds `gpuwm`; `gpuwm-data/pyproject.toml` builds `gpuwm-data`,
+  which carries the RRTMGP and Thompson table directories because the
+  single wheel had reached 103.62 MiB against PyPI's 100 MiB cap. Build
+  them with `python -m build --wheel` and `python -m build --wheel
+  gpuwm-data`, from a tree with no stale `build/` in either place. They
+  share one version string and are cut and uploaded together
+  (RELEASE_CHECKLIST.md).
+  A checkout needs no `pip install -e gpuwm-data` to READ the tables:
+  `gpuwm.data_assets` falls to the sibling directory when `gpuwm` is
+  running out of the same tree. Reach those files through
+  `data_assets.data_path()` and never by joining onto `gpuwm/data`.
+  `gpuwm doctor` is a different question and will still report
+  `gpuwm-data: not installed` in such an environment, correctly: it
+  reads the installed distribution's metadata, and an installed `gpuwm`
+  really is missing a dependency it declares. Install the companion
+  (`pip install -e gpuwm-data`) to clear the line.
 - Run the focused tests for the changed surface first, then the broad
   CPU suite it touches. Rust changes must pass locked offline tests
   and strict formatting.

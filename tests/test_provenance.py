@@ -454,6 +454,72 @@ def test_the_answer_is_cached_so_it_can_be_called_at_every_start(monkeypatch):
     assert len(calls) == 1, "refresh=True did not re-measure"
 
 
+def test_the_git_identity_is_the_executing_trees_not_the_installs(tmp_path):
+    """Worktree code must stamp the WORKTREE's commit, not the install's.
+
+    An editable install's PEP 610 direct_url names the MAIN checkout.
+    When a parallel worktree's code is what actually imports (its cwd
+    precedes site-packages on sys.path), the receipt banner used to
+    stamp the MAIN checkout's git identity into receipts written by
+    WORKTREE code -- found independently by two gauntlet lanes.  The
+    identity belongs to the tree that owns the executing package.
+    """
+
+    install = tmp_path / "main-checkout"
+    _package(install)
+    _pyproject(install, version="1.8.7")
+    _git_init(install)
+    worktree = tmp_path / "worktree"
+    package = _package(worktree)
+    _pyproject(worktree, version="1.8.7")
+    _git_init(worktree)
+    (worktree / "tracked.txt").write_text("worktree line\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "-A"],
+                   capture_output=True, check=False)
+    subprocess.run(["git", "-C", str(worktree), "-c", "user.email=t@t",
+                    "-c", "user.name=t", "commit", "-q", "-m", "worktree"],
+                   capture_output=True, check=False)
+
+    resolved = describe_provenance(
+        package, _dist_info(tmp_path / "site-packages", version="1.8.7",
+                            editable_at=install),
+        reported_version="1.8.7")
+
+    def _head(root: Path) -> str:
+        return subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=False).stdout.strip()
+
+    assert resolved.git is not None
+    assert resolved.git["commit_full"] == _head(worktree)
+    assert resolved.git["commit_full"] != _head(install)
+
+
+def test_a_src_layout_still_falls_back_to_the_editable_root(tmp_path):
+    """The executing tree wins only when it IS a checkout top.
+
+    In a src/ layout the package's parent is not the repository root, so
+    probing it yields nothing; the distribution's editable root is then
+    the only honest identity left and must still be reported.
+    """
+
+    project = tmp_path / "project"
+    package = _package(project / "src")
+    _pyproject(project, version="1.8.7")
+    _git_init(project)
+
+    resolved = describe_provenance(
+        package, _dist_info(tmp_path / "site-packages", version="1.8.7",
+                            editable_at=project),
+        reported_version="1.8.7")
+
+    assert resolved.git is not None
+    head = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=False).stdout.strip()
+    assert resolved.git["commit_full"] == head
+
+
 # ---------------------------------------------------------------------------
 # against the artifact: this very process, and a clean child process
 # ---------------------------------------------------------------------------

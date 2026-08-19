@@ -572,9 +572,23 @@ def read_pairing_fields(path: Path) -> dict[str, np.ndarray]:
     return _read_named(path, PAIRING_FIELDS)
 
 
+def _open_decoded(path: Path):
+    """Open for FIELD decoding, through the Rust bridge.
+
+    Separate from :func:`_open_dataset` above, which stays on netCDF4
+    for :func:`frame_identity`: that one reads the ``Times`` character
+    array, and the vendored netcrust reader exposes no character read at
+    all.  Splitting the two openers is what lets the field half move
+    without pretending the identity half can.
+    """
+    from gpuwm import netcdf_bridge  # noqa: PLC0415
+
+    return netcdf_bridge.open_dataset(path)
+
+
 def _read_named(path: Path, names: tuple[str, ...]) -> dict[str, np.ndarray]:
     fields: dict[str, np.ndarray] = {}
-    with _open_dataset(path) as dataset:
+    with _open_decoded(path) as dataset:
         for name in names:
             variable = dataset.variables.get(name)
             if variable is None:

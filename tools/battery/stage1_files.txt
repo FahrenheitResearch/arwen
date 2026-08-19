@@ -64,6 +64,14 @@ tests/test_letkf_osse.py
 tests/test_certification_capsule.py
 tests/test_package_data_coverage.py
 
+# The companion distribution split (2.5.0).  gpuwm-data carries the
+# RRTMGP and Thompson table directories because the single wheel had
+# reached 103.62 MiB against PyPI's 100 MiB cap.  Stage 1 gates it
+# because both halves are cut and uploaded together: a version that
+# drifted, or a moved table whose bytes changed, is a release-shaped
+# failure and nothing else in stage 1 would see it.
+tests/test_companion_distribution.py
+
 # Task #121: the physics registry and its citation checker.  The 1.8.5
 # battery was the first to inherit the checker, and stage 1 had no gate
 # on the registry itself until this entry was added.
@@ -490,6 +498,11 @@ tests/test_publish_workflow_state_machine.py
 # mid cut.  1 s, 0.4 s and 2 s respectively; test_doctor_da_eigensolver.py
 # carries two field failures behind it.
 tests/test_verify_source_bridge_pins.py
+# The other half of the pins story: the source tree must stay unpinned
+# (above), and no WHEEL may be built while it is (below) -- the 2.5.0
+# candidate was built with the pin step skipped and installed on a clean
+# home as FAILED bridges.  ~4 s; also on always_files.txt.
+tests/test_wheel_pin_gate.py
 tests/test_doctor_nexrad.py
 tests/test_doctor_da_eigensolver.py
 
@@ -600,6 +613,18 @@ tests/test_wizard_adapter_roundtrip.py
 # CPU-only, under a second; the failure it guards is a crash in a
 # user-selectable profile.
 tests/test_shinhong_composed_tke_guard.py
+
+# The upstream half of the same class: the ONLY input that reproduces
+# the task-#206 crash signature is entry TKE at or below zero (or
+# non-finite) reaching the chain, so the driver re-asserts WRF's
+# shinhonginit floor at the seam, in place, said once.  This suite pins
+# the hazard class through the float32 authority (zero/negative/NaN in,
+# passenger pair non-finite while every tendency holds), the driver's
+# heal (degenerate entries reach the launch AT the floor, healthy
+# values bit-untouched, the identity fast path allocates nothing), and
+# the advisory latch.  CPU-only except one gpu-marked end-to-end
+# injected-cliff micro-run.
+tests/test_shinhong_entry_floor.py
 
 # 2.3 streamed-child lane: the CPU-hermetic half of the resident-parent +
 # tile-streamed-child corridor -- the frame rule and its slice-rule
@@ -727,3 +752,111 @@ tests/test_table_fetch.py
 tests/test_source_adapters.py
 tests/test_namelist_compat.py
 tests/test_bridge_bundle_adopt.py
+
+# 2.5.0: the arbitrary-input door.  This release's headline is a pipeline a
+# user drives from their own script -- their Vtable, their NetCDF, their
+# namelist -- and the two suites that gate it were not on this list.  A
+# guard added mid-cycle (mapped_authoring._require_declared_unit_scale)
+# then refused this project's OWN shipped GFS and ERA5 authorities on
+# land_fraction and volumetric_soil_moisture, which killed every compile
+# route into the door, and stage 1 reported zero failures on that tree.
+# Ten node failures, in the headline feature, invisible to the release
+# gate.  Both files are fast and CPU-only, so they belong here.
+tests/test_adapt.py
+tests/test_mapped_authoring.py
+
+# 2.5.0 integration: the nine suites that gate THIS release's headline
+# features and its cut mechanics.  Each one was written by a lane that
+# could only run it against its own branch; none of them was on this
+# list, so the battery that decides whether a cut may proceed could not
+# see the release gates themselves.  Two concrete holes this closes:
+# the packaging change that puts configs/ in the wheel (the LES cases
+# are unreachable from a plain `pip install` without it) and the
+# equivalence gate that keeps `gpuwm go` a composition of `gpuwm sim`
+# rather than a second implementation -- the latter BROKE on merge and
+# was caught only because integration ran the full suite.
+# All nine are CPU-only and fast; measured together at 163 tests.
+tests/test_release_version_declaration.py
+tests/test_publish_dist_shape_agreement.py
+tests/test_configs_are_packaged.py
+tests/test_stage_seams.py
+tests/test_progress_log.py
+tests/test_render_layout.py
+tests/test_chain_deep_ladder.py
+tests/test_les_mixing_default.py
+tests/test_dual_run_screen.py
+
+# ---------------------------------------------------------------------------
+# 2.5.0 release blocker #5: the tilestream pytest suites join the battery.
+# ---------------------------------------------------------------------------
+# tilestream/ carries 13 pytest suites (312 tests) beside its `python -m`
+# script gates, and NO list ran any of them: pyproject testpaths said
+# ["tests"], this file said tests/ only, and the gpu shard likewise -- so
+# 11 failures and a collection error (test_hoststore.py::test_pinning had
+# NEVER executed under pytest) sat invisible until the gating pass measured
+# them.  tilestream/conftest.py now extends tests/conftest.py's GPU-marking
+# discipline over the tree, so under this leg's GPUWM_NO_LOCAL_GPU=1 the
+# device halves skip and what runs is CPU arithmetic.  Entries below are the
+# files MEASURED to carry live coverage in that mode (Windows cut box,
+# 2026-08-16, wall seconds per isolated pytest invocation in parentheses).
+# NOT listed, deliberately: test_overlap.py and test_tile_hook_contract.py
+# -- their modules' main() runners are already per-cut cpu entries in
+# tools/battery/tiles_gates.txt and run MORE than their pytest half, so a
+# listing here would double-run the lesser form; test_gather.py,
+# test_graphcap.py, test_hoststore.py, test_exchange_pack.py -- 100% (or
+# all-but-none) skipped in this mode, they are the gpu shard's.
+#
+# The tile/window geometry contract and its validate_plan checker (2.3 s).
+tilestream/test_spec.py
+# The ring-arena dependency model: saved bands, WAR deps, patch sources (1.8 s).
+tilestream/test_rings.py
+# The planner: rungs, budgets, refusal attribution (geometry vs vram, the
+# scaling lane's smaller-arm CannotPlan inversion is pinned here), 42 CPU
+# tests; its two device tests skip here and run on the gpu shard (9.9 s).
+tilestream/test_autoplan.py
+# The [tiles] admission story on the release line: estimate mode-blindness,
+# the run/tree routes streaming instead of refusing, gpuwm go admitting
+# mode='on' pre-fetch, and the OPEN two-VRAM-models defect pin (3.6 s).
+tilestream/test_ledger_gate.py
+# The prepared-store serialization surface, 128 tests, numpy only (1.9 s).
+tilestream/test_prepared_store.py
+# The store-direct frame road's CPU half (2.5 s).
+tilestream/test_store_direct_frame.py
+# hoststore.host_memory portable on Windows -- the box THIS leg runs on; the
+# suite lives outside test_hoststore.py precisely so the cpu leg can see it
+# (that module's helpers import cupy, so all of it skips here) (1.8 s).
+tilestream/test_hostmem.py
+
+# Task #154 (MPAS physics seam counterparty): the column-batch contract
+# is a cross-program API an external MPAS core builds against.  This
+# suite pins the published name, the orchestration-identity leaf-wrapper
+# refusal, the cadence law and the whole pre-device refusal surface.
+# ~0.4 s, CPU-only; the behavioural half is GPU-marked and runs on the
+# rented card.
+tests/test_mpas_column_batch.py
+
+# The NOAHMP_GLACIER port (MPAS collaborator, real x4 case): the
+# CPU-hermetic half pins the transcription's own WRF balance gates, the
+# dispatch partition, the 0.02-vs-0.5 threshold boundary, the
+# native-XLAND contract and the parameters' refusal surface.  ~0.5 s,
+# CPU-only; the CUDA/host bitwise parity and the full-seam behaviour
+# are GPU-marked in tests/test_noahmp_glacier_gpu.py on the rented card.
+tests/test_noahmp_glacier.py
+
+# Spectral verification v2 (additive lane beside the frozen v1 metric): the
+# CPU-only controls for physical wavelength bands, amplitude-vs-phase error
+# separation, rotational/divergent wind KE, fail-closed preregistration and
+# self-hashed receipts, calibrated-only gates, and receipt-bound plotting.
+# The v1 pin in tests/test_spectral.py is untouched and stays the frozen one;
+# these two suites are what would catch a v2 pin or band rule moving silently.
+tests/test_spectral_compare_v2.py
+tests/test_spectral_receipt_v2.py
+
+# The 2.5.0 RC verify (2026-08-18) found this suite priced in
+# tools/battery/durations.json but on no leg's list, so "no case names in
+# generic code" -- one of the project's binding laws -- had no stage-1
+# gate at all.  The class of breakage is a case token reaching defaults,
+# core or a generic identifier: it killed a prior project, it is the kind
+# of thing a source-adding lane introduces without noticing, and every
+# cut ships whatever is in those files.  1.0 s, CPU-only.
+tests/test_case_token_leakage.py

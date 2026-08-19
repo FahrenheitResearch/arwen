@@ -40,23 +40,86 @@ certification. A bounded native 25 km -> 12.5 km, 49-level GPU smoke and an
 unchanged stock-WRF startup remain required. The supplied three-hour sample
 does not certify a separate private hourly/80-member archive layout.
 
-## Complementary NetCDF-CF ensemble primitives
+## The NetCDF route: `--source 20crv3-cf`
 
-`gpuwm.twentycrv3` preserves the separate metadata-driven implementation for
-NetCDF-CF ensemble products. It discovers coordinates and member count from
-the files, validates hourly or three-hourly coverage without manufacturing
-missing times, normalizes dimension order and units into canonical source
-frames, plans memory-bounded member batches, and publishes deterministic
-hash-addressed generations atomically. Synthetic fixtures cover 2- and
-5-member files, permuted dimensions, ascending/descending axes, 1- and 3-hour
-cadence, arbitrary target vertical counts including 80, corrupt members,
-bounded retention, and worker-count-independent output bytes.
+This is the 20CRv3 anyone can actually download.  NOAA PSL publishes the
+reanalysis as NetCDF -- one variable per file per year, three-hourly, on a
+global 1-degree grid -- and `gpuwm prep --source 20crv3-cf` reads it
+directly, through the Rust `rw_netcdf` bridge, with no per-model decode
+code at all.  The whole adapter is three JSON documents shipped in the
+wheel (`gpuwm/authorities/rw-wps-20crv3-netcdf.{mapping,composition,provenance}.json`),
+pinned by SHA-256 in `gpuwm.source_authorities`, plus one row of the
+adapter registry naming that profile.  The runner is the generic
+`mapped_composition_v1`.
 
-This NetCDF-CF surface is intentionally registered separately as
-`20crv3-cf` with aliases such as `20crv3-netcdf`. It remains non-runnable from
-the public WRF CLI until a real corpus is bound to a complete field mapping
-and the resulting initialization passes the native/stock-WRF gates. It does
-not inherit the exact filename-bound GRIB2 route's certification evidence.
+It replaced `gpuwm/twentycrv3.py`, a 1,185-line per-model NetCDF-CF
+decoder with no product consumer that read files with the C netCDF4
+library rather than through the bridge.  That module is deleted; what it
+promised is what the mapping table now states declaratively.
+
+### What a user types
+
+```text
+python tools/download_20crv3_native_subset.py     --start 1974-04-03T18:00:00 --frames 2     --north 50 --south 30 --west -105 --east -80     --output subset
+
+gpuwm prep --source 20crv3-cf     --input subset/air.nc --input subset/hgt.nc --input subset/shum.nc     --input subset/uwnd.nc --input subset/vwnd.nc     --input subset/pres.sfc.nc --input subset/skt.nc     --input subset/air.2m.nc --input subset/shum.2m.nc     --input subset/uwnd.10m.nc --input subset/vwnd.10m.nc     --input subset/tsoil.nc --input subset/soilw.nc     --input subset/invariant.nc     --supplement subset/invariant.nc     --author-input-manifest subset/inputs.json     --wps-namelist configs/twentycrv3_netcdf_demo.namelist.wps     --geog-root <WPS_GEOG>     --experiment-config configs/twentycrv3_netcdf_demo.toml     --output-root prepared
+
+gpuwm sim prepared     --experiment-config configs/twentycrv3_netcdf_demo.toml     --wps-namelist configs/twentycrv3_netcdf_demo.namelist.wps     --outdir run
+```
+
+`tools/demo_20crv3_netcdf.sh WORKDIR GEOG_ROOT` is all of that plus the
+render, in one script.  Note what the `prep` line does NOT contain: no
+`--mapping`, no `--composition`, no `--provenance`, no `--source-format`.
+The packaged profile supplies them and byte-checks them, and a caller who
+passes one is refused rather than quietly overriding a shipped contract.
+
+### What it decodes, MEASURED 2026-08-16/17
+
+* 21 common pressure levels, 1000 to 100 hPa.  20CRv3 publishes air,
+  height and wind on 28 levels and specific humidity on 21; the mapping
+  declares the intersection and the decoder selects those levels by VALUE
+  out of every file that has more.
+* The complete surface state, from four different directories, where the
+  same variable NAME means different things (`air` on pressure levels and
+  `air` at 2 m).  The mapping's selectors carry a `level_desc` attribute
+  discriminator, so the file's own self-description decides.
+* The exact four Noah soil layers, addressed as four layer slices of ONE
+  `tsoil`/`soilw` variable by the depth on its own coordinate (0, 10, 40,
+  100 cm), each bound to the composition's declared layer top.
+* Three-hourly analyses; `boundary_interval_seconds = 10800`.
+
+### The two limits, stated
+
+**It is the ENSEMBLE MEAN.**  Every variable in PSL's distribution carries
+`statistic = "Ensemble Mean"`.  It is not one of the 80 members and is
+smoother than any of them.  For a member state the route is unchanged:
+`--source 20crv3` over the every-member GRIB2 archive.
+
+**PSL publishes no orography and no land mask** for 20CRv3 (MEASURED
+2026-08-16: no `hgt.sfc`, `land` or `lsmask` file exists anywhere under
+`Datasets/20thC_ReanV3/`).  Both are recovered from 20CRv3's own published
+fields by `tools/build_pressure_level_invariant_supplement.py` -- the
+orography by evaluating the published pressure-level geopotential height
+at the published surface pressure, linearly in `ln p`; the land mask as
+the valid footprint of the published soil wilting point -- and carried as
+one supplement whose provenance document states the method and the
+divergence.  Sanity, MEASURED at 1974-04-03 18Z: 2275 m at 39N/105W
+(Colorado Front Range), 379 m at 35N/98W (central Oklahoma), 50 m at
+30N/92W (Louisiana coast).
+
+### Evidence, MEASURED 2026-08-17
+
+Real NOAA data, real front door, on the development Windows host:
+
+| | |
+|---|---|
+| download for a 2-frame 25x20 degree window | 737,620 bytes, 14 files |
+| `gpuwm prep --source 20crv3-cf` | exit 0, 3.7 s (decode 0.9 s, statics 1.6 s) |
+| `gpuwm sim` | exit 0, 120 steps, 3 forecast hours, 19.1 s, no NaNs |
+| `gpuwm render --engine rust` | 12 product PNGs through `rw_wrfbatch` |
+
+The route is runnable and is NOT stock-WRF certified: no unchanged
+`wrf.exe` has been run against its exported inputs.
 
 ## Purpose
 

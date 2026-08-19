@@ -355,14 +355,19 @@ def compare_head_to_head(output_path, reference_path) -> HeadToHeadMetrics:
     )
 
 
+#: The four charts the Task 13 verification wants, as slugs in the
+#: production renderer's own catalog.  Same four subjects the case has
+#: always published -- mean-sea-level pressure, 2 m temperature, 500 hPa
+#: height with wind, and the forecast-hours-6-to-12 accumulation -- with
+#: the drawing moved to the engine the render law names (audit F6).
+#:
+#: ``qpf_6h`` is why :func:`make_task13_maps` hands the renderer BOTH
+#: files: the engine defines it as F012 minus F006 from stored run-total
+#: accumulations, which is exactly the difference this case used to take
+#: in numpy, and it can only take it from a store that holds both frames.
 _SYNOPTIC_MAP_SPEC = SynopticMapSpec(
-    mslp_t2_filename="real74_mslp_t2.png",
-    mslp_t2_title="gpuwm +12 h MSLP and 2 m temperature",
-    height_wind_filename="real74_500hpa.png",
-    height_wind_title="gpuwm +12 h 500 hPa height and grid-relative wind",
-    precip_filename="real74_precip_6h.png",
-    precip_title=("gpuwm forecast hours 6-12 total precipitation "
-                  "(grid-scale + convective)"),
+    products=("mslp_10m_winds", "2m_temperature", "500mb_height_winds",
+              "qpf_6h"),
 )
 
 
@@ -372,24 +377,7 @@ def make_task13_maps(final_path, six_hour_path, output_dir) -> tuple[Path, ...]:
         final_path, six_hour_path, output_dir, _SYNOPTIC_MAP_SPEC)
 
 
-#: NWS RIDGE-style radar palette: 5 dBZ bins from 5 to 75 dBZ, the
-#: standard operational composite-reflectivity ramp (cyan/blue light
-#: precip, green/yellow moderate, orange/red convective cores,
-#: magenta/purple extreme).
-_NWS_REFL_BOUNDS = tuple(float(b) for b in range(5, 80, 5))
-_NWS_REFL_COLORS = (
-    "#04e9e7", "#019ff4", "#0300f4", "#02fd02", "#01c501",
-    "#008e00", "#fdf802", "#e5bc00", "#fd9500", "#fd0000",
-    "#d40000", "#bc0000", "#f800fd", "#9854c6",
-)
-
-_REFLECTIVITY_MAP_SPEC = ReflectivityMapSpec(
-    filename="real74_composite_refl.png",
-    title=("gpuwm simulated composite reflectivity "
-           "(REFL_10CM column maximum)"),
-    bounds=_NWS_REFL_BOUNDS,
-    colors=_NWS_REFL_COLORS,
-)
+_REFLECTIVITY_MAP_SPEC = ReflectivityMapSpec()
 
 
 def make_reflectivity_map(wrfout_path, output_dir, *, time_index=0) -> Path:
@@ -399,9 +387,10 @@ def make_reflectivity_map(wrfout_path, output_dir, *, time_index=0) -> Path:
     nothing in the current product path calls it, so Task 7 opts in once
     its wrfouts carry the REFL_10CM variable
     (the output-due microphysics-time stash merged into the output frame).
-    The composite is the column maximum of REFL_10CM -- the standard
-    NWS-style product -- shaded on the operational 5-75 dBZ palette with
-    echoes below 5 dBZ left unshaded.
+
+    The operational 5-75 dBZ ramp this used to declare locally is the
+    renderer's own ``composite_reflectivity`` ramp; the case declares
+    the product, not the palette.
     """
     return make_composite_reflectivity_map(
         wrfout_path, output_dir, _REFLECTIVITY_MAP_SPEC,
@@ -430,21 +419,21 @@ def _rust_snapshot(valid_time: datetime):
 
 def build_forcing(run_seconds=1800.0):
     """Build 12/18/00Z real states and attach their LBCs to the 12Z state."""
-    import netCDF4
+    from gpuwm import netcdf_bridge
     from gpuwm.config import validate_run_config
 
     # ``config`` is the dynamics-only Task-8 path.  With PBL off, WRF's
     # km_opt=4 branch also selects the now-ported vertical_diffusion_2.
     cfg = validate_run_config(config(run_seconds))
     grid = grids_from_wps_namelist(BUNDLE / "namelists" / "namelist.wps")[0]
-    with netCDF4.Dataset(BUNDLE / "geo_em" / "geo_em.d01.nc") as ds:
+    with netcdf_bridge.open_dataset(BUNDLE / "geo_em" / "geo_em.d01.nc") as ds:
         terrain = np.asarray(ds.variables["HGT_M"][0], dtype=np.float64)
         map_fields = {
             name: np.asarray(ds.variables[name][0], dtype=np.float64)
             for name in ("MAPFAC_M", "MAPFAC_U", "MAPFAC_V", "F", "E",
                          "SINALPHA", "COSALPHA")
         }
-    with netCDF4.Dataset(
+    with netcdf_bridge.open_dataset(
             BUNDLE / "met_em" / "met_em.d01.1974-04-03_12_00_00.nc") as ds:
         source_orography = np.asarray(ds.variables["SOILHGT"][0],
                                       dtype=np.float64)

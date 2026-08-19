@@ -23,11 +23,14 @@ So this command answers four questions the version number alone cannot:
   * WHAT the index has -- one PyPI lookup, so "am I behind" does not
     require a second tool.
 
-The network is strictly optional and strictly last.  Every local line is
-printed BEFORE the lookup is attempted, the lookup has a short timeout,
-and any failure at all -- offline, proxy, DNS, a 404, a slow index --
-prints nothing rather than an error.  A version command that cannot
-answer on a plane is a broken version command.
+The network is strictly optional and strictly last.  Every identity
+line is printed BEFORE the lookup is attempted, the lookup has a short
+timeout, and any failure at all -- offline, proxy, DNS, a 404, a slow
+index -- prints nothing rather than an error.  A version command that
+cannot answer on a plane is a broken version command.  The one line
+that waits for the lookup is the wheel upgrade advice, because on an
+install AHEAD of the index that advice points backwards and is dropped
+(UX finding N16); a silent index keeps it, one timeout later.
 
 Like :mod:`gpuwm.update_cli`, this prints and never executes: replacing
 a package's files under the process importing them is how a
@@ -241,6 +244,31 @@ def _is_behind(installed: str | None, latest: str | None) -> bool | None:
         return None if installed == latest else True
 
 
+def _is_ahead(installed: str | None, latest: str | None) -> bool:
+    """Is this install NEWER than the index's latest?
+
+    The case the walks measured missing (UX finding N16): a 2.5.0
+    install against a 2.4.1 index was reported "current", because
+    "not behind" had only two sentences.  Ahead is a distinct fact --
+    a source or pre-release install -- and it is the one comparison
+    where pip upgrade advice points backwards.  ``False`` whenever the
+    comparison cannot be made, because withholding the upgrade line
+    needs evidence.
+    """
+
+    if not installed or not latest:
+        return False
+    try:
+        from packaging.version import InvalidVersion, Version
+
+        try:
+            return Version(installed) > Version(latest)
+        except InvalidVersion:
+            return False
+    except ImportError:
+        return False
+
+
 def local_report(shape: dict | None = None) -> list[str]:
     """Every line that needs no network, built so a test can read them."""
 
@@ -270,23 +298,64 @@ def local_report(shape: dict | None = None) -> list[str]:
             lines.append(f"  Update the tree at {shape['source_root']} the "
                          "way you obtained it.")
     else:
-        from gpuwm.update_cli import upgrade_command
-
-        lines.append(f"  Installed as a wheel; upgrade with: "
-                     f"{upgrade_command(shape['distribution'])}")
+        advice = _wheel_upgrade_advice(shape)
+        if advice is not None:
+            lines.append(advice)
     return lines
 
 
-def pypi_report(shape: dict, *, timeout: float = PYPI_TIMEOUT_S) -> list[str]:
-    """The staleness line, or no lines at all.  Never raises."""
+def _wheel_upgrade_advice(shape: dict) -> str | None:
+    """The wheel-install upgrade line, or ``None`` off the wheel case.
+
+    A separate function because :func:`version_main` holds this ONE
+    line back until the index has answered: on an install that is
+    AHEAD of PyPI, `pip install --upgrade` points backwards, and the
+    walks measured it being advised anyway (UX finding N16).  Every
+    other outcome -- behind, current, no answer, ``--offline`` --
+    still prints it, so a wheel user always keeps the one command that
+    upgrades a wheel unless it is demonstrably wrong advice.
+    """
+
+    if shape["distribution"] is None or shape["editable"]:
+        return None
+    from gpuwm.update_cli import upgrade_command
+
+    return (f"  Installed as a wheel; upgrade with: "
+            f"{upgrade_command(shape['distribution'])}")
+
+
+#: "No latest was passed in" -- distinct from None, which is a real
+#: answer meaning the index did not answer.
+_ASK_THE_INDEX = object()
+
+
+def pypi_report(shape: dict, *, timeout: float = PYPI_TIMEOUT_S,
+                latest=_ASK_THE_INDEX) -> list[str]:
+    """The staleness line, or no lines at all.  Never raises.
+
+    ``latest`` lets :func:`version_main` ask the index ONCE and share
+    the answer between this line and the upgrade-advice decision;
+    omitted, the index is asked here, which is what every other caller
+    wants.
+    """
 
     if shape["distribution"] is None:
         return []
-    latest = pypi_latest(shape["distribution"], timeout=timeout)
+    if latest is _ASK_THE_INDEX:
+        latest = pypi_latest(shape["distribution"], timeout=timeout)
     if latest is None:
         return []
     behind = _is_behind(shape["version"], latest)
     line = f"  PyPI latest is {latest}"
+    if _is_ahead(shape["version"], latest):
+        # Ahead is not "current": it is a source or pre-release install,
+        # and saying "current" against an older index number reads as a
+        # broken comparison (measured, UX finding N16).  Each version
+        # number appears once in the sentence: the first spelling of it
+        # said the index's number twice in eleven words, which reads as
+        # a template that forgot to substitute.
+        return [f"{line} -- this install is {shape['version']}, ahead of "
+                "it: a source or pre-release install."]
     if behind is False:
         return [f"{line} -- this install is current."]
     if behind is None:
@@ -298,15 +367,34 @@ def pypi_report(shape: dict, *, timeout: float = PYPI_TIMEOUT_S) -> list[str]:
 
 
 def version_main(args=None) -> int:
-    """Print local lines first, then try the index.  Never fails."""
+    """Print local lines first, then try the index.  Never fails.
+
+    One exception to local-first, and it is one line: the wheel
+    upgrade-advice waits for the index's answer, because on an install
+    that is AHEAD of PyPI that advice points backwards and is dropped
+    (UX finding N16).  The identity lines still print before the
+    lookup, and the advice still prints -- after at most the lookup's
+    two-second timeout -- whenever the index is silent, refused, or
+    reports the install behind or current.  ``--offline`` skips the
+    lookup and keeps the advice, exactly as before.
+    """
 
     shape = install_shape()
+    offline = getattr(args, "offline", False)
+    advice = None if offline else _wheel_upgrade_advice(shape)
     for line in local_report(shape):
+        if advice is not None and line == advice:
+            continue                     # held for the index's answer
         print(line, flush=True)
-    if getattr(args, "offline", False):
+    if offline:
         return 0
-    for line in pypi_report(shape, timeout=getattr(
-            args, "pypi_timeout", PYPI_TIMEOUT_S)):
+    latest = (pypi_latest(shape["distribution"],
+                          timeout=getattr(args, "pypi_timeout",
+                                          PYPI_TIMEOUT_S))
+              if shape["distribution"] is not None else None)
+    if advice is not None and not _is_ahead(shape["version"], latest):
+        print(advice, flush=True)
+    for line in pypi_report(shape, latest=latest):
         print(line)
     return 0
 

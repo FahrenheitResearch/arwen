@@ -1303,7 +1303,7 @@ def _nc_array(variable, key) -> np.ndarray:
 def _load_evaluation_series_snapshot(
         snapshot: _MemberRecordSnapshot) -> EvaluationSeries:
     """Load required d04 arrays while each hash-verified frame remains open."""
-    import netCDF4
+    from gpuwm import netcdf_bridge
 
     record = snapshot.document
     variant = record["variant"]
@@ -1320,7 +1320,7 @@ def _load_evaluation_series_snapshot(
     levels = F_GATE_TKE_LOWEST_MASS_LEVELS
     for item in d04:
         frame_path = snapshot.frame_paths[item["relative_path"]]
-        with netCDF4.Dataset(frame_path) as dataset:
+        with netcdf_bridge.open_dataset(frame_path) as dataset:
             # The dataset handle keeps the opened file identity stable.  Hash
             # both before and after array extraction so path replacement or
             # in-place mutation cannot feed unverified bytes to the evaluator.

@@ -25,6 +25,8 @@ from typing import Callable, Mapping, Sequence
 import time
 
 import netCDF4
+
+from gpuwm import netcdf_bridge
 import numpy as np
 
 from gpuwm.core import microphysics_transition as _mt
@@ -531,7 +533,9 @@ def read_parent_microphysics(path: str | Path) -> Mapping[str, np.ndarray]:
     """Read only transported moisture fields from one WRF history record."""
 
     fields: dict[str, np.ndarray] = {}
-    with netCDF4.Dataset(path) as dataset:
+    # Decoded by the Rust bridge: transported moisture is meteorological
+    # field data, whoever wrote the tape.
+    with netcdf_bridge.open_dataset(path) as dataset:
         for wrf_name, state_name in _WRF_TO_STATE.items():
             if wrf_name not in dataset.variables:
                 continue
@@ -748,6 +752,43 @@ _SURFACE_OPTIONAL_FIELDS = (
 _SURFACE_CATEGORY_FIELDS = frozenset({"LU_INDEX", "ISLTYP"})
 _SURFACE_SOIL_FIELDS = frozenset({"TSLB", "SMOIS", "SH2O"})
 
+#: The remedy half of the child-surface refusal, shared by the front
+#: door's early check (`gpuwm downscale`) and the runner's late guard so
+#: the two cannot drift.  It names the flag, the contract, AND an
+#: in-product way to SATISFY it: the walked 2.4.1 refusal named only the
+#: first two, and the walked user's own preparation already held a valid
+#: child-grid file at ``wrf-native-input/wrfinput_d0N`` -- rw-wps emits
+#: one per nest -- with no sentence anywhere pointing at it.
+CHILD_SURFACE_SOURCE_REMEDY = (
+    "pass --child-surface-from with a wrfinput or history file on the "
+    "EXACT child grid (ndown-equivalent contract: downscaling replaces "
+    "the meteorology, never the land identity).  gpuwm's own "
+    "preprocessor builds one per nest: prepare a hierarchy whose nest "
+    "IS this child grid (`gpuwm domain --ladder ...`, then rw-wps) and "
+    "point the flag at <prepared>/wrf-native-input/wrfinput_d0N; an "
+    "archived gpuwm or WRF history frame on the exact child grid works "
+    "too")
+
+
+def child_surface_requirement(cfg) -> str | None:
+    """Why this child config needs ``--child-surface-from``, or ``None``.
+
+    The predicate is :func:`gpuwm.offline_child_run.
+    _initialize_child_physics`'s own: any of the land-surface, surface-
+    layer or PBL selections requires child-grid soil state and land
+    identity, which are never fabricated on a real-data child.
+    """
+    if not (getattr(cfg, "sf_surface_physics", 0)
+            or getattr(cfg, "sf_sfclay_physics", 0)
+            or getattr(cfg, "bl_pbl_physics", 0)):
+        return None
+    return (
+        "child config enables surface physics (sf_surface_physics="
+        f"{cfg.sf_surface_physics}, sf_sfclay_physics="
+        f"{cfg.sf_sfclay_physics}, bl_pbl_physics={cfg.bl_pbl_physics}) "
+        "but no child-grid surface source was given; "
+        + CHILD_SURFACE_SOURCE_REMEDY)
+
 
 @dataclass(frozen=True)
 class ChildSurfaceState:
@@ -773,7 +814,11 @@ def read_child_surface_state(
 
     path = Path(path)
     fields: dict[str, np.ndarray] = {}
-    with netCDF4.Dataset(path) as dataset:
+    # Reads the child surface FIELDS (_SURFACE_REQUIRED_FIELDS), not just
+    # the dimensions above them, so it decodes and goes through Rust.
+    # The f32 cast below is unaffected: the bridge promotes f32 storage to
+    # f64 exactly, and casting back reproduces the stored bits.
+    with netcdf_bridge.open_dataset(path) as dataset:
         for name, expected in (("south_north", int(child_ny)),
                                ("west_east", int(child_nx))):
             if name not in dataset.dimensions:
@@ -1103,7 +1148,7 @@ def interpolate_parent_initial_state(
         # _AEROSOL_SURFACE_EMISSION_WRF), so tolerating the absence would
         # produce a finite, bounded, aerosol-emission-free forecast.
         initial_fields = initial_fields + _AEROSOL_SURFACE_EMISSION_WRF
-    with netCDF4.Dataset(path) as dataset:
+    with netcdf_bridge.open_dataset(path) as dataset:
         raw, moisture = _raw_parent_state(dataset, int(source_mp_physics))
         for name in initial_fields:
             if name not in raw:
@@ -1395,7 +1440,7 @@ def interpolate_parent_boundary_snapshot(
     target_mp = int(source_mp_physics if target_mp_physics is None
                     else target_mp_physics)
     started = time.perf_counter()
-    with netCDF4.Dataset(path) as dataset:
+    with netcdf_bridge.open_dataset(path) as dataset:
         raw, moisture = _raw_parent_state(dataset, int(source_mp_physics))
         coeffs, hybrid_opt, etac, p_top = _vertical_coefficients(raw, dataset)
     coupled, raw_device, _ = _couple_parent(raw, moisture, coeffs, backend)

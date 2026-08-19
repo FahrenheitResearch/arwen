@@ -47,12 +47,23 @@ by putting an ensemble token in the product slot::
     refl-ens-paintball40dbz_d02-3km_1974-04-03_18-00-00.png
     refl-ens-pmm_d02-3km_1974-04-03_18-00-00.png
 
-KNOWN GAP: the vendored rust renderer's catalog has no ensemble entries,
-so this module is matplotlib-only.  ``gpuwm render --engine rust`` is
-still the per-member product path; there is no ``--engine`` switch here
-because there is no second engine to switch to, and offering one that
-silently fell back would be the exact failure ``fallback_notice`` exists
-to prevent.
+ENGINES: ``--engine`` selects which renderer draws the panels, and the
+default is ``auto``, which means the Rust one.  ``rw_ensbatch`` is the
+engine this module's docstring used to say did not exist -- the same
+reductions (``rustwx-ensemble``, unit-tested against the same probes the
+functions below name) on the same production map/basemap/design/PNG path
+a deterministic ``gpuwm render --engine rust`` panel comes off.
+
+The matplotlib suite below (:func:`run_suite` and everything it calls) is
+therefore the render law's DEPRECATED FALLBACK: reachable, documented,
+reported by name whenever ``auto`` degrades to it, and NOT the product
+tier.  Two things still bring a caller here on purpose and are not a
+silent second tier -- ``--domain`` (the Rust engine takes one wrfout per
+member and refuses a member directory holding several nests) and
+``--dpi`` (the Rust engine sizes panels in pixels) -- and both are
+refused or warned about by name on the Rust route rather than ignored.
+MEASURED 2026-08-17: five real tile-streamed members, all five products
+through the real executable at the default engine.
 """
 
 from __future__ import annotations
@@ -1796,7 +1807,15 @@ def run_suite(root, *, fields, products, thresholds, radii, domain,
               tie_rule=DEFAULT_PMM_TIE_RULE,
               provenance=None,
               ) -> tuple[list[Path], list[str]]:
-    """Draw the requested suite; return ``(written, failures)``.
+    """Draw the requested suite with matplotlib; ``(written, failures)``.
+
+    DEPRECATED FALLBACK under the render law: :func:`run_suite_rust` is
+    the product tier and ``--engine auto`` reaches it by default.  This
+    path stays because two of its options have no Rust equivalent
+    (``--domain``, ``--dpi``) and because a checkout that has not built
+    the workspace must still be able to look at its ensemble -- with the
+    reason it fell back printed, never assumed.
+
 
     Roster problems refuse up front (:class:`EnsembleRefusal`) -- an
     ensemble that is not the ensemble it claims to be produces no
@@ -1981,7 +2000,10 @@ def write_synthetic_ensemble(root, *, n_members: int = 5, nx: int = 24,
     would test a contract nothing writes.
     """
 
-    from gpuwm.io.wrfout import WrfoutWriter
+    import datetime
+    from types import SimpleNamespace
+
+    from gpuwm.io.wrfout import WrfoutWriter, wrf_global_attrs
 
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -1989,6 +2011,25 @@ def write_synthetic_ensemble(root, *, n_members: int = 5, nx: int = 24,
     yy, xx = np.mgrid[0:ny, 0:nx].astype(float)
     lat = np.tile(np.linspace(38.0, 40.0, ny)[:, None], (1, nx))
     lon = np.tile(np.linspace(-98.0, -95.0, nx)[None, :], (ny, 1))
+
+    # The PRODUCTION global-attribute profile, not a bare GRID_ID.
+    #
+    # A fixture whose files are not the kind of file the product writes is
+    # a fixture that tests a contract nothing produces.  This one used to
+    # carry `GRID_ID` alone, which the matplotlib engine happens not to
+    # read -- so the fixture passed every test in this suite while being
+    # unreadable by the RUST renderer, whose fail-closed preflight wants a
+    # run origin (`START_DATE`) and a projection like every real wrfout
+    # has.  `gpuwm enprod --engine rust` on a `--make-fixture` ensemble
+    # refused with "no sound WRF run origin" until this changed.
+    fixture_grid = SimpleNamespace(
+        truelat1=38.5, truelat2=39.5, stand_lon=-96.5, ref_lat=39.0,
+        ref_lon=-96.5)
+    attrs = wrf_global_attrs(
+        fixture_grid,
+        datetime.datetime.strptime(stamps[0], "%Y-%m-%d_%H:%M:%S"),
+        grid_id=domain_id, parent_id=max(domain_id - 1, 1),
+        i_parent_start=5, j_parent_start=5, parent_grid_ratio=3, dt=6.0)
 
     records = []
     for number in range(n_members):
@@ -2008,7 +2049,7 @@ def write_synthetic_ensemble(root, *, n_members: int = 5, nx: int = 24,
         y0 = ny / 2.0 + member_rng.normal(0.0, ny / 12.0)
         x0 = nx / 2.0 + member_rng.normal(0.0, nx / 12.0)
         with WrfoutWriter(path, nx=nx, ny=ny, nz=nz, dx=dx, dy=dx,
-                          global_attrs={"GRID_ID": domain_id}) as writer:
+                          global_attrs=attrs) as writer:
             for step, stamp in enumerate(stamps):
                 drift = 1.5 * step
                 blob = np.exp(-(((yy - y0 - drift) ** 2
@@ -2214,6 +2255,32 @@ def enprod_main(args: argparse.Namespace) -> int:
                  "against the manifest before anything renders, and "
                  "the override is stamped on every panel.")
     print(f"enprod: {experimental_stamp()}")
+    engine, why = resolve_enprod_engine(args.engine)
+    print(f"enprod: engine {engine} ({why})")
+    if engine == "rust":
+        # Two flags the rust route does not implement, refused by name
+        # rather than accepted and ignored.  A silently dropped --domain
+        # would average whichever nest each member's directory listing
+        # happened to put last, which is the kind of wrong answer that
+        # looks right.
+        if args.domain:
+            print(f"enprod: --domain {args.domain} is not implemented on "
+                  "--engine rust; the engine takes ONE wrfout per member "
+                  "and refuses a member directory holding more than one "
+                  "domain.  Use --engine matplotlib, or point the "
+                  "manifest's member_dir at the domain you mean",
+                  file=sys.stderr)
+            return 2
+        if args.dpi != 150:
+            warn(f"--dpi {args.dpi} has no effect on --engine rust; the "
+                 "rust engine sizes panels in pixels, not dots per inch "
+                 "(1200x900 here)")
+        return run_suite_rust(
+            args.ens_root, fields=fields, products=products,
+            thresholds=thresholds, radii=radii, timeidx=timeidx,
+            outdir=args.out, source_label=args.source_label,
+            accept_status=accept_status, nan_policy=args.nan_policy,
+            tie_rule=args.pmm_tie_rule)
     provenance: dict = {}
     try:
         written, failures = run_suite(
@@ -2234,6 +2301,112 @@ def enprod_main(args: argparse.Namespace) -> int:
     print(f"enprod: {len(written)} file(s) -> {args.out}")
     return 0 if written and not failures else 1
 
+
+
+# ---------------------------------------------------------------------------
+# The Rust engine route
+# ---------------------------------------------------------------------------
+#
+# This module's own docstring used to say there was no second engine to
+# switch to -- "the vendored rust renderer's catalog has no ensemble
+# entries, so this module is matplotlib-only".  ``rw_ensbatch`` is that
+# second engine: the reductions are `rustwx-ensemble` (the same policies,
+# unit-tested against the same probes this module's docstrings name) and
+# the panels come off the same production map/basemap/design/PNG path a
+# deterministic `gpuwm render --engine rust` panel does.
+
+
+def resolve_enprod_engine(request: str) -> tuple[str, str]:
+    """``(engine, why)`` for ``--engine`` -- the same three-way contract
+    ``gpuwm render`` applies.
+
+    An EXPLICIT ``rust`` that cannot be honoured raises rather than
+    silently drawing with the other engine: a caller who names an engine
+    is making a statement about which one must draw.  ``auto`` degrades
+    and names the reason.  ``matplotlib`` is the documented fallback and
+    is never probed.
+    """
+
+    if request == "matplotlib":
+        return "matplotlib", "requested"
+    from gpuwm import rustwx_lanes
+
+    try:
+        engine_path = rustwx_lanes.find_ensemble_bin()
+    except FileNotFoundError as error:
+        if request == "rust":
+            raise RuntimeError(str(error)) from error
+        return "matplotlib", str(error)
+    if engine_path is None:
+        reason = (f"{rustwx_lanes.ENSEMBLE_NAME} is not built "
+                  f"({rustwx_lanes.CARGO_BUILD_HINT})")
+        if request == "rust":
+            raise RuntimeError(reason)
+        return "matplotlib", reason
+    usable, evidence = rustwx_lanes.probe_ensemble_bin(engine_path)
+    if not usable:
+        if request == "rust":
+            raise RuntimeError(f"{engine_path}: {evidence}")
+        return "matplotlib", f"{engine_path}: {evidence}"
+    return "rust", str(engine_path)
+
+
+def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
+                   timeidx, outdir, source_label, accept_status,
+                   nan_policy, tie_rule) -> int:
+    """Drive ``rw_ensbatch`` once per (field, threshold, radius).
+
+    The roster gate stays in the engine, which reads the same manifest
+    this module reads and refuses the same statuses; what this function
+    owns is only the request fan-out, because the CLI takes LISTS of
+    thresholds and radii and one engine invocation renders one of each.
+    """
+
+    from gpuwm import rustwx_lanes
+
+    engine_path = rustwx_lanes.find_ensemble_bin()
+    manifest = Path(ens_root) / MANIFEST_FILENAME
+    if not manifest.is_file():
+        print(f"enprod: no ensemble manifest at {manifest}", file=sys.stderr)
+        return 2
+    outdir = Path(outdir)
+    store_root = outdir / "_ens_store"
+    written: list[Path] = []
+    failures: list[str] = []
+    frames = None if timeidx is None else int(timeidx)
+    for name in fields:
+        spec = FIELDS[name]
+        field_thresholds = thresholds or (spec.default_threshold,)
+        for threshold in field_thresholds:
+            for radius_km in (radii or (0.0,)):
+                paths, problems, skipped, report = (
+                    rustwx_lanes.run_ensemble_renderer(
+                        engine_path, manifest, store_root=store_root,
+                        out_dir=outdir, field=name,
+                        products=",".join(products), threshold=threshold,
+                        neighborhood_km=radius_km, frames=frames,
+                        nan_policy=nan_policy, pmm_tie_rule=tie_rule,
+                        accept_status=",".join(accept_status),
+                        source_label=source_label))
+                written.extend(paths)
+                failures.extend(problems)
+                for slug, reason in skipped:
+                    print(f"enprod: skipped {slug}: {reason}")
+                for key in ("members", "coverage", "pmm_ties",
+                            "paintball_legend"):
+                    if key in report:
+                        print(f"enprod: {key} {report[key]}")
+    for path in written:
+        print(f"enprod: {path}")
+    if failures:
+        for failure in failures:
+            print(f"enprod: {failure}", file=sys.stderr)
+        return 1
+    if not written:
+        print("enprod: the rust engine drew nothing", file=sys.stderr)
+        return 1
+    print(f"enprod: {len(written)} panel(s) -> {outdir}")
+    return 0
 
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
@@ -2307,6 +2480,14 @@ def register_cli(subparsers) -> None:
              "gives every point in a tie the group's mean intensity and "
              "gives up the exact pooled distribution")
     parser.add_argument(
+        "--engine", default="auto", choices=("auto", "rust", "matplotlib"),
+        help="which renderer draws the panels (default auto).  The render "
+             "law puts weather fields on the Rust renderer; 'auto' uses "
+             "rw_ensbatch when this checkout has built it and falls back "
+             "to matplotlib with the reason named, 'rust' refuses rather "
+             "than substituting, and 'matplotlib' selects the fallback "
+             "outright")
+    parser.add_argument(
         "--make-fixture", type=Path, metavar="DIR",
         help="write a synthetic ensemble (members + manifest) to DIR and "
              "exit, for exercising the suite without a real ensemble")
@@ -2326,6 +2507,7 @@ __all__ = [
     "MemberFrames", "ProductRequest", "coverage_caption", "disc_offsets",
     "ensemble_mean", "ensemble_plot_context", "ensemble_spread",
     "ensemble_token", "exceedance_probability", "expand_requests",
+    "resolve_enprod_engine", "run_suite_rust",
     "index_ensemble", "index_member_frames", "load_manifest",
     "load_member_stack", "member_color", "missingness_report",
     "neighborhood_footprint", "neighborhood_max", "number_slug",

@@ -1,0 +1,108 @@
+# The first ten minutes at the command line, captured as they happen.
+#
+# This is a walk script for tools/walk_capture.py -- data, not code.  It
+# names concrete commands and concrete flags on purpose: that is what a
+# person types.  The harness that runs it knows nothing about any of
+# them, which is why a second persona is a second file rather than a
+# second code path.
+#
+# Run it:
+#
+#   python -m tools.walk_capture run tools/walks/cli-first-contact.toml \
+#       --root <a scratch directory> --out <a capture directory>
+#
+# Nothing here downloads anything, needs a GPU, or takes longer than a
+# few seconds per step, so it is safe to run anywhere.  What it measures
+# is the shape of the experience: how long the first command sits there,
+# which door exits non-zero on a machine that is only partly set up,
+# whether two doors agree about how to spell a date, and what a
+# forgotten flag looks like.
+
+name = "Command line, first contact"
+persona = "Someone who has just installed this and has not read the docs."
+description = """
+Seven commands in the order a new user reaches for them: find out what \
+is installed, ask whether the machine is ready, draw a domain, size it \
+against the card that is actually in the box, look at what data can be \
+fed in, then two things that go wrong. Every command below ran for \
+real; the timings and the output are that run. Note what the \
+time-to-first-plot line says: nothing in the first ten minutes at the \
+command line produces a picture, because every route to one runs \
+through a download and a forecast.
+"""
+
+# Where the walk lives.  Override on the command line with --root; the
+# harness tracks file creation under this directory and nowhere else.
+root = "{home}/.gpuwm/walks/cli-first-contact"
+
+[settings]
+# A first-contact command that takes longer than this has already lost
+# the user's attention, so that is where the friction line is drawn.
+slow_seconds = 5.0
+# And this is how long a terminal can show nothing before the user
+# starts wondering whether it is stuck.
+quiet_seconds = 4.0
+timeout_seconds = 600
+# Everything is recorded even after something fails: what happens after
+# the first wall is the part nobody ever writes down.
+stop_on_unexpected_failure = false
+output_bytes_in_report = 12000
+
+[env]
+# Point the walk at this working tree rather than at whatever wheel or
+# editable install happens to be on the machine.  Step 1 prints which
+# tree it resolved, so the report proves this took effect instead of
+# asserting it.
+PYTHONPATH = "{repo_root}"
+
+[[steps]]
+id = "version"
+intent = "Before anything else: which copy of the program is going to run?"
+command = "{python} -m gpuwm.cli version"
+tags = ["orientation"]
+
+[[steps]]
+id = "doctor"
+intent = "Is this machine ready to run a forecast, and if not, what is missing?"
+command = "{python} -m gpuwm.cli doctor"
+# Not an expected failure -- a fresh machine exiting non-zero here is
+# exactly the friction this walk exists to surface, so it is recorded as
+# a failure and the walk keeps going.
+allow_failure = true
+tags = ["install"]
+
+[[steps]]
+id = "domain"
+intent = "Draw a domain around a point, with every default left alone."
+command = """{python} -m gpuwm.cli domain --point 39.10,-84.51 \
+--source gfs --cycle 2026-08-17T00 --hours 6 --out first-domain.toml"""
+tags = ["setup"]
+
+[[steps]]
+id = "check"
+intent = "The wizard's own next step: measure the card in THIS box, not a declared one."
+command = "{python} -m gpuwm.cli check first-domain.toml"
+allow_failure = true
+tags = ["setup"]
+
+[[steps]]
+id = "list-sources"
+intent = "What data can I feed it? (The answer arrives as one JSON document.)"
+command = "{python} -m gpuwm.cli prep --list-sources"
+tags = ["data"]
+
+[[steps]]
+id = "prep-dry-run"
+intent = """Take the cycle exactly as the wizard printed it two steps ago \
+and hand it to the preprocessing door."""
+command = """{python} -m gpuwm.cli prep --source gfs \
+--cycle 2026-08-17T00 --dry-run"""
+expect_failure = true
+tags = ["data"]
+
+[[steps]]
+id = "forgotten-flag"
+intent = "Forget a required flag. Is the error any use to someone who does not know the answer?"
+command = "{python} -m gpuwm.cli domain --point 39.10,-84.51 --out second.toml"
+expect_failure = true
+tags = ["errors"]

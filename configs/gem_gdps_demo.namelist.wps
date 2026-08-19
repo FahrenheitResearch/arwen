@@ -1,0 +1,37 @@
+&share
+ wrf_core = 'ARW',
+ max_dom = 1,
+ start_date = '2026-08-16_00:00:00',
+ end_date   = '2026-08-16_03:00:00',
+ interval_seconds = 10800,
+ io_form_geogrid = 2,
+/
+
+&geogrid
+ parent_id         = 1,
+ parent_grid_ratio = 1,
+ i_parent_start    = 1,
+ j_parent_start    = 1,
+ e_we              = 51,
+ e_sn              = 51,
+ geog_data_res     = 'default',
+ dx = 12000,
+ dy = 12000,
+ map_proj = 'lambert',
+ ref_lat   = 43.5,
+ ref_lon   = -80.0,
+ truelat1  = 30.0,
+ truelat2  = 60.0,
+ stand_lon = -80.0,
+ geog_data_path = 'WPS_GEOG',
+/
+
+&ungrib
+ out_format = 'WPS',
+ prefix = 'GDPS',
+/
+
+&metgrid
+ fg_name = 'GDPS',
+ io_form_metgrid = 2,
+/

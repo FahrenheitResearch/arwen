@@ -224,44 +224,42 @@ def test_wrf_diagnostics_carries_raw_and_display_mslp(tmp_path):
     assert np.isfinite(diagnostics["mslp"]).all()
 
 
-def test_synoptic_map_draws_the_display_field(tmp_path, monkeypatch):
-    """make_synoptic_maps must contour 'mslp_display', not raw 'mslp'.
+def test_the_display_twin_is_computed_but_never_drawn_here(tmp_path):
+    """The smoothing survives the render-law move; the drawing does not.
 
-    The stand-in diagnostics omit 'mslp' entirely: a map that still
-    reads the raw field fails with KeyError, one that draws the treated
-    field renders.
+    ``make_synoptic_maps`` used to contour ``mslp_display`` with
+    matplotlib, and this test pinned that it contoured the treated field
+    rather than the raw one.  Weather-field product plots come from
+    ``rw_wrfbatch`` now (CLAUDE.md, Drew 2026-08-06; audit F6), so the
+    MSLP panel is the renderer's ``mslp_10m_winds`` and the contouring
+    question is no longer this module's to answer.
+
+    What is still this module's, and is what this now holds: the treated
+    field is COMPUTED and published beside the raw one, so the smoothing
+    cannot be quietly dropped along with the plotting code, and the
+    scored field stays the raw reduction.
     """
-    ny, nx = 5, 7
-    lat = np.broadcast_to(
-        np.linspace(30.0, 34.0, ny)[:, None], (ny, nx)).copy()
-    lon = np.broadcast_to(
-        np.linspace(-100.0, -94.0, nx)[None, :], (ny, nx)).copy()
-    level = {"temperature": np.full((ny, nx), 250.0),
-             "u": np.full((ny, nx), 10.0),
-             "v": np.full((ny, nx), 2.0),
-             "height": np.linspace(
-                 5500.0, 5600.0, ny * nx).reshape(ny, nx)}
-    fake = {
-        "mslp_display": np.linspace(
-            995.0, 1020.0, ny * nx).reshape(ny, nx),
-        "lat": lat, "lon": lon,
-        "t2": np.full((ny, nx), 288.0),
-        "levels": {500: level},
-        "rainnc": np.full((ny, nx), 3.0),
-        "rainc": np.zeros((ny, nx)),
-        "pressure": None,
-    }
-    monkeypatch.setattr(metrics, "_wrf_diagnostics", lambda _path: fake)
-    spec = metrics.SynopticMapSpec(
-        mslp_t2_filename="mslp_t2.png",
-        mslp_t2_title="MSLP and 2 m temperature",
-        height_wind_filename="h500.png",
-        height_wind_title="500 hPa height and wind",
-        precip_filename="precip.png",
-        precip_title="precipitation",
-    )
-    paths = metrics.make_synoptic_maps(
-        tmp_path / "a", tmp_path / "b", tmp_path / "maps", spec)
-    assert [p.name for p in paths] == [
-        "mslp_t2.png", "h500.png", "precip.png"]
-    assert all(p.is_file() and p.stat().st_size > 1000 for p in paths)
+    import netCDF4
+
+    ny, nx = 6, 10
+    terrain = np.full((ny, nx), 40.0)
+    terrain[:, nx // 2:] = 2200.0
+    path = tmp_path / "wrfout_d01_1974-04-04_12_00_00"
+    _write_synthetic_wrfout(path, terrain)
+
+    diagnostics = metrics._wrf_diagnostics(path)
+    with netCDF4.Dataset(path) as ds:
+        pressure_pa = (np.asarray(ds.variables["P"][0], dtype=np.float64)
+                       + np.asarray(ds.variables["PB"][0],
+                                    dtype=np.float64))
+        phi = (np.asarray(ds.variables["PH"][0], dtype=np.float64)
+               + np.asarray(ds.variables["PHB"][0], dtype=np.float64))
+    assert np.array_equal(
+        diagnostics["mslp_display"],
+        metrics.terrain_smoothed_mslp(
+            diagnostics["mslp"], pressure_pa[0], phi[0] / 9.80665))
+    # And the map spec is a product declaration, with no plot recipe in
+    # it at all -- nothing here can name a colormap or a filename again.
+    spec = metrics.SynopticMapSpec(products=("mslp_10m_winds",))
+    assert spec.products == ("mslp_10m_winds",)
+    assert not hasattr(spec, "mslp_t2_filename")

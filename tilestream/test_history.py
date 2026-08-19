@@ -120,6 +120,7 @@ reported as such rather than silently counted as coverage.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import sys
 import time
@@ -628,7 +629,12 @@ def _history_builder(cfg, domain, geo, *, boundaries):
 # the cases
 # --------------------------------------------------------------------------
 
-WORK = Path("/tmp/tilestream-history")
+# Absolute, not drive-relative: on Windows "/tmp" spells "\tmp", and the
+# netCDF-C build in use refuses to OPEN a classic-format file through a
+# drive-relative path ("NetCDF: Unknown file format") while opening the
+# same bytes absolutely works.  The product writer pins its own paths
+# (gpuwm/io/wrfout.py), and this gate's readers must do the same.
+WORK = Path(os.path.abspath("/tmp/tilestream-history"))
 
 
 def case_frames(rung: str, *, nsteps=NSTEPS, history_every=HISTORY_EVERY,

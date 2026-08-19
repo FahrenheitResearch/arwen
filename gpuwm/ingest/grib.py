@@ -184,12 +184,35 @@ class Era5Snapshot:
     latitude: np.ndarray
     longitude: np.ndarray
     fields: Mapping[str, np.ndarray]
+    #: ``None`` for a geographic regular grid (the historical meaning of
+    #: ``latitude``/``longitude``).  For a source regular in its own
+    #: PROJECTION plane, ``{"family": ..., "parameters": {...}}`` from the
+    #: mapped grid declaration -- and the two axis arrays are then the
+    #: projected y/x coordinates in ``parameters["axis_unit_m"]`` units.
+    #: Every downstream consumer that pairs these axes with target
+    #: coordinates must transform the target into the same plane
+    #: (:func:`gpuwm.ingest.horiz.source_coordinate_transform`).
+    projection: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.valid_time, datetime):
             raise TypeError("valid_time must be a datetime")
         if self.valid_time.tzinfo is not None:
             raise ValueError("valid_time must be naive UTC")
+        if self.projection is not None:
+            projection = dict(self.projection)
+            if not isinstance(projection.get("family"), str) \
+                    or not isinstance(projection.get("parameters"), Mapping):
+                raise ValueError(
+                    "snapshot projection must carry family and parameters")
+            object.__setattr__(
+                self, "projection",
+                MappingProxyType({
+                    "family": str(projection["family"]),
+                    "parameters": MappingProxyType(
+                        dict(projection["parameters"])),
+                }),
+            )
 
         axes: dict[str, np.ndarray] = {}
         for name in ("levels_hpa", "latitude", "longitude"):
@@ -237,6 +260,13 @@ class Era5Snapshot:
     def save_npz(self, path: str | Path) -> None:
         """Write a pickle-free ``np.savez`` snapshot archive."""
 
+        if self.projection is not None:
+            # The archive carries no projection record, so a reload would
+            # silently reinterpret projected axes as geographic degrees --
+            # mis-georeferencing with nothing that looks like a failure.
+            raise ValueError(
+                "save_npz does not persist a source projection; a "
+                "projected snapshot cannot round-trip through this archive")
         names = tuple(self.fields)
         payload: dict[str, np.ndarray] = {
             "valid_time": np.asarray(self.valid_time.isoformat(timespec="seconds")),

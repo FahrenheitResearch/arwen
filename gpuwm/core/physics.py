@@ -43,6 +43,21 @@ from gpuwm.config import (MYJ_PBL_SCHEME, MYJ_SFCLAY_SCHEME,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.core import constants as c
+# Configuration-only predicates and name tables live in the
+# runtime-free inventory module so the VRAM estimator (and every
+# other caller that must stay importable without cupy) can ask them
+# without paying for this module's body.  Re-exported here so every
+# existing `from gpuwm.core.physics import ...` keeps resolving.
+from gpuwm.core.physics_inventory import (
+    PBL_RQI_MICROPHYSICS,
+    _HMIX_K_DIAG_NAMES,
+    hmix_k_diag_names,
+    microphysics_scratch_slots,
+    physics_driver_required,
+    physics_enabled,
+    physics_retains_ysu_output,
+    physics_reuses_pbl_composition,
+)
 from gpuwm.core import health_ledger
 from gpuwm.core.noah import (_F2D as NOAH_FIELDS_2D,
                              _F3D as NOAH_FIELDS_3D,
@@ -66,6 +81,7 @@ from gpuwm.core.noahmp_runtime import (
     NSNOW as NOAHMP_NSNOW,
     NoahmpRuntimeParameters,
     NoahmpSolarGeometry,
+    classify_noahmp_surface,
     guard_noahmp_glacier_columns,
     noahmp_cold_start,
     noahmp_lsm_step,
@@ -120,6 +136,7 @@ from gpuwm.core.myjpbl import (MYJ_PBL_INOUT, myj_pbl_step,
 from gpuwm.core.myjsfc import (MYJ_SFCLAY_INOUT, MYJ_SFCLAY_OUTPUTS,
                                launch_myj_sfclay)
 from gpuwm.core.shinhong import (SHINHONG_PASSENGER_OUTPUTS,
+                                 SHINHONG_TKE_FLOOR,
                                  invalid_shinhong_outputs, launch_shinhong,
                                  repair_shinhong_passenger_outputs)
 from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
@@ -460,85 +477,6 @@ _SASE_FLUX_DIAG_OUTPUT = {"SASE_FQV_VENT": "fqv_vent",
                           "SASE_FTH_VENT": "fth_vent",
                           "SASE_FTH_DIFF": "fth_diff"}
 
-#: HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (cfg.hmix_k_diag): the (momentum,
-#: scalar) history names each horizontal mixing producer publishes under.
-#:
-#: Named for the PRODUCER, not for the diagnostic, because that is the
-#: whole point of the field.  ``km_opt = 4`` publishes WRF's own Registry
-#: names for the 2-D Smagorinsky viscosities it computes; SASE publishes
-#: scheme-qualified names for its governed horizontal diffusivity.  Both
-#: are m2 s-1 on the mass grid and both are the coefficient of the same
-#: down-gradient horizontal flux, so a run that removes one producer and
-#: installs the other can be compared field to field on the channel it
-#: swapped -- which is the measurement that decides whether "SASE
-#: supplies the mixing the km_opt operator would otherwise apply" is
-#: true, rather than leaving it as an assertion.
-_HMIX_K_DIAG_NAMES: dict[str, tuple[str, str]] = {
-    "smagorinsky": ("XKMH", "XKHH"),
-    "sase": ("SASE_KMH", "SASE_KHH"),
-}
-
-
-def hmix_k_diag_names(cfg: RunConfig) -> tuple[str, ...]:
-    """The horizontal-K history names this configuration can publish.
-
-    EMPTY when the run has no horizontal mixing producer at all (the
-    acknowledged ``km_opt = 0`` control).  Deliberately empty rather than
-    a pair of zero fields: an absent variable cannot be misread as a
-    measured zero, and "this file has no horizontal viscosity variable"
-    is the strongest available statement that this run ran no horizontal
-    mixing operator.
-    """
-    if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
-        return _HMIX_K_DIAG_NAMES["sase"]
-    if cfg.km_opt == 4:
-        return _HMIX_K_DIAG_NAMES["smagorinsky"]
-    return ()
-
-
-def physics_enabled(cfg: RunConfig) -> bool:
-    """Whether any non-timesplit physics scheme is configured."""
-    return bool(radiation_enabled(cfg) or cfg.sf_sfclay_physics
-                or cfg.sf_surface_physics or cfg.bl_pbl_physics
-                or cfg.cu_physics)
-
-
-def physics_driver_required(cfg: RunConfig) -> bool:
-    """Whether setup must attach a persistent :class:`PhysicsDriver`.
-
-    Microphysics is advanced after RK3 rather than through the non-timesplit
-    tendency path selected by :func:`physics_enabled`.  It still needs the
-    driver for accumulated precipitation and the output-due REFL_10CM
-    handoff, so an mp-only domain must receive the same persistent attachment
-    as a domain with radiation, surface, PBL, or cumulus physics.
-    """
-    return bool(cfg.mp_physics or physics_enabled(cfg))
-
-
-def physics_retains_ysu_output(cfg: RunConfig) -> bool:
-    """Whether the raw YSU output dict crosses a model-step boundary.
-
-    Positive ``bldt`` keeps the historical diagnostic object untouched.
-    At ``bldt == 0`` every configured PBL call is immediately consumed by
-    :meth:`PhysicsDriver._run_ysu`, so retaining the raw rates duplicates the
-    coupled PBL tendencies without serving a later reader.
-    """
-    return bool(cfg.bl_pbl_physics and cfg.bldt > 0.0)
-
-
-def physics_reuses_pbl_composition(cfg: RunConfig) -> bool:
-    """Whether the composed tendency target can be the fresh PBL stack.
-
-    This is deliberately narrower than ``stepbl == 1``: every positive-bldt
-    configuration retains the historical allocation path.  With active YSU
-    and literal ``bldt == 0``, ``_run_ysu`` replaces the PBL stack before
-    every composition, so radiation/cumulus can be accumulated into it once
-    without corrupting a value needed by the next step.
-    """
-    return bool(cfg.bl_pbl_physics and cfg.bldt == 0.0
-                and (radiation_enabled(cfg) or cfg.cu_physics))
-
-
 def _cumulus_optional_tendency_components(
         cfg: RunConfig) -> tuple[str, ...]:
     """Canonical KF moisture categories for the configured MP phase mode."""
@@ -553,18 +491,6 @@ def _cumulus_optional_tendency_components(
     elif phase_mode == KFPhaseMode.SEPARATE_SNOW:
         components.append("rqs")
     return tuple(components)
-
-
-#: ``mp_physics`` values whose WRF Registry ``moist`` package carries QI,
-#: and therefore the values for which the PBL driver returns an ``rqi``
-#: tendency the run must hold.  THREE sites read it and all three must
-#: agree, or the ``gpuwm check --alloc`` measurement stops covering true
-#: runtime residency: this module's :func:`_pbl_optional_tendency_
-#: components` (what the run allocates), ``preflight.physics_array_shapes``
-#: (what the estimate prices) and ``preflight._materialize_physics`` (what
-#: the measurement constructs).  They used to be three literal tuples, and
-#: mp=16 reached production having moved only two of them.
-PBL_RQI_MICROPHYSICS = (6, 8, 9, 10, 16, 18, 28, 50)
 
 
 def _pbl_optional_tendency_components(cfg: RunConfig) -> tuple[str, ...]:
@@ -659,63 +585,6 @@ def _composed_optional_tendency_components(
     members = (set(_pbl_optional_tendency_components(cfg))
                | set(_cumulus_optional_tendency_components(cfg)))
     return tuple(name for name in ("rqr", "rqi", "rqs") if name in members)
-
-
-def microphysics_scratch_slots(
-        mp_physics: int) -> tuple[tuple[str, str], ...]:
-    """Driver diagnostic component -> canonical persistent scratch slot.
-
-    ``mp_physics=28`` shares mp=8's row, and the authority for that is WRF's
-    own driver arm rather than mp=8's spelling: ``CASE (THOMPSONAERO)``
-    (``phys/module_microphysics_driver.F:1029``) calls ``mp_gt_driver`` with
-    RAINNC (:1085), RAINNCV (:1086), SNOWNC (:1087), SNOWNCV (:1088),
-    GRAUPELNC (:1089), GRAUPELNCV (:1090) and SR (:1091) and with NO hail
-    argument -- the identical seven ``CASE (THOMPSON)`` binds at :1253-:1259.
-    gpuwm's aerosol adapter writes the same seven canonical scratch slots
-    (``gpuwm/core/microphysics_aerosol.py:263-269``), so the driver aliases
-    them here instead of allocating a private zero-filled copy set.
-    """
-    if mp_physics == 1:
-        return (("rainnc", "mp_rainnc"),
-                ("rainncv", "mp_rainncv"),
-                ("sr", "mp_kessler_sr"))
-    if mp_physics in (6, 8, 10, 16, 28):
-        return (("rainnc", "mp_rainnc"),
-                ("rainncv", "mp_rainncv"),
-                ("sr", "mp_sr"),
-                ("snownc", "mp_snownc"),
-                ("snowncv", "mp_snowncv"),
-                ("graupelnc", "mp_graupelnc"),
-                ("graupelncv", "mp_graupelncv"))
-    if mp_physics in (9, 18):
-        # Milbrandt-Yau shares NSSL's nine-slot row because its WRF driver
-        # arm binds the same nine: RAINNC/RAINNCV (:1868-1869),
-        # SNOWNC/SNOWNCV (:1870-1871), HAILNC/HAILNCV (:1872-1873),
-        # GRAUPELNC/GRAUPELNCV (:1874-1875) and SR (:1876) in
-        # module_microphysics_driver.F's CASE (MILBRANDT2MOM).
-        return (("rainnc", "mp_rainnc"),
-                ("rainncv", "mp_rainncv"),
-                ("snownc", "mp_snownc"),
-                ("snowncv", "mp_snowncv"),
-                ("graupelnc", "mp_graupelnc"),
-                ("graupelncv", "mp_graupelncv"),
-                ("hailnc", "mp_hailnc"),
-                ("hailncv", "mp_hailncv"),
-                ("sr", "mp_sr"))
-    if mp_physics == 50:
-        # P3 one-category.  FIVE slots, not mp=6/8's seven: the driver arm
-        # ``CASE (P3_1CATEGORY)`` binds RAINNC/RAINNCV/SR/SNOWNC/SNOWNCV and
-        # NO graupel argument (module_microphysics_driver.F:1590-1595),
-        # because P3 has a single ice category whose rime fraction spans
-        # what other schemes split into snow, graupel and hail.  Listing
-        # graupel here would allocate a canonical accumulator that stayed
-        # zero forever and let output claim a graupel field P3 never has.
-        return (("rainnc", "mp_rainnc"),
-                ("rainncv", "mp_rainncv"),
-                ("sr", "mp_sr"),
-                ("snownc", "mp_snownc"),
-                ("snowncv", "mp_snowncv"))
-    return ()
 
 
 def _as_2d(value, shape, name: str, *, dtype=DTYPE) -> cp.ndarray:
@@ -1593,6 +1462,18 @@ def couple_column_tendencies(
 
 def _prepare_atmosphere(state: DomainState) -> dict[str, cp.ndarray]:
     """CuPy transcription of WRF ``phy_prep`` fields used in Phase 3."""
+    supplied = getattr(state, "prepared_physics_atmosphere", None)
+    if supplied is not None:
+        # A column state that already lives on the physics grid (A-grid
+        # winds, height-coordinate pressures: gpuwm/core/
+        # mpas_column_batch.py) supplies its own phy_prep product.  The
+        # destagger below is C-grid face interpolation and the pressure
+        # loop is ARW mass-coordinate arithmetic; neither is defined for
+        # such a state, so the carrier hands the driver the same dict this
+        # function builds, with every key filled from the caller's own
+        # fields.  The ORCHESTRATION (cadence, holds, buckets, scheme
+        # calls) above and below this seam is shared, not duplicated.
+        return supplied()
     nz, ny, nx = state.p.shape
     theta = cp.ascontiguousarray(state.total_theta())
     pressure = state.p
@@ -1801,6 +1682,16 @@ class PhysicsDriver:
         # (task #206); the repair itself applies on every step that
         # needs it.
         self._shinhong_passenger_advisory = False
+        # One advisory per run for the Shin-Hong ENTRY heal (the
+        # upstream half of the same defect class: state.e_sgs arriving
+        # below WRF's shinhonginit floor, or non-finite); the heal
+        # itself applies on every step that needs it.
+        self._shinhong_entry_advisory = False
+        #: The construction-time surface classification receipt --
+        #: which source decided XLAND and the per-class column counts.
+        #: initialize_physics fills it right after construction; a
+        #: hand-built driver keeps the empty dict.
+        self.surface_classification: dict = {}
         if int(cfg.sf_surface_physics) == 4:
             if noahmp_params is None:
                 raise ValueError(
@@ -2566,6 +2457,38 @@ class PhysicsDriver:
                 health_ledger.masked_clear(mask, array)
         self.cu_expiring[...] = DTYPE(0.0)
         self._cu_expiry_pending = False
+
+    def recouple_cumulus_tendencies(self, state: DomainState,
+                                    cfg: RunConfig) -> None:
+        """Rebuild the held coupled cumulus tendencies from the raw rates.
+
+        The nest-relocation preparer restores the raw per-column rates
+        (``cu_rates``, aliases of the serialized ``cu_*`` slots) onto a
+        rebuilt driver; the COUPLED copies the RK composer reads were
+        computed by the OUTGOING driver against its own dry-air mass and
+        do not survive the rebuild.  Recoupling against the post-
+        transplant child reproduces them: on the strip the rates are
+        zero and the coupling is inert, and on the overlap the rates are
+        the outgoing child's, coupled with the transplanted (current)
+        mass rather than the historical due-call mass -- the same
+        approximation WRF's own advance would make one step later, and
+        stated here rather than silently absorbed.  Without this call a
+        moved nest applies ZERO convective heating on held columns until
+        the next due cumulus call, which is up to a full ``cudt``.
+        """
+        if self.cu_rates is None:
+            return
+        cumulus_components = _cumulus_optional_tendency_components(cfg)
+        self.cumulus_tendencies = couple_column_tendencies(
+            state, cfg, rtheta=self.cu_rates["rthcuten"],
+            rqv=self.cu_rates["rqvcuten"], rqc=self.cu_rates["rqccuten"],
+            rqr=(self.cu_rates["rqrcuten"]
+                 if "rqr" in cumulus_components else None),
+            rqi=(self.cu_rates["rqicuten"]
+                 if "rqi" in cumulus_components else None),
+            rqs=(self.cu_rates["rqscuten"]
+                 if "rqs" in cumulus_components else None))
+        self.cumulus_tendencies.materialize(cumulus_components)
 
     def _compose_tendencies(self, cfg: RunConfig) -> None:
         """Compose held PBL/radiation/cumulus components in WRF order."""
@@ -3345,12 +3268,59 @@ class PhysicsDriver:
           its allocated zeros rather than inheriting another scheme's.
         """
         f = self.fields
+        # ENTRY CONTRACT (the upstream half of task #206): WRF runs this
+        # scheme only on TKE the shinhonginit floor (epsq2l/2) and the
+        # chain's own amax1 floors guarantee, and entry TKE at or below
+        # zero -- or non-finite -- is the ONE input class that reproduces
+        # the "non-finite tke tendency" crash signature (mixlen's
+        # el0 = alph*szq*0.5/sq goes 0/0 when sqrt(q2) integrates to
+        # zero; the NaN walks el -> disel -> prodq2's q2 into the
+        # published passenger pair while every tendency stays finite).
+        # MEASURED the other direction (work/probe_shinhong_big_ensemble
+        # .py, 2026-08-16): 24,000 adversarial columns with entry TKE at
+        # or above the floor produced ZERO tke-confined non-finites.
+        # The engine's own writers keep the invariant (state.py cold
+        # start, the validated writeback below), but this seam used to
+        # trust ANY writer -- a hand-carried restart, an analysis state,
+        # an external tool, a bit flip on a no-ECC card -- so the floor
+        # is re-asserted here, in place, upstream of the output guard.
+        # min() is the identity fast path: one scalar readback beside
+        # the validation readback this call already pays, and a healthy
+        # run's trajectory is bit-identical.  NaN fails the >= compare,
+        # so corruption lands in the heal branch too.
+        e_sgs = self.state.e_sgs
+        # The floor in the CARRIER'S dtype: the module literal is a
+        # Python float and float32(0.005) sits just below it, so a
+        # float64 compare would flag every legal cold-start value.
+        entry_floor = DTYPE(SHINHONG_TKE_FLOOR)
+        entry_min = float(e_sgs.min())
+        if not (math.isfinite(entry_min)
+                and entry_min >= float(entry_floor)):
+            xp = cp.get_array_module(e_sgs)
+            good = xp.isfinite(e_sgs) & (e_sgs >= entry_floor)
+            healed = int(e_sgs.size) - int(good.sum())
+            e_sgs[...] = xp.where(good, e_sgs, entry_floor)
+            if not self._shinhong_entry_advisory:
+                self._shinhong_entry_advisory = True
+                print(
+                    "shin-hong: the SGS TKE carrier (state.e_sgs) arrived "
+                    f"at the PBL seam with {healed} entry value(s) below "
+                    "WRF's shinhonginit cold-start floor (epsq2l/2 = "
+                    f"{SHINHONG_TKE_FLOOR}) or non-finite; healed to the "
+                    "floor in place and continuing.  The scheme's own "
+                    "writers keep this invariant, so a value outside it "
+                    "came from another writer (a carried-in state, an "
+                    "analysis, memory corruption).  Entry TKE at or below "
+                    "zero is the one input class that reproduces the "
+                    "'non-finite tke tendency' failure.  Said once per "
+                    "run; the heal applies whenever needed.",
+                    file=sys.stderr)
         out = launch_shinhong(
             atmosphere["u"], atmosphere["v"], atmosphere["theta"],
             atmosphere["qv"], atmosphere["qc"], atmosphere["qi"],
             atmosphere["pressure"], atmosphere["p_interface"],
             atmosphere["exner"], atmosphere["dz"],
-            self.state.e_sgs,
+            e_sgs,
             psfc=atmosphere["p_interface"][0], znt=f["znt"], ust=f["ust"],
             hfx=f["hfx"], qfx=f["qfx"], wspd=f["wspd"], br=f["br"],
             psim=f["fm"], psih=f["fh"], xland=f["xland"],
@@ -4478,7 +4448,7 @@ def initialize_physics(
         ivgtyp=10, isltyp=6, vegfra=50.0, tmn=285.0, xice=0.0, snow=0.0,
         snow_depth=0.0, sst=None,
         swdown=None, glw=None, pblh=0.0, mavail=1.0,
-        landuse=None,
+        landuse=None, xland=None, xice_threshold=None,
         noah_params=None, radiation=None, cumulus=None,
         radiation_start_time=None, radiation_latitude=None,
         radiation_longitude=None,
@@ -4677,12 +4647,31 @@ def initialize_physics(
         pblh = landuse.pblh
         mavail = landuse.mavail
     land = _as_2d(landmask, shape, "landmask") >= DTYPE(0.5)
-    xland = (_as_2d(landuse.xland, shape, "xland")
-             if landuse is not None else
-             cp.ascontiguousarray(cp.where(
-                 land, DTYPE(1.0), DTYPE(2.0))))
+    # NATIVE-XLAND LAW: a caller that supplies ``xland`` supplies the
+    # classification, and it wins VERBATIM -- never re-derived, never
+    # reconciled against landmask.  The pinning case is MPAS category-15
+    # fractional sea ice, which carries native xland=1 on columns whose
+    # landmask is 0: derivation would classify them open water and run no
+    # surface at all, while the native value routes them to the ice
+    # surface (NOAHMP_GLACIER for VEGTYP=ISICE below the sea-ice
+    # threshold, the sea-ice skip at or above it).  Derivation from
+    # landmask (WPS 1=land/0=water -> WRF 1=land/2=water) remains ONLY as
+    # the documented fallback when no xland is passed; a landuse
+    # initialization's own xland sits between the two.  The provenance is
+    # recorded in ``driver.surface_classification`` so a run can state
+    # which source decided.
+    if xland is not None:
+        resolved_xland = cp.ascontiguousarray(_as_2d(xland, shape, "xland"))
+        xland_source = "native"
+    elif landuse is not None:
+        resolved_xland = _as_2d(landuse.xland, shape, "xland")
+        xland_source = "landuse"
+    else:
+        resolved_xland = cp.ascontiguousarray(cp.where(
+            land, DTYPE(1.0), DTYPE(2.0)))
+        xland_source = "derived-from-landmask"
     f: dict[str, cp.ndarray] = {
-        "landmask": land.astype(DTYPE), "xland": xland,
+        "landmask": land.astype(DTYPE), "xland": resolved_xland,
         "tsk": _as_2d(tsk, shape, "tsk"),
         "pblh": _as_2d(pblh, shape, "pblh"),
         "mavail": _as_2d(mavail, shape, "mavail"),
@@ -4946,10 +4935,18 @@ def initialize_physics(
         ruc_params = RucRuntimeParameters(
             seaice_albedo_default=cfg.seaice_albedo_default)
 
+    if xice_threshold is not None and int(cfg.sf_surface_physics) != 4:
+        raise ValueError(
+            "xice_threshold is the Noah-MP sea-ice classification "
+            "threshold (sf_surface_physics=4); RUC pins its own in "
+            f"gpuwm/core/ruc_runtime.py.  Got sf_surface_physics="
+            f"{cfg.sf_surface_physics}")
     noahmp_params = None
     noahmp_geometry = None
     if int(cfg.sf_surface_physics) == 4:
-        noahmp_params = NoahmpRuntimeParameters()
+        noahmp_params = (NoahmpRuntimeParameters() if xice_threshold is None
+                         else NoahmpRuntimeParameters(
+                             xice_threshold=float(xice_threshold)))
         latitude = (noahmp_latitude if noahmp_latitude is not None
                     else radiation_latitude)
         longitude = (noahmp_longitude if noahmp_longitude is not None
@@ -5042,6 +5039,31 @@ def initialize_physics(
                            ruc_params=ruc_params,
                            glw_provenance=glw_provenance,
                            carriers=carriers)
+    # CLASSIFICATION RECEIPT: which source decided XLAND and how many
+    # columns each surface class took under the active identity.  Rebuilt
+    # at every construction from the same inputs (restart classification:
+    # rebuild), and published so a run can answer "who decided these were
+    # water" with a name instead of a diff.
+    surface_classification = {
+        "xland_source": xland_source,
+        "xland_land_columns": int((resolved_xland
+                                   < DTYPE(1.5)).sum()),
+        "xland_water_columns": int((resolved_xland
+                                    >= DTYPE(1.5)).sum()),
+    }
+    if noahmp_params is not None:
+        masks = classify_noahmp_surface(
+            f["xland"], f["xice"], f["ivgtyp"],
+            xice_threshold=noahmp_params.xice_threshold,
+            isice=int(noahmp_params.land_use.isice))
+        surface_classification.update({
+            "xice_threshold": float(noahmp_params.xice_threshold),
+            "sea_ice_columns": int(masks["sea_ice"].sum()),
+            "open_water_columns": int(masks["open_water"].sum()),
+            "sflx_land_columns": int(masks["sflx_land"].sum()),
+            "glacier_columns": int(masks["glacier"].sum()),
+        })
+    driver.surface_classification = surface_classification
     if int(cfg.sf_surface_physics) == 3:
         # ruclsminit runs once, before the first step, where
         # module_physics_init.F runs it.  Without it SH2O is whatever the
@@ -5114,6 +5136,24 @@ def initialize_physics(
     return driver
 
 
+def __getattr__(name: str):
+    """PEP 562 lazy export of the MPAS column-batch seam factory.
+
+    ``gpuwm.core.physics.run_mpas_column_batch`` is the published API name
+    for the persistent MPAS physics seam; the implementation lives in
+    :mod:`gpuwm.core.mpas_column_batch`, which imports THIS module for the
+    driver/coupling machinery.  A lazy attribute breaks that cycle without
+    a wrapper function, so the exported name IS the implementation's own
+    function object (the seam's orchestration-identity tests rely on
+    object identity, never on spelling).
+    """
+    if name == "run_mpas_column_batch":
+        from gpuwm.core.mpas_column_batch import run_mpas_column_batch
+        return run_mpas_column_batch
+    raise AttributeError(
+        f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = ["CumulusResult", "DECLARED_CONSTANT_GLW_WM2",
            "LAND_SURFACE_SFCDIAGS_SCHEMES",
            "PHYSICS_SLOT_DISPATCH", "PhysicsDriver", "PhysicsTendencies",
@@ -5126,4 +5166,5 @@ __all__ = ["CumulusResult", "DECLARED_CONSTANT_GLW_WM2",
            "physics_driver_required",
            "physics_retains_ysu_output", "physics_reuses_pbl_composition",
            "resolve_physics_dispatch", "resolve_physics_slot",
+           "run_mpas_column_batch",
            "validate_ysu_tendencies"]

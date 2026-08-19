@@ -178,6 +178,8 @@ fn shared_non_ecape_plan_collapses_gfs_direct_and_pair_to_one_fetch_key() {
         subtitle_left_override: None,
         subtitle_right_override: None,
         title_provenance: TitleProvenance::default(),
+        geographic_overlays: None,
+        panel_annotations: None,
     };
     let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
     let derived_recipes = plan_derived_recipes(&["sbcape".to_string()]).unwrap();
@@ -232,6 +234,8 @@ fn shared_non_ecape_plan_strips_nomads_hrrr_direct_idx_patterns() {
         subtitle_left_override: None,
         subtitle_right_override: None,
         title_provenance: TitleProvenance::default(),
+        geographic_overlays: None,
+        panel_annotations: None,
     };
     let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
     let plan =
@@ -277,6 +281,8 @@ fn shared_non_ecape_plan_collapses_ecmwf_direct_and_pair_to_one_fetch_key() {
         subtitle_left_override: None,
         subtitle_right_override: None,
         title_provenance: TitleProvenance::default(),
+        geographic_overlays: None,
+        panel_annotations: None,
     };
     let direct_groups = plan_direct_fetch_groups(&direct_request).unwrap();
     let derived_recipes = plan_derived_recipes(&["sbcape".to_string()]).unwrap();

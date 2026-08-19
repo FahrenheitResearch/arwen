@@ -49,7 +49,11 @@ def _wheel_layout(monkeypatch, tmp_path, *, staged: bool):
                         / "grib1_bridge")
     if staged:
         for name in doctor._GRIB2_ROUTE_TOOLS:
-            (bridge_dir / bridges.executable_name(name)).write_bytes(b"MZ\0\0")
+            # The real contract markers, because the route check applies
+            # the resolver's static ABI gate: a fake that lacks them is
+            # a STALE staged pair, which is its own test below.
+            (bridge_dir / bridges.executable_name(name)).write_bytes(
+                b"MZ\0\0" + bridges.BRIDGE_ABI_MARKERS[name])
         monkeypatch.setattr(
             bridges, "find_bridge",
             lambda name: bridge_dir / bridges.executable_name(name))
@@ -70,14 +74,20 @@ def test_staged_grib2_tools_are_reported_reachable_now_that_they_are(
     files probed green, and ``mapped_source._build_grib2_tools()`` shelled
     cargo into a directory a wheel does not contain, so the route died
     before reading a byte.  That function consults the resolution ladder
-    first now, so the staged copies are exactly what the default route
-    uses -- and a report still calling this a gap would be the same defect
-    pointed the other way: a red line over a working route teaches a
-    reader to stop believing the report.
+    first now, so the staged copies are exactly what the routes that
+    still launch these executables use -- and a report calling that a gap
+    would be the same defect pointed the other way: a red line over a
+    working route teaches a reader to stop believing the report.
 
     The green is earned rather than assumed: it is asserted through the
     SAME ``find_bridge`` the route calls, on a layout with no crate
     anywhere, which is what a wheel install is.
+
+    The DOORS the line credits move with the code, and the assertions
+    below hold them to it: since ``compose`` was declared for grib2 the
+    packaged-profile GRIB2 preparations do their byte work inside
+    ``gpuwm_mapped_engine`` and name neither tool, so this line may
+    enumerate them only as the sources that resolve neither.
     """
 
     bridge_dir = _wheel_layout(monkeypatch, tmp_path, staged=True)
@@ -88,7 +98,77 @@ def test_staged_grib2_tools_are_reported_reachable_now_that_they_are(
         "gap here is a report that has fallen behind the code")
     assert str(bridge_dir / bridges.executable_name("grib2_inventory")) \
         in check.detail
+    # WHICH doors this line vouches for, and it may not overclaim.  Until
+    # the compose port it could say "every packaged-profile GRIB2
+    # source", because every mapped prep ran the Python engine and
+    # launched these two executables.  `compose` is declared for grib2
+    # now, so a bare `gpuwm prep --source hrrr-prs` composes in
+    # `gpuwm_mapped_engine` and names neither tool -- and a report still
+    # crediting these tools with that source's decode would tell a
+    # reader their bytes are decoded somewhere they are not, which is
+    # this file's whole subject pointed at a newer hole.
+    for door in ("gpuwm adapt", "gpuwm-member-prep",
+                 "--mapped-engine python"):
+        assert door in check.detail, door
+    # The 20CRv3 member route left the credited list when it moved onto
+    # `decode_composed_source`: a bare member prep composes in the engine
+    # and reads the raw record inventory in process, so a report still
+    # crediting these tools with that door's decode would tell a reader
+    # their bytes are decoded somewhere they are not.
+    assert "gpuwm prep --source 20crv3 route" not in check.detail
+    assert "20crv3" in check.detail, (
+        "the member route must still be named -- as a source that "
+        "resolves neither, or a reader is left to guess")
+    # The packaged profiles are still enumerated -- a reader asks "does
+    # MY source need these?" -- but as the sources that resolve NEITHER.
+    packaged = doctor._packaged_grib2_source_ids()
+    assert "hrrr-prs" in packaged, (
+        "the packaged GRIB2 profile enumeration went empty, so this row "
+        "would pass while the report named no source at all")
+    for source in packaged:
+        assert source in check.detail, source
+    assert "compose in the engine on a bare run and resolve neither" \
+        in check.detail
     assert doctor.blocking_gaps([check]) == []
+
+
+def test_a_stale_staged_pair_is_not_reported_as_resolving(
+        monkeypatch, tmp_path):
+    """The resolver refuses a pre-contract binary; the report must too.
+
+    ``_build_grib2_tools`` gates every ladder hit on the static contract
+    marker now, so a staged pair predating the converged decoder is a
+    pair the route will NOT launch.  A ``verified`` line over it would
+    be the original audit finding again, one rung further up.
+    """
+
+    bridge_dir = _wheel_layout(monkeypatch, tmp_path, staged=True)
+    for name in doctor._GRIB2_ROUTE_TOOLS:
+        (bridge_dir / bridges.executable_name(name)).write_bytes(
+            b"MZ\0\0predates-the-contract")
+    check = doctor._mapped_grib2_route_check()
+
+    assert check.status == "missing"
+    assert "predates" in check.detail
+    assert check.action == "gpuwm fetch-bridges"
+
+
+def test_a_stale_staged_pair_in_a_checkout_reads_untested(
+        monkeypatch, tmp_path):
+    """With a crate present, the route rebuilds; doctor cannot judge it."""
+
+    crate = tmp_path / "site-packages" / "tools" / "grib1_bridge"
+    crate.mkdir(parents=True)
+    (crate / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+    bridge_dir = _wheel_layout(monkeypatch, tmp_path, staged=True)
+    for name in doctor._GRIB2_ROUTE_TOOLS:
+        (bridge_dir / bridges.executable_name(name)).write_bytes(
+            b"MZ\0\0predates-the-contract")
+    check = doctor._mapped_grib2_route_check()
+
+    assert check.status == "untested"
+    assert check.detail.startswith("not tested")
+    assert "predates" in check.detail
 
 
 def test_the_same_route_reports_not_tested_where_a_build_could_succeed(

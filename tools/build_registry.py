@@ -1454,7 +1454,7 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
                     "WRF v4.6.1 (git tag v4.6.1, commit "
                     "d66e442fccc04111067e29274c9f9eaccc3cef28), file "
                     "run/CCN_ACTIVATE.BIN"),
-                "search_root": "gpuwm/data/thompson/tables",
+                "search_root": "gpuwm_data/data/thompson/tables",
                 "root_environment_override": "GPUWM_THOMPSON_TABLE_ROOT",
                 "path_environment_override": "GPUWM_THOMPSON_CCN_ACTIVATE",
                 "regenerable": False,
@@ -1467,7 +1467,8 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
                     "thompson_init and no gpuwm code path regenerates it. "
                     "gpuwm redistributes WRF's file verbatim -- it is "
                     "committed under search_root, listed in that directory's "
-                    "MANIFEST.sha256 and shipped in the wheel, under WRF's "
+                    "MANIFEST.sha256 and shipped in the gpuwm-data companion "
+                    "wheel that `pip install gpuwm` pulls, under WRF's "
                     "public-domain dedication whose notice travels in "
                     "gpuwm/data/wrf_radiation/LICENSE-WRF.txt -- so a default "
                     "install satisfies this requirement and the environment "
@@ -3450,6 +3451,26 @@ def build(registry: dict) -> dict:
             "tendencies are computed but not yet coupled (CumulusResult "
             "carries no momentum slots); (3) mass-level w is the "
             "KF-precedent average of the staggered field.",
+            "MEASURED regime behaviour (2026-08-17, 12 km single-domain "
+            "real-case twins on the tree route, 150x120x49, 6 h, KF "
+            "control differing only in cu_physics/cudt): under strong "
+            "synoptic forcing (1974-04-03 12-18Z) GF's domain-mean RAINC "
+            "is ~40% of the KF control's -- ordinary inter-scheme "
+            "spread; under weak forcing (1999-05-03 12-18Z, Ohio "
+            "valley) it is 1-2% of KF's, i.e. the scheme is nearly "
+            "silent where KF still rains. A column-level kernel probe "
+            "of the weak-forcing state (18,000 real columns through "
+            "gf_gfdrv_stage) found the deep trigger rejecting every "
+            "column under four forcing arms alike -- the shipped "
+            "zero-forcing seam, HFX/QFX-reconstructed RTHBLTEN/"
+            "RQVBLTEN, and radiative forcing of either sign -- so the "
+            "weak-forcing silence is the bitwise scheme's own "
+            "trigger/closure response to these inputs, not a numeric "
+            "defect at the adapter seam. A user expecting KF-like "
+            "convective rain from cu_physics=3 on a weakly forced case "
+            "will see almost none; that is the measured shape of the "
+            "scheme as fed today, recorded here so it is not "
+            "re-diagnosed as breakage.",
         ],
     }
     surface_options["mynn"]["constraints"]["requires_components"][

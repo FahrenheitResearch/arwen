@@ -79,6 +79,12 @@ _BRIDGE_USAGE_MARKERS = {
     "gfs_grib2_bridge": "usage: gfs_grib2_bridge",
     "hrrr_grib2_bridge": "usage: hrrr_grib2_bridge",
     "rw_fetch": "usage: rw_fetch",
+    # The mapped decode engine is a decoder of record: on the Rust route
+    # it is the one binary an input manifest seals, so it needs the same
+    # no-argument identity probe the subprocess tools get.  Without a row
+    # here `bridge_identity` refuses the name outright and no manifest
+    # could be authored for that route at all.
+    "gpuwm_mapped_engine": "usage: gpuwm_mapped_engine",
 }
 # The generic GRIB2 pair is an internal tabular ABI, not just any executable
 # with the right basename and usage string.  These adjacent-column markers

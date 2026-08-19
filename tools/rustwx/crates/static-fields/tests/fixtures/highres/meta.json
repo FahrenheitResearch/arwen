@@ -1,0 +1,2002 @@
+{
+ "donors": {
+  "cases": [
+   {
+    "donor_x": {
+     "dtype": "int32",
+     "file": "donors_random_x.bin",
+     "shape": [
+      20,
+      16
+     ]
+    },
+    "donor_y": {
+     "dtype": "int32",
+     "file": "donors_random_y.bin",
+     "shape": [
+      20,
+      16
+     ]
+    },
+    "mask": {
+     "dtype": "uint8",
+     "file": "donors_random_mask.bin",
+     "shape": [
+      20,
+      16
+     ]
+    },
+    "name": "random"
+   },
+   {
+    "donor_x": {
+     "dtype": "int32",
+     "file": "donors_single_x.bin",
+     "shape": [
+      7,
+      9
+     ]
+    },
+    "donor_y": {
+     "dtype": "int32",
+     "file": "donors_single_y.bin",
+     "shape": [
+      7,
+      9
+     ]
+    },
+    "mask": {
+     "dtype": "uint8",
+     "file": "donors_single_mask.bin",
+     "shape": [
+      7,
+      9
+     ]
+    },
+    "name": "single"
+   },
+   {
+    "donor_x": {
+     "dtype": "int32",
+     "file": "donors_banded_x.bin",
+     "shape": [
+      14,
+      14
+     ]
+    },
+    "donor_y": {
+     "dtype": "int32",
+     "file": "donors_banded_y.bin",
+     "shape": [
+      14,
+      14
+     ]
+    },
+    "mask": {
+     "dtype": "uint8",
+     "file": "donors_banded_mask.bin",
+     "shape": [
+      14,
+      14
+     ]
+    },
+    "name": "banded"
+   }
+  ],
+  "empty_message": "nearest-donor mask must be 2-D with a valid cell"
+ },
+ "landcover": {
+  "fractions": {
+   "dtype": "float64",
+   "file": "landcover_fractions.bin",
+   "shape": [
+    21,
+    13,
+    14
+   ]
+  },
+  "grid_spec": {
+   "dx": 1500.0,
+   "dy": 1500.0,
+   "e_sn": 8,
+   "e_we": 9,
+   "kind": "lambert",
+   "known_x": 4.5,
+   "known_y": 4.0,
+   "moad_cen_lat": 39.5,
+   "moad_cen_lon": -84.0,
+   "ref_lat": 39.5,
+   "ref_lon": -84.0,
+   "stand_lon": -84.0,
+   "truelat1": 38.0,
+   "truelat2": 41.0
+  },
+  "halo": 3,
+  "mapping": [
+   [
+    11,
+    21
+   ],
+   [
+    12,
+    15
+   ],
+   [
+    21,
+    13
+   ],
+   [
+    22,
+    13
+   ],
+   [
+    23,
+    13
+   ],
+   [
+    24,
+    13
+   ],
+   [
+    31,
+    16
+   ],
+   [
+    41,
+    4
+   ],
+   [
+    42,
+    1
+   ],
+   [
+    43,
+    5
+   ],
+   [
+    52,
+    7
+   ],
+   [
+    71,
+    10
+   ],
+   [
+    81,
+    10
+   ],
+   [
+    82,
+    12
+   ],
+   [
+    90,
+    11
+   ],
+   [
+    95,
+    11
+   ]
+  ],
+  "mean_l1_cap": 0.04,
+  "nodata": 250,
+  "per_cell_l1_cap": 0.09
+ },
+ "merge_full": {
+  "audit": {
+   "deep_soil_water_masked_cells": 10,
+   "newly_land_nearest_climatology_fallback_cells": 2,
+   "newly_water_masked_cells": 2,
+   "unchanged_land_water_cells": 116
+  },
+  "baseline": [
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_ALBEDO12M.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "ALBEDO12M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_GREENFRAC.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "GREENFRAC",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_HGT_M.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "HGT_M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_LAI12M.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "LAI12M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_LANDMASK.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "LANDMASK",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_LANDUSEF.bin",
+     "shape": [
+      21,
+      12,
+      10
+     ]
+    },
+    "name": "LANDUSEF",
+    "nx": 10,
+    "ny": 12,
+    "planes": 21
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_LU_INDEX.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "LU_INDEX",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_SCB_DOM.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SCB_DOM",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_SCT_DOM.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SCT_DOM",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_SNOALB.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SNOALB",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_SOILCBOT.bin",
+     "shape": [
+      16,
+      12,
+      10
+     ]
+    },
+    "name": "SOILCBOT",
+    "nx": 10,
+    "ny": 12,
+    "planes": 16
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_SOILCTOP.bin",
+     "shape": [
+      16,
+      12,
+      10
+     ]
+    },
+    "name": "SOILCTOP",
+    "nx": 10,
+    "ny": 12,
+    "planes": 16
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_SOILTEMP.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SOILTEMP",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_base_TMN.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "TMN",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   }
+  ],
+  "merged": [
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_ALBEDO12M.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "ALBEDO12M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_GREENFRAC.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "GREENFRAC",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_HGT_M.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "HGT_M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_LAI12M.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "LAI12M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_LANDMASK.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "LANDMASK",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_LANDUSEF.bin",
+     "shape": [
+      21,
+      12,
+      10
+     ]
+    },
+    "name": "LANDUSEF",
+    "nx": 10,
+    "ny": 12,
+    "planes": 21
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_LU_INDEX.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "LU_INDEX",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_SCB_DOM.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SCB_DOM",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_SCT_DOM.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SCT_DOM",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_SNOALB.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SNOALB",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_SOILCBOT.bin",
+     "shape": [
+      16,
+      12,
+      10
+     ]
+    },
+    "name": "SOILCBOT",
+    "nx": 10,
+    "ny": 12,
+    "planes": 16
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_SOILCTOP.bin",
+     "shape": [
+      16,
+      12,
+      10
+     ]
+    },
+    "name": "SOILCTOP",
+    "nx": 10,
+    "ny": 12,
+    "planes": 16
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_SOILTEMP.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SOILTEMP",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_out_TMN.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "TMN",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   }
+  ],
+  "overrides": [
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_over_HGT_M.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "HGT_M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_over_LANDMASK.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "LANDMASK",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_over_LANDUSEF.bin",
+     "shape": [
+      21,
+      12,
+      10
+     ]
+    },
+    "name": "LANDUSEF",
+    "nx": 10,
+    "ny": 12,
+    "planes": 21
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_over_LU_INDEX.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "LU_INDEX",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_over_SCB_DOM.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SCB_DOM",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_over_SCT_DOM.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SCT_DOM",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_over_SOILCBOT.bin",
+     "shape": [
+      16,
+      12,
+      10
+     ]
+    },
+    "name": "SOILCBOT",
+    "nx": 10,
+    "ny": 12,
+    "planes": 16
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mf_over_SOILCTOP.bin",
+     "shape": [
+      16,
+      12,
+      10
+     ]
+    },
+    "name": "SOILCTOP",
+    "nx": 10,
+    "ny": 12,
+    "planes": 16
+   }
+  ]
+ },
+ "merge_refusals": {
+  "single_cell": "merged high-resolution SOILTEMP is not a temperature on 1 land cell(s) of 110: range [0, 0] K outside 170..400.  0 K is the geog soil_temperature fill, so this is a deep-soil source that did not decode over the land this domain resolves -- check the geog soil_temperature tile coverage for this footprint",
+  "terrain_shape": "terrain override shape (5, 4) differs from baseline (12, 10)",
+  "whole_domain": "merged high-resolution SOILTEMP is not a temperature on 110 land cell(s) of 110: range [0, 0] K outside 170..400.  0 K is the geog soil_temperature fill, so this is a deep-soil source that did not decode over the land this domain resolves -- check the geog soil_temperature tile coverage for this footprint"
+ },
+ "merge_terrain": {
+  "audit": {
+   "land_water_cells_unchanged": 120,
+   "newly_land_nearest_climatology_fallback_cells": 0,
+   "newly_water_masked_cells": 0,
+   "terrain_cells_changed": 120
+  },
+  "baseline": [
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_ALBEDO12M.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "ALBEDO12M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_GREENFRAC.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "GREENFRAC",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_HGT_M.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "HGT_M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_LAI12M.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "LAI12M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_LANDMASK.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "LANDMASK",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_LANDUSEF.bin",
+     "shape": [
+      21,
+      12,
+      10
+     ]
+    },
+    "name": "LANDUSEF",
+    "nx": 10,
+    "ny": 12,
+    "planes": 21
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_LU_INDEX.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "LU_INDEX",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_SCB_DOM.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SCB_DOM",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_SCT_DOM.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SCT_DOM",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_SNOALB.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SNOALB",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_SOILCBOT.bin",
+     "shape": [
+      16,
+      12,
+      10
+     ]
+    },
+    "name": "SOILCBOT",
+    "nx": 10,
+    "ny": 12,
+    "planes": 16
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_SOILCTOP.bin",
+     "shape": [
+      16,
+      12,
+      10
+     ]
+    },
+    "name": "SOILCTOP",
+    "nx": 10,
+    "ny": 12,
+    "planes": 16
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_SOILTEMP.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SOILTEMP",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_base_TMN.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "TMN",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   }
+  ],
+  "hgt_override": {
+   "dtype": "float64",
+   "file": "mt_hgt_override.bin",
+   "shape": [
+    12,
+    10
+   ]
+  },
+  "merged": [
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_ALBEDO12M.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "ALBEDO12M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_GREENFRAC.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "GREENFRAC",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_HGT_M.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "HGT_M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_LAI12M.bin",
+     "shape": [
+      12,
+      12,
+      10
+     ]
+    },
+    "name": "LAI12M",
+    "nx": 10,
+    "ny": 12,
+    "planes": 12
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_LANDMASK.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "LANDMASK",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_LANDUSEF.bin",
+     "shape": [
+      21,
+      12,
+      10
+     ]
+    },
+    "name": "LANDUSEF",
+    "nx": 10,
+    "ny": 12,
+    "planes": 21
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_LU_INDEX.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "LU_INDEX",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_SCB_DOM.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SCB_DOM",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_SCT_DOM.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SCT_DOM",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_SNOALB.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SNOALB",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_SOILCBOT.bin",
+     "shape": [
+      16,
+      12,
+      10
+     ]
+    },
+    "name": "SOILCBOT",
+    "nx": 10,
+    "ny": 12,
+    "planes": 16
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_SOILCTOP.bin",
+     "shape": [
+      16,
+      12,
+      10
+     ]
+    },
+    "name": "SOILCTOP",
+    "nx": 10,
+    "ny": 12,
+    "planes": 16
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_SOILTEMP.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "SOILTEMP",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   },
+   {
+    "data": {
+     "dtype": "float64",
+     "file": "mt_out_TMN.bin",
+     "shape": [
+      12,
+      10
+     ]
+    },
+    "name": "TMN",
+    "nx": 10,
+    "ny": 12,
+    "planes": 1
+   }
+  ]
+ },
+ "mosaic": {
+  "bounds_wsen": [
+   7.965,
+   46.435,
+   8.035,
+   46.485
+  ],
+  "exact_fraction_floor": 0.55,
+  "filled": {
+   "dtype": "float32",
+   "file": "mosaic_filled.bin",
+   "shape": [
+    180,
+    252
+   ]
+  },
+  "hole_mask": {
+   "dtype": "uint8",
+   "file": "mosaic_holes.bin",
+   "shape": [
+    180,
+    252
+   ]
+  },
+  "holes": 180,
+  "max_abs_delta_cap_m": 60.0,
+  "mean_abs_delta_cap_m": 8.0,
+  "resolution_deg": 0.0002777777777777778,
+  "shape": [
+   180,
+   252
+  ],
+  "tiles": [
+   "mosaic_west.tif",
+   "mosaic_east.tif"
+  ],
+  "transform": [
+   0.0002777777777777778,
+   0.0,
+   7.965,
+   0.0,
+   -0.0002777777777777778,
+   46.485
+  ]
+ },
+ "mosaic_clip_east": {
+  "file": "mosaic_east.tif",
+  "max": 3805.487060546875,
+  "min": 2434.609375,
+  "nan_count": 0,
+  "sample": {
+   "dtype": "float32",
+   "file": "mosaic_east.tif.sample.bin",
+   "shape": [
+    759
+   ]
+  },
+  "sample_stride": 41,
+  "shape": [
+   216,
+   144
+  ],
+  "source_sha256": "47769664394ee1ff3b51f5c1b43a3441d7f7bce8d086d0ed2f3a892b895fae3e",
+  "source_tile": "Copernicus_DSM_COG_10_N46_00_E008_00_DEM.tif",
+  "transform": [
+   0.0002777777777777778,
+   0.0,
+   7.9998611111111115,
+   0.0,
+   -0.0002777777777777778,
+   46.49013888888889
+  ]
+ },
+ "mosaic_clip_west": {
+  "file": "mosaic_west.tif",
+  "max": 4144.47216796875,
+  "min": 2452.44091796875,
+  "nan_count": 0,
+  "sample": {
+   "dtype": "float32",
+   "file": "mosaic_west.tif.sample.bin",
+   "shape": [
+    759
+   ]
+  },
+  "sample_stride": 41,
+  "shape": [
+   216,
+   144
+  ],
+  "source_sha256": "426e3d1492d94e4f23d444843f852ff5be675da5c4c14e661b5642006864047d",
+  "source_tile": "Copernicus_DSM_COG_10_N46_00_E007_00_DEM.tif",
+  "transform": [
+   0.0002777777777777778,
+   0.0,
+   7.9598611111111115,
+   0.0,
+   -0.0002777777777777778,
+   46.49013888888889
+  ]
+ },
+ "real_tile_summary": {
+  "path": "Copernicus_DSM_COG_10_N46_00_E007_00_DEM.tif",
+  "sha256": "426e3d1492d94e4f23d444843f852ff5be675da5c4c14e661b5642006864047d",
+  "shape": [
+   3600,
+   3600
+  ],
+  "transform": [
+   0.0002777777777777778,
+   0.0,
+   6.9998611111111115,
+   0.0,
+   -0.0002777777777777778,
+   47.00013888888889
+  ],
+  "window_col_row_w_h": [
+   512,
+   1024,
+   256,
+   256
+  ],
+  "window_max": 1714.2030029296875,
+  "window_min": 749.3357543945312,
+  "window_sum": 81332196.31329346
+ },
+ "soil": {
+  "crs_override": "+proj=igh +lat_0=0 +lon_0=0 +datum=WGS84 +units=m +no_defs",
+  "grid_spec": {
+   "dx": 1500.0,
+   "dy": 1500.0,
+   "e_sn": 8,
+   "e_we": 9,
+   "kind": "lambert",
+   "known_x": 4.5,
+   "known_y": 4.0,
+   "moad_cen_lat": 39.5,
+   "moad_cen_lon": -84.0,
+   "ref_lat": 39.5,
+   "ref_lon": -84.0,
+   "stand_lon": -84.0,
+   "truelat1": 38.0,
+   "truelat2": 41.0
+  },
+  "halo": 3,
+  "layers": {
+   "bottom_30_100cm": {
+    "category": {
+     "dtype": "int16",
+     "file": "soil_bottom_30_100cm_category.bin",
+     "shape": [
+      89,
+      107
+     ]
+    },
+    "fractions": {
+     "dtype": "float64",
+     "file": "soil_bottom_30_100cm_fractions.bin",
+     "shape": [
+      16,
+      13,
+      14
+     ]
+    },
+    "raw_total": {
+     "dtype": "float64",
+     "file": "soil_bottom_30_100cm_total.bin",
+     "shape": [
+      89,
+      107
+     ]
+    },
+    "valid": {
+     "dtype": "uint8",
+     "file": "soil_bottom_30_100cm_valid.bin",
+     "shape": [
+      89,
+      107
+     ]
+    },
+    "weights": [
+     [
+      "30-60cm",
+      30.0
+     ],
+     [
+      "60-100cm",
+      40.0
+     ]
+    ]
+   },
+   "top_0_30cm": {
+    "category": {
+     "dtype": "int16",
+     "file": "soil_top_0_30cm_category.bin",
+     "shape": [
+      89,
+      107
+     ]
+    },
+    "fractions": {
+     "dtype": "float64",
+     "file": "soil_top_0_30cm_fractions.bin",
+     "shape": [
+      16,
+      13,
+      14
+     ]
+    },
+    "raw_total": {
+     "dtype": "float64",
+     "file": "soil_top_0_30cm_total.bin",
+     "shape": [
+      89,
+      107
+     ]
+    },
+    "valid": {
+     "dtype": "uint8",
+     "file": "soil_top_0_30cm_valid.bin",
+     "shape": [
+      89,
+      107
+     ]
+    },
+    "weights": [
+     [
+      "0-5cm",
+      5.0
+     ],
+     [
+      "5-15cm",
+      10.0
+     ],
+     [
+      "15-30cm",
+      15.0
+     ]
+    ]
+   }
+  },
+  "mean_l1_cap": 0.02,
+  "nodata": 0.0,
+  "per_cell_l1_cap": 0.08,
+  "scale_factor": 0.1,
+  "source_shape": [
+   89,
+   107
+  ],
+  "source_transform": [
+   250.0,
+   0.0,
+   -9770966.68686908,
+   0.0,
+   -250.0,
+   4408134.433157712
+  ]
+ },
+ "terrain_clip": {
+  "file": "terrain_clip.tif",
+  "max": 3019.96728515625,
+  "min": 866.1331787109375,
+  "nan_count": 0,
+  "sample": {
+   "dtype": "float32",
+   "file": "terrain_clip.tif.sample.bin",
+   "shape": [
+    12139
+   ]
+  },
+  "sample_stride": 41,
+  "shape": [
+   576,
+   864
+  ],
+  "source_sha256": "426e3d1492d94e4f23d444843f852ff5be675da5c4c14e661b5642006864047d",
+  "source_tile": "Copernicus_DSM_COG_10_N46_00_E007_00_DEM.tif",
+  "transform": [
+   0.0002777777777777778,
+   0.0,
+   7.379861111111111,
+   0.0,
+   -0.0002777777777777778,
+   46.58013888888889
+  ]
+ },
+ "terrain_warp": {
+  "extended_shape": [
+   14,
+   16
+  ],
+  "extended_transform": [
+   750.0,
+   0.0,
+   -6000.0,
+   0.0,
+   -750.0,
+   60837.327174137245
+  ],
+  "grid_spec": {
+   "dx": 750.0,
+   "dy": 750.0,
+   "e_sn": 9,
+   "e_we": 11,
+   "kind": "lambert",
+   "known_x": 5.5,
+   "known_y": 4.5,
+   "moad_cen_lat": 46.5,
+   "moad_cen_lon": 7.5,
+   "ref_lat": 46.5,
+   "ref_lon": 7.5,
+   "stand_lon": 7.5,
+   "truelat1": 46.0,
+   "truelat2": 47.0
+  },
+  "halo": 3,
+  "hgt": {
+   "dtype": "float64",
+   "file": "terrain_warp_hgt.bin",
+   "shape": [
+    8,
+    10
+   ]
+  },
+  "max_abs_delta_cap_m": 20.0,
+  "mean_abs_delta_cap_m": 4.5,
+  "smoothed": {
+   "dtype": "float64",
+   "file": "terrain_warp_smoothed.bin",
+   "shape": [
+    14,
+    16
+   ]
+  },
+  "warped": {
+   "dtype": "float64",
+   "file": "terrain_warp_extended.bin",
+   "shape": [
+    14,
+    16
+   ]
+  }
+ },
+ "tile_ids": {
+  "cases": [
+   {
+    "bbox": [
+     38.95,
+     40.12,
+     -85.3,
+     -83.9
+    ],
+    "copernicus": [
+     "N38_00_W086_00",
+     "N38_00_W085_00",
+     "N38_00_W084_00",
+     "N39_00_W086_00",
+     "N39_00_W085_00",
+     "N39_00_W084_00",
+     "N40_00_W086_00",
+     "N40_00_W085_00",
+     "N40_00_W084_00"
+    ],
+    "name": "midwest",
+    "srtm": [
+     "N38W086",
+     "N38W085",
+     "N38W084",
+     "N39W086",
+     "N39W085",
+     "N39W084",
+     "N40W086",
+     "N40W085",
+     "N40W084"
+    ],
+    "three_dep": [
+     "n39w086",
+     "n39w085",
+     "n39w084",
+     "n40w086",
+     "n40w085",
+     "n40w084",
+     "n41w086",
+     "n41w085",
+     "n41w084"
+    ]
+   },
+   {
+    "bbox": [
+     45.98,
+     47.63,
+     6.55,
+     9.02
+    ],
+    "copernicus": [
+     "N45_00_E006_00",
+     "N45_00_E007_00",
+     "N45_00_E008_00",
+     "N45_00_E009_00",
+     "N46_00_E006_00",
+     "N46_00_E007_00",
+     "N46_00_E008_00",
+     "N46_00_E009_00",
+     "N47_00_E006_00",
+     "N47_00_E007_00",
+     "N47_00_E008_00",
+     "N47_00_E009_00"
+    ],
+    "name": "alps",
+    "srtm": [
+     "N45E006",
+     "N45E007",
+     "N45E008",
+     "N45E009",
+     "N46E006",
+     "N46E007",
+     "N46E008",
+     "N46E009",
+     "N47E006",
+     "N47E007",
+     "N47E008",
+     "N47E009"
+    ],
+    "three_dep": null
+   },
+   {
+    "bbox": [
+     -34.6,
+     -33.2,
+     18.2,
+     19.9
+    ],
+    "copernicus": [
+     "S35_00_E018_00",
+     "S35_00_E019_00",
+     "S34_00_E018_00",
+     "S34_00_E019_00"
+    ],
+    "name": "southern",
+    "srtm": [
+     "S35E018",
+     "S35E019",
+     "S34E018",
+     "S34E019"
+    ],
+    "three_dep": null
+   },
+   {
+    "bbox": [
+     50.1,
+     52.4,
+     176.4,
+     179.9
+    ],
+    "copernicus": [
+     "N50_00_E176_00",
+     "N50_00_E177_00",
+     "N50_00_E178_00",
+     "N50_00_E179_00",
+     "N51_00_E176_00",
+     "N51_00_E177_00",
+     "N51_00_E178_00",
+     "N51_00_E179_00",
+     "N52_00_E176_00",
+     "N52_00_E177_00",
+     "N52_00_E178_00",
+     "N52_00_E179_00"
+    ],
+    "name": "dateline_west",
+    "srtm": [
+     "N50E176",
+     "N50E177",
+     "N50E178",
+     "N50E179",
+     "N51E176",
+     "N51E177",
+     "N51E178",
+     "N51E179",
+     "N52E176",
+     "N52E177",
+     "N52E178",
+     "N52E179"
+    ],
+    "three_dep": null
+   }
+  ],
+  "tile_bboxes": {
+   "N39W105": [
+    39.0,
+    40.0,
+    -105.0,
+    -104.0
+   ],
+   "N39_00_W105_00": [
+    39.0,
+    40.0,
+    -105.0,
+    -104.0
+   ],
+   "S34_00_E018_00": [
+    -34.0,
+    -33.0,
+    18.0,
+    19.0
+   ],
+   "S56W071": [
+    -56.0,
+    -55.0,
+    -71.0,
+    -70.0
+   ]
+  }
+ },
+ "transform_points": [
+  {
+   "crs": "+proj=lcc +lat_1=38 +lat_2=41 +lat_0=38 +lon_0=-84 +R=6370000 +units=m +no_defs",
+   "lat": {
+    "dtype": "float64",
+    "file": "tp_lcc_lat.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lat_back": {
+    "dtype": "float64",
+    "file": "tp_lcc_lat2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon": {
+    "dtype": "float64",
+    "file": "tp_lcc_lon.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon_back": {
+    "dtype": "float64",
+    "file": "tp_lcc_lon2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "name": "lcc",
+   "x": {
+    "dtype": "float64",
+    "file": "tp_lcc_x.bin",
+    "shape": [
+     120
+    ]
+   },
+   "y": {
+    "dtype": "float64",
+    "file": "tp_lcc_y.bin",
+    "shape": [
+     120
+    ]
+   }
+  },
+  {
+   "crs": "+proj=lcc +lat_1=45 +lat_2=45 +lat_0=45 +lon_0=10 +R=6370000 +units=m +no_defs",
+   "lat": {
+    "dtype": "float64",
+    "file": "tp_lcc_tangent_lat.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lat_back": {
+    "dtype": "float64",
+    "file": "tp_lcc_tangent_lat2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon": {
+    "dtype": "float64",
+    "file": "tp_lcc_tangent_lon.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon_back": {
+    "dtype": "float64",
+    "file": "tp_lcc_tangent_lon2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "name": "lcc_tangent",
+   "x": {
+    "dtype": "float64",
+    "file": "tp_lcc_tangent_x.bin",
+    "shape": [
+     120
+    ]
+   },
+   "y": {
+    "dtype": "float64",
+    "file": "tp_lcc_tangent_y.bin",
+    "shape": [
+     120
+    ]
+   }
+  },
+  {
+   "crs": "+proj=merc +lat_ts=20 +lon_0=-80 +R=6370000 +units=m +no_defs",
+   "lat": {
+    "dtype": "float64",
+    "file": "tp_merc_lat.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lat_back": {
+    "dtype": "float64",
+    "file": "tp_merc_lat2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon": {
+    "dtype": "float64",
+    "file": "tp_merc_lon.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon_back": {
+    "dtype": "float64",
+    "file": "tp_merc_lon2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "name": "merc",
+   "x": {
+    "dtype": "float64",
+    "file": "tp_merc_x.bin",
+    "shape": [
+     120
+    ]
+   },
+   "y": {
+    "dtype": "float64",
+    "file": "tp_merc_y.bin",
+    "shape": [
+     120
+    ]
+   }
+  },
+  {
+   "crs": "+proj=stere +lat_0=90 +lat_ts=60 +lon_0=-100 +R=6370000 +units=m +no_defs",
+   "lat": {
+    "dtype": "float64",
+    "file": "tp_polar_n_lat.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lat_back": {
+    "dtype": "float64",
+    "file": "tp_polar_n_lat2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon": {
+    "dtype": "float64",
+    "file": "tp_polar_n_lon.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon_back": {
+    "dtype": "float64",
+    "file": "tp_polar_n_lon2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "name": "polar_n",
+   "x": {
+    "dtype": "float64",
+    "file": "tp_polar_n_x.bin",
+    "shape": [
+     120
+    ]
+   },
+   "y": {
+    "dtype": "float64",
+    "file": "tp_polar_n_y.bin",
+    "shape": [
+     120
+    ]
+   }
+  },
+  {
+   "crs": "+proj=stere +lat_0=-90 +lat_ts=-60 +lon_0=170 +R=6370000 +units=m +no_defs",
+   "lat": {
+    "dtype": "float64",
+    "file": "tp_polar_s_lat.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lat_back": {
+    "dtype": "float64",
+    "file": "tp_polar_s_lat2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon": {
+    "dtype": "float64",
+    "file": "tp_polar_s_lon.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon_back": {
+    "dtype": "float64",
+    "file": "tp_polar_s_lon2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "name": "polar_s",
+   "x": {
+    "dtype": "float64",
+    "file": "tp_polar_s_x.bin",
+    "shape": [
+     120
+    ]
+   },
+   "y": {
+    "dtype": "float64",
+    "file": "tp_polar_s_y.bin",
+    "shape": [
+     120
+    ]
+   }
+  },
+  {
+   "crs": "+proj=igh +lat_0=0 +lon_0=0 +datum=WGS84 +units=m +no_defs",
+   "lat": {
+    "dtype": "float64",
+    "file": "tp_igh_lat.bin",
+    "shape": [
+     400
+    ]
+   },
+   "lat_back": {
+    "dtype": "float64",
+    "file": "tp_igh_lat2.bin",
+    "shape": [
+     400
+    ]
+   },
+   "lon": {
+    "dtype": "float64",
+    "file": "tp_igh_lon.bin",
+    "shape": [
+     400
+    ]
+   },
+   "lon_back": {
+    "dtype": "float64",
+    "file": "tp_igh_lon2.bin",
+    "shape": [
+     400
+    ]
+   },
+   "name": "igh",
+   "x": {
+    "dtype": "float64",
+    "file": "tp_igh_x.bin",
+    "shape": [
+     400
+    ]
+   },
+   "y": {
+    "dtype": "float64",
+    "file": "tp_igh_y.bin",
+    "shape": [
+     400
+    ]
+   }
+  },
+  {
+   "crs": "+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=23.0 +lon_0=-96 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs",
+   "lat": {
+    "dtype": "float64",
+    "file": "tp_aea_lat.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lat_back": {
+    "dtype": "float64",
+    "file": "tp_aea_lat2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon": {
+    "dtype": "float64",
+    "file": "tp_aea_lon.bin",
+    "shape": [
+     120
+    ]
+   },
+   "lon_back": {
+    "dtype": "float64",
+    "file": "tp_aea_lon2.bin",
+    "shape": [
+     120
+    ]
+   },
+   "name": "aea",
+   "x": {
+    "dtype": "float64",
+    "file": "tp_aea_x.bin",
+    "shape": [
+     120
+    ]
+   },
+   "y": {
+    "dtype": "float64",
+    "file": "tp_aea_y.bin",
+    "shape": [
+     120
+    ]
+   }
+  }
+ ],
+ "usda": {
+  "categories": {
+   "dtype": "int16",
+   "file": "usda_categories.bin",
+   "shape": [
+    5151
+   ]
+  },
+  "categories_scaled": {
+   "dtype": "int16",
+   "file": "usda_categories_scaled.bin",
+   "shape": [
+    5151
+   ]
+  },
+  "invalid_total_message": "soil texture contains invalid totals",
+  "scale": 8.13
+ }
+}

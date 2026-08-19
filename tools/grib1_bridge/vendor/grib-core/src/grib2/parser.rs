@@ -145,9 +145,11 @@ pub struct DataRepresentation {
     /// octet 23 of Templates 5.2/5.3): 0 = no explicit management (a
     /// bitmap, if any, carries the missing cells), 1 = primary missing
     /// value substitute embedded in the packed data, 2 = primary and
-    /// secondary.  The unpackers only implement 0 and refuse the rest;
-    /// before this octet was parsed they silently decoded the
-    /// substitute sentinels as data.
+    /// secondary.  All three are decoded; see
+    /// `unpack::missing_value_mode`.  Before this octet was parsed the
+    /// unpackers silently decoded the markers modes 1 and 2 reserve as
+    /// physical data, which is why every value it is read into is
+    /// carried on the message rather than inferred later.
     pub missing_value_management: u8,
     /// Primary missing value substitute (octets 24-27), raw bits.
     pub primary_missing_value: u32,
@@ -209,19 +211,65 @@ impl Default for GridDefinition {
 }
 
 impl ProductDefinition {
-    /// Returns the first statistical time range expressed in hours when PDT 4.8/4.11/4.12
-    /// provides an hourly window. Falls back to the forecast-time unit for callers that only
-    /// populated `time_range_length`.
-    pub fn statistical_time_range_hours(&self) -> Option<u16> {
+    /// The second fixed surface as an optional pair, or `None` when Code
+    /// Table 4.5 code 255 says no second surface is specified.
+    ///
+    /// This crate stores the pair as `u8`/`f64` with 255 as the "absent"
+    /// code, matching the octets and the TSV the bridge binaries emit.
+    /// Callers that model absence as `Option` (the layer-bound selector
+    /// matching in `rw-wps`) go through here rather than re-deriving the
+    /// sentinel test, which is how a `255` layer type reaches a selector as
+    /// a real bounded surface.
+    pub fn second_fixed_surface(&self) -> Option<(u8, f64)> {
+        (self.second_level_type != 255)
+            .then_some((self.second_level_type, self.second_level_value))
+    }
+
+    /// Returns the first PDT 4.8/4.11/4.12 statistical time range as an exact
+    /// number of seconds for the fixed-duration WMO Code Table 4.4 units.
+    /// Falls back to the forecast-time unit for callers that only populated
+    /// `time_range_length`.  Calendar-relative month/year units intentionally
+    /// return `None` because they cannot be represented without an anchor.
+    pub fn statistical_time_range_seconds(&self) -> Option<u64> {
         let unit = self
             .statistical_time_range_unit
             .unwrap_or(self.time_range_unit);
-        if unit != 1 {
-            return None;
-        }
-        self.time_range_length
+        let value = u64::from(self.time_range_length?);
+        fixed_time_value_to_seconds(unit, value)
+    }
+
+    /// Returns the first statistical time range as whole hours.  Minute- and
+    /// second-valued provider intervals are accepted only when they are
+    /// exactly divisible by one hour; no rounding or truncation is allowed.
+    ///
+    /// A provider that encodes a 60-minute accumulation in Code Table 4.4
+    /// unit 0 used to read as "no hourly window" and the accumulation was
+    /// dropped; reading only unit 1 was the breakage.
+    pub fn statistical_time_range_hours(&self) -> Option<u16> {
+        let seconds = self.statistical_time_range_seconds()?;
+        (seconds % 3_600 == 0)
+            .then(|| seconds / 3_600)
             .and_then(|hours| u16::try_from(hours).ok())
     }
+}
+
+/// WMO Code Table 4.4 durations that are a fixed number of seconds.
+///
+/// Month (3), year (4), decade (5), normal (6) and century (7) need a
+/// calendar anchor to become a duration, so they answer `None` rather than
+/// inventing one.
+fn fixed_time_value_to_seconds(unit: u8, value: u64) -> Option<u64> {
+    let seconds_per_unit = match unit {
+        0 => 60,
+        1 => 3_600,
+        2 => 86_400,
+        10 => 10_800,
+        11 => 21_600,
+        12 => 43_200,
+        13 => 1,
+        _ => return None,
+    };
+    value.checked_mul(seconds_per_unit)
 }
 
 impl Default for ProductDefinition {
@@ -1116,12 +1164,18 @@ fn read_scaled_optional(
     if scale_factor == 255 || scaled_value == u32::MAX {
         return Ok(None);
     }
-    let value = if scale_factor < 128 {
-        scaled_value as f64 / 10.0_f64.powi(scale_factor as i32)
+    // Code Table 4.5's scale factor is sign-magnitude, exactly like the two
+    // fixed-surface scales above: 0x82 is -2, not the -126 a two's-complement
+    // reading produces.  Reading it as two's complement turned a 300 K
+    // probability threshold into 3e126 -- an out-of-band number that survives
+    // every downstream range check because nothing expects a threshold to be
+    // finite-but-absurd.
+    let scale_factor = if scale_factor & 0x80 == 0 {
+        i32::from(scale_factor)
     } else {
-        let neg_scale = 256 - scale_factor as i32;
-        scaled_value as f64 * 10.0_f64.powi(neg_scale)
+        -i32::from(scale_factor & 0x7f)
     };
+    let value = scaled_value as f64 * 10.0_f64.powi(-scale_factor);
     Ok(Some(value))
 }
 
@@ -1463,6 +1517,90 @@ mod tests {
         let product = parse_section4(&section).unwrap();
         assert_eq!(product.level_value, 10.0);
         assert_eq!(product.second_level_value, 300.0);
+    }
+
+    #[test]
+    fn fixed_surface_scale_factor_uses_grib_sign_magnitude() {
+        let mut positive = vec![0_u8; 34];
+        seed_common_section4(&mut positive, 0);
+        positive[22] = 100;
+        positive[23] = 2;
+        positive[24..28].copy_from_slice(&50_000_u32.to_be_bytes());
+        assert_eq!(parse_section4(&positive).unwrap().level_value, 500.0);
+
+        let mut negative = vec![0_u8; 34];
+        seed_common_section4(&mut negative, 0);
+        negative[22] = 100;
+        negative[23] = 0x82;
+        negative[24..28].copy_from_slice(&5_u32.to_be_bytes());
+        assert_eq!(parse_section4(&negative).unwrap().level_value, 500.0);
+    }
+
+    #[test]
+    fn probability_threshold_scale_factor_uses_grib_sign_magnitude() {
+        let mut sec = vec![0_u8; 47];
+        seed_common_section4(&mut sec, 5);
+        sec[34] = 0;
+        sec[35] = 1;
+        sec[36] = 1;
+        sec[37] = 0x82;
+        sec[38..42].copy_from_slice(&3_u32.to_be_bytes());
+        sec[42] = 255;
+        sec[43..47].copy_from_slice(&u32::MAX.to_be_bytes());
+
+        let product = parse_section4(&sec).expect("section 4 should parse");
+        assert_eq!(product.probability_lower_limit, Some(300.0));
+        assert_eq!(product.probability_upper_limit, None);
+    }
+
+    #[test]
+    fn parse_section4_captures_bounded_second_fixed_surface() {
+        // Ported from the donor.  Its `ProductDefinition` carried the second
+        // surface as `Option`; this crate keeps the u8/f64 pair with 255 as
+        // the Code Table 4.5 "no second surface" code, so the assertion is
+        // re-expressed against that representation.
+        let mut sec = vec![0u8; 34];
+        seed_common_section4(&mut sec, 0);
+        sec[22] = 106;
+        sec[23] = 1;
+        sec[24..28].copy_from_slice(&0u32.to_be_bytes());
+        sec[28] = 106;
+        sec[29] = 1;
+        sec[30..34].copy_from_slice(&1u32.to_be_bytes());
+
+        let product = parse_section4(&sec).expect("section 4 should parse");
+
+        assert_eq!(product.level_type, 106);
+        assert_eq!(product.level_value, 0.0);
+        assert_eq!(product.second_level_type, 106);
+        assert!((product.second_level_value - 0.1).abs() < 1e-12);
+
+        let (kind, value) = product
+            .second_fixed_surface()
+            .expect("a bounded surface is present");
+        assert_eq!(kind, 106);
+        assert!((value - 0.1).abs() < 1e-12);
+        assert_eq!(
+            ProductDefinition::default().second_fixed_surface(),
+            None,
+            "code 255 means no second surface"
+        );
+    }
+
+    #[test]
+    fn minute_statistical_ranges_preserve_exact_duration_without_rounding() {
+        let mut product = ProductDefinition {
+            time_range_unit: 0,
+            statistical_time_range_unit: Some(0),
+            time_range_length: Some(60),
+            ..ProductDefinition::default()
+        };
+        assert_eq!(product.statistical_time_range_seconds(), Some(3_600));
+        assert_eq!(product.statistical_time_range_hours(), Some(1));
+
+        product.time_range_length = Some(75);
+        assert_eq!(product.statistical_time_range_seconds(), Some(4_500));
+        assert_eq!(product.statistical_time_range_hours(), None);
     }
 
     #[test]

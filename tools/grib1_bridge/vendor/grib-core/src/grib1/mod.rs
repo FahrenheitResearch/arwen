@@ -17,5 +17,8 @@ pub use parser::{
     BinaryDataSection, BitMapSection, Grib1File, Grib1Message, GridDescriptionSection, GridType,
     IndicatorSection, LevelType, ProductDefinitionSection,
 };
-pub use tables::{level_description, parameter_abbrev, parameter_name, parameter_units};
+pub use tables::{
+    level_description, parameter_abbrev, parameter_entry, parameter_name, parameter_units,
+    ParameterTableEntry,
+};
 pub use unpack::{ibm_to_ieee, unpack_bds};

@@ -55,7 +55,12 @@ import time
 from pathlib import Path
 
 from gpuwm import capabilities
+from gpuwm import run_stamp as run_stamp_module
 from gpuwm.explain import explain_enabled, layered, render
+# The two-stage route is spelled in ONE place (the seam that IS those
+# two stages), and every door that points a reader at it renders from
+# there -- this refusal included.
+from gpuwm.stage_cli import staged_route_commands
 
 #: The runner that owns both the authority materialization and the
 #: forecast, as an importable module rather than a script path.
@@ -93,15 +98,16 @@ HEARTBEAT_SECONDS = 20.0
 #: The sources whose printed-value relay is documented end to end.
 #:
 #: GFS only, and for a reason that is a property of the other routes
-#: rather than a preference.  HRRR does not merely lack the printed
-#: relay -- ``gpuwm fetch --source hrrr`` says so itself, ending with
-#: "fetching cannot bind the run's own flags: --wps-namelist,
-#: --geog-root, --experiment-config, --valid-time and --output-root are
-#: yours to supply" -- it cannot reach this chain's last stage at all:
-#: ``tools/prepared_single_domain_forecast.py`` declares
-#: ``SUPPORTED_SOURCES = {"gfs", "era5", "20crv3"}`` and refuses
-#: ``hrrr`` outright.  Its front door writes no ``proof.json`` and
-#: prints no three-digest command, so there is nothing to carry.
+#: rather than a preference.  HRRR reaches the single-domain runner --
+#: it is in that module's ``SUPPORTED_SOURCES`` and its preparation
+#: publishes a ``proof.json`` on every run -- but it does not reach it
+#: through THIS chain: the native HRRR preparation takes a different
+#: stage vocabulary (a strict target domain, a native static cache and
+#: receipt, a sealed decoder bridge) that ``go``'s five commands do not
+#: compose, and ``gpuwm fetch --source hrrr`` says as much itself,
+#: ending with "fetching cannot bind the run's own flags".  Its two
+#: stages already stand alone with no digests to carry by hand:
+#: ``gpuwm prep --source hrrr`` then ``gpuwm sim``.
 #:
 #: ERA5 reaches that runner but arrives by the ``[case_data]``
 #: config-driven route, which ``gpuwm run`` executes in one command and
@@ -198,8 +204,27 @@ def printable(command: list[str]) -> str:
 def plan_from_config(config: Path, *, outdir: Path | None = None,
                      data_dir: Path | None = None,
                      render_products: str | None = None,
-                     allow_tree: bool = False) -> dict:
+                     allow_tree: bool = False,
+                     run_stamp: bool = run_stamp_module.DEFAULT_RUN_STAMP,
+                     claim: bool = False) -> dict:
     """Everything the five stages need, or a refusal saying why not.
+
+    ``run_stamp`` puts this run's whole tree -- authority, prepared,
+    run, png -- in its own timestamped folder under the output
+    directory, which is the default and the reason two runs of one
+    config no longer collide.  The DOWNLOAD stays at
+    ``<outdir>/data``, shared across runs: it holds inputs, it is meant
+    to be reused, and stamping it would re-fetch identical GRIB every
+    time.
+
+    A plan NAMES that folder; it does not create it.  The gates in
+    :func:`go_main` refuse before anything is spent and a refused run
+    must leave the disk as it found it, so the directory is claimed by
+    :func:`claim_run_root` at the moment the first stage is about to
+    write -- create-exclusively, so two chains started inside one second
+    take two folders rather than sharing one and publishing receipts
+    describing neither.  ``claim=True`` folds that step in for a caller
+    that wants the plan and the folder in one call.
 
     Read from the wizard's own emitted tables rather than asked for
     again: ``[fetch]`` carries the resolved cycle, hours and area the
@@ -264,14 +289,16 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         raise GoRefusal(
             f"{config} is a --source {source} config, and this chain is "
             f"the {'/'.join(ORCHESTRATED_SOURCES)} one.  "
-            + ("hrrr cannot reach its last stage at all: "
-               "tools/prepared_single_domain_forecast.py accepts "
-               "gfs/era5/20crv3 and refuses hrrr, and the HRRR front "
-               "door writes no proof.json, so there are no digests to "
-               "carry.\n"
+            + ("hrrr's preparation takes a different stage vocabulary "
+               "-- a strict target domain, a native static cache and "
+               "receipt, a sealed decoder bridge -- which these five "
+               "commands do not compose.  It needs no relay either: "
+               "its preparation publishes the authorities its forecast "
+               "binds, so the whole route is two commands.\n"
+               "  remedy: " + " && ".join(staged_route_commands("hrrr"))
                if source == "hrrr" else
-               f"{source} has no printed-value relay to automate.\n")
-            + f"  remedy: follow {MANUAL_CHAIN} for this source")
+               f"{source} has no printed-value relay to automate.\n"
+               f"  remedy: follow {MANUAL_CHAIN} for this source"))
 
     try:
         experiment = load_experiment(config)
@@ -313,12 +340,48 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # repository".  The runner is part of the package now, so if this
     # module imported, so did it.
 
-    # NO [tiles] refusal here.  This gate existed only to bring the runner's
-    # own admission refusal forward, to the near side of the download -- and
-    # the runner no longer refuses, because the prepared single-domain route
-    # wires a streamed-domain builder.  Mirroring a refusal that is gone
-    # would make `go`, the front door most users type, the last place that
-    # still rejects streaming.
+    # [tiles] is HONORED, and recorded rather than refused.  The refusal
+    # that used to stand here brought the runner's admission refusal
+    # forward, to the near side of the download -- and the runner no longer
+    # refuses, because both prepared routes wire a streamed-domain builder
+    # (streaming.builders_for_tree): the authority stage carries the
+    # config's [tiles] table into the hash-bound experiment.toml byte for
+    # byte, and the forecast stage reads it there and streams.  What
+    # remained wrong after the refusal went was the SILENCE: the plan
+    # recorded nothing, so a config that asked to stream planned six
+    # commands that never said so, and the only evidence was one stage
+    # line on a captured stdout.  The decision is recorded on the plan
+    # here, where the banner and the dry run say it out loud.  The one
+    # [tiles] shape this chain genuinely cannot run -- a coupling edge
+    # with BOTH ends streamed -- was already refused by load_experiment
+    # above, with the core's own sentence, relayed before the fetch.
+    tiles_plan = None
+    tiles_options = getattr(experiment, "tiles", None)
+    if tiles_options is not None and tiles_options.enabled:
+        from gpuwm.core import streaming
+
+        asked = [
+            f"d{int(dc.grid_id):02d}" for dc in experiment.domains
+            if streaming.options_for_domain(dc, tiles_options).enabled]
+        if tiles_options.mode == "on":
+            outcome = (
+                f"{'/'.join(asked)} integrate(s) out of a pinned "
+                f"{tiles_options.store} store, tile by tile")
+        else:
+            outcome = (
+                f"{'/'.join(asked)} stream(s) out of a pinned "
+                f"{tiles_options.store} store wherever the planner says "
+                "the domain does not fit resident, decided against the "
+                "card at the forecast stage")
+        tiles_plan = {
+            "mode": tiles_options.mode,
+            "store": tiles_options.store,
+            "asked": asked,
+            "sentence": (
+                f"[tiles] mode = '{tiles_options.mode}' "
+                f"({tiles_options.store} store) rides the hash-bound "
+                f"experiment config into the forecast stage: {outcome}"),
+        }
     for key in ("cycle", "hours", "area"):
         if key not in fetch_table:
             raise GoRefusal(
@@ -326,7 +389,13 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
                 "config with `gpuwm domain`")
 
     base = config.parent
-    root = Path(outdir) if outdir is not None else base / f"{config.stem}-go"
+    # The CASE root: the directory the reader named (or the one derived
+    # from the config's own name).  It holds the download cache and one
+    # folder per run; the run tree itself is the stamped child claimed
+    # below.
+    case_root = (Path(outdir) if outdir is not None
+                 else base / f"{config.stem}-go")
+    root = case_root
     # `[fetch].out` is deliberately NOT used, and this is not an
     # oversight in either direction.
     #
@@ -344,7 +413,13 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # and are honoured exactly.  Where the bytes land is this command's
     # own business, so they land under its own root unless `--data-dir`
     # names an existing download to reuse.
-    data = Path(data_dir) if data_dir is not None else root / "data"
+    # NOT stamped, on purpose.  This directory holds INPUTS -- the GRIB
+    # the fetch stage downloads -- and inputs are cached across runs
+    # while artifacts are separated by run.  Putting it inside the run
+    # folder would re-download an identical forcing set on every re-run
+    # of one config, which is the opposite of the complaint the stamping
+    # answers.
+    data = Path(data_dir) if data_dir is not None else case_root / "data"
     # E-07.  The default puts the download INSIDE the run root, so the
     # two are related by construction and only an explicit --data-dir can
     # make them equal.  When it does, the run claims the directory the
@@ -367,6 +442,11 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
                 f"Point --outdir at a new directory and leave --data-dir "
                 f"on the download, or drop --data-dir and let the "
                 f"download land under the run root as {root / 'data'}.")
+    # AFTER every refusal above: a plan that is going to be refused must
+    # not leave a directory behind on the way out.
+    root = run_stamp_module.resolve(
+        case_root, init=fetch_table["cycle"], enabled=run_stamp,
+        create=claim)
     return {
         "config": config,
         "wps_namelist": base / f"{config.stem}.namelist.wps",
@@ -393,6 +473,12 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         "area": str(fetch_table["area"]),
         "data": data,
         "profile": profile,
+        # Two roots, and the distinction is the whole scheme.  ``root``
+        # is THIS RUN's tree, which every stage writes into and every
+        # existing consumer already reads; ``case_root`` is the folder
+        # the reader named, which holds the shared download and one
+        # ``run-...`` child per run.
+        "case_root": Path(case_root),
         "root": Path(root),
         "authority": Path(root) / "authority",
         "prepared": Path(root) / "prepared",
@@ -400,6 +486,12 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # Set by a caller that wants a subset; `gpuwm go` itself never
         # sets it, so its render stage is unchanged.
         "render_products": render_products,
+        # None for the resident run every config without a [tiles] table
+        # is -- the same emptiness contract the receipts keep -- and the
+        # recorded routing decision otherwise.  Nothing is forwarded on a
+        # flag: the forecast stage reads the table off the hash-bound
+        # experiment config the authority stage publishes.
+        "tiles": tiles_plan,
         "render": Path(root) / "png",
         "domains": domain_count,
         # Preparation does not branch; the forecast does.
@@ -419,6 +511,65 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
 # ---------------------------------------------------------------------------
 # The five commands, composed from the plan
 # ---------------------------------------------------------------------------
+
+def claim_run_root(plan: dict) -> dict:
+    """Create this run's folder and re-point the plan's trees into it.
+
+    Separate from :func:`plan_from_config`, and called at the moment the
+    first stage is about to write, for two reasons that pull the same
+    way.  The gates refuse without spending anything and a refused run
+    must leave the disk exactly as it found it, so naming the folder and
+    making it cannot be one step.  And the making has to be
+    create-exclusive at the moment it happens: two chains launched
+    inside one second both PREDICT the same stamp, and only an
+    allocation that fails on an existing directory separates them.
+
+    ``plan`` is updated in place, because the observer, the render stage
+    and the closing report all hold this same dict.
+    """
+
+    root = Path(plan["root"])
+    if root == Path(plan["case_root"]):
+        # Either --run-stamp off, or --outdir named a run folder and it
+        # was honoured verbatim.  Both leave the run root EQUAL to the
+        # case root, which is the one test that separates "the plan
+        # predicted a stamped child" from "the caller chose the folder"
+        # -- the predicted child's NAME is a run stamp too, so asking
+        # the name instead would never allocate anything.
+        root.mkdir(parents=True, exist_ok=True)
+        return plan
+    claimed = run_stamp_module.allocate(plan["case_root"],
+                                        init=plan.get("cycle"))
+    plan["root"] = claimed
+    plan["authority"] = claimed / "authority"
+    plan["prepared"] = claimed / "prepared"
+    plan["run"] = claimed / "run"
+    plan["render"] = claimed / "png"
+    return plan
+
+
+def _run_folder_note(plan: dict) -> str:
+    """The one line saying where THIS run's tree is, before it exists.
+
+    Printed by the dry run and by the real run, from the same function,
+    so the path a reader plans against is the path they get.  Says which
+    of the three cases they are in rather than leaving them to compare
+    two directory names: a fresh stamped folder, a folder they named, or
+    the unstamped tree the workaround restores.
+    """
+
+    root, case_root = Path(plan["root"]), Path(plan["case_root"])
+    if root == case_root:
+        return (f"go: run folder {root} (--run-stamp off: this run "
+                "writes straight into the output directory, so a second "
+                "run of this config will be refused against it)")
+    if not run_stamp_module.is_run_folder(root):    # pragma: no cover
+        return f"go: run folder {root}"
+    note = (f"go: run folder {root.name} under {case_root} -- "
+            f"authority/, prepared/, run/ and png/ all land inside it, "
+            f"and the download is cached at {case_root / 'data'}")
+    return note
+
 
 def _lead_note(plan: dict) -> str:
     """The forecast lead, said in the plan line, or nothing at lead 0."""
@@ -529,7 +680,70 @@ def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
             "--output-root", str(plan["prepared"])]
 
 
-def forecast_command(plan: dict, digests: dict) -> list[str]:
+#: How `go` asks the forecast stage for its per-step progress.
+#:
+#: The runner's OWN default is `text`: one WRF-shaped `Timing for main:`
+#: line per model time step on stdout, which is what a user driving that
+#: door from a script asked for and gets.  `go` is the other caller, and
+#: for it the sentences must not go to stdout, for two reasons:
+#:
+#: * the SUBPROCESS arm captures the stage's stdout in memory and
+#:   discards it on success, so a 4-domain day-long run would buffer tens
+#:   of megabytes of lines nobody will ever read;
+#: * the IN-PROCESS arm is `gpuwm run-plan` hosting the runner, and that
+#:   front door's contract is that stdout carries its event stream and
+#:   NOTHING else.
+#:
+#: `jsonl` keeps every one of those lines -- they land in
+#: `<run>/progress.jsonl`, beside the frame-ready markers -- and keeps
+#: them off the channel neither caller can afford to have written on.
+_PROGRESS_FLAGS = ("--progress-format", "jsonl")
+
+
+def _early_render_products(plan: dict) -> str | None:
+    """What the forecast stage should draw as the first frame lands.
+
+    TIME TO FIRST PLOT, on the door people use.  The machinery exists
+    (:mod:`gpuwm.first_products`) and `gpuwm run-plan` proves it, but it
+    is armed on an OBSERVER -- and arming it from `go` would mean
+    hosting the forecast in this process, which is the one thing `go`
+    must not start doing for telemetry's sake.  The runner owns an
+    identical arming of its own, reachable from its command line, so
+    this chain asks for it there and keeps its subprocess.
+
+    ``"all"`` when the plan named no products, because ``"all"`` IS what
+    the finalize stage renders when nobody passes ``--products``
+    (``gpuwm render --products`` defaults to it).  The two must agree
+    exactly: finalize skips the early frame only when the receipt's
+    product spec matches its own, and byte-identity between the early
+    picture and the late one is a property of composing both commands
+    from this one plan dict.
+
+    ``None`` for a run that asked for no pictures -- ``none`` is passed
+    through verbatim so the runner's own ``early_render_requested``
+    makes that call, and there is no second place that can disagree
+    about what "asked for pictures" means.
+    """
+
+    if "render" not in plan:
+        # A caller driving this function with a hand-built plan (the
+        # tree route's stub, a test) named no render directory, and the
+        # early render must land in the same tree the finalize stage
+        # renders into or the two layouts diverge.  No directory, no
+        # early render, and nothing guessed.
+        return None
+    if render_extra_missing() is not None:
+        # This install cannot draw at all, and the finalize stage below
+        # will say so with a remedy.  Asking the runner to draw anyway
+        # would spend a subprocess to reach the same answer, in a place
+        # the reader is not looking.
+        return None
+    products = plan.get("render_products")
+    return "all" if products is None else str(products)
+
+
+def forecast_command(plan: dict, digests: dict, *,
+                     early_render: str | None = None) -> list[str]:
     return [sys.executable, "-m", str(plan["runner"]),
             "--source", plan["source"],
             "--prepared-root", str(plan["prepared"]),
@@ -540,6 +754,13 @@ def forecast_command(plan: dict, digests: dict) -> list[str]:
             str(plan["authority"] / "experiment.toml"),
             "--wps-namelist", str(plan["authority"] / "namelist.wps"),
             *_profile_flags(plan),
+            *_PROGRESS_FLAGS,
+            # Same output directory the finalize stage renders into, so
+            # the early picture and the late one land in one tree under
+            # one layout rather than two.
+            *([] if early_render is None else
+              ["--render-products", str(early_render),
+               "--render-dir", str(plan["render"])]),
             "--io-mode", "history", "--outdir", str(plan["run"])]
 
 
@@ -575,6 +796,7 @@ def tree_forecast_command(plan: dict) -> list[str]:
             "--preparation-receipt-sha256", sha256_file(receipt),
             "--experiment-config", str(config),
             "--experiment-config-sha256", sha256_file(config),
+            *_PROGRESS_FLAGS,
             "--io-mode", "history", "--outdir", str(plan["run"])]
 
 
@@ -647,11 +869,22 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     and run-plan does exactly that -- it IS the supervising process.
     """
 
+    # A host is an observer that says it hosts.  Every observer used to
+    # mean "run the forecast in this process", which was fine while the
+    # only observer was run-plan -- but `gpuwm go` now always carries a
+    # stage-event observer, and telemetry must not be the reason a bare
+    # chain gives up the process isolation that keeps a CUDA failure
+    # inside one stage.  Defaults to True, so every existing caller
+    # (which is run-plan, and which does host) is unchanged.
+    hosted = observer is not None and getattr(observer, "hosts_forecast", True)
     command = (tree_forecast_command(plan) if plan.get("domains", 1) > 1
-               else forecast_command(plan, digests))
+               else forecast_command(plan, digests,
+                                     early_render=None if hosted
+                                     else _early_render_products(plan)))
     progress = plan["run"] / "progress.json"
-    if observer is None:
-        _run_stage("forecast", command, explain=explain, progress=progress)
+    if not hosted:
+        _run_stage("forecast", command, explain=explain, progress=progress,
+                   observer=observer)
         return
 
     # `python -m MODULE ...` -> the module, and the argv it would have
@@ -738,12 +971,22 @@ def render_command(plan: dict, frames: list[Path] | None = None) -> list[str]:
     glob spelling, which is what ``--dry-run`` should print: at that
     point the directory is empty and naming its contents would be a
     guess.
+
+    The run folder is claimed ONCE, by the chain, and this stage draws
+    into it: :func:`gpuwm.run_stamp.stage_flags` is what says so.  This
+    command is composed twice for one run -- once by
+    :mod:`gpuwm.first_products` on the first committed frame and once by
+    :func:`_render_stage` at the end -- so a render that stamped for
+    itself would put those two halves of one run's pictures in two
+    wall-clock folders, and the finalize stage could no longer prove the
+    early frame had already been drawn.
     """
 
     targets = ([str(frame) for frame in frames] if frames is not None
                else [str(plan["run"] / "wrfout" / "*")])
     command = [sys.executable, "-m", "gpuwm.cli", "render", *targets,
-               "--out", str(plan["render"])]
+               "--out", str(plan["render"]),
+               *run_stamp_module.stage_flags()]
     # `products` is `gpuwm render --products`' own spec, passed through
     # verbatim: a comma-separated list of product names, or `all`.  It
     # is NOT parsed or validated here -- the render front door owns that
@@ -805,12 +1048,17 @@ def _render_stage(plan: dict, *, explain: bool,
         return False
     missing = render_extra_missing()
     if missing is not None:
+        # An ANNOUNCED absence of imagery, which is the lawful shape
+        # here: the render law reserves weather fields for rw_wrfbatch
+        # and names one fallback that serves none of these products, so
+        # a chain with no usable renderer draws nothing and says so.  It
+        # used to offer `pip install 'gpuwm[render]'` as a second way
+        # out, which installed the matplotlib engine -- the second
+        # fallback the law forbids (audit F7).
         print(f"  -- render skipped: {missing}")
         print("     remedy: gpuwm setup")
         print("     # stages the rust render engine, which draws the full "
               "catalog")
-        print("     #   ... or, for the matplotlib fallback engine:")
-        print("     #   pip install 'gpuwm[render]'")
         print("     then:")
         print(f"       {printable(render_command(plan))}")
         return False
@@ -1205,6 +1453,35 @@ def _physics_words(plan: dict) -> str:
             "WRF-verified)")
 
 
+def memory_refusal_text(gate: dict) -> str:
+    """The go memory refusal, with remedies that can actually succeed.
+
+    The 2026-08-19 3080 walk followed the previous remedy verbatim --
+    ``gpuwm domain --vram-gib 8`` -- and was refused at every grid size,
+    because the flag names a CARD and the number fed to it was a
+    free-VRAM figure, pointed back into the same accounting that had
+    just refused.  A refusal's remedy must be reachable: the bare wizard
+    measures this card itself, a lighter suite is ranked by the priced
+    envelope inside the wizard's own refusal, and a bigger card is a
+    bigger card.  The measured free-VRAM sentence stays: it is the one
+    number in this refusal read directly off the machine.
+    """
+
+    free = gate.get("free_bytes")
+    free_words = ("" if free is None else
+                  f", and the card has {free / (1024 ** 3):.2f} GiB "
+                  "free right now")
+    return (
+        f"this configuration will not fit: {gate['verdict']}{free_words}."
+        "  Refusing here, BEFORE the fetch stage downloads the forcing "
+        "data, rather than in preprocessing after it.\n"
+        "  remedy: re-size against this machine -- gpuwm domain ... "
+        "(bare, it measures this card) -- or pick a lighter "
+        "--physics-profile (the wizard's refusal ranks them by priced "
+        "envelope), or free VRAM and re-run, or use a larger card\n"
+        "  # gpuwm go CONFIG --no-memory-gate runs it anyway")
+
+
 def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
     """Price every phase of ``plan`` against this card, before the fetch.
 
@@ -1428,10 +1705,20 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
     -- run-plan does -- is not the reader that refusal is for.
     """
 
+    from gpuwm import chain_events
     from gpuwm.fetch import sha256_file
     from gpuwm.geog_assets import default_geog_root
+    from gpuwm.gfs_direct import prepare_progress_path
 
     explain = explain_enabled(args)
+    # DEFAULT-ON.  A caller that brought its own observer owns its own
+    # telemetry -- `gpuwm run-plan` writes this exact grammar into its
+    # own run directory and a second writer would interleave two runs'
+    # sequences in one file.  Everybody else, which is everybody who
+    # types `gpuwm go`, gets the stage timings on disk without asking.
+    chain = chain_events.GoChainEvents() if observer is None else None
+    if chain is not None:
+        observer = chain
     # THE first thing this chain does, before it reads a config, resolves
     # a bridge, downloads a byte or writes a directory.
     #
@@ -1464,7 +1751,8 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
                             data_dir=getattr(args, "data_dir", None),
                             render_products=getattr(
                                 args, "render_products", None),
-                            allow_tree=allow_tree)
+                            allow_tree=allow_tree,
+                            run_stamp=run_stamp_module.run_stamp_enabled(args))
     bridge = resolve_bridge()
     geog_root = (Path(args.geog_root) if getattr(args, "geog_root", None)
                  else default_geog_root())
@@ -1476,6 +1764,9 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
         print(f"go: {plan['config']} -- source {plan['source']}, cycle "
               f"{plan['cycle']}, {plan['hours']} h, "
               f"{_physics_words(plan)}{_lead_note(plan)}")
+        print(_run_folder_note(plan))
+        if plan.get("tiles"):
+            print(f"go: {plan['tiles']['sentence']}")
         print("")
         for label, command in (
                 ("1. authority", authority_command(plan)),
@@ -1507,18 +1798,50 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
     # typed.  Answer it here, in the caller's own vocabulary, before
     # spending a stage to reach it.
     if plan["authority"].exists():
+        # Reachable in exactly two ways now that every run claims its own
+        # stamped folder: --outdir named an EXISTING run folder (which is
+        # honoured verbatim, so the caller has pointed a second chain at
+        # a finished run's tree), or --run-stamp off put this run back in
+        # the shared directory the last one used.  Both are named, in
+        # that order, because the remedy differs.
+        named = run_stamp_module.is_run_folder(plan["root"])
         raise GoRefusal(
             f"{plan['authority']} already exists, so this chain has been "
             f"run into {plan['root']} before.  Every stage is create-only "
             "on purpose -- merging two runs into one tree would publish "
             "receipts describing neither.\n"
-            f"  remedy: gpuwm go {_quote(plan['config'])} --outdir "
-            "<a new directory>\n"
-            f"  # or remove {plan['root']} if that run is finished with")
+            + (f"  {plan['root'].name} is a run folder you named on the "
+               "command line, so it was used as given rather than "
+               "getting a stamped child of its own.\n"
+               f"  remedy: gpuwm go {_quote(plan['config'])} --outdir "
+               f"{_quote(str(plan['case_root']))}, which claims a fresh "
+               "run folder beside it\n"
+               if named else
+               "  remedy: drop --run-stamp off and each run claims its "
+               f"own {run_stamp_module.RUN_PREFIX}... folder under "
+               f"{plan['case_root']}, or pass --outdir <a new "
+               "directory>\n")
+            + f"  # or remove {plan['root']} if that run is finished with")
 
     print(f"go: {plan['config']} -- source {plan['source']}, cycle "
           f"{plan['cycle']}, {plan['hours']} h, {_physics_words(plan)}"
           f"{_lead_note(plan)}")
+    # The run-folder line, BEFORE the gates -- the same line, from the
+    # same function, that --dry-run prints second.  It used to print
+    # only after the memory and geography gates, so both of the
+    # 2.4.1-upgrader walk's real attempts refused without ever naming
+    # the 2.5.0 layout, and no cheap door revealed the new folder
+    # naming (UX finding N18).  Announced here it still spends nothing:
+    # the folder is only CLAIMED after the gates, below, and if the
+    # claim lands on a different stamp the line prints again corrected.
+    predicted_root = plan["root"]
+    print(_run_folder_note(plan))
+    # The routing a [tiles] table chose, said before any stage runs.  The
+    # forecast stage prints its own decision line too, but that stage's
+    # stdout is captured -- a reader watching this terminal would learn
+    # their run streamed only from report.json, after the fact.
+    if plan.get("tiles"):
+        print(f"go: {plan['tiles']['sentence']}")
 
     # The interrupt contract covers the gate too: the memory probe
     # is a real subprocess (first-run staging), and a Ctrl-C landing
@@ -1531,16 +1854,7 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
             gate = memory_gate(plan)
             print(f"go: memory -- {gate['verdict']}")
             if gate["refuse"]:
-                raise GoRefusal(
-                    f"this configuration will not fit: {gate['verdict']}, and "
-                    f"the card has {gate['free_bytes'] / (1024 ** 3):.2f} GiB "
-                    "free right now.  Refusing here, BEFORE the fetch stage "
-                    "downloads the forcing data, rather than in preprocessing "
-                    "after it.\n"
-                    "  remedy: re-size for this card -- gpuwm domain "
-                    f"--vram-gib {gate['free_bytes'] // (1024 ** 3)} ... -- or "
-                    "free VRAM and re-run\n"
-                    "  # gpuwm go CONFIG --no-memory-gate runs it anyway")
+                raise GoRefusal(memory_refusal_text(gate))
             if gate["warn"]:
                 print("go: WARNING -- that is above the reserved budget, "
                       "though it fits the free VRAM measured just now.  "
@@ -1551,6 +1865,27 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
         geography = geography_refusal(geog_root)
         if geography is not None:
             raise GoRefusal(geography)
+
+        # THE STAGE TIMINGS START LANDING ON DISK HERE, by default, for
+        # a caller that passed no flags and asked for no observer.
+        #
+        # Here and not at the top of the function on purpose: the gates
+        # above refuse without spending anything, and a run they refuse
+        # must leave the disk exactly as it found it.  Opening the
+        # stream creates the run root.  The boot stage is not lost by
+        # waiting -- `chain.open` emits it from the launch anchor.
+        #
+        # And the run folder is CLAIMED here, on the same side of the
+        # gates and for the same reason: the plan above only named it.
+        claim_run_root(plan)
+        if plan["root"] != predicted_root:
+            # The claim landed on a different stamp than the plan named
+            # (two chains racing the same second allocate neighbours):
+            # correct the announcement above, once.
+            print(_run_folder_note(plan))
+        if chain is not None:
+            chain.open(plan["root"] / chain_events.CHAIN_EVENTS_FILENAME,
+                       plan=plan)
 
         _run_stage("authority", authority_command(plan), explain=explain,
                    observer=observer)
@@ -1567,7 +1902,13 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
             plan, bridge, manifest=manifest,
             manifest_sha256=sha256_file(manifest),
             cycle_stamp=cycle_stamp, geog_root=geog_root), explain=explain,
-            progress=plan["prepared"] / "progress.json",
+            # Not `prepared/progress.json`: the stage builds its whole
+            # product in a staging directory and publishes it with one
+            # rename, so nothing can live inside `prepared/` until
+            # there is nothing left to report.  The path is asked of
+            # the publisher rather than spelled here, so the writer and
+            # this poller cannot disagree.
+            progress=prepare_progress_path(plan["prepared"]),
             observer=observer)
         # A hierarchy proof carries no single prepared-cache identity,
         # and proof_digests says so by refusing.  The tree arm reads its
@@ -1584,6 +1925,14 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
         _run_forecast(plan, digests, explain=explain, observer=observer)
         rendered = _render_stage(plan, explain=explain,
                                  observer=observer)
+    except GoRefusal:
+        # A refusal reached from INSIDE the chain -- a manifest stage
+        # that wrote nothing, a proof with no single cache identity.
+        # The stream is open by then and would otherwise end mid-run,
+        # which reads exactly like a killed process.
+        if chain is not None:
+            chain.finish(status="REFUSED", exit_code=2)
+        raise
     except GoStageFailed as failure:
         # D-05.  The interrupted arm below has always told the reader what
         # is on disk; this one raised and said nothing, so a failed
@@ -1592,6 +1941,8 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
         # Nothing is deleted here: the tree is the only evidence of what
         # went wrong, and a tool that tidies away the failure a person is
         # about to report is worse than one that leaves it.
+        if chain is not None:
+            chain.finish(status="FAILED", exit_code=failure.code)
         print(_partial_tree_note(plan["root"]), file=sys.stderr)
         return failure.code
     except GoInterrupted as stop:
@@ -1617,6 +1968,9 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
             "and neither process can see a Ctrl-C at all; send SIGTERM "
             "there instead."),
             explain=explain, command="gpuwm go"), file=sys.stderr)
+        if chain is not None:
+            chain.finish(status="INTERRUPTED",
+                         exit_code=INTERRUPT_EXIT_CODE)
         return INTERRUPT_EXIT_CODE
 
     # The forecast writes its own validity verdict (health, stability,
@@ -1630,6 +1984,8 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
     verdict = report.get("status")
     delivered = _boundary_interval_refusal(plan, report)
     if delivered is not None:
+        if chain is not None:
+            chain.finish(status="FAILED", exit_code=1)
         print(f"go: {delivered}", file=sys.stderr)
         return 1
     if verdict:
@@ -1637,6 +1993,24 @@ def go_main(args, *, observer=None, allow_tree=False) -> int:
     print(f"go: wrote {plan['run']}")
     if rendered:
         print(f"go: rendered {plan['render']}")
+    if chain is not None:
+        summary = chain.finish(status="SUCCESS")
+        # THE HEADLINE NUMBER, said out loud at the end of the run that
+        # produced it.  It existed as an engine measurement and was
+        # reachable only from `gpuwm run-plan`; a reader of `gpuwm go`
+        # had to compare PNG mtimes against when they hit return.
+        ttfp = summary.get("time_to_first_plot_seconds")
+        if ttfp is not None:
+            print(f"go: time to first plot {_elapsed_words(ttfp)} "
+                  f"({summary['time_to_first_plot_source']})")
+        # The path is stated only when there IS one.  A stream that
+        # could not be opened is not a reason to fail a finished
+        # forecast, and it is certainly not a reason to point a reader
+        # at a file that does not exist.
+        where = ("" if chain.path is None
+                 else f"; per-stage timings in {chain.path}")
+        print("go: launch to done "
+              f"{_elapsed_words(summary['wall_seconds'])}{where}")
     return 0
 
 
@@ -1702,9 +2076,17 @@ def register_cli(subparsers) -> None:
                              "shape (--physics-profile optional: an "
                              "unbound config's own suite runs as written)")
     parser.add_argument("--outdir", type=Path, default=None, metavar="DIR",
-                        help="root for the authority, prepared and run "
-                             "trees (default <config-stem>-go beside the "
-                             "config)")
+                        help="the case directory: it holds the cached "
+                             "download and one timestamped run folder "
+                             "per run, each carrying that run's "
+                             "authority, prepared, run and png trees "
+                             "(default <config-stem>-go beside the "
+                             "config).  Point it at an existing "
+                             "run-... folder and that folder is used as "
+                             "given")
+    run_stamp_module.add_argument(
+        parser, artifacts="authority, prepared, run and png trees",
+        option="--outdir")
     parser.add_argument("--data-dir", type=Path, default=None, metavar="DIR",
                         dest="data_dir",
                         help="reuse an existing `gpuwm fetch` download "

@@ -1,0 +1,1039 @@
+{
+  "case": "icon-eu",
+  "frames": [
+    {
+      "decoded_direct_fields": [
+        "air_temperature",
+        "air_temperature_2m",
+        "eastward_wind",
+        "eastward_wind_10m",
+        "geopotential",
+        "land_fraction",
+        "northward_wind",
+        "northward_wind_10m",
+        "relative_humidity",
+        "relative_humidity_2m",
+        "skin_temperature",
+        "snow_depth",
+        "snow_water_equivalent",
+        "soil_temperature",
+        "soil_water_column",
+        "surface_pressure",
+        "terrain_height"
+      ],
+      "fields": {
+        "air_temperature": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "3c842f04d81f43e1874274816cc708fa84e2c62d30f20709e8f8925de93d67a6",
+          "shape": [
+            20,
+            657,
+            1377
+          ],
+          "source_reference_count": 20
+        },
+        "air_temperature_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "a7b04289989a72afcc129a055aa7abacd3dced48d32690c1d451ad9e37afaf87",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "eastward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "8947b682600434decd080c6b2bb1cd407b8372e19e54acb15868ddfa5bcd0a38",
+          "shape": [
+            20,
+            657,
+            1377
+          ],
+          "source_reference_count": 20
+        },
+        "eastward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "e7ba00f21d452c3cb3e2cde571a2a40242c9aecf4776ac2f98d74937bca1b0c2",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "geopotential": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "6283fc1c7d9283f81ef78232905530e8bf669f166b62f383382ed3a6399aec07",
+          "shape": [
+            20,
+            657,
+            1377
+          ],
+          "source_reference_count": 20
+        },
+        "land_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "19f4bcf413cdbe275daa5decd5afcbd8a51aa364b1917a1bf5c5508d28fd1b28",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "northward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "1e6e8b071e8f68de891bff355dbf1384559a67b88b2f27a33c3e13b0a9fbef4c",
+          "shape": [
+            20,
+            657,
+            1377
+          ],
+          "source_reference_count": 20
+        },
+        "northward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "a4da4222a15ef1930721dbb8bf5295cff85534d6b195401c7f2821e0ab5280d0",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "relative_humidity": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "370fae0041b1540258aa0d0cdf042646d8b84145055269967796db4b4a97d1ca",
+          "shape": [
+            20,
+            657,
+            1377
+          ],
+          "source_reference_count": 20
+        },
+        "relative_humidity_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "2cdfef5a5a924c497a936b7a70020286f7e130d3acdc7413830f004a0858e0e8",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "skin_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "ff8e997a8596f8f27e24944d1e4c315b001649b70095ccd1a1d5ff293e7a22b0",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "snow_depth": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "386084b5cbb8eb4a000de9ea5f9aae0a5140ed0614bbc975eff27f1019a37564",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "snow_water_equivalent": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "a95894b91dff625cb85289ec254399824ffe5be69aa9b414164f7cea1ea07456",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "soil_temperature": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "missing": 3409227,
+          "sha256": "27cdee3841780af7abfee1cde6fa4b051081a920986dae0606a47cdf85e932f3",
+          "shape": [
+            9,
+            657,
+            1377
+          ],
+          "source_reference_count": 9
+        },
+        "soil_water_column": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "missing": 3030424,
+          "sha256": "340d37bc603c75e97170dec8205e234d7d893e4eafd350559cd3a12ed9484ed8",
+          "shape": [
+            8,
+            657,
+            1377
+          ],
+          "source_reference_count": 8
+        },
+        "surface_pressure": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "14e6abe65fe6b30f62e07dfa23159b1eceedeb4ca09435e2287e1f93ce8dbc40",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "terrain_height": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "7a58691636de27a0f15f17efe0af8dcde16e787688db6637808b98776de4f6fc",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        }
+      },
+      "member": null,
+      "source_cycle": "2026-08-17T00:00:00",
+      "unresolved_direct_fields": [],
+      "valid_time": "2026-08-17T00:00:00"
+    },
+    {
+      "decoded_direct_fields": [
+        "air_temperature",
+        "air_temperature_2m",
+        "eastward_wind",
+        "eastward_wind_10m",
+        "geopotential",
+        "land_fraction",
+        "northward_wind",
+        "northward_wind_10m",
+        "relative_humidity",
+        "relative_humidity_2m",
+        "skin_temperature",
+        "snow_depth",
+        "snow_water_equivalent",
+        "soil_temperature",
+        "soil_water_column",
+        "surface_pressure"
+      ],
+      "fields": {
+        "air_temperature": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "a2fc6a0e039e633bf34726978739f356d52eed22247f911292c9e2d8c6c2a01f",
+          "shape": [
+            20,
+            657,
+            1377
+          ],
+          "source_reference_count": 20
+        },
+        "air_temperature_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "bc256bd53cd66f00ed2e04878a5807dc20d56da66d2e1c7294d6e256399a8913",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "eastward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "fce4526bc007149ab3a178abe89e54d2d65d2734a86dc5dd40d3d09c44610cbb",
+          "shape": [
+            20,
+            657,
+            1377
+          ],
+          "source_reference_count": 20
+        },
+        "eastward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "1b25baf1754c39a4ba727a907eeb9f094f2658a9b94b3848283576d0d4c71155",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "geopotential": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "84e6a1821ec64ccc7bc07fc93868b9dc791ba0bc604ef2249e99598f9040af80",
+          "shape": [
+            20,
+            657,
+            1377
+          ],
+          "source_reference_count": 20
+        },
+        "land_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "19f4bcf413cdbe275daa5decd5afcbd8a51aa364b1917a1bf5c5508d28fd1b28",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "northward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "743a92e2256de67a0d3d33bcfe5c43eeb37076f44067f1b2c2ff052a36342d83",
+          "shape": [
+            20,
+            657,
+            1377
+          ],
+          "source_reference_count": 20
+        },
+        "northward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "132e5dfabc468fdc4b07701caaf919beac9a6deb0982f00e3e29db4fb3c185ea",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "relative_humidity": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "a050910f73c40b50271c523f7ac7b66c7654a042c462dc79bed7f10d7834f3f8",
+          "shape": [
+            20,
+            657,
+            1377
+          ],
+          "source_reference_count": 20
+        },
+        "relative_humidity_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "4e1db3d2ee6b21f2b862cb6dcab779f5aaf9b1b66609d603f353c39955a0fc9a",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "skin_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "2678be264bd0d4e68329cd082756259cf4e136a7d855d6a2552dd77f4af81647",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "snow_depth": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "f60e6dbf9a29c5c4a1bfa42e4cecd4d7e7f5e42c57ad05dfc6ac8489e960c203",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "snow_water_equivalent": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "d0b098a1e1d60e1514ecbdcf6007dfcc9e654dc320b503f1b9fb04f33a225b4e",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        },
+        "soil_temperature": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "missing": 3409227,
+          "sha256": "a1a5971b0f1b2f94940cff50b2970a39436cafadf2fa9fe1b03b3fd072d78261",
+          "shape": [
+            9,
+            657,
+            1377
+          ],
+          "source_reference_count": 9
+        },
+        "soil_water_column": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "missing": 3030424,
+          "sha256": "5a8c99b655827a210e1f1d32ca99c938159c89d1adfe4eef2abf0a9ed1c85e43",
+          "shape": [
+            8,
+            657,
+            1377
+          ],
+          "source_reference_count": 8
+        },
+        "surface_pressure": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "cfc8848258534af0d04b799f5a49a477a5f829448d19888c62b00de8e9e85cb5",
+          "shape": [
+            657,
+            1377
+          ],
+          "source_reference_count": 1
+        }
+      },
+      "member": null,
+      "source_cycle": "2026-08-17T00:00:00",
+      "unresolved_direct_fields": [
+        "terrain_height"
+      ],
+      "valid_time": "2026-08-17T01:00:00"
+    }
+  ],
+  "grid": {
+    "fingerprint": "55077ad9b7cb53620267729f1cd98f74f26af524163151f9ccc2ac722500e32c",
+    "nx": 1377,
+    "ny": 657,
+    "vertical_count": 20
+  },
+  "input_names": [
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_100_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_100_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_100_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_100_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_100_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_150_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_150_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_150_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_150_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_150_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_200_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_200_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_200_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_200_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_200_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_250_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_250_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_250_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_250_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_250_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_300_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_300_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_300_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_300_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_300_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_400_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_400_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_400_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_400_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_400_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_500_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_500_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_500_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_500_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_500_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_600_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_600_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_600_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_600_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_600_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_700_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_700_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_700_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_700_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_700_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_775_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_775_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_775_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_775_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_775_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_800_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_800_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_800_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_800_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_800_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_825_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_825_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_825_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_825_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_825_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_850_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_850_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_850_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_850_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_850_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_875_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_875_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_875_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_875_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_875_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_900_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_900_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_900_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_900_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_900_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_925_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_925_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_925_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_925_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_925_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_100_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_100_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_100_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_100_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_100_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_150_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_150_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_150_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_150_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_150_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_200_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_200_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_200_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_200_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_200_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_250_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_250_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_250_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_250_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_250_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_300_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_300_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_300_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_300_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_300_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_400_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_400_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_400_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_400_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_400_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_500_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_500_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_500_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_500_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_500_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_600_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_600_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_600_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_600_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_600_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_700_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_700_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_700_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_700_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_700_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_775_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_775_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_775_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_775_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_775_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_800_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_800_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_800_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_800_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_800_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_825_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_825_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_825_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_825_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_825_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_850_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_850_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_850_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_850_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_850_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_875_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_875_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_875_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_875_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_875_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_900_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_900_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_900_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_900_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_900_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_925_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_925_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_925_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_925_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_925_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_FI.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_RELHUM.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_T.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_U.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_V.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_000_H_SNOW.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_000_PS.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_000_RELHUM_2M.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_000_T_2M.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_000_T_G.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_000_U_10M.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_000_V_10M.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_000_W_SNOW.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_001_H_SNOW.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_001_PS.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_001_RELHUM_2M.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_001_T_2M.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_001_T_G.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_001_U_10M.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_001_V_10M.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_single-level_2026081700_001_W_SNOW.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_0_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_0_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_1458_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_162_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_18_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_1_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_243_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_27_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_2_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_3_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_486_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_54_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_5_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_6_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_729_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_81_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_000_9_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_0_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_0_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_1458_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_162_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_18_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_1_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_243_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_27_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_2_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_3_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_486_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_54_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_5_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_6_T_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_729_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_81_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_soil-level_2026081700_001_9_W_SO.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_time-invariant_2026081700_FR_LAND.grib2.bz2",
+    "icon-eu_europe_regular-lat-lon_time-invariant_2026081700_HSURF.grib2.bz2"
+  ],
+  "input_sha256": [
+    "8f5dfec4ca8c1703076e1e3e17a131d240c4ae00b8b1d6bb84ab3b54c64867e4",
+    "0b34cfdef35424f18232828a4780a99fdf5b7af16910582224c57d8e2cb97d49",
+    "96c46bda83261c7ab580858bed54bb18b63c9f7551555af932b2d51b1ddd5e5b",
+    "3bd4207ce117195614736966743a9fc0e74c4b0e293227471ab4d3c1b4bc8442",
+    "659609cc7b702d9d410bd51c8d2b980c440d73c8914a87e4f4fddbb0c1eb37a2",
+    "a89d1ec832ee3d76a0468d5cd5e2f02bb7ce0dcf3fc35d53949ad04ed2db310c",
+    "b3780bff7849cf9c3270102f725d80a28ec4de00bff6d780aa3ec207ffed8587",
+    "0ca1bf0b0bd9c40aef9d6a593602a461f670f67fe66b70a2e1c78082a9b88913",
+    "49052794d49904ed12bd6ea95b381163b06a5efd367303aed796f1133165034f",
+    "54841704e2baff65931904bef83b19258be6a4e338246d2bc6a54646ef035a81",
+    "694e42c517f8d85d0d0eac960e3c0b4f5fa609aec9fd356a2339a7bfe1ae632b",
+    "07b71dfdbecb3ce5659210502daa6adfef1ed8121ff08ce5643f5d11149cf7ba",
+    "f7b9e9524bb0c037d5b60e3653e6fa21789ed3651178e22922e431d07a0d6bf8",
+    "ce38ca29e738e538b2c97444f2317a0adf16db236ac145e21bda08888fe30942",
+    "4cc51332a7dc9c9e82ffca9cd81528c64ca5fb61f1704128a2681e2b1ebc1751",
+    "12f09a5527543b1178788255ed3a62254f2e608dbd2bad3669313f74de271347",
+    "59971c83efeecdd521cd430c1ecec8c35a889059234299d52d96dd3b4c1be9be",
+    "efc07e223bbabe7bf56496b0f5b9e3e78bf26560e658a27998d3ede7ce5bbdb3",
+    "4752cc3ec6532ce9921b50afc900d5a6a6f258dfa98023355e030ca73f13aac1",
+    "b35f867a8aabad5ffb690df90c37e2d8ef9682764e33307c3d33a3655f89b616",
+    "c97a367594155875ef11b7b5624182905f8e778452c3f328a8264aa228310ec3",
+    "363aae52b1868008fb90499c3e57822bad0e0f022c4c7b4e2f5bb71860916a6d",
+    "f120e66e9d403bd5dce4a3efdeef9a1b1946851b1c743ebbe20b439d8c26451d",
+    "aa70ca630f2e97ec362ca58d68b20fc87b5ee8f6bc8f0e8f7731883233125199",
+    "b1e36513be06990ffee4b0309800d0633f25652a615390389b7a309107ee5f73",
+    "7e234e70d30ad2c3a2f42dc55eba6d897e6a516dd7ceefa537315c49dd2cfb59",
+    "2a688aa58d0512125cfa5976532719180d3a878222c5d7d4f49b565d9b360fa7",
+    "679b4919e48f1405773be83e0e98b32eddcd940e3347eb486722e9ff00f4dbfa",
+    "ecfff77ff375e62b2610933919a3312cd4ad859cad81693c439dd2482b59ef69",
+    "406da80a2da727bccfaaadc41d451812ec7871c16e56f79f7092624d0003ea72",
+    "81f3738cc81a3c1d1fc6b03f18108485d3f8db171d704f8a2a920588e1c76a94",
+    "4107010a155dca1275a695816628452956284b23d5ed54b02037444208568d37",
+    "20458e2477266f32fec88673bd01e0764ddccbc11eb493d258f6efa29680c322",
+    "8f85f228470904712279308c9851f5d761c5a8e93593f1378e284d3d75569c6d",
+    "8a58195d8e749b556ab8452c6692f3dda494f2bb60aff5c43d8ad56da122e13d",
+    "53d60229b6fb00e20773154ae2e967ce11886973cd5dbdc8d6afb7f346c62e52",
+    "db4543d469e79c0c10abe8f5689630ed48acd8c57d379923e5741b02ac8fb83a",
+    "9c038811a1cdfc3b356cb7f11f3b8f43d9a1d786953f9d2167162457ae28e69a",
+    "5ff950e0f3f655a725514bdd442b815db341f3778dc6f9f0134651dca1b761ab",
+    "c7a0493e173ccbff3903b56b17030e1776a84bb442745900104b542f62a07066",
+    "6b7135254583fa6169af3579e7a8caeca29600cea534e165802bbfbf63b44103",
+    "ed17fb5cfa12a23b878c461cf6f3bd17a7409a02842fb13a3e609adf142c3fd0",
+    "d76ebc828c66b5d691bb919eb0ad44ac51f221050fa8f7313855b2e2df25e013",
+    "7d4d41c9e71598a47b488888b6ef346d90a68b28a3ff415d5c1ae4232dc30e49",
+    "52839b120272ba90b7b099f825466c706802affccb5fbd45c0e301eb3f40bc99",
+    "2160d03ae97d8670138264d840ef7866667b801423ffc5b73bb9d41efe0cdd1d",
+    "b90350ed66c56f9b82e51553d24809ecb0e3f019cb0219f77b0d893d6411e122",
+    "58b45b79b776d2619109c956aaa64455d1723bca017fe4d7eba00ddbee97c128",
+    "e3df5d823c87327dfe77ec5b842cb5623b883bfb83f6ed1aa0a16276074df49f",
+    "86e9ca6d93c73bedf99edc3b069cb3f896e488dcd806ce0950f30ea136bac492",
+    "e5adc2fa2b606d6a14bc6e05644b6268e5400fc2d6b457f1097ab72129e3056b",
+    "c22aea4801f31690197b4b876d8b35e6be01ee9d0b7b9087ea17ab1a6470c0c7",
+    "26129d3d4dd15382ab868e19ba159afc1f94bc505fedc76caf0a42cdf17d550d",
+    "ae9aa70846b4e9555a16e6733425bdf83281a0c67f40e66252a8d2549f73ad21",
+    "4c365d0b64f8e078843baaaf3bcfa188f633968e175e89a14ec6349f5de1062d",
+    "c27df2e23948eb925efdd459fe510487bd285f2564270b974a4c8319a6d80b27",
+    "e133e48d2c603d4ee44b0e62a0c14a289dc914f19bd0909c4f1fd944e66c8eee",
+    "d301c59773024c36b4da39d53111ab33ab8590f78275131ac9b2fd0bab1808b4",
+    "c0c9bf49efe87aa8775dc096ed833bd92cd29425503704302b660998688e8abc",
+    "83bd00cb4730f2094bbf436b846e08fa97bbc327d236023ae16a965254689bfe",
+    "eeeb6de3d3d3e379d5f7ed106c910f1783c5fb856846ce346b3fda21bc984f31",
+    "92acf1eafa67c9b37a542a68c44ef95d1e798cad693299a83ce820ae8ebcfd49",
+    "4fe2b3e7ac0f3aeb3a9a9709012fb0fe736d0dd0ad53be3245fb8ba283c41a71",
+    "29ab221f4e89c147f8b6c423efc7aed54c82e141819bbcbfbf2cd2eab493c5c7",
+    "2d585d6bcbafd3136a867885256ae4af8466570a85d319e4cf560f3102bd11cd",
+    "947c032fb47e58bef5e8ab3a85b64b59b001234ea8b04e19e052624549ad7bea",
+    "a6bbe07c3102fd917f233733c29b11ad87154286f51309bdad64b37c51a878f3",
+    "4bfc508fc7a6565b657d81b40bfd3ae521acdb1841c76f5077ff53c29381db2a",
+    "d47ec70604c50d501110099f2f18a3fc3e7d2f75cb5c4f0b4902b0242819c8e3",
+    "6546a5b9773027ce2418612b10ad46a095c70e1b522a9c072c9763eb7b3cfe81",
+    "00c1e2e23aa37c2a89f3cb82838629100a48e880d939b484acc2dbe23729a16d",
+    "de30bfc328a4c3add7cd5b21b7a9ab347f850fc3dd2428f595a7f7a978152303",
+    "aa348e2a8c5802cafcb07ec338b3cd8fc11de78a949056600c09f92732bebc02",
+    "95c319fdf9927bd46905d701121a64c5c24267e3ee2acf07e4b64e2ce6a7ecc6",
+    "9b7350aca6f5db56e19d0cb72b771dbc642356b4ff10e9e88f1045881b9e23a1",
+    "7c699393137484fb8df45680a08dae060d133e1022510276cc2d93e32fbf6896",
+    "df5ddd2cff10e7ddd72bc3ea33105b1dadc8b62caf16be6a5277e8ba5247efab",
+    "2dd25af12d2e8b879e16108a5ab528360ff7dbe1098aeb08625b309357981217",
+    "5c1acbfef54c158137ef9306b281983eae3f7a704ba9adfdc9929282435e02cc",
+    "78fa98d9ad9bddf034b2b6c12d4ddd54b578cb70a06eb9fe91b0755fa1c65261",
+    "5e6ca7b8e34ec2743330b0651af498212df00f3bbb055435e6ba7d1937ade547",
+    "8b158bc957aada54239d08b2df1a7eff826923e8b6f2e99998c024162bd356de",
+    "44a599d9ef2148f3d69a7ebdcdd0616b723fff83eb2e71fadb63b76c0d014b77",
+    "286ae0704b883504ef2f723911f69c14721a8edc3e7a2af46bfcaf7ca658ddd9",
+    "8d31ee59147df7b163e1242c2595a67152cdc5d24abe8383aad50acbb3b46201",
+    "674b82cfd6918bee047447a3a44485b39516c0218aa13ea3fe7b4857c08dcf46",
+    "09859dba82913b0182faeed3a6e1dd1d4bb7134f98f9a24822b2c6eb87c2ddbb",
+    "d8b600578b74ba13c1717dfe5e0d2bd70526fe7adf0e3aa7e8eef52a6addb8f4",
+    "48fd818601630fdcc2c66785644c62341778b881d4085712080b29f7ae1ed022",
+    "257c57b32bfc8d08de24fb605a729ed8a4e040cf2405b91cc797f8dc91c28dd9",
+    "aca39dc340fc2fb09f04209e460ba5e350a27c402f07f1454eab85d76f03a04d",
+    "30b1ead231d87d38065c0f8bc2c90af59ffdc44b8aa9dcd26d30228a11845abc",
+    "856ad25c9311f584b4a72f6300147ef896039000b97fb9cfe41ce7a819a3ae17",
+    "fe5d7ed5aef8c72912db9ca051e96372c763c22db59345f48e6cdeae1158a16a",
+    "f8fd53ad7875c675207a31b09fa4dd14411b881112f4510f5f75c6e8a5004dda",
+    "2e7b3275f94567d26f4c04e932e97fbec0202aef5d2a52d230c364df070dcec3",
+    "8b0663dd10c7549eb8dcc1710b81b4fd8f3abde443e05326c6684110f17eff2a",
+    "af9bfd349216db387fb4265461de0435d9edb6fb4b96ff6533f0292e14e0b48c",
+    "d9c5ff47956045be54cf609e4dc0b91dee1df84f05af694231904606e3ce2fc1",
+    "2225bcd608320643bb5e1b8a494c4d832c33fa85c6514e8738f8210184d8ebad",
+    "01e47d72dc97bc5c0d7253a25a9750fa2564ec748a13f5b00d5f2da3ae516ba6",
+    "60ca04f8c1eb6f355c7aa5034f16ef6252d9d3876cb963acaf8c816501b5add9",
+    "e37def38c6f2fc6b4c9d17d1aab9ef182167b6e4ba985fa6119be5c3c69d6ee4",
+    "fef95135f87e41ed7235c6662a9296a8491e57eb112fbd663a6a020a1f284aba",
+    "11da99b86b374fd0635977260a7db730ed8a3a92ab8cc5d4e3f73c85aab5c0d9",
+    "3d3db1627f24113821b61bdc0dc24f79f46c24114014bb2a1779650ccf1e49b1",
+    "ac9ad0c49cf5bec65bafd3df6602caf076aa33aab0b3beeb54daefde775e31ed",
+    "4920f0872fd84bf782c918fb773d486a92b1d5dd699a38b9a78e877e2f462dcd",
+    "2c65274b8d22f1c9f467f8eb67a359e951598c743999b0cec57ede50730b5bad",
+    "4f62b212ca26182c7b428804984b1fa5a94235d5d8c555b4b91170d1d10b810a",
+    "06fe7be342b1cd37a8400b9f256962b32404200f74eace776ba1d8df90076063",
+    "3283ec0e9798ec1e9a750761e93ba42266f034e13a534e26aceda32efbebdcbd",
+    "116b3bb3fef9478cfebfcb9fc9f6062aeec047c7c4d7003c446a12d9b75c2a67",
+    "c805410c26567388cd3213a558ac0390ea46f984edf65bc2021cbf15728a9eaa",
+    "87bbc95301d590647095f29078813f27da19d4ca7a6fcc77e99344d7a5761250",
+    "a0c0f910438c77962feb5533464aa99ef086e19eb56938eb9ff568ed8483bdda",
+    "5259d5386aa1164ce37255b0f44b789ee3fe5218f81ea6764e26ef2ca92ed769",
+    "11013d0ba3d39c749caa1d121676cadf4bfcbeaef18eb6b6bf08d48841ba71cf",
+    "2a6f0712d147642b479c7feccbe09aa18c9c3264161a9fe5b90f979641c6c8ab",
+    "e0aa42363bf3ac9df29129329488b722fb577d5f6a6e7bc7b1d3900a602c4625",
+    "1fb651c928caca82e1b356bea3ef1fb8c73868668d2f71d1355f93c6d0eedf67",
+    "230c6ba331a4ba5b6dcdaff63c31d2454c2484e668bea862198b76263b202fa9",
+    "61983d9aeb9794863e4a33ef0f36949bc5b64b8924319a64f6261fcfbd6fa275",
+    "0071db251a1c487d28c43db8c4253b098cd1de8a76f72ef66e29074db0519fec",
+    "e26aca63505f7361ede1b60fd3ef766d55a96a360879db6a43aa7d3fef9aec23",
+    "27d4d54306d3ba77b7acd9ecf18eef27c7bbd5e34f26b5d88cba386a7b600ac8",
+    "2171168e21f3d7c16c0a61eb36b4ba32984c64a7cffbe22c986e4e3c84f25a93",
+    "f71abc5f8bc8f3f69535e74c0fccdf9418c7170e729f56a61b59e70dbe2cbfb1",
+    "899014a1ec37d96d7d9a8aa47f86b2addbfd774dade0f64fcc11476c81b19312",
+    "532ae14456e5b20afa0aee1b2c98aabd1e0d9d240aace411355ce804d6c172a6",
+    "eb396ea48b73a4343e45ad2f8f910d5e5ef0702073bb142a1c3f41f19a08b1fb",
+    "1d97fb25d277fabb1f98438b63e3efabdbb690b4a2ff70c9b802ad06c912822c",
+    "ecf7e3e298c15a0618d65e5053035db7a6336171ff909ae0d588e8710001b237",
+    "6180e879b894409f2be001a539fd1c8abfd299de84910cb531d0693e71d786d2",
+    "2249067addf340fc0b7a8d44f97f1bf4d4ebcb55ee3544552d82ac40432b9ca4",
+    "b5eb94e494415c08e492b850f1087b6dac80a5b2387eac8ddbaffd81f194e755",
+    "1d0f43e76c5b395d97f094f31621615bb503cac39d8f4a1f4df735a3135626c7",
+    "2ae3e7f125a3022d73aa997daba3e4101726fcbaf26e111dbe6794b117a4ee74",
+    "f1c9e91c79081fc57fb136e2fba3727a9974b40ba2aef0c92fc3b4baecbb4b3c",
+    "71f67598104d9288047698135562350950a49517d1302a7b1466f215286db077",
+    "1f4441f1f88d9fcc266acd26779058bb3c1e437bc5d112fe8a945707466db4ea",
+    "5c011c04e41a58e040e978c0676dbb264e48ce3c91ae54366498875b470eb70a",
+    "73dfdcd7091714f4df68151ba15a02a120d6c35663c92b82214bd86337a67431",
+    "2df6c8106f2c0da3e9864c0a469f2f895031deb6cce823a1d5f5d1821571dab6",
+    "8e5783ed94426e5b9583bd667eaa3b60677bc584ad2b5c9828eff08b91c76121",
+    "6b37ccc3f769a8b006de49458d6faf4fa017de99fe2d2c36d91c876ef25483ec",
+    "5e9d0e4b2894baa5e9d6a7cfc90035f47b77ea486abec64d968acb03aa4cf1ed",
+    "d64680ee39ea8cbab36389f95b883f9ff3ac053c4f9cc1854597895f9d2c4597",
+    "c0444a1720269f636ac3fe2b820b72feae54b9c9f766cea0335dccc10d52c023",
+    "3bcbc32725f8c817446515819e8844e36e52f448df4c2800930367e12fa4b57a",
+    "5ad881fa5b2ba4c21928d3cd40ec0b74a94981a8f0a2c377d0ca915335c73dcf",
+    "8ae87ec6e504f527aa21569ceb19e3d3d46100975d1e8c028b634c4a79b0b0e9",
+    "64338aa80f88c41032f13a3e23396a33457eec3327937719ebb37f04cb76dba2",
+    "23945dbf6e9b56792a428de1be813039a9b6bff060d7b3ab02c020b63466629a",
+    "eb186321c54dd193882d97560b4a5d1c496f4e5dbc9e9adbcd4e2c23c314b262",
+    "afcc52526e82fbfa0d273e7752ee52d9f0cb0b76f7a83c2450771758a7b9a551",
+    "bd4198d2ffc85e9dcc9603e81fd6c3f34052eaa767457a2233ccacef33917bbf",
+    "cf2d10f689f8188360527afd238636749822dafdc19f079659d351998a907a90",
+    "353eb43b698f4ca99d9b1f127e682e33bce77197131f9d8297ceff4a15111fcf",
+    "7eb851975ffa5163510e2510a29c590e22d2ea22259fcc6f1b716c3f26e4b3d5",
+    "a294002752543d89088be0f46dda992bc496152065ac87e37130cf9b64fc0e5a",
+    "1559f39b286fbd0cdec6574dfad0a71da876f20d991cecbb484cd62ab4fb29fe",
+    "f5dcb9ede9dac67c2b4bd124870d5305d6a7e1c9bbef17029773382e9a7e3ded",
+    "61785a5e6de421a715538d9f4d6165e7b6f2510eb46063cb8461715dc86acd21",
+    "2d2e6a89f94c79218bb01cb3dcf27cd910c20ceafff9d91d119a4cff43573197",
+    "df4bfb366a8433a3fb264e8513d0315c5a36337bcf55b491e5655f8241a049b4",
+    "1da39878da70187dd2052e045abe95ee5d780e784f6a2473827f104c430a0fe2",
+    "7ad2b2b84c23c3724708f2eea7d9b84ee047982df6581d6be8a25feba0a1a4f0",
+    "dd3dc1d3af868cc2adfc425d9e2ab34801b06013dd70686ae39c4dc8f2028a82",
+    "b1597c959226a091ee4cfe199b5c1f1aba33a8ea66faac86d4eb458608a0ee00",
+    "28e64ff9ddf940ec3aa617c86bcf1c309eb2b03f78b57c3d5e6605a2cf86dc7e",
+    "e0eef93ba1c197959c23e85020858173795a0d3cc39dd03b7de8040311b498ff",
+    "d5bd81710f750d745977260e3f6287d8ec5544cd9790c5822bee53f95e13464b",
+    "8b0a43e4313467719c4f267903921c13a1928df0daf3ec691accfe1549be8ea3",
+    "6e7bc4fd5b95ea0bb35cedcc2f2dfcdab3168b0237c8edc65210ae2c96d1d63d",
+    "5584d7ac57203a2907b5f346a46ef892efd58875e30a773a1c7d921b0970d202",
+    "9a79e54e6ffa92a13542971408b18348d733a300c81238c03c58bb4b9b636daa",
+    "a26d51668d89937fd6b149e94e7942877f82341dc837682cd92706db86769fec",
+    "41e804cb053537e5f57e53e15ddd98d286435855e133d27f66f8b9f2f1de408d",
+    "b06077ca3df2b78617034bf1b53216456320bb42836d405c30f6a874d2a3a657",
+    "d5efb3b94474c47da25bfb835654bef008bea4c2847935c3eacd120840677bab",
+    "96ab9fd9548eb68be605a8a4144c7df04a913e4e061cddac9cea994c2bd6754e",
+    "fa88e01ee12b03c161f511b0cd5512cc3bcb065d0026a25c61de01769410bf36",
+    "a600c4d3f9b55ddc2cce7b376bdbfe23ae3ec1479074aba6e6eade8b66a5fadb",
+    "b3e073f6d00c3ff90ffed99f84b2037bdaef0980db6d0a1c080c1fac08c96176",
+    "2f8b5a503b333ba2ecc8765d83c81b10101cbf461f032f16deab3306c41f0141",
+    "809c1bb72785fb741475c06b5446da98c72a55c584cab1b029d414c68fbff6c6",
+    "6a499c5cd6946b3d47497784ae9d0dd5095327e1f386cbcdeebcc56f5266f31c",
+    "6e9abef458a87f7986f885146e174a5e244eb61875ac413521a0de0a5dda6d75",
+    "e3fc11c4413cad82c808d1dc740f0cbbe59a430a07b89476ca2c2fc00ecb2f39",
+    "fec6c1197e48bfa8eb062a450ae4b1278729eaf08249853eb982f84aae1b9e25",
+    "55c9511875bb7c0502cfcf014ce21584df39c189de3ce4cc5e330aee1a195eb9",
+    "55605a6d26ee6407019f882eca66a42d3eebe5fd7bcf010e9fe3136873d2fff4",
+    "2fd192c22cd4b3d5a9ff6da177e4369eff7b163fc0e0db6623fa024bf0ad0b44",
+    "335598adfaaf9ee9a73828e4a85051a76006a751f7dbf691f9d2679f9026ee9a",
+    "ecc53d30c1a7a958203494c935bfc01ef9847044df8077c96c92dfb821f8c5f3",
+    "c47a0600a160adf798dfe46ad1697a145bbdcc1256b94b94bb80d412269fdb43",
+    "6660a0d604f803048721a42f7ce2946b5e327464b88f9a6b3a3bcfacf4a63511",
+    "d91e60c52ab73550eb7c7abf7f00f6e4e8184431db614ecf1b6987da919ddd66",
+    "f2c3df4eb7422c6313a191043b53d8109bd949c08a7ede4c8ea9e4ea0185ccc8",
+    "9833b20f29ef651e61ca40e4d08693d1dff359c08e80c12a90581c547b8e14df",
+    "3bbe2d080cc9a72663c53dd74d4e3145ce53388f9f8ce0ce486801651ad71c59",
+    "a8cbc5f842a85c767949571c04e05b1648cbd1598a6a5e5e0cb6bd6f8fc21762",
+    "a6a3aec14809462737ec5df7195847dc8754f692cec533394d793af75fc6153d",
+    "680ae8072500f2722d4413757669ff23428b8d69f969499a3c43f1ebe3c81a93",
+    "68214fcf1137bdaabf4c1186d70de83e25285f32cf4c30ef9a5189eb40ab8eb8",
+    "0270c4b2e6dc08d1e3e280d6fc3a1ff5f2aa0464c5414ea4898b1a1ea5be8aed",
+    "059d548766dc5b390c65bc906dce0a07582cac7b929f3154551dce29f2615bb7",
+    "6f949ade535b1a11f3843c475444bbf8b6805a967eef20ea234d7f39937054ba",
+    "8157e61de65a1665a9806d5f670f0bb41e695b3bf24274ee12b9a1ef974b0123",
+    "5504cb7ae238e96c1af3cba4edd97bc62de1ec8e39cb3e50faaf9f348f794936",
+    "3bb577432333e8739848d3f481db1391647b825cb24094449e32be5cc49f4f5b",
+    "c4decd4a6e35e8fd4a43efcd14896f9e4b1ebd141ca7695df255346feb08ab9e",
+    "9ac1ee43aa22970f61ef7cd5bb36e37a7863ad6d439e5d3a7b75a790d43b8244",
+    "922c8e08a7b937ded4c4dd39406a48a73e21798b4159235fc563245525e36af3",
+    "d180871cb5747c250c6d2cd3cf4fa133d05d1462d3fae0e0bb673bb9209f6a16",
+    "3203ec73b62e22f72c5855964c33a9a2f4fc5cfbf3c22830a39f2c709bb13786",
+    "31e38fd7d0be9aed6c9d3c657385863de017f7b104675da6377f5805fef1934a",
+    "923aec9ece516b530e1a82e91230aa69606cb345970e31014c6b7b95915a8d70",
+    "85a5cab389bf3a0260ef15de0aea819bdab5832c0ef37f069c9e5f321ecb0c3d",
+    "ccf333829018bdb9378d11b2c3d4ee5768fb77b362ab78c542c08ee10916831f",
+    "ad91fa444f05a94d3af090c163b87019a2050836c3b2346d37f63eba7b022097",
+    "515378c1de2b8aea5e0dda59fec3f7759e4424c592e619e9016d1a5a15a0978f",
+    "6edaca1e06de990917bce368bd1563aa85d1978b5322f5d067a81293f0b749b4",
+    "5eac5f85ec5f348950a426916122fe51eccef42f0feeb4655fe21cf56bb16f21",
+    "bfd2665cd2a72b3c71c5e81c9ad63c4ec1ccc8c4057fd396c7521d15f66cd49d",
+    "b8b3d32ff7d63ed4662931723902c8cd5d7b52f37853409885f5a3ff4af5fd6a",
+    "49dc5b9e8ac4cf4cf82e3c234f1eb86ae91fc05e794f85dd1cde4237bbb74f6d",
+    "b41e46f6566dd5727ff026451372f71148e0ca64646f8d5731b5ebf88b7c43b2",
+    "6cc184b16f54a62e542d8705cd46cdfd9c01614c4065c8238eb7afa92763677b",
+    "c0a06e1f46db54840361357b8d2b044b6b8a3e7f0693ab7e7cf4797e5dd30c83",
+    "ad6a36d5e5accd41d850cb35a91b3e66f8bb1e778beb3f6a0d10fd7cf1a3ad4c",
+    "73faf85ff807a209c8cd4ef5e940465f3b0e3480d5c554f9365b425e0255635d",
+    "fb34393384eaaa1fb8560a67b1121148787d3e0a596cd88171539dac0d2da589",
+    "4e989779f55176f39a95bbc5d49a893bc43855f39c49f5c09f56a2f64a214253",
+    "9c1648be1ea9a100ecb55410b7f1cc447a2900a8880d6850d3c5d16657bb1efc",
+    "740f46993ad190384ae1c032a7cfea5a25e5fce39641cc0358e77fb7bdb17e82",
+    "d4d63ea6de1c2e0a3c1e2952699ad5f7b17c0bb37d673ec050afd329a498cc82",
+    "6ef88e7d091a1590a8b609f9e9e1654fb30aaa9a8c87e708f15285fbe73c6ad7",
+    "6f0d46f958e012b36994dc7e3b913e8af9498660f7af355864299ca3aa01dce1",
+    "c5040c65b436e4d79234703a5149e2ca76257e830fb51467d7f18917d90526c8",
+    "f86ec31a6b3a99540dc40e6a4d53b54274791f013286424e2ea98dba8c0aa40d",
+    "03de7414be222576e5934f83ee7e86d3c2e6a6769a10a969fb5fe02c8a1d6222",
+    "7f8105d03f38c7375d9cd7bf170e2f5dfb4e651b5f2d884f4cd957d8a6226a06",
+    "37012ce9d448ca177ed068301560fda496e9dbdf65dc2f8b74505920a4665146",
+    "bf4c015d04637832b89d10b5b675bf12c147eea1d09f2ab3b994f5487f7da5fe",
+    "971c8e40ffeed7c965356c6bb6716256222c18c729d17865db7d18aca17d4f24",
+    "d50c1d39caa90ec12f27b2e1002ac30567db0a7663e8717c91fcfb9d6c2296a5",
+    "8f2691b7156102a864cd1dd476dfa4c1b6084904c4c3c27abb422e6db7fda6f2",
+    "c1504892c8ab3607bb60f76454beda9b353f4fb345c4b625235fb8387ba57c67",
+    "d61e8eb990a303e69dc5bfeddede086ab5774d681302f1567181b63387e7fcda",
+    "47d4eb1fae1c10f6a6038d64aca27c65779fd89feea0aaa4fdd6a1dc27795193"
+  ],
+  "mapping": "gpuwm/authorities/rw-wps-icon-eu-regular-grib2.mapping.json",
+  "mapping_sha256": "141c635c9adc6690719fd52ff0fbcfe78d478a14e18cea8bb13df812359b3fc1",
+  "materialization": {
+    "verdict": "INCOMPLETE"
+  },
+  "produced_by": "gpuwm.mapped_source.inspect_mapped_source",
+  "source_format": "grib2",
+  "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED"
+}

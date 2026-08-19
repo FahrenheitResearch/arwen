@@ -1,0 +1,30 @@
+# Sdist-side twin of the size-driven [tool.setuptools.exclude-package-data]
+# entries in this directory's pyproject.toml (exclude-package-data governs
+# the wheel only).  The two largest Thompson tables are externalized:
+# published as GitHub release assets and staged by `gpuwm fetch-tables`
+# under the SHA-256 pins in gpuwm/core/thompson_contract.py.  Without these
+# lines the sdist exceeds PyPI's 100 MiB per-file cap on freezeH2O.dat
+# alone.
+# tests/test_package_data_coverage.py pins this file against the wheel list.
+exclude gpuwm_data/data/thompson/tables/freezeH2O.dat
+exclude gpuwm_data/data/thompson/tables/qr_acr_qg_V4.dat
+
+# The four CC-BY-NC-SA-4.0 RFMIP reference-result NetCDFs are excluded from
+# the WHEEL for licensing, and this file states no rule about them.  It USED
+# to claim they were "deliberately NOT excluded here", on the reasoning that
+# the sdist is the source repository's own form and a source build must be
+# able to run the suite that reads them.  The built artifact disproved it:
+# 14 of the 18 files under gpuwm_data/data/rrtmgp/ reach the sdist, the same
+# 14 the wheel carries.  `exclude-package-data` governs the SDIST'S DEFAULT
+# FILE SET as well as the wheel -- setuptools' sdist folds package-data in
+# through the same step -- so an `exclude` written for the wheel takes the
+# file out of both, and a comment here cannot put it back.
+#
+# What that costs, stated rather than left to be discovered: unpacking
+# gpuwm_data-<v>.tar.gz gives a tree that cannot run the RFMIP acceptance
+# gates, because their reference results are not in it.  The repository is
+# where those fixtures live (1.85 MiB, so size is not the reason).  Putting
+# them into a published sdist is a licensing decision about redistribution,
+# not a packaging tidy-up, so it is left for whoever owns that call.
+# tests/test_package_data_coverage.py measures both artifacts and fails if
+# the two stop agreeing -- including on the day someone decides to add them.

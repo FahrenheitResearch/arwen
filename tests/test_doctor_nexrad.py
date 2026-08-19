@@ -168,11 +168,16 @@ def test_the_bundled_front_door_uses_the_resolution_ladders_own_env_var():
 def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
     """The docstring is the contract a release engineer reads; keep it true."""
 
-    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 16
-    assert "sixteen artifacts" in bridge_assets.__doc__
+    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 21
+    assert "twenty-one artifacts" in bridge_assets.__doc__
     for stale in ("eight artifacts", "nine artifacts", "nine files",
                   "ten artifacts", "ten files", "eleven artifacts",
-                  "fourteen artifacts", "fourteen files"):
+                  "eleven files", "fourteen artifacts", "fourteen files",
+                  "sixteen artifacts", "sixteen files",
+                  "seventeen artifacts", "seventeen files",
+                  "eighteen artifacts", "eighteen files",
+                  "nineteen artifacts", "nineteen files",
+                  "twenty artifacts", "twenty files"):
         assert stale not in bridge_assets.__doc__
 
 

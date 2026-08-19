@@ -1,0 +1,71 @@
+# gpuwm mapped-engine workspace (skeleton).
+#
+# The donor snapshot under crates/ and vendor/ is UNMODIFIED (see
+# VENDOR.md); this manifest is gpuwm's, added so the snapshot resolves
+# its `*.workspace = true` inheritances and builds in-tree.  The pins
+# mirror the donor workspace at edf044c (edition 2024, rust 1.92).
+#
+# Offline posture: `--locked --offline`, via the checked-in crates.io
+# mirror under vendor/crates-io and the .cargo/config.toml source
+# replacement beside it (the tools/grib1_bridge posture).  The
+# clean-clone rule is `pip install gpuwm` + one offline cargo build.
+#
+# grib-core: BOTH members point at ../../../grib1_bridge/vendor/grib-core,
+# the ONE superset crate that carries this snapshot's hardening and
+# gpuwm's together.  The donor's convergence-input copy that used to sit
+# at vendor/grib-core is deleted; cargo refuses two different packages
+# named grib-core v0.1.0 in one lockfile, and a second copy would let the
+# mapped engine decode through different bytes than the shipped
+# grib2_dump.  tests/test_grib_core_convergence.py holds the line that
+# exactly one grib-core manifest is tracked.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/rw-wps",
+    "crates/mapped-engine",
+]
+# The vendored library crates are path dependencies of the members,
+# not workspace members: their donor manifests stay byte-identical.
+exclude = [
+    "vendor/netcrust",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+rust-version = "1.92"
+
+[workspace.dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+# netcrust reaches HDF5 twice: directly, through a `hdf5-reader` PATH
+# dependency on the hardened vendored copy, and indirectly, through
+# `netcdf-reader 0.3`, which declares `hdf5-reader = "0.3"` and so
+# resolves the crates.io package unless it is redirected here.  Patches
+# only apply from the workspace root, which is why this lives in the
+# workspace manifest and not in netcrust's own (that manifest is a
+# byte-identical donor snapshot and stays one).
+#
+# Without the redirect the lock carries TWO hdf5-reader 0.3.0 packages
+# and the one that builds netcrust's variable and dimension tables is the
+# stock registry crate, whose dataset.rs is 92 lines behind the vendored
+# tree.  Measured consequence: every netCDF4-written file refused inside
+# this engine with `HDF5 error: checksum mismatch: expected 0x00000000`
+# while the shipped rw_netcdf.exe -- same netcrust source, built inside
+# the already-patched tools/rustwx workspace -- read the same bytes fine.
+# tests/test_hdf5_reader_convergence.py holds both halves of the line:
+# the redirect is declared, and the lock resolves exactly one reader.
+[patch.crates-io]
+hdf5-reader = { path = "vendor/netcrust/vendor/hdf5-reader" }
+
+[profile.release]
+# Same reasoning as tools/grib1_bridge: bridge binaries are package
+# data measured against wheel caps; debug symbols are the cheapest
+# weight to give back.  The ABI marker literal survives stripping.
+strip = "debuginfo"

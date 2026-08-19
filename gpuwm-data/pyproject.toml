@@ -1,0 +1,93 @@
+# The companion distribution.  One repository, two distributions: this
+# directory is built on its own (`python -m build --wheel gpuwm-data`)
+# and the root `pyproject.toml` builds `gpuwm`.  Both are cut from the
+# same commit, at the same version, and are uploaded together.
+#
+# Why it exists, measured rather than asserted: the 2.5.0 `gpuwm` wheel
+# built to 103.62 MiB against PyPI's 100 MiB per-file cap.  The two
+# directories moved here are 64.21 MiB of that -- pure reference tables,
+# no code, no platform coupling -- and taking them out puts `gpuwm` at
+# 39.41 MiB with room for the native artifacts that are still landing.
+#
+# It is a HARD dependency of `gpuwm`, never an extra: `pip install gpuwm`
+# must be a complete install, and radiation and Thompson microphysics are
+# not optional parts of a weather model.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpuwm-data"
+description = "Physics reference tables for gpuwm (RRTMGP k-distributions, Thompson microphysics lookups)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.11"
+# NO dependencies, deliberately.  This distribution is bytes on disk plus
+# eleven lines of pathlib; giving it a dependency would make a table
+# unreadable for a reason that has nothing to do with tables.  In
+# particular it does NOT depend on `gpuwm`: the arrow points the other
+# way, and a cycle would make either one unresolvable on its own.
+dependencies = []
+keywords = ["WRF", "RRTMGP", "Thompson", "weather", "gpuwm"]
+# Read from gpuwm_data/VERSION rather than written here, because this
+# version is not free: it must equal `gpuwm`'s to the character, and
+# `gpuwm` pins `gpuwm-data==<that exact string>`.  The file is the one
+# spelling that travels inside the built distribution, so a wheel can
+# state its own version without the sibling project's pyproject.toml
+# beside it.  tests/test_companion_distribution.py fails if the file,
+# the root pyproject's `[project].version` and that pin ever disagree.
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/FahrenheitResearch/arwen"
+Repository = "https://github.com/FahrenheitResearch/arwen"
+
+[tool.setuptools.dynamic]
+version = { file = ["gpuwm_data/VERSION"] }
+
+[tool.setuptools.packages.find]
+# One package, named explicitly.  A glob here would sweep `data/` and its
+# subdirectories in as PEP 420 namespace packages, which is how a data
+# directory ends up importable.
+include = ["gpuwm_data"]
+
+[tool.setuptools.package-data]
+# A recursive glob, never an enumeration of filenames -- the same rule the
+# root pyproject.toml states, and for the same reason: an enumeration here
+# had already drifted 52 files behind the tree once.  `gpuwm_data` holds
+# no Python except __init__.py, so "everything under data/" is both
+# correct and incapable of going stale.
+# tests/test_companion_distribution.py fails if any file lands outside it.
+gpuwm_data = ["VERSION", "data/**/*"]
+
+# The two exclusion classes travelled here with the files they name; they
+# are the same two the root pyproject.toml documented while these
+# directories lived under gpuwm/.  Nothing may be excluded for any other
+# reason, and tests/test_package_data_coverage.py pins both lists exactly.
+#
+# 1. License-driven: the four RFMIP reference-result NetCDFs are
+#    CC-BY-NC-SA-4.0 (data/rrtmgp/PROVENANCE.md).  They stay in-repo as
+#    test fixtures; shipping them would attach a non-commercial
+#    restriction to the wheel.  Their license text
+#    (LICENSE-CC-BY-NC-SA-4.0) still ships so PROVENANCE.md resolves.
+# 2. Size-driven externalized assets: the two largest Thompson tables
+#    would put this wheel over PyPI's cap by themselves (freezeH2O.dat is
+#    243 MiB and additionally exceeds GitHub's 100 MiB blob limit).  Both
+#    are published as GitHub release assets and staged by
+#    `gpuwm fetch-tables` (gpuwm/table_assets.py) under the same size +
+#    SHA-256 pins every mp8 run enforces
+#    (gpuwm/core/thompson_contract.py).  Moving the directory did not
+#    move that contract: `gpuwm fetch-tables` still stages into
+#    ~/.gpuwm/tables/thompson, outside every install.
+#    MANIFEST.in carries the same two exclusions for the sdist.
+[tool.setuptools.exclude-package-data]
+gpuwm_data = [
+    "data/rrtmgp/rfmip-clear-sky-reference-lw-down.nc",
+    "data/rrtmgp/rfmip-clear-sky-reference-lw-up.nc",
+    "data/rrtmgp/rfmip-clear-sky-reference-sw-down.nc",
+    "data/rrtmgp/rfmip-clear-sky-reference-sw-up.nc",
+    "data/thompson/tables/freezeH2O.dat",
+    "data/thompson/tables/qr_acr_qg_V4.dat",
+]

@@ -293,6 +293,17 @@ class CaseDataConfig:
     #: and a declared overlay keeps its own precedence.  See
     #: :mod:`gpuwm.ingest.water_temperature`.
     water_temperature_policy: str | None = None
+    #: The resolved ``[ingest] soil_texture_downscale`` policy, carried on
+    #: the case object so every consumer that already holds one can read it
+    #: without re-opening the TOML.  It is NOT a ``[case_data]`` key and
+    #: never appears in that table's schema: ``[case_data]`` selects the
+    #: ERA5 config-driven route and declares that route's inputs, while
+    #: this is ingest POLICY that every route honours.  The declaration
+    #: lives in its own ``[ingest]`` table
+    #: (:func:`gpuwm.ingest.soil_downscale.parse_ingest_table`), and
+    #: silence here means ON -- a bare default run must not show the
+    #: forcing mesh in its 2 m dewpoint.
+    soil_texture_downscale: bool = True
     #: Optional validated ``[static.highres]`` block
     #: (:class:`gpuwm.static.highres_production.HighresStaticConfig`).
     #: Absence (None) is the identity path: the 30-arc-second baseline
@@ -761,6 +772,11 @@ def load_experiment_case_bytes(
     # The optional [static] table (high-resolution static geography)
     # splits off identically; its schema is owned by
     # gpuwm.static.highres_production and validated, never dropped.
+    ingest_table = raw.pop("ingest", None)
+    ingest_policy = None
+    if ingest_table is not None:
+        from gpuwm.ingest.soil_downscale import parse_ingest_table
+        ingest_policy = parse_ingest_table(ingest_table, source=source)
     static_table = raw.pop("static", None)
     # Validate the experiment FIRST so an invalid experiment surfaces its
     # own error even when [case_data] is also missing.
@@ -779,6 +795,12 @@ def load_experiment_case_bytes(
             static_table, source=source, base_dir=base)
         if highres is not None:
             data = replace(data, static_highres=highres)
+    if ingest_policy is not None and (
+            ingest_policy.get("soil_texture_downscale") is not None):
+        data = replace(
+            data,
+            soil_texture_downscale=bool(
+                ingest_policy["soil_texture_downscale"]))
     return experiment, data
 
 

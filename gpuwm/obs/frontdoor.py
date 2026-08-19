@@ -32,7 +32,8 @@ from dataclasses import dataclass
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            cargo_build_one_liner, default_bridge_dir,
-                           executable_name)
+                           ensure_executable, executable_name,
+                           packaged_bridge_dir)
 
 _PROBE_TIMEOUT_S = 20
 
@@ -78,6 +79,7 @@ class FrontDoor:
             crate_dir() / "target" / "release" / filename,
             crate_dir() / "target" / "debug" / filename,
             _repo_root() / "libexec" / "bridges" / filename,
+            packaged_bridge_dir() / filename,
             default_bridge_dir() / filename,
         ))
         return tuple(candidates)
@@ -93,7 +95,7 @@ class FrontDoor:
         override = os.environ.get(self.env_var)
         for candidate in self.candidates():
             if candidate.is_file():
-                return candidate.resolve()
+                return ensure_executable(candidate.resolve())
             if override and candidate == Path(override):
                 raise FileNotFoundError(
                     f"{self.env_var} names a missing file: {candidate}")

@@ -362,10 +362,15 @@ def _make_writer(path: Path, cfg, *, complevel: int | None, schema=None):
     """
     from gpuwm.io.wrfout import WrfoutWriter
 
+    # This bench prices the netCDF4/HDF5 close machinery stage by stage
+    # (deflate injection patches netCDF4.Dataset itself, and the caller
+    # unrolls the HDF5 close sequence through writer.ds), so it names
+    # that engine explicitly now that the DEFAULT is the Rust classic
+    # writer.  Pricing the default engine is a different bench.
     if complevel is None:
         return WrfoutWriter(path, nx=cfg.nx, ny=cfg.ny, nz=cfg.nz,
                             dx=cfg.dx, dy=cfg.dy, title="bench",
-                            field_schema=schema)
+                            field_schema=schema, engine="python")
 
     import netCDF4
 
@@ -381,7 +386,7 @@ def _make_writer(path: Path, cfg, *, complevel: int | None, schema=None):
     try:
         return WrfoutWriter(path, nx=cfg.nx, ny=cfg.ny, nz=cfg.nz,
                             dx=cfg.dx, dy=cfg.dy, title="bench",
-                            field_schema=schema)
+                            field_schema=schema, engine="python")
     finally:
         netCDF4.Dataset.createVariable = original
 

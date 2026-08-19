@@ -2006,6 +2006,36 @@ fn inner_rect_from_coverage(mask: &RgbaImage, inset: u32) -> Option<LocalRect> {
     inset_rect(rect, inset)
 }
 
+/// Every covered pixel, trimmed by the frame inset -- the bounding box of
+/// the coverage rather than a rectangle inscribed in it.
+///
+/// gpuwm divergence (VENDOR.md): the counterpart to
+/// [`inner_rect_from_coverage`] for grids whose screen footprint is not a
+/// rectangle.
+fn covering_rect_from_coverage(mask: &RgbaImage, inset: u32) -> Option<LocalRect> {
+    let bounds = raster_alpha_bounds(mask)?;
+    inset_rect(LocalRect::from_bounds(bounds), inset)
+}
+
+/// The domain frame for a projected grid.
+///
+/// `inscribe_in_coverage` says whether the grid's screen footprint is an
+/// axis-aligned rectangle.  When it is -- a wrfout drawn on its own map
+/// projection -- the frame is the largest rectangle INSCRIBED in the
+/// coverage, so the ragged antialiased rim is trimmed off the outline.
+///
+/// gpuwm divergence (VENDOR.md): a regular lat/lon field resampled into a
+/// PRESENTATION projection (every lat/lon source at a regional window:
+/// GFS, GDAS, GEFS, ICON, the AI atmospheres) has a curved footprint, and
+/// on a curve the inscribed rectangle is a thin horizontal band -- the
+/// three 90%-coverage erosion passes below keep shrinking because the
+/// rows near the top and bottom edges really are clipped by the arcs.
+/// `clear_outside` then erases everything outside that band, which is
+/// most of the model domain.  Measured on a 0.25 deg 20-55N / 130-60W
+/// window: 256 of 900 rows survived.  For those grids the frame is the
+/// bounding box of the coverage instead, which is identical to the
+/// inscribed rectangle whenever the footprint IS a rectangle, so no
+/// native-projection render moves a pixel.
 fn compute_projected_domain_frame_rect(
     frame: DomainFrame,
     grid: &ProjectedGrid,
@@ -2013,10 +2043,15 @@ fn compute_projected_domain_frame_rect(
     map_w: u32,
     map_h: u32,
     _overlay_padding_px: u32,
+    inscribe_in_coverage: bool,
 ) -> Option<LocalRect> {
     let mask =
         rasterize::rasterize_projected_coverage_mask(grid.ny, grid.nx, pixel_points, map_w, map_h);
-    inner_rect_from_coverage(&mask, frame.inset_px)
+    if inscribe_in_coverage {
+        inner_rect_from_coverage(&mask, frame.inset_px)
+    } else {
+        covering_rect_from_coverage(&mask, frame.inset_px)
+    }
 }
 
 fn overlay_frame_padding_px(opts: &RenderOpts, layout: &Layout) -> u32 {
@@ -4813,6 +4848,11 @@ fn render_to_image_profile_inner(
                 layout.map_w,
                 layout.map_h,
                 overlay_padding_px,
+                // An inverse-raster render is, by construction, a regular
+                // lat/lon field resampled into a different presentation
+                // projection: its footprint curves, so the inscribed
+                // rectangle is not its frame.
+                opts.inverse_projected_grid.is_none(),
             )
         }
         (Some(frame), _, _) if matches!(frame.source, DomainFrameSource::RasterAlpha) => None,

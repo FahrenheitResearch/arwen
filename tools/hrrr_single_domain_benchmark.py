@@ -1347,7 +1347,8 @@ def _microphysics_table_authority(profile: str) -> dict[str, object] | None:
     here means mp8, and mp8 was not staged.
 
     Staging is what removes it, not a relaxed guard.  The tables ship as
-    package data (``gpuwm/data/thompson/tables``, SHA-256 pinned) and the
+    package data (``gpuwm_data/data/thompson/tables`` in the ``gpuwm-data``
+    companion distribution, SHA-256 pinned) and the
     ladder that finds them -- env override, user staging, packaged root
     -- is the project's one resolver
     (:func:`gpuwm.physics_compat.thompson_table_root`).  This calls it
@@ -2944,6 +2945,13 @@ def run(args):
                 "resolved public selector")
 
     root_result = root_met = initial_snapshot = None
+    # The SOLVED Noah surface, when the state came from a prepared cache.
+    # A cache stores it and therefore drops the native SOILT/SOILW pair
+    # from the met contract beside it, so a restore that let physics setup
+    # re-derive soil died on `missing soil input field(s): ['ST000007',
+    # ...]` while the answer sat in surface/.  None on the fresh road,
+    # which holds the native pair and no surface yet.
+    root_surface = None
     last_valid_time = None
     boundaries = None
     if restore_cached:
@@ -2969,6 +2977,7 @@ def run(args):
         prepared_cache_receipt = dict(restored.receipt)
         root_result = restored.initial_result
         root_met = restored.met
+        root_surface = restored.surface
         boundaries = restored.boundaries
         cache_metadata = dict(restored.metadata)
         initial_valid_time = datetime.fromisoformat(
@@ -3570,7 +3579,8 @@ def run(args):
     driver = initialize_hrrr_physics(
         root_result, dc.run, root_met, static, attrs, grid,
         initial_snapshot.valid_time,
-        constant_glw_wm2=declared_constant_glw(exp))
+        constant_glw_wm2=declared_constant_glw(exp),
+        surface=root_surface)
     timing["initialize_physics"] = time.perf_counter() - started
 
     clock = resolve_clock(exp, lbc_interval_s=3600.0)

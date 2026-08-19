@@ -17,6 +17,8 @@ from types import MappingProxyType, SimpleNamespace
 from typing import Mapping, Sequence
 
 import netCDF4
+
+from gpuwm import netcdf_bridge
 import numpy as np
 
 from gpuwm.verify.n5s_common import restored_input_sha256, stable_hash, write_json
@@ -520,7 +522,10 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
                 "grid_id and expected_dimensions are mutually exclusive")
         expected_extents = _explicit_wrfinput_dimensions(expected_dimensions)
     required_moisture, allowed_moisture = _active_moisture_inventory(cfg)
-    with netCDF4.Dataset(path) as dataset:
+    # Foreign input: WRF real.exe's own wrfinput, decoded field by
+    # field.  Through the Rust bridge; `Times` is skipped below, which is
+    # what makes this one convertible while read_wrfbdy is not.
+    with netcdf_bridge.open_dataset(path) as dataset:
         dimensions = {name: len(dim) for name, dim in dataset.dimensions.items()}
         unknown = sorted(
             set(dataset.variables) - ALLOWED_WRFINPUT - IGNORED_WRFINPUT)

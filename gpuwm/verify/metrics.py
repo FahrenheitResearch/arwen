@@ -1,18 +1,33 @@
 """Reusable real-weather verification metrics and map primitives.
 
 Phase 5, Task 7 extracts these operations from the frozen
-``real74_d01`` case.  The arithmetic, operation order, dtypes, masks, map
-layout, labels, and filenames are intentionally unchanged.  Case modules
-provide policy through the frozen map-spec records below; this module owns
-only reusable readers, scorers, diagnostics, and renderers.
+``real74_d01`` case.  The arithmetic, operation order, dtypes and masks
+are intentionally unchanged.  Case modules provide policy through the
+frozen map-spec records below; this module owns only reusable readers,
+scorers, diagnostics, and the seam that drives the renderer.
+
+MAP LAYOUT, LABELS AND FILENAMES ARE NO LONGER THIS MODULE'S.  Every
+panel here is a weather field, the render law (CLAUDE.md, Drew
+2026-08-06) reserves those for the production Rust renderer
+``rw_wrfbatch`` driven through :mod:`gpuwm.rustwx`, and until the
+2026-08-18 hidden-scope audit they were drawn with
+``matplotlib.pcolormesh``/``contour``/``quiver`` right here, on the bare
+default of ``gpuwm verify`` (audit F6).  They come from the renderer
+now, filed under the same ``<out>/<domain>/<product>/<valid-day>/``
+layout as every other render, and a run with no usable renderer emits
+NO weather-field imagery and says so rather than substituting an engine
+the law does not allow.
 """
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from gpuwm import science_core as _pin
 
 
 def boundary_zone_blowup(boundary_w_max: float,
@@ -36,26 +51,52 @@ def _read_wrf_field(ds, name: str) -> np.ndarray:
     return value
 
 
+def _science_core():
+    """The mandated science core, or a refusal naming what to install.
+
+    Function-local so importing this module -- which every real-weather
+    case does -- never depends on the extra being present; the refusal
+    lands on the call that needs it, with the install line.
+    """
+
+    try:
+        import wrf
+    except ImportError:
+        raise ImportError(
+            f"the mandated science core is not installed, and gpuwm has no "
+            f"Python reimplementation of this diagnostic.\n"
+            f"  pip install '{_pin.SCIENCE_CORE_REQUIREMENT}'\n"
+            f"  # or: pip install 'gpuwm[render]'") from None
+    version = _pin.installed_science_core_version()
+    if not _pin.version_supported(version):
+        raise ImportError(_pin.science_core_refusal(version))
+    return wrf
+
+
 def _interpolate_to_pressure(field: np.ndarray, pressure_hpa: np.ndarray,
                              target_hpa: float) -> np.ndarray:
-    """Log-pressure interpolation on WRF bottom-to-top model columns."""
+    """Log-pressure interpolation on WRF bottom-to-top model columns.
+
+    Delegates to the science core's ``interplevel``.  This function used
+    to carry its own numpy transcription of that interpolation -- a
+    take_along_axis bracket search and a log-p weight -- which is the
+    kind of duplicate this project does not keep: the operation exists
+    in Rust, in the library gpuwm mandates for exactly these
+    diagnostics.  The two were measured against each other on a
+    30-level synthetic column set at 925/850/700/500/300 hPa before the
+    transcription was removed, and agreed to 0.000e+00 over 2,500
+    compared points at every level.
+
+    The shape contract stays here because it is this module's contract,
+    not the core's, and because a mismatched pair must be refused with
+    the message the cases already expect.
+    """
+
     if field.shape != pressure_hpa.shape or field.ndim != 3:
         raise ValueError("field and pressure must share a 3-D WRF mass grid")
-    valid_column = (np.isfinite(field).all(axis=0)
-                    & np.isfinite(pressure_hpa).all(axis=0)
-                    & (target_hpa <= pressure_hpa[0])
-                    & (target_hpa >= pressure_hpa[-1]))
-    upper = np.sum(pressure_hpa >= target_hpa, axis=0)
-    upper = np.clip(upper, 1, pressure_hpa.shape[0] - 1)
-    lower = upper - 1
-    lo = np.take_along_axis(field, lower[None], axis=0)[0]
-    hi = np.take_along_axis(field, upper[None], axis=0)[0]
-    plo = np.take_along_axis(pressure_hpa, lower[None], axis=0)[0]
-    phi = np.take_along_axis(pressure_hpa, upper[None], axis=0)[0]
-    weight = ((np.log(target_hpa) - np.log(plo))
-              / (np.log(phi) - np.log(plo)))
-    out = lo + weight * (hi - lo)
-    return np.where(valid_column, out, np.nan)
+    return np.asarray(
+        _science_core().interplevel(field, pressure_hpa, float(target_hpa)),
+        dtype=np.float64)
 
 
 def _dcomputeseaprs(pressure_pa, temperature, qv, height_msl) -> np.ndarray:
@@ -161,9 +202,12 @@ def terrain_smoothed_mslp(mslp_hpa: np.ndarray,
     scribbles multi-hPa noise across high terrain -- the published
     failure mode of station-style reductions (Benjamin & Miller 1990,
     Mon. Wea. Rev. 118, 2099-2116, who replace or smooth the
-    below-ground extrapolation for exactly this reason).  wrf-rust
-    0.2.35 exposes only the raw reduction (``slp``), so the standard
-    display treatment is applied here, from the published algorithm:
+    below-ground extrapolation for exactly this reason).  Across the
+    whole certified window wrf-rust exposes only the raw reduction --
+    re-MEASURED on 0.2.38, whose ``list_variables()`` carries exactly one
+    sea-level entry, ``slp`` "Sea-level pressure", and no smoothed or
+    display variant -- so the standard display treatment is applied here,
+    from the published algorithm:
 
     1. ``r`` is smoothed with the standard nine-point smoother
        (:data:`MSLP_SMOOTH_PASSES` passes, Shuman 1957 family -- the
@@ -206,9 +250,9 @@ def terrain_smoothed_mslp(mslp_hpa: np.ndarray,
 
 def _wrf_diagnostics(path: Path) -> dict[str, object]:
     """Read comparison and map fields without a wrf-python dependency."""
-    import netCDF4
+    from gpuwm import netcdf_bridge
 
-    with netCDF4.Dataset(path) as ds:
+    with netcdf_bridge.open_dataset(path) as ds:
         pressure_pa = (_read_wrf_field(ds, "P")
                        + _read_wrf_field(ds, "PB"))
         pressure = pressure_pa / 100.0
@@ -308,131 +352,139 @@ def score_pair(model: np.ndarray, source: np.ndarray, *,
             _pattern_correlation(model[region], source[region]))
 
 
+#: Panel size for every verification map, in pixels.  The renderer's
+#: own default aspect, matching ``gpuwm render``'s ``--size``, so a
+#: verification panel and a product panel of the same field are the same
+#: picture at the same scale.
+SYNOPTIC_MAP_SIZE = (1200, 900)
+
+
 @dataclass(frozen=True)
 class SynopticMapSpec:
-    """Case-owned labels and filenames for the three synoptic maps."""
+    """Case-owned product policy for a case's synoptic panels.
 
-    mslp_t2_filename: str
-    mslp_t2_title: str
-    height_wind_filename: str
-    height_wind_title: str
-    precip_filename: str
-    precip_title: str
+    ``products`` are slugs in ``rw_wrfbatch``'s OWN catalog, and that is
+    the whole spec.  It used to carry a filename and a title per figure,
+    because this module drew the figures; under the render law (CLAUDE.md,
+    Drew 2026-08-06) it does not, and titles, palettes, projections and
+    filenames all belong to the renderer that the campaign product sheets
+    were proven pixel-identical against.  What stays case-owned is WHICH
+    charts a case wants.
+    """
+
+    products: tuple[str, ...]
+    #: Provenance label stamped on every panel.  ``None`` takes
+    #: ``gpuwm.render.default_source_label()`` -- the brand plus the
+    #: version that is EXECUTING -- which is what the render door uses.
+    source_label: str | None = None
+
+
+def _renderer_series(paths, output_dir, products, source_label,
+                     *, frames=None) -> tuple[Path, ...]:
+    """Draw ``products`` for a wrfout series with the production renderer.
+
+    ONE store over the whole series, because the verification set is
+    windowed: ``qpf_6h`` is F012 minus F006 and there is no way to
+    difference two frames that never met.  Everything else -- the
+    contract handshake, the provenance gate, the
+    ``<out>/<domain>/<product>/<valid-day>/`` layout -- is the render
+    door's, reached through :mod:`gpuwm.render`, so a verification panel
+    cannot come from an engine the render door would refuse.
+    """
+
+    from gpuwm import render
+
+    written, failures, skipped = render.render_series_rust(
+        [Path(item) for item in paths], products=",".join(products),
+        timeidx=frames, outdir=Path(output_dir), size=SYNOPTIC_MAP_SIZE,
+        source_label=source_label)
+    for failure in failures:
+        print(f"verify: render FAILED: {failure}", file=sys.stderr)
+    for slug, reason in skipped:
+        print(f"verify: no {slug} panel: {reason}", file=sys.stderr)
+    return tuple(written)
 
 
 def make_synoptic_maps(final_path, accumulation_start_path, output_dir,
                        spec: SynopticMapSpec) -> tuple[Path, ...]:
-    """Write MSLP/T2, 500-hPa height/wind, and precipitation maps."""
-    import matplotlib
-    matplotlib.use("Agg", force=True)
-    import matplotlib.pyplot as plt
+    """The case's synoptic panels, drawn by ``rw_wrfbatch``, or ``()``.
+
+    Both frames go into one store: the accumulation start supplies the
+    window the 6 h QPF panel is differenced against, and the final frame
+    supplies everything else.
+
+    With no usable renderer this door emits NO weather-field imagery and
+    says so, at the point the imagery would have appeared.  That is the
+    lawful degradation for a verification run (the product of ``gpuwm
+    verify`` is its metrics and gates; the panels are evidence), and it
+    replaces the defect the 2026-08-18 hidden-scope audit filed as F6:
+    four of the exact product classes the render law names -- MSLP, 2 m
+    temperature, 500 hPa height with a wind quiver, 6 h accumulated
+    precipitation -- drawn with ``matplotlib.pcolormesh``/``contour``/
+    ``quiver`` on the BARE DEFAULT of the door, with no renderer probe
+    and no announcement anywhere in ``gpuwm/verify/``.  Omitting
+    ``--outdir`` did not skip them; it sent them to a temporary
+    directory, so there was no way to run the case without the unlawful
+    drawing happening.
+    """
+
+    from gpuwm import render
 
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    final = _wrf_diagnostics(Path(final_path))
-    accumulation_start = _wrf_diagnostics(Path(accumulation_start_path))
-    lon, lat = final["lon"], final["lat"]
-    paths = []
-
-    path = output_dir / spec.mslp_t2_filename
-    fig, ax = plt.subplots(figsize=(11, 7), constrained_layout=True)
-    shading = ax.pcolormesh(lon, lat, final["t2"] - 273.15,
-                            shading="auto", cmap="coolwarm")
-    # Contour the display twin: the raw reduction scribbles grid-scale
-    # noise over high terrain (see terrain_smoothed_mslp); over low
-    # terrain the two fields are identical by construction.
-    contours = ax.contour(lon, lat, final["mslp_display"], colors="black",
-                          linewidths=0.8)
-    ax.clabel(contours, inline=True, fontsize=7, fmt="%.0f")
-    fig.colorbar(shading, ax=ax, label="2 m temperature (degC)")
-    ax.set(title=spec.mslp_t2_title,
-           xlabel="Longitude", ylabel="Latitude")
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    paths.append(path)
-
-    level = final["levels"][500]
-    path = output_dir / spec.height_wind_filename
-    fig, ax = plt.subplots(figsize=(11, 7), constrained_layout=True)
-    contours = ax.contour(lon, lat, level["height"], colors="black",
-                          linewidths=0.9)
-    ax.clabel(contours, inline=True, fontsize=7, fmt="%.0f")
-    stride = max(min(lon.shape) // 18, 1)
-    ax.quiver(lon[::stride, ::stride], lat[::stride, ::stride],
-              level["u"][::stride, ::stride],
-              level["v"][::stride, ::stride], scale=500.0)
-    ax.set(title=spec.height_wind_title,
-           xlabel="Longitude", ylabel="Latitude")
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    paths.append(path)
-
-    precip = np.maximum((final["rainnc"] + final["rainc"])
-                        - (accumulation_start["rainnc"]
-                           + accumulation_start["rainc"]), 0.0)
-    path = output_dir / spec.precip_filename
-    fig, ax = plt.subplots(figsize=(11, 7), constrained_layout=True)
-    shading = ax.pcolormesh(lon, lat, precip, shading="auto", cmap="Blues")
-    fig.colorbar(shading, ax=ax,
-                 label="6 h accumulated total precipitation (mm)")
-    ax.set(title=spec.precip_title,
-           xlabel="Longitude", ylabel="Latitude")
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    paths.append(path)
-    return tuple(paths)
+    try:
+        render.require_renderer()
+    except RuntimeError as refusal:
+        print("verify: no weather-field imagery for this run -- "
+              + str(refusal).split("[[explain]]")[0].strip()
+              + "\n  The verification metrics and gates below are "
+                "unaffected; only the panels are missing.",
+              file=sys.stderr)
+        return ()
+    return _renderer_series(
+        (accumulation_start_path, final_path), output_dir, spec.products,
+        spec.source_label)
 
 
 @dataclass(frozen=True)
 class ReflectivityMapSpec:
-    """Case-owned output policy for a composite-reflectivity map."""
+    """Case-owned product policy for a composite-reflectivity panel.
 
-    filename: str
-    title: str
-    bounds: tuple[float, ...]
-    colors: tuple[str, ...]
+    The palette and the title were this module's until the render law
+    took them back: ``composite_reflectivity`` is a catalog product with
+    its own operational dBZ ramp, and a second ramp declared here is the
+    duplicate-of-a-shipped-product this project keeps paying for.
+    """
+
+    product: str = "composite_reflectivity"
+    source_label: str | None = None
 
 
 def make_composite_reflectivity_map(
         wrfout_path, output_dir, spec: ReflectivityMapSpec, *, time_index=0
         ) -> Path:
-    """Write a column-maximum simulated-reflectivity PNG."""
-    import matplotlib
-    matplotlib.use("Agg", force=True)
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import BoundaryNorm, ListedColormap
-    import netCDF4
+    """One column-maximum simulated-reflectivity panel, from the renderer.
 
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with netCDF4.Dataset(wrfout_path) as ds:
-        if "REFL_10CM" not in ds.variables:
-            raise ValueError(f"{wrfout_path} carries no REFL_10CM variable; "
-                             "write frames with the reflectivity opt-in "
-                             "before mapping it")
-        refl = np.asarray(np.ma.filled(
-            ds.variables["REFL_10CM"][time_index], np.nan), dtype=np.float64)
-        lat = np.asarray(ds.variables["XLAT"][time_index], dtype=np.float64)
-        lon = np.asarray(ds.variables["XLONG"][time_index], dtype=np.float64)
-    if not np.isfinite(refl).all():
-        raise ValueError("REFL_10CM map input is non-finite")
-    composite = np.max(refl, axis=0)
+    A REFUSAL rather than a degradation when the renderer is not usable,
+    and the asymmetry with :func:`make_synoptic_maps` is deliberate: this
+    is called by someone who asked for exactly one picture, so returning
+    nothing would answer a direct request with silence.  The synoptic set
+    is evidence attached to a gate run that still has its metrics.
+    """
 
-    path = output_dir / spec.filename
-    cmap = ListedColormap(spec.colors)
-    norm = BoundaryNorm(spec.bounds, cmap.N)
-    fig, ax = plt.subplots(figsize=(11, 7), constrained_layout=True)
-    ax.set_facecolor("0.92")
-    shading = ax.pcolormesh(
-        lon, lat, np.ma.masked_less(composite, spec.bounds[0]),
-        cmap=cmap, norm=norm, shading="auto")
-    fig.colorbar(shading, ax=ax, ticks=spec.bounds,
-                 label="composite reflectivity (dBZ)")
-    ax.set(title=spec.title,
-           xlabel="Longitude", ylabel="Latitude")
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    return path
+    written = _renderer_series(
+        (wrfout_path,), output_dir, (spec.product,), spec.source_label,
+        frames=int(time_index))
+    if not written:
+        raise RuntimeError(
+            f"{Path(wrfout_path)}: the renderer drew no "
+            f"{spec.product} panel -- most often the frame carries no "
+            "REFL_10CM (write frames with the reflectivity opt-in), and "
+            "the SKIPPED reason above names the field it wanted")
+    if len(written) != 1:
+        raise RuntimeError(
+            f"expected one {spec.product} panel, got {len(written)}: "
+            f"{[path.name for path in written]}")
+    return written[0]
 
 
 # Public spellings for new profiles; underscored aliases remain the exact
@@ -446,7 +498,8 @@ wrf_diagnostics = _wrf_diagnostics
 __all__ = [
     "MSLP_SMOOTH_PASSES", "MSLP_SMOOTH_TERRAIN_CEILING_M",
     "MSLP_SMOOTH_TERRAIN_FLOOR_M", "ReflectivityMapSpec",
-    "SynopticMapSpec", "boundary_zone_blowup", "interior_region",
+    "SYNOPTIC_MAP_SIZE", "SynopticMapSpec", "boundary_zone_blowup",
+    "interior_region",
     "interpolate_to_pressure", "make_composite_reflectivity_map",
     "make_synoptic_maps", "pattern_correlation", "rmse", "score_pair",
     "terrain_smoothed_mslp", "wrf_diagnostics",

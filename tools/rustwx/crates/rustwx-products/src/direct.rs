@@ -80,6 +80,7 @@ pub use projection::{
     build_natural_projected_map_with_projection_and_basemap_padding, build_projected_map,
     build_projected_map_with_projection, build_requested_projected_map_with_projection,
     direct_map_frame_aspect_ratio, model_data_domain_frame_for_projection,
+    project_points_with_projection,
 };
 pub(crate) use query::{load_direct_sampled_fields_from_latest, required_direct_fetch_products};
 #[cfg(test)]
@@ -155,6 +156,8 @@ impl DirectBatchRequest {
             subtitle_left_override: None,
             subtitle_right_override: None,
             title_provenance: TitleProvenance::default(),
+            geographic_overlays: None,
+            panel_annotations: None,
         }
     }
 
@@ -204,6 +207,8 @@ fn sampling_direct_request(
         subtitle_left_override: None,
         subtitle_right_override: None,
         title_provenance: TitleProvenance::default(),
+        geographic_overlays: None,
+        panel_annotations: None,
     }
 }
 
@@ -943,6 +948,25 @@ fn render_direct_recipe(
                 &filled.grid.lon_deg,
                 filled.projection.as_ref(),
             )?;
+        }
+        // gpuwm addition (VENDOR.md): caller-supplied geographic overlays
+        // and panel annotations, projected into the SAME frame the fill
+        // was projected into (`request.domain.bounds` + `target_ratio`,
+        // the two arguments the `build_projected_map_with_projection`
+        // above took).  Both are `None` for every caller that does not
+        // pass them, so the default path is byte-unchanged.
+        if let Some(overlays) = request.geographic_overlays.as_ref() {
+            overlays.apply(
+                &mut render_request,
+                &filled.grid.lat_deg,
+                &filled.grid.lon_deg,
+                filled.projection.as_ref(),
+                request.domain.bounds,
+                target_ratio,
+            )?;
+        }
+        if let Some(annotations) = request.panel_annotations.as_ref() {
+            annotations.apply(&mut render_request);
         }
         let save_timing = save_png_profile_with_options(
             &render_request,

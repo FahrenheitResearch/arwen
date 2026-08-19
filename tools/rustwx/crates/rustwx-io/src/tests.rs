@@ -339,6 +339,9 @@ fn ieee_f32_message(
         .collect::<Vec<_>>();
     Grib2Message {
         discipline: parameter.discipline,
+        // The converged decoder carries Section 1 as a value object; a
+        // synthetic message has no originating centre to name.
+        identification: grib_core::grib2::Identification::default(),
         reference_time: chrono::NaiveDate::from_ymd_opt(2026, 4, 14)
             .unwrap()
             .and_hms_opt(0, 0, 0)

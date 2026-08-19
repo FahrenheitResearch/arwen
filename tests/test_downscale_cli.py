@@ -387,3 +387,117 @@ def test_child_boundary_clock_reproduces_wrf_dtbc_recurrence():
     with pytest.raises(OfflineChildContractError, match="whole"):
         _child_boundary_clock(
             cfg, lbc_interval_seconds=31.0, steps=24, output_steps=12)
+
+
+#: The reference-shaped surface selection every real parent carries
+#: (Noah + MM5 surface layer + YSU), purely as data: a child inheriting
+#: it needs a child-grid surface source before anything runs.
+_SURFACE_PARENT_CONFIG = dict(
+    _PARENT_CONFIG, sf_surface_physics=2, sf_sfclay_physics=91,
+    bl_pbl_physics=1, num_soil_layers=4)
+
+
+def _surface_child_args(tmp_path):
+    """One valid --child-config invocation whose child needs a surface."""
+    start = datetime(1974, 4, 3, 12)
+    for index in range(3):
+        path = tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00"
+        _history(path, start + timedelta(hours=index), ny=18, nx=20)
+    namelist = tmp_path / "namelist.input"
+    namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
+    child_toml = tmp_path / "child.toml"
+    parent = {"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0}
+    merged = _derive_child_run_config(
+        _SURFACE_PARENT_CONFIG, parent=parent, ratio=1, child_nx=12,
+        child_ny=10, run_seconds=600.0, output_interval_s=300.0)
+    child_toml.write_text(_render_child_toml(merged), encoding="utf-8")
+    return [
+        "downscale", str(tmp_path), "--parent-domain", "3",
+        "--parent-namelist", str(namelist),
+        "--child-config", str(child_toml), "--ratio", "1",
+        "--i-parent-start", "4", "--j-parent-start", "4",
+        "--out", str(tmp_path / "child-run")]
+
+
+def test_fit_refusal_names_the_real_error_not_the_budget():
+    """A config-invalid derivation must not read as a VRAM verdict.
+
+    ``_fit_child_size`` probed sizes, caught every ValueError, and
+    reported "no child fits the N GiB budget inside this parent" -- so a
+    size-INDEPENDENT config invalidity (walked live: a restart-evidence
+    key the tip refused) was blamed on the card.  The refusal must carry
+    the validation error's own sentence.
+    """
+    parent = {"nx": 501, "ny": 501, "dx": 1000.0, "dy": 1000.0}
+    config = dict(_PARENT_CONFIG, nx=501, ny=501, nz=49,
+                  sase_moist_n2=False, bl_pbl_physics=1)
+    with pytest.raises(OfflineChildContractError) as caught:
+        _fit_child_size(
+            parent, config, j0=250, i0=250, ratio=2, run_seconds=3600.0,
+            output_interval_s=3600.0, vram_gib=24.0)
+    assert "sase_moist_n2" in str(caught.value)
+    assert "budget" not in str(caught.value)
+
+
+def test_dry_run_names_the_missing_surface_source(tmp_path, capsys):
+    """--dry-run stays runnable and says the run itself will not be.
+
+    The walked defect (2026-08-17, 2.4.1 wheel): a --point derivation's
+    dry run printed a green plan with ``"child_surface_from": null`` and
+    zero mention that the run would refuse for exactly that null -- the
+    plan said GO, the run said no.  The dry run must keep printing the
+    plan (deriving the geometry is HOW a user learns which child grid to
+    build a surface file for), warn with the remedy, and record the
+    requirement in the plan document.
+    """
+    import json as json_module
+
+    assert cli_main(_surface_child_args(tmp_path) + ["--dry-run"]) == 0
+    captured = capsys.readouterr()
+    plan = json_module.loads(
+        captured.out[captured.out.index("{"):])
+    assert plan["child_surface_required"] is True
+    assert plan["child_surface_from"] is None
+    assert "child-grid surface source" in captured.err
+    assert "wrf-native-input/wrfinput_d0N" in captured.err
+
+
+def test_run_refuses_missing_surface_source_before_any_work(
+        tmp_path, capsys):
+    """The real run refuses at the front door, naming the in-product remedy.
+
+    Walked on the 2.4.1 wheel: the refusal named the flag and the
+    contract but no way to SATISFY them, while the user's own
+    preparation already held a valid child-grid ``wrfinput_d0N`` under
+    ``wrf-native-input/`` -- rw-wps writes one per nest.  The refusal
+    must name that recipe, and it must fire before preprocessing or the
+    output directory exist.
+    """
+    rc = cli_main(_surface_child_args(tmp_path))
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "child-grid surface source" in captured.err
+    assert "--child-surface-from" in captured.err
+    assert "wrf-native-input/wrfinput_d0N" in captured.err
+    assert "rw-wps" in captured.err
+    assert not (tmp_path / "child-run").exists()
+
+
+def test_surface_satisfied_plan_records_no_requirement(tmp_path, capsys):
+    """A surface-free (microphysics-only) child plans as before."""
+    import json as json_module
+
+    args = _surface_child_args(tmp_path)
+    # Overwrite the child with _PARENT_CONFIG's surface-free selection:
+    # the requirement must read False and nothing may warn.
+    child_toml = tmp_path / "child.toml"
+    parent = {"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0}
+    merged = _derive_child_run_config(
+        _PARENT_CONFIG, parent=parent, ratio=1, child_nx=12,
+        child_ny=10, run_seconds=600.0, output_interval_s=300.0)
+    child_toml.write_text(_render_child_toml(merged), encoding="utf-8")
+    assert cli_main(args + ["--dry-run"]) == 0
+    captured = capsys.readouterr()
+    plan = json_module.loads(captured.out[captured.out.index("{"):])
+    assert plan["child_surface_required"] is False
+    assert "child-grid surface source" not in captured.err

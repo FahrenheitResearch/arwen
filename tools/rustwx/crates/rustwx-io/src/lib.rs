@@ -2880,7 +2880,11 @@ fn build_grid_memo_entry(
 ) -> Result<GridMemoEntry, IoError> {
     let nx = shape.nx;
     let ny = shape.ny;
-    let (mut lat, mut lon) = grid_latlon(grid_def);
+    // grid_latlon fails closed on a grid template it cannot place; the
+    // empty-vector guard below it is retained for the degenerate 0-point
+    // case a refusing decoder can still Ok into existence (nx or ny 0).
+    let (mut lat, mut lon) =
+        grid_latlon(grid_def).map_err(|err| IoError::Grib(err.to_string()))?;
     if lat.is_empty() || lon.is_empty() {
         return Err(IoError::MissingGridCoordinates { selector });
     }

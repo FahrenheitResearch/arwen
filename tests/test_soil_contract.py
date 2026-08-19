@@ -420,3 +420,61 @@ def test_generic_mapped_soil_arrays_cannot_run_without_their_contract():
     fields[MAPPED_SOIL_MOISTURE] = np.full((4, 2, 2), 0.2)
     with pytest.raises(ValueError, match="explicit soil_layer_contract"):
         preprocess_noah_soil(fields, soil_type=np.full((2, 2), 6))
+
+
+AIFS_MAPPING = ROOT / "gpuwm" / "authorities" / \
+    "rw-wps-aifs-single-grib2.mapping.json"
+AIFS_COMPOSITION = ROOT / "gpuwm" / "authorities" / \
+    "rw-wps-aifs-single-grib2.composition.json"
+
+
+def test_grib2_ordinal_soil_level_encoding_binds_index_to_declared_depth():
+    """WMO type 151 counts soil layers ordinally; index i pairs bounds i,i+1.
+
+    ECMWF's newer products encode soil layers as soil-level indices
+    (type 151, first/second surface i and i+1) rather than the
+    metre-bounded type-106 layers NOAA products carry.  The composition
+    DECLARES that addressing through ``selector_depth_binding``
+    (indexed_fixed_surfaces on the producer-owned type): 106 binds by
+    metre depth equality by default, and under the declaration the
+    selector at declared layer i must carry exactly the index pair
+    (i, i+1).
+    """
+
+    contract = load_composition(AIFS_COMPOSITION, AIFS_MAPPING)
+    layers = contract["soil_layers"]["source_layers"]
+    assert [(layer["top"], layer["bottom"]) for layer in layers] == [
+        (0.0, 0.07), (0.07, 0.28),
+    ]
+
+
+def test_grib2_ordinal_soil_level_encoding_refuses_index_drift(tmp_path):
+    composition = json.loads(AIFS_COMPOSITION.read_text(encoding="utf-8"))
+    mapping = json.loads(AIFS_MAPPING.read_text(encoding="utf-8"))
+    for payload in (mapping["fields"]["soil_temperature"]["selectors"][1],
+                    composition["soil_layers"]["source_layers"][1][
+                        "selectors"]["soil_temperature"]):
+        payload["level_value"] = 2
+        payload["second_level_value"] = 3
+    composition_path, mapping_path = _write_contract_case(
+        tmp_path, composition, mapping,
+    )
+    with pytest.raises(ValueError, match="declared ordinal layer"):
+        load_composition(composition_path, mapping_path)
+
+
+def test_grib2_soil_selectors_must_not_mix_layer_encodings(tmp_path):
+    composition = json.loads(AIFS_COMPOSITION.read_text(encoding="utf-8"))
+    mapping = json.loads(AIFS_MAPPING.read_text(encoding="utf-8"))
+    for payload in (mapping["fields"]["soil_temperature"]["selectors"][1],
+                    composition["soil_layers"]["source_layers"][1][
+                        "selectors"]["soil_temperature"]):
+        payload["level_type"] = 106
+        payload["second_level_type"] = 106
+        payload["level_value"] = 0.07
+        payload["second_level_value"] = 0.28
+    composition_path, mapping_path = _write_contract_case(
+        tmp_path, composition, mapping,
+    )
+    with pytest.raises(ValueError, match="index-addressed GRIB2 layer"):
+        load_composition(composition_path, mapping_path)

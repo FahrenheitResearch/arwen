@@ -1,0 +1,31 @@
+[package]
+name = "rw-wps"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Rusty Weather Preprocessing Suite frontend for native WRF initialization"
+
+[dependencies]
+clap.workspace = true
+# Lane 2 note: pointed at gpuwm's grib-core (the declared BASE of lane 1's
+# superset) rather than the donor snapshot under ../../vendor/grib-core.
+# Cargo refuses two different packages named grib-core v0.1.0 in one
+# lockfile, and the mapped engine must decode through the SAME crate the
+# shipped grib2_dump uses, or a crate difference lands inside the parity
+# verdict that is supposed to read engine differences.  This is the
+# integration path-flip of design doc §5, done early and proven by
+# `cargo test -p rw-wps` on this tip; deleting the donor snapshot stays
+# lane 1 / coordinator work.
+grib-core = { path = "../../../grib1_bridge/vendor/grib-core", default-features = false, features = ["jpeg2000"] }
+hdf5-reader = { path = "../../vendor/netcrust/vendor/hdf5-reader" }
+netcrust = { path = "../../vendor/netcrust" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[[bin]]
+name = "rw-wps"
+path = "src/main.rs"

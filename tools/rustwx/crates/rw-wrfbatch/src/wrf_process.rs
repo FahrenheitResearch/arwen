@@ -236,6 +236,15 @@ const RAW_EXTRA_CATALOG: &[&str] = &[
     "GRAUPELNC",
     "WSPD10MAX",
     "UP_HELI_MAX",
+    // Column extremes of vertical velocity. The same family as the two
+    // above -- WRF Registry column/period maxima carried verbatim -- and
+    // the only way a SURFACE snapshot's updraft reaches a panel at all,
+    // since such a file has no profile to take a maximum over. gpuwm's
+    // tile-streamed lane publishes its own instantaneous column extremes
+    // under these names and states the window divergence in a global
+    // attribute of its own.
+    "W_UP_MAX",
+    "W_DN_MAX",
 ];
 
 const PROFILE_FNV64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;

@@ -41,6 +41,7 @@ import re
 import sys
 from dataclasses import dataclass
 
+from gpuwm import data_assets
 from gpuwm.explain import layered
 
 
@@ -182,6 +183,49 @@ PILLOW = Requirement(
             "  # lacks it is an incomplete install rather than a missing\n"
             "  # feature."))
 
+def _companion_remedy() -> str:
+    """The companion's remedy, from the module that owns it.
+
+    NOT a second copy: :func:`gpuwm.data_assets.companion_install_command`
+    is the single spelling, because the pip line carries the version
+    ``gpuwm`` was built against and a restatement here would be a literal
+    that goes stale at the next cut.
+
+    One line and nothing after it, deliberately.  This is the remedy a
+    reader meets at the END of the refusal, and a trailing ``#`` note
+    would put commentary between them and the command.
+    """
+
+    return f"  remedy: {data_assets.companion_install_command()}"
+
+
+#: The packaged reference tables, which live in their own distribution
+#: since 2.5.0 -- the ``gpuwm`` wheel had reached 103.62 MiB against
+#: PyPI's 100 MiB per-file cap and these two directories were 64.21 MiB
+#: of it (see :mod:`gpuwm.data_assets`).
+#:
+#: It is registered here for one reason: ``gpuwm.core.rrtmgp`` resolves
+#: its data directory at MODULE level, so on an install whose companion
+#: was uninstalled the refusal surfaces during an import, deep inside
+#: the preflight, and reaches :func:`gpuwm.cli.main`'s
+#: ``ModuleNotFoundError`` branch.  That branch derives its remedy from
+#: the missing MODULE, and a module this table does not know gets no
+#: remedy and is re-raised as a stack -- measured at 15 frames from
+#: `gpuwm check` and 17 from `gpuwm domain`.
+#:
+#: No extra, and the remedy says why rather than offering one: the
+#: companion is a HARD ``==`` dependency, so a plain `pip install gpuwm`
+#: brings it and this state means the install was edited afterwards.
+COMPANION_DATA = Requirement(
+    module=data_assets.COMPANION_PACKAGE,
+    distribution=data_assets.COMPANION_DISTRIBUTION,
+    extras=(),
+    unlocks=("every radiation scheme and every mp_physics=8/28 run -- it "
+             "carries the RRTMGP k-distribution and cloud-optics tables "
+             "and the Thompson microphysics lookup tables"),
+    remedy=_companion_remedy())
+
+
 def _geog_remedy() -> str:
     """The geography stack's remedy, from the module that owns it.
 
@@ -192,10 +236,16 @@ def _geog_remedy() -> str:
     commands for the same missing library."  This registry consumes it
     rather than restating it.
 
-    It matters here specifically: from 2.3.3 ``rasterio`` and ``pyproj``
-    are ordinary runtime dependencies and the ``geog`` extra is EMPTY,
-    so a remedy of ``pip install 'gpuwm[geog]'`` would resolve, succeed,
-    and install nothing at all.
+    It matters here specifically, and the reason has now inverted twice.
+    From 2.3.3 ``rasterio`` and ``pyproj`` were ordinary runtime
+    dependencies and the ``geog`` extra was EMPTY, so a remedy of ``pip
+    install 'gpuwm[geog]'`` would resolve, succeed and install nothing.
+    Since the warp substrate flipped onto the Rust static-fields library
+    the extra carries them again -- and a remedy of ``pip install
+    --upgrade gpuwm`` would now be the empty one, because the default
+    high-resolution path does not read either library.  Consuming the
+    owning module's string is what keeps this correct without anybody
+    remembering which way round it currently is.
     """
 
     from gpuwm.static.geog_stack import geog_unavailable_detail
@@ -207,15 +257,19 @@ def _geog_remedy() -> str:
 RASTERIO = Requirement(
     module="rasterio",
     distribution="rasterio",
-    extras=(),
-    unlocks="the mosaic step of the high-resolution terrain path",
+    extras=("geog",),
+    unlocks=("the mosaic step of the PURE-PYTHON high-resolution "
+             "fallback (GPUWM_STATIC_PYTHON=1); the default engine is "
+             "the Rust static-fields library, which needs neither"),
     remedy=_geog_remedy())
 
 PYPROJ = Requirement(
     module="pyproj",
     distribution="pyproj",
-    extras=(),
-    unlocks="the reprojection step of the high-resolution terrain path",
+    extras=("geog",),
+    unlocks=("the reprojection step of the PURE-PYTHON high-resolution "
+             "fallback (GPUWM_STATIC_PYTHON=1); the default engine is "
+             "the Rust static-fields library, which needs neither"),
     remedy=_geog_remedy())
 
 
@@ -248,6 +302,7 @@ REQUIREMENTS: tuple[Requirement, ...] = (
     PILLOW,
     RASTERIO,
     PYPROJ,
+    COMPANION_DATA,
     _base_dependency("numpy", "numpy", "every array in the product"),
     _base_dependency("netCDF4", "netCDF4", "reading and writing wrfout files"),
     _base_dependency("matplotlib", "matplotlib",
@@ -468,6 +523,12 @@ COMMAND_REQUIREMENTS: dict[str, tuple[Requirement, ...]] = {
     "go": (GPU_RUNTIME,),
     "run": (GPU_RUNTIME,),
     "resume": (GPU_RUNTIME,),
+    # The unbundled forecast stage integrates the same model `go`'s
+    # fifth stage does, so it owes the same preflight.  Without the row
+    # here, `gpuwm sim` on an install with no CuPy would have refused
+    # deep inside the runner instead of at the front door -- the exact
+    # failure this table was added to close, re-opened by a new door.
+    "sim": (GPU_RUNTIME,),
     "verify": (GPU_RUNTIME,),
 }
 
@@ -481,6 +542,8 @@ _BEFORE = {
             "and the case prepared."),
     "resume": ("Refusing here, before a GPU is selected and a worker "
                "spawned."),
+    "sim": ("Refusing here, before the prepared tree is opened and its "
+            "identity recomputed."),
     "verify": "Refusing here, before the case allocates anything.",
 }
 
@@ -510,7 +573,8 @@ def unmet_run_requirements() -> tuple[Requirement, ...]:
     return missing((GPU_RUNTIME,))
 
 
-__all__ = ["CapabilityMissing", "COMMAND_REQUIREMENTS", "GPU_RUNTIME",
+__all__ = ["CapabilityMissing", "COMMAND_REQUIREMENTS", "COMPANION_DATA",
+           "GPU_RUNTIME",
            "GPU_RUNTIME_REMEDY", "PILLOW", "PYPROJ", "RASTERIO",
            "REQUIREMENTS", "Requirement", "SCIENCE_CORE", "SCIPY",
            "SHAPEFILE_READER", "is_installed", "missing",

@@ -200,42 +200,31 @@ before validation. The store path is collision/isolation checked and its SHA
 entries are listed in the summary. Ordinary single `gpuwm run` invocations
 keep their historical direct-input behavior and do not create this store.
 
-### 12 GiB on Windows is an EXPERIMENTAL tier
+### Small Windows cards are MEASURED now (2026-08-19, RTX 3080 10 GiB)
 
-The 12 GiB tier is fully measured on Linux. On Windows it is a pioneer
-tier, and the wizard says so on every sizing it prints.
+Windows/WDDM accounting used to come from exactly ONE machine -- a
+32 GiB RTX 5090 running campaign-scale multi-domain forecasts -- whose
+two fixed pool constants (4.12 GiB) plus a 1.75x envelope refused every
+ladder on a small card for accounting measured somewhere else. An
+EXPERIMENTAL "small-card tier" papered over that with a guessed
+1.5 GiB reserve, and its advisory asked pioneers to send back one
+measured peak.
 
-Windows/WDDM accounting in gpuwm comes from exactly ONE machine: a
-32 GiB RTX 5090 running campaign-scale multi-domain forecasts. Applied
-literally, its two fixed pool constants are 4.12 GiB -- a third of a
-12 GiB card before a single grid cell exists -- and the 1.75 envelope
-on top of them exceeded a 9 GiB budget at the *smallest layout the
-wizard can build*. Every ladder was refused, for an accounting term
-measured somewhere else.
+That measurement exists now: six whole bare-default `gpuwm go`
+forecasts on an RTX 3080 10 GiB Windows 11 desktop (WDDM, desktop
+resident on the same card), 60x48 through 240x192 at 12 km, rte-rrtmgp
+and legacy-RRTMG suites, machine-wide `nvidia-smi` at 0.25 s beside
+the runtime's own peak-watcher receipts. The measured peaks track
+`itemized estimate + itemized non-pool residency` within
+-0.20..+0.95 GiB, so every Windows card now takes ONE measured model
+(the affine form below plus a WDDM pool-slack term), the experimental
+tier is retired, and the 1.75 multiplier is gone from every gate.
 
-Windows cards at or below 12 GiB are therefore sized like Linux -- the
-itemized alloc estimate under the 1.45 envelope -- plus a single
-reduced 1.5 GiB fixed reserve standing in for the WDDM residency the
-CuPy pool never sees. Windows cards of 16 GiB and up are unchanged.
-
-What that risks, plainly: the layout may be optimistic. The worst case
-is paging (slow) or a clean out-of-memory failure before or during the
-run. **Neither corrupts a forecast and neither damages anything** --
-which is why sizing optimistically is the better failure here than
-refusing a card gpuwm can probably run. `gpuwm check` does not stop a
-later `gpuwm run` -- nothing prevents you from starting a forecast it
-warned about -- but since v1.1.0 an observed peak above the WDDM budget
-is an exit code 4, not a green exit with a warning in it. A script that
-reads the exit status is blocked; a person reading the output is
-advised. (Reserves moved to a flat 4 GiB through 24 GiB in v1.1.0; the
-12/16 GiB rows above were 3 GiB in v1.0.1.)
-
-**Please send the calibration back.** One measured peak from a real
-Windows small-card run is worth more than every estimate on this page.
-Run the forecast, then report the peak line from
-`gpuwm check <config>` together with the config file and your card
-model -- that is the measurement that turns 1.5 GiB from a guess into
-a number.
+`gpuwm check` does not stop a later `gpuwm run` -- nothing prevents
+you from starting a forecast it warned about -- but since v1.1.0 an
+observed peak above the WDDM budget is an exit code 4, not a green
+exit with a warning in it. A script that reads the exit status is
+blocked; a person reading the output is advised.
 
 A first single-domain forecast is far below any of these: the
 acceptance run (250x200x49 at 12 km, full physics) used ~6.3 GiB of
@@ -254,13 +243,14 @@ in-process) prices a run in three layers:
 2. **Footprint projection** -- the alloc estimate plus transient
    call-peak envelopes (radiation chunk workspaces are the largest).
 3. **Projected machine peak = the alloc estimate PLUS the non-pool
-   residency PLUS a measured constant.** It is a sum, not a multiple:
+   residency PLUS measured terms.** It is a sum, not a multiple:
 
    ```
    peak envelope = alloc estimate
                  + CUDA context + local-memory backing store
                  + 0.50 GiB unmodelled
                  + 5% of the estimate per nest beyond the root
+                 + 20% of the estimate WDDM pool slack (Windows only)
    ```
 
    The middle term scales with the DEVICE (its SM count) and the kernel
@@ -272,20 +262,20 @@ in-process) prices a run in three layers:
    headroom to spare; a wizard-emitted config passes `gpuwm check` on a
    real card of the tier it was sized for.
 
-Example (24 GiB tier, printed by the wizard on Windows, where the retained WDDM floor is the branch that binds):
+Example (24 GiB tier, printed by the wizard on Windows, where the measured WDDM pool-slack term rides on the same affine sum):
 
 ```
   domain    dx        mass grid      dt         resident
-  d01     12.000 km   164 x 130        60 s     0.59 GiB
-  d02      3.000 km   328 x 256        15 s     2.09 GiB
-  d03      1.000 km   354 x 276         5 s     2.44 GiB
-  d04      0.500 km   284 x 220       5/2 s     1.58 GiB
-  peak envelope: footprint 10.52 x 1.75 WDDM floor = 18.41 GiB, which is above the affine form (estimate 6.40 + non-pool 2.30 (CUDA context + local-memory backing store) + 0.50 unmodelled + 5% of the estimate x 3 nest(s) = 10.16 GiB) and therefore binds
-    envelope basis: windows; measured, 1 WDDM run
-  ingest (preprocessing): root 2 forcing times x 0.22 GiB each, 2 resident at a time + 3 nest initial state(s) 2.30 GiB, all resident for the single export transaction = 2.75 GiB resident; peak envelope 5.72 GiB
+  d01     12.000 km   220 x 176        60 s     1.09 GiB
+  d02      3.000 km   440 x 352        15 s     3.91 GiB
+  d03      1.000 km   474 x 378         5 s     4.54 GiB
+  d04      0.500 km   380 x 304       5/2 s     2.95 GiB
+  peak envelope: estimate 11.31 + non-pool 2.42 (CUDA context + local-memory backing store) + 0.50 unmodelled + 5% of the estimate x 3 nest(s) + 20% of the estimate WDDM pool slack = 18.19 GiB
+    envelope basis: windows; measured, RTX 3080 10 GiB / Windows 11 WDDM, six whole bare-default forecasts machine-wide at 0.25 s over a 2.5x span of itemized estimate, rte-rrtmgp + legacy-RRTMG suites
+  ingest (preprocessing): root 3 forcing times x 0.42 GiB each, 1 resident at a time + 3 nest initial state(s) 4.72 GiB, all resident for the single export transaction = 5.19 GiB resident; peak envelope 9.25 GiB
     ingest envelope basis: measured, CONUS 12 km 414x330x49 x 9 GFS times, RTX 5090 / Linux: itemization + 0.65x one forcing time of transients, x1.15 headroom, + CUDA context
-  BINDING PHASE: the forecast is the memory-binding phase at 18.41 GiB peak envelope (forecast 18.41 GiB, ingest 5.72 GiB); it fits the 19.57 GiB budget with 1.16 GiB to spare
-  budget 19.57 GiB (24 GiB card presents about 22.56 GiB free, minus this suite's 2.99 GiB reserve); headroom 1.16 GiB
+  BINDING PHASE: the forecast is the memory-binding phase at 18.19 GiB peak envelope (forecast 18.19 GiB, ingest 9.25 GiB); it fits the 19.30 GiB budget with 1.12 GiB to spare
+  budget 19.30 GiB (24 GiB card presents about 22.56 GiB free, minus this suite's 3.26 GiB reserve); headroom 1.12 GiB
 ```
 
 Both the wizard and `gpuwm check` show every term, so you can always
@@ -370,21 +360,28 @@ your card. When you size for a card that is not in the machine
 sold at that capacity, which over-prices every other card in the class
 rather than under-pricing any.
 
-### Windows / WDDM: the 1.75 multiplier, kept as a floor (measured, 1 run)
+### Windows / WDDM: the 1.75 multiplier is retired (measured, 2026-08-19)
 
-On the four-domain reference run (2026-07-28, RTX 5090 32 GiB,
-Windows), the preflight projected a 16.22 GiB footprint. The measured
-machine-wide peak was 29,004 MiB -- 1.75x the projection -- and it
-finished 57.1 MiB (0.2%) under the 30,472,743,936-byte Windows WDDM
-budget the gate had checked. The gate passed for the wrong reason: it
-compared the smaller alloc estimate against the budget.
+The multiplier came from ONE run: the four-domain reference forecast
+(2026-07-28, RTX 5090 32 GiB, Windows) peaked machine-wide at 1.746x
+its 16.22 GiB footprint projection. It was kept as a floor because
+nobody had instrumented a small Windows run to show where the
+multiplicative form and the affine form cross.
 
-That is a real measurement over a real projection, and it stays. On
-Windows the envelope is the LARGER of `footprint x 1.75` and the affine
-form above -- the affine form is a floor under it, never a discount.
-Nobody has instrumented a Windows run small enough to show where the
-two cross, so the multiplier is not retired; it is bounded from below
-by a model that cannot be optimistic about small configurations.
+The 3080 calibration instrumented six of them, and the answer is that
+the multiplier never described small configurations at all: the walk's
+110x88 forecast was floored to a 9.91 GiB envelope and measured 2.6 GiB
+of own contribution -- 3.8x reality -- while the affine terms tracked
+every measured peak from above. On Windows the envelope is now the
+affine form plus **20% of the estimate as WDDM pool slack**: the worst
+measured residual beyond `estimate + non-pool` was +0.30x of the
+estimate (legacy-RRTMG pool retention, whose call-peak the itemization
+under-counts), and 0.50 GiB unmodelled + 0.20x covers it with 0.33 GiB
+to spare. The historical 5090 observation stays recorded in
+`PEAK_ENVELOPE_FACTORS` and in this section; it no longer gates
+anything. The legacy-RRTMG pool residual is probably a CuPy pool
+behaviour rather than WDDM's -- re-measure on Linux before assuming
+that lane needs the term too.
 
 ### Linux: the three 2026-07-30 pilots, re-read
 
@@ -417,9 +414,9 @@ measurements. At the wizard's smallest possible layout those constants
 are **4.12 GiB of a 5.38 GiB projection: 77% of the floor**. That is
 why a 12 GiB card could not be sized at *any* ladder depth while its
 GPU sat 66% idle -- shrinking the grid could not touch the part that
-did not fit.  (The same reasoning is what the experimental Windows
-small-card tier above applies on Windows, with a reduced fixed reserve
-in place of the two constants and no measurements behind it yet.)
+did not fit.  (The 3080 calibration confirmed the same on Windows:
+those constants stay in the TIER 2/3 projection display and are no
+envelope terms anywhere.)
 
 So on Linux the projection **is** the itemized alloc estimate, and the
 envelope over it is the affine form described above.
@@ -469,19 +466,17 @@ estimate <= budget) instead of trusting arithmetic.
 ## Linux notes
 
 - No WDDM: the budget is the CUDA-reported free memory minus your
-  `--reserve-gib`. The same estimator applies, but the projection drops
-  the two Windows-pool constants and the envelope is the affine form
-  rather than Windows' 1.75 multiplier (see above), so the same card
-  sizes a much larger grid -- roughly one card tier's worth. A 12 GiB Linux card sizes more cells at every ladder depth than
-  the 16 GiB Windows tier delivers -- and unlike the experimental
-  Windows small-card tier, this one is measured.
+  `--reserve-gib`. The same affine estimator applies without the WDDM
+  pool-slack term (see above), so the same card sizes a somewhat larger
+  grid than its Windows twin -- both lanes are measured now.
 - Throughput is better than the Windows numbers below suggest.
   Node 2's 438x352x49 single domain at dt 60 s, Morrison + RTE-RRTMGP +
   YSU + Noah + KF, ran 6 simulated hours in 400 s on a 4090 --
-  **0.147 wall-s per simulated minute per Mcell**, against 0.229 for the
-  same physics and time step on the Windows/WDDM 5090. Normalised for
-  grid size that is ~1.56x faster per cell on the weaker card; the gap
-  is the platform.
+  **0.147 wall-s per simulated minute per Mcell**. The same physics and
+  time step on the Windows/WDDM 5090 costs 0.229 by the same measure, on
+  the stronger card: the gap is the platform, not the hardware, so size a
+  Linux run against the Linux figure rather than the Windows tables
+  below.
 - Output volume, not VRAM, is the binding constraint on a long Linux
   run: node 1's 6 h two-domain 12/3 km forecast wrote 24 GB of
   `wrfout` (32 frames at 15-minute cadence), and node 2's 438x352x49

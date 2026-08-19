@@ -3,7 +3,7 @@
 // Milbrandt-Yau double-moment bulk microphysics, WRF mp_physics = 9.
 //
 // TRANSCRIPTION AUTHORITY (read line by line, never from memory of WRF):
-//   C:/Users/drew/Downloads/WRF_1974_MP55_reference_bundle/
+//   the WRF 1974 MP55 reference bundle,
 //     WRF_source_v4.6.1_group/phys/module_mp_milbrandt2mom.F
 //   - my2_mod helper functions           :31-433, :3489-3525
 //   - sedi_wrapper_2 / sedi_1D / count_columns  :564-836

@@ -391,6 +391,68 @@ class CudaPreprocessBackend:
         }
 
 
+def _gpu_runtime_installed() -> bool:
+    """Whether cupy RESOLVES here, without importing it.
+
+    The cheap presence half only, same split as
+    :func:`gpuwm.capabilities.is_installed` (which this defers to):
+    "installed" and "working" are two claims, and ``gpuwm doctor`` makes
+    the second one.  Asked at resolve time so an explicit ``cuda``
+    request on a CPU-only install is refused with the remedy BEFORE any
+    bytes are decoded, instead of dying in the first kernel's
+    ``RuntimeError: CuPy is required for GPU horizontal interpolation``
+    after minutes of work.
+    """
+
+    from gpuwm.capabilities import is_installed
+
+    return is_installed("cupy")
+
+
+#: The auto->cpu announcement's dedup set: nest initialization and the
+#: per-snapshot helpers re-resolve the same selector string, and four
+#: copies of one sentence is noise.  One line per distinct reason per
+#: process.
+_ANNOUNCED_AUTO_REASONS: set[str] = set()
+
+
+def _announce_auto_cpu(reason: str) -> None:
+    """Say, once, that ``auto`` chose the CPU backend and why.
+
+    ONE line, because a bare-default preparation on a CPU-only box is a
+    supported route (fixed-means-default), not an error -- but a reader
+    watching a prep that used to run on a card deserves to be told which
+    engine is running and what changed the answer.
+    """
+
+    if reason in _ANNOUNCED_AUTO_REASONS:
+        return
+    _ANNOUNCED_AUTO_REASONS.add(reason)
+    from gpuwm.explain import warn
+
+    warn(f"preprocess backend auto: {reason}, so source-grid/WRF-real "
+         "preprocessing runs on the deterministic parallel CPU backend",
+         why="The CPU backend is the packaged Rust bridge, held to "
+             "numeric parity with the CUDA path by "
+             "tests/test_preprocess_cpu_backend.py; only this setup "
+             "half runs there.  The forecast model itself is CUDA-only "
+             "and still needs a card.  Force the choice with "
+             "--preprocess-backend cpu or cuda.")
+
+
+_GPU_PREPROCESS_REMEDY = (
+    "CUDA preprocessing was requested but this install cannot import "
+    "cupy, so every GPU interpolation kernel is unreachable.  Refusing "
+    "here, before any source bytes are decoded, rather than in the "
+    "first kernel after them.\n"
+    "  # CuPy ships one wheel per CUDA major; pick yours:\n"
+    "  remedy: pip install 'gpuwm[gpu-cu12]'\n"
+    "  #   ... on a box whose CUDA is 13-only, instead:\n"
+    "  #   pip install 'gpuwm[gpu-cu13]'\n"
+    "  # or run the same preparation off-GPU: --preprocess-backend cpu\n"
+    "  # (or auto, which picks the CPU backend on this install)")
+
+
 def resolve_preprocess_backend(backend="cuda", *, workers: int | None = None,
                                cpu_bridge: Path | str | None = None):
     """Resolve a public backend selector without silently changing policy."""
@@ -418,6 +480,12 @@ def resolve_preprocess_backend(backend="cuda", *, workers: int | None = None,
         if workers is not None or cpu_bridge is not None:
             raise ValueError(
                 "workers/cpu_bridge apply only to the CPU backend")
+        if not _gpu_runtime_installed():
+            # An EXPLICIT cuda request on a CPU-only install: a named
+            # refusal with the remedy, at the front of the work.  The
+            # bare default reaches the CPU backend through "auto" and
+            # never lands here.
+            raise ValueError(_GPU_PREPROCESS_REMEDY)
         return CudaPreprocessBackend()
     if normalized == "cpu":
         if sealed_backends is not None and "cpu" not in sealed_backends:
@@ -431,6 +499,12 @@ def resolve_preprocess_backend(backend="cuda", *, workers: int | None = None,
             raise ValueError("cpu_bridge cannot accompany backend='auto'")
         if sealed_backends is not None and "cuda" not in sealed_backends:
             return ParallelCpuPreprocessBackend(workers=workers)
+        # The CPU fallback is the bare default's road on every box where
+        # CUDA is unusable (fixed-means-default: the prep doors default
+        # to "auto"), so the fall is ANNOUNCED, once, with the reason --
+        # a silent engine swap and a silent death were the two shapes
+        # the 2.5.0 persona walks measured.
+        reason = None
         try:
             candidate = CudaPreprocessBackend()
             cp = candidate.array_module
@@ -442,8 +516,15 @@ def resolve_preprocess_backend(backend="cuda", *, workers: int | None = None,
                 and 12_000 <= runtime_version < 13_000
             ):
                 return candidate
+            if int(cp.cuda.runtime.getDeviceCount()) <= 0:
+                reason = "no CUDA device is visible here"
+            else:
+                reason = (f"cupy {cp.__version__} on CUDA runtime "
+                          f"{runtime_version} is outside the certified "
+                          "cupy>=13 + CUDA 12.x family")
         except (AttributeError, ImportError, RuntimeError, ValueError):
-            pass
+            reason = "cupy is not installed here"
+        _announce_auto_cpu(reason)
         return ParallelCpuPreprocessBackend(workers=workers)
     raise ValueError("backend must be 'cuda', 'cpu', or 'auto'")
 

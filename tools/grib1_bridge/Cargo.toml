@@ -11,4 +11,21 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 chrono = { version = "0.4", default-features = false }
-grib-core = { path = "vendor/grib-core", default-features = false }
+# jpeg2000 (GRIB2 DRT 5.40) is ON: several agencies pack operational
+# GRIB2 with it -- every RAP/NAM AWIPS-grid Lambert product and MSC
+# Datamart's GDPS files among them -- and a bridge without the codec
+# turns "decode this record" into a refusal about packing rather than
+# about meteorology.  The implementation is grib-core's own
+# (BowEcho-ratified) optional openjp2 backend, through the same vendored
+# openjp2 the renderer workspace already builds; png_codec stays off
+# because no consumed product uses Template 5.41.
+grib-core = { path = "vendor/grib-core", default-features = false, features = ["jpeg2000"] }
+
+# See tools/rustwx/Cargo.toml for the reasoning: these artifacts are
+# package data in a platform wheel measured against PyPI's 100 MB cap,
+# and debug symbols are the cheapest weight to give back.  The
+# source-revision stamp and the `gpuwm_preprocess_cpu_abi_version`
+# export both survive stripping -- one is .rodata, the other is an
+# export table entry.
+[profile.release]
+strip = "debuginfo"

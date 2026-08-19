@@ -40,19 +40,54 @@ def _fit(ladder: str, gib: float):
 
 
 @pytest.mark.parametrize("ladder", ["12", "12-3"])
-def test_a_larger_budget_buys_a_strictly_larger_root_domain(ladder: str) -> None:
-    """The property the cap violated, across the range real cards span."""
+def test_a_larger_budget_buys_more_grid_until_a_named_bound_binds(
+        ladder: str, capsys) -> None:
+    """The property the cap violated, across the range real cards span.
+
+    Restated in 2.5.0, because memory stopped being the only bound the
+    fit answers to.  A 12 km root sized for a 64 GiB card spans more
+    longitude than one crop of a global source can serve, and the fit
+    now shrinks against that limit instead of emitting a layout its own
+    emission would refuse.  So saturation is legitimate here -- what is
+    not legitimate, and what this file exists for, is saturation nobody
+    can see.  Every stall must therefore be accompanied by the wizard
+    saying which bound bound, and a bigger card must buy more grid up to
+    the point where one does.
+    """
     budgets = (32, 48, 64, 96, 180)
-    cells = {}
+    cells, spoke = {}, {}
     for gib in budgets:
         dims, _ = _fit(ladder, gib)
         nx, ny = dims[0]
         cells[gib] = nx * ny
+        spoke[gib] = "on the SOURCE, not the card" in capsys.readouterr().err
     pairs = list(zip(budgets, budgets[1:]))
-    stalled = [(a, b) for a, b in pairs if cells[b] <= cells[a]]
-    assert not stalled, (
+    silent_stall = [(a, b) for a, b in pairs
+                    if cells[b] <= cells[a] and not spoke[b]]
+    assert not silent_stall, (
         f"ladder {ladder}: a bigger budget bought no more grid at "
-        f"{stalled}; cells by budget = {cells}")
+        f"{silent_stall} and the wizard said nothing about why; "
+        f"cells by budget = {cells}")
+
+
+def test_the_stall_announcement_is_not_simply_always_on(capsys) -> None:
+    """The control the test above needs to mean anything.
+
+    "Every stall is announced" is satisfied by a wizard that announces
+    at every size and never grows, so one pair has to grow on memory
+    alone, silently.  A two-level ladder at 32 -> 64 GiB is that pair on
+    both platforms: its 3 km nest keeps the root well short of the
+    servable-crop limit that saturates a single 12 km domain, so the
+    card is what binds there whether or not the peak envelope carries
+    the Windows WDDM floor.
+    """
+    small, _ = _fit("12-3", 32)
+    assert "on the SOURCE" not in capsys.readouterr().err
+    large, _ = _fit("12-3", 64)
+    assert "on the SOURCE" not in capsys.readouterr().err
+    assert large[0][0] * large[0][1] > small[0][0] * small[0][1], (
+        f"a 64 GiB budget bought no more grid than 32 GiB: "
+        f"{large[0]} vs {small[0]}")
 
 
 def test_the_scale_ceiling_does_not_bind_at_any_real_card_size() -> None:

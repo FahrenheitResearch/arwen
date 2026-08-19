@@ -1,0 +1,33 @@
+{
+ "window_args": [
+  2,
+  11,
+  1,
+  9
+ ],
+ "nx": 3,
+ "ny": 2,
+ "halo": 3,
+ "dx_interp": "40b3880000000000",
+ "dx_gcell": "41086a0000000000",
+ "lat_e": "lat_e.bin",
+ "lon_e": "lon_e.bin",
+ "key": {
+  "dx": "3fd0000000000000",
+  "dy": "3fd0000000000000",
+  "known_x": "3ff0000000000000",
+  "known_y": "3ff0000000000000",
+  "known_lat": "4024400000000000",
+  "known_lon": "4034200000000000",
+  "x0": 2,
+  "y0": 1,
+  "shape": [
+   3,
+   9,
+   10
+  ]
+ },
+ "cells": "cells.bin",
+ "frac_interp": "frac_interp.bin",
+ "frac_gcell": "frac_gcell.bin"
+}

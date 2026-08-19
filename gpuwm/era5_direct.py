@@ -21,8 +21,9 @@ import tomllib
 from types import SimpleNamespace
 from typing import Mapping
 
-import netCDF4
 import numpy as np
+
+from gpuwm import netcdf_bridge
 
 from gpuwm.case_data import (
     CaseDataConfig,
@@ -39,6 +40,8 @@ from gpuwm.ingest.grib import (
     parse_vtable,
 )
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
+from gpuwm.ingest.source_coverage import (ForcingSeriesRefusal,
+                                          owns_source_coverage_refusal)
 from gpuwm.ingest.lateral_bc import (
     StateBoundaryFrames,
     attach_lateral_boundaries,
@@ -56,6 +59,8 @@ from gpuwm.ingest.preprocess_backend import (
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.ingest.soil import soil_source_orography
+from gpuwm.ingest.soil_downscale import (
+    declared_soil_texture_downscale, soil_mesh_plan_from_case)
 from gpuwm.ingest.water_overlay import (
     load_water_temperature_overlay,
     overlay_snapshots,
@@ -271,7 +276,9 @@ def load_era5_adapter_config(
 
 
 def _load_source_orography(path: Path, variable: str) -> np.ndarray:
-    with netCDF4.Dataset(path) as dataset:
+    # Decoded by the Rust bridge: this is a meteorological field read out
+    # of a third-party NetCDF, which is decode work, not plumbing.
+    with netcdf_bridge.open_dataset(path) as dataset:
         if variable not in dataset.variables:
             raise KeyError(f"source-orography file lacks {variable!r}")
         value = np.asarray(dataset.variables[variable][0], dtype=np.float64)
@@ -601,7 +608,8 @@ def prepare_era5_wrf(
     if forcing_hours[-1] * 3600 < exp.run_seconds:
         raise ValueError("ERA5 forcing does not cover the configured run")
     if len(forcing_hours) < 2:
-        raise ValueError("ERA5 direct forcing requires at least two times")
+        raise ForcingSeriesRefusal(
+            "ERA5 direct forcing requires at least two times")
     deltas = {
         later - earlier
         for earlier, later in zip(forcing_hours, forcing_hours[1:])}
@@ -700,6 +708,10 @@ def prepare_era5_wrf(
         water_temperature=getattr(
             initial_met, "water_temperature", None),
         water_temperature_policy=water_temperature_policy,
+        # The moisture and deep-temperature analogue of the elevation
+        # lapse two arguments up: the target grid knows things about the
+        # land surface a 0.25 degree forcing mesh cannot carry.
+        soil_mesh=soil_mesh_plan_from_case(snapshots[0], grid, declared),
         route=_WATER_ROUTE)
     # LOUD when it happened, silent when it did not: the SMCDRY floor
     # receipt is only bound into the prepared metadata/proof when at
@@ -791,6 +803,9 @@ def prepare_era5_wrf(
                 },
                 artifact_manifest_reference=(
                     "../hierarchy-artifacts/domain-artifacts.json"),
+                # A child sees the catalog, not the case data.
+                soil_texture_downscale=declared_soil_texture_downscale(
+                    declared),
             )
             hierarchy_seconds = time.perf_counter() - hierarchy_started
             final_manifest = _verify_input_manifest(
@@ -809,6 +824,15 @@ def prepare_era5_wrf(
                 "decoder_sha256": _sha256(paths["bridge"]),
                 "preprocessing": preprocess_receipt,
                 **soil_floor_binding,
+                # The soil-state SOURCE resolution, unconditional: a reader
+                # of this forecast must be able to answer "how coarse was
+                # the soil I started from" without the config, and whether
+                # the sub-source-cell reconstitution ran on it.  Bound
+                # outside CONDITIONAL_PREPARATION_RECEIPTS on purpose: the
+                # prepared-cache validator compares that tuple EXACTLY on
+                # both sides, and this receipt is proof-only.
+                "soil_texture_downscale": dict(
+                    getattr(soil, "soil_texture_downscale", {}) or {}),
                 **water_overlay_binding,
                 "root_static_provider": root_static_provider,
                 "root_static_receipt": root_static_receipt,
@@ -908,6 +932,15 @@ def prepare_era5_wrf(
             "preprocessing": preprocess_receipt,
             "preprocessing_receipt_sha256": preprocessing_receipt_sha256,
             **soil_floor_binding,
+            # The soil-state SOURCE resolution, unconditional: a reader
+            # of this forecast must be able to answer "how coarse was
+            # the soil I started from" without the config, and whether
+            # the sub-source-cell reconstitution ran on it.  Bound
+            # outside CONDITIONAL_PREPARATION_RECEIPTS on purpose: the
+            # prepared-cache validator compares that tuple EXACTLY on
+            # both sides, and this receipt is proof-only.
+            "soil_texture_downscale": dict(
+                getattr(soil, "soil_texture_downscale", {}) or {}),
             **water_overlay_binding,
             "source_inputs": {
                 "manifest_schema": manifest["schema"],
@@ -934,7 +967,7 @@ def prepare_era5_wrf(
         raise
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--grib", type=Path, required=True)
     parser.add_argument("--vtable", type=Path, required=True)
@@ -966,11 +999,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument(
         "--preprocess-backend", choices=("cuda", "cpu", "auto"),
-        default="cuda")
+        default="auto",
+        help="where the source-grid/WRF-real setup transforms run "
+             "(default auto: CUDA when the certified runtime is usable, "
+             "otherwise the deterministic parallel CPU backend, "
+             "announced in one line)")
     parser.add_argument("--preprocess-workers", type=int)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     parser.add_argument("--geog-root", type=Path)
     parser.add_argument("--hierarchy-workers", type=int)
+    return parser
+
+
+@owns_source_coverage_refusal
+def main(argv: list[str] | None = None) -> int:
+    parser = _parser()
     args = parser.parse_args(argv)
     try:
         hierarchy_source_orography = _domain_source_orography(

@@ -1,0 +1,41 @@
+# The Rust static-field builder: WPS-geogrid-equivalent statics
+# (projection grids, WPS_GEOG tile ingest, field building) plus the
+# high-resolution overlay compute, ported from gpuwm/static/*.py.
+#
+# The parity contract is byte-identical float64 arrays against the
+# Python implementation on the WPS path (projection, geog, build) and
+# defined-behaviour tolerance parity on the high-resolution warp path,
+# where the Python reference (GDAL's warper) is a black box, not a
+# spec.  See docs/dev/static-rust-port.md.
+#
+# Dependency posture: rayon for the raster loops (workspace-pinned).
+# Lane 3's GeoTIFF/warp substrate adds exactly three decode/verify
+# crates, every one already a lockfile resident of this workspace
+# (no new supply chain): miniz_oxide (deflate streams inside GeoTIFF
+# tiles/strips, and the crate's own deterministic writer), weezl
+# (LZW decode only, for sources GDAL compressed that way), sha2
+# (BoundRaster hash verification moving to Rust with the compute).
+# Provenance recorded in tools/rustwx/VENDOR.md.
+
+[package]
+name = "static-fields"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "WPS-geogrid-equivalent static-field builder (projection, GEOG tile ingest, field build, high-resolution overlays)"
+
+[lib]
+name = "static_fields"
+# cdylib: the ctypes seam gpuwm/static/rust_bridge.py loads (src/capi/).
+# rlib:   Rust callers and the crate's own tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+miniz_oxide = "0.8"
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+weezl = "0.1"

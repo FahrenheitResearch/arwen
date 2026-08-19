@@ -1,0 +1,2890 @@
+{
+ "cases": {
+  "corridor": {
+   "arrays": {
+    "crop_PLANE_A": {
+     "dtype": "f64",
+     "file": "corridor.crop_PLANE_A.f64",
+     "shape": [
+      10,
+      12
+     ]
+    },
+    "crop_PLANE_B": {
+     "dtype": "f64",
+     "file": "corridor.crop_PLANE_B.f64",
+     "shape": [
+      10,
+      12
+     ]
+    },
+    "crop_STACK_C": {
+     "dtype": "f64",
+     "file": "corridor.crop_STACK_C.f64",
+     "shape": [
+      5,
+      10,
+      12
+     ]
+    },
+    "full_PLANE_A": {
+     "dtype": "f64",
+     "file": "corridor.full_PLANE_A.f64",
+     "shape": [
+      24,
+      27
+     ]
+    },
+    "full_PLANE_B": {
+     "dtype": "f64",
+     "file": "corridor.full_PLANE_B.f64",
+     "shape": [
+      24,
+      27
+     ]
+    },
+    "full_STACK_C": {
+     "dtype": "f64",
+     "file": "corridor.full_STACK_C.f64",
+     "shape": [
+      5,
+      24,
+      27
+     ]
+    }
+   },
+   "cost": {
+    "bytes_per_cell": 776,
+    "cells": 20196,
+    "corridor_nx": 153,
+    "corridor_ny": 132,
+    "grid_id": 2,
+    "host_bytes": 15672096,
+    "parent_id": 1,
+    "planes_per_cell": 97
+   },
+   "crop_geometry": {
+    "child_nx": 12,
+    "child_ny": 10,
+    "corridor_nx": 27,
+    "corridor_ny": 24,
+    "grid_id": 2,
+    "origin_translation_child_cells": [
+     -9,
+     -6
+    ],
+    "parent_grid_ratio": 3,
+    "parent_id": 1,
+    "parent_nx": 9,
+    "parent_ny": 8,
+    "reference_i_parent_start": 4,
+    "reference_j_parent_start": 3
+   },
+   "crop_placement": [
+    5,
+    4
+   ],
+   "geometry": {
+    "child_nx": 45,
+    "child_ny": 39,
+    "corridor_nx": 153,
+    "corridor_ny": 132,
+    "grid_id": 2,
+    "origin_translation_child_cells": [
+     -51,
+     -42
+    ],
+    "parent_grid_ratio": 3,
+    "parent_id": 1,
+    "parent_nx": 51,
+    "parent_ny": 44,
+    "reference_i_parent_start": 18,
+    "reference_j_parent_start": 15
+   },
+   "probe_order": [
+    "sw",
+    "se",
+    "nw",
+    "ne",
+    "center"
+   ],
+   "scalars": {
+    "probe_center_lat": {
+     "f64_bits": "4043c00000000003"
+    },
+    "probe_center_lon": {
+     "f64_bits": "c055000000000000"
+    },
+    "probe_ne_lat": {
+     "f64_bits": "40449e4cf24ad279"
+    },
+    "probe_ne_lon": {
+     "f64_bits": "c054517545c4c188"
+    },
+    "probe_nw_lat": {
+     "f64_bits": "40449e4cf24ad279"
+    },
+    "probe_nw_lon": {
+     "f64_bits": "c055ae8aba3b3e78"
+    },
+    "probe_se_lat": {
+     "f64_bits": "4042d9f2dc98f10f"
+    },
+    "probe_se_lon": {
+     "f64_bits": "c0545a1d1dd93f1c"
+    },
+    "probe_sw_lat": {
+     "f64_bits": "4042d9f2dc98f10f"
+    },
+    "probe_sw_lon": {
+     "f64_bits": "c055a5e2e226c0e8"
+    }
+   }
+  },
+  "lam_d02": {
+   "arrays": {
+    "lat_mass": {
+     "dtype": "f64",
+     "file": "lam_d02.lat_mass.f64",
+     "shape": [
+      39,
+      45
+     ]
+    },
+    "lat_u": {
+     "dtype": "f64",
+     "file": "lam_d02.lat_u.f64",
+     "shape": [
+      39,
+      46
+     ]
+    },
+    "llij_x": {
+     "dtype": "f64",
+     "file": "lam_d02.llij_x.f64",
+     "shape": [
+      39,
+      45
+     ]
+    },
+    "llij_y": {
+     "dtype": "f64",
+     "file": "lam_d02.llij_y.f64",
+     "shape": [
+      39,
+      45
+     ]
+    },
+    "lon_mass": {
+     "dtype": "f64",
+     "file": "lam_d02.lon_mass.f64",
+     "shape": [
+      39,
+      45
+     ]
+    },
+    "lon_u": {
+     "dtype": "f64",
+     "file": "lam_d02.lon_u.f64",
+     "shape": [
+      39,
+      46
+     ]
+    }
+   },
+   "nest": {
+    "e_sn": 40,
+    "e_we": 46,
+    "i_parent_start": 18,
+    "j_parent_start": 15,
+    "parent": "lam_parent",
+    "parent_grid_ratio": 3
+   },
+   "scalars": {
+    "cen_lat": {
+     "f64_bits": "4043b072291b05e8"
+    },
+    "cen_lon": {
+     "f64_bits": "c05506b471df027c"
+    },
+    "cone": {
+     "f64_bits": "3fe45b592677a2fe"
+    },
+    "dx": {
+     "f64_bits": "40a7700000000000"
+    },
+    "hemi": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "known_x": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "known_y": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "polei": {
+     "f64_bits": "403a0000000000a0"
+    },
+    "polej": {
+     "f64_bits": "40a44e43c84ba4da"
+    },
+    "rebydx": {
+     "f64_bits": "40a096aaaaaaaaab"
+    },
+    "ref_lat": {
+     "f64_bits": "40436e640c08e487"
+    },
+    "ref_lon": {
+     "f64_bits": "c0553776ac376b60"
+    },
+    "rsw": {
+     "f64_bits": "40a44c815d19dec0"
+    }
+   }
+  },
+  "lam_d03": {
+   "arrays": {
+    "coriolis_e": {
+     "dtype": "f64",
+     "file": "lam_d03.coriolis_e.f64",
+     "shape": [
+      22,
+      25
+     ]
+    },
+    "coriolis_f": {
+     "dtype": "f64",
+     "file": "lam_d03.coriolis_f.f64",
+     "shape": [
+      22,
+      25
+     ]
+    },
+    "cosalpha_m": {
+     "dtype": "f64",
+     "file": "lam_d03.cosalpha_m.f64",
+     "shape": [
+      22,
+      25
+     ]
+    },
+    "cosalpha_u": {
+     "dtype": "f64",
+     "file": "lam_d03.cosalpha_u.f64",
+     "shape": [
+      22,
+      26
+     ]
+    },
+    "cosalpha_v": {
+     "dtype": "f64",
+     "file": "lam_d03.cosalpha_v.f64",
+     "shape": [
+      23,
+      25
+     ]
+    },
+    "lat_mass": {
+     "dtype": "f64",
+     "file": "lam_d03.lat_mass.f64",
+     "shape": [
+      22,
+      25
+     ]
+    },
+    "lat_u": {
+     "dtype": "f64",
+     "file": "lam_d03.lat_u.f64",
+     "shape": [
+      22,
+      26
+     ]
+    },
+    "llij_x": {
+     "dtype": "f64",
+     "file": "lam_d03.llij_x.f64",
+     "shape": [
+      22,
+      25
+     ]
+    },
+    "llij_y": {
+     "dtype": "f64",
+     "file": "lam_d03.llij_y.f64",
+     "shape": [
+      22,
+      25
+     ]
+    },
+    "lon_mass": {
+     "dtype": "f64",
+     "file": "lam_d03.lon_mass.f64",
+     "shape": [
+      22,
+      25
+     ]
+    },
+    "lon_u": {
+     "dtype": "f64",
+     "file": "lam_d03.lon_u.f64",
+     "shape": [
+      22,
+      26
+     ]
+    },
+    "mapfac_m": {
+     "dtype": "f64",
+     "file": "lam_d03.mapfac_m.f64",
+     "shape": [
+      22,
+      25
+     ]
+    },
+    "mapfac_u": {
+     "dtype": "f64",
+     "file": "lam_d03.mapfac_u.f64",
+     "shape": [
+      22,
+      26
+     ]
+    },
+    "mapfac_v": {
+     "dtype": "f64",
+     "file": "lam_d03.mapfac_v.f64",
+     "shape": [
+      23,
+      25
+     ]
+    },
+    "sinalpha_m": {
+     "dtype": "f64",
+     "file": "lam_d03.sinalpha_m.f64",
+     "shape": [
+      22,
+      25
+     ]
+    },
+    "sinalpha_u": {
+     "dtype": "f64",
+     "file": "lam_d03.sinalpha_u.f64",
+     "shape": [
+      22,
+      26
+     ]
+    },
+    "sinalpha_v": {
+     "dtype": "f64",
+     "file": "lam_d03.sinalpha_v.f64",
+     "shape": [
+      23,
+      25
+     ]
+    },
+    "surface_lat_c": {
+     "dtype": "f32",
+     "file": "lam_d03.surface_lat_c.f32",
+     "shape": [
+      29,
+      32
+     ]
+    },
+    "surface_lat_e": {
+     "dtype": "f32",
+     "file": "lam_d03.surface_lat_e.f32",
+     "shape": [
+      28,
+      31
+     ]
+    },
+    "surface_lat_integer_band": {
+     "dtype": "u8",
+     "file": "lam_d03.surface_lat_integer_band.u8",
+     "shape": [
+      28,
+      31
+     ]
+    },
+    "surface_lat_lower_e": {
+     "dtype": "f32",
+     "file": "lam_d03.surface_lat_lower_e.f32",
+     "shape": [
+      28,
+      31
+     ]
+    },
+    "surface_lon_boundary_band": {
+     "dtype": "u8",
+     "file": "lam_d03.surface_lon_boundary_band.u8",
+     "shape": [
+      28,
+      31
+     ]
+    },
+    "surface_lon_c": {
+     "dtype": "f64",
+     "file": "lam_d03.surface_lon_c.f64",
+     "shape": [
+      29,
+      32
+     ]
+    },
+    "surface_lon_e": {
+     "dtype": "f32",
+     "file": "lam_d03.surface_lon_e.f32",
+     "shape": [
+      28,
+      31
+     ]
+    },
+    "twin_lat": {
+     "dtype": "f32",
+     "file": "lam_d03.twin_lat.f32",
+     "shape": [
+      28,
+      31
+     ]
+    },
+    "twin_llij_x": {
+     "dtype": "f32",
+     "file": "lam_d03.twin_llij_x.f32",
+     "shape": [
+      28,
+      31
+     ]
+    },
+    "twin_llij_y": {
+     "dtype": "f32",
+     "file": "lam_d03.twin_llij_y.f32",
+     "shape": [
+      28,
+      31
+     ]
+    },
+    "twin_lon": {
+     "dtype": "f32",
+     "file": "lam_d03.twin_lon.f32",
+     "shape": [
+      28,
+      31
+     ]
+    }
+   },
+   "nest": {
+    "e_sn": 23,
+    "e_we": 26,
+    "i_parent_start": 10,
+    "j_parent_start": 8,
+    "parent": "lam_d02",
+    "parent_grid_ratio": 5
+   },
+   "scalars": {
+    "cen_lat": {
+     "f64_bits": "40438cbbdf7ee04f"
+    },
+    "cen_lon": {
+     "f64_bits": "c0551f2a23d15f20"
+    },
+    "cone": {
+     "f64_bits": "3fe45b592677a2fe"
+    },
+    "dx": {
+     "f64_bits": "4082c00000000000"
+    },
+    "hemi": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "known_x": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "known_y": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "polei": {
+     "f64_bits": "4054c0000000013b"
+    },
+    "polej": {
+     "f64_bits": "40c94f54ba5e8e0e"
+    },
+    "rebydx": {
+     "f64_bits": "40c4bc5555555555"
+    },
+    "ref_lat": {
+     "f64_bits": "4043856e07b0d9c8"
+    },
+    "ref_lon": {
+     "f64_bits": "c055247a36d35ad0"
+    },
+    "rsw": {
+     "f64_bits": "40c94ef5f048413d"
+    }
+   },
+   "surface_lon_e_dtype": "float32",
+   "twin_state": {
+    "cone": "3f22dabf",
+    "deg": "42652ee1",
+    "hemi": "3f800000",
+    "polei": "42a6002a",
+    "polej": "464a7ab3",
+    "rad": "3c8efa35",
+    "rebydx": "4625e2ab",
+    "rsw": "464a77bd",
+    "stand_lon": "c2a80000",
+    "tl1": "42180000",
+    "tl2": "42240000"
+   },
+   "twin_state_adopted": {
+    "cone": "3f22dabf",
+    "deg": "42652ee1",
+    "hemi": "3f800000",
+    "polei": "42a60000",
+    "polej": "464a7aa6",
+    "rad": "3c8efa35",
+    "rebydx": "4625e2ab",
+    "rsw": "464a77bd",
+    "stand_lon": "c2a80000",
+    "tl1": "42180000",
+    "tl2": "42240000"
+   }
+  },
+  "lam_parent": {
+   "arrays": {
+    "coriolis_e": {
+     "dtype": "f64",
+     "file": "lam_parent.coriolis_e.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "coriolis_f": {
+     "dtype": "f64",
+     "file": "lam_parent.coriolis_f.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "cosalpha_m": {
+     "dtype": "f64",
+     "file": "lam_parent.cosalpha_m.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "cosalpha_u": {
+     "dtype": "f64",
+     "file": "lam_parent.cosalpha_u.f64",
+     "shape": [
+      44,
+      52
+     ]
+    },
+    "cosalpha_v": {
+     "dtype": "f64",
+     "file": "lam_parent.cosalpha_v.f64",
+     "shape": [
+      45,
+      51
+     ]
+    },
+    "lat_c": {
+     "dtype": "f64",
+     "file": "lam_parent.lat_c.f64",
+     "shape": [
+      45,
+      52
+     ]
+    },
+    "lat_mass": {
+     "dtype": "f64",
+     "file": "lam_parent.lat_mass.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "lat_u": {
+     "dtype": "f64",
+     "file": "lam_parent.lat_u.f64",
+     "shape": [
+      44,
+      52
+     ]
+    },
+    "lat_v": {
+     "dtype": "f64",
+     "file": "lam_parent.lat_v.f64",
+     "shape": [
+      45,
+      51
+     ]
+    },
+    "llij_x": {
+     "dtype": "f64",
+     "file": "lam_parent.llij_x.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "llij_y": {
+     "dtype": "f64",
+     "file": "lam_parent.llij_y.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "lon_c": {
+     "dtype": "f64",
+     "file": "lam_parent.lon_c.f64",
+     "shape": [
+      45,
+      52
+     ]
+    },
+    "lon_mass": {
+     "dtype": "f64",
+     "file": "lam_parent.lon_mass.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "lon_u": {
+     "dtype": "f64",
+     "file": "lam_parent.lon_u.f64",
+     "shape": [
+      44,
+      52
+     ]
+    },
+    "lon_v": {
+     "dtype": "f64",
+     "file": "lam_parent.lon_v.f64",
+     "shape": [
+      45,
+      51
+     ]
+    },
+    "mapfac_m": {
+     "dtype": "f64",
+     "file": "lam_parent.mapfac_m.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "mapfac_u": {
+     "dtype": "f64",
+     "file": "lam_parent.mapfac_u.f64",
+     "shape": [
+      44,
+      52
+     ]
+    },
+    "mapfac_v": {
+     "dtype": "f64",
+     "file": "lam_parent.mapfac_v.f64",
+     "shape": [
+      45,
+      51
+     ]
+    },
+    "sinalpha_m": {
+     "dtype": "f64",
+     "file": "lam_parent.sinalpha_m.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "sinalpha_u": {
+     "dtype": "f64",
+     "file": "lam_parent.sinalpha_u.f64",
+     "shape": [
+      44,
+      52
+     ]
+    },
+    "sinalpha_v": {
+     "dtype": "f64",
+     "file": "lam_parent.sinalpha_v.f64",
+     "shape": [
+      45,
+      51
+     ]
+    },
+    "surface_lat_c": {
+     "dtype": "f32",
+     "file": "lam_parent.surface_lat_c.f32",
+     "shape": [
+      51,
+      58
+     ]
+    },
+    "surface_lat_e": {
+     "dtype": "f32",
+     "file": "lam_parent.surface_lat_e.f32",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "surface_lat_integer_band": {
+     "dtype": "u8",
+     "file": "lam_parent.surface_lat_integer_band.u8",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "surface_lat_lower_e": {
+     "dtype": "f32",
+     "file": "lam_parent.surface_lat_lower_e.f32",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "surface_lon_boundary_band": {
+     "dtype": "u8",
+     "file": "lam_parent.surface_lon_boundary_band.u8",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "surface_lon_c": {
+     "dtype": "f64",
+     "file": "lam_parent.surface_lon_c.f64",
+     "shape": [
+      51,
+      58
+     ]
+    },
+    "surface_lon_e": {
+     "dtype": "f64",
+     "file": "lam_parent.surface_lon_e.f64",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "twin_lat": {
+     "dtype": "f32",
+     "file": "lam_parent.twin_lat.f32",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "twin_llij_x": {
+     "dtype": "f32",
+     "file": "lam_parent.twin_llij_x.f32",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "twin_llij_y": {
+     "dtype": "f32",
+     "file": "lam_parent.twin_llij_y.f32",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "twin_lon": {
+     "dtype": "f32",
+     "file": "lam_parent.twin_lon.f32",
+     "shape": [
+      50,
+      57
+     ]
+    }
+   },
+   "scalars": {
+    "cen_lat": {
+     "f64_bits": "4043c00000000003"
+    },
+    "cen_lon": {
+     "f64_bits": "c055000000000000"
+    },
+    "cone": {
+     "f64_bits": "3fe45b592677a2fe"
+    },
+    "dx": {
+     "f64_bits": "40c1940000000000"
+    },
+    "hemi": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "known_x": {
+     "f64_bits": "403a000000000000"
+    },
+    "known_y": {
+     "f64_bits": "4036800000000000"
+    },
+    "polei": {
+     "f64_bits": "403a000000000000"
+    },
+    "polej": {
+     "f64_bits": "408b85afb5ba3123"
+    },
+    "rebydx": {
+     "f64_bits": "40861e38e38e38e4"
+    },
+    "ref_lat": {
+     "f64_bits": "4043c00000000000"
+    },
+    "ref_lon": {
+     "f64_bits": "c055000000000000"
+    },
+    "rsw": {
+     "f64_bits": "408ad1afb5ba3123"
+    }
+   },
+   "spec": {
+    "dx": 9000.0,
+    "dy": 9000.0,
+    "e_sn": 45,
+    "e_we": 52,
+    "kind": "lambert",
+    "known_x": 26.0,
+    "known_y": 22.5,
+    "moad_cen_lat": 39.5,
+    "moad_cen_lon": -84.0,
+    "ref_lat": 39.5,
+    "ref_lon": -84.0,
+    "stand_lon": -84.0,
+    "truelat1": 38.0,
+    "truelat2": 41.0
+   },
+   "surface_lon_e_dtype": "float64",
+   "twin_state": {
+    "cone": "3f22dabf",
+    "deg": "42652ee1",
+    "hemi": "3f800000",
+    "polei": "41d00000",
+    "polej": "445c2d8c",
+    "rad": "3c8efa35",
+    "rebydx": "4430f1c7",
+    "rsw": "44568d8c",
+    "stand_lon": "c2a80000",
+    "tl1": "42180000",
+    "tl2": "42240000"
+   }
+  },
+  "lam_sh": {
+   "arrays": {
+    "coriolis_e": {
+     "dtype": "f64",
+     "file": "lam_sh.coriolis_e.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "coriolis_f": {
+     "dtype": "f64",
+     "file": "lam_sh.coriolis_f.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "cosalpha_m": {
+     "dtype": "f64",
+     "file": "lam_sh.cosalpha_m.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "cosalpha_u": {
+     "dtype": "f64",
+     "file": "lam_sh.cosalpha_u.f64",
+     "shape": [
+      33,
+      40
+     ]
+    },
+    "cosalpha_v": {
+     "dtype": "f64",
+     "file": "lam_sh.cosalpha_v.f64",
+     "shape": [
+      34,
+      39
+     ]
+    },
+    "lat_c": {
+     "dtype": "f64",
+     "file": "lam_sh.lat_c.f64",
+     "shape": [
+      34,
+      40
+     ]
+    },
+    "lat_mass": {
+     "dtype": "f64",
+     "file": "lam_sh.lat_mass.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "lat_u": {
+     "dtype": "f64",
+     "file": "lam_sh.lat_u.f64",
+     "shape": [
+      33,
+      40
+     ]
+    },
+    "lat_v": {
+     "dtype": "f64",
+     "file": "lam_sh.lat_v.f64",
+     "shape": [
+      34,
+      39
+     ]
+    },
+    "llij_x": {
+     "dtype": "f64",
+     "file": "lam_sh.llij_x.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "llij_y": {
+     "dtype": "f64",
+     "file": "lam_sh.llij_y.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "lon_c": {
+     "dtype": "f64",
+     "file": "lam_sh.lon_c.f64",
+     "shape": [
+      34,
+      40
+     ]
+    },
+    "lon_mass": {
+     "dtype": "f64",
+     "file": "lam_sh.lon_mass.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "lon_u": {
+     "dtype": "f64",
+     "file": "lam_sh.lon_u.f64",
+     "shape": [
+      33,
+      40
+     ]
+    },
+    "lon_v": {
+     "dtype": "f64",
+     "file": "lam_sh.lon_v.f64",
+     "shape": [
+      34,
+      39
+     ]
+    },
+    "mapfac_m": {
+     "dtype": "f64",
+     "file": "lam_sh.mapfac_m.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "mapfac_u": {
+     "dtype": "f64",
+     "file": "lam_sh.mapfac_u.f64",
+     "shape": [
+      33,
+      40
+     ]
+    },
+    "mapfac_v": {
+     "dtype": "f64",
+     "file": "lam_sh.mapfac_v.f64",
+     "shape": [
+      34,
+      39
+     ]
+    },
+    "sinalpha_m": {
+     "dtype": "f64",
+     "file": "lam_sh.sinalpha_m.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "sinalpha_u": {
+     "dtype": "f64",
+     "file": "lam_sh.sinalpha_u.f64",
+     "shape": [
+      33,
+      40
+     ]
+    },
+    "sinalpha_v": {
+     "dtype": "f64",
+     "file": "lam_sh.sinalpha_v.f64",
+     "shape": [
+      34,
+      39
+     ]
+    },
+    "twin_lat": {
+     "dtype": "f32",
+     "file": "lam_sh.twin_lat.f32",
+     "shape": [
+      39,
+      45
+     ]
+    },
+    "twin_llij_x": {
+     "dtype": "f32",
+     "file": "lam_sh.twin_llij_x.f32",
+     "shape": [
+      39,
+      45
+     ]
+    },
+    "twin_llij_y": {
+     "dtype": "f32",
+     "file": "lam_sh.twin_llij_y.f32",
+     "shape": [
+      39,
+      45
+     ]
+    },
+    "twin_lon": {
+     "dtype": "f32",
+     "file": "lam_sh.twin_lon.f32",
+     "shape": [
+      39,
+      45
+     ]
+    }
+   },
+   "scalars": {
+    "cen_lat": {
+     "f64_bits": "c042400000000000"
+    },
+    "cen_lon": {
+     "f64_bits": "4062200000000000"
+    },
+    "cone": {
+     "f64_bits": "3fe2d01d81c57bff"
+    },
+    "dx": {
+     "f64_bits": "40c7700000000000"
+    },
+    "hemi": {
+     "f64_bits": "bff0000000000000"
+    },
+    "known_x": {
+     "f64_bits": "4034000000000000"
+    },
+    "known_y": {
+     "f64_bits": "4031000000000000"
+    },
+    "polei": {
+     "f64_bits": "c034000000000000"
+    },
+    "polej": {
+     "f64_bits": "40862340257e939a"
+    },
+    "rebydx": {
+     "f64_bits": "408096aaaaaaaaab"
+    },
+    "ref_lat": {
+     "f64_bits": "c042400000000000"
+    },
+    "ref_lon": {
+     "f64_bits": "4062200000000000"
+    },
+    "rsw": {
+     "f64_bits": "4086ab40257e939a"
+    }
+   },
+   "spec": {
+    "dx": 12000.0,
+    "dy": 12000.0,
+    "e_sn": 34,
+    "e_we": 40,
+    "kind": "lambert",
+    "known_x": 20.0,
+    "known_y": 17.0,
+    "moad_cen_lat": -36.5,
+    "moad_cen_lon": 145.0,
+    "ref_lat": -36.5,
+    "ref_lon": 145.0,
+    "stand_lon": 145.0,
+    "truelat1": -34.0,
+    "truelat2": -38.0
+   },
+   "twin_state": {
+    "cone": "3f1680f2",
+    "deg": "42652ee1",
+    "hemi": "bf800000",
+    "polei": "c1a00000",
+    "polej": "443119f9",
+    "rad": "3c8efa35",
+    "rebydx": "4404b555",
+    "rsw": "443559f9",
+    "stand_lon": "43110000",
+    "tl1": "c2080000",
+    "tl2": "c2180000"
+   }
+  },
+  "merc": {
+   "arrays": {
+    "coriolis_e": {
+     "dtype": "f64",
+     "file": "merc.coriolis_e.f64",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "coriolis_f": {
+     "dtype": "f64",
+     "file": "merc.coriolis_f.f64",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "cosalpha_m": {
+     "dtype": "f64",
+     "file": "merc.cosalpha_m.f64",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "cosalpha_u": {
+     "dtype": "f64",
+     "file": "merc.cosalpha_u.f64",
+     "shape": [
+      35,
+      42
+     ]
+    },
+    "cosalpha_v": {
+     "dtype": "f64",
+     "file": "merc.cosalpha_v.f64",
+     "shape": [
+      36,
+      41
+     ]
+    },
+    "lat_c": {
+     "dtype": "f64",
+     "file": "merc.lat_c.f64",
+     "shape": [
+      36,
+      42
+     ]
+    },
+    "lat_mass": {
+     "dtype": "f64",
+     "file": "merc.lat_mass.f64",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "lat_u": {
+     "dtype": "f64",
+     "file": "merc.lat_u.f64",
+     "shape": [
+      35,
+      42
+     ]
+    },
+    "lat_v": {
+     "dtype": "f64",
+     "file": "merc.lat_v.f64",
+     "shape": [
+      36,
+      41
+     ]
+    },
+    "llij_x": {
+     "dtype": "f64",
+     "file": "merc.llij_x.f64",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "llij_y": {
+     "dtype": "f64",
+     "file": "merc.llij_y.f64",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "lon_c": {
+     "dtype": "f64",
+     "file": "merc.lon_c.f64",
+     "shape": [
+      36,
+      42
+     ]
+    },
+    "lon_mass": {
+     "dtype": "f64",
+     "file": "merc.lon_mass.f64",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "lon_u": {
+     "dtype": "f64",
+     "file": "merc.lon_u.f64",
+     "shape": [
+      35,
+      42
+     ]
+    },
+    "lon_v": {
+     "dtype": "f64",
+     "file": "merc.lon_v.f64",
+     "shape": [
+      36,
+      41
+     ]
+    },
+    "mapfac_m": {
+     "dtype": "f64",
+     "file": "merc.mapfac_m.f64",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "mapfac_u": {
+     "dtype": "f64",
+     "file": "merc.mapfac_u.f64",
+     "shape": [
+      35,
+      42
+     ]
+    },
+    "mapfac_v": {
+     "dtype": "f64",
+     "file": "merc.mapfac_v.f64",
+     "shape": [
+      36,
+      41
+     ]
+    },
+    "sinalpha_m": {
+     "dtype": "f64",
+     "file": "merc.sinalpha_m.f64",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "sinalpha_u": {
+     "dtype": "f64",
+     "file": "merc.sinalpha_u.f64",
+     "shape": [
+      35,
+      42
+     ]
+    },
+    "sinalpha_v": {
+     "dtype": "f64",
+     "file": "merc.sinalpha_v.f64",
+     "shape": [
+      36,
+      41
+     ]
+    },
+    "surface_lat_c": {
+     "dtype": "f32",
+     "file": "merc.surface_lat_c.f32",
+     "shape": [
+      42,
+      48
+     ]
+    },
+    "surface_lat_e": {
+     "dtype": "f32",
+     "file": "merc.surface_lat_e.f32",
+     "shape": [
+      41,
+      47
+     ]
+    },
+    "surface_lat_integer_band": {
+     "dtype": "u8",
+     "file": "merc.surface_lat_integer_band.u8",
+     "shape": [
+      41,
+      47
+     ]
+    },
+    "surface_lat_lower_e": {
+     "dtype": "f32",
+     "file": "merc.surface_lat_lower_e.f32",
+     "shape": [
+      41,
+      47
+     ]
+    },
+    "surface_lon_boundary_band": {
+     "dtype": "u8",
+     "file": "merc.surface_lon_boundary_band.u8",
+     "shape": [
+      41,
+      47
+     ]
+    },
+    "surface_lon_c": {
+     "dtype": "f64",
+     "file": "merc.surface_lon_c.f64",
+     "shape": [
+      42,
+      48
+     ]
+    },
+    "surface_lon_e": {
+     "dtype": "f64",
+     "file": "merc.surface_lon_e.f64",
+     "shape": [
+      41,
+      47
+     ]
+    },
+    "twin_lat": {
+     "dtype": "f32",
+     "file": "merc.twin_lat.f32",
+     "shape": [
+      41,
+      47
+     ]
+    },
+    "twin_llij_x": {
+     "dtype": "f32",
+     "file": "merc.twin_llij_x.f32",
+     "shape": [
+      41,
+      47
+     ]
+    },
+    "twin_llij_y": {
+     "dtype": "f32",
+     "file": "merc.twin_llij_y.f32",
+     "shape": [
+      41,
+      47
+     ]
+    },
+    "twin_lon": {
+     "dtype": "f32",
+     "file": "merc.twin_lon.f32",
+     "shape": [
+      41,
+      47
+     ]
+    }
+   },
+   "scalars": {
+    "cen_lat": {
+     "f64_bits": "4035800000000000"
+    },
+    "cen_lon": {
+     "f64_bits": "405e400000000000"
+    },
+    "dlon": {
+     "f64_bits": "3f606c397d9561c4"
+    },
+    "dx": {
+     "f64_bits": "40c7700000000000"
+    },
+    "hemi": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "known_x": {
+     "f64_bits": "4035000000000000"
+    },
+    "known_y": {
+     "f64_bits": "4032000000000000"
+    },
+    "ref_lat": {
+     "f64_bits": "4035800000000000"
+    },
+    "ref_lon": {
+     "f64_bits": "405e400000000000"
+    },
+    "rsw": {
+     "f64_bits": "4067f77ea7b2b956"
+    }
+   },
+   "spec": {
+    "dx": 12000.0,
+    "dy": 12000.0,
+    "e_sn": 36,
+    "e_we": 42,
+    "kind": "mercator",
+    "known_x": 21.0,
+    "known_y": 18.0,
+    "moad_cen_lat": 21.5,
+    "moad_cen_lon": 121.0,
+    "ref_lat": 21.5,
+    "ref_lon": 121.0,
+    "stand_lon": 121.0,
+    "truelat1": 20.0,
+    "truelat2": 20.0
+   },
+   "surface_lon_e_dtype": "float64",
+   "twin_state": {
+    "deg": "42652ee1",
+    "dlon": "3b0361cc",
+    "knowni": "41a80000",
+    "knownj": "41900000",
+    "lat1": "41ac0000",
+    "lon1": "42f20000",
+    "rad": "3c8efa35",
+    "rsw": "433fbbf2"
+   }
+  },
+  "merc_subkm": {
+   "arrays": {
+    "coriolis_e": {
+     "dtype": "f64",
+     "file": "merc_subkm.coriolis_e.f64",
+     "shape": [
+      25,
+      29
+     ]
+    },
+    "coriolis_f": {
+     "dtype": "f64",
+     "file": "merc_subkm.coriolis_f.f64",
+     "shape": [
+      25,
+      29
+     ]
+    },
+    "cosalpha_m": {
+     "dtype": "f64",
+     "file": "merc_subkm.cosalpha_m.f64",
+     "shape": [
+      25,
+      29
+     ]
+    },
+    "cosalpha_u": {
+     "dtype": "f64",
+     "file": "merc_subkm.cosalpha_u.f64",
+     "shape": [
+      25,
+      30
+     ]
+    },
+    "cosalpha_v": {
+     "dtype": "f64",
+     "file": "merc_subkm.cosalpha_v.f64",
+     "shape": [
+      26,
+      29
+     ]
+    },
+    "lat_c": {
+     "dtype": "f64",
+     "file": "merc_subkm.lat_c.f64",
+     "shape": [
+      26,
+      30
+     ]
+    },
+    "lat_mass": {
+     "dtype": "f64",
+     "file": "merc_subkm.lat_mass.f64",
+     "shape": [
+      25,
+      29
+     ]
+    },
+    "lat_u": {
+     "dtype": "f64",
+     "file": "merc_subkm.lat_u.f64",
+     "shape": [
+      25,
+      30
+     ]
+    },
+    "lat_v": {
+     "dtype": "f64",
+     "file": "merc_subkm.lat_v.f64",
+     "shape": [
+      26,
+      29
+     ]
+    },
+    "llij_x": {
+     "dtype": "f64",
+     "file": "merc_subkm.llij_x.f64",
+     "shape": [
+      25,
+      29
+     ]
+    },
+    "llij_y": {
+     "dtype": "f64",
+     "file": "merc_subkm.llij_y.f64",
+     "shape": [
+      25,
+      29
+     ]
+    },
+    "lon_c": {
+     "dtype": "f64",
+     "file": "merc_subkm.lon_c.f64",
+     "shape": [
+      26,
+      30
+     ]
+    },
+    "lon_mass": {
+     "dtype": "f64",
+     "file": "merc_subkm.lon_mass.f64",
+     "shape": [
+      25,
+      29
+     ]
+    },
+    "lon_u": {
+     "dtype": "f64",
+     "file": "merc_subkm.lon_u.f64",
+     "shape": [
+      25,
+      30
+     ]
+    },
+    "lon_v": {
+     "dtype": "f64",
+     "file": "merc_subkm.lon_v.f64",
+     "shape": [
+      26,
+      29
+     ]
+    },
+    "mapfac_m": {
+     "dtype": "f64",
+     "file": "merc_subkm.mapfac_m.f64",
+     "shape": [
+      25,
+      29
+     ]
+    },
+    "mapfac_u": {
+     "dtype": "f64",
+     "file": "merc_subkm.mapfac_u.f64",
+     "shape": [
+      25,
+      30
+     ]
+    },
+    "mapfac_v": {
+     "dtype": "f64",
+     "file": "merc_subkm.mapfac_v.f64",
+     "shape": [
+      26,
+      29
+     ]
+    },
+    "sinalpha_m": {
+     "dtype": "f64",
+     "file": "merc_subkm.sinalpha_m.f64",
+     "shape": [
+      25,
+      29
+     ]
+    },
+    "sinalpha_u": {
+     "dtype": "f64",
+     "file": "merc_subkm.sinalpha_u.f64",
+     "shape": [
+      25,
+      30
+     ]
+    },
+    "sinalpha_v": {
+     "dtype": "f64",
+     "file": "merc_subkm.sinalpha_v.f64",
+     "shape": [
+      26,
+      29
+     ]
+    },
+    "surface_lat_c": {
+     "dtype": "f32",
+     "file": "merc_subkm.surface_lat_c.f32",
+     "shape": [
+      32,
+      36
+     ]
+    },
+    "surface_lat_e": {
+     "dtype": "f32",
+     "file": "merc_subkm.surface_lat_e.f32",
+     "shape": [
+      31,
+      35
+     ]
+    },
+    "surface_lat_integer_band": {
+     "dtype": "u8",
+     "file": "merc_subkm.surface_lat_integer_band.u8",
+     "shape": [
+      31,
+      35
+     ]
+    },
+    "surface_lat_lower_e": {
+     "dtype": "f32",
+     "file": "merc_subkm.surface_lat_lower_e.f32",
+     "shape": [
+      31,
+      35
+     ]
+    },
+    "surface_lon_boundary_band": {
+     "dtype": "u8",
+     "file": "merc_subkm.surface_lon_boundary_band.u8",
+     "shape": [
+      31,
+      35
+     ]
+    },
+    "surface_lon_c": {
+     "dtype": "f64",
+     "file": "merc_subkm.surface_lon_c.f64",
+     "shape": [
+      32,
+      36
+     ]
+    },
+    "surface_lon_e": {
+     "dtype": "f64",
+     "file": "merc_subkm.surface_lon_e.f64",
+     "shape": [
+      31,
+      35
+     ]
+    },
+    "twin_lat": {
+     "dtype": "f32",
+     "file": "merc_subkm.twin_lat.f32",
+     "shape": [
+      31,
+      35
+     ]
+    },
+    "twin_llij_x": {
+     "dtype": "f32",
+     "file": "merc_subkm.twin_llij_x.f32",
+     "shape": [
+      31,
+      35
+     ]
+    },
+    "twin_llij_y": {
+     "dtype": "f32",
+     "file": "merc_subkm.twin_llij_y.f32",
+     "shape": [
+      31,
+      35
+     ]
+    },
+    "twin_lon": {
+     "dtype": "f32",
+     "file": "merc_subkm.twin_lon.f32",
+     "shape": [
+      31,
+      35
+     ]
+    }
+   },
+   "scalars": {
+    "cen_lat": {
+     "f64_bits": "4035800000000000"
+    },
+    "cen_lon": {
+     "f64_bits": "405e400000000000"
+    },
+    "dlon": {
+     "f64_bits": "3f2184819705bd9e"
+    },
+    "dx": {
+     "f64_bits": "4089000000000000"
+    },
+    "hemi": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "known_x": {
+     "f64_bits": "402e000000000000"
+    },
+    "known_y": {
+     "f64_bits": "402a000000000000"
+    },
+    "ref_lat": {
+     "f64_bits": "4035800000000000"
+    },
+    "ref_lon": {
+     "f64_bits": "405e400000000000"
+    },
+    "rsw": {
+     "f64_bits": "40a67806bd378dc0"
+    }
+   },
+   "spec": {
+    "dx": 800.0,
+    "dy": 800.0,
+    "e_sn": 26,
+    "e_we": 30,
+    "kind": "mercator",
+    "known_x": 15.0,
+    "known_y": 13.0,
+    "moad_cen_lat": 21.5,
+    "moad_cen_lon": 121.0,
+    "ref_lat": 21.5,
+    "ref_lon": 121.0,
+    "stand_lon": 121.0,
+    "truelat1": 20.0,
+    "truelat2": 20.0
+   },
+   "surface_lon_e_dtype": "float64",
+   "twin_state": {
+    "deg": "42652ee1",
+    "dlon": "390c240d",
+    "knowni": "41700000",
+    "knownj": "41500000",
+    "lat1": "41ac0000",
+    "lon1": "42f20000",
+    "rad": "3c8efa35",
+    "rsw": "4533c033"
+   },
+   "twin_state_adopted": {
+    "deg": "42652ee1",
+    "dlon": "390c240d",
+    "knowni": "41700000",
+    "knownj": "41500000",
+    "lat1": "41ac0000",
+    "lon1": "42f20000",
+    "rad": "3c8efa35",
+    "rsw": "4533c036"
+   }
+  },
+  "npmath": {
+   "arrays": {
+    "cos_out": {
+     "dtype": "f32",
+     "file": "npmath.cos_out.f32",
+     "shape": [
+      4012
+     ]
+    },
+    "exp_in": {
+     "dtype": "f32",
+     "file": "npmath.exp_in.f32",
+     "shape": [
+      3509
+     ]
+    },
+    "exp_out": {
+     "dtype": "f32",
+     "file": "npmath.exp_out.f32",
+     "shape": [
+      3509
+     ]
+    },
+    "log_in": {
+     "dtype": "f32",
+     "file": "npmath.log_in.f32",
+     "shape": [
+      3506
+     ]
+    },
+    "log_out": {
+     "dtype": "f32",
+     "file": "npmath.log_out.f32",
+     "shape": [
+      3506
+     ]
+    },
+    "sin_out": {
+     "dtype": "f32",
+     "file": "npmath.sin_out.f32",
+     "shape": [
+      4012
+     ]
+    },
+    "trig_in": {
+     "dtype": "f32",
+     "file": "npmath.trig_in.f32",
+     "shape": [
+      4012
+     ]
+    }
+   },
+   "scalars": {}
+  },
+  "npz": {
+   "arrays": {
+    "field_ALPHA": {
+     "dtype": "f64",
+     "file": "npz.field_ALPHA.f64",
+     "shape": [
+      2,
+      5
+     ]
+    },
+    "field_BETA": {
+     "dtype": "f64",
+     "file": "npz.field_BETA.f64",
+     "shape": [
+      2,
+      3,
+      4
+     ]
+    },
+    "field_GAMMA": {
+     "dtype": "f64",
+     "file": "npz.field_GAMMA.f64",
+     "shape": [
+      2,
+      2
+     ]
+    }
+   },
+   "bytes": 990,
+   "fields": {
+    "ALPHA": [
+     2,
+     5
+    ],
+    "BETA": [
+     2,
+     3,
+     4
+    ],
+    "GAMMA": [
+     2,
+     2
+    ]
+   },
+   "file": "npz_seal.golden.npz",
+   "scalars": {},
+   "sha256": "1f92e69a4719d02eb4abc18323a4d2f2490a590f4c8b0a8a7fb09fcea6eaa5d7"
+  },
+  "polar": {
+   "arrays": {
+    "coriolis_e": {
+     "dtype": "f64",
+     "file": "polar.coriolis_e.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "coriolis_f": {
+     "dtype": "f64",
+     "file": "polar.coriolis_f.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "cosalpha_m": {
+     "dtype": "f64",
+     "file": "polar.cosalpha_m.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "cosalpha_u": {
+     "dtype": "f64",
+     "file": "polar.cosalpha_u.f64",
+     "shape": [
+      33,
+      40
+     ]
+    },
+    "cosalpha_v": {
+     "dtype": "f64",
+     "file": "polar.cosalpha_v.f64",
+     "shape": [
+      34,
+      39
+     ]
+    },
+    "lat_c": {
+     "dtype": "f64",
+     "file": "polar.lat_c.f64",
+     "shape": [
+      34,
+      40
+     ]
+    },
+    "lat_mass": {
+     "dtype": "f64",
+     "file": "polar.lat_mass.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "lat_u": {
+     "dtype": "f64",
+     "file": "polar.lat_u.f64",
+     "shape": [
+      33,
+      40
+     ]
+    },
+    "lat_v": {
+     "dtype": "f64",
+     "file": "polar.lat_v.f64",
+     "shape": [
+      34,
+      39
+     ]
+    },
+    "llij_x": {
+     "dtype": "f64",
+     "file": "polar.llij_x.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "llij_y": {
+     "dtype": "f64",
+     "file": "polar.llij_y.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "lon_c": {
+     "dtype": "f64",
+     "file": "polar.lon_c.f64",
+     "shape": [
+      34,
+      40
+     ]
+    },
+    "lon_mass": {
+     "dtype": "f64",
+     "file": "polar.lon_mass.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "lon_u": {
+     "dtype": "f64",
+     "file": "polar.lon_u.f64",
+     "shape": [
+      33,
+      40
+     ]
+    },
+    "lon_v": {
+     "dtype": "f64",
+     "file": "polar.lon_v.f64",
+     "shape": [
+      34,
+      39
+     ]
+    },
+    "mapfac_m": {
+     "dtype": "f64",
+     "file": "polar.mapfac_m.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "mapfac_u": {
+     "dtype": "f64",
+     "file": "polar.mapfac_u.f64",
+     "shape": [
+      33,
+      40
+     ]
+    },
+    "mapfac_v": {
+     "dtype": "f64",
+     "file": "polar.mapfac_v.f64",
+     "shape": [
+      34,
+      39
+     ]
+    },
+    "sinalpha_m": {
+     "dtype": "f64",
+     "file": "polar.sinalpha_m.f64",
+     "shape": [
+      33,
+      39
+     ]
+    },
+    "sinalpha_u": {
+     "dtype": "f64",
+     "file": "polar.sinalpha_u.f64",
+     "shape": [
+      33,
+      40
+     ]
+    },
+    "sinalpha_v": {
+     "dtype": "f64",
+     "file": "polar.sinalpha_v.f64",
+     "shape": [
+      34,
+      39
+     ]
+    },
+    "twin_lat": {
+     "dtype": "f32",
+     "file": "polar.twin_lat.f32",
+     "shape": [
+      39,
+      45
+     ]
+    },
+    "twin_llij_x": {
+     "dtype": "f32",
+     "file": "polar.twin_llij_x.f32",
+     "shape": [
+      39,
+      45
+     ]
+    },
+    "twin_llij_y": {
+     "dtype": "f32",
+     "file": "polar.twin_llij_y.f32",
+     "shape": [
+      39,
+      45
+     ]
+    },
+    "twin_lon": {
+     "dtype": "f32",
+     "file": "polar.twin_lon.f32",
+     "shape": [
+      39,
+      45
+     ]
+    }
+   },
+   "scalars": {
+    "cen_lat": {
+     "f64_bits": "4050000000000000"
+    },
+    "cen_lon": {
+     "f64_bits": "c063000000000000"
+    },
+    "dx": {
+     "f64_bits": "40cd4c0000000000"
+    },
+    "hemi": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "known_x": {
+     "f64_bits": "4034000000000000"
+    },
+    "known_y": {
+     "f64_bits": "4031000000000000"
+    },
+    "polei": {
+     "f64_bits": "403aa8255c6292f8"
+    },
+    "polej": {
+     "f64_bits": "4069f40b5a7c6319"
+    },
+    "rebydx": {
+     "f64_bits": "407a8aaaaaaaaaab"
+    },
+    "ref_lat": {
+     "f64_bits": "4050000000000000"
+    },
+    "ref_lon": {
+     "f64_bits": "c063000000000000"
+    },
+    "rsw": {
+     "f64_bits": "4067d7c33989bd12"
+    }
+   },
+   "spec": {
+    "dx": 15000.0,
+    "dy": 15000.0,
+    "e_sn": 34,
+    "e_we": 40,
+    "kind": "polar",
+    "known_x": 20.0,
+    "known_y": 17.0,
+    "moad_cen_lat": 64.0,
+    "moad_cen_lon": -152.0,
+    "ref_lat": 64.0,
+    "ref_lon": -152.0,
+    "stand_lon": -150.0,
+    "truelat1": 71.0,
+    "truelat2": 71.0
+   },
+   "twin_state": {
+    "deg": "42652ee1",
+    "hemi": "3f800000",
+    "polei": "41d54128",
+    "polej": "434fa05b",
+    "rad": "3c8efa35",
+    "rebydx": "43d45555",
+    "rsw": "433ebe1a",
+    "scale_top": "3ff906c0",
+    "stand_lon": "c3160000",
+    "tl1": "428e0000"
+   }
+  },
+  "polar_sh": {
+   "arrays": {
+    "coriolis_e": {
+     "dtype": "f64",
+     "file": "polar_sh.coriolis_e.f64",
+     "shape": [
+      29,
+      35
+     ]
+    },
+    "coriolis_f": {
+     "dtype": "f64",
+     "file": "polar_sh.coriolis_f.f64",
+     "shape": [
+      29,
+      35
+     ]
+    },
+    "cosalpha_m": {
+     "dtype": "f64",
+     "file": "polar_sh.cosalpha_m.f64",
+     "shape": [
+      29,
+      35
+     ]
+    },
+    "cosalpha_u": {
+     "dtype": "f64",
+     "file": "polar_sh.cosalpha_u.f64",
+     "shape": [
+      29,
+      36
+     ]
+    },
+    "cosalpha_v": {
+     "dtype": "f64",
+     "file": "polar_sh.cosalpha_v.f64",
+     "shape": [
+      30,
+      35
+     ]
+    },
+    "lat_c": {
+     "dtype": "f64",
+     "file": "polar_sh.lat_c.f64",
+     "shape": [
+      30,
+      36
+     ]
+    },
+    "lat_mass": {
+     "dtype": "f64",
+     "file": "polar_sh.lat_mass.f64",
+     "shape": [
+      29,
+      35
+     ]
+    },
+    "lat_u": {
+     "dtype": "f64",
+     "file": "polar_sh.lat_u.f64",
+     "shape": [
+      29,
+      36
+     ]
+    },
+    "lat_v": {
+     "dtype": "f64",
+     "file": "polar_sh.lat_v.f64",
+     "shape": [
+      30,
+      35
+     ]
+    },
+    "llij_x": {
+     "dtype": "f64",
+     "file": "polar_sh.llij_x.f64",
+     "shape": [
+      29,
+      35
+     ]
+    },
+    "llij_y": {
+     "dtype": "f64",
+     "file": "polar_sh.llij_y.f64",
+     "shape": [
+      29,
+      35
+     ]
+    },
+    "lon_c": {
+     "dtype": "f64",
+     "file": "polar_sh.lon_c.f64",
+     "shape": [
+      30,
+      36
+     ]
+    },
+    "lon_mass": {
+     "dtype": "f64",
+     "file": "polar_sh.lon_mass.f64",
+     "shape": [
+      29,
+      35
+     ]
+    },
+    "lon_u": {
+     "dtype": "f64",
+     "file": "polar_sh.lon_u.f64",
+     "shape": [
+      29,
+      36
+     ]
+    },
+    "lon_v": {
+     "dtype": "f64",
+     "file": "polar_sh.lon_v.f64",
+     "shape": [
+      30,
+      35
+     ]
+    },
+    "mapfac_m": {
+     "dtype": "f64",
+     "file": "polar_sh.mapfac_m.f64",
+     "shape": [
+      29,
+      35
+     ]
+    },
+    "mapfac_u": {
+     "dtype": "f64",
+     "file": "polar_sh.mapfac_u.f64",
+     "shape": [
+      29,
+      36
+     ]
+    },
+    "mapfac_v": {
+     "dtype": "f64",
+     "file": "polar_sh.mapfac_v.f64",
+     "shape": [
+      30,
+      35
+     ]
+    },
+    "sinalpha_m": {
+     "dtype": "f64",
+     "file": "polar_sh.sinalpha_m.f64",
+     "shape": [
+      29,
+      35
+     ]
+    },
+    "sinalpha_u": {
+     "dtype": "f64",
+     "file": "polar_sh.sinalpha_u.f64",
+     "shape": [
+      29,
+      36
+     ]
+    },
+    "sinalpha_v": {
+     "dtype": "f64",
+     "file": "polar_sh.sinalpha_v.f64",
+     "shape": [
+      30,
+      35
+     ]
+    },
+    "twin_lat": {
+     "dtype": "f32",
+     "file": "polar_sh.twin_lat.f32",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "twin_llij_x": {
+     "dtype": "f32",
+     "file": "polar_sh.twin_llij_x.f32",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "twin_llij_y": {
+     "dtype": "f32",
+     "file": "polar_sh.twin_llij_y.f32",
+     "shape": [
+      35,
+      41
+     ]
+    },
+    "twin_lon": {
+     "dtype": "f32",
+     "file": "polar_sh.twin_lon.f32",
+     "shape": [
+      35,
+      41
+     ]
+    }
+   },
+   "scalars": {
+    "cen_lat": {
+     "f64_bits": "c050000000000000"
+    },
+    "cen_lon": {
+     "f64_bits": "4064000000000000"
+    },
+    "dx": {
+     "f64_bits": "40cd4c0000000000"
+    },
+    "hemi": {
+     "f64_bits": "bff0000000000000"
+    },
+    "known_x": {
+     "f64_bits": "4032000000000000"
+    },
+    "known_y": {
+     "f64_bits": "402e000000000000"
+    },
+    "polei": {
+     "f64_bits": "40414fe96f0beec7"
+    },
+    "polej": {
+     "f64_bits": "c065e089332f12ce"
+    },
+    "rebydx": {
+     "f64_bits": "407a8aaaaaaaaaab"
+    },
+    "ref_lat": {
+     "f64_bits": "c050000000000000"
+    },
+    "ref_lon": {
+     "f64_bits": "4064000000000000"
+    },
+    "rsw": {
+     "f64_bits": "4067d7c33989bd12"
+    }
+   },
+   "spec": {
+    "dx": 15000.0,
+    "dy": 15000.0,
+    "e_sn": 30,
+    "e_we": 36,
+    "kind": "polar",
+    "known_x": 18.0,
+    "known_y": 15.0,
+    "moad_cen_lat": -64.0,
+    "moad_cen_lon": 160.0,
+    "ref_lat": -64.0,
+    "ref_lon": 160.0,
+    "stand_lon": 165.0,
+    "truelat1": -71.0,
+    "truelat2": -71.0
+   },
+   "twin_state": {
+    "deg": "42652ee1",
+    "hemi": "bf800000",
+    "polei": "420a7f4c",
+    "polej": "c32f044a",
+    "rad": "3c8efa35",
+    "rebydx": "43d45555",
+    "rsw": "433ebe1a",
+    "scale_top": "3ff906c0",
+    "stand_lon": "43250000",
+    "tl1": "c28e0000"
+   }
+  },
+  "polar_subkm": {
+   "arrays": {
+    "coriolis_e": {
+     "dtype": "f64",
+     "file": "polar_subkm.coriolis_e.f64",
+     "shape": [
+      23,
+      27
+     ]
+    },
+    "coriolis_f": {
+     "dtype": "f64",
+     "file": "polar_subkm.coriolis_f.f64",
+     "shape": [
+      23,
+      27
+     ]
+    },
+    "cosalpha_m": {
+     "dtype": "f64",
+     "file": "polar_subkm.cosalpha_m.f64",
+     "shape": [
+      23,
+      27
+     ]
+    },
+    "cosalpha_u": {
+     "dtype": "f64",
+     "file": "polar_subkm.cosalpha_u.f64",
+     "shape": [
+      23,
+      28
+     ]
+    },
+    "cosalpha_v": {
+     "dtype": "f64",
+     "file": "polar_subkm.cosalpha_v.f64",
+     "shape": [
+      24,
+      27
+     ]
+    },
+    "lat_c": {
+     "dtype": "f64",
+     "file": "polar_subkm.lat_c.f64",
+     "shape": [
+      24,
+      28
+     ]
+    },
+    "lat_mass": {
+     "dtype": "f64",
+     "file": "polar_subkm.lat_mass.f64",
+     "shape": [
+      23,
+      27
+     ]
+    },
+    "lat_u": {
+     "dtype": "f64",
+     "file": "polar_subkm.lat_u.f64",
+     "shape": [
+      23,
+      28
+     ]
+    },
+    "lat_v": {
+     "dtype": "f64",
+     "file": "polar_subkm.lat_v.f64",
+     "shape": [
+      24,
+      27
+     ]
+    },
+    "llij_x": {
+     "dtype": "f64",
+     "file": "polar_subkm.llij_x.f64",
+     "shape": [
+      23,
+      27
+     ]
+    },
+    "llij_y": {
+     "dtype": "f64",
+     "file": "polar_subkm.llij_y.f64",
+     "shape": [
+      23,
+      27
+     ]
+    },
+    "lon_c": {
+     "dtype": "f64",
+     "file": "polar_subkm.lon_c.f64",
+     "shape": [
+      24,
+      28
+     ]
+    },
+    "lon_mass": {
+     "dtype": "f64",
+     "file": "polar_subkm.lon_mass.f64",
+     "shape": [
+      23,
+      27
+     ]
+    },
+    "lon_u": {
+     "dtype": "f64",
+     "file": "polar_subkm.lon_u.f64",
+     "shape": [
+      23,
+      28
+     ]
+    },
+    "lon_v": {
+     "dtype": "f64",
+     "file": "polar_subkm.lon_v.f64",
+     "shape": [
+      24,
+      27
+     ]
+    },
+    "mapfac_m": {
+     "dtype": "f64",
+     "file": "polar_subkm.mapfac_m.f64",
+     "shape": [
+      23,
+      27
+     ]
+    },
+    "mapfac_u": {
+     "dtype": "f64",
+     "file": "polar_subkm.mapfac_u.f64",
+     "shape": [
+      23,
+      28
+     ]
+    },
+    "mapfac_v": {
+     "dtype": "f64",
+     "file": "polar_subkm.mapfac_v.f64",
+     "shape": [
+      24,
+      27
+     ]
+    },
+    "sinalpha_m": {
+     "dtype": "f64",
+     "file": "polar_subkm.sinalpha_m.f64",
+     "shape": [
+      23,
+      27
+     ]
+    },
+    "sinalpha_u": {
+     "dtype": "f64",
+     "file": "polar_subkm.sinalpha_u.f64",
+     "shape": [
+      23,
+      28
+     ]
+    },
+    "sinalpha_v": {
+     "dtype": "f64",
+     "file": "polar_subkm.sinalpha_v.f64",
+     "shape": [
+      24,
+      27
+     ]
+    },
+    "surface_lat_c": {
+     "dtype": "f32",
+     "file": "polar_subkm.surface_lat_c.f32",
+     "shape": [
+      30,
+      34
+     ]
+    },
+    "surface_lat_e": {
+     "dtype": "f32",
+     "file": "polar_subkm.surface_lat_e.f32",
+     "shape": [
+      29,
+      33
+     ]
+    },
+    "surface_lat_integer_band": {
+     "dtype": "u8",
+     "file": "polar_subkm.surface_lat_integer_band.u8",
+     "shape": [
+      29,
+      33
+     ]
+    },
+    "surface_lat_lower_e": {
+     "dtype": "f32",
+     "file": "polar_subkm.surface_lat_lower_e.f32",
+     "shape": [
+      29,
+      33
+     ]
+    },
+    "surface_lon_boundary_band": {
+     "dtype": "u8",
+     "file": "polar_subkm.surface_lon_boundary_band.u8",
+     "shape": [
+      29,
+      33
+     ]
+    },
+    "surface_lon_c": {
+     "dtype": "f64",
+     "file": "polar_subkm.surface_lon_c.f64",
+     "shape": [
+      30,
+      34
+     ]
+    },
+    "surface_lon_e": {
+     "dtype": "f64",
+     "file": "polar_subkm.surface_lon_e.f64",
+     "shape": [
+      29,
+      33
+     ]
+    },
+    "twin_lat": {
+     "dtype": "f32",
+     "file": "polar_subkm.twin_lat.f32",
+     "shape": [
+      29,
+      33
+     ]
+    },
+    "twin_llij_x": {
+     "dtype": "f32",
+     "file": "polar_subkm.twin_llij_x.f32",
+     "shape": [
+      29,
+      33
+     ]
+    },
+    "twin_llij_y": {
+     "dtype": "f32",
+     "file": "polar_subkm.twin_llij_y.f32",
+     "shape": [
+      29,
+      33
+     ]
+    },
+    "twin_lon": {
+     "dtype": "f32",
+     "file": "polar_subkm.twin_lon.f32",
+     "shape": [
+      29,
+      33
+     ]
+    }
+   },
+   "scalars": {
+    "cen_lat": {
+     "f64_bits": "4050000000000000"
+    },
+    "cen_lon": {
+     "f64_bits": "c063000000000000"
+    },
+    "dx": {
+     "f64_bits": "408c200000000000"
+    },
+    "hemi": {
+     "f64_bits": "3ff0000000000000"
+    },
+    "known_x": {
+     "f64_bits": "402c000000000000"
+    },
+    "known_y": {
+     "f64_bits": "4028000000000000"
+    },
+    "polei": {
+     "f64_bits": "405f3c9bab9ab9b2"
+    },
+    "polej": {
+     "f64_bits": "40a8ea367e4191e3"
+    },
+    "rebydx": {
+     "f64_bits": "40bba5c71c71c71c"
+    },
+    "ref_lat": {
+     "f64_bits": "4050000000000000"
+    },
+    "ref_lon": {
+     "f64_bits": "c063000000000000"
+    },
+    "rsw": {
+     "f64_bits": "40a8d616069a24f2"
+    }
+   },
+   "spec": {
+    "dx": 900.0,
+    "dy": 900.0,
+    "e_sn": 24,
+    "e_we": 28,
+    "kind": "polar",
+    "known_x": 14.0,
+    "known_y": 12.0,
+    "moad_cen_lat": 64.0,
+    "moad_cen_lon": -152.0,
+    "ref_lat": 64.0,
+    "ref_lon": -152.0,
+    "stand_lon": -150.0,
+    "truelat1": 71.0,
+    "truelat2": 71.0
+   },
+   "surface_lon_e_dtype": "float64",
+   "twin_state": {
+    "deg": "42652ee1",
+    "hemi": "3f800000",
+    "polei": "42f9e4d0",
+    "polej": "454751b5",
+    "rad": "3c8efa35",
+    "rebydx": "45dd2e39",
+    "rsw": "4546b0b1",
+    "scale_top": "3ff906c0",
+    "stand_lon": "c3160000",
+    "tl1": "428e0000"
+   },
+   "twin_state_adopted": {
+    "deg": "42652ee1",
+    "hemi": "3f800000",
+    "polei": "42f9e4dd",
+    "polej": "454751b4",
+    "rad": "3c8efa35",
+    "rebydx": "45dd2e39",
+    "rsw": "4546b0b1",
+    "scale_top": "3ff906c0",
+    "stand_lon": "c3160000",
+    "tl1": "428e0000"
+   }
+  },
+  "translated": {
+   "arrays": {
+    "compose_lat_mass": {
+     "dtype": "f64",
+     "file": "translated.compose_lat_mass.f64",
+     "shape": [
+      17,
+      19
+     ]
+    },
+    "compose_lon_mass": {
+     "dtype": "f64",
+     "file": "translated.compose_lon_mass.f64",
+     "shape": [
+      17,
+      19
+     ]
+    },
+    "lat_mass": {
+     "dtype": "f64",
+     "file": "translated.lat_mass.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "llij_x": {
+     "dtype": "f64",
+     "file": "translated.llij_x.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "llij_y": {
+     "dtype": "f64",
+     "file": "translated.llij_y.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "lon_mass": {
+     "dtype": "f64",
+     "file": "translated.lon_mass.f64",
+     "shape": [
+      44,
+      51
+     ]
+    },
+    "twin_lat": {
+     "dtype": "f32",
+     "file": "translated.twin_lat.f32",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "twin_llij_x": {
+     "dtype": "f32",
+     "file": "translated.twin_llij_x.f32",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "twin_llij_y": {
+     "dtype": "f32",
+     "file": "translated.twin_llij_y.f32",
+     "shape": [
+      50,
+      57
+     ]
+    },
+    "twin_lon": {
+     "dtype": "f32",
+     "file": "translated.twin_lon.f32",
+     "shape": [
+      50,
+      57
+     ]
+    }
+   },
+   "compose_extent": [
+    20,
+    18
+   ],
+   "compose_offset": [
+    -1,
+    4
+   ],
+   "offset": [
+    3,
+    -2
+   ],
+   "scalars": {
+    "cen_lat": {
+     "f64_bits": "4043ab370f79b53c"
+    },
+    "cen_lon": {
+     "f64_bits": "c054ebe5ad5bc5f4"
+    }
+   }
+  }
+ },
+ "generator": "tools/static_rust_port/extract_lane1_goldens.py",
+ "numpy": "2.2.6"
+}

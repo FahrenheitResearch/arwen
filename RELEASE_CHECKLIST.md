@@ -91,6 +91,15 @@ reproduce them, not because their proofs are optional:
       `X.Y.Z`. It reads this way by owner ruling of 2026-08-03: the
       stable-only refusal was added on 2026-08-01 with no ruling behind it,
       and it blocked a motion that had always worked.
+
+      Two more spellings of that same version must agree, and
+      `tests/test_companion_distribution.py` is what enforces it:
+      `gpuwm-data/gpuwm_data/VERSION`, and the `gpuwm-data==X.Y.Z` pin in
+      `[project].dependencies`.  Bump all three together.  They are
+      restatements rather than one dynamic lookup because
+      `[project].version` has to stay a static literal --
+      `gpuwm.provenance` reads it straight out of the file for the
+      code-version receipt.
 - [ ] The selected workflow ref and the tag name each other, and **exactly
       one** GitHub release carries that tag, in the state the ingress implies
       (a draft for a dispatch, an already-public release for the release
@@ -114,8 +123,10 @@ reproduce them, not because their proofs are optional:
       `tools/verify_source_bridge_pins.py` is a hard gate and stays one by
       owner ruling 2026-08-03: the failure mode is a source archive
       impersonating pinned release bytes.
-- [ ] `cargo build --release --locked` in `tools/grib1_bridge` and in
-      `tools/rustwx`, once per published platform
+- [ ] `cargo build --release --locked` in `tools/grib1_bridge`, in
+      `tools/rustwx`, in `tools/region_global_dealias` and in
+      `tools/rw_wps` (the mapped decode engine, which every mapped
+      source runs on by default), once per published platform
       (`gpuwm.bridge_assets.SUPPORTED_PLATFORMS`).
 - [ ] `python tools/build_bridge_bundle.py pack --release <tag>
       --platform <platform> --search <each target/release> --out
@@ -149,6 +160,29 @@ reproduce them, not because their proofs are optional:
       builds from) or `git archive HEAD` into an empty directory both
       satisfy this; check the wheel's size against the last release's
       before uploading anything.
+- [ ] **TWO distributions, one commit.**  `gpuwm-data` is built from the
+      same tree, at the same version, and uploaded in the same act:
+
+          python -m build --wheel            # gpuwm, per-platform
+          python -m build --wheel gpuwm-data # the companion, py3-none-any
+
+      The companion is pure data, so ONE `py3-none-any` wheel serves every
+      platform and it is built once per cut, not once per platform.  Build
+      it after `rm -rf gpuwm-data/build` for exactly the reason above.
+
+      Neither may be uploaded without the other, and the order is
+      companion first.  `gpuwm` pins `gpuwm-data==<this version>`, so a
+      `gpuwm` on PyPI whose companion is not there yet is an install that
+      resolves to nothing -- every `pip install gpuwm` in the window fails
+      at resolution, including the quickstart.  The reverse gap is
+      invisible: a companion nobody depends on yet is inert.
+
+      Measure both against the 100 MiB per-file cap before uploading
+      anything.  At 2.5.0 they were 39.41 MiB (win_amd64, bridges staged)
+      and 64.22 MiB.  The split happened because the single wheel had
+      reached 103.62 MiB; if either half approaches the cap again, the
+      remedy is another directory into
+      `gpuwm.data_assets.COMPANION_TREES`, not a dropped decoder.
 - [ ] Confirm the built package reads its own pins: the release matches
       the tag, every supported platform is pinned, and each bundle names
       every artifact in `gpuwm.bridge_assets.BUNDLED_ARTIFACTS`.
@@ -183,11 +217,25 @@ reproduce them, not because their proofs are optional:
       `gpuwm.__version__` is the installed distribution's metadata, and a
       source tree beside a stale `site-packages` reports the stale
       number.
+- [ ] In that same scratch environment, read a moved table back through
+      the resolver rather than trusting the file list:
+
+          python -c "import hashlib; from gpuwm import data_assets; \
+            p = data_assets.data_path('rrtmgp/rrtmgp-gas-lw-g256.nc'); \
+            print(p, hashlib.sha256(p.read_bytes()).hexdigest())"
+
+      It must land in `site-packages/gpuwm_data/data/` and match the
+      digest in `tests/test_companion_distribution.py`.  A wheel whose
+      file list is right and whose resolver points at the checkout is a
+      release that only works on the machine that built it.
 - [ ] Reconcile the target PyPI version before upload. Exact existing files
       are retained, only missing wheel/sdist files are staged for Trusted
       Publishing, and any filename/size/SHA-256 mismatch refuses. Prove the
       final PyPI version contains exactly those two artifacts before making
       the GitHub draft public; this makes a one-file partial upload retryable.
+      Reconcile the `gpuwm-data` project at the same version the same way,
+      and prove it public FIRST -- `gpuwm`'s `==` pin makes the companion a
+      precondition of every install, not a follow-up.
 - [ ] After the release is public, one live smoke against the published
       URL: `GPUWM_NETWORK_TESTS=1 python -m pytest -q -m network
       tests/test_bridge_fetch.py`.
@@ -202,7 +250,12 @@ reproduce them, not because their proofs are optional:
       there is nothing to promote -- the release was already public when the
       event fired, and the final job proves it and exits.
 
-A cut that skips the pin step ships a wheel whose pins declare no
-platform.  That is not a corrupt release -- `gpuwm fetch-bridges` says
-so and `gpuwm doctor` falls back to the build-from-source remedy -- but
-it is a release that did not deliver what it built.
+A cut that skips the pin step can no longer build a wheel at all:
+`setup.py` refuses `bdist_wheel` while
+`gpuwm/data/bridges/bridge-pins.json` declares no release and no
+platforms (the 2.5.0 candidate shipped exactly that state, and a clean
+home answered `pip install gpuwm && gpuwm setup` with FAILED bridges --
+no GRIB decoder, no NetCDF decoder, renderer rw_wrfbatch not built).
+`tests/test_wheel_pin_gate.py` proves the refusal in every lane and in
+stage 1; `GPUWM_ALLOW_UNPINNED_WHEEL=1` is the explicit dev override
+for a wheel that never leaves the machine that built it.

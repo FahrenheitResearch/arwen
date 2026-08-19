@@ -235,13 +235,19 @@ class MissingAerosolTableAsset(FileNotFoundError):
 
 
 def packaged_aerosol_table_root() -> Path:
-    """The in-package Thompson table directory.
+    """The packaged Thompson table directory.
 
-    Identical to ``physics_compat.packaged_thompson_table_root()``.  mp=28
-    shares the classic root on purpose: a second root would let ``tnccn_act``
-    and the process tables come from different WRF builds.
+    Identical to ``physics_compat.packaged_thompson_table_root()`` -- now
+    by delegation rather than by a second copy of the path, because since
+    2.5.0 that directory ships in the ``gpuwm-data`` companion and a
+    restated literal here would resolve to a directory that no longer
+    exists.  mp=28 shares the classic root on purpose: a second root would
+    let ``tnccn_act`` and the process tables come from different WRF
+    builds.
     """
-    return Path(__file__).resolve().parents[1] / "data" / "thompson" / "tables"
+    from gpuwm.physics_compat import packaged_thompson_table_root
+
+    return packaged_thompson_table_root()
 
 
 def resolve_aerosol_table_root(root: str | Path | None = None, *,

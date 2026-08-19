@@ -261,6 +261,13 @@ pub struct StoreRenderConfig {
     pub output_height: u32,
     pub png_compression: PngCompressionMode,
     pub place_label_overlay: Option<PlaceLabelOverlay>,
+    /// gpuwm addition (VENDOR.md): caller-supplied map overlays in
+    /// geographic degrees (`rw_wrfbatch --overlays FILE.json`).  `None`
+    /// executes no overlay code, so the default render is byte-unchanged.
+    pub geographic_overlays: Option<rustwx_products::geographic_overlays::MapOverlays>,
+    /// gpuwm addition (VENDOR.md): title/subtitle overrides
+    /// (`rw_wrfbatch --annotate FILE.json`).
+    pub panel_annotations: Option<rustwx_products::geographic_overlays::PanelAnnotations>,
 }
 
 impl StoreRenderConfig {
@@ -430,6 +437,8 @@ pub fn render_hour_products(
 
     if !direct_slugs.is_empty() {
         let direct_request = DirectBatchRequest {
+            geographic_overlays: config.geographic_overlays.clone(),
+            panel_annotations: config.panel_annotations.clone(),
             model: config.model,
             date_yyyymmdd: config.date_yyyymmdd.clone(),
             cycle_override_utc: Some(config.cycle_utc),
@@ -657,6 +666,8 @@ mod tests {
             output_height: 900,
             png_compression: PngCompressionMode::Fast,
             place_label_overlay: None,
+            geographic_overlays: None,
+            panel_annotations: None,
         }
     }
 

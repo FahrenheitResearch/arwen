@@ -250,9 +250,15 @@ def test_auto_falls_back_to_the_next_host_on_an_unrecognised_inventory(
         hours=(0,), area=None, out=out, transport="nomads",
         transport_fallback=("s3",), progress=said.append)
 
-    # NOMADS was tried first for each product and S3 served both.
-    assert seen == ["atmosphere:nomads", "atmosphere:s3",
-                    "soil:nomads", "soil:s3"]
+    # NOMADS was tried first for EACH product and S3 served both.  The
+    # pooled transport may interleave the two products, so the pin is
+    # per product, not on the global call order.
+    per_product = {"atmosphere": [], "soil": []}
+    for attempt in seen:
+        kind, _, host = attempt.partition(":")
+        per_product[kind].append(host)
+    assert per_product == {"atmosphere": ["nomads", "s3"],
+                           "soil": ["nomads", "s3"]}
     explanation = [line for line in said if "does not recognise" in line]
     assert len(explanation) == 2
     assert "falling back to s3" in explanation[0]
@@ -273,7 +279,12 @@ def test_a_pinned_transport_reports_the_mismatch_instead_of_wandering(
         fetch.fetch_hrrr(
             cycle=datetime(2026, 7, 28, 5), hours=(0,), area=None,
             out=tmp_path / "hrrr", transport="nomads", progress=lambda _: None)
-    assert seen == ["atmosphere:nomads"]
+    # The pinned host was the only one ever tried -- no product wandered
+    # to another transport.  (The pooled soil product may have started
+    # before the atmosphere refusal propagated; that changes which
+    # attempts exist, never which host they target.)
+    assert "atmosphere:nomads" in seen
+    assert {attempt.partition(":")[2] for attempt in seen} == {"nomads"}
 
 
 def test_the_manifest_records_the_engine_mode_and_bars(tmp_path,

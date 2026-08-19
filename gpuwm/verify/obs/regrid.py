@@ -37,6 +37,27 @@ Three properties this module exists to keep:
 Geometry is done on the unit sphere in Cartesian coordinates, so longitude
 wrapping and the poles are not special cases; distances are converted between
 great-circle and chord form with :data:`EARTH_RADIUS_M`.
+
+**Where the arithmetic runs.**  Drew's Python boundary names
+"regrid/transform" as data-path processing, so both halves of this module
+run on the Rust crate ``tools/rustwx/crates/obs-regrid`` by default,
+reached through :mod:`gpuwm.obs_regrid_bridge`.  The bodies below
+stay as the parity reference the crate's goldens are extracted from, and
+as an explicit fallback (``GPUWM_OBSREGRID_PYTHON=1``) that announces
+itself as a workaround.
+
+The two engines agree bit for bit on real observation and model grids --
+the crate's parity suite compares IEEE bit patterns, not tolerances, on
+goldens this module produced -- with exactly one documented divergence.
+When two source cells are exactly equidistant from one destination cell,
+``cKDTree`` returns whichever the traversal reached first (measured: 232
+of 400 trials returned the lowest index, 168 returned another), while
+the Rust engine defines the answer as the lowest flat source index.
+That is deliberate rather than a parity failure: this module's own
+premise, three paragraphs up, is that every arm is remapped by the
+identical integer array so no score can differ because a neighbour
+search broke a tie differently, and a tie resolved by traversal order is
+that defect waiting for a library upgrade.
 """
 
 from __future__ import annotations
@@ -143,6 +164,46 @@ def build_plan(*, source_latitude: np.ndarray, source_longitude: np.ndarray,
     destination_shape = np.asarray(destination_latitude).shape
     if len(source_shape) != 2 or len(destination_shape) != 2:
         raise ValueError("both grids must be 2-D")
+
+    from gpuwm import obs_regrid_bridge as regrid_bridge
+
+    engine = regrid_bridge.route("remap plan build")
+    if engine is not None:
+        index, reachable, used = engine.build_plan(
+            method=method, source_latitude=source_latitude,
+            source_longitude=source_longitude,
+            destination_latitude=destination_latitude,
+            destination_longitude=destination_longitude,
+            max_distance_m=max_distance_m)
+        return RegridPlan(
+            method=method, source_index=index, reachable=reachable,
+            destination_shape=(int(destination_shape[0]),
+                               int(destination_shape[1])),
+            source_shape=(int(source_shape[0]), int(source_shape[1])),
+            max_distance_m=float(max_distance_m),
+            max_used_distance_m=used)
+
+    return _build_plan_python(
+        source_latitude=source_latitude, source_longitude=source_longitude,
+        destination_latitude=destination_latitude,
+        destination_longitude=destination_longitude, method=method,
+        max_distance_m=max_distance_m)
+
+
+def _build_plan_python(*, source_latitude: np.ndarray,
+                       source_longitude: np.ndarray,
+                       destination_latitude: np.ndarray,
+                       destination_longitude: np.ndarray, method: str,
+                       max_distance_m: float) -> RegridPlan:
+    """The scipy body: the parity reference and the announced fallback.
+
+    Kept verbatim rather than deleted because the crate's goldens are
+    extracted from THIS code on real staged bytes, and a reference that
+    has been rewritten is no longer the thing the port was proven
+    against.
+    """
+    source_shape = np.asarray(source_latitude).shape
+    destination_shape = np.asarray(destination_latitude).shape
     source_points = unit_vectors(source_latitude, source_longitude)
     destination_points = unit_vectors(destination_latitude,
                                       destination_longitude)
@@ -195,6 +256,22 @@ def apply_plan(plan: RegridPlan, values: np.ndarray, valid: np.ndarray
             f"field shape {values.shape} does not match the plan's source "
             f"grid {plan.source_shape}")
 
+    from gpuwm import obs_regrid_bridge as regrid_bridge
+
+    engine = regrid_bridge.route("remap apply")
+    if engine is not None:
+        return engine.apply_plan(
+            method=plan.method, source_index=plan.source_index,
+            reachable=plan.reachable, source_shape=plan.source_shape,
+            destination_shape=plan.destination_shape, values=values,
+            valid=valid)
+
+    return _apply_plan_python(plan, values, valid)
+
+
+def _apply_plan_python(plan: RegridPlan, values: np.ndarray,
+                       valid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The numpy body: the parity reference and the announced fallback."""
     if plan.method == NEAREST:
         flat_values = values.ravel()
         flat_valid = valid.ravel()

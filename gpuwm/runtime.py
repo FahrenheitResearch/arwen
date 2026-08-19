@@ -61,6 +61,8 @@ from gpuwm.core.noah import noah_initial_snow_albedo
 from gpuwm.experiment import ExperimentConfig, VerticalConfig
 from gpuwm.ingest.grib import cached_era5_forcing
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
+from gpuwm.ingest.soil_downscale import (
+    declared_soil_texture_downscale, soil_mesh_plan_from_case)
 from gpuwm.ingest.lateral_bc import (StateBoundaryFrames,
                                      attach_lateral_boundaries)
 from gpuwm.ingest.preprocess_backend import (
@@ -468,9 +470,9 @@ def _cached_static_build(grid, geog_root, *,
 
 def load_source_orography(path, variable: str) -> np.ndarray:
     """Read the declared source-orography artifact (NetCDF, record 0)."""
-    import netCDF4
+    from gpuwm import netcdf_bridge
 
-    with netCDF4.Dataset(path) as ds:
+    with netcdf_bridge.open_dataset(path) as ds:
         if variable not in ds.variables:
             raise ValueError(
                 f"declared source-orography variable {variable!r} is not "
@@ -684,6 +686,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                       initial_perturbation=None,
                       constant_glw_wm2: float | None = None,
                       water_temperature_policy=None,
+                      soil_texture_downscale: bool = True,
                       ) -> PreparedRealCase:
     """Run the real-case setup pipeline for one domain.
 
@@ -780,6 +783,10 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     # N of them made setup, not the forecast, the memory-binding phase.
     initial_result = None
     initial_met = None
+    # The snapshot the INITIAL state came off, kept beside the interpolated
+    # fields because the soil seam needs the SOURCE mesh those fields were
+    # carried from and the interpolated snapshot no longer carries it.
+    initial_source = None
     forcing = StateBoundaryFrames(
         spec_bdy_width=cfg.spec_bdy_width, spec_zone=cfg.spec_zone,
         relax_zone=cfg.relax_zone)
@@ -825,6 +832,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         if index == 0:
             initial_met = met
             initial_result = result
+            initial_source = source
     # ``met``/``result`` now name the LAST forcing time; the first are held
     # separately above.  Nothing between them is still resident.
     final_met = met
@@ -884,6 +892,12 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         water_temperature=getattr(
             initial_met, "water_temperature", None),
         water_temperature_policy=water_temperature_policy,
+        # The moisture and deep-temperature analogue of the elevation lapse
+        # two arguments up.  ``initial_source`` is the snapshot the initial
+        # state came off, so the mesh described here is the mesh the soil
+        # arrived on.
+        soil_mesh=soil_mesh_plan_from_case(
+            initial_source, grid, enabled=bool(soil_texture_downscale)),
         route=_WATER_ROUTE)
     # WRF interpolates GREENFRAC/LAI to the run date
     # (module_initialize_real.F:1322-1335, mid-month anchors); shdmin/
@@ -1045,6 +1059,7 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
                              if data.co2_vmr is not None else None),
         geog_selection=geog_selection, forcing_catalog=catalog,
         water_temperature_policy=resolve_water_temperature_policy(data),
+        soil_texture_downscale=declared_soil_texture_downscale(data),
         scratch_arena=scratch_arena,
         dycore_state_workspace=dycore_state_workspace,
         radiation_column_chunk=exp.column_chunk,
@@ -1404,6 +1419,7 @@ class RealRelocationChildPreparer:
         self.writers = writers
 
     def capture_outgoing(self, node) -> None:
+        from gpuwm.core.physics_continuation import capture_continuation
         from gpuwm.ingest.relocation_init import (
             LAND_SURFACE_CONTINUATION_FIELDS)
 
@@ -1420,6 +1436,12 @@ class RealRelocationChildPreparer:
             "i_parent_start": int(node.cfg.i_parent_start),
             "j_parent_start": int(node.cfg.j_parent_start),
             "fields": fields,
+            # Driver-held per-column physics continuation (KF timers and
+            # held rates, precipitation accumulators, W0AVG), captured by
+            # the restart registry so it shifts with the move instead of
+            # cold-restarting on the whole child (the 2026-08-16 moving-
+            # nest KF artifact report).
+            "continuation": capture_continuation(node.state, driver),
             "static_fields": (None if case is None
                               else case.static_fields),
         }
@@ -1496,12 +1518,38 @@ class RealRelocationChildPreparer:
 
         driver_seconds = self._rebuild_driver(
             initialized, new_dc, parent_node, moved)
+        # Physics continuation follows the move: the registry-derived
+        # per-column driver state (KF NCA/held rates/PRATEC/RAINCV, the
+        # RAINC/RAINNC accumulators, W0AVG) shifts in index space with
+        # the same plan window as the serialised-state transplant, and
+        # the freshly exposed strip cold-starts.  Before this landed the
+        # whole child cold-started at every move, which is the reported
+        # moving-nest KF artifact (2026-08-16).
+        from gpuwm.core.physics_continuation import (restore_continuation,
+                                                     shift_continuation)
+
+        shifted = shift_continuation(
+            captured.get("continuation", {}) or {}, plan)
+        new_state = getattr(initialized, "state", None)
+        new_driver = getattr(new_state, "physics", None)
+        if new_state is not None and new_driver is not None:
+            continuation = restore_continuation(
+                new_state, new_driver, shifted)
+            continuation["restored"] = True
+        else:
+            continuation = {
+                "restored": False,
+                "reason": "the rebuilt child carries no physics driver, "
+                          "so its continuation state cold-starts",
+            }
         self._pending_refresh = (int(new_dc.grid_id), initialized.grid,
                                  static)
         self.last_receipt = {
             "overlap_statics": {
                 "compared_cells": statics_verdict["compared_cells"],
                 "mismatched_fields": statics_verdict["mismatched_fields"],
+                "within_one_ulp": statics_verdict.get(
+                    "within_one_ulp", {}),
                 "pass": statics_verdict["pass"],
             },
             "donor_fill": dict(fill.counts),
@@ -1509,7 +1557,8 @@ class RealRelocationChildPreparer:
             "fields_absent": sorted(
                 set(LAND_SURFACE_CONTINUATION_FIELDS)
                 - set(captured["fields"])),
-            "accumulators_reinitialized": True,
+            "accumulators_reinitialized": not continuation["restored"],
+            "physics_continuation": continuation,
             "driver_rebuild_seconds": driver_seconds,
             "preparer_seconds": _time.perf_counter() - started,
         }
@@ -1521,9 +1570,23 @@ class RealRelocationChildPreparer:
             initialized=initialized, child_dc=new_dc,
             parent_node=parent_node, land=moved)
 
+    @staticmethod
+    def _recouple_moved_cumulus(node) -> None:
+        """The held COUPLED cumulus tendencies are derived state: rebuild
+        them from the restored raw rates against the post-transplant
+        child (the transplanted mu), so held columns keep applying their
+        convective heating from the very first post-move step instead of
+        waiting for the next due cumulus call.  Called by BOTH routes'
+        ``after_move``."""
+        driver = getattr(node.state, "physics", None)
+        recouple = getattr(driver, "recouple_cumulus_tendencies", None)
+        if callable(recouple):
+            recouple(node.state, node.cfg.run)
+
     def after_move(self, node) -> None:
         import dataclasses
 
+        self._recouple_moved_cumulus(node)
         pending = self._pending_refresh
         self._pending_refresh = None
         if pending is None:
@@ -1634,6 +1697,7 @@ class PreparedTreeRelocationChildPreparer(RealRelocationChildPreparer):
         return seconds
 
     def after_move(self, node) -> None:
+        self._recouple_moved_cumulus(node)
         pending = self._pending_refresh
         self._pending_refresh = None
         if pending is None:

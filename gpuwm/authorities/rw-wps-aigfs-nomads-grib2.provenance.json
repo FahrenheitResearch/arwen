@@ -1,0 +1,32 @@
+{
+  "schema": "gpuwm-aigfs-front-door-identity-provenance-v1",
+  "source": "NCEP Artificial Intelligence Global Forecast System (AIGFS) v1.x, GraphCast-based, 0.25-degree deterministic GRIB2 product",
+  "front_door": {
+    "operational": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/aigfs.<YYYYMMDD>/<CC>/model/atmos/grib2/aigfs.t<CC>z.<pres|sfc>.f<HHH>.grib2",
+    "authority": "NWS Service Change Notice 25-89 (2025-12-09): operational data on the NCEP NOMADS server ONLY; no FTP, and MEASURED 2026-08-17: no operational AWS mirror exists (noaa-aigfs-pds and siblings 404, noaa-gfs-bdp-pds has no aigfs prefix), no NOMADS GRIB filter CGI (filter_aigfs.pl 404), and NOMADS keeps a 10-day rolling window with no archive behind it",
+    "cadence": "cycles 00/06/12/18 UTC, steps f000..f384 every 6 hours, exactly two files per step (pres, sfc)"
+  },
+  "identity": {
+    "centre": 7,
+    "subcentre": 0,
+    "generating_process_identifier": 137,
+    "tables_version": 2,
+    "local_tables_version": "1, stamped on every message but unused: every discipline.category.parameterNumber triple resolves against stock WMO tables (MEASURED, exhaustive scan)",
+    "ai_flagging": "NONE -- typeOfProcessedData=fc and typeOfGeneratingProcess=2 exactly like the physical GFS; generatingProcessIdentifier 137 and this front door are the only identity facts"
+  },
+  "imposter": {
+    "name": "EAGLE experimental line, bucket noaa-nws-graphcastgfs-pds",
+    "trap": "the S3 bucket serves DIFFERENT bytes under IDENTICAL object names and directory layout: a different run with a different field set (65-message pres without vertical velocity at f000 versus the operational 78; a 12-message sfc adding fields the operational product does not publish), differing by up to 8.66 gpm in 500 hPa geopotential height, 9.51 m s-1 in 250 hPa wind and 198.6 Pa in mean-sea-level pressure (MEASURED, 2026-08-17 00Z)",
+    "in_band_discriminator": "subCentre: 0 operational, 2 in the EAGLE copy; nothing in the filename distinguishes them",
+    "refusal": "every selector in the mapping pins subcenter=0, so EAGLE bytes match zero selectors and the decode refuses by naming the pinned-versus-observed identity octets instead of silently mixing model versions; note the EAGLE sfc files carry two subCentre-0 messages among their extras, which cannot complete a frame either -- the 3-D state still refuses and frame materialization refuses missing required fields"
+  },
+  "deliberate_exclusions": {
+    "total_precipitation": "published as PDT-8 accumulations in two windows that share paramId/level/step from f012 onward and are byte-identical duplicates at f006; interval statistics are not bindable initialization state, so no selector matches them and the duplicate/window trap cannot fire",
+    "acpcp": "EAGLE copy only: bitsPerValue=0 constant NEGATIVE field, a packing artifact of a field GraphCast never produced; never selected",
+    "idx_sidecars": "the wgrib2 .idx renders the long-range accumulation window as '0-16 day' while the GRIB itself carries hours; the profile trusts the message bytes and never reads the sidecar"
+  },
+  "grid_note": "regular_ll 1440x721 at 0.25 degrees, GDT 0, north-to-south rows, longitude origin 0 running to 359.75 -- the MIRROR of the AIFS 0.25-degree twin whose longitudes start at 180: an array copied between the two conventions without the coordinate metadata is rolled by half the domain",
+  "member_policy": "deterministic from the bytes: PDT 0/8 only, no ensemble keys anywhere; the ensemble sibling is a separate product line",
+  "time_policy": "instantaneous PDT-0 state at every published step; the f000 sfc file has no accumulation messages, and the operational pres file carries real (non-zero-filled) vertical velocity at f000",
+  "input_identity": "dynamic file paths and SHA-256 values are owned by the mapped-source input manifest, gpuwm-mapped-source-inputs-v1; this profile has no composition inputs until the cross-source land-surface donor lands"
+}

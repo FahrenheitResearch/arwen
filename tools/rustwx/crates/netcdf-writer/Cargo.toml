@@ -1,0 +1,63 @@
+# The Rust NetCDF WRITER the stack did not have.
+#
+# Everything in Drew's Rust that touches NetCDF today READS: netcrust,
+# hdf5-reader and netcdf-reader are read-only by design, and rw-netcdf is
+# `inventory` plus `dump`.  The one write capability was
+# rw-store/src/netcdf3.rs, a CDF-2 emitter with no record dimension and
+# NC_FLOAT as its only variable type -- which is exactly why it cannot
+# write a wrfout, whose `Times` variable is NC_CHAR on an unlimited
+# dimension.  This crate is that writer, seeded from netcdf3.rs's byte
+# grammar and extended to the whole classic format: CDF-1, CDF-2 and
+# CDF-5, every classic external type, a record dimension, and attributes
+# of every classic type.
+#
+# Dependency-free on the default feature, on purpose: the writer is the
+# floor of the product-tape path, and a floor with a dependency tree is a
+# floor that moves.  The `rewrite` feature adds the READ side (netcrust
+# plus hdf5-reader) for the wrfout rewrite harness only, so the shipped
+# library never carries it.
+
+[package]
+name = "netcdf-writer"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Dependency-free writer for the NetCDF classic formats (CDF-1, CDF-2, CDF-5)"
+
+[lib]
+name = "netcdf_writer"
+# cdylib: the ctypes seam gpuwm's WrfoutWriter calls (src/capi.rs).
+# rlib:   the Rust callers (rw-wrfbatch, the rewrite harness, tests).
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# The wrfout rewrite harness (src/bin/nc_rewrite.rs).  Read side only.
+#
+# netcrust supplies the STRUCTURE (its NetCDF-4 metadata reconstruction is
+# the hardened part of the read facade) and netcdf-reader supplies the
+# VALUES in their native types.  Both are needed because netcrust's public
+# read surface is f64-only -- gap D2 in the reset map's rw-netcdf list --
+# and promoting an f32 field through f64 is not something a byte-parity
+# harness may do.
+rewrite = ["dep:netcrust", "dep:netcdf-reader", "dep:ndarray"]
+
+[dependencies]
+netcrust = { path = "../../vendor/netcrust", optional = true }
+netcdf-reader = { version = "0.3", optional = true }
+ndarray = { version = "0.17", optional = true }
+
+[dev-dependencies]
+# An INDEPENDENT classic reader for the round-trip tests: a different
+# author, a different parse, so a shared misreading of the spec cannot
+# make a broken file look correct.  netCDF4-python (the C library) is the
+# second independent reader, applied by the acceptance scripts.
+netcdf-reader = "0.3"
+ndarray = "0.17"
+
+[[bin]]
+name = "nc_rewrite"
+path = "src/bin/nc_rewrite.rs"
+required-features = ["rewrite"]

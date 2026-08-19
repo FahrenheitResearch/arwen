@@ -1,0 +1,9 @@
+{
+ "generator": "golden/gen_lane2_goldens.py",
+ "oracle": "gpuwm.static (Python reference implementation)",
+ "repo_rev": "2e1ce801ee5bd04b042ac193aa2af59cc5b75113",
+ "python": "3.13.7",
+ "numpy": "2.2.6",
+ "platform": "Windows-11-10.0.26200-SP0",
+ "geog_root_present": true
+}

@@ -42,6 +42,8 @@ MYNN, in the same order:
    construction, where `module_physics_init.F` runs them. This is not
    optional: zero is the WRF Registry cold state for `TVXY`/`TGXY`, and
    `TV = TG = 0 K` walks straight into a negative saturation vapour pressure.
+   Since 2026-08-18 they run on the CUDA driver kernel, one thread per
+   column; see the "cold start location" row below.
 5. **Preflight.** `physics_field_names_2d` and `physics_array_shapes` count all
    49 additions. Under-counting VRAM is a correctness bar on this hardware.
 6. **Output.** `gpuwm/io/wrfout.py` lists every emitted name explicitly, gated
@@ -114,6 +116,7 @@ retained in this table as positive contracts.
 | `XICE_THRESHOLD` | pinned 0.5 | gpuwm has no configuration field for WRF's namelist value. |
 | diagnostic inventory | 26 of ~120 NOAHMP_SFLX outputs stored | The rest are computed and discarded, not zero-filled. WRF's `module_diag_misc.F` accumulators have no gpuwm counterpart, so `noahmp_output`/`noahmp_acc_dt` change nothing. |
 | column solver location | **the whole column runs on the device** (updated 2026-07-27; earlier revisions of this row recorded the hybrid leaf-batched and host eras): `noahmp_column_slab`'s orchestration answers every land column with no Python per column, in chunks of `SLAB_COLUMN_CHUNK` (65,536) | The assembled slab is bitwise (max ULP 0) against the scalar column: twelve heterogeneous fixture columns field by field, a full 65,536-column chunk, and 360,000 columns end to end. Measured 2026-07-27, twice, on one RTX 5090: 0.202--0.227 s per 360,000-land-column call through the slab path (7.3--8.2 wall seconds per simulated minute at dt=1.667 s, bldt=0) against 166--206 s through the per-column staged path in the same process. Absolute seconds are a property of the machine. The staged path remains the paired second implementation (`GPUWM_NOAHMP_STAGED_COLUMNS=1`). See `docs/noahmp_device_column_report.md`. |
+| cold start location | **the whole grid runs on the device** (updated 2026-08-18; every revision before that date ran the CPython transcription over every column, including on grids the column solver had already been device-resident on for a year): `noahmp_cold_start` launches `noahmp_driver_noahmp_init` (`gpuwm/core/kernels/noahmp_driver.cu`) one thread per column, in chunks of `SLAB_COLUMN_CHUNK` (65,536) | The kernel's bitwise identity with the unmodified WRF v4.6.1 driver over `noahmp-driver.csv` was already the gate in `tests/test_noahmp_driver_cuda.py` (`max_ulp == 0`); what was missing was a production caller, while `gpuwm/core/preflight.py` priced the translation unit into every scheme-4 compile. Measured 2026-08-18 at 360,000 columns: **0.126 s on the device against 10.254 s on the host** (0.35 vs 28.48 us/column), one time per domain. Byte-for-byte equal on all 28 written carriers over five real configurations and 40,000 randomised columns spanning all four snow topologies. The numpy column loop remains the paired scalar authority (`GPUWM_NOAHMP_HOST_COLD_START=1`, or the process-wide `GPUWM_NOAHMP_HOST_LEAVES=1`). |
 | soil layers | four only | Every Noah-MP fixture in the tree is four-layer. |
 | QSFC units | passed through unconverted | `module_sf_noahmpdrv.F:238` documents QSFC as specific humidity and `:808`/`:1245` pass it straight through, while WRF's surface layer fills the same Registry field with a mixing ratio. The inconsistency is WRF's, it is fully defined, and gpuwm reproduces it rather than inserting a conversion WRF does not have. |
 | ACC_* accumulators | zero on entry to every call, not allocated | `soiltstep=0` makes `soil_update_steps=1`, and `:649-660` zeroes all ten before the column loop, so no cross-step accumulator exists. Admitting `soiltstep>0` means allocating them **and** carrying them through restart. |
@@ -412,6 +415,38 @@ bounds the frame at 2 KiB and has a companion that recompiles the identical
 source under `-maxrregcount=24` — which raises the frame to 656 bytes — so the
 gate's sensitivity is demonstrated rather than asserted.
 
+## The cold start, proved through the front door (2026-08-18)
+
+The cold-start row above is a unit measurement. This is the same claim made
+against the artifact: `gpuwm run` on a bare config, no flags, on the card.
+
+The configuration is the expert template's own physics
+(`wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1`: mp 6, YSU, classic MM5,
+Noah-MP, Dudhia SW with no longwave, `radt` 1.0) at the smallest geometry
+that admits it — one 250 x 200 12 km domain, 49 levels, two 60 s steps —
+initialised from real ERA5 bytes through the real preparation chain. 50,000
+land columns.
+
+Three runs of that one config, on one RTX 3080:
+
+| run | arm | cold start | CPython column entries | rc |
+|---|---|---|---|---|
+| bare default, no instrument | device | — | — | 0 |
+| default + trap armed | device | **0.0248 s** | **0** | 0 |
+| `GPUWM_NOAHMP_HOST_COLD_START=1` | host | 1.596 s | 50,000 | 0 |
+
+64x, and 1.57 s off the start of every scheme-4 forecast at this width.
+
+Two things make that evidence rather than a log line. First, the **trap**:
+an out-of-process instrument (a `sitecustomize` meta-path hook, changing no
+gpuwm source) makes `noahmp_init_column` — the per-column CPython
+transcription — raise on entry. The default run survives it with a zero
+count; the same run with `GPUWM_NOAHMP_HOST_COLD_START=1` dies on the first
+column with the trap's own message, so the zero is a measured absence and
+not an instrument that never fired. Second, **the tape**: all three runs'
+`wrfout` frames are byte-identical, SHA-256 over every frame, so the two
+arms are the same forecast and not merely two forecasts of similar quality.
+
 ## What is still open
 
 1. **No gpuwm/WRF forecast comparison exists for this scheme.** That is what
@@ -442,3 +477,28 @@ gate's sensitivity is demonstrated rather than asserted.
    descriptors per domain. A four-domain Noah-MP nest is therefore about 196
    descriptors above whatever the same nest costs under Noah; the plan
    document's open item 4 is still open and now has a number.
+7. **`gpuwm check` refuses every Noah-MP configuration**, and so does the
+   `gpuwm domain` wizard, which prices through the same function. `gpuwm
+   run` is unaffected — nothing on the forecast path calls the local-frame
+   model — so the artifact above is a real bare run, but the documented
+   memory preflight is a door Noah-MP cannot walk through. Measured
+   2026-08-18. `kernel_local_frame_bytes` refuses because `noahmp_driver`,
+   `noahmp_energy` and `noahmp_thermal` sit in `UNMEASURED_KERNEL_MODULES`
+   with no `CHAINED_TRANSLATION_UNIT_FRAMES` row, which is exactly what the
+   refusal's own text names as the remedy; they are fragments that compile
+   only behind `noahmp_leaves.cu`, the same shape the legacy-RRTMG chain has
+   and which that chain already has a composite row for. Two further facts
+   found while measuring it, both pre-existing and neither Noah-MP-specific:
+   `noahmp_glacier` is uncompilable standalone but is in neither table, so
+   `tests/test_preflight.py::test_the_recorded_local_frames_match_the_driver`
+   fails on it; and that same test's recorded rows do not reproduce on a
+   second card (`gf`, `noah`, `noahmp_leaves`, `ysu`,
+   `thompson_aerosol_warm` all differ from the 2026-07-26 RTX 5090 record
+   when re-measured on an RTX 3080, and `health_tile` has no row at all).
+   Closing this needs a decision about which card the table is measured on
+   and a full re-measure there, not a row appended from whichever box a lane
+   happened to run on; the composed Noah-MP units measure 304 B
+   (`noahmp_driver_noahmp_init`), 208 B (`noahmp_energy`), 368 B
+   (`noahmp_thermal_hrt`/`_tsnosoi`), 456 B (`noahmp_glacier_column`) and
+   208 B (`noahmp_libm_slab`) on the RTX 3080, recorded here as a starting
+   point and not as a table row.

@@ -31,6 +31,9 @@ from gpuwm.era5_direct import (
 )
 from gpuwm.experiment import load_experiment
 from gpuwm.ingest.grib import Era5Snapshot
+from gpuwm.ingest.source_coverage import (ForcingSeriesRefusal,
+                                          PreparationRefusal,
+                                          owns_source_coverage_refusal)
 from gpuwm.ingest.horiz import (
     _regular_coordinates,
     interpolate_era5_to_lambert,
@@ -42,6 +45,8 @@ from gpuwm.ingest.lateral_bc import (
     attach_lateral_boundaries,
     start_last_forcing_order,
 )
+from gpuwm.ingest.soil_downscale import (
+    declared_soil_texture_downscale, soil_mesh_plan_from_case)
 from gpuwm.ingest.prepared_cache import (
     prepared_cache_identity,
     write_prepared_cache,
@@ -52,6 +57,7 @@ from gpuwm.ingest.preprocess_backend import (
 )
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+from gpuwm.ingest.soil import soil_source_orography
 from gpuwm.ingest.water_temperature import (
     MODIS_LAKE_CATEGORY, WaterTemperatureStatics,
     announce_water_temperature, assemble_for_route)
@@ -81,6 +87,21 @@ from gpuwm.wrf_direct import export_prepared_wrf
 
 INPUT_MANIFEST_SCHEMA = "gpuwm-gfs-direct-input-manifest-v1"
 BRIDGE_SCHEMA = "gpuwm-gfs-grib2-bridge-v1"
+
+#: The live progress document this stage publishes while it runs.
+#: Shaped like the forecast runner's ``progress.json`` -- ``schema`` and
+#: ``status`` -- because ``gpuwm go``'s heartbeat reads ``status`` off
+#: whichever file the running stage names, and a second shape would mean
+#: a second reader.
+PREPARE_PROGRESS_SCHEMA = "gpuwm.prepare-progress/v1"
+
+#: The phases this stage announces, in the order it passes through them.
+#: Named as one tuple so the publisher, the acceptance test and any
+#: reader agree about what "how far in is it" can say.
+PREPARE_PHASES = (
+    "verify_inputs", "static_build", "decode", "initialize_all_times",
+    "write_prepared_cache", "direct_wrf_export", "publish",
+)
 PROOF_SCHEMA = "gpuwm-gfs-direct-wrf-proof-v3"
 LEGACY_PROOF_SCHEMA = "gpuwm-gfs-direct-wrf-proof-v2"
 #: The multi-domain product.  v2 adds the front-door physics receipt the
@@ -509,7 +530,8 @@ def _read_series(path: Path) -> tuple[tuple[int, Path], ...]:
     # one uniform certified cadence, inside the published horizon: the
     # first is the initial condition and the rest are its boundaries.
     if len(hours) < 2:
-        raise ValueError("GFS series must have at least two times")
+        raise ForcingSeriesRefusal(
+            "GFS series must have at least two times")
     if hours[0] < 0:
         raise ValueError("GFS series forecast hours must be nonnegative")
     if hours[-1] > 384:
@@ -789,6 +811,80 @@ def _load_bridge_snapshots(
     return tuple(snapshots)
 
 
+def prepare_progress_path(output_root) -> Path:
+    """Where this stage publishes what it is doing, while it does it.
+
+    A SIBLING of ``--output-root``, not a file inside it, and that is
+    forced rather than chosen: the stage builds its whole product in a
+    staging directory and publishes it with one ``os.replace``, so
+    ``--output-root`` does not exist until the work is finished.  A
+    progress file inside it could only appear after there was nothing
+    left to report.
+
+    One function, called by the publisher and by ``gpuwm go``'s
+    heartbeat, so the path cannot be spelled two ways.  It survives the
+    run on purpose: the finished file is the stage's phase timeline, and
+    the same thing that answered "what is it doing" answers "what did it
+    spend its time on".
+    """
+
+    root = Path(output_root)
+    return root.parent / f"{root.name}.progress.json"
+
+
+class _PreparePhases:
+    """Publish which phase this stage is in, at each boundary it times.
+
+    THE DEFECT: prepare is the longest quiet stage in the chain (15 s
+    warm, 36 s at the documented normal size) and it published nothing
+    at all, so ``gpuwm go``'s heartbeat -- which polls exactly this path
+    and names whatever the running stage says about itself -- showed a
+    bare stopwatch for the whole of it.  Every other long stage in this
+    tree answers that question; this one is the reason the heartbeat
+    looked like a hang.
+
+    Every write is best-effort.  A progress file that cannot be written
+    is not a reason to fail a preparation, and the caller must never
+    have to guard a telemetry call.
+    """
+
+    def __init__(self, path: Path, *, phases=PREPARE_PHASES):
+        self._path = Path(path)
+        self._phases = tuple(phases)
+        self._started = time.perf_counter()
+        self._index = 0
+
+    def enter(self, phase: str, **fields) -> None:
+        try:
+            self._index = self._phases.index(phase) + 1
+        except ValueError:
+            self._index = 0
+        self._publish(phase, **fields)
+
+    def _publish(self, phase: str, **fields) -> None:
+        payload = {
+            "schema": PREPARE_PROGRESS_SCHEMA,
+            # `status` is what go's heartbeat prints, and it prints it
+            # verbatim beside the runner's own SHOUTING_SNAKE statuses,
+            # so it is spelled the way they are.
+            "status": f"PREPARING_{phase.upper()}",
+            "phase": phase,
+            "phase_index": self._index,
+            "phases_total": len(self._phases),
+            "elapsed_seconds": round(time.perf_counter() - self._started, 6),
+            **fields,
+        }
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._path.with_name(self._path.name + ".partial")
+            temporary.write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8", newline="\n")
+            os.replace(temporary, self._path)
+        except OSError:
+            pass
+
+
 def _prepare_output_root_parent(output_root: Path) -> Path:
     """Make sure the directory that will hold --output-root exists.
 
@@ -1000,6 +1096,17 @@ def prepare_gfs_wrf(
     if Path(output_root).exists():
         raise FileExistsError(f"refusing to overwrite {output_root}")
     _prepare_output_root_parent(Path(output_root))
+    # THE STAGE CLOCK STARTS HERE, not after the verification below.
+    # It used to start after it, so `total` in the receipt excluded the
+    # sha256 of every GRIB this stage is bound to -- work that is
+    # linear in the download and is nobody's idea of free.  A receipt
+    # whose `total` is not the stage's wall clock cannot be summed
+    # against the chain's own stage timing, which is the whole point of
+    # both numbers existing.
+    total_started = time.perf_counter()
+    progress = _PreparePhases(prepare_progress_path(output_root))
+    progress.enter("verify_inputs", files=len(roles))
+    verify_started = time.perf_counter()
     manifest = _verify_input_manifest(
         Path(input_manifest), input_manifest_sha256, roles)
     manifest_digest = input_manifest_sha256.lower()
@@ -1022,8 +1129,15 @@ def prepare_gfs_wrf(
         preprocess_backend, workers=preprocess_workers,
         cpu_bridge=cpu_preprocess_bridge)
     preprocess_receipt = preprocess.receipt()
+    # Everything above verified or identified an input: the manifest's
+    # digest over every GRIB, this build's implementation hash, the
+    # git identity, the preprocess backend's own receipt.  Named as one
+    # key because it is one answer to one question -- "how long did
+    # binding this stage to its inputs take" -- and because a reader
+    # chasing a slow prepare needs to know whether the wall went to
+    # hashing the download or to the work after it.
+    verify_inputs_seconds = time.perf_counter() - verify_started
 
-    total_started = time.perf_counter()
     exp = load_experiment(Path(experiment_config))
     from gpuwm.experiment import (
         refuse_unrouted_perturbation, refuse_unrouted_spawn,
@@ -1112,6 +1226,19 @@ def prepare_gfs_wrf(
         )
         grid = grids[0]
     landuse_attrs = None
+    # THE 14.1 SECONDS.  MEASURED, 2026-08-16: at the documented normal
+    # size this block was 40% of the prepare stage and the largest
+    # single item in it, and proof.json named it nowhere -- the only
+    # timing that existed was `static.build_static` under the opt-in
+    # GPUWM_PERF_TIMING env var, which under the fixed-means-default law
+    # is a deep-dive diagnostic and not instrumentation.  The number is
+    # taken here, unconditionally, with a plain perf_counter pair
+    # exactly like the four keys the receipt already had.  The env var
+    # is untouched and still does what it always did.
+    static_started = time.perf_counter()
+    progress.enter("static_build",
+                   cells=int(cfg.ny) * int(cfg.nx),
+                   source=("geog" if static_input is None else "prebuilt"))
     if static_input is None:
         static, root_static_receipt, landuse_attrs = _static_from_geog(
             Path(wps_namelist), Path(geog_root), grid, cfg)
@@ -1131,6 +1258,11 @@ def prepare_gfs_wrf(
                 Path(wps_namelist), Path(geog_root), (1,))
             landuse_attrs = geog_selection_from_catalog(
                 catalog, 1).landuse_global_attrs()
+    # Both roads, one key: "build it from the geography tree" and "load
+    # and verify the prebuilt cache" are two answers to one question,
+    # and a receipt that timed only the first would go quiet on exactly
+    # the runs that chose the second.
+    static_build_seconds = time.perf_counter() - static_started
 
     # One descriptor per decoded array is held for the whole bundle
     # write, and the array count is forcing-times x fields-per-time --
@@ -1145,6 +1277,7 @@ def prepare_gfs_wrf(
         raise ValueError(refusal)
 
     decode_started = time.perf_counter()
+    progress.enter("decode", forcing_times=len(records))
     # ignore_cleanup_errors: when the body fails for a reason that also
     # stops the scratch tree being removed -- descriptor exhaustion is
     # exactly that, since rmtree needs one per directory it walks -- the
@@ -1246,6 +1379,8 @@ def prepare_gfs_wrf(
         from gpuwm.core.grid import make_vertical_coord
 
         initialize_started = time.perf_counter()
+        progress.enter("initialize_all_times",
+                       forcing_times=len(records))
         # ONE forcing time is ever resident.  The start time is built LAST
         # (start_last_forcing_order) and is the only met/state this loop
         # retains; every other time contributes its perimeter frames
@@ -1329,6 +1464,17 @@ def prepare_gfs_wrf(
             # The receipt is printed only now that the field it describes
             # is the one soil consumes, two statements below.
             announce_water_temperature(assembly.receipt)
+        # WRF's `adjust_soil_temp_new` lapse, which this route was not
+        # arming.  The elevation pair is all-or-none in
+        # `preprocess_noah_soil`, and passing NEITHER satisfies that guard
+        # silently -- so TSK and every GFS_ST* level came through with no
+        # elevation correction at all and nothing said so.  Measured, the
+        # regression of TSK on terrain was -0.0003 K/m against WRF's
+        # -0.0065.  `SOURCE_OROGRAPHY` was decoded all along: the bridge
+        # gate above refuses any decode whose invariant_fields is not
+        # "SOURCE_OROGRAPHY,LANDSEA".  Resolved through the one shared
+        # resolver, with no declared artifact on this route.
+        soil_orography = soil_source_orography(None, initial_met.fields)
         soil = preprocess_land_surface_soil(
             initial_met.fields,
             sf_surface_physics=int(cfg.sf_surface_physics),
@@ -1336,7 +1482,15 @@ def prepare_gfs_wrf(
             soil_type=static["SCT_DOM"],
             deep_soil_temperature=static["TMN"], lake_mask=lake_mask,
             lake_skin_temperature=lake_skin,
+            landmask=static["LANDMASK"],
+            terrain=static["HGT_M"] if soil_orography is not None else None,
+            source_orography=soil_orography,
             water_temperature=water_temperature,
+            # GFS's 0.25 degree soil state is 5.5 by 9.1 cells wide on a
+            # 3 km European domain, which is exactly the regime the
+            # sub-source-cell reconstitution exists for.
+            soil_mesh=soil_mesh_plan_from_case(
+                snapshots[0], grid, experiment_config),
             route=_WATER_ROUTE)
         initialize_seconds = time.perf_counter() - initialize_started
 
@@ -1423,6 +1577,12 @@ def prepare_gfs_wrf(
                     stock_wrf_export=(
                         "optional" if stock_wrf_export else "off"),
                     statics_corridor=statics_corridor,
+                    # A child sees the catalog, not the config.  Without
+                    # this a WRF-comparison reproduction would disable the
+                    # soil reconstitution on the parent and silently keep
+                    # it on every nest.
+                    soil_texture_downscale=declared_soil_texture_downscale(
+                        experiment_config),
                 )
                 hierarchy_seconds = time.perf_counter() - hierarchy_started
                 final_manifest = _verify_input_manifest(
@@ -1452,6 +1612,12 @@ def prepare_gfs_wrf(
                     "root_static_receipt": root_static_receipt,
                     "hierarchy_workers": selected_workers,
                     "source_coverage": coverage_receipt,
+                    # The soil-state SOURCE resolution, on every run: a reader of
+                    # this forecast must be able to answer "how coarse was the
+                    # soil I started from" without the config, and whether the
+                    # sub-source-cell reconstitution ran on it.
+                    "soil_texture_downscale": dict(
+                        getattr(soil, "soil_texture_downscale", {}) or {}),
                     "decoder_stdout": completed.stdout.strip(),
                     "static_catalog": dict(
                         hierarchy.static_catalog_receipt),
@@ -1473,6 +1639,8 @@ def prepare_gfs_wrf(
                         if hierarchy.statics_corridor_receipt is not None
                         else {}),
                     "timing_seconds": {
+                        "verify_inputs": verify_inputs_seconds,
+                        "static_build": static_build_seconds,
                         "decode": decode_seconds,
                         "initialize_all_root_times": initialize_seconds,
                         **dict(hierarchy.hierarchy.timings_seconds),
@@ -1494,6 +1662,7 @@ def prepare_gfs_wrf(
                 forcing_hours=hours,
                 source_identity=native_source_identity,
             )
+            progress.enter("write_prepared_cache")
             cache_started = time.perf_counter()
             cache_receipt = write_prepared_cache(
                 prepared_cache, identity=identity,
@@ -1511,6 +1680,7 @@ def prepare_gfs_wrf(
             cache_seconds = time.perf_counter() - cache_started
             portable_cache_receipt = dict(cache_receipt)
             portable_cache_receipt["path"] = prepared_cache.name
+            progress.enter("direct_wrf_export")
             export_started = time.perf_counter()
             export_receipt = export_prepared_wrf(
                 prepared_cache, static_cache, geometry_receipt, wrf_output,
@@ -1603,11 +1773,23 @@ def prepare_gfs_wrf(
                 },
                 "initialization_artifacts": initialization_artifacts,
                 "source_coverage": coverage_receipt,
+                # The soil-state SOURCE resolution, on every run: a reader of
+                # this forecast must be able to answer "how coarse was the
+                # soil I started from" without the config, and whether the
+                # sub-source-cell reconstitution ran on it.
+                "soil_texture_downscale": dict(
+                    getattr(soil, "soil_texture_downscale", {}) or {}),
                 "decoder_stdout": completed.stdout.strip(),
                 "prepared_cache": portable_cache_receipt,
                 "physics": physics_selection,
                 "export": export_receipt,
+                # Every phase this stage passes through, and a `total`
+                # its children account for.  `gpuwm.stage_timing` states
+                # the rule and the acceptance test holds this document
+                # to it: an unnamed phase is time no reader can find.
                 "timing_seconds": {
+                    "verify_inputs": verify_inputs_seconds,
+                    "static_build": static_build_seconds,
                     "decode": decode_seconds,
                     "initialize_all_times": initialize_seconds,
                     "write_prepared_cache": cache_seconds,
@@ -1615,6 +1797,7 @@ def prepare_gfs_wrf(
                     "total": time.perf_counter() - total_started,
                 },
             }
+            progress.enter("publish")
             (staging / "proof.json").write_text(
                 json.dumps(proof, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8")
@@ -1789,7 +1972,7 @@ def prepared_forecast_next_command(
     return lines
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--series", type=Path, required=True)
     parser.add_argument("--cycle", required=True)
@@ -1803,7 +1986,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument(
         "--preprocess-backend", choices=("cuda", "cpu", "auto"),
-        default="cuda")
+        default="auto",
+        help="where the source-grid/WRF-real setup transforms run "
+             "(default auto: CUDA when the certified runtime is usable, "
+             "otherwise the deterministic parallel CPU backend, "
+             "announced in one line)")
     parser.add_argument("--preprocess-workers", type=int)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     parser.add_argument("--geog-root", type=Path)
@@ -1832,7 +2019,12 @@ def main(argv: list[str] | None = None) -> int:
              "(e.g. 2,3).  Required before the prepared tree runner will "
              "honor a [relocation] follow source; omitted, the bundle is "
              "byte-for-byte unchanged")
-    args = parser.parse_args(argv)
+    return parser
+
+
+@owns_source_coverage_refusal
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     statics_corridor = args.statics_corridor
     if statics_corridor is not None and statics_corridor != "all":
         try:
@@ -1862,6 +2054,13 @@ def main(argv: list[str] | None = None) -> int:
             stock_wrf_export=args.stock_wrf_export,
             statics_corridor=statics_corridor,
         )
+    except PreparationRefusal:
+        # The decorator on this main owns the whole refusal family: two
+        # lines, the message and ITS remedy.  Catching it here as a
+        # plain ValueError flattened the remedy away -- the eta-ladder
+        # refusal reached the walk as one sentence with no door named
+        # (UX finding R2) -- so it is re-raised to the owner.
+        raise
     except (ValueError, OSError) as error:
         # Every gate this door applies is a refusal, and a refusal is a
         # sentence.  A pilot met three of these as stack traces -- a

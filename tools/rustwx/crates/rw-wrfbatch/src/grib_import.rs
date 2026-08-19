@@ -17,8 +17,9 @@
 //! does not provide:
 //! - a streaming message INDEX (grib-core's `from_bytes` eagerly clones every
 //!   section of every message — 2x file size in RAM for a 450 MB file);
-//! - ECMWF parameter table 128 names/units (grib-core ships WMO table 2 only
-//!   and ignores `table_version`);
+//! - ECMWF table-128 STORE naming: readable slugs and canonical selectors
+//!   (grib-core's version-aware `parameter_entry` resolves ECMWF names and
+//!   units now, but the store slug/selector plan stays an app concern);
 //! - the store-write plan: canonical `FieldSelector`s for the params whose
 //!   units match what the WRF import precedent stores, derived slugs for the
 //!   rest, and hour keys derived from each message's valid time;
@@ -431,8 +432,9 @@ pub(crate) struct EraParam {
 }
 
 /// The ECMWF table-128 parameters ERA-20C (and the other GDEX "past"
-/// reanalysis streams) actually publish. grib-core's tables.rs is WMO table 2
-/// only and ignores `table_version`, so this map is the app seam. Slugs are
+/// reanalysis streams) actually publish. grib-core's `parameter_entry`
+/// resolves ECMWF table 128 names/units by cited version now; this map is
+/// the app seam for STORE naming, kept because slugs are
 /// deliberately readable (they surface verbatim in the field picker) and
 /// chosen so `color_tables::solar_model_field_table`'s substring heuristics
 /// land where a palette exists (temperature/dewpoint/cape/vort/precip/...).
@@ -731,25 +733,33 @@ pub(crate) fn plan_field(msg: &IndexedMessage) -> PlannedField {
             units: String::new(),
             scale: 1.0,
         };
-    } else if let Some(abbrev) = grib_core::grib1::parameter_abbrev(msg.parameter) {
-        // Non-ECMWF tables: WMO table 2 via grib-core.
-        let slug: String = abbrev
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() {
-                    ch.to_ascii_lowercase()
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        return PlannedField::Derived {
-            name: format!("{slug}{}", level_suffix(msg.level_type, msg.level_value)),
-            units: grib_core::grib1::parameter_units(msg.parameter)
-                .unwrap_or("")
-                .to_string(),
-            scale: 1.0,
-        };
+    } else if let Some(entry) =
+        grib_core::grib1::parameter_entry(msg.table_version, msg.center, msg.parameter)
+            .ok()
+            .flatten()
+    {
+        // WMO-lineage tables, consulted THROUGH the table the message
+        // cites: indicators 128-254 resolve only for the center that
+        // defined them (NCEP), and a cited table grib-core does not
+        // carry comes back Err and stays on the opaque-identity
+        // fallthrough below instead of borrowing NCEP's rows.
+        if let Some(abbrev) = entry.abbrev {
+            let slug: String = abbrev
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() {
+                        ch.to_ascii_lowercase()
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            return PlannedField::Derived {
+                name: format!("{slug}{}", level_suffix(msg.level_type, msg.level_value)),
+                units: entry.units.unwrap_or("").to_string(),
+                scale: 1.0,
+            };
+        }
     }
     PlannedField::Derived {
         name: format!(
@@ -1916,6 +1926,36 @@ mod tests {
                 assert!(units.is_empty());
             }
             other => panic!("unknown param must be derived, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_ncep_center_defined_region_stays_opaque_in_wmo_versions() {
+        // Center 34 (JMA) citing table version 3, parameter 144: the
+        // 128-254 region is center-defined, and the rows grib-core
+        // carries there are NCEP's ("Volumetric soil moisture content").
+        // Borrowing them for JMA would assign a scientifically false
+        // name; the plan keeps the values under an opaque identity.
+        let mut message = indexed(144, 1, 0);
+        message.center = 34;
+        message.table_version = 3;
+        match plan_field(&message) {
+            PlannedField::Derived { name, units, .. } => {
+                assert_eq!(name, "grib1_c34_t3_p144");
+                assert!(units.is_empty());
+            }
+            other => panic!("JMA local region must not borrow NCEP rows: {other:?}"),
+        }
+        // The international region (1-127) still resolves for any center.
+        let mut wmo = indexed(11, 100, 850);
+        wmo.center = 34;
+        wmo.table_version = 3;
+        match plan_field(&wmo) {
+            PlannedField::Derived { name, units, .. } => {
+                assert_eq!(name, "tmp_850");
+                assert_eq!(units, "K");
+            }
+            other => panic!("WMO international region must resolve: {other:?}"),
         }
     }
 

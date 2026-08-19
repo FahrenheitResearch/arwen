@@ -1006,6 +1006,27 @@ def test_sase_flux_diag_defaults_off_and_is_fail_closed():
         validate_run_config(_min_cfg(sase_flux_diag=True))
 
 
+def test_additive_dissipation_accepts_both_values_off_sase():
+    """The pre-flip recorded default must keep validating off-SASE.
+
+    The 2026-08-16 default flip (False -> True, 1a0e8a7f8) turned every
+    artifact that RECORDS the old default into a refusal: a 2.4.x
+    restart header carries ``sase_additive_dissipation=False`` beside a
+    non-SASE PBL, and so does every child TOML 2.4.x downscale rendered.
+    MEASURED 2026-08-17: `gpuwm downscale --point` of a 2.4.1 archive on
+    this tree refused (masked as "no child fits the 10 GiB budget").
+    The knob is inert off-SASE in BOTH positions, so neither may refuse
+    -- the fail-closed loop's own charter is "every existing
+    configuration keeps validating unchanged".
+    """
+    for value in (False, True):
+        cfg = _min_cfg(sase_additive_dissipation=value)
+        assert validate_run_config(cfg) is cfg
+    # Type discipline stays: a non-bool still refuses.
+    with pytest.raises(ValueError, match="boolean"):
+        validate_run_config(_min_cfg(sase_additive_dissipation=1))
+
+
 def test_sase_flux_diag_is_a_per_domain_override():
     """The key is settable per [[domain]] so the expensive domain can be
     left off while the read domains carry it."""

@@ -850,7 +850,17 @@ def run_gate(outdir, cfg: GateConfig | None = None) -> dict:
 
 
 def _render_products(leg_root, out):
-    """enprod over the analysed ensemble.  Returns the filenames written."""
+    """enprod over the analysed ensemble.  Returns the filenames written.
+
+    ``--engine matplotlib`` explicitly.  ``gpuwm enprod`` defaults to
+    ``auto``, which takes the Rust ``rw_ensbatch`` on a checkout that has
+    built it -- but this stage guards on ``wrf`` and ``matplotlib`` being
+    importable and its caller asserts the matplotlib suite's own
+    ``-ens-`` filename token, so it is a statement about that engine and
+    says which.  The gate's own member files carry a bare ``GRID_ID``
+    rather than the production global-attribute profile, which the Rust
+    importer's fail-closed preflight refuses by design.
+    """
 
     try:
         import wrf  # noqa: F401
@@ -866,7 +876,8 @@ def _render_products(leg_root, out):
     out = Path(out)
     code = cli.main(["enprod", str(leg_root), "--field", "refl",
                      "--products", "mean,spread,prob,paintball,pmm",
-                     "--threshold", "40", "--out", str(out), "--dpi", "72"])
+                     "--threshold", "40", "--out", str(out), "--dpi", "72",
+                     "--engine", "matplotlib"])
     return {
         "rendered": code == 0,
         "exit_code": code,

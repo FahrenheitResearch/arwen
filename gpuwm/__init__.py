@@ -14,8 +14,29 @@ says so rather than inventing a number.
 
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _distribution_version
+import time as _time
+
+#: The earliest instant any gpuwm code runs in this process, on both
+#: clocks: :data:`LAUNCH_MONOTONIC` for durations and
+#: :data:`LAUNCH_UNIX_MS` for the wall a receipt is stamped with.
+#:
+#: Captured HERE, on the first line of the package that any entry point
+#: must import, and before this module's own metadata lookup, because
+#: everything a chain wants to measure is measured FROM launch.  The
+#: 2026-08-16 pre-sim audit had to answer "how long from typing the
+#: command to step 1" with an external wrapper's timestamps, and the
+#: reason nothing inside the product could answer it was that nothing
+#: inside the product knew when it started.
+#:
+#: This is not the process's start: the interpreter has already booted
+#: and imported this package's parents by now.  It is the earliest
+#: instant gpuwm can observe, it is stated as such wherever it is
+#: reported, and the difference is milliseconds.
+LAUNCH_MONOTONIC = _time.monotonic()
+LAUNCH_UNIX_MS = int(_time.time() * 1000)
+
+from importlib.metadata import PackageNotFoundError  # noqa: E402
+from importlib.metadata import version as _distribution_version  # noqa: E402
 
 #: The distribution this package is published as.
 DISTRIBUTION_NAME = "gpuwm"
@@ -25,4 +46,5 @@ try:
 except PackageNotFoundError:  # pragma: no cover - uninstalled source tree
     __version__ = "0+unknown"
 
-__all__ = ["DISTRIBUTION_NAME", "__version__"]
+__all__ = ["DISTRIBUTION_NAME", "LAUNCH_MONOTONIC", "LAUNCH_UNIX_MS",
+           "__version__"]

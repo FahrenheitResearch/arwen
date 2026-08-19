@@ -12,6 +12,7 @@ import pytest
 
 import gpuwm.mapped_direct as mapped_direct
 from gpuwm.ingest.lateral_bc import start_last_forcing_order
+from gpuwm.ingest.source_coverage import PREPARATION_REFUSAL_EXIT_CODE
 
 
 _START = datetime(2026, 7, 20)
@@ -40,7 +41,8 @@ def _target_mapping(**updates):
     return {"format": "netcdf", "target": target}
 
 
-def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600):
+def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600,
+                eta: bool = True):
     domains = []
     for index in range(domain_count):
         run = SimpleNamespace(
@@ -70,7 +72,12 @@ def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600):
         start_time=_START,
         run_seconds=run_seconds,
         vertical=SimpleNamespace(
-            eta_levels=tuple(np.linspace(1.0, 0.0, nz + 1)),
+            # ``eta=False`` is the imported-WRF-config shape: a level
+            # COUNT with no explicit ladder, because stock WRF derives
+            # the ladder in real.exe and import-namelist has nothing to
+            # translate.
+            eta_levels=(
+                tuple(np.linspace(1.0, 0.0, nz + 1)) if eta else ()),
             p_top=10_000.0,
         ),
     )
@@ -91,11 +98,15 @@ def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600):
             "max_dom",
         ),
         (
+            # A count with NO explicit ladder is what an imported WRF
+            # config carries; matched or not, a ladder cannot be
+            # derived from it, and the refusal names both counts and
+            # both reconciling doors.
             _target_mapping(target_vertical_levels=48),
-            _experiment(1),
+            _experiment(1, eta=False),
             3600,
             False,
-            "vertical|levels|nz",
+            "vertical ladder is missing",
         ),
         (
             _target_mapping(require_lateral_boundaries=False),
@@ -128,8 +139,63 @@ def test_mapped_target_contract_returns_bound_receipt():
     assert receipt["domain_count"] == 2
     assert receipt["mapping_max_dom"] == 4
     assert receipt["target_vertical_levels"] == 49
+    assert receipt["mapping_reference_vertical_levels"] == 49
+    assert receipt["vertical_levels_adopted_from"] \
+        == "mapping-reference-count"
     assert receipt["boundary_interval_seconds"] == 3600
     assert receipt["require_lateral_boundaries"] is True
+
+
+def test_mapped_target_contract_adopts_an_explicit_experiment_ladder():
+    """A config CARRYING a valid ladder runs at its own level count.
+
+    This is the circle-breaker of UX finding N6: the count-equality
+    refusal named no breakage the ladder validation does not already
+    prevent -- every downstream array is allocated from the
+    experiment, and the interpolation target IS the experiment's
+    ladder -- so a valid explicit ladder is adopted and the receipt
+    records the adoption beside the mapping's reference count.
+    """
+
+    receipt = mapped_direct._validate_target_contract(
+        _target_mapping(), _experiment(1, nz=44), 3600, hierarchy=False,
+    )
+    assert receipt["target_vertical_levels"] == 44
+    assert receipt["mapping_reference_vertical_levels"] == 49
+    assert receipt["vertical_levels_adopted_from"] == "experiment-eta-ladder"
+
+
+def test_mapped_target_contract_names_both_counts_and_doors_without_ladder():
+    """No ladder: one refusal, both counts, both reconciling doors."""
+
+    from gpuwm.ingest.source_coverage import VerticalLadderRefusal
+
+    with pytest.raises(VerticalLadderRefusal) as caught:
+        mapped_direct._validate_target_contract(
+            _target_mapping(), _experiment(2, nz=44, eta=False), 3600,
+            hierarchy=True, experiment_config=Path("mycase.toml"),
+        )
+    message = str(caught.value)
+    assert "nz=44" in message and "e_vert=45" in message
+    assert "49" in message
+    assert "mycase.toml" in message
+    remedy = caught.value.remedy
+    assert "eta_levels" in remedy
+    assert "gpuwm domain" in remedy
+    # 45 interfaces for the user's own 44 levels: the exact edit that
+    # terminates, which is what the old shape-(0,) circle never named.
+    assert "45 interfaces" in remedy
+
+
+def test_mapped_target_contract_refuses_a_malformed_ladder_as_a_refusal():
+    from gpuwm.ingest.source_coverage import VerticalLadderRefusal
+
+    exp = _experiment(1, nz=44)
+    exp.vertical.eta_levels = exp.vertical.eta_levels[:-1] + (0.5,)
+    with pytest.raises(VerticalLadderRefusal, match="1.0.*0.0|decreasing"):
+        mapped_direct._validate_target_contract(
+            _target_mapping(), exp, 3600, hierarchy=False,
+        )
 
 
 def test_mapped_target_contract_accepts_five_minute_hierarchy_and_names_real_refusal():
@@ -201,9 +267,9 @@ def _write(path: Path, contents: bytes = b"test") -> Path:
 def _install_prepare_fakes(
         monkeypatch, tmp_path, *, domain_count: int, backend: str,
         cadence: int = 3600, run_seconds: int | None = None,
-        mapping_updates=None, nz: int = 49):
+        mapping_updates=None, nz: int = 49, eta: bool = True):
     run_seconds = cadence if run_seconds is None else run_seconds
-    exp = _experiment(domain_count, nz=nz, run_seconds=run_seconds)
+    exp = _experiment(domain_count, nz=nz, run_seconds=run_seconds, eta=eta)
     mapping = _target_mapping(**(mapping_updates or {}))
     grids = tuple(_Grid(index + 1) for index in range(domain_count))
     snapshots = tuple(
@@ -222,9 +288,16 @@ def _install_prepare_fakes(
         mapping_sha256="1" * 64,
         composition_sha256="2" * 64,
         input_manifest_sha256="3" * 64,
+        # Filled in below from the engine the route will actually
+        # resolve.  Since the compose port this route decodes in
+        # process, so its decoder inventory is ONE row -- the engine --
+        # and `prepare_mapped_wrf` refuses a bundle whose decoders are
+        # not the ones it asked for.  A fixture that reported an empty
+        # inventory would be asserting the pre-port route.
         decoder_paths={},
         decoder_sha256={},
         soil_layer_contract={"fixture": "declarative-soil-contract"},
+        contributing_sources=(),
     )
     composition_receipt = {"receipt_content_sha256": "4" * 64}
     states = tuple(_State() for _ in snapshots)
@@ -281,6 +354,21 @@ def _install_prepare_fakes(
     bundle.terrain_provenance_sha256 = hashlib.sha256(
         files["provenance.md"].read_bytes()
     ).hexdigest()
+
+    # The staged engine this route resolves, faked at the ladder rather
+    # than by editing the route: `prepare_mapped_wrf` resolves it before
+    # any output directory exists, and the bundle it then accepts must
+    # name that exact binary.
+    from gpuwm import mapped_engine_bridge
+
+    engine_binary = _write(tmp_path / "gpuwm_mapped_engine.exe").resolve()
+    monkeypatch.setattr(
+        mapped_engine_bridge, "require_engine", lambda: engine_binary)
+    bundle.decoder_paths = {mapped_engine_bridge.ENGINE_NAME: engine_binary}
+    bundle.decoder_sha256 = {
+        mapped_engine_bridge.ENGINE_NAME: hashlib.sha256(
+            engine_binary.read_bytes()).hexdigest(),
+    }
 
     monkeypatch.setattr(
         mapped_direct,
@@ -558,6 +646,40 @@ def test_single_domain_preserves_legacy_direct_export(monkeypatch, tmp_path):
                for result in expected.results[1:])
 
 
+def test_prepare_threads_the_output_root_into_the_compose_scratch(
+    monkeypatch,
+    tmp_path,
+):
+    """The prep route names its destination to the compose scratch.
+
+    Named breakage: the engine stages the whole composed frame stream
+    -- tens of GB for the biggest registered sources -- in a scratch
+    directory, and staged in the SYSTEM temp it filled a RAM-backed
+    tmpfs /tmp and killed the bare default prep with a disk-quota
+    error.  ``decode_composed_source`` places the scratch beside the
+    destination it is told about; this pins that the prep front door
+    actually tells it, because a caller that omits the destination
+    silently re-selects the system temp and resurrects the failure.
+    """
+
+    args, _calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu",
+    )
+    recorded: dict[str, object] = {}
+
+    def recording_decode(*_args, **kwargs):
+        recorded.update(kwargs)
+        return expected.bundle
+
+    monkeypatch.setattr(
+        mapped_direct, "decode_composed_source", recording_decode)
+
+    mapped_direct.prepare_mapped_wrf(**args)
+
+    assert recorded["scratch_destination"] == (
+        Path(args["output_root"]).resolve())
+
+
 def test_long_provenance_role_publishes_short_hash_named_evidence(
     monkeypatch,
     tmp_path,
@@ -579,24 +701,32 @@ def test_long_provenance_role_publishes_short_hash_named_evidence(
     assert role not in evidence.name
 
 
-def test_predecoded_bundle_uses_bound_authorities_and_named_adapter(
+def test_source_manifest_override_publishes_the_routes_own_authority(
     monkeypatch,
     tmp_path,
 ):
+    """A named-source route's user-facing manifest survives the bridge.
+
+    This row's ancestor asserted the ``_predecoded_bundle`` bypass --
+    the one branch that skipped ``decode_composed_source``, and the last
+    entry in ``ENGINE_GAPS``.  The seam that replaced it: the route
+    verifies its OWN sealed manifest, bridges it into the generic
+    composition-inputs document, and hands both here.  The decode runs
+    against the bridged twin, but the prepared tree's evidence copy and
+    identity chain stay bound to the route's own document -- it is what
+    the forecast leg re-verifies with the route's own reader.
+    """
+
     args, calls, expected = _install_prepare_fakes(
         monkeypatch, tmp_path, domain_count=2, backend="cuda",
     )
-    args["input_manifest_sha256"] = expected.bundle.input_manifest_sha256
-    args["_predecoded_bundle"] = expected.bundle
-    args["_predecoded_seconds"] = 1.25
+    source_manifest = tmp_path / "member-manifest.json"
+    source_manifest.write_text(
+        '{"fixture": "route-manifest"}\n', encoding="utf-8")
+    digest = hashlib.sha256(source_manifest.read_bytes()).hexdigest()
+    args["_source_manifest"] = source_manifest
+    args["_source_manifest_sha256"] = digest
     args["_source_adapter"] = "rw-wps-fixture-member-v1"
-    monkeypatch.setattr(
-        mapped_direct,
-        "decode_composed_source",
-        lambda *_args, **_kwargs: pytest.fail(
-            "predecoded bundle unexpectedly entered generic decode"
-        ),
-    )
 
     proof = mapped_direct.prepare_mapped_wrf(**args)
 
@@ -604,7 +734,36 @@ def test_predecoded_bundle_uses_bound_authorities_and_named_adapter(
     routed = calls["hierarchy"][0]
     assert routed["source_identity"]["adapter"] \
         == "rw-wps-fixture-member-v1"
-    assert proof["timing_seconds"]["decode_and_compose"] == 1.25
+    assert routed["source_identity"]["input_manifest_sha256"] == digest
+    assert routed["source_manifest_sha256"] == digest
+    assert routed["bridge_manifest_sha256"] == digest
+    assert routed["input_provenance"]["input_manifest_sha256"] == digest
+    evidence = (
+        args["output_root"] / "source-evidence" / "input-manifest.json")
+    assert evidence.read_bytes() == source_manifest.read_bytes()
+    # The bridged manifest is not erased -- it stays sealed inside the
+    # composition receipt, which the proof carries whole.
+    assert proof["source_composition"]["receipt_content_sha256"] == "4" * 64
+
+
+def test_a_source_manifest_with_a_stale_sha_is_refused(
+    monkeypatch,
+    tmp_path,
+):
+    """The override is verified, never trusted: bytes must hash as declared."""
+
+    args, _calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu",
+    )
+    source_manifest = tmp_path / "member-manifest.json"
+    source_manifest.write_text("{}", encoding="utf-8")
+    args["_source_manifest"] = source_manifest
+    args["_source_manifest_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="source manifest bytes differ"):
+        mapped_direct.prepare_mapped_wrf(**args)
+    args["_source_manifest_sha256"] = None
+    with pytest.raises(ValueError, match="atomic pair"):
+        mapped_direct.prepare_mapped_wrf(**args)
 
 
 def test_prepare_rejects_mapping_change_between_target_and_decode(
@@ -711,7 +870,12 @@ def test_mapped_hierarchy_preserves_five_minute_offsets_end_to_end(
     ("domain_count", "cadence", "nz", "mapping_updates", "message"),
     [
         (2, 3600, 49, {"max_dom": 1}, "max_dom"),
-        (1, 3600, 48, {}, "vertical|levels|nz"),
+        # nz differing from the mapping's reference count is ADOPTED
+        # when the experiment carries an explicit ladder, so the
+        # ladder-less imported-config shape is what still fails closed
+        # here (the call below passes eta=False for the off-reference
+        # count).
+        (1, 3600, 48, {}, "vertical ladder is missing"),
         (
             1,
             3600,
@@ -745,6 +909,7 @@ def test_invalid_target_contract_stops_before_static_or_preprocessing(
         backend="cpu",
         cadence=cadence,
         nz=nz,
+        eta=(nz == 49),
         mapping_updates=mapping_updates,
     )
     with pytest.raises(ValueError, match=message):
@@ -794,7 +959,13 @@ def test_mapped_cli_rejects_source_format_mapping_mismatch(
 @pytest.mark.parametrize(
     ("source_format", "decoder_args", "expected"),
     [
-        ("grib1", (), "grib1_bridge"),
+        # A GRIB1 run that pins ANY decoder tool leaves the engine route
+        # and owes the subprocess contract, so naming the wrong tool
+        # still fails closed on the right one.  Omitting every flag no
+        # longer belongs here: `mapped-engine` decodes GRIB1 records in
+        # process and the door must stop asking for a bridge nothing
+        # launches -- pinned below by its own test.
+        ("grib1", ("--grib2-dump", "/bin/grib2_dump"), "grib1_bridge"),
         (
             "grib2",
             ("--grib2-inventory", "/bin/grib2_inventory"),
@@ -809,16 +980,110 @@ def test_mapped_cli_rejects_source_format_mapping_mismatch(
 )
 def test_mapped_cli_decoder_inventory_fails_closed(
         monkeypatch, capsys, source_format, decoder_args, expected):
+    """Still closed, now delivered as the refusal it always was.
+
+    It used to be an argparse usage error -- ``error: grib2 requires
+    decoder flags [...]`` and exit 2 -- which is the staged-tool
+    papercut's original shape: a demand for a flag pointing at a file
+    the reader may not have, with nothing about getting one.  The gate
+    is unchanged and still names the missing role; it now exits with
+    the preparation-refusal status and carries a remedy.
+    """
+
     monkeypatch.setattr(
         mapped_direct, "load_mapping",
         lambda _path: {"format": source_format},
     )
 
-    with pytest.raises(SystemExit) as error:
-        mapped_direct.main(_mapped_cli_args(source_format, *decoder_args))
+    status = mapped_direct.main(_mapped_cli_args(source_format, *decoder_args))
 
-    assert error.value.code == 2
-    assert expected in capsys.readouterr().err
+    assert status == PREPARATION_REFUSAL_EXIT_CODE
+    message = capsys.readouterr().err
+    assert expected in message
+    assert "decoder inventory differs from the contract" in message
+    assert "remedy:" in message
+
+
+def test_an_undeclared_compose_asks_for_the_bridge_its_route_will_launch(
+        monkeypatch, capsys):
+    """The bridge is required exactly while Python composes GRIB1.
+
+    Named breakage: the staged-tool papercut -- a refusal that asks the
+    caller for the path to an executable nothing is going to launch --
+    and its mirror image, waving a run through that then dies because
+    the tool it needed was never resolved.
+
+    The condition that decides which one is right is the ROUTE, not the
+    format: ``prepare_mapped_wrf`` COMPOSES on every call, so a GRIB1
+    prep needs ``grib1_bridge`` exactly while ``compose`` is undeclared
+    for GRIB1.  The engine composes it today, so the demand is measured
+    against a table where it does not -- the state every format arrives
+    in before its port is measured, and the state this door was written
+    for.
+
+    Kept because the near-miss is the expensive one: asking the
+    capability table about ``decode`` instead of ``compose`` makes this
+    door wave a bare run through as "Rust decodes in process", and the
+    route then hands the work to the Python engine with no tools -- the
+    refusal arrives nineteen frames deep in the decoder contract instead
+    of at the door.  With the shipped table now agreeing about both
+    subcommands, only this direction can still catch that.
+    """
+
+    from gpuwm import mapped_engine_bridge
+
+    monkeypatch.delenv("GPUWM_MAPPED_ENGINE", raising=False)
+    monkeypatch.setattr(
+        mapped_engine_bridge, "ENGINE_CAPABILITIES",
+        dict(mapped_engine_bridge.ENGINE_CAPABILITIES,
+             compose=frozenset(
+                 mapped_engine_bridge.ENGINE_CAPABILITIES["compose"] or ())
+             - {"grib1"}))
+    monkeypatch.setattr(
+        mapped_direct, "load_mapping", lambda _path: {"format": "grib1"})
+    monkeypatch.setattr(
+        mapped_direct, "prepare_mapped_wrf",
+        lambda **kwargs: pytest.fail("the route ran with no decoder tools"))
+
+    assert mapped_direct.main(_mapped_cli_args("grib1")) \
+        == PREPARATION_REFUSAL_EXIT_CODE
+
+    message = capsys.readouterr().err
+    assert "grib1 decoder inventory differs from the contract" in message
+    assert "grib1_bridge" in message
+    assert "remedy:" in message
+
+
+def test_a_compose_capable_engine_drops_the_grib1_bridge_demand(
+        monkeypatch, capsys):
+    """The shipped contract for GRIB1: nothing to launch, nothing asked.
+
+    This was pinned against a clearly-labelled FAKE capability entry
+    before the compose port landed; the entry is now the real one, and
+    the assertion is unchanged.  A bare GRIB1 prep reaches
+    ``prepare_mapped_wrf`` with every tool argument ``None`` because the
+    engine composes those records in process -- the staged-tool papercut
+    closing on its own evidence rather than on a hand-maintained list of
+    formats.
+    """
+
+    observed = {}
+    monkeypatch.delenv("GPUWM_MAPPED_ENGINE", raising=False)
+    monkeypatch.setattr(
+        mapped_direct, "load_mapping", lambda _path: {"format": "grib1"})
+
+    def prepare(**kwargs):
+        observed["prepare"] = kwargs
+        return {"schema": "proof", "status": "PASS"}
+
+    monkeypatch.setattr(mapped_direct, "prepare_mapped_wrf", prepare)
+
+    assert mapped_direct.main(_mapped_cli_args("grib1")) == 0
+
+    assert observed["prepare"]["grib1_bridge"] is None
+    assert observed["prepare"]["grib2_inventory"] is None
+    assert observed["prepare"]["grib2_dump"] is None
+    assert '"status": "PASS"' in capsys.readouterr().out
 
 
 def test_role_bindings_preserve_aliases_paths_and_supplement_order():
@@ -903,6 +1168,9 @@ def test_mapped_cli_forwards_exact_composed_hierarchy_arguments(
         "provenance_files": {
             "terrain_provenance": Path("/case/terrain.md"),
         },
+        # No --contributing-mapping flags: a single-source preparation
+        # forwards an empty cross-source inventory.
+        "contributing_mappings": {},
         "input_manifest": Path("/case/input-manifest.json"),
         "input_manifest_sha256": _DIGEST,
         "grib1_bridge": None,
@@ -920,6 +1188,93 @@ def test_mapped_cli_forwards_exact_composed_hierarchy_arguments(
         "hierarchy_workers": 6,
     }
     assert '"status": "PASS"' in capsys.readouterr().out
+
+
+def test_mapped_cli_input_list_resolves_the_named_files_in_order(
+        monkeypatch, capsys, tmp_path):
+    observed = {}
+
+    monkeypatch.setattr(
+        mapped_direct, "load_mapping", lambda path: {"format": "grib2"})
+
+    def prepare(**kwargs):
+        observed["prepare"] = kwargs
+        return {"schema": "proof", "status": "PASS"}
+
+    monkeypatch.setattr(mapped_direct, "prepare_mapped_wrf", prepare)
+    input_list = tmp_path / "inputs.list"
+    # CRLF line endings and a blank line: what a Windows-authored list
+    # looks like.  The paths come through verbatim, in file order.
+    input_list.write_bytes(b"/source/f000.grib2\r\n\r\n/source/f003.grib2\n")
+    argv = [
+        "--source-format", "grib2",
+        "--composition", "/case/composition.json",
+        "--mapping", "/case/mapping.json",
+        "--input-list", str(input_list),
+        "--supplement", "terrain=/source/terrain-f000.grib2",
+        "--provenance", "terrain_provenance=/case/terrain.md",
+        "--input-manifest", "/case/input-manifest.json",
+        "--input-manifest-sha256", _DIGEST,
+        "--grib2-inventory", "/bin/grib2_inventory",
+        "--grib2-dump", "/bin/grib2_dump",
+        "--wps-namelist", "/case/namelist.wps",
+        "--geog-root", "/static/WPS_GEOG",
+        "--experiment-config", "/case/experiment.toml",
+        "--output-root", "/output/mapped",
+    ]
+
+    assert mapped_direct.main(argv) == 0
+
+    assert observed["prepare"]["primary_files"] == [
+        Path("/source/f000.grib2"),
+        Path("/source/f003.grib2"),
+    ]
+    assert '"status": "PASS"' in capsys.readouterr().out
+
+
+def test_mapped_cli_refuses_both_input_spellings(tmp_path, capsys):
+    input_list = tmp_path / "inputs.list"
+    input_list.write_bytes(b"/source/f000.grib2\n")
+    with pytest.raises(SystemExit) as stop:
+        mapped_direct.main([
+            "--source-format", "grib2",
+            "--input", "/source/f000.grib2",
+            "--input-list", str(input_list),
+        ])
+    assert stop.value.code == 2
+    assert "not allowed with" in capsys.readouterr().err
+
+
+def test_mapped_cli_refuses_an_empty_or_missing_input_list(
+        monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(
+        mapped_direct, "load_mapping", lambda path: {"format": "grib2"})
+    input_list = tmp_path / "inputs.list"
+    input_list.write_bytes(b"\r\n\n")
+    argv = [
+        "--source-format", "grib2",
+        "--composition", "/case/composition.json",
+        "--mapping", "/case/mapping.json",
+        "--input-list", str(input_list),
+        "--input-manifest", "/case/input-manifest.json",
+        "--input-manifest-sha256", _DIGEST,
+        "--grib2-inventory", "/bin/grib2_inventory",
+        "--grib2-dump", "/bin/grib2_dump",
+        "--wps-namelist", "/case/namelist.wps",
+        "--geog-root", "/static/WPS_GEOG",
+        "--experiment-config", "/case/experiment.toml",
+        "--output-root", "/output/mapped",
+    ]
+    with pytest.raises(SystemExit) as stop:
+        mapped_direct.main(argv)
+    assert stop.value.code == 2
+    assert "names no input files" in capsys.readouterr().err
+
+    input_list.unlink()
+    with pytest.raises(SystemExit) as stop:
+        mapped_direct.main(argv)
+    assert stop.value.code == 2
+    assert "--input-list" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -1053,7 +1408,9 @@ def test_absent_prebuilt_static_fails_closed_before_any_work(
     args["static_input"] = tmp_path / "does-not-exist.npz"
     args["static_receipt"] = tmp_path / "also-missing.json"
 
-    with pytest.raises(FileNotFoundError):
+    from gpuwm.ingest.source_coverage import RunInputRefusal
+
+    with pytest.raises(RunInputRefusal, match=r"--static-input"):
         mapped_direct.prepare_mapped_wrf(**args)
     assert calls["build_static"] == 0
     assert not args["output_root"].exists()

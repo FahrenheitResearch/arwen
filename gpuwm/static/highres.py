@@ -36,6 +36,148 @@ from .build import (
 from .lambert import EARTH_RADIUS_M, LambertGrid
 
 
+# ---------------------------------------------------------------------------
+# The Rust seam (fixed-means-default).  EVERY byte-transforming body in
+# this module routes to the static-fields cdylib by default, warp
+# substrate included: GeoTIFF decode, the CRS construction for the model
+# grid, the area-average onto mass points, the categorical fractions,
+# the SoilGrids depth means, the USDA triangle and both merges.  The
+# numpy/rasterio implementations below them remain the parity reference
+# and the explicit fallback (GPUWM_STATIC_PYTHON=1 or an unloadable
+# library), and every fallback run is REPORTED once per operation --
+# console line plus a `static_compute` field on the receipt -- never
+# silent.
+#
+# Parity posture, per docs/dev/static-rust-port.md section 3: byte
+# parity for everything downstream of a resampled plane (triangle,
+# crosswalk, donor fill, merges, and every refusal message); recorded
+# quantitative tolerance for the warped planes themselves, because
+# GDAL's warper is a black box rather than a spec and the crate
+# implements the DEFINED behaviour instead of guessing at it.  The caps
+# live with the goldens that measured them
+# (tools/rustwx/crates/static-fields/tests/fixtures/highres/meta.json).
+#
+# WHAT THE FALLBACK IS NOT: a byte-parity twin of the default on the
+# high-resolution path.  On the real Copernicus DEM GLO-30 source the
+# two engines disagree, MEASURED on a 500 m Alpine domain at max
+# |delta| 49.3 m and mean |delta| 6.4 m of terrain height, and the
+# disagreement is not symmetric -- on the containing-pixel rule the
+# Rust substrate is the one that matches at every cell probed, and the
+# rasterio path additionally leaves the derived window's last row
+# uncovered and fills 2848 pixels of Alpine terrain with 0 m sea level.
+# So GPUWM_STATIC_PYTHON=1 is a debugging instrument for bisecting a
+# difference, not a second correct answer, and a production run on it
+# is a workaround in the full sense of the word.
+# ---------------------------------------------------------------------------
+
+
+def static_compute_workaround() -> str | None:
+    """Why the byte-transforming compute would run pure-Python here, or
+    ``None`` when the Rust bridge is the active default.  The
+    production shell stamps this into every highres receipt so a
+    fallback run is legible afterwards, not just on the console."""
+    from . import rust_bridge
+
+    if rust_bridge.python_fallback_requested():
+        return f"{rust_bridge.STATIC_PYTHON_ENV}=1"
+    return rust_bridge.unavailable_reason()
+
+
+def _static_rust(operation: str):
+    """The loaded bridge module, or None with the workaround reported.
+
+    One shared decision point for the whole static path
+    (:func:`gpuwm.static.rust_bridge.route`): the env flag is read at
+    call time and the WORKAROUND line is printed once per operation per
+    process, so a parity harness can toggle engines per call and a
+    production run still says what it ran on exactly once.
+    """
+    from . import rust_bridge
+
+    return rust_bridge.route(operation)
+
+
+def _fieldset_new(bridge, fields: Mapping[str, np.ndarray]) -> int:
+    """Register a dict of float64 arrays as a Rust fieldset handle."""
+    import ctypes
+    import json as _json
+
+    library = bridge.load()
+    library.gpuwm_static_highres_fieldset_new.argtypes = [
+        ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_double), ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_uint64)]
+    library.gpuwm_static_highres_fieldset_new.restype = ctypes.c_int32
+    entries = []
+    chunks = []
+    for name in sorted(fields):
+        array = np.ascontiguousarray(np.asarray(fields[name],
+                                                dtype=np.float64))
+        planes = 1 if array.ndim == 2 else int(array.shape[0])
+        entries.append({"name": name, "planes": planes,
+                        "ny": int(array.shape[-2]),
+                        "nx": int(array.shape[-1])})
+        chunks.append(array.reshape(-1))
+    data = np.concatenate(chunks) if chunks else np.empty(0)
+    spec = _json.dumps({"fields": entries}).encode("utf-8")
+    spec_buffer = (ctypes.c_uint8 * len(spec)).from_buffer_copy(spec)
+    handle = ctypes.c_uint64(0)
+    code = library.gpuwm_static_highres_fieldset_new(
+        spec_buffer, len(spec),
+        data.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), data.size,
+        ctypes.byref(handle))
+    if code != 0:
+        raise RuntimeError(
+            f"fieldset_new: {bridge.last_error(library)}")
+    return int(handle.value)
+
+
+def _merge_via_rust(bridge, baseline, overrides_or_hgt, *, mode: str):
+    """Run one merge in the Rust seam; ValueError carries the crate's
+    own refusal text (byte-matched to the Python messages by the
+    committed parity goldens)."""
+    import ctypes
+    import json as _json
+
+    library = bridge.load()
+    baseline_handle = _fieldset_new(bridge, baseline)
+    overrides_handle = _fieldset_new(bridge, overrides_or_hgt)
+    merged_handle = ctypes.c_uint64(0)
+    request = _json.dumps({"mode": mode}).encode("utf-8")
+    request_buffer = (ctypes.c_uint8 * len(request)).from_buffer_copy(
+        request)
+    try:
+        code = library.gpuwm_static_highres_merge(
+            ctypes.c_uint64(baseline_handle),
+            ctypes.c_uint64(overrides_handle),
+            request_buffer, len(request), ctypes.byref(merged_handle))
+        if code != 0:
+            raise ValueError(bridge.last_error(library))
+        merged = bridge.fieldset_to_dict(int(merged_handle.value))
+        library.gpuwm_static_highres_audit_json.argtypes = [
+            ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t]
+        library.gpuwm_static_highres_audit_json.restype = ctypes.c_int64
+        cap = 4096
+        buffer = (ctypes.c_uint8 * cap)()
+        length = int(library.gpuwm_static_highres_audit_json(
+            merged_handle, buffer, cap))
+        if length < 0 or length > cap:
+            raise RuntimeError(
+                f"highres audit: {bridge.last_error(library)}")
+        audit = _json.loads(bytes(buffer[:length]).decode("utf-8"))
+        library.gpuwm_static_highres_audit_drop.argtypes = [
+            ctypes.c_uint64]
+        library.gpuwm_static_highres_audit_drop.restype = None
+        library.gpuwm_static_highres_audit_drop(merged_handle)
+        return merged, audit
+    finally:
+        bridge.fieldset_free(baseline_handle)
+        bridge.fieldset_free(overrides_handle)
+        if merged_handle.value:
+            bridge.fieldset_free(int(merged_handle.value))
+
+
 NLCD_TO_MODIS21_INLAND = {
     11: 21,  # open water -> inland lake for the scoped CONUS pilot
     12: 15,  # perennial snow / ice
@@ -214,9 +356,44 @@ def _source_crs(dataset, source: BoundRaster):
     return CRS.from_user_input(value)
 
 
+def _raster_spec(source: BoundRaster) -> dict[str, object]:
+    """The provenance-bound source as the crate's ``BoundRasterSpec``.
+
+    The receipt strings (source id, licence, attribution) stay Python:
+    they are provenance documents, not bytes to transform.  What crosses
+    is what the decode needs -- the path, the hash and size the crate
+    re-verifies itself, and the recorded override/scale.
+    """
+    spec: dict[str, object] = {"path": str(source.path),
+                               "sha256": source.sha256,
+                               "scale_factor": float(source.scale_factor)}
+    if source.expected_bytes is not None:
+        spec["expected_bytes"] = int(source.expected_bytes)
+    if source.crs_override is not None:
+        spec["crs_override"] = str(source.crs_override)
+    if source.nodata_override is not None:
+        spec["nodata_override"] = float(source.nodata_override)
+    return spec
+
+
 def resample_continuous(source: BoundRaster, grid: LambertGrid, *,
                         method: str = "average") -> np.ndarray:
-    """Reproject one continuous raster to mass points in south-north order."""
+    """Reproject one continuous raster to mass points in south-north order.
+
+    Runs in the Rust static-fields library by default (decode, CRS and
+    warp); the rasterio body below is the parity reference and the
+    reported fallback.
+    """
+
+    bridge = _static_rust("resample_continuous")
+    if bridge is not None:
+        fields, _ = bridge.highres_resample({
+            "kind": "continuous",
+            "grid_spec": grid._rust_spec(),
+            "method": method,
+            "source": _raster_spec(source),
+        })
+        return fields["VALUES"]
 
     try:
         from rasterio.enums import Resampling
@@ -322,7 +499,25 @@ def _resample_category_array(values: np.ndarray, valid: np.ndarray, *,
 def resample_mapped_categories(
         source: BoundRaster, grid: LambertGrid,
         mapping: Mapping[int, int], *, category_count: int) -> np.ndarray:
-    """Map raw categories then compute target-cell area fractions."""
+    """Map raw categories then compute target-cell area fractions.
+
+    Runs in the Rust static-fields library by default; the rasterio body
+    below is the parity reference and the reported fallback.  The
+    unmapped-category refusal is byte-matched between the two by the
+    crate's committed goldens.
+    """
+
+    bridge = _static_rust("resample_mapped_categories")
+    if bridge is not None:
+        fields, _ = bridge.highres_resample({
+            "kind": "mapped-categories",
+            "grid_spec": grid._rust_spec(),
+            "source": _raster_spec(source),
+            "mapping": [[int(raw), int(target)]
+                        for raw, target in sorted(mapping.items())],
+            "category_count": int(category_count),
+        })
+        return fields["FRACTIONS"]
 
     with _open_verified(source) as dataset:
         raw = dataset.read(1)
@@ -351,13 +546,40 @@ def resample_mapped_categories(
 
 def usda_texture_category(sand: np.ndarray, silt: np.ndarray,
                           clay: np.ndarray) -> np.ndarray:
-    """Map normalized percentages to WRF's USDA soil categories 1..12."""
+    """Map normalized percentages to WRF's USDA soil categories 1..12.
+
+    The triangle runs in the Rust static-fields library by default
+    (byte-parity proven by the crate's committed goldens, refusal
+    messages included); the numpy body below is the parity reference
+    and the reported fallback.
+    """
 
     sand = np.asarray(sand, dtype=np.float64)
     silt = np.asarray(silt, dtype=np.float64)
     clay = np.asarray(clay, dtype=np.float64)
     if sand.shape != silt.shape or sand.shape != clay.shape:
         raise ValueError("sand, silt, and clay shapes differ")
+
+    bridge = _static_rust("usda_texture_category")
+    if bridge is not None:
+        import ctypes
+        library = bridge.load()
+        f64p = ctypes.POINTER(ctypes.c_double)
+        library.gpuwm_static_highres_usda.argtypes = [
+            f64p, f64p, f64p, ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_int16)]
+        library.gpuwm_static_highres_usda.restype = ctypes.c_int32
+        flat = [np.ascontiguousarray(a).reshape(-1)
+                for a in (sand, silt, clay)]
+        out = np.empty(sand.size, dtype=np.int16)
+        code = library.gpuwm_static_highres_usda(
+            flat[0].ctypes.data_as(f64p), flat[1].ctypes.data_as(f64p),
+            flat[2].ctypes.data_as(f64p), sand.size,
+            out.ctypes.data_as(ctypes.POINTER(ctypes.c_int16)))
+        if code != 0:
+            raise ValueError(bridge.last_error(library))
+        return out.reshape(sand.shape)
+
     total = sand + silt + clay
     if np.any(~np.isfinite(total)) or np.any(total <= 0.0):
         raise ValueError("soil texture contains invalid totals")
@@ -450,6 +672,62 @@ def _soilgrids_categories(
     return category, valid, transform, crs, raw_total
 
 
+def soilgrids_category_fractions(
+        sources: Mapping[tuple[str, str], BoundRaster],
+        depth_weights: Mapping[str, float], grid: LambertGrid, *,
+        category_count: int = 16
+        ) -> tuple[np.ndarray, dict[str, object]]:
+    """One soil layer's target-cell category fractions, plus its audit.
+
+    This is the whole SoilGrids leg of :func:`build_highres_overrides`:
+    read and co-register the component x depth GeoTIFFs, take the
+    depth-weighted mean, classify it through the USDA triangle, and warp
+    the categories onto ``grid``.  It exists as one entry point because
+    every step of it is byte work -- decode plus transform -- and the
+    seam should cross once rather than shuttle a Homolosine transform
+    and a source-resolution category plane back into Python between
+    steps.
+
+    Runs in the Rust static-fields library by default; the numpy +
+    rasterio bodies (:func:`_soilgrids_categories` and
+    :func:`_resample_category_array`) are the parity reference and the
+    reported fallback.
+    """
+    bridge = _static_rust("soilgrids_category_fractions")
+    if bridge is not None:
+        fields, audit = bridge.highres_resample({
+            "kind": "soil-categories",
+            "grid_spec": grid._rust_spec(),
+            "category_count": int(category_count),
+            "soil_sources": {
+                f"{component}_{depth}": _raster_spec(source)
+                for (component, depth), source in sources.items()
+                if depth in depth_weights
+            },
+            "depth_weights": [[str(depth), float(weight)]
+                              for depth, weight in depth_weights.items()],
+        })
+        return fields["FRACTIONS"], {
+            "raw_component_total_percent_min":
+                float(audit["raw_component_total_percent_min"]),
+            "raw_component_total_percent_max":
+                float(audit["raw_component_total_percent_max"]),
+            "valid_source_pixels": int(audit["valid_source_pixels"]),
+        }
+
+    category, valid, transform, crs, raw_total = _soilgrids_categories(
+        sources, depth_weights)
+    fractions = _resample_category_array(
+        category, valid, transform=transform, crs=crs, grid=grid,
+        category_count=category_count)
+    totals = raw_total[valid]
+    return fractions, {
+        "raw_component_total_percent_min": float(totals.min()),
+        "raw_component_total_percent_max": float(totals.max()),
+        "valid_source_pixels": int(np.count_nonzero(valid)),
+    }
+
+
 def _require_coverage(name: str, values: np.ndarray) -> None:
     if not np.isfinite(values).all():
         count = int(np.count_nonzero(~np.isfinite(values)))
@@ -485,12 +763,9 @@ def build_highres_overrides(
     soil_fields: dict[str, np.ndarray] = {}
     soil_audit = {}
     for layer_name, weights in SOILGRIDS_DEPTH_WEIGHTS.items():
-        category, valid, transform, crs, raw_total = _soilgrids_categories(
-            soil_sources, weights)
-        fractions = _resample_category_array(
-            category, valid, transform=transform, crs=crs,
-            grid=extended, category_count=16,
-        )[(slice(None),) + crop]
+        fractions_extended, layer_audit = soilgrids_category_fractions(
+            soil_sources, weights, extended, category_count=16)
+        fractions = fractions_extended[(slice(None),) + crop]
         water = landmask == 0.0
         fractions[:, water] = 0.0
         fractions[13, water] = 1.0  # WRF soil category 14 = water
@@ -520,11 +795,8 @@ def build_highres_overrides(
         else:
             soil_fields["SOILCBOT"] = fractions
             soil_fields["SCB_DOM"] = dominant_category(fractions)
-        totals = raw_total[valid]
         soil_audit[layer_name] = {
-            "raw_component_total_percent_min": float(totals.min()),
-            "raw_component_total_percent_max": float(totals.max()),
-            "valid_source_pixels": int(np.count_nonzero(valid)),
+            **layer_audit,
             "fallback_land_cells": int(missing_land.sum()),
         }
 
@@ -620,6 +892,23 @@ def merge_terrain_override(
         raise KeyError(
             f"terrain-only overrides carry non-terrain field(s) {extra}; "
             "use merge_highres_overrides for the full overlay")
+
+    if (np.asarray(overrides["HGT_M"]).ndim == 2
+            and all(np.asarray(value).ndim in (2, 3)
+                    for value in baseline.values())):
+        bridge = _static_rust("merge_terrain_override")
+        if bridge is not None:
+            merged, audit = _merge_via_rust(
+                bridge, baseline, {"HGT_M": overrides["HGT_M"]},
+                mode="terrain")
+            return merged, {
+                "terrain_cells_changed":
+                    int(audit["terrain_cells_changed"]),
+                "land_water_cells_unchanged":
+                    int(audit["land_water_cells_unchanged"]),
+                "newly_land_nearest_climatology_fallback_cells": 0,
+                "newly_water_masked_cells": 0,
+            }
 
     out = {name: np.array(value, copy=True)
            for name, value in baseline.items()}
@@ -750,6 +1039,24 @@ def merge_highres_overrides(
     if missing:
         raise KeyError(f"high-resolution overrides missing {missing}")
 
+    if all(np.asarray(value).ndim in (2, 3)
+           for source in (baseline, overrides)
+           for value in source.values()):
+        bridge = _static_rust("merge_highres_overrides")
+        if bridge is not None:
+            merged, audit = _merge_via_rust(bridge, baseline, overrides,
+                                            mode="all")
+            return merged, {
+                "newly_land_nearest_climatology_fallback_cells": int(
+                    audit["newly_land_nearest_climatology_fallback_cells"]),
+                "newly_water_masked_cells":
+                    int(audit["newly_water_masked_cells"]),
+                "unchanged_land_water_cells":
+                    int(audit["unchanged_land_water_cells"]),
+                "deep_soil_water_masked_cells":
+                    int(audit["deep_soil_water_masked_cells"]),
+            }
+
     out = {name: np.array(value, copy=True)
            for name, value in baseline.items()}
     for name, value in overrides.items():
@@ -820,5 +1127,5 @@ __all__ = [
     "build_highres_overrides", "build_terrain_override",
     "merge_highres_overrides", "merge_terrain_override",
     "resample_continuous", "resample_mapped_categories", "sha256_file",
-    "usda_texture_category",
+    "soilgrids_category_fractions", "usda_texture_category",
 ]

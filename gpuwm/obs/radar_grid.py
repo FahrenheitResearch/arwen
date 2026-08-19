@@ -50,6 +50,27 @@ unfolded the velocities and ``provenance.dealias`` carries the three-state
 account of every gate it resolved, left alone, or refused.  The
 ``dealiasing`` attribute states which of the two this file is, and is the
 first thing a consumer should read.
+
+Which library moves the bytes
+-----------------------------
+Both halves are Drew's Rust on the bare default.  The file is WRITTEN by the
+classic writer at ``tools/rustwx/crates/netcdf-writer`` through
+:mod:`gpuwm.obs.grid_product`, in the CDF-5 container;
+``GPUWM_OBS_GRID_WRITER=python`` reaches the netCDF4/HDF5 writer this schema
+used through 2.4 and is an announced workaround, never a fallback.  Every
+OBSERVATION is READ back through :mod:`gpuwm.netcdf_bridge`.
+
+The file's METADATA -- its global attributes and the two fixed-width
+character variables ``radar_id`` and ``radar_valid_time`` -- comes off one
+netCDF4 open, the only netCDF4 read left in this module.  That is the split
+``gpuwm.downscale._parent_geometry`` already draws, and here it is forced:
+the vendored netcrust reader exposes no character read at all, and it cannot
+see an HDF5 attribute that landed in an object-header continuation block --
+it returns ``None`` for one rather than failing.  A two-radar product's
+``provenance`` is past that point, and every radar-grid file written before
+this release is HDF5, so reading the metadata on the bridge turned "this
+build cannot read the attribute" into "the file does not carry one" for the
+whole assimilation record.  Values stay on the bridge; metadata does not.
 """
 
 from __future__ import annotations
@@ -312,7 +333,8 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
     grid identity the file is bound to.
     """
 
-    import netCDF4                                       # noqa: PLC0415
+    from gpuwm.obs.grid_product import (                 # noqa: PLC0415
+        open_obs_grid_product)
 
     path = Path(path)
     if path.exists() and not overwrite:
@@ -340,7 +362,7 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
     coordinates = _coordinate_digests(grid)
     temp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
-        with netCDF4.Dataset(temp, "w", format="NETCDF4_CLASSIC") as dataset:
+        with open_obs_grid_product(temp) as dataset:
             dataset.createDimension("level", grid.nz)
             dataset.createDimension("south_north", grid.ny)
             dataset.createDimension("west_east", grid.nx)
@@ -519,7 +541,7 @@ def read_radar_grid(path: str | Path, *,
     refusal, not a regrid.
     """
 
-    import netCDF4                                       # noqa: PLC0415
+    from gpuwm import netcdf_bridge                      # noqa: PLC0415
 
     path = Path(path)
     if expected_grid is not None:
@@ -532,13 +554,24 @@ def read_radar_grid(path: str | Path, *,
                 "the caller is asking for two different grids")
         expected_grid_identity = demanded
 
-    with netCDF4.Dataset(path, "r") as dataset:
-        schema = getattr(dataset, "schema", None)
+    # One netCDF4 open for the METADATA -- the global attributes and the two
+    # character variables -- before any decode, because the bridge can see
+    # neither.  See :func:`_read_metadata`.
+    attributes, ids, times = _read_metadata(path)
+
+    # Every OBSERVATION -- value, error, count, mask, beam component and
+    # coordinate -- is decoded by ``rw_netcdf``.  Masking is turned off for
+    # the same reason the satellite twin turns it off: this schema writes
+    # ``_FillValue = -9.99e30`` and its consumers read that sentinel back
+    # deliberately, so handing them NaN would change what the DA side sees.
+    with netcdf_bridge.open_dataset(path) as dataset:
+        dataset.set_auto_mask(False)
+        schema = attributes.get("schema")
         if schema != RADAR_GRID_SCHEMA:
             raise RadarGridSchemaError(
                 f"{path.name}: schema {schema!r}, expected "
                 f"{RADAR_GRID_SCHEMA!r}")
-        identity = getattr(dataset, "grid_identity_sha256", None)
+        identity = attributes.get("grid_identity_sha256")
         if not identity:
             raise RadarGridSchemaError(
                 f"{path.name}: no grid_identity_sha256; a gridded "
@@ -556,8 +589,8 @@ def read_radar_grid(path: str | Path, *,
 
         result = {
             "schema": schema,
-            "status": getattr(dataset, "status", None),
-            "valid_time": getattr(dataset, "valid_time", None),
+            "status": attributes.get("status"),
+            "valid_time": attributes.get("valid_time"),
             "grid_identity_sha256": identity,
             "grid_coordinate_sha256": stored,
             "dims": {name: len(dataset.dimensions[name])
@@ -566,34 +599,88 @@ def read_radar_grid(path: str | Path, *,
             # None for a file written before the clear-air extension; the
             # DA side reads this to decide whether a zero batch may be
             # built at all, so its absence must be visible rather than
-            # defaulted to the value this build happens to write.
-            "clear_air_source": getattr(dataset, "clear_air_source", None),
+            # defaulted to the value this build happens to write.  Absent
+            # now means absent FROM THE FILE: the attributes come off
+            # netCDF4, which sees every one the writer stored.
+            "clear_air_source": attributes.get("clear_air_source"),
             "superob_params": json.loads(
-                getattr(dataset, "superob_params", "{}")),
-            "provenance": json.loads(getattr(dataset, "provenance", "{}")),
+                attributes.get("superob_params", "{}")),
+            "provenance": json.loads(attributes.get("provenance", "{}")),
             "radars": [],
             "variables": {},
         }
         for name in dataset.variables:
-            if name in ("radar_id", "radar_valid_time"):
+            if name in _CHARACTER_VARIABLES:
                 continue
             result["variables"][name] = np.asarray(dataset.variables[name][:])
         _require_beam_vectors(path, result["variables"])
-        ids = _read_strings(dataset.variables["radar_id"][:])
-        times = _read_strings(dataset.variables["radar_valid_time"][:])
-        if len(ids) != len(dataset.dimensions["radar"]):
-            raise RadarGridSchemaError(
-                f"{path.name}: {len(ids)} radar ids for "
-                f"{len(dataset.dimensions['radar'])} radars")
-        for index, site in enumerate(ids):
-            result["radars"].append({
-                "id": site,
-                "lat_deg": float(dataset.variables["radar_lat"][index]),
-                "lon_deg": float(dataset.variables["radar_lon"][index]),
-                "alt_m": float(dataset.variables["radar_alt"][index]),
-                "valid_time": times[index],
-            })
+        n_radar = len(dataset.dimensions["radar"])
+
+    if len(ids) != n_radar:
+        raise RadarGridSchemaError(
+            f"{path.name}: {len(ids)} radar ids for {n_radar} radars")
+    # The per-radar geometry comes out of the arrays already decoded above
+    # rather than being read a second time: one decode per variable is the
+    # bridge's unit of work, and re-indexing the file three times per radar
+    # would be three more of them for numbers already in hand.
+    for index, site in enumerate(ids):
+        result["radars"].append({
+            "id": site,
+            "lat_deg": float(result["variables"]["radar_lat"][index]),
+            "lon_deg": float(result["variables"]["radar_lon"][index]),
+            "alt_m": float(result["variables"]["radar_alt"][index]),
+            "valid_time": times[index],
+        })
     return result
+
+
+#: The two variables the Rust decoder cannot hand back.
+_CHARACTER_VARIABLES = ("radar_id", "radar_valid_time")
+
+
+def _is_character(variable) -> bool:
+    """Is this variable a fixed-width character array?"""
+
+    declared = getattr(variable, "is_character", None)
+    if isinstance(declared, bool):
+        return declared
+    return np.dtype(variable.dtype).kind in ("S", "U", "O")
+
+
+def _read_metadata(path: Path) -> tuple[dict, list[str], list[str]]:
+    """The global attributes, radar ids and timestamps, in ONE netCDF4 open.
+
+    This is the ONLY netCDF4 read left in this module.  Two things force it,
+    and both are the same shape of quiet wrong:
+
+    * the vendored netcrust reader promotes numeric variables to f64 and
+      exposes no character read at all (upstream gap 3), so handing the
+      caller an empty list of ids would say "this file has no radars";
+    * it cannot see an HDF5 global attribute that landed in an object-header
+      continuation block, and answers ``None`` for one instead of failing.
+      Seven attributes with one large among them is enough to spill, which a
+      two-radar product's ``provenance`` reaches, so reading the metadata on
+      the bridge said "this file records nothing about how it was made" for
+      every radar-grid file written before this release -- all of them HDF5.
+
+    Reading both off one open keeps the netCDF4 surface at exactly one
+    ``Dataset``, which :mod:`tests.test_obs_grid_writer` pins.
+    """
+
+    import netCDF4                                       # noqa: PLC0415
+
+    with netCDF4.Dataset(path, "r") as dataset:
+        attributes = {name: dataset.getncattr(name)
+                      for name in dataset.ncattrs()}
+        # A file that carries neither character variable is not refused
+        # here: the schema and structure checks in the caller run first and
+        # say WHICH contract the file breaks.  An absent id array reaches
+        # the caller as an empty list, which its radar-count check names.
+        strings = [
+            _read_strings(dataset.variables[name][:])
+            if name in dataset.variables else []
+            for name in _CHARACTER_VARIABLES]
+        return attributes, strings[0], strings[1]
 
 
 def _require_structure(path: Path, dataset) -> None:
@@ -656,7 +743,21 @@ def _require_structure(path: Path, dataset) -> None:
                 "array shape: a transposed field, or one on a staggered "
                 "dimension of equal length, has the right shape and the "
                 "wrong values, and only the tuple can tell them apart")
-        if np.dtype(variable.dtype) != np.dtype(dtype):
+        if np.dtype(dtype).kind == "S":
+            # A fixed-width character array.  The decoder spells that
+            # ``Char`` in a classic container and ``String`` in an HDF5 one
+            # -- the same bytes on disk, two reader spellings -- so the
+            # question asked here is the one the schema actually means: is
+            # this a character variable?  Comparing numpy dtypes instead
+            # would refuse every radar-grid file written before the writer
+            # moved to the classic container, which is a compatibility
+            # break dressed up as a schema violation.
+            if not _is_character(variable):
+                raise RadarGridSchemaError(
+                    f"{path.name}: {name} is stored as "
+                    f"{np.dtype(variable.dtype)}, this schema defines it as "
+                    f"{np.dtype(dtype)}")
+        elif np.dtype(variable.dtype) != np.dtype(dtype):
             raise RadarGridSchemaError(
                 f"{path.name}: {name} is stored as {np.dtype(variable.dtype)}, "
                 f"this schema defines it as {np.dtype(dtype)}")
@@ -820,12 +921,17 @@ def _read_strings(chars) -> list[str]:
             for row in array]
 
 
+# The four variable helpers hand the writer the caller's OWN array and let
+# the declared external type do the cast, which is what netCDF4 has always
+# done on assignment and what the classic facade does at write time.  Casting
+# here instead would leave a float32 copy of every volume alive until the file
+# closes -- several hundred megabytes for a multi-radar product, for nothing.
 def _grid_var(dataset, name, dims, values, description, units):
     variable = dataset.createVariable(name, "f4", dims)
     variable.description = description
     variable.units = units
     variable.coordinates = "XLONG XLAT"
-    variable[:] = np.asarray(values, dtype=np.float32)
+    variable[:] = values
 
 
 def _obs_var(dataset, name, dims, values, units, description):
@@ -834,7 +940,7 @@ def _obs_var(dataset, name, dims, values, units, description):
     variable.units = units
     variable.description = description
     variable.coordinates = "XLONG XLAT"
-    variable[:] = np.asarray(values, dtype=np.float32)
+    variable[:] = values
 
 
 def _mask_var(dataset, name, dims, values, description):
@@ -843,7 +949,7 @@ def _mask_var(dataset, name, dims, values, description):
     variable.flag_values = np.array([0, 1], dtype=np.int8)
     variable.flag_meanings = "no_observation valid"
     variable.coordinates = "XLONG XLAT"
-    variable[:] = np.asarray(values, dtype=np.int8)
+    variable[:] = values
 
 
 def _count_var(dataset, name, dims, values, description):
@@ -851,7 +957,7 @@ def _count_var(dataset, name, dims, values, description):
     variable.description = description
     variable.units = "count"
     variable.coordinates = "XLONG XLAT"
-    variable[:] = np.asarray(values, dtype=np.int32)
+    variable[:] = values
 
 
 def _digest(array, dtype) -> str:

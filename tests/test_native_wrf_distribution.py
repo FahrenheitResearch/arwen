@@ -435,7 +435,16 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     assert "gpuwm/physics_registry.py" in files
     assert "gpuwm/physics_registry_v2.json" in files
     assert "gpuwm/mapped_direct.py" in files
-    assert "gpuwm/twentycrv3.py" in files
+    assert "gpuwm/twentycrv3_direct.py" in files
+    # The packaged profiles a wheel user can name on `--source`, shipped as
+    # the table data they are.  `gpuwm/twentycrv3.py` used to be asserted
+    # here: a 1,185-line per-model NetCDF-CF decoder with no consumer,
+    # replaced by these three documents plus one adapter row.
+    for role in ("mapping", "composition", "provenance"):
+        assert f"gpuwm/authorities/rw-wps-20crv3-netcdf.{role}.json" in files
+        assert (
+            f"gpuwm/authorities/rw-wps-20crv3-member-grib2.{role}.json"
+            in files)
     assert "gpuwm/core/state.py" in files
     assert "gpuwm/core/thompson_contract.py" in files
     assert "gpuwm/core/nssl2_contract.py" in files
@@ -507,7 +516,7 @@ import gpuwm.era5_direct
 import gpuwm.gfs_direct
 import gpuwm.hrrr_hierarchy_direct
 import gpuwm.mapped_direct
-import gpuwm.twentycrv3
+import gpuwm.twentycrv3_direct
 import gpuwm.twentycrv3_wrf
 # The estate report is part of this surface: a preprocessing install is
 # the one that most needs to be told which bridge is missing, and it
@@ -546,7 +555,7 @@ for module in (
     gpuwm.gfs_direct,
     gpuwm.hrrr_hierarchy_direct,
     gpuwm.mapped_direct,
-    gpuwm.twentycrv3,
+    gpuwm.twentycrv3_direct,
     gpuwm.twentycrv3_wrf,
     gpuwm.doctor,
     tools.hrrr_single_domain_benchmark,

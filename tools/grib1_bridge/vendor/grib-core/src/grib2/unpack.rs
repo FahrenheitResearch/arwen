@@ -167,6 +167,32 @@ pub fn unpack_message(msg: &Grib2Message) -> crate::Result<Vec<f64>> {
             )));
         }
     }
+    // Convergence conflict C2 (see lib.rs): IEEE floating-point packing
+    // (Template 5.4) declares its point count in Section 5, and that count is
+    // the authority.  Section 7 is byte-padded by some encoders, so bytes
+    // BEYOND `count * width` are tolerated and dropped below; bytes SHORT of
+    // it are refused, because a short IEEE payload silently shortens the field
+    // and the missing tail reaches artifacts as good data.
+    if dr.template == 4 {
+        let width = match dr.bits_per_value {
+            32 => 4usize,
+            64 => 8usize,
+            // Any other width is refused by `unpack_ieee`, which names it.
+            _ => 0,
+        };
+        if width != 0 {
+            let required = declared_values.checked_mul(width).ok_or_else(|| {
+                crate::GribError::Unpack("IEEE byte count overflows usize".to_string())
+            })?;
+            if msg.raw_data.len() < required {
+                return Err(crate::GribError::Unpack(format!(
+                    "IEEE-packed Section 7 has {} bytes; Section 5 declares \
+                     {declared_values} values needing {required}",
+                    msg.raw_data.len()
+                )));
+            }
+        }
+    }
     let mut values = match dr.template {
         0 => unpack_simple(&msg.raw_data, dr).map_err(crate::GribError::Unpack)?,
         2 => unpack_complex(&msg.raw_data, dr).map_err(crate::GribError::Unpack)?,
@@ -187,6 +213,14 @@ pub fn unpack_message(msg: &Grib2Message) -> crate::Result<Vec<f64>> {
         }
     };
 
+    // A complex-packed field with zero groups is how GRIB2 spells a constant
+    // field: Section 7 carries no coded values even though Section 5 still
+    // declares the logical point count.  Expand it before the count check
+    // below, which would otherwise read the constant as a truncated payload.
+    if matches!(dr.template, 2 | 3) && dr.num_groups == 0 && values.is_empty() {
+        values = vec![dr.reference_value as f64; declared_values];
+    }
+
     if dr.template == 0 && dr.bits_per_value != 0 {
         if values.len() < declared_values {
             return Err(crate::GribError::Unpack(format!(
@@ -194,6 +228,10 @@ pub fn unpack_message(msg: &Grib2Message) -> crate::Result<Vec<f64>> {
                 values.len()
             )));
         }
+        values.truncate(declared_values);
+    } else if dr.template == 4 {
+        // Trailing IEEE padding tolerated (see the C2 note above); a short
+        // payload was already refused before decode.
         values.truncate(declared_values);
     } else if matches!(dr.template, 2 | 3) && values.len() != declared_values {
         return Err(crate::GribError::Unpack(format!(
@@ -368,14 +406,14 @@ fn unpack_simple_scan_normalized_row_window(
             ny,
             y_start,
             y_end,
-            || Some(dr.reference_value as f64),
+            || Ok(Some(dr.reference_value as f64)),
         );
     }
 
     let bpv = dr.bits_per_value as usize;
     let mut reader = BitReader::new(&msg.raw_data);
     fill_scan_normalized_row_window_from_dense_values(msg, nx, ny, y_start, y_end, || {
-        Some(scale_raw_value(reader.read_bits(bpv) as i64, dr))
+        Ok(Some(scale_raw_value(reader.read_bits(bpv) as i64, dr)))
     })
 }
 
@@ -387,19 +425,39 @@ fn unpack_complex_spatial_scan_normalized_row_window(
     y_end: usize,
 ) -> Result<Vec<f64>, String> {
     let dr = &msg.data_rep;
-    require_no_missing_value_management(dr)?;
+    let mode = missing_value_mode(dr)?;
     let order = dr.spatial_diff_order as usize;
     let extra_bytes = dr.spatial_diff_bytes as usize;
 
-    if order == 0 || extra_bytes == 0 {
-        let mut groups = ComplexGroups::new(&msg.raw_data, dr)?;
+    // Zero groups is the GRIB2 spelling of a constant field: there are no
+    // coded values to consume even though Section 5 still declares the
+    // logical point count.  Handled here so the window agrees with the full
+    // decode's constant expansion instead of coming back all-NaN.
+    if dr.num_groups == 0 {
         return fill_scan_normalized_row_window_from_dense_values(
             msg,
             nx,
             ny,
             y_start,
             y_end,
-            || groups.next_raw().map(|raw| scale_raw_value(raw, dr)),
+            || Ok(Some(dr.reference_value as f64)),
+        );
+    }
+
+    if order == 0 || extra_bytes == 0 {
+        let mut groups = ComplexGroups::new(&msg.raw_data, dr, mode)?;
+        return fill_scan_normalized_row_window_from_dense_values(
+            msg,
+            nx,
+            ny,
+            y_start,
+            y_end,
+            || {
+                Ok(groups.next_value().map(|value| match value {
+                    GroupValue::Present(raw) => scale_raw_value(raw, dr),
+                    GroupValue::Missing => f64::NAN,
+                }))
+            },
         );
     }
 
@@ -408,11 +466,14 @@ fn unpack_complex_spatial_scan_normalized_row_window(
 
     let mut initial_values = Vec::with_capacity(order);
     for _ in 0..order {
-        initial_values.push(reader.read_bits(nbits) as i64);
+        initial_values.push(
+            i64::try_from(reader.read_bits_checked(nbits)?)
+                .map_err(|_| "spatial-differencing initial value exceeded i64".to_string())?,
+        );
     }
 
-    let sign = reader.read_bits(1);
-    let magnitude = reader.read_bits(nbits - 1) as i64;
+    let sign = reader.read_bits_checked(1)?;
+    let magnitude = reader.read_bits_checked(nbits - 1)? as i64;
     let minimum = if sign == 1 { -magnitude } else { magnitude };
 
     reader.align_to_byte();
@@ -421,26 +482,46 @@ fn unpack_complex_spatial_scan_normalized_row_window(
         .raw_data
         .get(consumed_bytes..)
         .ok_or_else(|| "spatial differencing header exceeded data length".to_string())?;
-    let mut groups = ComplexGroups::new(remaining_data, dr)?;
+    let mut groups = ComplexGroups::new(remaining_data, dr, mode)?;
 
-    let mut dense_idx = 0usize;
+    // `present_idx` counts PRESENT cells, not grid cells: a cell marked
+    // missing in band carries no residual and must not advance the
+    // difference chain (see `unpack_complex_spatial`).
+    let mut present_idx = 0usize;
     let mut previous = None::<i64>;
     let mut previous_previous = None::<i64>;
     fill_scan_normalized_row_window_from_dense_values(msg, nx, ny, y_start, y_end, || {
-        let raw = groups.next_raw()?;
-        let mut reconstructed = raw + minimum;
-        if dense_idx < order {
-            reconstructed = initial_values[dense_idx];
-        } else if order == 1 {
-            reconstructed += previous.unwrap_or(0);
-        } else if order == 2 {
-            reconstructed += 2 * previous.unwrap_or(0) - previous_previous.unwrap_or(0);
-        }
+        let raw = match groups.next_value() {
+            None => return Ok(None),
+            Some(GroupValue::Missing) => return Ok(Some(f64::NAN)),
+            Some(GroupValue::Present(raw)) => raw,
+        };
+        // The same checked recurrence the full decode runs; see
+        // `unpack_complex_spatial` for why every step is checked.
+        let reconstructed = if present_idx < order {
+            initial_values[present_idx]
+        } else {
+            let difference = raw.checked_add(minimum).ok_or_else(|| {
+                "spatial-differencing difference overflow while adding minimum".to_string()
+            })?;
+            match order {
+                1 => difference
+                    .checked_add(previous.unwrap_or(0))
+                    .ok_or_else(|| "first-order spatial recurrence overflow".to_string())?,
+                2 => previous
+                    .unwrap_or(0)
+                    .checked_mul(2)
+                    .and_then(|value| value.checked_sub(previous_previous.unwrap_or(0)))
+                    .and_then(|value| value.checked_add(difference))
+                    .ok_or_else(|| "second-order spatial recurrence overflow".to_string())?,
+                _ => difference,
+            }
+        };
 
-        dense_idx += 1;
+        present_idx += 1;
         previous_previous = previous;
         previous = Some(reconstructed);
-        Some(scale_raw_value(reconstructed, dr))
+        Ok(Some(scale_raw_value(reconstructed, dr)))
     })
 }
 
@@ -451,10 +532,17 @@ struct ComplexGroups<'a> {
     group_lengths: Vec<usize>,
     group_idx: usize,
     value_idx_in_group: usize,
+    mode: MissingValueMode,
+    constant_markers: MissingMarkers,
 }
 
 impl<'a> ComplexGroups<'a> {
-    fn new(data: &'a [u8], dr: &DataRepresentation) -> Result<Self, String> {
+    fn new(
+        data: &'a [u8],
+        dr: &DataRepresentation,
+        mode: MissingValueMode,
+    ) -> Result<Self, String> {
+        let constant_markers = MissingMarkers::for_width(dr.bits_per_value as usize, mode);
         let ng = dr.num_groups as usize;
         if ng == 0 {
             return Ok(Self {
@@ -464,6 +552,8 @@ impl<'a> ComplexGroups<'a> {
                 group_lengths: Vec::new(),
                 group_idx: 0,
                 value_idx_in_group: 0,
+                mode,
+                constant_markers,
             });
         }
 
@@ -493,6 +583,7 @@ impl<'a> ComplexGroups<'a> {
             group_lengths[ng - 1] = dr.last_group_length as usize;
         }
         reader.align_to_byte();
+        refuse_ambiguous_constant_group(bpv, mode, &group_widths)?;
 
         Ok(Self {
             reader,
@@ -501,10 +592,12 @@ impl<'a> ComplexGroups<'a> {
             group_lengths,
             group_idx: 0,
             value_idx_in_group: 0,
+            mode,
+            constant_markers,
         })
     }
 
-    fn next_raw(&mut self) -> Option<i64> {
+    fn next_value(&mut self) -> Option<GroupValue> {
         while self.group_idx < self.group_lengths.len()
             && self.value_idx_in_group >= self.group_lengths[self.group_idx]
         {
@@ -519,10 +612,20 @@ impl<'a> ComplexGroups<'a> {
         let gref = self.group_refs[self.group_idx];
         self.value_idx_in_group += 1;
         if width == 0 {
-            Some(gref)
-        } else {
-            Some(gref + self.reader.read_bits(width) as i64)
+            return Some(if self.constant_markers.marks(gref as u64) {
+                GroupValue::Missing
+            } else {
+                GroupValue::Present(gref)
+            });
         }
+        let stored = self.reader.read_bits(width);
+        Some(
+            if MissingMarkers::for_width(width, self.mode).marks(stored) {
+                GroupValue::Missing
+            } else {
+                GroupValue::Present(gref + stored as i64)
+            },
+        )
     }
 }
 
@@ -535,7 +638,7 @@ fn fill_scan_normalized_row_window_from_dense_values<F>(
     mut next_value: F,
 ) -> Result<Vec<f64>, String>
 where
-    F: FnMut() -> Option<f64>,
+    F: FnMut() -> Result<Option<f64>, String>,
 {
     let total_points = nx
         .checked_mul(ny)
@@ -566,9 +669,12 @@ where
         if !active {
             continue;
         }
-        let Some(value) = next_value() else {
-            break;
-        };
+        // Running out of coded values mid-window used to `break`, leaving the
+        // untouched tail of the window at its NaN fill -- a short payload
+        // reaching a tile as a partly-missing field rather than as an error.
+        let value = next_value()?.ok_or_else(|| {
+            "packed data ended before every grid/bitmap point was decoded".to_string()
+        })?;
 
         let source_y = idx / nx;
         let normalized_y = if flip_y { ny - 1 - source_y } else { source_y };
@@ -611,28 +717,167 @@ fn unpack_simple(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, Strin
     Ok(apply_scaling(&raw, dr))
 }
 
-/// Refuse the complex-packing missing-value modes this decoder does not
-/// implement.  Code Table 5.5 values 1 and 2 embed missing-value
-/// substitutes *inside* the packed groups (all-ones group references
-/// and widths become sentinels); decoding them with the mode-0
-/// arithmetic below would silently publish those sentinels as data.
-/// Before octet 23 was parsed that is exactly what happened, so this is
-/// a new positive refusal, not a relaxation.
-fn require_no_missing_value_management(dr: &DataRepresentation) -> Result<(), String> {
-    if dr.missing_value_management != 0 {
+/// Code Table 5.5: how Templates 5.2 and 5.3 carry missing values.
+///
+/// A complex-packed message may declare missing cells IN BAND instead of
+/// shipping a Section-6 bitmap: octet 23 of Section 5 reserves the
+/// all-ones bit pattern of each group (and, in mode 2, the pattern one
+/// below it) as a marker rather than a value.  A decoder that never
+/// reads octet 23 hands those markers back as physical data -- for a
+/// 4-bit group that is fifteen counts above the group reference, scaled
+/// like everything else, with no error and no NaN.  Mode 0 is the
+/// common NCEP case and is the only one this decoder used to accept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingValueMode {
+    /// Octet 23 = 0: no in-band markers; a Section-6 bitmap, if any,
+    /// carries the missing cells.
+    None,
+    /// Octet 23 = 1: the primary substitute is reserved in band.
+    Primary,
+    /// Octet 23 = 2: primary and secondary substitutes are reserved.
+    PrimaryAndSecondary,
+}
+
+/// Read Code Table 5.5 off the data representation, refusing what this
+/// decoder cannot represent rather than guessing.
+///
+/// The refusal names its breakage: a reserved code means the encoder
+/// reserved bit patterns this decoder cannot identify, and decoding
+/// anyway is the original defect by another route.
+///
+/// The companion `bits_per_value == 0` refusal lives in
+/// `refuse_ambiguous_constant_group`, which runs once the group widths are
+/// known.  It used to sit here and refused every mode-1/2 field whose
+/// `bits_per_value` was 0, including fields whose groups all carry a real
+/// width from `group_width_ref` -- those decode unambiguously and the
+/// blanket refusal turned them into decode failures.
+pub fn missing_value_mode(dr: &DataRepresentation) -> Result<MissingValueMode, String> {
+    match dr.missing_value_management {
+        0 => Ok(MissingValueMode::None),
+        1 => Ok(MissingValueMode::Primary),
+        2 => Ok(MissingValueMode::PrimaryAndSecondary),
+        other => Err(format!(
+            "complex packing missing-value management {other} is reserved in Code \
+             Table 5.5; refusing rather than decoding as data the bit patterns it \
+             reserves as missing-value markers"
+        )),
+    }
+}
+
+/// Refuse a width-zero (constant) group whose reference is simultaneously
+/// the only representable value and the missing-value marker.
+///
+/// A width-zero group takes its value from the group reference, which is
+/// `bits_per_value` bits wide; the marker for that group is the all-ones
+/// pattern of the same width.  When `bits_per_value` is 0 the reference can
+/// only ever be 0 and the "all-ones pattern of zero bits" is not a number,
+/// so every such group is either wholly missing or the marker means nothing.
+/// Picking one silently is a guess about somebody's data.
+///
+/// Groups whose width came from `group_width_ref` are unaffected: their
+/// markers are the all-ones pattern of that width, which is well defined.
+fn refuse_ambiguous_constant_group(
+    bits_per_value: usize,
+    mode: MissingValueMode,
+    group_widths: &[usize],
+) -> Result<(), String> {
+    if mode == MissingValueMode::None || bits_per_value != 0 {
+        return Ok(());
+    }
+    if group_widths.iter().any(|width| *width == 0) {
         return Err(format!(
-            "complex packing missing-value management {} is not implemented \
-             (only 0, no embedded missing values, is); decoding would misread \
-             the missing-value substitutes as data",
-            dr.missing_value_management
+            "complex packing declares missing-value management {} with bits_per_value 0 \
+             for a zero-width group, which reserves the only representable group \
+             reference as the missing-value marker; refusing rather than publishing a \
+             group that is either wholly missing or wholly marker",
+            match mode {
+                MissingValueMode::Primary => 1,
+                MissingValueMode::PrimaryAndSecondary => 2,
+                MissingValueMode::None => 0,
+            }
         ));
     }
     Ok(())
 }
 
+/// One decoded complex-packing cell: an unscaled integer, or a cell the
+/// encoder marked missing in band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupValue {
+    Present(i64),
+    Missing,
+}
+
+/// The all-ones pattern for `width` bits, or `None` when no pattern can
+/// be reserved: a zero-width read carries no bits, and a width past 64
+/// is refused by the bit reader before it gets here.
+fn all_ones(width: usize) -> Option<u64> {
+    match width {
+        0 => None,
+        64 => Some(u64::MAX),
+        width if width > 64 => None,
+        width => Some((1u64 << width) - 1),
+    }
+}
+
+/// The bit patterns one group reserves as missing-value markers.
+#[derive(Debug, Clone, Copy)]
+struct MissingMarkers {
+    primary: Option<u64>,
+    secondary: Option<u64>,
+}
+
+impl MissingMarkers {
+    fn for_width(width: usize, mode: MissingValueMode) -> Self {
+        match mode {
+            MissingValueMode::None => Self {
+                primary: None,
+                secondary: None,
+            },
+            MissingValueMode::Primary => Self {
+                primary: all_ones(width),
+                secondary: None,
+            },
+            MissingValueMode::PrimaryAndSecondary => {
+                let primary = all_ones(width);
+                Self {
+                    primary,
+                    // all-ones-minus-one; `all_ones` is at least 1 for
+                    // every width it answers for, so this cannot wrap.
+                    secondary: primary.map(|pattern| pattern - 1),
+                }
+            }
+        }
+    }
+
+    fn marks(&self, stored: u64) -> bool {
+        self.primary == Some(stored) || self.secondary == Some(stored)
+    }
+}
+
+/// Apply the GRIB2 scaling formula to decoded cells, carrying in-band
+/// missing cells out as NaN -- the same representation this decoder
+/// already uses for cells a Section-6 bitmap excludes, so a consumer
+/// that handles one handles the other.
+fn apply_scaling_values(values: &[GroupValue], dr: &DataRepresentation) -> Vec<f64> {
+    let r = dr.reference_value as f64;
+    let e = dr.binary_scale as f64;
+    let d = dr.decimal_scale as f64;
+    let two_e = 2.0_f64.powf(e);
+    let ten_neg_d = 10.0_f64.powf(-d);
+
+    values
+        .iter()
+        .map(|value| match value {
+            GroupValue::Present(raw) => (r + *raw as f64 * two_e) * ten_neg_d,
+            GroupValue::Missing => f64::NAN,
+        })
+        .collect()
+}
+
 /// Template 5.2: Complex packing.
 fn unpack_complex(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, String> {
-    require_no_missing_value_management(dr)?;
+    let mode = missing_value_mode(dr)?;
     let ng = dr.num_groups as usize;
     if ng == 0 {
         return Ok(Vec::new());
@@ -676,29 +921,73 @@ fn unpack_complex(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, Stri
             dr.section5_num_data_points
         ));
     }
+    let raw = read_group_values(
+        &mut reader,
+        &group_refs,
+        &group_widths,
+        &group_lengths,
+        total_values,
+        dr.bits_per_value as usize,
+        mode,
+    )?;
+
+    Ok(apply_scaling_values(&raw, dr))
+}
+
+/// Read every group's cells, classifying in-band missing markers.
+///
+/// A group of non-zero width reserves the all-ones pattern OF THAT
+/// WIDTH; a zero-width (constant) group carries no per-cell bits, so its
+/// marker is the all-ones pattern of the field's `bits_per_value`
+/// compared against the group reference itself.  Both branches match
+/// NCEP g2c's `comunpack.c`.
+fn read_group_values(
+    reader: &mut BitReader<'_>,
+    group_refs: &[i64],
+    group_widths: &[usize],
+    group_lengths: &[usize],
+    total_values: usize,
+    bits_per_value: usize,
+    mode: MissingValueMode,
+) -> Result<Vec<GroupValue>, String> {
+    refuse_ambiguous_constant_group(bits_per_value, mode, group_widths)?;
+    let constant_markers = MissingMarkers::for_width(bits_per_value, mode);
     let mut raw = Vec::with_capacity(total_values);
 
-    for g in 0..ng {
+    for g in 0..group_lengths.len() {
         let width = group_widths[g];
         let length = group_lengths[g];
         let gref = group_refs[g];
 
-        for _ in 0..length {
-            if width == 0 {
-                raw.push(gref);
+        if width == 0 {
+            let value = if constant_markers.marks(gref as u64) {
+                GroupValue::Missing
             } else {
-                let val = reader.read_bits_checked(width)? as i64;
-                raw.push(gref + val);
+                GroupValue::Present(gref)
+            };
+            for _ in 0..length {
+                raw.push(value);
             }
+            continue;
+        }
+
+        let markers = MissingMarkers::for_width(width, mode);
+        for _ in 0..length {
+            let stored = reader.read_bits_checked(width)?;
+            raw.push(if markers.marks(stored) {
+                GroupValue::Missing
+            } else {
+                GroupValue::Present(gref + stored as i64)
+            });
         }
     }
 
-    Ok(apply_scaling(&raw, dr))
+    Ok(raw)
 }
 
 /// Template 5.3: Complex packing with spatial differencing.
 fn unpack_complex_spatial(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, String> {
-    require_no_missing_value_management(dr)?;
+    let mode = missing_value_mode(dr)?;
     let order = dr.spatial_diff_order as usize;
     let extra_bytes = dr.spatial_diff_bytes as usize;
 
@@ -712,7 +1001,8 @@ fn unpack_complex_spatial(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f6
     // Read the initial values (1 for order=1, 2 for order=2)
     let mut initial_values = Vec::with_capacity(order);
     for _ in 0..order {
-        let val = reader.read_bits_checked(nbits)? as i64;
+        let val = i64::try_from(reader.read_bits_checked(nbits)?)
+            .map_err(|_| "spatial-differencing initial value exceeded i64".to_string())?;
         initial_values.push(val);
     }
 
@@ -773,50 +1063,77 @@ fn unpack_complex_spatial(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f6
             dr.section5_num_data_points
         ));
     }
-    let mut raw = Vec::with_capacity(total_values);
+    let raw = read_group_values(
+        &mut greader,
+        &group_refs,
+        &group_widths,
+        &group_lengths,
+        total_values,
+        dr.bits_per_value as usize,
+        mode,
+    )?;
 
-    for g in 0..ng {
-        let width = group_widths[g];
-        let length = group_lengths[g];
-        let gref = group_refs[g];
+    // Spatial differencing runs over the PRESENT cells only.  A cell the
+    // encoder marked missing carries no residual, so integrating across
+    // it does not merely lose that cell: every value after it inherits
+    // the marker.  g2c does the same by packing the present residuals
+    // densely and integrating that sequence.
+    let mut present: Vec<i64> = raw
+        .iter()
+        .filter_map(|value| match value {
+            GroupValue::Present(raw) => Some(*raw),
+            GroupValue::Missing => None,
+        })
+        .collect();
 
-        for _ in 0..length {
-            if width == 0 {
-                raw.push(gref);
-            } else {
-                let val = greader.read_bits_checked(width)? as i64;
-                raw.push(gref + val);
-            }
-        }
-    }
-
-    // Add minimum to all values
-    for v in raw.iter_mut() {
-        *v += minimum;
-    }
-
-    // Reconstruct from spatial differencing.
-    // The complex-packed groups contain ALL n values (including positions 0..order).
-    // Replace the first `order` values with the actual initial values read from the header.
-    let mut reconstructed = raw;
-
+    // The complex-packed groups contain a residual for every present
+    // cell (including the first `order` of them); replace those with the
+    // initial values read from the Section-7 header, which are already
+    // absolute and carry no overall minimum.
     for (i, &iv) in initial_values.iter().enumerate() {
-        if i < reconstructed.len() {
-            reconstructed[i] = iv;
+        if i < present.len() {
+            present[i] = iv;
         }
+    }
+    // Every step of the integration is checked.  An encoder that ships a
+    // descriptor wide enough to hold near-i64 initial values can drive the
+    // recurrence past i64; unchecked, that is a debug panic or a release
+    // wrap-around, and a wrapped residual is published as physics.
+    for i in order..present.len() {
+        present[i] = present[i].checked_add(minimum).ok_or_else(|| {
+            "spatial-differencing difference overflow while adding minimum".to_string()
+        })?;
     }
 
     if order == 1 {
-        for i in 1..reconstructed.len() {
-            reconstructed[i] += reconstructed[i - 1];
+        for i in 1..present.len() {
+            present[i] = present[i]
+                .checked_add(present[i - 1])
+                .ok_or_else(|| "first-order spatial recurrence overflow".to_string())?;
         }
     } else if order == 2 {
-        for i in 2..reconstructed.len() {
-            reconstructed[i] += 2 * reconstructed[i - 1] - reconstructed[i - 2];
+        for i in 2..present.len() {
+            present[i] = present[i - 1]
+                .checked_mul(2)
+                .and_then(|value| value.checked_sub(present[i - 2]))
+                .and_then(|value| value.checked_add(present[i]))
+                .ok_or_else(|| "second-order spatial recurrence overflow".to_string())?;
         }
     }
 
-    Ok(apply_scaling(&reconstructed, dr))
+    let mut reconstructed = Vec::with_capacity(raw.len());
+    let mut present_idx = 0usize;
+    for value in raw {
+        match value {
+            GroupValue::Present(_) => {
+                reconstructed.push(GroupValue::Present(present[present_idx]));
+                present_idx += 1;
+            }
+            GroupValue::Missing => reconstructed.push(GroupValue::Missing),
+        }
+    }
+
+    Ok(apply_scaling_values(&reconstructed, dr))
 }
 
 /// Template 5.40: JPEG2000 packing (stub for platforms without openjp2).
@@ -2409,14 +2726,286 @@ mod tests {
 
     // ---- complex-packing missing-value management ----
 
+    /// Section 5 for Template 5.2 over the four-point field the tests
+    /// below encode: reference 0.0, no scaling, 4-bit values, two
+    /// two-value groups of width 4.
+    fn section5_complex(mode: u8, template: u16) -> Vec<u8> {
+        let mut sec = vec![0u8; if template == 3 { 49 } else { 47 }];
+        let len = sec.len() as u32;
+        sec[0..4].copy_from_slice(&len.to_be_bytes());
+        sec[4] = 5;
+        sec[5..9].copy_from_slice(&if template == 3 { 5u32 } else { 4u32 }.to_be_bytes());
+        sec[9..11].copy_from_slice(&template.to_be_bytes());
+        sec[11..15].copy_from_slice(&0.0f32.to_be_bytes()); // reference value
+        sec[15..17].copy_from_slice(&0i16.to_be_bytes()); // binary scale
+        sec[17..19].copy_from_slice(&0i16.to_be_bytes()); // decimal scale
+        sec[19] = 4; // bits per value
+        sec[20] = 0; // original field type: floating point
+        sec[21] = 1; // group splitting: general
+        sec[22] = mode; // MISSING VALUE MANAGEMENT, Code Table 5.5
+        sec[23..27].copy_from_slice(&9999.0f32.to_be_bytes()); // primary substitute
+        sec[27..31].copy_from_slice(&9998.0f32.to_be_bytes()); // secondary substitute
+        if template == 3 {
+            sec[31..35].copy_from_slice(&1u32.to_be_bytes()); // one group
+            sec[42..46].copy_from_slice(&5u32.to_be_bytes()); // last group length
+            sec[47] = 1; // first-order spatial differencing
+            sec[48] = 2; // two extra descriptor bytes
+        } else {
+            sec[31..35].copy_from_slice(&2u32.to_be_bytes()); // two groups
+            sec[42..46].copy_from_slice(&2u32.to_be_bytes()); // last group length
+        }
+        sec[35] = 0; // group width reference
+        sec[36] = 8; // group width bits
+        sec[37..41].copy_from_slice(&0u32.to_be_bytes()); // group length reference
+        sec[41] = 1; // group length increment
+        sec[46] = 8; // group length bits
+        sec
+    }
+
+    /// Wrap one Section 5 and one Section 7 payload in a complete GRIB2
+    /// envelope.  The parser enforces exact envelope coverage, the
+    /// 1/3/4/5/6/7 state machine and Section-3/5 cardinality, so a
+    /// fixture has to be a real message rather than a fragment.
+    fn synthetic_message(points: u32, section5: &[u8], payload: &[u8]) -> Vec<u8> {
+        let mut section1 = vec![0u8; 21];
+        section1[0..4].copy_from_slice(&21u32.to_be_bytes());
+        section1[4] = 1;
+        section1[9] = 2; // master table version
+        section1[12..14].copy_from_slice(&2026u16.to_be_bytes());
+        section1[14] = 8; // month
+        section1[15] = 16; // day
+
+        let mut section3 = vec![0u8; 72];
+        section3[0..4].copy_from_slice(&72u32.to_be_bytes());
+        section3[4] = 3;
+        section3[6..10].copy_from_slice(&points.to_be_bytes());
+        section3[12..14].copy_from_slice(&0u16.to_be_bytes()); // template 3.0
+        section3[14] = 6; // spherical earth
+        section3[30..34].copy_from_slice(&points.to_be_bytes()); // Ni
+        section3[34..38].copy_from_slice(&1u32.to_be_bytes()); // Nj
+        section3[63..67].copy_from_slice(&1_000_000u32.to_be_bytes()); // Di
+        section3[67..71].copy_from_slice(&1_000_000u32.to_be_bytes()); // Dj
+
+        let mut section4 = vec![0u8; 34];
+        section4[0..4].copy_from_slice(&34u32.to_be_bytes());
+        section4[4] = 4;
+        section4[7..9].copy_from_slice(&0u16.to_be_bytes()); // template 4.0
+        section4[22] = 1; // ground or water surface
+        section4[28] = 255; // no second fixed surface
+
+        let mut section6 = vec![0u8; 6];
+        section6[0..4].copy_from_slice(&6u32.to_be_bytes());
+        section6[4] = 6;
+        section6[5] = 255; // no bitmap
+
+        let mut section7 = vec![0u8; 5];
+        section7[4] = 7;
+        section7.extend_from_slice(payload);
+        let section7_len = section7.len() as u32;
+        section7[0..4].copy_from_slice(&section7_len.to_be_bytes());
+
+        let body_len = section1.len()
+            + section3.len()
+            + section4.len()
+            + section5.len()
+            + section6.len()
+            + section7.len();
+        let total = (16 + body_len + 4) as u64;
+
+        let mut message = Vec::with_capacity(total as usize);
+        message.extend_from_slice(b"GRIB");
+        message.extend_from_slice(&[0, 0, 0, 2]); // reserved, discipline 0, edition 2
+        message.extend_from_slice(&total.to_be_bytes());
+        message.extend_from_slice(&section1);
+        message.extend_from_slice(&section3);
+        message.extend_from_slice(&section4);
+        message.extend_from_slice(section5);
+        message.extend_from_slice(&section6);
+        message.extend_from_slice(&section7);
+        message.extend_from_slice(b"7777");
+        message
+    }
+
+    /// Section 7 for the four-point Template 5.2 field: group
+    /// references 3 and 5, both groups width 4 and length 2.  The
+    /// all-ones nibble `F` is the primary missing marker mode 1 and 2
+    /// reserve; `E` is the secondary marker mode 2 reserves.
+    fn payload_complex(values: [u8; 4]) -> Vec<u8> {
+        vec![
+            0x35, // group references 3 and 5, four bits each
+            0x04,
+            0x04, // group widths
+            0x02,
+            0x02, // group lengths
+            (values[0] << 4) | values[1],
+            (values[2] << 4) | values[3],
+        ]
+    }
+
+    /// Section 7 for the five-point Template 5.3 field: one group,
+    /// width 4, length 5, first-order spatial differencing with initial
+    /// value 100 and overall minimum 0.
+    fn payload_complex_spatial(values: [u8; 5]) -> Vec<u8> {
+        vec![
+            0x00,
+            0x64, // initial value 100, two bytes
+            0x00,
+            0x00, // overall minimum 0, sign-magnitude, two bytes
+            0x00, // one group reference, four bits, byte aligned
+            0x04, // group width
+            0x05, // group length
+            (values[0] << 4) | values[1],
+            (values[2] << 4) | values[3],
+            values[4] << 4,
+        ]
+    }
+
+    fn decode_message(bytes: &[u8]) -> Vec<f64> {
+        let file = crate::grib2::parser::Grib2File::from_bytes(bytes).expect("message parses");
+        assert_eq!(file.messages.len(), 1);
+        unpack_message(&file.messages[0]).expect("message unpacks")
+    }
+
+    fn assert_field(got: &[f64], want: &[Option<f64>]) {
+        assert_eq!(got.len(), want.len(), "point count: {got:?}");
+        for (index, (value, expected)) in got.iter().zip(want.iter()).enumerate() {
+            match expected {
+                None => assert!(value.is_nan(), "point {index} should be missing, got {value}"),
+                Some(expected) => assert!(
+                    (value - expected).abs() < 1e-9,
+                    "point {index}: got {value}, want {expected}"
+                ),
+            }
+        }
+    }
+
     #[test]
-    fn test_complex_packing_refuses_embedded_missing_values() {
-        // Code Table 5.5 modes 1 and 2 turn all-ones group references
-        // and widths into missing-value sentinels INSIDE the packed
-        // stream.  None of the decoders below implement that
-        // substitution, so both refuse rather than publish sentinels as
-        // data.  Mode 0 (bitmap-only) keeps decoding.
-        for mode in [1u8, 2] {
+    fn test_complex_packing_decodes_primary_missing_values_as_nan() {
+        // Mode 1 reserves the all-ones pattern of each group's width as
+        // the missing marker.  Before octet 23 was decoded, the two
+        // marked cells came out as 3+15=18 and 5+15=20 -- plausible
+        // numbers that are not data.
+        let bytes = synthetic_message(4, &section5_complex(1, 2), &payload_complex([1, 15, 2, 15]));
+        assert_field(
+            &decode_message(&bytes),
+            &[Some(4.0), None, Some(7.0), None],
+        );
+    }
+
+    #[test]
+    fn test_complex_packing_decodes_secondary_missing_values_as_nan() {
+        // Mode 2 reserves all-ones AND all-ones-minus-one.  Mode 1 must
+        // NOT treat 14 as missing, which is what separates the two.
+        let secondary =
+            synthetic_message(4, &section5_complex(2, 2), &payload_complex([1, 15, 14, 2]));
+        assert_field(
+            &decode_message(&secondary),
+            &[Some(4.0), None, None, Some(7.0)],
+        );
+
+        let primary_only =
+            synthetic_message(4, &section5_complex(1, 2), &payload_complex([1, 15, 14, 2]));
+        assert_field(
+            &decode_message(&primary_only),
+            &[Some(4.0), None, Some(19.0), Some(7.0)],
+        );
+    }
+
+    #[test]
+    fn test_complex_packing_mode_zero_decodes_every_pattern_as_data() {
+        // The regression guard on the fix: with no missing-value
+        // management declared, an all-ones nibble is data and stays
+        // data.
+        let bytes = synthetic_message(4, &section5_complex(0, 2), &payload_complex([1, 15, 2, 15]));
+        assert_field(
+            &decode_message(&bytes),
+            &[Some(4.0), Some(18.0), Some(7.0), Some(20.0)],
+        );
+    }
+
+    #[test]
+    fn test_zero_width_group_reference_carries_the_missing_marker() {
+        // A constant group has no per-value bits, so its marker is the
+        // all-ones pattern of bits_per_value applied to the group
+        // reference itself (NCEP g2c comunpack.c takes the same branch).
+        let dr = DataRepresentation {
+            template: 2,
+            bits_per_value: 4,
+            missing_value_management: 1,
+            num_groups: 2,
+            group_width_bits: 8,
+            group_length_bits: 8,
+            group_length_inc: 1,
+            last_group_length: 2,
+            section5_num_data_points: 4,
+            ..make_default_dr()
+        };
+        // references 15 (the marker) and 5; both groups width 0, length 2.
+        let data = [0xF5, 0x00, 0x00, 0x02, 0x02];
+        let values = unpack_complex(&data, &dr).expect("constant groups decode");
+        assert_field(&values, &[None, None, Some(5.0), Some(5.0)]);
+    }
+
+    #[test]
+    fn test_spatial_differencing_excludes_missing_cells_from_the_chain() {
+        // The defect is worse than two wrong cells: with first-order
+        // differencing every value AFTER a marker inherits it.  Decoded
+        // as data the field reads 100, 115, 117, 120, 135; the true
+        // field is 100, missing, 102, 105, missing.
+        let bytes = synthetic_message(
+            5,
+            &section5_complex(1, 3),
+            &payload_complex_spatial([0, 15, 2, 3, 15]),
+        );
+        assert_field(
+            &decode_message(&bytes),
+            &[Some(100.0), None, Some(102.0), Some(105.0), None],
+        );
+    }
+
+    #[test]
+    fn test_spatial_differencing_mode_zero_is_unchanged() {
+        let bytes = synthetic_message(
+            5,
+            &section5_complex(0, 3),
+            &payload_complex_spatial([0, 15, 2, 3, 15]),
+        );
+        assert_field(
+            &decode_message(&bytes),
+            &[
+                Some(100.0),
+                Some(115.0),
+                Some(117.0),
+                Some(120.0),
+                Some(135.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_row_window_decode_marks_missing_cells_nan() {
+        // The streaming row-band path decodes the same bytes through a
+        // different loop, so it needs its own proof.
+        let bytes = synthetic_message(
+            5,
+            &section5_complex(1, 3),
+            &payload_complex_spatial([0, 15, 2, 3, 15]),
+        );
+        let file = crate::grib2::parser::Grib2File::from_bytes(&bytes).expect("message parses");
+        let window = unpack_message_scan_normalized_row_window(&file.messages[0], 0, 1)
+            .expect("row window decodes");
+        assert_field(
+            &window,
+            &[Some(100.0), None, Some(102.0), Some(105.0), None],
+        );
+    }
+
+    #[test]
+    fn test_reserved_missing_value_management_is_refused() {
+        // Code Table 5.5 defines 0, 1 and 2.  Everything else is
+        // reserved: a decoder that guessed would be back to publishing
+        // whatever the encoder reserved as physical data.
+        for mode in [3u8, 7, 255] {
             let dr = DataRepresentation {
                 template: 2,
                 bits_per_value: 8,
@@ -2445,6 +3034,26 @@ mod tests {
                 "{refusal}"
             );
         }
+    }
+
+    #[test]
+    fn test_missing_values_with_zero_bits_per_value_are_refused() {
+        // bits_per_value 0 makes the only representable group reference
+        // the marker itself, so the field is either all-missing or the
+        // marker is meaningless.  Refuse instead of picking one.
+        let dr = DataRepresentation {
+            template: 2,
+            bits_per_value: 0,
+            missing_value_management: 1,
+            num_groups: 1,
+            group_width_bits: 8,
+            group_length_bits: 8,
+            last_group_length: 1,
+            section5_num_data_points: 1,
+            ..make_default_dr()
+        };
+        let refusal = unpack_complex(&[0u8; 16], &dr).unwrap_err();
+        assert!(refusal.contains("bits_per_value 0"), "{refusal}");
     }
 
     // ---- unpack_simple tests ----
@@ -2689,6 +3298,284 @@ mod tests {
         let full = unpack_message_normalized(&msg).unwrap();
         let window = unpack_message_scan_normalized_row_window(&msg, 0, 1).unwrap();
         assert_eq!(full[0..3], window);
+    }
+
+    // ---- ported donor coverage: complex/spatial missing-value family,
+    // ---- IEEE padding, zero-group constants (see lib.rs convergence notes)
+
+    fn spatial_missing_dr(management: u8, count: u32) -> DataRepresentation {
+        DataRepresentation {
+            template: 3,
+            bits_per_value: 0,
+            missing_value_management: management,
+            num_groups: 1,
+            group_width_ref: 3,
+            group_width_bits: 0,
+            group_length_ref: 0,
+            group_length_inc: 1,
+            last_group_length: count,
+            group_length_bits: 0,
+            spatial_diff_order: 2,
+            spatial_diff_bytes: 1,
+            section5_num_data_points: count,
+            ..make_default_dr()
+        }
+    }
+
+    fn pack_unsigned(values: &[u64], width: usize) -> Vec<u8> {
+        let mut packed = vec![0_u8; (values.len() * width).div_ceil(8)];
+        let mut bit = 0usize;
+        for value in values {
+            for shift in (0..width).rev() {
+                if value & (1_u64 << shift) != 0 {
+                    packed[bit / 8] |= 1 << (7 - bit % 8);
+                }
+                bit += 1;
+            }
+        }
+        packed
+    }
+
+    fn assert_same_values(expected: &[f64], actual: &[f64]) {
+        assert_eq!(expected.len(), actual.len());
+        for (expected, actual) in expected.iter().zip(actual) {
+            if expected.is_nan() {
+                assert!(actual.is_nan());
+            } else {
+                assert_eq!(expected.to_bits(), actual.to_bits());
+            }
+        }
+    }
+
+    fn message_with(
+        grid: crate::grib2::parser::GridDefinition,
+        data_rep: DataRepresentation,
+        raw_data: Vec<u8>,
+    ) -> Grib2Message {
+        Grib2Message {
+            discipline: 0,
+            identification: crate::grib2::parser::Identification::default(),
+            reference_time: chrono::NaiveDate::from_ymd_opt(2026, 8, 17)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            grid,
+            product: crate::grib2::parser::ProductDefinition::default(),
+            data_rep,
+            bitmap: None,
+            raw_data,
+        }
+    }
+
+    #[test]
+    fn test_unpack_message_trims_ieee_padding_to_grid_point_count() {
+        // Convergence conflict C2: the Section 5 point count is the authority
+        // and trailing Section 7 padding is tolerated.  The donor asserted the
+        // same trim with `section5_num_data_points` left at 0; this crate
+        // refuses a zero declaration outright, so the fixture states it.
+        use crate::grib2::parser::GridDefinition;
+
+        let values = [1.0f32, 2.0, 3.0];
+        let raw_data = values
+            .iter()
+            .flat_map(|value| value.to_be_bytes())
+            .collect::<Vec<_>>();
+        let msg = message_with(
+            GridDefinition {
+                nx: 2,
+                ny: 1,
+                num_data_points: 2,
+                ..GridDefinition::default()
+            },
+            DataRepresentation {
+                template: 4,
+                bits_per_value: 32,
+                section5_num_data_points: 2,
+                ..make_default_dr()
+            },
+            raw_data,
+        );
+
+        let unpacked = unpack_message(&msg).unwrap();
+        assert_eq!(unpacked, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_unpack_message_refuses_short_ieee_payload() {
+        // The other half of C2: bytes short of the declared count are refused,
+        // because a short IEEE payload silently shortens the field.
+        use crate::grib2::parser::GridDefinition;
+
+        let raw_data = 1.0f32.to_be_bytes().to_vec();
+        let msg = message_with(
+            GridDefinition {
+                nx: 2,
+                ny: 1,
+                num_data_points: 2,
+                ..GridDefinition::default()
+            },
+            DataRepresentation {
+                template: 4,
+                bits_per_value: 32,
+                section5_num_data_points: 2,
+                ..make_default_dr()
+            },
+            raw_data,
+        );
+
+        let refusal = unpack_message(&msg).unwrap_err().to_string();
+        assert!(refusal.contains("IEEE-packed Section 7 has 4 bytes"), "{refusal}");
+    }
+
+    #[test]
+    fn test_complex_spatial_primary_missing_is_not_a_difference() {
+        let dr = spatial_missing_dr(1, 4);
+        let mut data = vec![10, 12, 0];
+        data.extend(pack_unsigned(&[0, 0, 7, 1], 3));
+
+        let values = unpack_complex_spatial(&data, &dr).unwrap();
+        assert_eq!(values.len(), 4);
+        assert_eq!(values[0], 10.0);
+        assert_eq!(values[1], 12.0);
+        assert!(values[2].is_nan());
+        // Recurrence continues across non-missing values only:
+        // 1 + 2*12 - 10 = 15, not an all-ones-code explosion.
+        assert_eq!(values[3], 15.0);
+    }
+
+    #[test]
+    fn test_complex_spatial_primary_and_secondary_missing_skip_recurrence() {
+        let dr = spatial_missing_dr(2, 6);
+        let mut data = vec![10, 12, 0];
+        data.extend(pack_unsigned(&[0, 0, 7, 1, 6, 2], 3));
+
+        let values = unpack_complex_spatial(&data, &dr).unwrap();
+        assert_eq!(values.len(), 6);
+        assert_eq!(values[0], 10.0);
+        assert_eq!(values[1], 12.0);
+        assert!(values[2].is_nan());
+        assert_eq!(values[3], 15.0);
+        assert!(values[4].is_nan());
+        assert_eq!(values[5], 20.0);
+    }
+
+    #[test]
+    fn test_complex_width_zero_groups_classify_both_missing_codes() {
+        let dr = DataRepresentation {
+            template: 2,
+            bits_per_value: 2,
+            missing_value_management: 2,
+            num_groups: 3,
+            group_width_ref: 0,
+            group_width_bits: 0,
+            group_length_ref: 1,
+            group_length_inc: 0,
+            last_group_length: 1,
+            group_length_bits: 0,
+            section5_num_data_points: 3,
+            ..make_default_dr()
+        };
+        // Width-zero groups use the group reference itself: 3=primary,
+        // 2=secondary, 1=ordinary value.  Six reference bits plus padding.
+        let values = unpack_complex(&[0b1110_0100], &dr).unwrap();
+        assert!(values[0].is_nan());
+        assert!(values[1].is_nan());
+        assert_eq!(values[2], 1.0);
+    }
+
+    #[test]
+    fn test_complex_group_count_must_match_section5_points() {
+        let dr = DataRepresentation {
+            template: 2,
+            bits_per_value: 2,
+            num_groups: 3,
+            group_length_ref: 1,
+            last_group_length: 1,
+            section5_num_data_points: 4,
+            ..make_default_dr()
+        };
+        // The donor phrased the same disagreement as "describe 3 values,
+        // expected 4"; this crate's wording names Section 5 explicitly.
+        let error = unpack_complex(&[0], &dr).unwrap_err();
+        assert!(
+            error.contains("declare 3 values, Section 5 declares 4"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_complex_spatial_recurrence_overflow_is_an_error() {
+        let dr = DataRepresentation {
+            template: 3,
+            bits_per_value: 0,
+            num_groups: 1,
+            group_width_ref: 1,
+            last_group_length: 3,
+            spatial_diff_order: 2,
+            spatial_diff_bytes: 8,
+            section5_num_data_points: 3,
+            ..make_default_dr()
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(&i64::MAX.to_be_bytes());
+        data.extend_from_slice(&i64::MAX.to_be_bytes());
+        data.extend_from_slice(&0_i64.to_be_bytes());
+        data.extend(pack_unsigned(&[0, 0, 1], 1));
+        let error = unpack_complex_spatial(&data, &dr).unwrap_err();
+        assert!(
+            error.contains("second-order spatial recurrence overflow"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_row_window_complex_missing_matches_full_decode() {
+        use crate::grib2::parser::GridDefinition;
+
+        let mut raw_data = vec![10, 12, 0];
+        raw_data.extend(pack_unsigned(&[0, 0, 7, 1, 6, 2], 3));
+        let msg = message_with(
+            GridDefinition {
+                nx: 3,
+                ny: 2,
+                num_data_points: 6,
+                scan_mode: 0x40,
+                ..GridDefinition::default()
+            },
+            spatial_missing_dr(2, 6),
+            raw_data,
+        );
+        let full = unpack_message_normalized(&msg).unwrap();
+        let window = unpack_message_scan_normalized_row_window(&msg, 0, 2).unwrap();
+        assert_same_values(&full, &window);
+    }
+
+    #[test]
+    fn test_zero_group_complex_constant_matches_row_window() {
+        use crate::grib2::parser::GridDefinition;
+
+        let msg = message_with(
+            GridDefinition {
+                nx: 3,
+                ny: 2,
+                num_data_points: 6,
+                ..GridDefinition::default()
+            },
+            DataRepresentation {
+                template: 3,
+                reference_value: 42.5,
+                bits_per_value: 0,
+                num_groups: 0,
+                section5_num_data_points: 6,
+                ..make_default_dr()
+            },
+            Vec::new(),
+        );
+
+        let full = unpack_message_normalized(&msg).unwrap();
+        let window = unpack_message_scan_normalized_row_window(&msg, 0, 2).unwrap();
+        assert_eq!(full, vec![42.5; 6]);
+        assert_eq!(window, full);
     }
 
     // Helper to create a default DataRepresentation for testing

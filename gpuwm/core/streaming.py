@@ -3910,25 +3910,96 @@ def _CannotPlan():
     return CannotPlan
 
 
-def _minimum_claim_bytes(node, total_budget: int) -> int:
-    """The LEAST VRAM ``node`` can run in, for a reservation.
+def _process_overhead_bytes(node) -> int:
+    """What ``node``'s rung costs ONCE per process, not once per domain.
+
+    ``autoplan.Footprint.process_overhead_bytes``: the CUDA context, the
+    module images and the rung's k-distribution tables.  Every claim in
+    this walk is MARGINAL -- the domain's own bytes with this part taken
+    out -- and the walk charges this once for the whole tree.
+    """
+    from tilestream import autoplan
+
+    return int(autoplan.footprint_for(node.cfg.run).process_overhead_bytes)
+
+
+def _radiation_transient_bytes(node) -> int:
+    """``node``'s rung's RRTMGP per-call transient, RESERVED not claimed.
+
+    ``autoplan.Footprint.radiation_transient_bytes``: allocated, used and
+    freed inside one radiation step, so it never belongs to a domain's
+    price -- it comes off the budget before anything is planned against it.
+    """
+    from tilestream import autoplan
+
+    return int(autoplan.footprint_for(node.cfg.run).radiation_transient_bytes)
+
+
+def _tree_radiation_transient_bytes(nodes) -> int:
+    """The radiation reservation a whole TREE takes, ONCE.
+
+    The MAXIMUM over the tree's rungs, for the same reason the process
+    overhead is: the RRTMGP chunk workspace is shared and the domains of a
+    tree step strictly sequentially, so the peak is one domain's transient
+    and never their sum.
+    """
+    return max((_radiation_transient_bytes(node) for node in nodes),
+               default=0)
+
+
+def _tree_budget_bytes(machine, tree_transient: int) -> int:
+    """The card's budget for the whole tree, radiation reservation included.
+
+    ``autoplan.budget_for`` asked of the tree rather than of one domain:
+    the reservation is the LARGER of the percentage headroom and the
+    measured radiation transient, never their sum, and it is written as
+    the budget minus the EXCESS for the reason stated there.
+    """
+    headroom = int(int(machine.vram_bytes) * float(machine.vram_headroom))
+    excess = max(0, int(tree_transient) - headroom)
+    return max(0, int(machine.vram_budget_bytes) - excess)
+
+
+def _tree_process_overhead_bytes(nodes) -> int:
+    """The once-per-process floor a whole TREE pays, charged ONCE.
+
+    The MAXIMUM over the tree's rungs, not the sum and not the root's.  A
+    process that runs a dry parent and a ``full`` child has loaded the
+    RRTMGP tables, so the tree's floor is the dearest rung present; taking
+    the root's alone would under-charge that tree by 3.2 GiB, and
+    under-charging is the direction that OOMs a forecast three hours in.
+    """
+    return max((_process_overhead_bytes(node) for node in nodes), default=0)
+
+
+def _minimum_claim_bytes(node, claim_budget: int) -> int:
+    """The LEAST VRAM ``node`` adds to a process already running, for a
+    reservation.
+
+    MARGINAL, like every other claim in this walk: the per-process fixed
+    cost is charged once for the tree by
+    :func:`_tree_process_overhead_bytes` and must not appear again here.
 
     A reservation must be a floor, never a wish: too small and it fails to
     protect the domain it was taken for, too large and it refuses a tree
     that would have run.  So each undecided domain is priced at the
     cheapest road actually open to it.
 
-    A domain whose resident price fits the whole card will be RESIDENT --
-    under a streamed ancestor it has no choice, because the both-ends law
-    below refuses the alternative -- and a resident domain's floor is its
-    resident price exactly: it does not shrink.  A domain too big to sit
-    resident on the whole card must stream, and a streamed domain's floor
-    is one buffer of the smallest legal compute window, the same number
+    A domain whose resident price fits what is left of the card will be
+    RESIDENT -- under a streamed ancestor it has no choice, because the
+    both-ends law below refuses the alternative -- and a resident domain's
+    floor is its resident price exactly: it does not shrink.  A domain too
+    big to sit resident must stream, and a streamed domain's floor is one
+    buffer of the smallest legal compute window, the same number
     ``autoplan.plan`` reports when it says no tile fits.  Reserving that
     instead of an unaffordable resident price is what lets the walk reach
     the both-ends refusal -- which names the shape -- rather than dying at
     the planner's "no tile fits in 0.02 GiB", which names an arithmetic
     nobody wrote.
+
+    ``claim_budget`` is the card MINUS the tree's process overhead, i.e.
+    what is actually available to domain claims, because that is the
+    budget the resident/streamed question is answered against.
     """
     from tilestream import autoplan
 
@@ -3936,19 +4007,21 @@ def _minimum_claim_bytes(node, total_budget: int) -> int:
     fp = autoplan.footprint_for(cfg)
     nz = int(cfg.nz)
     cells = int(cfg.nx) * int(cfg.ny) * nz
-    resident = int(fp.resident_bytes(cells))
-    if resident <= int(total_budget):
+    resident = int(fp.marginal_resident_bytes(cells))
+    if resident <= int(claim_budget):
         return resident
     halo = _halo_for(cfg)
-    return int(fp.vram_bytes((2 * halo + 1) ** 2 * nz, 1))
+    return int(fp.marginal_bytes((2 * halo + 1) ** 2 * nz, 1))
 
 
-def _decision_claim_bytes(node, decision, total_budget: int) -> int:
+def _decision_claim_bytes(node, decision, claim_budget: int) -> int:
     """What the road this domain DECIDED on actually claims on the card.
 
-    ``decision.resident_bytes`` is the planner's own number and is used
-    wherever the planner was consulted.  The two roads that never consult
-    it still occupy the card and still have to be paid for, or the next
+    MARGINAL -- the domain's own bytes, without the per-process fixed cost
+    the tree pays once.  ``decision.resident_bytes`` is the planner's own
+    number and prices ONE domain in ONE process, so the overhead comes
+    back out of it here.  The two roads that never consult the planner
+    still occupy the card and still have to be paid for, or the next
     domain in the walk is handed their bytes a second time:
 
     * a PINNED tiling is priced at its own compute window -- the tile plus
@@ -3958,7 +4031,8 @@ def _decision_claim_bytes(node, decision, total_budget: int) -> int:
       resident, which is what it is.
     """
     if decision.resident_bytes is not None:
-        return int(decision.resident_bytes)
+        return max(0, int(decision.resident_bytes)
+                   - _process_overhead_bytes(node))
     from tilestream import autoplan
 
     cfg = node.cfg.run
@@ -3968,24 +4042,24 @@ def _decision_claim_bytes(node, decision, total_budget: int) -> int:
         halo = int(decision.halo or 0)
         window = ((int(decision.tile_nx) + 2 * halo)
                   * (int(decision.tile_ny) + 2 * halo) * nz)
-        return int(fp.vram_bytes(window, int(decision.nbuffers or 1)))
-    return _minimum_claim_bytes(node, total_budget)
+        return int(fp.marginal_bytes(window, int(decision.nbuffers or 1)))
+    return _minimum_claim_bytes(node, claim_budget)
 
 
-def _tree_reservations(nodes, total_budget: int) -> list:
+def _tree_reservations(nodes, claim_budget: int) -> list:
     """``[(reserved_bytes, [grid_id, ...]), ...]``, aligned with ``nodes``.
 
     Entry ``i`` is what the domains still UNDECIDED after ``nodes[i]`` need
-    between them: the sum of their floors plus, for each of them that is a
-    child, the coupling corridor its edge costs.  The corridor is priced in
-    its RESIDENT form (``corridor_claim_bytes`` with no decision), which is
-    the form a reserved domain will be in.
+    between them: the sum of their MARGINAL floors plus, for each of them
+    that is a child, the coupling corridor its edge costs.  The corridor is
+    priced in its RESIDENT form (``corridor_claim_bytes`` with no
+    decision), which is the form a reserved domain will be in.
     """
     from gpuwm.core.nest_stream import corridor_claim_bytes
 
     floors = []
     for node in nodes:
-        claim = _minimum_claim_bytes(node, total_budget)
+        claim = _minimum_claim_bytes(node, claim_budget)
         if getattr(node, "parent", None) is not None:
             claim += int(corridor_claim_bytes(node))
         floors.append(int(claim))
@@ -4162,16 +4236,21 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     decided: list = []
     decided_by_gid: dict[int, object] = {}
 
-    def reduced(by: int, host_by: int = 0):
-        """``machine0`` with ``by`` VRAM and ``host_by`` host bytes spent."""
-        if not (consults_planner and (by or host_by)):
+    def reduced(by: int, host_by: int = 0, transient: int = 0):
+        """``machine0`` with ``by`` VRAM and ``host_by`` host bytes spent.
+
+        ``transient`` is THIS domain's radiation reservation, which
+        ``autoplan.budget_for`` will take back out of the machine handed on.
+        It is added here so the planner lands on the intended remainder:
+        the tree reserves the transient ONCE, in ``total_budget``, and a
+        domain that paid it again would be planned against a card two
+        reservations short.
+        """
+        if not consults_planner:
             return machine0
-        reduced_machine = machine0
-        if by:
-            reduced_machine = dataclasses.replace(
-                reduced_machine,
-                vram_bytes=max(0, machine0.vram_budget_bytes - by),
-                vram_headroom=0.0)
+        reduced_machine = dataclasses.replace(
+            machine0, vram_bytes=max(0, total_budget - by) + int(transient),
+            vram_headroom=0.0)
         if host_by:
             # ``pinned_fraction`` is forced to 1.0 for the same reason
             # ``vram_headroom`` is zeroed above: the number handed on IS the
@@ -4205,15 +4284,64 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     # stream-or-resident question is still asked against the budget the
     # predecessors left, exactly as before, so a tree that ran all-resident
     # decides all-resident still and no existing road moves.
-    total_budget = (int(machine0.vram_budget_bytes) if consults_planner
-                    else 0)
-    reservations = (_tree_reservations(nodes, total_budget)
+    #
+    # AND THE PER-PROCESS FIXED COST IS CHARGED ONCE, NOT ONCE PER DOMAIN.
+    # ``autoplan.Footprint.vram_bytes`` prices ONE domain in ONE process,
+    # so it carries the CUDA context and the rung's k-distribution tables
+    # inside it.  Subtracting that whole number per domain charged the
+    # tables once per grid: 3.760 GiB of phantom bytes for every domain
+    # after the first at the ``full`` rung, 7.519 GiB on a three-domain
+    # tree -- enough that a tree priced at 12.41 GiB was refused outright
+    # on a 16.30 GiB card.  It is the same measurement autoplan's own
+    # docstring makes about tile BUFFERS ("the fixed part is per PROCESS"),
+    # and a tree of domains is one process too.
+    #
+    # So every claim below is MARGINAL and the overhead is charged once,
+    # at the DEAREST rung in the tree.  The planner still prices each
+    # domain whole -- ``decide`` is a single-domain question and its
+    # answer stays a single-domain answer, which is what the receipt's
+    # ``resident_bytes`` records -- so the budget a domain is shown is
+    # reduced by the overhead of the OTHER rungs only
+    # (``tree_overhead - own``).  The planner then re-adds the domain's own
+    # overhead internally and the total comes out as
+    # ``tree_overhead + sum(marginal)``, which is what the card holds.
+    #
+    # AND SO IS THE RADIATION TRANSIENT.  ``autoplan.budget_for`` reserves
+    # the RRTMGP call's measured per-call working set out of the card before
+    # anything is planned against it -- once per PROCESS, because the chunk
+    # workspace is shared and a tree's domains step strictly sequentially.
+    # The tree's reservation is the dearest rung's, taken here so the walk's
+    # own budget is the same number every ``decide`` in it is planning
+    # against, and added back per domain in ``reduced`` so no domain pays it
+    # a second time.
+    tree_overhead = (_tree_process_overhead_bytes(nodes) if consults_planner
+                     else 0)
+    tree_transient = (_tree_radiation_transient_bytes(nodes)
+                      if consults_planner else 0)
+    total_budget = (_tree_budget_bytes(machine0, tree_transient)
+                    if consults_planner else 0)
+    claim_budget = max(0, total_budget - tree_overhead)
+    reservations = (_tree_reservations(nodes, claim_budget)
                     if consults_planner else [(0, [])] * len(nodes))
     for node, node_options, (reserve, reserved_for) in zip(
             nodes, per_domain, reservations):
         gid = int(node.cfg.grid_id)
         cfg = node.cfg.run
-        node_machine = reduced(spent, host_spent)
+        # The overhead of the rungs this domain is NOT: what the process
+        # pays for its siblings' tables on top of its own.  Zero for a
+        # tree whose domains all sit on one rung, which is most of them.
+        overhead_offset = (max(0, tree_overhead - _process_overhead_bytes(node))
+                           if consults_planner else 0)
+        # The radiation reservation needs no offset of its own: the tree
+        # already withheld the DEAREST rung's out of ``total_budget``, and
+        # a domain on a cheaper rung shares that one reservation rather
+        # than being charged a second, smaller one.  All that is handed
+        # down is this domain's own figure, so ``budget_for`` subtracting
+        # it inside the planner lands back on the remainder.
+        own_transient = (_radiation_transient_bytes(node) if consults_planner
+                         else 0)
+        node_machine = reduced(spent + overhead_offset, host_spent,
+                               own_transient)
         # Decided ONCE and handed to make_stepper, rather than letting
         # make_stepper decide again: `auto` consults the planner, and a
         # second consultation on a card whose free VRAM moved in between
@@ -4222,7 +4350,8 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
         decision = decide(cfg, node_options, machine=node_machine)
         if decision.stream and reserve:
             budget_before = int(decision.budget_bytes or 0)
-            tile_machine = reduced(spent + int(reserve), host_spent)
+            tile_machine = reduced(spent + overhead_offset + int(reserve),
+                                   host_spent, own_transient)
             try:
                 decision = decide(cfg, node_options, machine=tile_machine)
             except _CannotPlan() as exc:
@@ -4244,7 +4373,7 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
             decision.detail.update(
                 reserved_bytes=int(reserve), reserved_for=list(reserved_for),
                 budget_before_reserve_bytes=budget_before)
-        claim = _decision_claim_bytes(node, decision, total_budget)
+        claim = _decision_claim_bytes(node, decision, claim_budget)
         corridor = 0
         if getattr(node, "parent", None) is not None:
             from gpuwm.core.nest_stream import corridor_claim_bytes
@@ -4256,6 +4385,12 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
             claim_bytes=claim, corridor_claim_bytes=corridor,
             budget_spent_before_bytes=int(spent),
             host_spent_before_bytes=int(host_spent),
+            # ``claim_bytes`` is MARGINAL, so the tree's ledger only adds up
+            # with this beside it: the once-per-process floor the whole tree
+            # shares, recorded identically on every domain so a reader of
+            # ONE decision can still reconstruct
+            # ``tree_process_overhead + sum(claim + corridor)``.
+            tree_process_overhead_bytes=int(tree_overhead),
             configured_mode=node_options.mode)
         if consults_planner:
             spent += claim + corridor

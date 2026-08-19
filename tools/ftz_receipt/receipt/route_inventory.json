@@ -9,11 +9,11 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 64,
+  "site_count": 65,
   "site_count_by_kind": {
     "cupy.ElementwiseKernel": 3,
     "cupy.RawKernel": 1,
-    "cupy.RawModule": 45,
+    "cupy.RawModule": 46,
     "cupy.ReductionKernel": 5,
     "cupy.cuda.compiler.compile_using_nvrtc": 10
   },
@@ -24,7 +24,7 @@
     },
     "package": {
       "cupy.ElementwiseKernel": 3,
-      "cupy.RawModule": 8,
+      "cupy.RawModule": 9,
       "cupy.ReductionKernel": 3,
       "cupy.cuda.compiler.compile_using_nvrtc": 3
     },
@@ -253,7 +253,7 @@
     },
     {
       "file": "gpuwm/core/noahmp_driver_gpu.py",
-      "line": 142,
+      "line": 150,
       "column": 13,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -270,6 +270,22 @@
     {
       "file": "gpuwm/core/noahmp_energy_gpu.py",
       "line": 85,
+      "column": 13,
+      "surface": "package",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "_module",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "options",
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "module = cp.RawModule(code=source, options=options)"
+    },
+    {
+      "file": "gpuwm/core/noahmp_glacier_gpu.py",
+      "line": 155,
       "column": 13,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -909,7 +925,7 @@
     },
     {
       "file": "tests/test_thompson_aerosol_device_helpers.py",
-      "line": 1052,
+      "line": 1055,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -929,7 +945,7 @@
     },
     {
       "file": "tests/test_thompson_aerosol_device_helpers.py",
-      "line": 1203,
+      "line": 1206,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -949,7 +965,7 @@
     },
     {
       "file": "tests/test_thompson_aerosol_device_helpers.py",
-      "line": 1795,
+      "line": 1798,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -969,7 +985,7 @@
     },
     {
       "file": "tests/test_thompson_aerosol_device_helpers.py",
-      "line": 1830,
+      "line": 1833,
       "column": 12,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -989,7 +1005,7 @@
     },
     {
       "file": "tests/test_thompson_aerosol_device_helpers.py",
-      "line": 1916,
+      "line": 1919,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -1009,7 +1025,7 @@
     },
     {
       "file": "tests/test_thompson_aerosol_device_helpers.py",
-      "line": 2448,
+      "line": 2451,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -1049,7 +1065,7 @@
     },
     {
       "file": "tests/test_thompson_aerosol_warm_gpu.py",
-      "line": 1369,
+      "line": 1371,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawModule",

@@ -1135,9 +1135,13 @@ def test_hierarchy_export_publishes_every_input_and_root_boundary_atomically(
 
     written_updates = {}
 
-    def fake_write(path, _contract, _dimensions, updates, _fields, _stamp):
+    def fake_write(path, _contract, _dimensions, updates, _fields, _stamp,
+                   engine=None):
         path.write_bytes(b"child-input")
         written_updates[path.name] = updates
+        # One writer decision governs the whole hierarchy, so every child
+        # export is handed the engine the root resolved.
+        assert engine == "rust"
 
     monkeypatch.setattr(wrf_direct, "export_prepared_wrf", fake_root_export)
     monkeypatch.setattr(

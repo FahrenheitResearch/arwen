@@ -22,4 +22,4 @@ rustwx-core = { path = "../rustwx-core" }
 rustwx-io = { path = "../rustwx-io" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-render = { path = "../rustwx-render" }
-grib-core = { path = "../../vendor/grib-core" }
+grib-core = { path = "../../../grib1_bridge/vendor/grib-core" }

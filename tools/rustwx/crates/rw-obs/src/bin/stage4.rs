@@ -499,11 +499,14 @@ fn load_field(raw: &[u8], allow_mvm: bool) -> Result<Field, Box<dyn Error>> {
             values.len()
         )));
     }
-    let (lats, lons) = grid_latlon(&message.grid);
+    // grid_latlon now refuses a projection it cannot place (it used to
+    // return empty vectors, which the guard below caught locally); the
+    // cell-count check stays as the shape gate.
+    let (lats, lons) = grid_latlon(&message.grid)
+        .map_err(|e| err(format!("Stage-IV grid will not place: {e}")))?;
     if lats.len() != cells || lons.len() != cells {
         return Err(err(format!(
-            "Stage-IV grid template 3.{} yielded {}/{} coordinates for {cells} cells; the \
-             vendored decoder does not place this projection",
+            "Stage-IV grid template 3.{} yielded {}/{} coordinates for {cells} cells",
             message.grid.template,
             lats.len(),
             lons.len()

@@ -616,10 +616,11 @@ measured.
 catalog — what may go in `render_products`. Asked of the renderer, never
 transcribed: on a box with the Rust engine that is its own
 `--list-products` (150 slugs plus the `all`/`direct`/`derived`/`heavy`/
-`windowed` group keywords); on a matplotlib-only box it is that engine's
-five, and the document names which engine answered, because a picker
-built against one and run against the other would offer products that do
-not exist. The parse is checked against the renderer's own declared
+`windowed` group keywords); on a box with no usable engine it is
+`engine: null`, `products: null` and the staging remedy in `error`,
+because `gpuwm render` refuses there rather than answering from a second
+engine, and a picker built against one catalog and run against the other
+would offer products that do not exist. The parse is checked against the renderer's own declared
 count, and a disagreement is reported in `parse_warning` with the raw
 output carried, rather than silently returning a short list.
 

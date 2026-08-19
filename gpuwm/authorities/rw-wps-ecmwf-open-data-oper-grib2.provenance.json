@@ -1,0 +1,17 @@
+{
+  "schema": "gpuwm-ecmwf-open-data-in-band-terrain-provenance-v1",
+  "source": "ECMWF open-data IFS 0.25-degree oper (HRES) GRIB2 product",
+  "field": "terrain_height",
+  "selector": {
+    "format": "grib2",
+    "discipline": 0,
+    "category": 3,
+    "parameter": 4,
+    "level_type": 1
+  },
+  "unit_note": "the surface record is geopotential in m2 s-2; the mapping converts to metres with the declared scale 1/9.80665",
+  "time_policy": "decoded at every valid time and required invariant",
+  "member_policy": "oper is the deterministic HRES trajectory; no member identity exists",
+  "licensing": "authored against the 0.25-degree ECMWF open data distribution (CC-BY-4.0, attribution required); the native 9 km HRES distribution is access-restricted, which is a data-licensing fact about the feed, not a capability limit of this profile",
+  "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"
+}

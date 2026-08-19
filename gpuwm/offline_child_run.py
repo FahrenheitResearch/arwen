@@ -35,6 +35,7 @@ from gpuwm.offline_child import (
     bind_parent_physics_from_wrf_namelist,
     build_offline_child_domain_state,
     build_offline_lateral_boundaries,
+    child_surface_requirement,
     interpolate_parent_initial_state,
     read_child_surface_state,
     validate_parent_history,
@@ -207,13 +208,10 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
     ra_lw, ra_sw = radiation_scheme_ids(cfg)
     radiation_active = bool(ra_lw or ra_sw)
     if needs_surface and surface is None:
-        raise OfflineChildContractError(
-            "child config enables surface physics (sf_surface_physics="
-            f"{cfg.sf_surface_physics}, sf_sfclay_physics="
-            f"{cfg.sf_sfclay_physics}, bl_pbl_physics={cfg.bl_pbl_physics}) "
-            "but no child-grid surface source was given; pass "
-            "--child-surface-from with the child's own wrfinput/history "
-            "file (ndown-equivalent contract)")
+        # The predicate and the sentence live in one place
+        # (offline_child.child_surface_requirement) so the front door's
+        # early refusal and this late guard cannot drift apart.
+        raise OfflineChildContractError(child_surface_requirement(cfg))
     if surface is None and not radiation_active:
         return initialize_physics(child, cfg)
 

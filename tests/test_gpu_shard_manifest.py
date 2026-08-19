@@ -100,7 +100,12 @@ def test_every_listed_path_exists(entry: str) -> None:
     assert "\\" not in entry, (
         f"{entry} uses a backslash; forward slashes only, so the same list "
         "works on the Windows cut box and the Linux GPU node")
-    assert entry.startswith("tests/") and entry.endswith(".py"), entry
+    # tests/ or tilestream/: the tilestream pytest suites joined the shard
+    # at the 2.5.0 gating pass (release blocker #5) -- their device halves
+    # ran on no list before it.  The GPU-bound property below applies to
+    # them unchanged, through the same conftest detector.
+    assert entry.startswith(("tests/", "tilestream/")) \
+        and entry.endswith(".py"), entry
     assert (REPOSITORY_ROOT / entry).is_file(), (
         f"{entry} is listed in tools/battery/gpu_shard_files.txt but does not "
         "exist; pytest would fail the whole GPU leg on the missing argument")

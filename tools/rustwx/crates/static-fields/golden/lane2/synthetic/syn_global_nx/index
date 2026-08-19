@@ -1,0 +1,14 @@
+type=continuous
+projection=regular_ll
+dx=0.5
+dy=0.5
+known_x=1.0
+known_y=1.0
+known_lat=-89.75
+known_lon=-179.75
+wordsize=1
+tile_x=10
+tile_y=10
+tile_z=1
+global_nx=20
+global_ny=10

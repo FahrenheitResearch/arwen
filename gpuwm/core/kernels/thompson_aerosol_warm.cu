@@ -3,7 +3,7 @@
 // WP-07.  Aerosol-aware (mp_physics=28) WARM source network plus the
 // standalone ncten balance limiter.
 //
-// Numerical authority is /home/drew/wrf461-pristine/phys/module_mp_thompson.F
+// Numerical authority is WRF v4.6.1 phys/module_mp_thompson.F
 // (WRF v4.6.1, commit d66e442, zero local modifications).  Every bare line
 // number below refers to that file.  Structural authority -- which rates are
 // fused into one launch, the conservation order, the held-number quirks, the

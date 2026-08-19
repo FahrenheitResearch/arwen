@@ -5,8 +5,8 @@ by hand from a checkout):
 
 ``pack``
     On each target platform, after ``cargo build --release --locked`` in
-    the two workspaces and the vendored dealiasing crate, collect the
-    ten artifacts of
+    the decoder, renderer and mapped-engine workspaces and the vendored
+    dealiasing crate, collect every artifact of
     ``gpuwm.bridge_assets.BUNDLED_ARTIFACTS``, plus the renderer's map
     assets, into one zip named for the release and the platform.  The
     archive is deterministic: binaries first in the declared artifact

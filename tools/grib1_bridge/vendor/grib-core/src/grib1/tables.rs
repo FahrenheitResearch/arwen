@@ -1,9 +1,173 @@
-//! WMO Standard Parameter Table 2 for GRIB Edition 1.
+//! GRIB Edition 1 parameter tables.
 //!
 //! Provides lookups for parameter indicator codes (PDS byte 9) to
 //! human-readable names, abbreviations, and SI units.
+//!
+//! Two lookup surfaces exist:
+//!
+//! - [`parameter_entry`] is the authoritative one: it consults the
+//!   parameter table version the message CITES (PDS byte 4) together
+//!   with the originating center, resolves against the correct table
+//!   where one is vendored, and fails closed naming version and
+//!   parameter where none is.  A GRIB1 message citing ECMWF table 128
+//!   used to be decoded against the WMO/NCEP table below silently --
+//!   parameter 134 ("Surface pressure" in ECMWF 128) came back as
+//!   NCEP's "Sweat index".
+//! - `parameter_name` / `parameter_units` / `parameter_abbrev` are the
+//!   raw WMO table 2 rows (with NCEP's center-7 extensions above 127),
+//!   consulted by `parameter_entry` and kept public for callers that
+//!   have already established the message cites that table.
+
+/// One resolved parameter-table row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParameterTableEntry {
+    /// Full parameter name.
+    pub name: &'static str,
+    /// Units string, when the table records one.
+    pub units: Option<&'static str>,
+    /// Table-native abbreviation (NCEP mnemonic or ECMWF short name),
+    /// when the table records one.
+    pub abbrev: Option<&'static str>,
+}
+
+/// Resolve a parameter against the table the message cites.
+///
+/// - Table versions 1-3 are the WMO table 2 lineage.  Indicators 1-127
+///   are internationally assigned and resolve for any center; 128-254
+///   belong to the originating center, and the extension rows this
+///   crate carries there are NCEP's (center 7).  Another center's
+///   message in that region is refused rather than decoded against
+///   NCEP's rows.
+/// - Table version 128 from ECMWF (center 98) resolves against the
+///   vendored ECMWF table 128 rows; a parameter without a vendored row
+///   is refused naming version and parameter.
+/// - Any other (center, version) pair is refused: no table for it is
+///   vendored, and answering from WMO table 2 would be a wrong-table
+///   decode.  Supporting one needs its rows added to this module.
+///
+/// `Ok(None)` means the cited table is known and genuinely has no row
+/// for the indicator (a reserved code), which is different from not
+/// knowing the table at all.
+pub fn parameter_entry(
+    table_version: u8,
+    center_id: u8,
+    indicator: u8,
+) -> crate::Result<Option<ParameterTableEntry>> {
+    match table_version {
+        1..=3 => {
+            if (128..=254).contains(&indicator) && center_id != 7 {
+                return Err(crate::GribError::Parse(format!(
+                    "GRIB1 parameter {indicator} from center {center_id} in table \
+                     version {table_version} sits in the center-defined region \
+                     (128-254); the extension rows vendored here are NCEP's \
+                     (center 7), and decoding against them would assign a \
+                     scientifically false name.  Supporting it needs center \
+                     {center_id}'s table rows added to grib1/tables.rs"
+                )));
+            }
+            Ok(wmo_table_2_entry(indicator))
+        }
+        128 if center_id == 98 => match ecmwf_table_128_entry(indicator) {
+            Some(entry) => Ok(Some(entry)),
+            None => Err(crate::GribError::Parse(format!(
+                "ECMWF table version 128 parameter {indicator} has no vendored \
+                 row; decoding it against WMO table 2 would be a wrong-table \
+                 decode.  Supporting it needs its ECMWF table 128 row added \
+                 to grib1/tables.rs"
+            ))),
+        },
+        _ => Err(crate::GribError::Parse(format!(
+            "GRIB1 message cites parameter table version {table_version} from \
+             center {center_id}, for which no table is vendored; decoding \
+             parameter {indicator} against WMO table 2 would be a wrong-table \
+             decode.  Supporting it needs that center's table added to \
+             grib1/tables.rs"
+        ))),
+    }
+}
+
+fn wmo_table_2_entry(indicator: u8) -> Option<ParameterTableEntry> {
+    parameter_name(indicator).map(|name| ParameterTableEntry {
+        name,
+        units: parameter_units(indicator),
+        abbrev: parameter_abbrev(indicator),
+    })
+}
+
+/// ECMWF local parameter table 128 (GRIB1), the table ERA5/ERA-20C
+/// GRIB1 archives cite.  Rows carried are the ones the campaign data
+/// and the renderer's ERA import read; the ECMWF short name is the
+/// abbreviation.  An indicator without a row is a fail-closed refusal
+/// in [`parameter_entry`], never a fallback to another table.
+fn ecmwf_table_128_entry(indicator: u8) -> Option<ParameterTableEntry> {
+    let entry = |name, units, abbrev| {
+        Some(ParameterTableEntry {
+            name,
+            units: Some(units),
+            abbrev: Some(abbrev),
+        })
+    };
+    match indicator {
+        31 => entry("Sea-ice cover", "(0-1)", "ci"),
+        34 => entry("Sea surface temperature", "K", "sst"),
+        39 => entry("Volumetric soil water layer 1", "m3/m3", "swvl1"),
+        40 => entry("Volumetric soil water layer 2", "m3/m3", "swvl2"),
+        41 => entry("Volumetric soil water layer 3", "m3/m3", "swvl3"),
+        42 => entry("Volumetric soil water layer 4", "m3/m3", "swvl4"),
+        59 => entry("Convective available potential energy", "J/kg", "cape"),
+        129 => entry("Geopotential", "m2/s2", "z"),
+        130 => entry("Temperature", "K", "t"),
+        131 => entry("U component of wind", "m/s", "u"),
+        132 => entry("V component of wind", "m/s", "v"),
+        133 => entry("Specific humidity", "kg/kg", "q"),
+        134 => entry("Surface pressure", "Pa", "sp"),
+        135 => entry("Vertical velocity (pressure)", "Pa/s", "w"),
+        136 => entry("Total column water", "kg/m2", "tcw"),
+        137 => entry("Total column water vapour", "kg/m2", "tcwv"),
+        138 => entry("Relative vorticity", "1/s", "vo"),
+        139 => entry("Soil temperature level 1", "K", "stl1"),
+        141 => entry("Snow depth (water equivalent)", "m", "sd"),
+        142 => entry("Large-scale precipitation", "m", "lsp"),
+        143 => entry("Convective precipitation", "m", "cp"),
+        144 => entry("Snowfall (water equivalent)", "m", "sf"),
+        151 => entry("Mean sea level pressure", "Pa", "msl"),
+        152 => entry("Logarithm of surface pressure", "~", "lnsp"),
+        155 => entry("Divergence", "1/s", "d"),
+        156 => entry("Geopotential height", "gpm", "gh"),
+        157 => entry("Relative humidity", "%", "r"),
+        159 => entry("Boundary layer height", "m", "blh"),
+        164 => entry("Total cloud cover", "(0-1)", "tcc"),
+        165 => entry("10 m U wind component", "m/s", "10u"),
+        166 => entry("10 m V wind component", "m/s", "10v"),
+        167 => entry("2 m temperature", "K", "2t"),
+        168 => entry("2 m dewpoint temperature", "K", "2d"),
+        170 => entry("Soil temperature level 2", "K", "stl2"),
+        172 => entry("Land-sea mask", "(0-1)", "lsm"),
+        173 => entry("Surface roughness", "m", "sr"),
+        182 => entry("Evaporation (water equivalent)", "m", "e"),
+        183 => entry("Soil temperature level 3", "K", "stl3"),
+        186 => entry("Low cloud cover", "(0-1)", "lcc"),
+        187 => entry("Medium cloud cover", "(0-1)", "mcc"),
+        188 => entry("High cloud cover", "(0-1)", "hcc"),
+        201 => entry("Maximum 2 m temperature", "K", "mx2t"),
+        202 => entry("Minimum 2 m temperature", "K", "mn2t"),
+        205 => entry("Runoff", "m", "ro"),
+        228 => entry("Total precipitation", "m", "tp"),
+        235 => entry("Skin temperature", "K", "skt"),
+        236 => entry("Soil temperature level 4", "K", "stl4"),
+        238 => entry("Temperature of snow layer", "K", "tsn"),
+        243 => entry("Forecast albedo", "(0-1)", "fal"),
+        244 => entry("Forecast surface roughness", "m", "fsr"),
+        245 => entry("Forecast log of surface roughness for heat", "~", "flsr"),
+        _ => None,
+    }
+}
 
 /// Returns the full name for a WMO table 2 parameter indicator.
+///
+/// Raw table rows only: indicators 128-254 are NCEP's center-7
+/// extensions.  Callers that have not already established the message
+/// cites this table must go through [`parameter_entry`].
 ///
 /// Returns `None` for reserved or unrecognized codes.
 pub fn parameter_name(indicator: u8) -> Option<&'static str> {
@@ -502,6 +666,89 @@ mod tests {
         assert_eq!(parameter_name(250), None);
         assert_eq!(parameter_units(250), None);
         assert_eq!(parameter_abbrev(250), None);
+    }
+
+    // ---- Version-aware lookup: the table a message CITES is the table ----
+    // ---- it is decoded against, never silently WMO/NCEP table 2.      ----
+
+    #[test]
+    fn test_ecmwf_table_128_resolves_by_version() {
+        // ECMWF (center 98) table 128: parameter 130 is Temperature and
+        // parameter 134 is Surface pressure.  Decoded against NCEP table 2
+        // these were "Mean sea level pressure (ETA)" and "Sweat index" --
+        // the exact wrong-table decode the census flagged, live in the
+        // May-1999 ERA5 campaign files.
+        let t = parameter_entry(128, 98, 130).unwrap().unwrap();
+        assert_eq!(t.name, "Temperature");
+        assert_eq!(t.units, Some("K"));
+        assert_eq!(t.abbrev, Some("t"));
+
+        let sp = parameter_entry(128, 98, 134).unwrap().unwrap();
+        assert_eq!(sp.name, "Surface pressure");
+        assert_eq!(sp.units, Some("Pa"));
+        assert_eq!(sp.abbrev, Some("sp"));
+
+        let z = parameter_entry(128, 98, 129).unwrap().unwrap();
+        assert_eq!(z.name, "Geopotential");
+        assert_eq!(z.units, Some("m2/s2"));
+
+        // The ERA5 soil slabs the ingest catalog reads.
+        assert_eq!(
+            parameter_entry(128, 98, 139).unwrap().unwrap().name,
+            "Soil temperature level 1"
+        );
+        assert_eq!(
+            parameter_entry(128, 98, 39).unwrap().unwrap().abbrev,
+            Some("swvl1")
+        );
+    }
+
+    #[test]
+    fn test_wmo_international_region_is_center_agnostic() {
+        // Indicators 1-127 are internationally assigned in versions 1-3;
+        // any originating center resolves them from WMO table 2.
+        for (version, center) in [(1u8, 98u8), (2, 7), (3, 34)] {
+            let entry = parameter_entry(version, center, 11).unwrap().unwrap();
+            assert_eq!(entry.name, "Temperature");
+            assert_eq!(entry.abbrev, Some("TMP"));
+        }
+        // Reserved gaps inside a KNOWN table stay None, not an error.
+        assert_eq!(parameter_entry(2, 7, 250).unwrap(), None);
+    }
+
+    #[test]
+    fn test_ncep_extension_region_is_ncep_only() {
+        // 128-254 in versions 1-3 belong to the originating center.  The
+        // entries this crate carries there are NCEP's; another center's
+        // message must not borrow them.
+        let cape = parameter_entry(2, 7, 157).unwrap().unwrap();
+        assert_eq!(cape.name, "Convective available potential energy");
+        assert_eq!(cape.abbrev, Some("CAPE"));
+
+        let err = parameter_entry(2, 34, 157).unwrap_err().to_string();
+        assert!(err.contains("center 34"), "{err}");
+        assert!(err.contains("version 2"), "{err}");
+        assert!(err.contains("parameter 157"), "{err}");
+    }
+
+    #[test]
+    fn test_unknown_local_table_fails_closed_naming_version_and_parameter() {
+        let err = parameter_entry(200, 98, 250).unwrap_err().to_string();
+        assert!(err.contains("version 200"), "{err}");
+        assert!(err.contains("parameter 250"), "{err}");
+
+        // NCEP's local table 128 is not ECMWF's and is not vendored.
+        assert!(parameter_entry(128, 7, 129).is_err());
+    }
+
+    #[test]
+    fn test_ecmwf_128_unknown_parameter_fails_closed() {
+        // Parameter 11 is not a row this crate carries for ECMWF table
+        // 128; answering from WMO table 2 ("Temperature") would be the
+        // defect, and None would claim the table has no such row.
+        let err = parameter_entry(128, 98, 11).unwrap_err().to_string();
+        assert!(err.contains("version 128"), "{err}");
+        assert!(err.contains("parameter 11"), "{err}");
     }
 
     #[test]

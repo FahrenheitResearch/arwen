@@ -49,6 +49,10 @@ NOAHMP_TRANSLATION_UNITS: dict[str, tuple[str, ...]] = {
     "noahmp_driver": (LIBM_UNIT, "noahmp_driver"),
     "noahmp_energy": (LIBM_UNIT, "noahmp_energy"),
     "noahmp_fluxprep": ("noahmp_fluxprep",),
+    # NOAHMP_GLACIER borrows r_pow/r_exp/r_log (and the AD/SU/MU/DV
+    # macros plus NMP_* constants) from the libm unit and carries only its
+    # own glibc atanf copy, like noahmp_bareflux does.
+    "noahmp_glacier": (LIBM_UNIT, "noahmp_glacier"),
     "noahmp_leaves": ("noahmp_leaves",),
     # The slab composition's elementwise transcendentals borrow r_pow/r_exp/
     # r_log from LIBM_UNIT and nmpe_tanhf from noahmp_energy, so it is the one

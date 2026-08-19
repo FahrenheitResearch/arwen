@@ -1,0 +1,15 @@
+type=continuous
+projection=regular_ll
+dx=0.05
+dy=-0.05
+known_x=1.0
+known_y=1.0
+known_lat=89.975
+known_lon=-179.975
+wordsize=1
+tile_x=6
+tile_y=4
+tile_z=1
+missing_value=255.
+row_order=top_bottom
+scale_factor=0.01

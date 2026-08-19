@@ -35,7 +35,15 @@ from gpuwm.mapped_composition import COMPOSITION_SCHEMA, load_composition
 from gpuwm.mapped_source import (
     _build_grib2_tools,
     _decode_grib,
+    _decode_netcdf,
     _grib2_inventory,
+    _match_nc_variables,
+    _matching_nc_variables,
+    _nc_selector_text,
+    _nc_vocabulary,
+    _selector_names,
+    NC_EVIDENCE_NAME,
+    NC_EVIDENCE_STANDARD_NAME,
     _require_authority_snapshot,
     _sha256,
     _snapshot_authority,
@@ -46,6 +54,7 @@ from gpuwm.mapped_source import (
 ADAPT_PROVENANCE_SCHEMA = "gpuwm-adapt-provenance-v1"
 ADAPTER_STATUS = "runnable_mapping_not_stock_wrf_certified"
 _SUPPORTED_FORMAT = "grib2"
+_SUPPORTED_FORMATS = ("grib2", "netcdf")
 _GRID_KEYS = (
     "gdt",
     "nx",
@@ -198,6 +207,32 @@ def _refuse_scaffold(raw: object, label: str) -> None:
     )
 
 
+def _descriptor_format(descriptor_path: Path) -> str:
+    """The descriptor's declared source format, read before compilation.
+
+    The front door has to know whether a Vtable and the GRIB2 decoders are
+    required *before* it asks for them, and the descriptor is the only place
+    that says so.  A format the adapter cannot author is refused by name.
+    """
+
+    raw = _strict_json(
+        _stable_file_snapshot(descriptor_path).data,
+        f"descriptor {descriptor_path}",
+    )
+    if not isinstance(raw, dict) or not isinstance(raw.get("format"), str):
+        raise ValueError(
+            f"descriptor {descriptor_path} must declare a string 'format'; "
+            f"supported: {list(_SUPPORTED_FORMATS)}"
+        )
+    source_format = raw["format"]
+    if source_format not in _SUPPORTED_FORMATS:
+        raise ValueError(
+            f"gpuwm adapt cannot author {source_format!r} input; supported "
+            f"formats are {list(_SUPPORTED_FORMATS)}"
+        )
+    return source_format
+
+
 def _load_adapt_policy(descriptor_path: Path) -> tuple[dict[str, object], object]:
     snapshot = _stable_file_snapshot(descriptor_path)
     raw = _strict_json(snapshot.data, f"descriptor {snapshot.path}")
@@ -219,9 +254,28 @@ def _load_adapt_policy(descriptor_path: Path) -> tuple[dict[str, object], object
     soil = _object(
         policy["soil_policy"],
         "descriptor.adapt.soil_policy",
-        allowed={"kind", "target_layers_m"},
+        allowed={"kind", "target_layers_m", "source_layers_m"},
         required={"kind"},
     )
+    # GRIB selectors carry their own layer bounds, so a second declaration
+    # would be a second authority.  NetCDF selectors are variable names and
+    # carry no depth at all, so the depths must be declared or they would be
+    # guessed from the order -- which is exactly the kind of silent
+    # assumption this contract exists to refuse.
+    source_format = raw.get("format")
+    if source_format == "netcdf":
+        if "source_layers_m" not in soil:
+            raise ValueError(
+                "descriptor.adapt.soil_policy.source_layers_m is required for "
+                "NetCDF: variable-name selectors carry no layer depth, and "
+                "soil geometry is never inferred from selector order"
+            )
+    elif "source_layers_m" in soil:
+        raise ValueError(
+            "descriptor.adapt.soil_policy.source_layers_m is refused for "
+            f"{source_format!r}: the GRIB selectors already bind both layer "
+            "surfaces, and two authorities for one geometry is one too many"
+        )
     if soil["kind"] not in {
         "identity_complete_layers",
         "conservative_layer_means",
@@ -299,6 +353,7 @@ def _require_contiguous_layers(
 
 def _soil_source_layers(
     mapping: Mapping[str, object],
+    declared: object = None,
 ) -> list[dict[str, object]]:
     names = ("soil_temperature", "volumetric_soil_moisture")
     fields = mapping["fields"]
@@ -319,6 +374,32 @@ def _soil_source_layers(
             "soil-layer check failed: temperature/moisture selector counts "
             f"differ ({len(selector_lists[0])} != {len(selector_lists[1])})"
         )
+    if declared is not None:
+        layers = _layers(declared, "descriptor.adapt.soil_policy.source_layers_m")
+        if len(layers) != len(selector_lists[0]):
+            raise ValueError(
+                "soil-layer check failed: source_layers_m declares "
+                f"{len(layers)} layer(s) but the soil fields carry "
+                f"{len(selector_lists[0])} selector(s); one depth per "
+                "selector, shallow to deep"
+            )
+        rows = [
+            {
+                "top": layer["top"],
+                "bottom": layer["bottom"],
+                # The selector bound to this depth, position by position.
+                # The composition re-checks this pairing, which is what
+                # stops a reordered selector list from silently relabelling
+                # the soil column.
+                "selectors": {
+                    name: copy.deepcopy(selectors[index])
+                    for name, selectors in zip(names, selector_lists)
+                },
+            }
+            for index, layer in enumerate(layers)
+        ]
+        _require_contiguous_layers(rows, "source soil inventory")
+        return rows
     source_layers: list[dict[str, object]] = []
     for index, pair in enumerate(zip(*selector_lists)):
         bounds = []
@@ -381,8 +462,10 @@ def build_composition(
 ) -> dict[str, object]:
     """Build the executable v2 composition from explicit descriptor policy."""
 
-    source_layers = _soil_source_layers(mapping)
     soil_policy = adapt_policy["soil_policy"]
+    source_layers = _soil_source_layers(
+        mapping, soil_policy.get("source_layers_m")
+    )
     if soil_policy["kind"] == "identity_complete_layers":
         target_layers = [
             {"top": row["top"], "bottom": row["bottom"]}
@@ -436,7 +519,7 @@ def build_composition(
             "terrain_height": {
                 "data_role": "adapt_in_band_terrain",
                 "provenance_role": "adapt_authority_provenance",
-                "format": _SUPPORTED_FORMAT,
+                "format": str(mapping["format"]),
                 "field": "terrain_height",
                 "selector_authority": "mapping_field_exact",
                 "grid_alignment": "exact_coordinate_subset",
@@ -518,19 +601,30 @@ def _validate_static_bindings(
     mapping: Mapping[str, object],
     adapt_policy: Mapping[str, object],
 ) -> dict[str, object]:
-    if mapping["format"] != _SUPPORTED_FORMAT:
+    if mapping["format"] not in _SUPPORTED_FORMATS:
         raise ValueError(
-            f"gpuwm adapt v1.1 supports GRIB2 descriptors only; got "
-            f"{mapping['format']!r}. Use the named-adapter path for other "
-            "formats."
+            f"gpuwm adapt supports {list(_SUPPORTED_FORMATS)} descriptors; "
+            f"got {mapping['format']!r}."
         )
-    levels = mapping["coordinates"]["vertical"].get("levels")
+    vertical = mapping["coordinates"]["vertical"]
+    levels = vertical.get("levels")
     if not isinstance(levels, list) or not levels:
         raise ValueError(
             "vertical-coverage check failed: descriptor must declare the "
             "complete pressure coordinate in coordinates.vertical.levels"
         )
-    source_top = min(float(level) for level in levels)
+    # GRIB level values are Pa by definition; a NetCDF vertical coordinate
+    # carries whatever unit the file declares, and comparing hPa against a
+    # model top in Pa silently passes a source that does not reach it.
+    units = str(vertical["units"])
+    scale = {"Pa": 1.0, "hPa": 100.0, "millibar": 100.0, "mb": 100.0}.get(units)
+    if scale is None:
+        raise ValueError(
+            "vertical-coverage check failed: cannot compare a model top in Pa "
+            f"against a vertical coordinate in {units!r}; declare the "
+            "vertical coordinate in 'Pa' or 'hPa'"
+        )
+    source_top = min(float(level) for level in levels) * scale
     model_top = _positive_number(
         adapt_policy["model_top_pa"],
         "descriptor.adapt.model_top_pa",
@@ -772,6 +866,127 @@ def verify_grib2_inputs(
     }, snapshots
 
 
+def verify_netcdf_inputs(
+    mapping: Mapping[str, object],
+    input_files: Sequence[str | Path],
+) -> tuple[dict[str, object], tuple[object, ...]]:
+    """Run the fail-closed battery against actual NetCDF input paths.
+
+    The failure this is built against is the silent zero: a descriptor whose
+    selectors match nothing, decoded without complaint into an empty result
+    that every downstream count reports as success.  Every declared selector
+    must resolve, and a selector that resolves nothing is refused with both
+    vocabularies printed -- what the descriptor asked for, and what the file
+    actually contains.
+    """
+
+    from gpuwm import netcdf_bridge
+
+    paths = tuple(Path(path).resolve() for path in input_files)
+    if not paths or len(set(paths)) != len(paths):
+        raise ValueError("adapt input inventory must be non-empty and unique")
+    snapshots = tuple(_snapshot_authority(path) for path in paths)
+
+    fields = mapping["fields"]
+    wanted: list[tuple[str, int, Mapping[str, object]]] = []
+    for field_name, field in fields.items():
+        for index, selector in enumerate(field.get("selectors", [])):
+            wanted.append((field_name, index, selector))
+    if not wanted:
+        raise ValueError(
+            "record-inventory check failed: the compiled mapping declares no "
+            "NetCDF variable selectors at all"
+        )
+
+    resolved: dict[tuple[str, int], str] = {}
+    evidence: dict[tuple[str, int], str] = {}
+    vocabulary = ""
+    variable_names: set[str] = set()
+    for path in paths:
+        with netcdf_bridge.open_dataset(path) as dataset:
+            vocabulary = _nc_vocabulary(dataset)
+            variable_names.update(dataset.variables)
+            for field_name, index, selector in wanted:
+                matches = _match_nc_variables(dataset, selector)
+                if len(matches) > 1:
+                    # Never a silent pick between two candidates: both are
+                    # named so the descriptor can be disambiguated.
+                    raise ValueError(
+                        f"record-inventory check failed: {field_name} "
+                        f"selector[{index}] ({_nc_selector_text(selector)}) "
+                        f"resolves {len(matches)} variables in {path} "
+                        f"({', '.join(sorted(str(v.name) for v, _ in matches))}); "
+                        "rw-wps.mapping.v1 requires exactly one"
+                    )
+                if matches:
+                    variable, how = matches[0]
+                    resolved[(field_name, index)] = str(variable.name)
+                    evidence[(field_name, index)] = how
+
+    unresolved = sorted(
+        f"{field_name}.selectors[{index}] ({_nc_selector_text(selector)})"
+        for field_name, index, selector in wanted
+        if (field_name, index) not in resolved
+    )
+    if unresolved:
+        # Naming only one vocabulary is what makes a mapping miss read as a
+        # data problem.  Print both so the mismatch is obvious on sight.
+        raise ValueError(
+            "record-inventory check failed: "
+            f"{len(unresolved)} of {len(wanted)} declared NetCDF selector(s) "
+            f"matched no variable in any input file.\n"
+            "  descriptor asked for: " + "; ".join(unresolved) + "\n"
+            "  files actually contain: " + vocabulary
+        )
+    if not resolved:
+        raise ValueError(
+            "record-inventory check failed: no NetCDF variables match the "
+            f"compiled selector set. files contain: {vocabulary}"
+        )
+
+    for snapshot in snapshots:
+        _require_authority_snapshot(snapshot)
+    # Counts and evidence, never a boolean: a mapping that matched nothing
+    # while reporting success is the failure mode this program keeps hitting.
+    by_standard_name = sorted(
+        f"{field_name}.selectors[{index}] -> {resolved[(field_name, index)]}"
+        for (field_name, index), how in evidence.items()
+        if how == NC_EVIDENCE_STANDARD_NAME
+        and _selector_names(
+            next(
+                selector for name, position, selector in wanted
+                if name == field_name and position == index
+            )
+        )
+    )
+    receipt = {
+        "status": "PASS",
+        "input_file_count": len(paths),
+        "declared_selector_count": len(wanted),
+        "resolved_selector_count": len(resolved),
+        "resolved_by_name_count": sum(
+            1 for how in evidence.values() if how == NC_EVIDENCE_NAME
+        ),
+        "resolved_by_standard_name_count": sum(
+            1 for how in evidence.values()
+            if how == NC_EVIDENCE_STANDARD_NAME
+        ),
+        "resolved_variables": sorted(set(resolved.values())),
+        "source_variable_count": len(variable_names),
+    }
+    if by_standard_name:
+        receipt["descriptor_name_drift"] = by_standard_name
+        warn(
+            f"{len(by_standard_name)} selector(s) resolved by CF "
+            "standard_name because the name the descriptor gives no longer "
+            f"exists in these files: {'; '.join(by_standard_name)}",
+            why="The files are self-describing and were read correctly. "
+                "Add the current spelling to those selectors' name lists so "
+                "the match stops depending on the standard name alone.",
+        )
+    return receipt, snapshots
+
+
 def _validate_candidate_contracts(
     mapping: Mapping[str, object],
     composition: Mapping[str, object],
@@ -824,92 +1039,129 @@ def _require_compilation_snapshot(
 
 def author_adapter(
     *,
-    vtable_path: str | Path,
+    vtable_path: str | Path | None = None,
     descriptor_path: str | Path,
     input_files: Sequence[str | Path],
     output_dir: str | Path,
     grib2_inventory: str | Path | None = None,
     grib2_dump: str | Path | None = None,
 ) -> dict[str, object]:
-    """Verify inputs and create the runnable, uncertified authority bundle."""
+    """Verify inputs and create the runnable, uncertified authority bundle.
+
+    ``vtable_path`` is the GRIB selector authority and must be omitted for
+    NetCDF descriptors, whose selectors name variables directly and have no
+    Vtable to import from.
+    """
 
     descriptor_path = Path(descriptor_path).resolve()
-    vtable_path = Path(vtable_path).resolve()
     paths = tuple(Path(path).resolve() for path in input_files)
     policy, descriptor_snapshot = _load_adapt_policy(descriptor_path)
-    vtable_snapshot = _stable_file_snapshot(vtable_path)
+    source_format = _descriptor_format(descriptor_path)
+    if source_format == "netcdf":
+        if vtable_path is not None:
+            raise ValueError(
+                "NetCDF descriptors have no WPS Vtable: their selectors name "
+                "variables directly. Drop --vtable."
+            )
+        vtable_snapshot = None
+        resolved_vtable = None
+    else:
+        if vtable_path is None:
+            raise ValueError(
+                f"{source_format} descriptors require --vtable, the selector "
+                "authority"
+            )
+        resolved_vtable = Path(vtable_path).resolve()
+        vtable_snapshot = _stable_file_snapshot(resolved_vtable)
     mapping, compilation = compile_mapping_descriptor(
         descriptor_path,
-        vtable_path=vtable_path,
+        vtable_path=resolved_vtable,
     )
     _require_compilation_snapshot(
         compilation["descriptor"],
         descriptor_snapshot,
         "descriptor",
     )
-    _require_compilation_snapshot(
-        compilation["vtable"],
-        vtable_snapshot,
-        "Vtable",
-    )
+    if vtable_snapshot is not None:
+        _require_compilation_snapshot(
+            compilation["vtable"],
+            vtable_snapshot,
+            "Vtable",
+        )
     static_check = _validate_static_bindings(mapping, policy)
     composition = build_composition(mapping, policy)
     _validate_candidate_contracts(mapping, composition)
 
-    if (grib2_inventory is None) != (grib2_dump is None):
-        raise ValueError(
-            "--grib2-inventory and --grib2-dump must be supplied together"
-        )
-    if grib2_inventory is None:
-        try:
-            inventory_path, dump_path = _build_grib2_tools()
-        except FileNotFoundError as error:
-            # ValueError so the CLI boundary prints a refusal, not a
-            # traceback -- the same conversion the explicit-path branch
-            # below already makes, applied to the branch a wheel install
-            # actually takes.  Omitting the expert overrides is the
-            # DOCUMENTED default, and until the resolver ladder landed
-            # this branch shelled cargo into a directory a wheel does not
-            # have and ended in a raw NotADirectoryError.
-            raise ValueError(str(error)) from error
-    else:
-        inventory_path = Path(grib2_inventory).resolve()
-        dump_path = Path(grib2_dump).resolve()
-    for decoder in (inventory_path, dump_path):
-        if not decoder.is_file():
-            # ValueError so the CLI boundary prints a refusal, not a
-            # traceback with a bare path.
+    if source_format == "netcdf":
+        if grib2_inventory is not None or grib2_dump is not None:
             raise ValueError(
-                f"GRIB2 decoder {decoder} does not exist; build the "
-                "bridges (gpuwm setup, or gpuwm doctor --explain for "
-                "the checkout route)")
-    decoder_snapshots = tuple(
-        _snapshot_authority(decoder)
-        for decoder in (inventory_path, dump_path)
-    )
+                "NetCDF input does not use the GRIB2 decoders; drop "
+                "--grib2-inventory/--grib2-dump"
+            )
+        inventory_path = dump_path = None
+        decoder_snapshots: tuple[object, ...] = ()
+        inventory_check, input_snapshots = verify_netcdf_inputs(mapping, paths)
+        # Inventory proves selector completeness cheaply; executing the
+        # existing decoder proves those exact variables can actually be read,
+        # georeferenced, unit-transformed, axis-bound, and assembled.
+        _decode_netcdf(mapping, paths)
+    else:
+        if (grib2_inventory is None) != (grib2_dump is None):
+            raise ValueError(
+                "--grib2-inventory and --grib2-dump must be supplied together"
+            )
+        if grib2_inventory is None:
+            try:
+                inventory_path, dump_path = _build_grib2_tools()
+            except FileNotFoundError as error:
+                # ValueError so the CLI boundary prints a refusal, not a
+                # traceback -- the same conversion the explicit-path branch
+                # below already makes, applied to the branch a wheel install
+                # actually takes.  Omitting the expert overrides is the
+                # DOCUMENTED default, and until the resolver ladder landed
+                # this branch shelled cargo into a directory a wheel does
+                # not have and ended in a raw NotADirectoryError.
+                raise ValueError(str(error)) from error
+        else:
+            inventory_path = Path(grib2_inventory).resolve()
+            dump_path = Path(grib2_dump).resolve()
+        for decoder in (inventory_path, dump_path):
+            if not decoder.is_file():
+                # ValueError so the CLI boundary prints a refusal, not a
+                # traceback with a bare path.
+                raise ValueError(
+                    f"GRIB2 decoder {decoder} does not exist; build the "
+                    "bridges (gpuwm setup, or gpuwm doctor --explain for "
+                    "the checkout route)")
+        decoder_snapshots = tuple(
+            _snapshot_authority(decoder)
+            for decoder in (inventory_path, dump_path)
+        )
 
-    inventory_check, input_snapshots = verify_grib2_inputs(
-        mapping,
-        paths,
-        inventory_executable=inventory_path,
-    )
-    # Inventory proves selector completeness cheaply; executing the existing
-    # decoder proves those exact selected messages can actually be unpacked,
-    # normalized, unit-transformed, axis-bound, and assembled.  A merely
-    # parseable Section 5/7 representation must never be called runnable.
-    _decode_grib(
-        mapping,
-        paths,
-        grib1_bridge=None,
-        grib2_inventory=inventory_path,
-        grib2_dump=dump_path,
-    )
+        inventory_check, input_snapshots = verify_grib2_inputs(
+            mapping,
+            paths,
+            inventory_executable=inventory_path,
+        )
+        # Inventory proves selector completeness cheaply; executing the
+        # existing decoder proves those exact selected messages can actually
+        # be unpacked, normalized, unit-transformed, axis-bound, and
+        # assembled.  A merely parseable Section 5/7 representation must
+        # never be called runnable.
+        _decode_grib(
+            mapping,
+            paths,
+            grib1_bridge=None,
+            grib2_inventory=inventory_path,
+            grib2_dump=dump_path,
+        )
     for snapshot in input_snapshots:
         _require_authority_snapshot(snapshot)
     for snapshot in decoder_snapshots:
         _require_authority_snapshot(snapshot)
     _require_snapshot(descriptor_snapshot)
-    _require_snapshot(vtable_snapshot)
+    if vtable_snapshot is not None:
+        _require_snapshot(vtable_snapshot)
 
     output_dir = Path(output_dir).resolve()
     outputs = {
@@ -928,10 +1180,10 @@ def author_adapter(
         )
     authorities = {
         descriptor_path,
-        vtable_path,
         *paths,
-        inventory_path.resolve(),
-        dump_path.resolve(),
+        *(() if resolved_vtable is None else (resolved_vtable,)),
+        *(() if inventory_path is None else (inventory_path.resolve(),)),
+        *(() if dump_path is None else (dump_path.resolve(),)),
     }
     aliases = [
         str(path)
@@ -968,6 +1220,7 @@ def author_adapter(
         },
         "descriptor": compilation["descriptor"],
         "vtable": compilation["vtable"],
+        "source_format": source_format,
         "inputs": _input_rows(paths, input_snapshots),
         "battery": {
             "status": "PASS",
@@ -987,7 +1240,11 @@ def author_adapter(
             },
             "grid_family": {
                 "status": "PASS",
-                "required": "regular_latitude_longitude_gdt_0_scan_0x40",
+                "required": (
+                    "regular_latitude_longitude_cf_geographic_coordinates"
+                    if source_format == "netcdf"
+                    else "regular_latitude_longitude_gdt_0_scan_0x40"
+                ),
             },
             "vertical_coverage": static_check,
         },
@@ -1014,7 +1271,7 @@ def author_adapter(
             },
             grib2_inventory=inventory_path,
             grib2_dump=dump_path,
-            expected_format=_SUPPORTED_FORMAT,
+            expected_format=source_format,
         )
         published.append(outputs["input_manifest"])
         if load_mapping(outputs["mapping"]) != mapping:
@@ -1030,7 +1287,8 @@ def author_adapter(
         for snapshot in decoder_snapshots:
             _require_authority_snapshot(snapshot)
         _require_snapshot(descriptor_snapshot)
-        _require_snapshot(vtable_snapshot)
+        if vtable_snapshot is not None:
+            _require_snapshot(vtable_snapshot)
     except BaseException:
         for path in reversed(published):
             path.unlink(missing_ok=True)
@@ -1055,7 +1313,7 @@ def author_adapter(
         "input_manifest": manifest_receipt["manifest"],
         "runtime_bindings": {
             "source": "mapped",
-            "source_format": _SUPPORTED_FORMAT,
+            "source_format": source_format,
             "inputs": [str(path) for path in paths],
             "supplements": {
                 "adapt_in_band_terrain": [str(path) for path in paths],
@@ -1063,7 +1321,7 @@ def author_adapter(
             "provenance": {
                 "adapt_authority_provenance": str(outputs["provenance"]),
             },
-            "decoders": {
+            "decoders": {} if source_format == "netcdf" else {
                 "grib2_inventory": str(inventory_path),
                 "grib2_dump": str(dump_path),
             },
@@ -1298,10 +1556,16 @@ def descriptor_skeleton(vtable_path: str | Path) -> dict[str, object]:
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "adapt",
-        help="verify actual GRIB2 files and author a runnable mapped adapter",
+        help="verify your own GRIB2 or NetCDF files and author a runnable "
+             "mapped adapter",
         description=(
-            "Verify actual GRIB2 files against a descriptor you write, and "
-            "author a runnable mapped adapter. A successful adaptation "
+            "Verify your own GRIB2 or NetCDF files against a descriptor you "
+            "write, and author a runnable mapped adapter. This is the "
+            "arbitrary-input front door: no source name is blessed in "
+            "advance, and no code change is needed for a new dataset. GRIB "
+            "descriptors import their selectors from an 11-column WPS "
+            "Vtable (--vtable); NetCDF descriptors name CF variables "
+            "directly and take no Vtable. A successful adaptation "
             "establishes that the emitted files implement your descriptor "
             "exactly and that your GRIB files satisfy it. It does not "
             "establish that your descriptor is a correct physical "
@@ -1324,13 +1588,14 @@ def register_cli(subparsers) -> None:
     )
     parser.add_argument(
         "--vtable",
-        required=True,
         type=Path,
         metavar="VTABLE",
-        help="11-column WPS Vtable selector authority. Required, and "
-             "never defaulted: this command adapts arbitrary sources, and "
-             "quietly reaching for a GFS Vtable would mis-map every other "
-             "product. A worked GFS example installs with the package -- "
+        help="11-column WPS Vtable selector authority. Required for GRIB "
+             "descriptors, and never defaulted: this command adapts "
+             "arbitrary sources, and quietly reaching for a GFS Vtable "
+             "would mis-map every other product. Must be omitted for "
+             "NetCDF descriptors, whose selectors name CF variables "
+             "directly. A worked GFS example installs with the package -- "
              f"{_packaged_vtable_hint()}",
     )
     parser.add_argument(
@@ -1350,8 +1615,10 @@ def register_cli(subparsers) -> None:
         action="append",
         type=Path,
         default=[],
-        metavar="GRIB2",
-        help="actual GRIB2 input (repeat for every file in the series)",
+        metavar="FILE",
+        help="your own GRIB2 or NetCDF input file, matching the "
+             "descriptor's declared format (repeat for every file in the "
+             "series)",
     )
     parser.add_argument(
         "--output-dir",
@@ -1376,6 +1643,13 @@ def register_cli(subparsers) -> None:
 
 def _from_cli(args) -> int:
     if args.skeleton is not None:
+        if args.vtable is None:
+            raise ValueError(
+                "--skeleton scaffolds a GRIB descriptor from a WPS Vtable "
+                "and requires --vtable. NetCDF descriptors have no Vtable: "
+                "start from the worked example named in "
+                "docs/intermediate-format.md."
+            )
         incompatible = {
             "--descriptor": args.descriptor,
             "--input": args.input,

@@ -133,9 +133,10 @@ trajectory/stock-WRF gates.
 
 ## Reproducing the bounded pilot
 
-The raster dependencies (rasterio, pyproj) are ordinary dependencies of
-`gpuwm` as of 2.3.3, so a plain install carries them; the `[geog]` extra is
-still accepted and now adds nothing. Run:
+The raster work runs in the Rust `static-fields` library, which a plain
+install stages, so nothing extra is needed; `pip install 'gpuwm[geog]'`
+adds rasterio and pyproj, the pure-Python parity fallback behind
+`GPUWM_STATIC_PYTHON=1`. Run:
 
 ```text
 python -m pip install -e "."

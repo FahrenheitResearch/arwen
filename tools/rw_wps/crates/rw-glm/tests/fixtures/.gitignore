@@ -1,0 +1,7 @@
+# The repo-wide `*.nc` rule (root .gitignore:13) exists to keep model
+# OUTPUT out of history.  This directory holds a 240 KB real GOES-19 GLM
+# NetCDF4 granule that the vendored donor test
+# `real_netcdf4_fixture_is_inventoried_through_hdf5_fallback` opens by
+# path, so the rule has to be lifted here or the suite is 59/60 on any
+# fresh clone — which is exactly what it was until this file existed.
+!*.nc

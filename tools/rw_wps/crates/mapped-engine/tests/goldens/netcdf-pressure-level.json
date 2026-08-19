@@ -1,0 +1,502 @@
+{
+  "case": "netcdf-pressure-level",
+  "frames": [
+    {
+      "decoded_direct_fields": [
+        "air_temperature",
+        "air_temperature_2m",
+        "dewpoint_2m",
+        "eastward_wind",
+        "eastward_wind_10m",
+        "geopotential",
+        "land_fraction",
+        "northward_wind",
+        "northward_wind_10m",
+        "relative_humidity",
+        "skin_temperature",
+        "soil_temperature",
+        "surface_pressure",
+        "terrain_height",
+        "volumetric_soil_moisture"
+      ],
+      "fields": {
+        "air_temperature": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "8dd04d46fc686bfe66aaa331ec969bbb719c6761987acebea1d51ad60e73a97a",
+          "shape": [
+            37,
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "air_temperature_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "e6f5af645f1756d4d5b79ac871cf4af3d1991d516c01f4b4878408c569b5bc73",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "dewpoint_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "819df4a48be317d98f129b4f80be1f3d60c8c21f7ad2d9032e9af07a90587eb5",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "eastward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "eec678d7c8364fe3b9c754d36d14acef04505e946b28d6636dd5f85aea299e8a",
+          "shape": [
+            37,
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "eastward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "4b7a9ba2d5d1942fa542f6cb8c0ddde8f1e45d82d6f94b400a66377a9593c5d3",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "geopotential": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "baa107f0f77563997351ffbebd55ddbbce38f153d0655e29f2642ce8a343e290",
+          "shape": [
+            37,
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "land_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "375480e276fb6aa00864d6ccdc10447a2bb3d668c047476128a308f8d3e3f790",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "northward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "19fb7380662cc5c9402271dec961bc674d739109600e5971b71ea7e967a8a303",
+          "shape": [
+            37,
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "northward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "a3823d21a90970a238d5e46a12df206340491b26f4c113e49f9af560758bfda1",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "relative_humidity": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "e25eed9d77bfd1dbb4bf860f3cad03236fa8145593403e259844518365a33f53",
+          "shape": [
+            37,
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "skin_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "7424b11bf88a535c1ec4776627324d02313ddbaaa08e75bb28c5e0b8190fb4ff",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "soil_temperature": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "262907c52373f4b87d8c495f2e40d9b950ce3d5921caa67630feea13d7c09c9d",
+          "shape": [
+            4,
+            6,
+            9
+          ],
+          "source_reference_count": 4
+        },
+        "surface_pressure": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "27c544bbf727841af7512f524fe9095d7dd5fd4dd8068cfb7175526732812846",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "terrain_height": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "1a373299a509a311d30ad91ad8cfb8de9a8bee0de6ece8870dcdbf3a1ac484be",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "volumetric_soil_moisture": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "4790eef1089fec4e1882467873c40f1c93592b57f89c46b3e56a4fbb3cc3a9ae",
+          "shape": [
+            4,
+            6,
+            9
+          ],
+          "source_reference_count": 4
+        }
+      },
+      "member": null,
+      "source_cycle": "2026-06-06T00:00:00",
+      "unresolved_direct_fields": [],
+      "valid_time": "2026-06-06T00:00:00"
+    },
+    {
+      "decoded_direct_fields": [
+        "air_temperature",
+        "air_temperature_2m",
+        "dewpoint_2m",
+        "eastward_wind",
+        "eastward_wind_10m",
+        "geopotential",
+        "land_fraction",
+        "northward_wind",
+        "northward_wind_10m",
+        "relative_humidity",
+        "skin_temperature",
+        "soil_temperature",
+        "surface_pressure",
+        "terrain_height",
+        "volumetric_soil_moisture"
+      ],
+      "fields": {
+        "air_temperature": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "bc75a674581504c2a14911bcacbdbe5f786924148eda57f70120d89160ef1ddf",
+          "shape": [
+            37,
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "air_temperature_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "5571152e6953159584318d19f28d86a2707b3c2a0551ac2093013bdfd5577122",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "dewpoint_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "4ff60248b1c52360c34c75bd5015686d932f903081ccd02f9323db3b4ac25878",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "eastward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "107897bdcf56d070f3c22928d5bb5a72d2dbb0ed8338ca017b188df137195156",
+          "shape": [
+            37,
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "eastward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "0557f4c9c6b13b4effd1fa39efae2aae9f4648f2bf5fe840d4fbeb95fc07e4ee",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "geopotential": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "f0bdca7cc1e1534d39384c7edd486a355ee5514ab524dcf3d080f6305dff0274",
+          "shape": [
+            37,
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "land_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "8691151ad46c450ae17944f8631ba4eebd27226901db298eb5d1655b5bd08e25",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "northward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "a504093f57c93dbb97d7973bb9b896b4bb58bbfe2397cf127269d433a2332c33",
+          "shape": [
+            37,
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "northward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "49b4b74b90c229c7dcdcd62f4891a17f79cd5d7e01cec3f4ec1a1ddcba2af673",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "relative_humidity": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "7790155c57cc2948dc9709bead162a920bb7e2c63f03a192988f59be31b857a8",
+          "shape": [
+            37,
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "skin_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "1c7c11396d4d0e0bc0fb734d52ea7a795d1d969eec8448320940091d22f3fab5",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "soil_temperature": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "76f115fb3be322f12f7e966ebf41be5d955f1f74c3dd0bd50437fe240235bfb7",
+          "shape": [
+            4,
+            6,
+            9
+          ],
+          "source_reference_count": 4
+        },
+        "surface_pressure": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "cb00de36eb388078855e27db429e3e335b3a0691f7c4108146a0b81639359b2b",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "terrain_height": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "c84bfbae7a4efe9b50cac292616468008f9e89554cb9c0b4b3ce000db99c5ed5",
+          "shape": [
+            6,
+            9
+          ],
+          "source_reference_count": 1
+        },
+        "volumetric_soil_moisture": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "missing": 0,
+          "sha256": "2d9674e957df9738b1a9c1380f0d93cfc1ab423845e080c18efb77719cb81bbb",
+          "shape": [
+            4,
+            6,
+            9
+          ],
+          "source_reference_count": 4
+        }
+      },
+      "member": null,
+      "source_cycle": "2026-06-06T06:00:00",
+      "unresolved_direct_fields": [],
+      "valid_time": "2026-06-06T06:00:00"
+    }
+  ],
+  "grid": {
+    "fingerprint": "2129e584003783f0f1be80487260d14f312480d0e4ea2a344fade610253d7a41",
+    "nx": 9,
+    "ny": 6,
+    "vertical_count": 37
+  },
+  "input_names": [
+    "netcdf-pressure-level-sample.nc"
+  ],
+  "input_sha256": [
+    "6099bb2caad3a933a6fecf5d213d28efd61e7a780c31fa0145a97ded41b81980"
+  ],
+  "mapping": "configs/rw-wps-era5-netcdf.mapping.json",
+  "mapping_sha256": "d2c9ee08e45478a64e4d2bba689e9bad1d2e97bde713477ee2a4de26e31d7ad3",
+  "materialization": {
+    "frame_count": 2,
+    "frame_header_sha256": [
+      "2e0e235d3c28b010a08c14fc959d477be954c83ed008eb3ac3200c5d597aa32e",
+      "0d5771f5d680f56bd3d09564112989bbeef411fe08583870488f96d02ae5d6f6"
+    ],
+    "frame_header_sha256_masked": [
+      "9162a40d1f5172dfff252dcd60e350fc9865a53aa82ccae42e4abc54a0dc2ac8",
+      "e9f5d36e21166a301ef842374bc97393366490c22d354366d0bb42b536ecbba3"
+    ],
+    "verdict": "PASS"
+  },
+  "produced_by": "gpuwm.mapped_source.inspect_mapped_source",
+  "source_format": "netcdf",
+  "status": "CANONICAL_FRAMES_MATERIALIZED_NOT_STOCK_WRF_CERTIFIED"
+}

@@ -57,7 +57,12 @@ from collections.abc import Iterable, Mapping, Sequence
 
 import numpy as np
 
-import cupy as cp
+# cupy is imported INSIDE the methods that allocate device memory, so
+# the slot-SHAPE helpers this module also owns stay readable on
+# installs with no GPU runtime -- the preflight estimator prices the
+# MYNN workspace there (`gpuwm domain` on a CPU-only box).  All
+# ``cp.`` annotations below are strings under `from __future__ import
+# annotations` and are never evaluated.
 
 from gpuwm.core.state import DTYPE
 
@@ -346,6 +351,8 @@ class MynnPblScratch:
     @classmethod
     def from_state(cls, state, chunk: int, nz: int) -> "MynnPblScratch":
         """Draw every declared slot from ``DomainState.scratch``."""
+        import cupy as cp
+
         buffers = {}
         for slot, shape in mynn_pbl_scratch_shapes(chunk, nz).items():
             buffers[slot] = state.scratch(shape, slot)
@@ -376,6 +383,8 @@ class MynnPblScratch:
         return self._nz
 
     def _backing(self, slot: str, values: int, dtype) -> cp.ndarray:
+        import cupy as cp
+
         buf = self._buffers.get(slot)
         if buf is None:
             if not self._lazy:
@@ -419,6 +428,8 @@ class MynnPblScratch:
 
     def index(self, slot: str, shape) -> cp.ndarray:
         """An int32 array from an index slot."""
+        import cupy as cp
+
         shape = tuple(int(extent) for extent in shape)
         unit = 1
         for extent in shape:
@@ -427,6 +438,8 @@ class MynnPblScratch:
 
     def flags(self, slot: str = MYNN_PBL_FLAG_SLOTS[0]) -> cp.ndarray:
         """The persistent int32 validity words, zeroed for this use."""
+        import cupy as cp
+
         buf = self._backing(slot, _FLAG_WORDS, cp.int32)
         buf[...] = 0
         return buf

@@ -302,11 +302,19 @@ def _download(url: str, destination: Path, *, retries: int = 5) -> None:
                 raise RuntimeError("NOMADS response is not a complete GRIB2 stream")
             os.replace(partial, destination)
             return
-        except Exception:
+        except Exception as error:
             partial.unlink(missing_ok=True)
             if attempt == retries:
                 raise
-            time.sleep(5 * attempt)
+            # The wait before the next attempt is at least the server's
+            # own Retry-After ask, when it sent one -- honoring the
+            # instruction beats guessing a ladder.  (A NOMADS
+            # over-rate-limit answer additionally opened the node-wide
+            # cooldown inside paced_urlopen, which the next attempt's
+            # pacing serves in full.)
+            from gpuwm.nomads_governor import retry_after_seconds
+            asked = retry_after_seconds(error)
+            time.sleep(max(5 * attempt, asked if asked is not None else 0))
 
 
 def _write_manifest(

@@ -64,6 +64,8 @@ from dataclasses import dataclass
 import hashlib
 import importlib.metadata
 from importlib.util import find_spec
+
+from gpuwm.local_gpu import no_local_gpu
 import json
 import os
 from pathlib import Path
@@ -75,6 +77,7 @@ import tempfile
 from gpuwm import bridges
 from gpuwm import rustwx
 from gpuwm import rustwx_fetch
+from gpuwm import science_core
 from gpuwm.explain import explain_enabled
 
 # The pip extras exactly as the README installs them.
@@ -121,10 +124,12 @@ RENDER_EXTRA_HINT = ("pip install 'gpuwm[render]'\n"
                      "  # basemaps read).  matplotlib is NOT in this extra:\n"
                      "  # it is a base dependency, installed already.")
 GEOG_STACK_HINT = (
-    "pip install --upgrade gpuwm\n"
-    "  # rasterio and pyproj are ordinary runtime dependencies from\n"
-    "  # 2.3.3 on; an install missing them predates that or used\n"
-    "  # --no-deps.  To add just these to the environment you have:\n"
+    "pip install --upgrade 'gpuwm[geog]'\n"
+    "  # rasterio and pyproj are the PARITY FALLBACK for the\n"
+    "  # high-resolution warp, not what a default run reads: the\n"
+    "  # default engine is the Rust static-fields library (the\n"
+    "  # `static builder` row).  Install these only to run\n"
+    "  # GPUWM_STATIC_PYTHON=1.  To add just the two libraries:\n"
     "  #   pip install --upgrade rasterio pyproj")
 GEOG_HINT = (
     "gpuwm fetch-geog\n"
@@ -153,11 +158,13 @@ _BRIDGE_CONSUMERS = {
     "gfs_grib2_bridge": "GFS front door (rw-wps --source gfs, and every "
                         "stage of the gpuwm go chain)",
     "hrrr_grib2_bridge": "HRRR front door (rw-wps --source hrrr)",
-    "grib2_inventory": "the 20CRv3/mapped GRIB2 routes, which resolve it "
+    "grib2_inventory": "the 20CRv3, mapped and packaged-profile GRIB2 "
+                       "prep routes (gpuwm prep/rw-wps), which resolve it "
                        "from here (--grib2-inventory overrides) -- see the "
                        "mapped/20CRv3 route line",
-    "grib2_dump": "the 20CRv3/mapped GRIB2 routes, which resolve it from "
-                  "here (--grib2-dump overrides) -- see the mapped/20CRv3 "
+    "grib2_dump": "the 20CRv3, mapped and packaged-profile GRIB2 prep "
+                  "routes (gpuwm prep/rw-wps), which resolve it from here "
+                  "(--grib2-dump overrides) -- see the mapped/20CRv3 "
                   "route line",
 }
 
@@ -469,7 +476,7 @@ def _driver_cuda_major() -> int | None:
     NVIDIA driver is the ordinary case here, not an error.
     """
 
-    if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+    if no_local_gpu():
         return None
     for name in _driver_library_names():
         try:
@@ -567,7 +574,7 @@ def _cupy_check() -> Check:
     if ok:
         wheels = _installed_cupy_wheels()
         named = ", ".join(name for name, _ in wheels) or "cupy"
-        if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+        if no_local_gpu():
             # The documented never-open-the-local-device switch (the
             # rented-GPU workflow leaves it set on the user's own
             # machine).  The pairing probe is real device contact, so
@@ -616,6 +623,27 @@ def _cupy_check() -> Check:
         box_major = driver // 1000
         detail = (f"cupy {evidence} ({named}) imports, but cuBLAS failed "
                   f"its first load on this box: {_short(str(cublas), 120)}.")
+        if (_names_missing_cuda_headers(cublas)
+                and (not wheel_majors or box_major in wheel_majors
+                     or not box_major)):
+            # THE CIRCULAR REMEDY, closed.  CuPy 14 raises its
+            # headers error from the first device call of any kind, so
+            # the right wheel on the right box reaches HERE -- and this
+            # branch used to answer "the installed CuPy cannot load
+            # cuBLAS on it: uninstall cupy-cuda13x, install
+            # gpuwm[gpu-cu13]", which removes the correct wheel and
+            # installs the same correct wheel, forever.  The wheel is
+            # fine; what is missing is a CUDA toolkit.  The
+            # majors-disagree case is deliberately NOT folded in: there
+            # the wheel really is wrong, and its own remedy replaces it
+            # with one whose gpuwm extra carries the toolkit too.
+            detail += ("  The wheel matches this box; what is absent is the "
+                       "CUDA toolkit HEADER tree, which no cupy wheel ships "
+                       "and no wheel reinstall supplies")
+            remedy, action = _cuda_headers_remedy(box_major or None)
+            return Check("cupy (GPU runtime)", "missing", detail, remedy,
+                         action=action, brief=_short(str(cublas)),
+                         severity=SEVERITY_BROKEN)
         if box_major and wheel_majors and box_major not in wheel_majors:
             targets = ", ".join(f"CUDA {major}" for major in wheel_majors)
             detail += (f"  The wheel targets {targets}; the box serves "
@@ -742,6 +770,20 @@ def _nvrtc_header_probe() -> dict:
         return {"probe": tail[-1] if tail else f"exit {probe.returncode}"}
 
 
+#: The CuPy wheel extra that installs a matching CUDA toolkit, as wheels.
+#:
+#: CuPy 14.0 added it; 13.x has none, which is why the gpu extras floor at
+#: 14.0 (pip only WARNS on an extra the resolved version does not provide,
+#: so a lower floor would let the toolkit go silently missing).
+_CUPY_TOOLKIT_EXTRA = "ctk"
+
+
+def _cupy_ctk_install(major: int) -> str:
+    """The one command that gives a driver-only box a working CuPy."""
+
+    return f"pip install 'cupy-cuda{major}x[{_CUPY_TOOLKIT_EXTRA}]'"
+
+
 def _cuda_headers_remedy(box_major: int | None) -> tuple[str, str]:
     """``(remedy, action)`` for a box whose CuPy cannot find CUDA headers.
 
@@ -752,69 +794,118 @@ def _cuda_headers_remedy(box_major: int | None) -> tuple[str, str]:
     no headers, because no CuPy wheel has ever carried a header tree.  A
     buyer following it watches pip succeed and the fault survive.
 
-    The headers come from a CUDA toolkit, and CuPy reads them through
-    ``CUDA_PATH``.  A conda toolkit is named first because it installs the
-    toolkit into the environment that is already active, on both platforms,
-    without administrator rights; the ``nvidia`` channel leads because that
-    is the line a 2.2.1 user's box was actually fixed with, and conda-forge
-    follows as the equivalent that also sets ``CUDA_PATH`` on activation.
-    The pip wheels are named last because they carry the same header tree
-    for an estate that has no conda.
+    WHAT LEADS NOW, and why it changed.  MEASURED on weather-node-1
+    (Ubuntu, CUDA 13 driver, no ``nvcc``, no ``/usr/local/cuda``, no
+    conda), 2026-08-17: a bare ``pip install cupy-cuda13x`` gives a 274
+    MiB environment in which cuBLAS, a self-contained ``RawModule`` and a
+    ``cupy.arange().sum()`` reduction ALL fail with "Failed to find CUDA
+    headers", and ``pip install 'cupy-cuda13x[ctk]'`` gives an 1867 MiB
+    environment in which all three pass.  CuPy publishes the toolkit as
+    an extra of its own wheel, pinned to that wheel's CUDA major, so the
+    fix is one line, needs no conda, no administrator and no
+    ``CUDA_PATH``.  The old lead -- a conda toolkit -- assumed an estate
+    the failing box did not have.
+
+    CuPy's own message hardcodes ``cupy-cuda12x[ctk]`` at every major.
+    Pasted on a CUDA-13 box that installs the wheel that cannot load
+    cuBLAS there, which is the trap this whole module was rewritten
+    around, so the major printed here is the one read off the driver.
+
+    The external-toolkit routes survive as commented alternatives, for an
+    estate that wants a real system toolkit or holds a pinned CuPy older
+    than 14.0 (which has no ``[ctk]`` extra to ask for).  Commented, not
+    live: a remedy is pasted whole, and a paste that installs a toolkit
+    two different ways is a worse install than the one it repaired.
     """
 
     major = box_major if box_major in _GPU_EXTRA_BY_MAJOR else None
     pin = f"={major}" if major else ""
     if bridges.WINDOWS_SHELL:
-        point_at_conda = "$env:CUDA_PATH = $env:CONDA_PREFIX"
+        point_at_conda = "#   $env:CUDA_PATH = $env:CONDA_PREFIX"
     else:
-        point_at_conda = 'export CUDA_PATH="$CONDA_PREFIX"'
-    served = (
-        f"# this box's driver serves CUDA {box_major}, so the toolkit has "
-        f"to be a CUDA {box_major} one" if box_major else
-        "# match the toolkit's major to the CUDA version nvidia-smi prints")
+        point_at_conda = '#   export CUDA_PATH="$CONDA_PREFIX"'
     lines = [
         "# the CuPy wheel ships NVRTC -- the COMPILER -- and no headers.",
-        "# CuPy's own reduction and sort kernels include the CUDA runtime",
-        "# headers, so they build only where a real toolkit is installed",
-        "# and CUDA_PATH points at it.  Reinstalling the gpuwm GPU extra",
-        "# cannot fix this: it reinstalls the compiler, which is present.",
+        "# CuPy's own kernels include the CUDA runtime headers, so on a",
+        "# box with no CUDA toolkit the first device call of any kind --",
+        "# a reduction, a sort, the first cuBLAS load behind a matmul --",
+        "# dies with 'Failed to find CUDA headers'.  Reinstalling the",
+        "# cupy wheel or the gpuwm GPU extra CANNOT fix that: it",
+        "# reinstalls the compiler, which is already here.",
         "#",
-        "# The header tree has to MATCH that compiler's major.  Feeding",
-        "# CUDA 13 headers to a CUDA 12 NVRTC fails on cuda_fp8.hpp, and",
-        "# that pairing is the commonest way this breaks after an upgrade.",
-        "# The cupy line above keeps the wheel paired to this driver, so",
-        "# matching the toolkit to the driver matches it to the compiler.",
-        "#",
-        served,
-        f"conda install -c nvidia cuda-toolkit{pin}",
-        "# ...into the environment that is active now.  conda-forge carries",
-        "# the same toolkit and sets CUDA_PATH when the environment",
-        "# activates, if that channel is the one this estate uses:",
-        f"# conda install -c conda-forge cuda-toolkit{pin}",
-        "# If CUDA_PATH did not get set, or the toolkit came from NVIDIA's",
-        "# own installer, point it at the toolkit root yourself:",
-        point_at_conda,
-        "#",
-        "# no conda in this estate?  the NVIDIA pip wheels carry the same",
-        "# header tree; install them and point CUDA_PATH at them:",
-        _cuda_wheel_install(_CUDA_TOOLKIT_PACKAGES, major),
-        "python -c \"import nvidia.cuda_runtime as r,pathlib;"
-        "print(pathlib.Path(r.__file__).parent)\"",
+        "# The header tree has to MATCH that compiler's major, and CuPy",
+        "# publishes exactly that as an extra of its own wheel:",
     ]
     if major is None:
-        lines.insert(6, "nvidia-smi")
-    return "\n".join(lines), f"conda install -c nvidia cuda-toolkit{pin}"
+        lines += [
+            "# this box's CUDA major could not be read, and the wheel is",
+            "# chosen by it, so read it first:",
+            "nvidia-smi",
+            "# ...then run the line that matches what it prints:",
+            f"#   {_cupy_ctk_install(12)}",
+            f"#   {_cupy_ctk_install(13)}",
+        ]
+        action = ("nvidia-smi  # then pip install "
+                  "'cupy-cuda12x[ctk]' or 'cupy-cuda13x[ctk]' to match")
+    else:
+        lines += [
+            f"# this box's driver serves CUDA {box_major}, so it is this one",
+            _cupy_ctk_install(major),
+        ]
+        action = _cupy_ctk_install(major)
+    lines += [
+        "#",
+        "# That pulls the CUDA runtime and its headers, NVRTC, cuBLAS,",
+        "# cuFFT, cuRAND, cuSOLVER and cuSPARSE as wheels: about 1.6 GiB",
+        "# installed, measured on a driver-only box.  gpuwm's own GPU",
+        "# extras ask for the same set from 2.5.0 on, so a FRESH install",
+        "# needs nothing beyond the documented pip line; this repairs an",
+        "# environment that already exists, or one holding a CuPy older",
+        "# than 14.0, which has no [ctk] extra to ask for.",
+        "#",
+        "# ALTERNATIVES, for an estate that installs a real toolkit",
+        "# instead.  conda puts one into the active environment on both",
+        "# platforms without administrator rights:",
+        f"#   conda install -c nvidia cuda-toolkit{pin}",
+        f"#   conda install -c conda-forge cuda-toolkit{pin}",
+        "# ...and if CUDA_PATH did not get set on activation, or the",
+        "# toolkit came from NVIDIA's own installer, point it at the",
+        "# toolkit root yourself:",
+        point_at_conda,
+        "# ...or take the NVIDIA wheels on their own, which carry the",
+        "# same header tree:",
+        "#   " + _cuda_wheel_install(_CUDA_TOOLKIT_PACKAGES, major),
+        "#   python -c \"import nvidia.cuda_runtime as r,pathlib;"
+        "print(pathlib.Path(r.__file__).parent)\"",
+    ]
+    return "\n".join(lines), action
 
 
-#: Markers in a failed ``import cupy`` that name the TOOLKIT, not the
-#: wheel.  CuPy's import-time installation check says so in these words --
-#: ``Failed to find CUDA headers``, or the ``CUDA_PATH``/``nvcc`` it
-#: consulted looking for them.
-_TOOLKIT_IMPORT_MARKERS = ("cuda headers", "cuda_path", "cuda_home",
-                           "nvcc", "cuda toolkit")
+#: Markers that name the TOOLKIT HEADERS as the missing piece, wherever
+#: the message surfaced -- an import, the cuBLAS pairing probe, or a
+#: kernel compile.  CuPy says "Failed to find CUDA headers" in those
+#: words, and names the ``CUDA_PATH``/``nvcc``/header file it consulted
+#: looking for them.
+#:
+#: This is a FAILURE CLASS, not a probe: CuPy 14 raises the same error
+#: from the first device call of any kind, so the branch that owns the
+#: cuBLAS probe meets it too and used to call it a wrong wheel.
+_HEADERS_FAILURE_MARKERS = ("cuda headers", "cuda_path", "cuda_home",
+                            "nvcc", "cuda toolkit", "cuda_fp8.hpp",
+                            "cuda_runtime.h")
 
-#: ...and the markers that name the WHEEL: a shared library the wheel
-#: hard-codes and the loader could not produce.
+
+def _names_missing_cuda_headers(text: object) -> bool:
+    """Does this failure message name the toolkit-headers class?"""
+
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in _HEADERS_FAILURE_MARKERS)
+
+
+#: The markers that name the WHEEL: a shared library the wheel
+#: hard-codes and the loader could not produce.  (Their opposite number,
+#: the toolkit-headers class, is :data:`_HEADERS_FAILURE_MARKERS`, which
+#: lives beside the remedy it selects because three checks read it now.)
 _WHEEL_IMPORT_MARKERS = ("no module named", "cannot open shared object",
                          "libcublas", "libnvrtc", "libcudart",
                          "dll load failed")
@@ -844,7 +935,7 @@ def _cupy_import_failure_remedy(evidence: str,
     """
 
     lowered = evidence.lower()
-    if any(marker in lowered for marker in _TOOLKIT_IMPORT_MARKERS):
+    if _names_missing_cuda_headers(evidence):
         return _cuda_headers_remedy(box_major)
     if any(marker in lowered for marker in _WHEEL_IMPORT_MARKERS):
         return _gpu_extra_hint(box_major)
@@ -884,7 +975,7 @@ def _cuda_headers_check() -> Check:
     """
 
     name = "CUDA kernel headers"
-    if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+    if no_local_gpu():
         return Check(
             name, "info",
             "not judged -- compiling a kernel is device contact and "
@@ -925,6 +1016,24 @@ def _cuda_headers_check() -> Check:
             f"a self-contained kernel and a cupy reduction both compiled "
             f"from a COLD cache (CUDA_PATH {cuda_path})",
             brief="kernels compile", blocking=False)
+    if self_contained != "ok" and _names_missing_cuda_headers(self_contained):
+        # CuPy 14 raises the headers error BEFORE it compiles anything,
+        # so a kernel with no ``#include`` at all fails too and the
+        # two-kernel split cannot separate the pair on its own.  Falling
+        # through to the wheel branch here is how a driver-only box was
+        # told "NVRTC ships inside the cupy wheel, so this is the wheel"
+        # and sent to reinstall the wheel that is present and correct.
+        # The message names the class; the class picks the remedy.
+        box_major = _driver_cuda_major()
+        remedy, action = _cuda_headers_remedy(box_major)
+        return Check(
+            name, "missing",
+            f"no kernel compiles on this box, including one with no "
+            f"#include at all: {_short(str(self_contained), 120)}.  That "
+            f"names the toolkit HEADER tree, which no cupy wheel ships and "
+            f"no wheel reinstall supplies (CUDA_PATH {cuda_path})",
+            remedy, action=action, brief="toolkit headers missing",
+            blocking=False)
     if self_contained == "ok":
         # THE DISTINCTION THIS CHECK EXISTS FOR.  NVRTC works, so the
         # wheel is fine and reinstalling it is wasted advice; what is
@@ -1260,6 +1369,12 @@ _IMPORT_NAME = {
     "psutil": "psutil",
     "huggingface-hub": "huggingface_hub",
     "h5py": "h5py",
+    # The companion distribution: pure reference tables (RRTMGP,
+    # Thompson), pinned `==` and installed by a bare `pip install
+    # gpuwm`.  The probe imports it like any other, which is exactly
+    # what a reader needs -- an importable gpuwm_data is what
+    # gpuwm.data_assets resolves against.
+    "gpuwm-data": "gpuwm_data",
 }
 
 
@@ -1290,6 +1405,18 @@ class _Requirement:
     #: ``gpuwm[render]`` and friends: an extra that pulls another extra
     #: rather than a package.  Reported as the alias it is.
     alias: bool
+    #: The environment marker MINUS its ``extra ==`` clause -- the half
+    #: that decides whether pip installs this requirement on THIS
+    #: interpreter at all.  ``""`` when there is none.
+    marker: str = ""
+
+
+#: The ``extra == "..."`` clause and the boolean glue around it.  Removed
+#: rather than evaluated: the extra is how the requirement was filed in
+#: the first place, so what is left is the part that answers "would pip
+#: install this here".
+_EXTRA_CLAUSE = re.compile(
+    r"""\s*(?:and\s+|or\s+)?extra\s*==\s*['"][^'"]+['"]\s*""")
 
 
 def _parse_requirement(text: str) -> _Requirement | None:
@@ -1297,8 +1424,95 @@ def _parse_requirement(text: str) -> _Requirement | None:
     if match is None:
         return None
     distribution = _canonical(match.group(1))
-    return _Requirement(distribution, text.split(";")[0].strip(),
-                        distribution == _canonical(_DISTRIBUTION))
+    head, _, marker = text.partition(";")
+    return _Requirement(distribution, head.strip(),
+                        distribution == _canonical(_DISTRIBUTION),
+                        _EXTRA_CLAUSE.sub(" ", marker).strip(" and or\t"))
+
+
+def _marker_gap(requirement: "_Requirement") -> str | None:
+    """The sentence that names why this build excludes ``requirement``.
+
+    A marker tells a reader that pip skipped something; it does not tell
+    them WHY, and "why" is the whole content of a gap report.  This is
+    how the project says it out loud.  Anything excluded with no answer
+    here still reports the marker verbatim -- an unnamed exclusion is a
+    defect to surface, not one to hide.
+
+    Asked, not tabled.  The one gap this project has ever recorded is the
+    science core's interpreter ceiling, and that ceiling is an
+    availability fact about an index that moves: wrf-rust 0.2.39 closed
+    the 3.14 gap that 0.2.38 opened.  A table entry frozen at import
+    would have gone on printing the closed one, so the answer is computed
+    from :data:`science_core.SCIENCE_CORE_PYTHON_CEILING` at the moment a
+    reader asks, and only when this interpreter is genuinely over it.
+    """
+
+    if requirement.distribution != _canonical(
+            science_core.SCIENCE_CORE_DISTRIBUTION):
+        return None
+    found = _python_version()
+    if science_core.python_supports_science_core(found):
+        # Excluded for some reason that is NOT the ceiling; naming the
+        # ceiling here would be a confident wrong answer.
+        return None
+    return science_core.python_gap_sentence(found)
+
+
+def _python_version() -> tuple[int, ...]:
+    """This interpreter's version, as one patchable seam.
+
+    A function so the marker branches can be exercised from a suite that
+    is not running on the interpreter under test; patching ``sys``
+    itself would reach every other consumer in the process.
+    """
+
+    return tuple(sys.version_info[:3])
+
+
+def _marker_excludes_this_interpreter(requirement: _Requirement) -> bool:
+    """Would pip SKIP this requirement here, marker and all?
+
+    ``packaging`` answers it exactly and is present on every install
+    (matplotlib, a base dependency, requires it), so it is tried first.
+    The fallback covers only ``python_version`` comparisons, which is the
+    one marker this project authors, and is documented as partial rather
+    than presented as an evaluator: a marker it cannot read reports
+    "not excluded", which is the pre-marker behaviour and never invents
+    an exclusion that pip did not make.
+    """
+
+    marker = requirement.marker
+    if not marker:
+        return False
+    found = _python_version()
+    try:
+        from packaging.markers import Marker
+
+        # The interpreter comes from the same seam the rest of this
+        # module reports, never from ``packaging``'s own view of the
+        # process: a check that judges one interpreter and reports
+        # another is the class of defect this file exists to catch.
+        return not Marker(marker).evaluate({
+            "python_version": f"{found[0]}.{found[1]}",
+            "python_full_version": ".".join(str(part) for part in found)})
+    except ImportError:
+        pass
+    except Exception:
+        return False
+    found = found[:2]
+    for operator, literal in re.findall(
+            r"""python_version\s*(<=|>=|==|!=|<|>)\s*['"]([0-9.]+)['"]""",
+            marker):
+        want = tuple(int(part) for part in literal.split(".") if part.isdigit())
+        here = found[:len(want)]
+        satisfied = {
+            "<": here < want, "<=": here <= want, ">": here > want,
+            ">=": here >= want, "==": here == want, "!=": here != want,
+        }[operator]
+        if not satisfied:
+            return True
+    return False
 
 
 def declared_requirements() -> tuple[tuple[_Requirement, ...],
@@ -1460,6 +1674,15 @@ _EXTRA_FACTS: dict[str, _ExtraFacts] = {
 _GROUP_EXTRAS = "pip extras"
 _GROUP_EXTRA_ALIASES = "pip extra aliases"
 
+#: Groups the brief folds into ONE line wherever their members appear,
+#: rather than only when they happen to be adjacent.  Exactly one group
+#: qualifies, on one property: every line in it carries no information
+#: a reader can act on (an alias that resolves, no gap, no command), so
+#: the position of each member is not a fact worth three lines.  Nothing
+#: with a remedy belongs here -- folding those would hide WHERE in the
+#: estate the gap is.
+_SCATTERED_FOLD_GROUPS = frozenset({_GROUP_EXTRA_ALIASES})
+
 
 def _extra_install_line(extra: str) -> str:
     """The one command that installs ``extra``, as it must be typed."""
@@ -1472,11 +1695,19 @@ def _package_evidence(requirement: _Requirement,
                       ) -> tuple[str, str, str]:
     """``(state, label, evidence)`` for one required package.
 
-    ``state`` is one of ``"ok"``, ``"absent"``, ``"broken"`` or
-    ``"untested"``.  The last one is not a euphemism for ok: it is the
-    answer for a distribution whose import name this module does not
-    know, where the honest report is that its metadata was read and
-    nothing was imported.
+    ``state`` is one of ``"ok"``, ``"absent"``, ``"broken"``,
+    ``"untested"`` or ``"excluded"``.  ``untested`` is not a euphemism
+    for ok: it is the answer for a distribution whose import name this
+    module does not know, where the honest report is that its metadata
+    was read and nothing was imported.
+
+    ``excluded`` is the state pip put the package in, not one this box
+    can leave: an environment marker on the requirement means pip never
+    tried to install it here.  Reporting that as ``absent`` produces the
+    circular remedy in its second home -- ``wrf-rust ... not installed``
+    over ``pip install 'gpuwm[render]'``, on an interpreter where that
+    command installs nothing, reports success, and leaves doctor saying
+    MISSING forever.
     """
 
     module = _IMPORT_NAME.get(requirement.distribution)
@@ -1485,6 +1716,15 @@ def _package_evidence(requirement: _Requirement,
             requirement.distribution)
     except importlib.metadata.PackageNotFoundError:
         version = None
+    if version is None and _marker_excludes_this_interpreter(requirement):
+        # Only when it is genuinely absent: a marker is about what pip
+        # WOULD install, and a package that is here anyway (a source
+        # build, a newer upstream release) is judged on what it does.
+        gap = _marker_gap(requirement)
+        return ("excluded", requirement.specifier,
+                gap or (f"this build's metadata excludes it on this "
+                        f"interpreter ({requirement.marker}), and the "
+                        f"project has not recorded why"))
     if module is None:
         if version is None:
             return ("absent", requirement.specifier, "not installed")
@@ -1618,6 +1858,8 @@ def _extra_check(extra: str, requirements: tuple[_Requirement, ...],
               if state == "broken"]
     untested = [(label, why) for _i, state, label, why in states
                 if state == "untested"]
+    excluded = [(label, why) for _i, state, label, why in states
+                if state == "excluded"]
 
     if facts is None:
         # An extra this build declares and this module has never been
@@ -1640,6 +1882,24 @@ def _extra_check(extra: str, requirements: tuple[_Requirement, ...],
             "reinstall it:\n" + install,
             action=install, brief=_short(detail), group=_GROUP_EXTRAS,
             blocking=True, severity=SEVERITY_BROKEN)
+
+    if excluded:
+        # A gap this box cannot close, so it prints no command.  MISSING
+        # over an install line that installs nothing is worse than
+        # silence: it sends a reader round a loop the project already
+        # knows has no exit, which is why the sentence names the exit
+        # (an interpreter this requirement HAS wheels for) and who owns
+        # it.  Non-blocking for the same reason: `pip install gpuwm`
+        # did everything it was asked, and an installer that trusts the
+        # exit code must not fail a box for an upstream wheel matrix.
+        detail = ("; ".join(f"{label}: {why}" for label, why in excluded)
+                  + f".  {unlocks}")
+        if facts is not None and facts.still_works:
+            detail += f".  This box still has {facts.still_works}"
+        return Check(
+            name, "info", "not installable on this interpreter -- " + detail,
+            brief=_short("; ".join(why for _label, why in excluded)),
+            group=_GROUP_EXTRAS, blocking=False)
 
     if absent:
         missing = ", ".join(label for label, _why in absent)
@@ -1802,13 +2062,24 @@ def _extras_checks() -> list[Check]:
 
 
 def _geog_stack_check() -> Check:
-    """Can this box build high-resolution terrain at all?
+    """Is the high-resolution path's PARITY FALLBACK available here?
 
     The check `gpuwm doctor` did not have in 2.3.2, which is why the
     failure had to be discovered by running the feature: rasterio and
     pyproj lived in an extra nothing documented, and the only thing that
     reported their absence was a traceback after a 160.7 MiB download.
     Doctor's whole job is to answer that before anything is run.
+
+    What the row reports moved when the warp substrate flipped onto the
+    Rust ``static-fields`` library.  The DEFAULT engine is that library,
+    reported by the ``static builder`` row; these two are what
+    ``GPUWM_STATIC_PYTHON=1`` runs on.  So the row is ``info`` rather
+    than ``missing`` when they are absent: a wheel install with the
+    library staged builds high-resolution terrain perfectly without
+    them, and calling that MISSING would be doctor crying about a thing
+    the shipped configuration does not read.  It becomes a real problem
+    only when the library is also unavailable, and the ``static
+    builder`` row is what says so.
 
     Deliberately a REAL import in a subprocess, not ``find_spec``.  Both
     libraries are thin Python over large native stacks (GDAL, PROJ), and
@@ -1818,32 +2089,29 @@ def _geog_stack_check() -> Check:
     all of those green.  The front-door refusal uses the cheap probe
     because it runs on every build; doctor is where the expensive, honest
     answer belongs.
-
-    ``blocking=False``: a base install that never touches
-    ``[static.highres]`` is complete without these being importable, and
-    the exit code is what installers and `gpuwm setup` read.  The line
-    still prints MISSING with its remedy either way.
     """
-    from gpuwm.static.geog_stack import GEOG_MODULES
+    from gpuwm.static.geog_stack import GEOG_EXTRA, GEOG_MODULES
 
     results = {name: _import_probe(name) for name, _role in GEOG_MODULES}
     broken = {name: evidence for name, (ok, evidence) in results.items()
               if not ok}
-    title = "geography stack (rasterio + pyproj)"
+    title = "geography stack (rasterio + pyproj, the highres fallback)"
     if not broken:
         versions = ", ".join(
             f"{name} {evidence}" for name, (_, evidence) in results.items())
         return Check(title, "verified",
                      f"imported in subprocesses ({versions}); "
-                     "[static.highres] can build terrain",
+                     "GPUWM_STATIC_PYTHON=1 can run the pure-Python "
+                     "high-resolution fallback",
                      brief=_short(versions))
     detail = "; ".join(f"{name}: {evidence}"
                        for name, evidence in sorted(broken.items()))
     return Check(
-        title, "missing",
-        f"{detail} -- [static.highres] cannot build high-resolution "
-        "terrain without both",
-        GEOG_STACK_HINT, action="pip install --upgrade gpuwm",
+        title, "info",
+        f"{detail} -- the pure-Python high-resolution fallback "
+        "(GPUWM_STATIC_PYTHON=1) cannot run here.  The DEFAULT engine is "
+        "the Rust static-fields library; see the `static builder` row",
+        GEOG_STACK_HINT, action=f"pip install 'gpuwm[{GEOG_EXTRA}]'",
         brief=_short(detail), blocking=False)
 
 
@@ -1986,6 +2254,42 @@ def _grib2_route_crate() -> Path:
         *_GRIB2_ROUTE_CRATE_RELATIVE)
 
 
+def _packaged_grib2_source_ids() -> tuple[str, ...]:
+    """The packaged-profile GRIB2 sources, named for the line above.
+
+    Derived from the adapter table and the packaged profiles rather than
+    hand-listed, because the list GROWS: every new GRIB2 model landed as
+    a packaged profile joins it on the day its rows land, and a
+    hand-written enumeration would still be naming the first two.  Empty
+    on any read problem -- this feeds a report line, never a gate.
+
+    Since the compose port these sources are the ones that do NOT launch
+    the two executables on a bare run: their preparation composes inside
+    ``gpuwm_mapped_engine``.  They are still enumerated because a reader
+    of this line is asking "does MY source need these tools?", and the
+    answer for every one of them is worth printing rather than implying.
+    """
+
+    try:
+        from gpuwm.source_adapters import source_adapters
+        from gpuwm.source_authorities import packaged_profile
+
+        ids = []
+        for adapter in source_adapters():
+            if (adapter.packaged_profile is None
+                    or adapter.runner != "mapped_composition_v1"):
+                continue
+            try:
+                declared = packaged_profile(str(adapter.packaged_profile))
+            except (KeyError, FileNotFoundError, RuntimeError):
+                continue
+            if declared["source_format"] == "grib2":
+                ids.append(adapter.source_id)
+        return tuple(ids)
+    except Exception:  # a broken adapter table is its own finding
+        return ()
+
+
 def _mapped_grib2_route_check() -> Check:
     """Can the mapped/20CRv3 GRIB2 routes reach the tools they need?
 
@@ -2007,9 +2311,16 @@ def _mapped_grib2_route_check() -> Check:
 
     That function consults :func:`gpuwm.bridges.find_bridge` FIRST now,
     the way ``ingest/grib.py`` always did, so the staged copies ARE what
-    the default route uses.  This check still answers the route's
-    question rather than the file's -- it just has a third answer it did
-    not have before:
+    the default route uses.  And it is the resolver of RECORD: the
+    ``rw-wps``/``gpuwm prep`` front door resolves the same two tools
+    through the same function for every GRIB2 route it dispatches --
+    mapped, 20CRv3, and each packaged-profile source -- so a bare
+    ``gpuwm prep --source hrrr-prs`` needs no tool flags on a box this
+    line calls verified.  The check applies the resolver's own static
+    contract gate too, because "resolves" that hands the route a stale
+    decoder is the same green-over-a-hole one release later.  This
+    check still answers the route's question rather than the file's --
+    it just has a third answer it did not have before:
 
     * both tools resolve through the ladder, and then the default route
       reaches them.  ``verified``.  This is the state a wheel install
@@ -2029,24 +2340,60 @@ def _mapped_grib2_route_check() -> Check:
     """
 
     name = "mapped/20CRv3 GRIB2 route (the tools it resolves)"
-    doors = ("gpuwm-mapped-inspect, gpuwm adapt --descriptor/--input, and "
-             "the rw-wps --source mapped route")
+    # WHICH doors, exactly.  Before the compose port this line could say
+    # "every packaged-profile GRIB2 source", because every mapped prep
+    # ran the Python engine and launched these two executables.  It no
+    # longer does: `compose` is declared for grib2, so a BARE prep of a
+    # packaged-profile source resolves the engine and no subprocess tool
+    # at all (`gpuwm prep --source hrrr-prs ... --dry-run` prints neither
+    # flag).  Saying otherwise here would tell a reader their bytes are
+    # decoded somewhere they are not, which is the same defect
+    # `ENGINE_GAPS` exists to prevent, in a report line instead of a
+    # table.  The doors below are the ones measured to still resolve
+    # them: `gpuwm adapt` (adapt.py), `gpuwm-member-prep`'s identity
+    # verification (member_prep.py), and any mapped run that asks for
+    # the Python engine or names a tool.  The `--source 20crv3` runner
+    # left this list when it moved onto `decode_composed_source`: a bare
+    # member prep composes in the engine and reads its raw
+    # record-inventory surface in process, so it resolves neither tool.
+    packaged = _packaged_grib2_source_ids()
+    doors = ("gpuwm adapt --descriptor/--input, gpuwm-member-prep, and "
+             "any mapped run that asks for the Python engine with "
+             "--mapped-engine python or names a tool"
+             + (f" (the packaged GRIB2 profiles -- {', '.join(packaged)} -- "
+                "20crv3's member route included, compose in the engine on "
+                "a bare run and resolve neither)"
+                if packaged else ""))
     staged: dict[str, Path | None] = {}
     override_faults: list[str] = []
+    stale_notes: list[str] = []
     for tool in _GRIB2_ROUTE_TOOLS:
         try:
-            staged[tool] = bridges.find_bridge(tool)
+            resolved = bridges.find_bridge(tool)
         except FileNotFoundError as error:
             # A set environment override naming a missing file.  The
             # route raises on it too, by design, so it is a gap here
             # whatever else resolves.
             staged[tool] = None
             override_faults.append(str(error))
+            continue
+        if resolved is not None:
+            # The same static contract gate the resolver of record
+            # (mapped_source._build_grib2_tools) applies: a stale hit
+            # is a hit the route will not accept, so reporting it
+            # resolved would be the green-over-a-hole this check exists
+            # to stop -- in its newest costume.
+            ok, evidence = bridges.bridge_abi_matches(tool, resolved)
+            if not ok:
+                stale_notes.append(f"{tool} at {resolved} {evidence}")
+                resolved = None
+        staged[tool] = resolved
     crate = _grib2_route_crate()
     have_crate = (crate / "Cargo.toml").is_file()
     found = {tool: path for tool, path in staged.items() if path is not None}
 
-    if len(found) == len(_GRIB2_ROUTE_TOOLS) and not override_faults:
+    if (len(found) == len(_GRIB2_ROUTE_TOOLS) and not override_faults
+            and not stale_notes):
         return Check(
             name, "verified",
             f"{', '.join(str(path) for path in found.values())} resolve "
@@ -2060,6 +2407,8 @@ def _mapped_grib2_route_check() -> Check:
                 f"the route falls back to a cargo build in {crate}.  Doctor "
                 "never runs cargo (see this module's docstring), so whether "
                 "that build succeeds here is unknown")
+        if stale_notes:
+            note += "; " + "; ".join(stale_notes)
         if override_faults:
             note += "; " + "; ".join(override_faults)
         return Check(name, "untested", f"not tested -- {note}",
@@ -2068,9 +2417,11 @@ def _mapped_grib2_route_check() -> Check:
 
     absent = [tool for tool in _GRIB2_ROUTE_TOOLS if tool not in found]
     detail = (
-        f"{', '.join(absent)} not staged, and this install has no "
+        f"{', '.join(absent)} not resolvable, and this install has no "
         f"tools/grib1_bridge crate to build them in ({crate}), so "
-        f"{doors} cannot resolve either tool")
+        f"{doors} cannot resolve the tools")
+    if stale_notes:
+        detail += "; " + "; ".join(stale_notes)
     if override_faults:
         detail += "; " + "; ".join(override_faults)
     remedy_lines = [
@@ -2128,6 +2479,11 @@ _CHECKED_ARTIFACTS = {
     "rw_asos": "the `obs front door` lines",
     "rw_goes": "the `obs front door` lines",
     "rw_opera": "the `obs front door` lines",
+    "rw_netcdf": "the `NetCDF decoder` line",
+    "netcdf_writer": "the `NetCDF writer` line",
+    "gpuwm_mapped_engine": "the `mapped decode engine` line",
+    "static_fields": "the `static builder` line",
+    "obs_regrid": "the `observation remap` line",
 }
 
 
@@ -2524,6 +2880,330 @@ def _nexrad_front_door_check() -> Check:
                  brief=_short(evidence), group=_GROUP_ENGINES)
 
 
+def _netcdf_decoder_check() -> Check:
+    """The NetCDF decoder, which every NetCDF source now needs.
+
+    ``missing`` rather than ``info``, for the same reason ``rw_nexrad``
+    is: since NetCDF decode moved off ``netCDF4.Dataset`` and onto the
+    vendored ``netcrust`` reader, an absent ``rw_netcdf`` does not cost
+    an option -- it costs every NetCDF source the product accepts, and
+    there is deliberately no Python decoder behind it to quietly take
+    over.  A prerequisite of a shipped path belongs in the blocking
+    group, and the remedy is the build, never a workaround flag.
+    """
+
+    name = "NetCDF decoder (every NetCDF source)"
+    blocks = ("blocks every NetCDF source -- gpuwm adapt, the mapped "
+              "routes, rw-wps --source netcdf")
+    try:
+        from gpuwm import netcdf_bridge
+    except ImportError as error:                 # pragma: no cover - partial
+        return Check(name, "missing",
+                     f"gpuwm.netcdf_bridge is not importable ({error}) -- "
+                     f"{blocks}",
+                     "# reinstall so the NetCDF front door imports:\n"
+                     "  pip install --force-reinstall gpuwm",
+                     brief="netcdf_bridge not importable",
+                     group=_GROUP_ENGINES)
+    try:
+        found = netcdf_bridge.find_netcdf_bin()
+    except FileNotFoundError as error:
+        return Check(
+            name, "missing", f"{error} -- {blocks}",
+            f"# {netcdf_bridge.NETCDF_ENV} names a missing executable: "
+            "point it at a real build, or unset it and get one --\n"
+            + netcdf_bridge.netcdf_remedy(),
+            action=f"unset {netcdf_bridge.NETCDF_ENV}, or point it at a "
+                   f"real build",
+            brief=f"{netcdf_bridge.NETCDF_ENV} names a missing file",
+            group=_GROUP_ENGINES)
+    if found is None:
+        return Check(
+            name, "missing",
+            "no prebuilt executable (searched "
+            + ", ".join(str(c) for c in netcdf_bridge.netcdf_candidates())
+            + f") -- {blocks}",
+            netcdf_bridge.netcdf_remedy()
+            + "\n  # without it no NetCDF source can be read at all: gpuwm\n"
+            "  # decodes NetCDF in Rust and keeps no Python fallback",
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not staged; no NetCDF source can be read",
+            group=_GROUP_ENGINES)
+    return Check(name, "verified", str(found),
+                 brief="staged", group=_GROUP_ENGINES)
+
+
+def _mapped_engine_check() -> Check:
+    """The mapped decode engine, and whether a bare mapped run needs it.
+
+    Two verdicts from one probe, because the answer genuinely depends on
+    which engine is the default: while the default is the Python engine
+    an absent binary costs nothing and saying ``missing`` would be a
+    false alarm, and the moment the default flips an absent binary costs
+    every mapped source and anything softer than ``missing`` would be
+    the ``ok``-on-a-dead-route defect this report exists to prevent.
+    The check reads :data:`gpuwm.mapped_engine_bridge.DEFAULT_ENGINE`
+    rather than restating it, so the flip moves this line with it.
+    """
+
+    name = "mapped decode engine (gpuwm prep --source mapped)"
+    try:
+        from gpuwm import mapped_engine_bridge as engine_bridge
+    except ImportError as error:                 # pragma: no cover - partial
+        return Check(name, "missing",
+                     f"gpuwm.mapped_engine_bridge is not importable ({error})",
+                     "# reinstall so the mapped seam imports:\n"
+                     "  pip install --force-reinstall gpuwm",
+                     brief="mapped_engine_bridge not importable",
+                     group=_GROUP_ENGINES)
+    default = engine_bridge.DEFAULT_ENGINE
+    blocker = engine_bridge.DEFAULT_ENGINE_BLOCKER
+    required = default == engine_bridge.ENGINE_RUST
+    try:
+        found = engine_bridge.find_engine()
+    except FileNotFoundError as error:
+        return Check(
+            name, "missing", str(error),
+            f"# {engine_bridge.ENGINE_PATH_ENV} names a missing "
+            "executable: point it at a real build, or unset it --\n"
+            + engine_bridge.engine_remedy_lines(
+                "the override names no file"),
+            action=f"unset {engine_bridge.ENGINE_PATH_ENV}, or point it "
+                   "at a real build",
+            brief=f"{engine_bridge.ENGINE_PATH_ENV} names a missing file",
+            group=_GROUP_ENGINES)
+    if found is None:
+        detail = (
+            "no prebuilt executable (searched "
+            + ", ".join(str(c) for c in engine_bridge.engine_candidates())
+            + ")")
+        if required:
+            return Check(
+                name, "missing",
+                f"{detail} -- blocks every mapped source, which is the "
+                "default decode path",
+                engine_bridge.engine_remedy_lines("it is not staged"),
+                action=_build_action(engine_bridge.ENGINE_CRATE_RELATIVE),
+                brief="not staged; no mapped source can be read",
+                group=_GROUP_ENGINES)
+        return Check(
+            name, "info",
+            f"{detail}. Mapped sources decode on the {default} engine on "
+            f"this release, so nothing is blocked: {blocker}",
+            engine_bridge.engine_remedy_lines("it is not staged"),
+            action=_build_action(engine_bridge.ENGINE_CRATE_RELATIVE),
+            brief=f"not staged; mapped decode runs on {default}",
+            group=_GROUP_ENGINES, blocking=False)
+    matches, reason = bridges.bridge_abi_matches(
+        engine_bridge.ENGINE_NAME, found)
+    if not matches:
+        return Check(
+            name, "missing" if required else "info",
+            f"{found} {reason}",
+            engine_bridge.engine_remedy_lines(reason),
+            action=_build_action(engine_bridge.ENGINE_CRATE_RELATIVE),
+            brief="staged build predates this release's frameset contract",
+            group=_GROUP_ENGINES, blocking=required)
+    if required:
+        # The paths still routed to Python are named HERE rather than
+        # left for a reader to discover from a receipt: this line is
+        # what a user reads to learn where their bytes are decoded, and
+        # "the Rust engine is the default" without the exceptions would
+        # be a true sentence that leaves a false impression.
+        suffix = "".join(f"; {gap}" for gap in engine_bridge.ENGINE_GAPS)
+    else:
+        suffix = (f"; mapped decode runs on the {default} engine by default "
+                  f"on this release -- {blocker}")
+    return Check(
+        name, "verified", f"{found} speaks {engine_bridge.FRAMESET_SCHEMA}"
+        + suffix,
+        brief=f"staged; default engine is {default}",
+        group=_GROUP_ENGINES)
+
+
+def _ncwrite_check() -> Check:
+    """The NetCDF WRITER, which two default engines now need.
+
+    ``missing`` rather than ``info``, for the same reason ``rw_netcdf``
+    is: since the product tape and then the wrfinput/wrfbdy pair flipped
+    onto the Rust classic writer, an absent ``netcdf_writer`` library
+    does not cost an option -- it costs every history write AND every
+    WRF-input export, and both refuse loudly rather than silently
+    downgrading a container with build state.  The remedy is the build;
+    ``GPUWM_WRFOUT_WRITER=python`` and ``GPUWM_WRFINPUT_WRITER=python``
+    are named as what they are, documented workarounds onto the netCDF4
+    writer, not fallbacks the product takes on its own.
+    """
+
+    name = "NetCDF writer (default wrfout and wrfinput engine)"
+    blocks = ("blocks every history write and every WRF-input export -- "
+              "gpuwm sim, gpuwm go, gpuwm prep, gpuwm-wrf-init, rw-wps, "
+              "the tilestream history path")
+    try:
+        from gpuwm.io import nc_writer_bridge
+    except ImportError as error:                 # pragma: no cover - partial
+        return Check(name, "missing",
+                     f"gpuwm.io.nc_writer_bridge is not importable "
+                     f"({error}) -- {blocks}",
+                     "# reinstall so the writer seam imports:\n"
+                     "  pip install --force-reinstall gpuwm",
+                     brief="nc_writer_bridge not importable",
+                     group=_GROUP_ENGINES)
+    # Install-aware: `gpuwm fetch-bridges` first on a wheel, the in-tree
+    # build for a checkout -- then name the workaround AS a workaround.
+    remedy = bridges.artifact_remedy(
+        env_var=nc_writer_bridge.NCWRITE_BRIDGE_ENV,
+        filename=nc_writer_bridge.library_names()[0],
+        subject="the NetCDF writer",
+        crate_relative=bridges.RUSTWX_CRATE_RELATIVE) + (
+        "\n  # GPUWM_WRFOUT_WRITER=python (history) and\n"
+        "  # GPUWM_WRFINPUT_WRITER=python (the WRF input pair) select the\n"
+        "  # netCDF4 writer as an explicit workaround, each onto its own\n"
+        "  # HDF5 container (NETCDF4_CLASSIC / NETCDF4)")
+    try:
+        path = nc_writer_bridge.resolve_ncwrite_bridge()
+    except FileNotFoundError as error:
+        return Check(
+            name, "missing", f"{error} -- {blocks}", remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not staged; default history/WRF-input writes blocked",
+            group=_GROUP_ENGINES)
+    reason = nc_writer_bridge.unavailable_reason()
+    if reason is not None:
+        return Check(
+            name, "missing", f"{path} -- {reason} -- {blocks}", remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not loadable; default history/WRF-input writes blocked",
+            group=_GROUP_ENGINES)
+    return Check(name, "verified",
+                 f"{path} -- ABI {nc_writer_bridge.NCWRITE_ABI}",
+                 brief="staged", group=_GROUP_ENGINES)
+
+
+def _static_builder_check() -> Check:
+    """The static-field builder, which the default build path now needs.
+
+    ``missing`` rather than ``info``, the ``netcdf_writer`` posture:
+    since ``build_static`` and the ProjectedGrid array methods flipped
+    onto the Rust crate by default (the static-rust-port lanes), an
+    absent ``static_fields`` library does not cost an option -- it turns
+    every static build into a reported WORKAROUND onto the numpy
+    fallback.  The fallback still produces byte-identical fields (the
+    dual-run parity record in docs/dev/static-rust-port.md), so the
+    breakage this row names is the degradation itself: a wheel whose
+    every prepare prints a workaround line is not running the shipped
+    configuration, and at corridor scale the fallback is measured ~11x
+    slower.
+    """
+
+    name = "static builder (default static-field engine)"
+    degrades = ("every static build -- gpuwm go's prepare stage, nest "
+                "initialization, the statics corridor, and the whole "
+                "[static.highres] overlay including its GeoTIFF decode "
+                "and warp -- runs the pure-Python fallback as a reported "
+                "WORKAROUND, which needs the [geog] extra installed")
+    try:
+        from gpuwm.static import rust_bridge
+    except ImportError as error:                 # pragma: no cover - partial
+        return Check(name, "missing",
+                     f"gpuwm.static.rust_bridge is not importable "
+                     f"({error}) -- {degrades}",
+                     "# reinstall so the builder seam imports:\n"
+                     "  pip install --force-reinstall gpuwm",
+                     brief="rust_bridge not importable",
+                     group=_GROUP_ENGINES)
+    remedy = bridges.artifact_remedy(
+        env_var=rust_bridge.STATIC_BRIDGE_ENV,
+        filename=rust_bridge.library_names()[0],
+        subject="the static-field builder",
+        crate_relative=bridges.RUSTWX_CRATE_RELATIVE) + (
+        "\n  # GPUWM_STATIC_PYTHON=1 selects the numpy fallback as an\n"
+        "  # explicit workaround (byte-identical fields, measured ~11x\n"
+        "  # slower at corridor scale)")
+    try:
+        path = rust_bridge.resolve_static_bridge()
+    except FileNotFoundError as error:
+        return Check(
+            name, "missing", f"{error} -- {degrades}", remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not staged; static builds degrade to the fallback",
+            group=_GROUP_ENGINES)
+    reason = rust_bridge.unavailable_reason()
+    if reason is not None:
+        return Check(
+            name, "missing", f"{path} -- {reason} -- {degrades}", remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not loadable; static builds degrade to the fallback",
+            group=_GROUP_ENGINES)
+    return Check(name, "verified",
+                 f"{path} -- ABI {rust_bridge.STATIC_ABI}",
+                 brief="staged", group=_GROUP_ENGINES)
+
+
+def _obs_regrid_check() -> Check:
+    """The observation remap, which the battery's default now needs.
+
+    ``missing`` rather than ``info``, the ``static_fields`` posture:
+    since `gpuwm.verify.obs.regrid` flipped onto the Rust crate by
+    default, an absent ``obs_regrid`` library does not cost an option --
+    every observation score becomes a reported WORKAROUND onto the scipy
+    fallback.
+
+    The breakage this row names is not slowness.  On the scipy path two
+    source cells exactly equidistant from one destination cell are
+    resolved by whichever the cKDTree traversal reached first (measured:
+    232 of 400 trials answered the lowest index, 168 answered another),
+    so a remap plan stops being a function of its two grids alone.  The
+    battery's premise is that every arm is remapped by the identical
+    integer array, which is what makes arm scores comparable; a plan
+    whose ties turn on traversal order is that premise, unenforced.
+    """
+
+    name = "observation remap (default battery remap engine)"
+    degrades = ("every observation score -- python -m "
+                "tools.obs_battery_score, tools.obs_precampaign_controls, "
+                "tools.obs_battery_registration -- runs the scipy fallback "
+                "as a reported WORKAROUND, where exactly-tied nearest "
+                "neighbours are resolved by cKDTree traversal order rather "
+                "than by lowest source index")
+    try:
+        from gpuwm import obs_regrid_bridge as regrid_bridge
+    except ImportError as error:                 # pragma: no cover - partial
+        return Check(name, "missing",
+                     f"gpuwm.obs_regrid_bridge is not importable "
+                     f"({error}) -- {degrades}",
+                     "# reinstall so the remap seam imports:\n"
+                     "  pip install --force-reinstall gpuwm",
+                     brief="regrid_bridge not importable",
+                     group=_GROUP_ENGINES)
+    remedy = bridges.artifact_remedy(
+        env_var=regrid_bridge.OBSREGRID_BRIDGE_ENV,
+        filename=regrid_bridge.library_names()[0],
+        subject="the observation remap engine",
+        crate_relative=bridges.RUSTWX_CRATE_RELATIVE) + (
+        "\n  # GPUWM_OBSREGRID_PYTHON=1 selects the scipy fallback as an\n"
+        "  # explicit workaround (bit-identical everywhere except exact\n"
+        "  # neighbour ties, where scipy has no defined answer)")
+    try:
+        path = regrid_bridge.resolve_obsregrid_bridge()
+    except FileNotFoundError as error:
+        return Check(
+            name, "missing", f"{error} -- {degrades}", remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not staged; observation scores degrade to the fallback",
+            group=_GROUP_ENGINES)
+    reason = regrid_bridge.unavailable_reason()
+    if reason is not None:
+        return Check(
+            name, "missing", f"{path} -- {reason} -- {degrades}", remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not loadable; observation scores degrade to the fallback",
+            group=_GROUP_ENGINES)
+    return Check(name, "verified",
+                 f"{path} -- ABI {regrid_bridge.OBSREGRID_ABI}",
+                 brief="staged", group=_GROUP_ENGINES)
+
+
 def _region_dealias_check() -> Check:
     """The region-global dealiasing engine, which the default now needs.
 
@@ -2597,27 +3277,47 @@ def _region_dealias_check() -> Check:
 
 
 def _matplotlib_engine_note() -> str:
-    """What ``gpuwm render`` actually falls back to, on THIS install.
+    """What ``gpuwm render --engine matplotlib`` would do, on THIS install.
 
     This function exists because the sentence it replaces was false.
     Doctor said "matplotlib remains the documented fallback" in three
     places, and the matplotlib engine imports the ``wrf`` package at the
     top of its render loop -- every product it draws is a ``wrf.getvar``
-    call -- so on an install without ``[render]`` there is no fallback
-    at all: no rust engine and no matplotlib engine, and `gpuwm render`
-    ends in a traceback rather than the second of two options.  The
-    fallback is real exactly when that extra is installed, so the
-    sentence has to be a question, asked here.
+    call -- so on an install without ``[render]`` there was no fallback
+    at all.  The sentence has to be a question, asked here.
+
+    It is no longer a FALLBACK in either arm.  ``--engine auto``
+    refuses when ``rw_wrfbatch`` is unusable rather than degrading,
+    because the render law (CLAUDE.md, Drew 2026-08-06) reserves
+    weather-field product plots for that binary and names exactly one
+    permitted fallback, which is not this engine (audit F7).  So the
+    honest doctor line is about a WORKAROUND a reader can type, never
+    about a safety net that catches them.
     """
 
     ok, _evidence = _import_probe("wrf", "wrf-rust")
     if ok:
-        return ("gpuwm render falls back to the matplotlib engine, which "
-                "is available here (the wrf package imports)")
-    return ("gpuwm render has NO engine left here: the matplotlib engine "
-            "is not a package-free fallback -- it imports the wrf package "
-            "from the [render] extra, which is not installed (see the "
-            "`pip extra [render]` line)")
+        return ("`gpuwm render --engine matplotlib` is available here as "
+                "a NAMED WORKAROUND (the wrf package imports); the "
+                "default --engine auto refuses rather than degrading to "
+                "it, because weather fields come from rw_wrfbatch")
+    if not science_core.python_supports_science_core(_python_version()):
+        # Not "not installed": not INSTALLABLE.  Telling a reader over
+        # the ceiling to run pip for a package with no wheel for their
+        # interpreter is the same dead loop the extras line used to
+        # print.  The sentence is derived, so the day upstream publishes
+        # the wheels this branch stops firing on its own -- which is
+        # what 0.2.39 did for 3.14.
+        return ("`gpuwm render --engine matplotlib` cannot run on this "
+                "interpreter, and pip cannot supply what it needs: "
+                + science_core.python_gap_sentence(_python_version())
+                + ".  The DEFAULT rust engine is unaffected -- it draws "
+                  "from the rw_wrfbatch binary and imports no Python "
+                  "science core at all")
+    return ("gpuwm render has NO engine left here: the matplotlib "
+            "workaround imports the wrf package from the [render] "
+            "extra, which is not installed (see the `pip extra "
+            "[render]` line)")
 
 
 def _rust_renderer_check() -> Check:
@@ -2932,6 +3632,80 @@ def _thompson_tables_check() -> Check:
         f"SHA-256, {sum(asset.bytes for asset in assets):,} B), the same "
         "validation every mp8 run performs at load",
         brief=f"{len(assets)} assets byte-validated")
+
+
+def _arbitrary_input_check() -> Check:
+    """Can this install ingest a data source nobody blessed in advance?
+
+    The whole reason this check exists: `gpuwm adapt` was a working
+    arbitrary-input front door that no user could find and, on a wheel
+    install, could not run.  A feature nobody can reach is not shipped, so
+    doctor states the surface rather than leaving it to be discovered.
+    """
+
+    from gpuwm.adapt import _SUPPORTED_FORMATS
+
+    formats = list(_SUPPORTED_FORMATS)
+    # NetCDF authoring is reachable when the RUST decoder is, not when
+    # netCDF4 is.  Probing the Python library here was correct while
+    # `adapt` read NetCDF through `netCDF4.Dataset`; since the decode
+    # moved to `rw_netcdf` the old probe was wrong in both directions --
+    # it reported the door shut on an install that can open it, and open
+    # on an install whose bridge is unstaged.  `_netcdf_decoder_check`
+    # is the blocking verdict on that executable; this check states what
+    # the door does with it.
+    try:
+        from gpuwm import netcdf_bridge
+        netcdf_decoder = netcdf_bridge.find_netcdf_bin()
+    except (ImportError, FileNotFoundError) as error:
+        return Check(
+            "arbitrary input", "missing",
+            f"NetCDF authoring is unreachable: the Rust NetCDF decoder is "
+            f"not usable ({error}); `gpuwm adapt --descriptor ...` cannot "
+            "read a NetCDF source without it",
+            REINSTALL_HINT, action="pip install -e .",
+            brief=_short(f"rw_netcdf unusable: {error}"))
+    # Both formats need a decoder now.  Report the split rather than one
+    # verdict, because a missing GRIB2 decoder does not stop a NetCDF
+    # source from running, and vice versa.
+    missing = []
+    for name in ("grib2_inventory", "grib2_dump"):
+        try:
+            if bridges.find_bridge(name) is None:
+                missing.append(name)
+        except FileNotFoundError:
+            missing.append(name)
+    if netcdf_decoder is None:
+        grib_state = (
+            f"GRIB2 authoring is unavailable too ({', '.join(missing)} not "
+            "resolvable)." if missing else "GRIB2 authoring is unaffected."
+        )
+        return Check(
+            "arbitrary input", "missing",
+            "NetCDF authoring is unreachable: rw_netcdf is not staged, and "
+            f"gpuwm keeps no Python NetCDF decoder behind it. {grib_state} "
+            "The format contract is docs/intermediate-format.md.",
+            netcdf_bridge.netcdf_remedy(),
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="rw_netcdf not staged")
+    detail = (
+        "`gpuwm adapt` authors arbitrary sources from your own descriptor, "
+        f"no source name required; formats: {', '.join(formats)}. NetCDF is "
+        f"decoded by rw_netcdf ({netcdf_decoder}). "
+        "The format contract is docs/intermediate-format.md."
+    )
+    if missing:
+        return Check(
+            "arbitrary input", "present",
+            detail + f" GRIB2 authoring is unavailable: {', '.join(missing)} "
+            "not resolvable; NetCDF authoring is unaffected.",
+            bridges.bridge_remedy(missing[0]),
+            action="gpuwm fetch-bridges",
+            brief=f"netcdf ready; grib2 needs {', '.join(missing)}",
+            blocking=False)
+    return Check(
+        "arbitrary input", "verified", detail,
+        brief=f"gpuwm adapt authors {', '.join(formats)} from a descriptor")
 
 
 def _noah_tables_check() -> Check:
@@ -3296,14 +4070,30 @@ def _non_git_import_check() -> Check:
 #: Doctor's per-source route checks, by the ``--source`` name.  These are
 #: public data products, not cases.
 #:
-#: DERIVED from :data:`gpuwm.bridges.SOURCE_DECODERS` rather than
-#: transcribed, because the transcription was wrong: this tuple read
-#: ``("gfs", "hrrr")`` while the help text under it promised "every
-#: route this build knows", and the build knows era5 -- whose decoder
-#: doctor's own bridge line names as the ERA5 route's.  Deriving it
-#: means a fourth source added to the resolver arrives here without
-#: anyone remembering to add it.
-DOCTOR_SOURCES = tuple(sorted(bridges.SOURCE_DECODERS))
+#: DERIVED from the two declarations that between them name every route
+#: this build serves, never transcribed.  It read ``SOURCE_DECODERS``
+#: alone, which is the three routes with a dedicated Rust decoder, so
+#: ``--source`` accepted era5/gfs/hrrr and refused ``hrrr-prs`` -- a
+#: route ``gpuwm fetch`` and ``gpuwm prep`` both serve, and the one the
+#: persona walk actually used (UX finding N17).  The registry is the
+#: other half: a model joins this list by having a row, which is the
+#: same act that makes it reachable from every other door.
+#:
+#: Resolved LAZILY, through the module ``__getattr__`` at the bottom of
+#: this file.  ``gpuwm.doctor`` must import on an interpreter that has
+#: no scientific stack -- that is what a reader runs when the install is
+#: broken, and a pinned test proves it -- and the source registry pulls
+#: numpy in behind its coverage windows.  Code inside this module calls
+#: :func:`_doctor_sources`; everything outside reads the name.
+def _doctor_sources() -> tuple[str, ...]:
+    """Every route name ``--source`` accepts, resolved once."""
+
+    from gpuwm import source_adapters
+
+    return tuple(sorted(
+        set(bridges.SOURCE_DECODERS)
+        | {adapter.source_id
+           for adapter in source_adapters.source_adapters()}))
 
 #: Fold key for one source's route findings.
 _GROUP_ROUTE = "route"
@@ -3427,12 +4217,100 @@ def _gfs_fetch_path_check() -> Check:
         group=_GROUP_ROUTE)
 
 
-def _source_route_checks(source: str) -> list[Check]:
-    """Everything one data route resolves before it reads a byte."""
+def _registry_transport(source: str) -> str:
+    """What ``gpuwm fetch --source SOURCE`` would move, in one clause."""
 
-    if source not in DOCTOR_SOURCES:
+    from gpuwm import fetch_routes
+
+    try:
+        route = fetch_routes.route_for(source)
+    except ValueError as error:
+        return str(error).splitlines()[0]
+    hosts = ", ".join(host.name for host in route.hosts)
+    return (f"fetch takes whole objects from {hosts} "
+            f"({route.label}) through the packaged route table")
+
+
+def _registry_route_check(source: str, engine: Check) -> Check:
+    """One line for a route with no decoder executable of its own.
+
+    A route without a dedicated binary is not a route without an
+    answer: the registry row says whether an implementation exists, the
+    packaged profile says WHAT the preparation decodes it through, and
+    the fetch route table says whether ``gpuwm fetch`` can go and get
+    it.  All three are table lookups, so the twenty-eight routes this
+    added to the default estate cost no probes -- ``engine`` is the one
+    real resolution, made once by the caller and shared across them.
+
+    ONE line rather than the decoder/transport pair the three
+    executable-backed routes print, because both halves are one table
+    read here and a second line would double the length of the default
+    report to repeat a lookup.
+
+    The engine's own verdict stays on the engine's own line.  This one
+    DEFERS to it (``info``, never ``missing``) so that one unbuilt
+    binary produces one gap with one remedy instead of twenty-eight
+    copies of the same gap -- which is the shape that makes a report
+    unreadable rather than more complete.
+    """
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    adapter = get_source_adapter(source)
+    name = f"{source} route"
+    transport = _registry_transport(source)
+    if not adapter.runnable:
+        return Check(
+            name, "info",
+            "declared in the registry with no strict implementation "
+            f"route on this release (status {adapter.status.value}); "
+            f"`gpuwm prep --show-source {source}` prints the row and "
+            f"what it would need.  {transport}",
+            brief="declared, no implementation route", group=_GROUP_ROUTE,
+            blocking=False)
+    if adapter.packaged_profile is None:
+        return Check(
+            name, "info",
+            f"decoded through a mapping the caller supplies (runner "
+            f"{adapter.runner}), so there is no packaged profile for "
+            f"this report to resolve.  {transport}",
+            brief="caller-supplied mapping", group=_GROUP_ROUTE,
+            blocking=False)
+    if engine.status == "verified":
+        return Check(
+            name, "verified",
+            f"packaged profile {adapter.packaged_profile}, decoded on "
+            f"{engine.brief or 'the mapped engine'}.  {transport}",
+            brief=_short(adapter.packaged_profile), group=_GROUP_ROUTE)
+    return Check(
+        name, "info",
+        f"packaged profile {adapter.packaged_profile}, decoded on the "
+        "mapped engine -- which this estate has not resolved; see the "
+        f"`{engine.name}` line for the verdict and the remedy.  "
+        f"{transport}",
+        engine.remedy, action=engine.action,
+        brief="mapped engine unresolved; see the engine line",
+        group=_GROUP_ROUTE, blocking=False)
+
+
+def _source_route_checks(source: str, engine: Check | None = None
+                         ) -> list[Check]:
+    """Everything one data route resolves before it reads a byte.
+
+    ``engine`` is the mapped decode engine's own check, resolved once
+    per report by :func:`collect_checks` and shared across every
+    registry route; omitted, it is resolved here, which is what a
+    caller asking about one route wants.
+    """
+
+    known = _doctor_sources()
+    if source not in known:
         raise ValueError(f"unknown doctor source {source!r}; known: "
-                         f"{list(DOCTOR_SOURCES)}")
+                         f"{list(known)}")
+    if source not in bridges.SOURCE_DECODERS:
+        return [_registry_route_check(
+            source,
+            engine if engine is not None else _mapped_engine_check())]
     checks = [_decoder_route_check(source)]
     if source == "hrrr":
         checks.append(_hrrr_fetch_path_check())
@@ -3454,6 +4332,38 @@ def _source_route_checks(source: str) -> list[Check]:
     return checks
 
 
+def _default_route_order() -> tuple[str, ...]:
+    """Every route, ordered so the terse report can fold the tail.
+
+    Three blocks, and the order is a stated grouping rather than a
+    sort of the findings: the routes with a decoder executable of their
+    own (which print a decoder line and a transport line each), then
+    the registry routes that have an implementation, then the registry
+    rows that are declared and not yet runnable.  Adjacent same-verdict
+    lines fold, so the twenty-eight routes `--source` gained do not
+    turn the default report into a page of alternating one-word
+    verdicts; every one of them is still a named line under
+    ``--explain`` and in ``--json``, and `--source NAME` prints its own.
+    """
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    executable = sorted(bridges.SOURCE_DECODERS)
+    rest = [source for source in _doctor_sources()
+            if source not in bridges.SOURCE_DECODERS]
+
+    def rank(source: str) -> tuple[int, str]:
+        adapter = get_source_adapter(source)
+        if not adapter.runnable:
+            return (2, source)
+        # Runnable through a packaged profile, then runnable only
+        # through a mapping the caller brings: three tiers, so each one
+        # folds to a line instead of interrupting its neighbour's run.
+        return (0 if adapter.packaged_profile is not None else 1, source)
+
+    return tuple(executable) + tuple(sorted(rest, key=rank))
+
+
 def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     """The estate, plus every named data route's own resolution.
 
@@ -3463,7 +4373,8 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     are in the default estate rather than behind a flag.
     """
 
-    selected = DOCTOR_SOURCES if sources is None else tuple(sources)
+    selected = (_default_route_order() if sources is None
+                else tuple(sources))
     checks: list[Check] = []
     version = ".".join(str(v) for v in sys.version_info[:3])
     if sys.version_info >= (3, 11):
@@ -3502,6 +4413,11 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     # through 2.3.3, which is how a box with every radar-adjacent
     # observation route dead could print a fully green estate.
     checks.extend(_obs_front_door_checks())
+    checks.append(_netcdf_decoder_check())
+    checks.append(_mapped_engine_check())
+    checks.append(_ncwrite_check())
+    checks.append(_static_builder_check())
+    checks.append(_obs_regrid_check())
     checks.append(_region_dealias_check())
     checks.extend(_bridge_checks())
     # ABOUT the report, not about an artifact: does every artifact the
@@ -3515,13 +4431,19 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     checks.append(_cpu_library_check())
     checks.append(_thompson_tables_check())
     checks.append(_noah_tables_check())
+    checks.append(_arbitrary_input_check())
     checks.extend(_case_data_root_check())
     checks.append(_distribution_manifest_check())
     checks.append(_provenance_check())
     checks.append(_install_identity_check())
     checks.append(_non_git_import_check())
+    # Resolved ONCE for every registry route below.  Twenty-eight of
+    # the routes decode on the same mapped engine, and asking that
+    # binary the same question twenty-eight times would put the whole
+    # expansion of `--source` on doctor's wall clock.
+    engine = _mapped_engine_check()
     for source in selected:
-        checks.extend(_source_route_checks(source))
+        checks.extend(_source_route_checks(source, engine))
     return checks
 
 
@@ -3640,10 +4562,31 @@ def _fold(checks: list[Check]) -> list[tuple[Check, int]]:
     Only ADJACENT checks fold, so the report keeps the order
     :func:`collect_checks` chose -- a group interrupted by an unrelated
     check stays two entries rather than silently reordering the report.
+
+    :data:`_SCATTERED_FOLD_GROUPS` is the one exception, and it is
+    narrow: the extras block declares aliases in packaging order, which
+    interleaves them with the real extras, so a walk read three
+    consecutive ``info pip extra aliases (3)`` lines as three findings
+    (UX finding N24).  A group listed there folds into its FIRST
+    appearance wherever its members land, because every line in it says
+    the same nothing -- the alias resolves, there is no gap and no
+    command.  Every member still survives by name in ``--explain`` and
+    ``--json``.
     """
 
     folded: list[tuple[Check, int]] = []
+    scattered: dict[tuple, int] = {}
     for check in checks:
+        if check.group in _SCATTERED_FOLD_GROUPS:
+            key = (check.group, check.status, check.action)
+            index = scattered.get(key)
+            if index is not None:
+                first, count = folded[index]
+                folded[index] = (first, count + 1)
+                continue
+            scattered[key] = len(folded)
+            folded.append((check, 1))
+            continue
         if folded and check.group is not None:
             last, count = folded[-1]
             if (last.group == check.group and last.status == check.status
@@ -3802,6 +4745,78 @@ def _severity_clause(checks: list[Check]) -> str:
                               for severity in ordered)
 
 
+#: Where doctor remembers which version it last reported on, so that
+#: the NEXT run after an upgrade can say what moved.  Beside the bridges
+#: and the staged tables, in the directory this product already owns;
+#: the environment variable exists so a test -- and an operator with a
+#: read-only home -- can put it somewhere else.
+DOCTOR_STATE_ENV = "GPUWM_DOCTOR_STATE"
+
+#: Schema of that file.  One key today; named so a later key can be
+#: added without a reader's file being unreadable.
+DOCTOR_STATE_SCHEMA = "gpuwm-doctor-state-v1"
+
+
+def state_path() -> Path | None:
+    """The state file's path, or ``None`` when there is nowhere to put it."""
+
+    override = os.environ.get(DOCTOR_STATE_ENV)
+    if override:
+        return Path(override)
+    try:
+        return Path.home() / ".gpuwm" / "doctor-state.json"
+    except (RuntimeError, OSError):              # pragma: no cover - no home
+        return None
+
+
+def upgrade_note(installed: str | None, path: Path | None = None
+                 ) -> str | None:
+    """What changed since the version doctor last reported here.
+
+    Returns the block to print, or ``None`` -- for a first run (nothing
+    recorded is not a change), for an unchanged version, for a
+    downgrade, and for any release with nothing user-visible to say.
+    Either way the current version is recorded, so the note is said
+    ONCE: an upgrade announcement that repeats at every doctor run is
+    noise the reader learns to skip past, which is how the announcement
+    stops working.
+
+    Never raises.  This is a courtesy line on a diagnostic command, and
+    a state file that cannot be read or written must not cost a reader
+    the report they actually asked for.
+    """
+
+    from gpuwm import whats_changed
+
+    path = state_path() if path is None else Path(path)
+    if path is None or not installed:
+        return None
+    previous = None
+    try:
+        if path.is_file():
+            recorded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(recorded, dict):
+                previous = recorded.get("version")
+    except (OSError, ValueError):
+        previous = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"schema": DOCTOR_STATE_SCHEMA,
+                        "version": str(installed)}, indent=2) + "\n",
+            encoding="utf-8")
+    except OSError:                              # pragma: no cover - read-only
+        pass
+    lines = whats_changed.since(previous, str(installed))
+    if not lines:
+        return None
+    block = [f"gpuwm doctor: this install is {installed}; the last report "
+             f"here was from {previous}.  What changed for you:"]
+    block += [f"  * {line}" for line in lines]
+    block.append("  (said once -- this install is now the recorded one.)")
+    return "\n".join(block)
+
+
 def doctor_main(args) -> int:
     sources = getattr(args, "source", None) or None
     checks = collect_checks(tuple(sources) if sources else None)
@@ -3819,9 +4834,28 @@ def doctor_main(args) -> int:
     # diagnosed from an editable install months behind the version the
     # reader thinks they upgraded to is a different report.
     print(_install_headline())
+    # AFTER the identity line, because the note is about that install,
+    # and BEFORE the findings, because "the run folder moved" reframes
+    # every path in the report under it.  Only on the human path: the
+    # JSON door is a machine surface and gets no prose, and leaving its
+    # state alone keeps the note for the reader who will read it.
+    note = _upgrade_note_for_this_install()
+    if note is not None:
+        print(note)
     print(format_report(checks) if explain_enabled(args)
           else format_brief(checks))
     return 1 if blocking_gaps(checks) else 0
+
+
+def _upgrade_note_for_this_install() -> str | None:
+    """:func:`upgrade_note` for whatever gpuwm is running.  Never fails."""
+
+    try:
+        from gpuwm.version_cli import install_shape
+
+        return upgrade_note(install_shape().get("version"))
+    except Exception:                                   # noqa: BLE001
+        return None
 
 
 def register_cli(subparsers) -> None:
@@ -3840,20 +4874,43 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--json", action="store_true",
                         help="emit the checks as JSON")
     parser.add_argument(
-        "--source", action="append", choices=sorted(DOCTOR_SOURCES),
+        "--source", action="append", choices=_doctor_sources(),
         metavar="SOURCE",
         help="report only this data route's own resolution (repeatable) "
-             "alongside the shared estate: the exact decoder its "
-             "preparation will launch, and the byte transport its fetch "
-             "will use.  Omitted, every route this build knows is "
-             f"reported ({', '.join(sorted(DOCTOR_SOURCES))})")
+             "alongside the shared estate: what its preparation will "
+             "decode with, and the byte transport its fetch will use.  "
+             "The choices are the source registry -- the same list "
+             "`gpuwm fetch` and `gpuwm prep` take.  Omitted, every route "
+             "this build knows is reported")
     parser.set_defaults(func=doctor_main)
     return parser
 
 
-__all__ = ["Check", "DOCTOR_SOURCES",
+def __getattr__(name: str):
+    """``doctor.DOCTOR_SOURCES``, resolved on first read and cached.
+
+    PEP 562, for one name and one reason: the registry that answers it
+    imports numpy, and this module has a pinned promise that it imports
+    on an interpreter with no scientific stack -- because a reader with
+    a broken install runs `gpuwm doctor` FIRST, and a diagnostic that
+    cannot import on the estate it diagnoses is worse than no
+    diagnostic.  Callers inside this file use ``_doctor_sources()``;
+    a module-level ``__getattr__`` does not answer a module's own
+    global lookups.
+    """
+
+    if name == "DOCTOR_SOURCES":
+        value = _doctor_sources()
+        globals()["DOCTOR_SOURCES"] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = ["Check", "DOCTOR_SOURCES", "DOCTOR_STATE_ENV",
+           "DOCTOR_STATE_SCHEMA",
            "SETUP_ACTIONS", "SEVERITY_BROKEN", "SEVERITY_DEGRADED",
            "SEVERITY_OPT_IN", "SEVERITY_UNREACHABLE", "blocking_gaps",
            "collect_checks", "declared_requirements", "doctor_main",
            "format_brief", "format_report", "geography_gaps",
-           "register_cli", "severity_census"]
+           "register_cli", "severity_census", "state_path",
+           "upgrade_note"]

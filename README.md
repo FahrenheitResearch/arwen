@@ -77,6 +77,33 @@ installed as well as after -- and names the extra that matches. `[all]`
 and `[gpu]` still work and still mean cu12; they are kept for the
 installs that already use them.
 
+Those lines install a CUDA toolkit as wheels alongside the CuPy wheel
+(CuPy's own `[ctk]` extra, about 1.6 GiB), because a wheel alone is not
+enough on a box that has only a driver: CuPy ships the compiler and no
+CUDA headers, so the first kernel and the first cuBLAS load both die
+with `Failed to find CUDA headers`. Measured on a driver-only CUDA 13
+node: bare wheel 274 MiB and nothing on the GPU runs; with `[ctk]` 1867
+MiB and all of it runs. If your box already has a matching CUDA
+toolkit, `pip install gpuwm` then `pip install cupy-cuda13x` (or
+`cupy-cuda12x`) is the smaller install.
+
+**No card in the machine?** Install `gpuwm` alone, without a CuPy extra.
+Everything upstream of the forecast — sizing, fetching, and
+preprocessing into a prepared bundle a card can pick up — runs on the
+CPU, and preprocessing selects that backend by itself. The forecast loop
+does not, and there is no CPU fallback for it. The measured walkthrough
+is [WITHOUT-A-GPU.md](docs/public/WITHOUT-A-GPU.md).
+
+**Python 3.10 through 3.14 all install the whole thing.** The `render`
+extra resolves `wrf-rust>=0.2.39`, which is the oldest release with a
+wheel for every one of them; earlier releases stopped at cp313, and
+because pip fails a whole resolution when one requirement fails, `pip
+install 'gpuwm[gpu-cu13,render]'` on a 3.14 box used to install **no
+gpuwm at all**. Nothing is skipped and nothing carries an environment
+marker now. If you pin an older `wrf-rust` yourself on 3.14, `gpuwm
+doctor` names that gap rather than printing a pip line that cannot
+work.
+
 `gpuwm setup` runs `gpuwm fetch-bridges` then `gpuwm fetch-tables`,
 verifies every artifact against the SHA-256 pins packaged in the wheel,
 and finishes with the `gpuwm doctor` summary. It is re-run safe: what
@@ -113,6 +140,13 @@ gpuwm domain --point 35.3,-97.5 --card 24gb --ladder 12 \
 #    (`--dry-run` prints the six underlying commands instead.)
 gpuwm go configs/myarea.toml
 ```
+
+Step 2 builds its static fields — terrain, land use, soil — from the
+WPS_GEOG tree, and `gpuwm setup` does **not** stage it: ~1.3 GB
+compressed, ~16 GB unpacked, which is a decision rather than a default.
+Run `gpuwm fetch-geog` once, before or after step 1. A bare `gpuwm
+setup` closes by saying it skipped it, and `gpuwm doctor` names the gap
+with the same command.
 
 Bare `gpuwm domain` at a terminal asks four questions and ends by
 printing that exact `gpuwm go` line.  Nest ladders (12-3, 12-3-1, ...)
@@ -294,6 +328,16 @@ gpuwm fetch-tables      # the two externalized Thompson tables
 gpuwm doctor            # what is still missing, and the command for each
 ```
 
+`pip install gpuwm` also pulls **`gpuwm-data`**, and there is nothing to
+do about it: it is a hard dependency pinned to the same version, not an
+extra, and it carries the RRTMGP k-distribution NetCDFs and the Thompson
+microphysics lookup tables. They live in a second distribution because
+PyPI rejects any file over 100 MiB and the single 2.5.0 wheel measured
+103.62 MiB; split, the two are 39.41 MiB and 64.22 MiB. The companion is
+pure data, so one `py3-none-any` wheel serves every platform. If an
+edited environment loses it, every radiation and Thompson run refuses by
+name and prints `pip install gpuwm-data==<your gpuwm version>`.
+
 `gpuwm fetch-bridges` downloads one bundle for your platform -- the
 five GRIB decoders, the CPU preprocessing library, the Rust fetch
 backbone and the batch renderer -- and verifies every artifact against
@@ -312,8 +356,10 @@ the box's CUDA major, so naming it is the install's job and checking it
 is `gpuwm doctor`'s. `[all-cu12]`/`[all-cu13]` are those plus
 `[render]`. The older `[gpu]`/`[all]` names still resolve, to cu12;
 `[render]` installs the pinned `wrf-rust` package, and the shapefile
-reader the demo gallery draws basemaps with, for `gpuwm render`'s
-matplotlib fallback engine. The `tools/rustwx` build
+reader the demo gallery draws basemaps with, for `gpuwm render --engine
+matplotlib` — a named workaround, not an automatic fallback: with no
+usable renderer the default `--engine auto` refuses and names `gpuwm
+fetch-bridges`. The `tools/rustwx` build
 is the production render engine (the vendored Rusty Weather renderer:
 coast/state/county basemaps over a 324-entry vendored product catalog,
 151 of whose products are implicit-render candidates on any file) --
@@ -351,6 +397,22 @@ gpuwm run    configs/myarea.toml --outdir out/myarea
 gpuwm render out/myarea/wrfout_d01_* --out out/myarea/png
 ```
 
+Every run claims its own timestamped folder under the output directory,
+so running the same configuration twice never overwrites the last run:
+`out/myarea/png/run-20260817-041233Z_i202605171800Z/...` (the launch
+instant, then the model's initialisation time, both UTC).  `gpuwm go`
+and `gpuwm sim` do the same for wrfout, receipts and logs; the download
+stays cached at `<outdir>/data`.  See
+[docs/run-output-folders.md](docs/run-output-folders.md); `--run-stamp
+off` restores the fixed paths releases up to 2.4.1 wrote.
+
+Inside that folder, pictures are filed as
+`<domain>/<product>/<valid-day>/<file>.png` -- one folder per nest, per
+chart, per day, so a real run's thousands of frames are navigable and a
+script can compute a path without globbing.  See
+[docs/render-output-layout.md](docs/render-output-layout.md);
+`--layout flat` restores the single directory releases up to 2.4.1 wrote.
+
 Live progress is `run-progress.json` in the output directory (atomic,
 schema `gpuwm.run-progress/v1`); restart checkpoints are written every
 `restart_interval_s` and `gpuwm resume` continues from the newest valid
@@ -364,7 +426,7 @@ runners write `<outdir>/progress.json`.
 
 ## What the output looks like
 
-![ArWen 500 m composite reflectivity, 3 April 1974 17:30Z, +5h30m
+![ArWen 500 m composite reflectivity, 17:30Z, +5h30m
 lead](docs/public/img/showcase-d04-500m-reflectivity-1730z.png)
 
 *Discrete supercells with 55-60 dBZ cores on the 500 m nest at a
@@ -392,7 +454,7 @@ opt-in via `--heavy`.*
 | Cumulus | Kain-Fritsch (outer domains) |
 | Data | ERA5 (CDS), GFS 0.25-deg (NOMADS), HRRR (NOMADS or AWS S3, incl. a live-cycle `--wait-for` mode) all initialize a run; GDAS 0.25-deg (NOMADS) is **fetch and decode only through f009 -- no initialization route** (`rw-wps --source gdas` refuses). Fail-closed Rust GRIB bridges; `gpuwm fetch` download front door. Plus an experimental, not-yet-stock-WRF-gated 20CRv3 ensemble-member route for GRIB2 files you supply yourself (no fetch route) -- see [DATA.md](docs/public/DATA.md) |
 | Domains | `gpuwm domain` wizard: point + card -> sized experiment TOML (16/24/32 GiB tiers) |
-| Products | `gpuwm render`, two engines: vendored Rusty Weather renderer (default when built), whose vendored catalog carries 324 entries; the runtime lister enumerates 151 of them as implicit-render candidates per file (the rest are explicit-opt-in ensemble/probabilistic families) -- reflectivity composite/1 km, surface T/Td/RH/MSLP/wind/PWAT/cloud-cover families, the 200-850 mb isobaric charts (height/temp/dewpoint/RH/absolute-vorticity + winds), CAPE/CIN/SRH/shear/STP severe suite, heavy ECAPE family (`--heavy`), and multi-hour windowed accumulations -- everything a file's stored fields prove out renders (measured on the committed 3 km UH-smoke case: 58/58 on a single frame, 238 renders / 0 failures across its four-frame store, transcripts retained in the development tree under `evidence/render-receipts/`; `--list-products` prints the per-file verdict with a field-level reason for every unavailable row), with coast/state/county basemaps and sub-hourly leads stamped; matplotlib fallback (composite reflectivity, T2, 10 m wind, accumulated precipitation); `--pair A B` composes two runs' PNGs into labeled comparison sheets |
+| Products | `gpuwm render`, two engines: vendored Rusty Weather renderer (default when built), whose vendored catalog carries 324 entries; the runtime lister enumerates 151 of them as implicit-render candidates per file (the rest are explicit-opt-in ensemble/probabilistic families) -- reflectivity composite/1 km, surface T/Td/RH/MSLP/wind/PWAT/cloud-cover families, the 200-850 mb isobaric charts (height/temp/dewpoint/RH/absolute-vorticity + winds), CAPE/CIN/SRH/shear/STP severe suite, heavy ECAPE family (`--heavy`), and multi-hour windowed accumulations -- everything a file's stored fields prove out renders (measured on the committed 3 km UH-smoke case: 58/58 on a single frame, 238 renders / 0 failures across its four-frame store, transcripts retained in the development tree under `evidence/render-receipts/`; `--list-products` prints the per-file verdict with a field-level reason for every unavailable row), with coast/state/county basemaps and sub-hourly leads stamped; `--engine matplotlib` is a named, self-announcing workaround (composite reflectivity, T2, 10 m wind, accumulated precipitation, OLR), never an automatic fallback — `--engine auto` refuses when the renderer is unusable; `--pair A B` composes two runs' PNGs into labeled comparison sheets |
 | Lifecycle | `check` (input + VRAM preflight), `run`, `resume`, restart checkpoints, failure capsules.  **Checkpoints are written on the `[case_data]` route (`gpuwm run`) and on the multi-domain prepared route; a single-domain config with no `[case_data]` table runs on the prepared single-domain forecaster, which writes none** -- `gpuwm check` says so before the run |
 | Operational HRRR | `gpuwm stream PLAN.toml`: bounded hourly chunked restart-extend with immutable leg chains, exact-hour cycle succession, independent disk-volume gates, and crash-safe replay |
 | Downscaling | `gpuwm downscale`: offline finer nest from archived gpuwm or WRF history (ndown-class) |
@@ -421,16 +483,24 @@ loader rather than a gate on it
   smoke-run verified -- transcription gates at binary64 against a
   Fortran oracle built from the pinned WRF v4.6.1
   `share/module_llxy.F`, plus short GPU smoke integrations -- not
-  matched-run verified. The deep matched-run validation (the 1974
-  reference family) exists for northern-hemisphere Lambert only.
-- **Nesting.** Static nests. Children may start later on an exact
+  matched-run verified. The deep matched-run validation (the
+  historical reference family) exists for northern-hemisphere Lambert
+  only.
+- **Nesting.** Static nests, plus discrete storm-following relocation:
+  a `[relocation]` table, default off, moves a child domain by a whole
+  number of parent cells at cycle boundaries, and `[relocation.follow]`
+  decides when and where from the running model's own updraft helicity
+  and column-max reflectivity. That is a sequence of static nests
+  joined by a re-grid, not WRF's continuous per-step motion, and WRF's
+  own moving-nest namelist keys stay refused and say so.
+  Children may start later on an exact
   parent-step and forcing-cadence seam. One-way is the supported
   default; two-way feedback (`feedback = 1`) ships as an EXPERIMENTAL
   path -- it runs, it is stamped as experimental in the run's own
   provenance, and one-way consumers refuse a feedback-modified parent.
   It feeds back dynamic state only, where WRF also feeds back hundreds
   of masked land-surface fields, so it is not a WRF-equivalent claim.
-  No moving nests, no vertical refinement, no adaptive time step.
+  No vertical refinement, no adaptive time step.
 - **Precision.** The model state is FP32 (like WRF's default REAL).
   No end-to-end bit-identity with WRF is claimed anywhere; see
   [VERIFICATION.md](docs/public/VERIFICATION.md) for exactly what is
@@ -468,7 +538,8 @@ loader rather than a gate on it
   [FIRST-LIGHT.md 3a](docs/public/FIRST-LIGHT.md).
   HRRR remains CONUS (Lambert) only; worldwide points use GFS or ERA5,
   both global.
-- **Verification depth.** One case (3 April 1974, ERA5, four domains to
+- **Verification depth.** One case (a historical severe-weather
+  reference day, ERA5, four domains to
   500 m) is deeply validated against WRF v4.6.1; other configurations
   inherit component-level evidence only. Physics options carry explicit
   per-option maturity labels ([PHYSICS.md](docs/public/PHYSICS.md)).
@@ -501,7 +572,7 @@ of the measured results:
 
 | Gate | Scope | Measured result |
 |---|---|---|
-| t=0 parity | 4 domains, 3 Apr 1974 case | T2 MAE 0.000 K, corr 1.000 on every domain vs the WRF initial state |
+| t=0 parity | 4 domains, historical reference case | T2 MAE 0.000 K, corr 1.000 on every domain vs the WRF initial state |
 | Matched 6 h forecast | d02 (3 km), 15Z | composite refl corr 0.985; >=20 dBZ echo area within 3 pixels of WRF's 14,227 |
 | Matched 6 h forecast | d03 (1 km), 18Z | T2 MAE 0.347 K; refl corr 0.715 (convective-scale chaos floor; see the page) |
 | Component oracles | legacy RRTMG LW/SW engines | max ULP 0 vs the transcription oracle over the full fixture decks |
@@ -520,12 +591,16 @@ What it does detect, what it does not, and the pin set that defines
 ## Documentation
 
 - [First light walkthrough](docs/public/FIRST-LIGHT.md)
+- [Glossary, for people who know WPS](docs/public/GLOSSARY.md)
+- [Without a GPU: how far the chain runs with no card](docs/public/WITHOUT-A-GPU.md)
+- [The pipeline, unbundled: running preprocessing, the simulation and rendering on your own terms](docs/public/PIPELINE-STAGES.md)
 - [Verification](docs/public/VERIFICATION.md)
 - [Determinism and the no-ECC dual-run screen](docs/public/DETERMINISM.md)
 - [Physics options and maturity](docs/public/PHYSICS.md)
 - [Overnight dewpoints far below the airmass](docs/public/NOCTURNAL-DEWPOINTS.md)
 - [Configuration knobs (WRF namelist parity)](docs/public/CONFIGURATION.md)
 - [Getting data](docs/public/DATA.md)
+- [Sources at the domain wizard](docs/public/SOURCES.md)
 - [Hardware and VRAM sizing](docs/public/HARDWARE.md)
 - [Offline downscaling](docs/public/DOWNSCALE.md)
 - [Chunked forecast streaming](docs/public/STREAMING.md)

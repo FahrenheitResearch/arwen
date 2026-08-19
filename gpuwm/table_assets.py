@@ -57,6 +57,7 @@ import urllib.error
 import urllib.request
 
 from gpuwm import fetch_guard
+from gpuwm.progress import ByteCounter
 from gpuwm.core.thompson_contract import (
     CLASSIC_TABLE_ASSETS,
     TableAsset,
@@ -81,6 +82,11 @@ RELEASE_ASSET_BASE_URL = (
 ASSET_URL_BASE_ENV = "GPUWM_TABLE_ASSET_URL_BASE"
 
 _BLOCK_BYTES = 8 * 1024 * 1024
+
+#: Transfer block, smaller than the hashing block on purpose: it is the
+#: resolution of the byte counter above, and an eight-MiB step over a
+#: slow link is a number that stands still for seconds at a time.
+_TRANSFER_BLOCK_BYTES = 1024 * 1024
 
 
 def asset_url_base() -> str:
@@ -310,19 +316,35 @@ def fetch_asset_from_url(root: Path, asset: TableAsset, url: str) -> Path:
     Held under the table-root lock: staging, verifying and installing is
     one transaction, so a concurrent fetch into the same root queues
     behind it instead of interleaving with it.
+
+    The transfer COUNTS ITS BYTES on stderr while it runs.  This is the
+    303 MiB that made ``gpuwm setup`` sit silent for 15.5 s of its 16.2
+    (UX finding N9), and the pinned size in ``asset`` is the total, so
+    the percentage is the contract's own number rather than a header the
+    host supplied.  stderr because ``gpuwm setup`` captures each step's
+    stdout; see :mod:`gpuwm.progress`.
     """
 
     final = root / asset.filename
     with fetch_guard.hold("fetch-tables", root):
         temp = _staging_path(root, asset)
+        counter = ByteCounter(
+            f"gpuwm fetch-tables: {asset.filename}", asset.bytes)
         try:
             with urllib.request.urlopen(url) as response, \
                     temp.open("wb") as sink:
-                shutil.copyfileobj(response, sink, _BLOCK_BYTES)
+                while True:
+                    block = response.read(_TRANSFER_BLOCK_BYTES)
+                    if not block:
+                        break
+                    sink.write(block)
+                    counter.advance(len(block))
         except (urllib.error.URLError, OSError) as error:
             temp.unlink(missing_ok=True)
             raise TableAssetError(
                 f"{asset.filename}: download failed from {url}: {error}")
+        finally:
+            counter.close()
         _stage(temp, final, asset)
     return final
 

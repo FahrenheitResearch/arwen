@@ -1,0 +1,212 @@
+{
+ "schema": "gpuwm-mapped-composition-v2",
+ "name": "icon-eu-regular-latlon-invariant-hsurf-and-terra-node-soil",
+ "mapping_binding": "input_manifest_sha256",
+ "supplements": {
+  "terrain_height": {
+   "data_role": "icon_eu_invariant_surface",
+   "provenance_role": "icon_eu_invariant_surface_provenance",
+   "format": "grib2",
+   "field": "terrain_height",
+   "selector_authority": "mapping_field_exact",
+   "grid_alignment": "exact_coordinate_subset",
+   "time_alignment": "cycle_invariant_broadcast",
+   "require_invariant_across_time": true
+  }
+ },
+ "soil_layers": {
+  "temperature_field": "soil_temperature",
+  "moisture_field": "volumetric_soil_moisture",
+  "depth_units": "m",
+  "source_nodes": [
+   {
+    "depth": 0.0,
+    "selectors": {
+     "soil_temperature": {
+      "format": "grib2",
+      "discipline": 2,
+      "category": 3,
+      "parameter": 18,
+      "level_type": 106,
+      "level_value": 0.0
+     }
+    }
+   },
+   {
+    "depth": 0.005,
+    "selectors": {
+     "soil_temperature": {
+      "format": "grib2",
+      "discipline": 2,
+      "category": 3,
+      "parameter": 18,
+      "level_type": 106,
+      "level_value": 0.005
+     }
+    }
+   },
+   {
+    "depth": 0.02,
+    "selectors": {
+     "soil_temperature": {
+      "format": "grib2",
+      "discipline": 2,
+      "category": 3,
+      "parameter": 18,
+      "level_type": 106,
+      "level_value": 0.02
+     }
+    }
+   },
+   {
+    "depth": 0.06,
+    "selectors": {
+     "soil_temperature": {
+      "format": "grib2",
+      "discipline": 2,
+      "category": 3,
+      "parameter": 18,
+      "level_type": 106,
+      "level_value": 0.06
+     }
+    }
+   },
+   {
+    "depth": 0.18,
+    "selectors": {
+     "soil_temperature": {
+      "format": "grib2",
+      "discipline": 2,
+      "category": 3,
+      "parameter": 18,
+      "level_type": 106,
+      "level_value": 0.18
+     }
+    }
+   },
+   {
+    "depth": 0.54,
+    "selectors": {
+     "soil_temperature": {
+      "format": "grib2",
+      "discipline": 2,
+      "category": 3,
+      "parameter": 18,
+      "level_type": 106,
+      "level_value": 0.54
+     }
+    }
+   },
+   {
+    "depth": 1.62,
+    "selectors": {
+     "soil_temperature": {
+      "format": "grib2",
+      "discipline": 2,
+      "category": 3,
+      "parameter": 18,
+      "level_type": 106,
+      "level_value": 1.62
+     }
+    }
+   },
+   {
+    "depth": 4.86,
+    "selectors": {
+     "soil_temperature": {
+      "format": "grib2",
+      "discipline": 2,
+      "category": 3,
+      "parameter": 18,
+      "level_type": 106,
+      "level_value": 4.86
+     }
+    }
+   },
+   {
+    "depth": 14.58,
+    "selectors": {
+     "soil_temperature": {
+      "format": "grib2",
+      "discipline": 2,
+      "category": 3,
+      "parameter": 18,
+      "level_type": 106,
+      "level_value": 14.58
+     }
+    }
+   }
+  ],
+  "moisture_provenance": {
+   "kind": "derived_layer_mass",
+   "layer_mass_field": "soil_water_column",
+   "volumetric_field": "soil_water_column_volumetric",
+   "source_layers": [
+    {
+     "top": 0.0,
+     "bottom": 0.01
+    },
+    {
+     "top": 0.01,
+     "bottom": 0.03
+    },
+    {
+     "top": 0.03,
+     "bottom": 0.09
+    },
+    {
+     "top": 0.09,
+     "bottom": 0.27
+    },
+    {
+     "top": 0.27,
+     "bottom": 0.81
+    },
+    {
+     "top": 0.81,
+     "bottom": 2.43
+    },
+    {
+     "top": 2.43,
+     "bottom": 7.29
+    },
+    {
+     "top": 7.29,
+     "bottom": 21.87
+    }
+   ],
+   "surface_policy": "replicate_shallowest"
+  },
+  "target_layers": [
+   {
+    "top": 0.0,
+    "bottom": 0.1
+   },
+   {
+    "top": 0.1,
+    "bottom": 0.4
+   },
+   {
+    "top": 0.4,
+    "bottom": 1.0
+   },
+   {
+    "top": 1.0,
+    "bottom": 2.0
+   }
+  ],
+  "remap": {
+   "kind": "linear_node_samples",
+   "source_value_location": "level_node",
+   "target_value_location": "layer_midpoint"
+  },
+  "missing": {
+   "land": "reject",
+   "ocean": {
+    "stage": "after_horizontal_interpolation",
+    "temperature": "skin_temperature",
+    "moisture": 1.0
+   }
+  }
+ }
+}

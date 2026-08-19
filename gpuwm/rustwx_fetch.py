@@ -47,7 +47,8 @@ import subprocess
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            cargo_build_one_liner, default_bridge_dir,
-                           executable_name, launchable, quiet_loader_errors)
+                           ensure_executable, executable_name, launchable,
+                           packaged_bridge_dir, quiet_loader_errors)
 
 #: Environment variable naming a prebuilt fetch backbone.
 FETCH_ENV = "GPUWM_RW_FETCH"
@@ -103,6 +104,7 @@ def fetch_candidates() -> tuple[Path, ...]:
         crate_dir() / "target" / "release" / filename,
         crate_dir() / "target" / "debug" / filename,
         root / "libexec" / "bridges" / filename,
+        packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
     ))
     return tuple(candidates)
@@ -120,7 +122,7 @@ def find_fetch_bin() -> Path | None:
     override = os.environ.get(FETCH_ENV)
     for candidate in fetch_candidates():
         if candidate.is_file():
-            return candidate.resolve()
+            return ensure_executable(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{FETCH_ENV} names a missing file: {candidate}")

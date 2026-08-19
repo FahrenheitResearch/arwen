@@ -741,6 +741,11 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
                 # held tendencies for its transported rime pair.
                 RunConfig(**_TINY, moist=True, moist_cq=True,
                           mp_physics=50, km_opt=4),
+                # The MPAS column-batch seam (mpas_column_batch.py:469-481)
+                # builds its own ny == 1 WSM6 config and is the only
+                # allocator of the ny-keyed adapter pair; without this arm
+                # physics_column_alt/php are invisible to this gate.
+                RunConfig(**{**_TINY, "ny": 1}, moist=True, mp_physics=6),
                 RunConfig(**_TINY, sf_sfclay_physics=1),
                 RunConfig(**_TINY, nwp_diagnostics=1),
                 # LES closures: km_opt=3 owns the vertical exchange-
@@ -794,6 +799,17 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
         # survives.
         ("gpuwm/core/mynn_pbl_scratch.py", "from_state"),
         ("gpuwm/core/mynn_pbl_runtime.py", "mynn_pbl_step"),
+        # The column-batch precipitation report loops over a literal tuple
+        # of three mp_* names in the same statement -- every one a registry
+        # row of the seam's own mp=6 config -- so the slot expression is a
+        # variable only to the scanner.
+        ("gpuwm/core/mpas_column_batch.py", "accumulated_precipitation"),
+        # The relocation restore iterates continuation_slots(), which IS
+        # gpuwm/io/restart.py's SERIALIZED_SCRATCH_SLOTS: the checkpoint
+        # registry and the relocation inventory are one list, so an
+        # unregistered slot cannot enter this loop without first failing
+        # the restart manifest classification.
+        ("gpuwm/core/physics_continuation.py", "restore_continuation"),
     }
     # The one sanctioned getattr(state, "scratch") lookup: lateral_bc's
     # duck-type guard, whose resulting Name call the scanner classifies.
@@ -2490,11 +2506,13 @@ def test_declared_free_is_capped_at_the_cards_physical_total(capsys):
 def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     """The empirical envelope line: honest, informational, budget-aware.
 
-    The Thompson rematch measured a machine peak of 1.746x the footprint
-    projection (29,004 MiB vs 16.22 GiB); ``gpuwm check`` must surface
-    footprint x1.75 as an OBSERVED envelope and warn when it exceeds the
-    WDDM budget -- WITHOUT changing any gate, because the enforced
-    numbers remain the itemized estimate and the measured legs.
+    On Windows the envelope is the MEASURED affine model (the 2026-08-19
+    RTX 3080 calibration): estimate + itemized non-pool + unmodelled +
+    the WDDM pool-slack fraction of the estimate (+ per-nest term).  The
+    retired ``footprint x 1.75`` floor predicted 3.8x the measured peak
+    on the calibration card and must be gone from the report -- WITHOUT
+    changing any gate, because the enforced numbers remain the itemized
+    estimate and the measured legs.
 
     The exit code is NOT informational, though: see
     ``test_check_over_budget_envelope_exits_nonzero``.  A node-7 pilot
@@ -2507,17 +2525,28 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     payload = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert payload["observed_peak_envelope_platform"] == "windows"
-    assert payload["observed_peak_envelope_factor"] == 1.75
-    # The WDDM lane keeps its one instrumented multiplicative observation
-    # as a FLOOR: the affine form may raise it, never discount it.
-    assert payload["observed_peak_envelope_bytes"] >= int(
+    assert payload["envelope_wddm_pool_slack_fraction"] == \
+        pf.WDDM_POOL_SLACK_FRACTION
+    # The measured affine model, term for term.
+    assert payload["observed_peak_envelope_bytes"] == (
+        payload["alloc_estimate_bytes"]
+        + payload["non_pool_device_bytes"]
+        + pf.ENVELOPE_UNMODELLED_BYTES
+        + math.ceil(pf.ENVELOPE_PER_NEST_FRACTION
+                    * (len(payload["domains"]) - 1)
+                    * payload["alloc_estimate_bytes"])
+        + math.ceil(pf.WDDM_POOL_SLACK_FRACTION
+                    * payload["alloc_estimate_bytes"]))
+    # ...and strictly below what the retired multiplier would have said.
+    assert payload["observed_peak_envelope_bytes"] < int(
         payload["footprint_projection_bytes"] * 1.75)
     # 100 GiB budget: envelope fits, no warning.
     assert payload["observed_peak_envelope_exceeds_budget"] is False
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "keeps that multiplier as a FLOOR" in out
+    assert "WDDM pool slack" in out
+    assert "WDDM floor" not in out
     assert "WARNING: observed peak envelope" not in out
     # The forecast is no longer the only phase this report prices, so the
     # historical line must say which phase it is, the preprocessing phase
@@ -2562,16 +2591,16 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
 
 
 def test_peak_envelope_factor_is_platform_conditional():
-    """WDDM is what 1.75 models, and Linux does not have it.
+    """The retired multipliers stay recorded; the families stay platform.
 
-    Two instrumented Linux RTX 4090 pilots (2026-07-30) measured
-    machine-wide peaks of 0.84x and 0.79x the footprint projection, so
-    applying the Windows envelope there sold users roughly half the grid
-    their cards could hold.
+    The factors are the HISTORICAL record (and `gpuwm downscale`'s
+    deliberately conservative child-fit bound); no gate reads them since
+    the 3080 calibration replaced the WDDM multiplier with the measured
+    affine slack term.  The family split itself remains, because the two
+    platforms have different measured behaviour -- and it depends on the
+    platform ONLY, never on card size (the #162 wizard/check split).
     """
-    assert pf.PEAK_ENVELOPE_FACTORS == {"windows": 1.75,
-                                        "windows-small": 1.45,
-                                        "linux": 1.45}
+    assert pf.PEAK_ENVELOPE_FACTORS == {"windows": 1.75, "linux": 1.45}
     assert pf.OBSERVED_PEAK_OVER_FOOTPRINT == 1.75
 
     for name in ("win32", "cygwin", "msys"):
@@ -2665,7 +2694,7 @@ def test_check_cli_prints_the_linux_envelope_factor_when_on_linux(
     payload = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert payload["observed_peak_envelope_platform"] == "linux"
-    assert payload["observed_peak_envelope_factor"] == 1.45
+    assert payload["envelope_wddm_pool_slack_fraction"] == 0.0
     # AFFINE on Linux: estimate + the itemized non-pool residency + the
     # measured unmodelled constant (+ a per-nest term).  Not a multiple
     # of the projection -- a multiple has no intercept, and a model with
@@ -4039,20 +4068,27 @@ def test_the_envelope_has_an_intercept_that_does_not_scale_with_the_grid():
     assert small - 2 * GIB == non_pool + pf.ENVELOPE_UNMODELLED_BYTES
 
 
-def test_the_wddm_multiplier_is_a_floor_not_a_discount():
-    """Windows keeps its one instrumented observation.  The affine form
-    may raise that number; it may never lower it."""
+def test_the_wddm_term_is_the_measured_slack_not_the_multiplier():
+    """Windows = the affine form + the measured pool-slack fraction.
 
-    footprint = 20 * GIB
+    The retired multiplicative floor turned a 5.66 GiB footprint into a
+    9.91 GiB envelope on the 3080 walk while the run measured 2.6 GiB;
+    the calibrated term is proportional to the ESTIMATE (worst measured
+    +0.30x, legacy-RRTMG pool retention) and the footprint projection is
+    display-only.
+    """
+
+    linux = pf.machine_peak_envelope_bytes(
+        alloc_estimate_bytes=8 * GIB, non_pool_bytes=GIB, family="linux")
     windows = pf.machine_peak_envelope_bytes(
         alloc_estimate_bytes=8 * GIB, non_pool_bytes=GIB,
-        footprint_projection_bytes=footprint, family="windows")
-    assert windows == int(footprint * pf.PEAK_ENVELOPE_FACTORS["windows"])
-    # ...and where the affine form is the larger of the two, it wins.
-    huge = pf.machine_peak_envelope_bytes(
-        alloc_estimate_bytes=40 * GIB, non_pool_bytes=GIB,
-        footprint_projection_bytes=footprint, family="windows")
-    assert huge > int(footprint * pf.PEAK_ENVELOPE_FACTORS["windows"])
+        footprint_projection_bytes=20 * GIB, family="windows")
+    assert windows == linux + math.ceil(
+        pf.WDDM_POOL_SLACK_FRACTION * 8 * GIB)
+    # The footprint projection no longer moves the envelope at all.
+    assert windows == pf.machine_peak_envelope_bytes(
+        alloc_estimate_bytes=8 * GIB, non_pool_bytes=GIB,
+        footprint_projection_bytes=200 * GIB, family="windows")
 
 
 def test_the_absent_card_profile_is_the_conservative_measured_reference():
@@ -4223,7 +4259,12 @@ def test_the_over_budget_remedy_is_an_action_not_a_design_pointer(capsys):
     assert "OVER BUDGET" in out
     assert "DESIGN REOPEN" not in out
     assert "section E" not in out
-    assert "remedy: re-size for this card -- gpuwm domain --vram-gib" in out
+    # And the action is REACHABLE: the 3080 walk followed the previous
+    # `gpuwm domain --vram-gib <free>` remedy and was refused at every
+    # grid size, because the flag names a card and the number fed to it
+    # was a free-VRAM figure.  The bare wizard measures the card itself.
+    assert "remedy: re-size against this machine -- gpuwm domain" in out
+    assert "--vram-gib" not in out.split("remedy:")[1].split("\n")[0]
 
 
 def test_the_printed_exit_code_is_the_one_the_process_returns(capsys):
@@ -4268,30 +4309,27 @@ def test_the_budget_word_follows_the_platform(capsys, monkeypatch):
     assert "exceeds the WDDM budget" in out
 
 
-def test_the_unmeasured_small_windows_tier_keeps_its_fixed_term():
-    """Replacing a multiplier with an intercept must not drop a term.
-
-    The Windows small-card tier is EXPERIMENTAL and calibrated on
-    nothing: it stands in for the WDDM residency the CuPy pool never
-    sees with one reduced fixed reserve.  The affine envelope carries
-    that term in its intercept, so the tier does not quietly become more
-    optimistic on the strength of Linux measurements.
+def test_the_small_windows_tier_is_retired_into_the_measured_model():
+    """The experimental tier's own advisory asked for exactly one thing:
+    a measured peak from a small Windows card.  The 2026-08-19 3080
+    calibration delivered it, so the tier is gone -- every Windows card
+    takes the ONE measured model, and the envelope intercept is the
+    itemized non-pool residency on every platform.  Card size changes
+    the numbers (through the profile and the estimate), never the
+    formula: that split is how the wizard and `gpuwm check` returned
+    opposite verdicts on the same bytes (task #162).
     """
-    assert pf.platform_projection_constants("win32", 12.0) == (
-        0, pf.WINDOWS_SMALL_CARD_RESERVE_BYTES)
     exp = load_experiment_case(CONFIG_4DOM)[0]
     small = pf.estimate_experiment(exp, vram_gib=12.0)
-    linux = dataclasses.replace(small, device_overhead_bytes=0,
-                                envelope_family="linux")
-    assert small.envelope_intercept_bytes - linux.envelope_intercept_bytes \
-        == pf.WINDOWS_SMALL_CARD_RESERVE_BYTES
-    assert small.peak_envelope_bytes > linux.peak_envelope_bytes
-    # Linux itself carries no such term: the whole point of the 2026-07-30
-    # amendment was that those constants are Windows-pool artifacts.
-    on_linux = pf.estimate_experiment(exp, vram_gib=24.0)
-    if pf.envelope_platform(vram_gib=24.0) == "linux":
-        assert on_linux.envelope_intercept_bytes == \
-            on_linux.non_pool_device_bytes
+    large = pf.estimate_experiment(exp, vram_gib=32.0)
+    unsized = pf.estimate_experiment(exp)
+    assert small.envelope_family == large.envelope_family \
+        == unsized.envelope_family
+    for est in (small, large, unsized):
+        assert est.envelope_intercept_bytes == est.non_pool_device_bytes
+    # Same profile pricing => same envelope, sized or not: one envelope.
+    assert small.peak_envelope_bytes == large.peak_envelope_bytes \
+        == unsized.peak_envelope_bytes
 
 
 def test_the_gate_names_printed_on_linux_do_not_say_wddm(monkeypatch):
@@ -4356,13 +4394,18 @@ class _CompletedProbe:
         self.stdout = stdout
 
 
-def test_the_device_probe_asks_everything_in_a_new_interpreter():
+def test_the_device_probe_asks_everything_in_a_new_interpreter(monkeypatch):
     """``memGetInfo``/``deviceGetLimit`` stand up a CUDA primary context
     wherever they are asked, so the probe must ask them in a NEW
     interpreter whose context dies with it -- a long-lived caller (the
     ``gpuwm go`` orchestrator, which outlives its gate as a progress
     printer) then holds no device memory at all."""
     import sys as _sys
+
+    # The never-touch-the-local-device switch stops the probe before the
+    # run seam (tests/test_no_local_gpu_contract.py owns that contract);
+    # this test is about what the spawned interpreter asks.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
 
     seen = {}
 

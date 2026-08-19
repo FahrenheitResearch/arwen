@@ -30,6 +30,12 @@ MP28_PORT_SPEC.md
 HANDOFF.md
 MP28_HANDOFF.md
 
+# The project's binding agent instructions.  Tracked so every worktree and
+# agent reads one law file, but it is a development-process document -- it
+# names this machine's Downloads directory and program ledger -- and means
+# nothing to a release reader.
+CLAUDE.md
+
 # Campaign handoffs and internal project history (developer paths inside).
 docs/gpuwm-controller-handoff.md
 docs/lead-handoff-2026-07-26.md
@@ -71,8 +77,10 @@ tests/test_n5s_toolchain.py
 # reads it to regenerate gpuwm/physics_registry_v2.json and
 # tests/test_build_registry.py asserts that regeneration reproduces the
 # shipped file byte for byte.  Dropping it would trade a reproducibility
-# proof for a hygiene win, so the one developer path inside it was
-# scrubbed instead.
+# proof for a hygiene win, so the developer paths inside it were
+# scrubbed instead -- twice: once when this note was written, and again
+# for two survey-tree paths on line 14 that the release scan could not
+# see until its Windows marker learned to read escaped separators.
 
 # A generated `sha256sum` receipt whose second column is one machine's
 # absolute paths into a private reference bundle.  The hashes it pins
@@ -147,6 +155,20 @@ tilestream/PLOTS-AS-YOU-GO.md
 tilestream/RENDER-CLI.md
 tilestream/RESULTS.md
 
+# The same lane's RAW measurement records: gate logs, seam-gate captures,
+# per-arm digests and the skeptic timing transcripts.  Each names the tree,
+# venv and run directory on the rented node it was taken on -- in tracebacks,
+# in header blocks and in "wrote <path>" lines -- which is the same
+# measurement-conditions argument as the .md records above, in a form that
+# cannot be reworded without falsifying a traceback.  No shipped page links
+# them (the user-facing page is docs/public/TILES.md) and no module reads
+# them: the only tilestream package data is output-scaling.json.  They
+# became visible when the release scan stopped reading by suffix, which is
+# what a suffix allowlist was hiding.
+tilestream/evidence/**
+tilestream/evidence-reconcile/**
+tilestream/skeptic/**
+
 # Verbatim forks rescued off two destroyed boxes, kept so a digest taken on
 # a dead machine can still be diffed against the tree that replaced it.
 # They are copies of files that also exist above them, they are not on any
@@ -167,9 +189,18 @@ tools/les1m_trimmed.sh
 # The 2011 superoutbreak campaign configs.  Their forcing, vtable and
 # geography roots point into the case tree staged on the rented node the
 # runs were made on; nobody else has those files, so the configs are a
-# record of what was run rather than something a reader can run.  The
-# probe_* configs beside them carry no machine path and ship.
+# record of what was run rather than something a reader can run.
+#
+# Each .toml has a .namelist.wps twin carrying the same node geography
+# root, and until the release scan stopped reading by suffix nothing saw
+# them: .wps was not on the scanned-suffix allowlist, so four campaign
+# namelists went on shipping beside their excluded configs.  The twins are
+# listed here for the reason the configs are.
 configs/superoutbreak_20110427_d01_3km.toml
 configs/superoutbreak_20110427_d01_960.toml
 configs/superoutbreak_20110427_probe480.toml
 configs/superoutbreak_20110427_smoke.toml
+configs/superoutbreak_20110427_d01_3km.namelist.wps
+configs/superoutbreak_20110427_d01_960.namelist.wps
+configs/superoutbreak_20110427_probe480.namelist.wps
+configs/superoutbreak_20110427_smoke.namelist.wps

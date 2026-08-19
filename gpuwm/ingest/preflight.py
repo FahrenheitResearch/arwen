@@ -24,6 +24,7 @@ import numpy as np
 from gpuwm.ingest.grib import (Era5DecodeResult, Era5Snapshot,
                                cached_era5_forcing, canonical_units,
                                inspect_grib1_envelopes, parse_vtable)
+from gpuwm import data_assets
 from gpuwm.ingest.horiz import _MASKED_SEARCH_RADIUS
 from gpuwm.static.geog import GeogDataset
 
@@ -191,6 +192,13 @@ class InputCatalog:
     #: and not the case data, and a child that assembled its lakes under a
     #: different policy than its parent would seam at the nest boundary.
     water_temperature_policy: str | None = None
+    #: The resolved ``[ingest] soil_texture_downscale`` policy, carried for
+    #: exactly the reason above one line at a time: a nested child sees the
+    #: catalog and not the case data, it re-ingests the SAME forcing onto a
+    #: FINER grid, and a child that kept the forcing mesh in its soil while
+    #: its parent did not would seam at the nest boundary in every field
+    #: soil moisture drives.
+    soil_texture_downscale: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provenance",
@@ -355,31 +363,84 @@ def _product_id(case_data) -> str:
     return "ERA5" if "ERA5" in name else name
 
 
-def _table_root(case_data) -> Path:
+def _declared_table_root(case_data) -> Path | None:
+    """A caller-supplied flat table tree, or None for the packaged set.
+
+    The native WRF distribution builds one of these
+    (``tools/build_native_wrf_distribution.py``): a single directory
+    holding copies of the ``gpuwm/data`` subtrees in their original
+    layout.  When one is declared it answers for every asset, exactly as
+    it always did.
+    """
+
     declared = (getattr(case_data, "table_root", None)
                 or getattr(case_data, "bundled_table_root", None))
-    return (Path(declared) if declared is not None
-            else Path(__file__).resolve().parents[1] / "data")
+    return None if declared is None else Path(declared)
 
 
-def _table_files(case_data, exp=None) -> tuple[Path, ...]:
-    root = _table_root(case_data)
-    paths = [
-        root / "kf_lutab" / "kf_lutab.npz",
-        root / "rrtmgp" / "rrtmgp-gas-lw-g256.nc",
-        root / "rrtmgp" / "rrtmgp-gas-sw-g224.nc",
-        root / "rrtmgp" / "rrtmgp-clouds-lw-bnd.nc",
-        root / "rrtmgp" / "rrtmgp-clouds-sw-bnd.nc",
-        root / "noah_tables" / "LANDUSE.TBL",
-        root / "noah_tables" / "VEGPARM.TBL",
-        root / "noah_tables" / "SOILPARM.TBL",
-        root / "noah_tables" / "GENPARM.TBL",
+def _table_root(case_data) -> Path:
+    """The root a declared tree names, else this wheel's ``gpuwm/data``.
+
+    Do not join packaged asset paths onto this: use :func:`_table_asset`.
+    Since 2.5.0 two of those directories ship in the ``gpuwm-data``
+    companion distribution and only the resolver knows which.
+    """
+
+    declared = _declared_table_root(case_data)
+    return declared if declared is not None \
+        else data_assets.package_data_root()
+
+
+def _table_asset(case_data, relative: str) -> Path:
+    """One ``gpuwm/data``-relative asset, at the root that holds it.
+
+    Written as a function rather than a join so the two call sites below
+    -- the existence sweep and the per-file NetCDF dimension checks --
+    cannot drift apart.  They did not drift before because both joined
+    the same ``root``; once ``rrtmgp/`` moved to the companion, a sweep
+    that found the companion path and a check that rebuilt the in-wheel
+    one would have made every dimension check silently skip, since the
+    check keys on the path the sweep recorded.
+    """
+
+    declared = _declared_table_root(case_data)
+    if declared is not None:
+        return declared.joinpath(*relative.split("/"))
+    return data_assets.data_path(relative)
+
+
+def _table_asset_map(case_data, exp=None) -> dict[str, Path]:
+    """``gpuwm/data``-relative key -> resolved path, in check order.
+
+    The KEY is what ``_TABLE_SHA256`` is written against, so it travels
+    with the path instead of being recovered from it.  Recovering it by
+    ``path.relative_to(root)`` is what broke when ``rrtmgp/`` moved to
+    the companion: the relative_to raised, the fallback used the bare
+    filename, no pin matched that spelling, and four pinned SHA-256
+    checks passed by finding nothing to compare.
+    """
+
+    relatives = [
+        "kf_lutab/kf_lutab.npz",
+        "rrtmgp/rrtmgp-gas-lw-g256.nc",
+        "rrtmgp/rrtmgp-gas-sw-g224.nc",
+        "rrtmgp/rrtmgp-clouds-lw-bnd.nc",
+        "rrtmgp/rrtmgp-clouds-sw-bnd.nc",
+        "noah_tables/LANDUSE.TBL",
+        "noah_tables/VEGPARM.TBL",
+        "noah_tables/SOILPARM.TBL",
+        "noah_tables/GENPARM.TBL",
     ]
     if exp is not None:
         from gpuwm.config import radiation_scheme_ids
         if any(radiation_scheme_ids(dc.run)[0] == 1 for dc in exp.domains):
-            paths.append(root / "wrf_radiation" / "RRTM_DATA")
-    return tuple(paths)
+            relatives.append("wrf_radiation/RRTM_DATA")
+    return {relative: _table_asset(case_data, relative)
+            for relative in relatives}
+
+
+def _table_files(case_data, exp=None) -> tuple[Path, ...]:
+    return tuple(_table_asset_map(case_data, exp).values())
 
 
 def _select_contiguous_times(times: Sequence[datetime], interval_s: float | None
@@ -712,9 +773,11 @@ def build_input_catalog(case_data) -> InputCatalog:
         catalog = replace(catalog, static_highres=highres)
     from gpuwm.ingest.water_temperature import (
         resolve_water_temperature_policy)
+    from gpuwm.ingest.soil_downscale import declared_soil_texture_downscale
     catalog = replace(
         catalog,
-        water_temperature_policy=resolve_water_temperature_policy(case_data))
+        water_temperature_policy=resolve_water_temperature_policy(case_data),
+        soil_texture_downscale=declared_soil_texture_downscale(case_data))
     return catalog
 
 
@@ -1073,8 +1136,15 @@ def _check_orography(exp, case_data, catalog
         checks.append(
             f"source orography shape/dtype/finiteness d{dc.grid_id:02d}")
         try:
-            import netCDF4
-            with netCDF4.Dataset(path) as dataset:
+            # The VALUES come out of Drew's Rust decoder, in the split
+            # `gpuwm.downscale._parent_geometry` established: a source
+            # orography field is meteorological data whoever wrote the file,
+            # and reading one is decode work.  `np.isfinite` below stays in
+            # Python because it is a validation predicate over data the
+            # bridge has already delivered, not a second decode of it.
+            from gpuwm import netcdf_bridge          # noqa: PLC0415
+
+            with netcdf_bridge.open_dataset(path) as dataset:
                 if variable not in dataset.variables:
                     issues.append(PreflightIssue(
                         "orography-variable",
@@ -1088,10 +1158,10 @@ def _check_orography(exp, case_data, catalog
                 shape = tuple(raw.shape)
                 expected = (int(dc.run.ny), int(dc.run.nx))
                 if shape == expected:
-                    value = np.asarray(raw[:])
+                    selector: object = slice(None)
                 elif len(shape) == 3 and shape[0] == 1 \
                         and shape[1:] == expected:
-                    value = np.asarray(raw[0])
+                    selector = 0
                 else:
                     issues.append(PreflightIssue(
                         "orography-shape",
@@ -1100,13 +1170,20 @@ def _check_orography(exp, case_data, catalog
                         path=path, variable=variable,
                     ))
                     continue
-                if not np.issubdtype(value.dtype, np.number):
+                # Asked of the STORED type from the inventory, ahead of any
+                # decode.  The decoder promotes every numeric type to f64, so
+                # asking the decoded array would always answer "numeric" --
+                # and a character orography cannot be decoded at all, so the
+                # question has to be settled before the values are pulled.
+                if not np.issubdtype(raw.dtype, np.number):
                     issues.append(PreflightIssue(
                         "orography-dtype",
-                        f"d{dc.grid_id:02d} orography dtype {value.dtype} "
+                        f"d{dc.grid_id:02d} orography dtype {raw.dtype} "
                         "is not numeric",
                         path=path, variable=variable,
                     ))
+                    continue
+                value = np.asarray(raw[selector])
                 bad = ~np.isfinite(value)
                 if np.any(bad):
                     index = _first_index(bad)
@@ -1310,12 +1387,16 @@ _RRTMGP_DIMS = MappingProxyType({
 })
 
 
-def _check_table_hash(path: Path, root: Path,
+def _check_table_hash(path: Path, relative: str,
                       issues: list[PreflightIssue]) -> bool:
-    try:
-        relative = path.relative_to(root).as_posix()
-    except ValueError:
-        relative = path.name
+    """Pinned-checksum check for one table, keyed by its declared name.
+
+    ``relative`` is the ``gpuwm/data``-relative spelling ``_TABLE_SHA256``
+    is written against.  It is PASSED rather than derived from ``path``,
+    because the two no longer share a root: since 2.5.0 ``rrtmgp/`` and
+    ``thompson/tables/`` resolve inside the ``gpuwm-data`` companion.
+    """
+
     expected = _TABLE_SHA256.get(relative)
     if not path.is_file():
         issues.append(PreflightIssue(
@@ -1336,11 +1417,11 @@ def _check_tables(case_data, exp=None) -> tuple[list[PreflightIssue], list[str]]
     checks = ["KF LUT checksum/shape/dtype/finiteness",
               "RRTMGP NetCDF checksum/shape/dtype/finiteness",
               "Noah tables checksum/shape/dtype/finiteness"]
-    root = _table_root(case_data)
-    paths = _table_files(case_data, exp)
-    present = {path: _check_table_hash(path, root, issues) for path in paths}
+    assets = _table_asset_map(case_data, exp)
+    present = {path: _check_table_hash(path, relative, issues)
+               for relative, path in assets.items()}
 
-    kf_path = root / "kf_lutab" / "kf_lutab.npz"
+    kf_path = assets["kf_lutab/kf_lutab.npz"]
     if present.get(kf_path):
         expected = {
             "temperature": ((250, 220), np.dtype("float32")),
@@ -1398,8 +1479,8 @@ def _check_tables(case_data, exp=None) -> tuple[list[PreflightIssue], list[str]]
         netCDF4 = None
     if netCDF4 is not None:
         for name, dimensions in _RRTMGP_DIMS.items():
-            path = root / "rrtmgp" / name
-            if not present.get(path):
+            path = assets.get(f"rrtmgp/{name}")
+            if path is None or not present.get(path):
                 continue
             try:
                 with netCDF4.Dataset(path) as dataset:
@@ -1453,7 +1534,7 @@ def _check_tables(case_data, exp=None) -> tuple[list[PreflightIssue], list[str]]
                     path=path,
                 ))
 
-    rrtm_path = root / "wrf_radiation" / "RRTM_DATA"
+    rrtm_path = assets.get("wrf_radiation/RRTM_DATA")
     if rrtm_path in present:
         checks.append("WRF RRTM_DATA checksum/record-layout/finiteness")
         if present[rrtm_path]:
@@ -1474,7 +1555,7 @@ def _check_tables(case_data, exp=None) -> tuple[list[PreflightIssue], list[str]]
                     path=rrtm_path,
                 ))
 
-    noah_dir = root / "noah_tables"
+    noah_dir = assets["noah_tables/LANDUSE.TBL"].parent
     if all(present.get(noah_dir / name) for name in
            ("LANDUSE.TBL", "VEGPARM.TBL", "SOILPARM.TBL", "GENPARM.TBL")):
         try:

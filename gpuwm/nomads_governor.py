@@ -328,11 +328,56 @@ def pace(url: str, *, sleeper=time.sleep) -> None:
             sentinel.release()
 
 
-def mark_rate_limited(url: str, reason: str) -> None:
-    """Record a node-wide cooldown after an over-rate-limit answer."""
+def retry_after_seconds(error: BaseException) -> float | None:
+    """The server's own ``Retry-After`` ask, in seconds, or ``None``.
+
+    Read off an :class:`HTTPError` (whose ``headers`` carry the
+    answer's header block).  Both spellings the header allows are
+    parsed: delay-seconds and an HTTP-date.  Junk, absence, and asks
+    that are already in the past all yield ``None`` -- an instruction
+    that cannot be read is not an instruction.
+    """
+
+    headers = getattr(error, "headers", None)
+    if headers is None:
+        return None
+    try:
+        raw = headers.get("Retry-After")
+    except AttributeError:
+        return None
+    if raw is None:
+        return None
+    raw = str(raw).strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        import email.utils
+        try:
+            when = email.utils.parsedate_to_datetime(raw) if raw else None
+        except ValueError:
+            return None
+        if when is None:
+            return None
+        seconds = when.timestamp() - time.time()
+    return seconds if seconds > 0.0 else None
+
+
+def mark_rate_limited(url: str, reason: str,
+                      retry_after_s: float | None = None) -> None:
+    """Record a node-wide cooldown after an over-rate-limit answer.
+
+    ``retry_after_s`` is the server's own ``Retry-After`` instruction,
+    when it sent one.  It can only EXTEND the cooldown beyond this
+    node's configured one, never shorten it: the state file is shared
+    with the Rust client, and honoring a header must not make the
+    node-wide governor looser than either twin's own configuration.
+    """
 
     if not is_nomads_url(url):
         return
+    cooldown = cooldown_ms()
+    if retry_after_s is not None and retry_after_s > 0.0:
+        cooldown = max(cooldown, int(retry_after_s * 1000.0))
     state = state_path()
     lock = _lock_path(state)
     sentinel = _acquire(lock)
@@ -342,7 +387,7 @@ def mark_rate_limited(url: str, reason: str) -> None:
         if existing > now:
             log_event(url, "cooldown_existing", reason)
             return
-        write_state(state, last_request_ms, now + cooldown_ms())
+        write_state(state, last_request_ms, now + cooldown)
         log_event(url, "cooldown", reason)
     finally:
         if sentinel is not None:
@@ -382,7 +427,8 @@ def paced_urlopen(request: Request | str, *, timeout: float | None = None,
                     else opener(request, timeout=timeout))
     except Exception as error:
         if _is_rate_limit(error):
-            mark_rate_limited(url, type(error).__name__)
+            mark_rate_limited(url, type(error).__name__,
+                              retry_after_s=retry_after_seconds(error))
         log_event(url, kind, f"error:{type(error).__name__}",
                   _now_ms() - started)
         raise
@@ -421,6 +467,7 @@ __all__ = [
     "min_interval_ms",
     "pace",
     "paced_urlopen",
+    "retry_after_seconds",
     "read_state",
     "state_path",
     "write_state",

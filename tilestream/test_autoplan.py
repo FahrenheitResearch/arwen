@@ -398,6 +398,74 @@ def test_redundancy_limit_refuses_a_tile_that_is_almost_all_halo():
     assert p.window_nx <= 64, p.window_nx     # 25 + 2*16, one cell of rounding
 
 
+def test_a_domain_too_small_to_tile_names_geometry_not_vram():
+    """The scaling lane's finding, reproduced and pinned: a SMALLER forced-
+    tiled arm died CannotPlan while every larger arm planned fine.
+
+    At 32^2 non-periodic and halo 16 the transport itself is the constraint:
+    ``spec.plan_tiles`` refuses ``tile + 2*halo > nx`` on a clamped axis, so
+    tile_nx <= 32 - 32 = 0 and NO tile is legal at ANY budget.  The refusal
+    used to say "no tile fits in 13.26 GiB of VRAM ... the smallest legal
+    compute window at halo 16 is 33^2" -- a resource a bigger card would fix
+    and a window the transport would refuse, both false.  A refusal names
+    the concrete breakage or it does not exist; this one's breakage is the
+    domain's own geometry.
+    """
+    small = A._config_for_rung(32, 32, 49, "dry", periodic=False,
+                               specified=True)
+    try:
+        A.plan(small, M5090, prefer_resident=False)
+    except A.CannotPlan as exc:
+        assert exc.resource == "geometry", (exc.resource, str(exc))
+        assert "non-periodic" in str(exc), str(exc)
+        assert "resident" in str(exc), (
+            f"the remedy for a domain this small is to run it resident, and "
+            f"the refusal has to say so: {exc}")
+        assert "GiB of VRAM" not in str(exc), (
+            f"the refusal still blames the card for a geometry bound: {exc}")
+    else:
+        raise AssertionError("a 32^2 non-periodic domain planned a tiling "
+                             "the transport cannot serve at halo 16")
+    # CONTROL 1: the same domain is not cursed -- resident preference plans.
+    p = A.plan(small, M5090)
+    assert p.mode == "resident", p.explain()
+    # CONTROL 2, the inversion itself: a LARGER domain, same machine, same
+    # forced tiling, plans.  The boundary is the domain size, not the card.
+    bigger = A._config_for_rung(64, 64, 49, "dry", periodic=False,
+                                specified=True)
+    p2 = A.plan(bigger, M5090, prefer_resident=False)
+    assert p2.mode == "tiled", p2.explain()
+
+
+def test_redundancy_refusal_names_geometry_when_the_domain_caps_the_tile():
+    """The same misattribution one size up, where tiles EXIST but are capped.
+
+    At 48^2 non-periodic and halo 16 the transport admits tiles up to
+    48 - 32 = 16, so the best legal tiling does 9x the necessary work AT ANY
+    BUDGET -- yet the refusal said "This is a VRAM problem".  Its sibling
+    (``test_redundancy_limit_refuses_a_tile_that_is_almost_all_halo`` above)
+    is the case where VRAM really is the cap, and it must KEEP saying vram --
+    the two tests together pin that the resource label is derived, not
+    hardcoded either way.
+    """
+    cfg = A._config_for_rung(48, 48, 49, "dry", periodic=False,
+                             specified=True)
+    try:
+        A.plan(cfg, M5090, prefer_resident=False)
+    except A.CannotPlan as exc:
+        assert exc.resource == "geometry", (exc.resource, str(exc))
+        assert "max_redundancy=None" in str(exc), (
+            f"the run-it-anyway remedy was lost from the refusal: {exc}")
+        assert "VRAM problem" not in str(exc), str(exc)
+    else:
+        raise AssertionError("a 9x-redundant tiling was planned without "
+                             "complaint on a 48^2 clamped domain")
+    # CONTROL: the refusal is the limit's, not a blanket one -- lifted, the
+    # same case plans, at the redundancy the message quoted.
+    p = A.plan(cfg, M5090, prefer_resident=False, max_redundancy=None)
+    assert p.mode == "tiled" and p.redundancy > 4.0, p.explain()
+
+
 # --------------------------------------------------------------------------
 # geometry
 # --------------------------------------------------------------------------
@@ -541,6 +609,114 @@ def test_the_fixed_cost_is_not_charged_per_buffer():
         "is what a per-BUFFER fixed cost would do; the measurement says the "
         "fixed part is per process")
     assert fp.buffer_fixed_bytes < fp.process_fixed_bytes
+
+
+def test_the_fixed_cost_is_not_charged_per_domain():
+    """The same measurement, restated for DOMAINS -- a tree is one process.
+
+    ``vram_bytes`` prices ONE domain in ONE process, context included, so a
+    caller that walks a tree and subtracts it per domain charges the CUDA
+    context and the k-distribution tables once per GRID.  At the ``full``
+    rung that is 3.760 GiB of phantom bytes for every domain after the
+    first, and 7.519 GiB on a three-domain tree -- which is what refused a
+    tree priced at 12.4 GiB on a card with 15.2 GiB free.
+
+    The discriminating number is the DIFFERENCE between the whole price and
+    the marginal one: it must be the process overhead exactly, and it must
+    not move with the window or the buffer count, because none of what is
+    in it is per window or per buffer.
+    """
+    fp = A.FOOTPRINTS["full"]
+    overhead = fp.process_overhead_bytes
+    assert abs(overhead / GIB - 3.760) < 0.005, overhead / GIB
+    for window, nbuffers in ((331 * 331 * 49, 1), (64 * 64 * 49, 3),
+                             (1024 * 512 * 49, 2)):
+        whole = fp.vram_bytes(window, nbuffers)
+        marginal = fp.marginal_bytes(window, nbuffers)
+        assert abs((whole - marginal) - overhead) < 1.0, (window, nbuffers)
+        assert marginal > 0
+    cells = 331 * 331 * 49
+    correct = overhead + 3 * fp.marginal_resident_bytes(cells)
+    per_domain = 3 * fp.resident_bytes(cells)
+    assert abs((per_domain - correct) / GIB - 7.519) < 0.01, (
+        f"the phantom on a three-domain tree is "
+        f"{(per_domain - correct) / GIB:.3f} GiB, not 7.519")
+
+
+def test_every_rung_pays_its_overhead_once_and_only_once():
+    """CONTROL for the above: the identity must hold at EVERY rung.
+
+    A ``marginal_bytes`` that happened to be right at one rung and wrong at
+    another would pass the test above and still mis-price a mixed tree,
+    which is the shape a nest ladder with radiation on one rung actually is.
+    """
+    for name, fp in A.FOOTPRINTS.items():
+        overhead = fp.process_overhead_bytes
+        assert overhead >= A.CUDA_CONTEXT_BYTES, name
+        assert abs(fp.resident_bytes(1 << 20)
+                   - fp.marginal_resident_bytes(1 << 20)
+                   - overhead) < 1.0, name
+
+
+# --------------------------------------------------------------------------
+# the radiation transient: reserved, never claimed
+# --------------------------------------------------------------------------
+
+def test_the_radiation_transient_is_reserved_and_replaces_the_headroom():
+    """MEASURED, both sides, on the run in the module docstring.
+
+    A three-domain 9/3/1 km forecast on a 15.92 GiB card with 15.245 GiB
+    free peaked at 15.46 GiB against a 12.72 GiB steady state: +2.74 GiB of
+    RRTMGP per-call transient that this model did not price.  The reservation
+    is the LARGER of the percentage headroom and that measurement, never
+    their sum -- stacking them plans a tiling 40% smaller than the one that
+    ran, and charging neither plans the tiling that would have died.
+    """
+    free = int(15.245 * GIB)
+    machine = A.Machine(vram_bytes=free, host_bytes=int(123.25 * GIB))
+    full = A.FOOTPRINTS["full"]
+    headroom = free - machine.vram_budget_bytes
+
+    assert full.radiation_transient_bytes > headroom, (
+        "this test is only meaningful while the measured transient is the "
+        "bigger of the two on this card; re-derive it")
+    budget = A.budget_for(machine, full)
+    assert abs(budget / GIB - 12.505) < 0.01, budget / GIB
+    # NOT the sum: that is 11.285 GiB and it buys a smaller tile than the
+    # tiling that actually ran.
+    stacked = machine.vram_budget_bytes - full.radiation_transient_bytes
+    assert budget > stacked
+    # and NOT ignored: that is the 14.025 GiB budget which selects the
+    # tiling the measured run's own analysis says would have been fatal.
+    assert budget < machine.vram_budget_bytes
+
+
+def test_a_rung_without_radiation_is_left_exactly_where_it_was():
+    """CONTROL: the reservation must be invisible where nothing was measured.
+
+    Every dry and moist plan in this project predates the constant, so if
+    the reservation leaked into them their tile sizes would move and the
+    measured capacity table above would stop describing the planner.
+    """
+    machine = _machine(12, 64)
+    for name in ("dry", "moist"):
+        fp = A.FOOTPRINTS[name]
+        assert fp.radiation_transient_bytes == 0, name
+        assert A.budget_for(machine, fp) == machine.vram_budget_bytes, name
+
+
+def test_a_card_big_enough_makes_the_percentage_the_binding_reservation():
+    """CONTROL: the ``max`` really is a max, in both directions.
+
+    Above ~34 GiB the 8% headroom is the larger of the two and the measured
+    transient stops binding.  Without this, ``budget_for`` could be
+    subtracting the transient unconditionally and every test above would
+    still pass.
+    """
+    big = A.Machine(vram_bytes=80 * GIB, host_bytes=256 * GIB)
+    fp = A.FOOTPRINTS["full"]
+    assert 0.08 * big.vram_bytes > fp.radiation_transient_bytes
+    assert A.budget_for(big, fp) == big.vram_budget_bytes
 
 
 def test_buffers_never_exceed_the_tile_count():
@@ -710,6 +886,44 @@ def _fixed_cost_per_buffer():
     return lambda: (A.FOOTPRINTS.clear(), A.FOOTPRINTS.update(saved))
 
 
+def _fixed_cost_per_domain():
+    """The defect this lane closed: the process overhead charged per GRID.
+
+    ``marginal_bytes`` answering the WHOLE price is exactly what the tree
+    walk did before -- every domain paying for its own CUDA context and its
+    own copy of the k-distribution tables.
+    """
+    original = A.Footprint.marginal_bytes
+    A.Footprint.marginal_bytes = lambda self, w, n: self.vram_bytes(w, n)
+    return lambda: setattr(A.Footprint, "marginal_bytes", original)
+
+
+def _stack_the_transient_on_the_headroom():
+    """The tempting wrong arm: reserve the percentage AND the measurement.
+
+    It looks safer and it is not: on the card this was measured on it plans
+    a 175x250 tiling where a 175x375 one ran, so it makes every radiation
+    forecast slower to protect against bytes already withheld.
+    """
+    original = A.budget_for
+    A.budget_for = lambda machine, fp: max(
+        0, machine.vram_budget_bytes - fp.radiation_transient_bytes)
+    return lambda: setattr(A, "budget_for", original)
+
+
+def _ignore_the_radiation_transient():
+    """The other wrong arm: price the radiation call's transient at zero.
+
+    The state before this constant existed.  It hands the freed budget to
+    the tile search, which spends it on a tile whose steady footprint plus
+    the transient is past the card -- dead at the first radiation call.
+    """
+    saved = dict(A.RADIATION_TRANSIENT_BYTES)
+    A.RADIATION_TRANSIENT_BYTES.update({k: 0 for k in saved})
+    return lambda: (A.RADIATION_TRANSIENT_BYTES.clear(),
+                    A.RADIATION_TRANSIENT_BYTES.update(saved))
+
+
 def _drop_the_ragged_overhang():
     original = A.ring_arena_fraction
 
@@ -754,6 +968,22 @@ BREAKAGES = (
     ("the fixed cost is charged per BUFFER, as was assumed",
      _fixed_cost_per_buffer,
      ("test_the_fixed_cost_is_not_charged_per_buffer",)),
+    ("the fixed cost is charged per DOMAIN, as the tree walk did",
+     _fixed_cost_per_domain,
+     ("test_the_fixed_cost_is_not_charged_per_domain",
+      "test_every_rung_pays_its_overhead_once_and_only_once")),
+    # NOT ``test_a_rung_without_radiation_is_left_exactly_where_it_was``:
+    # the stacked form subtracts zero at a rung with no transient, so that
+    # test cannot see this breakage and listing it would be a control that
+    # never fires.  It is the control for the reservation LEAKING, which is
+    # a different mistake.
+    ("the radiation transient is stacked on the percentage headroom",
+     _stack_the_transient_on_the_headroom,
+     ("test_the_radiation_transient_is_reserved_and_replaces_the_headroom",
+      "test_a_card_big_enough_makes_the_percentage_the_binding_reservation")),
+    ("the radiation transient is not priced at all",
+     _ignore_the_radiation_transient,
+     ("test_the_radiation_transient_is_reserved_and_replaces_the_headroom",)),
     ("the ring model drops the ragged overhang", _drop_the_ragged_overhang,
      ("test_ring_arena_fraction_matches_every_measured_plan",
       "test_ring_model_needs_the_ragged_overhang_term")),

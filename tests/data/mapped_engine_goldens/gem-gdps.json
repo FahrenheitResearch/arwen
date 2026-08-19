@@ -1,0 +1,30 @@
+{
+  "decode": {
+    "mapping": {
+      "name": "rw-wps-gem-gdps-grib2.mapping.json",
+      "sha256": "75811eab726d9217cca4abe224162ccdfb717457f4f0e39faefbf1ef08e1c98a"
+    },
+    "refusal": {
+      "message": "air_temperature vertical coverage mismatch; missing=[100.0, 500.0, 1000.0, 2000.0, 3000.0, 5000.0, 10000.0, 15000.0, 17500.0, 20000.0, 22500.0, 25000.0, 27500.0, 30000.0, 35000.0, 40000.0, 45000.0, 50000.0, 55000.0, 60000.0, 65000.0, 70000.0, 75000.0, 80000.0, 87500.0, 90000.0, 92500.0, 95000.0, 97000.0, 98500.0, 100000.0, 101500.0], extra=[]",
+      "type": "ValueError"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "gem-gdps",
+    "verdict": "REFUSED"
+  },
+  "inspect": {
+    "refusal": {
+      "message": "air_temperature vertical coverage mismatch; missing=[100.0, 500.0, 1000.0, 2000.0, 3000.0, 5000.0, 10000.0, 15000.0, 17500.0, 20000.0, 22500.0, 25000.0, 27500.0, 30000.0, 35000.0, 40000.0, 45000.0, 50000.0, 55000.0, 60000.0, 65000.0, 70000.0, 75000.0, 80000.0, 87500.0, 90000.0, 92500.0, 95000.0, 97000.0, 98500.0, 100000.0, 101500.0], extra=[]",
+      "type": "ValueError"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "gem-gdps",
+    "verdict": "REFUSED"
+  },
+  "measured_on": {
+    "machine": "AMD64",
+    "system": "Windows"
+  },
+  "schema": "gpuwm-mapped-parity-digest-v1",
+  "source": "gem-gdps"
+}

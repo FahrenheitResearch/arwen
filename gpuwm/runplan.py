@@ -3440,31 +3440,47 @@ def render_catalog() -> dict[str, Any]:
     """What may be put in ``render_products``, as JSON.
 
     The renderer's own answer, asked rather than transcribed.  Which
-    engine speaks is part of the answer, not an implementation detail:
-    the rust catalog is much larger than the matplotlib fallback's five,
-    so a picker built against one and run against the other would offer
-    products that do not exist.  The engine is named in the document.
+    engine speaks is part of the answer, not an implementation detail,
+    so the engine is named in the document.
 
     ``render.py`` already refuses to keep a second copy of the rust
     catalog for exactly this reason; this keeps that promise across the
     machine seam too.
+
+    There is one engine to ask now.  ``--engine auto`` stopped degrading
+    to the matplotlib engine when the render law's one-fallback clause
+    was enforced (audit F7), so a box with no usable ``rw_wrfbatch``
+    answers ``engine: null``, ``products: null`` and the staging remedy
+    in ``error`` -- which is a document a picker can act on, unlike the
+    five-name list it used to be handed from a different catalog.
     """
 
-    from gpuwm.render import PRODUCTS, _resolve_engine, fallback_notice
+    from gpuwm.render import _resolve_engine, matplotlib_workaround_notice
 
-    engine, why = _resolve_engine("auto")
     document: dict[str, Any] = {
         "schema": CATALOG_SCHEMA,
-        "engine": engine,
-        "engine_notice": fallback_notice(engine, why),
         "spec": "a comma-separated list of the names below, or 'all'; "
                 "'none' skips rendering entirely",
         "skip_token": "none",
     }
-    if engine == "matplotlib":
-        document["products"] = [{"name": name} for name in PRODUCTS]
-        document["source"] = "gpuwm.render.PRODUCTS (matplotlib engine)"
+    try:
+        engine, _why = _resolve_engine("auto")
+    except (RuntimeError, FileNotFoundError) as refusal:
+        # `auto` no longer degrades to the matplotlib engine (render
+        # law, audit F7), so "which products may I ask for" has no
+        # answer on a box with no renderer.  The refusal is the answer,
+        # carried into the document rather than raised through a JSON
+        # front door -- a picker that gets `products: null` plus the
+        # staging remedy can say so; one that gets a traceback cannot.
+        document.update({
+            "engine": None,
+            "engine_notice": None,
+            "products": None,
+            "error": str(refusal).split("[[explain]]")[0].strip(),
+        })
         return document
+    document["engine"] = engine
+    document["engine_notice"] = matplotlib_workaround_notice(engine)
 
     import subprocess
 

@@ -49,6 +49,29 @@ _WHEEL_BROKEN = {
     "toolkit_headers": "ImportError: libnvrtc.so.12: cannot open",
     "cuda_path": "/usr/local/cuda",
 }
+
+#: What CuPy 14 ACTUALLY says on a driver-only box, verbatim.  MEASURED
+#: 2026-08-17 on weather-node-1 (Ubuntu, 610.43.02 driver, no nvcc, no
+#: /usr/local/cuda, cupy-cuda13x 14.1.1 on python3.14): every one of
+#: cuBLAS, a self-contained ``RawModule`` and a ``cupy.arange().sum()``
+#: reduction failed with this one string.
+#:
+#: Two things in it drive the checks below.  First, CuPy 14 raises it
+#: from the *first device call of any kind*, not only from a reduction --
+#: so the cuBLAS pairing probe meets it too, and the branch that owns
+#: that probe used to answer a header gap with "your wheel is wrong for
+#: this box".  Second, CuPy's own hint hardcodes ``cupy-cuda12x`` at
+#: every major; pasted on this CUDA-13 box it installs the wheel that
+#: cannot load cuBLAS here, so doctor may not simply echo it.
+_CUPY14_HEADERS_MESSAGE = (
+    "RuntimeError: Failed to find CUDA headers. Please install CUDA "
+    "toolkit headers (e.g., pip install cupy-cuda12x[ctk]) or specify "
+    "CUDA_PATH environment variable.")
+_HEADERS_KILL_EVERYTHING = {
+    "self_contained": _CUPY14_HEADERS_MESSAGE,
+    "toolkit_headers": _CUPY14_HEADERS_MESSAGE,
+    "cuda_path": "",
+}
 _BOTH_OK = {
     "self_contained": "ok", "toolkit_headers": "ok",
     "cuda_path": "/usr/local/cuda",
@@ -109,13 +132,20 @@ def test_headers_missing_is_named_as_headers_and_never_as_a_wheel(
     assert "gpuwm[gpu-cu12]" not in check.remedy
     assert "gpuwm[gpu-cu13]" not in check.remedy
     assert "gpuwm[gpu-" not in (check.action or "")
-    # The real remedy: an external toolkit, and CUDA_PATH pointed at it.
-    # The `nvidia` channel leads because that is the line that fixed a real
-    # 2.2.1 box; conda-forge survives as the named equivalent.
+    # The real remedy: a CUDA toolkit.  From 2.5.0 the one command that
+    # leads is CuPy's own `[ctk]` extra -- MEASURED to take a driver-only
+    # box from "Failed to find CUDA headers" on every device call to
+    # cuBLAS/NVRTC/reduction all ok, in one line, with no conda and no
+    # root.  The external-toolkit routes survive as named alternatives,
+    # because an estate that wants a real system toolkit still needs
+    # them and CUDA_PATH is how CuPy is pointed at one.
     assert "conda install -c nvidia cuda-toolkit" in check.remedy
     assert "conda install -c conda-forge cuda-toolkit" in check.remedy
     assert "CUDA_PATH" in check.remedy
-    assert check.action.startswith("conda install -c nvidia cuda-toolkit")
+    if box_major is None:
+        assert check.action.startswith("nvidia-smi")
+    else:
+        assert check.action == f"pip install 'cupy-cuda{box_major}x[ctk]'"
 
 
 @pytest.mark.parametrize("box_major", (12, 13))
@@ -211,7 +241,70 @@ def test_a_probe_that_would_not_run_still_prints_the_real_remedy(monkeypatch):
     assert check.status == "missing"
     assert not check.blocking
     assert "conda install -c nvidia cuda-toolkit=13" in check.remedy
-    assert check.action == "conda install -c nvidia cuda-toolkit=13"
+    assert check.action == "pip install 'cupy-cuda13x[ctk]'"
+
+
+# --------------------------------------------------------------------------
+# F2, THE CIRCULAR REMEDY.  A driver-only CUDA-13 box installs the wheel its
+# CUDA major asks for, `import cupy` succeeds, and every device call dies on
+# "Failed to find CUDA headers".  Through 2.4.1 doctor answered that with
+#
+#     pip uninstall -y cupy-cuda13x
+#     pip install 'gpuwm[gpu-cu13]'
+#
+# -- remove the correct wheel, install the identical correct wheel, forever,
+# because the CuPy-wheel/box-major branch owns the cuBLAS probe and a header
+# gap looks like a failed cuBLAS load from there.  The fix is a failure CLASS
+# the checks read out of the message, and a command that works.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("box_major", (12, 13))
+def test_the_headers_remedy_leads_with_cupys_own_ctk_extra(monkeypatch,
+                                                           box_major):
+    """One line, matched to the box, and it is the FIRST command."""
+    check = _check(monkeypatch, _HEADERS_MISSING, box_major=box_major)
+    install = f"pip install 'cupy-cuda{box_major}x[ctk]'"
+    assert install in check.remedy
+    commands = [line.strip() for line in check.remedy.splitlines()
+                if line.strip() and not line.strip().startswith("#")]
+    assert commands[0] == install, commands
+    # ...and it is the ONLY thing the reader is asked to run.  Everything
+    # else in this block is an alternative, and an alternative that runs
+    # when the whole remedy is pasted is not an alternative.
+    assert commands == [install], commands
+    # The wheel for the OTHER major never appears: pasting it would give
+    # this box a CuPy that cannot load cuBLAS at all.
+    other = 12 if box_major == 13 else 13
+    assert f"cupy-cuda{other}x" not in check.remedy
+
+
+def test_the_headers_remedy_does_not_echo_cupys_own_wrong_major(monkeypatch):
+    """CuPy's message hardcodes ``cupy-cuda12x[ctk]`` at every major.
+
+    Pasted on a CUDA-13 box that is the wheel this project refuses by
+    name.  Doctor prints the major it read off the driver instead.
+    """
+    check = _check(monkeypatch, _HEADERS_KILL_EVERYTHING, box_major=13)
+    assert "pip install 'cupy-cuda13x[ctk]'" in check.remedy
+    assert "cupy-cuda12x" not in check.remedy
+
+
+def test_a_headers_gap_that_kills_even_a_self_contained_kernel_is_headers(
+        monkeypatch):
+    """CuPy 14 fails the no-include kernel too, and it is still not the wheel.
+
+    The probe's two-kernel split assumes a self-contained ``RawModule``
+    exercises NVRTC alone.  CuPy 14 raises the header error before it
+    compiles anything, so BOTH kernels fail and the old code fell through
+    to "NVRTC ships inside the cupy wheel, so this is the wheel" -- and
+    prescribed reinstalling the wheel that is present and fine.
+    """
+    check = _check(monkeypatch, _HEADERS_KILL_EVERYTHING, box_major=13)
+    assert check.status == "missing"
+    assert check.brief == "toolkit headers missing"
+    assert "gpuwm[gpu-" not in check.remedy
+    assert "wheel rather than the toolkit headers" not in check.detail
+    assert check.action == "pip install 'cupy-cuda13x[ctk]'"
 
 
 def test_the_check_is_in_the_default_estate(monkeypatch):
@@ -320,10 +413,63 @@ def test_the_field_case_gets_the_toolkit_and_not_the_gpuwm_extra(
                              box_major=box_major)
     assert check.status == "missing"
     assert "conda install -c nvidia cuda-toolkit" in check.remedy
-    assert check.action.startswith("conda install -c nvidia cuda-toolkit")
+    # The one command is the toolkit, and from 2.5.0 the toolkit route
+    # that leads is CuPy's own [ctk] extra -- one line, no conda, no
+    # administrator (see test_the_headers_remedy_leads_with_cupys_own_ctk_extra).
+    if box_major is None:
+        assert check.action.startswith("nvidia-smi")
+    else:
+        assert check.action == f"pip install 'cupy-cuda{box_major}x[ctk]'"
     # The advice that could not work is gone from this branch entirely.
     assert "gpuwm[gpu-" not in check.remedy
     assert "gpuwm[gpu-" not in check.action
+
+
+def _paired(monkeypatch, wheels, probe, *, box_major=13):
+    """``_cupy_check`` on a box where cupy IMPORTS and the device answers."""
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+    monkeypatch.setattr(doctor, "_import_probe",
+                        lambda module, distribution=None: (True, "14.1.1"))
+    monkeypatch.setattr(doctor, "_installed_cupy_wheels", lambda: wheels)
+    monkeypatch.setattr(doctor, "_cublas_pairing_probe", lambda: probe)
+    monkeypatch.setattr(doctor, "_driver_cuda_major", lambda: box_major)
+    return doctor._cupy_check()
+
+
+def test_the_driver_only_box_is_not_told_to_reinstall_the_wheel_it_has(
+        monkeypatch):
+    """F2 reproduced through the line the user reads, then closed.
+
+    Right wheel, right major, device present, cuBLAS dead on headers.
+    The old answer uninstalled cupy-cuda13x and installed the extra that
+    installs cupy-cuda13x.
+    """
+    check = _paired(
+        monkeypatch, [("cupy-cuda13x", 13)],
+        {"wheel_runtime": 13000, "driver": 13060, "devices": 1,
+         "cublas": _CUPY14_HEADERS_MESSAGE})
+    assert check.status == "missing" and check.blocking
+    # The command that works, verbatim, and it is the one command.
+    assert check.action == "pip install 'cupy-cuda13x[ctk]'"
+    assert "pip install 'cupy-cuda13x[ctk]'" in check.remedy
+    # The circle is broken: nothing here removes or reinstalls the wheel
+    # that is already correct for this box.
+    assert "pip uninstall" not in check.remedy
+    assert "gpuwm[gpu-" not in check.remedy
+    # ...and the diagnosis says which piece is missing, not "wrong wheel".
+    assert "header" in check.detail.lower()
+
+
+def test_a_real_wrong_wheel_still_gets_the_wheel_remedy(monkeypatch):
+    """The majors-disagree branch is untouched: that one IS the wheel."""
+    check = _paired(
+        monkeypatch, [("cupy-cuda12x", 12)],
+        {"wheel_runtime": 12090, "driver": 13020, "devices": 1,
+         "cublas": "ImportError: libcublas.so.12: cannot open shared "
+                   "object file: No such file or directory"},
+        box_major=13)
+    assert check.action == "pip install 'gpuwm[gpu-cu13]'"
+    assert "pip uninstall -y cupy-cuda12x" in check.remedy
 
 
 def test_a_missing_shared_library_still_gets_the_wheel_remedy(monkeypatch):

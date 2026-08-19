@@ -23,7 +23,9 @@ from base64 import urlsafe_b64encode
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import shutil
 import tarfile
 import zipfile
 
@@ -556,18 +558,26 @@ def _library_artifacts() -> tuple[bridge_assets.BundledArtifact, ...]:
                  if artifact.kind == "library")
 
 
-def test_the_release_ships_two_libraries_with_different_abi_symbols() -> None:
-    """The premise of the dispatch: two libraries, two handshakes.
+def test_the_release_ships_five_libraries_with_different_abi_symbols() -> None:
+    """The premise of the dispatch: each library has its OWN handshake.
 
     If this ever collapses to one library the dispatch cases below stop
     proving anything, and this one says so out loud rather than letting
-    them pass vacuously.
+    them pass vacuously.  The third library is the NetCDF writer behind
+    the default wrfout engine, which joined the bundle when the product
+    tape flipped onto it; the fourth is the static-field builder, which
+    joined when `build_static` flipped onto the Rust crate by default;
+    the fifth is the observation remap, which joined when
+    `gpuwm.verify.obs.regrid` flipped off scipy by default.
     """
 
     artifacts = _library_artifacts()
-    assert len(artifacts) == 2, [a.name for a in artifacts]
+    assert len(artifacts) == 5, [a.name for a in artifacts]
     symbols = {bridge_assets.library_abi_for(a.name)[0] for a in artifacts}
-    assert symbols == {"gpuwm_preprocess_cpu_abi_version", "bw_abi_version"}
+    assert symbols == {"gpuwm_preprocess_cpu_abi_version", "bw_abi_version",
+                       "gpuwm_ncwrite_abi_version",
+                       "gpuwm_static_abi_version",
+                       "gpuwm_obsregrid_abi_version"}
 
 
 @pytest.mark.parametrize("platform", bridge_assets.SUPPORTED_PLATFORMS)
@@ -706,3 +716,77 @@ def test_the_workflow_probe_reads_the_shared_table_not_its_own_copy() -> None:
     for symbol, _version in bridge_assets.LIBRARY_ABI.values():
         assert f'"{symbol}"' not in text, symbol
         assert f"'{symbol}'" not in text, symbol
+
+
+# ---------------------------------------------------------------------
+# PyPI's per-file cap
+# ---------------------------------------------------------------------
+# The upload is the LAST step of a cut: the tag is pushed and the
+# release assets are written before twine hands PyPI anything, so a file
+# over the cap burns a public tag that non-reproducible Rust builds
+# cannot be rebuilt behind.  The published pair's headroom is 8.07 MB
+# (wheel) and 4.75 MB (sdist) as measured on 2026-08-17, and a platform
+# wheel built in the same tree is 108.70 MB (win) / 111.70 MB (linux) --
+# over the cap outright.  So the verifier measures every distribution
+# file it can see, refuses the ones the cut is about to publish, and
+# records the rest.
+
+
+def _pad_archive(path: Path, extra_bytes: int) -> None:
+    """Grow a zip past a size threshold with incompressible bytes."""
+
+    with zipfile.ZipFile(path, "a", zipfile.ZIP_STORED) as archive:
+        archive.writestr("gpuwm/_size_probe.bin", os.urandom(extra_bytes))
+
+
+def test_a_published_wheel_over_the_cap_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundles, pins, manifest = _pack_and_pin(tmp_path, monkeypatch)
+    wheel, sdist = _build_dists(tmp_path, pins)
+    monkeypatch.setattr(verify_release_artifacts, "PYPI_FILE_CAP_BYTES", 4096)
+
+    with pytest.raises(SystemExit) as refusal:
+        _dry_run(tmp_path, bundles, pins, manifest, wheel, sdist)
+
+    message = str(refusal.value)
+    assert "per-file cap" in message, message
+    assert wheel.name in message, message
+    assert "after the tag is public" in message, message
+
+
+def test_a_platform_wheel_beside_the_pair_is_measured_not_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shape the cut is NOT publishing still gets a number.
+
+    A per-platform wheel built in the same tree lands in the same dist
+    directory, does not fit under the cap at this tip, and used to be
+    invisible to the receipt -- which named the universal wheel and
+    nothing else.
+    """
+
+    bundles, pins, manifest = _pack_and_pin(tmp_path, monkeypatch)
+    wheel, sdist = _build_dists(tmp_path, pins)
+    platform_wheel = wheel.parent / f"gpuwm-{VERSION}-py3-none-win_amd64.whl"
+    shutil.copyfile(wheel, platform_wheel)
+    _pad_archive(platform_wheel, 200_000)
+    # A cap the published pair clears with room and the padded platform
+    # wheel does not -- the shape this tip really has, in miniature.
+    monkeypatch.setattr(verify_release_artifacts, "PYPI_FILE_CAP_BYTES",
+                        100_000)
+
+    receipt = json.loads(
+        _dry_run(tmp_path, bundles, pins, manifest, wheel, sdist).read_text(
+            encoding="utf-8"))
+
+    by_name = {row["filename"]: row for row in receipt["distributions"]}
+    assert set(by_name) == {wheel.name, sdist.name, platform_wheel.name}
+    assert by_name[wheel.name]["published"] is True
+    assert by_name[wheel.name]["cap_verdict"] == "PASS"
+    measured = by_name[platform_wheel.name]
+    assert measured["published"] is False
+    assert measured["cap_verdict"] == "OVER"
+    assert measured["bytes"] == platform_wheel.stat().st_size
+    assert measured["headroom_bytes_vs_100e6"] < 0
+    assert receipt["pypi_file_cap_bytes"] == 100_000

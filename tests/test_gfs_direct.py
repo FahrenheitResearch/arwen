@@ -1465,3 +1465,92 @@ def test_the_adapter_prints_corridor_size_honesty_lines(
     assert "statics corridor d02: 900x900 child cells" in err
     assert "629.0 MB on disk" in err
     assert "no GPU residency" in err
+
+
+# ---------------------------------------------------------------------------
+# UX finding R2 (2026-08-18 walk C, step 5): the eta-ladder refusal on the
+# GFS/native direct routes speaks, in the mapped door's own voice.
+# ---------------------------------------------------------------------------
+
+def test_a_config_with_no_eta_ladder_is_refused_with_both_doors_named(
+        tmp_path):
+    """An import-namelist config declares a level count and no explicit
+    ladder -- the shape every stock WRF namelist has.  The mapped door
+    answers that in sentences (UX finding N6); this route answered
+    ``explicit eta_levels has shape (0,)`` with no remedy at all."""
+
+    from gpuwm.ingest.source_coverage import VerticalLadderRefusal
+
+    config = Path(__file__).parents[1] / "configs" / "gfs_wrf_direct_proof.toml"
+    baseline = load_experiment(config)
+    vertical = VerticalConfig(
+        eta_levels=(), p_top=0.0, hybrid_opt=2, etac=0.37)
+    exp = dataclasses.replace(baseline, vertical=vertical)
+    wps = tmp_path / "namelist.wps"
+    wps.write_text(_matching_wps(), encoding="utf-8")
+    with pytest.raises(VerticalLadderRefusal) as caught:
+        _validate_grid_and_vertical_contract(exp, wps)
+    nz = int(baseline.root.run.nz)
+    message = str(caught.value)
+    assert f"nz={nz}" in message
+    assert "no explicit eta_levels ladder" in message
+    remedy = caught.value.remedy
+    assert "eta_levels" in remedy
+    assert "[shared]" in remedy
+    assert "gpuwm domain" in remedy
+
+
+def test_a_malformed_eta_ladder_keeps_the_shape_error_and_gains_a_remedy(
+        tmp_path):
+    from gpuwm.ingest.source_coverage import VerticalLadderRefusal
+
+    config = Path(__file__).parents[1] / "configs" / "gfs_wrf_direct_proof.toml"
+    baseline = load_experiment(config)
+    nz = int(baseline.root.run.nz)
+    short = VerticalConfig(
+        eta_levels=tuple(float(value)
+                         for value in np.linspace(1.0, 0.0, nz)),
+        p_top=10_000.0, hybrid_opt=2, etac=0.37)
+    exp = dataclasses.replace(baseline, vertical=short)
+    wps = tmp_path / "namelist.wps"
+    wps.write_text(_matching_wps(), encoding="utf-8")
+    with pytest.raises(VerticalLadderRefusal) as caught:
+        _validate_grid_and_vertical_contract(exp, wps)
+    assert "shape" in str(caught.value)
+    assert "eta_levels" in caught.value.remedy
+
+
+def test_the_door_prints_the_ladder_refusal_with_its_remedy(
+        tmp_path, capsys, monkeypatch):
+    """Through ``python -m gpuwm.gfs_direct``: the refusal family owns
+    two lines -- the message and ITS remedy -- rather than being
+    flattened into the one-sentence handler with the remedy dropped."""
+
+    import gpuwm.gfs_direct as gfs_direct_module
+    from gpuwm.gfs_direct import main as gfs_main
+    from gpuwm.ingest.source_coverage import (
+        PREPARATION_REFUSAL_EXIT_CODE, VerticalLadderRefusal)
+
+    def refuse(**kwargs):
+        raise VerticalLadderRefusal(
+            "GFS direct adapter d01: the experiment config declares nz=49 "
+            "mass levels (WRF e_vert=50) and no explicit eta_levels ladder",
+            remedy="remedy: add an explicit eta_levels ladder")
+
+    monkeypatch.setattr(gfs_direct_module, "prepare_gfs_wrf", refuse)
+    code = gfs_main([
+        "--series", str(tmp_path / "series.tsv"),
+        "--cycle", "2026-08-18_18:00:00",
+        "--bridge", str(tmp_path / "bridge"),
+        "--wps-namelist", str(tmp_path / "namelist.wps"),
+        "--experiment-config", str(tmp_path / "case.toml"),
+        "--input-manifest", str(tmp_path / "manifest.json"),
+        "--input-manifest-sha256", "0" * 64,
+        "--output-root", str(tmp_path / "out"),
+    ])
+    captured = capsys.readouterr()
+    assert code == PREPARATION_REFUSAL_EXIT_CODE
+    assert captured.out == ""
+    assert "no explicit eta_levels ladder" in captured.err
+    assert "remedy: add an explicit eta_levels ladder" in captured.err
+    assert "Traceback" not in captured.err

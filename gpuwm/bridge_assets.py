@@ -1,12 +1,21 @@
 """``gpuwm fetch-bridges``: stage the prebuilt Rust artifacts.
 
-The pip wheel ships no compiled Rust.  Until this command existed the
-only way to get the GRIB decoders, the CPU preprocessing library, the
-fetch backbone, the batch renderer, the two radar front doors and the
-MRMS, Stage-IV, surface, GOES and European-composite front doors onto a
-wheel install was to clone the repository and run ``cargo build`` twice
--- a Rust toolchain, a 2.5 GB checkout and a few minutes of compiling,
-for sixteen files.
+A PLATFORM wheel now ships the compiled Rust itself: the artifacts below
+are staged into ``gpuwm/libexec/bridges`` by
+``tools/stage_wheel_bridges.py`` before the wheel is built, so on a
+platform a bundle exists for, ``pip install gpuwm`` is already complete
+and this command has nothing left to do.
+
+It remains the route for everyone else: the ``py3-none-any`` fallback
+wheel, which pip resolves wherever no platform bundle is published,
+carries no binaries at all.  Before either existed, the only way to get
+the GRIB decoders, the CPU preprocessing library, the fetch backbone,
+the batch renderer, the two radar front doors, the MRMS, Stage-IV,
+surface, GOES and European-composite front doors, the NetCDF decoder,
+the mapped decode engine and the observation remap onto a wheel install
+was to clone the repository and run ``cargo build`` three times -- a
+Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
+twenty-one files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -15,7 +24,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the sixteen artifacts of
+One bundle per platform, holding the twenty-one artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges``) -- the last rung of the
 resolution ladder every consumer already searches, so nothing else in
@@ -32,10 +41,16 @@ new lookup: ``rw_wrfbatch`` already resolves ``assets/basemap`` under
 its own ancestors, so a renderer staged at ``~/.gpuwm/bridges`` finds
 the shapefiles itself, with no environment variable set and no Python
 in the loop.  They travel in the bundle rather than the wheel because
-the wheel has no room: it is 74.6 MiB against PyPI's 100 MB per-file
-cap and the assets deflate to 20.2 MiB.  Binary and basemaps arriving
-by one mechanism is the point -- a renderer that draws a cyclone over
-a blank rectangle is what happens when they arrive by two.
+the wheel has no room, and that is measured rather than estimated:
+as of 2026-08-17 the platform wheels are 108.70 MB (win_amd64) and
+111.70 MB (manylinux_2_28_x86_64) against PyPI's 100 MB per-file cap --
+already over it before a byte of basemap, which deflates to 21.1 MB.
+The published pair is the pure one (91.93 MB wheel, 95.25 MB sdist);
+see ``tools/stage_wheel_bridges.py``'s docstring for the full table and
+what makes the platform pair uploadable.  So the binaries ship in the wheel and the
+basemaps do not -- which is the one place the "arrive by one mechanism"
+rule bends, and the reason a wheel-only install renders fields without
+the cartographic overlay until this command runs.
 
 Platform support is a capability check on the OS and machine
 architecture -- can this box run the bytes in that bundle -- and never
@@ -67,7 +82,7 @@ new bytes passing all three checks first.
 Offline and mirrors
 -------------------
 ``--from DIR`` stages from a local directory under identical
-verification: either the bundle archive itself, or the sixteen
+verification: either the bundle archive itself, or the twenty-one
 artifacts loose in that directory (what an air-gapped operator has
 after building them on a machine that does have a toolchain).
 ``GPUWM_BRIDGE_ASSET_URL_BASE`` overrides the download base URL; the
@@ -209,14 +224,16 @@ class BundledArtifact:
     vendored: bool = False
 
 
-#: The sixteen artifacts a bundle carries, in build order: the five
+#: The twenty-one artifacts a bundle carries, in build order: the five
 #: GRIB decoders and the CPU preprocessing library from the decoder
 #: workspace, then the fetch backbone, the batch renderer, the two radar
-#: front doors and the five observation front doors from the renderer
-#: workspace, then the region-global dealiasing library from its own
-#: vendored crate.  The environment variables are the ones the
-#: resolution ladder already honours, so a staged bundle and a
-#: hand-built tree are found by exactly the same code.
+#: front doors, the five observation front doors, the NetCDF decoder,
+#: the NetCDF writer, the static-field builder and the observation remap
+#: from the renderer workspace, then the region-global dealiasing library
+#: from its own vendored crate and the mapped decode engine from the
+#: engine workspace.  The environment variables are
+#: the ones the resolution ladder already honours, so a staged bundle
+#: and a hand-built tree are found by exactly the same code.
 #:
 #: ``rw_odim`` joined for the reason ``rw_nexrad`` did, one continent
 #: over.  European polar-volume ingest had a complete library path, a
@@ -318,6 +335,18 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_opera", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_OPERA",
         "European composite reflectivity (gpuwm obs opera)"),
+    # The NetCDF decoder.  It joined this list the moment NetCDF decode
+    # moved off `netCDF4.Dataset` and onto `netcrust`: from that commit
+    # `rw-wps --source netcdf` and every mapped NetCDF route REFUSE
+    # without it, by design and by name.  A bundle that omits it is a
+    # bundle that cannot read the one source format a user is most
+    # likely to bring of their own -- and the alternative, telling them
+    # to install a Rust toolchain, is the prerequisite this project
+    # otherwise never imposes.
+    BundledArtifact(
+        "rw_netcdf", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_NETCDF", "NetCDF sources (rw-wps --source netcdf, "
+        "gpuwm adapt, the mapped routes)"),
     # The dealiasing engine `--dealias` gets by default since 2026-08-12.
     # It joined this list the day it became the default and for the same
     # reason `rw_nexrad` did: a prerequisite of the shipped configuration
@@ -338,6 +367,79 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "GPUWM_DEALIAS_REGION_BRIDGE",
         "velocity dealiasing (--dealias, the default engine)",
         vendored=True),
+    # The NetCDF WRITER.  It joined this list the moment the product tape
+    # flipped onto it BY DEFAULT: from that commit `gpuwm sim` and every
+    # history write REFUSE without it, by design and by name
+    # (`gpuwm.io.wrfout.WrfoutWriter` names the breakage and the
+    # GPUWM_WRFOUT_WRITER=python workaround), so a wheel that omits it is
+    # a wheel that cannot write its own forecast.  The wrfinput/wrfbdy
+    # pair then flipped onto the same library, so such a wheel now cannot
+    # write its own WRF INPUT either -- `gpuwm prep` refuses the same way,
+    # naming GPUWM_WRFINPUT_WRITER=python.  Environment variable spelled
+    # to match gpuwm.io.nc_writer_bridge.NCWRITE_BRIDGE_ENV, and a test
+    # binds the two.
+    BundledArtifact(
+        "netcdf_writer", "library", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_NCWRITE_BRIDGE",
+        "wrfout history writes and the wrfinput/wrfbdy export "
+        "(both default engines)"),
+    # The STATIC-FIELD builder.  It joined this list the moment
+    # `build_static` and the ProjectedGrid array methods flipped onto the
+    # Rust crate BY DEFAULT (the static-rust-port lanes): from that
+    # commit every bare static build on a wheel without it is a reported
+    # WORKAROUND onto the numpy fallback -- a degradation, never the
+    # shipped configuration.  Environment variable spelled to match
+    # gpuwm.static.rust_bridge.STATIC_BRIDGE_ENV; a test binds the two
+    # (tests/test_static_rust_parity.py::TestEstateAndDoctor).
+    BundledArtifact(
+        "static_fields", "library", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_STATIC_BRIDGE",
+        "static-field builds (the default geogrid-equivalent builder)"),
+    # The MAPPED DECODE ENGINE, and the plainest case on this list.
+    # `gpuwm.mapped_engine_bridge.DEFAULT_ENGINE` is `rust`, so every
+    # mapped source -- the route almost every registered source reaches
+    # canonical frames through -- decodes in this binary on a bare run.
+    # It was left out of this tuple when the route flipped, and the
+    # measurement of what that costs is not a hypothetical: a fresh
+    # py3.14 wheel install reports `MISSING mapped decode engine ...
+    # blocks every mapped source, which is the default decode path`, and
+    # no gpuwm command could supply it -- `gpuwm fetch-bridges` staged a
+    # complete bundle and the gap survived, because the roster it reads
+    # is this one.  A wheel user's only route was a clone and a cargo
+    # build, for the DEFAULT decode path.  That is the rw_mpas_convert
+    # failure exactly, one layer more expensive: committed is not
+    # shipped, and the alternative -- telling every user to install a
+    # Rust toolchain -- is the prerequisite this project otherwise never
+    # imposes.
+    #
+    # It is the first entry from the engine workspace (`tools/rw_wps`),
+    # which builds `--locked --offline` from its own vendored closure
+    # exactly as the other two workspaces do.  The crate path and the
+    # environment variable are spelled out rather than imported from
+    # `gpuwm.mapped_engine_bridge` for the reason the dealiasing entry
+    # gives: this module is reached by `gpuwm fetch-bridges` on a fresh
+    # wheel and has no business importing the decode stack to read two
+    # strings.  `tests/test_bridge_fetch.py` binds both to that module's
+    # own constants.  NOT vendored: `crates/mapped-engine` is gpuwm's
+    # own crate beside the donor snapshot (VENDOR.md), so it is proved
+    # by the source-revision stamp its own `build.rs` injects, like
+    # every other gpuwm-authored artifact here.
+    BundledArtifact(
+        "gpuwm_mapped_engine", "executable", "tools/rw_wps",
+        "GPUWM_MAPPED_ENGINE_BIN",
+        "mapped-source decode (the default decode path)"),
+    # The OBSERVATION REMAP.  It joined this list the moment
+    # `gpuwm.verify.obs.regrid`'s plan build and apply flipped onto the
+    # Rust crate BY DEFAULT: from that commit every observation score on
+    # a wheel without it is a reported WORKAROUND onto the scipy
+    # fallback, whose exact-tie answers are cKDTree traversal order
+    # rather than a rule.  Environment variable spelled to match
+    # gpuwm.obs_regrid_bridge.OBSREGRID_BRIDGE_ENV; a test binds
+    # the two (tests/test_obs_regrid_rust_parity.py).
+    BundledArtifact(
+        "obs_regrid", "library", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_OBSREGRID_BRIDGE",
+        "observation remap plans (the default battery remap engine)"),
 )
 
 
@@ -358,6 +460,13 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
 LIBRARY_ABI: dict[str, tuple[str, int]] = {
     "gpuwm_preprocess_cpu": ("gpuwm_preprocess_cpu_abi_version", 1),
     "region_global_dealias": ("bw_abi_version", 1),
+    # Matches gpuwm.io.nc_writer_bridge.NCWRITE_ABI; a test binds them.
+    "netcdf_writer": ("gpuwm_ncwrite_abi_version", 1),
+    # Matches gpuwm.static.rust_bridge.STATIC_ABI; a test binds them.
+    "static_fields": ("gpuwm_static_abi_version", 1),
+    # Matches gpuwm.obs_regrid_bridge.OBSREGRID_ABI; a test
+    # binds them.
+    "obs_regrid": ("gpuwm_obsregrid_abi_version", 1),
 }
 
 
@@ -1022,7 +1131,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
     """Install the pinned artifacts sitting loose in ``source_dir``.
 
     What an air-gapped operator has after building on a machine that
-    does have a toolchain: sixteen files, no archive.  Same three
+    does have a toolchain: twenty-one files, no archive.  Same three
     checks, same atomic install.
     """
 
@@ -1035,7 +1144,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
             f"{source_dir} carries neither {bundle.filename} nor the loose "
             f"artifacts; missing {', '.join(absent)}")
     if absent:
-        # The sixteen artifacts are independent; an air-gapped operator
+        # The twenty-one artifacts are independent; an air-gapped operator
         # with the decoders but not the renderer gets the decoders,
         # verified, and doctor names what is still missing.
         warn(f"{source_dir} is missing {len(absent)} of "
@@ -1327,9 +1436,10 @@ def register_cli(subparsers) -> None:
         "fetch-bridges",
         help="download this platform's prebuilt Rust artifacts into "
              "~/.gpuwm/bridges -- the GRIB decoders and CPU preprocessing "
-             "library, the fetch backbone, the batch renderer, the "
-             "dealiasing engine and the radar, MRMS, Stage-IV, surface "
-             "and GOES observation front doors -- each one verified "
+             "library, the mapped decode engine, the fetch backbone, the "
+             "batch renderer, the dealiasing engine and the radar, MRMS, "
+             "Stage-IV, surface and GOES observation front doors -- each "
+             "one verified "
              "against the packaged SHA-256 pins before it is installed; "
              "idempotent when everything is already staged",
         # `description` and not `help` alone, because `gpuwm

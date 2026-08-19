@@ -12,6 +12,11 @@ import pytest
 
 import gpuwm.mapped_source as mapped_source
 from gpuwm.ingest.soil_contract import MAPPED_SOIL_TEMPERATURE
+
+#: The per-format subprocess decoder roles.  A NetCDF source must never
+#: resolve one, whichever engine reads it.
+_GRIB_DECODER_ROLES = frozenset(
+    {"grib1_bridge", "grib2_inventory", "grib2_dump"})
 from gpuwm.mapped_source import (
     INPUT_MANIFEST_SCHEMA,
     _GribRecord,
@@ -313,7 +318,16 @@ def test_netcdf_mapping_materializes_two_complete_canonical_frames(tmp_path):
         "CANONICAL_FRAMES_MATERIALIZED_NOT_STOCK_WRF_CERTIFIED"
     assert inspection["materialization"]["verdict"] == "PASS"
     assert inspection["grid"]["vertical_count"] == 3
-    assert inspection["decoders"] == {}
+    # `decoders` names the binaries that actually READ the bytes.  The
+    # Python route runs no subprocess decoder for NetCDF, so the inventory
+    # is empty; the Rust route decodes in process and records the engine
+    # itself, as it already does for every GRIB2 source.  Both answers are
+    # correct, and `decoders` is engine identity rather than decoded
+    # content -- it is the one member the parity battery masks.  So assert
+    # the property that must hold on EITHER route, which is the one this
+    # test was really pinning: no per-format GRIB subprocess tool went
+    # anywhere near a NetCDF source.
+    assert not (_GRIB_DECODER_ROLES & set(inspection["decoders"]))
 
 
 def test_regular_snapshot_conversion_rejects_source_land_soil_gap(tmp_path):
@@ -458,7 +472,13 @@ def test_netcdf_selector_stack_fails_closed_on_duplicate_or_missing_variable(
     )
     mapping_path = tmp_path / "missing.json"
     _write_mapping(mapping_path, mapping)
-    with pytest.raises(ValueError, match="stacked selector 3 has no matching"):
+    # A stack whose members are SPLIT is still refused, and the refusal now
+    # counts them: a source may spread its fields across files (20CRv3 ships
+    # thirteen), so "absent from this file" is only a fault when the rest of
+    # the stack is present in it.
+    with pytest.raises(
+        ValueError, match="stacked selector inventory is split across files: 3 of 4"
+    ):
         decode_mapped_source(mapping_path, [source])
 
 
@@ -734,10 +754,22 @@ def test_checked_in_real_grib2_and_netcdf_mappings_pin_new_semantics():
     era5 = load_mapping(root / "configs" / "rw-wps-era5-netcdf.mapping.json")
     assert era5["format"] == "netcdf"
     assert era5["fields"]["soil_temperature"]["selector_stack_axis"] == "soil"
+    # Both spellings, in stack order: ECMWF renamed these and files of both
+    # vintages are still in the wild, so the mapping accepts either rather
+    # than trading one break for the other.
     assert [
         selector["name"]
         for selector in era5["fields"]["volumetric_soil_moisture"]["selectors"]
-    ] == ["SWVL1", "SWVL2", "SWVL3", "SWVL4"]
+    ] == [
+        ["SWVL1", "swvl1"], ["SWVL2", "swvl2"],
+        ["SWVL3", "swvl3"], ["SWVL4", "swvl4"],
+    ]
+    assert era5["coordinates"]["vertical"]["selector"]["name"] == [
+        "level", "pressure_level"
+    ]
+    assert era5["coordinates"]["time"]["selector"]["name"] == [
+        "time", "valid_time"
+    ]
 
 
 def test_grib2_local_use_mapping_rejects_missing_table_authority(tmp_path):
@@ -815,3 +847,125 @@ def test_preserve_mask_policy_is_restricted_to_land_aware_soil(tmp_path):
     _write_mapping(path, mapping)
     with pytest.raises(ValueError, match="restricted to soil fields"):
         load_mapping(path)
+
+
+def _cycle_invariant_collection(
+    *, second_time_land: np.ndarray | None = None,
+) -> mapped_source._DecodedCollection:
+    """Two valid times; land_fraction decoded only at the first unless given.
+
+    The shape several agencies actually publish: the full state at every
+    forecast hour, the invariant surface identities (land mask, orography)
+    once per cycle at analysis time.
+    """
+
+    from types import MappingProxyType
+
+    start = datetime(2026, 7, 20, 0)
+    times = (start, start + timedelta(hours=1))
+    latitude = np.asarray([40.0, 41.0])
+    longitude = np.asarray([250.0, 251.0, 252.0])
+    levels = np.asarray([100000.0, 85000.0, 70000.0])
+
+    def direct(name, time, values, axes):
+        return mapped_source._DirectValue(
+            name=name, valid_time=time, member=None, source_cycle=start,
+            axes=axes, values=np.asarray(values, dtype=np.float64),
+            missing_count=0,
+            references=(f"fixture:{name}:{time.isoformat()}",),
+        )
+
+    three_d = {
+        "air_temperature": 280.0, "specific_humidity": 0.005,
+        "eastward_wind": 3.0, "northward_wind": -2.0,
+        "geopotential_height": 500.0,
+    }
+    surface = {
+        "surface_pressure": 100000.0, "terrain_height": 120.0,
+        "skin_temperature": 290.0, "air_temperature_2m": 288.0,
+        "specific_humidity_2m": 0.006, "eastward_wind_10m": 2.0,
+        "northward_wind_10m": -1.0,
+    }
+    fields: dict = {}
+    for index, time in enumerate(times):
+        for name, base in three_d.items():
+            fields[(time, None, name)] = direct(
+                name, time, np.full((3, 2, 3), base + index),
+                ("vertical", "y", "x"),
+            )
+        for name, base in surface.items():
+            fields[(time, None, name)] = direct(
+                name, time, np.full((2, 3), base + index), ("y", "x"),
+            )
+        for name, base in (
+            ("soil_temperature", 285.0), ("volumetric_soil_moisture", 0.3),
+        ):
+            fields[(time, None, name)] = direct(
+                name, time, np.full((4, 2, 3), base), ("soil", "y", "x"),
+            )
+    land = np.asarray([[1.0, 0.0, 1.0], [1.0, 1.0, 0.0]])
+    fields[(times[0], None, "land_fraction")] = direct(
+        "land_fraction", times[0], land, ("y", "x"),
+    )
+    if second_time_land is not None:
+        fields[(times[1], None, "land_fraction")] = direct(
+            "land_fraction", times[1], second_time_land, ("y", "x"),
+        )
+    cycles = {(time, None): start for time in times}
+    return mapped_source._DecodedCollection(
+        latitude=latitude, longitude=longitude, vertical_values=levels,
+        direct=MappingProxyType(fields),
+        source_cycles=MappingProxyType(cycles),
+        grid_fingerprint="fixture-grid",
+    )
+
+
+def test_cycle_invariant_refuses_netcdf_mappings_where_it_would_be_inert(tmp_path):
+    """The broadcast lives in GRIB frame assembly; NetCDF refuses at load.
+
+    This fixture's mapping is NetCDF-format.  Frame materialization no
+    longer carries a broadcast of its own, so a NetCDF field declared
+    ``time_binding: cycle_invariant`` would silently do nothing -- the
+    grammar refuses the declaration at load instead.  The broadcast and
+    its changed-record refusal are covered on the GRIB path by
+    ``test_mapped_time_invariants`` and
+    ``test_mapped_invariant_and_landmask``.
+    """
+
+    mapping = _mapping()
+    mapping["fields"]["land_fraction"]["time_binding"] = "cycle_invariant"
+    path = tmp_path / "mapping.json"
+    _write_mapping(path, mapping)
+    with pytest.raises(ValueError, match="NetCDF.*silently do nothing"):
+        load_mapping(path)
+
+
+def test_without_cycle_invariant_a_missing_time_still_refuses(tmp_path):
+    """The default is unchanged: absence at any valid time is a refusal."""
+
+    mapping = _mapping()
+    path = tmp_path / "mapping.json"
+    _write_mapping(path, mapping)
+    validated = load_mapping(path)
+
+    with pytest.raises(ValueError, match="lacks required fields.*land_fraction"):
+        mapped_source._materialize_frames(
+            validated, _cycle_invariant_collection(),
+            mapping_sha256="0" * 64, input_sha256={},
+        )
+
+
+def test_time_binding_grammar_is_closed(tmp_path):
+    mapping = _mapping()
+    mapping["fields"]["land_fraction"]["time_binding"] = "whenever"
+    path = tmp_path / "bad-scope.json"
+    _write_mapping(path, mapping)
+    with pytest.raises(ValueError, match="time_binding"):
+        load_mapping(path)
+
+    soil = _mapping()
+    soil["fields"]["soil_temperature"]["time_binding"] = "cycle_invariant"
+    soil_path = tmp_path / "bad-soil-scope.json"
+    _write_mapping(soil_path, soil)
+    with pytest.raises(ValueError, match="time_binding"):
+        load_mapping(soil_path)

@@ -1,0 +1,12 @@
+{
+ "nxe": 9,
+ "nye": 8,
+ "halo": 3,
+ "shape": [
+  6,
+  7
+ ],
+ "gx": "gx.bin",
+ "gy": "gy.bin",
+ "flat": "flat.bin"
+}

@@ -1317,7 +1317,7 @@ def test_thompson_restart_identity_resolves_packaged_root_without_env(
     test asserted that identity construction refused to run without
     GPUWM_EXPERIMENTAL_THOMPSON_MP8=1 and GPUWM_THOMPSON_TABLE_ROOT.  The
     guard is retired and the table root defaults to the packaged
-    gpuwm/data/thompson/tables directory; what this test now pins is that
+    packaged classic-table directory; what this test now pins is that
     the restart identity resolves exactly the root the forecast adapter
     loads, records the promoted admission token instead of the retired
     guard, and still honors the override.

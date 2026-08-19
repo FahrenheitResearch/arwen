@@ -992,6 +992,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "netcdf-writer"
+version = "0.1.0"
+dependencies = [
+ "ndarray 0.17.2",
+ "netcdf-reader 0.3.0",
+ "netcrust",
+]
+
+[[package]]
 name = "netcrust"
 version = "0.1.0"
 dependencies = [
@@ -1060,6 +1069,10 @@ dependencies = [
  "autocfg",
  "libm",
 ]
+
+[[package]]
+name = "obs-regrid"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"
@@ -1586,6 +1599,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustwx-ensemble"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "rustwx-io"
 version = "0.1.0"
 dependencies = [
@@ -1719,6 +1740,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-netcdf"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "netcrust",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rw-nexrad"
 version = "0.1.0"
 dependencies = [
@@ -1808,8 +1839,10 @@ dependencies = [
  "netcrust",
  "rayon",
  "rustwx-core",
+ "rustwx-ensemble",
  "rustwx-models",
  "rustwx-products",
+ "rustwx-render",
  "rusty-weather",
  "rw-ingest",
  "rw-store",
@@ -1818,6 +1851,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "wrf-core",
+ "wx-radar 0.3.6",
 ]
 
 [[package]]
@@ -1965,6 +1999,18 @@ name = "sprintf"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c0cdea5a20a06e7c57f627094e7b1618e5665592cd88f2d45fa4014e348db58"
+
+[[package]]
+name = "static-fields"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2",
+ "weezl",
+]
 
 [[package]]
 name = "subtle"

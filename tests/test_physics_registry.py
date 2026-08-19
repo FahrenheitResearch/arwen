@@ -810,8 +810,9 @@ def test_noahmp_is_implemented_and_warns_rather_than_blocking():
     the DEVICE through the slab orchestration at a measured 0.202-0.227 s
     per 360,000-column call (2026-07-27, twice, one RTX 5090 -- the figure
     that retired the host-era "6.4 ms per land column" scaling blocker),
-    that glacier columns are refused, that sea ice has no energy balance,
-    and that the WRF six-rate and carried-COSZEN seams are active.
+    that glacier columns run the dedicated NOAHMP_GLACIER port, that sea
+    ice has no energy balance under the configurable xice_threshold, and
+    that the WRF six-rate and carried-COSZEN seams are active.
 
     The pinned figures are the ones
     ``gpuwm/core/noahmp_runtime.py`` ``NOAHMP_RUNTIME_RESTRICTIONS``
@@ -834,8 +835,10 @@ def test_noahmp_is_implemented_and_warns_rather_than_blocking():
     # what the slab timing runs measured.
     assert "0.202-0.227 s" in text
     assert "7.3-8.2 wall seconds per simulated minute" in text
-    assert "GLACIER columns are REFUSED" in text
+    assert "GLACIER columns run the dedicated NOAHMP_GLACIER port" in text
+    assert "never to NOAHMP_SFLX" in text
     assert "no sea-ice surface energy balance" in text
+    assert "xice_threshold" in text
     assert "SIX-RATE precipitation seam is active" in text
     assert "COSZEN is a radiation-driver carrier" in text
     assert "MEASURED INERT" in text
@@ -1837,7 +1840,9 @@ def test_mp28_activation_table_is_declared_as_a_shipped_but_separate_asset():
     assert requirement["regenerable"] is False
     # Shipped is not regenerable: nothing in gpuwm or WRF recomputes these
     # numbers, so a lost copy is fetched from a WRF release, not rebuilt.
-    assert requirement["search_root"] == "gpuwm/data/thompson/tables"
+    # Inside the gpuwm-data companion distribution since 2.5.0, at the same
+    # relative path it always had.
+    assert requirement["search_root"] == "gpuwm_data/data/thompson/tables"
 
     pinned = AEROSOL_TABLE_ASSETS[0]
     assert requirement["assets"] == [{

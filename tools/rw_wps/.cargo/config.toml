@@ -1,0 +1,11 @@
+# Source replacement for the rw_wps workspace, the same posture
+# tools/grib1_bridge and tools/rustwx already ship: the clean-clone rule is
+# `pip install gpuwm` plus ONE offline cargo build, so the crates.io
+# transitive set is vendored under vendor/crates-io and cargo is told to
+# resolve from there.  `cargo build --locked --offline` is the shipped
+# invocation; anything that needs the network is a packaging defect.
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor/crates-io"

@@ -1,7 +1,0 @@
-BASELINE         GATE PASSED  (break NOT caught)                                66s
-noop_replay      GATE FAILED  (break CAUGHT, 9 problems)                        32s
-no_settle        GATE PASSED  (break NOT caught)                                67s
-shared_pool      GATE PASSED  (break NOT caught)                                67s
-shared_ledger    GATE PASSED  (break NOT caught)                                68s
-no_node_floor    GATE PASSED  (break NOT caught)                                68s
-double_scalars   GATE FAILED  (break CAUGHT, 3 problems)                        68s

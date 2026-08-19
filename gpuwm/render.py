@@ -12,13 +12,34 @@ Two engines render:
   accumulations -- and everything a file's stored fields prove out
   renders (``--list-products`` shows the per-file verdict and every
   reason).
-  The default whenever the binary is built and probes as runnable.
-* ``matplotlib`` -- the wrf-rust + matplotlib path below: the no-rust
-  fallback, always available with the ``[render]`` extra.
+  The ONLY engine ``--engine auto`` will select, and the only one any
+  in-process caller or chain reaches.
+* ``matplotlib`` -- the wrf-rust + matplotlib path below, reachable
+  only by typing ``--engine matplotlib``, and announcing itself as a
+  ``WORKAROUND:`` line on every run.
+
+The render law (CLAUDE.md, Drew 2026-08-06) reserves weather-field
+product plots for ``rw_wrfbatch`` and names exactly ONE permitted
+fallback, ``tools/da_nowcast_render.py``, which composes multi-panel
+sheets from a DA nowcast case directory and serves none of this door's
+products.  ``--engine auto`` therefore does not degrade: with no usable
+renderer it REFUSES, naming the missing artifact and ``gpuwm
+fetch-bridges``, at a nonzero exit.  It used to draw five weather
+fields with matplotlib and report success, which is how a box with a
+failed bridge staging produced pictures that looked like the
+production catalog and were not it.
 
 ``--pair A_DIR B_DIR`` composes two runs' rendered PNGs into labeled
 side-by-side comparison sheets (:mod:`gpuwm.pair_compose`) -- either
 engine's output pairs.
+
+Both engines file what they draw through :mod:`gpuwm.render_layout`:
+``<--out>/<domain>/<product>/<valid-day>/<file>.png``, by default and
+without a flag.  Every picture used to land in one directory, which on
+a three-nest run of the rust catalog is five figures of files of every
+product and every valid time with nothing but filenames to sort them.
+``--layout flat`` restores the v2.4.1 single directory for a consumer
+that still needs it.  See ``docs/render-output-layout.md``.
 
 Every output filename carries a domain + resolution token
 (:func:`domain_token`: ``d02-3km``, sub-kilometre nests as ``d05-111m``)
@@ -69,7 +90,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gpuwm import explain
+from gpuwm import explain, render_layout, run_stamp
 from gpuwm.science_core import SCIENCE_CORE_REQUIREMENT
 
 #: The pip requirement the render products are certified against, quoted
@@ -311,8 +332,13 @@ def _finish(fig, axis, mappable, *, title: str, cbar_label: str,
     cbar.ax.tick_params(labelsize=8)
     axis.set_title(title, fontsize=11)
     fig.tight_layout()
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, dpi=dpi)
+    # Same ceiling as the rust engine's placement seam, same remedy: the
+    # layout's three folders push the longest product names past
+    # Windows' MAX_PATH from any real case root, and a savefig that
+    # cannot open its target loses the picture outright here.
+    spelled = render_layout.fs_path(out_png)
+    Path(spelled).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(spelled, dpi=dpi)
 
 
 def _render_refl(wf, timeidx, lat, lon, *, plt, wrf, context,
@@ -606,6 +632,7 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
                    timeidx: int | None, outdir: Path,
                    dpi: int = 150,
                    source_label: str | None = None,
+                   layout: str = render_layout.DEFAULT_LAYOUT,
                    ) -> tuple[list[Path], list[str],
                               list[tuple[str, str]]]:
     """Render every requested product/frame.
@@ -690,8 +717,16 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
                     skipped.append((product, f"{path}[{index}] carries no "
                                              f"{', '.join(absent)}"))
                     continue
-                out_png = outdir / (
-                    f"{product}_{token}_{_stamp_for_filename(stamp)}.png")
+                # WHERE the picture goes is one decision, made in one
+                # place, for both engines: gpuwm.render_layout.  The
+                # filename is unchanged from v2.4.1 -- only the
+                # directory beneath `--out` is new -- so a reader who
+                # knows the old name still recognises the file.
+                out_png = render_layout.place(
+                    outdir, domain=token, product=product,
+                    day=render_layout.valid_day(stamp), layout=layout,
+                    filename=(f"{product}_{token}_"
+                              f"{_stamp_for_filename(stamp)}.png"))
                 # The token separates nests, but it cannot separate two
                 # inputs it could not identify: both are `native_grid`.
                 # Refusing the second is the same call this release made
@@ -844,8 +879,10 @@ def catalog_main(args) -> int:
     Answered by asking the engine, never from a copy kept here: the rust
     catalog is the renderer's, and a second list in this module is the
     enumeration-drift failure this project keeps paying for.  With no
-    rust engine installed, the matplotlib engine's own products are the
-    honest answer, and the notice above already said which engine spoke.
+    usable rust engine this REFUSES rather than answering from the other
+    engine's five: ``--engine auto`` would not draw those products
+    either (render law, audit F7), so listing them would be a menu
+    nothing serves.  ``--engine matplotlib`` still lists its own.
     """
 
     from gpuwm import rustwx
@@ -859,7 +896,7 @@ def catalog_main(args) -> int:
         # that cannot answer for itself is the same shape of answer.
         print(f"render: {exc}", file=sys.stderr)
         return 2
-    notice = fallback_notice(engine, why)
+    notice = matplotlib_workaround_notice(engine)
     if notice is not None:
         print(notice, file=sys.stderr)
     print(f"render: product catalog (engine {engine})")
@@ -888,10 +925,98 @@ def catalog_main(args) -> int:
     return 0
 
 
+def require_renderer() -> Path:
+    """The usable ``rw_wrfbatch``, or the refusal that names its absence.
+
+    The SAME gate :func:`_resolve_engine` reads, at the LAST seam before
+    the engine is launched.  The CLI already asked, but the in-process
+    callers do not go through the CLI (``gpuwm go``'s first-products
+    leg, the DA gallery, the verification door's synoptic panels,
+    tests), and a gate that only one caller passes through is a gate the
+    next caller walks around.  There is no fallback to offer here --
+    weather fields belong to this binary -- so the reason is raised.
+    """
+
+    from gpuwm import rustwx
+
+    renderer = rustwx.find_renderer()
+    if renderer is None:
+        raise RuntimeError(_unresolvable_renderer_refusal(
+            "it is not built (nothing on the resolution ladder holds a "
+            "rw_wrfbatch binary)"))
+    reason = renderer_refusal(renderer)
+    if reason is not None:
+        raise RuntimeError(_unresolvable_renderer_refusal(
+            f"the renderer at {renderer} may not be used by this tree: "
+            f"{reason}"))
+    return renderer
+
+
+def render_series_rust(paths, *, products: str, timeidx: int | None,
+                       outdir: Path, size: tuple[int, int],
+                       heavy: bool = False,
+                       source_label: str | None = None,
+                       layout: str = render_layout.DEFAULT_LAYOUT,
+                       overlays: Path | None = None,
+                       annotate: Path | None = None,
+                       ) -> tuple[list[Path], list[str],
+                                  list[tuple[str, str]]]:
+    """One store over a whole wrfout SERIES; ``(written, failures, skipped)``.
+
+    :func:`render_wrfouts_rust` renders one file per store, which is the
+    campaign convention and the right default for independent inputs.
+    It is also the one thing a WINDOWED product cannot be drawn under:
+    ``qpf_6h`` is defined as F012 minus F006, so a store holding only
+    F012 has nothing to difference and the engine skips it by name.
+    This renders the whole series into ONE store, which is what a
+    verification door's 6 h accumulation -- two separate hourly wrfout
+    files -- actually needs.
+
+    The domain token comes from the LAST file, the frame whose valid
+    time the panels carry; every file in a series is one nest by
+    construction, because a store that mixed two nests would merge two
+    grids into one run.  Placement and rebranding are
+    :func:`_place_engine_output`'s, unchanged, so these panels land in
+    the same ``<out>/<domain>/<product>/<valid-day>/`` layout as every
+    other render.
+    """
+
+    import tempfile
+
+    from gpuwm import rustwx
+
+    series = [Path(item) for item in paths]
+    if not series:
+        raise ValueError("a render series needs at least one wrfout file")
+    renderer = require_renderer()
+    if source_label is None:
+        source_label = default_source_label()
+    outdir.mkdir(parents=True, exist_ok=True)
+    subject = series[-1]
+    token = domain_token(_domain_tag(subject), _grid_spacing_m(subject))
+    width, height = size
+    store = Path(tempfile.mkdtemp(prefix=".rwstore-", dir=outdir))
+    try:
+        written, failures, skipped = rustwx.run_renderer_series(
+            renderer, series, store_root=store, out_dir=outdir,
+            products=products, frames="all" if timeidx is None
+            else str(timeidx), width=width, height=height, heavy=heavy,
+            source_label=source_label, overlays=overlays,
+            annotate=annotate)
+    finally:
+        _remove_scratch_store(store)
+    written = [_place_engine_output(png, outdir, token, layout)
+               for png in written]
+    return written, failures, skipped
+
+
 def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                         outdir: Path, size: tuple[int, int],
                         heavy: bool = False,
                         source_label: str | None = None,
+                        layout: str = render_layout.DEFAULT_LAYOUT,
+                        overlays: Path | None = None,
+                        annotate: Path | None = None,
                         ) -> tuple[list[Path], list[str],
                                    list[tuple[str, str]]]:
     """Rusty Weather engine; ``(written, failures, skipped)``.
@@ -901,29 +1026,22 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
     per-file isolation keeps every input independently comparable, the
     campaign convention).  The scratch store lives under the output
     directory and is removed as soon as the file's render finishes.
+
+    ``overlays``/``annotate`` are JSON files in the renderer's own
+    geographic-overlay schema (coordinates in degrees; see
+    ``tools/rustwx/crates/rustwx-products/src/geographic_overlays.rs``).
+    They are what the tile-streamed and DA lanes needed and could not
+    have: a boundary-zone box, tile seams, storm-report markers, radar
+    sites and range rings, on a panel the production renderer drew.
+    Omitted, the renderer runs no overlay code and the PNGs are
+    byte-identical to every earlier build.
     """
 
     from gpuwm import rustwx
 
+    renderer = require_renderer()
     if source_label is None:
         source_label = default_source_label()
-    renderer = rustwx.find_renderer()
-    if renderer is None:
-        raise RuntimeError(
-            "the rust render engine is not built; "
-            + rustwx.renderer_remedy())
-    # The SAME gate `_resolve_engine` reads, at the LAST seam before the
-    # engine is launched.  The CLI already asked, but this function is
-    # also called directly (`gpuwm go`'s first-products leg, the DA
-    # gallery, tests), and a gate that only one caller passes through is
-    # a gate the next caller walks around.  There is no fallback to
-    # offer here -- the caller asked for the rust engine by name -- so
-    # the reason is raised rather than returned.
-    reason = renderer_refusal(renderer)
-    if reason is not None:
-        raise RuntimeError(
-            f"the rust render engine at {renderer} may not be used by "
-            f"this tree: {reason}")
     outdir.mkdir(parents=True, exist_ok=True)
     frames = "all" if timeidx is None else str(timeidx)
     width, height = size
@@ -932,15 +1050,23 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
     skipped: list[tuple[str, str]] = []
     for path in (Path(p) for p in paths):
         import tempfile
+        # The domain this file PROVES, read the same way the matplotlib
+        # engine reads it, from the file's own GRID_ID/DX.  The engine
+        # spells the same token into its filenames, but evidence from
+        # the file beats a transcription, and one file's outputs all
+        # belong to one nest whatever any filename says.
+        token = domain_token(_domain_tag(path), _grid_spacing_m(path))
         store = Path(tempfile.mkdtemp(prefix=".rwstore-", dir=outdir))
         try:
             file_written, file_failures, file_skipped = rustwx.run_renderer(
                 renderer, path, store_root=store, out_dir=outdir,
                 products=products, frames=frames, width=width,
-                height=height, heavy=heavy, source_label=source_label)
+                height=height, heavy=heavy, source_label=source_label,
+                overlays=overlays, annotate=annotate)
         finally:
             _remove_scratch_store(store)
-        file_written = [_rebrand_engine_output(png) for png in file_written]
+        file_written = [_place_engine_output(png, outdir, token, layout)
+                        for png in file_written]
         written.extend(file_written)
         failures.extend(file_failures)
         skipped.extend(file_skipped)
@@ -983,6 +1109,63 @@ def _rebrand_engine_output(png: Path) -> Path:
     try:
         os.replace(png, target)
     except OSError:
+        return png
+    return target
+
+
+def _place_engine_output(png: Path, outdir: Path, domain: str,
+                         layout: str) -> Path:
+    """Rebrand one engine-written PNG and file it under the layout.
+
+    The rust engine writes every picture straight into ``--out-dir``
+    with a name of its own, which is what made a real run's output a
+    single directory of thousands of files.  It is not asked to change:
+    the vendored crate stays byte-identical to its campaign builds, and
+    the placement happens here, at the same seam the rebrand already
+    happened at -- one move per file, after the renderer has exited and
+    the file is complete.
+
+    Every failure degrades to leaving the picture where the engine put
+    it, and SAYS SO on stderr, naming the file and why.  A drawn image
+    at the old path beats no image over filing -- layout is not
+    correctness -- but the silent form of this exact fallback is how a
+    parser that could not read the engine's one-digit cycle hours
+    shipped every 00Z-09Z run flat under a front door printing ``layout
+    nested``.  The caller's returned list names wherever the file
+    actually is, so nothing downstream is told about a file that is not
+    there.
+    """
+
+    png = _rebrand_engine_output(png)
+    if layout == render_layout.FLAT:
+        return png
+    parsed = render_layout.parse_engine_output(png.name, domain=domain)
+    if parsed is None:
+        # Not a name this engine's grammar produces -- so nothing here
+        # knows which product or valid time it is, and inventing a
+        # folder for it would file it under a guess.
+        print(f"render: warning: left flat, filename does not parse as "
+              f"engine output: {png}", file=sys.stderr)
+        return png
+    filed_domain, product, day = parsed
+    target = render_layout.place(
+        outdir, domain=filed_domain, product=product, day=day,
+        filename=png.name, layout=layout)
+    if target == png:
+        return png
+    try:
+        # Through render_layout.fs_path: three folders plus the engine's
+        # filename put the longest products past Windows' MAX_PATH from
+        # any real case root, and without this the warning below fires
+        # for exactly those products -- the layout ruling inverted for
+        # `composite_reflectivity` while `2m_temperature` beside it
+        # files correctly.
+        spelled = render_layout.fs_path(target)
+        Path(spelled).parent.mkdir(parents=True, exist_ok=True)
+        os.replace(render_layout.fs_path(png), spelled)
+    except OSError as error:
+        print(f"render: warning: left flat, could not move into layout "
+              f"({error}): {png}", file=sys.stderr)
         return png
     return target
 
@@ -1064,14 +1247,92 @@ def renderer_refusal(renderer) -> str | None:
     return renderer_bridge_refusal(renderer, env_var=rustwx.RENDERER_ENV)
 
 
+def _unresolvable_renderer_refusal(reason: str) -> str:
+    """The one refusal both ``auto`` and ``rust`` raise, layered.
+
+    THE render-law fix (hidden-scope audit F7, 2026-08-18).  Weather
+    fields belong to ``rw_wrfbatch``; the law (CLAUDE.md, Drew
+    2026-08-06) names exactly one fallback, ``da_nowcast_render.py``,
+    and that tool draws multi-panel sheets from a DA case directory --
+    it has no product for a wrfout's reflectivity, temperature, wind,
+    precipitation or OLR panel.  So there is nothing lawful to fall back
+    to here, and the answer is a refusal that names the missing artifact
+    and stages it.
+
+    ``gpuwm fetch-bridges`` leads because it is the remedy that works on
+    a wheel install, which is where the defect was found: staging failed
+    silently, ``--engine auto`` drew five matplotlib weather fields, and
+    the command exited 0.  The cargo one-liner follows for a checkout,
+    and the explicit matplotlib workaround is named last -- naming the
+    exit is not the same as taking it (1.8.8 refusal sweep).
+    """
+
+    from gpuwm import rustwx
+
+    # The reason may itself be a LAYERED message -- the provenance
+    # clause is one -- and nesting two `[[explain]]` marks in one string
+    # truncates this remedy at the inner mark for every consumer that
+    # splits on the first one (`explain.render`, and the JSON catalog
+    # that carries the action half into a document).  So the inner
+    # explanation is lifted out and appended to the outer one, which is
+    # where it belonged: one message, one action half, one why half.
+    reason, nested_why = explain.split(str(reason))
+    reason = reason.rstrip()
+    # No `gpuwm render:` prefix here.  Every terminal caller adds one
+    # (`render_main` and `catalog_main` both print "render: " + this),
+    # and a message that carries its own prefix printed "render: gpuwm
+    # render: ..." on the first line a refused user sees.  The subject
+    # is named in the sentence instead, which also reads correctly
+    # where there is no prefix at all -- the run-plan catalog document
+    # carries this string verbatim in its `error` field.
+    action = (
+        f"the rust render engine ({rustwx.RENDERER_NAME}) is "
+        f"not usable here: {reason}\n"
+        "  Weather-field product plots come from the real Rust renderer, "
+        "so this is refused rather than drawn by something else.\n"
+        "  remedy: gpuwm fetch-bridges\n"
+        f"  # stages {rustwx.RENDERER_NAME} and the basemap assets it "
+        "draws from\n"
+        f"  #   ... or, from a checkout: {rustwx.CARGO_BUILD_HINT}\n"
+        f"  #   ... or set {rustwx.RENDERER_ENV} to a built binary you "
+        "mean to use\n"
+        "  # `gpuwm render --engine matplotlib` still exists as a NAMED "
+        "WORKAROUND;\n"
+        "  # it draws five analysis-grade panels, not the production "
+        "catalog.")
+    why = _RENDER_LAW_WHY
+    if nested_why.strip():
+        why = f"{why}\n\n{nested_why.strip()}"
+    return explain.layered(action, why)
+
+
+#: How every message here names the one engine allowed to draw a
+#: weather field, so the phrase cannot drift between call sites.
+_RENDERER_SUBJECT = "the Rust renderer rw_wrfbatch, through gpuwm.rustwx"
+
+_RENDER_LAW_WHY = (
+    "The render law (CLAUDE.md, Drew 2026-08-06) permits exactly one "
+    "fallback for weather fields, `tools/da_nowcast_render.py`, and that "
+    "tool composes multi-panel sheets from a DA nowcast case directory "
+    "-- it serves none of this door's products.  `--engine auto` used to "
+    "degrade to a SECOND fallback: on a box where bridge staging failed "
+    "it drew composite reflectivity, 2 m temperature, 10 m wind, "
+    "accumulated precipitation and OLR with matplotlib and exited 0, so "
+    "an operator got pictures and no signal that the 151-product "
+    "production catalog had never run.  `auto` now has two answers, the "
+    "rust engine or this refusal, and the exit code says which.")
+
+
 def _resolve_engine(requested: str) -> tuple[str, str]:
     """(engine, why) for ``--engine auto|rust|matplotlib``.
 
     Rust is selected exactly when the binary resolves AND
-    :func:`renderer_refusal` has nothing to say about it.  The two
-    request forms differ only in what happens on failure: ``auto`` falls
-    back to matplotlib with the reason in ``why``; an explicit ``rust``
-    refuses.
+    :func:`renderer_refusal` has nothing to say about it.  ``auto`` and
+    ``rust`` now differ only in wording: NEITHER degrades, because the
+    thing they would degrade to is matplotlib drawing weather fields,
+    which the render law does not allow (audit F7).  ``auto`` means
+    "resolve the engine for me", not "draw with whatever is lying
+    around".
 
     The explicit path used to return the resolved binary WITHOUT the
     probe -- only ``auto`` asked the contract question -- so the one
@@ -1082,12 +1343,8 @@ def _resolve_engine(requested: str) -> tuple[str, str]:
     a statement about which engine must draw, so failing its contract is
     a refusal, never a silent substitution and never a fallback.
 
-    The shape is not invented here either:
-    :func:`gpuwm.fetch.resolve_fetch_engine` has always resolved
-    ``--engine rust`` this way -- probe, then refuse an explicit request
-    and degrade an automatic one.  The renderer was the odd one out at
-    the probe (task #106) and at the resolver, and this is the second
-    half.
+    ``--engine matplotlib`` remains reachable, by that name only, and
+    every run of it prints :func:`matplotlib_workaround_notice`.
     """
 
     if requested == "matplotlib":
@@ -1100,8 +1357,9 @@ def _resolve_engine(requested: str) -> tuple[str, str]:
             raise RuntimeError(
                 "--engine rust: the renderer is not built; "
                 + rustwx.renderer_remedy())
-        return "matplotlib", "rust renderer not built (gpuwm doctor shows " \
-                             "the build one-liner)"
+        raise RuntimeError(_unresolvable_renderer_refusal(
+            "it is not built (nothing on the resolution ladder, including "
+            "~/.gpuwm/bridges, holds a rw_wrfbatch binary)"))
     reason = renderer_refusal(renderer)
     if reason is None:
         return "rust", str(renderer)
@@ -1109,18 +1367,18 @@ def _resolve_engine(requested: str) -> tuple[str, str]:
         # NO SILENT SUBSTITUTION -- an explicit --engine rust that got a
         # different engine is the defect this refusal exists for -- but
         # the exit is named, because one demonstrably exists: the same
-        # command with --engine auto renders the whole catalog's
-        # matplotlib subset on this identical tree.  Refusing to choose
-        # for the caller is not the same as refusing to tell them what
-        # the choices are (1.8.8 refusal sweep).
+        # command with --engine matplotlib renders the analysis-grade
+        # subset on this identical tree.  Refusing to choose for the
+        # caller is not the same as refusing to tell them what the
+        # choices are (1.8.8 refusal sweep).
         raise RuntimeError(
             f"--engine rust: the renderer at {renderer} failed its "
             f"contract check: {reason}\n"
-            f"  Rebuild the renderer ({rustwx.CARGO_BUILD_HINT}), or use "
-            f"--engine auto to fall back to matplotlib with this reason "
-            f"printed, or --engine matplotlib to select the fallback "
-            f"outright.")
-    return "matplotlib", f"rust renderer unusable: {reason}"
+            f"  Rebuild the renderer ({rustwx.CARGO_BUILD_HINT}), stage "
+            f"one with `gpuwm fetch-bridges`, or pass --engine matplotlib "
+            f"to take the named workaround outright.")
+    raise RuntimeError(_unresolvable_renderer_refusal(
+        f"the renderer at {renderer} failed its contract check: {reason}"))
 
 
 def matplotlib_engine_gap():
@@ -1142,15 +1400,19 @@ def matplotlib_engine_gap():
 
 
 def drawable_engine() -> tuple[str | None, str]:
-    """Which engine could draw here, and why -- no file, no render.
+    """Which engine ``gpuwm go`` may chain into, and why -- or ``(None, why)``.
 
-    ``(None, why)`` when NEITHER engine can: the rust binary is not
-    staged (or fails its contract) AND the matplotlib fallback has no
-    science core.  That is the only state in which "this install cannot
-    draw" is true, and it is the question ``gpuwm go``'s render stage
-    must ask -- it used to ask whether ``wrf`` imported, which is a
-    question about the fallback engine on a chain that runs the rust
-    one.
+    Exactly one engine is chainable: the rust one.  ``(None, why)`` when
+    it is not staged or fails its contract, and the chain then SKIPS its
+    render stage with that reason printed, which is the lawful shape of
+    "no imagery here" -- a forecast that finished plus a named absence.
+
+    The matplotlib engine is deliberately absent from this answer even
+    when its science core is installed (audit F7).  It draws weather
+    fields, the render law reserves those for ``rw_wrfbatch``, and a
+    chain that reaches it automatically is precisely the second fallback
+    the law forbids.  It stays reachable by name at the ``gpuwm render``
+    front door, where a human typed it.
     """
 
     try:
@@ -1161,16 +1423,18 @@ def drawable_engine() -> tuple[str | None, str]:
         # render stage; resolving the rust engine means launching it for
         # its contract handshake, and a launch that fails for any reason
         # must degrade this answer, never end a forecast that has
-        # already succeeded.  The reason is carried, not swallowed.
-        engine, why = "matplotlib", f"the rust engine could not be probed: {error}"
+        # already succeeded.  The reason is carried, not swallowed --
+        # and the first line is what the chain prints, so the layered
+        # explain half is dropped here rather than pasted into a stage
+        # log.
+        first = str(error).split("[[explain]]")[0].strip()
+        return None, first or f"the rust engine could not be probed: {error}"
     if engine == "rust":
         return "rust", why
-    if matplotlib_engine_gap() is None:
-        return "matplotlib", why
     return None, (
-        f"the rust render engine is not available ({why}), and the "
-        f"matplotlib fallback engine needs {WRF_PACKAGE_REQUIREMENT}, "
-        "which is not installed")
+        f"the rust render engine is not available ({why}); weather-field "
+        f"product plots come from {_RENDERER_SUBJECT}, so the chain draws "
+        "nothing rather than substituting another engine")
 
 
 def engine_refusal(engine: str, requested: str, why: str) -> str | None:
@@ -1238,13 +1502,21 @@ _ENGINE_WHY = (
 _RUST_CATALOG_PRODUCTS = 151
 
 
-def fallback_notice(engine: str, why: str) -> str | None:
-    """ONE line saying the matplotlib fallback is in use, and why.
+def matplotlib_workaround_notice(engine: str) -> str | None:
+    """ONE line saying the matplotlib engine is drawing, in the workaround voice.
 
     Silence here cost a pilot a whole session: four products came out,
     they looked right, and nothing said the 151-product rust catalog was
-    simply not installed.  A fallback that does not announce itself is
+    simply not installed.  An engine that does not announce itself is
     indistinguishable from the real thing until someone counts.
+
+    It is a WORKAROUND now, not a fallback, and the word is the point.
+    Nothing degrades into this engine any more (audit F7): it is
+    reachable only by typing ``--engine matplotlib``, and "Fixed means
+    default" (Drew 2026-08-10) says an opt-in remedy must be REPORTED as
+    a workaround every time it runs.  The prefix is this tree's existing
+    spelling for that -- ``gpuwm/static/rust_bridge.py`` prints the same
+    ``WORKAROUND:`` line whenever the Python geog reader stands in.
 
     One line, and it carries everything needed to act on it: the engine
     actually used, the products available against the rust catalog, and
@@ -1262,19 +1534,22 @@ def fallback_notice(engine: str, why: str) -> str | None:
     notice gets exactly one physical line.
     """
 
-    if engine != "matplotlib" or why == "requested":
+    if engine != "matplotlib":
         return None
     from gpuwm import bridges, rustwx
 
     fix = bridges.install_aware_one_line_hint(
         rustwx.CARGO_BUILD_HINT, rustwx.RUSTWX_CRATE_RELATIVE)
-    return (f"render: engine matplotlib -- rust render engine not "
-            f"available ({why}); {len(PRODUCTS)} of the rust catalog's "
-            f"{_RUST_CATALOG_PRODUCTS} products are renderable. Build it "
-            f"with: {fix}")
+    return (f"WORKAROUND: render engine matplotlib -- the render law "
+            f"reserves weather-field product plots for {_RENDERER_SUBJECT}; "
+            f"{len(PRODUCTS)} of the rust catalog's "
+            f"{_RUST_CATALOG_PRODUCTS} products are renderable this way. "
+            f"Stage the real engine with `gpuwm fetch-bridges`, or build "
+            f"it: {fix}")
 
 
-def skip_notice(skipped: list[tuple[str, str]]) -> str | None:
+def skip_notice(skipped: list[tuple[str, str]],
+                wrote_any: bool = True) -> str | None:
     """ONE line for the products this render did not draw, or ``None``.
 
     A skip is not a failure and must not print as one -- but it must
@@ -1295,20 +1570,33 @@ def skip_notice(skipped: list[tuple[str, str]]) -> str | None:
     sentence is printed by ``gpuwm render`` and swallowed by the chain,
     which is the silent success this change exists to avoid.
 
-    The action half also states that the exit code is not about this.  A
-    reader who has just watched a chain stop at render needs to know
-    which of the two things they are looking at, and a count with no
-    verdict attached reads as the bad one.
+    The action half also states what the skips mean for the exit code,
+    and it must state it TRUTHFULLY in both arms.  With at least one
+    image drawn (``wrote_any``), skips do not change the exit code and
+    the notice says so.  With NOTHING drawn, the skips are exactly why
+    the command exits nonzero (the deliberate ask-for-one-absent-product
+    arm of the main dispatch), and the old reassurance -- "not a failure
+    and does not change the exit code" -- was false there: a real user
+    who requested ``lifted_index`` from a wrfout got rendered=0, exit 1,
+    and a note insisting nothing had failed.  That arm now says nothing
+    rendered and points at ``--list-products``, which prints the
+    per-product verdict and reason for THIS file.
     """
 
     if not skipped:
         return None
     names = sorted({product for product, _detail in skipped})
+    if wrote_any:
+        verdict = ("That is not a failure and does not change the "
+                   "exit code")
+    else:
+        verdict = ("Nothing else was drawn, so nothing rendered and the "
+                   "exit code is nonzero; run --list-products to see "
+                   "which products this file can support")
     return explain.layered(
         f"note: render skipped {len(skipped)} product render(s) "
         f"({', '.join(names)}) -- the file(s) do not carry their declared "
-        f"input fields.  That is not a failure and does not change the "
-        f"exit code",
+        f"input fields.  {verdict}",
         "\n".join(f"  skipped {product}: {detail}"
                   for product, detail in skipped))
 
@@ -1384,18 +1672,117 @@ def _pair_main(args: argparse.Namespace) -> int:
         return 2
     left, right = (Path(p) for p in args.pair)
     labels = args.pair_labels or (None, None)
+    # A pair sheet is an output of this invocation like any picture, so
+    # it gets its own run folder too.  No inputs are passed: a
+    # comparison of two runs belongs to neither one's cycle, so the
+    # stamp carries the launch instant and no init time.
+    _claim_run_dir(args)
     try:
-        sheets = compose_pairs(
-            left, right, args.out, title=args.pair_title,
-            subtitle=args.pair_subtitle, left_label=labels[0],
-            right_label=labels[1])
-    except ValueError as exc:
-        print(f"render: {exc}", file=sys.stderr)
-        return 2
-    for sheet in sheets:
-        print(f"render: {sheet}")
-    print(f"render: {len(sheets)} pair sheet(s) -> {args.out}")
-    return 0
+        try:
+            sheets = compose_pairs(
+                left, right, args.out, title=args.pair_title,
+                subtitle=args.pair_subtitle, left_label=labels[0],
+                right_label=labels[1])
+        except ValueError as exc:
+            print(f"render: {exc}", file=sys.stderr)
+            return 2
+        for sheet in sheets:
+            print(f"render: {sheet}")
+        print(f"render: {len(sheets)} pair sheet(s) -> {args.out}")
+        return 0
+    finally:
+        _publish_run_dir(args)
+
+
+def _claim_run_dir(args: argparse.Namespace, inputs=()) -> Path:
+    """Rebind ``args.out`` to this render's own run folder, and say so.
+
+    One render is one run of the renderer, and two renders into one
+    ``--out`` used to drop their pictures among each other -- same
+    directory, same filenames for the same product and valid time, the
+    second silently overwriting the first.  The stamped level fixes
+    that above the layout: ``<domain>/<product>/<valid-day>`` is
+    untouched underneath it.
+
+    ``args.out`` is REBOUND rather than threaded through as a second
+    value because every path this door writes -- the pictures, the pair
+    sheets, the per-file scratch store, the closing summary line -- is
+    computed from it.  Two names for the output directory is how one of
+    them ends up being the one nobody updated.
+
+    The initialisation time comes from the FIRST INPUT THAT PROVES ONE
+    (``SIMULATION_START_DATE``), and is omitted when none does; the
+    ``--pair`` route passes no inputs and takes a launch-only stamp,
+    because a comparison sheet belongs to no single run's cycle.
+
+    A freshly allocated folder is NOT yet published: ``latest-run.txt``
+    stays where it was until :func:`_publish_run_dir` sees at least one
+    PNG in the folder, and a render that produced none removes the
+    folder again.  A failed render used to leave an empty stamped
+    folder with the pointer naming it, so a script following the
+    documented pointer could not tell a failed render from a successful
+    empty one (UX finding N5).
+    """
+
+    out = Path(args.out)
+    enabled = run_stamp.run_stamp_enabled(args)
+    if enabled and run_stamp.is_run_folder(out):
+        # The caller named the run folder.  A second stamp level inside
+        # it would bury the path they typed, so it is honoured verbatim
+        # -- and said out loud, because "I asked for a stamp and got no
+        # new folder" is otherwise a silent surprise.
+        print(f"render: run folder {out} (named on the command line; "
+              f"drawing into it rather than stamping inside it)")
+    run_dir = run_stamp.resolve(
+        out, init=run_stamp.first_wrfout_init(inputs), enabled=enabled,
+        publish=False)
+    if enabled and run_dir != out:
+        print(f"render: run folder {run_stamp.relative_to_case(run_dir, out)}"
+              f" under {out}")
+    args.out = run_dir
+    # What _publish_run_dir needs on every exit path: whether THIS
+    # invocation allocated a fresh folder, and under which case root.
+    args._run_claim_created = run_dir != out
+    args._run_claim_root = out
+    return run_dir
+
+
+def _publish_run_dir(args: argparse.Namespace) -> None:
+    """Publish or retract this render's run folder by what it produced.
+
+    Called on EVERY exit path after :func:`_claim_run_dir` -- the
+    normal return and both exception returns -- and a no-op when this
+    invocation allocated no fresh folder (``--run-stamp off``, or an
+    ``--out`` already inside a run).
+
+    At least one PNG under the folder publishes it: ``latest-run.txt``
+    moves to name it, exactly as before.  No PNG at all retracts it:
+    the folder is removed and the pointer is left untouched, so a
+    script reading the pointer always lands on the newest run that
+    actually drew something, and a failed render leaves no new folder
+    to mistake for output.
+    """
+
+    if not getattr(args, "_run_claim_created", False):
+        return
+    args._run_claim_created = False
+    run_dir = Path(args.out)
+    case_root = Path(args._run_claim_root)
+    if any(run_dir.rglob("*.png")):
+        run_stamp.record_latest(case_root, run_dir)
+        return
+    import shutil
+
+    try:
+        shutil.rmtree(run_dir)
+    except OSError:
+        # A folder that cannot be removed is left; it still was not
+        # published, which is the half a pointer-following script needs.
+        return
+    print("render: no images were produced, so run folder "
+          f"{run_stamp.relative_to_case(run_dir, case_root)} was not "
+          f"published (removed; {run_stamp.LATEST_POINTER} untouched)",
+          file=sys.stderr)
 
 
 def render_main(args: argparse.Namespace) -> int:
@@ -1454,7 +1841,7 @@ def render_main(args: argparse.Namespace) -> int:
                 refusal, explain=explain.explain_enabled(args),
                 command="gpuwm render"), file=sys.stderr)
             return 2
-    notice = fallback_notice(engine, why)
+    notice = matplotlib_workaround_notice(engine)
     if notice is not None:
         print(notice, file=sys.stderr)
     if engine == "rust":
@@ -1466,40 +1853,59 @@ def render_main(args: argparse.Namespace) -> int:
     if args.list_products:
         return list_products_main(args, engine)
     print(f"render: engine {engine} ({why})")
-    if engine == "rust":
-        # The receipt line for WHICH engine binary drew these products.
-        # Recorded on the passing path too: "the in-tree engine ran" is
-        # the fact that was missing when a foreign engine's 153 products
-        # had to be explained after the fact.
-        from gpuwm import rustwx
-        from gpuwm.provenance_gate import bridge_tree_match
+    # AFTER every refusal and after --list-products: this creates a
+    # directory, and a command that draws nothing must leave none --
+    # which is also why every exit path below runs _publish_run_dir.
+    _claim_run_dir(args, args.wrfout)
+    try:
+        # WHERE the pictures will be, printed BEFORE they are drawn, so
+        # a script driving this can compute the path it is going to
+        # watch rather than glob for it afterwards.
+        # One separator on both arms: the reader's own --out arrives
+        # with this platform's, and gluing a forward-slash template
+        # behind it printed a path in two spellings (UX finding N24).
+        print(f"render: layout {args.layout} -- "
+              + (render_layout.describe(str(args.out))
+                 if args.layout == render_layout.NESTED
+                 else f"{args.out}{os.sep}<file>.png (legacy flat)"))
+        if engine == "rust":
+            # The receipt line for WHICH engine binary drew these
+            # products.  Recorded on the passing path too: "the in-tree
+            # engine ran" is the fact that was missing when a foreign
+            # engine's 153 products had to be explained after the fact.
+            from gpuwm import rustwx
+            from gpuwm.provenance_gate import bridge_tree_match
 
-        verdict = bridge_tree_match(rustwx.find_renderer(),
-                                    env_var=rustwx.RENDERER_ENV)
-        print(f"render: engine bridge {verdict.verdict} "
-              f"({verdict.basis})")
-        try:
-            written, failures, skipped = render_wrfouts_rust(
-                args.wrfout, products=rust_products, timeidx=timeidx,
-                outdir=args.out, size=size, heavy=args.heavy,
-                source_label=args.source_label)
-        except (RuntimeError, ValueError) as exc:
-            print("render: " + explain.render(
-                str(exc), explain=explain.explain_enabled(args),
+            verdict = bridge_tree_match(rustwx.find_renderer(),
+                                        env_var=rustwx.RENDERER_ENV)
+            print(f"render: engine bridge {verdict.verdict} "
+                  f"({verdict.basis})")
+            try:
+                written, failures, skipped = render_wrfouts_rust(
+                    args.wrfout, products=rust_products, timeidx=timeidx,
+                    outdir=args.out, size=size, heavy=args.heavy,
+                    source_label=args.source_label, layout=args.layout,
+                    overlays=args.overlays, annotate=args.annotate)
+            except (RuntimeError, ValueError) as exc:
+                print("render: " + explain.render(
+                    str(exc), explain=explain.explain_enabled(args),
+                    command="gpuwm render"), file=sys.stderr)
+                return 2
+        else:
+            written, failures, skipped = render_wrfouts(
+                args.wrfout, products=products, timeidx=timeidx,
+                outdir=args.out, dpi=args.dpi,
+                source_label=args.source_label, layout=args.layout)
+        for failure in failures:
+            print(f"render FAIL: {failure}", file=sys.stderr)
+        notice = skip_notice(skipped, wrote_any=bool(written))
+        if notice is not None:
+            print(explain.render(
+                notice, explain=explain.explain_enabled(args),
                 command="gpuwm render"), file=sys.stderr)
-            return 2
-    else:
-        written, failures, skipped = render_wrfouts(
-            args.wrfout, products=products, timeidx=timeidx,
-            outdir=args.out, dpi=args.dpi,
-            source_label=args.source_label)
-    for failure in failures:
-        print(f"render FAIL: {failure}", file=sys.stderr)
-    notice = skip_notice(skipped)
-    if notice is not None:
-        print(explain.render(notice, explain=explain.explain_enabled(args),
-                             command="gpuwm render"), file=sys.stderr)
-    print(f"render: {len(written)} file(s) -> {args.out}")
+        print(f"render: {len(written)} file(s) -> {args.out}")
+    finally:
+        _publish_run_dir(args)
     # Written-and-no-failures, where a SKIP IS NOT A FAILURE.  The two
     # were one list until 1.4.1 and the exit code could not tell them
     # apart, so a registered absence -- the cold-start frame's missing
@@ -1530,9 +1936,11 @@ def register_cli(subparsers) -> None:
         default="auto",
         help="render engine: the vendored Rusty Weather renderer "
              "(campaign plot quality; 151 implicit-render catalog "
-             "candidates per file) or the matplotlib fallback; 'auto' "
+             "candidates per file) or the matplotlib workaround; 'auto' "
              "(default) uses rust whenever its binary is built and "
-             "probes as runnable")
+             "probes as runnable, and REFUSES otherwise rather than "
+             "drawing weather fields with matplotlib -- 'matplotlib' "
+             "asks for that workaround by name and announces itself")
     parser.add_argument(
         "--products", default="all", metavar="LIST",
         help="comma-separated products: "
@@ -1544,7 +1952,23 @@ def register_cli(subparsers) -> None:
         help="frame index within each file, or 'all' (default)")
     parser.add_argument(
         "--out", type=Path, default=Path("out/render"), metavar="DIR",
-        help="output directory for the PNGs (default out/render)")
+        help="where the PNGs go (default out/render).  Each render "
+             "claims its own timestamped run folder under it, so two "
+             "renders never overwrite each other; point it at an "
+             "existing run-... folder to draw into that one")
+    parser.add_argument(
+        "--layout", choices=render_layout.LAYOUTS,
+        default=render_layout.DEFAULT_LAYOUT,
+        help="how the PNGs are arranged inside this render's run "
+             "folder: 'nested' (default) files each picture at "
+             f"{render_layout.describe('<run folder>', sep='/')}, "
+             "so a run's thousands of frames are separated by nest, by "
+             "chart and by day and a script can predict a path without "
+             "globbing; 'flat' writes every picture directly into the "
+             "run folder, which is what releases up to 2.4.1 did and is "
+             "kept only for consumers still written against it (with "
+             "--run-stamp off it is the v2.4.1 tree exactly)")
+    run_stamp.add_argument(parser, artifacts="PNGs")
     parser.add_argument(
         "--dpi", type=int, default=150, metavar="N",
         help="PNG resolution, matplotlib engine (default 150)")
@@ -1566,6 +1990,23 @@ def register_cli(subparsers) -> None:
         help="rust engine: also compute the heavy ECAPE product family "
              "at import (SBECAPE/SBNCAPE/SBECIN, ECAPE SCP/EHI/...; "
              "adds substantial per-frame import time)")
+    parser.add_argument(
+        "--overlays", type=Path, metavar="FILE.json",
+        help="rust engine: draw map overlays given in geographic DEGREES "
+             "on every panel -- lines, closed boxes, markers, labels and "
+             "range rings.  This is the seam a boundary-zone frame, tile "
+             "seams, storm-report markers and radar sites needed; the "
+             "schema is documented in "
+             "tools/rustwx/crates/rustwx-products/src/"
+             "geographic_overlays.rs.  Omitted, the renderer runs no "
+             "overlay code and the PNGs are byte-identical")
+    parser.add_argument(
+        "--annotate", type=Path, metavar="FILE.json",
+        help="rust engine: override the panel title and the three "
+             "subtitle slots (title, title_suffix, subtitle_left, "
+             "subtitle_center, subtitle_right).  A short badge belongs "
+             "in the centre slot; anything sentence-length belongs on "
+             "the left, which owns the row's width")
     parser.add_argument(
         "--list-products", action="store_true",
         help="list the engine's product catalog with per-file "
@@ -1591,8 +2032,10 @@ def register_cli(subparsers) -> None:
 __all__ = ["DEFAULT_SOURCE_LABEL", "PRODUCTS", "RUST_PRODUCT_ALIASES",
            "WRF_PACKAGE_REQUIREMENT", "default_source_label",
            "domain_token", "list_products_main",
+           "matplotlib_workaround_notice",
            "parse_products", "parse_products_rust", "parse_size",
            "parse_timeidx", "plot_context", "register_cli", "render_main",
            "missing_basemap_notice", "missing_declared_inputs",
-           "render_wrfouts", "render_wrfouts_rust", "resolution_token",
-           "skip_notice", "spacing_label"]
+           "render_series_rust", "render_wrfouts", "render_wrfouts_rust",
+           "require_renderer", "resolution_token", "skip_notice",
+           "spacing_label"]

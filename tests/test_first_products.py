@@ -461,13 +461,34 @@ class _CollectedTrigger:
         return None
 
 
+def _a_box_that_can_draw(monkeypatch) -> None:
+    """Declare a usable render engine for the three bookkeeping tests.
+
+    ``_render_stage`` asks ``gpuwm.render.drawable_engine`` whether this
+    install can draw at all and skips with a remedy when it cannot.
+    Since the render law's one-fallback clause was enforced (audit F7)
+    the only chainable engine is the rust one, so on a box whose only
+    resolvable ``rw_wrfbatch`` belongs to another checkout that answer is
+    "no engine" -- and these three tests are about the EARLY-RENDER
+    BOOKKEEPING, not about which engine draws (the subprocess is stubbed
+    out entirely).  Declaring the engine keeps them measuring the thing
+    they are named for on every box.
+    """
+
+    from gpuwm import render
+
+    monkeypatch.setattr(render, "drawable_engine",
+                        lambda: ("rust", "declared by the test"))
+
+
 def test_the_render_stage_collects_the_early_render_before_it_draws(
         wrf_package, tmp_path, monkeypatch):
-    # ``_render_stage`` returns False and prints a remedy when the science
-    # core is absent, so the three tests that assert it returns True are
-    # science-core tests even though they stub the subprocess out.
+    # ``_render_stage`` returns False and prints a remedy when no engine
+    # can draw, so the three tests that assert it returns True declare
+    # one even though they stub the subprocess out.
     from gpuwm import go_cli
 
+    _a_box_that_can_draw(monkeypatch)
     plan, frame, _receipt = _published(tmp_path)
     later = _frame(tmp_path, "wrfout_d01_1974-04-03_19_00_00")
     commands = []
@@ -489,6 +510,7 @@ def test_a_run_whose_only_frame_was_published_early_draws_nothing_again(
         wrf_package, tmp_path, monkeypatch, capsys):
     from gpuwm import go_cli
 
+    _a_box_that_can_draw(monkeypatch)
     plan, _frame_path, _receipt = _published(tmp_path)
     commands = []
     monkeypatch.setattr(
@@ -574,6 +596,7 @@ def test_an_observer_without_the_hook_renders_exactly_as_it_always_did(
         wrf_package, tmp_path, monkeypatch):
     from gpuwm import go_cli
 
+    _a_box_that_can_draw(monkeypatch)
     plan, frame, _receipt = _published(tmp_path)
     commands = []
     monkeypatch.setattr(
@@ -672,10 +695,17 @@ def test_a_frame_rendered_early_is_byte_identical_to_one_rendered_late(
         errors="replace", cwd=str(_stage_cwd()), env=_stage_env())
     assert completed.returncode == 0, completed.stderr
 
-    early_pngs = {p.name: sha256_file(p)
-                  for p in sorted((tmp_path / "early").glob("*.png"))}
-    late_pngs = {p.name: sha256_file(p)
-                 for p in sorted(late.glob("*.png"))}
+    # Keyed by the path RELATIVE to each render directory, not by the
+    # bare filename: since 2.5.0 the render writes a tree
+    # (gpuwm.render_layout), and identity has to cover where the file
+    # landed as well as what is in it -- an early render that published
+    # the right bytes into the wrong directory is not the same run.
+    def _tree(root):
+        return {p.relative_to(root).as_posix(): sha256_file(p)
+                for p in sorted(root.rglob("*.png"))}
+
+    early_pngs = _tree(tmp_path / "early")
+    late_pngs = _tree(late)
     assert early_pngs and early_pngs == late_pngs
 
     # And the receipt's recorded digests are those same bytes, which is

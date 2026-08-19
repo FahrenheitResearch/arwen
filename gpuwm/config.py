@@ -506,11 +506,13 @@ class RunConfig:
     # default path's.  Both registered calibration gates hold with it
     # True and the jet gate gains margin; the lake gate's margin
     # narrows from 28% to 9% and that is recorded at the fixture.
-    # DEFAULT FALSE because flipping it moves bitwise goldens and five
-    # RED legs that pin historical formulations, which is a separate
-    # decision with its own evidence (authority module docstring, S3-12
-    # section, "DEFAULT FALSE, AND WHY").
-    sase_additive_dissipation: bool = False
+    # DEFAULT TRUE since the 2026-08-17 real-data confirmation leg
+    # (fixed-means-default): the 08-01 operational configuration flown
+    # through the shipped front door with this channel on.  The RED legs
+    # that pin the historical un-channeled formulation set
+    # additive_dissipation=False explicitly, exactly as the S3-6j legs
+    # pin apply_drag=False (authority module docstring, S3-12 section).
+    sase_additive_dissipation: bool = True
     # --- Horizontal-mixing diagnostic and the km_opt = 0 acknowledgement.
     #
     # Horizontal eddy-viscosity diagnostic (output-only, per domain).  True
@@ -682,11 +684,11 @@ NOAHMP_OPTION_IDENTITY_EVIDENCE: dict[str, tuple[object, str]] = {
                    "rates"),
     "opt_tbot": (2, "fixture; Noah lower boundary at ZBOT"),
     "opt_stc": (1, "fixture; semi-implicit snow/soil temperature"),
-    "opt_gla": (1, "declared only.  Every glacier column RAISES "
-                   "(gpuwm/core/noahmp_runtime.py), so no glacier physics "
-                   "runs at any opt_gla and this value is not evidence of "
-                   "one -- it exists so a plan that asks for opt_gla=2 is "
-                   "refused rather than silently ignored"),
+    "opt_gla": (1, "ported; NOAHMP_GLACIER (gpuwm/core/noahmp_glacier.py) "
+                   "transcribes the opt_gla=1 phase-change arm and every "
+                   "opt_gla=2 arm is dead code it refuses, so a plan that "
+                   "asks for opt_gla=2 is refused rather than silently "
+                   "ignored"),
     "opt_rsf": (1, "fixture; Sakaguchi/Zeng ground resistance"),
     "opt_soil": (1, "fixture; one soil category per column.  The 3-D and "
                     "pedotransfer branches at :737-746 are not "
@@ -1620,11 +1622,7 @@ def validate_sase_config(cfg: RunConfig) -> None:
             ("sase_stable_dissipation", False,
              "the stable-limb dissipation coefficient it decouples lives "
              "in the SASE analytic decay substep, so setting it "
-             "elsewhere would decouple nothing"),
-            ("sase_additive_dissipation", False,
-             "the additive e^{3/2} dissipation channel it enables lives "
-             "in the SASE analytic decay substep, so setting it "
-             "elsewhere would add nothing")):
+             "elsewhere would decouple nothing")):
         value = getattr(cfg, name)
         if type(value) is not bool:
             raise ValueError(f"{name} must be boolean, got {value!r}.")
@@ -1635,6 +1633,20 @@ def validate_sase_config(cfg: RunConfig) -> None:
                 f"bl_pbl_physics={cfg.bl_pbl_physics}: {what} -- a key "
                 "that names a seam this run does not have would read as "
                 "a setting that took effect.")
+    # sase_additive_dissipation left the fail-closed loop when its
+    # default flipped (False -> True, 2026-08-16, 1a0e8a7f8): the loop's
+    # charter is "every existing configuration keeps validating
+    # unchanged", and artifacts written under the old default RECORD
+    # ``sase_additive_dissipation = false`` beside non-SASE PBLs -- every
+    # 2.4.x restart header and every child TOML 2.4.x downscale rendered.
+    # Refusing the old default broke `gpuwm downscale` of a 2.4.1
+    # archive on this tree (MEASURED 2026-08-17, masked as a VRAM-fit
+    # refusal).  Off-SASE the knob is inert in BOTH positions, so only
+    # the type is held; on SASE both positions are legal channels.
+    value = cfg.sase_additive_dissipation
+    if type(value) is not bool:
+        raise ValueError(
+            f"sase_additive_dissipation must be boolean, got {value!r}.")
 
 
 #: ``name -> (predicate, what the value has to be)`` for the dynamics
@@ -2030,9 +2042,18 @@ def _unresolved_depth_advice(*, where: str, km_opt: int, horizontal: float,
 def anisotropic_w_mixing_advice(*, where: str, km_opt: int,
                                 mix_isotropic: int, mix_upper_bound: float,
                                 dx: float, dy: float, dz_max: float,
-                                ladder: str = "",
+                                ladder: str = "", forced: bool = False,
                                 ) -> tuple[float | None, str | None]:
     """``(ratio, one-sentence advisory)`` for the exposed-mixing check.
+
+    ``forced`` says the configuration WROTE ``mix_isotropic = 0`` -- as
+    opposed to inheriting it -- and appends the override state to the
+    over-the-limit sentence.  Since the auto-switch (Drew, 2026-08-16;
+    :func:`auto_mix_isotropic_selection`), a domain that reaches this
+    advisory over the limit through the experiment loader can ONLY have
+    written the value: an unset ``mix_isotropic`` resolves to 1 there
+    and never lands here.  The caller supplies the flag because only it
+    knows which loader the config came through.
 
     One wording, every door.  :func:`warn_anisotropic_w_mixing` prints
     it at config load; ``gpuwm check`` repeats it in its advisory list
@@ -2107,20 +2128,40 @@ def anisotropic_w_mixing_advice(*, where: str, km_opt: int,
         f"mix_upper_bound*(dz_max/dx)^2 = "
         f"{ratio:.3g} exceeds the explicit horizontal diffusion limit "
         f"{EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT}, so the horizontal "
-        f"mixing of w {tier}. Set mix_isotropic = 1 on this domain, or "
-        f"lower mix_upper_bound below {admitted:.3g}. ADVISORY, not a "
+        f"mixing of w {tier}. The remedy is mix_isotropic = 1 on this "
+        f"domain: it builds ONE length from (dx*dy*dz)^(1/3) and caps "
+        f"the vertical coefficient against the horizontal one, which "
+        f"takes the domain off this path entirely rather than moving it "
+        f"nearer the limit. Lowering mix_upper_bound below "
+        f"{admitted:.3g} also satisfies the criterion, but it weakens "
+        f"the subgrid mixing everywhere to fix a horizontal-operator "
+        f"problem. COST OF THE REMEDY, STATED HERE SO IT IS NOT "
+        f"DISCOVERED LATER: mix_isotropic is inside the RunConfig "
+        f"fingerprint gpuwm/io/restart.py writes as "
+        f"configuration_sha256, so a checkpoint written under "
+        f"mix_isotropic = 0 CANNOT be resumed under 1 -- take it at "
+        f"t = 0, not part-way through a campaign you intend to restart. "
+        f"ADVISORY, not a "
         f"refusal: {ratio:.3g} is the WORST case the cap admits and a "
         f"flow that never reaches it never sees this, which is why "
         f"trees above the limit have completed -- but above the limit "
         f"nothing guarantees the operator's own stability, and what it "
         f"costs when it does bite is an abort late in a long run rather "
         f"than a number you can inspect")
+    if forced:
+        advice += (
+            ". OVERRIDE STATE: mix_isotropic = 0 is this configuration's "
+            "EXPLICIT setting, so the automatic isotropic selection "
+            "stands aside and the anisotropic form runs, at the ratio "
+            "above; delete the key (or write \"auto\") to let the model "
+            "select the stable length here")
     return ratio, advice
 
 
 def warn_anisotropic_w_mixing(*, where: str, km_opt: int, mix_isotropic: int,
                               mix_upper_bound: float, dx: float, dy: float,
-                              dz_max: float, ladder: str = "") -> float | None:
+                              dz_max: float, ladder: str = "",
+                              forced: bool = False) -> float | None:
     """Advise when the anisotropic mixing length exceeds the explicit limit.
 
     A warning and not a refusal, RE-RULED 2026-08-09 after the shipped
@@ -2143,6 +2184,30 @@ def warn_anisotropic_w_mixing(*, where: str, km_opt: int, mix_isotropic: int,
     and the tier, and ``tests/test_shipped_configs_mixing_stability.py``
     keeps the shipped set out of the exposed state entirely.
 
+    THE DEFAULT IS THE AUTO-SWITCH (Drew, 2026-08-16; supersedes the
+    recipe-only half of the 2.5.0 "where the default moved" ruling).
+    "Fixed means default" makes an opt-in remedy for a correctness
+    criterion a workaround, and an advisory that a bare config scrolls
+    past was exactly that.  A domain that leaves ``mix_isotropic`` unset
+    (or writes ``"auto"``) and violates this criterion now RUNS
+    ``mix_isotropic = 1`` -- resolved by the experiment loader
+    (``gpuwm.experiment.resolve_auto_mix_isotropic``), announced by
+    :func:`auto_mix_isotropic_selection` at load and by ``gpuwm check``,
+    with the fingerprint consequence named at both restart doors
+    (:data:`MIX_ISOTROPIC_RESTART_BREAK_NOTICE`).  The wizard's
+    :func:`gpuwm.domain_wizard.gray_zone_advisory` recipe keeps naming
+    ``mix_isotropic = 1`` explicitly, as before.
+
+    So this function fires only for a configuration that WROTE
+    ``mix_isotropic = 0`` (or one on a route the auto-switch does not
+    resolve, e.g. a wrapped legacy RunConfig), and that asymmetry is the
+    ruling: an explicit setting is kept, in the danger zone too, and
+    what it gets is this warning -- the instability by name, the
+    measured ratio, and (``forced``) the override state.  Refusing would
+    make the frozen crash records unloadable; flipping a WRITTEN key
+    would mutate a physics selector the user chose and orphan its
+    checkpoints (``mix_isotropic`` is inside ``configuration_sha256``).
+
     Returns the computed ratio so a caller can record the number whether
     or not it warned.  ``None`` covers two cases and a caller must not
     conflate them: not applicable, and applicable with an unresolvable
@@ -2153,7 +2218,7 @@ def warn_anisotropic_w_mixing(*, where: str, km_opt: int, mix_isotropic: int,
     ratio, advice = anisotropic_w_mixing_advice(
         where=where, km_opt=km_opt, mix_isotropic=mix_isotropic,
         mix_upper_bound=mix_upper_bound, dx=dx, dy=dy, dz_max=dz_max,
-        ladder=ladder)
+        ladder=ladder, forced=forced)
     if advice is None:
         return ratio
     from gpuwm.explain import warn
@@ -2175,6 +2240,61 @@ def warn_anisotropic_w_mixing(*, where: str, km_opt: int, mix_isotropic: int,
             "is wide. This is an advisory: the ratio is the worst case "
             "the cap admits, not a value this flow is required to reach.")
     return ratio
+
+
+#: The TOML sentinel for "let the model choose the mixing length": the
+#: same meaning as leaving ``mix_isotropic`` unset, writable so a config
+#: can SAY it is deferring rather than merely omit the key.  Only the
+#: experiment loader consumes it; ``RunConfig.mix_isotropic`` itself
+#: stays the resolved WRF integer (0/1) everywhere downstream.
+MIX_ISOTROPIC_AUTO = "auto"
+
+
+def auto_mix_isotropic_selection(*, where: str, ratio: float,
+                                 ladder: str = "") -> str:
+    """The one loud line for an auto-selected isotropic mixing length.
+
+    One wording, every door -- exactly the discipline of
+    :func:`anisotropic_w_mixing_advice`: the experiment loader prints it
+    (through :func:`gpuwm.explain.warn`) at the shared config load every
+    front door runs at model start, and ``gpuwm check`` repeats it in
+    its advisory list so the report says what the run WILL do, not that
+    something is wrong.  It names what happened and why: the criterion
+    value, the limit it exceeds, and that isotropic mixing was selected
+    -- plus the escape hatch and the restart consequence, so neither is
+    discovered later.
+    """
+
+    provenance = f" ({ladder})" if ladder else ""
+    return (
+        f"{where} leaves mix_isotropic UNSET on a grid that violates the "
+        f"anisotropic-mixing criterion -- mix_upper_bound*(dz_max/dx)^2 "
+        f"= {ratio:.3g} exceeds the explicit horizontal diffusion limit "
+        f"{EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT}{provenance} -- so this "
+        f"run SELECTS ISOTROPIC MIXING: mix_isotropic = 1, the single "
+        f"(dx*dy*dz)^(1/3) length, runs on this domain. Write "
+        f"mix_isotropic = 0 explicitly to keep the anisotropic form "
+        f"(the instability advisory then applies); a checkpoint written "
+        f"under the old anisotropic default will not bit-continue under "
+        f"this selection.")
+
+
+#: The restart doors' one-line honesty about the changed default: said
+#: when a checkpoint integrated under ``mix_isotropic = 0`` meets a run
+#: that selects 1, because a bare hash/field mismatch does not tell a
+#: reader that the DEFAULT moved under them.  A notice beside the
+#: existing refusal, not a refusal of its own -- the mismatch machinery
+#: already names the concrete breakage (a different trajectory).
+MIX_ISOTROPIC_RESTART_BREAK_NOTICE = (
+    "note: the checkpoint was integrated under anisotropic mixing "
+    "(mix_isotropic = 0) and this run selects ISOTROPIC mixing "
+    "(mix_isotropic = 1). A config that leaves mix_isotropic unset now "
+    "auto-selects the isotropic length where mix_upper_bound*"
+    "(dz_max/dx)^2 exceeds "
+    f"{EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT}, and a trajectory cannot "
+    "bit-continue across that change. To resume this checkpoint, write "
+    "mix_isotropic = 0 explicitly on the domain (the instability "
+    "advisory then applies); otherwise restart from t = 0.")
 
 
 def validate_run_config(cfg: RunConfig) -> RunConfig:

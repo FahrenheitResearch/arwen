@@ -849,8 +849,8 @@ def canonical_state_digest(state, clock, *,
 
 
 def _read_field(path: str | Path, name: str) -> np.ndarray:
-    import netCDF4
-    with netCDF4.Dataset(path) as dataset:
+    from gpuwm import netcdf_bridge
+    with netcdf_bridge.open_dataset(path) as dataset:
         if name not in dataset.variables:
             raise KeyError(f"{path} has no {name} variable")
         return np.asarray(

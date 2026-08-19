@@ -1,5 +1,17 @@
 """Render a streamed real-case forecast, on ArWen's own product-map frame.
 
+DEPRECATED FALLBACK, under the render law (CLAUDE.md, Drew 2026-08-06).
+The streamed frames this reads now become real wrfouts by default
+(``tilestream/run_bigdomain.py`` -> :mod:`gpuwm.io.surface_wrfout`), so
+the field below is drawable by ``rw_wrfbatch``:
+``tilestream/bigdomain_render.py --engine rust`` renders the whole
+catalog of a streamed run, and ``python -m tilestream.render_case_rust``
+renders a case run.  MEASURED 2026-08-17: 22 products per frame.
+
+The ONLY reason this file still draws is its shape -- ``figure_sequence``
+is an N-column CONTACT SHEET of many frames, and the renderer composes
+one panel.  Nothing here should acquire a new single-panel product.
+
 Reuses the repo's rendering machinery rather than inventing a look:
 
 * the basemap geometry is the vendored Natural Earth 10 m + US Census county

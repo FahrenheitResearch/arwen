@@ -2,7 +2,13 @@ use super::parser::GridDefinition;
 
 /// Compute latitude and longitude arrays for every grid point.
 /// Returns (lats, lons) with length nx*ny, stored in row-major order (j * nx + i).
-pub fn grid_latlon(grid: &GridDefinition) -> (Vec<f64>, Vec<f64>) {
+///
+/// Fails closed on a grid definition template this decoder cannot place:
+/// returning EMPTY vectors for an unsupported template let an unsupported
+/// input decode "successfully" to nothing and reach downstream artifacts
+/// as a good decode -- the same class of defect as the unread
+/// missing-value octet.  A refusal names the template number.
+pub fn grid_latlon(grid: &GridDefinition) -> crate::Result<(Vec<f64>, Vec<f64>)> {
     // For reduced Gaussian grids, use the pl array to compute coordinates
     // instead of nx * ny, which would overflow (nx is 0xFFFFFFFF).
     if grid.is_reduced {
@@ -14,17 +20,19 @@ pub fn grid_latlon(grid: &GridDefinition) -> (Vec<f64>, Vec<f64>) {
     let n = nx * ny;
 
     match grid.template {
-        0 => latlon_grid(grid, nx, ny, n),
-        1 => rotated_latlon_grid(grid, nx, ny, n),
-        10 => mercator_grid(grid, nx, ny, n),
-        20 => polar_stereo_grid(grid, nx, ny, n),
-        30 => lambert_grid(grid, nx, ny, n),
-        40 => gaussian_grid(grid, nx, ny, n),
-        90 => space_view_grid(grid, nx, ny, n),
-        _ => {
-            // Return empty vectors for unknown templates
-            (Vec::new(), Vec::new())
-        }
+        0 => Ok(latlon_grid(grid, nx, ny, n)),
+        1 => Ok(rotated_latlon_grid(grid, nx, ny, n)),
+        10 => Ok(mercator_grid(grid, nx, ny, n)),
+        20 => Ok(polar_stereo_grid(grid, nx, ny, n)),
+        30 => Ok(lambert_grid(grid, nx, ny, n)),
+        40 => Ok(gaussian_grid(grid, nx, ny, n)),
+        90 => Ok(space_view_grid(grid, nx, ny, n)),
+        template => Err(crate::GribError::UnsupportedTemplate {
+            template,
+            detail: "grid definition (Section 3; supporting it needs this \
+                     template's point placement implemented in grib2/grid.rs)"
+                .to_string(),
+        }),
     }
 }
 
@@ -32,11 +40,17 @@ pub fn grid_latlon(grid: &GridDefinition) -> (Vec<f64>, Vec<f64>) {
 ///
 /// Each latitude row has a variable number of evenly-spaced longitude points
 /// given by the `pl` array. The total number of points is `sum(pl)`.
-fn reduced_gaussian_latlon(grid: &GridDefinition) -> (Vec<f64>, Vec<f64>) {
+fn reduced_gaussian_latlon(grid: &GridDefinition) -> crate::Result<(Vec<f64>, Vec<f64>)> {
     let ny = grid.ny as usize;
     let pl = match grid.pl.as_ref() {
         Some(pl) => pl,
-        None => return (Vec::new(), Vec::new()),
+        None => {
+            return Err(crate::GribError::Parse(
+                "reduced (quasi-regular) grid carries no pl array; its \
+                 points cannot be placed"
+                    .into(),
+            ))
+        }
     };
     let total: usize = pl.iter().map(|&v| v as usize).sum();
     let mut lats = Vec::with_capacity(total);
@@ -59,7 +73,7 @@ fn reduced_gaussian_latlon(grid: &GridDefinition) -> (Vec<f64>, Vec<f64>) {
             lons.push(lon);
         }
     }
-    (lats, lons)
+    Ok((lats, lons))
 }
 
 /// Template 3.0: Regular latitude/longitude grid.
@@ -80,10 +94,42 @@ fn latlon_grid(grid: &GridDefinition, nx: usize, ny: usize, n: usize) -> (Vec<f6
     } else {
         grid.lon2
     };
-    let dlon = if nx > 1 {
-        (lon2_unwrapped - grid.lon1) / (nx as f64 - 1.0)
+    // Longitude spacing comes from the ENDPOINTS wherever they describe a
+    // span, and from the declared i-direction increment only where they do
+    // not.  Both halves are load-bearing and the order between them was
+    // measured, not assumed:
+    //
+    // * A cyclic grid may encode identical first and last longitudes (180 ->
+    //   180 over 721 half-degree points).  Interpolating between equal
+    //   endpoints yields a zero increment and collapses every longitude onto
+    //   one meridian, so the declared increment has to win there.
+    // * Everywhere else the endpoints win, because the declared increment is
+    //   a ROUNDED octet.  An operational 3072-point Gaussian grid states
+    //   Di = 0.117188 for a true 0.1171875 spacing; taking the octet at face
+    //   value walks 0.0015 deg (~170 m) off by the last column, growing
+    //   linearly across the row, while the endpoints reproduce the spacing
+    //   exactly.
+    //
+    // Scan-mode bit 1 (0x80) selects -i; the unwrap above forces a forward
+    // span, so a -i scan must take its sign from the increment.
+    let declared_increment = if grid.dx.is_finite() && grid.dx > 0.0 {
+        Some(grid.dx)
     } else {
+        None
+    };
+    let span = lon2_unwrapped - grid.lon1;
+    let dlon = if nx <= 1 {
         0.0
+    } else if grid.scan_mode & 0x80 != 0 {
+        match declared_increment {
+            Some(dx) => -dx,
+            None => span / (nx as f64 - 1.0),
+        }
+    } else {
+        match declared_increment {
+            Some(dx) if span == 0.0 => dx,
+            _ => span / (nx as f64 - 1.0),
+        }
     };
 
     for j in 0..ny {
@@ -542,7 +588,7 @@ mod tests {
             lon2: -90.0,
             ..Default::default()
         };
-        let (lats, lons) = grid_latlon(&grid);
+        let (lats, lons) = grid_latlon(&grid).unwrap();
         assert_eq!(lats.len(), 1);
         assert_eq!(lons.len(), 1);
         assert!((lats[0] - 45.0).abs() < 1e-10);
@@ -561,7 +607,7 @@ mod tests {
             lon2: 10.0,
             ..Default::default()
         };
-        let (lats, lons) = grid_latlon(&grid);
+        let (lats, lons) = grid_latlon(&grid).unwrap();
         assert_eq!(lats.len(), 4);
         // Row 0: lat=0, Row 1: lat=10
         assert!((lats[0] - 0.0).abs() < 1e-10);
@@ -586,7 +632,7 @@ mod tests {
             lon2: 360.0,
             ..Default::default()
         };
-        let (lats, lons) = grid_latlon(&grid);
+        let (lats, lons) = grid_latlon(&grid).unwrap();
         assert_eq!(lats.len(), 9);
         assert!((lats[0] - (-90.0)).abs() < 1e-10);
         assert!((lats[3] - 0.0).abs() < 1e-10);
@@ -608,12 +654,69 @@ mod tests {
             lon2: 90.0,
             ..Default::default()
         };
-        let (_lats, lons) = grid_latlon(&grid);
+        let (_lats, lons) = grid_latlon(&grid).unwrap();
         assert_eq!(lons.len(), 8);
         assert!((lons[0] - 180.0).abs() < 1e-6);
         assert!((lons[1] - 270.0).abs() < 1e-6);
         assert!((lons[2] - 360.0).abs() < 1e-6);
         assert!((lons[3] - 90.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_latlon_grid_uses_increment_for_equal_endpoint_cyclic_grid() {
+        let grid = GridDefinition {
+            template: 0,
+            nx: 721,
+            ny: 360,
+            lat1: -90.0,
+            lon1: 180.0,
+            lat2: 89.5,
+            lon2: 180.0,
+            dx: 0.5,
+            dy: 0.5,
+            scan_mode: 0x40,
+            ..Default::default()
+        };
+        let (lats, lons) = grid_latlon(&grid).unwrap();
+        assert_eq!(lats.len(), 721 * 360);
+        assert_eq!(lons.len(), 721 * 360);
+        assert!((lons[0] - 180.0).abs() < 1e-10);
+        assert!((lons[1] - 180.5).abs() < 1e-10);
+        assert!((lons[360] - 360.0).abs() < 1e-10);
+        assert!((lons[361] - 0.5).abs() < 1e-10);
+        assert!((lons[720] - 180.0).abs() < 1e-10);
+        assert!((lats[0] - (-90.0)).abs() < 1e-10);
+        assert!((lats[721 * 359] - 89.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_latlon_grid_prefers_endpoints_over_a_rounded_declared_increment() {
+        // The other half of the rule above, pinned against the operational
+        // shape that MEASURED the regression: a 3072-point Gaussian row whose
+        // declared Di (0.117188) is the 1e-6 rounding of the true 0.1171875.
+        // Taking the octet at face value walks the last column 0.0015 deg
+        // (~170 m) east and every column in between proportionally.
+        let grid = GridDefinition {
+            template: 40,
+            nx: 3072,
+            ny: 1,
+            lat1: 89.910324,
+            lon1: 0.0,
+            lat2: 89.910324,
+            lon2: 359.882813,
+            dx: 0.117188,
+            dy: 0.117188,
+            scan_mode: 0,
+            ..Default::default()
+        };
+        let (_lats, lons) = grid_latlon(&grid).unwrap();
+        assert_eq!(lons.len(), 3072);
+        assert!((lons[1] - 0.1171875).abs() < 1e-9, "lon[1]={}", lons[1]);
+        assert!(
+            (lons[3071] - 359.882813).abs() < 1e-9,
+            "lon[3071]={}",
+            lons[3071]
+        );
     }
 
     // ---- Template 30: Lambert Conformal ----
@@ -633,25 +736,48 @@ mod tests {
             lov: 262.5,
             ..Default::default()
         };
-        let (lats, lons) = grid_latlon(&grid);
+        let (lats, lons) = grid_latlon(&grid).unwrap();
         assert_eq!(lats.len(), 9);
         assert!((lats[0] - 21.138).abs() < 0.01, "lat[0]={}", lats[0]);
         assert!((lons[0] - 237.28).abs() < 0.01, "lon[0]={}", lons[0]);
     }
 
-    // ---- Unknown template ----
+    // ---- Unknown template: fail closed, never empty-but-successful ----
 
     #[test]
-    fn test_unknown_template_returns_empty() {
+    fn test_unknown_template_fails_closed_naming_the_template() {
+        // An unsupported grid template used to decode to EMPTY coordinate
+        // vectors -- an unsupported input reaching sha-bound artifacts as
+        // a good decode.  It must refuse, naming the template.
+        //
+        // Convergence conflict C1 (see lib.rs): this is the re-expression of
+        // the donor's `test_unknown_template_returns_empty`.  Returning empty
+        // vectors is the behaviour being refused, not an alternative that
+        // survives in the decode path.
         let grid = GridDefinition {
             template: 999,
             nx: 5,
             ny: 5,
             ..Default::default()
         };
-        let (lats, lons) = grid_latlon(&grid);
-        assert!(lats.is_empty());
-        assert!(lons.is_empty());
+        let err = grid_latlon(&grid).unwrap_err().to_string();
+        assert!(err.contains("999"), "{err}");
+        assert!(err.contains("grid definition"), "{err}");
+    }
+
+    #[test]
+    fn test_reduced_grid_without_pl_fails_closed() {
+        // is_reduced with no pl array also used to decode to empty
+        // vectors.  Same class, same refusal posture.
+        let grid = GridDefinition {
+            template: 40,
+            ny: 4,
+            is_reduced: true,
+            pl: None,
+            ..Default::default()
+        };
+        let err = grid_latlon(&grid).unwrap_err().to_string();
+        assert!(err.contains("pl"), "{err}");
     }
 
     // ---- rotated_to_geographic ----
@@ -691,7 +817,7 @@ mod tests {
             lon2: 20.0,
             ..Default::default()
         };
-        let (lats, lons) = grid_latlon(&grid);
+        let (lats, lons) = grid_latlon(&grid).unwrap();
         assert_eq!(lats.len(), 4);
         assert!((lats[0] - (-10.0)).abs() < 1e-10);
         assert!((lats[2] - 10.0).abs() < 1e-10);
@@ -716,7 +842,7 @@ mod tests {
             projection_center_flag: 0, // north pole
             ..Default::default()
         };
-        let (lats, lons) = grid_latlon(&grid);
+        let (lats, lons) = grid_latlon(&grid).unwrap();
         assert_eq!(lats.len(), 9);
         assert_eq!(lons.len(), 9);
         // All lats should be in a reasonable range for a north polar stereo
@@ -740,7 +866,7 @@ mod tests {
             lad: 20.0,
             ..Default::default()
         };
-        let (lats, lons) = grid_latlon(&grid);
+        let (lats, lons) = grid_latlon(&grid).unwrap();
         assert_eq!(lats.len(), 4);
         // First point should be close to (20, -100)
         assert!((lats[0] - 20.0).abs() < 0.01, "lat[0]={}", lats[0]);

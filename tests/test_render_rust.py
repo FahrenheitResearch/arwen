@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 
 import gpuwm.cli as cli
-from gpuwm import rustwx
+from gpuwm import render_layout, run_stamp, rustwx
 from gpuwm.io.wrfout import WrfoutWriter, wrf_global_attrs
 from gpuwm.render import parse_products_rust, parse_size
 
@@ -290,9 +290,17 @@ def wrfout_hourly_d03(tmp_path_factory):
 
 
 def _png_size(path) -> tuple[int, int]:
-    """(width, height) from the PNG IHDR chunk; no image library."""
+    """(width, height) from the PNG IHDR chunk; no image library.
 
-    data = path.read_bytes()
+    Read through ``render_layout.fs_path`` for the same reason the
+    placement seam writes through it: ``--out`` plus a run folder plus
+    ``<domain>/<product>/<valid-day>`` plus an exact-time product name
+    passes Windows' MAX_PATH from an ordinary temp root, and a reader
+    that is less long-path aware than the writer reports a correctly
+    filed frame as missing.
+    """
+
+    data = Path(render_layout.fs_path(path)).read_bytes()
     assert data[:8] == b"\x89PNG\r\n\x1a\n", f"{path} is not a PNG"
     assert data[12:16] == b"IHDR"
     width, height = struct.unpack(">II", data[16:24])
@@ -307,7 +315,7 @@ def test_rust_engine_renders_every_frame_including_half_hourly(
                    "--out", str(out)])
     assert rc == 0
     assert "render: engine rust" in capsys.readouterr().out
-    produced = sorted(p.name for p in out.glob("*.png"))
+    produced = sorted(p.name for p in out.rglob("*.png"))
     assert produced, "the rust engine wrote no PNGs"
     # Both frames rendered -- the :30 frame is the sub-hourly lead the
     # source renderer refused (exact-time ordinal axis).
@@ -317,8 +325,9 @@ def test_rust_engine_renders_every_frame_including_half_hourly(
     # 'all' renders the catalog the fixture's fields prove out, which
     # must include the reflectivity composite at minimum.
     assert any("composite_reflectivity" in name for name in produced)
-    for png in out.glob("*.png"):
-        assert png.stat().st_size > 5_000, png.name
+    for png in out.rglob("*.png"):
+        assert Path(render_layout.fs_path(png)).stat().st_size > 5_000, (
+            png.name)
         width, height = _png_size(png)
         assert (width, height) == (1200, 900), png.name
 
@@ -331,7 +340,7 @@ def test_rust_engine_timeidx_selects_the_half_hourly_frame(
                    "--products", "refl", "--timeidx", "1",
                    "--out", str(out)])
     assert rc == 0
-    produced = [p.name for p in out.glob("*.png")]
+    produced = [p.name for p in out.rglob("*.png")]
     assert len(produced) == 1, produced
     assert "composite_reflectivity" in produced[0]
     assert _LEADS[1] in produced[0], produced
@@ -345,11 +354,11 @@ def test_rust_engine_maps_shared_product_names(wrfout, tmp_path):
                    "--products", "refl,t2", "--timeidx", "0",
                    "--size", "800x600", "--out", str(out)])
     assert rc == 0
-    produced = sorted(p.name for p in out.glob("*.png"))
+    produced = sorted(p.name for p in out.rglob("*.png"))
     assert len(produced) == 2, produced
     assert any("composite_reflectivity" in name for name in produced)
     assert any("2m_temperature" in name for name in produced)
-    for png in out.glob("*.png"):
+    for png in out.rglob("*.png"):
         assert _png_size(png) == (800, 600)
 
 
@@ -377,7 +386,7 @@ def test_wind10_renders_the_wind_not_a_pressure_chart(wrfout, tmp_path):
                    "--products", "wind10", "--timeidx", "0",
                    "--size", "800x600", "--out", str(out)])
     assert rc == 0
-    produced = sorted(p.name for p in out.glob("*.png"))
+    produced = sorted(p.name for p in out.rglob("*.png"))
     assert len(produced) == 1, produced
     assert "10m_wind_speed_and_direction" in produced[0], produced
     assert "mslp" not in produced[0], (
@@ -431,13 +440,13 @@ def test_two_domains_at_one_lead_do_not_overwrite_each_other(
                    "--engine", "rust", "--products", "refl",
                    "--timeidx", "0", "--out", str(out)])
     assert rc == 0
-    produced = sorted(p.name for p in out.glob("*.png"))
+    produced = sorted(p.name for p in out.rglob("*.png"))
     assert len(produced) == 2, (
         "two domains at one lead collapsed to one file", produced)
     assert any("_d02-1km_" in name for name in produced), produced
     assert any("_d03-333m_" in name for name in produced), produced
     # Both survive as real images, not one truncated overwrite.
-    for png in out.glob("*.png"):
+    for png in out.rglob("*.png"):
         assert png.stat().st_size > 5_000, png.name
 
 
@@ -450,7 +459,7 @@ def test_domain_and_resolution_token_on_the_exact_time_axis(
     rc = cli.main(["render", str(wrfout), "--engine", "rust",
                    "--products", "refl", "--out", str(out)])
     assert rc == 0
-    produced = sorted(p.name for p in out.glob("*.png"))
+    produced = sorted(p.name for p in out.rglob("*.png"))
     assert len(produced) == 2, produced
     for name in produced:
         assert "_d02-1km_" in name, name
@@ -480,7 +489,7 @@ def test_unknown_domain_identity_keeps_the_native_grid_token(
     rc = cli.main(["render", str(path), "--engine", "rust",
                    "--products", "refl", "--out", str(out)])
     assert rc == 0
-    produced = [p.name for p in out.glob("*.png")]
+    produced = [p.name for p in out.rglob("*.png")]
     assert produced, "the anonymous-domain file rendered nothing"
     for name in produced:
         assert "native_grid" in name, name
@@ -653,9 +662,13 @@ def test_engine_outputs_are_rebranded_to_the_product_prefix(monkeypatch,
         ghost,
         "unbranded_extra.png",
     ]
-    # On disk: the branded file moved and nothing else changed.
-    assert (outdir / "arwen_wrf_19740403_12z_f003_d02-3km_sbcape.png"
-            ).is_file()
+    # On disk: the branded file moved and nothing else changed.  Since
+    # 2.5.0 it moves TWICE -- rebranded, then filed under the render
+    # layout (gpuwm.render_layout) -- and a name the engine's grammar
+    # does not produce is left exactly where the engine put it, because
+    # nothing here knows its product or its valid time.
+    assert (outdir / "d02-3km" / "sbcape" / "1974-04-03"
+            / "arwen_wrf_19740403_12z_f003_d02-3km_sbcape.png").is_file()
     assert not (outdir / branded).exists()
     assert (outdir / "unbranded_extra.png").is_file()
     # The per-file console lines name what is actually on disk.
@@ -676,7 +689,7 @@ def test_rust_engine_unknown_slug_fails_loudly(wrfout, tmp_path, capsys):
     # whichever one runs.  The pin is on the CLI's contract, so it is
     # unchanged by the renderer's exit code.
     assert rc == 1
-    assert not list((tmp_path / "png").glob("*.png"))
+    assert not list((tmp_path / "png").rglob("*.png"))
     # ...and the reason reaches the user.  gpuwm.rustwx surfaces the LAST
     # non-empty stderr line, which the renderer used to make the usage line:
     # every arg mistake reported the same unactionable sentence.
@@ -699,17 +712,42 @@ def test_engine_rust_unbuilt_is_a_documented_refusal(
     assert "cargo build --release --locked --offline" in err
 
 
-def test_engine_auto_falls_back_to_matplotlib(
+def test_engine_auto_refuses_when_the_renderer_is_not_built(
         wrfout, tmp_path, monkeypatch, capsys):
-    pytest.importorskip(
-        "wrf", reason="matplotlib fallback needs the render extra")
+    """`auto` used to degrade here; the render law says it may not.
+
+    Weather-field product plots come from ``rw_wrfbatch`` (CLAUDE.md,
+    Drew 2026-08-06), and the one permitted fallback --
+    ``da_nowcast_render.py`` -- draws none of this door's products.  So
+    with nothing staged the answer is a refusal naming the artifact and
+    the staging remedy, at a nonzero exit; drawing five matplotlib
+    weather fields and reporting success is the defect (audit F7).
+    """
+
     monkeypatch.setattr("gpuwm.rustwx.find_renderer", lambda: None)
     out = tmp_path / "png"
     rc = cli.main(["render", str(wrfout), "--products", "t2",
                    "--out", str(out)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "rw_wrfbatch" in err and "fetch-bridges" in err
+    assert not out.exists() or not list(out.rglob("*.png"))
+
+
+def test_engine_matplotlib_is_reachable_only_by_name(
+        wrfout, tmp_path, capsys):
+    """And says WORKAROUND every time it draws."""
+
+    pytest.importorskip(
+        "wrf", reason="the matplotlib workaround needs the render extra")
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(wrfout), "--engine", "matplotlib",
+                   "--products", "t2", "--out", str(out)])
     assert rc == 0
-    assert "render: engine matplotlib" in capsys.readouterr().out
-    assert list(out.glob("t2_*.png"))
+    printed = capsys.readouterr()
+    assert "render: engine matplotlib" in printed.out
+    assert "WORKAROUND:" in printed.err
+    assert list(out.rglob("t2_*.png"))
 
 
 # --------------------------------------------------------------------------
@@ -756,14 +794,16 @@ def test_engine_rust_refuses_a_renderer_that_fails_the_contract(
     assert "--abi does not match the render contract" in err
     # An explicit request is a statement about which engine must draw:
     # no silent substitution, and no fallback either.
-    assert not out.exists() or not list(out.glob("*.png"))
+    assert not out.exists() or not list(out.rglob("*.png"))
     # ... and the exit is named (1.8.8 refusal sweep).  Refusing to
     # choose for the caller is not the same as refusing to tell them
-    # what the choices are, and on this identical tree --engine auto
-    # exits 0: a way through demonstrably exists, so it is named.
+    # what the choices are.  `--engine auto` is no longer one of those
+    # choices: it refuses this same renderer now, because degrading to
+    # matplotlib weather fields is what the render law forbids.
     assert "cargo build --release" in err
-    assert "--engine auto to fall back to matplotlib" in err
-    assert "--engine matplotlib to select the fallback outright" in err
+    assert "gpuwm fetch-bridges" in err
+    assert "--engine matplotlib to take the named workaround" in err
+    assert "fall back" not in err
 
 
 def test_a_missing_renderer_override_names_the_three_ways_out(
@@ -789,29 +829,28 @@ def test_a_missing_renderer_override_names_the_three_ways_out(
     assert "--engine matplotlib" in err
 
 
-def test_engine_auto_falls_back_where_engine_rust_refuses(
+def test_engine_auto_refuses_the_same_renderer_engine_rust_refuses(
         wrfout, tmp_path, monkeypatch, capsys):
-    """Same staged renderer, two request forms, two different answers.
+    """Same staged renderer, two request forms, ONE outcome now.
 
-    This is the pair the defect was invisible to: with a stale bridge
-    staged, ``auto`` fell back naming the mismatch while ``rust`` ran the
-    stale build without a word.  Asserting only the refusal would leave
-    the fallback free to become a refusal too, which would break the
-    documented default.
+    This is the pair the original defect was invisible to: with a stale
+    bridge staged, ``auto`` fell back naming the mismatch while ``rust``
+    ran the stale build without a word.  The contract check closed the
+    second half; the render law closes the first, because "fell back"
+    meant matplotlib drew the weather fields.  What must stay asserted
+    is that both forms still NAME the mismatch -- a refusal that hides
+    which binary was rejected is the outage the probe exists to prevent.
     """
 
-    pytest.importorskip(
-        "wrf", reason="matplotlib fallback needs the render extra")
     _stage_foreign_renderer(monkeypatch, tmp_path)
     out = tmp_path / "png"
     rc = cli.main(["render", str(wrfout), "--engine", "auto",
                    "--products", "t2", "--out", str(out)])
-    assert rc == 0
+    assert rc == 2
     printed = capsys.readouterr()
-    assert "render: engine matplotlib" in printed.out
     assert "--abi does not match the render contract" in (
         printed.out + printed.err)
-    assert list(out.glob("t2_*.png"))
+    assert not out.exists() or not list(out.rglob("*.png"))
 
 
 def test_engine_rust_accepts_the_renderer_that_passes_the_contract(
@@ -848,8 +887,10 @@ def test_engine_rust_accepts_the_renderer_that_passes_the_contract(
 
     monkeypatch.setattr("gpuwm.rustwx.probe_renderer",
                         lambda path: (False, "stale"))
-    engine, why = _resolve_engine("auto")
-    assert engine == "matplotlib" and "stale" in why
+    # Both request forms refuse a failing contract now, and both name
+    # the evidence.  `auto` used to answer ("matplotlib", ...) here.
+    with pytest.raises(RuntimeError, match="stale"):
+        _resolve_engine("auto")
     with pytest.raises(RuntimeError, match="stale"):
         _resolve_engine("rust")
 
@@ -878,16 +919,24 @@ def test_both_engine_resolvers_treat_an_explicit_request_the_same(
     The render resolver skipped the probe for an explicit request, which
     is the whole defect.  Asserting both in one place is what makes the
     next divergence a red rather than a discovery in the field.
+
+    The two doors diverge on ONE point deliberately, and it is a law and
+    not an oversight: ``fetch --engine auto`` still degrades to the
+    Python engine, because moving bytes on Python is a workaround, while
+    ``render --engine auto`` refuses, because DRAWING a weather field on
+    matplotlib is not permitted at all (the render law, CLAUDE.md, Drew
+    2026-08-06).
     """
 
     from gpuwm import fetch as fetch_module
     from gpuwm.render import _resolve_engine
 
-    # render: staged binary, failing contract.
+    # render: staged binary, failing contract.  Both forms refuse.
     _stage_foreign_renderer(monkeypatch, tmp_path)
     with pytest.raises(RuntimeError):
         _resolve_engine("rust")
-    assert _resolve_engine("auto")[0] == "matplotlib"
+    with pytest.raises(RuntimeError):
+        _resolve_engine("auto")
 
     # fetch: staged backbone, failing contract, same two answers.
     backbone = tmp_path / "rw_fetch"
@@ -1063,7 +1112,7 @@ def test_windowed_products_render_on_whole_hour_stores(
     rc = cli.main(["render", str(wrfout_hourly), "--engine", "rust",
                    "--products", "qpf_total", "--out", str(out)])
     assert rc == 0
-    produced = [p.name for p in out.glob("*.png")]
+    produced = [p.name for p in out.rglob("*.png")]
     assert any("qpf_total" in name for name in produced), produced
 
 
@@ -1075,8 +1124,11 @@ def test_list_products_matplotlib_engine(tmp_path, monkeypatch, capsys):
     with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ, dx=1000.0, dy=1000.0) \
             as writer:
         writer.write_frame(_STAMPS[0], fields)
+    # `--engine matplotlib` by name: `auto` no longer resolves to this
+    # engine, so its catalog is reachable only where a caller asked for
+    # it (render law, audit F7).
     rc = cli.main(["render", str(path), "--list-products",
-                   "--out", str(tmp_path)])
+                   "--engine", "matplotlib", "--out", str(tmp_path)])
     assert rc == 0
     out = capsys.readouterr().out
     assert "engine matplotlib" in out
@@ -1122,10 +1174,15 @@ def _pair_dirs(tmp_path):
 
 def test_pair_composes_common_products(tmp_path, capsys):
     left, right = _pair_dirs(tmp_path)
-    out = tmp_path / "pairs"
+    case = tmp_path / "pairs"
     rc = cli.main(["render", "--pair", str(left), str(right),
-                   "--out", str(out)])
+                   "--out", str(case)])
     assert rc == 0
+    # A pair compose is an invocation of the render door like any other,
+    # so it claims its own run folder under --out (gpuwm.run_stamp) and
+    # two composes into one directory cannot overwrite each other.
+    out = run_stamp.latest(case)
+    assert out is not None and run_stamp.is_run_folder(out)
     sheets = sorted(p.name for p in out.glob("*.png"))
     assert sheets == ["d02-3km_sbcape-pair.png",
                       "t2_d02-3km_1974-04-03_18-00-00-pair.png"]
@@ -1177,6 +1234,47 @@ def test_pair_keys_keep_the_domain_so_nests_do_not_cross_pair(tmp_path):
         Path("arwen_wrf_19740403_12z_f003_d02-3km_sbcape")
     ) == product_name(
         Path("rustwx_wrf_19740403_15z_f006_d02-3km_sbcape"))
+
+
+def test_pair_matches_one_domain_per_side_across_domains(tmp_path, capsys):
+    """DOWNSCALE.md's own compare -- parent dir vs child dir -- pairs.
+
+    The two sides of that documented command are DIFFERENT domains by
+    definition (a 12 km parent against its 3 km offline child), and the
+    domain-bearing pairing key made them share no key at all: walked
+    2026-08-17, the doc's exact command refused with "no matching
+    product PNGs".  When each side's stripped key is unambiguous, the
+    same product pairs across the domain tokens.
+    """
+    left = tmp_path / "parent"
+    right = tmp_path / "child"
+    left.mkdir()
+    right.mkdir()
+    _tiny_png(left / "arwen_wrf_19740403_12z_f002_d01-12km_sbcape.png")
+    _tiny_png(right / "arwen_wrf_19740403_12z_f002_d02-3km_sbcape.png")
+    rc = cli.main(["render", "--pair", str(left), str(right),
+                   "--out", str(tmp_path / "pairs")])
+    assert rc == 0
+    sheets = list(run_stamp.latest(tmp_path / "pairs").glob("*-pair.png"))
+    assert len(sheets) == 1
+    capsys.readouterr()
+
+
+def test_pair_never_cross_pairs_an_ambiguous_side(tmp_path, capsys):
+    """Two nests of one run in one directory still never cross-pair."""
+    from gpuwm.pair_compose import compose_pairs
+
+    left = tmp_path / "a"
+    right = tmp_path / "b"
+    left.mkdir()
+    right.mkdir()
+    # Left carries TWO nests of the same product: the stripped key is
+    # ambiguous, so neither may pair with the right side's single nest.
+    _tiny_png(left / "rustwx_wrf_19740403_12z_f000_d02-3km_sbcape.png")
+    _tiny_png(left / "rustwx_wrf_19740403_12z_f000_d03-333m_sbcape.png")
+    _tiny_png(right / "rustwx_wrf_19740403_12z_f000_d04-111m_sbcape.png")
+    with pytest.raises(ValueError, match="no matching product"):
+        compose_pairs(left, right, tmp_path / "pairs", title="t")
 
 
 def test_pair_with_no_common_products_is_exit_2(tmp_path, capsys):

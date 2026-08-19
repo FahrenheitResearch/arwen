@@ -103,9 +103,13 @@ from gpuwm.core.thompson_contract import (
     TABLE_SET_ID as CLASSIC_TABLE_SET_ID,
     read_sequential_records,
 )
+from gpuwm.physics_compat import packaged_thompson_table_root
 
 
-_TABLES = Path(__file__).parents[1] / "gpuwm" / "data" / "thompson" / "tables"
+#: Resolved rather than joined: the classic-table directory ships in the
+#: gpuwm-data companion distribution since 2.5.0.  ``oracle-aero`` below
+#: did NOT move and is still joined onto gpuwm/data.
+_TABLES = packaged_thompson_table_root()
 _CCN_PATH = _TABLES / AEROSOL_TABLE_FILE
 _ORACLE_AERO = (Path(__file__).parents[1] / "gpuwm" / "data" / "thompson"
                 / "oracle-aero")
@@ -247,7 +251,8 @@ def test_ccn_activate_is_vendored_but_stays_out_of_the_classic_contract():
         asset.filename for asset in CLASSIC_TABLE_ASSETS}
     ignore = (Path(__file__).parents[1] / ".gitignore").read_text(
         encoding="utf-8")
-    assert "\ngpuwm/data/thompson/tables/CCN_ACTIVATE.BIN" not in ignore, (
+    assert ("\ngpuwm-data/gpuwm_data/data/thompson/tables/CCN_ACTIVATE.BIN"
+            not in ignore), (
         "the asset is committed now; a .gitignore entry would make a clean "
         "checkout silently unable to validate mp=28")
     # The pin itself must survive, or "redistributed" quietly becomes

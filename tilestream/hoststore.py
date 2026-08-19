@@ -7,8 +7,9 @@ domain shape.  Only halo tiles ever visit the GPU.
 
 Three things in here are load-bearing and worth reading before you use it.
 
-1.  THE MANIFEST IS PROBED, NOT HARDCODED.  Which of the 41 contract
-    attributes actually exist, and their staggering, depend on the config
+1.  THE MANIFEST IS PROBED, NOT HARDCODED.  Which of the contract
+    attributes (47 as of the mp9/P3 restart fixes; ``test_gather`` pins the
+    count) actually exist, and their staggering, depend on the config
     (``moist``, ``mp_physics``, ``km_opt``, ``bl_pbl_physics``).  Rather than
     transcribe ``gpuwm/core/state.py``'s allocation branches -- which would
     silently drift -- :func:`build_manifest` constructs a throwaway
@@ -594,25 +595,91 @@ def max_square_domain(budget_bytes: int, manifest: Iterable[FieldSpec],
 # host memory accounting
 # --------------------------------------------------------------------------
 
-def _meminfo() -> dict[str, int]:
+def _parse_meminfo(lines) -> dict[str, int]:
+    """``/proc/meminfo`` text -> ``{key: bytes}``.  Split out so the parser
+    is testable on a box that has no procfs at all."""
     info: dict[str, int] = {}
-    with open("/proc/meminfo", "r", encoding="ascii") as handle:
-        for line in handle:
-            key, _, rest = line.partition(":")
-            parts = rest.split()
-            if parts:
-                info[key] = int(parts[0]) * 1024   # kB -> bytes
+    for line in lines:
+        key, _, rest = line.partition(":")
+        parts = rest.split()
+        if parts:
+            info[key] = int(parts[0]) * 1024   # kB -> bytes
     return info
 
 
-def host_memory() -> dict[str, int]:
-    """``{'total', 'available', 'free'}`` bytes, from ``/proc/meminfo``.
+def _meminfo() -> dict[str, int]:
+    with open("/proc/meminfo", "r", encoding="ascii") as handle:
+        return _parse_meminfo(handle)
 
-    ``MemAvailable`` is the number that matters -- it is the kernel's own
-    estimate of what can be handed out without swapping, which is exactly the
-    question a pinned allocation asks.
+
+def _host_memory_windows() -> dict[str, int]:
+    """``GlobalMemoryStatusEx``, the Win32 answer to ``/proc/meminfo``.
+
+    Same source :func:`tilestream.autoplan._windows_memtotal` reads for the
+    planner, taken here in full so the store gets ``available`` too.
+    ``ullAvailPhys`` is the kernel's count of physical pages it can hand out
+    without paging -- the same question ``MemAvailable`` answers on Linux --
+    so it serves as both ``available`` and ``free``: Win32 publishes no
+    separate ``MemFree``-shaped number, and every consumer in this module
+    reads ``available``.
     """
-    info = _meminfo()
+    import ctypes
+
+    class _MemoryStatusEx(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    status = _MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise HostStoreError(
+            "GlobalMemoryStatusEx refused; without a host-memory reading the "
+            "pinned-store guards cannot run, and running them on a guess is "
+            "how a box gets driven into swap")
+    avail = int(status.ullAvailPhys)
+    return {"total": int(status.ullTotalPhys),
+            "available": avail, "free": avail}
+
+
+def host_memory() -> dict[str, int]:
+    """``{'total', 'available', 'free'}`` bytes, from whichever source this
+    OS has.
+
+    ``available`` is the number that matters -- the kernel's own estimate of
+    what can be handed out without swapping, which is exactly the question a
+    pinned allocation asks.  Linux answers it as ``MemAvailable``; Windows as
+    ``GlobalMemoryStatusEx``'s ``ullAvailPhys`` (no procfs exists there, and
+    the unconditional ``/proc/meminfo`` read this function used to be meant
+    every ``HostDomainStore`` construction on the product's own shipping
+    platform died in ``check_allocatable`` before pinning a byte).  Anywhere
+    with neither source, psutil answers if it is installed; otherwise this
+    raises naming the platform rather than guessing, because every guard in
+    this module divides by these numbers.
+    """
+    if os.name == "nt":
+        return _host_memory_windows()
+    try:
+        info = _meminfo()
+    except FileNotFoundError:
+        try:
+            import psutil
+        except ImportError:
+            import sys
+            raise HostStoreError(
+                f"no host-memory source on this platform ({sys.platform}): "
+                "no /proc/meminfo, not Windows, and psutil is not installed."
+                "  The pinned-store guards refuse to run on a guess; "
+                "`pip install psutil` gives them a real reading.") from None
+        vm = psutil.virtual_memory()
+        return {"total": int(vm.total), "available": int(vm.available),
+                "free": int(getattr(vm, "free", vm.available))}
     return {"total": info.get("MemTotal", 0),
             "available": info.get("MemAvailable", info.get("MemFree", 0)),
             "free": info.get("MemFree", 0)}

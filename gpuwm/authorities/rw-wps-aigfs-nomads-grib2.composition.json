@@ -1,0 +1,17 @@
+{
+  "schema": "gpuwm-cross-source-composition-pending-v1",
+  "name": "aigfs-atmosphere-only-awaiting-land-surface-donor",
+  "pending": {
+    "missing_canonical_state": [
+      "land_fraction",
+      "skin_temperature",
+      "soil_temperature",
+      "specific_humidity_2m",
+      "surface_pressure",
+      "terrain_height",
+      "volumetric_soil_moisture"
+    ],
+    "reason": "the operational AIGFS product is six 3-D fields on 13 pressure levels (top 50 hPa) plus 2 m temperature, 10 m wind, mean-sea-level pressure and accumulated precipitation; it publishes no soil temperature or moisture on any layer, no land-sea mask, no orography, no skin temperature, no surface pressure (PRMSL only), no snow and no sea ice, so the terrain-following interpolation and the land-surface initial state are undefined from these bytes alone (MEASURED by exhaustive scan of the 2026-08-17 00Z cycle, both front doors)",
+    "supply_route": "the cross-source composition must borrow the missing land-surface, mask, orography and surface-pressure state from a physical GFS/GDAS cycle of matching valid time before any initialization is attempted"
+  }
+}

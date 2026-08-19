@@ -44,14 +44,8 @@ from gpuwm.core.mynn_pbl_scratch import (
 from gpuwm.core.state import DTYPE
 
 
-#: WRF Registry ``mynnscheme`` prognostic/carried 3-D state, in the spelling
-#: ``module_pbl_driver.F`` binds.  ``el_pbl``/``sh3d``/``sm3d`` keep WRF's
-#: names rather than the solver's ``el``/``sh``/``sm`` so the restart
-#: manifest and wrfout read the same identifiers WRF writes.
-MYNN_PBL_STATE_3D = (
-    "qke", "tsq", "qsq", "cov", "el_pbl", "sh3d", "sm3d",
-    "qc_bl", "qi_bl", "cldfra_bl",
-)
+from gpuwm.core.physics_inventory import MYNN_PBL_STATE_3D  # noqa: F401  (one home; re-exported here)
+
 
 #: Solver output name -> the ``PhysicsDriver.fields`` key it persists into.
 _STATE_FIELD = {
@@ -60,11 +54,11 @@ _STATE_FIELD = {
     "qc_bl": "qc_bl", "qi_bl": "qi_bl", "cldfra_bl": "cldfra_bl",
 }
 
-#: Per-column plume diagnostics the wrapper exports (``:1698-1699``).
-MYNN_PBL_DIAGNOSTICS_2D = ("maxwidth", "maxmf", "ztop_plume")
+from gpuwm.core.physics_inventory import (  # noqa: F401  (one home; re-exported here)
+    MYNN_PBL_DIAGNOSTICS_2D,
+    MYNN_PBL_DIAGNOSTICS_INT_2D,
+)
 
-#: Integer per-column diagnostic; kept apart because it is int32.
-MYNN_PBL_DIAGNOSTICS_INT_2D = ("ktop_plume",)
 
 _TPB = 128
 #: Full MYNN wrapper call requires the lowest five model levels.

@@ -475,6 +475,26 @@ class Level2Gallery:
                   "wave1")
 
     def wave1(self, single_path: Path, multi_path: Path):
+        # DEPRECATED FALLBACK, under the render law (CLAUDE.md, Drew
+        # 2026-08-06).  Every field these four figures show is drawn
+        # natively by ``rw_obsgrid`` from the same
+        # ``gpuwm-obs.radar-grid.v1`` files -- column-max Z, coverage
+        # depth, distinct-radar overlap, lowest-tilt radial velocity and
+        # per-radar contribution are its five products, and it was built
+        # for exactly this surface (MEASURED 2026-08-17 on a real
+        # three-radar file).
+        #
+        # What keeps these here is the SHAPE, not the science: three of
+        # the four are side-by-side or per-radar GRIDS of panels, and
+        # ``MapRenderRequest`` composes one panel.  The A/B question this
+        # wave asks is inherently a comparison, so the sheet is the
+        # product.  Render the panels with the binary and compose them
+        # the day there is a compositor; do not add a fifth figure here.
+        print("da_level2_render: WARNING -- wave-1 panels are the render "
+              "law's DEPRECATED FALLBACK; the product tier for these same "
+              "files is  rw_obsgrid --obs FILE.nc --out-dir OUT  and this "
+              "module keeps them only because its figures are multi-panel "
+              "comparisons.", flush=True)
         single = self.open_obs(single_path)
         multi = self.open_obs(multi_path)
         self.fig_coverage_pair(single, multi)

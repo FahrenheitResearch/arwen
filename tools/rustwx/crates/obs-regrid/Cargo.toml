@@ -1,0 +1,33 @@
+# The Rust observation remap: the port target for
+# gpuwm/verify/obs/regrid.py, which is the whole referee of the
+# observation-verification battery.  Both registered operators
+# (`nearest`, `cell_average`), the bounded neighbour search that used to
+# be scipy.spatial.cKDTree, and the validity remap.
+#
+# The parity contract is bit-identical float64 against the scipy/numpy
+# reference on real observation and model grids, with exactly one
+# documented divergence: nearest-neighbour tie-breaking, which scipy
+# leaves to traversal order and this crate defines (lowest flat index
+# wins).  See src/kdtree.rs for the measurements.
+#
+# Dependency posture: none.  The k-d tree is 200 lines and the
+# alternative was a crates.io neighbour search whose tie-breaking is
+# somebody else's undocumented traversal order, which is the exact
+# defect this port exists to remove.
+
+[package]
+name = "obs-regrid"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Observation/forecast remap plans on the unit sphere (nearest, cell_average)"
+
+[lib]
+name = "obs_regrid"
+# cdylib: the ctypes seam gpuwm/obs_regrid_bridge.py loads (src/capi.rs).
+# rlib:   Rust callers and the crate's own tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

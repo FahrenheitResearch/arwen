@@ -187,13 +187,32 @@ def test_a_bad_point_re_prompts_and_says_why(monkeypatch, capsys, bad,
     assert f"--point={good}" in argv
 
 
-@pytest.mark.parametrize("bad", ["gefs", "GFS2", "era-5"])
+@pytest.mark.parametrize("bad", ["GFS2", "era-5", "not-a-model"])
 def test_an_unknown_source_re_prompts(monkeypatch, capsys, bad):
     _answers(monkeypatch, ["35.3,-97.5", bad, "hrrr", "latest", "", ""])
     _no_gpu(monkeypatch)
     argv = interactive.collect(printer=lambda *a, **k: None)
-    assert "must be one of" in capsys.readouterr().out
+    assert "is not a registered source" in capsys.readouterr().out
     assert argv[argv.index("--source") + 1] == "hrrr"
+
+
+@pytest.mark.parametrize("typed", ["gefs", "rap", "gem"])
+def test_a_registered_source_the_prompt_does_not_offer_is_accepted(
+        monkeypatch, typed):
+    """The prompt SUGGESTS three; it must not REFUSE the other thirteen.
+
+    ``gefs`` was one of this suite's own examples of an unknown source,
+    which is the measurement: the prompt's shortlist was also its accepted
+    set, so every source shipped after those three was unreachable here.
+    """
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    _answers(monkeypatch, ["35.3,-97.5", typed, "2026-08-17T00", "", ""])
+    _no_gpu(monkeypatch)
+    argv = interactive.collect(printer=lambda *a, **k: None)
+    assert (argv[argv.index("--source") + 1]
+            == get_source_adapter(typed).source_id)
 
 
 def test_an_empty_answer_takes_the_default_rather_than_complaining(

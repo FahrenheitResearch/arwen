@@ -95,7 +95,12 @@ pytestmark = pytest.mark.gpu
 _DATA = Path(__file__).parents[1] / "gpuwm" / "data" / "thompson"
 _ORACLE_AERO = _DATA / "oracle-aero"
 _ORACLE_CLASSIC = _DATA / "oracle"
-_TABLES = _DATA / "tables"
+# Resolved, not joined: the classic-table directory ships in the gpuwm-data
+# companion distribution since 2.5.0.  The oracle directories above did not
+# move and are still under gpuwm/data/thompson.
+from gpuwm.physics_compat import packaged_thompson_table_root  # noqa: E402
+
+_TABLES = packaged_thompson_table_root()
 
 F32 = np.float32
 _LEVELS = 24

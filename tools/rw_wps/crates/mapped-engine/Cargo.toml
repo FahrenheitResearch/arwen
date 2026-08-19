@@ -1,0 +1,54 @@
+# The mapped-source decode engine behind gpuwm's Python prep front door.
+#
+# grib-core path: gpuwm's copy at tools/grib1_bridge/vendor/grib-core, NOT
+# the donor snapshot under ../../vendor/grib-core.  Two reasons, both
+# about the numbers this engine must reproduce:
+#
+#   * the shipped `grib2_dump`/`grib2_inventory` bins the Python engine
+#     runs today are built from gpuwm's copy, so decoding through any
+#     other descendant would put a crate difference inside the parity
+#     verdict the battery is supposed to read as an ENGINE difference;
+#   * gpuwm's copy is the declared BASE of lane 1's superset (design doc
+#     §2), so this dep already points where the one crate will live and
+#     the coordinator has no path to flip here.
+#
+# `jpeg2000` is on for the same reason grib1_bridge turns it on: several
+# operational Lambert products (RAP/NAM AWIPS grids, MSC GDPS) pack with
+# DRT 5.40, and a decode engine without the codec refuses about packing
+# instead of about meteorology.  `png_codec` stays off: nothing consumed
+# uses Template 5.41.
+[package]
+name = "mapped-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "gpuwm mapped-source decode engine: in-process GRIB/NetCDF to canonical source frames"
+
+[dependencies]
+bzip2 = "0.5"
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+grib-core = { path = "../../../grib1_bridge/vendor/grib-core", default-features = false, features = ["jpeg2000"] }
+ndarray = "0.17"
+netcrust = { path = "../../vendor/netcrust" }
+# Message decode is pure per-message work and a large complex-packed
+# object carries hundreds of them; see `src/threads.rs` for the one rule
+# every parallel step here obeys (pre-assigned slots, drained in
+# document order) and for why the worker count is capped.
+rayon = "1.12"
+serde.workspace = true
+# `float_roundtrip` is REQUIRED, not a preference.  serde_json's default
+# float parser is fast and inexact: it returned 0.10197162129779283 one ULP
+# off, which moved every cell of a scaled field (measured on the NetCDF
+# golden, where `terrain_height`'s declared scale made all 53 non-zero
+# cells differ from the Python engine by one ULP while every unscaled field
+# matched).  A mapping's declared scale, offset and level values are
+# CONTRACT numbers; parsing them approximately breaks byte parity on every
+# field that uses one.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2.workspace = true
+
+[[bin]]
+name = "gpuwm_mapped_engine"
+path = "src/main.rs"

@@ -682,7 +682,7 @@ fn build_native_field(
     let nx = message.grid.nx as usize;
     let ny = message.grid.ny as usize;
     let shape = GridShape::new(nx, ny)?;
-    let (mut lat, mut lon) = grid_latlon(&message.grid);
+    let (mut lat, mut lon) = grid_latlon(&message.grid)?;
     let mut values = unpack_message(message)?;
     if message.grid.scan_mode & 0x40 != 0 {
         flip_rows(&mut lat, nx, ny);

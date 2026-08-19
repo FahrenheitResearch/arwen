@@ -19,6 +19,11 @@ consumer chose), ``error_model`` (labelled UNCALIBRATED, with its
 constants), and ``dqf_policy`` (the bridge's condemn mask, carried
 forward).  A consumer that reads this file and does not read those three
 cannot say how its observations were made.
+
+Both halves are Drew's Rust, and this module imports no Python NetCDF
+library at all: :mod:`gpuwm.obs.grid_product` writes the classic container
+and :mod:`gpuwm.netcdf_bridge` decodes it back.  The radar twin keeps one
+netCDF4 read for its character variables; this product has none.
 """
 
 from __future__ import annotations
@@ -81,7 +86,8 @@ def write_goes_grid(path: str | Path, observations: GriddedCwp,
                     overwrite: bool = False) -> dict:
     """Write one ``gpuwm-obs.goes-grid.v1`` file, atomically."""
 
-    import netCDF4                                       # noqa: PLC0415
+    from gpuwm.obs.grid_product import (                 # noqa: PLC0415
+        open_obs_grid_product)
 
     path = Path(path)
     if path.exists() and not overwrite:
@@ -129,7 +135,7 @@ def write_goes_grid(path: str | Path, observations: GriddedCwp,
 
     temp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
-        with netCDF4.Dataset(temp, "w", format="NETCDF4_CLASSIC") as dataset:
+        with open_obs_grid_product(temp) as dataset:
             dataset.createDimension("south_north", grid.ny)
             dataset.createDimension("west_east", grid.nx)
             dataset.setncatts({
@@ -235,7 +241,7 @@ def read_goes_grid(path: str | Path, *,
     structure centres every observation in the wrong layer.
     """
 
-    import netCDF4                                       # noqa: PLC0415
+    from gpuwm import netcdf_bridge                       # noqa: PLC0415
 
     path = Path(path)
     if expected_grid is not None:
@@ -248,7 +254,13 @@ def read_goes_grid(path: str | Path, *,
                 "the caller is asking for two different grids")
         expected_grid_identity = demanded
 
-    with netCDF4.Dataset(path, "r") as dataset:
+    # Reading back the gridded CWP product means decoding observation
+    # fields (cwp_obs, its mask and error, obs_level, XLAT/XLONG), so the
+    # read goes through the Rust bridge even though gpuwm wrote the file.
+    # The WRITE above is Rust too now: "writing is not decoding" was the
+    # sentence that kept a whole gridded-product writer on the C library,
+    # and the 2026-08-18 audit retired it.
+    with netcdf_bridge.open_dataset(path) as dataset:
         schema = getattr(dataset, "schema", None)
         if schema != GOES_GRID_SCHEMA:
             raise GoesGridSchemaError(

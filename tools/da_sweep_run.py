@@ -44,6 +44,15 @@ from pathlib import Path
 
 SCHEMA = "gpuwm-da.sweep-queue.v1"
 
+#: A plan names the prepared case it runs on by token, because prepared
+#: cases are host-bound: the same plan is validated and run on whatever
+#: box holds the case, and an absolute path written into the plan goes
+#: stale the moment that box's scratch is reaped.  The spelling is the
+#: one ``evidence/da-demo/sweep/validate_sweep_plan.py`` pre-flights, so
+#: what the validator proved and what the queue launches cannot differ.
+CASE_ROOT_TOKEN = "${CASE_ROOT}"
+CASE_ROOT_ENV = "GPUWM_DA_SWEEP_CASE_ROOT"
+
 
 class Status:
     """The durable status file. Appended to, never rewritten."""
@@ -118,11 +127,13 @@ def wait_for_card(status: Status, gate: Path, gate_log: Path, *, label: str,
 
 
 def run_step(status: Status, step: dict, *, run_dir: Path, repo: Path,
-             env: dict, arm: str, index: int) -> int:
+             case_root: Path | None, env: dict, arm: str, index: int) -> int:
     """One subprocess, both streams captured to their own files."""
 
     argv = [a.replace("${RUN_DIR}", str(run_dir)).replace("${REPO}", str(repo))
             for a in step["argv"]]
+    if case_root is not None:
+        argv = [a.replace(CASE_ROOT_TOKEN, str(case_root)) for a in argv]
     if argv and argv[0] == "${PYTHON}":
         argv[0] = sys.executable
     logs = run_dir / "logs"
@@ -159,6 +170,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--case-root", type=Path, default=None,
+                        help="prepared case root binding the plan's "
+                             f"{CASE_ROOT_TOKEN}; defaults to "
+                             f"{CASE_ROOT_ENV}")
     parser.add_argument("--gate", type=Path, required=True,
                         help="the GPU admission gate script")
     parser.add_argument("--wait-for", type=Path, action="append", default=[],
@@ -177,10 +192,28 @@ def main(argv: list[str] | None = None) -> int:
     gate_log = run_dir / "logs" / "gate.log"
     gate_log.parent.mkdir(parents=True, exist_ok=True)
 
-    plan = json.loads(args.plan.read_text(encoding="utf-8"))
+    plan_text = args.plan.read_text(encoding="utf-8")
+    plan = json.loads(plan_text)
     status.say(f"QUEUE START pid {os.getpid()} plan {args.plan}")
     status.say(f"plan {plan.get('schema')} arms "
                f"{[a['name'] for a in plan['arms']]}")
+
+    case_root = args.case_root
+    if case_root is None and os.environ.get(CASE_ROOT_ENV, "").strip():
+        case_root = Path(os.environ[CASE_ROOT_ENV].strip())
+    if CASE_ROOT_TOKEN in plan_text and case_root is None:
+        # Refused before the first gate poll, deliberately.  Every arm
+        # would otherwise wait hours for a card and then hand
+        # tools.da_cycle_prepared the literal string "${CASE_ROOT}" as a
+        # prepared root, failing inside the slot it waited for.
+        verdict = (f"CASE_ROOT_UNBOUND the plan names {CASE_ROOT_TOKEN} and "
+                   f"neither --case-root nor {CASE_ROOT_ENV} bound it; "
+                   "nothing was run and nothing was stopped")
+        status.say("VERDICT " + verdict)
+        verdict_path.write_text(verdict + "\n", encoding="utf-8")
+        return 2
+    if case_root is not None:
+        status.say(f"case root {case_root}")
 
     env = dict(os.environ)
     env["PYTHONPATH"] = str(args.repo)
@@ -229,7 +262,8 @@ def main(argv: list[str] | None = None) -> int:
         failed = None
         for index, step in enumerate(arm["steps"]):
             code = run_step(status, step, run_dir=run_dir, repo=args.repo,
-                            env=env, arm=name, index=index)
+                            case_root=case_root, env=env, arm=name,
+                            index=index)
             if code != 0:
                 failed = f"{step['name']} exit {code}"
                 break

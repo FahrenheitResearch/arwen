@@ -304,7 +304,18 @@ def test_output_claim_is_create_only_and_cannot_overlap_inputs(tmp_path):
         runner.claim_output_directory(output, protected_roots=(protected,))
         == output.resolve()
     )
-    with pytest.raises(FileExistsError, match="refusing existing"):
+    # An EMPTY directory that already exists is accepted, and has to be:
+    # `gpuwm sim` allocates this run's stamped folder create-exclusively
+    # before it dispatches, so the folder handed here exists and is empty
+    # on every single tree run.  Refusing it prevented nothing and killed
+    # the prepare-then-simulate route.
+    assert (
+        runner.claim_output_directory(output, protected_roots=(protected,))
+        == output.resolve()
+    )
+    # Holding an earlier run is the breakage, and it still refuses.
+    (output / "receipt.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="already holds a run"):
         runner.claim_output_directory(output, protected_roots=(protected,))
     with pytest.raises(ValueError, match="overlaps protected input"):
         runner.claim_output_directory(protected / "run", protected_roots=(protected,))

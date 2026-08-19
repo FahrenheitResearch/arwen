@@ -385,14 +385,54 @@ def validate_native_lambert_contracts(
     if vertical.hybrid_opt != 2:
         raise ValueError(
             f"{label} direct export currently requires WRF hybrid_opt=2")
+    # The vertical ladder refusals below speak in the mapped door's
+    # voice (UX finding R2, walk C step 5): an import-namelist config
+    # declares a level count and no explicit ladder -- the shape every
+    # stock WRF namelist has, because real.exe generates the ladder
+    # itself -- and this route used to answer it with the bare
+    # ``explicit eta_levels has shape (0,)`` and no remedy at all.
+    # Both refusals carry their own doors now, exactly like
+    # ``gpuwm.mapped_direct._validate_target_contract``.
+    from gpuwm.ingest.source_coverage import VerticalLadderRefusal
+
+    if not tuple(vertical.eta_levels or ()):
+        nz = int(exp.root.run.nz)
+        raise VerticalLadderRefusal(
+            f"{label} direct adapter vertical ladder is missing: the "
+            f"experiment config declares nz={nz} mass levels (WRF "
+            f"e_vert={nz + 1}) and no explicit eta_levels ladder.  This "
+            "route interpolates every forcing time onto an explicit "
+            "full-level eta ladder; a level count alone does not define "
+            "one, and WRF's automatic level generator (real.exe) is not "
+            "implemented",
+            remedy=(
+                f"remedy: two doors reconcile this.  Keep your {nz} "
+                f"levels: add an explicit eta_levels ladder of {nz + 1} "
+                "interfaces -- `eta_levels = [1.0, ..., 0.0]`, strictly "
+                "decreasing -- to the [shared] block of the experiment "
+                "config; prep adopts your ladder at your level count.  "
+                "Or use the packaged reference ladder: `gpuwm domain` "
+                "authors a config whose [shared] block carries the "
+                "certified ladder; copy its nz/p_top/eta_levels lines "
+                "into your imported config."))
     for domain in exp.domains:
-        validate_explicit_eta_grid(
-            vertical.eta_levels,
-            nz=domain.run.nz,
-            p_top=vertical.p_top,
-            source_top_pressure_pa=source_top_pressure_pa,
-            context=f"{label} direct adapter d{domain.grid_id:02d}",
-        )
+        try:
+            validate_explicit_eta_grid(
+                vertical.eta_levels,
+                nz=domain.run.nz,
+                p_top=vertical.p_top,
+                source_top_pressure_pa=source_top_pressure_pa,
+                context=f"{label} direct adapter d{domain.grid_id:02d}",
+            )
+        except ValueError as error:
+            raise VerticalLadderRefusal(
+                str(error),
+                remedy=(
+                    "remedy: fix the [shared] eta_levels ladder in the "
+                    "experiment config: nz + 1 entries (WRF e_vert), "
+                    "running 1.0 (surface) to 0.0 (top), strictly "
+                    "decreasing, with p_top in pascals inside the "
+                    "source atmosphere.")) from error
     return tuple(expected_grids)
 
 

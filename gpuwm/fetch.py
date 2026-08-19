@@ -73,7 +73,10 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from gpuwm import explain, fetch_bars, fetch_guard
+import functools
+
+from gpuwm import (explain, fetch_bars, fetch_guard, fetch_pool,
+                   fetch_routes, source_adapters)
 from gpuwm.explain import layered
 from gpuwm.nomads_governor import paced_urlopen
 
@@ -128,6 +131,16 @@ HRRR_NOMADS_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod"
 #: Approximate NOMADS retention (hours).  Older cycles live on S3 only.
 HRRR_NOMADS_RETENTION_HOURS = 48
 HRRR_TRANSPORTS = ("auto", "nomads", "s3")
+
+#: Every host name ``--transport`` accepts across all routes: HRRR's
+#: three plus whatever the packaged route table's rows declare.  The
+#: union lives here rather than in argparse literals so a new row in the
+#: table teaches the front door its host without a code edit.
+FETCH_TRANSPORTS = tuple(sorted(
+    set(HRRR_TRANSPORTS)
+    | {host.name
+       for source_id in fetch_routes.route_ids()
+       for host in fetch_routes.route_for(source_id).hosts}))
 
 #: Which downloader moves the bytes.  ``rust`` is the vendored
 #: ``rw_fetch`` backbone (16 MiB parallel range GETs, ``.idx``
@@ -531,20 +544,71 @@ def source_coverage_envelope(source: str
     """``(south, west, north, east)`` the source's native grid actually
     covers, or ``None`` for a source with no coverage box (global).
 
-    Data, not policy, and ONE definition per source: HRRR's envelope is
-    computed from the native Lambert grid itself
-    (:func:`gpuwm.ingest.hrrr_target.hrrr_coverage_envelope`), and both
+    Data, not policy, and ONE definition per source: the source's registry
+    row declares its native grid (:mod:`gpuwm.source_coverage`), and both
     sides of the area contract -- this module's ``--area`` gate and
     ``gpuwm domain``'s suggested fetch box -- consume it here, so they
-    cannot drift apart the way the retired hand-held CONUS box did.
-    The import is deferred so a base install stays importable without
-    the ingest subpackage loaded.
+    cannot drift apart the way the retired hand-held CONUS box did.  A
+    source with no declared window is global and gets no bound; a name the
+    registry does not know gets none either, because this function answers
+    "how far does it reach", not "does it exist" (the callers' own
+    validators own that question and phrase it better).
+
+    The import is deferred so a base install stays importable without the
+    registry's projection machinery loaded.
     """
 
-    if source == "hrrr":
-        from gpuwm.ingest.hrrr_target import hrrr_coverage_envelope
-        return hrrr_coverage_envelope()
-    return None
+    from gpuwm.source_adapters import get_source_adapter
+    from gpuwm.source_coverage import window_envelope
+
+    try:
+        adapter = get_source_adapter(source)
+    except ValueError:
+        return None
+    return window_envelope(adapter.coverage_window)
+
+
+def fetch_front_door_sources() -> tuple[str, ...]:
+    """The sources ``gpuwm fetch`` can actually download today.
+
+    Named as a seam because another front door has to ask: `gpuwm domain`
+    emits a ``[fetch]`` hint table only for a source whose bytes this
+    module can go and get, and prints the honest acquisition route for the
+    rest.  Before the seam existed the wizard had no way to ask, so it
+    simply did not offer the other sources at all.
+
+    DERIVED, never listed.  There are exactly two ways a fetch runs: a row
+    in the packaged acquisition-route document, or one of the four
+    hand-written transports that predate it -- which is precisely what
+    :func:`gpuwm.fetch_routes.all_fetchable_sources` answers, and it is
+    the same answer ``gpuwm fetch`` itself dispatches on.  The seam spelled
+    the four legacy names by hand until 2026-08-17, so the ten routes that
+    landed that day were invisible here: `gpuwm domain --source rrfs`
+    printed "stage the bytes yourself" for a model whose route was live,
+    and a hand-written ``[fetch]`` table naming it was refused at config
+    load as an unknown source.  A future model's row now reaches this door
+    with the row, which is the whole point of the route table being data.
+    """
+
+    return fetch_routes.all_fetchable_sources()
+
+
+def fetch_accepts_area(source: str) -> bool:
+    """Can ``gpuwm fetch --source SOURCE`` be handed a crop box?
+
+    The second half of the same seam, and derived from the same split.
+    Only the four hand-written transports subset: GFS/GDAS through the
+    NOMADS grib-filter, HRRR through its ``.idx`` byte ranges, ERA5
+    through the retrieval request.  A table route takes whole published
+    objects because there is no subsetting service in front of them, and
+    ``gpuwm fetch`` refuses ``--area`` on one by name -- so a front door
+    that emits an ``area`` hint for a routed source prints a step 1 that
+    exits 2.  The crop for those sources happens at `gpuwm prep`, where
+    the namelist geometry is the crop.
+    """
+
+    return fetch_routes.canonical_source(source) in (
+        fetch_routes.LEGACY_ROUTE_SOURCES)
 
 
 def area_bounds_inward(envelope: tuple[float, float, float, float],
@@ -1096,6 +1160,87 @@ def write_fetch_manifest(out: Path, payload: dict) -> Path:
     return path
 
 
+def fetch_throughput(out: Path) -> dict | None:
+    """What the fetch in ``out`` moved, and how fast, or ``None``.
+
+    Read back out of ``fetch-manifest.json`` -- the artifact, never a
+    printed line -- so a chain reporting fetch bandwidth is relaying a
+    receipt rather than re-deriving one.
+
+    ``bytes_per_second`` IS BANDWIDTH AND ONLY BANDWIDTH: it is computed
+    over the files this run actually downloaded, and it is ``None`` when
+    this run downloaded nothing.  The distinction is not pedantry.  A
+    re-run against an existing ``--data-dir`` skips every download and
+    only re-hashes what is on disk, and dividing those bytes by those
+    seconds produced **1.09 GB/s** on the reference box -- a true
+    number about sha256, presented under a name that means the network.
+    An instrument that confidently reports a wrong-by-two-orders answer
+    on the most ordinary re-run there is would be worse than no
+    instrument, so the verified bytes are reported separately, by name.
+
+    ``None`` when there is no readable manifest.  Per-file ``seconds``
+    is absent from manifests written before it existed, and absent is
+    said as ``None`` rather than as zero.
+    """
+
+    payload = _load_fetch_manifest(Path(out))
+    if payload is None:
+        return None
+    files = payload.get("files")
+    if not isinstance(files, list):
+        return None
+    total_bytes = 0
+    seconds = 0.0
+    timed = 0
+    downloaded_bytes = 0
+    downloaded_seconds = 0.0
+    downloaded = 0
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        size = entry.get("bytes")
+        size = int(size) if isinstance(size, (int, float)) else 0
+        total_bytes += size
+        elapsed = entry.get("seconds")
+        elapsed = float(elapsed) if isinstance(elapsed, (int, float)) else None
+        if elapsed is not None:
+            seconds += elapsed
+            timed += 1
+        # A manifest that predates this key says nothing either way, so
+        # it is not counted as a download; its bytes still show up in
+        # `bytes`, and `bytes_per_second` stays None, which is honest.
+        if entry.get("downloaded") is True:
+            downloaded += 1
+            downloaded_bytes += size
+            if elapsed is not None:
+                downloaded_seconds += elapsed
+    concurrency = payload.get("concurrency")
+    return {
+        "files": len(files),
+        "bytes": total_bytes,
+        # The SERIAL MODEL of the stage: the sum of per-file seconds.
+        # Under the pooled default transfers overlap, so the wall the
+        # caller actually waited is `concurrency.wall_seconds`; this sum
+        # is what the same request would have cost one file at a time.
+        "seconds": round(seconds, 6) if timed else None,
+        "files_timed": timed,
+        "downloaded_files": downloaded,
+        "downloaded_bytes": downloaded_bytes,
+        "downloaded_seconds": (round(downloaded_seconds, 6)
+                               if downloaded else None),
+        "bytes_per_second": (round(downloaded_bytes / downloaded_seconds, 1)
+                             if downloaded and downloaded_seconds > 0.0
+                             else None),
+        "verified_files": len(files) - downloaded,
+        "verified_bytes": total_bytes - downloaded_bytes,
+        # The pool receipt (files, bytes, workers, host caps, wall,
+        # modeled serial seconds, effective speedup); None when the
+        # manifest predates it or the run was interrupted.
+        "concurrency": (dict(concurrency)
+                        if isinstance(concurrency, dict) else None),
+    }
+
+
 def _load_fetch_manifest(out: Path) -> dict | None:
     """The prior fetch manifest payload in ``out``, or None.
 
@@ -1324,6 +1469,7 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
               source: str = "gfs",
               top_pressure_pa: float | None = None,
               all_levels: bool = False,
+              file_workers: int | None = None,
               available_levels=gfs_available_levels) -> Path:
     """Download the exact GFS pgrb2.0p25 subset series into ``out``.
 
@@ -1351,6 +1497,7 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
             force=force, accept_inventory_change=accept_inventory_change,
             derived_bar=derived_bar, source=source,
             top_pressure_pa=top_pressure_pa, all_levels=all_levels,
+            file_workers=file_workers,
             available_levels=available_levels)
 
 
@@ -1361,6 +1508,7 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
                       source: str = "gfs",
                       top_pressure_pa: float | None = None,
                       all_levels: bool = False,
+                      file_workers: int | None = None,
                       available_levels=gfs_available_levels) -> Path:
     """The GFS transfer, with the output-root lock already held.
 
@@ -1463,6 +1611,7 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
             "only cost is download size and the run continues unchanged")
         progress(f"fetch {source}: NOTE {longitude_note}")
     files: list[dict] = []
+    pool_summary: dict = {}
 
     def publish_manifest() -> Path:
         # Relative names: gfs_grib2_bridge resolves them against the
@@ -1498,6 +1647,12 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
         payload["engine_selection"] = "python-requested"
         payload["mode"] = "nomads-cgi-subset"
         payload["record_bars"] = [bar.as_manifest()]
+        if pool_summary:
+            # The completed run's concurrency receipt: files, bytes,
+            # workers, host caps, wall, and the effective speedup
+            # against the serial model.  Absent from interrupted
+            # manifests, which measured no complete run.
+            payload["concurrency"] = dict(pool_summary)
         # The ladder is request state, not a constant, so the receipt
         # carries it: the front-door manifest passes it to the bridge,
         # and the vertical contract needs the source top to decide
@@ -1505,7 +1660,10 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
         payload["pressure_levels_hpa"] = [
             float(format(float(level), "g")) for level in levels]
         payload["source_top_pressure_pa"] = source_top_pa
-        return write_fetch_manifest(out, payload)
+        manifest_path = write_fetch_manifest(out, payload)
+        _write_gfs_front_door_files(
+            out, source=source, cycle=cycle, files=files, series=series)
+        return manifest_path
 
     def resume_command() -> str:
         cadence = hours[1] - hours[0] if len(hours) > 1 else 3
@@ -1527,84 +1685,118 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
             command.append("--accept-inventory-change")
         return shlex.join(command)
 
-    current: tuple[int, str, Path, str] | None = None
+    planned = [
+        (hour,
+         f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}.subset.grib2",
+         transport.nomads_query(cycle, hour, model=source,
+                                pressure_levels_hpa=levels, **box))
+        for hour in hours]
+
+    def transfer(hour: int, name: str, url: str) -> dict:
+        path = out / name
+        # The stopwatch starts on the WHOLE hour, not on the
+        # download alone: a verify-skip re-hashes the file on disk
+        # and that is real wall clock a reader of the manifest is
+        # entitled to see.  The terminal printed a per-file
+        # "N B in X.X s" and threw it away; the manifest recorded
+        # bytes and sha256 and no seconds at all, so bandwidth --
+        # the number that says whether the network or the service
+        # was the limiter -- existed nowhere on disk.
+        file_started = time.perf_counter()
+        downloaded = not path.exists()
+        # No per-hour force quarantine here: the whole directory was
+        # swept before the transfers, receipts first.  Moving a payload
+        # aside mid-run is what let an old manifest outlive the
+        # bytes it claimed.
+        if path.exists():
+            observed = count_grib2_messages(path)
+            if observed != bar.expected:
+                raise ValueError(
+                    f"existing {name} carries {observed} GRIB2 "
+                    f"messages, expected {bar.expected}; move it "
+                    "aside and re-fetch")
+            digest = sha256_file(path)
+            recorded = prior_digests.get(name)
+            if recorded is not None and digest != recorded:
+                raise ValueError(
+                    f"existing {name} does not match the sha256 "
+                    "recorded in the prior fetch manifest, so it "
+                    "cannot be resumed for this request; pass "
+                    "--force-refetch to move the existing files aside "
+                    "(nothing is deleted) and re-download")
+            progress(f"fetch {source} f{hour:03d}: {name} exists, "
+                     f"{path.stat().st_size:,} B verified -- skipped")
+        else:
+            started = time.perf_counter()
+            try:
+                transport._download(url, path)
+            except HTTPError as error:
+                raise RuntimeError(nomads_reach_refusal(
+                    source, cycle, hour, error)) from None
+            observed = count_grib2_messages(path)
+            if observed != bar.expected:
+                raise ValueError(
+                    f"NOMADS returned {observed} GRIB2 messages for "
+                    f"f{hour:03d}, expected {bar.expected}; the "
+                    "upstream inventory has drifted")
+            digest = sha256_file(path)
+            progress(f"fetch {source} f{hour:03d}: {name} "
+                     f"{path.stat().st_size:,} B in "
+                     f"{time.perf_counter() - started:.1f} s")
+        return {
+            "name": name, "role": f"{source}-subset",
+            "forecast_hour": hour, "bytes": path.stat().st_size,
+            "seconds": round(time.perf_counter() - file_started, 6),
+            # Said, not inferred from the seconds: a reader of this
+            # manifest must be able to tell a download from a
+            # verify-skip, because dividing bytes by seconds means
+            # bandwidth for one and sha256 throughput for the other.
+            "downloaded": downloaded,
+            "sha256": digest, "url": url,
+        }
+
+    def admit(index: int, entry: dict) -> Path:
+        # On the caller's thread, in hour order, as the verified prefix
+        # grows -- the manifest keeps its exact serial publication
+        # semantics under any pool size.
+        files.append(entry)
+        return publish_manifest()
+
     try:
-        for hour in hours:
-            name = (f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}"
-                    ".subset.grib2")
+        _entries, receipt = fetch_pool.run_transfers(
+            [fetch_pool.TransferJob(
+                name=name, url=url,
+                action=functools.partial(transfer, hour, name, url))
+             for hour, name, url in planned],
+            workers=file_workers, on_admitted=admit)
+        pool_summary.update(receipt)
+        publish_manifest()
+    except KeyboardInterrupt:
+        # The downloader atomically promotes .part only after checking
+        # the GRIB envelope, and pooled hours may have completed beyond
+        # the admitted prefix before SIGINT landed.  Walk the remaining
+        # hours in order and extend the prefix with every file that
+        # passes the full envelope/count/digest bars, stopping at the
+        # first that does not.
+        for hour, name, url in planned[len(files):]:
             path = out / name
-            url = transport.nomads_query(
-                cycle, hour, model=source,
-                pressure_levels_hpa=levels, **box)
-            current = (hour, name, path, url)
-            # No per-hour force quarantine here: the whole directory was
-            # swept before the loop, receipts first.  Moving a payload
-            # aside mid-loop is what let an old manifest outlive the
-            # bytes it claimed.
-            if path.exists():
+            if not path.is_file():
+                break
+            try:
                 observed = count_grib2_messages(path)
-                if observed != bar.expected:
-                    raise ValueError(
-                        f"existing {name} carries {observed} GRIB2 "
-                        f"messages, expected {bar.expected}; move it "
-                        "aside and re-fetch")
                 digest = sha256_file(path)
-                recorded = prior_digests.get(name)
-                if recorded is not None and digest != recorded:
-                    raise ValueError(
-                        f"existing {name} does not match the sha256 "
-                        "recorded in the prior fetch manifest, so it "
-                        "cannot be resumed for this request; pass "
-                        "--force-refetch to move the existing files aside "
-                        "(nothing is deleted) and re-download")
-                progress(f"fetch {source} f{hour:03d}: {name} exists, "
-                         f"{path.stat().st_size:,} B verified -- skipped")
-            else:
-                started = time.perf_counter()
-                try:
-                    transport._download(url, path)
-                except HTTPError as error:
-                    raise RuntimeError(nomads_reach_refusal(
-                        source, cycle, hour, error)) from None
-                observed = count_grib2_messages(path)
-                if observed != bar.expected:
-                    raise ValueError(
-                        f"NOMADS returned {observed} GRIB2 messages for "
-                        f"f{hour:03d}, expected {bar.expected}; the "
-                        "upstream inventory has drifted")
-                digest = sha256_file(path)
-                progress(f"fetch {source} f{hour:03d}: {name} "
-                         f"{path.stat().st_size:,} B in "
-                         f"{time.perf_counter() - started:.1f} s")
+            except (OSError, ValueError):
+                break
+            recorded = prior_digests.get(name)
+            if observed != bar.expected or (
+                    recorded is not None and digest != recorded):
+                break
             files.append({
                 "name": name, "role": f"{source}-subset",
-                "forecast_hour": hour, "bytes": path.stat().st_size,
+                "forecast_hour": hour,
+                "bytes": path.stat().st_size,
                 "sha256": digest, "url": url,
             })
-            publish_manifest()
-    except KeyboardInterrupt:
-        # The downloader atomically promotes .part only after checking the
-        # GRIB envelope.  If SIGINT arrived just after that rename but
-        # before this loop recorded the hour, apply our own full
-        # envelope/count/digest bars before admitting it to the prefix.
-        if current is not None:
-            hour, name, path, url = current
-            if path.is_file() and not any(
-                    item["name"] == name for item in files):
-                try:
-                    observed = count_grib2_messages(path)
-                    digest = sha256_file(path)
-                    recorded = prior_digests.get(name)
-                    if (observed == bar.expected
-                            and (recorded is None or digest == recorded)):
-                        files.append({
-                            "name": name, "role": f"{source}-subset",
-                            "forecast_hour": hour,
-                            "bytes": path.stat().st_size,
-                            "sha256": digest, "url": url,
-                        })
-                except (OSError, ValueError):
-                    pass
         publish_manifest()
         verified = (
             ", ".join(
@@ -1693,6 +1885,7 @@ def fetch_gfs_fullfile(*, cycle: datetime, hours: tuple[int, ...],
                        cache_dir: Path | None = None,
                        top_pressure_pa: float | None = None,
                        all_levels: bool = False,
+                       file_workers: int | None = None,
                        available_levels=gfs_available_levels) -> Path:
     """Download whole ``pgrb2.0p25`` objects from the AWS S3 archive.
 
@@ -1714,7 +1907,8 @@ def fetch_gfs_fullfile(*, cycle: datetime, hours: tuple[int, ...],
             force=force, source=source, engine=engine, engine_bin=engine_bin,
             engine_selection=engine_selection,
             cache_dir=cache_dir, top_pressure_pa=top_pressure_pa,
-            all_levels=all_levels, available_levels=available_levels)
+            all_levels=all_levels, file_workers=file_workers,
+            available_levels=available_levels)
 
 
 def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
@@ -1725,7 +1919,9 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
                                cache_dir: Path | None,
                                top_pressure_pa: float | None,
                                all_levels: bool,
-                               available_levels) -> Path:
+                               file_workers: int | None = None,
+                               available_levels=gfs_available_levels
+                               ) -> Path:
     """The whole-object transfer, with the output-root lock held.
 
     Per object, three independent bars before the manifest admits it:
@@ -1782,6 +1978,7 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
         _force_quarantine_output(out, progress, source)
     prior_digests = _prior_manifest_digests(out)
     files: list[dict] = []
+    pool_summary: dict = {}
 
     def publish_manifest() -> Path:
         # Relative names: gfs_grib2_bridge resolves them against the
@@ -1817,7 +2014,14 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
         payload["pressure_levels_hpa"] = [
             float(format(float(level), "g")) for level in levels]
         payload["source_top_pressure_pa"] = source_top_pa
-        return write_fetch_manifest(out, payload)
+        if pool_summary:
+            # The completed run's concurrency receipt; absent from
+            # interrupted manifests, which measured no complete run.
+            payload["concurrency"] = dict(pool_summary)
+        manifest_path = write_fetch_manifest(out, payload)
+        _write_gfs_front_door_files(
+            out, source=source, cycle=cycle, files=files, series=series)
+        return manifest_path
 
     def resume_command() -> str:
         cadence = hours[1] - hours[0] if len(hours) > 1 else 3
@@ -1837,102 +2041,125 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
             command.extend(("--forecast-start-hour", str(hours[0])))
         return shlex.join(command)
 
-    current: tuple[int, str, Path, str] | None = None
-    try:
-        for hour in hours:
-            name = f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}"
-            path = out / name
-            url = gfs_object_url(cycle, hour, source)
-            current = (hour, name, path, url)
-            idx_records = _gfs_index_record_count(
-                url + ".idx", progress=progress,
-                label=f"{source} f{hour:03d}")
-            if path.exists():
-                observed = count_grib2_messages(path)
-                if idx_records is not None and observed != idx_records:
-                    raise ValueError(
-                        f"existing {name} carries {observed} GRIB2 "
-                        f"messages where the live index lists "
-                        f"{idx_records}; move it aside and re-fetch")
-                digest = sha256_file(path)
-                recorded = prior_digests.get(name)
-                if recorded is not None and digest != recorded:
-                    raise ValueError(
-                        f"existing {name} does not match the sha256 "
-                        "recorded in the prior fetch manifest, so it "
-                        "cannot be resumed for this request; pass "
-                        "--force-refetch to move the existing files aside "
-                        "(nothing is deleted) and re-download")
-                progress(f"fetch {source} f{hour:03d}: {name} exists, "
-                         f"{path.stat().st_size:,} B verified -- skipped")
+    planned = [
+        (hour, f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}",
+         gfs_object_url(cycle, hour, source))
+        for hour in hours]
+
+    def transfer(hour: int, name: str, url: str) -> dict:
+        path = out / name
+        # The whole hour, index probe included: see the subset
+        # route's note.  A manifest that recorded only the download's
+        # seconds would under-report the wall a caller waited.
+        file_started = time.perf_counter()
+        downloaded = not path.exists()
+        idx_records = _gfs_index_record_count(
+            url + ".idx", progress=progress,
+            label=f"{source} f{hour:03d}")
+        if path.exists():
+            observed = count_grib2_messages(path)
+            if idx_records is not None and observed != idx_records:
+                raise ValueError(
+                    f"existing {name} carries {observed} GRIB2 "
+                    f"messages where the live index lists "
+                    f"{idx_records}; move it aside and re-fetch")
+            digest = sha256_file(path)
+            recorded = prior_digests.get(name)
+            if recorded is not None and digest != recorded:
+                raise ValueError(
+                    f"existing {name} does not match the sha256 "
+                    "recorded in the prior fetch manifest, so it "
+                    "cannot be resumed for this request; pass "
+                    "--force-refetch to move the existing files aside "
+                    "(nothing is deleted) and re-download")
+            progress(f"fetch {source} f{hour:03d}: {name} exists, "
+                     f"{path.stat().st_size:,} B verified -- skipped")
+        else:
+            started = time.perf_counter()
+            if engine == "rust":
+                entry = _rw_fetch_gfs_fullfile(
+                    binary=engine_bin, cycle=cycle, hour=hour,
+                    source=source, out=out, cache_dir=cache_dir,
+                    progress=progress)
+                landed = out / entry["name"]
+                if landed != path:
+                    raise RuntimeError(
+                        f"rw_fetch landed {entry['name']}, expected "
+                        f"{name}")
             else:
-                started = time.perf_counter()
-                if engine == "rust":
-                    entry = _rw_fetch_gfs_fullfile(
-                        binary=engine_bin, cycle=cycle, hour=hour,
-                        source=source, out=out, cache_dir=cache_dir,
-                        progress=progress)
-                    landed = out / entry["name"]
-                    if landed != path:
-                        raise RuntimeError(
-                            f"rw_fetch landed {entry['name']}, expected "
-                            f"{name}")
-                else:
-                    try:
-                        transport._download(url, path)
-                    except HTTPError as error:
-                        raise RuntimeError(
-                            f"the S3 archive did not serve {url} "
-                            f"({error.code} {error.reason}); "
-                            "`gpuwm fetch --cycle latest` probes the same "
-                            "archive, and a permanent 404 here usually "
-                            "names a lead this cycle never published"
-                        ) from None
+                try:
+                    transport._download(url, path)
+                except HTTPError as error:
+                    raise RuntimeError(
+                        f"the S3 archive did not serve {url} "
+                        f"({error.code} {error.reason}); "
+                        "`gpuwm fetch --cycle latest` probes the same "
+                        "archive, and a permanent 404 here usually "
+                        "names a lead this cycle never published"
+                    ) from None
+            observed = count_grib2_messages(path)
+            if idx_records is not None and observed != idx_records:
+                _quarantine_rejected(path, progress,
+                                     f"{source} full-file")
+                raise ValueError(
+                    f"downloaded {name} carries {observed} GRIB2 "
+                    f"messages where its live .idx lists "
+                    f"{idx_records}; the file has been moved aside, "
+                    "nothing was deleted")
+            digest = sha256_file(path)
+            if engine != "rust":
+                progress(f"fetch {source} f{hour:03d}: {name} "
+                         f"{path.stat().st_size:,} B in "
+                         f"{time.perf_counter() - started:.1f} s "
+                         "(s3, full-file)")
+        return {
+            "name": name, "role": f"{source}-full-file",
+            "forecast_hour": hour, "bytes": path.stat().st_size,
+            "seconds": round(time.perf_counter() - file_started, 6),
+            "downloaded": downloaded,
+            "sha256": digest, "url": url,
+            "grib2_messages": observed, "idx_records": idx_records,
+        }
+
+    def admit(index: int, entry: dict) -> Path:
+        files.append(entry)
+        return publish_manifest()
+
+    try:
+        _entries, receipt = fetch_pool.run_transfers(
+            [fetch_pool.TransferJob(
+                name=name, url=url,
+                action=functools.partial(transfer, hour, name, url))
+             for hour, name, url in planned],
+            workers=file_workers, on_admitted=admit)
+        pool_summary.update(receipt)
+        publish_manifest()
+    except KeyboardInterrupt:
+        # Same admission bars as the transfers: envelope walk and the
+        # prior manifest's digest.  Pooled hours may have completed
+        # beyond the admitted prefix; extend it in order and stop at
+        # the first file that is absent or fails a bar.  A partial file
+        # never reaches the manifest.
+        for hour, name, url in planned[len(files):]:
+            path = out / name
+            if not path.is_file():
+                break
+            try:
                 observed = count_grib2_messages(path)
-                if idx_records is not None and observed != idx_records:
-                    _quarantine_rejected(path, progress,
-                                         f"{source} full-file")
-                    raise ValueError(
-                        f"downloaded {name} carries {observed} GRIB2 "
-                        f"messages where its live .idx lists "
-                        f"{idx_records}; the file has been moved aside, "
-                        "nothing was deleted")
                 digest = sha256_file(path)
-                if engine != "rust":
-                    progress(f"fetch {source} f{hour:03d}: {name} "
-                             f"{path.stat().st_size:,} B in "
-                             f"{time.perf_counter() - started:.1f} s "
-                             "(s3, full-file)")
+            except (OSError, ValueError):
+                break
+            recorded = prior_digests.get(name)
+            if recorded is not None and digest != recorded:
+                break
             files.append({
                 "name": name, "role": f"{source}-full-file",
-                "forecast_hour": hour, "bytes": path.stat().st_size,
+                "forecast_hour": hour,
+                "bytes": path.stat().st_size,
                 "sha256": digest, "url": url,
-                "grib2_messages": observed, "idx_records": idx_records,
+                "grib2_messages": observed,
+                "idx_records": None,
             })
-            publish_manifest()
-    except KeyboardInterrupt:
-        # Same admission bars as the loop: envelope walk, index census
-        # when known, and the prior manifest's digest.  A partial file
-        # never reaches the manifest.
-        if current is not None:
-            hour, name, path, url = current
-            if path.is_file() and not any(
-                    item["name"] == name for item in files):
-                try:
-                    observed = count_grib2_messages(path)
-                    digest = sha256_file(path)
-                    recorded = prior_digests.get(name)
-                    if recorded is None or digest == recorded:
-                        files.append({
-                            "name": name, "role": f"{source}-full-file",
-                            "forecast_hour": hour,
-                            "bytes": path.stat().st_size,
-                            "sha256": digest, "url": url,
-                            "grib2_messages": observed,
-                            "idx_records": None,
-                        })
-                except (OSError, ValueError):
-                    pass
         publish_manifest()
         verified = (
             ", ".join(
@@ -1958,6 +2185,66 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
             f"recorded): {unverified}.\n"
             f"  resume exactly with: {resume_command()}") from None
     return out / FETCH_MANIFEST_NAME
+
+
+def _write_gfs_front_door_files(out: Path, *, source: str, cycle: datetime,
+                                files: list[dict], series: Path) -> None:
+    """The four-file front door, on the GFS container routes too.
+
+    DATA.md promises every fetched directory ``inputs.txt`` +
+    ``prep-command.txt`` + ``SHA256SUMS`` + ``fetch-manifest.json``, and
+    the table routes keep that promise; the GFS route left three grib2
+    files, a tsv and a manifest -- a pile, not a front door (UX finding
+    N11).  Written beside every manifest publication, so an interrupted
+    fetch's files describe exactly the verified prefix the manifest
+    records.
+
+    ``prep-command.txt`` carries the BOUND half only, like every table
+    route's: the namelist, config, geography and output root are the
+    reader's.  The digest binding is not a fifth file to author by hand
+    -- ``gpuwm prep --source gfs`` authors and binds the input manifest
+    itself when ``--source-manifest`` is omitted.
+    """
+
+    lines = [f"{item['sha256']}  {item['name']}" for item in files]
+    lines.append(f"{sha256_file(series)}  {series.name}")
+    _atomic_write_text(out / "SHA256SUMS", "\n".join(lines) + "\n")
+    _atomic_write_text(out / "inputs.txt", "".join(
+        f"{(out / item['name']).resolve()}\n" for item in files))
+    header = [
+        f"# {source} 0.25-degree isobaric container fetch",
+        f"# cycle {cycle:%Y-%m-%dT%H}Z"
+        + (f", forecast hours f{files[0]['forecast_hour']:03d}.."
+           f"f{files[-1]['forecast_hour']:03d}" if files else ""),
+        "#",
+    ]
+    if source == "gfs":
+        header.extend((
+            "# The prep door authors and digest-binds the input manifest",
+            "# itself when --source-manifest is omitted (it binds this",
+            "# directory's fetch manifest, the resolved bridge, and the",
+            "# namelist/config you pass).",
+            "#",
+            "# yours to supply: --wps-namelist, --experiment-config,",
+            "#                  --geog-root, --output-root",
+        ))
+        body = [
+            "gpuwm prep \\",
+            "  --source gfs \\",
+            f"  --gfs-series {shlex.quote(str(series.resolve()))} \\",
+            f"  --cycle {cycle:%Y-%m-%d_%H:%M:%S}",
+        ]
+    else:
+        header.extend((
+            f"# no ingest route: `gpuwm prep --source {source}` refuses,",
+            "# because that adapter declares no field/level/cadence",
+            f"# mapping.  `gpuwm prep --show-source {source}` states the",
+            "# same thing in machine form.",
+        ))
+        body = []
+    _atomic_write_text(out / "prep-command.txt",
+                       "\n".join(header + ([""] if body else []) + body)
+                       + "\n")
 
 
 def author_gfs_front_door_manifest(
@@ -2825,6 +3112,7 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
                engine_selection: str | None = None,
                mode: str = "auto", cache_dir: Path | None = None,
                accept_inventory_change: bool = False,
+               file_workers: int | None = None,
                transport_fallback: tuple[str, ...] = ()) -> Path:
     """Byte-range download the native HRRR subset series into ``out``.
 
@@ -2845,6 +3133,7 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
             engine_bin=engine_bin, engine_selection=engine_selection,
             mode=mode, cache_dir=cache_dir,
             accept_inventory_change=accept_inventory_change,
+            file_workers=file_workers,
             transport_fallback=transport_fallback)
 
 
@@ -2862,6 +3151,7 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                        engine_selection: str | None = None,
                        mode: str = "auto", cache_dir: Path | None = None,
                        accept_inventory_change: bool = False,
+                       file_workers: int | None = None,
                        transport_fallback: tuple[str, ...] = ()) -> Path:
     """The HRRR transfer, with the output-root lock already held.
 
@@ -2965,6 +3255,7 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
     files: list[dict] = []
     complete_hours: list[int] = []
     cache_dedup: list[dict] = []
+    pool_summary: dict = {}
 
     def publish_manifest(recorded_hours: tuple[int, ...]) -> Path:
         # A receipt claims only files belonging to a COMPLETE hour.  An
@@ -3009,119 +3300,157 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         # multiple of what was fetched with nothing on the receipt to
         # say so.
         payload["dedup"] = _cache_dedup_summary(cache_dedup)
+        if pool_summary:
+            # The completed run's concurrency receipt; wait mode has
+            # none, because publication-following is serial by design.
+            payload["concurrency"] = dict(pool_summary)
         return write_fetch_manifest(out, payload)
 
+    def transfer_product(hour: int, kind: str, source_name: str,
+                         dest_name: str, product: str) -> dict:
+        dest = out / dest_name
+        # A prior full-file transfer recorded its own census; only
+        # fall back to the certified subset count when the manifest
+        # predates that key.
+        expected = prior_records.get(dest_name, expected_counts[kind])
+        label = f"f{hour:02d} {kind}"
+        digest = None
+        if dest.exists() and not force:
+            digest = _existing_hrrr_digest(
+                dest, expected_count=expected,
+                prior_digest=prior_digests.get(dest_name),
+                progress=progress, label=label)
+        if digest is not None:
+            chosen = candidates[0]
+            url = hrrr_object_url(cycle, hour, product,
+                                  transport=chosen)
+            progress(f"fetch hrrr {label}: {dest_name} exists, "
+                     f"{dest.stat().st_size:,} B / {expected} records "
+                     "verified -- skipped")
+        else:
+            if dest.exists():
+                _quarantine_rejected(dest, progress, f"hrrr {label}")
+            chosen = candidates[0]
+            if wait:
+                found = _wait_for_hrrr_product(
+                    cycle=cycle, hour=hour, product=product,
+                    candidates=candidates, probe=probe, clock=clock,
+                    deadline=deadline, sleeper=sleeper,
+                    progress=progress, label=label)
+                if found is None:
+                    publish_manifest(tuple(complete_hours))
+                    fetched = (
+                        f"complete hours f{complete_hours[0]:02d}.."
+                        f"f{complete_hours[-1]:02d} are on disk and "
+                        "recorded in the fetch manifest"
+                        if complete_hours else
+                        "no complete forecast hour was fetched")
+                    raise RuntimeError(
+                        f"--wait-for timed out after "
+                        f"{wait_timeout_s / 60.0:.0f} min: {dest_name} "
+                        f"(cycle {cycle:%Y-%m-%dT%H}Z) never appeared "
+                        f"on {'/'.join(candidates)}.  {fetched}; "
+                        "re-running the same command resumes the "
+                        "verified files and extends the window.")
+                chosen = found
+            # Hosts do not publish identical index vocabularies (see
+            # download_hrrr_native_subset.FIELD_ALIASES), so a host
+            # whose inventory this ArWen does not recognise is a
+            # reason to move to the next one with an explanation --
+            # not to abort a fetch the other host can serve.
+            attempts = (chosen,) + tuple(
+                host for host in transport_fallback if host != chosen)
+            started = time.perf_counter()
+            for position, host in enumerate(attempts):
+                remaining = attempts[position + 1:]
+                chosen = host
+                url = hrrr_object_url(cycle, hour, product,
+                                      transport=host)
+                try:
+                    bar, url = _download_one_hrrr_product(
+                        engine=engine, engine_bin=engine_bin, mode=mode,
+                        cycle=cycle, hour=hour, kind=kind, host=host,
+                        url=url, dest=dest, dest_name=dest_name,
+                        source_name=source_name, out=out, label=label,
+                        cache_dir=cache_dir, workers=workers,
+                        retries=retries, bar_kind=bar_kinds[kind],
+                        certified=expected_counts[kind],
+                        accept_inventory_change=accept_inventory_change,
+                        progress=progress, dedup=cache_dedup)
+                except range_transport.IndexInventoryError as error:
+                    if not remaining:
+                        raise
+                    # The refused host's .idx is already on disk and
+                    # the next host's will differ; move it aside so
+                    # the byte-identity guard has a clean slate.
+                    stale = out / f"{source_name}.idx"
+                    if stale.is_file():
+                        _quarantine_rejected(
+                            stale, progress, f"hrrr {label} index")
+                    progress(
+                        f"fetch hrrr {label}: {host} publishes an index "
+                        f"this ArWen does not recognise ({error}); "
+                        f"falling back to {remaining[0]}")
+                    continue
+                bars[bar_kinds[kind]] = bar
+                break
+            digest = sha256_file(dest)
+            progress(f"fetch hrrr {label}: {dest_name} "
+                     f"{dest.stat().st_size:,} B in "
+                     f"{time.perf_counter() - started:.1f} s "
+                     f"({chosen})")
+        return {
+            "name": dest_name, "role": kind, "forecast_hour": hour,
+            "bytes": dest.stat().st_size, "sha256": digest,
+            "url": url, "transport": chosen,
+            "records": count_grib2_messages(dest),
+        }
+
+    products = []
     for hour in hours:
         atmosphere = f"hrrr.t{cycle:%H}z.wrfnatf{hour:02d}.grib2"
         pressure = f"hrrr.t{cycle:%H}z.wrfprsf{hour:02d}.grib2"
         soil = f"hrrr.t{cycle:%H}z.soilf{hour:02d}.grib2"
-        for kind, source_name, dest_name, product in (
-                ("atmosphere", atmosphere, atmosphere, "wrfnat"),
-                ("soil", pressure, soil, "wrfprs")):
-            dest = out / dest_name
-            # A prior full-file transfer recorded its own census; only
-            # fall back to the certified subset count when the manifest
-            # predates that key.
-            expected = prior_records.get(dest_name, expected_counts[kind])
-            label = f"f{hour:02d} {kind}"
-            digest = None
-            if dest.exists() and not force:
-                digest = _existing_hrrr_digest(
-                    dest, expected_count=expected,
-                    prior_digest=prior_digests.get(dest_name),
-                    progress=progress, label=label)
-            if digest is not None:
-                chosen = candidates[0]
-                url = hrrr_object_url(cycle, hour, product,
-                                      transport=chosen)
-                progress(f"fetch hrrr {label}: {dest_name} exists, "
-                         f"{dest.stat().st_size:,} B / {expected} records "
-                         "verified -- skipped")
-            else:
-                if dest.exists():
-                    _quarantine_rejected(dest, progress, f"hrrr {label}")
-                chosen = candidates[0]
-                if wait:
-                    found = _wait_for_hrrr_product(
-                        cycle=cycle, hour=hour, product=product,
-                        candidates=candidates, probe=probe, clock=clock,
-                        deadline=deadline, sleeper=sleeper,
-                        progress=progress, label=label)
-                    if found is None:
-                        publish_manifest(tuple(complete_hours))
-                        fetched = (
-                            f"complete hours f{complete_hours[0]:02d}.."
-                            f"f{complete_hours[-1]:02d} are on disk and "
-                            "recorded in the fetch manifest"
-                            if complete_hours else
-                            "no complete forecast hour was fetched")
-                        raise RuntimeError(
-                            f"--wait-for timed out after "
-                            f"{wait_timeout_s / 60.0:.0f} min: {dest_name} "
-                            f"(cycle {cycle:%Y-%m-%dT%H}Z) never appeared "
-                            f"on {'/'.join(candidates)}.  {fetched}; "
-                            "re-running the same command resumes the "
-                            "verified files and extends the window.")
-                    chosen = found
-                # Hosts do not publish identical index vocabularies (see
-                # download_hrrr_native_subset.FIELD_ALIASES), so a host
-                # whose inventory this ArWen does not recognise is a
-                # reason to move to the next one with an explanation --
-                # not to abort a fetch the other host can serve.
-                attempts = (chosen,) + tuple(
-                    host for host in transport_fallback if host != chosen)
-                started = time.perf_counter()
-                for position, host in enumerate(attempts):
-                    remaining = attempts[position + 1:]
-                    chosen = host
-                    url = hrrr_object_url(cycle, hour, product,
-                                          transport=host)
-                    try:
-                        bar, url = _download_one_hrrr_product(
-                            engine=engine, engine_bin=engine_bin, mode=mode,
-                            cycle=cycle, hour=hour, kind=kind, host=host,
-                            url=url, dest=dest, dest_name=dest_name,
-                            source_name=source_name, out=out, label=label,
-                            cache_dir=cache_dir, workers=workers,
-                            retries=retries, bar_kind=bar_kinds[kind],
-                            certified=expected_counts[kind],
-                            accept_inventory_change=accept_inventory_change,
-                            progress=progress, dedup=cache_dedup)
-                    except range_transport.IndexInventoryError as error:
-                        if not remaining:
-                            raise
-                        # The refused host's .idx is already on disk and
-                        # the next host's will differ; move it aside so
-                        # the byte-identity guard has a clean slate.
-                        stale = out / f"{source_name}.idx"
-                        if stale.is_file():
-                            _quarantine_rejected(
-                                stale, progress, f"hrrr {label} index")
-                        progress(
-                            f"fetch hrrr {label}: {host} publishes an index "
-                            f"this ArWen does not recognise ({error}); "
-                            f"falling back to {remaining[0]}")
-                        continue
-                    bars[bar_kinds[kind]] = bar
-                    break
-                digest = sha256_file(dest)
-                progress(f"fetch hrrr {label}: {dest_name} "
-                         f"{dest.stat().st_size:,} B in "
-                         f"{time.perf_counter() - started:.1f} s "
-                         f"({chosen})")
-            files.append({
-                "name": dest_name, "role": kind, "forecast_hour": hour,
-                "bytes": dest.stat().st_size, "sha256": digest,
-                "url": url, "transport": chosen,
-                "records": count_grib2_messages(dest),
-            })
-        complete_hours.append(hour)
+        products.append((hour, "atmosphere", atmosphere, atmosphere,
+                         "wrfnat"))
+        products.append((hour, "soil", pressure, soil, "wrfprs"))
+
+    def hour_checkpoint(index: int, entry: dict) -> None:
         # Checkpoint per completed hour, as GFS already did.  Publishing
-        # only after the whole nested loop meant an ordinary SIGKILL
-        # after many good hours left a fresh output with valid payloads
-        # and no receipt at all, which the front door then refused --
-        # verified data, unusable, and nothing to resume from.
-        publish_manifest(tuple(complete_hours))
+        # only after every product meant an ordinary SIGKILL after many
+        # good hours left a fresh output with valid payloads and no
+        # receipt at all, which the front door then refused -- verified
+        # data, unusable, and nothing to resume from.  An hour is
+        # complete when its SECOND product (soil) has verified; entries
+        # arrive in submission order either way, so the claimed prefix
+        # is contiguous by construction.
+        files.append(entry)
+        hour, kind = products[index][0], products[index][1]
+        if kind == "soil":
+            complete_hours.append(hour)
+            publish_manifest(tuple(complete_hours))
+
+    if wait:
+        # Live-cycle mode follows publication by definition: each
+        # product is polled until the mirrors serve it, then fetched.
+        # The polling is the pacing, so the transfers stay serial and
+        # in publication order regardless of the pool default.
+        for index, (hour, kind, source_name, dest_name,
+                    product) in enumerate(products):
+            hour_checkpoint(index, transfer_product(
+                hour, kind, source_name, dest_name, product))
+    else:
+        _entries, receipt = fetch_pool.run_transfers(
+            [fetch_pool.TransferJob(
+                name=dest_name,
+                url=hrrr_object_url(cycle, hour, product,
+                                    transport=candidates[0]),
+                action=functools.partial(
+                    transfer_product, hour, kind, source_name,
+                    dest_name, product))
+             for hour, kind, source_name, dest_name, product in products],
+            workers=file_workers, on_admitted=hour_checkpoint)
+        pool_summary.update(receipt)
     return publish_manifest(hours)
 
 
@@ -3484,12 +3813,132 @@ def _resolve_area(args) -> Area | None:
     return None
 
 
+#: Flags that belong to one of the four hand-written transports and mean
+#: nothing on a table route, each with the sentence that says why.
+_LEGACY_ONLY_FLAGS = {
+    "--validate": "the ERA5 manual-retrieval checker",
+    "--wait-for": "HRRR live-cycle publication polling",
+    "--wait-timeout-minutes": "HRRR live-cycle publication polling",
+    "--p-top-pa": "the GFS/GDAS isobaric ladder",
+    "--all-levels": "the GFS/GDAS isobaric ladder",
+    "--engine": "the Rust range-GET backbone, which the GFS and HRRR "
+                "whole-file routes drive",
+    "--cache-dir": "the Rust backbone's disk cache",
+    "--author-front-door-manifest": "the GFS front-door input manifest",
+}
+
+
+def _route_fetch_main(args, source: str) -> int:
+    """``gpuwm fetch`` for a source whose acquisition is table data."""
+
+    supplied = []
+    for flag, owner in _LEGACY_ONLY_FLAGS.items():
+        value = getattr(args, flag.lstrip("-").replace("-", "_"), None)
+        if value:
+            supplied.append((flag, owner))
+    if supplied:
+        raise ValueError(
+            f"{', '.join(flag for flag, _ in supplied)}: --source {source} "
+            "is a table-driven route.\n"
+            f"  why: {supplied[0][0]} belongs to {supplied[0][1]}, which "
+            "this route does not use -- it takes whole published objects "
+            "over the stdlib transport, in parallel, and composes them "
+            "into the files its packaged profile declares.\n"
+            "  see: `gpuwm fetch --source " + source + " --help`.")
+    if args.fetch_workers is not None:
+        fetch_pool.resolve_file_workers(args.fetch_workers)
+    fetch_routes.resolve_mode(source, args.mode)
+    if args.cycle is None or args.hours is None or args.out is None:
+        raise ValueError(
+            f"fetch --source {source} requires --cycle, --hours and --out")
+    if args.cycle == "latest":
+        raise ValueError(
+            f"--cycle latest: --source {source} resolves no latest cycle.\n"
+            "  why: this route reads a packaged cycle grammar, not a live "
+            "listing, so 'latest' would have to guess how far behind the "
+            "wall clock the publisher is -- and that lag differs by hours "
+            "between these producers (GDAS is about +7 h, ICON-EU about "
+            "+2 h).  Name the cycle you want with --cycle.")
+    cycle = parse_cycle(args.cycle, source)
+    plan = fetch_routes.resolve_request(
+        source, cycle=cycle, hours=args.hours, cadence=args.cadence,
+        start_hour=(args.forecast_start_hour or 0),
+        host=args.transport, member=args.member,
+        area=(args.area if args.area is not None else args.point),
+        out=args.out)
+
+    with fetch_guard.hold("fetch-out", args.out):
+        fetch_routes.run_plan(
+            plan, out=args.out, force=args.force_refetch,
+            file_workers=args.fetch_workers)
+        donor_files = _fetch_route_donors(plan, args)
+        fetch_routes.write_handoff(plan, args.out, donor_files=donor_files)
+
+    print(f"fetch {source}: manifest "
+          f"{args.out / fetch_routes.MANIFEST_NAME}")
+    for line in fetch_routes.handoff_lines(plan, args.out):
+        print(line)
+    return 0
+
+
+def _fetch_route_donors(plan, args) -> dict:
+    """Fetch the cross-source analysis a hybrid profile declares.
+
+    The atmosphere-only AI products publish no land surface at all;
+    their packaged compositions bind the missing canonicals to the
+    same-cycle GDAS analysis.  Leaving that to the reader is what made
+    them unreachable, so the front door fetches the declared donor with
+    the same command, into its own subdirectory, and binds it in the
+    handoff.
+    """
+
+    donor_files: dict[str, Path] = {}
+    for donor in plan.donors:
+        if donor.source not in GFS_CONTAINER_SOURCES:
+            raise ValueError(
+                f"--source {plan.source_id} declares a {donor.source} donor "
+                "and this ArWen has no route for it")
+        donor_out = Path(args.out) / f"donor-{donor.source}"
+        print(f"fetch {plan.source_id}: fetching the declared "
+              f"{donor.source} donor into {donor_out}")
+        print(f"  why: {donor.why}")
+        choice = select_fetch_engine("auto")
+        manifest = fetch_gfs_fullfile(
+            cycle=donor.cycle, hours=tuple(donor.leads), area=None,
+            out=donor_out, force=args.force_refetch, source=donor.source,
+            engine=choice.engine, engine_bin=choice.binary,
+            engine_selection=choice.selection, cache_dir=None,
+            top_pressure_pa=None, all_levels=False,
+            file_workers=args.fetch_workers)
+        document = json.loads(Path(manifest).read_text(encoding="utf-8"))
+        names = [entry["name"] for entry in document.get("files", [])]
+        if not names:
+            raise ValueError(
+                f"the {donor.source} donor fetch published no file")
+        donor_files[donor.role] = donor_out / names[0]
+    return donor_files
+
+
 def fetch_main(args) -> int:
     source = args.source
+    if source in fetch_routes.route_ids():
+        return _route_fetch_main(args, source)
+    if getattr(args, "member", None) is not None:
+        raise ValueError(
+            f"--member: --source {source} is not an ensemble route")
     area = _resolve_area(args)
 
     if args.validate is not None and source != "era5":
         raise ValueError("--validate applies to --source era5 only")
+    if args.fetch_workers is not None:
+        if source == "era5":
+            raise ValueError(
+                "--fetch-workers: --source gfs/gdas/hrrr only (era5 is a "
+                "manual CDS retrieval -- the template is written locally, "
+                "so there is nothing to parallelize)")
+        # Refused here, before any network round trip, in the pool's own
+        # words (a zero-or-negative count names no schedulable pool).
+        fetch_pool.resolve_file_workers(args.fetch_workers)
 
     if source != "hrrr":
         hrrr_only = sorted(
@@ -3747,14 +4196,16 @@ def fetch_main(args) -> int:
                     engine_selection=choice.selection,
                     cache_dir=args.cache_dir,
                     top_pressure_pa=args.p_top_pa,
-                    all_levels=args.all_levels)
+                    all_levels=args.all_levels,
+                    file_workers=args.fetch_workers)
             else:
                 manifest = fetch_gfs(
                     cycle=cycle, hours=hours, area=area, out=args.out,
                     force=args.force_refetch, source=source,
                     accept_inventory_change=args.accept_inventory_change,
                     top_pressure_pa=args.p_top_pa,
-                    all_levels=args.all_levels)
+                    all_levels=args.all_levels,
+                    file_workers=args.fetch_workers)
     elif source == "hrrr":
         if args.cadence is not None:
             raise ValueError("HRRR is hourly; --cadence does not apply")
@@ -3880,6 +4331,7 @@ def fetch_main(args) -> int:
                 engine_selection=choice.selection, mode=mode,
                 cache_dir=args.cache_dir,
                 accept_inventory_change=args.accept_inventory_change,
+                file_workers=args.fetch_workers,
                 transport_fallback=transport_fallback)
     else:
         raise ValueError(f"unknown fetch source {source!r}")
@@ -3985,7 +4437,34 @@ FETCH_HINT_KEYS = frozenset({
     "source", "cycle", "hours", "area", "point", "radius_km", "out",
     "cadence", "forecast_start_hour",
 })
-_FETCH_HINT_SOURCES = ("gfs", "gdas", "hrrr", "era5")
+def _fetch_hint_sources() -> tuple[str, ...]:
+    """Sources a ``[fetch]`` table may name -- one definition, derived.
+
+    The same seam the wizard emits through
+    (:func:`fetch_front_door_sources`), so the validator cannot refuse a
+    table the emitter just wrote.  It was a hand-typed 4-tuple, and that
+    is exactly the drift that shipped: ten table routes opened and every
+    hand-written ``[fetch]`` table naming one of them failed to load.
+    """
+
+    return fetch_front_door_sources()
+
+
+def _source_reaches_forecast_leads(source: str) -> bool:
+    """Does SOURCE publish forecast leads, or only analyses?
+
+    The registry's ``max_forecast_hour`` is the whole answer, so
+    ``forecast_start_hour`` is gated on the row rather than on a spelled
+    ``{"gfs", "gdas", "hrrr"}`` -- which refused RAP a lead RAP publishes
+    51 hours of.  An unregistered name is not this function's question;
+    the caller has already proved the source is fetchable.
+    """
+
+    try:
+        return source_adapters.get_source_adapter(
+            source).max_forecast_hour > 0
+    except ValueError:
+        return False
 
 
 def validate_fetch_hints(table: dict, *, source: str) -> None:
@@ -4004,14 +4483,15 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
         raise ValueError(
             f"unknown key(s) {unknown} in [fetch] of {source}; known "
             f"keys: {sorted(FETCH_HINT_KEYS)}")
+    known = _fetch_hint_sources()
     if "source" not in table:
         raise ValueError(
             f"[fetch] of {source} must carry source = "
-            f"{'|'.join(_FETCH_HINT_SOURCES)}")
-    if table["source"] not in _FETCH_HINT_SOURCES:
+            f"{'|'.join(known)}")
+    if table["source"] not in known:
         raise ValueError(
             f"source = {table['source']!r} in [fetch] of {source} is not "
-            f"one of {_FETCH_HINT_SOURCES}")
+            f"one of {known}")
     for key, value in table.items():
         if isinstance(value, bool) or not isinstance(
                 value, (str, int, float)):
@@ -4022,6 +4502,17 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
     # rotten hint: catch it at config load, in the same words the CLI
     # would use, rather than at the download.
     area = table.get("area")
+    crop_keys = sorted(k for k in ("area", "point", "radius_km")
+                       if table.get(k) is not None)
+    if crop_keys and not fetch_accepts_area(table["source"]):
+        raise ValueError(
+            f"[fetch] of {source}: {', '.join(crop_keys)} names a crop "
+            f"`gpuwm fetch --source {table['source']}` refuses.\n"
+            "  why: this source publishes whole objects and there is no "
+            "subsetting service in front of them, so a fetch given a box "
+            "exits 2 and this config's first step could never be run.\n"
+            "  where the crop happens: `gpuwm prep` maps the source onto "
+            "your domain, so the namelist geometry is the crop.")
     if area is not None:
         # The hint the fetch reads as a box, through the REAL parser and
         # the per-source coverage gate.  The field defect class this
@@ -4047,11 +4538,12 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
         raise ValueError(
             f"forecast_start_hour = {start_hour!r} in [fetch] of {source} "
             "must be a nonnegative forecast lead")
-    if start_hour and table["source"] not in {"gfs", "gdas", "hrrr"}:
+    if start_hour and not _source_reaches_forecast_leads(table["source"]):
         raise ValueError(
-            f"[fetch] of {source}: forecast_start_hour applies to "
-            "source = gfs|gdas|hrrr only (era5 is a reanalysis, so every "
-            "time in it is an analysis and there is no lead to begin at)")
+            f"[fetch] of {source}: forecast_start_hour applies to a source "
+            f"that publishes forecast leads, and {table['source']} declares "
+            "max_forecast_hour = 0 -- every time it publishes is an "
+            "analysis, so there is no lead to begin at")
     if table["source"] == "gdas":
         hours = table.get("hours")
         if isinstance(hours, (int, float))                 and start_hour + hours > GDAS_MAX_FORECAST_HOUR:
@@ -4093,28 +4585,74 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
                         f"[fetch] of {source}: {error}") from error
 
 
+def source_argument(value: str) -> str:
+    """``--source`` as a registry id, or the refusal that names why not.
+
+    argparse ``choices`` would answer a registered-but-unfetchable name
+    with "invalid choice", which says nothing about WHY -- and the two
+    reasons are different: a private archive wants ``--source-root``, a
+    non-runnable row wants nothing at all.  Resolving here keeps each
+    refusal in the route table's own words, and it makes every registry
+    alias (``gdps``, ``ifs``, ``hrrr-wrfprs``) spell its source.
+    """
+
+    import argparse as _argparse
+
+    name = str(value).strip().lower().replace("_", "-")
+    try:
+        source_id = source_adapters.get_source_adapter(name).source_id
+    except ValueError:
+        source_id = name
+    if source_id in fetch_routes.all_fetchable_sources():
+        return source_id
+    try:
+        fetch_routes.route_for(source_id)
+    except ValueError as error:
+        raise _argparse.ArgumentTypeError(str(error)) from error
+    raise _argparse.ArgumentTypeError(
+        f"--source {value}: no fetch route in this ArWen")
+
+
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "fetch",
-        help="download initialization/boundary data (GFS/HRRR), download "
-             "and decode only (GDAS -- no ingest route), or template + "
-             "validate a manual ERA5 CDS retrieval")
+        help="download initialization/boundary data for any registered "
+             "source with public bytes; download and decode only (GDAS -- "
+             "no ingest route); template + validate a manual ERA5 CDS "
+             "retrieval")
     parser.add_argument(
-        "--source", required=True,
-        choices=("gfs", "gdas", "hrrr", "era5"),
-        help="public data source")
+        "--source", required=True, type=source_argument, metavar="MODEL",
+        help="public data source: "
+             + ", ".join(fetch_routes.all_fetchable_sources())
+             + ".  Registry aliases work too (gdps, ifs, hrrr-wrfprs).  A "
+               "registered source with no public bytes -- the 20CRv3 "
+               "every-member archive, the generic 'mapped' adapter -- "
+               "refuses by name and points at `gpuwm prep --source-root`")
+    parser.add_argument(
+        "--member", default=None, metavar="ID",
+        help="ensemble routes (gefs, aigefs): which member to fetch "
+             "(default the control).  Member identity is a PATH component "
+             "for these products, so the files land under their declared "
+             "upstream-relative paths and `gpuwm-member-prep --inputs` "
+             "reads the directory as published")
     parser.add_argument(
         "--cycle", default=None, metavar="YYYY-MM-DDTHH|latest",
         help="model cycle (UTC); 'latest' resolves the newest complete "
-             "cycle from the AWS Open Data listing (gfs/hrrr only)")
+             "cycle from the AWS Open Data listing (gfs/hrrr only -- the "
+             "table routes read a packaged cycle grammar rather than a "
+             "live listing, and publication lag differs by hours between "
+             "those producers, so they want an explicit cycle)")
     parser.add_argument(
         "--hours", type=int, default=None, metavar="N",
         help="forecast window length: hours 0..N are fetched.  gdas is "
              "certified for fetch and decode through "
              f"f{GDAS_MAX_FORECAST_HOUR:03d} -- there is no gdas ingest "
-             "route, so those files stop at the decoder -- and it is the "
-             "one source that also accepts --hours 0, because its f000 "
-             "is an analysis")
+             "route, so those files stop at the decoder.  --hours 0 is "
+             "the analysis alone, which gdas accepts and every table "
+             "route accepts (its f000 is an initial state on its own, and "
+             "it is also how a hybrid source's donor is fetched).  A "
+             "window past the cycle's own horizon refuses and names both "
+             "the horizon and which cycles reach farther")
     parser.add_argument(
         "--area", default=None, metavar="LAT0,LON0,LAT1,LON1",
         help="bounding box corners in degrees (order free); allow several "
@@ -4138,18 +4676,25 @@ def register_cli(subparsers) -> None:
         help="forecast-hour cadence: gfs 1 or 3 (default 3); gdas 1, 3, "
              "or 6 (default 3, and it does not apply to --hours 0, which "
              "is the analysis alone); era5 template 1, 3, or 6 "
-             "(default 6); hrrr is hourly")
+             "(default 6); hrrr is hourly.  On a table route the accepted "
+             "cadences and the default are the row's own -- a cadence off "
+             "the publisher's ladder refuses and names the ladder")
     parser.add_argument(
         "--validate", type=Path, nargs="+", default=None, metavar="GRIB",
         help="era5 only: validate user-supplied GRIB1 file(s) against "
              "what gpuwm ingest expects instead of fetching")
     parser.add_argument(
-        "--transport", default=None, choices=HRRR_TRANSPORTS,
-        help="hrrr only: download host.  Both serve byte-identical files "
+        "--transport", default=None, choices=FETCH_TRANSPORTS,
+        help="download host.  hrrr: both hosts serve byte-identical files "
              "and .idx indexes; 'nomads' (nomads.ncep.noaa.gov, roughly "
              "the newest 48 h) publishes each hour first, 's3' is the "
              "full AWS archive, and 'auto' (default) probes NOMADS for "
-             "the requested window and falls back to S3")
+             "the requested window and falls back to S3.  Table routes: "
+             "the host names their row declares (aws, nomads, ecmwf, dwd, "
+             "msc), defaulting to the one the row marks -- a host the row "
+             "does not carry refuses and lists the ones it does, because "
+             "for some products the second copy is a DIFFERENT product "
+             "(see `gpuwm fetch --source aigfs`)")
     parser.add_argument(
         "--wait-for", action="store_true",
         help="hrrr only: live-cycle mode -- download each forecast hour "
@@ -4228,6 +4773,22 @@ def register_cli(subparsers) -> None:
              "by URL and byte range, so a re-run or an overlapping "
              "window re-reads bytes instead of re-downloading them")
     parser.add_argument(
+        "--fetch-workers", type=int, default=None, metavar="N",
+        help="how many FILES are in flight at once (default "
+             f"{fetch_pool.DEFAULT_FILE_WORKERS}; every source but era5, "
+             "which is a manual CDS retrieval).  Bounded per host on top of "
+             "the pool: NOMADS is capped at "
+             f"{fetch_pool.NOMADS_FILE_WORKER_CAP} in-flight requests "
+             "and every request still passes the node-wide 2.5 s "
+             "spacing governor, so concurrency overlaps service time "
+             "without raising the request rate against a fragile "
+             "public host.  Every file keeps the exact serial "
+             "verification -- envelope walk, record bar, sha256 -- and "
+             "one failed file still refuses by name.  1 is the serial "
+             "transport: a knob, not a workaround.  The manifest "
+             "receipts files, bytes, workers, wall and the effective "
+             "speedup under 'concurrency'")
+    parser.add_argument(
         "--accept-inventory-change", action="store_true",
         help="proceed when the live provider inventory yields a "
              "different record count than this ArWen was certified "
@@ -4272,7 +4833,7 @@ def register_cli(subparsers) -> None:
         help=f"manifest path (default <out>/{GFS_INPUT_MANIFEST_NAME})")
     parser.add_argument(
         "--forecast-start-hour", type=int, default=None, metavar="K",
-        help="gfs/gdas/hrrr: the forecast lead the window BEGINS at "
+        help="every forecast source: the forecast lead the window BEGINS at "
              "(default f000, the analysis).  --hours stays the window "
              "length, so --forecast-start-hour 174 --hours 66 fetches "
              "f174..f240 and nothing before it; an experiment whose "

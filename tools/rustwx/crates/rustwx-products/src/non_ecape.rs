@@ -505,6 +505,8 @@ fn prepare_non_ecape_hour(
             subtitle_left_override: None,
             subtitle_right_override: None,
             title_provenance: TitleProvenance::default(),
+            geographic_overlays: None,
+            panel_annotations: None,
         };
         crate::direct::plan_direct_fetch_groups(&direct_request)?
     };
@@ -715,6 +717,8 @@ fn prepare_non_ecape_hour(
                 subtitle_left_override: None,
                 subtitle_right_override: None,
                 title_provenance: TitleProvenance::default(),
+                geographic_overlays: None,
+                panel_annotations: None,
             };
             Some(Arc::new(prepare_direct_batch_from_loaded(
                 &direct_request,
@@ -993,6 +997,8 @@ fn run_prepared_non_ecape_domain(
             subtitle_left_override: None,
             subtitle_right_override: None,
             title_provenance: TitleProvenance::default(),
+            geographic_overlays: None,
+            panel_annotations: None,
         });
 
     let derived_request = (!prepared.normalized.derived_recipe_slugs.is_empty()).then(|| {

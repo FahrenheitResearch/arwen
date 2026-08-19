@@ -1,5 +1,0 @@
-key=none reuse=run, verify OFF                 completed, bitexact=False, differing=46, maxabs=1.682e+05
-key=none reuse=run, verify ON                  RAISED GraphCaptureError -- topology key ('physics', False, True, False, True, True) is incomplete: the cached graph has 1471 nodes / 34a6
-
-VERDICT: verify_topology CAN fire
-PROBES DONE

@@ -97,19 +97,49 @@ def _reasons() -> dict[str, str]:
     return reasons
 
 
+def _path_dependency_members(root: Path, manifest: dict) -> set[str]:
+    """Path dependencies that live inside the workspace directory.
+
+    Cargo makes these workspace members automatically -- "all path
+    dependencies residing in the workspace directory become members" --
+    which is why ``cargo test -p grib-core`` works from
+    ``tools/grib1_bridge`` even though nothing lists it.  The gate has to
+    know that, or a crate the release ships and the whole tree decodes
+    GRIB through is invisible to the both-directions check.
+    """
+
+    names = set()
+    for table in ("dependencies", "dev-dependencies", "build-dependencies"):
+        for spec in manifest.get(table, {}).values():
+            if not isinstance(spec, dict) or "path" not in spec:
+                continue
+            candidate = (root / spec["path"]).resolve()
+            try:
+                candidate.relative_to(root.resolve())
+            except ValueError:
+                continue  # outside the workspace directory: not a member
+            member_toml = candidate / "Cargo.toml"
+            if member_toml.is_file():
+                names.add(tomllib.loads(
+                    member_toml.read_text(encoding="utf-8"))["package"]["name"])
+    return names
+
+
 def _members(workspace: str) -> set[str]:
     """The package names a workspace directory declares.
 
     A ``[workspace]`` table means the members' own manifests carry the
     names; a bare ``[package]`` (``tools/grib1_bridge``) is a one-package
-    workspace and is its own member.
+    workspace, is its own member, and additionally owns every path
+    dependency vendored beneath it.
     """
 
     root = REPOSITORY_ROOT / workspace
     manifest = tomllib.loads(
         (root / "Cargo.toml").read_text(encoding="utf-8"))
     if "workspace" not in manifest:
-        return {manifest["package"]["name"]}
+        return {manifest["package"]["name"]} | _path_dependency_members(
+            root, manifest)
     names = set()
     for member in manifest["workspace"].get("members", []):
         member_toml = root / member / "Cargo.toml"

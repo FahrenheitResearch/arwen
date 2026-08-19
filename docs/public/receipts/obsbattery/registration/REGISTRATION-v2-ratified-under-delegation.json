@@ -213,7 +213,7 @@
    "pin_rule": "the reader is pinned by CONTENT: the source tree commit the editable install resolves to, plus the SHA-256 of the built extension that answers every diagnostic call. A distribution version alone cannot detect a rebuilt artifact under an unchanged label.",
    "pinned_distribution_version": "0.2.35",
    "science_core": "wrf-rust",
-   "source_tree": "C:\\Users\\drew\\wrf-rust-diamomd",
+   "source_tree": "wrf-rust-diamomd",
    "source_tree_clean": true,
    "source_tree_commit": "fdee84ca4c95ce9af8e56b61b323b84c0bbd301a"
   },

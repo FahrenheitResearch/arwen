@@ -252,20 +252,47 @@ def test_geog_extra_still_exists_so_the_old_working_command_still_works():
     assert "geog" in declared, (
         "the geog extra was removed; every 'pip install gpuwm[geog]' "
         "written down in the wild now fails at resolution")
-    assert declared["geog"] == [], (
-        "geog should be empty: its contents moved into the runtime "
-        f"dependencies, got {declared['geog']}")
 
 
-def test_the_geography_libraries_are_runtime_dependencies_not_an_extra():
+def test_high_resolution_terrain_is_reachable_from_a_bare_install():
+    """The 2.3.2 breakage, gated at the engine rather than at pip.
+
+    In 2.3.2 the terrain path's only engine was rasterio + pyproj and
+    they sat in an extra nobody named, so following HIGHRES-TERRAIN.md
+    on a documented install downloaded 160.7 MiB of Copernicus tiles and
+    then died on an import.  2.3.3 answered that by making them runtime
+    dependencies.  Since the warp substrate flipped onto the Rust
+    static-fields library they are the parity FALLBACK, not the engine,
+    and the reachability question changed with it: what a bare `pip
+    install gpuwm` must carry is the ENGINE.
+
+    So this asserts the engine ships in the bundle a wheel stages, and
+    leaves the runtime proof -- rasterio, pyproj and affine made
+    unimportable, every default call still answering -- to
+    tests/test_static_highres_warp_routing.py.  Two gates, one for the
+    packaging fact and one for the behaviour, because 2.3.2 passed
+    every packaging check it had.
+    """
+    from gpuwm import bridge_assets
+
+    staged = {artifact.name for artifact in bridge_assets.BUNDLED_ARTIFACTS}
+    assert "static_fields" in staged, (
+        "the static-fields library is not a bundled artifact, so a bare "
+        "`pip install gpuwm` stages no high-resolution warp engine and "
+        "HIGHRES-TERRAIN.md is unreachable again -- exactly the 2.3.2 "
+        "failure, one layer down")
+
     with (_repo_root() / "pyproject.toml").open("rb") as stream:
         project = tomllib.load(stream)["project"]
     names = " ".join(project["dependencies"])
-    for required in ("rasterio", "pyproj"):
-        assert required in names, (
-            f"{required} is not a runtime dependency, so a bare "
-            "`pip install gpuwm` cannot build high-resolution terrain "
-            "and HIGHRES-TERRAIN.md is unreachable again")
+    for fallback_only in ("rasterio", "pyproj"):
+        assert fallback_only not in names, (
+            f"{fallback_only} is back in the runtime dependencies. It is "
+            "the pure-Python parity fallback's library, which no default "
+            "high-resolution run reads, so declaring it makes every bare "
+            "install carry a GDAL stack it never imports. If the default "
+            "engine really did move back to Python, this test is the "
+            "wrong thing to edit -- the port did.")
 
 
 def test_the_terrain_doc_carries_a_working_install_line():

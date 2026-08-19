@@ -1,7 +1,7 @@
 """``tools/dual_run_screen.py`` classifies, and it still bites.
 
 The screen is the standing corruption detector on a card with no ECC, so
-it has two ways to be worthless and this file pins both.
+it has three ways to be worthless and this file pins all three.
 
 It can cry wolf.  It did: a completed dual run whose 151 history files
 were byte-identical and whose 5092 final-state digests agreed was
@@ -18,6 +18,18 @@ excluded, a computed estimate sitting beside it in the same block is
 not -- and that an excluded key which disagrees is still PRINTED.  An
 exclusion nobody can see is indistinguishable from a screen that never
 looked.
+
+And it can say PASS on nothing, which is the worst of the three because
+it looks exactly like the good outcome.  Seven separate arrangements --
+no receipts, unreadable receipts, a receipt only one arm wrote,
+receipts under different names, zero-byte history files, a receipt with
+no digest in it, and the same directory handed in twice -- each printed
+``DUAL-RUN SCREEN: PASS (bit-identical)`` with ``final-state digests
+compared: 0``.  A corruption detector that greens on an empty
+comparison is not a weak detector, it is a false one, and every one of
+those seven is pinned below as a REFUSAL.  The positive control sits
+beside them: a genuinely bit-identical pair still passes, and now says
+how much it compared to get there.
 """
 
 from __future__ import annotations
@@ -188,6 +200,215 @@ def test_the_registered_partition_is_still_honoured(screen_module,
         "registered ENVIRONMENTAL_FIELDS")
 
 
+def _arm(root: Path, *, frame: bytes | None = b"history-bytes" * 8,
+         receipt: str | None = None,
+         receipt_name: str = "evidence/run-receipt.json") -> Path:
+    """One run directory, built to order.
+
+    Deliberately lower-level than :func:`_pair`: the refusal battery
+    needs arms that are individually broken -- a missing receipt, an
+    unreadable one, no history at all -- which is precisely what
+    :func:`_pair` is built never to produce.
+    """
+
+    root.mkdir(parents=True, exist_ok=True)
+    if frame is not None:
+        (root / "wrfout").mkdir(parents=True, exist_ok=True)
+        (root / "wrfout" / "wrfout_d01_2021-12-11_00_00_00").write_bytes(frame)
+    if receipt is not None:
+        path = root / receipt_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(receipt, encoding="utf-8")
+    return root
+
+
+def _good_receipt() -> str:
+    return json.dumps(_receipt(), indent=1)
+
+
+# --------------------------------------------------------------------------
+# the verdict is derived from evidence, not set
+# --------------------------------------------------------------------------
+
+
+def test_pass_is_unreachable_without_evidence(screen_module):
+    """The structural claim, tested directly on the verdict function.
+
+    Everything below builds directories to prove the screen refuses in
+    practice.  This proves it cannot do otherwise in principle: an
+    :class:`Evidence` that counted nothing has no ``PASS`` available to
+    it, because ``PASS`` is derived from the counters rather than
+    assigned by whichever branch ran last.
+    """
+
+    empty = screen_module.Evidence()
+    assert empty.verdict == screen_module.REFUSED
+    assert empty.blocking_reasons
+
+    # ... and one counter at zero is enough to keep it unreachable.
+    for missing in ("frames_compared", "frame_bytes_hashed",
+                    "receipt_digests_compared"):
+        counts = {"frames_compared": 1, "frame_bytes_hashed": 1,
+                  "receipt_digests_compared": 1}
+        counts[missing] = 0
+        assert screen_module.Evidence(**counts).verdict == (
+            screen_module.REFUSED), missing
+
+    assert screen_module.Evidence(
+        frames_compared=1, frame_bytes_hashed=1,
+        receipt_digests_compared=1).verdict == screen_module.PASS
+
+
+def test_a_real_finding_outranks_a_thin_comparison(screen_module):
+    """A mismatch is a finding even when the rest of the screen is thin.
+
+    Downgrading an observed byte difference to "could not evaluate"
+    because some OTHER leg of the screen was empty would lose the one
+    thing the screen exists to report.
+    """
+
+    assert screen_module.Evidence(
+        mismatches=("wrfout/x",)).verdict == screen_module.MISMATCH
+
+
+# --------------------------------------------------------------------------
+# the refusal battery: seven arrangements that used to print PASS
+# --------------------------------------------------------------------------
+
+
+def test_no_receipts_at_all_refuses(screen_module, tmp_path):
+    """Zero final-state digests compared is not a bit-identical run."""
+
+    verdict, lines = screen_module.screen(
+        _arm(tmp_path / "a"), _arm(tmp_path / "b"), REPO_ROOT)
+    text = "\n".join(lines)
+
+    assert verdict == screen_module.REFUSED, text
+    assert "DUAL-RUN SCREEN: REFUSED -- NOT EVALUATED" in text
+    assert "PASS (bit-identical)" not in text
+    assert "final-state digest" in text
+
+
+def test_an_unreadable_receipt_refuses(screen_module, tmp_path):
+    """A receipt that will not parse is a symptom, not a thing to skip.
+
+    The screen used to swallow ``JSONDecodeError`` and carry on, so a
+    truncated or corrupted receipt -- exactly what a bad card produces --
+    removed itself from the comparison and the screen greened.
+    """
+
+    verdict, lines = screen_module.screen(
+        _arm(tmp_path / "a", receipt="{not json"),
+        _arm(tmp_path / "b", receipt="{not json"), REPO_ROOT)
+    text = "\n".join(lines)
+
+    assert verdict == screen_module.REFUSED, text
+    assert "could not be read" in text
+    assert "evidence/run-receipt.json" in text
+
+
+def test_a_receipt_only_one_arm_wrote_refuses(screen_module, tmp_path):
+    """A crashed arm must suppress the verdict, not supply one.
+
+    Standing project law on A/B arms: absent evidence of work suppresses
+    every verdict field.  An arm that never wrote its receipt did not
+    finish, and "the receipts we could pair all agreed" is vacuously
+    true when zero receipts paired.
+    """
+
+    verdict, lines = screen_module.screen(
+        _arm(tmp_path / "a", receipt=_good_receipt()),
+        _arm(tmp_path / "b"), REPO_ROOT)
+    text = "\n".join(lines)
+
+    assert verdict == screen_module.REFUSED, text
+    assert "only in A" in text
+
+
+def test_receipts_under_different_names_refuse(screen_module, tmp_path):
+    """Pairing is by relative path; nothing paired means nothing compared."""
+
+    verdict, lines = screen_module.screen(
+        _arm(tmp_path / "a", receipt=_good_receipt(),
+             receipt_name="evidence/run-receipt.json"),
+        _arm(tmp_path / "b", receipt=_good_receipt(),
+             receipt_name="evidence/rerun-receipt.json"), REPO_ROOT)
+    text = "\n".join(lines)
+
+    assert verdict == screen_module.REFUSED, text
+
+
+def test_zero_byte_history_files_refuse(screen_module, tmp_path):
+    """Two empty files are byte-identical and prove nothing whatever."""
+
+    verdict, lines = screen_module.screen(
+        _arm(tmp_path / "a", frame=b"", receipt=_good_receipt()),
+        _arm(tmp_path / "b", frame=b"", receipt=_good_receipt()), REPO_ROOT)
+    text = "\n".join(lines)
+
+    assert verdict == screen_module.REFUSED, text
+    assert "history bytes" in text
+
+
+def test_a_receipt_carrying_no_digest_refuses(screen_module, tmp_path):
+    """Receipts that paired but carried no digest still compared none."""
+
+    thin = json.dumps({"status": "PASS", "wall_seconds": 1.0})
+    verdict, lines = screen_module.screen(
+        _arm(tmp_path / "a", receipt=thin),
+        _arm(tmp_path / "b", receipt=thin), REPO_ROOT)
+    text = "\n".join(lines)
+
+    assert verdict == screen_module.REFUSED, text
+    assert "final-state digests compared: 0" in text
+
+
+def test_the_same_directory_twice_refuses(screen_module, tmp_path):
+    """One run compared with itself agrees with itself.
+
+    The A/B law in its purest form: an exactly-zero delta between an arm
+    and itself is not evidence that the card is healthy, it is evidence
+    that the experiment never ran.  The screen could not previously tell
+    it had been handed one directory twice.
+    """
+
+    arm = _arm(tmp_path / "a", receipt=_good_receipt())
+    verdict, lines = screen_module.screen(arm, arm, REPO_ROOT)
+    text = "\n".join(lines)
+
+    assert verdict == screen_module.REFUSED, text
+    assert "same directory" in text
+
+
+def test_an_arm_nested_inside_the_other_refuses(screen_module, tmp_path):
+    """``rglob`` from A would walk B's files as if they were A's."""
+
+    outer = _arm(tmp_path / "a", receipt=_good_receipt())
+    inner = _arm(outer / "arm-b", receipt=_good_receipt())
+    verdict, lines = screen_module.screen(outer, inner, REPO_ROOT)
+
+    assert verdict == screen_module.REFUSED, "\n".join(lines)
+
+
+def test_an_arm_with_no_history_refuses_rather_than_crying_corruption(
+        screen_module, tmp_path):
+    """"Nothing to compare" is not "the card corrupted memory".
+
+    This path already declined to pass, but it reported MISMATCH, whose
+    documented meaning is a CORRUPTION FINDING and whose exit status
+    stops a chain with the wrong reason.  The module docstring has always
+    promised a distinct "could not be evaluated" outcome; this is it.
+    """
+
+    verdict, lines = screen_module.screen(
+        _arm(tmp_path / "a", frame=None, receipt=_good_receipt()),
+        _arm(tmp_path / "b", receipt=_good_receipt()), REPO_ROOT)
+    text = "\n".join(lines)
+
+    assert verdict == screen_module.REFUSED, text
+    assert "CORRUPTION FINDING" not in text
+
+
 # --------------------------------------------------------------------------
 # the screen, end to end
 # --------------------------------------------------------------------------
@@ -195,15 +416,20 @@ def test_the_registered_partition_is_still_honoured(screen_module,
 
 def test_healthy_pair_passes_and_shows_what_it_excluded(
         screen_module, tmp_path):
-    """The false finding, reproduced: it must now PASS -- out loud."""
+    """The positive control, and the false finding reproduced.
+
+    A genuinely bit-identical pair must still PASS -- a refusal that
+    fires on healthy work is just a differently-shaped lie -- and the
+    six allocator high-water numbers must still be excluded out loud.
+    """
 
     run_a, run_b = _pair(tmp_path, mutate_b=lambda doc: [
         _set(doc, key, _get(doc, key) + 4096)
         for key in SAMPLED_HIGH_WATER_KEYS])
-    ok, lines = screen_module.screen(run_a, run_b, REPO_ROOT)
+    verdict, lines = screen_module.screen(run_a, run_b, REPO_ROOT)
     text = "\n".join(lines)
 
-    assert ok, text
+    assert verdict == screen_module.PASS, text
     assert "DUAL-RUN SCREEN: PASS (bit-identical)" in text
     assert "non-environmental scalar blocks differing: 0" in text
     # Excluded, and SHOWN.  Every one of the six, by name, with both
@@ -214,14 +440,34 @@ def test_healthy_pair_passes_and_shows_what_it_excluded(
     assert "sampled memory high-water 6" in text
 
 
+def test_a_pass_states_how_much_it_compared(screen_module, tmp_path):
+    """"Identical" is a claim with a size attached to it.
+
+    The counts are the half of the closure nobody has to guess a floor
+    for: a reader handed ``2 final-state digests`` can see a thin screen
+    for themselves even when it cleared the minimum.
+    """
+
+    run_a, run_b = _pair(tmp_path)
+    verdict, lines = screen_module.screen(run_a, run_b, REPO_ROOT)
+    text = "\n".join(lines)
+    assert verdict == screen_module.PASS, text
+
+    assert "history bytes hashed: 104" in text
+    assert "final-state digests compared: 2" in text
+    verdict_line = [line for line in lines if line.startswith("DUAL-RUN")][0]
+    assert "1 history file" in verdict_line
+    assert "2 final-state digests" in verdict_line
+
+
 def test_a_flipped_history_bit_still_fails(screen_module, tmp_path):
     """The negative control.  A screen that only passes proves nothing."""
 
     run_a, run_b = _pair(tmp_path, corrupt_a_bytes=True)
-    ok, lines = screen_module.screen(run_a, run_b, REPO_ROOT)
+    verdict, lines = screen_module.screen(run_a, run_b, REPO_ROOT)
     text = "\n".join(lines)
 
-    assert not ok
+    assert verdict == screen_module.MISMATCH
     assert "DUAL-RUN SCREEN: MISMATCH -- CORRUPTION FINDING" in text
     assert "DIFFERS: wrfout/wrfout_d01_2021-12-11_00_00_00" in text
 
@@ -232,10 +478,10 @@ def test_a_screened_memory_key_still_fails(screen_module, tmp_path):
     run_a, run_b = _pair(tmp_path, mutate_b=lambda doc: _set(
         doc, "memory.preflight_alloc_estimate_bytes",
         doc["memory"]["preflight_alloc_estimate_bytes"] + 4096))
-    ok, lines = screen_module.screen(run_a, run_b, REPO_ROOT)
+    verdict, lines = screen_module.screen(run_a, run_b, REPO_ROOT)
     text = "\n".join(lines)
 
-    assert not ok
+    assert verdict == screen_module.MISMATCH
     assert "SCALAR DIFFERS: evidence/run-receipt.json:" \
            "memory.preflight_alloc_estimate_bytes" in text
 
@@ -245,9 +491,57 @@ def test_a_changed_final_state_digest_still_fails(screen_module, tmp_path):
 
     run_a, run_b = _pair(tmp_path, mutate_b=lambda doc: _set(
         doc, "final_state_digest.d01:U", "c" * 64))
-    ok, lines = screen_module.screen(run_a, run_b, REPO_ROOT)
+    verdict, lines = screen_module.screen(run_a, run_b, REPO_ROOT)
     text = "\n".join(lines)
 
-    assert not ok
+    assert verdict == screen_module.MISMATCH
     assert "DIGEST DIFFERS: evidence/run-receipt.json:" \
            "final_state_digest.d01:U" in text
+
+
+# --------------------------------------------------------------------------
+# the exit statuses the docstring promises
+# --------------------------------------------------------------------------
+
+
+def test_exit_statuses_are_the_documented_three(screen_module, tmp_path,
+                                                capsys):
+    """0 PASS, 1 MISMATCH, 2 the screen could not be evaluated.
+
+    The third was unreachable: every non-PASS outcome, including "there
+    was nothing to compare", left through the same ``return 1`` and
+    presented as a corruption finding.
+    """
+
+    def run(run_a, run_b):
+        return screen_module.main(["--run-a", str(run_a), "--run-b",
+                                   str(run_b), "--repo", str(REPO_ROOT)])
+
+    passing_a, passing_b = _pair(tmp_path / "ok")
+    assert run(passing_a, passing_b) == 0
+
+    bad_a, bad_b = _pair(tmp_path / "bad", corrupt_a_bytes=True)
+    assert run(bad_a, bad_b) == 1
+
+    assert run(_arm(tmp_path / "thin-a"), _arm(tmp_path / "thin-b")) == 2
+    capsys.readouterr()
+
+
+def test_a_refusal_is_written_to_the_out_file_too(screen_module, tmp_path,
+                                                  capsys):
+    """The artifact a reader finds later must carry the refusal.
+
+    A receipt file that exists only on the passing path is how a refusal
+    becomes invisible to everyone reading the campaign directory
+    afterwards.
+    """
+
+    out = tmp_path / "receipts" / "dual_run_screen.txt"
+    status = screen_module.main([
+        "--run-a", str(_arm(tmp_path / "a")),
+        "--run-b", str(_arm(tmp_path / "b")),
+        "--repo", str(REPO_ROOT), "--out", str(out)])
+    capsys.readouterr()
+
+    assert status == 2
+    assert "REFUSED -- NOT EVALUATED" in out.read_text(encoding="utf-8")

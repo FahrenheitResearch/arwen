@@ -66,7 +66,8 @@ full + NSSL mp18 + MYNN + Noah-MP                234     291.65   9.04x
 The heaviest configuration that runs in this checkout is 291.65 B/cell,
 9.04x the dry milestone and 2.43x the 120.2 B/cell of the heaviest
 config previously surveyed.  ``mp_physics=28`` cannot be measured here --
-``gpuwm/data/thompson/tables/freezeH2O.dat`` is absent from the repository --
+``gpuwm_data/data/thompson/tables/freezeH2O.dat`` is absent from the public
+repository --
 but its ALLOCATION is 271.65 B/cell in the MYNN+Noah-MP stack, below mp18.
 
 FOUR THINGS THAT ARE NOT ARRAYS

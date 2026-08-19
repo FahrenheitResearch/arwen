@@ -188,11 +188,11 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 4 distinct caller-supplied option tuples across the 17
+  The inventory records 4 distinct caller-supplied option tuples across the 18
   compile sites in the shipped package, each listed here with a site that
   supplies it:
   - no caller options -- `gpuwm/core/dycore.py:157` (cp.ElementwiseKernel),
-    and 9 other site(s)
+    and 10 other site(s)
   - `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_lw.py:3733`
     (_cc.compile_using_nvrtc), and 2 other site(s)
   - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:78` (cp.RawModule), and
@@ -249,7 +249,7 @@ bytes are outside the numerical oracle.
 
 ## Deliberate runtime deviations from WRF v4.6.1
 
-### D1 — retired real74 compatibility-mode microphysics/h_diabatic cadence
+### D1 — retired historical-reference compatibility-mode microphysics/h_diabatic cadence
 
 - **WRF-native cadence**: the moist-physics prep/driver/finish block runs
   once per model step with the model-step `dtm` (solve_em.F:3604-3616

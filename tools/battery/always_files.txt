@@ -125,3 +125,13 @@ tests/test_module_skip_placement.py
 # gate being run by the lane that breaks it rather than by the cut that
 # cannot afford to.
 tests/test_native_wrf_distribution.py
+
+# The wheel-pin gate: proves setup.py refuses bdist_wheel while
+# gpuwm/data/bridges/bridge-pins.json declares no release and no
+# platforms.  Repo-scanning by nature (it reads the tree and runs the
+# real setup.py in subprocesses; no import edge reaches it), and the
+# defect it pins fails only at a cut: the 2.5.0 candidate wheel was
+# built with the pin step skipped and installed on a clean home as
+# FAILED bridges -- no GRIB decoder, no NetCDF decoder, renderer
+# rw_wrfbatch not built.  About 4 s.
+tests/test_wheel_pin_gate.py

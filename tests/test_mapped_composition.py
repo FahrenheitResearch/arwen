@@ -35,12 +35,13 @@ def _direct(
     name: str,
     valid_time: datetime,
     values: np.ndarray,
+    cycle: datetime | None = None,
 ) -> _DirectValue:
     return _DirectValue(
         name=name,
         valid_time=valid_time,
         member=None,
-        source_cycle=valid_time,
+        source_cycle=cycle or valid_time,
         axes=("y", "x"),
         values=np.asarray(values, dtype=np.float64),
         missing_count=0,
@@ -84,9 +85,12 @@ def _collections(*, changed: bool = False, missing_time: bool = False):
         primary_latitude,
         primary_longitude,
         {
+            # One source CYCLE serves both leads, as a real decode's
+            # reference time would; a broadcast belongs to one cycle.
             (time, None, "surface_pressure"): _direct(
                 "surface_pressure", time,
                 np.full((3, 4), 100000.0 + index),
+                cycle=start,
             )
             for index, time in enumerate(primary_times)
         },
@@ -148,10 +152,15 @@ def test_checked_in_grib2_and_netcdf_compositions_bind_source_soil_contracts():
     )
     assert era5["supplements"]["terrain_height"]["format"] == "netcdf"
     assert era5["soil_layers"]["remap"]["kind"] == "linear_point_samples"
+    # Both spellings per depth: the depth-to-selector pairing survives
+    # ECMWF's rename without being rewritten, and both vintages still read.
     assert [
         layer["selectors"]["soil_temperature"]["name"]
         for layer in era5["soil_layers"]["source_layers"]
-    ] == ["STL1", "STL2", "STL3", "STL4"]
+    ] == [
+        ["STL1", "stl1"], ["STL2", "stl2"],
+        ["STL3", "stl3"], ["STL4", "stl4"],
+    ]
 
 
 def test_retired_v1_composition_cannot_be_mistaken_for_v2(tmp_path):
@@ -463,7 +472,7 @@ def test_bundle_preserves_canonical_soil_arrays_and_explicit_zero_hydrometeors(
     )
     monkeypatch.setattr(
         "gpuwm.mapped_composition.mapped_frames_to_regular_snapshots",
-        lambda _frames: (packed,),
+        lambda _frames, **_kwargs: (packed,),
     )
     dummy = tmp_path / "authority"
     dummy.write_bytes(b"authority")
@@ -493,3 +502,229 @@ def test_bundle_preserves_canonical_soil_arrays_and_explicit_zero_hydrometeors(
     assert not any(name.startswith("GFS_ST") for name in actual.fields)
     for name in ("QC", "QR", "QI", "QS", "QG"):
         np.testing.assert_array_equal(actual.fields[name], np.zeros_like(pressure))
+
+
+def _analysis_only_collections():
+    """Terrain supplied at the FIRST primary valid time alone.
+
+    The shape agencies that publish invariants once per cycle actually
+    ship: the analysis file carries orography, the forecast-hour files do
+    not repeat it.
+    """
+
+    primary, terrain, expected = _collections()
+    first_time = min(time for time, _member in primary.source_cycles)
+    analysis_fields = {
+        key: value for key, value in terrain.direct.items()
+        if key[0] == first_time
+    }
+    assert len(analysis_fields) == 1
+    analysis_terrain = _collection(
+        terrain.latitude, terrain.longitude, analysis_fields,
+    )
+    return primary, analysis_terrain, expected
+
+
+def test_analysis_invariant_broadcast_binds_one_analysis_record_to_all_times():
+    primary, terrain, expected = _analysis_only_collections()
+    combined, receipt = _compose_terrain(
+        primary, terrain,
+        time_alignment="cycle_invariant_broadcast",
+    )
+
+    assert receipt["status"] == "PASS"
+    assert receipt["invariant_across_all_supplement_times"] is True
+    assert receipt["time_alignment"] == "cycle_invariant_broadcast"
+    assert len(receipt["supplement_valid_times"]) == 1
+    assert len(receipt["matched_primary_valid_times"]) == 2
+    assert len(combined.source_cycles) == 2
+    for valid_time, member in combined.source_cycles:
+        actual = combined.direct[(valid_time, member, "terrain_height")]
+        np.testing.assert_array_equal(actual.values, expected)
+
+
+def test_default_alignment_still_refuses_an_analysis_only_supplement():
+    primary, terrain, _expected = _analysis_only_collections()
+    with pytest.raises(ValueError, match="lacks exact primary valid time"):
+        _compose_terrain(primary, terrain)
+
+
+def test_broadcast_alignment_still_refuses_a_changing_supplement():
+    primary, terrain, _expected = _collections(changed=True)
+    with pytest.raises(ValueError, match="changes across supplied valid times"):
+        _compose_terrain(
+            primary, terrain,
+            time_alignment="cycle_invariant_broadcast",
+        )
+
+
+def test_composition_time_alignment_grammar_is_closed(tmp_path):
+    raw = json.loads(COMPOSITION.read_text(encoding="utf-8"))
+    raw["supplements"]["terrain_height"]["time_alignment"] = "whenever"
+    path = tmp_path / "bad-alignment.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="time alignment"):
+        load_composition(path, MAPPING)
+
+
+def _engine_compose_harness(tmp_path, monkeypatch):
+    """Drive ``_compose_through_engine`` with a fake engine seam.
+
+    The engine writes the WHOLE composed frame stream -- f64, tens of GB
+    for the largest registered sources -- into the scratch directory
+    before read-back, so where that directory is created is a
+    correctness question these tests pin.  The bridge calls are faked;
+    the ``tempfile.TemporaryDirectory`` call is recorded so each test
+    can observe the ``dir=`` the scratch was created with.
+    """
+
+    import tempfile
+
+    from gpuwm import mapped_composition, mapped_engine_bridge
+
+    files = {}
+    for name in (
+        "mapping.json", "composition.json", "manifest.json",
+        "primary.grb2", "terrain.grb2", "terrain-provenance.md",
+    ):
+        path = tmp_path / name
+        path.write_text("fixture", encoding="utf-8")
+        files[name] = path
+
+    engine_calls: list[dict] = []
+    monkeypatch.setattr(
+        mapped_engine_bridge, "run_engine",
+        lambda *args, **kwargs: engine_calls.append(dict(kwargs)))
+    frame = SimpleNamespace(
+        mapping_sha256="mapping-hash",
+        fields={"terrain_height": SimpleNamespace(
+            values=np.zeros((2, 2), dtype=np.float64))},
+    )
+    monkeypatch.setattr(
+        mapped_engine_bridge, "read_frameset", lambda _directory: (frame,))
+    monkeypatch.setattr(
+        mapped_engine_bridge, "read_composition_evidence",
+        lambda _directory: {
+            "alignment_receipt": {"status": "PASS"},
+            "contributing_sources": [],
+        })
+
+    captured: dict[str, object] = {}
+    real_factory = tempfile.TemporaryDirectory
+
+    def recording_factory(*args, **kwargs):
+        captured["kwargs"] = dict(kwargs)
+        return real_factory(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", recording_factory)
+
+    def compose(destination):
+        return mapped_composition._compose_through_engine(
+            engine=tmp_path / "engine.exe",
+            mapping_path=files["mapping.json"],
+            composition_path=files["composition.json"],
+            manifest_path=files["manifest.json"],
+            manifest_sha256="manifest-hash",
+            primary=(files["primary.grb2"],),
+            supplements={"terrain": (files["terrain.grb2"],)},
+            provenance={"terrain-provenance": files["terrain-provenance.md"]},
+            contributing={},
+            contract={"soil_layers": {"schema": "fixture"}},
+            bindings={},
+            terrain_spec={
+                "data_role": "terrain",
+                "provenance_role": "terrain-provenance",
+            },
+            decoders={},
+            snapshots={},
+            before={str(path): f"{name}-hash"
+                    for name, path in files.items()}
+                   | {str(files["mapping.json"]): "mapping-hash"},
+            scratch_destination=destination,
+        )
+
+    return SimpleNamespace(
+        compose=compose, captured=captured, engine_calls=engine_calls)
+
+
+def test_engine_compose_scratch_lands_beside_the_destination(
+        tmp_path, monkeypatch):
+    """The composed frame stream stages on the destination's filesystem.
+
+    Named breakage, measured twice and deterministic: the engine staged
+    the whole composed frame stream in the SYSTEM temp, and on a box
+    whose system temp is RAM-backed tmpfs (Ubuntu with /tmp on tmpfs and
+    a user quota; Fedora mounts /tmp at RAM/2 by default) a bare default
+    prep of the biggest registered source died with "cannot write the
+    frame stream: Disk quota exceeded (os error 122)" -- at exactly the
+    scale the release headlines.  The scratch belongs beside the prep
+    output, which is disk-backed by construction because the output
+    lands there anyway.
+    """
+
+    monkeypatch.delenv("GPUWM_COMPOSE_SCRATCH", raising=False)
+    harness = _engine_compose_harness(tmp_path, monkeypatch)
+    destination = tmp_path / "case" / "prep-output"
+
+    bundle = harness.compose(destination)
+
+    assert bundle.alignment_receipt["status"] == "PASS"
+    assert Path(harness.captured["kwargs"]["dir"]) == destination.parent
+    # The parent is created for the scratch (the prep would create it
+    # moments later anyway); the destination itself stays untouched so
+    # the route's create-only refusal still means something.
+    assert destination.parent.is_dir()
+    assert not destination.exists()
+
+
+def test_compose_scratch_env_override_wins_over_the_destination(
+        tmp_path, monkeypatch):
+    override = tmp_path / "big-disk-scratch"
+    override.mkdir()
+    monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(override))
+    harness = _engine_compose_harness(tmp_path, monkeypatch)
+
+    harness.compose(tmp_path / "case" / "prep-output")
+
+    assert Path(harness.captured["kwargs"]["dir"]) == override
+
+
+def test_compose_scratch_env_override_refuses_a_missing_directory_by_name(
+        tmp_path, monkeypatch):
+    """A named override that cannot hold the stream refuses, not falls back.
+
+    Silently falling back to the system temp would put the multi-GB
+    stream on exactly the filesystem the caller set the variable to
+    steer away from -- the quota failure this placement exists to
+    prevent, now with the user believing they had prevented it.
+    """
+
+    missing = tmp_path / "no-such-scratch"
+    monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(missing))
+    harness = _engine_compose_harness(tmp_path, monkeypatch)
+
+    with pytest.raises(NotADirectoryError) as refusal:
+        harness.compose(tmp_path / "case" / "prep-output")
+
+    message = str(refusal.value)
+    assert "GPUWM_COMPOSE_SCRATCH" in message
+    assert str(missing) in message
+    assert not harness.engine_calls
+
+
+def test_compose_scratch_falls_back_to_system_temp_without_a_destination(
+        tmp_path, monkeypatch):
+    """No destination, no override: the system temp is the documented home.
+
+    Callers with no real output directory (in-memory recompose paths)
+    stage streams sized to what they hold in memory, so the system temp
+    is proportionate there and demanding a destination would refuse
+    work that was never at risk.
+    """
+
+    monkeypatch.delenv("GPUWM_COMPOSE_SCRATCH", raising=False)
+    harness = _engine_compose_harness(tmp_path, monkeypatch)
+
+    harness.compose(None)
+
+    assert harness.captured["kwargs"].get("dir") is None

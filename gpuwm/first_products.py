@@ -69,6 +69,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from gpuwm.render_layout import fs_path, iter_rendered
+
 #: The receipt the early render leaves beside the pictures it published.
 FIRST_PRODUCTS_RECEIPT = "first-products.json"
 
@@ -108,9 +110,18 @@ def early_render_requested(render_products: Any) -> bool:
 
 
 def _sha256_file(path: Path) -> str:
+    """The digest of one file, readable at any path length.
+
+    Through ``render_layout.fs_path`` because the receipt's whole job is
+    re-finding the pictures the layout placed, and the layout can now
+    place them deeper than Windows' ordinary API reaches.  A digest that
+    raised there would turn a correctly filed picture into "the picture
+    it names is not on disk" and re-render the frame.
+    """
+
     from gpuwm.fetch import sha256_file
 
-    return sha256_file(path)
+    return sha256_file(Path(fs_path(path)))
 
 
 def _run_render(command: Sequence[str]) -> subprocess.CompletedProcess:
@@ -253,13 +264,13 @@ class FirstProducts:
         # the same directory would be published as though this render had
         # written it.
         if scratch.exists():
-            shutil.rmtree(scratch)
+            shutil.rmtree(fs_path(scratch))
         scratch.mkdir(parents=True)
         try:
             command = render_command(
                 {**self._plan, "render": scratch}, [frame])
             completed = self._runner(command)
-            written = sorted(scratch.glob("*.png"))
+            written = iter_rendered(scratch)
             if not written:
                 # Not a failure.  The cold-start frame carries no
                 # REFL_10CM -- no microphysics call precedes it, a
@@ -282,21 +293,49 @@ class FirstProducts:
             published: list[dict[str, str]] = []
             paths: list[Path] = []
             for source in written:
-                target = render_dir / source.name
+                # The RELATIVE path, not the bare name: since 2.5.0 the
+                # render writes a tree (domain/product/valid-day, see
+                # gpuwm.render_layout) and flattening it here would
+                # publish the early frame into a different directory
+                # from the one finalize renders the rest into -- two
+                # layouts in one run, from the same command.
+                relative = source.relative_to(scratch)
+                target = render_dir / relative
+                # Both sides through render_layout.fs_path: the scratch
+                # is one folder DEEPER than the published tree, so it is
+                # the first place the layout's own path length runs into
+                # Windows' MAX_PATH, and a publish that failed there
+                # would drop a drawn picture on the floor.
+                spelled = fs_path(target)
+                Path(spelled).parent.mkdir(parents=True, exist_ok=True)
                 # Atomic within the volume: a reader tailing the render
                 # directory sees a whole PNG or no PNG, and a later
                 # finalize write of the same name cannot land on top of
                 # a write still in flight.
-                os.replace(source, target)
-                published.append({"name": target.name,
+                os.replace(fs_path(source), spelled)
+                # Recorded relative to the render directory, in posix
+                # spelling, so `render_dir / entry["name"]` re-finds it
+                # on any platform when finalize re-checks the digests.
+                published.append({"name": relative.as_posix(),
                                   "sha256": _sha256_file(target)})
                 paths.append(target)
             elapsed = time.perf_counter() - started
         finally:
-            shutil.rmtree(scratch, ignore_errors=True)
+            shutil.rmtree(fs_path(scratch), ignore_errors=True)
 
         announced = {
             "schema": FIRST_PRODUCTS_SCHEMA,
+            # THE TIME-TO-FIRST-PLOT INSTANT, on the wall clock.
+            #
+            # The report hook below carries seconds-from-start, which is
+            # the number a HOST wants because the host owns the start.
+            # A caller that did not host this render -- `gpuwm go`,
+            # which asks the runner subprocess to do it -- has only the
+            # receipt, and a duration measured from a start it cannot
+            # see is not a number it can use.  So the receipt carries
+            # the absolute instant and every consumer subtracts its own
+            # launch from it.
+            "published_unix_ms": int(time.time() * 1000),
             "frame": str(frame),
             "domain": int(domain),
             "valid_time": (valid_time.isoformat()
@@ -370,7 +409,7 @@ def _receipt_still_holds(receipt: Mapping[str, Any], *, render_dir: Path,
         if not isinstance(entry, dict):
             return "one of its entries is not a record"
         picture = render_dir / str(entry.get("name") or "")
-        if not picture.is_file():
+        if not Path(fs_path(picture)).is_file():
             return f"the picture it names ({picture.name}) is not on disk"
         if _sha256_file(picture) != entry.get("sha256"):
             return (f"the picture it names ({picture.name}) no longer "

@@ -8,7 +8,8 @@ and cache packed FP32 device copies.
 
 Reference: earth-system-radiation/rte-rrtmgp commit
 fa107a16120051c4124305c6b3d4c87059119f58; coefficient data are rrtmgp-data
-v1.9.  See ``gpuwm/data/rrtmgp/PROVENANCE.md``.
+v1.9.  See ``gpuwm_data/data/rrtmgp/PROVENANCE.md`` in the ``gpuwm-data``
+companion distribution, which carries these tables since 2.5.0.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from typing import Mapping
 import numpy as np
 from netCDF4 import Dataset, chartostring
 
+from gpuwm import data_assets
 from gpuwm.config import DEFAULT_COLUMN_CHUNK
 from gpuwm.physics_compat import (
     WRF_RRTMG_TO_RTE_RRTMGP,
@@ -33,7 +35,14 @@ from gpuwm.core.mynn_radiation import (
     wrf_itimestep,
 )
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "rrtmgp"
+#: The k-distribution, cloud-optics and RFMIP NetCDFs.  Same files, same
+#: relative layout, same bytes as when they sat at ``gpuwm/data/rrtmgp``;
+#: they ship in the ``gpuwm-data`` companion distribution since 2.5.0
+#: because the wheel carrying them measured 103.62 MiB against PyPI's
+#: 100 MiB cap.  ``gpuwm.data_assets`` is the only thing that knows that,
+#: and it refuses BY NAME (with the pip line) if the companion is absent
+#: or a different version.
+DATA_DIR = data_assets.rrtmgp_data_dir()
 DTYPE = np.float32
 
 # ---------------------------------------------------------------------------

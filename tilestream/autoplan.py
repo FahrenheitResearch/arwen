@@ -64,6 +64,77 @@ none of the three terms is an artefact of the other two absorbing a sign; and
 the worst UNDER-prediction over all points is -4.3%, which is what
 :data:`VRAM_SAFETY` covers.
 
+MULTIPLE DOMAINS IN ONE PROCESS
+--------------------------------
+The measurement above says the fixed part is per PROCESS.  A tree of nested
+domains is ONE process, so the same sentence applies to DOMAINS and not only
+to buffers, and :meth:`Footprint.process_overhead_bytes` is the part a second
+domain does not pay again::
+
+    VRAM(tree) = process_overhead + SUM over domains of marginal_bytes(d)
+
+``gpuwm.core.streaming.steppers_for_tree`` charges it exactly once.  It used
+to charge ``vram_bytes`` -- context INCLUDED -- once per domain, which at the
+``full`` rung is 3.760 GiB of phantom bytes for every domain after the first:
+7.519 GiB on a three-domain tree, enough that a tree priced at 12.41 GiB was
+refused outright on a 16.30 GiB card.
+
+THE RADIATION TRANSIENT, AND WHY IT IS A RESERVATION AND NOT A CLAIM
+---------------------------------------------------------------------
+The cost model above prices what a forecast HOLDS.  A radiation step also
+allocates, uses and frees a working set that nothing holds between calls, and
+on the measured three-domain run below that transient was **+2.74 GiB** -- a
+fifth of the whole forecast, recurring every radiation period and lasting
+60-75 s of it.  Ignoring it is not conservative in either direction: it makes
+the planner spend the bytes on a bigger tile and then meet the transient at
+the first radiation call.
+
+It is charged as a RESERVATION against free VRAM (see :func:`budget_for`),
+not as a claim added to a domain's price, and it REPLACES the percentage
+:data:`VRAM_HEADROOM` rather than stacking on it -- that guess exists for
+exactly these first-use transients, so charging both counts the same bytes
+twice.  All three of those choices are decided by the same measurement, a
+9/3/1 km three-domain Poland forecast on node 1's 15.92 GiB (16,303 MiB)
+card with 15.245 GiB free, RTE+RRTMGP at 49 levels:
+
+======================================  ==========  =========================
+quantity                                     GiB    source
+======================================  ==========  =========================
+d01 200x160x49 resident                      4.614   this model, MATCHED
+d02 402x300x49 resident                      6.932   this model, MATCHED
+predicted total, d03 tiled 175x375          12.358   this model
+measured steady state                       12.72    NVML, -2.9% miss
+measured radiation peak                     15.46    NVML, +2.74 over steady
+peak headroom against the card               0.456   467 MiB, and it RAN
+the tiling one step larger (350x250)        ~14.34   would peak 17.08: DEAD
+======================================  ==========  =========================
+
+Both arms are measured, and together they pin the arithmetic:
+
+* as a CLAIM the tree prices 12.358 + 2.74 = 15.098 GiB against a 14.025 GiB
+  budget and the run that completed is refused;
+* as a reservation STACKED on the 8% headroom the budget is
+  15.245 - 1.22 - 2.74 = 11.285 GiB, which buys a 175x250 tile -- 20 tiles
+  where 12 ran, so a run that worked is planned slower for no reason;
+* as a reservation REPLACING the headroom the budget is
+  15.245 - 2.74 = 12.505 GiB, which selects 175x375 -- the tiling that
+  actually ran -- and refuses 350x250, the tiling that would have died.
+
+Only the third arm reproduces the observation on both sides, so that is the
+one implemented.  :data:`RADIATION_TRANSIENT_BYTES` is the measured number and
+the rungs that do not run RRTMGP carry zero.
+
+WHAT THE CONSTANT DOES NOT YET KNOW.  It was measured at ONE column count and
+one ``nz``; the run's own instrumentation says it "will not grow: RRTMGP's
+workspace is a function of column count, which is fixed", and the same figure
+priced both tilings above, so it is carried as a per-PROCESS constant rather
+than scaled by a law nobody has measured.  ``gpuwm.core.preflight``'s
+shape-derived transient rail computes 1.464 GiB for this same tree -- 1.9x
+under the measurement -- so the two rails disagree and the measurement wins
+here.  ``tilestream.rrtmgp_ceiling`` already forces a radiation step and reads
+the pool; running it at two or three column counts is what would turn this
+constant into a slope.
+
 Two things in the table deserve a second look.  ``full(real74)+KF`` has
 3.2 GiB of process fixed and no per-buffer fixed; ``full+MYNN+Noah-MP`` has
 2.6 GiB of process fixed and 1.0 GiB per buffer.  MYNN and Noah-MP move a
@@ -236,8 +307,31 @@ PINNED_FRACTION = 0.47
 
 #: VRAM left unplanned, on top of :data:`VRAM_SAFETY`.  CuPy's pool fragments
 #: across a long run, cuFFT/cuBLAS workspaces appear on first use, and the
-#: cost of being wrong is a dead forecast.
+#: cost of being wrong is a dead forecast.  It is a PERCENTAGE GUESS at those
+#: transients; where one of them has been measured instead, the measurement
+#: replaces this rather than adding to it -- see :func:`budget_for`.
 VRAM_HEADROOM = 0.08
+
+#: The RRTMGP radiation call's per-process TRANSIENT working set, by rung.
+#: MEASURED at +2.74 GiB over steady state on the three-domain 9/3/1 km run
+#: in the module docstring (NVML: 13,030 MiB steady, excursions to
+#: 15,700-15,836 MiB every ~5.8 min lasting 60-75 s, which is exactly the
+#: radiation period).  It is allocated, used and freed inside one call, so it
+#: is reserved from the budget and never added to a domain's price, and it is
+#: charged ONCE per process because the chunk workspace is shared and the
+#: domains of a tree step strictly sequentially.
+#:
+#: The two RRTMGP rungs carry the same figure: the transient measured is the
+#: RADIATION one, and MYNN's and Noah-MP's own per-call transients are not in
+#: it and have not been measured here.  The rungs without radiation carry
+#: zero, which is why every dry and moist plan is byte-identical to what it
+#: was before this constant existed.
+RADIATION_TRANSIENT_BYTES: dict[str, int] = {
+    "dry": 0,
+    "moist": 0,
+    "full": int(2.74 * GIB),
+    "full+mynn+noahmp": int(2.74 * GIB),
+}
 
 
 @dataclass(frozen=True)
@@ -265,14 +359,51 @@ class Footprint:
         return self.buffer_fixed_bytes + self.bytes_per_cell * window_cells
 
     def vram_bytes(self, window_cells: int, nbuffers: int) -> float:
-        """VRAM a process holding ``nbuffers`` such buffers costs, with safety."""
+        """VRAM a process holding ``nbuffers`` such buffers costs, with safety.
+
+        ONE domain in ONE process.  A caller pricing a SECOND domain into a
+        process that already holds one wants :meth:`marginal_bytes`, which
+        is this number without the part the process already paid.
+        """
         raw = (CUDA_CONTEXT_BYTES + self.process_fixed_bytes
                + nbuffers * self.buffer_bytes(window_cells))
         return raw * VRAM_SAFETY
 
+    @property
+    def process_overhead_bytes(self) -> float:
+        """The part of :meth:`vram_bytes` a SECOND domain does not pay again.
+
+        The CUDA context, the module images and the rung's k-distribution
+        tables are process-wide -- that is the measurement the module
+        docstring reports for tile BUFFERS, and the same fact holds for
+        DOMAINS, because a tree of domains is one process too.  Charging
+        this once per domain was worth 3.76 GiB of phantom bytes per extra
+        ``full``-rung domain; see MULTIPLE DOMAINS IN ONE PROCESS above.
+        """
+        return (CUDA_CONTEXT_BYTES + self.process_fixed_bytes) * VRAM_SAFETY
+
+    def marginal_bytes(self, window_cells: int, nbuffers: int) -> float:
+        """VRAM one MORE domain costs in a process that already runs one."""
+        return self.vram_bytes(window_cells, nbuffers) \
+            - self.process_overhead_bytes
+
     def resident_bytes(self, cells: int) -> float:
         """VRAM the whole domain costs with no tiling: one buffer, no halo."""
         return self.vram_bytes(cells, 1)
+
+    def marginal_resident_bytes(self, cells: int) -> float:
+        """:meth:`resident_bytes` for a domain that is not the first."""
+        return self.marginal_bytes(cells, 1)
+
+    @property
+    def radiation_transient_bytes(self) -> int:
+        """The rung's per-process radiation transient, RESERVED not claimed.
+
+        Zero for a rung this project has not measured one on, which is the
+        honest answer and also the one that leaves every dry and moist plan
+        exactly where it was; see :data:`RADIATION_TRANSIENT_BYTES`.
+        """
+        return int(RADIATION_TRANSIENT_BYTES.get(self.rung, 0))
 
     def store_bytes(self, cells: int) -> float:
         """Pinned host bytes one full-domain carrier store costs."""
@@ -306,6 +437,38 @@ FOOTPRINTS: dict[str, Footprint] = {
     "full+mynn+noahmp": Footprint("full+mynn+noahmp",
                                   2560 * MIB, 1024 * MIB, 612.0, 279.5),
 }
+
+
+def budget_for(machine: "Machine", fp: Footprint) -> int:
+    """What ``machine`` may actually spend on a process running ``fp``'s rung.
+
+    ``Machine.vram_budget_bytes`` withholds :data:`VRAM_HEADROOM`, a
+    PERCENTAGE GUESS at the transients that appear on first use.  At the
+    RRTMGP rungs one of those transients has been measured instead
+    (:data:`RADIATION_TRANSIENT_BYTES`), and the measurement is the bigger
+    number on any card below ~34 GiB.
+
+    The reservation is therefore the LARGER of the two and never their sum.
+    Stacking them double-counts one set of bytes, and the module docstring
+    has the arithmetic: on the card this was measured on, stacking plans a
+    tiling 40% smaller than the one that ran, while charging neither plans
+    the tiling that would have died at the first radiation call.
+
+    A rung with no measured transient gets exactly
+    ``machine.vram_budget_bytes`` back, so every dry and moist plan is
+    unmoved.
+
+    Written as ``budget - EXCESS`` rather than as ``vram - max(...)``
+    deliberately: the second form derives the headroom by subtraction, so a
+    machine whose ``vram_budget_bytes`` is nonsense gets quietly clamped
+    back to something plausible -- which defeats the control that breaks
+    the budget on purpose to prove the tile search reads it at all.  The
+    budget stays the base; only the part of the measured transient that the
+    percentage has NOT already withheld comes off it.
+    """
+    headroom = int(machine.vram_bytes * machine.vram_headroom)
+    excess = max(0, fp.radiation_transient_bytes - headroom)
+    return int(machine.vram_budget_bytes) - excess
 
 
 class CannotPlan(RuntimeError):
@@ -899,10 +1062,20 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
     periodic_x, periodic_y = is_periodic_x(cfg), is_periodic_y(cfg)
     periodic = periodic_x and periodic_y
     fp = footprint or footprint_for(cfg, rung=rung)
-    vram_budget = machine.vram_budget_bytes
+    # NOT ``machine.vram_budget_bytes``: at the RRTMGP rungs the radiation
+    # call's measured transient is a bigger reservation than the percentage
+    # headroom, and it is the one that decides the tile on a 16 GiB card.
+    vram_budget = budget_for(machine, fp)
     host_budget = machine.host_budget_bytes
     notes: list[str] = []
     warnings: list[str] = []
+    if fp.radiation_transient_bytes:
+        notes.append(
+            f"{fp.radiation_transient_bytes / GIB:.2f} GiB is reserved for "
+            f"the {fp.rung} rung's RRTMGP per-call transient, which is "
+            f"allocated and freed inside one radiation step and so is never "
+            f"part of a domain's price; it REPLACES the "
+            f"{VRAM_HEADROOM:.0%} headroom rather than adding to it")
 
     # ---------------------------------------------------------- resident?
     resident = fp.resident_bytes(cells)
@@ -976,6 +1149,24 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
             "geometry", dict(nx=nx, ny=ny))
 
     if best is None:
+        # WHICH resource emptied the search is derived, not asserted: the
+        # same search with an unbounded window says whether ANY tile is
+        # geometrically legal.  A scaling sweep hit exactly this seam -- its
+        # 32^2 forced-tiled arm was refused "no tile fits in 13.26 GiB of
+        # VRAM" while every larger arm planned, because on a non-periodic
+        # axis spec.plan_tiles refuses tile + 2*halo > n, so at nx <= 2*halo
+        # the candidate set is empty AT ANY BUDGET and the card was never
+        # the constraint.  Blaming VRAM there sends the user shopping for a
+        # bigger card that would change nothing.
+        if _geometry_admits_no_tile(nx, ny, nz, halo, periodic_x, periodic_y,
+                                    allow_ragged):
+            raise CannotPlan(
+                _too_small_to_tile_message(nx, ny, halo, periodic_x,
+                                           periodic_y, fp, cells,
+                                           vram_budget),
+                "geometry", dict(nx=nx, ny=ny, halo=halo,
+                                 periodic_x=periodic_x,
+                                 periodic_y=periodic_y))
         floor = fp.vram_bytes((2 * halo + 1) ** 2 * nz, 1)
         raise CannotPlan(
             f"no tile fits in {vram_budget / GIB:.2f} GiB of VRAM: the "
@@ -1027,6 +1218,43 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
                          host_budget=host_budget))
 
     if max_redundancy is not None and best["redundancy"] > max_redundancy:
+        # The resource is derived the same way as the empty-search case
+        # above: if an UNBOUNDED budget still cannot beat the limit, the
+        # tile is capped by the domain's own geometry (a non-periodic axis
+        # admits no tile wider than n - 2*halo; a small periodic domain is
+        # halo-dominated whatever the tile) and no card fixes it.  Only when
+        # a bigger budget WOULD admit a better tile is this a VRAM problem.
+        roomy = _best_tile(nx, ny, nz, halo,
+                           _unbounded_window_cells(nx, ny, nz, halo),
+                           periodic_x, periodic_y, allow_ragged, prefer_exact)
+        geometry_capped = (roomy is None or roomy.get("ragged_only")
+                           or roomy["redundancy"] > max_redundancy)
+        if geometry_capped:
+            resident_note = (
+                f"  This domain's resident footprint is "
+                f"{resident / GIB:.2f} GiB against the {vram_budget / GIB:.2f}"
+                f" GiB budget, so run it RESIDENT ([tiles] off, or mode = "
+                f"'auto') instead of streaming it."
+                if resident <= vram_budget else
+                f"  Resident needs {resident / GIB:.2f} GiB against "
+                f"{vram_budget / GIB:.2f} GiB, so neither shape of this run "
+                f"fits this card.")
+            clamp = (" a non-periodic axis admits no tile wider than "
+                     f"n - 2*halo (x cap {nx - 2 * halo}, y cap "
+                     f"{ny - 2 * halo}),"
+                     if not (periodic_x and periodic_y) else
+                     " every compute window carries 2*halo cells per axis,")
+            raise CannotPlan(
+                f"the domain is too small to tile efficiently at halo "
+                f"{halo}:{clamp} so the best legal tiling is "
+                f"{tile_nx}x{tile_ny} inside a "
+                f"{best['window_nx']}x{best['window_ny']} window and does "
+                f"{best['redundancy']:.2f}x the necessary work (limit "
+                f"{max_redundancy:.2f}x) AT ANY BUDGET -- a bigger card "
+                f"changes nothing.{resident_note}  Pass max_redundancy=None "
+                f"to stream it anyway.",
+                "geometry", dict(redundancy=best["redundancy"],
+                                 tile=(tile_nx, tile_ny), halo=halo))
         raise CannotPlan(
             f"the largest tile that fits is {tile_nx}x{tile_ny} inside a "
             f"{best['window_nx']}x{best['window_ny']} window, so "
@@ -1110,6 +1338,66 @@ def _max_window_cells(fp: Footprint, nbuffers: int, budget: int) -> int:
     room = budget / VRAM_SAFETY - CUDA_CONTEXT_BYTES - fp.process_fixed_bytes
     room = room / nbuffers - fp.buffer_fixed_bytes
     return int(room / fp.bytes_per_cell) if room > 0 else 0
+
+
+def _unbounded_window_cells(nx: int, ny: int, nz: int, halo: int) -> int:
+    """A window budget no legal candidate can exceed, for feasibility probes.
+
+    The widest window any candidate produces is the whole domain plus a full
+    halo on every side, so handing :func:`_best_tile` this many cells asks a
+    pure GEOMETRY question: does any tile exist at any budget?
+    """
+    return (nx + 2 * halo) * (ny + 2 * halo) * nz
+
+
+def _geometry_admits_no_tile(nx: int, ny: int, nz: int, halo: int,
+                             periodic_x: bool, periodic_y: bool,
+                             allow_ragged: bool) -> bool:
+    """Whether the tile search is empty AT ANY BUDGET.
+
+    True exactly when the domain's own geometry -- in practice a
+    non-periodic axis, where ``spec.plan_tiles`` refuses any window wider
+    than the axis, so no tile exists once ``n <= 2*halo`` -- is what empties
+    the search.  On a fully periodic domain this is never true: ``tile = n``
+    is always a legal candidate there.
+    """
+    probe = _best_tile(nx, ny, nz, halo,
+                       _unbounded_window_cells(nx, ny, nz, halo),
+                       periodic_x, periodic_y, allow_ragged)
+    return probe is None or bool(probe.get("ragged_only"))
+
+
+def _too_small_to_tile_message(nx: int, ny: int, halo: int, periodic_x: bool,
+                               periodic_y: bool, fp: Footprint, cells: int,
+                               vram_budget: int) -> str:
+    """The geometry refusal, with the remedy that actually helps.
+
+    A domain in this state is SMALL -- the clamp only empties the search at
+    ``n <= 2*halo`` per non-periodic axis -- so the remedy is almost always
+    to run it resident, and the message computes that instead of gesturing
+    at it.
+    """
+    caps = []
+    if not periodic_x:
+        caps.append(f"x admits no tile wider than nx - 2*halo = "
+                    f"{nx - 2 * halo}")
+    if not periodic_y:
+        caps.append(f"y admits no tile wider than ny - 2*halo = "
+                    f"{ny - 2 * halo}")
+    resident = fp.resident_bytes(cells)
+    remedy = (f"this domain's resident footprint is {resident / GIB:.2f} GiB "
+              f"against the {vram_budget / GIB:.2f} GiB budget, so run it "
+              f"RESIDENT ([tiles] off, or mode = 'auto')"
+              if resident <= vram_budget else
+              f"resident needs {resident / GIB:.2f} GiB against "
+              f"{vram_budget / GIB:.2f} GiB, so neither shape of this run "
+              f"fits this card")
+    return (f"the domain cannot be tiled at all at halo {halo}: on a "
+            f"non-periodic axis the transport refuses any compute window "
+            f"wider than the domain (tile + 2*halo <= n), and at "
+            f"{nx}x{ny} that leaves no legal tile -- {'; '.join(caps)}.  "
+            f"No card size changes this; {remedy}.  A larger domain tiles "
+            f"fine, which is why a size sweep sees its SMALLEST arm refused.")
 
 
 def _best_tile(nx: int, ny: int, nz: int, halo: int, window_cells: int,

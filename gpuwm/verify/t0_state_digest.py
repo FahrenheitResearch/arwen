@@ -347,9 +347,19 @@ def discover_boundary_files(directory: Path) -> dict[str, Path]:
 
 
 def _open_dataset(path: Path):
-    import netCDF4  # imported lazily: the registration must stay importable
+    # Decoded in Rust like every other met NetCDF read.  This module was
+    # exempted as "bytes" -- needing the stored representation, which the
+    # bridge cannot give because it promotes every numeric type to f64 --
+    # but that reason does not survive reading the code: `_first_record`
+    # casts to FP32 itself and never inspects a dtype or takes a
+    # `.tobytes()`, so the stored width is discarded here anyway.  It also
+    # reads only numeric variables (CARRIER_GROUPS enumerates them, and
+    # BOUNDARY_VAR_RE is uppercase-only, which excludes wrfbdy's lowercase
+    # `md___*` character metadata), and it takes its valid times from the
+    # filename rather than from `Times`.
+    from gpuwm import netcdf_bridge  # noqa: PLC0415
 
-    return netCDF4.Dataset(str(path))
+    return netcdf_bridge.open_dataset(path)
 
 
 def _first_record(variable) -> np.ndarray:

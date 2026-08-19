@@ -6,6 +6,18 @@ static cache, and a small geometry receipt.  A frozen WRF-v4.6.1 declaration
 contract supplies only NetCDF metadata; all gridded state is derived from the
 native inputs.
 
+Who writes the bytes: Drew's Rust.  The DEFAULT engine is the classic
+writer at ``tools/rustwx/crates/netcdf-writer``, driven through
+:mod:`gpuwm.io.nc_writer_bridge` and the shared
+:class:`gpuwm.io.classic_tape.ClassicTape` facade -- the same seam the
+wrfout history tape writes through.  The export's closing verification
+runs there too: the ``rw_netcdf`` reader for the header (attributes,
+inventory, dimensions) and the writer crate's own read-back sweep for
+the finiteness check over every float variable.  ``netCDF4`` survives in
+this module for exactly one thing, the ``GPUWM_WRFINPUT_WRITER=python``
+workaround engine, which is announced as a workaround and never selected
+silently.
+
 The supported slice is a single specified projected domain
 (lambert/mercator/polar; MAP_PROJ and MAP_PROJ_CHAR derive from the
 geometry receipt) with an explicit validated hybrid eta coordinate and a
@@ -18,7 +30,7 @@ from __future__ import annotations
 
 import argparse
 import copy
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -33,7 +45,9 @@ import uuid
 import netCDF4
 import numpy as np
 
+from gpuwm import netcdf_bridge
 from gpuwm.core import constants as _model_constants
+from gpuwm.io.classic_tape import ClassicTape
 from gpuwm.ingest.prepared_cache import (
     compare_prepared_domain_config,
     prepared_domain_config_identity,
@@ -76,6 +90,75 @@ _CANONICAL_SURFACE_FIELDS = frozenset({
     "TSK", "TSLB", "SMOIS", "SH2O", "TMN", "SEAICE", "XLAND",
     "LANDMASK", "SNOW", "SNOWH",
 })
+
+#: Which library writes the ``wrfinput``/``wrfbdy`` pair.  ``rust`` (the
+#: DEFAULT) is the dependency-free classic writer at
+#: ``tools/rustwx/crates/netcdf-writer`` behind the
+#: :mod:`gpuwm.io.nc_writer_bridge` ctypes seam, emitting the CDF-2
+#: (``NETCDF3_64BIT_OFFSET``) container -- which is what stock WRF's own
+#: ``real.exe`` writes at ``io_form_input = 2``, so the pair stays a file
+#: set unchanged WRF reads.  ``python`` is the netCDF4/HDF5 writer this
+#: module used through 2.4, emitting the frozen contract's ``NETCDF4``
+#: container -- kept reachable as an EXPLICIT WORKAROUND only, never
+#: selected silently.  Their equivalence on the real contract is
+#: ``tests/test_wrf_direct_writer.py::test_the_two_engines_write_the_same_file``.
+#:
+#: What the classic container cannot carry is the frozen contract's
+#: per-variable HDF5 storage tuning -- ``zlib``/``shuffle``/``complevel``/
+#: ``fletcher32``/``chunksizes`` and the stored ``endian``.  None of them
+#: describes a value: names, types, dimensions, definition order,
+#: attributes and every bit of every field survive the flip, and the
+#: contract declares no fill value for any variable.  An uncompressed
+#: pair is larger on disk and is exactly what ``real.exe`` produces.
+WRFINPUT_WRITER_ENV = "GPUWM_WRFINPUT_WRITER"
+
+_WRFINPUT_ENGINES = ("rust", "python")
+
+#: What a caller should do when the classic header is already on disk.
+#: The whole schema is declared in ``_create_dataset`` before any value
+#: is written, so this can only be reached by a change to this module.
+_FROZEN_REMEDY = (
+    "Every dimension, attribute and variable of this pair is declared in "
+    "gpuwm.wrf_direct._create_dataset before the first value is written; "
+    "declare it there, or use the netCDF4 workaround "
+    f"{WRFINPUT_WRITER_ENV}=python.")
+
+
+def resolve_wrfinput_engine(engine: str | None = None) -> str:
+    """The writer engine to use: explicit argument, else env, else rust."""
+
+    value = engine if engine is not None else os.environ.get(
+        WRFINPUT_WRITER_ENV, "rust")
+    value = str(value).strip().lower()
+    if value not in _WRFINPUT_ENGINES:
+        raise ValueError(
+            f"unknown wrfinput writer engine {value!r} "
+            f"(from {WRFINPUT_WRITER_ENV!r} or the engine argument); "
+            f"expected one of {_WRFINPUT_ENGINES}.  'rust' is the default "
+            "classic writer; 'python' is the netCDF4 workaround.")
+    return value
+
+
+def _require_rust_writer() -> None:
+    """Refuse, rather than downgrade, when the Rust writer is not here."""
+
+    from gpuwm.io import nc_writer_bridge
+
+    reason = nc_writer_bridge.unavailable_reason()
+    if reason is None:
+        return
+    raise RuntimeError(
+        "the default wrfinput/wrfbdy engine is the Rust NetCDF writer "
+        "(the netcdf-writer cdylib behind gpuwm.io.nc_writer_bridge) and "
+        "it is not loadable here, so the WRF handoff pair cannot be "
+        f"written:\n  {reason}\n"
+        "A silent fallback would change the pair's container with build "
+        "state and quietly un-test the default, so it is refused instead. "
+        "Remedies: build the library from a checkout (cd tools/rustwx; "
+        "cargo build --release --locked --offline -p netcdf-writer; "
+        "cd ../..), or run `gpuwm fetch-bridges` on an installed wheel; "
+        f"or set {WRFINPUT_WRITER_ENV}=python to select the netCDF4 "
+        "writer as an explicit workaround.")
 
 
 class StockWrfExportUnsupported(ValueError):
@@ -835,8 +918,24 @@ def _global_updates(*, valid_time: datetime, nx: int, ny: int, nz: int,
 
 def _create_dataset(path: Path, contract: Mapping[str, object],
                     dimensions: Mapping[str, int | None],
-                    global_updates: Mapping[str, object]) -> netCDF4.Dataset:
-    dataset = netCDF4.Dataset(path, "w", format=str(contract["format"]))
+                    global_updates: Mapping[str, object],
+                    engine: str | None = None):
+    """Declare the whole frozen contract, then hand back the open file.
+
+    The two engines differ only in who puts the bytes down: ``rust`` (the
+    default) opens a :class:`~gpuwm.io.classic_tape.ClassicTape` on the
+    Rust seam, ``python`` opens the frozen contract's own NetCDF-4
+    container with the C library.  Everything below is one code path, so
+    the declaration cannot drift between them.
+    """
+
+    engine = resolve_wrfinput_engine(engine)
+    if engine == "rust":
+        _require_rust_writer()
+        dataset = ClassicTape(path, container="cdf2",
+                              frozen_remedy=_FROZEN_REMEDY)
+    else:
+        dataset = netCDF4.Dataset(path, "w", format=str(contract["format"]))
     try:
         for name, length in dimensions.items():
             dataset.createDimension(name, length)
@@ -847,22 +946,29 @@ def _create_dataset(path: Path, contract: Mapping[str, object],
             )
             dataset.setncattr(name, restored)
         for spec in contract["variables"]:
-            compression = spec["compression"]
-            kwargs = {
-                "zlib": bool(compression["zlib"]),
-                "shuffle": bool(compression["shuffle"]),
-                "complevel": int(compression["complevel"]),
-                "fletcher32": bool(compression["fletcher32"]),
-                "endian": spec["endian"],
-            }
-            if isinstance(spec["chunking"], list):
-                kwargs["chunksizes"] = tuple(
-                    min(int(chunk), int(dimensions[dim]))
-                    if dimensions[dim] is not None else int(chunk)
-                    for chunk, dim in zip(spec["chunking"], spec["dimensions"])
-                )
-            if spec["has_fill_value"]:
-                kwargs["fill_value"] = spec["fill_value"]
+            # The classic container has no spelling for HDF5 storage
+            # tuning, so the rust engine declares the variable and
+            # nothing else; the C library keeps the frozen contract's
+            # chunking and compression exactly as 2.4 wrote them.
+            kwargs: dict[str, object] = {}
+            if engine == "python":
+                compression = spec["compression"]
+                kwargs = {
+                    "zlib": bool(compression["zlib"]),
+                    "shuffle": bool(compression["shuffle"]),
+                    "complevel": int(compression["complevel"]),
+                    "fletcher32": bool(compression["fletcher32"]),
+                    "endian": spec["endian"],
+                }
+                if isinstance(spec["chunking"], list):
+                    kwargs["chunksizes"] = tuple(
+                        min(int(chunk), int(dimensions[dim]))
+                        if dimensions[dim] is not None else int(chunk)
+                        for chunk, dim in zip(spec["chunking"],
+                                              spec["dimensions"])
+                    )
+                if spec["has_fill_value"]:
+                    kwargs["fill_value"] = spec["fill_value"]
             variable = dataset.createVariable(
                 spec["name"], np.dtype(spec["dtype"]),
                 tuple(spec["dimensions"]), **kwargs)
@@ -874,20 +980,40 @@ def _create_dataset(path: Path, contract: Mapping[str, object],
                 })
         return dataset
     except BaseException:
-        dataset.close()
+        _abandon_dataset(dataset, path)
         raise
 
 
-def _shape_without_time(variable: netCDF4.Variable) -> tuple[int, ...]:
+def _abandon_dataset(dataset, path: Path) -> None:
+    """Release a half-written file without publishing it.
+
+    A classic tape is ABORTED, which leaves ``numrecs`` 0 so a reader of
+    the leftover sees an empty inventory rather than a partial pair
+    presented as whole; a netCDF4 dataset is closed, which is all that
+    library offers.  The file is then removed, because unlike the wrfout
+    tape this export publishes by directory rename and a leftover would
+    travel with it.
+    """
+
+    with suppress(BaseException):
+        if isinstance(dataset, ClassicTape):
+            dataset.abort()
+        else:
+            dataset.close()
+    with suppress(BaseException):
+        Path(path).unlink(missing_ok=True)
+
+
+def _shape_without_time(variable) -> tuple[int, ...]:
     return tuple(len(variable.group().dimensions[name])
                  for name in variable.dimensions if name != "Time")
 
 
-def _write_time_value(variable: netCDF4.Variable, value) -> None:
+def _write_time_value(variable, value) -> None:
     _write_time_value_at(variable, value, 0)
 
 
-def _write_time_value_at(variable: netCDF4.Variable, value,
+def _write_time_value_at(variable, value,
                          time_index: int) -> None:
     if not variable.dimensions or variable.dimensions[0] != "Time":
         raise ValueError(f"{variable.name} does not begin with Time")
@@ -905,18 +1031,18 @@ def _write_time_value_at(variable: netCDF4.Variable, value,
     variable[(time_index,) + (slice(None),) * len(target_shape)] = array
 
 
-def _write_timestamp(variable: netCDF4.Variable, text: str) -> None:
+def _write_timestamp(variable, text: str) -> None:
     _write_timestamp_at(variable, text, 0)
 
 
-def _write_timestamp_at(variable: netCDF4.Variable, text: str,
+def _write_timestamp_at(variable, text: str,
                         time_index: int) -> None:
     encoded = np.frombuffer(text.encode("ascii"), dtype="S1")
     _write_time_value_at(variable, encoded, time_index)
 
 
 def _resolved_prototype_value(
-    variable: netCDF4.Variable, prototype
+    variable, prototype
 ):
     """Keep matching frozen prototypes; resize only all-zero scaffolds.
 
@@ -1255,8 +1381,10 @@ def _wrfbdy_fields(cache: PreparedCache,
 def _write_wrfinput(path: Path, contract: Mapping[str, object],
                     dimensions: Mapping[str, int | None],
                     global_updates: Mapping[str, object],
-                    fields: Mapping[str, np.ndarray], stamp: str) -> None:
-    dataset = _create_dataset(path, contract, dimensions, global_updates)
+                    fields: Mapping[str, np.ndarray], stamp: str,
+                    engine: str | None = None) -> None:
+    dataset = _create_dataset(path, contract, dimensions, global_updates,
+                              engine)
     try:
         specs = {item["name"]: item for item in contract["variables"]}
         for name, variable in dataset.variables.items():
@@ -1273,8 +1401,12 @@ def _write_wrfinput(path: Path, contract: Mapping[str, object],
             else:
                 shape = _shape_without_time(variable)
                 _write_time_value(variable, np.zeros(shape, dtype=variable.dtype))
-    finally:
-        dataset.close()
+    except BaseException:
+        # A half-written pair must not be left where the publication
+        # step would carry it forward as a finished export.
+        _abandon_dataset(dataset, path)
+        raise
+    dataset.close()
 
 
 def _write_wrfbdy(path: Path, contract: Mapping[str, object],
@@ -1282,8 +1414,10 @@ def _write_wrfbdy(path: Path, contract: Mapping[str, object],
                   global_updates: Mapping[str, object],
                   cache: PreparedCache,
                   boundary_times: list[datetime],
-                  boundary_interval_seconds: int) -> None:
-    dataset = _create_dataset(path, contract, dimensions, global_updates)
+                  boundary_interval_seconds: int,
+                  engine: str | None = None) -> None:
+    dataset = _create_dataset(path, contract, dimensions, global_updates,
+                              engine)
     try:
         for time_index, boundary_time in enumerate(boundary_times):
             fields = _wrfbdy_fields(cache, time_index)
@@ -1309,11 +1443,29 @@ def _write_wrfbdy(path: Path, contract: Mapping[str, object],
                     _write_time_value_at(
                         variable, np.zeros(shape, dtype=variable.dtype),
                         time_index)
-    finally:
-        dataset.close()
+    except BaseException:
+        _abandon_dataset(dataset, path)
+        raise
+    dataset.close()
 
 
-def _attribute_matches(actual, expected) -> bool:
+def _attribute_matches(actual, expected, type_spec=None) -> bool:
+    """Does the file's attribute still say what the export meant it to?
+
+    ``type_spec`` is the frozen contract's declaration for this
+    attribute, and it is what makes the comparison survive the Rust
+    reader: ``rw_netcdf`` reports every numeric attribute as a JSON
+    number, so an NC_FLOAT ``CEN_LAT`` comes back as the f64 widening of
+    an f32 and would differ from the f64 the caller asked for in the last
+    bits.  Restoring the OBSERVED value to the width the contract
+    declares compares like with like -- and the contract, not the reader,
+    is the thing that says what width the file carries.
+    """
+
+    if type_spec is not None:
+        with suppress(TypeError, ValueError, OverflowError):
+            actual = _restore_attribute(actual, type_spec)
+            expected = _restore_attribute(expected, type_spec)
     if isinstance(actual, bytes):
         return actual == (expected if isinstance(expected, bytes)
                           else str(expected).encode("latin1"))
@@ -1352,15 +1504,88 @@ def _domain_global_attributes(updates: Mapping[str, object]) \
     return {name: updates[name] for name in names}
 
 
+@contextmanager
+def _open_for_validation(path: Path, engine: str):
+    """Open the written pair for its read-back, on the matching reader.
+
+    The default engine's file is a classic container and is read by
+    :mod:`gpuwm.netcdf_bridge` -- ``rw_netcdf``, Drew's Rust -- in a
+    metadata-only pass that decodes no value.
+
+    The netCDF4 workaround engine's file is an HDF5 container, and there
+    the Rust reader recovers the variable list through HDF5 dimension
+    scales rather than a definition-order table, so it cannot answer the
+    inventory-ORDER check this validation makes (measured: it returns the
+    same 183 names in a different order).  A workaround-written file is
+    therefore checked by the library that wrote it, which is part of the
+    workaround rather than a second default.
+    """
+
+    if engine == "rust":
+        with netcdf_bridge.open_dataset(path) as dataset:
+            yield dataset
+    else:
+        with netCDF4.Dataset(path) as dataset:
+            yield dataset
+
+
+def _nonfinite_variables(path: Path, contract: Mapping[str, object],
+                         engine: str) -> list[str]:
+    """Every float variable of the written file, swept for finiteness.
+
+    This is the gate that stops a NaN reaching stock WRF, where it
+    surfaces hours later as a blown-up integration with no trace of where
+    it came from, and it is a READ-BACK: it asks the bytes on disk, not
+    the arrays that were handed to the writer, so a short or corrupted
+    write is caught as well.
+
+    On the default engine it runs inside the writer crate
+    (:func:`gpuwm.io.nc_writer_bridge.scan_nonfinite`), one sequential
+    pass over a file whose geometry that crate owns.  ``rw_netcdf`` is
+    the front door for READING a NetCDF file, and it is the wrong shape
+    for this one job: it decodes one variable per process launch through
+    an f64 temp file, which for a 183-variable ``wrfinput`` would put 183
+    process launches and a few gigabytes of temporary writes on the
+    preparation path.
+
+    On the netCDF4 workaround engine the file is an HDF5 container the
+    crate does not read, so the sweep stays with the library that wrote
+    it -- part of the workaround, not a separate default.
+    """
+
+    if engine == "rust":
+        from gpuwm.io import nc_writer_bridge
+
+        return list(nc_writer_bridge.scan_nonfinite(path))
+    nonfinite = []
+    with netCDF4.Dataset(path) as dataset:
+        for name, variable in dataset.variables.items():
+            if np.dtype(variable.dtype).kind == "f":
+                if not np.isfinite(variable[:]).all():
+                    nonfinite.append(name)
+    return nonfinite
+
+
 def _validate_file(path: Path, contract: Mapping[str, object], *,
                    nx: int, ny: int, nz: int,
                    num_soil_layers: int = 4,
                    expected_global_attributes: Mapping[str, object]
-                   | None = None) -> dict[str, object]:
+                   | None = None,
+                   engine: str | None = None) -> dict[str, object]:
+    """Read the published file back and check it against the contract.
+
+    The header half -- global attributes, variable inventory and order,
+    dimension extents -- comes through :mod:`gpuwm.netcdf_bridge`, the
+    Rust reader, which is a metadata-only pass and decodes no value.  The
+    value half is :func:`_nonfinite_variables`.
+    """
+
+    engine = resolve_wrfinput_engine(engine)
     expected_dimensions = _dimensions(
         contract, nx=nx, ny=ny, nz=nz,
         num_soil_layers=num_soil_layers)
-    with netCDF4.Dataset(path) as dataset:
+    attribute_types = contract["global_attribute_types"]
+    with _open_for_validation(path, engine) as dataset:
         if expected_global_attributes is not None:
             missing_attributes = sorted(
                 set(expected_global_attributes) - set(dataset.ncattrs()))
@@ -1374,7 +1599,9 @@ def _validate_file(path: Path, contract: Mapping[str, object], *,
                     "expected": expected,
                 }
                 for name, expected in expected_global_attributes.items()
-                if not _attribute_matches(dataset.getncattr(name), expected)
+                if not _attribute_matches(
+                    dataset.getncattr(name), expected,
+                    attribute_types.get(name))
             }
             if drift:
                 raise ValueError(
@@ -1387,16 +1614,9 @@ def _validate_file(path: Path, contract: Mapping[str, object], *,
                 raise ValueError(f"{path.name}: dimension {name} mismatch")
             if expected is None and not actual.isunlimited():
                 raise ValueError(f"{path.name}: dimension {name} is not unlimited")
-        nonfinite = []
-        for name, variable in dataset.variables.items():
-            if np.dtype(variable.dtype).kind == "f":
-                # Read one vertical/chunk slab at a time to keep validation
-                # memory bounded for wide domains.
-                value = variable[:]
-                if not np.isfinite(value).all():
-                    nonfinite.append(name)
-        if nonfinite:
-            raise ValueError(f"{path.name}: non-finite variables {nonfinite}")
+    nonfinite = _nonfinite_variables(path, contract, engine)
+    if nonfinite:
+        raise ValueError(f"{path.name}: non-finite variables {nonfinite}")
     return {"bytes": path.stat().st_size, "sha256": _sha256(path)}
 
 
@@ -1635,6 +1855,12 @@ def export_prepared_wrf_hierarchy(
     by their declared parents at runtime.
     """
 
+    # One writer decision governs the whole pair, resolved once here
+    # rather than re-read per file: a hierarchy whose d01 was classic and
+    # whose d03 was HDF5 because the environment moved mid-export is a
+    # file set nobody declared.
+    engine = resolve_wrfinput_engine()
+
     # Stock WRF v4.6.1 normalizes microphysics to one selector across the
     # hierarchy.  GPUWM's explicit MP8->MP18 edge is executable only in its
     # own one-way coupler and must never be mislabeled as a READY stock-WRF
@@ -1718,12 +1944,14 @@ def export_prepared_wrf_hierarchy(
                         mp_physics=physics_inventory.mp_physics)
                     _write_wrfinput(
                         staging / name, input_contract, dimensions,
-                        updates, fields, _date_text(domain_valid_time))
+                        updates, fields, _date_text(domain_valid_time),
+                        engine)
                 files[name] = _validate_file(
                     staging / name, input_contract,
                     nx=int(cfg["nx"]), ny=int(cfg["ny"]), nz=int(cfg["nz"]),
                     expected_global_attributes=_domain_global_attributes(
-                        updates))
+                        updates),
+                    engine=engine)
             sources[f"d{domain.grid_id:02d}"] = {
                 "prepared_header_sha256": _sha256(cache.header_path),
                 "prepared_content_sha256": cache.header["content_sha256"],
@@ -1986,6 +2214,9 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
     )
     num_soil_layers = int(cfg.get("num_soil_layers", 4))
     sf_surface_physics = int(cfg["sf_surface_physics"])
+    # One writer decision for wrfinput and wrfbdy alike: a pair with two
+    # containers in it is a file set nobody declared.
+    engine = resolve_wrfinput_engine()
     try:
         with np.load(static_path, allow_pickle=False) as static:
             wrfinput_fields = _wrfinput_fields(
@@ -1999,27 +2230,30 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                 num_soil_layers=num_soil_layers)
             _write_wrfinput(
                 staging / "wrfinput_d01", input_contract, input_dimensions,
-                updates, wrfinput_fields, stamp)
+                updates, wrfinput_fields, stamp, engine)
         bdy_contract = contract_bundle["wrfbdy"]
         bdy_dimensions = _dimensions(
             bdy_contract, nx=nx, ny=ny, nz=nz,
             num_soil_layers=num_soil_layers)
         _write_wrfbdy(
             staging / "wrfbdy_d01", bdy_contract, bdy_dimensions,
-            updates, cache, boundary_times, boundary_interval_seconds)
+            updates, cache, boundary_times, boundary_interval_seconds,
+            engine)
         files = {
             "wrfinput_d01": _validate_file(
                 staging / "wrfinput_d01", input_contract,
                 nx=nx, ny=ny, nz=nz,
                 num_soil_layers=num_soil_layers,
                 expected_global_attributes=_domain_global_attributes(
-                    updates)),
+                    updates),
+                engine=engine),
             "wrfbdy_d01": _validate_file(
                 staging / "wrfbdy_d01", bdy_contract,
                 nx=nx, ny=ny, nz=nz,
                 num_soil_layers=num_soil_layers,
                 expected_global_attributes=_domain_global_attributes(
-                    updates)),
+                    updates),
+                engine=engine),
         }
         limitations = [
             "single specified projected domain only (lambert stock-WRF-gated; mercator/polar exports oracle-gated, not yet stock-WRF-gated)",

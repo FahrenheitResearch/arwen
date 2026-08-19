@@ -2,7 +2,7 @@
   "_what": "Measured per-file pytest wall seconds. Read by tools/battery/fastfix.py to sort a selection cheapest-first and to price it. Regenerate with `python tools/battery/fastfix.py --base <ref> --record`.",
   "_why": "Audit finding G11: tests/test_health_field_census.py documented its own cost as 'about 65 s' and measured 541 s. Nothing in the project measured test cost, so the fast/slow tier split was maintained from stale prose. A number in a tracked file is harder to be wrong about for a year than a sentence in a docstring.",
   "_how": "GPUWM_NO_LOCAL_GPU=1 PYTHONSAFEPATH=1, one file per pytest invocation, Windows cut box, venv with cupy + setuptools + the render extra. Process spawn is dearer on Windows than on a Linux node: tests/test_gpu_marker_discipline.py measured 311 s here against 122 s on a Linux node before this branch changed it. Treat these as the cut box's numbers.",
-  "_measured": "2026-08-13, branch lane/battery-fastfix, after the tier split and the collection reuse",
+  "_measured": "2026-08-13, branch lane/battery-fastfix, after the tier split and the collection reuse. tilestream/ rows added 2026-08-16 (release blocker #5): same one-file-per-invocation method on the Windows cut box; the three gpu-shard files (test_gather/test_graphcap/test_hoststore) were timed WITH the card since under GPUWM_NO_LOCAL_GPU=1 they are all-skip and the number would price nothing.",
   "seconds": {
     "tests/test_build_registry.py": 49.0,
     "tests/test_case_token_leakage.py": 1.0,
@@ -47,6 +47,19 @@
     "tests/test_verify_release_artifacts.py": 3.0,
     "tests/test_verify_source_bridge_pins.py": 0.3,
     "tests/test_cargo_gate_manifest.py": 1.0,
-    "tests/test_tiles_gate_manifest.py": 1.0
+    "tests/test_tiles_gate_manifest.py": 1.0,
+    "tilestream/test_spec.py": 2.3,
+    "tilestream/test_rings.py": 1.8,
+    "tilestream/test_overlap.py": 2.4,
+    "tilestream/test_tile_hook_contract.py": 1.5,
+    "tilestream/test_autoplan.py": 9.9,
+    "tilestream/test_ledger_gate.py": 3.6,
+    "tilestream/test_prepared_store.py": 1.9,
+    "tilestream/test_store_direct_frame.py": 2.5,
+    "tilestream/test_exchange_pack.py": 1.9,
+    "tilestream/test_hostmem.py": 1.8,
+    "tilestream/test_gather.py": 4.0,
+    "tilestream/test_graphcap.py": 2.6,
+    "tilestream/test_hoststore.py": 9.5
   }
 }

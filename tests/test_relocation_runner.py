@@ -754,3 +754,43 @@ def test_prepared_tree_route_wires_the_corridor_runner(tmp_path):
     with pytest.raises(ValueError, match="verified statics corridor"):
         build_prepared_tree_relocation_runner(
             exp, statics_corridor=None, model=model, outdir=tmp_path)
+
+
+def test_receipts_write_survives_a_transient_windows_reader(monkeypatch,
+                                                            tmp_path):
+    """A reader holding the receipts open must not kill the run.
+
+    Windows refuses the atomic rename while any reader holds the
+    destination; receipts exist to be read mid-run, and a tail killed a
+    6 h forecast with WinError 5 here (measured).  Two transient
+    refusals then success must land the payload; a PERMANENT reader
+    downgrades to a warning with the .tmp preserved.
+    """
+    import os
+
+    import gpuwm.core.relocation_runner as rr
+
+    target = tmp_path / "relocation_receipts.json"
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def flaky(src, dst):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(5, "Access is denied", str(dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(rr.os, "replace", flaky)
+    monkeypatch.setattr(rr.time, "sleep", lambda _s: None)
+    rr._atomic_json(target, {"ok": 1})
+    assert json.loads(target.read_text()) == {"ok": 1}
+
+    def always(src, dst):
+        raise PermissionError(5, "Access is denied", str(dst))
+
+    monkeypatch.setattr(rr.os, "replace", always)
+    with pytest.warns(UserWarning, match="stayed stale"):
+        rr._atomic_json(target, {"ok": 2})
+    assert json.loads(target.read_text()) == {"ok": 1}
+    assert json.loads(
+        (tmp_path / "relocation_receipts.json.tmp").read_text()) == {"ok": 2}

@@ -24,12 +24,7 @@ from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import DTYPE
 
 
-SFCLAY_OUTPUTS = (
-    "znt", "ust", "mol", "hfx", "qfx", "qsfc", "zol", "regime",
-    "psim", "psih", "fm", "fh", "lh", "u10", "v10", "th2", "t2",
-    "q2", "chs", "chs2", "cqs2", "flhc", "flqc", "qgh", "rmol",
-    "wspd", "br", "gz1oz0", "cpm", "ck", "cka", "cd", "cda",
-)
+from gpuwm.core.physics_inventory import SFCLAY_OUTPUTS  # noqa: F401  (one home; re-exported here)
 
 
 @dataclass

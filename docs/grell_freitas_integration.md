@@ -81,6 +81,25 @@ The kernel is bitwise; these are about what the engine can hand it today.
    not coupled. WRF couples them.
 3. **w on mass levels** is the KF-precedent average `0.5*(w[k]+w[k+1])`.
 
+**MEASURED regime behaviour (2026-08-17).** Two 12 km single-domain 6 h
+real-case twin pairs (150x120x49, tree route, KF control differing only
+in `cu_physics`/`cudt`): under strong synoptic forcing (1974-04-03
+12-18Z) GF's domain-mean RAINC is ~40% of KF's — ordinary inter-scheme
+spread; under weak forcing (1999-05-03 12-18Z, Ohio valley) it is 1-2%
+of KF's — nearly silent where KF still rains (KF RAINC max 2.2 mm, GF
+0.18 mm). A column-level probe of the weak-forcing state (18,000 real
+columns through `gf_gfdrv_stage`, four arms: shipped zero forcing,
+HFX/QFX-reconstructed RTHBLTEN/RQVBLTEN, ±1 K/day radiative) found the
+deep trigger rejecting every column in every arm, so the weak-forcing
+silence is the bitwise scheme's own trigger/closure response to these
+inputs — no fed forcing arm revives it, and feeding reconstructed BL
+rates alone REDUCED convecting columns on the strongly forced state
+(3162 → 2068 of 18,000; the dicycle closure subtracts BL-driven
+instability by design). Any seam upgrade must therefore be validated
+against obs skill, not against "more rain"; a user report of "GF is
+broken / makes no rain" on a weakly forced case is this measured shape,
+not an adapter defect.
+
 ## 5. VRAM: GF costs +3.20 GiB of non-pool backing store
 
 This is the one number that changes what a host can run, and it is not in

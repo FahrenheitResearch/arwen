@@ -1,0 +1,375 @@
+{
+ "dx": "40b7700000000000",
+ "halo": 3,
+ "nx": 12,
+ "ny": 11,
+ "is_lambert": true,
+ "lon_e_dtype": "f64",
+ "mesh_in": {
+  "lat32": "in_lat32.bin",
+  "lon32": "in_lon32.bin",
+  "lat64": "in_lat64.bin",
+  "lon64": "in_lon64.bin",
+  "latc32": "in_latc32.bin",
+  "lonc64": "in_lonc64.bin"
+ },
+ "mesh_out": {
+  "lat_e": "out_lat_e.bin",
+  "lat_lower": "out_lat_lower.bin",
+  "lon_e": "out_lon_e.bin",
+  "lon_band": "out_lon_band.bin",
+  "lat_band": "out_lat_band.bin"
+ },
+ "windows": {
+  "terrain": {
+   "dir": "topo_gmted2010_30s",
+   "x0": 33041,
+   "y0": 15482,
+   "shape": [
+    1,
+    118,
+    160
+   ],
+   "cells": "cells_terrain.bin",
+   "key": {
+    "dx": "3f8111109e88c1b0",
+    "dy": "3f8111109e88c1b0",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567fbbadc0980b",
+    "known_lon": "3f71111127f920f1",
+    "x0": 33041,
+    "y0": 15482,
+    "shape": [
+     1,
+     118,
+     160
+    ]
+   }
+  },
+  "landuse": {
+   "dir": "modis_landuse_20class_30s_with_lakes",
+   "x0": 11441,
+   "y0": 15482,
+   "shape": [
+    1,
+    118,
+    160
+   ],
+   "cells": "cells_landuse.bin",
+   "key": {
+    "dx": "3f8111109e88c1b0",
+    "dy": "3f8111109e88c1b0",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567fbbadc0980b",
+    "known_lon": "c0667fddd6e04c06",
+    "x0": 11441,
+    "y0": 15482,
+    "shape": [
+     1,
+     118,
+     160
+    ]
+   }
+  },
+  "soil_top": {
+   "dir": "soiltype_top_30s",
+   "x0": 11441,
+   "y0": 15482,
+   "shape": [
+    1,
+    118,
+    160
+   ],
+   "cells": "cells_soil_top.bin",
+   "key": {
+    "dx": "3f8111109e88c1b0",
+    "dy": "3f8111109e88c1b0",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567fbbadc0980b",
+    "known_lon": "c0667fddd6e04c06",
+    "x0": 11441,
+    "y0": 15482,
+    "shape": [
+     1,
+     118,
+     160
+    ]
+   }
+  },
+  "soil_bottom": {
+   "dir": "soiltype_bot_30s",
+   "x0": 11441,
+   "y0": 15482,
+   "shape": [
+    1,
+    118,
+    160
+   ],
+   "cells": "cells_soil_bottom.bin",
+   "key": {
+    "dx": "3f8111109e88c1b0",
+    "dy": "3f8111109e88c1b0",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567fbbadc0980b",
+    "known_lon": "c0667fddd6e04c06",
+    "x0": 11441,
+    "y0": 15482,
+    "shape": [
+     1,
+     118,
+     160
+    ]
+   }
+  },
+  "greenfrac": {
+   "dir": "greenfrac_fpar_modis",
+   "x0": 11441,
+   "y0": 15482,
+   "shape": [
+    12,
+    118,
+    160
+   ],
+   "cells": "cells_greenfrac.bin",
+   "key": {
+    "dx": "3f8111109e88c1b0",
+    "dy": "3f8111109e88c1b0",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567fbbba55d1c4",
+    "known_lon": "c0667fdddd2ae8e2",
+    "x0": 11441,
+    "y0": 15482,
+    "shape": [
+     12,
+     118,
+     160
+    ]
+   }
+  },
+  "lai": {
+   "dir": "lai_modis_10m",
+   "x0": 569,
+   "y0": 771,
+   "shape": [
+    12,
+    14,
+    16
+   ],
+   "cells": null,
+   "key": {
+    "dx": "3fc555555c7dda4b",
+    "dy": "3fc555555c7dda4b",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567aaaac1094a3",
+    "known_lon": "c0667d5556084a51",
+    "x0": 569,
+    "y0": 771,
+    "shape": [
+     12,
+     14,
+     16
+    ]
+   }
+  },
+  "albedo": {
+   "dir": "albedo_modis",
+   "x0": 1904,
+   "y0": 998,
+   "shape": [
+    12,
+    26,
+    34
+   ],
+   "cells": null,
+   "key": {
+    "dx": "3fa999999999999a",
+    "dy": "bfa999999999999a",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "40567e6666666666",
+    "known_lon": "c0667f3333333333",
+    "x0": 1904,
+    "y0": 998,
+    "shape": [
+     12,
+     26,
+     34
+    ]
+   }
+  },
+  "snow_albedo": {
+   "dir": "maxsnowalb_modis",
+   "x0": 1904,
+   "y0": 998,
+   "shape": [
+    1,
+    26,
+    34
+   ],
+   "cells": null,
+   "key": {
+    "dx": "3fa999999999999a",
+    "dy": "bfa999999999999a",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "40567e6666666666",
+    "known_lon": "c0667f3333333333",
+    "x0": 1904,
+    "y0": 998,
+    "shape": [
+     1,
+     26,
+     34
+    ]
+   }
+  },
+  "soil_temperature": {
+   "dir": "soiltemp_1deg",
+   "x0": 92,
+   "y0": 126,
+   "shape": [
+    1,
+    9,
+    10
+   ],
+   "cells": null,
+   "key": {
+    "dx": "3ff0000000000000",
+    "dy": "3ff0000000000000",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c056600000000000",
+    "known_lon": "c066700000000000",
+    "x0": 92,
+    "y0": 126,
+    "shape": [
+     1,
+     9,
+     10
+    ]
+   }
+  }
+ },
+ "cell_coords": {
+  "field": "terrain",
+  "xi": "coords_xi.bin",
+  "yi": "coords_yi.bin"
+ },
+ "binning": {
+  "field": "terrain",
+  "gx": "gx.bin",
+  "gy": "gy.bin"
+ },
+ "build": {
+  "HGT_M": {
+   "shape": [
+    11,
+    12
+   ],
+   "file": "build_HGT_M.bin"
+  },
+  "LANDUSEF": {
+   "shape": [
+    21,
+    11,
+    12
+   ],
+   "file": "build_LANDUSEF.bin"
+  },
+  "LANDMASK": {
+   "shape": [
+    11,
+    12
+   ],
+   "file": "build_LANDMASK.bin"
+  },
+  "LU_INDEX": {
+   "shape": [
+    11,
+    12
+   ],
+   "file": "build_LU_INDEX.bin"
+  },
+  "SOILCTOP": {
+   "shape": [
+    16,
+    11,
+    12
+   ],
+   "file": "build_SOILCTOP.bin"
+  },
+  "SCT_DOM": {
+   "shape": [
+    11,
+    12
+   ],
+   "file": "build_SCT_DOM.bin"
+  },
+  "SOILCBOT": {
+   "shape": [
+    16,
+    11,
+    12
+   ],
+   "file": "build_SOILCBOT.bin"
+  },
+  "SCB_DOM": {
+   "shape": [
+    11,
+    12
+   ],
+   "file": "build_SCB_DOM.bin"
+  },
+  "GREENFRAC": {
+   "shape": [
+    12,
+    11,
+    12
+   ],
+   "file": "build_GREENFRAC.bin"
+  },
+  "LAI12M": {
+   "shape": [
+    12,
+    11,
+    12
+   ],
+   "file": "build_LAI12M.bin"
+  },
+  "ALBEDO12M": {
+   "shape": [
+    12,
+    11,
+    12
+   ],
+   "file": "build_ALBEDO12M.bin"
+  },
+  "SNOALB": {
+   "shape": [
+    11,
+    12
+   ],
+   "file": "build_SNOALB.bin"
+  },
+  "SOILTEMP": {
+   "shape": [
+    11,
+    12
+   ],
+   "file": "build_SOILTEMP.bin"
+  },
+  "TMN": {
+   "shape": [
+    11,
+    12
+   ],
+   "file": "build_TMN.bin"
+  }
+ }
+}

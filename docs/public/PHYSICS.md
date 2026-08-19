@@ -1156,6 +1156,21 @@ verification receipt exists -- which is why the label is
 default: a per-domain override on the named routes, or an explicit
 `cu_physics = 3` in a config you wrote.
 
+What to expect from it before choosing it, measured (2026-08-17, 12 km
+single-domain 6 h real-case twins against a Kain-Fritsch control that
+differs only in the cumulus selection): under strong synoptic forcing
+GF's convective rain is roughly 40 per cent of KF's, which is ordinary
+inter-scheme spread; under weak forcing it is 1-2 per cent of KF's --
+the scheme is nearly silent where KF still rains. A column-level probe
+of the weak-forcing state through the shipped kernel found the deep
+trigger rejecting every column whether the forcing seam was fed zeros,
+reconstructed boundary-layer rates, or radiative rates of either sign,
+so that silence is the scheme's own scale-aware trigger and closure
+design responding to those inputs, not a defect in the port. If a run
+with `cu_physics = 3` produces far less convective precipitation than
+the same run with Kain-Fritsch, that is the documented behaviour of the
+scheme as fed today.
+
 ## Map projections (`map_proj`)
 
 Projections are not physics schemes and carry no physics-registry
@@ -1168,7 +1183,7 @@ worldwide section of [VERIFICATION.md](VERIFICATION.md).
 
 | option | WPS name | maturity | evidence, in one line |
 |---|---|---|---|
-| Lambert conformal, northern hemisphere | `lambert` | **model-validated** | the 3 April 1974 four-domain matched-run family runs on it; binary64 `module_llxy` oracle at the pinned ceilings |
+| Lambert conformal, northern hemisphere | `lambert` | **model-validated** | the historical-reference four-domain matched-run family runs on it; binary64 `module_llxy` oracle at the pinned ceilings |
 | Lambert conformal, southern hemisphere | `lambert` | implemented-unverified | binary64 oracle rows (SH secant + SH tangent cones) at the pinned ceilings; Brisbane GPU smoke integration; no matched WRF run |
 | Mercator | `mercator` | implemented-unverified | binary64 oracle rows (tropical, subtropical, antimeridian) at the pinned ceilings; Singapore and Fiji (antimeridian) GPU smoke integrations; no matched WRF run |
 | Polar stereographic, either pole | `polar` | implemented-unverified | binary64 oracle rows (NH, SH, pole-anchored) at the pinned ceilings; Fairbanks GPU smoke integration; no matched WRF run |
@@ -1281,6 +1296,7 @@ as a setting that took effect.
 | `sase_flux_diag` | `false` | output-only, per domain. True adds four history fields recording the closure's own vertical subgrid fluxes with the venting channel separated from the K_v diffusion channel; the prognostic state is bitwise identical either way |
 | `sase_moist_n2` | `true` | physics selector, run-wide. True is the closure as built (saturated N^2 at the stability lengths, the subgrid-energy buoyancy source and the K_v/K_h suppression); false consumes the dry N^2 at all three points. Not per-domain: a nest whose domains ran different closures could not be compared across its own boundary |
 | `sase_stable_dissipation` | `false` | physics selector, run-wide. The default is false for a measured reason, not for caution: with it true, the closure's own registered stable-boundary-layer calibration gate exits its observation band, and `tests/test_sase.py::test_jet_decoupling_stable_dissipation_exits_obs_band` pins that RED. What is falsified is the pair of stable-limb coefficients, which enter the stability ratio jointly; neither may be re-registered or tuned alone |
+| `sase_additive_dissipation` | `true` | physics selector, run-wide. The additive e^{3/2} dissipation channel (C_ED = 0.51, Deardorff-traced) that gives the stable limb a bounded fixed point; without it the subgrid energy is e-linear on that limb and a bare operational run regrows spurious energy above the boundary layer until the health gate trips (measured 2026-08-01: 1.62 m2/s2 at 11.3-13.9 km at forecast hour 1). Default true since the 2026-08-17 real-data confirmation run of that same configuration completed with the gate silent; GABLS1 holds inside one published sigma with the channel on, and the GPU mirror is ULP-0 against the FP64 authority. False restores the historical formulation the RED legs pin and is expected to reproduce the runaway on operational data |
 
 Maturity warns and never blocks. Every front
 door says so once, and then continues. `gpuwm go` carries the clause
@@ -1692,7 +1708,9 @@ staged tables at all, so the route could not default to full radiation:
 full radiation here means mp8, and mp8 was not staged. 1.8 stages them
 --- for **every** profile whose microphysics reads them, at
 profile-binding time, through the project's packaged table ladder
-(`gpuwm/data/thompson/tables`, SHA-256 pinned), before the fetch and
+(`gpuwm_data/data/thompson/tables` in the `gpuwm-data` companion
+distribution that `pip install gpuwm` pulls, SHA-256 pinned), before the
+fetch and
 before preprocessing --- and the constraint is gone rather than
 relaxed. The resolved table set is recorded in the physics receipt as
 `microphysics_table_authority`.

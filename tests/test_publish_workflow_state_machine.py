@@ -214,8 +214,21 @@ def _install_fake_endpoints(root: Path) -> None:
                 output = args[args.index("--output") + 1]
             except (ValueError, IndexError):
                 output = args[args.index("-o") + 1]
+            map_path = os.environ.get("PYPI_RESPONSE_MAP")
             sequence_path = os.environ.get("PYPI_RESPONSE_SEQUENCE")
-            if sequence_path:
+            if map_path:
+                # Keyed by the project the URL names, because the release
+                # steps under test read more than one PyPI project and a
+                # purely call-ordered fake could not catch a step asking
+                # for the wrong one.
+                project = url.split("/pypi/", 1)[1].split("/", 1)[0]
+                mapping = json.loads(
+                    Path(map_path).read_text(encoding="utf-8")
+                )
+                entry = mapping[project]
+                shutil.copyfile(entry["file"], output)
+                sys.stdout.write(str(entry.get("status", "200")))
+            elif sequence_path:
                 sequence = json.loads(
                     Path(sequence_path).read_text(encoding="utf-8")
                 )
@@ -269,6 +282,7 @@ def _base_env(root: Path) -> dict[str, str]:
         "RELEASE_ID": str(RELEASE_ID),
         "RELEASE_TAG": TAG,
         "PYPI_PROJECT": "gpuwm",
+        "PYPI_DATA_PROJECT": "gpuwm-data",
         "PYPI_VERSION": VERSION,
         "EXPECTED_COMMIT_SHA": COMMIT_SHA,
         "RELEASE_COMMIT": COMMIT_SHA,
@@ -447,9 +461,13 @@ def _setup_assets(root: Path) -> tuple[dict[str, bytes], list[dict[str, Any]]]:
 
 
 def _setup_dists(root: Path) -> dict[str, bytes]:
+    # Both projects of the split: gpuwm==X.Y.Z hard-pins gpuwm-data==X.Y.Z,
+    # so the one python-dists artifact carries both pairs.
     payloads = {
         f"gpuwm-{VERSION}-py3-none-any.whl": b"wheel bytes\n",
         f"gpuwm-{VERSION}.tar.gz": b"sdist bytes\n",
+        f"gpuwm_data-{VERSION}-py3-none-any.whl": b"data wheel bytes\n",
+        f"gpuwm_data-{VERSION}.tar.gz": b"data sdist bytes\n",
     }
     dist_dir = root / "dist"
     proof_dir = root / "release-proof"
@@ -459,6 +477,47 @@ def _setup_dists(root: Path) -> dict[str, bytes]:
         (dist_dir / name).write_bytes(payload)
     _write_sums(proof_dir / "python-dists-SHA256SUMS", payloads)
     return payloads
+
+
+def _project_dists(dists: dict[str, bytes], project: str) -> dict[str, bytes]:
+    """The subset of distribution files belonging to one PyPI project."""
+
+    prefix = project.replace("-", "_") + "-"
+    return {name: payload for name, payload in dists.items()
+            if name.startswith(prefix)}
+
+
+def _pypi_urls(root: Path) -> list[str]:
+    """Every PyPI URL the step under test actually requested, in order."""
+
+    return [
+        arg
+        for call in _logged_calls(root / "curl.log")
+        for arg in call
+        if arg.startswith("http") and "pypi.org" in arg
+    ]
+
+
+def _pypi_projects_called(root: Path) -> list[str]:
+    return [url.split("/pypi/", 1)[1].split("/", 1)[0]
+            for url in _pypi_urls(root)]
+
+
+def _pypi_map_env(
+    root: Path, responses: dict[str, tuple[str, list[dict[str, Any]]]]
+) -> dict[str, str]:
+    """Env for the URL-keyed fake PyPI: {project: (status, urls)}."""
+
+    mapping: dict[str, dict[str, str]] = {}
+    for project, (status, urls) in responses.items():
+        file_name = f"pypi-map-{project}.json"
+        body: dict[str, Any] = (
+            {"urls": urls} if status == "200" else {"message": "Not Found"}
+        )
+        _write_json(root / file_name, body)
+        mapping[project] = {"status": status, "file": file_name}
+    _write_json(root / "pypi-response-map.json", mapping)
+    return {"PYPI_RESPONSE_MAP": "pypi-response-map.json"}
 
 
 def _pypi_file(name: str, payload: bytes) -> dict[str, Any]:
@@ -848,6 +907,28 @@ def test_assets_refuse_changed_uploaded_bytes(tmp_path: Path, mismatch: str) -> 
     assert not _logged_calls(tmp_path / "curl.log")
 
 
+#: The two reconcile steps of the publish job: one per PyPI project, each
+#: staging into its own upload directory so neither can push the other's
+#: bytes.  gpuwm-data goes first because gpuwm==X.Y.Z pins
+#: gpuwm-data==X.Y.Z: a gpuwm that lands without its companion breaks
+#: every fresh `pip install gpuwm` until the companion exists.
+_RECONCILE_STEPS = (
+    pytest.param(
+        "reconcile exact PyPI distribution state",
+        "gpuwm",
+        "dist-upload",
+        id="gpuwm",
+    ),
+    pytest.param(
+        "reconcile exact PyPI distribution state for gpuwm-data",
+        "gpuwm-data",
+        "dist-upload-data",
+        id="gpuwm-data",
+    ),
+)
+
+
+@pytest.mark.parametrize(("step", "project", "upload_dir"), _RECONCILE_STEPS)
 @pytest.mark.parametrize(
     ("remote_count", "http_status", "expected_missing", "upload_required"),
     (
@@ -858,15 +939,28 @@ def test_assets_refuse_changed_uploaded_bytes(tmp_path: Path, mismatch: str) -> 
 )
 def test_pypi_absent_partial_and_exact_states_choose_only_missing_files(
     tmp_path: Path,
+    step: str,
+    project: str,
+    upload_dir: str,
     remote_count: int,
     http_status: str,
     expected_missing: int,
     upload_required: str,
 ) -> None:
+    """Absent (404), partial, and exact states stage only the missing files.
+
+    The 404 arm is the pending-publisher flow for gpuwm-data: the project
+    does not exist on PyPI until this workflow's first upload creates it,
+    so "not found" means "everything is missing", never an error.  Each
+    step must also touch only its own project's files -- staging the
+    sibling's bytes would upload them under the wrong project name.
+    """
+
     _install_fake_endpoints(tmp_path)
     _, asset_records = _setup_assets(tmp_path)
     dists = _setup_dists(tmp_path)
-    remote = [_pypi_file(name, payload) for name, payload in dists.items()][
+    own = _project_dists(dists, project)
+    remote = [_pypi_file(name, payload) for name, payload in own.items()][
         :remote_count
     ]
     release = _release(draft=True, assets=asset_records)
@@ -875,11 +969,7 @@ def test_pypi_absent_partial_and_exact_states_choose_only_missing_files(
     _write_json(tmp_path / "pypi-response.json", {"urls": remote})
     env = _base_env(tmp_path) | {"PYPI_HTTP_STATUS": http_status}
 
-    result = _run_bash(
-        tmp_path,
-        _step_script("reconcile exact PyPI distribution state"),
-        env,
-    )
+    result = _run_bash(tmp_path, _step_script(step), env)
 
     assert result.returncode == 0, result.stderr
     assert _outputs(tmp_path) == {
@@ -887,19 +977,24 @@ def test_pypi_absent_partial_and_exact_states_choose_only_missing_files(
         "missing_count": str(expected_missing),
     }
     staged = (
-        {path.name for path in (tmp_path / "dist-upload").iterdir()}
-        if (tmp_path / "dist-upload").exists()
+        {path.name for path in (tmp_path / upload_dir).iterdir()}
+        if (tmp_path / upload_dir).exists()
         else set()
     )
-    assert staged == set(list(dists)[remote_count:])
+    assert staged == set(list(own)[remote_count:])
+    assert _pypi_projects_called(tmp_path) == [project]
 
 
+@pytest.mark.parametrize(("step", "project", "upload_dir"), _RECONCILE_STEPS)
 @pytest.mark.parametrize("mismatch", ("size", "digest", "yanked", "unexpected"))
-def test_pypi_mismatch_is_fail_closed(tmp_path: Path, mismatch: str) -> None:
+def test_pypi_mismatch_is_fail_closed(
+    tmp_path: Path, step: str, project: str, upload_dir: str, mismatch: str
+) -> None:
     _install_fake_endpoints(tmp_path)
     _, asset_records = _setup_assets(tmp_path)
     dists = _setup_dists(tmp_path)
-    name, payload = next(iter(dists.items()))
+    own = _project_dists(dists, project)
+    name, payload = next(iter(own.items()))
     remote = _pypi_file(name, payload)
     if mismatch == "size":
         remote["size"] += 1
@@ -908,17 +1003,14 @@ def test_pypi_mismatch_is_fail_closed(tmp_path: Path, mismatch: str) -> None:
     elif mismatch == "yanked":
         remote["yanked"] = True
     else:
-        remote["filename"] = f"gpuwm-{VERSION}-cp999-none-any.whl"
+        prefix = project.replace("-", "_")
+        remote["filename"] = f"{prefix}-{VERSION}-cp999-none-any.whl"
     release = _release(draft=True, assets=asset_records)
     _write_json(tmp_path / "release-sequence.json", [release])
     _write_json(tmp_path / "release-list.json", [[release]])
     _write_json(tmp_path / "pypi-response.json", {"urls": [remote]})
 
-    result = _run_bash(
-        tmp_path,
-        _step_script("reconcile exact PyPI distribution state"),
-        _base_env(tmp_path),
-    )
+    result = _run_bash(tmp_path, _step_script(step), _base_env(tmp_path))
 
     assert result.returncode != 0
     expected = (
@@ -954,7 +1046,29 @@ def _post_upload_proof_env(root: Path, sequence: list[dict[str, str]]) -> dict[s
     }
 
 
-def test_post_upload_proof_survives_index_lag_404_then_200(tmp_path: Path) -> None:
+#: The two post-upload exact-state proofs of the publish job.  The
+#: gpuwm-data one runs BETWEEN the two uploads: it is the hard gate that
+#: makes gpuwm unreachable until PyPI provably lists the companion.
+_EXACT_PROOF_STEPS = (
+    pytest.param(
+        "prove exact PyPI state before release promotion",
+        "gpuwm",
+        "PyPI exact-state proof",
+        id="gpuwm",
+    ),
+    pytest.param(
+        "prove exact gpuwm-data PyPI state before gpuwm publishes",
+        "gpuwm-data",
+        "gpuwm-data exact-state proof",
+        id="gpuwm-data",
+    ),
+)
+
+
+@pytest.mark.parametrize(("step", "project", "label"), _EXACT_PROOF_STEPS)
+def test_post_upload_proof_survives_index_lag_404_then_200(
+    tmp_path: Path, step: str, project: str, label: str
+) -> None:
     """A 200 OK upload can precede the JSON index listing by a beat.
 
     The proof must poll the index read again instead of failing the whole
@@ -963,7 +1077,7 @@ def test_post_upload_proof_survives_index_lag_404_then_200(tmp_path: Path) -> No
     """
 
     _install_fake_endpoints(tmp_path)
-    dists = _setup_dists(tmp_path)
+    dists = _project_dists(_setup_dists(tmp_path), project)
     _write_json(tmp_path / "pypi-lagged.json", {"message": "Not Found"})
     _write_json(
         tmp_path / "pypi-exact.json",
@@ -977,18 +1091,23 @@ def test_post_upload_proof_survives_index_lag_404_then_200(tmp_path: Path) -> No
         ],
     )
 
-    result = _run_bash(
-        tmp_path,
-        _step_script("prove exact PyPI state before release promotion"),
-        env,
-    )
+    result = _run_bash(tmp_path, _step_script(step), env)
 
     assert result.returncode == 0, result.stderr
     assert len(_pypi_curl_calls(tmp_path)) == 2
+    assert _pypi_projects_called(tmp_path) == [project, project]
 
 
-def test_post_upload_proof_permanent_404_still_fails_after_budget(tmp_path: Path) -> None:
-    """Retry is bounded: a version the index never lists remains a failure."""
+@pytest.mark.parametrize(("step", "project", "label"), _EXACT_PROOF_STEPS)
+def test_post_upload_proof_permanent_404_still_fails_after_budget(
+    tmp_path: Path, step: str, project: str, label: str
+) -> None:
+    """Retry is bounded: a version the index never lists remains a failure.
+
+    For gpuwm-data this is the ordering guarantee itself: its proof step
+    failing hard means the job dies with gpuwm still unpublished, so gpuwm
+    can never land on PyPI without the companion its pin requires.
+    """
 
     _install_fake_endpoints(tmp_path)
     _setup_dists(tmp_path)
@@ -997,19 +1116,18 @@ def test_post_upload_proof_permanent_404_still_fails_after_budget(tmp_path: Path
         tmp_path, [{"status": "404", "file": "pypi-lagged.json"}]
     )
 
-    result = _run_bash(
-        tmp_path,
-        _step_script("prove exact PyPI state before release promotion"),
-        env,
-    )
+    result = _run_bash(tmp_path, _step_script(step), env)
 
     assert result.returncode != 0
-    assert "PyPI exact-state proof returned HTTP 404" in result.stderr
+    assert f"{label} returned HTTP 404" in result.stderr
     # It genuinely retried before failing closed.
     assert len(_pypi_curl_calls(tmp_path)) >= 2
 
 
-def test_post_upload_proof_non_lag_status_fails_immediately(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("step", "project", "label"), _EXACT_PROOF_STEPS)
+def test_post_upload_proof_non_lag_status_fails_immediately(
+    tmp_path: Path, step: str, project: str, label: str
+) -> None:
     """Only the 404 lag signature is retried; a 503 keeps single-shot failure."""
 
     _install_fake_endpoints(tmp_path)
@@ -1019,19 +1137,16 @@ def test_post_upload_proof_non_lag_status_fails_immediately(tmp_path: Path) -> N
         tmp_path, [{"status": "503", "file": "pypi-error.json"}]
     )
 
-    result = _run_bash(
-        tmp_path,
-        _step_script("prove exact PyPI state before release promotion"),
-        env,
-    )
+    result = _run_bash(tmp_path, _step_script(step), env)
 
     assert result.returncode != 0
-    assert "PyPI exact-state proof returned HTTP 503" in result.stderr
+    assert f"{label} returned HTTP 503" in result.stderr
     assert len(_pypi_curl_calls(tmp_path)) == 1
 
 
+@pytest.mark.parametrize(("step", "project", "label"), _EXACT_PROOF_STEPS)
 def test_post_upload_proof_retry_never_wraps_the_content_assertions(
-    tmp_path: Path,
+    tmp_path: Path, step: str, project: str, label: str
 ) -> None:
     """Retry covers the index read only, never the exact-state checks.
 
@@ -1041,7 +1156,7 @@ def test_post_upload_proof_retry_never_wraps_the_content_assertions(
     """
 
     _install_fake_endpoints(tmp_path)
-    dists = _setup_dists(tmp_path)
+    dists = _project_dists(_setup_dists(tmp_path), project)
     exact = [_pypi_file(name, payload) for name, payload in dists.items()]
     mismatched = [dict(entry) for entry in exact]
     mismatched[0]["digests"] = {"sha256": "0" * 64}
@@ -1055,14 +1170,10 @@ def test_post_upload_proof_retry_never_wraps_the_content_assertions(
         ],
     )
 
-    result = _run_bash(
-        tmp_path,
-        _step_script("prove exact PyPI state before release promotion"),
-        env,
-    )
+    result = _run_bash(tmp_path, _step_script(step), env)
 
     assert result.returncode != 0
-    assert "PyPI exact-state proof failed for" in result.stderr
+    assert f"{label} failed for" in result.stderr
     assert len(_pypi_curl_calls(tmp_path)) == 1
 
 
@@ -1070,6 +1181,60 @@ def test_upload_action_is_conditioned_on_the_reconciliation_decision() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "if: steps.pypi.outputs.upload_required == 'true'" in text
     assert "packages-dir: dist-upload/" in text
+    assert "if: steps.pypi_data.outputs.upload_required == 'true'" in text
+    assert "packages-dir: dist-upload-data/" in text
+
+
+def test_gpuwm_data_publishes_first_and_hard_gates_gpuwm() -> None:
+    """The companion uploads and is proven BEFORE gpuwm touches PyPI.
+
+    gpuwm==X.Y.Z hard-pins gpuwm-data==X.Y.Z.  If gpuwm lands first and
+    anything then fails, every fresh `pip install gpuwm` is broken until
+    the companion exists -- and gpuwm-data is a pending trusted publisher,
+    so its very first upload happens inside this ordering.  The reverse
+    failure mode (companion live, gpuwm absent) breaks nobody.  Both
+    uploads use the same OIDC publisher action, and no step in the job may
+    soften a failure with continue-on-error.
+    """
+
+    # Sliced from the jobs region: `release:` is also a TRIGGER key in the
+    # `on:` block, so anchoring from the top of the file finds that one.
+    jobs = WORKFLOW.read_text(encoding="utf-8")
+    jobs = jobs[jobs.index("\njobs:"):]
+    job = jobs[jobs.index("\n  publish:"): jobs.index("\n  release:")]
+    marks = [
+        "- name: reconcile exact PyPI distribution state for gpuwm-data",
+        "packages-dir: dist-upload-data/",
+        "- name: prove exact gpuwm-data PyPI state before gpuwm publishes",
+        "- name: reconcile exact PyPI distribution state\n",
+        "packages-dir: dist-upload/\n",
+        "- name: prove exact PyPI state before release promotion",
+    ]
+    positions = [job.index(mark) for mark in marks]
+    assert positions == sorted(positions), (
+        "the publish job no longer uploads and proves gpuwm-data before "
+        "gpuwm")
+    assert job.count("pypa/gh-action-pypi-publish@") == 2
+    assert "PYPI_DATA_PROJECT: gpuwm-data" in job
+    assert "continue-on-error" not in job
+
+
+def _exact_pypi_map_env(root: Path, dists: dict[str, bytes]) -> dict[str, str]:
+    """URL-keyed fake PyPI where both projects list their exact dists."""
+
+    return _pypi_map_env(
+        root,
+        {
+            project: (
+                "200",
+                [
+                    _pypi_file(name, payload)
+                    for name, payload in _project_dists(dists, project).items()
+                ],
+            )
+            for project in ("gpuwm", "gpuwm-data")
+        },
+    )
 
 
 def test_exact_draft_promotes_once_to_immutable_public_release(tmp_path: Path) -> None:
@@ -1081,11 +1246,7 @@ def test_exact_draft_promotes_once_to_immutable_public_release(tmp_path: Path) -
     _write_json(tmp_path / "release-sequence.json", [draft])
     _write_json(tmp_path / "release-list.json", [[draft]])
     _write_json(tmp_path / "release-list-sequence.json", [[[draft]], [[public]]])
-    _write_json(
-        tmp_path / "pypi-response.json",
-        {"urls": [_pypi_file(name, payload) for name, payload in dists.items()]},
-    )
-    env = _base_env(tmp_path) | {
+    env = _base_env(tmp_path) | _exact_pypi_map_env(tmp_path, dists) | {
         "GH_RELEASE_LIST_SEQUENCE": "release-list-sequence.json",
         "GH_RELEASE_LIST_COUNTER": "gh-list-counter.txt",
     }
@@ -1103,6 +1264,12 @@ def test_exact_draft_promotes_once_to_immutable_public_release(tmp_path: Path) -
     assert len(patch_calls) == 1
     assert "draft=false" in patch_calls[0]
     assert "prerelease=false" in patch_calls[0]
+    # Both PyPI projects are proven, companion first, before AND after the
+    # promotion patch: the split's promise is that a public release always
+    # stands on a resolvable pair.
+    assert _pypi_projects_called(tmp_path) == [
+        "gpuwm-data", "gpuwm", "gpuwm-data", "gpuwm",
+    ]
 
 
 def test_promotion_carries_the_captured_prerelease_state_unchanged(
@@ -1127,11 +1294,7 @@ def test_promotion_carries_the_captured_prerelease_state_unchanged(
     _write_json(tmp_path / "release-sequence.json", [draft])
     _write_json(tmp_path / "release-list.json", [[draft]])
     _write_json(tmp_path / "release-list-sequence.json", [[[draft]], [[public]]])
-    _write_json(
-        tmp_path / "pypi-response.json",
-        {"urls": [_pypi_file(name, payload) for name, payload in dists.items()]},
-    )
-    env = _base_env(tmp_path) | {
+    env = _base_env(tmp_path) | _exact_pypi_map_env(tmp_path, dists) | {
         "CAPTURED_PRERELEASE": "true",
         "GH_RELEASE_LIST_SEQUENCE": "release-list-sequence.json",
         "GH_RELEASE_LIST_COUNTER": "gh-list-counter.txt",
@@ -1164,15 +1327,13 @@ def test_promotion_refuses_a_prerelease_flag_that_moved_since_capture(
     draft = _release(draft=True, assets=asset_records, prerelease=True)
     _write_json(tmp_path / "release-sequence.json", [draft])
     _write_json(tmp_path / "release-list.json", [[draft]])
-    _write_json(
-        tmp_path / "pypi-response.json",
-        {"urls": [_pypi_file(name, payload) for name, payload in dists.items()]},
-    )
 
     result = _run_bash(
         tmp_path,
         _step_script("publish the fully-proven draft"),
-        _base_env(tmp_path) | {"CAPTURED_PRERELEASE": "false"},
+        _base_env(tmp_path)
+        | _exact_pypi_map_env(tmp_path, dists)
+        | {"CAPTURED_PRERELEASE": "false"},
     )
 
     assert result.returncode != 0
@@ -1190,11 +1351,7 @@ def test_promotion_refuses_asset_changed_while_draft_was_mutable(tmp_path: Path)
     _write_json(tmp_path / "release-sequence.json", [draft])
     _write_json(tmp_path / "release-list.json", [[draft]])
     _write_json(tmp_path / "release-list-sequence.json", [[[draft]], [[public]]])
-    _write_json(
-        tmp_path / "pypi-response.json",
-        {"urls": [_pypi_file(name, payload) for name, payload in dists.items()]},
-    )
-    env = _base_env(tmp_path) | {
+    env = _base_env(tmp_path) | _exact_pypi_map_env(tmp_path, dists) | {
         "GH_RELEASE_LIST_SEQUENCE": "release-list-sequence.json",
         "GH_RELEASE_LIST_COUNTER": "gh-list-counter.txt",
     }
@@ -1227,13 +1384,28 @@ def test_promotion_pypi_proof_survives_index_lag_404_then_200(tmp_path: Path) ->
     _write_json(tmp_path / "release-list-sequence.json", [[[draft]], [[public]]])
     _write_json(tmp_path / "pypi-lagged.json", {"message": "Not Found"})
     _write_json(
-        tmp_path / "pypi-exact.json",
-        {"urls": [_pypi_file(name, payload) for name, payload in dists.items()]},
+        tmp_path / "pypi-data-exact.json",
+        {"urls": [
+            _pypi_file(name, payload)
+            for name, payload in _project_dists(dists, "gpuwm-data").items()
+        ]},
     )
+    _write_json(
+        tmp_path / "pypi-exact.json",
+        {"urls": [
+            _pypi_file(name, payload)
+            for name, payload in _project_dists(dists, "gpuwm").items()
+        ]},
+    )
+    # Call-ordered: the companion read lags once and is retried, then the
+    # gpuwm read, then the two post-promotion re-proofs.
     env = _post_upload_proof_env(
         tmp_path,
         [
             {"status": "404", "file": "pypi-lagged.json"},
+            {"status": "200", "file": "pypi-data-exact.json"},
+            {"status": "200", "file": "pypi-exact.json"},
+            {"status": "200", "file": "pypi-data-exact.json"},
             {"status": "200", "file": "pypi-exact.json"},
         ],
     ) | {
@@ -1248,8 +1420,12 @@ def test_promotion_pypi_proof_survives_index_lag_404_then_200(tmp_path: Path) ->
     )
 
     assert result.returncode == 0, result.stderr
-    # The lagged read, its retry, and the post-promotion re-proof.
-    assert len(_pypi_curl_calls(tmp_path)) == 3
+    # The lagged companion read, its retry, the gpuwm read, and the two
+    # post-promotion re-proofs -- companion first each time.
+    assert len(_pypi_curl_calls(tmp_path)) == 5
+    assert _pypi_projects_called(tmp_path) == [
+        "gpuwm-data", "gpuwm-data", "gpuwm", "gpuwm-data", "gpuwm",
+    ]
     patch_calls = [
         call for call in _logged_calls(tmp_path / "gh.log") if "PATCH" in call
     ]
@@ -1281,8 +1457,51 @@ def test_promotion_pypi_proof_permanent_404_still_fails_after_budget(
 
     assert result.returncode != 0
     assert "final promotion PyPI artifact set changed" in result.stderr
-    # It genuinely retried before failing closed.
+    # It genuinely retried before failing closed -- and it was the
+    # companion's read that gated: gpuwm was never even consulted.
     assert len(_pypi_curl_calls(tmp_path)) >= 2
+    assert set(_pypi_projects_called(tmp_path)) == {"gpuwm-data"}
+    assert not any("PATCH" in call for call in _logged_calls(tmp_path / "gh.log"))
+
+
+def test_promotion_refuses_when_the_companion_is_missing_despite_exact_gpuwm(
+    tmp_path: Path,
+) -> None:
+    """gpuwm being byte-exact on PyPI cannot rescue an absent companion.
+
+    This is the split's failure mode in miniature: gpuwm==X.Y.Z live,
+    gpuwm-data==X.Y.Z missing, every fresh `pip install gpuwm`
+    unresolvable.  Promotion must refuse and leave the draft private.
+    """
+
+    _install_fake_endpoints(tmp_path)
+    _, asset_records = _setup_assets(tmp_path)
+    dists = _setup_dists(tmp_path)
+    draft = _release(draft=True, assets=asset_records)
+    _write_json(tmp_path / "release-sequence.json", [draft])
+    _write_json(tmp_path / "release-list.json", [[draft]])
+    env = _base_env(tmp_path) | _pypi_map_env(
+        tmp_path,
+        {
+            "gpuwm-data": ("404", []),
+            "gpuwm": ("200", [
+                _pypi_file(name, payload)
+                for name, payload in _project_dists(dists, "gpuwm").items()
+            ]),
+        },
+    ) | {
+        "PYPI_INDEX_RETRY_BUDGET_SECONDS": "3",
+        "PYPI_INDEX_RETRY_INITIAL_DELAY_SECONDS": "1",
+    }
+
+    result = _run_bash(
+        tmp_path,
+        _step_script("publish the fully-proven draft"),
+        env,
+    )
+
+    assert result.returncode != 0
+    assert "final promotion PyPI artifact set changed" in result.stderr
     assert not any("PATCH" in call for call in _logged_calls(tmp_path / "gh.log"))
 
 
@@ -1293,17 +1512,146 @@ def test_already_public_same_id_retry_succeeds_without_patch(tmp_path: Path) -> 
     release = _release(draft=False, assets=asset_records, immutable=True)
     _write_json(tmp_path / "release-sequence.json", [release])
     _write_json(tmp_path / "release-list.json", [[release]])
-    _write_json(
-        tmp_path / "pypi-response.json",
-        {"urls": [_pypi_file(name, payload) for name, payload in dists.items()]},
-    )
 
     result = _run_bash(
         tmp_path,
         _step_script("publish the fully-proven draft"),
-        _base_env(tmp_path),
+        _base_env(tmp_path) | _exact_pypi_map_env(tmp_path, dists),
     )
 
     assert result.returncode == 0, result.stderr
     assert "already public at the captured id" in result.stdout
     assert not any("PATCH" in call for call in _logged_calls(tmp_path / "gh.log"))
+
+
+# --------------------------------------------------------------------------
+# The prepare job's gpuwm-data distribution proof.
+# --------------------------------------------------------------------------
+
+def _stage_data_dists(
+    tmp_path: Path,
+    *,
+    wheel_name: str | None = None,
+    sdist_name: str | None = None,
+    size: int = 10_000_001,
+) -> None:
+    """A companion pair in dist/, extended to `size` bytes each."""
+
+    dist = tmp_path / "dist"
+    dist.mkdir(exist_ok=True)
+    for name in (
+        wheel_name or f"gpuwm_data-{VERSION}-py3-none-any.whl",
+        sdist_name or f"gpuwm_data-{VERSION}.tar.gz",
+    ):
+        path = dist / name
+        path.write_bytes(b"\0")
+        os.truncate(path, size)
+
+
+def test_data_dist_proof_accepts_the_exact_cut_pair(tmp_path: Path) -> None:
+    """One universal wheel and one sdist, named for the cut, sized sanely."""
+
+    _stage_data_dists(tmp_path)
+
+    result = _run_bash(
+        tmp_path,
+        _step_script("prove the gpuwm-data distributions"),
+        _base_env(tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    (
+        pytest.param(
+            {"wheel_name": "gpuwm_data-1.2.3-py3-none-any.whl"},
+            "gpuwm-data wheel is not",
+            id="wheel-version",
+        ),
+        pytest.param(
+            {"wheel_name":
+             f"gpuwm_data-{VERSION}-cp311-abi3-manylinux_2_28_x86_64.whl"},
+            "gpuwm-data wheel is not",
+            id="platform-wheel",
+        ),
+        pytest.param(
+            {"sdist_name": "gpuwm_data-1.2.3.tar.gz"},
+            "gpuwm-data sdist is not",
+            id="sdist-version",
+        ),
+        pytest.param({"size": 4096}, "lost its payload", id="hollow"),
+        pytest.param(
+            {"size": 100_000_001},
+            "exceeds PyPI's per-file cap",
+            id="over-cap",
+        ),
+    ),
+)
+def test_data_dist_proof_refuses_the_named_defects(
+    tmp_path: Path, kwargs: dict[str, Any], message: str
+) -> None:
+    """Each refusal names its breakage.
+
+    A companion at any version but the cut's -- or wearing a platform
+    tag under the pinned universal name -- publishes a gpuwm whose
+    `gpuwm-data==X.Y.Z` pin no fresh install can resolve.  A hollow
+    dist installs cleanly and then dies at the first radiation or
+    microphysics table read.  A dist over PyPI's per-file cap dies at
+    upload, at job 9 of 10, with the tag already spent -- the 2.4.0
+    burn.
+    """
+
+    _stage_data_dists(tmp_path, **kwargs)
+
+    result = _run_bash(
+        tmp_path,
+        _step_script("prove the gpuwm-data distributions"),
+        _base_env(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert message in result.stderr
+
+
+def test_data_dist_proof_refuses_a_missing_half_of_the_pair(
+    tmp_path: Path,
+) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    lone = dist / f"gpuwm_data-{VERSION}-py3-none-any.whl"
+    lone.write_bytes(b"\0")
+    os.truncate(lone, 10_000_001)
+
+    result = _run_bash(
+        tmp_path,
+        _step_script("prove the gpuwm-data distributions"),
+        _base_env(tmp_path),
+    )
+
+    assert result.returncode != 0
+    assert (
+        "expected exactly one gpuwm-data wheel and one gpuwm-data sdist"
+        in result.stderr
+    )
+
+
+def test_prepare_builds_the_companion_into_the_shared_dist() -> None:
+    """Both projects' dists ride ONE python-dists artifact.
+
+    The companion is built in the same prepare job, into the same dist/
+    directory, before the gpuwm-data proof step runs and before the
+    artifact upload -- so every later job's re-proof covers both pairs
+    and no second artifact channel exists to drift.
+    """
+
+    text = WORKFLOW.read_text(encoding="utf-8")
+    prepare = text[text.index("\n  prepare:"): text.index("\n  assets:")]
+    root_build = prepare.index("python -m build\n")
+    data_build = prepare.index("python -m build --outdir dist gpuwm-data")
+    proof = prepare.index("- name: prove the gpuwm-data distributions")
+    upload = prepare.index("name: python-dists")
+    assert root_build < proof and data_build < proof < upload, (
+        "the prepare job no longer builds and proves the companion before "
+        "uploading the python-dists artifact")

@@ -47,9 +47,12 @@ import numpy as np
 
 from gpuwm import physics_mode as physics_mode_module
 from gpuwm.core import streaming as streaming_module
-from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
-                          radiation_enabled, validate_run_config,
-                          warn_anisotropic_w_mixing)
+from gpuwm.config import (DEFAULT_COLUMN_CHUNK,
+                          EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT,
+                          MIX_ISOTROPIC_AUTO, RunConfig,
+                          anisotropic_w_mixing_ratio,
+                          auto_mix_isotropic_selection, radiation_enabled,
+                          validate_run_config, warn_anisotropic_w_mixing)
 from gpuwm.explain import layered, warn
 
 #: Relative tolerance for cross-checking hand-typed child dx/dt against the
@@ -895,6 +898,19 @@ class ExperimentConfig:
     #: code path, only the absence of one.  Excluded from the restart
     #: identity on purpose: see ``streaming.identity_payload_entry``.
     tiles: "streaming_module.StreamingOptions" = streaming_module.OFF
+    #: grid_ids whose ``mix_isotropic`` was CHOSEN BY THE MODEL because
+    #: the config left it unset or wrote the ``"auto"`` sentinel (Drew's
+    #: 2026-08-16 auto-switch ruling; ``resolve_auto_mix_isotropic``).
+    #: A provenance LABEL, not a trajectory input: the chosen value sits
+    #: on each domain's ``run.mix_isotropic``, which is what the restart
+    #: identity binds, so this field leaves ``restart_identity_payload``
+    #: and the sealed-extension identity unconditionally -- an
+    #: auto-selected 1 and a written 1 are the same run, and each must
+    #: resume the other's checkpoints.  The empty default keeps every
+    #: code-constructed experiment (``experiment_from_run_config``, the
+    #: frozen verify fixtures) on explicit semantics: what its author
+    #: set is what runs.
+    auto_mix_isotropic: tuple[int, ...] = ()
 
     def __post_init__(self):
         if self.feedback not in (0, 1):
@@ -1088,6 +1104,10 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
     if static_table is not None:
         from gpuwm.static.highres_production import parse_static_table
         parse_static_table(static_table, source=source, base_dir=base_dir)
+    ingest_table = raw.pop("ingest", None)
+    if ingest_table is not None:
+        from gpuwm.ingest.soil_downscale import parse_ingest_table
+        parse_ingest_table(ingest_table, source=source)
     return build_experiment(raw, source=source)
 
 
@@ -1524,6 +1544,19 @@ def _reject_domain_vertical_keys(dom: dict, grid_id, source: str) -> None:
             "vertical grid, share/mediation_integrate.F:666).")
 
 
+def _bad_mix_isotropic_sentinel(value, where: str, source: str) -> str:
+    """The refusal for a string that is not the ``"auto"`` sentinel."""
+
+    return (
+        f"mix_isotropic = {value!r} in {where} of {source} must be 0 "
+        f"(anisotropic mixing lengths), 1 (isotropic (dx*dy*dz)^(1/3)) "
+        f"or the string \"{MIX_ISOTROPIC_AUTO}\" -- the same meaning as "
+        f"leaving the key unset: the model selects isotropic where "
+        f"mix_upper_bound*(dz_max/dx)^2 exceeds "
+        f"{EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT} and the WRF-default "
+        f"anisotropic form otherwise.")
+
+
 def _cross_check(kind: str, grid_id, supplied: float, derived: Fraction,
                  chain: str, source: str) -> None:
     """Hand-typed child dx/dt cross-check: the namelist chain is
@@ -1712,6 +1745,23 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain",
                     "relocation", "perturbation", "tiles")
+    # [ingest] is INGEST POLICY, and it is validated-and-dropped HERE
+    # rather than added to the companion list above.  The companion
+    # tables declare INPUTS: dropping one loses a setting, so the caller
+    # must consume it and reaching this seam with one present is a
+    # routing defect worth refusing.  [ingest] declares neither an input
+    # nor anything this builder consumes -- its value is read from the
+    # config by whoever ingests (gpuwm.ingest.soil_downscale.
+    # declared_soil_texture_downscale, and gpuwm.case_data's loader,
+    # which puts it on CaseDataConfig) -- so requiring every one of the
+    # dozen callers of this function to split it would only mean the
+    # switch is unreachable from whichever door someone forgot.  It is
+    # still VALIDATED on the way past: a typo refuses here, it does not
+    # silently run the default under the name of your setting.
+    if isinstance(raw, dict) and "ingest" in raw:
+        from gpuwm.ingest.soil_downscale import parse_ingest_table
+        raw = dict(raw)
+        parse_ingest_table(raw.pop("ingest"), source=source)
     # Companion tables of the ONE-FILE case schema: real, documented
     # tables that belong to other owners (gpuwm.case_data, gpuwm.fetch,
     # gpuwm.static.highres_production) and are split off by every file
@@ -1909,6 +1959,18 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     _reject_unknown_keys("shared", shared, shared_known, source)
     _reject_axis_authored_keys("shared", shared, physics_mode, source)
 
+    # mix_isotropic's "auto" sentinel (Drew's 2026-08-16 auto-switch
+    # ruling): the string means the same as leaving the key unset -- the
+    # model chooses -- so it is stripped HERE and its absence is what the
+    # domain loop below reads.  Any other string is refused by name;
+    # integers flow through to validate_run_config's 0/1 battery
+    # untouched, so every explicit config keeps its exact meaning.
+    if isinstance(shared.get("mix_isotropic"), str):
+        if shared["mix_isotropic"] != MIX_ISOTROPIC_AUTO:
+            raise ValueError(_bad_mix_isotropic_sentinel(
+                shared["mix_isotropic"], "[shared]", source))
+        del shared["mix_isotropic"]
+
     for key, default in _GUARD_DEFAULTS.items():
         value = shared.pop(key, default)
         if value == default:
@@ -2044,6 +2106,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     # via the existing checks inside the loop.
     domain_tables = _parent_before_child(domain_tables, source)
     domains: list[DomainConfig] = []
+    auto_mix_ids: list[int] = []
     by_id: dict[int, DomainConfig] = {}
     dt_by_id: dict[int, Fraction] = {}
     dx_by_id: dict[int, Fraction] = {}
@@ -2064,6 +2127,21 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             raise ValueError(
                 f"duplicate grid_id = {grid_id} in [[domain]] tables of "
                 f"{source}.")
+        # This domain's mix_isotropic provenance: AUTO when neither this
+        # table nor [shared] writes an integer for it (a per-domain
+        # "auto" string overrides a [shared] integer, and is stripped
+        # here so only resolved integers ever reach RunConfig).
+        if isinstance(dom.get("mix_isotropic"), str):
+            if dom["mix_isotropic"] != MIX_ISOTROPIC_AUTO:
+                raise ValueError(_bad_mix_isotropic_sentinel(
+                    dom["mix_isotropic"],
+                    f"[[domain]] grid_id={grid_id}", source))
+            dom = dict(dom)
+            del dom["mix_isotropic"]
+            mix_isotropic_auto = True
+        else:
+            mix_isotropic_auto = ("mix_isotropic" not in dom
+                                  and "mix_isotropic" not in shared)
         parent_id = dom["parent_id"]
         is_root = parent_id == 0
         if index == 0 and not is_root:
@@ -2460,6 +2538,16 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                      "children force with spec_exp = 0, exactly as WRF "
                      "would run this namelist.")
             kw["spec_exp"] = 0.0
+        # An AUTO domain starts on the RunConfig default (0, WRF's
+        # Registry value) so the whole validation battery and the
+        # exposure computation below see a resolved integer; the
+        # criterion-driven switch to 1 happens in ONE place,
+        # resolve_auto_mix_isotropic, after the tree is assembled and
+        # the layer depths are knowable.  The pop also covers a
+        # per-domain "auto" under a [shared] integer.
+        if mix_isotropic_auto:
+            kw.pop("mix_isotropic", None)
+            auto_mix_ids.append(grid_id)
         # The full legacy invariant battery applies to every per-domain
         # RunConfig (p5t1 review F1): same checks, same messages as
         # load_config.
@@ -2629,6 +2717,12 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         physics_mode=physics_mode,
         perturbation=perturbation,
         tiles=tiles)
+    # The mixing-length auto-switch runs HERE, at the one load every
+    # front door shares, so run/go/check, both prepared runners and the
+    # wizard's candidate loop all execute (and announce) the same
+    # selection; the advisory pass further down then sees the RESOLVED
+    # tree and warns only about written-out exposures.
+    experiment = resolve_auto_mix_isotropic(experiment, auto_mix_ids, source)
     # [tiles] against the TREE, and it needs the assembled experiment
     # because neither half of the question is answerable alone: the block
     # is parsed hundreds of lines above, the parent_id edges hundreds of
@@ -2814,6 +2908,20 @@ def anisotropic_w_mixing_exposure(experiment: ExperimentConfig
                     if d.run.km_opt in (2, 3) and d.run.mix_isotropic == 0)
     if not exposed:
         return ExposedMixing(0.0, (), "")
+    dz_max, ladder = _mixing_layer_depths(experiment)
+    return ExposedMixing(dz_max, exposed, ladder)
+
+
+def _mixing_layer_depths(experiment: ExperimentConfig) -> tuple[float, str]:
+    """``(dz_max, ladder)`` -- THE layer-depth resolution, in one place.
+
+    Extracted from :func:`anisotropic_w_mixing_exposure` so the
+    auto-switch resolver (:func:`resolve_auto_mix_isotropic`) and the
+    switched-domain reporter (:func:`auto_selected_isotropic_mixing`)
+    read exactly the depths the advisory reads -- one implementation of
+    the criterion's inputs, never a copy.  The ``inf`` sentinel and the
+    ladder provenance keep their exposure-era meanings.
+    """
 
     from gpuwm.core.grid import (analytic_base_pressure, base_layer_depths,
                                  make_vertical_coord)
@@ -2827,8 +2935,8 @@ def anisotropic_w_mixing_exposure(experiment: ExperimentConfig
         run = experiment.domains[0].run
         p_top = analytic_base_pressure(run.ztop)
         if p_top is None:
-            return ExposedMixing(
-                math.inf, exposed,
+            return (
+                math.inf,
                 f"no eta_levels, and ztop = {float(run.ztop):g} m is above "
                 f"the analytic base state's representable ceiling, so no "
                 f"layer depth can be resolved for this grid at all")
@@ -2840,7 +2948,112 @@ def anisotropic_w_mixing_exposure(experiment: ExperimentConfig
 
     dz_max = float(base_layer_depths(
         znw, vertical.hybrid_opt, vertical.etac, p_top).max())
-    return ExposedMixing(dz_max, exposed, ladder)
+    return dz_max, ladder
+
+
+def resolve_auto_mix_isotropic(experiment: ExperimentConfig, auto_ids,
+                               source: str) -> ExperimentConfig:
+    """Apply the mixing-length auto-switch (Drew, 2026-08-16) to one tree.
+
+    ``auto_ids`` are the grid_ids whose config left ``mix_isotropic``
+    unset (or wrote ``"auto"``).  Each such domain that selects the
+    per-axis path (``km_opt`` 2/3) is judged by the one criterion
+    implementation -- :func:`gpuwm.config.anisotropic_w_mixing_ratio`
+    over :func:`_mixing_layer_depths` -- and where the ratio exceeds
+    :data:`gpuwm.config.EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT` the domain
+    runs ``mix_isotropic = 1``, announced by one loud
+    :func:`gpuwm.explain.warn` line per switched domain.
+
+    Everything else is untouched, deliberately and observably:
+
+    * a domain that satisfies the criterion keeps the WRF-default 0 and
+      is byte-identical (restart identity included) to the same file
+      with ``mix_isotropic = 0`` written out;
+    * a WRITTEN 0 or 1 is never here (``auto_ids`` excludes it) -- an
+      explicit danger-zone 0 keeps the anisotropic form and gets the
+      forced-override advisory instead;
+    * an unresolvable layer depth switches nothing: the criterion has
+      no number there, and the no-number advisory (not this resolver)
+      is what speaks.
+
+    The re-validated replacement RunConfig keeps the p5t1 battery
+    binding on what actually runs.
+    """
+
+    auto_ids = tuple(sorted({int(grid_id) for grid_id in auto_ids}))
+    if not auto_ids:
+        return experiment
+    experiment = _dc_replace(experiment, auto_mix_isotropic=auto_ids)
+    candidates = [dc for dc in experiment.domains
+                  if dc.grid_id in set(auto_ids)
+                  and dc.run.km_opt in (2, 3)
+                  and dc.run.mix_isotropic == 0]
+    if not candidates:
+        return experiment
+    dz_max, ladder = _mixing_layer_depths(experiment)
+    switched: dict[int, float] = {}
+    for dc in candidates:
+        ratio = anisotropic_w_mixing_ratio(
+            km_opt=dc.run.km_opt, mix_isotropic=0,
+            mix_upper_bound=dc.run.mix_upper_bound,
+            dx=dc.run.dx, dy=dc.run.dy, dz_max=dz_max)
+        if (ratio is not None
+                and ratio > EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT):
+            switched[dc.grid_id] = float(ratio)
+    if not switched:
+        return experiment
+    experiment = _dc_replace(experiment, domains=tuple(
+        _dc_replace(dc, run=validate_run_config(
+            _dc_replace(dc.run, mix_isotropic=1)))
+        if dc.grid_id in switched else dc
+        for dc in experiment.domains))
+    for grid_id in sorted(switched):
+        warn(auto_mix_isotropic_selection(
+            where=f"domain grid_id = {grid_id} of {source}",
+            ratio=switched[grid_id], ladder=ladder),
+            why="With mix_isotropic = 0 the vertical exchange coefficient "
+                "is built and capped on the LAYER DEPTH and then diffuses "
+                "w over the HORIZONTAL spacing; past "
+                "mix_upper_bound*(dz_max/dx)^2 = 1/4 that operator can "
+                "invert a 2dx mode and past 1/2 grow one. The config "
+                "declined to choose a length, so the model chooses the "
+                "one that is stable on this grid.")
+    return experiment
+
+
+def auto_selected_isotropic_mixing(experiment: ExperimentConfig
+                                   ) -> tuple[tuple[tuple[int, float], ...],
+                                              str]:
+    """``((grid_id, ratio), ...)`` the model switched, plus the ladder.
+
+    The reporting face of :func:`resolve_auto_mix_isotropic`, for doors
+    that see only the RESOLVED experiment (``gpuwm check`` first among
+    them): a domain is reported here exactly when its ``mix_isotropic =
+    1`` was the model's choice, with the ratio the anisotropic path
+    would have reached -- recomputed through the same
+    :func:`_mixing_layer_depths` /
+    :func:`gpuwm.config.anisotropic_w_mixing_ratio` pair the resolver
+    used, so the two can never tell different stories.  A WRITTEN 1 is
+    never reported: that configuration is legitimate and quiet.
+    """
+
+    auto = set(getattr(experiment, "auto_mix_isotropic", ()) or ())
+    selected = [dc for dc in experiment.domains
+                if dc.grid_id in auto and dc.run.km_opt in (2, 3)
+                and dc.run.mix_isotropic == 1]
+    if not selected:
+        return (), ""
+    dz_max, ladder = _mixing_layer_depths(experiment)
+    out = []
+    for dc in selected:
+        ratio = anisotropic_w_mixing_ratio(
+            km_opt=dc.run.km_opt, mix_isotropic=0,
+            mix_upper_bound=dc.run.mix_upper_bound,
+            dx=dc.run.dx, dy=dc.run.dy, dz_max=dz_max)
+        if (ratio is not None
+                and ratio > EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT):
+            out.append((dc.grid_id, float(ratio)))
+    return tuple(out), ladder
 
 
 def _advise_anisotropic_w_mixing(experiment: ExperimentConfig,
@@ -2855,14 +3068,19 @@ def _advise_anisotropic_w_mixing(experiment: ExperimentConfig,
     """
 
     dz_max, exposed, ladder = anisotropic_w_mixing_exposure(experiment)
+    auto = set(getattr(experiment, "auto_mix_isotropic", ()) or ())
     for domain in exposed:
+        # Post-resolution, an exposed domain either WROTE its 0 (the
+        # forced-override state, said as such) or left it unset on a
+        # depth the criterion could not evaluate (the no-number
+        # advisory, which the forced flag does not touch).
         warn_anisotropic_w_mixing(
             where=f"domain grid_id = {domain.grid_id} of {source}",
             km_opt=domain.run.km_opt,
             mix_isotropic=domain.run.mix_isotropic,
             mix_upper_bound=domain.run.mix_upper_bound,
             dx=domain.run.dx, dy=domain.run.dy, dz_max=dz_max,
-            ladder=ladder)
+            ladder=ladder, forced=domain.grid_id not in auto)
 
 
 def _assert_derived_copies(experiment: ExperimentConfig,

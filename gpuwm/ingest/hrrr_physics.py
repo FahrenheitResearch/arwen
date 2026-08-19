@@ -23,6 +23,13 @@ _CANONICAL_SURFACE_FIELDS = frozenset({
     "LANDMASK", "SNOW", "SNOWH",
 })
 
+#: The native soil pair a met snapshot carries when nothing has solved
+#: the surface yet.  Named here because the prepared-cache writer DROPS
+#: it precisely when a solved surface rides along
+#: (:func:`gpuwm.ingest.prepared_cache._prepared_met_names`), so these
+#: two names are the whole difference between the two roads below.
+_NATIVE_SOIL_FIELDS = ("SOILT", "SOILW")
+
 
 def _validate_prepared_surface(surface, cfg) -> Mapping[str, object]:
     try:
@@ -217,22 +224,89 @@ def initialize_prepared_physics(
     return driver
 
 
-def initialize_hrrr_physics(
-        result, cfg, met, static, attrs, grid, valid_time, *,
-        constant_glw_wm2=None):
-    """Initialize physics, accepting either host or device ingestion fields."""
+def resolve_prepared_noah_surface(met, cfg, static, *, surface=None):
+    """The canonical Noah surface this state initializes its land model from.
+
+    Two roads arrive here holding the same forecast, and they hold
+    DIFFERENT halves of the soil statement.
+
+    The FRESH road has just decoded the source: its met snapshot carries
+    the native ``SOILT``/``SOILW`` node column and nothing has solved a
+    surface yet, so the surface is derived here
+    (``preprocess_land_surface_soil`` -> ``canonical_noah_surface``).
+
+    The RESTORE road holds a prepared cache, and the solved surface is
+    exactly what that cache persists -- ``surface/TSLB``, ``SMOIS``,
+    ``SH2O`` and the rest of the canonical Noah inventory.  Because the
+    surface is stored, the writer deliberately DROPS the native pair from
+    the met contract beside it
+    (:func:`gpuwm.ingest.prepared_cache._prepared_met_names`: the pair is
+    required only when ``surface is None``).  So a restore has the
+    answer and not the ingredients.
+
+    Re-deriving on the restore road is therefore not a slow path, it is a
+    crash: the soil router, finding no native pair and no mapped or GFS
+    markers, falls through to its ERA5-named arm and dies on ``missing
+    soil input field(s): ['ST000007', ...]`` -- four frames deep, on a
+    cache that was complete.  MEASURED 2026-08-18 on the Linux shakeout's
+    prepared-cache restore arm, where the solved soil was sitting in
+    ``surface/`` the whole time.
+
+    ``surface`` is therefore consumed when the caller has one and derived
+    only when it does not.  A state holding NEITHER is refused here by
+    name rather than downstream by KeyError.
+    """
 
     from types import MappingProxyType, SimpleNamespace
+
+    if surface is not None:
+        return surface
 
     from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
     from gpuwm.native_wrf_contract import canonical_noah_surface
 
+    try:
+        fields = met.fields
+    except AttributeError as exc:
+        raise TypeError(
+            "prepared physics meteorology must expose a fields mapping"
+        ) from exc
+    absent = [name for name in _NATIVE_SOIL_FIELDS if name not in fields]
+    if absent:
+        raise ValueError(
+            "this prepared state carries no solved Noah surface and no "
+            f"native soil to derive one from ({', '.join(absent)} absent "
+            "from its met fields), so the land model has no soil state to "
+            "start from and the forecast would run on fabricated ground.\n"
+            "  A prepared cache written by this release stores the solved "
+            "surface (surface/TSLB, SMOIS, SH2O and the rest of the "
+            "canonical Noah inventory) and drops the native SOILT/SOILW "
+            "pair, so a restore must pass restore_prepared_cache(...)"
+            ".surface through to this call rather than re-deriving.\n"
+            "  A cache carrying neither is incomplete and must be prepared "
+            "again; nothing here can reconstruct soil that was never "
+            "written.")
     soil = preprocess_land_surface_soil(
-        met.fields, sf_surface_physics=int(cfg.sf_surface_physics),
+        fields, sf_surface_physics=int(cfg.sf_surface_physics),
         soil_type=static["SCT_DOM"],
         deep_soil_temperature=static["SOILTEMP"])
-    surface = SimpleNamespace(fields=MappingProxyType(
+    return SimpleNamespace(fields=MappingProxyType(
         canonical_noah_surface(soil)))
+
+
+def initialize_hrrr_physics(
+        result, cfg, met, static, attrs, grid, valid_time, *,
+        constant_glw_wm2=None, surface=None):
+    """Initialize physics, accepting either host or device ingestion fields.
+
+    ``surface`` is the solved Noah surface when the caller already holds
+    one -- what :func:`gpuwm.ingest.prepared_cache.restore_prepared_cache`
+    hands back.  Omitted, the surface is derived from the met snapshot's
+    native soil, which is what a freshly decoded state carries.  See
+    :func:`resolve_prepared_noah_surface` for why the two roads differ.
+    """
+
+    surface = resolve_prepared_noah_surface(met, cfg, static, surface=surface)
     landuse_attrs = {
         name: attrs[name] for name in ("MMINLU", "ISWATER", "ISLAKE", "ISICE")
     }
@@ -241,4 +315,5 @@ def initialize_hrrr_physics(
         center_lat=attrs["CEN_LAT"], constant_glw_wm2=constant_glw_wm2)
 
 
-__all__ = ["initialize_hrrr_physics", "initialize_prepared_physics"]
+__all__ = ["initialize_hrrr_physics", "initialize_prepared_physics",
+           "resolve_prepared_noah_surface"]

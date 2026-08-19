@@ -1,9 +1,11 @@
 """Locate the built Rust bridge executables outside a source checkout.
 
-The pip wheel deliberately ships no compiled Rust: the fail-closed GRIB
-decoders and the CPU preprocessing library are built once from the
-vendored ``tools/grib1_bridge`` workspace (``cargo build --release
---locked --offline``) and then *pointed at*.  This module is the single
+A platform wheel SHIPS the compiled Rust: the fail-closed GRIB decoders
+and the CPU preprocessing library are built from the vendored
+``tools/grib1_bridge`` workspace (``cargo build --release --locked
+--offline``) and staged into :func:`packaged_bridge_dir` before the
+wheel is built, so ``pip install gpuwm`` lands a complete install on
+every platform a bundle exists for.  This module is the single
 resolution mechanism shared by ingest (:func:`gpuwm.ingest.grib
 .build_rust_bridge`), ``gpuwm doctor``, and documentation:
 
@@ -13,10 +15,22 @@ resolution mechanism shared by ingest (:func:`gpuwm.ingest.grib
    build tree (the developer path -- ingest may also *build* there);
 3. ``<root>/libexec/bridges`` beside the package (the sealed runtime
    archive layout);
-4. the user-level default directory :func:`default_bridge_dir`
+4. :func:`packaged_bridge_dir` -- ``gpuwm/libexec/bridges`` INSIDE the
+   installed package, which is what a platform wheel carries.  It sits
+   below the checkout rungs so a developer's own build still wins, and
+   above ``~/.gpuwm/bridges`` because bytes shipped with this version
+   are version-matched by construction while a fetched bundle is only
+   as fresh as the last ``gpuwm fetch-bridges``;
+5. the user-level default directory :func:`default_bridge_dir`
    (``~/.gpuwm/bridges``), which ``gpuwm fetch-bridges``
    (:mod:`gpuwm.bridge_assets`) stages the release's prebuilt bundle
    into, and where a wheel user otherwise copies their own build once.
+
+The ``py3-none-any`` fallback wheel -- the one pip resolves on a
+platform with no published bundle -- carries no rung 4, and every
+consumer of a missing artifact must refuse BY NAME with
+:func:`artifact_remedy` rather than degrade into a Python
+reimplementation of the decoder.
 
 Nothing here runs cargo; resolution is read-only so ``gpuwm doctor``
 can report the estate without side effects.
@@ -39,6 +53,15 @@ BRIDGE_ENV = {
     "grib2_inventory": "GPUWM_GRIB2_INVENTORY",
     "grib2_dump": "GPUWM_GRIB2_DUMP",
 }
+# `gpuwm_mapped_engine` is deliberately NOT in this map, for the same
+# reason `rw_netcdf` is not: this map's consumers resolve through
+# :func:`crate_dir`, which is the grib1_bridge crate, and the mapped
+# engine builds in `tools/rw_wps`.  An entry here would make
+# :func:`find_bridge` miss a checkout build and answer from a staged
+# copy instead -- a stale-binary answer wearing a fresh-checkout face.
+# Its ladder lives in :mod:`gpuwm.mapped_engine_bridge`; its contract
+# marker is in :data:`BRIDGE_ABI_MARKERS` below, which is keyed by
+# artifact and not by this map.
 
 #: The bridge crate's path inside a checkout.
 CRATE_RELATIVE = "tools/grib1_bridge"
@@ -77,9 +100,17 @@ BRIDGE_ABI_MARKERS = {
         b"usage: hrrr_grib2_bridge WRFNAT_F00 WRFNAT_F01 SOIL_F00 "
         b"SOIL_F01 OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START "
         b"J_END"),
+    # The inventory contract grew the ensemble-identity columns
+    # (typeOfEnsembleForecast, encoded ensemble size, derived-forecast
+    # statistic code) beside the perturbation number it always carried.
+    # The marker is the new header tail, which only a binary speaking
+    # the grown contract contains: a stale build would inventory an
+    # ensemble file without the octets that tell a mean from a member,
+    # and the member-identity gate would refuse it at run time with a
+    # rebuild remedy -- this catches it statically instead.
     "grib2_inventory": (
-        b"parameter\tcenter\tsubcenter\tmaster_table_version\t"
-        b"local_table_version\tname"),
+        b"minimum\tmaximum\t"
+        b"ensemble_type\tensemble_size\tderived_forecast"),
     "grib2_dump": (
         b"parameter\tcenter\tsubcenter\tmaster_table_version\t"
         b"local_table_version\tlevel_type"),
@@ -91,6 +122,43 @@ BRIDGE_ABI_MARKERS = {
     # inside the first refined solve -- which is exactly the class of
     # stale build this table exists to catch statically.
     "region_global_dealias": b"bw_dealias_rift_v1",
+    # The NetCDF writer cdylib behind the DEFAULT wrfout engine AND the
+    # DEFAULT wrfinput/wrfbdy export.  A library, so the literal is an
+    # exported symbol name, and it names the newest capability a default
+    # path depends on: it was `gpuwm_ncwrite_write_record` while the
+    # record dimension was that capability (a build predating it exports
+    # every other entry point, loads cleanly, answers the version probe
+    # -- and then cannot write a `Times` variable), and it is now the
+    # read-back sweep, because the wrfinput export verifies every float
+    # variable for finiteness before it publishes.  Spelled to match
+    # gpuwm.io.nc_writer_bridge.ABI_MARKER; a test binds the two.
+    "netcdf_writer": b"gpuwm_ncwrite_scan_nonfinite",
+    # The mapped decode engine behind `gpuwm prep --source mapped`.  The
+    # marker is its OUTPUT SCHEMA name rather than a usage line, because
+    # that is the literal which changes exactly when the frameset
+    # contract changes: a binary built before a frameset change still
+    # launches, still refuses politely, and would then write a directory
+    # `gpuwm.mapped_engine_bridge.read_frameset` no longer reads -- the
+    # 1.1.0 GFS series-file failure class, one layer further in.  Spelled
+    # to match gpuwm.mapped_engine_bridge.ABI_MARKER; a test binds the
+    # two.
+    "gpuwm_mapped_engine": b"gpuwm-mapped-frameset-v1",
+    # The static-field builder cdylib (tools/rustwx/crates/static-fields),
+    # the default engine for the WPS-geogrid-equivalent statics from the
+    # static-rust-port lanes on.  A library, so the literal is an
+    # exported symbol name: a build that loads and answers the version
+    # probe but predates the field build cannot produce a single static
+    # field.  Spelled to match gpuwm.static.rust_bridge.ABI_MARKER; a
+    # test binds the two.
+    "static_fields": b"gpuwm_static_build_fields",
+    # The observation remap cdylib (tools/rustwx/crates/obs-regrid),
+    # behind the DEFAULT plan build of the observation battery.  A
+    # library, so the literal is an exported symbol name: a build that
+    # answers the version probe but predates the plan builder cannot
+    # produce a single remap, and the battery would fall back to scipy
+    # -- whose tie-breaking is traversal order -- while reporting the
+    # Rust engine as present.
+    "obs_regrid": b"gpuwm_obsregrid_build_plan",
 }
 
 #: True when the shell a remedy will be pasted into is Windows
@@ -545,6 +613,75 @@ def default_bridge_dir() -> Path:
     return Path.home() / ".gpuwm" / "bridges"
 
 
+#: Directory INSIDE the package that a platform wheel stages its
+#: prebuilt Rust artifacts into.  Named once here because six separate
+#: resolution ladders consume it (this module, :mod:`gpuwm.rustwx`,
+#: :mod:`gpuwm.rustwx_fetch`, :mod:`gpuwm.obs.nexrad`,
+#: :mod:`gpuwm.obs.frontdoor` and :mod:`gpuwm.obs.dealias_region`) and a
+#: seventh copy of the string is how a rung goes missing on one door.
+PACKAGED_BRIDGE_SUBDIR = ("libexec", "bridges")
+
+
+def ensure_executable(path: Path) -> Path:
+    """Give a wheel-shipped artifact back its executable bit.
+
+    ``pip`` does not preserve unix modes for package data.  It applies
+    them only to entries under the wheel's ``.data/scripts/``
+    directory; everything else lands 0644 however the wheel recorded it.
+    So the binaries this package ships arrive on Linux and macOS present,
+    correct, and unrunnable -- measured, not theorised: a clean-venv
+    install of the manylinux wheel put all eleven artifacts in place and
+    then died with ``PermissionError: [Errno 13] Permission denied`` on
+    the first ``subprocess.run``.
+
+    The repair is done at resolution rather than asked of the user,
+    because "fixed" means a bare ``pip install gpuwm`` works: a flag or a
+    documented ``chmod +x`` would be a workaround, and this defect is
+    invisible until a door is already being opened.
+
+    Only files inside :func:`packaged_bridge_dir` are touched -- a
+    checkout build, a ``~/.gpuwm/bridges`` copy or an environment
+    override belongs to the user, and silently re-permissioning those
+    would be changing something this package does not own.  A no-op on
+    Windows, where execution does not consult a mode bit.
+    """
+
+    if os.name == "nt":
+        return path
+    try:
+        packaged = packaged_bridge_dir()
+        if not path.is_relative_to(packaged):
+            return path
+        mode = path.stat().st_mode
+        if mode & 0o111:
+            return path
+        # Mirror the read bits: a file the user can read, they may run.
+        path.chmod(mode | ((mode & 0o444) >> 2))
+    except OSError as error:
+        raise PermissionError(
+            f"{path} is not executable and its mode could not be repaired "
+            f"({error}).  pip does not preserve executable bits on package "
+            f"data, so a wheel-installed bridge needs one of:\n"
+            f"  chmod +x {path}\n"
+            f"  # or point gpuwm at a copy you control via its environment "
+            f"variable") from None
+    return path
+
+
+def packaged_bridge_dir() -> Path:
+    """The wheel-bundled bridge directory inside this installation.
+
+    ``<site-packages>/gpuwm/libexec/bridges`` for an installed wheel and
+    ``<checkout>/gpuwm/libexec/bridges`` in a source tree, where
+    ``tools/stage_wheel_bridges.py`` puts the built artifacts before a
+    platform wheel is built.  Distinct from ``<root>/libexec/bridges``,
+    which is BESIDE the package (the sealed-runtime archive layout) and
+    therefore cannot be package data.
+    """
+
+    return Path(__file__).resolve().parent.joinpath(*PACKAGED_BRIDGE_SUBDIR)
+
+
 def _package_parent() -> Path:
     """The directory containing the ``gpuwm`` package.
 
@@ -571,9 +708,10 @@ def artifact_candidates(env_var: str, filename: str) -> tuple[Path, ...]:
     THE resolution order for everything ``tools/grib1_bridge`` builds
     (bridge executables and the CPU preprocessing library alike):
     environment override, checkout release, checkout debug, ``libexec``
-    beside the package, user-level default directory.  The environment
-    override comes first; a missing file it names is the caller's error
-    to raise (never silently skipped).
+    beside the package, the wheel-bundled :func:`packaged_bridge_dir`,
+    user-level default directory.  The environment override comes first;
+    a missing file it names is the caller's error to raise (never
+    silently skipped).
     """
 
     candidates: list[Path] = []
@@ -585,6 +723,7 @@ def artifact_candidates(env_var: str, filename: str) -> tuple[Path, ...]:
         crate_dir() / "target" / "release" / filename,
         crate_dir() / "target" / "debug" / filename,
         root / "libexec" / "bridges" / filename,
+        packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
     ))
     return tuple(candidates)
@@ -601,7 +740,7 @@ def find_artifact(env_var: str, filename: str) -> Path | None:
     override = os.environ.get(env_var)
     for candidate in artifact_candidates(env_var, filename):
         if candidate.is_file():
-            return candidate.resolve()
+            return ensure_executable(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{env_var} names a missing file: {candidate}")
@@ -778,9 +917,22 @@ def artifact_remedy(*, env_var: str, filename: str, subject: str,
     crate = _package_parent() / Path(crate_relative)
     built = crate / "target" / "release" / filename
     if crate.is_dir():
+        # The build line must name the crate this remedy is ABOUT.  The
+        # fallback used to be CARGO_BUILD_HINT, which is frozen to
+        # CRATE_RELATIVE (tools/grib1_bridge): every caller that passed
+        # a different `crate_relative` -- rw_netcdf lives in
+        # tools/rustwx -- printed `cd tools/grib1_bridge` one line above
+        # a "that produces .../rustwx/target/release/rw_netcdf.exe"
+        # promise the command cannot keep.  Building grib1_bridge
+        # produces no rw_netcdf, so a reader who pasted the block landed
+        # exactly where they started, on the refusal that sent them.
+        # This is the same defect
+        # test_the_bridge_remedy_is_a_real_bootstrap_on_a_pip_install
+        # already records being fixed once for the six bridges; it
+        # survived here because this fallback ignores its own argument.
         return (
             f"# build {subject} once, from this checkout's root:\n"
-            f"  {one_liner or CARGO_BUILD_HINT}\n"
+            f"  {one_liner or cargo_build_one_liner(crate_relative)}\n"
             f"  # that produces {built},\n"
             f"  # which gpuwm then finds on its own (or set {env_var} "
             f"to it).")

@@ -14,6 +14,8 @@ from gpuwm.ingest.soil_contract import (
     MAPPED_SOIL_TEMPERATURE,
     conservative_overlap_weights,
     soil_layer_bounds,
+    soil_node_depths,
+    soil_source_sample_count,
     validate_soil_layer_contract,
 )
 from gpuwm.ingest.water_temperature import (
@@ -102,6 +104,15 @@ class NoahSoilState:
     #: water half of that substitution is the ordinary path -- every run
     #: takes it on every water cell -- and is never counted here.
     deep_soil_repair: Mapping[str, object] = field(default_factory=dict)
+    #: Receipt from :mod:`gpuwm.ingest.soil_downscale`: the forcing mesh
+    #: this soil state came off, how many grid cells one source cell spans,
+    #: whether the sub-source-cell reconstitution ran, and what it moved.
+    #: UNLIKE the two repair receipts above this one is NOT conditional --
+    #: the soil-state source resolution belongs on every run's provenance,
+    #: because "how coarse was the soil you started from" is a question a
+    #: reader of the output must be able to answer without the config.  It
+    #: is empty only for a route that declared no source mesh at all.
+    soil_texture_downscale: Mapping[str, object] = field(default_factory=dict)
 
 
 _TEMP_NAMES = ("ST000007", "ST007028", "ST028100", "ST100289")
@@ -212,11 +223,26 @@ def _remap_declared_soil(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply one already validated source-independent soil remap."""
 
-    source = soil_layer_bounds(contract, "source_layers")
     target = soil_layer_bounds(contract, "target_layers")
     remap = contract["remap"]
     if not isinstance(remap, Mapping):  # guarded by validation; defense in depth
         raise TypeError("soil remap must be an object")
+    if remap["kind"] == "linear_node_samples":
+        # Depth-node sources (RUC-family: HRRR, RAP) sample the column at
+        # true depths INCLUDING 0 m and 3 m, so Noah's four midpoints come
+        # directly from WRF's sorted linear node interpolation -- the same
+        # arithmetic the native HRRR route runs on its fixed node table,
+        # executed here on the depths the contract declares.
+        node_depths = np.asarray(soil_node_depths(contract), dtype=np.float64)
+        target_depths = np.asarray(
+            [(top + bottom) / 2.0 for top, bottom in target],
+            dtype=np.float64,
+        )
+        return (
+            _interp_nodes(temperature, node_depths, target_depths),
+            _interp_nodes(moisture, node_depths, target_depths),
+        )
+    source = soil_layer_bounds(contract, "source_layers")
     if remap["kind"] == "linear_point_samples":
         # WRF places layer-form soil values at the INTEGER-centimetre layer
         # midpoints (module_optional_input.F:char2int2, (top+bottom)/2 in
@@ -318,6 +344,13 @@ def _soil_temperature_elevation_delta(terrain, source_orography, terrestrial):
 #: them to the model grid are not monotone, and a snow line is the
 #: sharpest gradient either field has.
 _SNOW_OVERSHOOT_FRACTION = 0.25
+
+#: A route that declares no source mesh is announced once per process, not
+#: once per forcing time and per domain, on the same reasoning as
+#: ``horiz.py``'s ``_REPORTED_FRACTIONAL_RECOVERY``: the fact is a property
+#: of the ROUTE, so repeating it per call is noise around a fact the reader
+#: already has.
+_REPORTED_MISSING_SOIL_MESH: set = set()
 
 
 def _admitted_snow_field(name: str, value: np.ndarray, shape) -> np.ndarray:
@@ -597,6 +630,7 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
                          source_orography=None,
                          water_temperature=None,
                          water_temperature_policy=None,
+                         soil_mesh=None,
                          route=None) -> NoahSoilState:
     """Map ERA5 layers, GFS Noah layers, or native HRRR depth nodes to Noah.
 
@@ -649,6 +683,26 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     deep temperature is NOT adjusted here: WRF's Noah branch subtracts
     ``0.0065 * terrain`` from the sea-level annual mean instead, which the
     static build already bakes into TMN.
+
+    ``soil_mesh`` is the route's
+    :class:`gpuwm.ingest.soil_downscale.SoilMeshPlan`: the forcing mesh
+    measured against this grid.  Supplied, the LAND soil state is
+    reconstituted below the source spacing -- moisture through Noah's own
+    ``SRATIO`` against the target grid's 30 arc-second soil texture, deep
+    temperature through WRF's own linear-in-depth ``TMN`` anchoring -- and
+    the receipt rides back on ``NoahSoilState.soil_texture_downscale``.
+    This is the moisture and deep-temperature analogue of the elevation
+    lapse above: both exist because the target grid knows things about the
+    land surface that a 0.25 degree forcing mesh cannot.  See
+    :mod:`gpuwm.ingest.soil_downscale` for what stock WRF does instead and
+    why this diverges from it deliberately.
+
+    ``None`` means the route declared no source mesh, which is announced
+    rather than silently skipped: without it the source mesh stays visible
+    in SMOIS for the whole forecast and in every field soil moisture drives.
+    ``SoilMeshPlan(..., enabled=False)`` -- ``[ingest]
+    soil_texture_downscale = false`` -- is the deliberate WRF-comparison
+    path and is byte-identical to the historical behaviour.
     """
     mapped_markers = (MAPPED_SOIL_TEMPERATURE, MAPPED_SOIL_MOISTURE)
     mapped_marker_count = sum(name in fields for name in mapped_markers)
@@ -690,7 +744,7 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
         shape = _require_same_shape(fields, ("LANDSEA", "SKINTEMP"))
         declared_temperature = _host(fields[MAPPED_SOIL_TEMPERATURE])
         declared_moisture = _host(fields[MAPPED_SOIL_MOISTURE])
-        source_count = len(declared_contract["source_layers"])
+        source_count = soil_source_sample_count(declared_contract)
         expected_shape = (source_count,) + shape
         if declared_temperature.shape != expected_shape \
                 or declared_moisture.shape != expected_shape:
@@ -870,6 +924,39 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
         # reasons the GFS bridge now clamps for.
         declared_moisture, _ = clamp_bound_kissing(
             declared_moisture, minimum=0.0, maximum=1.0)
+        # WPS's sixteen_pt operator genuinely overshoots on sharp source
+        # gradients -- a 3 km dryline can put one land cell a percent or
+        # two of volumetric moisture below zero.  The native HRRR route
+        # repairs this by construction (convex bilinear soil weights, a
+        # documented divergence from WPS); the mapped route keeps the
+        # WPS-parity operator and repairs its overshoot HERE, bounded and
+        # counted: within the margin the value clamps to the physical
+        # bound, beyond it the refusal below still stands, and any cell
+        # that would have prepared before this admission is untouched
+        # because genuine overshoot was a hard refusal, never a value.
+        overshoot_margin = 0.05
+        overshoot = (
+            (declared_moisture < 0.0) & (declared_moisture >= -overshoot_margin)
+        ) | (
+            (declared_moisture > 1.0)
+            & (declared_moisture <= 1.0 + overshoot_margin)
+        )
+        if bool(overshoot.any()):
+            land_count = int(np.count_nonzero(overshoot[:, terrestrial]))
+            exceedance = float(np.max(np.where(
+                overshoot,
+                np.maximum(-declared_moisture, declared_moisture - 1.0),
+                0.0)))
+            print(
+                "mapped soil moisture: WPS sixteen_pt overshoot clamped to "
+                f"[0, 1] on {land_count} land value(s) (largest exceedance "
+                f"{exceedance:.4f}); the interpolation operator is "
+                "WPS-parity and this repair is the mapped twin of the "
+                "native route's convex-bilinear soil divergence",
+                file=sys.stderr)
+            repaired = declared_moisture.copy()
+            repaired[overshoot] = np.clip(repaired[overshoot], 0.0, 1.0)
+            declared_moisture = repaired
         land_temperature = declared_temperature[:, terrestrial]
         land_moisture = declared_moisture[:, terrestrial]
         if not np.isfinite(land_temperature).all() \
@@ -928,6 +1015,20 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
         soil_t[layer, sea_ice] = (
             (3.0 - midpoint) * tsk[sea_ice] + midpoint * tmn[sea_ice]
         ) / 3.0
+    # The deep-temperature half of the sub-source-cell reconstitution, after
+    # the water and sea-ice columns are settled and before the physical
+    # bound check -- it touches ONLY terrestrial cells, and every layer's
+    # source-cell mean is unchanged, so a passing column cannot be pushed
+    # out of 170..400 K by a fraction of a kelvin of anomaly.
+    if soil_mesh is not None:
+        from gpuwm.ingest.soil_downscale import (
+            downscale_deep_soil_temperature)
+
+        soil_t, deep_downscale_receipt = downscale_deep_soil_temperature(
+            soil_t, deep_soil_temperature=tmn, terrestrial=terrestrial,
+            plan=soil_mesh, layer_midpoints_m=NOAH_LAYER_MIDPOINTS_M)
+    else:
+        deep_downscale_receipt = {}
     if (not np.isfinite(soil_t).all() or np.any((soil_t < 170.0) | (soil_t > 400.0))):
         raise ValueError("soil temperature is outside 170..400 K")
     # Sixteen-point source stencils overshoot the saturated ceiling
@@ -968,6 +1069,32 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     # derived SH2O carry the same protection.
     soil_m, moisture_floor = _floor_land_moisture_at_smcdry(
         soil_m, pre_clip_moisture, terrestrial, soil_type, noah_params)
+    # The moisture half of the sub-source-cell reconstitution, AFTER the
+    # air-dry floor (so the receipt above still reports what the source
+    # actually delivered) and BEFORE sh2o_init (so the frozen-water split
+    # is derived from the moisture the forecast will integrate).  Its
+    # output is bounded by [SMCDRY, SMCMAX] for this grid's own texture by
+    # construction, so it cannot reintroduce what the floor just repaired.
+    if soil_mesh is not None:
+        from gpuwm.ingest.soil_downscale import downscale_soil_moisture
+
+        soil_m, downscale_receipt = downscale_soil_moisture(
+            soil_m, soil_type=soil_type, terrestrial=terrestrial,
+            params=noah_params, plan=soil_mesh,
+            layer_thickness_m=NOAH_LAYER_THICKNESS_M)
+        downscale_receipt = dict(downscale_receipt)
+        downscale_receipt["deep_soil_temperature"] = deep_downscale_receipt
+    elif not _REPORTED_MISSING_SOIL_MESH:
+        downscale_receipt = {}
+        _REPORTED_MISSING_SOIL_MESH.add(True)
+        print(
+            "soil-state source mesh: this route declared none, so the "
+            "soil state keeps whatever spacing the forcing arrived on and "
+            "SMOIS will carry it for the whole forecast "
+            "(gpuwm/ingest/soil_downscale.py)",
+            file=sys.stderr)
+    else:
+        downscale_receipt = {}
     liquid_m = sh2o_init(soil_m, soil_t, soil_type, noah_params)
     liquid_m[:, sea_ice] = 0.0
 
@@ -1005,6 +1132,7 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
         snow_depth=snowh,
         moisture_floor=moisture_floor,
         deep_soil_repair=deep_repair,
+        soil_texture_downscale=downscale_receipt,
     )
 
 

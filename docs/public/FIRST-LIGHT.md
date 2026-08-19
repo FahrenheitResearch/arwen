@@ -87,11 +87,12 @@ shapefiles -- staged beside the binary where it finds them on its own.
 Take the binary without them and plots come out with the weather drawn
 over a blank rectangle, which is why they travel together.
 
-(The `tools/rustwx` build remains skippable: `gpuwm render` falls back to
-matplotlib without any render engine, and doctor labels that state
-`info`, not a gap. It is a fallback, though -- five products against the
-rust catalog's 151 -- and `gpuwm render` says so on every run that uses
-it.)
+(The `tools/rustwx` build remains skippable, and doctor labels its
+absence `info`, not a gap -- but `gpuwm render` then REFUSES rather than
+drawing with something else, because weather-field product plots come
+from `rw_wrfbatch`. `--engine matplotlib` is still reachable by name;
+it is a workaround -- five products against the rust catalog's 151 --
+and it prints a `WORKAROUND:` line on every run.)
 
 ## 2. Size a domain to your card (measured: 1.7 s)
 
@@ -185,7 +186,11 @@ conformal from 25 to 60, polar stereographic above 60, in either
 hemisphere -- and `--projection` overrides the choice.
 Antimeridian-crossing footprints are handled. It still refuses what
 the pipeline cannot stand behind: domains containing or touching a
-pole, and forcing footprints wider than 180 degrees of longitude. The
+pole, and forcing footprints wider than 180 degrees of longitude --
+though the 180-degree limit is now a bound the sizer respects rather
+than a wall it walks into, so a card big enough to want a wider box
+gets the largest domain one source crop can actually feed, and a line
+on stderr saying the source, not the card, is what stopped it. The
 new projections (Mercator, polar stereographic, southern-hemisphere
 Lambert) are oracle-verified and smoke-run verified, not matched-run
 verified ([VERIFICATION.md](VERIFICATION.md)).
@@ -275,15 +280,19 @@ gpuwm domain --point=35.3,-97.5 --card 24gb --ladder 12     --source gfs --cycle
 #    the receipt.  Nothing is rewritten behind you.
 python -m gpuwm.prepared_single_domain_forecast --materialize-authorities     --source gfs     --base-experiment-config configs/myarea.toml     --base-wps-namelist configs/myarea.namelist.wps     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --output-directory work/myarea-authority
 
-# 3. Fetch, then author the front-door manifest.  Step 3 prints the
-#    complete rw-wps command with its digest already filled in.
-#    --bridge is optional: omitted, it resolves the built
-#    gfs_grib2_bridge this install has (a checkout's own build, then
-#    libexec/, then the ~/.gpuwm/bridges that `gpuwm setup` stages
-#    into) -- the same resolver `gpuwm go` uses.  `gpuwm doctor` names
-#    the one it found; pass --bridge PATH to override it.
+# 3. Fetch.  The fetched directory is a front door (inputs.txt,
+#    prep-command.txt, SHA256SUMS, fetch-manifest.json), and the input
+#    manifest the next step needs is NOT yours to author: rw-wps /
+#    `gpuwm prep --source gfs` authors and digest-binds it from this
+#    directory when --source-manifest is omitted.  --bridge is optional
+#    there too: omitted, it resolves the built gfs_grib2_bridge this
+#    install has (a checkout's own build, then libexec/, then the
+#    ~/.gpuwm/bridges that `gpuwm setup` stages into) -- the same
+#    resolver `gpuwm go` uses.  `gpuwm doctor` names the one it found.
+#    (`gpuwm fetch --author-front-door-manifest` still authors the
+#    manifest standalone -- a tail series, or a different
+#    namelist/config pairing -- and prints the bound rw-wps line.)
 gpuwm fetch --source gfs --cycle <RESOLVED> --hours 6     --area=<THE BOX THE WIZARD PRINTED> --out data/myarea
-gpuwm fetch --source gfs --author-front-door-manifest --out data/myarea     --wps-namelist work/myarea-authority/namelist.wps     --experiment-config work/myarea-authority/experiment.toml
 
 # 4. Run the front door (paste the line step 3 printed, plus these).
 rw-wps ... --geog-root $GPUWM_CASE_DATA_ROOT/WPS_GEOG     --output-root out/myarea-init
@@ -402,13 +411,16 @@ without colliding, and the plot subtitle carries the same spacing as
 rendering wrfout files this model did not produce, so the sheet does
 not claim them.
 
-Without that build, the matplotlib fallback renders five products per
-frame -- composite reflectivity (NWS color scale), 2 m temperature,
-10 m wind speed and barbs, accumulated precipitation, and TOA outgoing
-longwave as synthetic infrared -- via the `wrf-rust` package
-(`pip install 'gpuwm[render]'` if you skipped the extra; the error
-message names it). The transcript below predates the OLR panel and
-measured the other four: 4 files x 4 products took 2.6 s.
+Without that build, `gpuwm render` refuses and names `gpuwm
+fetch-bridges`: weather-field product plots come from `rw_wrfbatch`, so
+nothing degrades to a second engine on its own. `--engine matplotlib`
+asks for the workaround by name and prints a `WORKAROUND:` line every
+run; it draws five products per frame -- composite reflectivity (NWS
+color scale), 2 m temperature, 10 m wind speed and barbs, accumulated
+precipitation, and TOA outgoing longwave as synthetic infrared -- via
+the `wrf-rust` package (`pip install 'gpuwm[render]'` if you skipped the
+extra; the error message names it). The transcript below predates the
+OLR panel and measured the other four: 4 files x 4 products took 2.6 s.
 
 To compare two runs product-by-product (a rerun, a physics variant, a
 CPU WRF twin), render each into its own directory and compose labeled

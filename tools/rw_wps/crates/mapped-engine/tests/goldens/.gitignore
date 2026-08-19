@@ -1,0 +1,6 @@
+# The repo-wide `*.nc` rule (root .gitignore:13) keeps model OUTPUT out of
+# history.  The NetCDF sample here is test INPUT — the bytes the NetCDF
+# golden was measured on — and a golden whose input is untracked is a
+# golden that silently skips on a fresh clone, which is the exact failure
+# the GLM fixture beside rw-glm already had.
+!*.nc

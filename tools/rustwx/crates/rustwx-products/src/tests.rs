@@ -20,6 +20,11 @@ const PRODUCT_MODULE_SURFACE: &[(&str, ProductModuleSurfaceKind)] = &[
     ("derived", StablePublic),
     ("direct", StablePublic),
     ("ecape", OperationalPublic),
+    // gpuwm addition (VENDOR.md): the geographic overlay/annotation
+    // schema is a PUBLIC contract -- `rw_wrfbatch --overlays FILE.json`
+    // deserialises straight into it and two sibling binaries apply it --
+    // so it is classified stable rather than internal.
+    ("geographic_overlays", StablePublic),
     ("gridded", CompatibilityPublic),
     ("heavy", OperationalPublic),
     ("hrrr", LegacyPublic),

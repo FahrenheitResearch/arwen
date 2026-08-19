@@ -23,7 +23,7 @@
  truelat1  = 30.0,
  truelat2  = 45.0,
  stand_lon = -88.0,
- geog_data_path = '/home/drew/WPS_GEOG',
+ geog_data_path = 'WPS_GEOG',
 /
 
 &ungrib

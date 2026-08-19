@@ -1,0 +1,16 @@
+{
+  "schema": "gpuwm-aifs-single-in-band-terrain-provenance-v1",
+  "source": "ECMWF open data AIFS single deterministic forecast GRIB2 product",
+  "field": "terrain_height",
+  "selector": {
+    "format": "grib2",
+    "discipline": 0,
+    "category": 3,
+    "parameter": 4,
+    "level_type": 1
+  },
+  "units_policy": "surface geopotential in m2 s-2, converted to metres by the mapping's declared 1/9.80665 scale",
+  "time_policy": "published at the analysis step (0-hour file) only and broadcast to every forecast valid time of the one cycle under the composition's cycle_invariant_broadcast alignment; a record present at more than one time must be bit-identical",
+  "member_policy": "AIFS single is deterministic; no member identity exists",
+  "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"
+}

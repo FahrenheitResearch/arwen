@@ -1,0 +1,19 @@
+{
+  "schema": "gpuwm-aigefs-member-hybrid-borrowed-surface-provenance-v1",
+  "source": "NCEP AIGEFS (Project EAGLE) member forecast GRIB2 product, completed by a same-cycle physical global analysis",
+  "field": "terrain_height",
+  "binding": "physical_analysis_surface",
+  "borrowed_fields": [
+    "terrain_height",
+    "land_fraction",
+    "soil_temperature",
+    "volumetric_soil_moisture",
+    "skin_temperature",
+    "specific_humidity_2m"
+  ],
+  "units_policy": "terrain enters as the analysis product's surface geopotential height record in metres; no scale is applied",
+  "time_policy": "the AI ensemble member supplies the evolving atmosphere at every forecast step; the borrowed land-surface state is the one analysis record of the SAME cycle, verified by the composition's source_cycle_analysis_broadcast alignment and carried unchanged to every primary valid time, with the carried times named in the receipt",
+  "member_policy": "member identity belongs to the PRIMARY files and is verified by the packaged rw-wps.members.v1 grammar at member preparation; the contributing analysis is deterministic and a member-bearing donor refuses by name",
+  "absence_policy": "the member product publishes no soil temperature, no soil moisture, no land mask, no orography, no skin temperature and no 2 m humidity (byte-measured, 2026-08-17 00Z cycle); every one of those gaps is declared composition_bound in the primary mapping and bound to the analysis donor -- nothing is synthesized",
+  "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"
+}

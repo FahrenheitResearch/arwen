@@ -40,7 +40,7 @@
     "declarative_mapped_composition": {
       "grib1": "genuine_era5_single_domain_stock_wrf_proof_passed",
       "grib2": "genuine canonical-LF current-contract GFS clean stock-WRF proof passed through d04",
-      "netcdf": "genuine_era5_single_domain_stock_wrf_proof_passed",
+      "netcdf": "historical genuine ERA5 single-domain proof invalidated by the shipped time-coordinate mapping change; evidence does not transfer across contract hashes; stock_wrf_regate_required",
       "target_ceiling": "mapping_declared_max_dom_current_examples_limit_4"
     }
   },

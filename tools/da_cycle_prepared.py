@@ -153,6 +153,52 @@ def to_host(value) -> np.ndarray:
     return np.ascontiguousarray(np.asarray(value))
 
 
+
+def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
+                            elapsed_seconds: float, exp, *, label: str):
+    """A real wrfout beside a composite ``.npz``; the path, or ``None``.
+
+    Why a writer and not a Rust ``.npz`` reader: ``.npz`` carries no
+    geolocation contract, so a reader for it would be a per-format adapter
+    -- exactly what the arbitrary-acceptance rule forbids -- while this
+    lane already holds the grid the composite was computed on and a wrfout
+    is the container that states it.
+
+    Additive and non-fatal.  The cycle's product is the ``.npz``; a
+    failure to write the second copy is REPORTED and the forecast
+    continues, because a rendering convenience must not be able to kill a
+    DA cycle.
+    """
+
+    import datetime
+
+    from gpuwm.io.surface_wrfout import (SurfaceSnapshotRefusal,
+                                         snapshot_wrfout_path,
+                                         write_surface_wrfout)
+    from gpuwm.io.wrfout import wrf_global_attrs
+
+    try:
+        lat, lon = grid.latlon_mass()
+        snapshot = {
+            "XLAT": np.asarray(lat, np.float32),
+            "XLONG": np.asarray(lon, np.float32),
+            "REFL_COMPOSITE": np.asarray(refl_colmax, np.float32),
+        }
+        start = getattr(exp, "start_time", None)
+        if not isinstance(start, datetime.datetime):
+            start = datetime.datetime(1970, 1, 1)
+        stamp = (start + datetime.timedelta(seconds=float(elapsed_seconds))
+                 ).strftime("%Y-%m-%d_%H:%M:%S")
+        attrs = wrf_global_attrs(grid, start, dt=float(cfg.dt))
+        return write_surface_wrfout(
+            snapshot_wrfout_path(npz_path), snapshot, time_str=stamp,
+            dx=float(cfg.dx), dy=float(cfg.dy), global_attrs=attrs,
+            title=f"gpuwm DA composite ({label})")
+    except (SurfaceSnapshotRefusal, AttributeError, TypeError,
+            ValueError, OSError) as problem:
+        print(f"    composite wrfout skipped for {label}: {problem}")
+        return None
+
 def main() -> int:
     # Deferred like every other gpuwm import in this driver: the module
     # has to be importable by a bare `python tools/da_cycle_prepared.py
@@ -1244,11 +1290,22 @@ def main() -> int:
             if args.save_composites:
                 comp_dir = out / "composites"
                 comp_dir.mkdir(parents=True, exist_ok=True)
+                composite_npz = (comp_dir /
+                                 f"leg{leg_number(leg):02d}_{name}.npz")
                 np.savez_compressed(
-                    comp_dir / f"leg{leg_number(leg):02d}_{name}.npz",
+                    composite_npz,
                     refl_colmax=refl_host.max(axis=0),
                     elapsed_seconds=np.float64(
                         node.clock.elapsed_seconds))
+                # ...and the same composite as a real wrfout beside it, so
+                # `gpuwm render --engine rust` -- the renderer the render
+                # law names -- can draw this member.  The npz is what the
+                # cycle's own analysis reads and is untouched; this is a
+                # second copy in the format a different tool reads.
+                _write_composite_wrfout(
+                    composite_npz, refl_host.max(axis=0), inputs.grid, cfg,
+                    node.clock.elapsed_seconds, exp,
+                    label=f"leg {leg_number(leg):02d} member {name}")
             # -- the nest's own leg-end product ------------------------------
             #
             # Written under a d02 name beside the parent's rather than

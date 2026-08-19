@@ -75,6 +75,26 @@ def _bundle_filename(release: str, platform: str) -> str:
         sys.path.remove(str(REPO_ROOT))
 
 
+def _stub_payload(artifact) -> bytes:
+    """The bytes a placeholder binary must carry to be pinnable.
+
+    Both proofs the release tool asks for, on every stub: the declared
+    contract marker (what a VENDORED artifact is held to, since its
+    source does not move with this checkout) and the
+    ``GPUWM_BRIDGE_SOURCE_REV`` stamp (what every other artifact is held
+    to).  Carrying both means these tests reach the asset question with
+    the binary question genuinely answered -- and it means a stub that
+    goes stale against either check reds here rather than silently
+    short-circuiting the check a test downstream is actually about.
+    """
+
+    from gpuwm import bridges
+
+    marker = bridges.BRIDGE_ABI_MARKERS.get(artifact.name, b"")
+    stamp = bridge_assets.SOURCE_REV_MARKER + SOURCE_REV.encode()
+    return f"stub::{artifact.name}::".encode() + marker + b"::" + stamp
+
+
 def _stub_artifacts(directory: Path, platform: str) -> Path:
     """One placeholder file per bundled artifact, named for ``platform``.
 
@@ -84,15 +104,10 @@ def _stub_artifacts(directory: Path, platform: str) -> Path:
     they must not reach it by making the binary half easier.
     """
 
-    from gpuwm import bridges
-
     directory.mkdir(parents=True, exist_ok=True)
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
         name = bridge_assets.artifact_filename(artifact, platform)
-        marker = bridges.BRIDGE_ABI_MARKERS.get(artifact.name, b"")
-        stamp = bridge_assets.SOURCE_REV_MARKER + SOURCE_REV.encode()
-        (directory / name).write_bytes(
-            f"stub::{artifact.name}::".encode() + marker + b"::" + stamp)
+        (directory / name).write_bytes(_stub_payload(artifact))
     return directory
 
 
@@ -211,6 +226,16 @@ def test_pin_refuses_a_bundle_that_carries_no_map_assets(tmp_path):
     This is precisely the bundle 1.4.0 published -- eight binaries and
     nothing else -- and the release tool must now refuse to write pins
     for it rather than produce a wheel that stages geography-less plots.
+
+    The binaries here are the SAME pinnable stubs the good bundle uses
+    (:func:`_stub_payload`: contract marker plus source-rev stamp), so
+    the only thing wrong with this archive is the missing ``assets/``
+    tree.  That matters because pin checks the binaries first: a stub
+    that carried the stamp but not the vendored artifacts' contract
+    marker earned the staleness refusal instead, and the asset refusal
+    this test names was never reached -- the test passed on the wrong
+    sentence.  Both refusals stay live; each is asserted where it is
+    the one thing wrong.
     """
 
     import zipfile
@@ -218,11 +243,10 @@ def test_pin_refuses_a_bundle_that_carries_no_map_assets(tmp_path):
     platform = "linux-x86_64"
     release = "v0-assetless"
     archive = tmp_path / _bundle_filename(release, platform)
-    stamp = bridge_assets.SOURCE_REV_MARKER + SOURCE_REV.encode()
     with zipfile.ZipFile(archive, "w") as zf:
         for artifact in bridge_assets.BUNDLED_ARTIFACTS:
             zf.writestr(bridge_assets.artifact_filename(artifact, platform),
-                        f"stub::{artifact.name}::".encode() + stamp)
+                        _stub_payload(artifact))
     result = subprocess.run(
         [sys.executable, str(BUNDLE_TOOL), "pin", "--release", release,
          "--source-rev", SOURCE_REV,

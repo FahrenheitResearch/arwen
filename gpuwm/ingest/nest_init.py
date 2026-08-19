@@ -135,6 +135,17 @@ class PreparedChildInput:
     #: router refuses an unassembled raw SST/SKINTEMP pair, and the
     #: catalog that resolved the policy is no longer in scope there.
     water_temperature_policy: str | None = None
+    #: The forcing mesh measured against this child's own grid
+    #: (:class:`gpuwm.ingest.soil_downscale.SoilMeshPlan`), carried for the
+    #: same reason as the policy above: finalization builds the child's
+    #: soil column, the sub-source-cell reconstitution needs the SOURCE
+    #: spacing, and the source snapshot is out of scope by then.  Without
+    #: it a nest would inherit exactly the 0.25 degree soil quilt its
+    #: parent was fixed for -- the child re-ingests the SAME source
+    #: through the SAME interpolation, so the defect is not the parent's
+    #: to hand down or withhold.  ``None`` only for a source with no
+    #: regular lat/lon mesh to measure.
+    soil_mesh: object | None = None
 
     def __post_init__(self) -> None:
         if (not np.isfinite(self.preparation_seconds)
@@ -164,6 +175,14 @@ class NestedInputCatalog:
     files: tuple[object, ...] = ()
     units: Mapping[str, str] = field(default_factory=dict)
     provenance: Mapping[str, object] = field(default_factory=dict)
+    #: The resolved ``[ingest] soil_texture_downscale`` declaration, carried
+    #: for the same reason :class:`gpuwm.ingest.preflight.InputCatalog`
+    #: carries it: a child sees the catalog and not the case data.  A nest
+    #: that kept the forcing mesh in its soil while its parent did not --
+    #: or DROPPED it while its parent kept it, which is the
+    #: WRF-comparison direction -- would seam at the nest boundary in
+    #: every field soil moisture drives.  Default True: silence means ON.
+    soil_texture_downscale: bool = True
 
     def __post_init__(self) -> None:
         snapshots = tuple(self.snapshots)
@@ -430,9 +449,9 @@ def _static_catalog(catalog):
 
 def _read_source_orography(artifact: SourceOrography) -> np.ndarray:
     """Read one already domain-resolved declared artifact."""
-    import netCDF4
+    from gpuwm import netcdf_bridge
 
-    with netCDF4.Dataset(artifact.path) as dataset:
+    with netcdf_bridge.open_dataset(artifact.path) as dataset:
         if artifact.variable not in dataset.variables:
             raise ValueError(
                 f"source-orography variable {artifact.variable!r} is absent "
@@ -792,7 +811,26 @@ def _prepare_child_input_on_grid(
         preprocess_backend=preprocess,
         preprocess_receipt=mapping_receipt,
         water_temperature_policy=water_temperature_policy,
+        soil_mesh=_child_soil_mesh(source, grid, catalog),
         preparation_seconds=time.perf_counter() - started)
+
+
+def _child_soil_mesh(source, grid, catalog):
+    """The child's own :class:`SoilMeshPlan`, or ``None`` if unmeasurable.
+
+    A nest re-ingests the SAME forcing through the SAME interpolation onto
+    a grid that is FINER than its parent's, so the source mesh is more
+    visible in a child than in the domain the defect was reported on.  The
+    enable declaration rides the catalog for the same reason the water
+    policy does: a child sees no case data of its own, and it must not
+    diverge from its parent on a correctness remedy.
+
+    A source with no regular lat/lon axes (native HRRR) has no spacing to
+    measure here and returns ``None``.
+    """
+    from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
+
+    return soil_mesh_plan_from_case(source, grid, catalog)
 
 
 def prepare_child_input(
@@ -984,6 +1022,11 @@ def finalize_prepared_child(
         # mapping carries a raw SST beside its SKINTEMP.
         water_temperature=getattr(horizontal, "water_temperature", None),
         water_temperature_policy=prepared.water_temperature_policy,
+        # A nest inherits the defect unless it inherits the remedy: this
+        # child's soil column is built from the same 0.25 degree source
+        # its parent's was, onto a grid where one source cell is even
+        # wider in model cells.
+        soil_mesh=prepared.soil_mesh,
         route=_WATER_ROUTE)
     save_mub = state.mub2d.copy()
 
@@ -1453,7 +1496,7 @@ def compare_n1_static(produced: Mapping[int | str, object], bundle,
     domain (keyed by id or ``dNN`` label); see :func:`_reference_frame_path`
     for the discovery fallback.
     """
-    import netCDF4
+    from gpuwm import netcdf_bridge
 
     # Ratified N1 static comparator thresholds.  Keep the production-side
     # optional comparator self-contained: standalone RW-WPS intentionally
@@ -1474,12 +1517,15 @@ def compare_n1_static(produced: Mapping[int | str, object], bundle,
         wrf_path = _reference_frame_path(
             bundle / "wrfout_reference", label, reference_frames, domain_id)
         geo_path = bundle / "geo_em" / f"geo_em.{label}.nc"
-        with netCDF4.Dataset(wrf_path) as dataset:
+        # HGT/MUB out of a WRF history tape and HGT_M out of a WPS
+        # geo_em are meteorological/static fields being decoded, so both
+        # go through the Rust bridge.
+        with netcdf_bridge.open_dataset(wrf_path) as dataset:
             reference_hgt = np.asarray(dataset.variables["HGT"][0],
                                        dtype=np.float64)
             reference_mub = np.asarray(dataset.variables["MUB"][0],
                                        dtype=np.float64)
-        with netCDF4.Dataset(geo_path) as dataset:
+        with netcdf_bridge.open_dataset(geo_path) as dataset:
             reference_fine = np.asarray(dataset.variables["HGT_M"][0],
                                         dtype=np.float64)
         if hgt.shape != reference_hgt.shape or mub.shape != reference_mub.shape:

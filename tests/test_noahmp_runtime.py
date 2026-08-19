@@ -701,20 +701,37 @@ def test_the_parameter_handle_cache_is_not_mutated_by_a_column():
 
 
 @requires_gpu
-def test_a_glacier_column_is_refused_rather_than_run_as_vegetation():
-    """The post-static guard names the first active land glacier at init."""
-    from gpuwm.core.noahmp_runtime import NoahmpGlacierColumnError
+def test_a_glacier_column_dispatches_to_the_ported_glacier_path():
+    """A glacier column ADMITS (the NOAHMP_GLACIER port answers it) and
+    the census says which path ran; the guard's refusal survives only
+    for the disabled-path state, naming the first offending column."""
+    from gpuwm.core.dycore import step
+    from gpuwm.core.noahmp_runtime import (NoahmpGlacierColumnError,
+                                           guard_noahmp_glacier_columns)
 
     vegetation = np.full((4, 6), _GRASSLAND)
     vegetation[0, 0] = _ICE
     vegetation[1, 2] = _ICE
     xice = np.zeros((4, 6))
     xice[0, 0] = 1.0  # sea ice is not an active Noah-MP land column
+    state, cfg, driver = _build(nx=6, ny=4, vegtyp=vegetation, xice=xice)
+    step(state, cfg)
+    census = driver.last_noahmp_census
+    assert census["glacier"] == 1
+    assert "noahmp-glacier" in census["glacier_path"]
+    # the glacier column took the glacier arm's own write-back
+    assert float(driver.fields["z0"][1, 2].get()) == pytest.approx(0.002)
+    assert float(driver.fields["snowc"][1, 2].get()) == 1.0
+    # red-on-revert: the disabled path refuses with the column named
+    driver.noahmp_params.glacier_path = False
     with pytest.raises(
             NoahmpGlacierColumnError,
             match=r"first offending active land cell is \(j=1, i=2\).*"
                   r"VEGTYP=15=ISICE_TABLE"):
-        _build(nx=6, ny=4, vegtyp=vegetation, xice=xice)
+        guard_noahmp_glacier_columns(driver.fields, driver.noahmp_params)
+    with pytest.raises(NoahmpGlacierColumnError):
+        step(state, cfg)
+    driver.noahmp_params.glacier_path = True
 
 
 # ---------------------------------------------------------------------------

@@ -232,10 +232,12 @@ class TargetGrid:
         reconstructed from a namelist that may no longer exist.
         """
 
-        import netCDF4                                   # noqa: PLC0415
+        from gpuwm import netcdf_bridge                  # noqa: PLC0415
 
         path = Path(path)
-        with netCDF4.Dataset(path, "r") as dataset:
+        # XLAT/XLONG/PH/PHB/HGT are decoded meteorological georeference
+        # fields, so the read goes through the Rust bridge.
+        with netcdf_bridge.open_dataset(path) as dataset:
             attrs = {key: dataset.getncattr(key) for key in dataset.ncattrs()}
             missing = [key for key in ("MAP_PROJ", "TRUELAT1", "TRUELAT2",
                                        "STAND_LON", "CEN_LAT", "CEN_LON",

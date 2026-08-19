@@ -13,12 +13,14 @@ WHAT IS BEING PROVEN
    silently moved nothing cannot pass.
 2. HOST ROUND TRIP -- the same, with a PINNED host store on the domain side,
    exercising the real H2D/D2H path rather than D2D.
-3. ALL 41 NAMES -- a synthetic store carrying every name in
+3. ALL 47 NAMES -- a synthetic store carrying every name in
    ``STATE_SERIALIZED_ATTRS`` at its true stagger, including the 2-D
    ``(ny, nx)`` surface fields (``mup``, ``nwfa2d``, ``nifa2d``) and the
    ``(nz+1, ny, nx)`` vertical-face fields (``w``, ``php``).  A dry
-   milestone-one ``DomainState`` only allocates 9 of the 41, so the real-state
-   tests above cannot cover the rest; this one does.
+   milestone-one ``DomainState`` only allocates 9 of the 47, so the real-state
+   tests above cannot cover the rest; this one does.  The count is pinned
+   exactly and moves only together with a per-field justification -- see
+   ``NEW_SINCE_41`` at the test.
 4. STAGGERED PLACEMENT -- a gathered ``u`` tile is compared against the
    directly-indexed slice of the full ``u`` array, so an off-by-one in the
    x-face treatment fails loudly instead of hiding inside a round trip that is
@@ -308,7 +310,7 @@ def _roundtrip(store_arrays, sink_arrays, tile_arrays, specs, stream=None):
 # ==========================================================================
 
 def _synthetic_shapes(nz, ny, nx):
-    """``{name: shape}`` for every one of the 41 serialized attributes.
+    """``{name: shape}`` for every one of the serialized attributes (47).
 
     Staggering follows the WRF-ARW registry: ``u`` on x faces, ``v`` on y
     faces, ``w``/``php`` on w levels, ``mup``/``nwfa2d``/``nifa2d`` 2-D at the
@@ -532,10 +534,53 @@ def test_host_roundtrip_pinned():
     assert len(set(digests.values())) == 1, digests
 
 
-def test_all_41_names_device_and_host():
-    """Every name in STATE_SERIALIZED_ATTRS, both memory paths, both specs."""
+#: The names that joined ``STATE_SERIALIZED_ATTRS`` after this suite was
+#: written against its 41.  Each is a restart-stream transcription from WRF's
+#: own registry (the contract's comments carry the chapter and verse), and
+#: each is a field a big-domain streamed run would silently LOSE on resume if
+#: the transport never learned it:
+#:
+#:   ``qir``/``qib``      mp_physics=50 (P3) rime mass and rime volume --
+#:                        rho_rime = qirim/birim picks the fall-speed table,
+#:                        so dropping them resumes with different ice physics
+#:                        (commit 252e9c6bf).
+#:   ``th_old``/``qv_old`` P3's cross-step supersaturation carriers; re-zeroed
+#:                        they replay the first-step transient mid-trajectory
+#:                        (same commit).
+#:   ``nh``               mp_physics=9 (Milbrandt-Yau) hail number -- a zero
+#:                        moment under nonzero hail mass on resume
+#:                        (commit 6b0cb580f).
+#:   ``nn``               mp_physics=16 (WDM6) CCN concentration, same class,
+#:                        same commit.
+#:
+#: All six are plain 3-D mass-point fields, so their transport is the mass
+#: path the round trip below drives -- but "same path" is an argument, and
+#: the assertion beneath is the measurement.
+NEW_SINCE_41 = ("qir", "qib", "th_old", "qv_old", "nh", "nn")
+
+
+def test_all_47_names_device_and_host():
+    """Every name in STATE_SERIALIZED_ATTRS, both memory paths, both specs.
+
+    The count is asserted EXACTLY, not as a floor: this suite synthesizes a
+    shape for every contract name, so a name this file's stagger table does
+    not know would otherwise ride through as 3-D mass by default.  When the
+    contract grows, this number moves ON PURPOSE, together with a named
+    justification above -- 41 became 47 when the P3 restart fix and the
+    mp9/WDM6 moment fix landed their six fields without this gate moving,
+    which left the streamed-serialization round trip formally proven for a
+    set the product no longer serialized.
+    """
     names = G.serialized_attrs()
-    assert len(names) == 41, len(names)
+    assert len(names) == 47, (
+        f"STATE_SERIALIZED_ATTRS has {len(names)} names, this gate knows 47. "
+        "A new field joined (or left) the streamed serialization set: extend "
+        "NEW_SINCE_41's justification block and this count TOGETHER, and "
+        "check the new name's stagger against _synthetic_shapes")
+    for name in NEW_SINCE_41:
+        assert name in names, (
+            f"{name} left STATE_SERIALIZED_ATTRS; its restart consequence is "
+            "documented above -- removing it needs an argument, not a tidy-up")
     nz, ny, nx, tile, halo = 6, 48, 48, 16, 8
     shapes = _synthetic_shapes(nz, ny, nx)
     assert set(shapes) == set(names)
@@ -556,10 +601,18 @@ def test_all_41_names_device_and_host():
                    for n, a in store.items()}
             gb, sb = _roundtrip(store, sink, tile_arrays, specs)
             key = f"{spec_label}/{mem_label}"
-            results[key] = _compare(ref, sink, f"all-41 round trip [{key}]")
+            results[key] = _compare(ref, sink, f"all-47 round trip [{key}]")
             total = sum(int(a.nbytes) for a in ref.values())
             assert sb == total, (key, sb, total)
-            print(f"  [{key}] 41/41 fields, {len(specs)} tiles, "
+            # The six post-41 joiners moved on THIS path, not by argument:
+            # each was filled, gathered, scattered into a zeroed sink and
+            # byte-compared -- the compare above walks all 47, and this pins
+            # that the six were among them in both directions.
+            for name in NEW_SINCE_41:
+                assert name in ref and name in sink, name
+                assert _bytes_of(sink[name]) == _bytes_of(ref[name]), name
+            print(f"  [{key}] {len(names)}/{len(names)} fields, "
+                  f"{len(specs)} tiles, "
                   f"{total/1e6:.2f} MB domain, gathered {gb/1e6:.2f} MB, "
                   f"sha256 {results[key][:16]}...")
     assert len(set(results.values())) == 1, (
@@ -1026,7 +1079,7 @@ TESTS = [
     test_layered_fields_gather_like_mass_fields,
     test_device_roundtrip_real_state,
     test_host_roundtrip_pinned,
-    test_all_41_names_device_and_host,
+    test_all_47_names_device_and_host,
     test_staggered_u_tile_matches_direct_slice,
     test_wrapped_edge_tile_matches_rolled_reference,
     test_duplicate_invariant_is_load_bearing,

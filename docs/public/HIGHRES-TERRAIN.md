@@ -31,11 +31,11 @@ worse product.
 pip install gpuwm
 ```
 
-That is the whole install. The libraries this path needs to read and
-reproject DEM tiles (rasterio and pyproj) are ordinary dependencies of
-`gpuwm`, so every install line the project publishes carries them --
-`gpuwm`, `gpuwm[all-cu12]`, `gpuwm[all-cu13]`, `gpuwm[render]`, all of
-them. There is no extra to remember and none to forget.
+That is the whole install. What reads and reprojects the DEM tiles is the
+Rust `static-fields` library, and it ships in the bridge bundle every
+install line the project publishes stages -- `gpuwm`, `gpuwm[all-cu12]`,
+`gpuwm[all-cu13]`, `gpuwm[render]`, all of them. There is no extra to
+remember and none to forget.
 
 Check it before you run anything:
 
@@ -43,9 +43,17 @@ Check it before you run anything:
 gpuwm doctor
 ```
 
-The line to look for is `geography stack (rasterio + pyproj)`. It reports
-the two versions when the path can run, and names the exact command to fix
-it when it cannot.
+The line to look for is `static builder (default static-field engine)`.
+It reports the staged library and its ABI when the path can run, and
+names the exact command to build or stage it when it cannot.
+
+There is a second line, `geography stack (rasterio + pyproj, the highres
+fallback)`. Those two are the pure-Python parity reference the Rust
+substrate was proven against, and they are what `GPUWM_STATIC_PYTHON=1`
+runs on. They are NOT needed to build terrain, which is why that line
+says `info` rather than `missing` when they are absent. If you ever want
+to bisect a difference against the reference by hand, `docs/install.md`
+names the extra that adds them.
 
 > **Through 2.3.2 this was not true.** Those two libraries lived in an
 > optional `geog` extra that `[all]` excluded and no quickstart named, and

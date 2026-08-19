@@ -47,7 +47,8 @@ what WRF does:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Mapping
 
 import numpy as np
 
@@ -506,6 +507,13 @@ class RucSoilState:
     snow_depth: np.ndarray             # m
     level_depths: np.ndarray           # (num_soil_layers,), WRF ZS
     level_thicknesses: np.ndarray      # (num_soil_layers,), WRF DZS
+    #: Receipt from :mod:`gpuwm.ingest.soil_downscale`, spelled exactly as
+    #: :class:`gpuwm.ingest.soil.NoahSoilState`'s so the run receipt binds
+    #: it the same way for either land surface.  RUC's copy is measured on
+    #: RUC's OWN ``STAS-RUC`` air-dry and saturation constants, because the
+    #: column it describes is the one ``remap_soil_to_ruc_levels`` builds
+    #: and ``LSMRUC`` integrates -- not Noah's discarded four layers.
+    soil_texture_downscale: Mapping[str, object] = field(default_factory=dict)
 
 
 def _midpoint_cm(name: str, prefix: str) -> int:
@@ -593,6 +601,7 @@ def preprocess_ruc_soil(
     source_orography=None,
     water_temperature=None,
     water_temperature_policy=None,
+    soil_mesh=None,
     route=None,
 ) -> RucSoilState:
     """Build a RUC initial soil state, in ``preprocess_noah_soil``'s signature.
@@ -656,6 +665,16 @@ def preprocess_ruc_soil(
     ``num_soil_layers`` reaches :func:`ruc_soil_depths`, which refuses
     anything but 6 or 9.  gpuwm's CUDA leaves index a nine-element
     ``__constant__`` table, so a six-level request is refused further in.
+
+    ``soil_mesh`` is the sub-source-cell reconstitution
+    (:mod:`gpuwm.ingest.soil_downscale`).  It is applied HERE, to the source
+    profiles, and NOT forwarded to the Noah call below -- deliberately, and
+    for the two reasons this whole seam exists.  Noah's four layers are
+    discarded a few lines later, so downscaling them would be work thrown
+    away and an advisory printed twice; and RUC's air-dry and saturation
+    constants are ``SOILPARM.TBL``'s ``STAS-RUC`` block, not ``STAS``, so the
+    ratio has to be formed against the table the scheme itself integrates.
+    The Noah call therefore stays bitwise what it was.
     """
 
     from gpuwm.ingest.soil import (_host, _soil_temperature_elevation_delta,
@@ -693,6 +712,33 @@ def preprocess_ruc_soil(
         temperature = temperature + _soil_temperature_elevation_delta(
             terrain, source_orography, decision)
 
+    # The sub-source-cell reconstitution, on the SOURCE profiles and before
+    # the vertical remap.  It is a purely horizontal, per-slab affine map,
+    # so it commutes with the vertical remap on either geometry arm: doing
+    # it here means the levels RUC integrates carry the target grid's own
+    # texture without this seam having to know RUC's level table.
+    downscale_receipt: Mapping[str, object] = {}
+    if soil_mesh is not None:
+        from gpuwm.core.noah import load_tables, pack_params
+        from gpuwm.ingest.soil_downscale import downscale_soil_moisture
+
+        terrestrial = (_host(landmask) if landmask is not None
+                       else _host(fields["LANDSEA"])) >= 0.5
+        if lake_mask is not None:
+            terrestrial = terrestrial.copy()
+            terrestrial[_host(lake_mask).astype(bool)] = False
+        moisture, downscale_receipt = downscale_soil_moisture(
+            moisture, soil_type=soil_type, terrestrial=terrestrial,
+            params=pack_params(load_tables(mminsl="STAS-RUC")),
+            plan=soil_mesh,
+            # RUC's source profiles are not on Noah's four thicknesses, and
+            # the layer/level geometry differs per source, so the soil-water
+            # budget is left unweighted rather than weighted by the wrong
+            # column.  Every other number on the receipt is exact.
+            layer_thickness_m=())
+        downscale_receipt = dict(downscale_receipt)
+        downscale_receipt["soil_table"] = "STAS-RUC"
+
     columns = remap_soil_to_ruc_levels(
         source_temperature=temperature,
         source_moisture=moisture,
@@ -719,6 +765,7 @@ def preprocess_ruc_soil(
         snow_depth=surface.snow_depth,
         level_depths=columns.level_depths,
         level_thicknesses=columns.level_thicknesses,
+        soil_texture_downscale=downscale_receipt,
     )
 
 
@@ -737,6 +784,7 @@ def preprocess_land_surface_soil(
     source_orography=None,
     water_temperature=None,
     water_temperature_policy=None,
+    soil_mesh=None,
     route=None,
 ):
     """Route a soil source to the selected land surface's own geometry.
@@ -775,6 +823,7 @@ def preprocess_land_surface_soil(
             source_orography=source_orography,
             water_temperature=water_temperature,
             water_temperature_policy=water_temperature_policy,
+            soil_mesh=soil_mesh,
             route=route,
             **({} if num_soil_layers is None
                else {"num_soil_layers": int(num_soil_layers)}))
@@ -793,6 +842,7 @@ def preprocess_land_surface_soil(
             source_orography=source_orography,
             water_temperature=water_temperature,
             water_temperature_policy=water_temperature_policy,
+            soil_mesh=soil_mesh,
             route=route)
     raise ValueError(
         f"sf_surface_physics={scheme} has no soil ingest.  gpuwm implements "

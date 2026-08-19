@@ -1,0 +1,894 @@
+{
+ "syn_i2_big_bdr": {
+  "window": {
+   "args": [
+    3,
+    14,
+    2,
+    11
+   ],
+   "x0": 3,
+   "y0": 2,
+   "shape": [
+    2,
+    10,
+    12
+   ],
+   "raw": "syn_i2_big_bdr_w0.bin",
+   "coverage": "syn_i2_big_bdr_w0_cov.bin",
+   "values_z": 1,
+   "values": "syn_i2_big_bdr_w0_vals.bin"
+  },
+  "tile_window": {
+   "args": [
+    9,
+    1
+   ],
+   "x0": 7,
+   "y0": -1,
+   "shape": [
+    2,
+    10,
+    12
+   ],
+   "raw": "syn_i2_big_bdr_tile.bin"
+  },
+  "required_origins": [
+   [
+    1,
+    1
+   ],
+   [
+    9,
+    1
+   ],
+   [
+    1,
+    7
+   ],
+   [
+    9,
+    7
+   ]
+  ],
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "3fe0000000000000",
+   "dy": "3fe0000000000000",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "c056700000000000",
+   "known_lon": "c066780000000000",
+   "wordsize": 2,
+   "tile_x": 8,
+   "tile_y": 6,
+   "tile_z_start": 1,
+   "tile_z_end": 2,
+   "tile_bdr": 2,
+   "signed": true,
+   "endian_big": true,
+   "scale_factor": "3fe0000000000000",
+   "missing_value": "c08f380000000000",
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": false,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": false,
+   "tile_count": 4,
+   "tile_inventory_bounds": [
+    1,
+    16,
+    1,
+    12
+   ],
+   "nx_global": 16,
+   "ny_global": 12,
+   "wraps_x": false,
+   "extent_basis": "tile_inventory"
+  }
+ },
+ "syn_u1_topbot_negdy": {
+  "window": {
+   "args": [
+    1,
+    12,
+    1,
+    8
+   ],
+   "x0": 1,
+   "y0": 1,
+   "shape": [
+    1,
+    8,
+    12
+   ],
+   "raw": "syn_u1_tb_w0.bin",
+   "coverage": "syn_u1_tb_w0_cov.bin",
+   "values_z": 0,
+   "values": "syn_u1_tb_w0_vals.bin"
+  },
+  "latlon_to_xy": [
+   {
+    "lat": "40567e6666666666",
+    "lon": "c0667f3333333333",
+    "x": "3ff0000000000000",
+    "y": "3ff0000000000000"
+   },
+   {
+    "lat": "40566ccccccccccd",
+    "lon": "c066733333333333",
+    "x": "4021000000000000",
+    "y": "4019ffffffffff40"
+   },
+   {
+    "lat": "405679999999999a",
+    "lon": "c066765e353f7cee",
+    "x": "401a147ae147ac80",
+    "y": "4003fffffffffe00"
+   }
+  ],
+  "xy_to_latlon": [
+   {
+    "x": "3ff0000000000000",
+    "y": "3ff0000000000000",
+    "lat": "40567e6666666666",
+    "lon": "c0667f3333333333"
+   },
+   {
+    "x": "4015000000000000",
+    "y": "401f000000000000",
+    "lat": "405668cccccccccc",
+    "lon": "c066786666666666"
+   },
+   {
+    "x": "4028000000000000",
+    "y": "400c000000000000",
+    "lat": "4056766666666666",
+    "lon": "c0666d9999999999"
+   }
+  ],
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "3fa999999999999a",
+   "dy": "bfa999999999999a",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "40567e6666666666",
+   "known_lon": "c0667f3333333333",
+   "wordsize": 1,
+   "tile_x": 6,
+   "tile_y": 4,
+   "tile_z_start": 1,
+   "tile_z_end": 1,
+   "tile_bdr": 0,
+   "signed": false,
+   "endian_big": true,
+   "scale_factor": "3f847ae147ae147b",
+   "missing_value": "406fe00000000000",
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": true,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": false,
+   "tile_count": 4,
+   "tile_inventory_bounds": [
+    1,
+    12,
+    1,
+    8
+   ],
+   "nx_global": 12,
+   "ny_global": 8,
+   "wraps_x": false,
+   "extent_basis": "tile_inventory"
+  }
+ },
+ "syn_wrap": {
+  "window": {
+   "args": [
+    -2,
+    8,
+    0,
+    7
+   ],
+   "x0": -2,
+   "y0": 0,
+   "shape": [
+    1,
+    8,
+    11
+   ],
+   "raw": "syn_wrap_w0.bin",
+   "coverage": "syn_wrap_w0_cov.bin",
+   "values_z": 0,
+   "values": "syn_wrap_w0_vals.bin"
+  },
+  "latlon_to_xy": [
+   {
+    "lat": "c052c00000000000",
+    "lon": "c064a00000000000",
+    "x": "3ff0000000000000",
+    "y": "3ff0000000000000"
+   },
+   {
+    "lat": "4024000000000000",
+    "lon": "40667ccccccccccd",
+    "x": "4028fe4b17e4b17e",
+    "y": "400eaaaaaaaaaaab"
+   },
+   {
+    "lat": "404e000000000000",
+    "lon": "c0667fae147ae148",
+    "x": "3fe002bb0cf87da0",
+    "y": "4016000000000000"
+   },
+   {
+    "lat": "0000000000000000",
+    "lon": "402e000000000000",
+    "x": "401c000000000000",
+    "y": "400c000000000000"
+   }
+  ],
+  "required_origins": [
+   [
+    1,
+    1
+   ],
+   [
+    5,
+    1
+   ],
+   [
+    9,
+    1
+   ],
+   [
+    1,
+    4
+   ],
+   [
+    5,
+    4
+   ],
+   [
+    9,
+    4
+   ]
+  ],
+  "too_wide": {
+   "args": [
+    -2,
+    15,
+    1,
+    6
+   ],
+   "contains": "window wider than the global grid"
+  },
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "403e000000000000",
+   "dy": "403e000000000000",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "c052c00000000000",
+   "known_lon": "c064a00000000000",
+   "wordsize": 1,
+   "tile_x": 4,
+   "tile_y": 3,
+   "tile_z_start": 1,
+   "tile_z_end": 1,
+   "tile_bdr": 0,
+   "signed": false,
+   "endian_big": true,
+   "scale_factor": "3ff0000000000000",
+   "missing_value": null,
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": false,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": false,
+   "tile_count": 6,
+   "tile_inventory_bounds": [
+    1,
+    12,
+    1,
+    6
+   ],
+   "nx_global": 12,
+   "ny_global": 6,
+   "wraps_x": true,
+   "extent_basis": "regular_ll_complete"
+  }
+ },
+ "syn_sparse": {
+  "window": {
+   "args": [
+    1,
+    12,
+    1,
+    6
+   ],
+   "x0": 1,
+   "y0": 1,
+   "shape": [
+    1,
+    6,
+    12
+   ],
+   "raw": "syn_sparse_w0.bin",
+   "coverage": "syn_sparse_w0_cov.bin",
+   "values_z": 0,
+   "values": "syn_sparse_w0_vals.bin"
+  },
+  "missing_tiles": [
+   [
+    5,
+    1
+   ],
+   [
+    5,
+    4
+   ]
+  ],
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "403e000000000000",
+   "dy": "403e000000000000",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "c052c00000000000",
+   "known_lon": "c064a00000000000",
+   "wordsize": 1,
+   "tile_x": 4,
+   "tile_y": 3,
+   "tile_z_start": 1,
+   "tile_z_end": 1,
+   "tile_bdr": 0,
+   "signed": false,
+   "endian_big": true,
+   "scale_factor": "3ff0000000000000",
+   "missing_value": null,
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": false,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": true,
+   "tile_count": 4,
+   "tile_inventory_bounds": [
+    1,
+    12,
+    1,
+    6
+   ],
+   "nx_global": 12,
+   "ny_global": 6,
+   "wraps_x": true,
+   "extent_basis": "regular_ll_complete"
+  }
+ },
+ "syn_missing_nonsparse": {
+  "read_window_error": {
+   "args": [
+    1,
+    12,
+    1,
+    6
+   ],
+   "contains": "expected tile origin (5, 1) is absent"
+  },
+  "python_message": "WPS GEOG dataset <static-fields>/golden/lane2/synthetic/syn_missing_nonsparse has unexplained fill at source index (x=5, y=1); expected tile origin (5, 1) is absent. Declare this dataset sparse only when missing coverage is intentional.",
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "403e000000000000",
+   "dy": "403e000000000000",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "c052c00000000000",
+   "known_lon": "c064a00000000000",
+   "wordsize": 1,
+   "tile_x": 4,
+   "tile_y": 3,
+   "tile_z_start": 1,
+   "tile_z_end": 1,
+   "tile_bdr": 0,
+   "signed": false,
+   "endian_big": true,
+   "scale_factor": "3ff0000000000000",
+   "missing_value": null,
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": false,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": false,
+   "tile_count": 4,
+   "tile_inventory_bounds": [
+    1,
+    12,
+    1,
+    6
+   ],
+   "nx_global": 12,
+   "ny_global": 6,
+   "wraps_x": true,
+   "extent_basis": "regular_ll_complete"
+  }
+ },
+ "syn_zpad": {
+  "window": {
+   "args": [
+    1,
+    5,
+    1,
+    4
+   ],
+   "x0": 1,
+   "y0": 1,
+   "shape": [
+    2,
+    4,
+    5
+   ],
+   "raw": "syn_zpad_w0.bin",
+   "coverage": "syn_zpad_w0_cov.bin",
+   "values_z": 1,
+   "values": "syn_zpad_w0_vals.bin"
+  },
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "3ff0000000000000",
+   "dy": "3ff0000000000000",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "c056600000000000",
+   "known_lon": "c066700000000000",
+   "wordsize": 2,
+   "tile_x": 5,
+   "tile_y": 4,
+   "tile_z_start": 1,
+   "tile_z_end": 2,
+   "tile_bdr": 0,
+   "signed": false,
+   "endian_big": true,
+   "scale_factor": "3ff0000000000000",
+   "missing_value": null,
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": false,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": false,
+   "tile_count": 1,
+   "tile_inventory_bounds": [
+    1,
+    5,
+    1,
+    4
+   ],
+   "nx_global": 5,
+   "ny_global": 4,
+   "wraps_x": false,
+   "extent_basis": "tile_inventory"
+  }
+ },
+ "syn_zpad_bad": {
+  "read_window_error": {
+   "args": [
+    1,
+    5,
+    1,
+    4
+   ],
+   "contains": "undeclared trailing planes contain nonzero data (first at z=3, y=2, x=4)"
+  },
+  "python_message": "tile <static-fields>/golden/lane2/synthetic/syn_zpad_bad/00001-00005.00001-00004 has 3 complete z planes but its index declares 2; undeclared trailing planes contain nonzero data (first at z=3, y=2, x=4)",
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "3ff0000000000000",
+   "dy": "3ff0000000000000",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "c056600000000000",
+   "known_lon": "c066700000000000",
+   "wordsize": 2,
+   "tile_x": 5,
+   "tile_y": 4,
+   "tile_z_start": 1,
+   "tile_z_end": 2,
+   "tile_bdr": 0,
+   "signed": false,
+   "endian_big": true,
+   "scale_factor": "3ff0000000000000",
+   "missing_value": null,
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": false,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": false,
+   "tile_count": 1,
+   "tile_inventory_bounds": [
+    1,
+    5,
+    1,
+    4
+   ],
+   "nx_global": 5,
+   "ny_global": 4,
+   "wraps_x": false,
+   "extent_basis": "tile_inventory"
+  }
+ },
+ "syn_staged": {
+  "coverage_mask": {
+   "args": [
+    175,
+    245,
+    55,
+    95
+   ],
+   "mask": "syn_staged_cov.bin"
+  },
+  "missing_tiles": [
+   [
+    151,
+    31
+   ],
+   [
+    181,
+    31
+   ],
+   [
+    211,
+    31
+   ],
+   [
+    241,
+    31
+   ],
+   [
+    151,
+    61
+   ],
+   [
+    241,
+    61
+   ],
+   [
+    151,
+    91
+   ],
+   [
+    181,
+    91
+   ],
+   [
+    211,
+    91
+   ],
+   [
+    241,
+    91
+   ]
+  ],
+  "required_origins": [
+   [
+    151,
+    31
+   ],
+   [
+    181,
+    31
+   ],
+   [
+    211,
+    31
+   ],
+   [
+    241,
+    31
+   ],
+   [
+    151,
+    61
+   ],
+   [
+    181,
+    61
+   ],
+   [
+    211,
+    61
+   ],
+   [
+    241,
+    61
+   ],
+   [
+    151,
+    91
+   ],
+   [
+    181,
+    91
+   ],
+   [
+    211,
+    91
+   ],
+   [
+    241,
+    91
+   ]
+  ],
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "3ff0000000000000",
+   "dy": "3ff0000000000000",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "c056600000000000",
+   "known_lon": "c066700000000000",
+   "wordsize": 1,
+   "tile_x": 30,
+   "tile_y": 30,
+   "tile_z_start": 1,
+   "tile_z_end": 1,
+   "tile_bdr": 0,
+   "signed": false,
+   "endian_big": true,
+   "scale_factor": "3ff0000000000000",
+   "missing_value": null,
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": false,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": false,
+   "tile_count": 2,
+   "tile_inventory_bounds": [
+    181,
+    240,
+    61,
+    90
+   ],
+   "nx_global": 360,
+   "ny_global": 180,
+   "wraps_x": true,
+   "extent_basis": "regular_ll_staged_inventory"
+  }
+ },
+ "syn_global_nx": {
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "3fe0000000000000",
+   "dy": "3fe0000000000000",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "c056700000000000",
+   "known_lon": "c066780000000000",
+   "wordsize": 1,
+   "tile_x": 10,
+   "tile_y": 10,
+   "tile_z_start": 1,
+   "tile_z_end": 1,
+   "tile_bdr": 0,
+   "signed": false,
+   "endian_big": true,
+   "scale_factor": "3ff0000000000000",
+   "missing_value": null,
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": false,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": false,
+   "tile_count": 2,
+   "tile_inventory_bounds": [
+    1,
+    20,
+    1,
+    10
+   ],
+   "nx_global": 20,
+   "ny_global": 10,
+   "wraps_x": false,
+   "extent_basis": "declared_global"
+  }
+ },
+ "syn_le_u2": {
+  "window": {
+   "args": [
+    1,
+    4,
+    1,
+    3
+   ],
+   "x0": 1,
+   "y0": 1,
+   "shape": [
+    1,
+    3,
+    4
+   ],
+   "raw": "syn_le_u2_w0.bin",
+   "coverage": "syn_le_u2_w0_cov.bin",
+   "values_z": 0,
+   "values": "syn_le_u2_w0_vals.bin"
+  },
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "3ff0000000000000",
+   "dy": "3ff0000000000000",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "c056600000000000",
+   "known_lon": "c066700000000000",
+   "wordsize": 2,
+   "tile_x": 4,
+   "tile_y": 3,
+   "tile_z_start": 1,
+   "tile_z_end": 1,
+   "tile_bdr": 0,
+   "signed": false,
+   "endian_big": false,
+   "scale_factor": "3ff0000000000000",
+   "missing_value": null,
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": false,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": false,
+   "tile_count": 1,
+   "tile_inventory_bounds": [
+    1,
+    4,
+    1,
+    3
+   ],
+   "nx_global": 4,
+   "ny_global": 3,
+   "wraps_x": false,
+   "extent_basis": "tile_inventory"
+  }
+ },
+ "syn_i4_big": {
+  "window": {
+   "args": [
+    1,
+    4,
+    1,
+    3
+   ],
+   "x0": 1,
+   "y0": 1,
+   "shape": [
+    1,
+    3,
+    4
+   ],
+   "raw": "syn_i4_big_w0.bin",
+   "coverage": "syn_i4_big_w0_cov.bin",
+   "values_z": 0,
+   "values": "syn_i4_big_w0_vals.bin"
+  },
+  "index": {
+   "type": "continuous",
+   "projection": "regular_ll",
+   "dx": "3ff0000000000000",
+   "dy": "3ff0000000000000",
+   "known_x": "3ff0000000000000",
+   "known_y": "3ff0000000000000",
+   "known_lat": "c056600000000000",
+   "known_lon": "c066700000000000",
+   "wordsize": 4,
+   "tile_x": 4,
+   "tile_y": 3,
+   "tile_z_start": 1,
+   "tile_z_end": 1,
+   "tile_bdr": 0,
+   "signed": true,
+   "endian_big": true,
+   "scale_factor": "3ff0000000000000",
+   "missing_value": null,
+   "category_min": null,
+   "category_max": null,
+   "mminlu": "",
+   "iswater": null,
+   "islake": null,
+   "isice": null,
+   "isurban": null,
+   "row_order_top_bottom": false,
+   "interp_option": ""
+  },
+  "inventory": {
+   "declared_sparse": false,
+   "tile_count": 1,
+   "tile_inventory_bounds": [
+    1,
+    4,
+    1,
+    3
+   ],
+   "nx_global": 4,
+   "ny_global": 3,
+   "wraps_x": false,
+   "extent_basis": "tile_inventory"
+  }
+ }
+}

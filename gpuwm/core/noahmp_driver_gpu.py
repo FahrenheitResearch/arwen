@@ -1,12 +1,20 @@
 """CUDA wrappers for the Noah-MP driver cold start.
 
 One thread per column.  The device layout is the flat slot layout documented
-at the top of ``gpuwm/core/kernels/noahmp_driver.cu``, and
-:func:`pack_snow_init` / :func:`pack_noahmp_init` are the only place it is
-constructed, so the test and any future caller cannot disagree about it.
+at the top of ``gpuwm/core/kernels/noahmp_driver.cu``; :data:`SI_IN`,
+:data:`SI_OUT`, :data:`NI_IX`, :data:`NI_IN` and :data:`NI_OUT` are the only
+statement of it, so a caller and the acceptance gate cannot disagree about
+where a field lives.
 
-These wrappers are a validation surface for the port, not a runtime path:
-Noah-MP is not dispatchable and ``sf_surface_physics=4`` stays blocked.
+These wrappers are the runtime path.  ``sf_surface_physics=4`` dispatches
+(``gpuwm/core/physics.py``'s scheme table) and
+:func:`gpuwm.core.noahmp_runtime.cold_start_on_device` drives
+``noahmp_driver_noahmp_init`` over the whole grid once, before the first
+step, on every default Noah-MP run; ``gpuwm/core/preflight.py`` prices this
+translation unit into the scheme-4 compile inventory.  Until 2026-08-18 that
+last sentence was the only true one -- the kernel was compiled on every run
+and launched by nothing but ``tests/test_noahmp_driver_cuda.py``, while the
+cold start took the CPython transcription column by column.
 
 ``noahmp_driver.cu`` is compiled **after** ``noahmp_leaves.cu``.  The
 supercooled-liquid guess at 2095-2096 needs glibc 2.39's ``powf`` on the

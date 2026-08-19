@@ -1,0 +1,829 @@
+//! LANE 1 parity: every grid-math module against goldens extracted by
+//! RUNNING the real Python implementation
+//! (`tools/static_rust_port/extract_lane1_goldens.py`; numpy version
+//! recorded in the manifest).  Equality is at the BIT for every float
+//! and at the BYTE for the sealed NPZ -- the WPS-path contract from
+//! docs/dev/static-rust-port.md section 3.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use serde_json::Value;
+use static_fields::corridor::{
+    corridor_cost, corridor_grid, crop, grid_identity_probes,
+    CorridorGeometry,
+};
+use static_fields::npz::write_deterministic_npz;
+use static_fields::projection::npmath::{np_cosf, np_expf, np_logf, np_sinf};
+use static_fields::projection::wps32::{
+    sampling_surface, twin_for, LambertTwin, MercatorTwin, PolarTwin,
+};
+use static_fields::projection::{
+    GridSpec, ProjectedGrid, Wps32Twin, DEG32, RAD32,
+};
+use static_fields::types::{Field, FieldSet, Grid2, Stack3, Stagger};
+
+struct Goldens {
+    root: PathBuf,
+    manifest: Value,
+}
+
+impl Goldens {
+    fn load() -> Self {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("goldens")
+            .join("lane1");
+        let manifest: Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("manifest.json"))
+                .expect("goldens present (extract_lane1_goldens.py)"),
+        )
+        .expect("manifest parses");
+        Goldens { root, manifest }
+    }
+
+    fn case(&self, name: &str) -> &Value {
+        &self.manifest["cases"][name]
+    }
+
+    fn entry<'a>(&'a self, case: &str, key: &str) -> &'a Value {
+        let entry = &self.case(case)["arrays"][key];
+        assert!(
+            !entry.is_null(),
+            "golden array {case}.{key} missing from the manifest"
+        );
+        entry
+    }
+
+    fn raw(&self, case: &str, key: &str) -> (Vec<usize>, Vec<u8>) {
+        let entry = self.entry(case, key);
+        let shape: Vec<usize> = entry["shape"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as usize)
+            .collect();
+        let bytes = std::fs::read(
+            self.root.join(entry["file"].as_str().unwrap()),
+        )
+        .unwrap();
+        (shape, bytes)
+    }
+
+    fn f64s(&self, case: &str, key: &str) -> (Vec<usize>, Vec<f64>) {
+        let (shape, bytes) = self.raw(case, key);
+        assert_eq!(self.entry(case, key)["dtype"], "f64");
+        let values = bytes
+            .chunks_exact(8)
+            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        (shape, values)
+    }
+
+    fn f32s(&self, case: &str, key: &str) -> (Vec<usize>, Vec<f32>) {
+        let (shape, bytes) = self.raw(case, key);
+        assert_eq!(self.entry(case, key)["dtype"], "f32");
+        let values = bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        (shape, values)
+    }
+
+    fn bools(&self, case: &str, key: &str) -> Vec<bool> {
+        let (_, bytes) = self.raw(case, key);
+        assert_eq!(self.entry(case, key)["dtype"], "u8");
+        bytes.iter().map(|&b| b != 0).collect()
+    }
+
+    fn scalar_f64(&self, case: &str, key: &str) -> f64 {
+        let hex = self.case(case)["scalars"][key]["f64_bits"]
+            .as_str()
+            .unwrap_or_else(|| panic!("scalar {case}.{key} missing"));
+        f64::from_bits(u64::from_str_radix(hex, 16).unwrap())
+    }
+
+    fn has_scalar(&self, case: &str, key: &str) -> bool {
+        !self.case(case)["scalars"][key].is_null()
+    }
+
+    fn spec(&self, case: &str) -> GridSpec {
+        serde_json::from_value(self.case(case)["spec"].clone())
+            .unwrap_or_else(|e| panic!("{case} spec: {e}"))
+    }
+}
+
+fn assert_f64_bits(observed: &[f64], expected: &[f64], what: &str) {
+    assert_eq!(observed.len(), expected.len(), "{what}: length");
+    for (i, (o, e)) in observed.iter().zip(expected).enumerate() {
+        assert!(
+            o.to_bits() == e.to_bits(),
+            "{what}[{i}]: {o:?} ({:#018x}) != {e:?} ({:#018x})",
+            o.to_bits(),
+            e.to_bits()
+        );
+    }
+}
+
+fn assert_f32_bits(observed: &[f32], expected: &[f32], what: &str) {
+    assert_eq!(observed.len(), expected.len(), "{what}: length");
+    for (i, (o, e)) in observed.iter().zip(expected).enumerate() {
+        assert!(
+            o.to_bits() == e.to_bits(),
+            "{what}[{i}]: {o:?} ({:#010x}) != {e:?} ({:#010x})",
+            o.to_bits(),
+            e.to_bits()
+        );
+    }
+}
+
+fn assert_scalar_bits(g: &Goldens, case: &str, key: &str, observed: f64) {
+    let expected = g.scalar_f64(case, key);
+    assert!(
+        observed.to_bits() == expected.to_bits(),
+        "{case}.{key}: {observed:?} != {expected:?}"
+    );
+}
+
+/// Rebuild the harness Lambert chain: parent from its spec, d02/d03
+/// through the same nest arithmetic the extraction ran.
+fn lambert_chain(g: &Goldens) -> (ProjectedGrid, ProjectedGrid, ProjectedGrid) {
+    let parent = ProjectedGrid::new(g.spec("lam_parent")).unwrap();
+    let nest = |grid: &ProjectedGrid, case: &str| -> ProjectedGrid {
+        let n = &g.case(case)["nest"];
+        grid.nest(
+            n["i_parent_start"].as_i64().unwrap(),
+            n["j_parent_start"].as_i64().unwrap(),
+            n["parent_grid_ratio"].as_i64().unwrap(),
+            n["e_we"].as_i64().unwrap(),
+            n["e_sn"].as_i64().unwrap(),
+            None,
+            None,
+        )
+        .unwrap()
+    };
+    let d02 = nest(&parent, "lam_d02");
+    let d03 = nest(&d02, "lam_d03");
+    (parent, d02, d03)
+}
+
+fn projection_scalars(grid: &ProjectedGrid) -> Vec<(&'static str, f64)> {
+    let mut out = vec![
+        ("hemi", grid.hemi),
+        ("known_x", grid.spec.known_x),
+        ("known_y", grid.spec.known_y),
+        ("ref_lat", grid.spec.ref_lat),
+        ("ref_lon", grid.spec.ref_lon),
+        ("dx", grid.spec.dx),
+    ];
+    out.extend(grid.state_scalars());
+    out
+}
+
+fn check_grid_case(g: &Goldens, case: &str, grid: &ProjectedGrid,
+                   compare_cen: bool) {
+    for (key, value) in projection_scalars(grid) {
+        if g.has_scalar(case, key) {
+            assert_scalar_bits(g, case, key, value);
+        }
+    }
+    if compare_cen {
+        assert_scalar_bits(g, case, "cen_lat", grid.cen_lat);
+        assert_scalar_bits(g, case, "cen_lon", grid.cen_lon);
+    }
+    let staggers = [
+        ("mass", Stagger::Mass),
+        ("u", Stagger::U),
+        ("v", Stagger::V),
+        ("c", Stagger::Corner),
+    ];
+    for (label, stagger) in staggers {
+        let lat_key = format!("lat_{label}");
+        if g.case(case)["arrays"][&lat_key].is_null() {
+            continue;
+        }
+        let (lat, lon) = grid.latlon(stagger);
+        let (shape, expected_lat) = g.f64s(case, &lat_key);
+        assert_eq!(shape, vec![lat.ny, lat.nx], "{case}.{lat_key} shape");
+        assert_f64_bits(&lat.data, &expected_lat, &format!("{case}.{lat_key}"));
+        let (_, expected_lon) = g.f64s(case, &format!("lon_{label}"));
+        assert_f64_bits(&lon.data, &expected_lon,
+                        &format!("{case}.lon_{label}"));
+    }
+    if !g.case(case)["arrays"]["mapfac_m"].is_null() {
+        for (key, stagger) in [("mapfac_m", Stagger::Mass),
+                               ("mapfac_u", Stagger::U),
+                               ("mapfac_v", Stagger::V)] {
+            let observed = grid.map_factor_array(stagger);
+            let (_, expected) = g.f64s(case, key);
+            assert_f64_bits(&observed.data, &expected,
+                            &format!("{case}.{key}"));
+        }
+        let (f, e) = grid.coriolis_arrays(Stagger::Mass);
+        let (_, expected_f) = g.f64s(case, "coriolis_f");
+        let (_, expected_e) = g.f64s(case, "coriolis_e");
+        assert_f64_bits(&f.data, &expected_f, &format!("{case}.coriolis_f"));
+        assert_f64_bits(&e.data, &expected_e, &format!("{case}.coriolis_e"));
+        for (label, stagger) in [("m", Stagger::Mass), ("u", Stagger::U),
+                                 ("v", Stagger::V)] {
+            let (sin, cos) = grid.rotation_arrays(stagger);
+            let (_, expected_sin) = g.f64s(case, &format!("sinalpha_{label}"));
+            let (_, expected_cos) = g.f64s(case, &format!("cosalpha_{label}"));
+            assert_f64_bits(&sin.data, &expected_sin,
+                            &format!("{case}.sinalpha_{label}"));
+            assert_f64_bits(&cos.data, &expected_cos,
+                            &format!("{case}.cosalpha_{label}"));
+        }
+    }
+    // float64 inverse transform on the grid's own mass latlon
+    let (lat, lon) = grid.latlon(Stagger::Mass);
+    let mut xs = Vec::with_capacity(lat.data.len());
+    let mut ys = Vec::with_capacity(lat.data.len());
+    for (la, lo) in lat.data.iter().zip(&lon.data) {
+        let (x, y) = grid.latlon_to_ij(*la, *lo);
+        xs.push(x);
+        ys.push(y);
+    }
+    let (_, expected_x) = g.f64s(case, "llij_x");
+    let (_, expected_y) = g.f64s(case, "llij_y");
+    assert_f64_bits(&xs, &expected_x, &format!("{case}.llij_x"));
+    assert_f64_bits(&ys, &expected_y, &format!("{case}.llij_y"));
+}
+
+#[test]
+fn spec_built_grids_bit_equal() {
+    let g = Goldens::load();
+    // Cases the extraction constructed with an explicit known point --
+    // the seam's own semantics, centre included.
+    check_grid_case(&g, "lam_parent",
+                    &ProjectedGrid::new(g.spec("lam_parent")).unwrap(), true);
+    // Cases the Python constructed through the centred-default shortcut
+    // (cen copied from ref verbatim, no round trip): every derived
+    // ARRAY must still be bit-equal; the cen metadata stays a
+    // Python-side concern and is skipped here (documented in
+    // ProjectedGrid::new).
+    for case in ["lam_sh", "merc", "merc_subkm", "polar", "polar_sh",
+                 "polar_subkm"] {
+        check_grid_case(&g, case,
+                        &ProjectedGrid::new(g.spec(case)).unwrap(), false);
+    }
+}
+
+#[test]
+fn nest_chain_bit_equal() {
+    let g = Goldens::load();
+    let (_, d02, d03) = lambert_chain(&g);
+    check_grid_case(&g, "lam_d02", &d02, true);
+    check_grid_case(&g, "lam_d03", &d03, true);
+}
+
+#[test]
+fn translated_delegation_bit_equal() {
+    let g = Goldens::load();
+    let parent = ProjectedGrid::new(g.spec("lam_parent")).unwrap();
+    let tr = parent.translated(3, -2, None, None).unwrap();
+    let (lat, lon) = tr.latlon(Stagger::Mass);
+    let (_, expected_lat) = g.f64s("translated", "lat_mass");
+    let (_, expected_lon) = g.f64s("translated", "lon_mass");
+    assert_f64_bits(&lat.data, &expected_lat, "translated.lat_mass");
+    assert_f64_bits(&lon.data, &expected_lon, "translated.lon_mass");
+    assert_scalar_bits(&g, "translated", "cen_lat", tr.cen_lat);
+    assert_scalar_bits(&g, "translated", "cen_lon", tr.cen_lon);
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    for (la, lo) in lat.data.iter().zip(&lon.data) {
+        let (x, y) = tr.latlon_to_ij(*la, *lo);
+        xs.push(x);
+        ys.push(y);
+    }
+    let (_, expected_x) = g.f64s("translated", "llij_x");
+    let (_, expected_y) = g.f64s("translated", "llij_y");
+    assert_f64_bits(&xs, &expected_x, "translated.llij_x");
+    assert_f64_bits(&ys, &expected_y, "translated.llij_y");
+
+    // composition onto the ORIGINAL reference, with re-extent
+    let tr2 = tr.translated(-1, 4, Some(20), Some(18)).unwrap();
+    let (lat2, lon2) = tr2.latlon(Stagger::Mass);
+    let (_, expected_lat2) = g.f64s("translated", "compose_lat_mass");
+    let (_, expected_lon2) = g.f64s("translated", "compose_lon_mass");
+    assert_f64_bits(&lat2.data, &expected_lat2, "translated.compose_lat");
+    assert_f64_bits(&lon2.data, &expected_lon2, "translated.compose_lon");
+    let (reference, offset) = tr2.translation.as_ref().unwrap();
+    assert!(reference.translation.is_none(),
+            "composition must land on the ORIGINAL reference");
+    assert_eq!(*offset, (2, 2));
+}
+
+#[test]
+fn grid_refusals_name_the_breakage() {
+    let g = Goldens::load();
+    let mut bad = g.spec("lam_parent");
+    bad.dy = bad.dx * 2.0;
+    let err = ProjectedGrid::new(bad).unwrap_err().to_string();
+    assert!(err.contains("requires dx == dy"), "{err}");
+
+    let parent = ProjectedGrid::new(g.spec("lam_parent")).unwrap();
+    let err = parent.nest(1, 1, 0, 10, 10, None, None).unwrap_err()
+        .to_string();
+    assert!(err.contains("parent_grid_ratio must be >= 1"), "{err}");
+
+    let err = parent.translated(0, 0, Some(1), Some(9)).unwrap_err()
+        .to_string();
+    assert!(err.contains("at least one cell per axis"), "{err}");
+}
+
+#[test]
+fn corridor_geometry_probes_cost_bit_equal() {
+    let g = Goldens::load();
+    let expected_geometry = &g.case("corridor")["geometry"];
+    let geometry = CorridorGeometry::derive(2, 1, 3, 18, 15, 45, 39, 51, 44)
+        .unwrap();
+    assert_eq!(&serde_json::to_value(&geometry).unwrap(), expected_geometry);
+
+    let expected_cost = &g.case("corridor")["cost"];
+    let planes = expected_cost["planes_per_cell"].as_i64().unwrap();
+    let cost = corridor_cost(&geometry, planes);
+    assert_eq!(&serde_json::to_value(&cost).unwrap(), expected_cost);
+
+    let (_, d02, _) = lambert_chain(&g);
+    let cgrid = corridor_grid(&d02, &geometry).unwrap();
+    let probes = grid_identity_probes(&cgrid).unwrap();
+    let expected_order: Vec<&str> = g.case("corridor")["probe_order"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let observed_order: Vec<&str> =
+        probes.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(observed_order, expected_order);
+    for (name, [lat, lon]) in &probes {
+        assert_scalar_bits(&g, "corridor", &format!("probe_{name}_lat"), *lat);
+        assert_scalar_bits(&g, "corridor", &format!("probe_{name}_lon"), *lon);
+    }
+
+    let err = CorridorGeometry::derive(2, 1, 0, 18, 15, 45, 39, 51, 44)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("parent_grid_ratio must be >= 1"), "{err}");
+}
+
+fn field_from_golden(g: &Goldens, case: &str, key: &str) -> Field {
+    let (shape, data) = g.f64s(case, key);
+    match shape.len() {
+        2 => Field::Plane(Grid2 { ny: shape[0], nx: shape[1], data }),
+        3 => Field::Stack(Stack3 {
+            planes: shape[0],
+            ny: shape[1],
+            nx: shape[2],
+            data,
+        }),
+        other => panic!("{case}.{key}: unexpected rank {other}"),
+    }
+}
+
+#[test]
+fn corridor_crop_bit_equal_and_refuses_off_corridor() {
+    let g = Goldens::load();
+    let geometry: CorridorGeometry = serde_json::from_value(
+        g.case("corridor")["crop_geometry"].clone(),
+    )
+    .unwrap();
+    let mut fields = FieldSet::default();
+    for name in ["PLANE_A", "PLANE_B", "STACK_C"] {
+        fields.fields.insert(
+            name.to_string(),
+            field_from_golden(&g, "corridor", &format!("full_{name}")),
+        );
+    }
+    let placement = g.case("corridor")["crop_placement"].as_array().unwrap();
+    let (ip, jp) = (placement[0].as_i64().unwrap(),
+                    placement[1].as_i64().unwrap());
+    let cropped = crop(&fields, &geometry, ip, jp).unwrap();
+    for name in ["PLANE_A", "PLANE_B", "STACK_C"] {
+        let expected = field_from_golden(&g, "corridor", &format!("crop_{name}"));
+        let observed = cropped.get(name).unwrap();
+        assert_eq!(observed.dims(), expected.dims(), "{name} dims");
+        assert_f64_bits(observed.data(), expected.data(),
+                        &format!("crop.{name}"));
+    }
+    let err = crop(&fields, &geometry, 99, 1).unwrap_err().to_string();
+    assert!(err.contains("outside the statics corridor"), "{err}");
+    assert!(err.contains("wiring defect"), "{err}");
+}
+
+#[test]
+fn npz_seal_bytes_equal_python() {
+    let g = Goldens::load();
+    let mut fields = FieldSet::default();
+    let names: Vec<String> = g.case("npz")["fields"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    for name in &names {
+        fields.fields.insert(
+            name.clone(),
+            field_from_golden(&g, "npz", &format!("field_{name}")),
+        );
+    }
+    let golden_file = g.case("npz")["file"].as_str().unwrap();
+    let expected = std::fs::read(g.root.join(golden_file)).unwrap();
+
+    let out = std::env::temp_dir().join(format!(
+        "static-fields-npz-parity-{}.npz",
+        std::process::id()
+    ));
+    write_deterministic_npz(&out, &fields).unwrap();
+    let observed = std::fs::read(&out).unwrap();
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(observed.len(), expected.len(), "NPZ length");
+    if observed != expected {
+        let first = observed
+            .iter()
+            .zip(&expected)
+            .position(|(a, b)| a != b)
+            .unwrap();
+        panic!(
+            "NPZ bytes differ first at offset {first}: {:02x} != {:02x}",
+            observed[first], expected[first]
+        );
+    }
+}
+
+fn twin_state_map(twin_kind: &str, grid: &ProjectedGrid)
+                  -> BTreeMap<&'static str, f32> {
+    let mut out = BTreeMap::new();
+    out.insert("rad", RAD32);
+    out.insert("deg", DEG32);
+    match twin_kind {
+        "lambert" => {
+            let t = LambertTwin::new(grid);
+            out.insert("hemi", t.hemi);
+            out.insert("tl1", t.tl1);
+            out.insert("tl2", t.tl2);
+            out.insert("cone", t.cone);
+            out.insert("rebydx", t.rebydx);
+            out.insert("stand_lon", t.stand_lon);
+            out.insert("rsw", t.rsw);
+            out.insert("polei", t.polei);
+            out.insert("polej", t.polej);
+        }
+        "mercator" => {
+            let t = MercatorTwin::new(grid);
+            out.insert("lat1", t.lat1);
+            out.insert("lon1", t.lon1);
+            out.insert("knowni", t.knowni);
+            out.insert("knownj", t.knownj);
+            out.insert("dlon", t.dlon);
+            out.insert("rsw", t.rsw);
+        }
+        "polar" => {
+            let t = PolarTwin::new(grid);
+            out.insert("hemi", t.hemi);
+            out.insert("tl1", t.tl1);
+            out.insert("stand_lon", t.stand_lon);
+            out.insert("rebydx", t.rebydx);
+            out.insert("scale_top", t.scale_top);
+            out.insert("rsw", t.rsw);
+            out.insert("polei", t.polei);
+            out.insert("polej", t.polej);
+        }
+        other => panic!("twin kind {other}"),
+    }
+    out
+}
+
+fn adopted_state_map(twin_kind: &str, grid: &ProjectedGrid)
+                     -> BTreeMap<&'static str, f32> {
+    let mut out = twin_state_map(twin_kind, grid);
+    match twin_kind {
+        "lambert" => {
+            let mut t = LambertTwin::new(grid);
+            t.adopt_public_pole(grid);
+            out.insert("polei", t.polei);
+            out.insert("polej", t.polej);
+            out.insert("rebydx", t.rebydx);
+        }
+        "mercator" => {
+            let mut t = MercatorTwin::new(grid);
+            t.adopt_public_pole(grid);
+            out.insert("dlon", t.dlon);
+            out.insert("rsw", t.rsw);
+        }
+        "polar" => {
+            let mut t = PolarTwin::new(grid);
+            t.adopt_public_pole(grid);
+            out.insert("polei", t.polei);
+            out.insert("polej", t.polej);
+            out.insert("rebydx", t.rebydx);
+        }
+        other => panic!("twin kind {other}"),
+    }
+    out
+}
+
+fn check_twin_state(g: &Goldens, case: &str, key: &str,
+                    observed: &BTreeMap<&'static str, f32>) {
+    let expected = g.case(case)[key].as_object().unwrap();
+    for (name, hex) in expected {
+        let bits = u32::from_str_radix(hex.as_str().unwrap(), 16).unwrap();
+        let value = observed
+            .get(name.as_str())
+            .unwrap_or_else(|| panic!("{case}.{key}: {name} not ported"));
+        assert!(
+            value.to_bits() == bits,
+            "{case}.{key}.{name}: {value:?} ({:#010x}) != bits {bits:#010x}",
+            value.to_bits()
+        );
+    }
+}
+
+fn check_twin_transforms(g: &Goldens, case: &str, grid: &ProjectedGrid) {
+    let mut twin = twin_for(grid).unwrap();
+    if grid.spec.dx < 1000.0 {
+        twin.adopt_public_pole(grid);
+    }
+    let nx = grid.spec.e_we as usize - 1;
+    let ny = grid.spec.e_sn as usize - 1;
+    let halo = 3usize;
+    let mut lat = Vec::new();
+    let mut lon = Vec::new();
+    for j in 0..(ny + 2 * halo) {
+        let y = (1 - halo as i64 + j as i64) as f64;
+        for i in 0..(nx + 2 * halo) {
+            let x = (1 - halo as i64 + i as i64) as f64;
+            let (la, lo) = twin.ij_to_latlon32(x as f32, y as f32);
+            lat.push(la);
+            lon.push(lo);
+        }
+    }
+    let (_, expected_lat) = g.f32s(case, "twin_lat");
+    let (_, expected_lon) = g.f32s(case, "twin_lon");
+    assert_f32_bits(&lat, &expected_lat, &format!("{case}.twin_lat"));
+    assert_f32_bits(&lon, &expected_lon, &format!("{case}.twin_lon"));
+
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    for (la, lo) in lat.iter().zip(&lon) {
+        let (x, y) = twin.latlon_to_ij32(*la, *lo);
+        xs.push(x);
+        ys.push(y);
+    }
+    let (_, expected_x) = g.f32s(case, "twin_llij_x");
+    let (_, expected_y) = g.f32s(case, "twin_llij_y");
+    assert_f32_bits(&xs, &expected_x, &format!("{case}.twin_llij_x"));
+    assert_f32_bits(&ys, &expected_y, &format!("{case}.twin_llij_y"));
+}
+
+#[test]
+fn wps32_twin_states_bit_equal() {
+    let g = Goldens::load();
+    let (_, _, d03) = lambert_chain(&g);
+    let cases: Vec<(&str, &str, ProjectedGrid)> = vec![
+        ("lam_parent", "lambert",
+         ProjectedGrid::new(g.spec("lam_parent")).unwrap()),
+        ("lam_d03", "lambert", d03),
+        ("lam_sh", "lambert", ProjectedGrid::new(g.spec("lam_sh")).unwrap()),
+        ("merc", "mercator", ProjectedGrid::new(g.spec("merc")).unwrap()),
+        ("merc_subkm", "mercator",
+         ProjectedGrid::new(g.spec("merc_subkm")).unwrap()),
+        ("polar", "polar", ProjectedGrid::new(g.spec("polar")).unwrap()),
+        ("polar_sh", "polar",
+         ProjectedGrid::new(g.spec("polar_sh")).unwrap()),
+        ("polar_subkm", "polar",
+         ProjectedGrid::new(g.spec("polar_subkm")).unwrap()),
+    ];
+    for (case, kind, grid) in &cases {
+        check_twin_state(&g, case, "twin_state",
+                         &twin_state_map(kind, grid));
+        if !g.case(case)["twin_state_adopted"].is_null() {
+            check_twin_state(&g, case, "twin_state_adopted",
+                             &adopted_state_map(kind, grid));
+        }
+        check_twin_transforms(&g, case, grid);
+    }
+}
+
+#[test]
+fn translated_twin_delegates_bit_equal() {
+    let g = Goldens::load();
+    let parent = ProjectedGrid::new(g.spec("lam_parent")).unwrap();
+    let tr = parent.translated(3, -2, None, None).unwrap();
+    check_twin_transforms(&g, "translated", &tr);
+}
+
+#[test]
+fn sampling_surfaces_bit_equal() {
+    let g = Goldens::load();
+    let (_, _, d03) = lambert_chain(&g);
+    let cases: Vec<(&str, ProjectedGrid)> = vec![
+        ("lam_parent", ProjectedGrid::new(g.spec("lam_parent")).unwrap()),
+        ("lam_d03", d03),
+        ("merc", ProjectedGrid::new(g.spec("merc")).unwrap()),
+        ("merc_subkm", ProjectedGrid::new(g.spec("merc_subkm")).unwrap()),
+        ("polar_subkm", ProjectedGrid::new(g.spec("polar_subkm")).unwrap()),
+    ];
+    for (case, grid) in &cases {
+        let surface = sampling_surface(grid, 3).unwrap();
+        let (shape, expected_lat_e) = g.f32s(case, "surface_lat_e");
+        assert_eq!(shape, vec![surface.nye, surface.nxe],
+                   "{case} surface shape");
+        assert_f32_bits(&surface.lat_e, &expected_lat_e,
+                        &format!("{case}.surface_lat_e"));
+        let (_, expected_lower) = g.f32s(case, "surface_lat_lower_e");
+        assert_f32_bits(&surface.lat_lower_e, &expected_lower,
+                        &format!("{case}.surface_lat_lower_e"));
+
+        let lon_dtype = g.case(case)["surface_lon_e_dtype"].as_str().unwrap();
+        if lon_dtype == "float32" {
+            assert!(surface.lon_e_is_f32, "{case}: lon_e must be the f32 \
+                     geogrid reconciliation");
+            let (_, expected_lon) = g.f32s(case, "surface_lon_e");
+            let narrowed: Vec<f32> =
+                surface.lon_e.iter().map(|&v| v as f32).collect();
+            assert_f32_bits(&narrowed, &expected_lon,
+                            &format!("{case}.surface_lon_e"));
+            for (i, &v) in surface.lon_e.iter().enumerate() {
+                assert!(v == expected_lon[i] as f64,
+                        "{case}.surface_lon_e[{i}] not exactly-f32");
+            }
+        } else {
+            assert!(!surface.lon_e_is_f32);
+            let (_, expected_lon) = g.f64s(case, "surface_lon_e");
+            assert_f64_bits(&surface.lon_e, &expected_lon,
+                            &format!("{case}.surface_lon_e"));
+        }
+
+        let expected_lon_band = g.bools(case, "surface_lon_boundary_band");
+        assert_eq!(surface.lon_boundary_band, expected_lon_band,
+                   "{case}.lon_boundary_band");
+        let expected_lat_band = g.bools(case, "surface_lat_integer_band");
+        assert_eq!(surface.lat_integer_band, expected_lat_band,
+                   "{case}.lat_integer_band");
+
+        let (_, expected_lat_c) = g.f32s(case, "surface_lat_c");
+        assert_f32_bits(&surface.lat_c, &expected_lat_c,
+                        &format!("{case}.surface_lat_c"));
+        let (_, expected_lon_c) = g.f64s(case, "surface_lon_c");
+        assert_f64_bits(&surface.lon_c, &expected_lon_c,
+                        &format!("{case}.surface_lon_c"));
+    }
+}
+
+#[test]
+fn npmath_kernels_bit_equal_numpy() {
+    let g = Goldens::load();
+    let (_, trig_in) = g.f32s("npmath", "trig_in");
+    let (_, sin_out) = g.f32s("npmath", "sin_out");
+    let (_, cos_out) = g.f32s("npmath", "cos_out");
+    let observed_sin: Vec<f32> = trig_in.iter().map(|&x| np_sinf(x)).collect();
+    let observed_cos: Vec<f32> = trig_in.iter().map(|&x| np_cosf(x)).collect();
+    assert_f32_bits(&observed_sin, &sin_out, "npmath.sin");
+    assert_f32_bits(&observed_cos, &cos_out, "npmath.cos");
+
+    let (_, exp_in) = g.f32s("npmath", "exp_in");
+    let (_, exp_out) = g.f32s("npmath", "exp_out");
+    let observed_exp: Vec<f32> = exp_in.iter().map(|&x| np_expf(x)).collect();
+    assert_f32_bits(&observed_exp, &exp_out, "npmath.exp");
+
+    let (_, log_in) = g.f32s("npmath", "log_in");
+    let (_, log_out) = g.f32s("npmath", "log_out");
+    let observed_log: Vec<f32> = log_in.iter().map(|&x| np_logf(x)).collect();
+    assert_f32_bits(&observed_log, &log_out, "npmath.log");
+}
+
+/// Optional large randomized kernel sweep: point `GPUWM_NPMATH_SWEEP`
+/// at a directory produced by `tools/static_rust_port/gen_npmath_sweep.py`
+/// (hundreds of thousands of values across the full magnitude range,
+/// too big to commit).  Without the env var this test is a no-op.
+#[test]
+fn npmath_extended_sweep() {
+    let Ok(dir) = std::env::var("GPUWM_NPMATH_SWEEP") else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let read_f32 = |name: &str| -> Vec<f32> {
+        std::fs::read(dir.join(name))
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect()
+    };
+    let assert_bits = |observed: &[f32], expected: &[f32], what: &str| {
+        assert_eq!(observed.len(), expected.len());
+        let mut bad = 0usize;
+        for (i, (o, e)) in observed.iter().zip(expected).enumerate() {
+            if o.to_bits() != e.to_bits() && !(o.is_nan() && e.is_nan()) {
+                if bad == 0 {
+                    eprintln!("{what}[{i}]: {o:?} != {e:?}");
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0, "{what}: {bad} bit mismatches");
+    };
+    let trig = read_f32("trig_in.f32");
+    let sin: Vec<f32> = trig.iter().map(|&x| np_sinf(x)).collect();
+    let cos: Vec<f32> = trig.iter().map(|&x| np_cosf(x)).collect();
+    assert_bits(&sin, &read_f32("sin_out.f32"), "sweep.sin");
+    assert_bits(&cos, &read_f32("cos_out.f32"), "sweep.cos");
+    let exp_in = read_f32("exp_in.f32");
+    let exp: Vec<f32> = exp_in.iter().map(|&x| np_expf(x)).collect();
+    assert_bits(&exp, &read_f32("exp_out.f32"), "sweep.exp");
+    let log_in = read_f32("log_in.f32");
+    let log: Vec<f32> = log_in.iter().map(|&x| np_logf(x)).collect();
+    assert_bits(&log, &read_f32("log_out.f32"), "sweep.log");
+}
+
+#[test]
+fn capi_grid_seam_end_to_end() {
+    let g = Goldens::load();
+    let spec_json = serde_json::to_string(&g.spec("lam_parent")).unwrap();
+    let mut handle = 0u64;
+    let rc = unsafe {
+        static_fields::capi::grid::gpuwm_static_grid_new(
+            spec_json.as_ptr(),
+            spec_json.len(),
+            &mut handle,
+        )
+    };
+    assert_eq!(rc, 0, "grid_new refused");
+    assert_ne!(handle, 0);
+
+    let (shape, expected_lat) = g.f64s("lam_parent", "lat_mass");
+    let mut out = vec![0.0f64; shape[0] * shape[1]];
+    let rc = unsafe {
+        static_fields::capi::grid::gpuwm_static_grid_array(
+            handle, 0, 0, out.as_mut_ptr(), out.len(),
+        )
+    };
+    assert_eq!(rc, 0, "grid_array refused");
+    assert_f64_bits(&out, &expected_lat, "capi.lat_mass");
+
+    // nest through the seam == the Python child bytes
+    let n = &g.case("lam_d02")["nest"];
+    let mut child = 0u64;
+    let rc = unsafe {
+        static_fields::capi::grid::gpuwm_static_grid_nest(
+            handle,
+            n["i_parent_start"].as_i64().unwrap(),
+            n["j_parent_start"].as_i64().unwrap(),
+            n["parent_grid_ratio"].as_i64().unwrap(),
+            n["e_we"].as_i64().unwrap(),
+            n["e_sn"].as_i64().unwrap(),
+            f64::NAN,
+            f64::NAN,
+            &mut child,
+        )
+    };
+    assert_eq!(rc, 0, "grid_nest refused");
+    let (cshape, expected_child_lat) = g.f64s("lam_d02", "lat_mass");
+    let mut child_lat = vec![0.0f64; cshape[0] * cshape[1]];
+    let rc = unsafe {
+        static_fields::capi::grid::gpuwm_static_grid_array(
+            child, 0, 0, child_lat.as_mut_ptr(), child_lat.len(),
+        )
+    };
+    assert_eq!(rc, 0);
+    assert_f64_bits(&child_lat, &expected_child_lat, "capi.child_lat");
+
+    // bulk transform: mass lat/lon -> x/y equals the llij golden
+    let (_, lat) = g.f64s("lam_parent", "lat_mass");
+    let (_, lon) = g.f64s("lam_parent", "lon_mass");
+    let mut a = lat.clone();
+    let mut b = lon.clone();
+    let rc = unsafe {
+        static_fields::capi::grid::gpuwm_static_grid_transform(
+            handle, 1, a.as_mut_ptr(), b.as_mut_ptr(), a.len(),
+        )
+    };
+    assert_eq!(rc, 0, "grid_transform refused");
+    let (_, expected_x) = g.f64s("lam_parent", "llij_x");
+    let (_, expected_y) = g.f64s("lam_parent", "llij_y");
+    assert_f64_bits(&a, &expected_x, "capi.llij_x");
+    assert_f64_bits(&b, &expected_y, "capi.llij_y");
+
+    // identity probes render as JSON whose parsed floats are the
+    // library's own probe values
+    let mut buf = vec![0u8; 4096];
+    let len = unsafe {
+        static_fields::capi::grid::gpuwm_static_grid_identity_probes(
+            handle, buf.as_mut_ptr(), buf.len(),
+        )
+    };
+    assert!(len > 0, "identity probes refused");
+    let json: Value =
+        serde_json::from_slice(&buf[..len as usize]).unwrap();
+    let grid = ProjectedGrid::new(g.spec("lam_parent")).unwrap();
+    for (name, [lat, lon]) in grid_identity_probes(&grid).unwrap() {
+        assert_eq!(json[&name][0].as_f64().unwrap().to_bits(),
+                   lat.to_bits(), "probe {name} lat");
+        assert_eq!(json[&name][1].as_f64().unwrap().to_bits(),
+                   lon.to_bits(), "probe {name} lon");
+    }
+
+    static_fields::capi::grid::gpuwm_static_grid_free(handle);
+    static_fields::capi::grid::gpuwm_static_grid_free(child);
+}

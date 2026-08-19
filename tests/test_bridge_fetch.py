@@ -613,13 +613,20 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
     host = bridge_assets.host_platform()
     if host is None:
         pytest.skip("no bundle platform for this host")
+    from gpuwm.io.nc_writer_bridge import library_names as ncwrite_names
     from gpuwm.obs.dealias_region import library_name as region_library_name
+    from gpuwm.static.rust_bridge import library_names as static_names
+    from gpuwm.obs_regrid_bridge import (
+        library_names as obsregrid_names)
 
     # One expected filename per library, from the resolver that actually
-    # searches for it: two libraries with one shared expectation would
+    # searches for it: libraries with one shared expectation would
     # pass while a bundle staged a file nothing looks for.
     libraries = {"gpuwm_preprocess_cpu": cpu_bridge_candidates()[-1].name,
-                 "region_global_dealias": region_library_name()}
+                 "region_global_dealias": region_library_name(),
+                 "netcdf_writer": ncwrite_names()[0],
+                 "static_fields": static_names()[0],
+                 "obs_regrid": obsregrid_names()[0]}
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
         produced = bridge_assets.artifact_filename(artifact, host)
         if artifact.kind == "library":

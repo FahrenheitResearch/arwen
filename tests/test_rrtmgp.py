@@ -17,8 +17,13 @@ import pytest
 
 from conftest import requires_gpu
 
+from gpuwm import data_assets
 
-DATA_DIR = Path(__file__).parents[1] / "gpuwm" / "data" / "rrtmgp"
+
+#: Resolved, never joined.  These NetCDFs ship in the ``gpuwm-data``
+#: companion distribution since 2.5.0, and re-deriving the path here from
+#: the repository root would test a directory that no longer exists.
+DATA_DIR = data_assets.rrtmgp_data_dir()
 
 
 _RFMIP_NAMES = {

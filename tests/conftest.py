@@ -236,6 +236,34 @@ def _isolated_fetch_lock_root(tmp_path_factory):
         os.environ[fetch_guard.LOCK_ROOT_ENV] = previous
 
 
+@pytest.fixture(autouse=True)
+def _wizard_probe_pinned_to_a_24gib_card(monkeypatch):
+    """Pin the ONE number the outside world moves in the domain wizard.
+
+    With neither ``--card`` nor ``--vram-gib``, ``gpuwm domain`` measures
+    the local card through its probe seam and refuses when nothing is
+    measurable.  Unpinned, every bare-wizard fixture emission in this
+    suite (117 of them at the time of writing) would size against
+    whatever card the box happens to hold -- or refuse outright on the
+    CPU legs -- turning grid dimensions machine-dependent.  The pin is a
+    24 GiB card, the tier the old silent default assumed, so every
+    historical fixture keeps its exact bytes.
+
+    In-process invocations only; a test that drives the real CLI in a
+    subprocess bypasses this and must declare its card (or pin its own
+    probe).  The sizing-authority tests that exercise the measure and
+    refuse paths re-monkeypatch this same seam with their own answers.
+    """
+
+    from gpuwm import domain_wizard
+
+    monkeypatch.setattr(
+        domain_wizard, "device_memory_probe_subprocess",
+        lambda **_kwargs: {"free_bytes": 20 * 1024 ** 3,
+                           "total_bytes": 24 * 1024 ** 3,
+                           "profile": None})
+
+
 def complete_runtime_manifest(payload: dict | None = None,
                               *, platform_name: str = "linux-x86_64",
                               **overrides) -> dict:

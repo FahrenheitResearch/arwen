@@ -132,15 +132,32 @@ def _write_window(target, window, values) -> None:
 def overlap_statics_mismatches(old_fields, new_fields, plan,
                                names=OVERLAP_STATIC_EQUALITY_FIELDS
                                ) -> dict[str, object]:
-    """Count per-field bitwise mismatches on the shared ground.
+    """Count per-field mismatches on the shared ground.
 
     ``old_fields`` are the outgoing footprint's statics, ``new_fields``
     the rebuilt ones; ``plan`` supplies the index-space windows
     (``new[dst] <-> old[src]``).  Identical source + identical cells
-    must give identical bytes; any nonzero count is a defect of the
-    statics build, not an input error, and the caller refuses on it.
+    must give identical VALUES; the caller refuses on any count in
+    ``mismatched_fields``.
+
+    ONE ULP IS TOLERATED ON FLOAT FIELDS, MEASURED, NOT ASSUMED.  The
+    climatology resamplers accumulate source pixels in an order that
+    shifts with the source crop, and floating-point addition is not
+    associative, so the same pixels over the same cell can land one ULP
+    apart between two footprints.  Measured on the 2011-04-27 ERA5
+    moving-nest case (work/complaint2/probe_greenfrac2.py): a 2-parent-
+    cell move rebuilt GREENFRAC bitwise-identical on the whole overlap
+    except THREE month-values of one west-edge cell, each exactly one
+    float64 ULP off (5.6e-17 on 0.335) -- and the refusal killed a
+    6-hour forecast at its first relocation over it.  Adjacent floats
+    are physics-identical ground; a category flip, a different pixel
+    set, or any drift beyond adjacency is still a statics-build defect
+    and still refuses.  Within-tolerance counts are REPORTED per field
+    (``within_one_ulp``), never silent, mirroring the sixteen_pt
+    clamp's bounded-margin-with-counted-advisory posture.
     """
     fields: dict[str, int] = {}
+    within: dict[str, int] = {}
     compared_cells = 0
     for name in names:
         old = old_fields.get(name)
@@ -158,21 +175,27 @@ def overlap_statics_mismatches(old_fields, new_fields, plan,
         (dst_j, src_j), (dst_i, src_i) = window
         actual = np.ascontiguousarray(new[..., dst_j, dst_i])
         expected = np.ascontiguousarray(old[..., src_j, src_i])
-        if actual.dtype.itemsize == 8 and actual.dtype.kind == "f":
-            mismatches = int(np.count_nonzero(
-                actual.view(np.uint64) != expected.view(np.uint64)))
-        elif actual.dtype.kind == "f":
-            mismatches = int(np.count_nonzero(
-                actual.view(np.uint32) != expected.view(np.uint32)))
+        if actual.dtype.kind == "f":
+            unequal = actual != expected
+            # One-ULP adjacency, exactly: stepping the smaller value
+            # toward the larger reaches it.  NaN fails every compare and
+            # therefore lands in the refusing count, deliberately.
+            adjacent = unequal & (np.nextafter(actual, expected)
+                                  == expected)
+            beyond = int(np.count_nonzero(unequal & ~adjacent))
+            fields[name] = beyond
+            ulp_count = int(np.count_nonzero(adjacent))
+            if ulp_count:
+                within[name] = ulp_count
         else:
-            mismatches = int(np.count_nonzero(actual != expected))
-        fields[name] = mismatches
+            fields[name] = int(np.count_nonzero(actual != expected))
         compared_cells += int(actual.size)
     return {
         "fields": fields,
         "compared_cells": int(compared_cells),
         "mismatched_fields": {name: count for name, count in fields.items()
                               if count},
+        "within_one_ulp": within,
         "pass": bool(compared_cells) and not any(fields.values()),
     }
 

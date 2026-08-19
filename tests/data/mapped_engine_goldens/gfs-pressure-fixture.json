@@ -1,0 +1,30 @@
+{
+  "decode": {
+    "mapping": {
+      "name": "rw-wps-gfs-pressure-grib2.mapping.json",
+      "sha256": "5b0f41a7f4ddee1116ce8310dfd67827761413908d45402e1f55f32facc61d86"
+    },
+    "refusal": {
+      "message": "volumetric_soil_moisture has 1 GRIB soil records; the mapping declares 4 ordered soil selectors",
+      "type": "ValueError"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "gfs-pressure-fixture",
+    "verdict": "REFUSED"
+  },
+  "inspect": {
+    "refusal": {
+      "message": "volumetric_soil_moisture has 1 GRIB soil records; the mapping declares 4 ordered soil selectors",
+      "type": "ValueError"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "gfs-pressure-fixture",
+    "verdict": "REFUSED"
+  },
+  "measured_on": {
+    "machine": "AMD64",
+    "system": "Windows"
+  },
+  "schema": "gpuwm-mapped-parity-digest-v1",
+  "source": "gfs-pressure-fixture"
+}

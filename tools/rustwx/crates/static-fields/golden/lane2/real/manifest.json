@@ -1,0 +1,450 @@
+{
+ "root_note": "paths resolved against GPUWM_STATIC_PARITY_GEOG at test time",
+ "indexes": {
+  "terrain": {
+   "dir": "topo_gmted2010_30s",
+   "index": {
+    "type": "continuous",
+    "projection": "regular_ll",
+    "dx": "3f8111109e88c1b0",
+    "dy": "3f8111109e88c1b0",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567fbbadc0980b",
+    "known_lon": "3f71111127f920f1",
+    "wordsize": 2,
+    "tile_x": 1200,
+    "tile_y": 1200,
+    "tile_z_start": 1,
+    "tile_z_end": 1,
+    "tile_bdr": 3,
+    "signed": true,
+    "endian_big": true,
+    "scale_factor": "3ff0000000000000",
+    "missing_value": null,
+    "category_min": null,
+    "category_max": null,
+    "mminlu": "",
+    "iswater": null,
+    "islake": null,
+    "isice": null,
+    "isurban": null,
+    "row_order_top_bottom": false,
+    "interp_option": ""
+   },
+   "inventory": {
+    "declared_sparse": false,
+    "tile_count": 648,
+    "tile_inventory_bounds": [
+     1,
+     43200,
+     1,
+     21600
+    ],
+    "nx_global": 43200,
+    "ny_global": 21600,
+    "wraps_x": true,
+    "extent_basis": "regular_ll_complete"
+   }
+  },
+  "landuse": {
+   "dir": "modis_landuse_20class_30s_with_lakes",
+   "index": {
+    "type": "categorical",
+    "projection": "regular_ll",
+    "dx": "3f8111109e88c1b0",
+    "dy": "3f8111109e88c1b0",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567fbbadc0980b",
+    "known_lon": "c0667fddd6e04c06",
+    "wordsize": 1,
+    "tile_x": 1200,
+    "tile_y": 1200,
+    "tile_z_start": 1,
+    "tile_z_end": 1,
+    "tile_bdr": 0,
+    "signed": false,
+    "endian_big": true,
+    "scale_factor": "3ff0000000000000",
+    "missing_value": null,
+    "category_min": 1,
+    "category_max": 21,
+    "mminlu": "MODIFIED_IGBP_MODIS_NOAH",
+    "iswater": 17,
+    "islake": 21,
+    "isice": 15,
+    "isurban": 13,
+    "row_order_top_bottom": false,
+    "interp_option": ""
+   },
+   "inventory": {
+    "declared_sparse": false,
+    "tile_count": 648,
+    "tile_inventory_bounds": [
+     1,
+     43200,
+     1,
+     21600
+    ],
+    "nx_global": 43200,
+    "ny_global": 21600,
+    "wraps_x": true,
+    "extent_basis": "regular_ll_complete"
+   }
+  },
+  "soil_top": {
+   "dir": "soiltype_top_30s",
+   "index": {
+    "type": "categorical",
+    "projection": "regular_ll",
+    "dx": "3f8111109e88c1b0",
+    "dy": "3f8111109e88c1b0",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567fbbadc0980b",
+    "known_lon": "c0667fddd6e04c06",
+    "wordsize": 1,
+    "tile_x": 1200,
+    "tile_y": 1200,
+    "tile_z_start": 1,
+    "tile_z_end": 1,
+    "tile_bdr": 0,
+    "signed": false,
+    "endian_big": true,
+    "scale_factor": "3ff0000000000000",
+    "missing_value": null,
+    "category_min": 1,
+    "category_max": 16,
+    "mminlu": "",
+    "iswater": null,
+    "islake": null,
+    "isice": null,
+    "isurban": null,
+    "row_order_top_bottom": false,
+    "interp_option": ""
+   },
+   "inventory": {
+    "declared_sparse": false,
+    "tile_count": 648,
+    "tile_inventory_bounds": [
+     1,
+     43200,
+     1,
+     21600
+    ],
+    "nx_global": 43200,
+    "ny_global": 21600,
+    "wraps_x": true,
+    "extent_basis": "regular_ll_complete"
+   }
+  },
+  "soil_bottom": {
+   "dir": "soiltype_bot_30s",
+   "index": {
+    "type": "categorical",
+    "projection": "regular_ll",
+    "dx": "3f8111109e88c1b0",
+    "dy": "3f8111109e88c1b0",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567fbbadc0980b",
+    "known_lon": "c0667fddd6e04c06",
+    "wordsize": 1,
+    "tile_x": 1200,
+    "tile_y": 1200,
+    "tile_z_start": 1,
+    "tile_z_end": 1,
+    "tile_bdr": 0,
+    "signed": false,
+    "endian_big": true,
+    "scale_factor": "3ff0000000000000",
+    "missing_value": null,
+    "category_min": 1,
+    "category_max": 16,
+    "mminlu": "",
+    "iswater": null,
+    "islake": null,
+    "isice": null,
+    "isurban": null,
+    "row_order_top_bottom": false,
+    "interp_option": ""
+   },
+   "inventory": {
+    "declared_sparse": false,
+    "tile_count": 648,
+    "tile_inventory_bounds": [
+     1,
+     43200,
+     1,
+     21600
+    ],
+    "nx_global": 43200,
+    "ny_global": 21600,
+    "wraps_x": true,
+    "extent_basis": "regular_ll_complete"
+   }
+  },
+  "greenfrac": {
+   "dir": "greenfrac_fpar_modis",
+   "index": {
+    "type": "continuous",
+    "projection": "regular_ll",
+    "dx": "3f8111109e88c1b0",
+    "dy": "3f8111109e88c1b0",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567fbbba55d1c4",
+    "known_lon": "c0667fdddd2ae8e2",
+    "wordsize": 1,
+    "tile_x": 1200,
+    "tile_y": 1200,
+    "tile_z_start": 1,
+    "tile_z_end": 12,
+    "tile_bdr": 0,
+    "signed": false,
+    "endian_big": true,
+    "scale_factor": "3f847ae147ae147b",
+    "missing_value": "4069000000000000",
+    "category_min": null,
+    "category_max": null,
+    "mminlu": "",
+    "iswater": null,
+    "islake": null,
+    "isice": null,
+    "isurban": null,
+    "row_order_top_bottom": false,
+    "interp_option": ""
+   },
+   "inventory": {
+    "declared_sparse": false,
+    "tile_count": 648,
+    "tile_inventory_bounds": [
+     1,
+     43200,
+     1,
+     21600
+    ],
+    "nx_global": 43200,
+    "ny_global": 21600,
+    "wraps_x": true,
+    "extent_basis": "regular_ll_complete"
+   }
+  },
+  "lai": {
+   "dir": "lai_modis_10m",
+   "index": {
+    "type": "continuous",
+    "projection": "regular_ll",
+    "dx": "3fc555555c7dda4b",
+    "dy": "3fc555555c7dda4b",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c0567aaaac1094a3",
+    "known_lon": "c0667d5556084a51",
+    "wordsize": 1,
+    "tile_x": 120,
+    "tile_y": 120,
+    "tile_z_start": 1,
+    "tile_z_end": 12,
+    "tile_bdr": 3,
+    "signed": false,
+    "endian_big": true,
+    "scale_factor": "3fb999999999999a",
+    "missing_value": "406fe00000000000",
+    "category_min": null,
+    "category_max": null,
+    "mminlu": "",
+    "iswater": null,
+    "islake": null,
+    "isice": null,
+    "isurban": null,
+    "row_order_top_bottom": false,
+    "interp_option": ""
+   },
+   "inventory": {
+    "declared_sparse": false,
+    "tile_count": 162,
+    "tile_inventory_bounds": [
+     1,
+     2160,
+     1,
+     1080
+    ],
+    "nx_global": 2160,
+    "ny_global": 1080,
+    "wraps_x": true,
+    "extent_basis": "regular_ll_complete"
+   }
+  },
+  "albedo": {
+   "dir": "albedo_modis",
+   "index": {
+    "type": "continuous",
+    "projection": "regular_ll",
+    "dx": "3fa999999999999a",
+    "dy": "bfa999999999999a",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "40567e6666666666",
+    "known_lon": "c0667f3333333333",
+    "wordsize": 2,
+    "tile_x": 1200,
+    "tile_y": 1200,
+    "tile_z_start": 1,
+    "tile_z_end": 12,
+    "tile_bdr": 3,
+    "signed": true,
+    "endian_big": true,
+    "scale_factor": "3f847ae147ae147b",
+    "missing_value": "c08f380000000000",
+    "category_min": null,
+    "category_max": null,
+    "mminlu": "",
+    "iswater": null,
+    "islake": null,
+    "isice": null,
+    "isurban": null,
+    "row_order_top_bottom": false,
+    "interp_option": ""
+   },
+   "inventory": {
+    "declared_sparse": false,
+    "tile_count": 18,
+    "tile_inventory_bounds": [
+     1,
+     7200,
+     1,
+     3600
+    ],
+    "nx_global": 7200,
+    "ny_global": 3600,
+    "wraps_x": true,
+    "extent_basis": "regular_ll_complete"
+   }
+  },
+  "snow_albedo": {
+   "dir": "maxsnowalb_modis",
+   "index": {
+    "type": "continuous",
+    "projection": "regular_ll",
+    "dx": "3fa999999999999a",
+    "dy": "bfa999999999999a",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "40567e6666666666",
+    "known_lon": "c0667f3333333333",
+    "wordsize": 2,
+    "tile_x": 1200,
+    "tile_y": 1200,
+    "tile_z_start": 1,
+    "tile_z_end": 1,
+    "tile_bdr": 3,
+    "signed": true,
+    "endian_big": true,
+    "scale_factor": "3f847ae147ae147b",
+    "missing_value": "c08f380000000000",
+    "category_min": null,
+    "category_max": null,
+    "mminlu": "",
+    "iswater": null,
+    "islake": null,
+    "isice": null,
+    "isurban": null,
+    "row_order_top_bottom": false,
+    "interp_option": ""
+   },
+   "inventory": {
+    "declared_sparse": false,
+    "tile_count": 18,
+    "tile_inventory_bounds": [
+     1,
+     7200,
+     1,
+     3600
+    ],
+    "nx_global": 7200,
+    "ny_global": 3600,
+    "wraps_x": true,
+    "extent_basis": "regular_ll_complete"
+   }
+  },
+  "soil_temperature": {
+   "dir": "soiltemp_1deg",
+   "index": {
+    "type": "continuous",
+    "projection": "regular_ll",
+    "dx": "3ff0000000000000",
+    "dy": "3ff0000000000000",
+    "known_x": "3ff0000000000000",
+    "known_y": "3ff0000000000000",
+    "known_lat": "c056600000000000",
+    "known_lon": "c066700000000000",
+    "wordsize": 2,
+    "tile_x": 180,
+    "tile_y": 180,
+    "tile_z_start": 1,
+    "tile_z_end": 1,
+    "tile_bdr": 3,
+    "signed": false,
+    "endian_big": true,
+    "scale_factor": "3f847ae147ae147b",
+    "missing_value": "0000000000000000",
+    "category_min": null,
+    "category_max": null,
+    "mminlu": "",
+    "iswater": null,
+    "islake": null,
+    "isice": null,
+    "isurban": null,
+    "row_order_top_bottom": false,
+    "interp_option": ""
+   },
+   "inventory": {
+    "declared_sparse": false,
+    "tile_count": 2,
+    "tile_inventory_bounds": [
+     1,
+     360,
+     1,
+     180
+    ],
+    "nx_global": 360,
+    "ny_global": 180,
+    "wraps_x": true,
+    "extent_basis": "regular_ll_complete"
+   }
+  }
+ },
+ "topo_window": {
+  "args": [
+   33110,
+   33190,
+   15500,
+   15560
+  ],
+  "shape": [
+   1,
+   61,
+   81
+  ],
+  "raw": "topo_w0.bin",
+  "values": "topo_w0_vals.bin"
+ },
+ "soiltemp_window": {
+  "args": [
+   170,
+   220,
+   -3,
+   12
+  ],
+  "shape": [
+   1,
+   16,
+   51
+  ],
+  "raw": "soiltemp_w0.bin",
+  "values": "soiltemp_w0_vals.bin",
+  "coverage": "soiltemp_w0_cov.bin"
+ }
+}

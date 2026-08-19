@@ -1,6 +1,6 @@
 {
  "bytes": 9349873046,
- "cache_root": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery",
+ "cache_root": "${OBS_CACHE_ROOT}",
  "case_days": 7,
  "cases": [
   {

@@ -1,0 +1,1100 @@
+{
+  "alignment_receipt": {
+    "coordinate_match": "exact_equivalent_contiguous_subset",
+    "field": "terrain_height",
+    "invariant_across_all_supplement_times": true,
+    "latitude_index_direction": 1,
+    "latitude_index_range": [
+      0,
+      1058
+    ],
+    "latitude_sha256": "9d1d5795052a01ccc98eac48a6d72da857fb07e68d71956a747dfab5a267c930",
+    "longitude_equivalence": "modulo_360_exact",
+    "longitude_index_direction": 1,
+    "longitude_index_range": [
+      0,
+      1798
+    ],
+    "longitude_sha256": "37068653cbee282ba7499d6573283cff703ca0d4db03c176682406dba4643f2b",
+    "matched_primary_valid_times": [
+      "2026-08-17T00:00:00",
+      "2026-08-17T01:00:00"
+    ],
+    "primary_shape": [
+      1059,
+      1799
+    ],
+    "schema": "gpuwm-mapped-exact-subset-binding-v1",
+    "status": "PASS",
+    "supplement_shape": [
+      1059,
+      1799
+    ],
+    "supplement_valid_times": [
+      "2026-08-17T00:00:00",
+      "2026-08-17T01:00:00"
+    ],
+    "terrain_full_sha256": "9320b67674c8e64211d6a5acb0ee4b064bbc5130e7cfdb3753810d3b62ff5fbe",
+    "terrain_subset_sha256": "9320b67674c8e64211d6a5acb0ee4b064bbc5130e7cfdb3753810d3b62ff5fbe"
+  },
+  "composition": {
+    "name": "rw-wps-rrfs-prslev-2dfld-grib2.composition.json",
+    "sha256": "a632eae5203e92eeb4f6af5ee1fcfe2f24c1e03c7a5124f73a669fbb4e1ca6b1"
+  },
+  "contributing_sources": [],
+  "frame_count": 2,
+  "frames": [
+    {
+      "fields": {
+        "air_pressure": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "17cbf81acc108e0bc540f67c729d7b31de988b3c4d04d875b50580c4c1c0404e",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "Pa"
+        },
+        "air_temperature": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "43caef877461a958ad84a930257273c15a578d5467aac492b525c0592d7b1356",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "air_temperature_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "d98ba6f3e3988aeb8b29b040788ad40814ae8312e8736b26dc93646820ed3f16",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "eastward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "ee1d3c3f86f759c666882a3f1519f1ae21959b53f1a32bb7103fee6f52ef378a",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m s-1"
+        },
+        "eastward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "fcebebe5d0f9dc27257e80d867bf39ca2996dc8d2d1745982f07b4cfa79f023a",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m s-1"
+        },
+        "geopotential_height": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "b6bc4a247627b9df1880dea3e068d468d2b95ed7757e974940307c9d30ae35a2",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m"
+        },
+        "land_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "f2d2ec57c0d2f7029f133a2b89452a08edb63148a53c185674fe5bdd440bec23",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "1"
+        },
+        "northward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "4a40e2b2643d446c89501dffe58af215afcba677514504ecd001b6b230964c86",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m s-1"
+        },
+        "northward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "b1e715f6e910f3a6314d41ae1bbce7e6d01afe4ec946aaeda153dfdf997aedbf",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m s-1"
+        },
+        "sea_ice_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "119b3e8580bf63c604593e97eee2dec6f621fa0587729e2b541f9cf0791ad236",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "1"
+        },
+        "skin_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "5e3894af37ca5e9327f63fcfb1b938616491cc877db7ac5b891fdea6f6585235",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "snow_depth": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "119b3e8580bf63c604593e97eee2dec6f621fa0587729e2b541f9cf0791ad236",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m"
+        },
+        "snow_water_equivalent": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "119b3e8580bf63c604593e97eee2dec6f621fa0587729e2b541f9cf0791ad236",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg m-2"
+        },
+        "soil_temperature": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "location": "soil",
+          "missing_count": 6340536,
+          "sha256": "ce84552ceab8b248d1ece5f5fb4bb5c576fd069905e0c36771d7504e1f5cbfe0",
+          "shape": [
+            9,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "specific_humidity": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "9faa97ce30ec6870caafc9b22976e0eef3a39f6cef92ce73334147a1a3d1b704",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
+        "specific_humidity_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "597ae35d35e916c96a5ec13063058a523056e3033ab8137f0a36b4bd8579cf42",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
+        "surface_pressure": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "7fc6f4ece0da7535c63abbc412836da0778c6e56ba07cdffc1301b3c30cbca04",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "Pa"
+        },
+        "terrain_height": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "9320b67674c8e64211d6a5acb0ee4b064bbc5130e7cfdb3753810d3b62ff5fbe",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m"
+        },
+        "volumetric_soil_moisture": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "location": "soil",
+          "missing_count": 6340536,
+          "sha256": "02fad151483c68dc2e67099931fef6eaaf27e89e6b3357f21487e37ae80d8cf5",
+          "shape": [
+            9,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m3 m-3"
+        }
+      },
+      "grid_fingerprint": "2b9c82182a6c3dc654dc195cd0e5070ff2e36e976ff3232ec5881d6f480f9df5",
+      "header_sha256": "d95ad038267b579ec1279c7b19c1870381253204be8fd90d652ce95e09e6a44a",
+      "inputs": [
+        {
+          "name": "OPS-rrfs.t00z.2dfld.3km.f000.conus.grib2",
+          "sha256": "0c62b4d5b6c96e98c75e5032cecd00f11719365814085d023744f1371a02f1bb"
+        },
+        {
+          "name": "OPS-rrfs.t00z.2dfld.3km.f001.conus.grib2",
+          "sha256": "a4e8e7124fab3a1ac9711b48172ae932dd653d48c90e0eca866ead81d85ac607"
+        },
+        {
+          "name": "OPS-rrfs.t00z.prslev.3km.f000.conus.grib2",
+          "sha256": "381b738d0cf86cfe54f60857b723eb03fcb7edefd3bcc9156169d4b801e42046"
+        },
+        {
+          "name": "OPS-rrfs.t00z.prslev.3km.f001.conus.grib2",
+          "sha256": "b1f351e56fa1d3ce620787ab7a08d59cee0cc584f0bdf83ac44d4caa449b9c4a"
+        }
+      ],
+      "latitude": {
+        "count": 1059,
+        "sha256": "9d1d5795052a01ccc98eac48a6d72da857fb07e68d71956a747dfab5a267c930"
+      },
+      "longitude": {
+        "count": 1799,
+        "sha256": "37068653cbee282ba7499d6573283cff703ca0d4db03c176682406dba4643f2b"
+      },
+      "member": null,
+      "source_cycle": "2026-08-17T00:00:00",
+      "valid_time": "2026-08-17T00:00:00",
+      "vertical": {
+        "count": 45,
+        "sha256": "0e3c2439acaeb295d8c6f4726c6dc9b3ab969cb5217ae48e177f908130f14348"
+      },
+      "vertical_kind": "pressure",
+      "vertical_units": "Pa"
+    },
+    {
+      "fields": {
+        "air_pressure": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "17cbf81acc108e0bc540f67c729d7b31de988b3c4d04d875b50580c4c1c0404e",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "Pa"
+        },
+        "air_temperature": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "abeee964d07b13d875dff979a2e57c9ec0c1ec2463747fc23d60430b31cbfe02",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "air_temperature_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "9807794ab9be9f7e6a1d2c14bbf2884c28110b062600cbed50b5f095d5ec6494",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "eastward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "3792f1530c623c6ae9473f914673aad4822aebd6ff60ce99039f3cc82ba838e0",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m s-1"
+        },
+        "eastward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "613c9a4bed7f41f51f814de73a28f05b1d3f4c2c64bcfd0b8f84d3f63bb49812",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m s-1"
+        },
+        "geopotential_height": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "397cdf0345576fcf70e86c44b38443790eb7e9bd6426f7862c24217429a0866a",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m"
+        },
+        "land_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "f2d2ec57c0d2f7029f133a2b89452a08edb63148a53c185674fe5bdd440bec23",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "1"
+        },
+        "northward_wind": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "60eb8dec9501e4e84c598bf497ccb90473c2e83a76def27271ed1d6c61ca924c",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m s-1"
+        },
+        "northward_wind_10m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "373cb89cf6a923ecfa0fcf304e002e75f75989d64db47c1d56993d54a819db1e",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m s-1"
+        },
+        "sea_ice_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "119b3e8580bf63c604593e97eee2dec6f621fa0587729e2b541f9cf0791ad236",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "1"
+        },
+        "skin_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "3bca9802896add3bac344daa5ca4febdd619cec4bfecb546f581aa676fa325ff",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "snow_depth": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "119b3e8580bf63c604593e97eee2dec6f621fa0587729e2b541f9cf0791ad236",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m"
+        },
+        "snow_water_equivalent": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "119b3e8580bf63c604593e97eee2dec6f621fa0587729e2b541f9cf0791ad236",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg m-2"
+        },
+        "soil_temperature": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "location": "soil",
+          "missing_count": 6340536,
+          "sha256": "a1b4cb0f31b539be7b1e65195d8bb7cc795f891b4798dc8bf06027bc6e09c044",
+          "shape": [
+            9,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "specific_humidity": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "18305fcaa9863285301e5aab03de1ffa6577c587d505ec9610181d7d993de802",
+          "shape": [
+            45,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
+        "specific_humidity_2m": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "3d19e5f074af7b0bd0fc89e91ebbca9ba7aea5454328173a16e3358a27050f34",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
+        "surface_pressure": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "409d00b7f964c13354b5e0c683dd57fb7deb58d4834b933ab006d0a78c8fa47a",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "Pa"
+        },
+        "terrain_height": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "9320b67674c8e64211d6a5acb0ee4b064bbc5130e7cfdb3753810d3b62ff5fbe",
+          "shape": [
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m"
+        },
+        "volumetric_soil_moisture": {
+          "axes": [
+            "soil",
+            "y",
+            "x"
+          ],
+          "location": "soil",
+          "missing_count": 6340536,
+          "sha256": "a8ee6309bc46c5b82ec62b206f3cb920831edb50ddba568bdb83c1b0d621f2ad",
+          "shape": [
+            9,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "m3 m-3"
+        }
+      },
+      "grid_fingerprint": "2b9c82182a6c3dc654dc195cd0e5070ff2e36e976ff3232ec5881d6f480f9df5",
+      "header_sha256": "a42cddcca1f018b0d164eaede6d0cd77b16d1c402c585364bd8bda682e2310a3",
+      "inputs": [
+        {
+          "name": "OPS-rrfs.t00z.2dfld.3km.f000.conus.grib2",
+          "sha256": "0c62b4d5b6c96e98c75e5032cecd00f11719365814085d023744f1371a02f1bb"
+        },
+        {
+          "name": "OPS-rrfs.t00z.2dfld.3km.f001.conus.grib2",
+          "sha256": "a4e8e7124fab3a1ac9711b48172ae932dd653d48c90e0eca866ead81d85ac607"
+        },
+        {
+          "name": "OPS-rrfs.t00z.prslev.3km.f000.conus.grib2",
+          "sha256": "381b738d0cf86cfe54f60857b723eb03fcb7edefd3bcc9156169d4b801e42046"
+        },
+        {
+          "name": "OPS-rrfs.t00z.prslev.3km.f001.conus.grib2",
+          "sha256": "b1f351e56fa1d3ce620787ab7a08d59cee0cc584f0bdf83ac44d4caa449b9c4a"
+        }
+      ],
+      "latitude": {
+        "count": 1059,
+        "sha256": "9d1d5795052a01ccc98eac48a6d72da857fb07e68d71956a747dfab5a267c930"
+      },
+      "longitude": {
+        "count": 1799,
+        "sha256": "37068653cbee282ba7499d6573283cff703ca0d4db03c176682406dba4643f2b"
+      },
+      "member": null,
+      "source_cycle": "2026-08-17T00:00:00",
+      "valid_time": "2026-08-17T01:00:00",
+      "vertical": {
+        "count": 45,
+        "sha256": "0e3c2439acaeb295d8c6f4726c6dc9b3ab969cb5217ae48e177f908130f14348"
+      },
+      "vertical_kind": "pressure",
+      "vertical_units": "Pa"
+    }
+  ],
+  "mapping": {
+    "name": "rw-wps-rrfs-prslev-2dfld-grib2.mapping.json",
+    "sha256": "3139a3b93f7fea54f600e36e42115fd1e986e67e1df6462b5ef866b11f8d6c1a"
+  },
+  "measured_on": {
+    "machine": "AMD64",
+    "system": "Windows"
+  },
+  "schema": "gpuwm-mapped-compose-parity-digest-v1",
+  "soil_layers": {
+    "depth_units": "m",
+    "missing": {
+      "land": "reject",
+      "ocean": {
+        "moisture": 1.0,
+        "stage": "after_horizontal_interpolation",
+        "temperature": "skin_temperature"
+      }
+    },
+    "moisture_field": "volumetric_soil_moisture",
+    "remap": {
+      "kind": "linear_node_samples",
+      "source_value_location": "level_node",
+      "target_value_location": "layer_midpoint"
+    },
+    "source_nodes": [
+      {
+        "depth": 0.0,
+        "selectors": {
+          "soil_temperature": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.0,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 2,
+            "second_level_type": 106,
+            "second_level_value": 0.0,
+            "subcenter": 0
+          },
+          "volumetric_soil_moisture": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.0,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 192,
+            "second_level_type": 106,
+            "second_level_value": 0.0,
+            "subcenter": 0
+          }
+        }
+      },
+      {
+        "depth": 0.01,
+        "selectors": {
+          "soil_temperature": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.01,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 2,
+            "second_level_type": 106,
+            "second_level_value": 0.01,
+            "subcenter": 0
+          },
+          "volumetric_soil_moisture": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.01,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 192,
+            "second_level_type": 106,
+            "second_level_value": 0.01,
+            "subcenter": 0
+          }
+        }
+      },
+      {
+        "depth": 0.04,
+        "selectors": {
+          "soil_temperature": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.04,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 2,
+            "second_level_type": 106,
+            "second_level_value": 0.04,
+            "subcenter": 0
+          },
+          "volumetric_soil_moisture": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.04,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 192,
+            "second_level_type": 106,
+            "second_level_value": 0.04,
+            "subcenter": 0
+          }
+        }
+      },
+      {
+        "depth": 0.1,
+        "selectors": {
+          "soil_temperature": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.1,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 2,
+            "second_level_type": 106,
+            "second_level_value": 0.1,
+            "subcenter": 0
+          },
+          "volumetric_soil_moisture": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.1,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 192,
+            "second_level_type": 106,
+            "second_level_value": 0.1,
+            "subcenter": 0
+          }
+        }
+      },
+      {
+        "depth": 0.3,
+        "selectors": {
+          "soil_temperature": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.3,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 2,
+            "second_level_type": 106,
+            "second_level_value": 0.3,
+            "subcenter": 0
+          },
+          "volumetric_soil_moisture": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.3,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 192,
+            "second_level_type": 106,
+            "second_level_value": 0.3,
+            "subcenter": 0
+          }
+        }
+      },
+      {
+        "depth": 0.6,
+        "selectors": {
+          "soil_temperature": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.6,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 2,
+            "second_level_type": 106,
+            "second_level_value": 0.6,
+            "subcenter": 0
+          },
+          "volumetric_soil_moisture": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 0.6,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 192,
+            "second_level_type": 106,
+            "second_level_value": 0.6,
+            "subcenter": 0
+          }
+        }
+      },
+      {
+        "depth": 1.0,
+        "selectors": {
+          "soil_temperature": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 1.0,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 2,
+            "second_level_type": 106,
+            "second_level_value": 1.0,
+            "subcenter": 0
+          },
+          "volumetric_soil_moisture": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 1.0,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 192,
+            "second_level_type": 106,
+            "second_level_value": 1.0,
+            "subcenter": 0
+          }
+        }
+      },
+      {
+        "depth": 1.6,
+        "selectors": {
+          "soil_temperature": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 1.6,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 2,
+            "second_level_type": 106,
+            "second_level_value": 1.6,
+            "subcenter": 0
+          },
+          "volumetric_soil_moisture": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 1.6,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 192,
+            "second_level_type": 106,
+            "second_level_value": 1.6,
+            "subcenter": 0
+          }
+        }
+      },
+      {
+        "depth": 3.0,
+        "selectors": {
+          "soil_temperature": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 3.0,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 2,
+            "second_level_type": 106,
+            "second_level_value": 3.0,
+            "subcenter": 0
+          },
+          "volumetric_soil_moisture": {
+            "category": 0,
+            "center": 7,
+            "discipline": 2,
+            "format": "grib2",
+            "level_type": 106,
+            "level_value": 3.0,
+            "local_table_version": 1,
+            "master_table_version": 2,
+            "parameter": 192,
+            "second_level_type": 106,
+            "second_level_value": 3.0,
+            "subcenter": 0
+          }
+        }
+      }
+    ],
+    "target_layers": [
+      {
+        "bottom": 0.1,
+        "top": 0.0
+      },
+      {
+        "bottom": 0.4,
+        "top": 0.1
+      },
+      {
+        "bottom": 1.0,
+        "top": 0.4
+      },
+      {
+        "bottom": 2.0,
+        "top": 1.0
+      }
+    ],
+    "temperature_field": "soil_temperature"
+  },
+  "source": "rrfs",
+  "terrain_data": [
+    {
+      "name": "OPS-rrfs.t00z.2dfld.3km.f000.conus.grib2",
+      "sha256": "0c62b4d5b6c96e98c75e5032cecd00f11719365814085d023744f1371a02f1bb"
+    },
+    {
+      "name": "OPS-rrfs.t00z.2dfld.3km.f001.conus.grib2",
+      "sha256": "a4e8e7124fab3a1ac9711b48172ae932dd653d48c90e0eca866ead81d85ac607"
+    },
+    {
+      "name": "OPS-rrfs.t00z.prslev.3km.f000.conus.grib2",
+      "sha256": "381b738d0cf86cfe54f60857b723eb03fcb7edefd3bcc9156169d4b801e42046"
+    },
+    {
+      "name": "OPS-rrfs.t00z.prslev.3km.f001.conus.grib2",
+      "sha256": "b1f351e56fa1d3ce620787ab7a08d59cee0cc584f0bdf83ac44d4caa449b9c4a"
+    }
+  ],
+  "terrain_provenance": {
+    "name": "rw-wps-rrfs-prslev-2dfld-grib2.provenance.json",
+    "sha256": "e364f22ec917bfd991ec3bb756aa49b697d03c7cd425d40a35501dd769f279de"
+  },
+  "verdict": "COMPOSED"
+}

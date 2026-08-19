@@ -110,6 +110,8 @@ def test_the_window_accepts_a_newer_core_and_still_refuses_an_older_one():
 
     assert science_core.version_supported("0.2.35")   # the floor holds
     assert science_core.version_supported("0.2.38")   # the reported case
+    assert science_core.version_supported("0.2.39")   # the certified core
+    assert science_core.version_supported("0.2.50")   # a newer core stays in
     assert science_core.version_supported("0.2.99")
     assert not science_core.version_supported("0.2.34")  # below the floor
     assert not science_core.version_supported("0.3.0")   # at the ceiling
@@ -119,8 +121,74 @@ def test_the_window_accepts_a_newer_core_and_still_refuses_an_older_one():
     assert not science_core.version_supported("0.0.1-not-the-pin")
 
 
+def test_the_install_floor_outranks_the_runtime_floor_and_stays_separate():
+    """Two floors, two breakages, and neither may absorb the other.
+
+    ``SCIENCE_CORE_INSTALL_FLOOR`` (0.2.39) is about what pip may
+    RESOLVE: below it a 3.14 box gets a wheel-less core, falls back to an
+    sdist whose pyo3 caps at 3.13, and -- because pip fails a whole
+    resolution when one requirement fails -- installs no gpuwm at all.
+    ``SCIENCE_CORE_FLOOR`` (0.2.35) is about a core that is ALREADY
+    installed, and no breakage has ever been named for 0.2.35..0.2.38: a
+    0.2.38 sitting on a 3.13 box renders every product it ever did.
+
+    Collapsing them into one number is the tempting edit, and it is a
+    refusal with nothing behind it -- gpuwm would start rejecting a
+    working core to enforce an install-time wheel-matrix fact.  This
+    asserts the split survives, in both directions.
+    """
+    from gpuwm import science_core
+
+    runtime = science_core.version_tuple(science_core.SCIENCE_CORE_FLOOR)
+    install = science_core.version_tuple(
+        science_core.SCIENCE_CORE_INSTALL_FLOOR)
+    assert runtime is not None and install is not None
+    # The install floor is the STRICTER of the two, and strictly so.
+    assert runtime < install
+    # The gap between them is the range that installs no longer resolve
+    # but a running box is still judged on its merits.
+    assert science_core.version_supported("0.2.38")
+    assert science_core.SCIENCE_CORE_REQUIREMENT == (
+        f"wrf-rust>={science_core.SCIENCE_CORE_INSTALL_FLOOR},"
+        f"<{science_core.SCIENCE_CORE_CEILING}")
+
+
+def test_the_certified_release_sits_inside_the_window_it_is_recorded_beside():
+    """The release the suites run on cannot fall out of the declared window.
+
+    ``SCIENCE_CORE_CERTIFIED`` records which wrf-rust the recorded test
+    counts belong to; the floor/ceiling record what a user is allowed to
+    install.  Nothing forces those three strings to agree, and the failure
+    they would produce is silent: a tree that certifies against a release
+    its own requirement string refuses to install, so `pip install
+    gpuwm[render]` hands the user a core no suite was ever run on.  This is
+    the arithmetic that catches it -- it is a consistency check between
+    three constants in one module, not a gate on anybody's environment.
+    """
+    from gpuwm import science_core
+
+    assert science_core.version_supported(science_core.SCIENCE_CORE_CERTIFIED)
+    floor = science_core.version_tuple(science_core.SCIENCE_CORE_FLOOR)
+    certified = science_core.version_tuple(
+        science_core.SCIENCE_CORE_CERTIFIED)
+    assert floor is not None and certified is not None
+    # The floor is the OLDEST certified release, so it cannot outrank the
+    # one actually exercised.
+    assert floor <= certified
+
+
 def test_the_requirement_string_is_the_one_pyproject_installs():
-    """One window, written once: the extra and the runtime check agree."""
+    """One window, written once: the extra and the runtime check agree.
+
+    ``SCIENCE_CORE_REQUIREMENT`` is the INSTALL window -- floor 0.2.39,
+    the oldest release with a wheel for every interpreter gpuwm
+    supports -- because that string is what pip is handed.  The runtime
+    floor is older and deliberately so; both axes, and the environment
+    marker this line used to carry, are asserted in
+    tests/test_render_extra_python_ceiling.py.  Splitting on ``;`` is
+    kept so a future marker cannot make this test fail for a reason it
+    does not name.
+    """
     import tomllib
 
     from gpuwm import science_core
@@ -128,7 +196,8 @@ def test_the_requirement_string_is_the_one_pyproject_installs():
     root = Path(__file__).resolve().parent.parent
     data = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
     render = data["project"]["optional-dependencies"]["render"]
-    declared = [item for item in render if item.startswith("wrf-rust")]
+    declared = [item.split(";")[0].strip()
+                for item in render if item.startswith("wrf-rust")]
     assert declared == [science_core.SCIENCE_CORE_REQUIREMENT]
 
 

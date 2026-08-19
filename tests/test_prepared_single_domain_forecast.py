@@ -95,6 +95,85 @@ def _declaring_before_first_domain(text: str, block: str) -> str:
     return text[:match.start()] + block + text[match.start():]
 
 
+def _mapped_proof_literals() -> dict[str, set[str]]:
+    """The top-level keys ``gpuwm/mapped_direct.py`` actually writes.
+
+    Read out of the writer's own source with :mod:`ast`, from the two
+    ``proof = {...}`` assignments it publishes -- one direct, one
+    hierarchy, told apart by the schema constant each names.  The one
+    computed key, ``forcing_key``, is the forcing axis, and it is
+    normalized to ``forcing_hours`` because that is the only spelling
+    the reader accepts (a sub-hourly mapped preparation is refused
+    elsewhere, by name).
+
+    This exists because reading a writer's source is still a great deal
+    better than restating its inventory in the reader and hoping.  When
+    the reader restated it, the 2.5.0 soil-mesh work added
+    ``soil_texture_downscale`` to both proofs and the forecast runner
+    silently began rejecting every mapped bundle the preparation stage
+    produced.  Nothing failed, because the fixture below wrote its own
+    proof rather than the writer's.
+    """
+
+    import ast
+
+    source = (ROOT / "gpuwm" / "mapped_direct.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    found: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(
+                node.value, ast.Dict):
+            continue
+        if not (len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "proof"):
+            continue
+        keys: set[str] = set()
+        schema_name = None
+        for key, value in zip(node.value.keys, node.value.values):
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                keys.add(key.value)
+                if key.value == "schema" and isinstance(value, ast.Name):
+                    schema_name = value.id
+            elif isinstance(key, ast.Name) and key.id == "forcing_key":
+                keys.add("forcing_hours")
+            else:  # pragma: no cover - a new computed key needs a decision
+                raise AssertionError(
+                    "gpuwm/mapped_direct.py grew a proof key this gate "
+                    "cannot read statically; teach it, do not delete it")
+        # `proof_content_sha256` is assigned on the next statement, not
+        # inside the literal, and both documents carry it.
+        keys.add("proof_content_sha256")
+        assert schema_name is not None
+        found[schema_name] = keys
+    return found
+
+
+def test_the_reader_and_the_writer_agree_on_the_mapped_proof_inventory():
+    """THE gate for the drift that killed the mapped route on this line.
+
+    ``gpuwm.mapped_direct`` writes the mapped/20CRv3 preparation proof;
+    ``prepared_single_domain_forecast`` refuses any proof whose exact
+    top-level inventory it does not recognise.  Those two lists have to
+    be the same list.  When they were not, a freshly prepared bundle was
+    refused with "mapped 20CRv3 proof top-level inventory differs" --
+    the last leg of the whole mapped/arbitrary-source chain, dead, with
+    every test green.
+    """
+
+    literals = _mapped_proof_literals()
+    assert set(literals) == {"PROOF_SCHEMA", "HIERARCHY_PROOF_SCHEMA"}, (
+        "gpuwm/mapped_direct.py no longer publishes exactly two proof "
+        f"documents; it publishes {sorted(literals)}")
+    assert literals["PROOF_SCHEMA"] == set(runner.MAPPED_DIRECT_PROOF_KEYS), (
+        "the mapped direct proof the writer publishes and the inventory "
+        "the forecast runner accepts have drifted apart")
+    assert literals["HIERARCHY_PROOF_SCHEMA"] \
+        == set(runner.MAPPED_HIERARCHY_PROOF_KEYS), (
+        "the mapped hierarchy proof the writer publishes and the "
+        "inventory the forecast runner accepts have drifted apart")
+
+
 def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
         tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
@@ -102,7 +181,10 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     payload = json.loads(capsys.readouterr().out)
     assert payload == runner.runner_capabilities()
     assert payload["schema"] == "gpuwm-runner-capabilities-v1"
-    assert payload["supported_sources"] == ["20crv3", "era5", "gfs", "hrrr"]
+    assert payload["supported_sources"] == [
+        "20crv3", "20crv3-cf", "aifs", "aigefs", "aigfs",
+        "ecmwf-open-data", "era5", "gdas", "gefs", "gem-gdps", "gfs",
+        "hrrr", "hrrr-prs", "icon-eu", "rap", "rrfs"]
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
     assert payload["report_schema"] == runner.REPORT_SCHEMA
     assert payload["window"]["limit_policy"] \
@@ -113,11 +195,32 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
         "gfs": [1, 3],
         "era5": "uniform-positive-whole-hour",
         "20crv3": "manifest-bound-uniform-positive-whole-hour",
+        "20crv3-cf": "uniform-positive-whole-hour",
+        "hrrr-prs": "uniform-positive-whole-hour",
+        "aifs": "uniform-positive-whole-hour",
+        "aigefs": "uniform-positive-whole-hour",
+        "aigfs": "uniform-positive-whole-hour",
+        "ecmwf-open-data": "uniform-positive-whole-hour",
+        "gdas": "uniform-positive-whole-hour",
+        "gefs": "uniform-positive-whole-hour",
+        "gem-gdps": "uniform-positive-whole-hour",
+        "icon-eu": "uniform-positive-whole-hour",
+        "rap": "uniform-positive-whole-hour",
+        "rrfs": "uniform-positive-whole-hour",
     }
     twentycr = payload["source_profiles"]["20crv3"]
     assert twentycr["member_identity"] \
         == "filename_memNNN_not_grib2_pdt"
     assert "NOT_ACCEPTANCE_GATED" in twentycr["readiness"]
+    # The packaged NetCDF profile is a source of its own here, and the two
+    # things a reader must not learn late are stated in its limitations.
+    twentycr_cf = payload["source_profiles"]["20crv3-cf"]
+    assert "NOT_ACCEPTANCE_GATED" in twentycr_cf["readiness"]
+    assert twentycr_cf["member_identity"]         == "ensemble_mean_analysis_not_a_member"
+    assert any("ENSEMBLE MEAN" in limit
+               for limit in twentycr_cf["limitations"])
+    assert any("orography and land mask are recovered" in limit
+               for limit in twentycr_cf["limitations"])
     assert payload["output"]["io_modes"] == ["history"]
     assert payload["output"]["configurable_cadence"] is True
     cadence = payload["output"]["history_interval_seconds"]
@@ -606,9 +709,13 @@ def _wizard_ladder_config(tmp_path: Path) -> Path:
     Not a hand-built stand-in: this is the artifact `gpuwm run-plan`'s
     prepared route hands to stage 1, and the wizard writes its nests
     with DELIBERATE per-domain departures from the root suite --
-    ``cu_physics = 0`` below the gray zone, a tighter ``radt``, the
-    certified ``diff_6th_factor`` ladder -- so the root resolves to the
-    named profile while the tree as a whole does not.
+    ``cu_physics = 0`` below the gray zone and the certified
+    ``diff_6th_factor`` ladder -- so the root resolves to the named
+    profile while the tree as a whole does not.
+
+    ``radt`` was a third departure until 2.5.0's radt-floor repair; the
+    wizard's nests now INHERIT the root's radiation cadence, so it is an
+    agreeing key here and the two departures above carry this fixture.
     """
 
     from gpuwm.cli import main as cli_main
@@ -650,9 +757,13 @@ def test_a_nest_that_departs_from_the_profile_is_refused_by_scope(tmp_path):
             profile=runner.MORRISON_PHYSICS_PROFILE, origin=str(config))
     message = str(caught.value)
     assert "[[domain]] d02 cu_physics: config 0, profile 1" in message
-    assert "[[domain]] d02 radt: config 3.0, profile 12.0" in message
     assert "[[domain]] d02 diff_6th_factor: config 0.1, profile 0.12" \
         in message
+    # radt used to be the third row here (config 3.0, profile 12.0).
+    # 2.5.0's radt-floor repair makes a nest inherit the root's
+    # radiation cadence, so d02 now AGREES with the profile at 12.0 --
+    # and an agreeing key is exactly what this refusal must not list.
+    assert "[[domain]] d02 radt" not in message
     # No [shared] rows: the shared block IS the profile here, and a
     # refusal that listed agreeing keys would be listing noise.
     assert "[shared]" not in message.split("[[explain]]")[0]
@@ -690,7 +801,10 @@ def test_the_remedy_for_a_config_rooted_in_the_profile_is_omission(tmp_path):
     rendered, exp, _receipt = runner._render_materialized_experiment(
         config.read_text(encoding="utf-8"), source="gfs", profile=None)
     nest = exp.domains[1].run
-    assert (int(nest.cu_physics), float(nest.radt)) == (0, 3.0)
+    # cu_physics is the departure that carries this now: since 2.5.0's
+    # radt-floor repair the nest INHERITS the root's radt, so 12.0 here
+    # is the config's own value published unchanged, not a flattening.
+    assert (int(nest.cu_physics), float(nest.radt)) == (0, 12.0)
 
 
 def test_a_declared_rrtmg_variant_is_governed_by_the_profile_resolution(
@@ -868,6 +982,7 @@ def test_materialized_descriptor_bytes_are_deterministic_across_case_roots(
 def _prepared_fixture(
         tmp_path: Path, source: str, *, adapter=None, hierarchy=False,
         physics_profile=runner.PHYSICS_PROFILE,
+        twentycr_decoder_roles=frozenset({"gpuwm_mapped_engine"}),
 ):
     if hierarchy and source not in {"gfs", "20crv3"}:
         raise ValueError("synthetic hierarchy fixture uses GFS-shaped configs")
@@ -1010,6 +1125,19 @@ def _prepared_fixture(
         source_manifest = prepared / "source-input-manifest.json"
     _write_json(source_manifest, manifest)
     manifest_digest = _sha256(source_manifest)
+    bridged_digest = None
+    if source == "20crv3":
+        # The bridged composition-inputs document the post-port writer
+        # publishes beside the member manifest, so the reader can
+        # re-hash the receipt's input_manifest record against bytes.
+        bridged = prepared / "source-evidence" / "composition-inputs.json"
+        _write_json(bridged, {
+            "schema": "gpuwm-mapped-composition-inputs-v1",
+            "fixture": "bridged-composition-inputs",
+            "member": manifest["member"],
+            "member_identity": manifest["member_identity"],
+        })
+        bridged_digest = _sha256(bridged)
     mapped_authorities = None
     source_composition = None
     target_contract = None
@@ -1018,11 +1146,11 @@ def _prepared_fixture(
         mapped_authorities = dict(runner.twentycrv3_authority_sha256())
         decoder_digests = {
             role: hashlib.sha256(f"20crv3-{role}".encode()).hexdigest()
-            for role in runner._TWENTYCRV3_DECODER_ROLES
+            for role in twentycr_decoder_roles
         }
         decoder_paths = {
             role: str((tmp_path / f"{role}.exe").resolve())
-            for role in runner._TWENTYCRV3_DECODER_ROLES
+            for role in twentycr_decoder_roles
         }
         composition_document = json.loads(
             (prepared / "source-evidence" / "composition.json").read_text(
@@ -1039,13 +1167,13 @@ def _prepared_fixture(
                 "sha256": mapped_authorities["composition"],
             },
             "input_manifest": {
-                "path": str((tmp_path / "member072-manifest.json").resolve()),
-                "sha256": manifest_digest,
+                "path": str((tmp_path / "composition-inputs.json").resolve()),
+                "sha256": bridged_digest,
             },
             "decoders": {
                 role: {"path": decoder_paths[role],
                        "sha256": decoder_digests[role]}
-                for role in sorted(runner._TWENTYCRV3_DECODER_ROLES)
+                for role in sorted(twentycr_decoder_roles)
             },
             "terrain_products": [
                 {"path": row["path"], "sha256": row["sha256"]}
@@ -1055,17 +1183,34 @@ def _prepared_fixture(
                 "provenance_path": str((tmp_path / "provenance.json").resolve()),
                 "provenance_sha256": mapped_authorities["provenance"],
             },
+            # The composed exact-subset receipt the post-port writer
+            # seals: mapped_composition's terrain receipt plus the
+            # ensemble identity the member manifest bound.
             "alignment": {
-                "strategy": "20crv3_in_band_surface_same_grid",
-                "terrain_external_supplement": False,
+                "schema": "gpuwm-mapped-exact-subset-binding-v1",
+                "status": "PASS",
+                "field": "terrain_height",
+                "primary_shape": [181, 360],
+                "supplement_shape": [181, 360],
+                "latitude_index_range": [0, 180],
+                "longitude_index_range": [0, 359],
+                "latitude_sha256": hashlib.sha256(
+                    b"20crv3-latitude").hexdigest(),
+                "longitude_sha256": hashlib.sha256(
+                    b"20crv3-longitude").hexdigest(),
+                "terrain_full_sha256": hashlib.sha256(
+                    b"20crv3-terrain-full").hexdigest(),
+                "terrain_subset_sha256": hashlib.sha256(
+                    b"20crv3-terrain-subset").hexdigest(),
+                "supplement_valid_times": manifest["valid_times"],
+                "matched_primary_valid_times": manifest["valid_times"],
+                "invariant_across_all_supplement_times": True,
+                "latitude_index_direction": 1,
+                "longitude_index_direction": 1,
+                "coordinate_match": "exact_equivalent_contiguous_subset",
+                "longitude_equivalence": "modulo_360_exact",
                 "member": manifest["member"],
                 "member_identity": manifest["member_identity"],
-                "surface_file_count": len(forcing_hours),
-                "valid_time_count": len(forcing_hours),
-                "canonical_receipt_content_sha256": hashlib.sha256(
-                    b"canonical-20crv3-frames").hexdigest(),
-                "coordinate_match": "same_decoded_grib2_grid_fingerprint",
-                "terrain_invariant_across_all_times": True,
             },
             "soil_layers": composition_document["soil_layers"],
             "frame_count": len(forcing_hours),
@@ -1333,6 +1478,15 @@ def _prepared_fixture(
             "schema": runner._PROOF_SCHEMA[source],
             "status": "READY_NOT_YET_STOCK_WRF_GATED",
             "forcing_times": manifest["valid_times"],
+            # WRITTEN BY THE REAL WRITER, so it belongs in the fixture.
+            # gpuwm/mapped_direct.py puts this key in every mapped proof
+            # it publishes -- direct and hierarchy alike -- and this
+            # fixture omitting it is what let the runner's exact
+            # top-level key check drift out of agreement with the
+            # preparation that feeds it.  A reader tested against its
+            # own fixture instead of the other lane's real writer is
+            # exactly the trap this line closes.
+            "soil_texture_downscale": {},
             "forcing_hours": forcing_hours,
             "boundary_interval_seconds": boundary_seconds,
             "execution_inputs": {
@@ -1343,7 +1497,7 @@ def _prepared_fixture(
                         "sha256": decoder_digests[role],
                     }
                     for index, role in enumerate(
-                        sorted(runner._TWENTYCRV3_DECODER_ROLES))
+                        sorted(twentycr_decoder_roles))
                 },
                 "experiment_config": _artifact(
                     experiment_config, str(experiment_config.resolve())),
@@ -1536,6 +1690,9 @@ def _prepared_fixture(
                 "status": "READY_NOT_YET_STOCK_WRF_GATED",
                 "domain_count": len(exp.domains),
                 "forcing_times": manifest["valid_times"],
+                # As above: the real writer puts this in the hierarchy
+                # proof too, so the fixture must.
+                "soil_texture_downscale": {},
                 "forcing_hours": forcing_hours,
                 "boundary_interval_seconds": boundary_seconds,
                 "target_contract": target_contract,
@@ -1547,7 +1704,7 @@ def _prepared_fixture(
                             "sha256": decoder_digests[role],
                         }
                         for index, role in enumerate(
-                            sorted(runner._TWENTYCRV3_DECODER_ROLES))
+                            sorted(twentycr_decoder_roles))
                     },
                     "experiment_config": _artifact(
                         experiment_config, str(experiment_config.resolve())),
@@ -1590,6 +1747,83 @@ def _prepared_fixture(
         source_manifest=source_manifest, experiment=experiment_config,
         wps=wps_namelist, content_sha256=header["content_sha256"],
         run_seconds=exp.run_seconds)
+
+
+@pytest.mark.parametrize("source", ("gfs", "era5", "20crv3"))
+def test_gpuwm_sim_composes_the_command_a_real_bundle_is_accepted_with(
+        tmp_path, monkeypatch, source):
+    """THE end-to-end proof of the simulation seam, short of a GPU.
+
+    ``gpuwm sim`` claims it can take a prepared tree, work out for
+    itself which source produced it and which runner arm it needs, relay
+    the digests off the bundle's own artifacts, and hand the runner
+    something that runs.  Every part of that claim is checkable here
+    without a card: build a bundle this runner's own preflight ACCEPTS,
+    ask the seam to compose its command, then feed the values PARSED OUT
+    OF THAT COMMAND back into the same preflight.
+
+    A pass means the seam's published boundary -- what
+    ``--print-command`` prints, and what a third party's script would
+    copy -- drives a bundle the runner genuinely accepts.  A
+    seam that composed a plausible-looking command nobody had run
+    through the real gate would be the "engine-proven is not shipped"
+    failure wearing a test.
+    """
+
+    fixture = _prepared_fixture(tmp_path, source)
+    grid = SimpleNamespace(source=source)
+    monkeypatch.setattr(
+        runner, "validate_native_lambert_contract",
+        lambda exp, path, *, source_name: grid)
+    monkeypatch.setattr(
+        runner, "verify_native_static_receipt",
+        lambda receipt, static, actual_grid, cfg: {"status": "PASS"})
+    monkeypatch.setattr(
+        runner, "load_native_static_cache",
+        lambda path, actual_grid, ny, nx: {
+            "STATIC": np.ones((ny, nx), dtype=np.float64)})
+
+    from gpuwm import stage_cli
+
+    bundle = stage_cli.resolve_bundle(fixture.prepared)
+    assert bundle["source"] == source, (
+        "the seam read the wrong source off the bundle's own document")
+    assert bundle["layout"] == "single"
+
+    profile = runner.PHYSICS_PROFILE
+    command = stage_cli.sim_command(
+        bundle, experiment_config=fixture.experiment,
+        wps_namelist=fixture.wps, outdir=tmp_path / "run",
+        physics_profile=profile)
+    flags = {command[i]: command[i + 1]
+             for i in range(3, len(command) - 1)
+             if command[i].startswith("--")}
+
+    # The relay read the digests off the artifacts.  Independently
+    # recomputing them here is the cross-check: `sim` takes the two
+    # inside the proof, and the fixture hashes the files, and a valid
+    # bundle is exactly one where those agree.
+    assert flags["--proof-sha256"] == _sha256(fixture.proof)
+    assert flags["--source-manifest-sha256"] \
+        == _sha256(fixture.source_manifest)
+    assert flags["--prepared-content-sha256"] == fixture.content_sha256
+
+    inputs = runner.preflight_prepared_forecast(
+        source=flags["--source"],
+        prepared_root=Path(flags["--prepared-root"]),
+        proof_sha256=flags["--proof-sha256"],
+        source_manifest_sha256=flags["--source-manifest-sha256"],
+        prepared_content_sha256=flags["--prepared-content-sha256"],
+        experiment_config=Path(flags["--experiment-config"]),
+        wps_namelist=Path(flags["--wps-namelist"]),
+        physics_profile=flags["--physics-profile"],
+        run_seconds=fixture.run_seconds,
+        history_interval_seconds=load_experiment(
+            fixture.experiment).root.history_interval_s)
+
+    assert inputs.source == source
+    assert inputs.cache_reader.verify_all()["status"] == "PASS"
+    runner._verify_inputs_unchanged(inputs)
 
 
 @pytest.mark.parametrize("source", ("gfs", "era5"))
@@ -1675,6 +1909,44 @@ def test_preflight_accepts_exact_member_20crv3_mapped_direct_d01(
     assert {"mapped_mapping", "mapped_composition", "mapped_provenance"} \
         <= set(inputs.authority_paths)
     runner._verify_inputs_unchanged(inputs)
+
+
+def test_20crv3_accepts_the_python_engine_decoder_pair_in_full(
+        tmp_path, monkeypatch):
+    """The workaround shape: a preparation sealed on the subprocess pair.
+
+    The member manifest declares no decoder section, so the reader pins
+    _TWENTYCRV3_DECODER_ROLE_SETS: the in-process engine OR the
+    subprocess pair, each in full.  This is the pair half; a partial
+    inventory (a role from each) is refused below rather than assumed.
+    """
+
+    fixture = _prepared_fixture(
+        tmp_path, "20crv3",
+        twentycr_decoder_roles=frozenset(
+            {"grib2_inventory", "grib2_dump"}))
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+
+    inputs = _preflight_fixture(fixture)
+
+    assert inputs.source_member == "072"
+    runner._verify_inputs_unchanged(inputs)
+
+
+def test_20crv3_refuses_a_decoder_inventory_that_is_neither_route(
+        tmp_path, monkeypatch):
+    """One role from each route is a run nothing shipped: refused by name."""
+
+    fixture = _prepared_fixture(
+        tmp_path, "20crv3",
+        twentycr_decoder_roles=frozenset(
+            {"gpuwm_mapped_engine", "grib2_dump"}))
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+
+    with pytest.raises(
+            ValueError,
+            match="neither the in-process engine nor the subprocess pair"):
+        _preflight_fixture(fixture)
 
 
 def test_20crv3_implemented_unverified_profile_retains_hash_bound_cadence(
@@ -1904,11 +2176,16 @@ def test_unnamed_forecast_main_reaches_execution_and_states_the_status(
     # forecast takes.  A stub that swallowed **kwargs instead would keep
     # passing while the argument it was handed went nowhere.
     def fake_run(inputs, *, output_directory, observer=None,
-                 first_products=None, stream_init="auto"):
+                 first_products=None, stream_init="auto",
+                 progress_options=None, preflight_seconds=None,
+                 kernel_cache_census=None):
         observed["inputs"] = inputs
         observed["observer"] = observer
         observed["first_products"] = first_products
         observed["stream_init"] = stream_init
+        observed["progress_options"] = progress_options
+        observed["preflight_seconds"] = preflight_seconds
+        observed["kernel_cache_census"] = kernel_cache_census
         return {
             "schema": runner.REPORT_SCHEMA,
             "status": "PASS",
@@ -1941,6 +2218,17 @@ def test_unnamed_forecast_main_reaches_execution_and_states_the_status(
     receipt = observed["inputs"].physics_receipt
     assert receipt["profile_binding"] in ("matched", "experiment-config")
     assert receipt["verification"]["status"] == "supported-not-wrf-verified"
+    # The preflight this door just ran is handed on as a number, not
+    # left dark: the runner is the only place that can put it in the
+    # step log and in report.json, and it did not measure it itself.
+    assert isinstance(observed["preflight_seconds"], float)
+    assert observed["preflight_seconds"] >= 0.0
+    # The kernel cache as this run INHERITED it, read before the door
+    # did anything: taken later it describes a cache this run has been
+    # filling, which is how a card swap stayed silent.
+    entries, undecodable, architectures = observed["kernel_cache_census"]
+    assert isinstance(entries, int)
+    assert isinstance(architectures, dict)
 
 
 def test_materializer_unnamed_publishes_the_base_suite_unchanged(tmp_path):
@@ -2208,7 +2496,10 @@ def test_20crv3_preflight_rejects_member_swap_even_with_resealed_proof(
 
     proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
     composition = proof["source_composition"]
-    composition["input_manifest"]["sha256"] = manifest_sha256
+    # The receipt's input_manifest record deliberately stays the sealed
+    # BRIDGED digest: the tamper is maximal everywhere the attacker can
+    # reach without re-running a composition, and the refusal below must
+    # come from the cache identity, not from a hash left stale.
     composition["alignment"]["member"] = "071"
     composition["terrain_products"] = [
         {"path": row["path"], "sha256": row["sha256"]}
@@ -2223,6 +2514,75 @@ def test_20crv3_preflight_rejects_member_swap_even_with_resealed_proof(
     _write_json(fixture.proof, proof)
 
     with pytest.raises(ValueError, match="source identity differs"):
+        _preflight_fixture(fixture)
+
+
+def _reseal_mapped_proof(fixture) -> None:
+    """Re-hash the composition receipt and the proof, in that order.
+
+    A tamper test that leaves a stale hash behind proves only that the
+    hash check works.  Re-sealing both is what makes the refusal that
+    fires the one the test is actually about.
+    """
+
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    composition = proof["source_composition"]
+    composition.pop("receipt_content_sha256", None)
+    composition["receipt_content_sha256"] = hashlib.sha256(
+        _canonical(composition).encode()).hexdigest()
+    proof.pop("proof_content_sha256", None)
+    proof["proof_content_sha256"] = hashlib.sha256(
+        _canonical(proof).encode()).hexdigest()
+    _write_json(fixture.proof, proof)
+
+
+def test_source_20crv3_refuses_a_bundle_prepared_from_a_users_own_mapping(
+        tmp_path, monkeypatch):
+    """THE control on de-specialising the mapped route.
+
+    ``20crv3`` is the declarative mapped route wearing a specific name:
+    it writes the same proof schema, the same ``source-evidence``
+    directory and the same composition receipt as any other mapped
+    preparation.  What makes it ``20crv3`` and not "some mapping" is the
+    certificate -- the mapping, composition and provenance authorities
+    must hash to the ones PACKAGED with this distribution.
+
+    That is exactly the property that must survive opening the route up
+    to caller-supplied mappings.  Widening the certificate instead of
+    adding a second, narrower one would turn a specific route into a
+    permissive one: any bundle at all would then be accepted as 20CRv3,
+    and the receipts would say 20CRv3 about data that never came from
+    it.
+
+    Here the bundle is well formed and internally consistent -- every
+    digest re-sealed, so nothing else can fire -- and differs from the
+    packaged route in exactly one way: the mapping authority is the
+    caller's.  ``--source 20crv3`` must refuse it, naming the packaged
+    authorities.
+    """
+
+    fixture = _prepared_fixture(tmp_path, "20crv3")
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    # Sanity, both directions: the untouched bundle is accepted, so a
+    # refusal below is caused by the substitution and by nothing else.
+    runner._verify_inputs_unchanged(_preflight_fixture(fixture))
+
+    evidence = fixture.proof.parent / "source-evidence"
+    users_mapping = json.loads(
+        (evidence / "mapping.json").read_text(encoding="utf-8"))
+    users_mapping["name"] = "a-mapping-this-user-authored"
+    _write_json(evidence / "mapping.json", users_mapping)
+    users_digest = _sha256(evidence / "mapping.json")
+    assert users_digest != runner.twentycrv3_authority_sha256()["mapping"]
+
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    proof["source_composition"]["mapping"]["sha256"] = users_digest
+    _write_json(fixture.proof, proof)
+    _reseal_mapped_proof(fixture)
+
+    with pytest.raises(
+        ValueError, match="does not use the packaged 20crv3 authorities"
+    ):
         _preflight_fixture(fixture)
 
 
@@ -2551,11 +2911,54 @@ def test_thompson_runs_without_the_retired_enable_gate(tmp_path, monkeypatch):
     guard = receipt["thompson_contract"]["guard"]
     assert "experimental_runtime_environment" not in guard
     assert guard["table_root_source"] == "environment override"
-    # And with no override at all, the packaged directory resolves.
+    # And with no override at all, a COMPLETE packaged directory
+    # resolves.  Both roots are injected rather than read off this box:
+    # the packaged set is complete in a git checkout and in a wheel whose
+    # user has run `gpuwm fetch-tables`, and short two 300 MiB assets in
+    # every other wheel -- so an uninjected assertion here pins whichever
+    # of the two the machine running the suite happens to have, which is
+    # exactly how this test passed on Windows and failed on Linux at the
+    # same commit.  What the product promises is the ORDER, and the order
+    # is what is pinned below.
     monkeypatch.delenv(runner.THOMPSON_TABLE_ROOT_ENV)
-    from gpuwm.physics_compat import (packaged_thompson_table_root,
-                                      thompson_table_root)
-    assert Path(thompson_table_root()) == packaged_thompson_table_root()
+    from gpuwm import physics_compat
+    from gpuwm.core.thompson_contract import CLASSIC_TABLE_ASSETS
+
+    def _table_root(where, *, complete):
+        where.mkdir(parents=True, exist_ok=True)
+        assets = (CLASSIC_TABLE_ASSETS if complete
+                  else CLASSIC_TABLE_ASSETS[:-1])
+        for asset in assets:
+            (where / asset.filename).write_bytes(b"")
+        return where
+
+    packaged = _table_root(tmp_path / "packaged", complete=True)
+    staged = _table_root(tmp_path / "staged", complete=True)
+    monkeypatch.setattr(physics_compat, "packaged_thompson_table_root",
+                        lambda: packaged)
+    monkeypatch.setattr(physics_compat, "user_thompson_table_root",
+                        lambda: staged)
+    assert Path(physics_compat.thompson_table_root()) == packaged
+
+    # A wheel whose packaged root is short an asset reads the staged set
+    # instead -- the read fallback that keeps `gpuwm fetch-tables` worth
+    # running -- rather than refusing a run that can read every table.
+    short = _table_root(tmp_path / "short-packaged", complete=False)
+    monkeypatch.setattr(physics_compat, "packaged_thompson_table_root",
+                        lambda: short)
+    assert Path(physics_compat.thompson_table_root()) == staged
+
+    # Neither root complete: the companion's own refusal is what the
+    # user gets, because "no tables anywhere" and "no companion" want
+    # different fixes.
+    monkeypatch.setattr(physics_compat, "user_thompson_table_root",
+                        lambda: _table_root(tmp_path / "short-staged",
+                                            complete=False))
+    monkeypatch.setattr(
+        physics_compat, "packaged_thompson_table_root",
+        lambda: (_ for _ in ()).throw(ImportError("gpuwm-data is missing")))
+    with pytest.raises(ImportError, match="gpuwm-data is missing"):
+        physics_compat.thompson_table_root()
 
     monkeypatch.setenv(runner.THOMPSON_TABLE_ROOT_ENV, str(runtime.root))
     changed = tmp_path / "other-tables"
@@ -2778,6 +3181,41 @@ def test_output_claim_is_create_only_and_preserves_existing_tree(tmp_path):
         runner.claim_output_directory(output)
 
     assert marker.read_text(encoding="utf-8") == "preserve"
+
+
+def test_output_claim_accepts_the_empty_folder_the_stage_door_just_claimed(
+        tmp_path):
+    """`gpuwm sim` is the caller, and it allocates before it dispatches.
+
+    The breakage this claim prevents is MERGING INTO AN EARLIER RUN --
+    two runs' wrfout frames under one set of names and a report.json
+    describing only the last.  An EMPTY directory holds no earlier run,
+    so refusing it prevents nothing and costs the whole route.
+
+    That is not hypothetical.  `gpuwm sim`'s run-folder claim is
+    create-exclusive on purpose (two launches in one second must not
+    share a folder), so by the time it dispatches, the stamped folder
+    EXISTS and is empty.  Against the real artifact on weather-node-1,
+    the merged 2.5.0 tip refused its own stamped folder and the forecast
+    never started:
+
+        prepared_single_domain_forecast: --outdir refused:
+        .../run-20260818-073611Z_i202608180600Z already exists
+
+    Both halves were individually right, which is why neither side's
+    suite caught it: the door names a real breakage, the runner names a
+    real breakage, and the composition ran nothing.
+    """
+
+    claimed = tmp_path / "fc" / "run-20260818-073611Z_i202608180600Z"
+    claimed.mkdir(parents=True)
+
+    assert runner.claim_output_directory(claimed) == claimed.resolve()
+
+    # ...and the refusal still fires the moment it holds anything.
+    (claimed / "report.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="already holds"):
+        runner.claim_output_directory(claimed)
 
 
 def test_output_claim_refuses_to_modify_the_prepared_input_tree(tmp_path):
@@ -3580,7 +4018,11 @@ def test_a_reused_authority_directory_is_a_sentence_not_a_traceback(
     assert "Traceback" not in captured.err
     assert captured.err.strip().count("\n") == 0, captured.err
     assert "--output-directory refused" in captured.err
-    assert "already exists" in captured.err
+    # "already HOLDS", not "already exists": the first run populated it,
+    # and holding an earlier run is the breakage.  A directory that
+    # merely exists is accepted -- `gpuwm sim` hands this runner one it
+    # claimed itself, every time.
+    assert "already holds" in captured.err
     assert "Pass a new --output-directory" in captured.err
 
 
@@ -3847,3 +4289,84 @@ def test_the_era5_writer_and_the_validator_share_one_receipt_list():
     for key in CONDITIONAL_PREPARATION_RECEIPTS:
         attribute = era5_direct._SOIL_RECEIPT_ATTRIBUTE.get(key, key)
         assert isinstance(attribute, str) and attribute
+
+
+def test_the_shared_mapped_evidence_validator_is_not_named_for_one_source():
+    """One validator serves EVERY packaged mapped profile, so its name
+    may not claim one of them.
+
+    It was authored as ``_validate_twentycrv3_mapped_evidence`` when
+    20CRv3 was the only packaged mapped profile.  It now certifies GDAS,
+    RRFS, AIGFS, AIGEFS, GEFS and the hybrids too -- a 20CRv3-named
+    function in an AIGEFS traceback is how a reader concludes the wrong
+    route ran.  The name is generic; this test keeps it generic as more
+    sources join ``_MAPPED_PACKAGED_PROFILE``.
+    """
+
+    from gpuwm import prepared_single_domain_forecast as module
+
+    assert not hasattr(module, "_validate_twentycrv3_mapped_evidence")
+    name = module._validate_packaged_mapped_evidence.__name__.lower()
+    tokens = {"twentycrv3"}
+    for source in module._MAPPED_PACKAGED_PROFILE:
+        tokens.add(source.replace("-", "").replace("_", "").lower())
+    assert tokens, "no packaged mapped profile is declared"
+    for token in tokens:
+        assert token not in name, (
+            f"the shared mapped-evidence validator is named for {token}")
+
+
+def _raised_message_strings(function) -> list[str]:
+    """Every string literal that reaches a ``raise`` in ``function``.
+
+    Docstrings and comments are deliberately excluded: prose may name the
+    source a behaviour was first measured on.  A REFUSAL may not, because
+    the refusal is what the user reads.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    messages: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Raise):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Constant) and isinstance(inner.value,
+                                                              str):
+                messages.append(inner.value)
+    return messages
+
+
+def test_the_shared_mapped_refusals_name_no_single_source():
+    """A refusal that hardcodes one source lies about every other one.
+
+    The shared validator certifies every packaged mapped profile, but its
+    refusals were written when 20CRv3 was the only one -- so a GEFS or
+    AIGEFS bundle failing its soil-layer receipt was refused with a
+    sentence naming 20CRv3.  A reader debugging an AIGEFS run reasonably
+    concludes the wrong route ran, which is the same defect the validator
+    RENAME closed one level up.
+
+    The refusal CLASSES and their remedies are untouched; only the source
+    the sentence names is now the source that actually failed.
+    """
+
+    from gpuwm import prepared_single_domain_forecast as module
+
+    tokens = {"20crv3", "twentycrv3"}
+    for source in module._MAPPED_PACKAGED_PROFILE:
+        tokens.add(source.replace("-", "").replace("_", "").lower())
+
+    offenders = []
+    for function in (module._validate_packaged_mapped_evidence,
+                     module._validate_mapped_static_proof):
+        for message in _raised_message_strings(function):
+            flattened = message.replace("-", "").replace("_", "").lower()
+            for token in tokens:
+                if token in flattened:
+                    offenders.append((function.__name__, message, token))
+    assert not offenders, (
+        "these refusals name one source inside a shared validator: "
+        f"{offenders}")

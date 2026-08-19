@@ -637,6 +637,17 @@ def test_go_runs_the_forecast_in_process_only_for_an_observer(monkeypatch,
     assert seen["argv"][:2] == ["--source", "gfs"]
     assert "--proof-sha256" in seen["argv"]
 
+    # ... and an observer that says it does NOT host keeps the
+    # subprocess.  `gpuwm go` now always carries a stage-event
+    # observer, and telemetry must not be what makes a bare chain give
+    # up the process isolation this test exists to protect.
+    class Telemetry:
+        hosts_forecast = False
+
+    go_cli._run_forecast(plan, digests, explain=False, observer=Telemetry())
+    assert spawned == ["forecast", "forecast"]
+    assert seen["observer"] is sentinel      # the host was not re-entered
+
 
 def test_go_notifications_are_off_without_an_observer():
     """Every existing gpuwm go caller must be unaffected."""
@@ -1162,8 +1173,16 @@ def test_the_catalog_query_returns_the_renderers_real_list(capsys):
     document = json.loads(capsys.readouterr().out)
 
     assert document["schema"] == CATALOG_SCHEMA
-    assert document["engine"] in ("rust", "matplotlib")
     assert document["skip_token"] == "none"
+    if document["engine"] is None:
+        # No usable rw_wrfbatch on this box.  `auto` refuses rather than
+        # answering from a second engine's catalog (render law, audit
+        # F7), and the document carries the refusal so a picker can say
+        # what is wrong instead of offering products that do not exist.
+        assert document["products"] is None
+        assert "fetch-bridges" in document["error"]
+        return
+    assert document["engine"] == "rust"
     products = document["products"]
     assert products and all(entry["name"] for entry in products)
     # No header or footer line leaked in as a product.
@@ -1183,19 +1202,29 @@ def test_the_catalog_needs_no_plan_and_writes_nothing(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_a_matplotlib_only_box_still_answers_the_catalog(monkeypatch):
-    """The fallback engine's five products are the honest answer there."""
+def test_a_box_with_no_renderer_answers_with_the_refusal(monkeypatch):
+    """A named "no answer" beats an answer from a different catalog.
 
-    import gpuwm.render as render_module
+    This used to hand the picker the matplotlib engine's five products.
+    They are not the products ``gpuwm render`` would draw on that box --
+    ``--engine auto`` refuses there now, because weather fields come
+    from ``rw_wrfbatch`` (render law, CLAUDE.md Drew 2026-08-06; audit
+    F7) -- so offering them was offering a menu nothing serves.  The
+    document says ``engine: null``, ``products: null`` and why.
+    """
 
-    monkeypatch.setattr(render_module, "_resolve_engine",
-                        lambda requested: ("matplotlib", "no rust renderer"))
+    from gpuwm import rustwx
     from gpuwm.runplan import render_catalog
 
+    monkeypatch.setattr(rustwx, "find_renderer", lambda: None)
     document = render_catalog()
-    assert document["engine"] == "matplotlib"
-    assert [entry["name"] for entry in document["products"]] == \
-        list(render_module.PRODUCTS)
+    assert document["engine"] is None
+    assert document["products"] is None
+    assert "rw_wrfbatch" in document["error"]
+    assert "fetch-bridges" in document["error"]
+    # The refusal reaches the JSON as ONE readable block, not with the
+    # `[[explain]]` sentinel a terminal layer is supposed to strip.
+    assert "[[explain]]" not in document["error"]
 
 
 # ---------------------------------------------------------------------------

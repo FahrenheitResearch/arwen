@@ -114,15 +114,26 @@ from .highres_refusal import HighresRefusal  # noqa: E402,F401
 
 
 def require_geography_stack() -> None:
-    """Refuse an enabled high-resolution block with no geography stack.
+    """Refuse an enabled high-resolution block that has no engine at all.
 
     Called at the very top of :func:`apply_highres_statics`, BEFORE the
     footprint is computed and long before a single tile is requested.
     The ordering is the whole point: through 2.3.2 the only check was the
     import inside the mosaic step, which runs *after* the fetch, so a
-    missing rasterio cost the user 160.7 MiB of downloads and then a raw
+    missing library cost the user 160.7 MiB of downloads and then a raw
     traceback.  Nothing about a missing library needs the network to
     discover, so nothing about it should wait for the network.
+
+    What counts as "an engine" moved with the port, and the gate moved
+    with it rather than being relaxed: the default is the Rust
+    static-fields library, and rasterio plus pyproj are what the
+    explicit ``GPUWM_STATIC_PYTHON=1`` fallback runs on.  The refusal
+    fires when the engine that WOULD run cannot -- the library is
+    unloadable and the fallback's libraries are absent, or the caller
+    selected the fallback and its libraries are absent.  An environment
+    carrying only the shipped default is complete, which it was not
+    under the old spelling: that one refused a perfectly good wheel
+    install for missing a library nothing on the default path reads.
 
     Raised OUTSIDE the ``on_refuse`` handler on purpose.  ``on_refuse =
     "fallback-30s"`` is a statement about *source coverage* -- "this
@@ -132,12 +143,11 @@ def require_geography_stack() -> None:
     silent degradation the rest of this module refuses.  An incomplete
     environment is fixable in one command, so it is always reported.
     """
-    from .geog_stack import geog_unavailable_detail, missing_geog_modules
+    from .geog_stack import missing_highres_engine
 
-    missing = missing_geog_modules()
-    if missing:
-        raise HighresRefusal("geography-stack-missing",
-                             geog_unavailable_detail(missing))
+    detail = missing_highres_engine()
+    if detail is not None:
+        raise HighresRefusal("geography-stack-missing", detail)
 
 
 @dataclass(frozen=True)
@@ -615,12 +625,21 @@ def apply_highres_statics(baseline, grid, *, config, domain_id: int,
     # broken install into a silent 30-arc-second run.
     require_geography_stack()
 
+    from .highres import static_compute_workaround
+
+    workaround = static_compute_workaround()
     receipt: dict[str, object] = {
         "schema": RECEIPT_SCHEMA,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "config": config.echo(),
         "grid": _grid_identity(grid, domain_id),
         "case_date": case_date.isoformat(),
+        # Fixed-means-default: the bare default is the Rust
+        # static-fields bridge; a pure-Python run is a workaround and
+        # says so here, not just on the console.
+        "static_compute": (
+            "rust static-fields bridge" if workaround is None
+            else f"pure-Python workaround ({workaround})"),
     }
     try:
         fields, detail = _apply(baseline, grid, config=config,

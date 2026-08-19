@@ -106,9 +106,21 @@ DEFAULT_PHYSICS_PROFILE_BY_SOURCE = {
 
 
 def default_physics_profile(source: str) -> str:
-    """The profile a bare session emits for ``source``."""
+    """The profile a bare session emits for ``source``.
 
-    return DEFAULT_PHYSICS_PROFILE_BY_SOURCE[source.lower()]
+    The table above names the three sources this prompt OFFERS, each with
+    the strongest suite its own route admits.  Any other registered source
+    a reader types gets the flags door's own default, so the two doors
+    cannot hand out different physics for the same source -- and a source
+    reachable by flags is never unreachable here for want of a table row.
+    """
+
+    from gpuwm.domain_wizard import resolved_physics_profile
+
+    key = source.lower()
+    if key in DEFAULT_PHYSICS_PROFILE_BY_SOURCE:
+        return DEFAULT_PHYSICS_PROFILE_BY_SOURCE[key]
+    return resolved_physics_profile(key, None)
 
 
 class PromptAborted(Exception):
@@ -183,8 +195,20 @@ def _validate_point(raw: str) -> None:
 
 
 def _validate_source(raw: str) -> None:
-    if raw.lower() not in SOURCES:
-        raise ValueError(f"source must be one of {', '.join(SOURCES)}")
+    """Accept any source the flags door can plan for, not only the three
+    this prompt OFFERS.
+
+    :data:`SOURCES` is the shortlist the prompt suggests -- the three a
+    new install is most likely to want -- and it stays short on purpose.
+    It was also the accepted SET, so a reader who knew the product ships
+    a RAP profile and typed ``rap`` here was told "source must be one of
+    gfs, hrrr, era5", which is a false statement about the product.  The
+    registry decides, in the same words the flags door uses.
+    """
+
+    from gpuwm.domain_wizard import resolve_source
+
+    resolve_source(raw)
 
 
 def _cycle_validator(source: str):
@@ -198,15 +222,25 @@ def _cycle_validator(source: str):
     """
 
     def validate(raw: str) -> None:
-        from gpuwm.fetch import parse_cycle
-
         if raw.strip().lower() == "latest":
             if source == "era5":
                 raise ValueError(
                     "era5 is a reanalysis with weeks of latency, so there "
                     "is no 'latest' to probe -- name the analysis time as "
                     "YYYY-MM-DDTHH (UTC)")
+            # Everything else `latest` cannot mean is the flags door's own
+            # rule, asked here rather than restated: a source with no
+            # download route has no mirror to probe for a complete cycle.
+            from gpuwm.domain_wizard import source_has_fetch_front_door
+
+            if not source_has_fetch_front_door(source):
+                raise ValueError(
+                    f"'latest' cannot be resolved for {source}: nothing can "
+                    "probe its mirrors for a complete cycle yet -- name the "
+                    "cycle you staged as YYYY-MM-DDTHH (UTC)")
             return
+        from gpuwm.fetch import parse_cycle
+
         parse_cycle(raw, source)
 
     return validate
@@ -264,7 +298,7 @@ def collect(*, printer=print) -> list[str]:
     function knows nothing about projections, ladders or budgets.
     """
 
-    from gpuwm.domain_wizard import _parse_point
+    from gpuwm.domain_wizard import _parse_point, resolve_source
 
     printer("gpuwm domain: no arguments, so here is the short version.")
     printer("Enter accepts the default in [brackets].  Ctrl-C stops.")
@@ -273,8 +307,9 @@ def collect(*, printer=print) -> list[str]:
     point = _ask("  center point, lat,lon", None, _validate_point)
     lat, lon = _parse_point(point)
 
-    source = _ask("  source (gfs/hrrr/era5)", DEFAULT_SOURCE,
-                  _validate_source).lower()
+    source = resolve_source(
+        _ask("  source (gfs/hrrr/era5, or any registered source)",
+             DEFAULT_SOURCE, _validate_source))
     if source == "era5":
         from gpuwm.fetch import cds_credentials_path, cds_credentials_present
 
@@ -283,7 +318,15 @@ def collect(*, printer=print) -> list[str]:
                     f"no {cds_credentials_path()} yet; gfs and hrrr need "
                     "no account.")
 
-    cycle_default = None if source == "era5" else "latest"
+    # `latest` is only offered where something can resolve it: it means
+    # "the newest cycle whose objects are published", which only the fetch
+    # door's per-source probe can answer.  Offering it for a source with
+    # no download route would default the reader into a refusal.
+    from gpuwm.domain_wizard import source_has_fetch_front_door
+
+    cycle_default = ("latest"
+                     if source != "era5" and source_has_fetch_front_door(source)
+                     else None)
     cycle = _ask("  cycle, YYYY-MM-DDTHH or latest", cycle_default,
                  _cycle_validator(source))
 

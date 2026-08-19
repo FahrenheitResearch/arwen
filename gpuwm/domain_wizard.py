@@ -42,12 +42,11 @@ Sizing conventions (all documented, none silent):
   the estimator's own machine-peak envelope, which is AFFINE (the
   itemized estimate, plus the non-pool residency that scales with the
   device rather than the grid, plus a measured constant and a per-nest
-  fraction).  A Windows card keeps its one instrumented x1.75
-  observation as a floor under that sum; a Windows card at or below
-  :data:`~gpuwm.core.preflight.WINDOWS_SMALL_CARD_MAX_GIB` takes the
-  EXPERIMENTAL third family, whose reduced fixed reserve rides in the
-  envelope's intercept, and every sizing that uses it prints the pioneer
-  warning.  The loop stops SHORT of the budget on purpose: a config that
+  fraction).  A Windows card adds the measured WDDM pool-slack term
+  (:data:`~gpuwm.core.preflight.WDDM_POOL_SLACK_FRACTION`, the 3080
+  calibration) -- the same model `gpuwm check` and `gpuwm go` price, so
+  a wizard PASS cannot become a check refusal on the same machine
+  state.  The loop stops SHORT of the budget on purpose: a config that
   exactly touches its budget has nothing left for the machine to be
   slightly less generous than the model, which is how every v1.4.0
   ladder came to sit 0.01-0.19 GiB from the wall.
@@ -74,6 +73,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 
@@ -83,10 +83,12 @@ from gpuwm.core.preflight import (CUDA_CONTEXT_BYTES,
                                   INGEST_PEAK_ENVELOPE_BASIS,
                                   ReservePolicy,
                                   card_local_memory_profile,
+                                  device_memory_probe_reason,
+                                  device_memory_probe_subprocess,
                                   envelope_platform, estimate_experiment,
                                   estimate_phases,
-                                  unknown_platform_note,
-                                  windows_small_card_advisory)
+                                  profile_from_device_probe,
+                                  unknown_platform_note)
 from gpuwm.experiment import ExperimentConfig, build_experiment
 from gpuwm.explain import explain_enabled, warn
 from gpuwm.fetch import parse_cycle
@@ -109,7 +111,13 @@ from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
 from gpuwm.hrrr_route_inputs import (ROUTE_DEFAULT_PHYSICS_PROFILE,
                                      HrrrRouteInputError, coverage_advisory,
                                      coverage_refusal, route_input_paths,
+                                     route_physics_blocker,
                                      write_hrrr_route_inputs)
+from gpuwm.source_adapters import (get_source_adapter, source_adapters,
+                                   source_coverage_window,
+                                   source_forcing_interval_seconds,
+                                   wizard_planable_source_ids)
+from gpuwm.source_coverage import points_outside, window_centre
 from gpuwm.static.projection import (EARTH_RADIUS_M, WRF_MAP_PROJ_CODES,
                                      _wrap180, projection_class)
 
@@ -176,6 +184,49 @@ _CHILD_SPAN_FRACTION = (0.5, 0.36, 0.4)
 
 #: diff_6th_factor by nest depth (certified ladder).
 _DIFF6_FACTORS = (0.12, 0.10, 0.08, 0.06)
+
+
+def _at_depth(table: tuple, depth: int) -> float:
+    """``table[depth]``, clamped to its ends -- never an IndexError.
+
+    Both per-depth tables above were tabulated at the CERTIFIED
+    four-domain layout's depth and then indexed by nest depth with no
+    bound, so ``--chain`` with four or more nests died on a bare
+    ``IndexError: tuple index out of range`` -- inside the sizing fit
+    loop, where it read as a crash rather than as a refusal.  That is
+    precisely the 12 -> 3 -> 1 -> 0.5 -> 0.25 km ladder this program
+    exists to run.
+
+    Clamping is the DEFINED behaviour for a depth past the table, not a
+    guess: both tables are monotone toward their inner end (spans get
+    proportionally tighter, sixth-order damping gets weaker), so the
+    last entry is the innermost value anybody certified, and a deeper
+    nest inheriting it is the conservative continuation.  It is also the
+    convention already in force elsewhere in this codebase --
+    ``gpuwm.da.nested_forecast._diff6_factor`` clamps the same table the
+    same way for the same reason.
+
+    This is a bound on a LOOKUP, not on a limit.  Nothing here softens a
+    refusal: a nest that cannot be hosted inside its parent with the
+    boundary clearance still raises :class:`DomainFitError` naming the
+    extent, and the fit loop still prices every candidate against the
+    card.
+    """
+    if not table:
+        raise ValueError("per-depth table is empty")
+    return table[min(max(int(depth), 0), len(table) - 1)]
+
+
+def _child_span_fraction(depth: int) -> float:
+    """Child linear extent as a fraction of its parent's, at ``depth``."""
+
+    return float(_at_depth(_CHILD_SPAN_FRACTION, depth))
+
+
+def _diff6_factor(depth: int) -> float:
+    """``diff_6th_factor`` for the domain at ``depth`` (0 = root)."""
+
+    return float(_at_depth(_DIFF6_FACTORS, depth))
 
 
 #: What a card of nominal capacity NEVER hands to a process: the driver's
@@ -317,10 +368,166 @@ def _fetch_margin_deg(source: str) -> float:
         return gfs_suggested_fetch_margin_deg()
     return _FETCH_MARGIN_DEG
 
-#: Forcing cadence per source: estimator LBC-interval sizing + fetch hint.
-SOURCE_FORCING_INTERVAL_S = {"era5": 21600.0, "gfs": 10800.0,
-                             "hrrr": 3600.0}
-_SOURCE_CADENCE_H = {"era5": 6, "gfs": 3}
+#: Forcing cadence per source: estimator LBC-interval sizing + the
+#: ``&share/interval_seconds`` the emitted namelist.wps carries.
+#:
+#: REGISTRY-DERIVED since 2.5.0.  It used to be this three-entry literal:
+#:
+#:     {"era5": 21600.0, "gfs": 10800.0, "hrrr": 3600.0}
+#:
+#: and that dict was the whole reason `gpuwm domain --source` offered three
+#: sources while the product shipped sixteen runnable ones.  The
+#: 2026-08-17 model battery hand-assembled a TOML and a namelist.wps for
+#: every other model, typing this one number in from the packaged mapping.
+#: It is a source's own published fact, so it lives in the source's own
+#: registry row (:func:`gpuwm.source_adapters.source_forcing_interval_seconds`)
+#: and a new model reaches this door without touching this file.
+SOURCE_FORCING_INTERVAL_S = MappingProxyType({
+    source_id: source_forcing_interval_seconds(source_id)
+    for source_id in wizard_planable_source_ids()
+})
+
+#: Sources whose fetch planner takes no ``--cadence`` at all.  HRRR is
+#: hourly by construction and `gpuwm fetch --source hrrr --cadence N`
+#: refuses by name ("HRRR is hourly; --cadence does not apply"), so the
+#: emitted [fetch] table must not carry the key for it.  Stated as an
+#: exclusion rather than by omitting HRRR from a hand-written table,
+#: because omission reads as an oversight and this one is a fact about
+#: the download planner.
+_CADENCE_FREE_FETCH_SOURCES = frozenset({"hrrr"})
+
+
+def _fetch_ladder_cadence_h() -> dict[str, int]:
+    """The ``cadence = N`` an emitted ``[fetch]`` table carries, per source.
+
+    The download ladder's spacing is the source's own native cadence -- a
+    fetch that skipped valid times would hand the preparation a series
+    with holes in it -- so this comes from the registry rather than from a
+    second hand-written table.  It used to be ``{"era5": 6, "gfs": 3}``,
+    and `--source gdas` was unreachable from this door precisely because
+    nothing had ever added the third entry: opening the door without
+    deriving this produced "GFS cadence must be 1 or 3 hours" from a
+    ``cadence`` key nobody had filled in.
+    """
+
+    from gpuwm.fetch import fetch_front_door_sources
+
+    return {
+        source: int(source_forcing_interval_seconds(source) // 3600)
+        for source in fetch_front_door_sources()
+        if source not in _CADENCE_FREE_FETCH_SOURCES
+        and source in SOURCE_FORCING_INTERVAL_S
+    }
+
+
+_SOURCE_CADENCE_H = _fetch_ladder_cadence_h()
+
+
+def planable_sources() -> tuple[str, ...]:
+    """Every source id this door can emit a runnable configuration for."""
+
+    return wizard_planable_source_ids()
+
+
+def resolve_source(raw: str) -> str:
+    """RAW (an id or a registry alias) as the canonical source id.
+
+    Fail-closed in three named ways, because "invalid choice: 'rap'" is a
+    refusal that tells a reader nothing about why the model they can see in
+    `gpuwm prep --list-sources` cannot be planned for:
+
+    * an unknown name lists the registry, so a misspelling is one glance
+      from correct;
+    * a registered row with no runnable route says what the row says about
+      itself, so the reader learns the state of that model rather than the
+      state of this parser;
+    * a registered runnable row with no declared forcing cadence names the
+      missing fact, because emitting ``interval_seconds`` for it would be a
+      guess about boundary times the source may never publish.
+    """
+
+    try:
+        adapter = get_source_adapter(raw)
+    except ValueError:
+        raise ValueError(
+            f"--source {raw!r} is not a registered source; "
+            f"gpuwm domain plans for {', '.join(planable_sources())}.  "
+            "`gpuwm prep --list-sources` lists the whole registry, "
+            "including the rows "
+            "that are registered but have no runnable route yet") from None
+    if not adapter.runnable:
+        raise ValueError(
+            f"--source {adapter.source_id}: this source is registered but "
+            f"has no runnable initialization route ({adapter.status.value})"
+            + (f" -- {adapter.composition_requirement}"
+               if adapter.composition_requirement else "")
+            + f".  A configuration emitted for it could not be prepared by "
+              f"anything; plan with one of {', '.join(planable_sources())}")
+    if adapter.forcing_interval_seconds is None:
+        raise ValueError(
+            f"--source {adapter.source_id}: this route's boundary cadence "
+            "comes from the mapping document a caller supplies, not from "
+            "the registry, so this door has no interval_seconds to write "
+            "and the namelist.wps it emitted would name boundary times the "
+            "inputs may not carry.  Plan with the named source your mapping "
+            f"describes ({', '.join(planable_sources())}), or author the "
+            "namelist beside the mapping")
+    return adapter.source_id
+
+
+def source_has_fetch_front_door(source: str) -> bool:
+    """Can ``gpuwm fetch`` go and get this source's bytes today?
+
+    The wizard emits an advisory ``[fetch]`` table only when the answer is
+    yes.  A table naming a source the fetch door does not serve is refused
+    at every later config load, and a table that quietly loads would
+    advertise a download nothing can make -- so the emission asks here and
+    prints the manual acquisition route otherwise.
+    """
+
+    from gpuwm.fetch import fetch_front_door_sources
+
+    return source in fetch_front_door_sources()
+
+
+def _candidate_fetch_hints(source: str) -> dict | None:
+    """The ``[fetch]`` stub a sizing candidate carries, or ``None``.
+
+    A candidate is rendered and reloaded through the real experiment
+    loader, so it must be a file that LOADS: a ``[fetch]`` table naming a
+    source the fetch door does not serve is refused there, which would
+    have turned every new source's first fit iteration into a load error
+    rather than a size.
+    """
+
+    return {"source": source} if source_has_fetch_front_door(source) else None
+
+
+def source_fetch_takes_a_crop_box(source: str) -> bool:
+    """Does this source's fetch accept an ``area``/``point`` crop?
+
+    Asked of the fetch module rather than decided here, for the same
+    reason the door question is: the hand-written transports subset at
+    the publisher and the table routes take whole objects, and a
+    ``[fetch]`` table carrying ``area`` for one of the latter prints a
+    step 1 that exits 2 and is refused at every later config load.
+    """
+
+    from gpuwm.fetch import fetch_accepts_area
+
+    return fetch_accepts_area(source)
+
+
+def source_reaches_forecast_leads(source: str) -> bool:
+    """Does SOURCE publish forecast leads, or only analyses at valid times?
+
+    The registry's ``max_forecast_hour`` is the whole answer: a reanalysis
+    and an every-member analysis archive both declare 0, and the front door
+    that used to spell this ``{"gfs", "gdas", "hrrr"}`` refused ``rap`` a
+    lead RAP publishes 51 hours of.
+    """
+
+    return get_source_adapter(source).max_forecast_hour > 0
 
 
 def _fetch_cadence_h(source: str, start_hour: int) -> int | None:
@@ -629,8 +836,16 @@ def oversized_footprint_advisory(area: str) -> list[str]:
     An advisory, never a refusal, and it changes no sizing: the layout
     is already chosen by the time this runs.  What it changes is whether
     a first-time reader learns that the hemisphere-wide fetch box they
-    are about to download is a consequence of their card's size and a
-    single flag away from something smaller.
+    are about to download is a single flag away from something smaller.
+
+    It used to open "sized to fill your card, not your map".  That
+    asserted a CAUSE this function cannot see, and since 2.5.0 gave the
+    fit a servable-crop bound the cause is sometimes false: on a large
+    card the wizard now stops on the source and says so on stderr, and
+    an advisory blaming the card two lines later contradicts it.  The
+    sentence states what the thresholds above actually measure -- the
+    box is much bigger than the documented examples -- and keeps the
+    remedy, which is true either way.
 
     Two things the first version got wrong, both found by a wheel user
     on Linux at ``--card 24gb --ladder 12``.  It measured longitude
@@ -652,7 +867,7 @@ def oversized_footprint_advisory(area: str) -> list[str]:
             and lat_span < _TALL_FOOTPRINT_DEGREES):
         return []
     return [
-        f"this domain is sized to fill your card, not your map: the "
+        f"this domain is much wider than the documented examples: the "
         f"fetch command below downloads a {lon_span:.0f} x "
         f"{lat_span:.0f} degree --area box, so pass --vram-gib N (or a "
         f"finer --root-dx KM) for a smaller first run -- narrowing "
@@ -698,21 +913,39 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
     """The HRRR chain, with every file this emission just wrote bound.
 
     HRRR reaches the GPU through the native front door: neither ``gpuwm
-    run`` (the ERA5 ``[case_data]`` route) nor ``gpuwm go`` (whose last
-    stage takes gfs/era5/20crv3) drives it, and it is NOT prepared with
-    ``rw-wps``, which is the GFS door.  Until 2026-08-01 a multi-domain
-    HRRR emission was told to use exactly that, because the
-    multi-domain branch of :func:`final_step_command` returned before
-    the HRRR one was ever reached.
+    run`` (the ERA5 ``[case_data]`` route) nor ``gpuwm go`` (whose five
+    commands do not compose this route's stage vocabulary) drives it,
+    and it is NOT prepared with ``rw-wps``, which is the GFS door.
+    Until 2026-08-01 a multi-domain HRRR emission was told to use
+    exactly that, because the multi-domain branch of
+    :func:`final_step_command` returned before the HRRR one was ever
+    reached.
+
+    **The commands printed here are the SHIPPED ones**, rendered from
+    :func:`gpuwm.stage_cli.staged_route_commands` -- the same helper
+    ``gpuwm go``'s hrrr refusal and ``gpuwm sim``'s unbindable-tree
+    refusal render, so a reader cannot be handed three spellings of one
+    route.  What this block printed until 2026-08-18 was the route's
+    INTERNALS: ``python -m tools.prepare_hrrr_wrf`` and ``python
+    tools/hrrr_single_domain_benchmark.py`` -- two ``tools/`` paths a
+    pip wheel does not contain at all -- plus ``python -m
+    gpuwm.hrrr_hierarchy_direct`` and ``python -m
+    gpuwm.prepared_domain_tree_forecast``.  Every one of those is a
+    program ``gpuwm prep``/``gpuwm sim`` spawn (MEASURED: ``gpuwm prep
+    --source hrrr ... --dry-run`` prints each line verbatim), so the
+    old block was machinery where a door exists.
 
     Every value this emission knows is bound -- the four input files,
     the cycle, the lead, the run length, the cadence, the profile, and
     ``--statics-corridor`` on the hierarchy stage when the config
     declares a ``[relocation]`` follow source.  What is left as a
     placeholder is what cannot exist yet: the WPS_GEOG root, which is
-    the reader's install, and the sha256 of each stage's own receipt,
-    which does not exist until that stage has run and which that stage
-    prints.
+    the reader's install, and the source manifest's own digest, which
+    ``gpuwm fetch`` prints.  The FORECAST stage now asks for no
+    placeholder at all -- ``gpuwm sim`` reads the preparation's digests
+    off the bundle it is pointed at, so the two ``<printed by the
+    hierarchy>`` / ``<sha256 of that file>`` values a reader used to
+    have to produce by hand are gone.
 
     **Every time printed here is the CYCLE, and the lead is printed
     beside it.**  Model time zero (cycle + K) is derived by each stage,
@@ -735,12 +968,12 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
         # cycle, which is what every pre-lead emission printed.
         cycle = exp.start_time - timedelta(hours=forecast_start_hour)
     cycle_text = cycle.strftime("%Y-%m-%d_%H:%M:%S")
-    lead_flag = (f"      --forecast-start-hour {forecast_start_hour} \\\n"
-                 if forecast_start_hour else "")
+    lead = ((f"--forecast-start-hour {forecast_start_hour}",)
+            if forecast_start_hour else ())
     run_seconds = int(exp.run_seconds)
     cadence = int(exp.domains[0].history_interval_s)
-    profile_flag = (f"      --physics-profile {profile} \\\n"
-                    if profile is not None else "")
+    profile_flag = ((f"--physics-profile {profile}",)
+                    if profile is not None else ())
     # The hierarchy stage's corridor flag, on exactly the configs that
     # need it.  Derived from the corridor module's own follow predicate
     # -- the same function `gpuwm go`'s plan and run-plan's decision
@@ -748,109 +981,91 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
     # config no door would have added it for.  A pasted chain that
     # forgot it would prepare a bundle the last line of the same chain
     # refuses.
+    from gpuwm.stage_cli import staged_route_commands
     from gpuwm.static.corridor import config_declares_follow_source
 
-    corridor_flag = ("      --statics-corridor \\\n"
-                     if config_declares_follow_source(exp) else "")
-    prepare = (
-        _guard_exports_block(profile)
-        + "  python -m tools.prepare_hrrr_wrf \\\n"
-        f"      --source-root {source_root} \\\n"
-        f"      --source-manifest {source_root}/SHA256SUMS \\\n"
-        "      --source-manifest-sha256 <printed by gpuwm fetch> \\\n"
-        f"      --domain-spec {printed['target_domain']} \\\n"
-        f"      --namelist-input {printed['namelist_input']} \\\n"
-        "      --geog-root <your WPS_GEOG> \\\n"
-        + profile_flag
-        + f"      --cycle {cycle_text} \\\n"
-        + lead_flag
-        + f"      --run-seconds {run_seconds} \\\n"
-        f"      --history-interval-seconds {cadence} \\\n"
-        "      --skip-stock-wrf-export \\\n"
-        f"      --output-root {root}\n")
+    corridor = (("--statics-corridor",)
+                if config_declares_follow_source(exp) else ())
+    manifest = f"{source_root}/SHA256SUMS"
+    manifest_digest = "<printed by gpuwm fetch>"
+    prepare_arguments = (
+        f"--source-root {source_root}",
+        f"--source-sha256s {manifest}",
+        f"--source-sha256s-sha256 {manifest_digest}",
+        f"--domain-spec {printed['target_domain']}",
+        f"--namelist-input {printed['namelist_input']}",
+        # Handed to the PREPARATION, not just to the hierarchy: the
+        # forecast stage's HRRR manifest inventory requires a
+        # wps_namelist role, and the preparer records the role only if
+        # it is given the file.  A chain that omitted it prepared a
+        # bundle `gpuwm sim` could not read at all -- which is how HRRR
+        # came to be sent to a benchmark script instead of a forecast.
+        f"--wps-namelist {printed['wps_namelist']}",
+        "--geog-root <your WPS_GEOG>",
+        *profile_flag,
+        f"--valid-time {cycle_text}",
+        *lead,
+        f"--run-seconds {run_seconds}",
+        f"--history-interval-seconds {cadence}",
+    )
+    prepare_command, root_forecast = staged_route_commands(
+        "hrrr", prep_arguments=prepare_arguments, prepared_root=root,
+        outdir="hrrr-forecast", indent="  ", wrap=True)
+    prepare = _guard_exports_block(profile) + prepare_command + "\n"
+    header = (
+        "# HRRR runs the native route -- not `gpuwm run` and not `gpuwm "
+        "go`, whose five\n"
+        "#   commands do not compose this route's stages.  Two commands "
+        "do, and they are\n"
+        "#   the shipped ones.  Every input below was written beside this "
+        "config; the\n"
+        "#   placeholders are your WPS_GEOG and the digest `gpuwm fetch` "
+        "printed.\n")
     if len(exp.domains) == 1:
-        # No forecast command is printed here, on purpose.  HRRR does not
-        # reach `gpuwm.prepared_single_domain_forecast` -- that runner's
-        # --source takes gfs/era5/20crv3 and refuses hrrr by design -- and
-        # `gpuwm.prepared_domain_tree_forecast` requires at least two
-        # domains.  The single-domain HRRR forecast stage is the same
-        # benchmark runner the preparation above drives, whose argument
-        # set that wrapper assembles from artifacts this file cannot
-        # name.  Printing a command that refuses is the exact failure
-        # this block exists to end, so it says what is true instead.
-        # The forecast stage, written out.  It used to be prose telling
-        # the reader to "re-run it with the ones that wrapper prints",
-        # and doing exactly that fails: the wrapper's own arguments
-        # decode into --bridge, which now exists, so the re-run dies with
-        # "pipeline output already exists".  The second pass restores the
-        # sealed cache instead of decoding again, which is a different
-        # set of flags, so the command is printed rather than described.
-        forecast = (
-            "  python tools/hrrr_single_domain_benchmark.py \\\n"
-            f"      --bridge {root}/native/native-bridge \\\n"
-            "      --manifest-sha256 <bridge_manifest_sha256 printed by "
-            "the preparation> \\\n"
-            f"      --prepared-cache {root}/native/prepared-cache \\\n"
-            f"      --source-root {source_root} \\\n"
-            f"      --source-manifest {source_root}/SHA256SUMS \\\n"
-            "      --source-manifest-sha256 <printed by gpuwm fetch> \\\n"
-            f"      --static-cache {root}/native-static.npz \\\n"
-            f"      --static-receipt {root}/native-static-receipt.json \\\n"
-            f"      --domain-spec {printed['target_domain']} \\\n"
-            f"      --namelist-input {printed['namelist_input']} \\\n"
-            + profile_flag
-            + f"      --cycle {cycle_text} \\\n"
-            + lead_flag
-            + f"      --run-seconds {run_seconds} \\\n"
-            f"      --history-interval-seconds {cadence} \\\n"
-            "      --io-mode history \\\n"
-            "      --outdir hrrr-forecast\n")
-        return (
-            "# HRRR runs the native route -- not `gpuwm run`, not `gpuwm "
-            "go`, and not\n"
-            "#   rw-wps, which is the GFS door.  Every input below was "
-            "written beside\n"
-            "#   this config; the placeholders are your WPS_GEOG and the "
-            "digests each\n"
-            "#   stage prints when it finishes.\n"
-            + prepare
-            + forecast
-            + "# the second command restores the cache the first one "
-            "sealed; it does not\n"
-            "#   decode again.  A ladder with a nest (--ladder 12-3, or "
-            "--root-dx/--chain)\n"
-            "#   instead reaches the nested route: hierarchy, then "
-            "gpuwm.prepared_domain_tree_forecast.")
-    return (
-        "# HRRR runs the native route -- not `gpuwm run`, not `gpuwm go`, "
-        "and not\n"
-        "#   rw-wps, which is the GFS door.  Every input below was "
-        "written beside\n"
-        "#   this config; the placeholders are your WPS_GEOG and the "
-        "digests each\n"
-        "#   stage prints when it finishes.\n"
-        + prepare
-        + "  python -m gpuwm.hrrr_hierarchy_direct \\\n"
-        f"      --root-preparation {root} \\\n"
-        f"      --root-domain-spec {printed['target_domain']} \\\n"
-        f"      --wps-namelist {printed['wps_namelist']} \\\n"
-        f"      --namelist-input {printed['namelist_input']} \\\n"
-        "      --stock-wrf-namelist-input "
-        f"{printed['stock_namelist_input']} \\\n"
-        "      --geog-root <your WPS_GEOG> \\\n"
-        f"      --source-manifest {source_root}/SHA256SUMS \\\n"
-        "      --source-manifest-sha256 <printed by gpuwm fetch> \\\n"
-        f"      --cycle {cycle_text} \\\n"
-        + lead_flag
-        + corridor_flag
-        + f"      --output-root {tree}\n"
-        "  python -m gpuwm.prepared_domain_tree_forecast \\\n"
-        f"      --prepared-root {tree} \\\n"
-        "      --preparation-receipt-sha256 <printed by the hierarchy> "
-        "\\\n"
-        f"      --experiment-config {_printed_path(out)} \\\n"
-        "      --experiment-config-sha256 <sha256 of that file> \\\n"
-        "      --outdir hrrr-forecast")
+        # The forecast stage is `gpuwm sim`, and that is not a rewording
+        # of what stood here.  This block used to print
+        # `tools/hrrr_single_domain_benchmark.py` under a comment saying
+        # HRRR "does not reach gpuwm.prepared_single_domain_forecast --
+        # that runner's --source takes gfs/era5/20crv3".  It does reach
+        # it: hrrr is in that runner's SUPPORTED_SOURCES, the
+        # preparation publishes proof.json plus the authorities the
+        # runner binds on every run, and `gpuwm sim` derives the three
+        # digests from them.  A reader was being sent to a benchmark
+        # script -- one that lives under tools/ and is therefore absent
+        # from every wheel -- for a run the shipped door does.
+        return (header + prepare + root_forecast + "\n"
+                + "# the second command reads the preparation's own "
+                "digests off the bundle;\n"
+                "#   nothing is copied by hand.  A ladder with a nest "
+                "(--ladder 12-3, or\n"
+                "#   --root-dx/--chain) takes one more `gpuwm prep` "
+                "between them: the\n"
+                "#   hierarchy stage, printed for those configs.")
+    hierarchy_arguments = (
+        f"--root-preparation {root}",
+        f"--domain-spec {printed['target_domain']}",
+        f"--wps-namelist {printed['wps_namelist']}",
+        f"--namelist-input {printed['namelist_input']}",
+        f"--stock-wrf-namelist-input {printed['stock_namelist_input']}",
+        "--geog-root <your WPS_GEOG>",
+        f"--source-sha256s {manifest}",
+        f"--source-sha256s-sha256 {manifest_digest}",
+        f"--valid-time {cycle_text}",
+        *lead,
+        *corridor,
+    )
+    # The tree runner binds its preparation receipt rather than a
+    # namelist digest, so --wps-namelist is left off the forecast line:
+    # printing a flag the runner does not read is how a reader learns a
+    # printed chain is approximate.
+    hierarchy, tree_forecast = staged_route_commands(
+        "hrrr", prep_arguments=hierarchy_arguments, prepared_root=tree,
+        outdir="hrrr-forecast", experiment_config=_printed_path(out),
+        wps_namelist=False, indent="  ", wrap=True)
+    return (header + prepare + hierarchy + "\n" + tree_forecast + "\n"
+            + "# the last command reads the hierarchy's own preparation "
+            "receipt off the\n"
+            "#   tree it is pointed at; no digest is copied by hand.")
 
 
 def final_step_command(out: "Path", *, source: str, profile: str | None,
@@ -906,11 +1121,45 @@ def final_step_command(out: "Path", *, source: str, profile: str | None,
     # exists, say where each value comes from, and give a URL that
     # resolves without a checkout.
     if domain_count > 1:
+        # The WHOLE chain, with this emission's real paths filled in.
+        # It used to say "prepare it with rw-wps" and print no command
+        # for the two stages that come first, so the only road to a
+        # ladder run -- the shape every `gpuwm downscale` parent needs,
+        # because single-domain emissions disable restart writing -- was
+        # reverse-engineering FIRST-LIGHT's single-domain sequence
+        # (walked live against the 2.4.1 wheel, 2026-08-17).  Each
+        # command below prints the next one filled in, so the reader
+        # types the first two and pastes the rest.
+        out_path = Path(out)
+        authority = out_path.parent / f"{out_path.stem}-authority"
+        namelist = out_path.parent / f"{out_path.stem}.namelist.wps"
+        profile_flag = ("" if profile is None
+                        else f" \\\n#       --physics-profile {profile}")
         return (
-            "# this is a " + str(domain_count) + "-domain tree: run it "
-            "with the tree runner, in two steps.\n"
-            "#   prepare it with rw-wps, which prints both values below "
-            "when it finishes, then:\n"
+            "# this is a " + str(domain_count) + "-domain tree: it runs "
+            "stage by stage; each command prints the next one filled "
+            "in.\n"
+            "#   materialize the physics authority FIRST:\n"
+            "#     python -m gpuwm.prepared_single_domain_forecast "
+            "--materialize-authorities \\\n"
+            f"#       --source {source} --base-experiment-config "
+            f"{_printed_path(out)} \\\n"
+            f"#       --base-wps-namelist {_printed_path(namelist)}"
+            f"{profile_flag} \\\n"
+            f"#       --output-directory {_printed_path(authority)}\n"
+            "#   author the front-door manifest -- it prints the "
+            "complete rw-wps command:\n"
+            f"#     gpuwm fetch --source {source} "
+            "--author-front-door-manifest \\\n"
+            f"#       --out {_printed_path(data_dir)} \\\n"
+            f"#       --wps-namelist "
+            f"{_printed_path(authority / 'namelist.wps')} \\\n"
+            f"#       --experiment-config "
+            f"{_printed_path(authority / 'experiment.toml')}\n"
+            "#   run the rw-wps line it printed (with your --geog-root); "
+            "rw-wps finishes by\n"
+            "#   printing the runner command below with both values "
+            "filled in:\n"
             "#   gpuwm-prepared-tree-forecast \\\n"
             "#     --prepared-root <the directory rw-wps wrote> \\\n"
             "#     --preparation-receipt-sha256 <the sha256 rw-wps "
@@ -1457,6 +1706,17 @@ def _resolve_cycle(raw: str, *, source: str, hours: int,
             "--cycle latest is not available for --source era5: ERA5 is a "
             "reanalysis with weeks of latency, so name the analysis time "
             "you want as YYYY-MM-DDTHH (UTC)")
+    if not source_has_fetch_front_door(source):
+        # `latest` means "the newest cycle whose objects are already
+        # published", and that is a question only the fetch door's
+        # per-source probe can ask.  Refused here, by name, rather than
+        # relayed as a network failure the reader cannot act on.
+        raise ValueError(
+            f"--cycle latest is not available for --source {source}: "
+            "resolving it means probing that source's mirrors for a "
+            "complete cycle, and `gpuwm fetch` has no download route for "
+            "this source yet, so nothing can do the probing.  Name the "
+            "cycle you staged as YYYY-MM-DDTHH (UTC)")
     from gpuwm.fetch import resolve_latest_cycle
     try:
         cycle = resolve_latest_cycle(source, start_hour + hours)
@@ -1489,7 +1749,7 @@ def _dims_for_scale(scale: float, ratios: tuple[int, ...]
         pnx, pny = dims[-1]
         spans = []
         for parent_extent in (pnx, pny):
-            span = _even(_CHILD_SPAN_FRACTION[depth] * parent_extent)
+            span = _even(_child_span_fraction(depth) * parent_extent)
             span = min(span, parent_extent - 2 * _CLEARANCE_ROWS)
             if span < 12:
                 raise DomainFitError(
@@ -1501,8 +1761,127 @@ def _dims_for_scale(scale: float, ratios: tuple[int, ...]
     return dims
 
 
-def _radt_minutes(dx_m: float) -> float:
-    return max(1.0, dx_m / 1000.0)
+def radt_ladder_minutes(root_radt_minutes: float,
+                        domains: int) -> list[float]:
+    """``radt`` per emitted domain, outer to inner: the root's, inherited.
+
+    A nest INHERITS its parent's radiation cadence.  Radiative transfer
+    varies on cloud timescales, not on grid scales, so nothing about
+    halving dx makes a shorter radiation interval more correct -- and
+    WRF's own namelist guidance says so outright: set ``radt`` once for
+    the coarsest domain and use the same value for every nest.
+
+    Until 2.5.0 this was ``max(1.0, dx_km)`` per nest, which was wrong in
+    both directions and expensive in one:
+
+    * Under the 12-minute suites (every RRTMGP/RRTMG profile the wizard
+      offers) the 12-3-1-0.5 ladder emitted 12/3/1/1 -- radiation once a
+      simulated MINUTE on both sub-km rungs, measured at 79% of a real
+      1 km run's wall clock.  The floor also flattened the bottom of the
+      ladder: 1 km and 500 m were handed the same 1.0, so the refinement
+      it was charging for had already stopped.  At the 250 m LES target
+      this program exists for -- 12-3-1-0.5-0.25 -- it taxed three rungs
+      out of five.
+    * Under the ``radt = 1.0`` suites (the mp8 validation profile and the
+      four no-radiation profiles) it ran the other way and emitted 3.0 on
+      the 3 km nest: a CHILD calling radiation three times less often
+      than the parent feeding its boundaries.
+
+    Inheritance ships default-ON and takes no flag: an opt-in remedy for
+    a correctness defect is a workaround, not a fix.  Per-domain ``radt``
+    stays overridable in the emitted TOML for anyone who wants a nest to
+    depart deliberately.
+    """
+
+    return [float(root_radt_minutes)] * int(domains)
+
+
+def radiation_cadence_advisory(profile: str | None,
+                               domains: int) -> list[str]:
+    """The spoken half of :func:`radt_ladder_minutes`: one line, or none.
+
+    "Fixed means default" ships a remedy default-on WITH an advisory, and
+    the inheritance rule earns its one line only where the AUTO
+    derivation actually decides something a reader could mistake: a
+    NESTED emission.  Layered like the gray-zone advisories: the default
+    screen carries a compact clause on the physics line domain_main
+    already prints (the one-screen cap is a measured gate), and this
+    full line prints under --explain.  It names the single cadence
+    every domain runs, says the nests inherit
+    it -- the pre-2.5.0 wizard refined it with dx instead, flooring
+    sub-km nests at 1-minute radiation, measured at 79% of a real run's
+    wall clock -- and points at the per-domain ``radt`` key in the
+    emitted config, which is the ONE user override the wizard honours
+    (it takes no radt flag, and an explicit value in the file always
+    wins at load).
+
+    Silent for a single domain: nothing inherits, and the physics
+    summary already speaks the root's radt.  There is no radiation-off
+    condition because no shipped suite is radiation-off: every profile
+    in the registry runs at least shortwave (the ``*-no-radiation-*``
+    names mean longwave OFF, Dudhia shortwave still on, radt = 1), so
+    radt paces real work in every nested emission.
+    """
+
+    if int(domains) < 2:
+        return []
+    switches = profile_switches(profile)
+    return [
+        f"radt {float(switches['radt']):g} min on all {int(domains)} "
+        "domains: nests inherit the root's radiation cadence rather than "
+        "refining it with dx (pre-2.5.0 the wizard floored sub-km nests "
+        "at 1-minute radiation -- 79% of a measured run's wall clock); "
+        "set a domain's radt in the emitted config to depart "
+        "deliberately"]
+
+
+#: Step the hosting-scale scan walks upward by.  Small enough that the
+#: layout it returns is within 5% of the smallest one that hosts the
+#: ladder, coarse enough that the whole scan is under a hundred
+#: iterations of integer arithmetic.
+_HOSTING_SCALE_STEP = 1.05
+
+
+def _min_hosting_scale(ratios: tuple[int, ...]) -> float:
+    """Smallest scale in the bracket whose layout can host ``ratios``.
+
+    ``_MIN_SCALE``'s comment claims it "still hosts the deepest ladder"
+    -- true of the deepest PRESET ladder, which is three nests.  A
+    custom ``--chain`` can ask for more, and each level spends both a
+    span fraction and a fixed :data:`_CLEARANCE_ROWS` boundary margin,
+    so a four-nest chain of ratio-2 refinements runs out of interior at
+    the 60x48 root ``_MIN_SCALE`` bottoms out at.  The fit loop probed
+    exactly that scale first, so those ladders were refused outright
+    even though a larger root hosts them comfortably -- the search never
+    looked.
+
+    Hosting is monotone in scale (a larger parent has more interior), so
+    the first scale that works is the floor of the whole feasible range,
+    and returning it lets the existing bisection do the rest.  For every
+    preset -- and for any chain of three nests or fewer -- this returns
+    ``_MIN_SCALE`` unchanged, so nothing that fitted before moves.
+
+    Refuses, with the depth and the remedy named, when the ladder cannot
+    be hosted anywhere in the bracket.
+    """
+    scale = _MIN_SCALE
+    while scale <= _MAX_SCALE:
+        try:
+            _dims_for_scale(scale, ratios)
+        except DomainFitError:
+            scale *= _HOSTING_SCALE_STEP
+            continue
+        return scale
+    raise DomainFitError(
+        f"a ladder of {len(ratios)} nests "
+        f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios))} km at a "
+        "12 km root) cannot be hosted at any layout this wizard will "
+        f"consider: every level spends {_CLEARANCE_ROWS} parent rows of "
+        "Davies/blend clearance on each side plus its share of the "
+        "parent's interior, and by the innermost level there are fewer "
+        f"than 12 cells left even at the {_MAX_SCALE:g}x scale ceiling. "
+        "Ask for fewer nests, or reach the same spacing in fewer steps "
+        "with larger --chain ratios")
 
 
 def seconds_per_km(ref_lat: float) -> Fraction:
@@ -1540,6 +1919,75 @@ def _clock_keys(dt: Fraction) -> dict[str, int]:
     return keys
 
 
+def snap_cadences_to_clock(time_step: Fraction | int | float,
+                           physics: dict
+                           ) -> tuple[dict, tuple[str, ...]]:
+    """Whole-step minute cadences for a derived root clock: (physics, notes).
+
+    The wizard derives BOTH sides of the cadence check: ``--root-dx``
+    fixes dt through the s-per-km convention, and the profile fixes
+    ``radt``/``cudt_minutes``.  At ``--root-dx 9`` those meet as dt =
+    45 s against cudt = 300 s, 300/45 = 20/3 steps, and the loader
+    rightly refuses fractional-step cadences -- so the wizard exited 2
+    over arithmetic the user supplied no part of (UX finding N14).  The
+    author reconciles its own derivation instead: each profile cadence
+    that is not a whole number of root steps moves to the NEAREST
+    whole-step cadence, and the move is spoken.
+
+    Hand-written configs are untouched -- the loader's refusal in
+    :mod:`gpuwm.experiment` still stands wherever a USER pinned an
+    incompatible pair, because there both numbers are the user's.
+
+    The snapped value must survive the round trip the loader takes:
+    ``Fraction(float(minutes)) * 60 / dt`` has to land on a whole
+    number, and not every whole-step cadence has minutes a float can
+    carry exactly (17 steps of a tropical 17.5 s clock is 297.5 s =
+    4.9583... min).  So the nearest step count whose minutes round-trip
+    exactly is taken -- one exists within a few steps for every clock
+    the s-per-km convention can produce, because dt's denominator is a
+    power of two times the km value's own binary fraction.
+    """
+
+    dt = Fraction(time_step)
+    adjusted = dict(physics)
+    notes: list[str] = []
+    for key in ("radt", "cudt_minutes"):
+        minutes = adjusted.get(key)
+        if minutes is None or float(minutes) <= 0.0:
+            continue  # 0 = every step (WRF convention); nothing to snap
+        if key == "cudt_minutes" and int(adjusted.get("cu_physics", 0)) != 1:
+            continue  # the loader paces cudt only under Kain-Fritsch
+        seconds = Fraction(float(minutes)) * 60
+        steps = seconds / dt
+        if steps.denominator == 1:
+            continue
+        target = max(1, round(float(steps)))
+        chosen = None
+        for offset in range(0, 64):
+            for count in ((target,) if offset == 0
+                          else (target - offset, target + offset)):
+                if count < 1:
+                    continue
+                snapped_minutes = float(count * dt / 60)
+                if Fraction(snapped_minutes) * 60 == count * dt:
+                    chosen = (count, snapped_minutes)
+                    break
+            if chosen is not None:
+                break
+        if chosen is None:  # pragma: no cover - no wizard clock reaches this
+            continue  # leave the pair for the loader's refusal
+        count, snapped_minutes = chosen
+        adjusted[key] = snapped_minutes
+        notes.append(
+            f"{key} adjusted {float(minutes):g} -> {snapped_minutes:g} "
+            f"min: the profile's {float(seconds):g} s is {steps} steps "
+            f"of the derived {float(dt):g} s root clock, not a whole "
+            f"number, and the loader refuses fractional-step cadences; "
+            f"{float(count * dt):g} s = {count} steps is the nearest "
+            f"cadence that is")
+    return adjusted, tuple(notes)
+
+
 def _domain_tables(dims: list[tuple[int, int]],
                    ratios: tuple[int, ...],
                    *, time_step: Fraction | int = ROOT_TIME_STEP_S,
@@ -1553,9 +2001,15 @@ def _domain_tables(dims: list[tuple[int, int]],
     The ROOT's radiation/cumulus/diffusion cadences come from the shipped
     physics profile, so the emitted d01 satisfies the prepared-forecast
     runner's exact-equality guard at any --root-dx.  Nests keep the
-    certified ladder's depth-varying values: the multi-domain runner has
-    no profile whitelist, and refining the radiation cadence with the
-    grid is the point of the ladder.
+    certified ladder's depth-varying ``diff_6th_factor`` and their pinned
+    ``cu_physics = 0``: those two really are grid-scale decisions, and
+    the multi-domain runner has no profile whitelist to stop them.
+
+    ``radt`` is NOT one of them.  It is the root's, inherited by every
+    nest (:func:`radt_ladder_minutes`) -- radiation varies on cloud
+    timescales, not grid scales.  Refining it with dx is what the
+    ``max(1.0, dx_km)`` rule did until 2.5.0, and it cost 79% of a
+    measured 1 km run's wall clock for no science.
 
     EVERY domain, root and nest alike, gets the profile's ``epssm``.
     Until 2026-08-01 the nests were written ``epssm = 0.1`` while the
@@ -1582,9 +2036,14 @@ def _domain_tables(dims: list[tuple[int, int]],
     """
     root_physics = {key: profile_switches(profile)[key]
                     for key in _PER_DOMAIN_PHYSICS}
+    # The author reconciles its own two derivations (dt from --root-dx,
+    # cadences from the profile) rather than emitting a file the loader
+    # refuses: see snap_cadences_to_clock (UX finding N14).
+    root_physics, _ = snap_cadences_to_clock(
+        Fraction(time_step), root_physics)
     epssm = profile_switches(profile)["epssm"]
+    radt = radt_ladder_minutes(root_physics["radt"], len(dims))
     tables = []
-    dx = float(root_dx_m)
     for index, (nx, ny) in enumerate(dims):
         if index == 0:
             table = {
@@ -1603,7 +2062,6 @@ def _domain_tables(dims: list[tuple[int, int]],
         else:
             ratio = ratios[index - 1]
             pnx, pny = dims[index - 1]
-            dx = dx / ratio
             table = {
                 "grid_id": index + 1, "parent_id": index,
                 "i_parent_start": (pnx - nx // ratio) // 2 + 1,
@@ -1616,8 +2074,8 @@ def _domain_tables(dims: list[tuple[int, int]],
                     if nest_history_interval_s is None
                     else float(nest_history_interval_s)),
                 "epssm": epssm,
-                "radt": _radt_minutes(dx), "cu_physics": 0,
-                "diff_6th_factor": _DIFF6_FACTORS[index],
+                "radt": radt[index], "cu_physics": 0,
+                "diff_6th_factor": _diff6_factor(index),
             }
         tables.append(table)
     return tables
@@ -1829,7 +2287,35 @@ def gray_zone_advisory(chain_km, shared: dict) -> list[str]:
     resolved, so the scheme and the dynamics do the same transport
     twice.  Saying so once, in the file and on stdout, is the honest
     thing; refusing would be wrong, and silence would be worse.
+
+    THE RECIPE CARRIES ``mix_isotropic = 1``, and that is a correctness
+    repair rather than a wording preference.  This sentence is the only
+    place the product tells anybody how to configure turbulence below a
+    kilometre, so it is where the recommended configuration is actually
+    chosen.  It used to name ``km_opt`` and ``bl_pbl_physics`` and stop
+    there -- but ``mix_isotropic`` defaults to 0 (WRF's Registry value,
+    :class:`gpuwm.config.RunConfig`), and with ``km_opt`` 2 or 3 that is
+    the per-axis path where the vertical exchange coefficient is built
+    and capped on the LAYER DEPTH and then handed to the horizontal
+    diffusion of ``w``.  A reader who followed the old recipe at 250 m
+    landed on ``mix_upper_bound*(dz_max/dx)^2 = 0.702`` against a limit
+    of 0.25 -- the tier where the operator amplifies a 2-grid-interval
+    mode instead of damping it -- and found out only if they later read
+    stderr at config load.  Recommending a configuration and separately
+    warning about it is not a fix; the recipe now is one that holds.
+
+    SINCE THE AUTO-SWITCH (Drew, 2026-08-16) the recipe's key is also
+    the running default: a config that leaves ``mix_isotropic`` unset
+    and violates the criterion runs isotropic anyway
+    (``gpuwm.experiment.resolve_auto_mix_isotropic``, announced at load
+    and in ``gpuwm check``).  The recipe keeps NAMING the key so the
+    file a reader authors says what it runs;
+    ``gpuwm.config.warn_anisotropic_w_mixing`` still only advises when a
+    config WRITES ``mix_isotropic = 0`` -- an explicit setting is kept,
+    and refusing it would make the frozen crash records unloadable.
     """
+
+    from gpuwm.config import EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT
 
     if not shared.get("bl_pbl_physics"):
         return []
@@ -1845,11 +2331,26 @@ def gray_zone_advisory(chain_km, shared: dict) -> list[str]:
         "dynamics and simultaneously parameterized as if they were not. "
         "The proper tool at these scales is a 3-D turbulence closure with "
         "the PBL off: set km_opt = 3 (3-D Smagorinsky) or km_opt = 2 "
-        "(1.5-order prognostic TKE) with bl_pbl_physics = 0 on the "
+        "(1.5-order prognostic TKE) with bl_pbl_physics = 0 AND "
+        "mix_isotropic = 1 on the "
         "domain(s) below the gray zone -- both are per-domain, so a PBL "
         "parent can carry a PBL-off child (see docs/public/LES.md) -- or "
         "the SASE closure (bl_pbl_physics = 900), which is implemented "
-        "and selectable but EXPERIMENTAL and not WRF-verified. Until "
+        "and selectable but EXPERIMENTAL and not WRF-verified. "
+        "mix_isotropic = 1 is part of that recipe and not an optional "
+        "extra: km_opt 2 and 3 with mix_isotropic = 0 (WRF's default; "
+        "left unset, ArWen auto-selects 1 where the criterion below "
+        "fails, and says so) build "
+        "the vertical exchange coefficient on the LAYER DEPTH and then "
+        "hand it to the horizontal diffusion of w, and the reachable "
+        "mix_upper_bound*(dz_max/dx)^2 rises as the grid narrows while "
+        "the layers do not -- it reads 0.702 on this project's own 250 m "
+        "LES child against a limit of "
+        f"{EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT}, which is the tier where "
+        "the horizontal mixing of w amplifies a 2-grid-interval mode "
+        "instead of damping it. Choose it at t = 0: mix_isotropic is "
+        "inside the RunConfig restart fingerprint, so it cannot be "
+        "changed part-way through a campaign you intend to resume. Until "
         "you do, treat sub-kilometre PBL structure as indicative rather "
         "than quantitative.",
     ]
@@ -1990,6 +2491,29 @@ def _root_grid(projection: dict, nx: int, ny: int,
         e_we=nx + 1, e_sn=ny + 1)
 
 
+def _footprint_contains_pole(projection: dict, nx: int, ny: int,
+                             root_dx_m: float = ROOT_DX_M) -> bool:
+    """Does this root contain (or nearly touch) the projection pole?
+
+    The predicate behind :func:`_pole_clearance_refusal`, split out
+    because a second caller needs to ASK it without refusing: a
+    pole-containing footprint spans every longitude, so it also trips
+    the 180-degree servable-crop bound, and the crop bound's remedy
+    ("size a narrower domain") is the wrong instruction for a domain
+    whose problem is the singularity inside it.
+    """
+
+    if projection["map_proj"] == "mercator":  # never reaches a pole
+        return False
+    grid = _root_grid(projection, nx, ny, root_dx_m)
+    pole_lat = 90.0 if projection["truelat1"] >= 0.0 else -90.0
+    px, py = (float(v) for v in grid.latlon_to_ij(
+        pole_lat, projection["stand_lon"]))
+    margin = _POLE_CLEARANCE_CELLS
+    return bool(0.5 - margin <= px <= grid.e_we - 0.5 + margin
+                and 0.5 - margin <= py <= grid.e_sn - 0.5 + margin)
+
+
 def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
                             root_dx_m: float = ROOT_DX_M,
                             target_option: str = "--point") -> None:
@@ -1997,15 +2521,8 @@ def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
     projection pole -- a genuine pipeline limit (lat-lon source
     interpolation and static windowing are not pole-capable), not a
     projection-math one.  Mercator never reaches a pole."""
-    if projection["map_proj"] == "mercator":
-        return
-    grid = _root_grid(projection, nx, ny, root_dx_m)
-    pole_lat = 90.0 if projection["truelat1"] >= 0.0 else -90.0
-    px, py = (float(v) for v in grid.latlon_to_ij(
-        pole_lat, projection["stand_lon"]))
-    margin = _POLE_CLEARANCE_CELLS
-    if (0.5 - margin <= px <= grid.e_we - 0.5 + margin
-            and 0.5 - margin <= py <= grid.e_sn - 0.5 + margin):
+    if _footprint_contains_pole(projection, nx, ny, root_dx_m):
+        pole_lat = 90.0 if projection["truelat1"] >= 0.0 else -90.0
         raise ValueError(
             f"the fitted root domain ({nx} x {ny} mass points at "
             f"{float(root_dx_m) / 1000:g} km) contains or touches the "
@@ -2014,6 +2531,66 @@ def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
             f"pole-capable -- move {target_option} away from the pole or "
             "choose "
             "a smaller layout (--vram-gib / a shallower --ladder)")
+
+
+def _margined_longitude_span(lon_c, center: float,
+                             margin_deg: float) -> tuple["np.ndarray", float]:
+    """Root longitudes on the branch nearest ``center``, and their span.
+
+    ONE expression of the arithmetic, because two readers depend on it
+    agreeing with itself: :func:`_fetch_area`, which refuses to emit a
+    box wider than one source crop, and :func:`fetch_crop_refusal`,
+    which is what stops the fit loop from choosing that layout in the
+    first place.  A sizing bound computed one way and an emission gate
+    computed another is how a wizard sizes a domain for twelve seconds
+    and then refuses the file it just sized.
+    """
+
+    lon_u = center + np.asarray(
+        _wrap180(np.asarray(lon_c, dtype=float) - center))
+    span = ((float(lon_u.max()) + margin_deg)
+            - (float(lon_u.min()) - margin_deg))
+    return lon_u, span
+
+
+def fetch_crop_refusal(projection: dict, nx: int, ny: int, *, source: str,
+                       root_dx_m: float = ROOT_DX_M,
+                       target_option: str = "--point") -> str | None:
+    """Why SOURCE cannot force this root as ONE crop, or ``None``.
+
+    The same bound :func:`_fetch_area` enforces at emission, asked early
+    enough that :func:`fit_ladder` can shrink against it -- a sizing
+    constraint that is not the card, exactly like
+    :func:`source_coverage_refusal`.
+
+    The breakage it names is specific and was measured, not theorized: a
+    forcing box whose MARGINED longitude span exceeds 180 degrees is
+    read back by :func:`gpuwm.fetch.parse_area` as the complementary
+    antimeridian-crossing box -- the wrong crop, silently -- so
+    ``_fetch_area`` refuses to write one.  Until this bound joined the
+    fit, the fit was free to choose a layout the emission would then
+    refuse: on Linux, where the peak envelope carries no WDDM floor and
+    the same card therefore buys a much larger grid, ``gpuwm domain
+    --point=35.3,-97.5 --source gfs --ladder 12 --vram-gib 32`` sized a
+    181.2-degree footprint and died with rc 2 and no layout to fall back
+    to.  The identical command on Windows emitted a 102 x 67 degree box.
+    Shrinking is the answer the refusal's own remedy asks for ("shrink
+    the configuration"), and the wizard is the thing that knows by how
+    much.
+    """
+
+    margin_deg = _fetch_margin_deg(source)
+    _, lon_c = _root_grid(projection, nx, ny, root_dx_m).latlon_c()
+    _, span = _margined_longitude_span(
+        lon_c, float(projection["ref_lon"]), margin_deg)
+    if span <= 180.0:
+        return None
+    return (
+        f"the {nx}x{ny} root's forcing box spans {span:.1f} degrees of "
+        f"longitude once {source}'s {margin_deg:g}-degree fetch margin is "
+        "added, and boxes wider than 180 degrees cannot be served as a "
+        f"single source crop.  Move {target_option} equatorward, or size a "
+        "narrower domain (--vram-gib N, or a finer --root-dx)")
 
 
 def _fetch_area(projection: dict, nx: int, ny: int,
@@ -2059,10 +2636,7 @@ def _fetch_area(projection: dict, nx: int, ny: int,
     """
     lat_c, lon_c = _root_grid(projection, nx, ny, root_dx_m).latlon_c()
     center = float(projection["ref_lon"])
-    lon_u = center + np.asarray(
-        _wrap180(np.asarray(lon_c, dtype=float) - center))
-    span = ((float(lon_u.max()) + margin_deg)
-            - (float(lon_u.min()) - margin_deg))
+    lon_u, span = _margined_longitude_span(lon_c, center, margin_deg)
     if span > 180.0:
         raise ValueError(
             f"the root domain's forcing footprint spans {span:.1f} "
@@ -2148,6 +2722,53 @@ def fetch_area_hint(projection: dict, nx: int, ny: int, *, source: str,
         coverage=source_coverage_envelope(source),
         coverage_label=source.upper(), coverage_notes=coverage_notes)
     return ",".join(f"{value:.{AREA_HINT_DECIMALS}f}" for value in area)
+
+
+def source_coverage_refusal(projection: dict, nx: int, ny: int, *,
+                            source: str,
+                            root_dx_m: float = ROOT_DX_M,
+                            target_option: str = "--point") -> str | None:
+    """Why SOURCE's native grid cannot force this root, or ``None``.
+
+    THE plan-time answer to the question the 2026-08-17 model battery could
+    only get out of a preparation traceback.  ICON-EU over a central-US
+    domain is a refusal by construction -- a European grid cannot reach
+    Kansas -- and the run learned it after decoding 1,752 objects, 73
+    seconds into a preparation, as ten lines of internal call stack.  The
+    facts needed to say it first are all in the registry row: the source's
+    declared window, and this root's own mass points.
+
+    The message is built to be the same three sentences the preparation
+    stage gets right: WHICH point is outside, WHERE it lands in the
+    source's own index space, and WHAT the source covers.  That is what
+    separates "this source does not reach the target" from "the crop is
+    too small", and it is the difference between moving the domain and
+    filing a bug.
+
+    A global source (no declared window) returns ``None``: it reaches
+    everything, and there is no bound to state.
+    """
+
+    window = source_coverage_window(source)
+    if window is None:
+        return None
+    latitude, longitude = _root_grid(
+        projection, nx, ny, root_dx_m).latlon_c()
+    outside = points_outside(window, latitude, longitude)
+    if not bool(outside.any()):
+        return None
+    index = int(np.argmax(outside))
+    bad_lat = float(np.asarray(latitude).reshape(-1)[index])
+    bad_lon = float(np.asarray(longitude).reshape(-1)[index])
+    centre_lat, centre_lon = window_centre(window)
+    return (
+        f"the {nx}x{ny} root's point at lat/lon ({bad_lat:.4f}, "
+        f"{_wrap180(bad_lon):.4f}) {window.locate(bad_lat, bad_lon)}; "
+        f"{int(outside.sum())} of {outside.size} root mass points are "
+        f"outside it.  {source}'s grid is centred at "
+        f"({centre_lat:.2f}, {centre_lon:.2f}) -- move {target_option} "
+        f"inside that grid, shrink the ladder, or choose a source whose "
+        f"coverage includes this domain")
 
 
 def _posix(path) -> str:
@@ -2447,10 +3068,25 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             profile=profile, history_interval_s=history_interval_s,
             nest_history_interval_s=nest_history_interval_s):
         parts.append(_render_table("domain", table, array_of_tables=True))
-    parts.append(_render_table(
-        "fetch", fetch_hints,
-        comment="Advisory data-acquisition hints (validated, not "
-                "executed); keys mirror `gpuwm fetch` flags."))
+    if fetch_hints:
+        parts.append(_render_table(
+            "fetch", fetch_hints,
+            comment="Advisory data-acquisition hints (validated, not "
+                    "executed); keys mirror `gpuwm fetch` flags."))
+    else:
+        # NO [fetch] TABLE, DELIBERATELY.  The table is validated at every
+        # config load against the sources `gpuwm fetch` can actually
+        # download, so writing one for a source with no fetch route would
+        # emit a file that refuses to load -- and writing one that loads
+        # would advertise a download this ArWen cannot make.  The
+        # acquisition route is stated as a comment instead, which is the
+        # honest shape until the fetch door grows the route.
+        parts.append(
+            "# NO [fetch] TABLE: `gpuwm fetch` has no download route for\n"
+            "# this source yet, so its bytes are staged by hand (see\n"
+            "# docs/public/SOURCES.md, 'Sources with no fetch door').  The\n"
+            "# geometry, levels, physics and boundary cadence in this file\n"
+            "# are complete -- only the acquisition step is manual.\n")
     if case_data is not None:
         parts.append(_render_table(
             "case_data", case_data,
@@ -2495,14 +3131,31 @@ def sizing_budget_bytes(exp: ExperimentConfig, *, free_bytes: int,
     return int(free_bytes) - reserve.reserve_bytes
 
 
-def _lighter_profiles_than(profile: str | None, source: str) -> list[str]:
-    """Shipped suites this source can run that cost less than ``profile``.
+def _lighter_profiles_than(profile: str | None, source: str,
+                           price_bytes) -> list[str]:
+    """Shipped suites this source can run that PRICE less than ``profile``.
 
-    Ranked by the two things that actually move a card's envelope: how
-    many prognostic species the microphysics transports, and whether a
-    radiation solver's kernel set is resident at all.  Returned in the
-    order a reader should try them -- cheapest last, so the first name is
-    the smallest step down rather than the biggest sacrifice.
+    Ranked by the estimator's own peak envelope at the refused layout --
+    ``price_bytes(profile_name) -> int | None`` -- never by a species
+    heuristic.  The heuristic ranked by microphysics species and
+    radiation presence, and on the 3080 walk it advised three
+    legacy-RRTMG suites as "lighter" than the rte-rrtmgp default; the
+    calibration runs then MEASURED the advised suite at 5.53 GiB against
+    the default's 2.60 at the same 110x88 grid, because the legacy
+    call-peak workspace dominates the envelope and the heuristic never
+    priced it.  A candidate the pricer cannot price is dropped, not
+    guessed at.
+
+    Returned in the order a reader should try them -- cheapest last, so
+    the first name is the smallest step down rather than the biggest
+    sacrifice.
+
+    Every candidate passes :func:`profile_route_blocker` -- the SAME
+    pairing predicate the emission refuses by -- before it is priced.
+    Admissibility used to be checked for one hard-coded source only,
+    so the 2.5.0 walk's gfs refusal ranked a RUC-LSM suite FIRST while
+    the very same wizard refuses that pairing outright: following the
+    printed advice was refused by the door that printed it.
 
     Named in a refusal, never applied: a suite is the operator's choice
     and a wizard that silently downgraded physics to make a number fit
@@ -2511,61 +3164,24 @@ def _lighter_profiles_than(profile: str | None, source: str) -> list[str]:
 
     if profile is None:
         return []
-    try:
-        cost = _profile_envelope_rank(profile)
-    except ValueError:
+    cost = price_bytes(profile)
+    if cost is None:
         return []
     lighter = []
     for candidate in WIZARD_PHYSICS_PROFILES:
         if candidate == profile:
             continue
         try:
-            if _profile_envelope_rank(candidate) >= cost:
-                continue
-            switches = single_domain_runtime_switches(candidate)
+            single_domain_runtime_switches(candidate)
         except ValueError:
             continue
-        if source == "hrrr" and not _route_admits(switches):
+        if profile_route_blocker(candidate, source) is not None:
             continue
-        lighter.append((_profile_envelope_rank(candidate), candidate))
-    return [name for _rank, name in sorted(lighter, reverse=True)][:3]
-
-
-def _profile_envelope_rank(profile: str) -> tuple[int, int]:
-    """(species load, radiation load) -- bigger is more device memory."""
-
-    # Ordered by how many prognostic species the scheme transports, which
-    # is what actually moves the pool: Kessler (qc/qr) < WSM6 (six
-    # single-moment) < Thompson mp8 (+ni/nr) < aerosol-aware mp28 (+two
-    # aerosol arrays) < Morrison mp10 (five number species) < NSSL-2 mp18
-    # (ten).  28 is listed rather than left to the fallback because
-    # tests/test_mp28_runtime_reachability.py audits every
-    # mp_physics-keyed dict for it, and an omission there is how a scheme
-    # silently stops being reachable.
-    switches = single_domain_runtime_switches(profile)
-    species = {1: 0, 6: 1, 8: 2, 28: 3, 10: 4, 18: 5}.get(
-        int(switches["mp_physics"]), 2)
-    lw = int(switches.get("ra_lw_physics", 0))
-    sw = int(switches.get("ra_sw_physics", 0))
-    radiation = 2 if lw == 4 else (1 if sw > 0 else 0)
-    return species, radiation
-
-
-def _route_admits(switches: dict) -> bool:
-    """The HRRR route's own physics gate, on a resolved switch set."""
-
-    from gpuwm.hrrr_route_inputs import (ADMITTED_PBL_PHYSICS,
-                                         ADMITTED_RADIATION_PAIRS,
-                                         REQUIRED_PHYSICS,
-                                         SUPPORTED_MICROPHYSICS)
-
-    return (
-        all(int(switches[key]) == value
-            for key, value in REQUIRED_PHYSICS.items())
-        and int(switches["bl_pbl_physics"]) in ADMITTED_PBL_PHYSICS
-        and (int(switches["ra_lw_physics"]),
-             int(switches["ra_sw_physics"])) in ADMITTED_RADIATION_PAIRS
-        and int(switches["mp_physics"]) in SUPPORTED_MICROPHYSICS)
+        candidate_cost = price_bytes(candidate)
+        if candidate_cost is None or candidate_cost >= cost:
+            continue
+        lighter.append((candidate_cost, candidate))
+    return [name for _cost, name in sorted(lighter, reverse=True)][:3]
 
 
 def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
@@ -2598,14 +3214,14 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         ratios = LADDER_RATIOS[ladder]
     label = ladder if ladder is not None else "-".join(
         f"{v:g}" for v in _ladder_dx_km(ratios, root_dx_m))
-    interval = SOURCE_FORCING_INTERVAL_S[source]
+    interval = source_forcing_interval_seconds(source)
 
     def candidate(scale: float):
         dims = _dims_for_scale(scale, ratios)
         text = render_config(
             name=name, start_time=start_time, hours=hours,
             projection=projection, dims=dims, ratios=ratios,
-            fetch_hints={"source": source}, case_data=None,
+            fetch_hints=_candidate_fetch_hints(source), case_data=None,
             root_dx_m=root_dx_m, profile=profile,
             # The candidate is the same file the user will get, so it
             # carries the same declaration -- otherwise the sizing loop
@@ -2624,31 +3240,73 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             forcing_interval_seconds=interval)
         return dims, exp, phases.peak_envelope_bytes, budget
 
-    def uncovered(exp) -> str | None:
+    def uncovered(exp, dims) -> str | None:
         """Why the SOURCE cannot force this layout, if it cannot.
 
         The budget is not the only constraint on how large a domain may
-        be.  HRRR's native grid is finite, and the interpolation stencil
-        plus the surface-fallback halo need real source cells outside
-        the target on every side -- so a card-filling ladder near the
-        edge of HRRR's coverage is a legal, well-sized experiment that
-        no HRRR fetch can force.  Sizing against VRAM alone produced
-        exactly that on a 24 GiB card: a 3 km root whose halo ran nine
-        rows off the top of the HRRR grid, discovered by the root
-        preparation after the download.
-        """
-        if source != "hrrr":
-            return None
-        try:
-            return coverage_refusal(exp)
-        except (HrrrRouteInputError, ValueError) as error:
-            # Not a coverage answer: the spec itself cannot be built.
-            # Shrinking the ladder cannot fix that, so it refuses with
-            # its OWN cause and remedy instead of masquerading as an
-            # off-grid polygon.
-            raise DomainFitError(str(error)) from None
+        be.  A regional source's native grid is finite, so a card-filling
+        ladder near its edge is a legal, well-sized experiment that no
+        fetch of that source can force.  Sizing against VRAM alone
+        produced exactly that on a 24 GiB card: a 3 km root whose halo
+        ran nine rows off the top of the HRRR grid, discovered by the
+        root preparation after the download.
 
-    dims, exp, envelope, budget = candidate(_MIN_SCALE)
+        THREE checks, and the order matters.  HRRR's certified route
+        knows more than the grid rectangle -- the interpolation stencil
+        plus the surface-fallback halo need real source cells outside
+        the target on every side, and the donor-search margin rides
+        along -- so its own refusal runs first and is the stricter one.
+        Every other regional source is bounded by its declared window
+        (:func:`source_coverage_refusal`), which is what turned ICON-EU
+        over a central-US domain from a preparation traceback into a
+        sizing bound this loop can shrink against.  Last, and for every
+        source including the global ones, the fitted root has to be
+        servable as ONE crop (:func:`fetch_crop_refusal`) -- the bound
+        that stops a card-filling Linux layout from being sized and then
+        refused by its own emission.
+        """
+        if source == "hrrr":
+            try:
+                refusal = coverage_refusal(exp)
+            except (HrrrRouteInputError, ValueError) as error:
+                # Not a coverage answer: the spec itself cannot be built.
+                # Shrinking the ladder cannot fix that, so it refuses with
+                # its OWN cause and remedy instead of masquerading as an
+                # off-grid polygon.
+                raise DomainFitError(str(error)) from None
+            if refusal is not None:
+                return (f"{refusal}.  Move --point away from the edge of "
+                        f"the {source.upper()} grid, or choose a source "
+                        "whose coverage includes it")
+        else:
+            refusal = source_coverage_refusal(
+                projection, dims[0][0], dims[0][1], source=source,
+                root_dx_m=root_dx_m)
+            if refusal is not None:
+                return refusal
+        # Last, and only when the source reaches the domain at all: can
+        # ONE crop of it be fetched?  Asked last because it is the only
+        # one of the three that costs a fresh grid evaluation on the
+        # global sources, which have no window to answer from.
+        #
+        # A pole-containing footprint is handed back to the genuine-limit
+        # refusal that runs after the fit (:func:`_pole_clearance_refusal`,
+        # whose call site says so): such a footprint spans every longitude,
+        # so this bound is true of it and useless -- shrinking a domain
+        # does not move the pole out of it, and the crop bound's remedy
+        # would send the reader after the wrong flag.
+        if _footprint_contains_pole(
+                projection, dims[0][0], dims[0][1], root_dx_m):
+            return None
+        return fetch_crop_refusal(
+            projection, dims[0][0], dims[0][1], source=source,
+            root_dx_m=root_dx_m)
+
+    # The MINIMUM layout is a property of the ladder, not a constant: a
+    # chain deeper than any preset needs a larger root before its
+    # innermost nest has any interior at all (:func:`_min_hosting_scale`).
+    min_scale = _min_hosting_scale(ratios)
+    dims, exp, envelope, budget = candidate(min_scale)
     if budget <= 0:
         # A capacity is never negative.  Say the reserve alone is the
         # whole card rather than printing a "-0.7 GiB budget" for the
@@ -2660,14 +3318,12 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             f"{(free_bytes - budget) / GIB:.2f} GiB against about "
             f"{free_bytes / GIB:.2f} GiB free.  Choose a physics profile "
             f"with a smaller kernel set, or a larger card")
-    smallest_uncovered = uncovered(exp)
+    smallest_uncovered = uncovered(exp, dims)
     if smallest_uncovered is not None:
         raise DomainFitError(
             f"ladder {label} cannot be forced by {source} even at the "
             f"minimum layout ({dims[0][0]}x{dims[0][1]} root): "
-            f"{smallest_uncovered}.  Move --point away from the edge of "
-            f"the {source.upper()} grid, or choose a source whose "
-            "coverage includes it")
+            f"{smallest_uncovered}")
     if envelope > budget:
         # Say WHY it does not fit.  "your card is too small" is what the
         # bare number reads as, and at the minimum layout the honest
@@ -2677,9 +3333,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         # a sentence contradicting the number in front of it.
         floor = estimate_experiment(
             exp, forcing_interval_seconds=interval, vram_gib=vram_gib)
-        constants = (floor.retention_residual_bytes
-                     + floor.device_overhead_bytes
-                     + floor.non_pool_device_bytes
+        constants = (floor.envelope_intercept_bytes
                      + ENVELOPE_UNMODELLED_BYTES)
         share = (100.0 * constants / envelope if envelope else 0.0)
         if share >= 25.0:
@@ -2706,7 +3360,31 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         # gave every source a full-radiation default, it is the lever a
         # small card most often needs.  Omitting it read as "your card is
         # too small" when a lighter shipped profile fits the same grid.
-        lighter = _lighter_profiles_than(profile, source)
+        # Candidates are PRICED at this exact layout by the same
+        # estimator that just refused, so a suite whose envelope is
+        # larger -- legacy-RRTMG's call-peak workspace, measured 2.1x
+        # the rte-rrtmgp default on the 3080 -- can never be advised.
+
+        def _price(candidate_profile: str) -> int | None:
+            try:
+                candidate_text = render_config(
+                    name=name, start_time=start_time, hours=hours,
+                    projection=projection, dims=dims, ratios=ratios,
+                    fetch_hints=_candidate_fetch_hints(source),
+                    case_data=None, root_dx_m=root_dx_m,
+                    profile=candidate_profile,
+                    acknowledgements=acknowledgements)
+                candidate_exp = experiment_from_text(
+                    candidate_text, source=f"<candidate {label} "
+                                           f"{candidate_profile}>")
+                return estimate_phases(
+                    candidate_exp, source=source,
+                    forcing_interval_seconds=interval,
+                    vram_gib=vram_gib).peak_envelope_bytes
+            except Exception:
+                return None
+
+        lighter = _lighter_profiles_than(profile, source, _price)
         remedy = ("choose a shallower ladder, a lighter --physics-profile "
                   f"({', '.join(lighter)}), or a larger card"
                   if lighter else
@@ -2715,21 +3393,40 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             f"ladder {label} does not fit a {budget / GIB:.1f} GiB "
             f"budget even at the minimum layout ({dims[0][0]}x{dims[0][1]} "
             f"root): {phases.verdict(budget)}.  {detail}; {remedy}")
-    lo, hi = _MIN_SCALE, _MAX_SCALE
+    lo, hi = min_scale, _MAX_SCALE
     best = (dims, exp)
+    # WHY the search stopped where it did, kept as it happens.  A memory
+    # bound needs no explanation -- the sizing line prints the envelope
+    # against the budget -- but a NON-memory bound is invisible from the
+    # outside, and an invisible saturation is the exact defect
+    # tests/test_domain_wizard_budget_monotonic.py was written for: a 180
+    # GiB card sized like a 64 GiB one and reported a comfortable fit.
+    # ``None`` means nothing SOURCE-shaped bound: the card did, or the
+    # experiment loader refused the layout on its own terms.
+    binding_reason: str | None = None
     for _ in range(36):
         mid = 0.5 * (lo + hi)
         try:
             dims, exp, envelope, budget = candidate(mid)
         except DomainFitError:
+            # A layout the experiment loader itself refuses -- neither
+            # the card nor the source, so the sentence below would name
+            # the wrong thing.  Claim nothing.
             hi = mid
+            binding_reason = None
             continue
         target = budget - fit_headroom_bytes(budget)
-        if envelope <= target and uncovered(exp) is None:
+        if envelope > target:
+            hi = mid
+            binding_reason = None
+            continue
+        reason = uncovered(exp, dims)
+        if reason is None:
             best = (dims, exp)
             lo = mid
         else:
             hi = mid
+            binding_reason = reason
     # A search that converges on its own upper bracket did not find the grid
     # the budget affords -- it found the largest grid it was willing to look
     # at.  Those are different answers and they used to be indistinguishable
@@ -2746,6 +3443,20 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                  "result sitting on the upper bracket means memory never "
                  "became the binding constraint, so a larger card will not "
                  "buy a larger domain until the ceiling is raised.")
+    elif binding_reason is not None:
+        # The same defect one bound over.  A source-shaped ceiling
+        # (coverage window, or a forcing box too wide to be fetched as
+        # one crop) stops the search below what the card affords, and
+        # from the outside that is indistinguishable from a comfortable
+        # fit -- the sizing line prints an envelope well under budget and
+        # says nothing about why the grid is not larger.  So the wizard
+        # says it, and says that a bigger card is not the lever.
+        root = best[0][0]
+        warn(f"domain search stopped at {root[0]}x{root[1]} on the SOURCE, "
+             "not the card: a larger card buys no more grid here",
+             why="The fit is bounded by every constraint, not only memory."
+                 f"  The next larger layout was rejected because "
+                 f"{binding_reason}")
     return best
 
 
@@ -2817,7 +3528,7 @@ def polygon_ladder_dims(*, footprint: PolygonFootprint,
         raise ValueError(
             f"polygon_ladder_dims needs {count} buffers, got "
             f"{len(buffers_km)}")
-    baseline = _dims_for_scale(_MIN_SCALE, ratios)
+    baseline = _dims_for_scale(_min_hosting_scale(ratios), ratios)
     finest_dx_m = float(root_dx_m) / math.prod(ratios)
     sample_step = _polygon_sample_step_deg(
         projection, footprint, finest_dx_m)
@@ -2949,7 +3660,7 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
     text = render_config(
         name=name, start_time=start_time, hours=hours,
         projection=projection, dims=dims, ratios=ratios,
-        fetch_hints={"source": source}, case_data=None,
+        fetch_hints=_candidate_fetch_hints(source), case_data=None,
         root_dx_m=root_dx_m, profile=profile,
         acknowledgements=acknowledgements)
     exp = experiment_from_text(text, source="<polygon candidate>")
@@ -2967,7 +3678,19 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
                 "polygon plus the requested per-level buffers falls outside "
                 f"HRRR coverage: {refusal}.  Move --polygon inside the HRRR "
                 "grid or choose a source whose coverage includes it")
-    interval = SOURCE_FORCING_INTERVAL_S[source]
+    else:
+        # Every other regional source is bounded by its declared window.
+        # A polygon cannot be shrunk toward coverage the way a fitted
+        # ladder can -- the footprint is the user's explicit request --
+        # so this is a refusal rather than a sizing bound.
+        refusal = source_coverage_refusal(
+            projection, dims[0][0], dims[0][1], source=source,
+            root_dx_m=root_dx_m, target_option="--polygon")
+        if refusal is not None:
+            raise DomainFitError(
+                "polygon plus the requested per-level buffers falls "
+                f"outside {source} coverage: {refusal}")
+    interval = source_forcing_interval_seconds(source)
     phases = estimate_phases(
         exp, source=source,
         forcing_interval_seconds=interval,
@@ -3026,8 +3749,9 @@ def render_wps_namelist(projection: dict, dims: list[tuple[int, int]],
     layout key against the [projection]/[[domain]] tables, so the emitted
     pair must agree exactly.
 
-    ``&share/interval_seconds`` is the source's own forcing cadence, as
-    an INTEGER.  It was omitted entirely until 2026-08-01, and the HRRR
+    ``&share/interval_seconds`` is the source's own forcing cadence, read
+    from the source's REGISTRY ROW, as an INTEGER.  It was omitted
+    entirely until 2026-08-01, and the HRRR
     domain-tree route's raw-WPS contract gate requires exactly 3600
     there -- so every wizard-emitted HRRR tree failed that route's first
     gate on a key the wizard had never written.  The importer drops the
@@ -3036,7 +3760,7 @@ def render_wps_namelist(projection: dict, dims: list[tuple[int, int]],
     everything.
     """
     tables = _domain_tables(dims, ratios, root_dx_m=root_dx_m)
-    interval_seconds = int(SOURCE_FORCING_INTERVAL_S[source])
+    interval_seconds = int(source_forcing_interval_seconds(source))
 
     def csv(values):
         return ", ".join(str(v) for v in values) + ","
@@ -3187,9 +3911,6 @@ def _print_sizing_table(exp: ExperimentConfig, estimate,
           "known-device intercept), so the estimate is never more "
           "optimistic than a present-card measurement; `gpuwm check` on "
           "the real card is what measures it.")
-    if family == "windows-small":
-        for line in windows_small_card_advisory(vram_gib):
-            print(line)
 
 
 def _missing_case_inputs(out: Path, case_data: dict) -> list[str]:
@@ -3259,12 +3980,30 @@ def _print_geog_help() -> None:
     print("    " + ", ".join(GEOG_DATASETS))
 
 
+#: Emission-route physics gates, by source id.  These sources' emission
+#: routes through a runner module carrying its OWN physics gate
+#: (:func:`write_hrrr_route_inputs` ->
+#: :func:`gpuwm.hrrr_route_inputs.validate_route_physics`), so the
+#: pairing predicate below consults that module's spelling of the gate
+#: -- never a restatement, which is how advice came to filter one
+#: hard-coded source while every other source's advice went out
+#: unchecked.  A TABLE, not a code path: a source that gains a routed
+#: emission gains its gate at every surface reading this predicate --
+#: advice ranking, the pre-emission refusal, ``--help``'s caveat -- by
+#: adding a row here.
+_ROUTE_EMISSION_PHYSICS_GATES = {
+    "hrrr": route_physics_blocker,
+}
+
+
 def profile_route_blocker(profile, source) -> str | None:
     """Why ``source`` cannot prepare ``profile``, or ``None``.
 
-    The registry answer, resolved through the same three calls the front
-    door makes, so a caller asking "can this pairing run" and a runner
-    asking "may this pairing run" cannot give different answers.
+    The registry answer plus the emission route's own physics gate,
+    resolved through the same calls the front doors make, so a caller
+    asking "can this pairing run", a runner asking "may this pairing
+    run" and a refusal RANKING alternative suites cannot give
+    different answers.
     """
 
     from gpuwm.physics_compat import (
@@ -3275,14 +4014,19 @@ def profile_route_blocker(profile, source) -> str | None:
     if profile is None or source is None:
         return None
     try:
-        component = single_domain_runtime_switches(profile).get(
-            "sf_surface_physics")
+        switches = single_domain_runtime_switches(profile)
     except (KeyError, ValueError):
         return None
-    named = land_surface_component_for_selector(component)
-    if named is None:
+    named = land_surface_component_for_selector(
+        switches.get("sf_surface_physics"))
+    if named is not None:
+        blocker = land_surface_route_blocker(named, source=str(source))
+        if blocker is not None:
+            return blocker
+    emission_gate = _ROUTE_EMISSION_PHYSICS_GATES.get(str(source))
+    if emission_gate is None:
         return None
-    return land_surface_route_blocker(named, source=str(source))
+    return emission_gate(switches)
 
 
 def profiles_blocked_on_source(source: str) -> tuple[str, ...]:
@@ -3311,10 +4055,14 @@ def _profile_help_route_note() -> str:
 
     Empty when every listed profile is preparable on every source,
     which is what this note existing at all is waiting for.
+
+    It walks EVERY plannable source rather than the three the door used
+    to offer, so widening the door cannot leave a route's refusals
+    unadvertised -- the same one-in-four gap, one layer up.
     """
 
     notes = []
-    for source in ("gfs", "hrrr", "era5"):
+    for source in planable_sources():
         blocked = profiles_blocked_on_source(source)
         if blocked:
             notes.append(f"--source {source} cannot prepare "
@@ -3354,7 +4102,79 @@ def _refuse_profile_its_source_cannot_prepare(profile, source) -> None:
             f"--source {source}: {head}", detail))
 
 
+def _resolve_vram_budget(card: str | None,
+                         vram_gib: float | None) -> tuple[float, str | None]:
+    """The VRAM the wizard sizes against, and where the number came from.
+
+    Three sources, in the only defensible order:
+
+    1. A DECLARATION (``--card`` tier or ``--vram-gib``) wins outright and
+       nothing local is probed -- the caller said "size for a machine that
+       need not be this one", and a probe would at best be ignored.
+    2. Nothing declared: the local card is MEASURED, through the same
+       short-lived subprocess probe the `go` memory gate uses (the
+       measured-thresholds rule -- a number this box can produce beats an
+       assumed tier).  The capacity is what is read; free VRAM is a
+       moment's answer and this file outlives the moment.
+    3. Nothing declared and nothing measurable: a refusal that names the
+       real choice.  This replaces two prior behaviors, both wrong: a
+       silent 24 GiB assumption (a config sized for a card nobody has),
+       and -- on CPU-only installs -- a cupy package check for a command
+       that integrates nothing on a card (the 2.5.0 persona walks'
+       finding).
+
+    Returns ``(vram_gib, sentence)`` where ``sentence`` is the
+    measurement announcement to print, or ``None`` for a declaration.
+    """
+
+    if card is not None:
+        return CARD_VRAM_GIB[card], None
+    if vram_gib is not None:
+        return float(vram_gib), None
+    probe = device_memory_probe_subprocess()
+    total = probe.get("total_bytes") if isinstance(probe, dict) else None
+    if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+        measured = total / GIB
+        profile = probe.get("profile") if isinstance(probe, dict) else None
+        name = (profile or {}).get("name") if isinstance(profile, dict) \
+            else None
+        card_words = f"{name}, " if name else ""
+        return measured, (
+            f"domain: no --card/--vram-gib declared, so the budget is the "
+            f"measured local card ({card_words}{measured:g} GiB total); "
+            f"declare --card or --vram-gib to size for another machine")
+    reason = (device_memory_probe_reason()
+              or "the local card could not be measured")
+    tiers = "/".join(sorted(CARD_VRAM_GIB))
+    if "CuPy" in reason or "cupy" in reason:
+        way_back = ("or install cupy (pip install 'gpuwm[gpu-cu12]', or "
+                    "'gpuwm[gpu-cu13]' on a CUDA-13 box) so the wizard "
+                    "can measure the local card")
+    else:
+        way_back = ("or make the local card readable so the wizard can "
+                    "measure it")
+    from gpuwm.explain import layered
+    raise ValueError(layered(
+        f"this wizard sizes every emitted level against a VRAM budget, "
+        f"and there is none: no --card/--vram-gib was declared, and "
+        f"{reason}.  Declare the target card -- --card {tiers} or "
+        f"--vram-gib N -- {way_back}.",
+        "The budget decides every grid dimension in the emitted file, so "
+        "the wizard needs one of three sources: a declared tier, a "
+        "declared GiB figure, or a measurement of the card in this "
+        "machine.  It used to assume a 24 GiB card when nothing was "
+        "declared, which sized domains for hardware nobody stated exists; "
+        "an assumption is not a budget.  The measurement runs in a "
+        "short-lived subprocess (no CUDA context survives in this "
+        "process) and GPUWM_NO_LOCAL_GPU suppresses it entirely."))
+
+
 def domain_main(args) -> int:
+    # FIRST, before any geometry: the source name becomes a registry row,
+    # or the run stops with the registry's own words.  Everything below
+    # reads the row -- coverage, cadence, forecast horizon -- so a name
+    # that never resolved would have been re-guessed at four later points.
+    args.source = resolve_source(args.source)
     polygon = None
     level_buffer_values = None
     polygon_path = getattr(args, "polygon", None)
@@ -3371,9 +4191,10 @@ def domain_main(args) -> int:
         raise ValueError("--card and --vram-gib are mutually exclusive")
     _refuse_profile_its_source_cannot_prepare(
         getattr(args, "physics_profile", None), args.source)
-    vram_gib = (CARD_VRAM_GIB[args.card] if args.card is not None
-                else args.vram_gib if args.vram_gib is not None
-                else CARD_VRAM_GIB["24gb"])
+    vram_gib, budget_sentence = _resolve_vram_budget(
+        args.card, args.vram_gib)
+    if budget_sentence is not None:
+        print(budget_sentence)
     # The floor is the reserve NOTHING can be sized below: one CUDA
     # context plus the external margin.  Deliberately not the flat
     # `vram_reserve_gib` any more -- that figure is retired from the
@@ -3420,12 +4241,25 @@ def domain_main(args) -> int:
     if start_hour < 0:
         raise ValueError(
             "--forecast-start-hour must be a nonnegative forecast lead")
-    if start_hour and args.source not in {"gfs", "gdas", "hrrr"}:
+    if start_hour and not source_reaches_forecast_leads(args.source):
         raise ValueError(
-            f"--forecast-start-hour: forecast sources only (gfs/gdas/hrrr), "
-            f"not {args.source} -- ERA5 is a reanalysis, so every time in "
-            "it is an analysis and there is no lead to begin at; name the "
-            "analysis time you want with --cycle")
+            f"--forecast-start-hour: {args.source} publishes no forecast "
+            "leads (its registry row declares max_forecast_hour = 0), so "
+            "every time in it is an analysis at its own valid time and "
+            "there is no lead to begin at; name the analysis time you want "
+            "with --cycle")
+    horizon = get_source_adapter(args.source).max_forecast_hour
+    if horizon and start_hour + args.hours > horizon:
+        # Named here, from the source's own declared horizon, rather than
+        # after the acquisition.  gdas stops at f009 and rap at f051; a
+        # window that walks past either is a window the product never
+        # published, and it used to be discovered by whichever stage first
+        # went looking for the missing lead.
+        raise ValueError(
+            f"--hours {args.hours} beginning at f{start_hour:03d} reaches "
+            f"f{start_hour + args.hours:03d}, past {args.source}'s declared "
+            f"f{horizon:03d} horizon; shorten the window, start earlier, or "
+            "choose a source with a longer forecast")
     cycle = _resolve_cycle(
         args.cycle, source=args.source, hours=args.hours,
         start_hour=start_hour)
@@ -3630,6 +4464,23 @@ def domain_main(args) -> int:
         fetch_hints["cadence"] = cadence
     if start_hour:
         fetch_hints["forecast_start_hour"] = start_hour
+    # A [fetch] table is a claim that `gpuwm fetch` can go and get these
+    # bytes.  For a source with no download route that claim is false, and
+    # the table would be refused at every later config load anyway
+    # (validate_fetch_hints checks it against the routes that exist), so
+    # the emission carries the geometry and states the acquisition gap in
+    # the file's own header instead of advertising a step that refuses.
+    emitted_fetch_hints = (fetch_hints
+                           if source_has_fetch_front_door(args.source)
+                           else None)
+    # And the crop key comes out for a source whose fetch takes whole
+    # published objects.  The area is still COMPUTED (the advisories and
+    # the hand-staging note below both say what window this config needs)
+    # -- it is not ADVERTISED as a download flag the fetch would refuse.
+    if (emitted_fetch_hints is not None
+            and not source_fetch_takes_a_crop_box(args.source)):
+        emitted_fetch_hints = {k: v for k, v in fetch_hints.items()
+                               if k not in {"area", "point", "radius_km"}}
     # Prove every emitted hint against the REAL fetch validators before
     # anything is written.  A config the wizard cannot fetch is a config
     # whose printed step 1 exits 2, and that shipped twice: any lead not
@@ -3665,7 +4516,7 @@ def domain_main(args) -> int:
         case_data = {
             "forcing": forcing,
             "vtable": vtable_text,
-            "forcing_interval_s": SOURCE_FORCING_INTERVAL_S["era5"],
+            "forcing_interval_s": source_forcing_interval_seconds("era5"),
             "wps_namelist": f"{out.stem}.namelist.wps",
             "geog_root": (_posix(Path(args.geog_root).resolve())
                           if args.geog_root
@@ -3678,7 +4529,7 @@ def domain_main(args) -> int:
     text = render_config(
         name=name, start_time=start_time, hours=args.hours,
         projection=projection, dims=dims, ratios=ratios,
-        fetch_hints=fetch_hints, case_data=case_data,
+        fetch_hints=emitted_fetch_hints, case_data=case_data,
         root_dx_m=root_dx_m, profile=profile,
         interactive=getattr(args, "interactive", False),
         level_buffers_km=level_buffers,
@@ -3687,7 +4538,7 @@ def domain_main(args) -> int:
         acknowledgements=acknowledgements)
     # Round-trip the exact bytes through the real loader before writing.
     exp = experiment_from_text(text, source=str(out))
-    interval = SOURCE_FORCING_INTERVAL_S[args.source]
+    interval = source_forcing_interval_seconds(args.source)
     estimate = estimate_experiment(
         exp, forcing_interval_seconds=interval, vram_gib=vram_gib)
     phases = estimate_phases(
@@ -3745,6 +4596,14 @@ def domain_main(args) -> int:
               f"ladder {ladder} "
               f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios, root_dx_m))} km), "
               f"buffers {buffers} km, card {vram_gib:g} GiB")
+    # The spoken half of snap_cadences_to_clock: what the author moved
+    # to keep its own two derivations compatible, one line each, or
+    # nothing (UX finding N14 -- the silent alternative was exit 2).
+    for note in snap_cadences_to_clock(
+            root_time_step_s(projection["ref_lat"], root_dx_m),
+            {key: profile_switches(profile)[key]
+             for key in _PER_DOMAIN_PHYSICS})[1]:
+        print(f"domain: {note}")
     if explain:
         _print_sizing_table(exp, estimate, budget, vram_gib,
                             phases=phases)
@@ -3775,13 +4634,42 @@ def domain_main(args) -> int:
         f"--cadence {cadence} "
         if cadence is not None and cadence != _SOURCE_CADENCE_H.get(args.source)
         else "")
-    fetch_command = ("gpuwm fetch "
-                     f"--source {args.source} --cycle {fetch_hints['cycle']} "
-                     f"--hours {fetch_hints['hours']} {area_flag} "
-                     + cadence_flag
-                     + (f"--forecast-start-hour {start_hour} "
-                        if start_hour else "")
-                     + f"--out {_printed_path(printed_out)}")
+    if not source_fetch_takes_a_crop_box(args.source):
+        # No crop flag for a route that publishes whole objects: `gpuwm
+        # fetch` refuses --area on one, so printing it made step 1 exit 2
+        # for every table-driven model.  The window is stated after the
+        # command instead, where it belongs -- it is a prep fact.
+        area_flag = ""
+    if emitted_fetch_hints is not None:
+        fetch_command = ("gpuwm fetch "
+                         f"--source {args.source} "
+                         f"--cycle {fetch_hints['cycle']} "
+                         f"--hours {fetch_hints['hours']} "
+                         + (f"{area_flag} " if area_flag else "")
+                         + cadence_flag
+                         + (f"--forecast-start-hour {start_hour} "
+                            if start_hour else "")
+                         + f"--out {_printed_path(printed_out)}")
+    else:
+        # NOT a `gpuwm fetch` line.  This source has a runnable profile
+        # and no download route, and printing a command that refuses is
+        # how a reader concludes the tool is broken -- the 1.3.0 field
+        # exhibit.  Say what is true, and say what the config is FOR: the
+        # geometry, levels, physics and boundary cadence below are
+        # complete, so a hand-staged directory of this cycle's files runs
+        # the same chain every other mapped source runs.
+        spacing_h = int(
+            source_forcing_interval_seconds(args.source)) // 3600
+        fetch_command = "\n".join((
+            f"# stage {args.source}'s bytes for cycle "
+            f"{fetch_hints['cycle']} yourself into",
+            f"#   {_printed_path(printed_out)}",
+            f"#   (`gpuwm fetch` has no download route for {args.source} "
+            f"yet; the window this config",
+            f"#    needs is {fetch_hints['area']}, "
+            f"{fetch_hints['hours']} h at {spacing_h} h spacing)",
+            f"#   `gpuwm prep --show-source {args.source}` names the exact "
+            f"products this route requires."))
     # The BARE form is the next step, because it is the one that measures
     # this machine.  v1.4.0 printed only the declared form, and on a real
     # 16 GB card the two returned opposite verdicts on the same file --
@@ -3853,13 +4741,25 @@ def domain_main(args) -> int:
     if args.source == "hrrr":
         for note in coverage_advisory(exp):
             print(f"advisory: {note}")
-    print(f"physics: {physics_summary(profile)}")
+    # The cadence statement is LAYERED like every other advisory here:
+    # the default screen gets a clause on the physics line it already
+    # prints (zero lines -- the one-screen cap is a measured gate, a
+    # user's next command went unfound under a 20-line wall), and
+    # --explain gets the full one-line advisory with the mechanism and
+    # the override path.
+    summary = physics_summary(profile)
+    if len(dims) > 1:
+        summary += (f" -- one radiation cadence: all {len(dims)} domains "
+                    "run the root's radt, nests inherit it")
+    print(f"physics: {summary}")
     chain_km = _ladder_dx_km(ratios, root_dx_m)
     shared = shared_physics(profile)
     cu_by_domain = cumulus_by_domain(dims, ratios, profile=profile)
     if explain:
         for line in prepared_route_physics_notice(profile, args.source):
             print(line)
+        for note in radiation_cadence_advisory(profile, len(dims)):
+            print(f"advisory: {note}")
         for note in gray_zone_advisory(chain_km, shared):
             print(f"advisory: {note}")
         for note in cumulus_gray_zone_advisory(chain_km, cu_by_domain):
@@ -3884,8 +4784,13 @@ def domain_main(args) -> int:
     deferred: list[str] = []
     if case_data is None:
         if explain:
+            # "fetched" only where a fetch exists; every other source's
+            # bytes arrive by hand, and calling that a fetch is the same
+            # false claim the omitted [fetch] table exists to avoid.
+            arrival = ("fetched" if emitted_fetch_hints is not None
+                       else "hand-staged")
             print(
-                f"note: fetched {args.source.upper()} GRIB2 feeds the "
+                f"note: {arrival} {args.source.upper()} data feeds the "
                 "rw-wps/gpuwm-wrf-init native initialization front door, "
                 "not the [case_data] run path (the config-driven route "
                 "decodes native GRIB1 = ERA5 today); this TOML's "
@@ -3968,7 +4873,14 @@ def _print_next_steps(fetch_command: str, check_command: str,
               "notes and the full advisories.")
     print("")
     print("next:")
-    print(f"  1. {fetch_command}")
+    # Step 1 is a command where `gpuwm fetch` has a route and a short
+    # acquisition note where it does not.  Printing a `gpuwm fetch
+    # --source <x>` line for a source the fetch door refuses is the exact
+    # numbered-list-to-a-refusal shape this block exists to end.
+    acquire = fetch_command.splitlines()
+    print(f"  1. {acquire[0]}")
+    for line in acquire[1:]:
+        print(f"     {line}")
     if source == "era5":
         from gpuwm.fetch import cds_credentials_path, cds_credentials_present
 
@@ -4041,8 +4953,13 @@ def register_cli(subparsers) -> None:
                              "center)")
     parser.add_argument("--card", choices=sorted(CARD_VRAM_GIB),
                         default=None,
-                        help="GPU tier; sets the VRAM budget (default "
-                             "24gb when --vram-gib is absent)")
+                        help="GPU tier; sets the VRAM budget with no "
+                             "local probe.  With neither --card nor "
+                             "--vram-gib the wizard MEASURES the local "
+                             "card's capacity (short-lived probe, "
+                             "suppressed by GPUWM_NO_LOCAL_GPU) and "
+                             "refuses, naming both flags, when there is "
+                             "nothing to measure")
     parser.add_argument("--vram-gib", type=float, default=None,
                         metavar="N",
                         help="total VRAM in GiB (alternative to --card)")
@@ -4117,10 +5034,25 @@ def register_cli(subparsers) -> None:
              "running one.  Ignored for a single-domain ladder")
     parser.add_argument("--hours", type=int, default=6, metavar="N",
                         help="forecast length (run_seconds = N*3600)")
-    parser.add_argument("--source", default="era5",
-                        choices=("gfs", "hrrr", "era5"),
-                        help="forcing source for the [fetch] hints and "
-                             "(era5) the [case_data] declarations")
+    parser.add_argument(
+        "--source", default="era5", metavar="SOURCE",
+        # NO `choices=`, deliberately.  This used to be
+        # choices=("gfs", "hrrr", "era5") while the product shipped
+        # sixteen runnable sources, so argparse answered `--source rap`
+        # with "invalid choice" -- a refusal that says nothing about RAP.
+        # The registry answers instead (`resolve_source`), which lets an
+        # alias resolve, a registered-but-unrunnable row explain itself,
+        # and a new row reach this door with no edit here.
+        help="forcing source: any registered source id or alias -- "
+             + ", ".join(wizard_planable_source_ids())
+             + " today (`gpuwm prep --list-sources` lists the whole "
+               "registry).  It "
+               "sets the boundary cadence written into the companion "
+               "namelist.wps, bounds the domain by the source's own grid "
+               "where that grid is regional, and (era5) declares "
+               "[case_data].  A source `gpuwm fetch` cannot download yet "
+               "emits the same geometry with the acquisition step named "
+               "instead of a [fetch] table")
     parser.add_argument("--cycle", required=True,
                         metavar="YYYY-MM-DDTHH|latest",
                         help="the forcing CYCLE (UTC), which is the run's "
@@ -4177,7 +5109,8 @@ __all__ = [
     "load_polygon_footprint", "max_fetch_abs_lat",
     "oversized_footprint_advisory", "parse_chain",
     "parse_custom_ladder", "parse_level_buffers", "pole_clearance_deg",
-    "polygon_ladder_dims", "register_cli", "render_config",
+    "polygon_ladder_dims", "radiation_cadence_advisory",
+    "radt_ladder_minutes", "register_cli", "render_config",
     "render_wps_namelist", "root_time_step_s", "seconds_per_km",
     "verify_polygon_containment", "vram_reserve_gib",
     "CARD_UNAVAILABLE_VRAM_GIB", "CARD_UNAVAILABLE_VRAM_FRACTION",

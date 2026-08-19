@@ -1,0 +1,74 @@
+{
+  "schema": "rw-wps.members.v1",
+  "name": "aigefs-quarter-degree-members",
+  "format": "grib2",
+  "layout": "file_per_member",
+  "declared_member_count": 31,
+  "cycle_hours": [0, 6, 12, 18],
+  "classes": {
+    "control": {
+      "ordinals": [0],
+      "member_id": "mem000",
+      "token": "mem000",
+      "verification": {
+        "product_definition_templates": [1, 11],
+        "type_of_ensemble_forecast": 3,
+        "perturbation_number": "ordinal",
+        "ensemble_size": 31,
+        "type_of_generating_process": 4,
+        "forecast_generating_process_id": 138
+      },
+      "note": "AIGEFS stamps its control typeOfEnsembleForecast = 3 and typeOfProcessedData = pf exactly like every perturbed member -- the WMO control codes 0/1 are never used. perturbationNumber == 0 is the only in-band control discriminator, so ordinal 0 with type 3 IS this grammar's control declaration; a reader looking for type 0/1 finds no control at all."
+    },
+    "perturbed": {
+      "ordinals": {"first": 1, "last": 30},
+      "member_id": "mem{ordinal:03d}",
+      "token": "mem{ordinal:03d}",
+      "verification": {
+        "product_definition_templates": [1, 11],
+        "type_of_ensemble_forecast": 3,
+        "perturbation_number": "ordinal",
+        "ensemble_size": 31,
+        "type_of_generating_process": 4,
+        "forecast_generating_process_id": 138
+      }
+    }
+  },
+  "statistics": {
+    "avg": {
+      "statistic": "ensemble mean",
+      "relative_paths": [
+        "aigefs.{yyyymmdd}/{hh}/ensstat/products/atmos/grib2/aigefs.t{hh}z.pres.avg.f{fff}.grib2",
+        "aigefs.{yyyymmdd}/{hh}/ensstat/products/atmos/grib2/aigefs.t{hh}z.sfc.avg.f{fff}.grib2"
+      ]
+    },
+    "spr": {
+      "statistic": "ensemble spread",
+      "relative_paths": [
+        "aigefs.{yyyymmdd}/{hh}/ensstat/products/atmos/grib2/aigefs.t{hh}z.pres.spr.f{fff}.grib2",
+        "aigefs.{yyyymmdd}/{hh}/ensstat/products/atmos/grib2/aigefs.t{hh}z.sfc.spr.f{fff}.grib2"
+      ]
+    }
+  },
+  "products": {
+    "pres": {
+      "relative_path": "aigefs.{yyyymmdd}/{hh}/{token}/model/atmos/grib2/aigefs.t{hh}z.pres.f{fff}.grib2",
+      "statistics_published": false
+    },
+    "sfc": {
+      "relative_path": "aigefs.{yyyymmdd}/{hh}/{token}/model/atmos/grib2/aigefs.t{hh}z.sfc.f{fff}.grib2",
+      "statistics_published": false
+    }
+  },
+  "front_doors": [
+    {"name": "nomads", "base_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/prod/"},
+    {"name": "aws-open-data", "base_url": "https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com/EAGLE_ensemble/"}
+  ],
+  "notes": {
+    "counting": "numberOfForecastsInEnsemble = 31 INCLUDES the control, so perturbationNumber runs 0..30 -- the opposite convention from GEFS, whose octet excludes its control (30). This declared difference is what lets the byte guard tell an AIGEFS member from a GEFS member: their verification triples are otherwise identical for the same ordinal.",
+    "member_addressing": "the member is a path component (mem000..mem030), not a filename token: every member's leaf filename is byte-identical, so a flat download destroys member identity. The prepared tree and its receipt exist to carry the identity the leaf name cannot.",
+    "statistics": "ensstat avg/spr exist on NOMADS only -- the AWS mirror does not carry them -- and their PDTs were not byte-measured by the recon, so this grammar declares their namespace without a derived-forecast code; the generic PDT statistic guard still refuses their bytes as members.",
+    "operational_status": "NCEP operational (production tree /com/aigefs/prod/, productionStatusOfProcessedData = 0) despite the experimental branding of the AWS bucket that mirrors it; cite the NOMADS prod path for status, never the bucket name.",
+    "front_door_lag": "the AWS mirror lags NOMADS by roughly three hours; NOMADS retention is about two dates while the mirror's archive is deep (2025-06-01 onward, gapless at recon)."
+  }
+}

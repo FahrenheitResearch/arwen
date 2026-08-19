@@ -446,6 +446,7 @@ def initialize_and_export_regular_source_hierarchy(
         artifact_manifest_reference: str | None = None,
         stock_wrf_export: str = "required",
         statics_corridor=None,
+        soil_texture_downscale: bool = True,
 ) -> RegularSourceHierarchyResult:
     """Feed a prepared GFS/ERA5 root and verified child inputs to the join.
 
@@ -531,6 +532,7 @@ def initialize_and_export_regular_source_hierarchy(
         files=tuple(static_catalog.files),
         units=units,
         provenance=catalog_provenance,
+        soil_texture_downscale=bool(soil_texture_downscale),
     )
     root = ParentInitView(
         cfg=exp.root, grid=grids[0], state=state)

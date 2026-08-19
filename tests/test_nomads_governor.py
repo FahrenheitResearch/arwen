@@ -361,6 +361,93 @@ def test_hrrr_range_transport_asks_the_governor_for_its_pool_width():
     assert "paced_urlopen" in inspect.getsource(transport._request_bytes)
 
 
+# ---------------------------------------------------------------------------
+# Retry-After: the server's own instruction is honored, never undercut
+# ---------------------------------------------------------------------------
+
+def test_retry_after_parses_seconds_and_http_dates():
+    import email.utils
+
+    error = HTTPError(NOMADS, 429, "rate", {"Retry-After": "120"}, None)
+    assert governor.retry_after_seconds(error) == 120.0
+    stamped = email.utils.formatdate(time.time() + 90, usegmt=True)
+    dated = HTTPError(NOMADS, 503, "busy", {"Retry-After": stamped}, None)
+    parsed = governor.retry_after_seconds(dated)
+    assert parsed is not None and 60.0 <= parsed <= 91.0
+    absent = HTTPError(NOMADS, 503, "busy", {}, None)
+    assert governor.retry_after_seconds(absent) is None
+    junk = HTTPError(NOMADS, 429, "rate", {"Retry-After": "soon"}, None)
+    assert governor.retry_after_seconds(junk) is None
+    past = HTTPError(NOMADS, 429, "rate", {"Retry-After": "-5"}, None)
+    assert governor.retry_after_seconds(past) is None
+
+
+def test_retry_after_extends_the_cooldown_but_never_shortens_it(
+        monkeypatch, isolated_state):
+    monkeypatch.setenv(governor.COOLDOWN_ENV, "30000")
+    clock = _Clock(monkeypatch)
+    # Longer than the configured cooldown: the server's word wins.
+    governor.mark_rate_limited(NOMADS, "over_rate_limit",
+                               retry_after_s=120.0)
+    assert governor.read_state(isolated_state)[1] == clock.now_ms + 120_000
+    # Shorter than the configured cooldown: the shared-state contract
+    # with the Rust twin stays -- honoring a header must never make the
+    # node-wide governor looser than its own configuration.
+    isolated_state.unlink()
+    governor.mark_rate_limited(NOMADS, "over_rate_limit", retry_after_s=1.0)
+    assert governor.read_state(isolated_state)[1] == clock.now_ms + 30_000
+
+
+def test_paced_urlopen_carries_retry_after_into_the_cooldown(
+        monkeypatch, isolated_state):
+    monkeypatch.setenv(governor.COOLDOWN_ENV, "30000")
+    clock = _Clock(monkeypatch)
+    monkeypatch.setattr(governor, "pace", lambda url, **kw: None)
+
+    def opener(request, **kwargs):
+        raise HTTPError(NOMADS, 429, "Over Rate Limit",
+                        {"Retry-After": "3600"}, None)
+
+    with pytest.raises(HTTPError):
+        governor.paced_urlopen(Request(NOMADS), opener=opener)
+    assert governor.read_state(isolated_state)[1] == (
+        clock.now_ms + 3_600_000)
+
+
+def test_gfs_transport_waits_out_retry_after_between_attempts(
+        monkeypatch, tmp_path):
+    from tools import download_gfs_native_subset as transport
+
+    naps: list[float] = []
+    monkeypatch.setattr(transport.time, "sleep", naps.append)
+    grib = b"GRIB" + b"\x00\x00\x00\x02" + (2048).to_bytes(8, "big") \
+        + b"\x00" * 2036 + b"7777"
+
+    class _Body(_Response):
+        def __init__(self):
+            self._left = [grib]
+
+        def read(self, *_args):
+            return self._left.pop() if self._left else b""
+
+    calls = {"n": 0}
+
+    def flaky(request, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise HTTPError(S3, 503, "busy", {"Retry-After": "7"}, None)
+        return _Body()
+
+    monkeypatch.setattr(
+        transport, "paced_urlopen",
+        lambda request, **kw: flaky(request, **kw))
+    transport._download(S3, tmp_path / "object.grib2")
+    assert calls["n"] == 2
+    # The wait between the attempts is at least the server's ask, not
+    # only the transport's own backoff ladder.
+    assert naps and max(naps) >= 7.0
+
+
 def test_request_log_is_the_rust_json_line_shape(monkeypatch, tmp_path):
     log = tmp_path / "nomads.jsonl"
     monkeypatch.setenv(governor.REQUEST_LOG_ENV, str(log))

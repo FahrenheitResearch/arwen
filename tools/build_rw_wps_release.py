@@ -51,6 +51,19 @@ _TOP_LEVEL_EXCLUDES = {
     # exists to call is not in this wheel, so shipping it would offer a
     # command that cannot run.
     "go_cli.py",
+    # `gpuwm go`'s own telemetry writer: the append-only events.jsonl a
+    # go chain emits per stage.  Its ONLY importer anywhere in gpuwm/ or
+    # tools/ is gpuwm/go_cli.py:1674 -- excluded directly above -- and
+    # the three modules it reaches inside its functions are
+    # gpuwm.progress_log, gpuwm.runplan and gpuwm.first_products, all
+    # three already excluded below.  Staging it therefore put a module
+    # in the wheel reaching for three deliberately absent ones, and
+    # this builder's own unresolved-import scan refused the staging
+    # outright: at that point `tools/build_rw_wps_release.py` could not
+    # stage, build or publish the standalone wheel at all.  A
+    # preprocessing wheel runs no `gpuwm go` chain, so it has no stage
+    # walls to record.
+    "chain_events.py",
     # The early-render worker `gpuwm go` and run-plan arm to draw the
     # analysis frame while the forecast runs.  It is reached only from a
     # running forecast, its only two referrers are go_cli.py and
@@ -68,6 +81,16 @@ _TOP_LEVEL_EXCLUDES = {
     # not stage.
     "prepared_single_domain_forecast.py",
     "prepared_domain_tree_forecast.py",
+    # Per-model-time-step progress for those two runners: the WRF-shaped
+    # `Timing for main:` line, progress.jsonl and the frame-ready
+    # markers.  A preprocessing wheel takes no model time steps and
+    # renders no history frames, so it has nothing to report; the only
+    # importers are the two runners immediately above, both excluded.
+    # It also reaches gpuwm.supervisor for the atomic marker write, and
+    # supervisor is excluded below -- which is how this surfaced: the
+    # staging scan refused on an unresolved internal import rather than
+    # shipping a module that would raise at first use.
+    "progress_log.py",
     # The machine front door.  It is an envelope over the run routes, so it
     # reaches every one of them -- gpuwm.cli, gpuwm.go_cli, gpuwm.supervisor,
     # gpuwm.domain_wizard, gpuwm.certify.capsule and gpuwm.core.preflight --
@@ -182,6 +205,44 @@ _INGEST_EXCLUDES = {"preflight.py", "nest_spawn_init.py",
 #: it -- `__init__` pulls radar_grid, superob, sweeps and target_grid -- so
 #: the radar front door `gpuwm doctor` checks for is unaffected.
 _OBS_EXCLUDES = {"sources.py"}
+#: The only two files of ``gpuwm/io`` this wheel stages -- named
+#: individually rather than by excluding the rest of the package,
+#: because the package is the forecast executor's output side and the
+#: allowed set is the small half.
+#:
+#: ``gpuwm/doctor.py`` imports ``gpuwm.io.nc_writer_bridge`` to report
+#: on the NetCDF writer, and that check RETURNS A BLOCKING ``missing``
+#: Check on ImportError.  So the two ways of leaving gpuwm/io out
+#: entirely both break something concrete: not staging it at all fails
+#: this builder's unresolved-import scan, and allowlisting the import
+#: instead ships a wheel whose `rw-wps doctor` always reports the
+#: NetCDF writer missing -- on a wheel that BUNDLES the netcdf_writer
+#: cdylib as one of its artifacts, and whose own suite states the
+#: doctor belongs here precisely because a preprocessing install is
+#: the one that needs to be told which bridge is missing.
+#:
+#: Staging the whole subpackage is what does not work: measured, it
+#: cascades to 26 fresh unresolved imports, because ``io/restart.py``
+#: reaches gpuwm.core.model/physics/microphysics/kf and
+#: gpuwm.supervisor, and ``io/wrfout.py`` reaches gpuwm.runtime and the
+#: physics runtimes -- the forecast executor this wheel exists not to
+#: carry.  ``nc_writer_bridge.py`` is the seam that does not: module
+#: scope is ctypes/os/pathlib/typing plus numpy, and its two internal
+#: lookups (gpuwm.bridges, gpuwm.rustwx) are function-local and both
+#: already staged.  ``__init__.py`` is empty and comes along only so
+#: ``gpuwm.io`` is a package in the wheel.
+#:
+#: ``classic_tape.py`` is the third, and it is here for the same reason
+#: and by the same measurement.  ``gpuwm/wrf_direct.py`` -- the
+#: wrfinput/wrfbdy writer, which IS preprocessing and which this wheel
+#: therefore stages -- imports ``ClassicTape`` at module scope, so
+#: leaving the module behind fails this builder's own unresolved-import
+#: scan and the wheel cannot be staged at all.  It does not cascade:
+#: module scope is pathlib plus numpy, and its one internal lookup
+#: (``gpuwm.io.nc_writer_bridge``) is function-local and already staged.
+#: It carries no forecast executor -- it is the shared classic-NetCDF
+#: tape both NetCDF products write through, nothing more.
+_IO_MODULES = {"__init__.py", "classic_tape.py", "nc_writer_bridge.py"}
 _ROOT_DATA = {
     "native_wrf_support_v1.json",
     "physics_registry_v2.json",
@@ -194,6 +255,26 @@ _FORBIDDEN_STAGED_FILES = {
     "gpuwm/core/model.py",
     "gpuwm/core/dycore.py",
     "gpuwm/core/physics.py",
+    # The forecast executor's OUTPUT side, named here for the same
+    # belt-and-braces reason as the three above.  `_IO_MODULES` makes
+    # gpuwm/io a partially-staged package, so "add one more name to the
+    # allowlist" is now a mistake somebody can make, and these two are
+    # what it must not reach: measured, staging them cascades to 26
+    # fresh unresolved imports (restart.py reaches gpuwm.core.model /
+    # physics / microphysics / kf and gpuwm.supervisor, wrfout.py
+    # reaches gpuwm.runtime and the physics runtimes).
+    #
+    # The unresolved-import scan below would catch that TODAY, so this
+    # is redundant today -- deliberately.  The scan only objects while
+    # those imports stay at module scope; the tilestream port already
+    # broke this wheel exactly once by making the scan blind (see
+    # streaming.py in _CORE_MODULES), and a later edit that made
+    # wrfout.py's executor imports function-local would ship the
+    # forecast output side of a preprocessing wheel with nothing
+    # refusing.  This line refuses on the FILE, which no import
+    # rearrangement can talk out of.
+    "gpuwm/io/restart.py",
+    "gpuwm/io/wrfout.py",
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
@@ -460,7 +541,12 @@ classifiers = ["License :: OSI Approved :: Apache Software License"]
 license-files = ["LICENSE", "NOTICE"]
 
 [project.optional-dependencies]
-gpu = ["cupy-cuda12x>=13.0"]
+# [ctk] and the 14.0 floor for the same measured reason as the parent
+# project's own GPU extras (see pyproject.toml): a CuPy wheel carries the
+# compiler and no CUDA headers, so on a driver-only box every device call
+# dies with "Failed to find CUDA headers", and [ctk] -- a CuPy 14 extra --
+# is what supplies a matching toolkit as wheels.
+gpu = ["cupy-cuda12x[ctk]>=14.0"]
 geog = ["rasterio>=1.3", "pyproj>=3.6"]
 
 [project.scripts]
@@ -586,6 +672,11 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
         for source in sorted((REPO / "gpuwm" / subpackage).glob("*.py")):
             if source.name not in excludes:
                 _copy_source(source, package / subpackage / source.name)
+    for name in sorted(_IO_MODULES):
+        _copy_source(
+            REPO / "gpuwm" / "io" / name,
+            package / "io" / name,
+        )
     for name in sorted(_CORE_MODULES):
         _copy_source(
             REPO / "gpuwm" / "core" / name,

@@ -191,7 +191,9 @@ def gate_display_name(metric: str, *, vram_gib: float | None = None) -> str:
         return metric.replace("_wddm_", "_vram_")
     return metric
 
-#: Observed machine-peak envelope factor over the footprint projection.
+#: RETIRED multiplicative machine-peak factors, kept as the historical
+#: record and for the standalone child fit (`gpuwm downscale`), which
+#: still reads them as a deliberately conservative bound.
 #:
 #: WINDOWS / WDDM -- 1.75.  The Thompson 12-18Z matched rerun (2026-07-28,
 #: the only multi-domain Windows run with whole-run machine-wide VRAM
@@ -241,25 +243,6 @@ def gate_display_name(metric: str, *, vram_gib: float | None = None) -> str:
 #: Both are presented as OBSERVED envelopes, not models, and neither
 #: changes any gate: the enforced numbers remain the itemized estimate and
 #: the measured --alloc legs.
-#: WINDOWS, SMALL CARDS -- 1.45, EXPERIMENTAL and calibrated on nothing.
-#:
-#: The 1.75 factor and the 4.12 GiB of projection constants beside it both
-#: come from ONE machine: a 32 GiB RTX 5090 running campaign-scale
-#: multi-domain forecasts.  On a 12 GiB Windows card those constants are
-#: 34% of the whole card before a single grid cell is allocated, and the
-#: wizard refused every ladder -- not because the model did not fit, but
-#: because an accounting term measured somewhere else did.  Refusing to
-#: size a card gpuwm can probably run is a worse failure than sizing it
-#: optimistically, because the optimistic failure mode here is bounded:
-#: WDDM pages, or the allocation fails cleanly.  Neither corrupts a
-#: forecast.
-#:
-#: So a small Windows card is priced like Linux -- the itemized alloc
-#: estimate under the 1.45 envelope -- plus ONE reduced fixed reserve
-#: (:data:`WINDOWS_SMALL_CARD_RESERVE_BYTES`) standing in for the WDDM
-#: residency the pool never sees.  It is a pioneer tier: see
-#: :func:`windows_small_card_advisory` for what users are asked to send
-#: back, which is the only thing that will turn this into a measurement.
 #: 2026-08-01 AMENDMENT -- the multiplier has no intercept, so its ERROR
 #: CHANGES SIGN.  A 16 GiB fleet node (RTX 4080, Linux, driver 595.58.03,
 #: machine-wide nvidia-smi sampled at 250 ms, GPU otherwise idle) measured
@@ -277,31 +260,73 @@ def gate_display_name(metric: str, *, vram_gib: float | None = None) -> str:
 #: with neither.  See :data:`ENVELOPE_UNMODELLED_BYTES` for the affine
 #: replacement and the residuals behind it.
 #:
-#: These factors are RETAINED for the WDDM lane, whose one instrumented
-#: run is a true multiplicative observation over a projection that carries
-#: the Windows pool constants, and as the historical record.
-PEAK_ENVELOPE_FACTORS = {"windows": 1.75, "windows-small": 1.45,
-                         "linux": 1.45}
+#: These factors are RETIRED from every gate: the 2026-08-19 RTX 3080
+#: calibration (below) replaced the WDDM multiplier with a measured
+#: affine term, and the Linux lane had already moved to the affine form.
+#: The dict is kept as the historical record and for `gpuwm downscale`'s
+#: deliberately conservative standalone child fit.
+PEAK_ENVELOPE_FACTORS = {"windows": 1.75, "linux": 1.45}
 
-#: How much evidence each factor rests on, printed beside the number.
+#: How much evidence each RETIRED factor rested on.
 PEAK_ENVELOPE_BASIS = {
-    "windows": "measured, 1 WDDM run",
-    "windows-small": "EXPERIMENTAL, no measurements on this card class",
-    "linux": "measured-preliminary, 3 runs",
+    "windows": "measured, 1 WDDM run (retired multiplier)",
+    "linux": "measured-preliminary, 3 runs (retired multiplier)",
 }
-
-#: Windows cards at or below this size take the experimental accounting.
-WINDOWS_SMALL_CARD_MAX_GIB = 12.0
-
-#: The single fixed reserve replacing the 5090-derived pool constants on
-#: a small Windows card: WDDM residency the CuPy pool never accounts for.
-#: A round 1.5 GiB, chosen to be smaller than the 4.12 GiB it replaces and
-#: larger than the 0.43 GiB CUDA context alone -- itself a guess, and the
-#: single most valuable number for a pioneer to send back.
-WINDOWS_SMALL_CARD_RESERVE_BYTES = 3 * GIB // 2
 
 #: Retained name for the WDDM factor (the original single-platform value).
 OBSERVED_PEAK_OVER_FOOTPRINT = PEAK_ENVELOPE_FACTORS["windows"]
+
+#: WDDM pool slack: what a Windows machine-wide peak carries beyond the
+#: affine terms, as a FRACTION of the itemized estimate.
+#:
+#: MEASURED 2026-08-19, RTX 3080 10 GiB / Windows 11 WDDM / driver-level
+#: desktop resident on the same card, machine-wide ``nvidia-smi`` at
+#: 0.25 s beside the runtime's own GpuPeakMemoryWatcher receipts, across
+#: six whole bare-default ``gpuwm go`` forecasts (single domain, 12 km,
+#: 60x48 to 240x192, 6 h GFS, rte-rrtmgp and legacy-RRTMG suites).
+#: ``machine-wide peak - desktop baseline`` against
+#: ``estimate + itemized non-pool (live profile)``:
+#:
+#:   =========  ========  =========  =========  =========
+#:   run        estimate  non-pool   measured   residual
+#:   =========  ========  =========  =========  =========
+#:   g60x48     1.26 GiB  1.22 GiB   2.28 GiB   -0.20 GiB
+#:   g110x88    1.54 GiB  1.22 GiB   2.60 GiB   -0.16 GiB
+#:   g170x136   2.10 GiB  1.22 GiB   3.25 GiB   -0.07 GiB
+#:   g240x192   3.05 GiB  1.22 GiB   4.11 GiB   -0.16 GiB
+#:   t60x48     2.94 GiB  1.42 GiB   4.62 GiB   +0.27 GiB
+#:   t110x88    3.16 GiB  1.42 GiB   5.53 GiB   +0.95 GiB
+#:   =========  ========  =========  =========  =========
+#:
+#: The rte-rrtmgp lane's pool tracks the itemization at 0.95-1.00x and
+#: its residuals are NEGATIVE: the affine form alone bounds it.  The
+#: only positive residuals are the legacy-RRTMG lane's, where the CuPy
+#: pool held up to 1.47x the itemized estimate (call-peak retention the
+#: itemization does not model), and they grow with the estimate:
+#: +0.09x at t60x48, +0.30x at t110x88 -- worst 0.30x, of which the
+#: 0.5 GiB unmodelled constant absorbed 0.16x.  0.20x of the estimate on
+#: top of that constant covers the worst measured point with 0.33 GiB to
+#: spare and is charged on Windows ONLY: the Linux lane keeps its own
+#: measured form untouched (re-measure there before exporting this term
+#: -- the retention mechanism is a CuPy pool behaviour, not WDDM's, but
+#: no Linux legacy-RRTMG run has been instrumented).
+#:
+#: What this REPLACES on Windows: the 1.75 multiplier over a footprint
+#: projection carrying 4.12 GiB of 5090-derived pool constants.  On the
+#: 3080 walk that model predicted 9.91 GiB for a run that measured
+#: 2.6 GiB of own contribution (3.8x), refused a fitting card, and its
+#: printed remedy refused at every grid size because 78% of the floored
+#: envelope was grid-independent.  Receipts:
+#: docs/public/receipts/wddm/rtx3080-wddm-calibration-20260819.json
+#: (every run's measured and priced terms), beside the walk capture in
+#: Downloads/ux-walks-replay/gpu-walk-3080.md.
+WDDM_POOL_SLACK_FRACTION = 0.20
+
+#: What the Windows affine envelope rests on, printed beside the number.
+ENVELOPE_WDDM_BASIS = (
+    "measured, RTX 3080 10 GiB / Windows 11 WDDM, six whole bare-default "
+    "forecasts machine-wide at 0.25 s over a 2.5x span of itemized "
+    "estimate, rte-rrtmgp + legacy-RRTMG suites")
 
 
 #: The platform names this accounting has evidence for.  ``linux``
@@ -388,9 +413,12 @@ def anisotropic_w_mixing_advisories(exp) -> list[str]:
     criterion is not a refusal.
     """
 
-    from gpuwm.config import anisotropic_w_mixing_advice
-    from gpuwm.experiment import anisotropic_w_mixing_exposure
+    from gpuwm.config import (anisotropic_w_mixing_advice,
+                              auto_mix_isotropic_selection)
+    from gpuwm.experiment import (anisotropic_w_mixing_exposure,
+                                  auto_selected_isotropic_mixing)
 
+    auto = set(getattr(exp, "auto_mix_isotropic", ()) or ())
     dz_max, exposed, ladder = anisotropic_w_mixing_exposure(exp)
     lines: list[str] = []
     for domain in exposed:
@@ -400,9 +428,18 @@ def anisotropic_w_mixing_advisories(exp) -> list[str]:
             mix_isotropic=domain.run.mix_isotropic,
             mix_upper_bound=domain.run.mix_upper_bound,
             dx=domain.run.dx, dy=domain.run.dy, dz_max=dz_max,
-            ladder=ladder)
+            ladder=ladder, forced=domain.grid_id not in auto)
         if advice:
             lines.append(advice)
+    # The domains whose isotropic length was the MODEL'S choice (the
+    # 2026-08-16 auto-switch): the report states what the run WILL do --
+    # the selection, the ratio and the limit -- rather than an advisory
+    # that something is wrong.  A written mix_isotropic = 1 is a
+    # legitimate configuration and stays out of this list entirely.
+    selected, selected_ladder = auto_selected_isotropic_mixing(exp)
+    for grid_id, ratio in selected:
+        lines.append(auto_mix_isotropic_selection(
+            where=f"d{grid_id:02d}", ratio=ratio, ladder=selected_ladder))
     return lines
 
 
@@ -528,8 +565,7 @@ def unknown_platform_note(platform: str | None = None) -> str | None:
 
 def envelope_platform(platform: str | None = None,
                       vram_gib: float | None = None) -> str:
-    """Which envelope family applies: ``windows``, ``windows-small``, or
-    ``linux``.
+    """Which envelope family applies: ``windows`` or ``linux``.
 
     PLATFORM defaults to :data:`sys.platform`.
 
@@ -547,30 +583,32 @@ def envelope_platform(platform: str | None = None,
     should print :func:`unknown_platform_note` beside the sizing so the
     substitution is visible rather than silent.
 
-    VRAM_GIB is the *card* size, and only a caller that knows it -- the
-    domain wizard, sizing for a named card -- can select the experimental
-    small-Windows tier.  Callers that do not pass it (``gpuwm check``
-    among them, which measures free VRAM rather than card size) keep
-    today's conservative Windows accounting exactly.  An unknown
-    platform does NOT reach ``windows-small``: that tier is an
-    experiment about WDDM on a small card, and a platform nobody has
-    measured is not the place to run a second experiment.
+    VRAM_GIB is accepted for callers that know the card and is
+    deliberately IGNORED.  It used to select an experimental
+    "windows-small" tier at or under 12 GiB, which is how the wizard
+    (which knows the card size) and ``gpuwm check`` / ``gpuwm go``
+    (which measure free VRAM and passed no size) priced the very same
+    bytes with two different formulas -- the wizard's inline check said
+    PASS and the standalone check exited 4 seconds later (open task
+    #162; the 2026-08-19 3080 walk).  One machine gets ONE envelope
+    family, decided by the platform alone; the 3080 calibration that
+    made the Windows family measured (:data:`WDDM_POOL_SLACK_FRACTION`)
+    is what retired the tier.
     """
 
     name = sys.platform if platform is None else str(platform)
     if name.startswith(_LINUX_PLATFORMS):
         return "linux"
-    if not (name.startswith(_WINDOWS_PLATFORM_PREFIXES)
-            or name in _WINDOWS_PLATFORM_NAMES):
-        return "windows"
-    small = (vram_gib is not None and math.isfinite(float(vram_gib))
-             and float(vram_gib) <= WINDOWS_SMALL_CARD_MAX_GIB)
-    return "windows-small" if small else "windows"
+    return "windows"
 
 
 def peak_envelope_factor(platform: str | None = None,
                          vram_gib: float | None = None) -> float:
-    """The machine-peak envelope factor this platform's evidence supports."""
+    """The RETIRED multiplicative factor for this platform.
+
+    Nothing gate-side reads it any more; ``gpuwm downscale``'s
+    standalone child fit keeps it as a deliberately conservative bound.
+    """
 
     return PEAK_ENVELOPE_FACTORS[envelope_platform(platform, vram_gib)]
 
@@ -586,48 +624,18 @@ def platform_projection_constants(
     within 1.15-1.32x.  Adding 4.12 GiB of Windows pool accounting to a
     Linux projection is not conservatism, it is a wrong number: it put
     the 12 GiB tier out of reach entirely.  Zero on Linux, unchanged on
-    Windows; the platform envelope factor carries the margin either way.
+    Windows.
 
-    A small Windows card takes neither: one reduced fixed reserve
-    (:data:`WINDOWS_SMALL_CARD_RESERVE_BYTES`) stands in for both, because
-    the 5090-derived pair is a third of such a card before any grid
-    exists.  Experimental -- see :data:`PEAK_ENVELOPE_FACTORS`.
+    These feed the TIER 2/3 projection DISPLAY lines and nothing else:
+    since the 3080 calibration they are not envelope terms on any
+    platform (:attr:`ExperimentMemoryEstimate.envelope_intercept_bytes`
+    is the itemized non-pool residency alone).
     """
 
     family = envelope_platform(platform, vram_gib)
     if family == "windows":
         return pool_retention_residual_bytes(), PROBE_DEVICE_OVERHEAD_BYTES
-    if family == "windows-small":
-        return 0, WINDOWS_SMALL_CARD_RESERVE_BYTES
     return 0, 0
-
-
-def windows_small_card_advisory(vram_gib: float) -> tuple[str, ...]:
-    """The pioneer warning for an experimentally-sized Windows card.
-
-    Says plainly that the accounting is extrapolated from one much larger
-    machine, what the worst case is (and that it is not corruption), and
-    exactly what measurement would replace the guess.
-    """
-
-    return (
-        f"EXPERIMENTAL: {vram_gib:g} GiB is at or below the "
-        f"{WINDOWS_SMALL_CARD_MAX_GIB:g} GiB Windows small-card threshold, "
-        "and this layout was sized with experimental accounting.",
-        "  Windows/WDDM memory accounting in gpuwm is calibrated from ONE "
-        "much larger machine (a 32 GiB RTX 5090 running campaign-scale "
-        "forecasts); its 4.12 GiB of fixed pool constants would consume a "
-        "third of this card before a single grid cell, so a reduced "
-        f"{WINDOWS_SMALL_CARD_RESERVE_BYTES / GIB:.1f} GiB reserve and the "
-        f"Linux {PEAK_ENVELOPE_FACTORS['windows-small']:.2f} envelope were "
-        "used instead.",
-        "  Worst case is paging (slow) or a clean out-of-memory failure "
-        "before or during the run. Neither corrupts a forecast, and "
-        "neither damages anything.",
-        "  Please report your measured peak so this stops being a guess: "
-        "run the forecast, then send the peak line from "
-        "`gpuwm check <config>` together with the config file and your "
-        "card model.")
 
 
 #: What the machine-wide peak carries beyond the itemized estimate and
@@ -721,9 +729,14 @@ def machine_peak_envelope_bytes(
       measured residue, stated as a constant because that is what it
       measured as.
 
-    The WDDM lane keeps its one instrumented multiplicative observation
-    and takes the LARGER of the two: the affine form is a floor there,
-    never a discount.
+    The WDDM lane adds ONE more measured term,
+    :data:`WDDM_POOL_SLACK_FRACTION` of the estimate -- the pool
+    retention the 3080 calibration measured beyond the affine terms
+    (worst +0.30x of the estimate, legacy-RRTMG lane).  This REPLACES
+    the retired ``footprint x 1.75`` floor, which predicted 3.8x the
+    measured peak on the calibration card and refused runs that fit
+    with gigabytes to spare.  ``footprint_projection_bytes`` is
+    accepted for signature compatibility and no longer read.
     """
 
     nests = max(0, int(domains) - 1)
@@ -731,9 +744,9 @@ def machine_peak_envelope_bytes(
               + ENVELOPE_UNMODELLED_BYTES
               + math.ceil(ENVELOPE_PER_NEST_FRACTION * nests
                           * int(alloc_estimate_bytes)))
-    if family == "windows" and footprint_projection_bytes is not None:
-        return max(affine, int(footprint_projection_bytes
-                               * PEAK_ENVELOPE_FACTORS["windows"]))
+    if family == "windows":
+        affine += math.ceil(WDDM_POOL_SLACK_FRACTION
+                            * int(alloc_estimate_bytes))
     return affine
 
 
@@ -1305,7 +1318,8 @@ WSM6_TIER_FRAME = TieredKernelFrame("wsm6", "WSM6_KMAX", 64, 112)
 #: Kernel modules whose local frame CANNOT be measured at this checkout
 #: because they do not compile alone: ``noahmp_driver.cu``,
 #: ``noahmp_energy.cu``, ``noahmp_thermal.cu`` and ``noahmp_libm_slab.cu``
-#: all fail NVRTC with ``identifier "r_pow" is undefined`` -- they are
+#: all fail NVRTC with ``identifier "r_pow" is undefined``, and
+#: ``noahmp_glacier.cu`` with ``identifier "MU" is undefined`` -- they are
 #: fragments that borrow ``noahmp_leaves.cu``'s single audited libm
 #: transcription and compile only through
 #: ``noahmp_kernel_sources.translation_unit_source``.  A configuration that
@@ -1323,6 +1337,7 @@ WSM6_TIER_FRAME = TieredKernelFrame("wsm6", "WSM6_KMAX", 64, 112)
 #: as the translation units they actually launch in.
 UNMEASURED_KERNEL_MODULES = frozenset({
     "noahmp_driver", "noahmp_energy", "noahmp_thermal", "noahmp_libm_slab",
+    "noahmp_glacier",
     "rrtmg_sw", "rrtmg_lw_chain", "rrtmg_lw_taugb02_10_11_12",
     "rrtmg_lw_taugb03_05", "rrtmg_lw_taugb06_09", "rrtmg_lw_taugb13_16"})
 
@@ -2282,12 +2297,15 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
     correctness bar on this hardware, not a cosmetic one.
     """
     from gpuwm.core.noah import _F2D as NOAH_FIELDS_2D
-    from gpuwm.core.sfclay import SFCLAY_OUTPUTS
+    # physics_inventory, not sfclay/mynn_*: those modules import cupy
+    # at module scope and this inventory must be readable on installs
+    # with no GPU runtime (the wizard's estimator runs here).
+    from gpuwm.core.physics_inventory import SFCLAY_OUTPUTS
 
     union = dict.fromkeys(_PHYSICS_INIT_FIELDS_2D)
     union.update(dict.fromkeys(SFCLAY_OUTPUTS))
     if cfg is not None and int(cfg.sf_sfclay_physics) == 5:
-        from gpuwm.core.mynn_sfclay import MYNN_SURFACE_OUTPUTS
+        from gpuwm.core.physics_inventory import MYNN_SURFACE_OUTPUTS
         union.update(dict.fromkeys(MYNN_SURFACE_OUTPUTS))
     elif (cfg is not None and int(cfg.km_opt) in (2, 3, 4)
           and int(cfg.bl_pbl_physics) == 0):
@@ -2298,7 +2316,7 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
     union.update(dict.fromkeys(NOAH_FIELDS_2D))
     union.update(dict.fromkeys(("ebal", "kpbl")))
     if cfg is not None and int(cfg.bl_pbl_physics) == 5:
-        from gpuwm.core.mynn_pbl_runtime import (
+        from gpuwm.core.physics_inventory import (
             MYNN_PBL_DIAGNOSTICS_2D, MYNN_PBL_DIAGNOSTICS_INT_2D,
         )
         union.update(dict.fromkeys(MYNN_PBL_DIAGNOSTICS_2D))
@@ -2316,7 +2334,7 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
             # keeps most results as automatic locals and exposes only the
             # wait-for-LSM subset; ArWen retains the full result so the GPU
             # launch allocates nothing outside this preflight inventory.
-            from gpuwm.core.mynn_sfclay import MYNN_SURFACE_OUTPUTS
+            from gpuwm.core.physics_inventory import MYNN_SURFACE_OUTPUTS
             union.update(dict.fromkeys(
                 f"{name}_sea" for name in MYNN_SURFACE_OUTPUTS))
         union.update(dict.fromkeys(SURFACE_PRECIPITATION_FIELDS))
@@ -2343,11 +2361,16 @@ def physics_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     placeholders, KF W0AVG/LUT, and RRTMGP setup grids.  Active microphysics
     diagnostics and KF ``cu_*`` persistence live in the scratch registry.
     """
-    from gpuwm.core.physics import (PBL_RQI_MICROPHYSICS, hmix_k_diag_names,
-                                    microphysics_scratch_slots,
-                                    physics_driver_required,
-                                    physics_retains_ysu_output,
-                                    physics_reuses_pbl_composition)
+    # The runtime-free inventory module, NOT gpuwm.core.physics: that
+    # module's body imports cupy, and this estimator is what `gpuwm
+    # domain` runs on CPU-only installs (it used to refuse every one of
+    # them from exactly this import).
+    from gpuwm.core.physics_inventory import (PBL_RQI_MICROPHYSICS,
+                                              hmix_k_diag_names,
+                                              microphysics_scratch_slots,
+                                              physics_driver_required,
+                                              physics_retains_ysu_output,
+                                              physics_reuses_pbl_composition)
 
     if not physics_driver_required(cfg):
         return {}
@@ -2366,7 +2389,7 @@ def physics_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         # initialize_physics allocates MYNN's ten carried 3-D arrays only for
         # this selector.  Missing them here under-counts VRAM by 10*nz*ny*nx
         # FP32 words, which on a four-domain nest is not a rounding error.
-        from gpuwm.core.mynn_pbl_runtime import MYNN_PBL_STATE_3D
+        from gpuwm.core.physics_inventory import MYNN_PBL_STATE_3D
         for name in MYNN_PBL_STATE_3D:
             shapes[f"fields/{name}"] = m
     if int(cfg.sf_surface_physics) == 3:
@@ -2698,6 +2721,14 @@ def scratch_slot_registry(cfg: RunConfig, *,
                      wsm6_z8w=fl, mp_rainnc=s2, mp_rainncv=s2,
                      mp_snownc=s2, mp_snowncv=s2, mp_graupelnc=s2,
                      mp_graupelncv=s2, mp_sr=s2, refl_t=m, refl_10cm=m)
+    if cfg.mp_physics == 6 and cfg.ny == 1:
+        # mpas_column_batch.py:769-773 (run_phase2 adapter pair):
+        # alt = 1/rho_dry and php = z_interface*g, fully rewritten by every
+        # phase-2 call before the microphysics dispatch reads them.  The
+        # column-batch seam is the only allocator and always builds its
+        # RunConfig with ny == 1 (one row of columns), so a plane-shaped
+        # WSM6 forecast neither allocates nor is priced for either slot.
+        slots.update(physics_column_alt=m, physics_column_php=fl)
     if cfg.mp_physics == 16:
         # wdm6.py preparation, persistent precipitation and due reflectivity.
         # Same slot shape as mp=6: WDM6's three extra moments are STATE, not
@@ -2859,7 +2890,9 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # microphysics.py spec-zone ring guard: per-edge snapshot buffers
         # for the WRF tile-clip exclusion (specified/nested only; exact
         # shapes from the single-source helper).
-        from gpuwm.core.microphysics import spec_zone_ring_save_slots
+        # physics_inventory, not microphysics: that module imports cupy
+        # at module scope and this registry is priced on CPU-only installs.
+        from gpuwm.core.physics_inventory import spec_zone_ring_save_slots
         slots.update(spec_zone_ring_save_slots(cfg))
     if cfg.mp_physics == 18:
         # nssl2_runtime.py exact moist-physics prep, post-process radar
@@ -2960,7 +2993,7 @@ def scratch_slot_registry(cfg: RunConfig, *,
     if cfg.khdif > 0.0 or cfg.kvdif > 0.0:
         slots.update(diff_u=xs, diff_v=ys, diff_w=fl, diff_th=m)
 
-    from gpuwm.core.physics import physics_enabled
+    from gpuwm.core.physics_inventory import physics_enabled
     if physics_enabled(cfg):
         slots["physics_qtot"] = m                   # physics.py:369
         if not cfg.moist:
@@ -3621,6 +3654,17 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         ("physics_dry_qv", "physics_dry_qc"), "excluded_unproven",
         "gpuwm/core/physics.py:404-414",
         "constant-zero placeholders lack a per-step write-before-read"),
+    # EXCLUDED (unproven): the column-batch adapter pair is fully rewritten
+    # by each run_phase2 call (cp.divide/cp.multiply with out=) before the
+    # microphysics dispatch reads it, but the whole WSM6 dispatch -- which
+    # allocates and writes its own scratch -- runs BETWEEN that write and
+    # the scheme's reads, the mp_ring_save_* hazard.  The seam never builds
+    # a shared arena anyway; correctness beats the savings.
+    ScratchSlotLifetime(
+        ("physics_column_alt", "physics_column_php"), "excluded_unproven",
+        "gpuwm/core/mpas_column_batch.py:769-774",
+        "the adapter pair must survive the WSM6 dispatch between its write "
+        "and the scheme's reads; retain per-domain identity"),
     # EXCLUDED (carrying/setup): weights are cached by key and forcing views
     # remain attached across all steps (lateral_bc.py:282-301,535-577).
     ScratchSlotLifetime(
@@ -4107,7 +4151,7 @@ def atmosphere_transient_shapes(cfg: RunConfig
     """``_prepare_atmosphere`` per-call transients (physics.py:338-400):
     fresh device arrays alive for the whole physics call, including
     through radiation."""
-    from gpuwm.core.physics import physics_enabled
+    from gpuwm.core.physics_inventory import physics_enabled
 
     if not physics_enabled(cfg):
         return {}
@@ -4491,15 +4535,14 @@ class ExperimentMemoryEstimate:
     def envelope_intercept_bytes(self) -> int:
         """Everything in the envelope that does not scale with the grid.
 
-        The itemized non-pool residency, PLUS whatever fixed platform
-        term the projection carries: zero on Linux, and on the
-        experimental Windows small-card tier the 1.5 GiB standing in for
-        the WDDM residency the CuPy pool never sees.  That tier has no
-        measurements behind it, so replacing its multiplier with an
-        intercept must not also drop the term it was carrying -- an
-        unmeasured tier is not the place to become more optimistic.
+        The itemized non-pool residency, and nothing else.  The 5090
+        zero-step probe constant (``device_overhead_bytes``) and the
+        pool-retention constant stay in the TIER 2/3 projection display
+        they were calibrated for; charging them here on top of the
+        itemized non-pool term is how a 10 GiB card came to carry
+        4.12 GiB of another machine's accounting (the 3080 walk).
         """
-        return self.non_pool_device_bytes + self.device_overhead_bytes
+        return self.non_pool_device_bytes
 
     @property
     def peak_envelope_bytes(self) -> int:
@@ -4508,28 +4551,14 @@ class ExperimentMemoryEstimate:
             alloc_estimate_bytes=self.alloc_estimate_bytes,
             non_pool_bytes=self.envelope_intercept_bytes,
             domains=len(self.domains),
-            footprint_projection_bytes=self.footprint_projection_bytes,
             family=self.envelope_family)
 
     @property
-    def affine_envelope_bytes(self) -> int:
-        """The affine form alone, whichever branch actually bound."""
-        return machine_peak_envelope_bytes(
-            alloc_estimate_bytes=self.alloc_estimate_bytes,
-            non_pool_bytes=self.envelope_intercept_bytes,
-            domains=len(self.domains), family="linux")
-
-    @property
     def envelope_basis(self) -> str:
-        """The evidence behind whichever branch actually bound."""
-        if self.envelope_is_wddm_floor:
-            return PEAK_ENVELOPE_BASIS["windows"]
+        """The evidence behind this platform's envelope terms."""
+        if self.envelope_family == "windows":
+            return ENVELOPE_WDDM_BASIS
         return ENVELOPE_AFFINE_BASIS
-
-    @property
-    def envelope_is_wddm_floor(self) -> bool:
-        """Did the retained WDDM multiplier bind instead of the sum?"""
-        return self.peak_envelope_bytes > self.affine_envelope_bytes
 
     def peak_envelope_terms(self) -> str:
         """The envelope's arithmetic, exactly as it was evaluated.
@@ -4542,19 +4571,15 @@ class ExperimentMemoryEstimate:
         nests = max(0, len(self.domains) - 1)
         nest_term = (f" + {ENVELOPE_PER_NEST_FRACTION:.0%} of the estimate "
                      f"x {nests} nest(s)" if nests else "")
-        affine = (f"estimate {self.alloc_estimate_bytes / GIB:.2f} + "
-                  f"non-pool {self.envelope_intercept_bytes / GIB:.2f} (CUDA "
-                  f"context + local-memory backing store) + "
-                  f"{ENVELOPE_UNMODELLED_BYTES / GIB:.2f} unmodelled"
-                  f"{nest_term} = "
-                  f"{self.affine_envelope_bytes / GIB:.2f} GiB")
-        if not self.envelope_is_wddm_floor:
-            return affine
-        factor = PEAK_ENVELOPE_FACTORS["windows"]
-        return (f"footprint {self.footprint_projection_bytes / GIB:.2f} x "
-                f"{factor:.2f} WDDM floor = "
-                f"{self.peak_envelope_bytes / GIB:.2f} GiB, which is above "
-                f"the affine form ({affine}) and therefore binds")
+        wddm_term = (
+            f" + {WDDM_POOL_SLACK_FRACTION:.0%} of the estimate WDDM "
+            f"pool slack" if self.envelope_family == "windows" else "")
+        return (f"estimate {self.alloc_estimate_bytes / GIB:.2f} + "
+                f"non-pool {self.envelope_intercept_bytes / GIB:.2f} (CUDA "
+                f"context + local-memory backing store) + "
+                f"{ENVELOPE_UNMODELLED_BYTES / GIB:.2f} unmodelled"
+                f"{nest_term}{wddm_term} = "
+                f"{self.peak_envelope_bytes / GIB:.2f} GiB")
 
 
 # ---------------------------------------------------------------------------
@@ -5673,7 +5698,7 @@ def run_alloc_preflight(
                     dc, exp.spec_bdy_width, by_id[dc.parent_id])
                 for slot, shape in shapes.items():
                     state.scratch(shape, slot, dtype=dtypes[slot])
-            from gpuwm.core.physics import physics_driver_required
+            from gpuwm.core.physics_inventory import physics_driver_required
             if physics_driver_required(dc.run):
                 # The experiment's declared constant GLW (or None),
                 # exactly as prepare_real_case/prepare_child_case type
@@ -5916,6 +5941,14 @@ def live_device_local_memory_profile() -> DeviceLocalMemoryProfile | None:
     profile -- which over-prices rather than under-prices.
     """
 
+    from gpuwm.local_gpu import no_local_gpu
+
+    if no_local_gpu():
+        # Same switch, same scope as the probe subprocess below: reading
+        # the device's SM census is device contact, and a caller that
+        # cannot measure prices against the reference profile, which
+        # over-prices rather than under-prices.
+        return None
     try:
         import cupy as cp
 
@@ -5998,6 +6031,20 @@ def _device_memory_probe(*, run=None) -> tuple[dict | None, str | None]:
 
     import subprocess
 
+    from gpuwm.local_gpu import NO_LOCAL_GPU_ENV, no_local_gpu
+
+    # The documented never-open-the-local-device switch, consulted
+    # BEFORE anything spawns.  The probe subprocess IS device contact --
+    # a CUDA primary context, memGetInfo, deviceGetLimit -- and the
+    # 2.5.0 upgrader walk proved this path never asked: the variable was
+    # set for every step and `gpuwm go`'s memory gate still reported the
+    # local card's free VRAM.  Under the switch there are no measured
+    # numbers, on purpose; callers price the DECLARED budget and their
+    # verdicts carry this reason so nobody mistakes "not read" for "not
+    # there".
+    if no_local_gpu():
+        return None, (f"{NO_LOCAL_GPU_ENV} is set, so the local card was "
+                      "not read")
     runner = subprocess.run if run is None else run
     try:
         completed = runner(
@@ -6305,15 +6352,14 @@ def check_main(args) -> int:
                 estimate.footprint_projection_bytes,
             "observed_peak_envelope_platform":
                 envelope_platform(vram_gib=card_total_gib),
-            "observed_peak_envelope_factor":
-                peak_envelope_factor(vram_gib=card_total_gib),
-            "observed_peak_envelope_basis": PEAK_ENVELOPE_BASIS[
-                envelope_platform(vram_gib=card_total_gib)],
             "observed_peak_envelope_bytes": forecast_envelope,
             "non_pool_device_bytes": estimate.non_pool_device_bytes,
             "envelope_unmodelled_bytes": ENVELOPE_UNMODELLED_BYTES,
             "envelope_per_nest_fraction": ENVELOPE_PER_NEST_FRACTION,
-            "envelope_basis": ENVELOPE_AFFINE_BASIS,
+            "envelope_wddm_pool_slack_fraction": (
+                WDDM_POOL_SLACK_FRACTION
+                if estimate.envelope_family == "windows" else 0.0),
+            "envelope_basis": estimate.envelope_basis,
             "local_memory_profile": estimate.non_pool_device_bytes and
                 profile.name,
             "peak_envelope_bytes": envelope,
@@ -6448,12 +6494,14 @@ def check_main(args) -> int:
         family = envelope_platform(vram_gib=card_total_gib)
         if family == "windows":
             provenance = (
-                "the one machine-peak-instrumented Windows run (Thompson "
-                "rematch 2026-07-28) peaked at 1.746x its footprint "
-                "projection machine-wide (CuPy pool retention + write "
-                "transients the projection does not model), so the WDDM "
-                "lane keeps that multiplier as a FLOOR under the affine "
-                "form and this envelope is the larger of the two")
+                "affine, calibrated on this card class: six whole "
+                "bare-default forecasts on an RTX 3080 10 GiB Windows/WDDM "
+                "desktop measured machine-wide peaks of estimate + "
+                "itemized non-pool within -0.20..+0.95 GiB, so the "
+                "envelope is that sum plus the measured WDDM pool-slack "
+                "term -- the retired 1.75 multiplier predicted 3.8x the "
+                "measured peak on the same card and is gone from every "
+                "gate")
         else:
             provenance = (
                 "affine, not a multiplier: a multiplier with no intercept "
@@ -6595,19 +6643,20 @@ def check_main(args) -> int:
                 # It used to end "staged residency (DESIGN REOPEN) per
                 # section E".  No pip user has a section E, and the
                 # sentence names no action; the actionable one already
-                # exists one layer up, in `gpuwm go`'s refusal.
-                # ``--vram-gib`` names the CARD, not the budget, so the
-                # number in the remedy is the free VRAM this preflight
-                # just used -- the same arithmetic `gpuwm go`'s refusal
-                # prints, and the same flag.
-                card_gib = max(1, int((free or budget) / GIB))
+                # exists one layer up, in `gpuwm go`'s refusal.  The
+                # remedy it then printed -- `gpuwm domain --vram-gib
+                # <free>` -- fed a free-VRAM figure to a flag that names
+                # a CARD, and on the 3080 walk that recursion refused at
+                # every grid size.  The bare wizard measures the card
+                # itself, which is the number this remedy actually means.
                 print("  OVER BUDGET, and the RRTMGP column_chunk lever "
                       "cannot close it: no chunk halving fits after the "
                       "shared-scratch arena, so the grid itself is what "
                       "has to come down.")
-                print(f"  remedy: re-size for this card -- gpuwm domain "
-                      f"--vram-gib {card_gib} ... -- or free VRAM and "
-                      f"re-run")
+                print("  remedy: re-size against this machine -- gpuwm "
+                      "domain ... (bare, it measures this card) -- or "
+                      "pick a lighter --physics-profile, or free VRAM "
+                      "and re-run")
     if abort is not None:
         return 3
     if args.alloc:
@@ -6618,6 +6667,30 @@ def check_main(args) -> int:
         return _EXIT_ENVELOPE_OVER_BUDGET if envelope_over_budget else 0
     evaluable = [leg for leg in gates.values() if leg is not None]
     if not evaluable:
+        # Fail closed, and SAY SO.  This exit used to be silent: the
+        # wizard prints `gpuwm check CONFIG` as its own step 2, and on a
+        # box with no measurable card that command printed the estimate,
+        # three "not measured" gate lines, and exit 2 with no sentence
+        # naming why or what to type next (UX finding R1, replay walk C
+        # step 1).  A refusal names the breakage -- nothing here to
+        # verify an estimate against -- and prints a remedy the reader
+        # can type: the declared-budget form of THIS command, and the
+        # wizard door that prints that form with the numbers filled in.
+        print("gpuwm check: REFUSED (exit 2, fail-closed): no gate could "
+              "be evaluated -- no VRAM budget was declared and no card "
+              "could be measured in this machine (CuPy or a CUDA device "
+              "is absent), so the estimate above has nothing to be "
+              "verified against.", file=sys.stderr)
+        print(f"  remedy: declare the card this config is sized for and "
+              f"re-run:\n"
+              f"    gpuwm check {args.config} --budget-gib <N> "
+              f"--vram-gib <card GiB>\n"
+              f"  # this configuration's peak envelope is "
+              f"{envelope / GIB:.2f} GiB; a budget at or above it "
+              f"passes.\n"
+              f"  # `gpuwm domain --card <tier>` (or --vram-gib N) "
+              f"prints this exact check line, numbers filled in, as the "
+              f"comment under its step 2.", file=sys.stderr)
         return 2  # nothing verifiable: fail closed at the command boundary
     if not all(evaluable):
         return 1
@@ -6719,11 +6792,10 @@ __all__ = [
     "shared_scratch_arena_aliases", "shared_scratch_arena_bytes",
     "shared_scratch_arena_shapes", "shinhong_output_transient_shapes",
     "state_array_shapes",
-    "WINDOWS_SMALL_CARD_MAX_GIB", "WINDOWS_SMALL_CARD_RESERVE_BYTES",
-    "windows_small_card_advisory",
     "ysu_output_transient_shapes",
     "ENVELOPE_AFFINE_BASIS", "ENVELOPE_PER_NEST_FRACTION",
-    "ENVELOPE_UNMODELLED_BYTES", "CARD_CLASS_MULTIPROCESSORS",
+    "ENVELOPE_UNMODELLED_BYTES", "ENVELOPE_WDDM_BASIS",
+    "WDDM_POOL_SLACK_FRACTION", "CARD_CLASS_MULTIPROCESSORS",
     "card_local_memory_profile", "live_device_local_memory_profile",
     "machine_peak_envelope_bytes", "observed_peak_envelope_bytes",
     "peak_envelope_factor", "PEAK_ENVELOPE_FACTORS",

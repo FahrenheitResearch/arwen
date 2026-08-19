@@ -1,0 +1,18 @@
+{
+  "schema": "gpuwm-20crv3-netcdf-recovered-invariant-provenance-v1",
+  "source": "NOAA-CIRES-DOE 20th Century Reanalysis version 3, NOAA PSL sub-daily NetCDF distribution (the SI directories)",
+  "field": "terrain_height",
+  "selector": {
+    "format": "netcdf",
+    "name": ["orog"],
+    "standard_name": "surface_altitude"
+  },
+  "why_a_supplement_exists": "NOAA PSL's 20CRv3 NetCDF distribution publishes no orography and no land mask (MEASURED 2026-08-16: no hgt.sfc, land or lsmask file exists under Datasets/20thC_ReanV3/ or any of its SI/MO directories). Both are invariant fields WRF-real needs, so they are recovered from 20CRv3's own published fields and shipped as one supplement rather than substituted from another dataset.",
+  "orography_method": "the source model's surface geopotential height, obtained by evaluating 20CRv3's published pressure-level geopotential height (prsSI/hgt) at its published surface pressure (sfcSI/pres.sfc), linearly in ln(p), extrapolating linearly in ln(p) below the lowest published level",
+  "orography_divergence": "this is NOT the archive's own orography field read from the archive; it is recovered from the archive's hydrostatic pressure-level heights and carries the vertical interpolation error of the 25 hPa level spacing near the ground. Sanity, MEASURED at 1974-04-03 18Z: 2275 m at 39N 105W (Colorado Front Range), 1681 m at 39N 104W, 379 m at 35N 98W (central Oklahoma), 208 m at 40N 88W (central Illinois), 50 m at 30N 92W (Louisiana coast).",
+  "land_mask_method": "the valid/missing footprint of 20CRv3's published soil wilting point (sfc_paramsSI/wilt), which the producer writes on land only: 1.0 where present, 0.0 where missing. Nothing is thresholded; the mask is the producer's own statement about where its land model runs.",
+  "builder": "tools/build_pressure_level_invariant_supplement.py, which writes its own per-run receipt naming the exact input files and their SHA-256",
+  "time_policy": "the supplement carries the primary series' own valid times and the recovered fields are required invariant across them",
+  "member_policy": "the PSL NetCDF distribution publishes the 20CRv3 ENSEMBLE MEAN analysis (every variable carries statistic = 'Ensemble Mean'); it is not one of the 80 members. Member states are the every-member GRIB2 archive, which is the --source 20crv3 route.",
+  "input_identity": "dynamic file paths and SHA-256 values are owned by the mapped input manifest, gpuwm-mapped-source-inputs-v1"
+}

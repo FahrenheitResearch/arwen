@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -182,13 +183,130 @@ def test_plan_arms_vary_exactly_one_flag_within_family_a():
         "ensemble-size comparison would be confounded")
 
 
-def test_plan_validates_against_the_real_parsers():
-    """The staged plan must still parse; a drifted flag fails here first."""
+#: The plan's spelling for the prepared case it runs on, and the
+#: variable that binds it.  Read from the validator rather than retyped:
+#: a token these tests spelled themselves would let the plan and the
+#: validator agree on one word while this file asserted about another.
+def _case_root_contract() -> tuple[str, str]:
+    sys.path.insert(0, str(SWEEP))
+    try:
+        import validate_sweep_plan as validator
 
-    proc = subprocess.run(
+        return validator.CASE_ROOT_TOKEN, validator.CASE_ROOT_ENV
+    finally:
+        sys.path.remove(str(SWEEP))
+
+
+def _bind_case_root(root: Path) -> dict:
+    """Materialize every ``${CASE_ROOT}`` input the plan names, and no more.
+
+    Built FROM the plan, never from a list typed here: a fixture that
+    enumerated the case tree by hand would keep passing after the plan
+    started naming a seventh observation file, which is the exact class
+    of drift this validator exists to catch.
+
+    Prepared cases are host-bound and none is committed, so what stands
+    in for one is a tree with the right SHAPE -- the validator's question
+    is existence, and answering it with an empty file is answering the
+    question it actually asks.
+    """
+
+    token, variable = _case_root_contract()
+    plan = json.loads((SWEEP / "sweep-plan.json").read_text(encoding="utf-8"))
+
+    # Directory-valued flags and file-valued flags, split as the tools
+    # themselves read them.
+    directories = {"--prepared-root", "--authority-dir", "--obs-dir",
+                   "--composites"}
+    files = {"--obs", "--grid-wrfout", "--domain-polygon"}
+    wanted: list[tuple[str, str]] = [
+        (str(root / needed), "dir")
+        for needed in ("go/prepared", "go/authority", "obs", "obsverify")]
+    for arm in plan["arms"]:
+        for step in arm["steps"]:
+            argv = step["argv"]
+            for flag, value in zip(argv, argv[1:]):
+                if not value.startswith(token):
+                    continue
+                kind = "dir" if flag in directories else (
+                    "file" if flag in files else None)
+                assert kind is not None, (
+                    f"{flag} names a {token} path and this fixture does not "
+                    "know whether it is a file or a directory")
+                wanted.append((value.replace(token, str(root)), kind))
+
+    assert wanted, "the plan names no case-root inputs; nothing to bind"
+    for path_text, kind in wanted:
+        path = Path(path_text)
+        if kind == "dir":
+            path.mkdir(parents=True, exist_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+    return {variable: str(root)}
+
+
+def _validate(env_overrides: dict | None = None):
+    environment = dict(os.environ)
+    environment.pop("GPUWM_DA_SWEEP_CASE_ROOT", None)
+    environment.update(env_overrides or {})
+    return subprocess.run(
         [sys.executable, str(SWEEP / "validate_sweep_plan.py")],
-        cwd=str(REPO), capture_output=True, text=True)
+        cwd=str(REPO), capture_output=True, text=True, env=environment)
+
+
+def test_plan_validates_against_the_real_parsers(tmp_path):
+    """The staged plan must still parse; a drifted flag fails here first.
+
+    Bound to a case tree built from the plan's own declarations, so the
+    only thing this can fail on is the plan: a flag the real parser no
+    longer accepts, an argv the real entry point refuses, or an input
+    the plan names and the case does not carry.
+    """
+
+    proc = _validate(_bind_case_root(tmp_path / "case"))
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_plan_refuses_when_no_box_has_bound_a_case_root():
+    """A template is refused, by name, before any card is waited for.
+
+    The plan cannot carry the case root: prepared cases are host-bound
+    and the one these argv were recorded from was an ephemeral
+    scratchpad that has since been reaped.  Unbound, the queue would
+    hand ``tools.da_cycle_prepared`` the literal token as a prepared
+    root -- inside a GPU slot it waited hours for -- so the refusal
+    belongs here, and it has to name the variable that fixes it.
+    """
+
+    token, variable = _case_root_contract()
+    proc = _validate()
+    assert proc.returncode != 0
+    message = proc.stdout + proc.stderr
+    assert token in message
+    assert variable in message
+    assert "go/prepared" in message  # what the reader must point it at
+
+
+def test_a_bound_case_root_missing_one_input_is_still_refused(tmp_path):
+    """The existence check keeps its teeth once the token resolves.
+
+    The instrument is tested in both directions on purpose: a validator
+    that went green on an unbound token would have been "fixed" into
+    saying nothing at all.
+    """
+
+    root = tmp_path / "case"
+    overrides = _bind_case_root(root)
+    victim = sorted((root / "obs").glob("*"))
+    assert victim, "the plan names no observation files under obs/"
+    victim[0].unlink()
+
+    proc = _validate(overrides)
+    assert proc.returncode != 0
+    message = proc.stdout + proc.stderr
+    assert "REFUSED" in message
+    assert victim[0].name in message
 
 
 def test_a_nest_composite_is_not_scored_as_an_extra_member(tmp_path):

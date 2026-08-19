@@ -268,7 +268,22 @@ def _tree_index() -> dict[str, tuple[str, ...]]:
 
     index: dict[str, list[str]] = {}
     for candidate in MODEL.rglob("*"):
-        if not candidate.is_file():
+        relative_parts = candidate.relative_to(MODEL).parts
+        # Other checkouts live INSIDE the main checkout: agent worktrees
+        # under .claude/worktrees and ~130 parked codex clones under
+        # .worktrees.  A citation into THIS worktree must never resolve
+        # into some other ref's tree (a rotted citation could come back
+        # RESOLVED against a file this tree no longer carries), and those
+        # clones contain Linux symlinks Windows cannot stat (WinError
+        # 1920), which killed this walk in the one checkout the release
+        # battery runs in.
+        if relative_parts and relative_parts[0] in (
+                ".worktrees", ".claude", ".git"):
+            continue
+        try:
+            if not candidate.is_file():
+                continue
+        except OSError:
             continue
         relative = candidate.relative_to(MODEL).as_posix()
         if "__pycache__" in relative:

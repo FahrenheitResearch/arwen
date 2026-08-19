@@ -461,11 +461,25 @@ def describe_provenance(package_path, distribution, *,
         install_kind = "editable" if (editable_root or outside) else "wheel"
 
     # -- git -------------------------------------------------------------
-    git_root = editable_root if editable_root is not None else source_root
+    # The EXECUTING tree first: the checkout that owns the imported
+    # package is the code actually running, and that is the identity a
+    # receipt must carry.  An editable install's PEP 610 root names
+    # where pip installed FROM, which is a different tree exactly when a
+    # parallel worktree's code shadows the install on sys.path -- the
+    # case where stamping the install's commit misattributes every
+    # receipt the worktree writes.  The editable root remains the
+    # fallback for layouts where the package's parent is not a checkout
+    # top (src/ layouts).
     try:
-        git = probe_git(git_root)
+        git = probe_git(source_root)
     except Exception:                                   # noqa: BLE001
         git = None
+    if git is None and editable_root is not None \
+            and editable_root != source_root:
+        try:
+            git = probe_git(editable_root)
+        except Exception:                               # noqa: BLE001
+            git = None
 
     # -- the code's own claim ---------------------------------------------
     code_version: str | None = None

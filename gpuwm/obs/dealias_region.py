@@ -265,7 +265,8 @@ def region_bridge_candidates() -> tuple[Path, ...]:
     shared, the crate is not.
     """
 
-    from gpuwm.bridges import default_bridge_dir
+    from gpuwm.bridges import (default_bridge_dir, ensure_executable,
+                               packaged_bridge_dir)
 
     filename = library_name()
     candidates: list[Path] = []
@@ -277,6 +278,7 @@ def region_bridge_candidates() -> tuple[Path, ...]:
         crate_dir() / "target" / "release" / filename,
         crate_dir() / "target" / "debug" / filename,
         root / "libexec" / "bridges" / filename,
+        packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
     ))
     return tuple(candidates)
@@ -291,10 +293,12 @@ def find_region_bridge() -> Path | None:
     other library happens to be on the ladder.
     """
 
+    from gpuwm.bridges import ensure_executable
+
     override = os.environ.get(REGION_DEALIAS_ENV)
     for candidate in region_bridge_candidates():
         if candidate.is_file():
-            return candidate.resolve()
+            return ensure_executable(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{REGION_DEALIAS_ENV} names a missing file: {candidate}")

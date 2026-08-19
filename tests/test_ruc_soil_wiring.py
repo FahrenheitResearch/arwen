@@ -288,6 +288,87 @@ def test_every_initializer_routes_through_the_land_surface_seam() -> None:
         assert "preprocess_land_surface_soil" in called, path
 
 
+def test_the_gfs_front_door_hands_the_seam_its_elevation_pair() -> None:
+    """`gpuwm/gfs_direct.py` arms `adjust_soil_temp_new`, structurally.
+
+    The defect this pins: the GFS door called the seam with neither
+    ``terrain`` nor ``source_orography``.  ``preprocess_noah_soil``'s
+    guard is all-or-none, so passing NEITHER is accepted in silence and
+    the lapse is simply never applied -- no warning, no receipt, no
+    refusal.  ``SOURCE_OROGRAPHY`` was decoded the whole time: the GFS
+    bridge gate refuses any decode whose ``invariant_fields`` is not
+    ``"SOURCE_OROGRAPHY,LANDSEA"``.
+
+    Checked on the AST of the actual call rather than by text search, so
+    a mention in a comment cannot satisfy it.
+    """
+    tree = ast.parse((_ROOT / "gpuwm/gfs_direct.py").read_text(encoding="utf-8"))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "preprocess_land_surface_soil"
+    ]
+    assert len(calls) == 1, f"expected one soil seam call, found {len(calls)}"
+    passed = {keyword.arg for keyword in calls[0].keywords}
+    missing = {"terrain", "source_orography"} - passed
+    assert not missing, (
+        f"gpuwm/gfs_direct.py calls the soil seam without {sorted(missing)}, "
+        "so WRF's adjust_soil_temp_new elevation lapse is silently skipped "
+        "for every GFS run")
+
+
+def test_the_gfs_elevation_lapse_matches_wrf_and_the_untreated_arm_differs():
+    """The lapse is -0.0065 K/m, and NOT arming it is visibly different.
+
+    Counts and slopes, not a boolean, and both arms are run: an
+    exact-zero delta between two arms is the signature of a treatment
+    that never happened, so the untreated arm has to be shown to differ
+    rather than assumed to.
+    """
+    fields = _SOURCES["gfs"]()
+    shape = fields["LANDSEA"].shape
+    landmask, terrain, source_orography = _seam_inputs(fields)
+    soil_type = _soil_type(shape)
+
+    # `landmask` is held CONSTANT across the arms: it selects the
+    # decision surface, and letting it vary with the elevation pair
+    # would make this an A/B on two treatments at once.  The single
+    # variable is the terrain pair -- exactly what the GFS door was
+    # failing to pass.
+    untreated = preprocess_land_surface_soil(
+        fields, sf_surface_physics=_RUC, soil_type=soil_type,
+        landmask=landmask)
+    treated = preprocess_land_surface_soil(
+        fields, sf_surface_physics=_RUC, soil_type=soil_type,
+        landmask=landmask, terrain=terrain,
+        source_orography=source_orography)
+
+    difference = np.asarray(terrain - source_orography, dtype=np.float64)
+    delta = (np.asarray(treated.tsk, dtype=np.float64)
+             - np.asarray(untreated.tsk, dtype=np.float64))
+
+    # The RATE, not the mask: which cells count as terrestrial is the
+    # decision surface's business and is measured by its own test above
+    # (the fixture deliberately makes the static landmask disagree with
+    # the met source's LANDSEA).  What this pins is that wherever the
+    # lapse DID apply, it applied at WRF's -0.0065 K/m, and that it
+    # applied somewhere.
+    moved = np.nonzero(delta)
+    moved_count = int(delta[moved].size)
+    assert moved_count, (
+        "treated and untreated TSK are identical everywhere, so the "
+        "elevation lapse never ran -- an exact-zero delta between two "
+        "arms is a treatment that did not happen")
+    expected = -0.0065 * difference[moved]
+    matched = int(np.count_nonzero(np.isclose(delta[moved], expected, atol=1e-9)))
+    assert matched == moved_count, (
+        f"{matched}/{moved_count} moved TSK cells carry WRF's -0.0065 K/m "
+        f"lapse; got {delta[moved]} against {expected}")
+
+    # And every cell it moved had a real elevation difference to move on.
+    assert int(np.count_nonzero(difference[moved] != 0.0)) == moved_count
+
+
 # ---------------------------------------------------------------------------
 # 2.  Noah and Noah-MP are bitwise unchanged
 # ---------------------------------------------------------------------------

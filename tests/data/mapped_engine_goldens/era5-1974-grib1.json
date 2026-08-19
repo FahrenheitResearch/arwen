@@ -1,0 +1,1448 @@
+{
+  "decode": {
+    "mapping": {
+      "name": "rw-wps-era5-1974-probe.mapping.json",
+      "sha256": "2ceb90e63d3265c0ebf871de4bfc7f622284681a9861c17e78e9fc11e3dc15b2"
+    },
+    "refusal": {
+      "message": "mapped frame at 1974-04-03 12:00:00 lacks required fields ['terrain_height']",
+      "type": "ValueError"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "era5-1974-grib1",
+    "verdict": "REFUSED"
+  },
+  "inspect": {
+    "inspection": {
+      "frames": [
+        {
+          "decoded_direct_fields": [
+            "air_temperature",
+            "air_temperature_2m",
+            "dewpoint_2m",
+            "eastward_wind",
+            "eastward_wind_10m",
+            "geopotential",
+            "land_fraction",
+            "northward_wind",
+            "northward_wind_10m",
+            "relative_humidity",
+            "skin_temperature",
+            "soil_temperature",
+            "surface_pressure",
+            "volumetric_soil_moisture"
+          ],
+          "fields": {
+            "air_temperature": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 307.399169921875,
+              "minimum": 193.69776916503906,
+              "missing": 0,
+              "sha256": "c13f98c78babbb50a432601f2de93d8861241a069badc000cb6d59953d4df305",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:38",
+                "era5_19740403.grb:39",
+                "era5_19740403.grb:40",
+                "era5_19740403.grb:41",
+                "era5_19740403.grb:42",
+                "era5_19740403.grb:43",
+                "era5_19740403.grb:44",
+                "era5_19740403.grb:45",
+                "era5_19740403.grb:46",
+                "era5_19740403.grb:47",
+                "era5_19740403.grb:48",
+                "era5_19740403.grb:49",
+                "era5_19740403.grb:50",
+                "era5_19740403.grb:51",
+                "era5_19740403.grb:52",
+                "era5_19740403.grb:53",
+                "era5_19740403.grb:54",
+                "era5_19740403.grb:55",
+                "era5_19740403.grb:56",
+                "era5_19740403.grb:57",
+                "era5_19740403.grb:58",
+                "era5_19740403.grb:59",
+                "era5_19740403.grb:60",
+                "era5_19740403.grb:61",
+                "era5_19740403.grb:62",
+                "era5_19740403.grb:63",
+                "era5_19740403.grb:64",
+                "era5_19740403.grb:65",
+                "era5_19740403.grb:66",
+                "era5_19740403.grb:67",
+                "era5_19740403.grb:68",
+                "era5_19740403.grb:69",
+                "era5_19740403.grb:70",
+                "era5_19740403.grb:71",
+                "era5_19740403.grb:72",
+                "era5_19740403.grb:73",
+                "era5_19740403.grb:74"
+              ]
+            },
+            "air_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 301.80096435546875,
+              "minimum": 251.62322998046875,
+              "missing": 0,
+              "sha256": "6fb3bcb3a7d54ba02ec1fdda82beaf5dd2ecc7496b2dcf635eb65e1bdc10ccdf",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:190"
+              ]
+            },
+            "dewpoint_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 296.7401428222656,
+              "minimum": 247.67373657226562,
+              "missing": 0,
+              "sha256": "f291933cfacb2798f8c02a63350e4453769b3b8e3c7ea8110fbfa5c5f18c1529",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:191"
+              ]
+            },
+            "eastward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 66.662841796875,
+              "minimum": -21.25048828125,
+              "missing": 0,
+              "sha256": "49a536de980fd0006589c2e777c55f8eb9728d6363360da725421bbb1afe1ff8",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:75",
+                "era5_19740403.grb:76",
+                "era5_19740403.grb:77",
+                "era5_19740403.grb:78",
+                "era5_19740403.grb:79",
+                "era5_19740403.grb:80",
+                "era5_19740403.grb:81",
+                "era5_19740403.grb:82",
+                "era5_19740403.grb:83",
+                "era5_19740403.grb:84",
+                "era5_19740403.grb:85",
+                "era5_19740403.grb:86",
+                "era5_19740403.grb:87",
+                "era5_19740403.grb:88",
+                "era5_19740403.grb:89",
+                "era5_19740403.grb:90",
+                "era5_19740403.grb:91",
+                "era5_19740403.grb:92",
+                "era5_19740403.grb:93",
+                "era5_19740403.grb:94",
+                "era5_19740403.grb:95",
+                "era5_19740403.grb:96",
+                "era5_19740403.grb:97",
+                "era5_19740403.grb:98",
+                "era5_19740403.grb:99",
+                "era5_19740403.grb:100",
+                "era5_19740403.grb:101",
+                "era5_19740403.grb:102",
+                "era5_19740403.grb:103",
+                "era5_19740403.grb:104",
+                "era5_19740403.grb:105",
+                "era5_19740403.grb:106",
+                "era5_19740403.grb:107",
+                "era5_19740403.grb:108",
+                "era5_19740403.grb:109",
+                "era5_19740403.grb:110",
+                "era5_19740403.grb:111"
+              ]
+            },
+            "eastward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 13.812240600585938,
+              "minimum": -9.738540649414062,
+              "missing": 0,
+              "sha256": "9675df3a04a169bb8766170dfde85ecdd4b0baaabf4a9178f425962d787a728d",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:188"
+              ]
+            },
+            "geopotential": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 471268.9375,
+              "minimum": -1611.04541015625,
+              "missing": 0,
+              "sha256": "e6482ad62a5bcc7b09f597a50dcf3b9230ea5325742120a483816b36d8c34ffb",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:0",
+                "era5_19740403.grb:1",
+                "era5_19740403.grb:2",
+                "era5_19740403.grb:3",
+                "era5_19740403.grb:4",
+                "era5_19740403.grb:5",
+                "era5_19740403.grb:6",
+                "era5_19740403.grb:7",
+                "era5_19740403.grb:8",
+                "era5_19740403.grb:9",
+                "era5_19740403.grb:10",
+                "era5_19740403.grb:11",
+                "era5_19740403.grb:12",
+                "era5_19740403.grb:13",
+                "era5_19740403.grb:14",
+                "era5_19740403.grb:15",
+                "era5_19740403.grb:16",
+                "era5_19740403.grb:17",
+                "era5_19740403.grb:18",
+                "era5_19740403.grb:19",
+                "era5_19740403.grb:20",
+                "era5_19740403.grb:21",
+                "era5_19740403.grb:22",
+                "era5_19740403.grb:23",
+                "era5_19740403.grb:24",
+                "era5_19740403.grb:25",
+                "era5_19740403.grb:26",
+                "era5_19740403.grb:27",
+                "era5_19740403.grb:28",
+                "era5_19740403.grb:29",
+                "era5_19740403.grb:30",
+                "era5_19740403.grb:31",
+                "era5_19740403.grb:32",
+                "era5_19740403.grb:33",
+                "era5_19740403.grb:34",
+                "era5_19740403.grb:35",
+                "era5_19740403.grb:36"
+              ]
+            },
+            "land_fraction": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "f768e19d9cb52a44e6e0cbeed7e05a6d4db21e643a63cf180df09e27278d4483",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:202"
+              ]
+            },
+            "northward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 47.71693420410156,
+              "minimum": -41.070098876953125,
+              "missing": 0,
+              "sha256": "1cb5feafc64748f1fe31bdcb67637566fb0e06209c539bc2ec835eab983eb492",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:112",
+                "era5_19740403.grb:113",
+                "era5_19740403.grb:114",
+                "era5_19740403.grb:115",
+                "era5_19740403.grb:116",
+                "era5_19740403.grb:117",
+                "era5_19740403.grb:118",
+                "era5_19740403.grb:119",
+                "era5_19740403.grb:120",
+                "era5_19740403.grb:121",
+                "era5_19740403.grb:122",
+                "era5_19740403.grb:123",
+                "era5_19740403.grb:124",
+                "era5_19740403.grb:125",
+                "era5_19740403.grb:126",
+                "era5_19740403.grb:127",
+                "era5_19740403.grb:128",
+                "era5_19740403.grb:129",
+                "era5_19740403.grb:130",
+                "era5_19740403.grb:131",
+                "era5_19740403.grb:132",
+                "era5_19740403.grb:133",
+                "era5_19740403.grb:134",
+                "era5_19740403.grb:135",
+                "era5_19740403.grb:136",
+                "era5_19740403.grb:137",
+                "era5_19740403.grb:138",
+                "era5_19740403.grb:139",
+                "era5_19740403.grb:140",
+                "era5_19740403.grb:141",
+                "era5_19740403.grb:142",
+                "era5_19740403.grb:143",
+                "era5_19740403.grb:144",
+                "era5_19740403.grb:145",
+                "era5_19740403.grb:146",
+                "era5_19740403.grb:147",
+                "era5_19740403.grb:148"
+              ]
+            },
+            "northward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 13.187393188476562,
+              "minimum": -11.808700561523438,
+              "missing": 0,
+              "sha256": "50061f485f0b600f8b2b9fb7757186a40277a6e6b82219a01c05954d39263d19",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:189"
+              ]
+            },
+            "relative_humidity": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 127.98507308959961,
+              "minimum": 8.709887333679944e-05,
+              "missing": 0,
+              "sha256": "920822916434c3ff81cb7e562d6b64817e43088ec325247647d939c1f923b337",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:149",
+                "era5_19740403.grb:150",
+                "era5_19740403.grb:151",
+                "era5_19740403.grb:152",
+                "era5_19740403.grb:153",
+                "era5_19740403.grb:154",
+                "era5_19740403.grb:155",
+                "era5_19740403.grb:156",
+                "era5_19740403.grb:157",
+                "era5_19740403.grb:158",
+                "era5_19740403.grb:159",
+                "era5_19740403.grb:160",
+                "era5_19740403.grb:161",
+                "era5_19740403.grb:162",
+                "era5_19740403.grb:163",
+                "era5_19740403.grb:164",
+                "era5_19740403.grb:165",
+                "era5_19740403.grb:166",
+                "era5_19740403.grb:167",
+                "era5_19740403.grb:168",
+                "era5_19740403.grb:169",
+                "era5_19740403.grb:170",
+                "era5_19740403.grb:171",
+                "era5_19740403.grb:172",
+                "era5_19740403.grb:173",
+                "era5_19740403.grb:174",
+                "era5_19740403.grb:175",
+                "era5_19740403.grb:176",
+                "era5_19740403.grb:177",
+                "era5_19740403.grb:178",
+                "era5_19740403.grb:179",
+                "era5_19740403.grb:180",
+                "era5_19740403.grb:181",
+                "era5_19740403.grb:182",
+                "era5_19740403.grb:183",
+                "era5_19740403.grb:184",
+                "era5_19740403.grb:185"
+              ]
+            },
+            "skin_temperature": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 299.23292541503906,
+              "minimum": 253.49855041503906,
+              "missing": 0,
+              "sha256": "9122e23e7be15a6a4dadb516dd077817082c95f8ee103152ebbc97e7078885d8",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:194"
+              ]
+            },
+            "soil_temperature": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 302.91748046875,
+              "minimum": 261.390869140625,
+              "missing": 0,
+              "sha256": "46a6c943d255548ca94b44c4623f2376ccea3bb90eb46482c7b9809029a1d2c2",
+              "shape": [
+                4,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:192",
+                "era5_19740403.grb:193",
+                "era5_19740403.grb:195",
+                "era5_19740403.grb:200"
+              ]
+            },
+            "surface_pressure": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 102373.625,
+              "minimum": 65626.625,
+              "missing": 0,
+              "sha256": "9dfbf40a45001e18dceae404ea98fb6877b0fecd05e03ea5c6ea0825d64df7ed",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:186"
+              ]
+            },
+            "volumetric_soil_moisture": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 0.7014514170587063,
+              "minimum": -1.037493348121643e-05,
+              "missing": 0,
+              "sha256": "6a2d043d40545dcaeaf8b9c2d1a800909f2df35db1b754fb17123693ded8d352",
+              "shape": [
+                4,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:196",
+                "era5_19740403.grb:197",
+                "era5_19740403.grb:198",
+                "era5_19740403.grb:199"
+              ]
+            }
+          },
+          "member": null,
+          "source_cycle": "1974-04-03T12:00:00",
+          "unresolved_direct_fields": [
+            "terrain_height"
+          ],
+          "valid_time": "1974-04-03T12:00:00"
+        },
+        {
+          "decoded_direct_fields": [
+            "air_temperature",
+            "air_temperature_2m",
+            "dewpoint_2m",
+            "eastward_wind",
+            "eastward_wind_10m",
+            "geopotential",
+            "land_fraction",
+            "northward_wind",
+            "northward_wind_10m",
+            "relative_humidity",
+            "skin_temperature",
+            "soil_temperature",
+            "surface_pressure",
+            "volumetric_soil_moisture"
+          ],
+          "fields": {
+            "air_temperature": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 310.31689453125,
+              "minimum": 195.5780792236328,
+              "missing": 0,
+              "sha256": "9ce323edefe9631f38d37c472274cbfcd6b2d960a1ba3a884bee802ac7301bc7",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:241",
+                "era5_19740403.grb:242",
+                "era5_19740403.grb:243",
+                "era5_19740403.grb:244",
+                "era5_19740403.grb:245",
+                "era5_19740403.grb:246",
+                "era5_19740403.grb:247",
+                "era5_19740403.grb:248",
+                "era5_19740403.grb:249",
+                "era5_19740403.grb:250",
+                "era5_19740403.grb:251",
+                "era5_19740403.grb:252",
+                "era5_19740403.grb:253",
+                "era5_19740403.grb:254",
+                "era5_19740403.grb:255",
+                "era5_19740403.grb:256",
+                "era5_19740403.grb:257",
+                "era5_19740403.grb:258",
+                "era5_19740403.grb:259",
+                "era5_19740403.grb:260",
+                "era5_19740403.grb:261",
+                "era5_19740403.grb:262",
+                "era5_19740403.grb:263",
+                "era5_19740403.grb:264",
+                "era5_19740403.grb:265",
+                "era5_19740403.grb:266",
+                "era5_19740403.grb:267",
+                "era5_19740403.grb:268",
+                "era5_19740403.grb:269",
+                "era5_19740403.grb:270",
+                "era5_19740403.grb:271",
+                "era5_19740403.grb:272",
+                "era5_19740403.grb:273",
+                "era5_19740403.grb:274",
+                "era5_19740403.grb:275",
+                "era5_19740403.grb:276",
+                "era5_19740403.grb:277"
+              ]
+            },
+            "air_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 310.899658203125,
+              "minimum": 261.108642578125,
+              "missing": 0,
+              "sha256": "7a3fab8d0660e8a9f6c915fab52005b74dc7bfd430a8b6f532e5c94966359bc0",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:393"
+              ]
+            },
+            "dewpoint_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 296.4436798095703,
+              "minimum": 253.6389923095703,
+              "missing": 0,
+              "sha256": "f6a405246046f0c4b939da10bad667175439bfca24c3f6b0aee500e048eb2dc6",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:394"
+              ]
+            },
+            "eastward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 67.67314147949219,
+              "minimum": -26.858718872070312,
+              "missing": 0,
+              "sha256": "b8ab30a16cde8ebf932610f0649c28de01ec66bb16a6c32a00a6d51543674c93",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:278",
+                "era5_19740403.grb:279",
+                "era5_19740403.grb:280",
+                "era5_19740403.grb:281",
+                "era5_19740403.grb:282",
+                "era5_19740403.grb:283",
+                "era5_19740403.grb:284",
+                "era5_19740403.grb:285",
+                "era5_19740403.grb:286",
+                "era5_19740403.grb:287",
+                "era5_19740403.grb:288",
+                "era5_19740403.grb:289",
+                "era5_19740403.grb:290",
+                "era5_19740403.grb:291",
+                "era5_19740403.grb:292",
+                "era5_19740403.grb:293",
+                "era5_19740403.grb:294",
+                "era5_19740403.grb:295",
+                "era5_19740403.grb:296",
+                "era5_19740403.grb:297",
+                "era5_19740403.grb:298",
+                "era5_19740403.grb:299",
+                "era5_19740403.grb:300",
+                "era5_19740403.grb:301",
+                "era5_19740403.grb:302",
+                "era5_19740403.grb:303",
+                "era5_19740403.grb:304",
+                "era5_19740403.grb:305",
+                "era5_19740403.grb:306",
+                "era5_19740403.grb:307",
+                "era5_19740403.grb:308",
+                "era5_19740403.grb:309",
+                "era5_19740403.grb:310",
+                "era5_19740403.grb:311",
+                "era5_19740403.grb:312",
+                "era5_19740403.grb:313",
+                "era5_19740403.grb:314"
+              ]
+            },
+            "eastward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 13.71087646484375,
+              "minimum": -10.11138916015625,
+              "missing": 0,
+              "sha256": "b8efe3d91bdadb956c2c4b5c60aee30e0fdddfaadb00058acdc1459fe6507912",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:391"
+              ]
+            },
+            "geopotential": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 473179.9375,
+              "minimum": -1406.40234375,
+              "missing": 0,
+              "sha256": "99d944ed848ebeb45a54067ae7151c3ee19f3650180047f04593bb58f91bf2b7",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:203",
+                "era5_19740403.grb:204",
+                "era5_19740403.grb:205",
+                "era5_19740403.grb:206",
+                "era5_19740403.grb:207",
+                "era5_19740403.grb:208",
+                "era5_19740403.grb:209",
+                "era5_19740403.grb:210",
+                "era5_19740403.grb:211",
+                "era5_19740403.grb:212",
+                "era5_19740403.grb:213",
+                "era5_19740403.grb:214",
+                "era5_19740403.grb:215",
+                "era5_19740403.grb:216",
+                "era5_19740403.grb:217",
+                "era5_19740403.grb:218",
+                "era5_19740403.grb:219",
+                "era5_19740403.grb:220",
+                "era5_19740403.grb:221",
+                "era5_19740403.grb:222",
+                "era5_19740403.grb:223",
+                "era5_19740403.grb:224",
+                "era5_19740403.grb:225",
+                "era5_19740403.grb:226",
+                "era5_19740403.grb:227",
+                "era5_19740403.grb:228",
+                "era5_19740403.grb:229",
+                "era5_19740403.grb:230",
+                "era5_19740403.grb:231",
+                "era5_19740403.grb:232",
+                "era5_19740403.grb:233",
+                "era5_19740403.grb:234",
+                "era5_19740403.grb:235",
+                "era5_19740403.grb:236",
+                "era5_19740403.grb:237",
+                "era5_19740403.grb:238",
+                "era5_19740403.grb:239"
+              ]
+            },
+            "land_fraction": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "f768e19d9cb52a44e6e0cbeed7e05a6d4db21e643a63cf180df09e27278d4483",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:405"
+              ]
+            },
+            "northward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 47.29927062988281,
+              "minimum": -39.57696533203125,
+              "missing": 0,
+              "sha256": "1ed8551a6a795815b0fc812ee1cb7b57fe00cce43be8f14335042c7ebcf20649",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:315",
+                "era5_19740403.grb:316",
+                "era5_19740403.grb:317",
+                "era5_19740403.grb:318",
+                "era5_19740403.grb:319",
+                "era5_19740403.grb:320",
+                "era5_19740403.grb:321",
+                "era5_19740403.grb:322",
+                "era5_19740403.grb:323",
+                "era5_19740403.grb:324",
+                "era5_19740403.grb:325",
+                "era5_19740403.grb:326",
+                "era5_19740403.grb:327",
+                "era5_19740403.grb:328",
+                "era5_19740403.grb:329",
+                "era5_19740403.grb:330",
+                "era5_19740403.grb:331",
+                "era5_19740403.grb:332",
+                "era5_19740403.grb:333",
+                "era5_19740403.grb:334",
+                "era5_19740403.grb:335",
+                "era5_19740403.grb:336",
+                "era5_19740403.grb:337",
+                "era5_19740403.grb:338",
+                "era5_19740403.grb:339",
+                "era5_19740403.grb:340",
+                "era5_19740403.grb:341",
+                "era5_19740403.grb:342",
+                "era5_19740403.grb:343",
+                "era5_19740403.grb:344",
+                "era5_19740403.grb:345",
+                "era5_19740403.grb:346",
+                "era5_19740403.grb:347",
+                "era5_19740403.grb:348",
+                "era5_19740403.grb:349",
+                "era5_19740403.grb:350",
+                "era5_19740403.grb:351"
+              ]
+            },
+            "northward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 13.150955200195312,
+              "minimum": -13.459396362304688,
+              "missing": 0,
+              "sha256": "f484ffe1d55422a371699cd4461eaa0078c79d7d7ef37cf50a1bdb573c746fd2",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:392"
+              ]
+            },
+            "relative_humidity": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 133.25737857818604,
+              "minimum": -1.8298139572143555,
+              "missing": 0,
+              "sha256": "b9b6b3d85eb787986d6ded237627db1d102366c631b33781c066ad3cc30c0cc1",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:352",
+                "era5_19740403.grb:353",
+                "era5_19740403.grb:354",
+                "era5_19740403.grb:355",
+                "era5_19740403.grb:356",
+                "era5_19740403.grb:357",
+                "era5_19740403.grb:358",
+                "era5_19740403.grb:359",
+                "era5_19740403.grb:360",
+                "era5_19740403.grb:361",
+                "era5_19740403.grb:362",
+                "era5_19740403.grb:363",
+                "era5_19740403.grb:364",
+                "era5_19740403.grb:365",
+                "era5_19740403.grb:366",
+                "era5_19740403.grb:367",
+                "era5_19740403.grb:368",
+                "era5_19740403.grb:369",
+                "era5_19740403.grb:370",
+                "era5_19740403.grb:371",
+                "era5_19740403.grb:372",
+                "era5_19740403.grb:373",
+                "era5_19740403.grb:374",
+                "era5_19740403.grb:375",
+                "era5_19740403.grb:376",
+                "era5_19740403.grb:377",
+                "era5_19740403.grb:378",
+                "era5_19740403.grb:379",
+                "era5_19740403.grb:380",
+                "era5_19740403.grb:381",
+                "era5_19740403.grb:382",
+                "era5_19740403.grb:383",
+                "era5_19740403.grb:384",
+                "era5_19740403.grb:385",
+                "era5_19740403.grb:386",
+                "era5_19740403.grb:387",
+                "era5_19740403.grb:388"
+              ]
+            },
+            "skin_temperature": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 325.258056640625,
+              "minimum": 259.593994140625,
+              "missing": 0,
+              "sha256": "547a0d055b96ff7aa6456220d8168a3164fd4f077b9f2644f063e697af4be955",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:397"
+              ]
+            },
+            "soil_temperature": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 312.227294921875,
+              "minimum": 262.070556640625,
+              "missing": 0,
+              "sha256": "bf23a93c9b727454c218fdf4dcc3829f64e26846343452021ba0bd3bd3f3f763",
+              "shape": [
+                4,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:395",
+                "era5_19740403.grb:396",
+                "era5_19740403.grb:398",
+                "era5_19740403.grb:403"
+              ]
+            },
+            "surface_pressure": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 102402.25,
+              "minimum": 65908.25,
+              "missing": 0,
+              "sha256": "62b4a82f75422deb566d9f78e94d9f7a549178585321bd901fad30f7077e98c5",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:389"
+              ]
+            },
+            "volumetric_soil_moisture": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 0.7304862327873707,
+              "minimum": -1.3034790754318237e-05,
+              "missing": 0,
+              "sha256": "de9f4104981db6b1a1b0d36a424cdd72d73b72584f518ed13b7c73268e2b6637",
+              "shape": [
+                4,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:399",
+                "era5_19740403.grb:400",
+                "era5_19740403.grb:401",
+                "era5_19740403.grb:402"
+              ]
+            }
+          },
+          "member": null,
+          "source_cycle": "1974-04-03T18:00:00",
+          "unresolved_direct_fields": [
+            "terrain_height"
+          ],
+          "valid_time": "1974-04-03T18:00:00"
+        },
+        {
+          "decoded_direct_fields": [
+            "air_temperature",
+            "air_temperature_2m",
+            "dewpoint_2m",
+            "eastward_wind",
+            "eastward_wind_10m",
+            "geopotential",
+            "land_fraction",
+            "northward_wind",
+            "northward_wind_10m",
+            "relative_humidity",
+            "skin_temperature",
+            "soil_temperature",
+            "surface_pressure",
+            "volumetric_soil_moisture"
+          ],
+          "fields": {
+            "air_temperature": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 313.495361328125,
+              "minimum": 196.29600524902344,
+              "missing": 0,
+              "sha256": "f103c74a16c05a132560db5cfbe1ca3e3678ecf6ee903617b99e49e741c4e8e2",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:444",
+                "era5_19740403.grb:445",
+                "era5_19740403.grb:446",
+                "era5_19740403.grb:447",
+                "era5_19740403.grb:448",
+                "era5_19740403.grb:449",
+                "era5_19740403.grb:450",
+                "era5_19740403.grb:451",
+                "era5_19740403.grb:452",
+                "era5_19740403.grb:453",
+                "era5_19740403.grb:454",
+                "era5_19740403.grb:455",
+                "era5_19740403.grb:456",
+                "era5_19740403.grb:457",
+                "era5_19740403.grb:458",
+                "era5_19740403.grb:459",
+                "era5_19740403.grb:460",
+                "era5_19740403.grb:461",
+                "era5_19740403.grb:462",
+                "era5_19740403.grb:463",
+                "era5_19740403.grb:464",
+                "era5_19740403.grb:465",
+                "era5_19740403.grb:466",
+                "era5_19740403.grb:467",
+                "era5_19740403.grb:468",
+                "era5_19740403.grb:469",
+                "era5_19740403.grb:470",
+                "era5_19740403.grb:471",
+                "era5_19740403.grb:472",
+                "era5_19740403.grb:473",
+                "era5_19740403.grb:474",
+                "era5_19740403.grb:475",
+                "era5_19740403.grb:476",
+                "era5_19740403.grb:477",
+                "era5_19740403.grb:478",
+                "era5_19740403.grb:479",
+                "era5_19740403.grb:480"
+              ]
+            },
+            "air_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 312.615234375,
+              "minimum": 256.44921875,
+              "missing": 0,
+              "sha256": "4353ffd8c5ba9fe7495fe66788176b49876b3e787b4923e0436e8f00c89b7713",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:596"
+              ]
+            },
+            "dewpoint_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 296.60382080078125,
+              "minimum": 250.87725830078125,
+              "missing": 0,
+              "sha256": "befc1b4346e909f858f14f245a517189e9c27fb21b861c31430f27ac49c82b17",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:597"
+              ]
+            },
+            "eastward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 71.82258605957031,
+              "minimum": -28.5462646484375,
+              "missing": 0,
+              "sha256": "d528bf9b8d5c39b3863bf34517d3be81907763bad8a4e77717af040bcdc3aa99",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:481",
+                "era5_19740403.grb:482",
+                "era5_19740403.grb:483",
+                "era5_19740403.grb:484",
+                "era5_19740403.grb:485",
+                "era5_19740403.grb:486",
+                "era5_19740403.grb:487",
+                "era5_19740403.grb:488",
+                "era5_19740403.grb:489",
+                "era5_19740403.grb:490",
+                "era5_19740403.grb:491",
+                "era5_19740403.grb:492",
+                "era5_19740403.grb:493",
+                "era5_19740403.grb:494",
+                "era5_19740403.grb:495",
+                "era5_19740403.grb:496",
+                "era5_19740403.grb:497",
+                "era5_19740403.grb:498",
+                "era5_19740403.grb:499",
+                "era5_19740403.grb:500",
+                "era5_19740403.grb:501",
+                "era5_19740403.grb:502",
+                "era5_19740403.grb:503",
+                "era5_19740403.grb:504",
+                "era5_19740403.grb:505",
+                "era5_19740403.grb:506",
+                "era5_19740403.grb:507",
+                "era5_19740403.grb:508",
+                "era5_19740403.grb:509",
+                "era5_19740403.grb:510",
+                "era5_19740403.grb:511",
+                "era5_19740403.grb:512",
+                "era5_19740403.grb:513",
+                "era5_19740403.grb:514",
+                "era5_19740403.grb:515",
+                "era5_19740403.grb:516",
+                "era5_19740403.grb:517"
+              ]
+            },
+            "eastward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 12.803878784179688,
+              "minimum": -13.413894653320312,
+              "missing": 0,
+              "sha256": "904a9959c7a30cb24c474af41663c4948a96c158549d7185f3f1ad3adb0545ec",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:594"
+              ]
+            },
+            "geopotential": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 472951.875,
+              "minimum": -1138.23193359375,
+              "missing": 0,
+              "sha256": "c1bf0b02beb24f0751ea5a62c67d74c383030f319a3ba6d608ba080c6e253e7b",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:406",
+                "era5_19740403.grb:407",
+                "era5_19740403.grb:408",
+                "era5_19740403.grb:409",
+                "era5_19740403.grb:410",
+                "era5_19740403.grb:411",
+                "era5_19740403.grb:412",
+                "era5_19740403.grb:413",
+                "era5_19740403.grb:414",
+                "era5_19740403.grb:415",
+                "era5_19740403.grb:416",
+                "era5_19740403.grb:417",
+                "era5_19740403.grb:418",
+                "era5_19740403.grb:419",
+                "era5_19740403.grb:420",
+                "era5_19740403.grb:421",
+                "era5_19740403.grb:422",
+                "era5_19740403.grb:423",
+                "era5_19740403.grb:424",
+                "era5_19740403.grb:425",
+                "era5_19740403.grb:426",
+                "era5_19740403.grb:427",
+                "era5_19740403.grb:428",
+                "era5_19740403.grb:429",
+                "era5_19740403.grb:430",
+                "era5_19740403.grb:431",
+                "era5_19740403.grb:432",
+                "era5_19740403.grb:433",
+                "era5_19740403.grb:434",
+                "era5_19740403.grb:435",
+                "era5_19740403.grb:436",
+                "era5_19740403.grb:437",
+                "era5_19740403.grb:438",
+                "era5_19740403.grb:439",
+                "era5_19740403.grb:440",
+                "era5_19740403.grb:441",
+                "era5_19740403.grb:442"
+              ]
+            },
+            "land_fraction": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "f768e19d9cb52a44e6e0cbeed7e05a6d4db21e643a63cf180df09e27278d4483",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:608"
+              ]
+            },
+            "northward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 49.96858215332031,
+              "minimum": -39.90138244628906,
+              "missing": 0,
+              "sha256": "67d5a406f32ff3a74d65489e64f4021fb0316d71b561894200e766e8b1fbf062",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:518",
+                "era5_19740403.grb:519",
+                "era5_19740403.grb:520",
+                "era5_19740403.grb:521",
+                "era5_19740403.grb:522",
+                "era5_19740403.grb:523",
+                "era5_19740403.grb:524",
+                "era5_19740403.grb:525",
+                "era5_19740403.grb:526",
+                "era5_19740403.grb:527",
+                "era5_19740403.grb:528",
+                "era5_19740403.grb:529",
+                "era5_19740403.grb:530",
+                "era5_19740403.grb:531",
+                "era5_19740403.grb:532",
+                "era5_19740403.grb:533",
+                "era5_19740403.grb:534",
+                "era5_19740403.grb:535",
+                "era5_19740403.grb:536",
+                "era5_19740403.grb:537",
+                "era5_19740403.grb:538",
+                "era5_19740403.grb:539",
+                "era5_19740403.grb:540",
+                "era5_19740403.grb:541",
+                "era5_19740403.grb:542",
+                "era5_19740403.grb:543",
+                "era5_19740403.grb:544",
+                "era5_19740403.grb:545",
+                "era5_19740403.grb:546",
+                "era5_19740403.grb:547",
+                "era5_19740403.grb:548",
+                "era5_19740403.grb:549",
+                "era5_19740403.grb:550",
+                "era5_19740403.grb:551",
+                "era5_19740403.grb:552",
+                "era5_19740403.grb:553",
+                "era5_19740403.grb:554"
+              ]
+            },
+            "northward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 11.44390869140625,
+              "minimum": -12.22503662109375,
+              "missing": 0,
+              "sha256": "a301ed5e0ac46071be04bad81216ae0da8b7e1fdd9b40c950c432bdf65f03c18",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:595"
+              ]
+            },
+            "relative_humidity": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 133.03168964385986,
+              "minimum": -0.2813519835472107,
+              "missing": 0,
+              "sha256": "39a9eff531a7ceef0dedcec69574a3ebf13746978890e1f7502cd5af30996258",
+              "shape": [
+                37,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:555",
+                "era5_19740403.grb:556",
+                "era5_19740403.grb:557",
+                "era5_19740403.grb:558",
+                "era5_19740403.grb:559",
+                "era5_19740403.grb:560",
+                "era5_19740403.grb:561",
+                "era5_19740403.grb:562",
+                "era5_19740403.grb:563",
+                "era5_19740403.grb:564",
+                "era5_19740403.grb:565",
+                "era5_19740403.grb:566",
+                "era5_19740403.grb:567",
+                "era5_19740403.grb:568",
+                "era5_19740403.grb:569",
+                "era5_19740403.grb:570",
+                "era5_19740403.grb:571",
+                "era5_19740403.grb:572",
+                "era5_19740403.grb:573",
+                "era5_19740403.grb:574",
+                "era5_19740403.grb:575",
+                "era5_19740403.grb:576",
+                "era5_19740403.grb:577",
+                "era5_19740403.grb:578",
+                "era5_19740403.grb:579",
+                "era5_19740403.grb:580",
+                "era5_19740403.grb:581",
+                "era5_19740403.grb:582",
+                "era5_19740403.grb:583",
+                "era5_19740403.grb:584",
+                "era5_19740403.grb:585",
+                "era5_19740403.grb:586",
+                "era5_19740403.grb:587",
+                "era5_19740403.grb:588",
+                "era5_19740403.grb:589",
+                "era5_19740403.grb:590",
+                "era5_19740403.grb:591"
+              ]
+            },
+            "skin_temperature": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 310.7580871582031,
+              "minimum": 251.04714965820312,
+              "missing": 0,
+              "sha256": "7d8b90f30a63b2921788c708ff2cf1097c122f0b5cae81f84f33b1ae80602533",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:600"
+              ]
+            },
+            "soil_temperature": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 313.849609375,
+              "minimum": 262.21875,
+              "missing": 0,
+              "sha256": "ef15f53858d9369067d0fd66e05b3f32b3b5685ed6429108bc790b874d4a251f",
+              "shape": [
+                4,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:598",
+                "era5_19740403.grb:599",
+                "era5_19740403.grb:601",
+                "era5_19740403.grb:606"
+              ]
+            },
+            "surface_pressure": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 102656.25,
+              "minimum": 66192.25,
+              "missing": 0,
+              "sha256": "8bb670c4e44a994be5359a59152b41e494b25218803da4bbc9b1b04ccab60037",
+              "shape": [
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:592"
+              ]
+            },
+            "volumetric_soil_moisture": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 0.741259042173624,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "e35381001277e35c9cecc8347a18cb472afc8cea50698cd18619e020b3f40044",
+              "shape": [
+                4,
+                121,
+                201
+              ],
+              "source_references": [
+                "era5_19740403.grb:602",
+                "era5_19740403.grb:603",
+                "era5_19740403.grb:604",
+                "era5_19740403.grb:605"
+              ]
+            }
+          },
+          "member": null,
+          "source_cycle": "1974-04-04T00:00:00",
+          "unresolved_direct_fields": [
+            "terrain_height"
+          ],
+          "valid_time": "1974-04-04T00:00:00"
+        }
+      ],
+      "grid": {
+        "fingerprint": "f755fc81e26101b38845491c11fd09d283e440079ae7dad7db33e01a183492b5",
+        "nx": 201,
+        "ny": 121,
+        "vertical_count": 37
+      },
+      "inputs": [
+        {
+          "bytes": 29438328,
+          "name": "era5_19740403.grb",
+          "sha256": "9501fd6807edaf1f93bc7ee5ab6424d712dde094f9015f733946bc574e6a0340"
+        }
+      ],
+      "mapping": {
+        "name": "rw-wps-era5-1974-probe.mapping.json",
+        "sha256": "2ceb90e63d3265c0ebf871de4bfc7f622284681a9861c17e78e9fc11e3dc15b2"
+      },
+      "materialization": {
+        "error": "mapped frame at 1974-04-03 12:00:00 lacks required fields ['terrain_height']",
+        "error_type": "ValueError",
+        "verdict": "INCOMPLETE"
+      },
+      "schema": "gpuwm-mapped-source-inspection-v1",
+      "source_format": "grib1",
+      "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED",
+      "stock_wrf_certified": false
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "era5-1974-grib1",
+    "verdict": "INSPECTED"
+  },
+  "measured_on": {
+    "machine": "AMD64",
+    "system": "Windows"
+  },
+  "schema": "gpuwm-mapped-parity-digest-v1",
+  "source": "era5-1974-grib1"
+}

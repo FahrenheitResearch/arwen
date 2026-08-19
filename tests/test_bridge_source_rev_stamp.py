@@ -32,7 +32,7 @@ import zipfile
 
 import pytest
 
-from gpuwm import bridge_assets, bridges
+from gpuwm import bridge_assets, bridges, mapped_engine_bridge
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_TOOL = REPO_ROOT / "tools" / "build_bridge_bundle.py"
@@ -302,6 +302,11 @@ _STAMP_SOURCES = {
     "rw_asos": "crates/rw-obs/src/bin/asos.rs",
     "rw_opera": "crates/rw-obs/src/bin/opera.rs",
     "rw_goes": "crates/rw-goes/src/main.rs",
+    "rw_netcdf": "crates/rw-netcdf/src/main.rs",
+    "netcdf_writer": "crates/netcdf-writer/src/capi.rs",
+    "static_fields": "crates/static-fields/src/capi/mod.rs",
+    "gpuwm_mapped_engine": "crates/mapped-engine/src/main.rs",
+    "obs_regrid": "crates/obs-regrid/src/capi.rs",
 }
 
 #: The build script that injects the revision for each artifact.
@@ -315,7 +320,16 @@ _STAMP_BUILDS = {
                                     # crate, so one script stamps all
                                     # four.
                                     "crates/rw-obs/build.rs",
-                                    "crates/rw-goes/build.rs"),
+                                    "crates/rw-goes/build.rs",
+                                    "crates/rw-netcdf/build.rs",
+                                    "crates/netcdf-writer/build.rs",
+                                    "crates/static-fields/build.rs",
+                                    "crates/obs-regrid/build.rs"),
+    # The engine workspace carries one gpuwm-authored crate beside the
+    # donor snapshot (tools/rw_wps/VENDOR.md); the snapshot's own crate
+    # ships nothing, so it is stamped by nothing.
+    mapped_engine_bridge.ENGINE_CRATE_RELATIVE: (
+        "crates/mapped-engine/build.rs",),
 }
 
 

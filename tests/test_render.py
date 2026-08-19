@@ -76,13 +76,13 @@ def test_render_all_products_all_frames(wrfout, tmp_path):
     out = tmp_path / "png"
     rc = cli.main(["render", "--engine", "matplotlib", str(wrfout), "--out", str(out)])
     assert rc == 0
-    produced = sorted(p.name for p in out.glob("*.png"))
+    produced = sorted(p.name for p in out.rglob("*.png"))
     expected = sorted(
         f"{product}_d02-1km_{stamp.replace(':', '-')}.png"
         for product in ("refl", "t2", "wind10", "precip", "olr")
         for stamp in _STAMPS)
     assert produced == expected
-    for png in out.glob("*.png"):
+    for png in out.rglob("*.png"):
         assert png.stat().st_size > 5_000, png.name
         height, width, _ = _png_shape(png)
         assert height >= 400 and width >= 600, (png.name, height, width)
@@ -93,7 +93,7 @@ def test_render_product_and_frame_selection(wrfout, tmp_path):
     rc = cli.main(["render", "--engine", "matplotlib", str(wrfout), "--products", "refl,t2",
                    "--timeidx", "1", "--out", str(out), "--dpi", "72"])
     assert rc == 0
-    produced = sorted(p.name for p in out.glob("*.png"))
+    produced = sorted(p.name for p in out.rglob("*.png"))
     stamp = _STAMPS[1].replace(":", "-")
     assert produced == sorted(
         [f"refl_d02-1km_{stamp}.png", f"t2_d02-1km_{stamp}.png"])
@@ -132,7 +132,7 @@ def test_a_field_the_file_does_not_carry_skips_that_product_at_rc_0(
     rc = cli.main(["render", "--engine", "matplotlib", str(path),
                    "--products", "refl,t2", "--out", str(out)])
     assert rc == 0
-    produced = [p.name for p in out.glob("*.png")]
+    produced = [p.name for p in out.rglob("*.png")]
     assert produced == [f"t2_d01-1km_{_STAMPS[0].replace(':', '-')}.png"]
 
     err = capsys.readouterr().err
@@ -166,7 +166,42 @@ def test_a_skip_still_exits_1_when_it_leaves_nothing_drawn(tmp_path):
     rc = cli.main(["render", "--engine", "matplotlib", str(path),
                    "--products", "refl", "--out", str(out)])
     assert rc == 1
-    assert not list(out.glob("*.png"))
+    assert not list(out.rglob("*.png"))
+
+
+def test_the_nothing_drawn_notice_does_not_deny_the_nonzero_exit(
+        tmp_path, capsys):
+    """The skip notice must not contradict the exit code it ships with.
+
+    Ask for exactly one product whose input is absent: the render exits 1
+    because nothing was drawn (the arm above).  The notice used to append
+    "That is not a failure and does not change the exit code" -- true when
+    other products rendered, FALSE here, where the skips are precisely why
+    the exit code is 1.  A user chasing that sentence concluded the tool
+    was broken (a real complaint: lifted_index requested from a wrfout,
+    rendered=0, exit 1, and a note insisting nothing failed).
+
+    The notice still names the product either way; what changes is the
+    verdict half: with nothing drawn it must SAY nothing was drawn and
+    that the exit code reflects it.
+    """
+    path = _wrfout_without(tmp_path, "REFL_10CM")
+    rc = cli.main(["render", "--engine", "matplotlib", str(path),
+                   "--products", "refl", "--out", str(tmp_path / "png")])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "refl" in err
+    assert "not a failure" not in err
+    assert "does not change the exit code" not in err
+    assert "nothing rendered" in err
+
+    # The mixed outcome keeps the reassuring sentence: skips beside a
+    # drawn product still exit 0 and still say so.
+    rc = cli.main(["render", "--engine", "matplotlib", str(path),
+                   "--products", "refl,t2", "--out", str(tmp_path / "png2")])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "not a failure" in err
 
 
 def test_a_product_whose_inputs_are_present_still_fails_loudly(
@@ -223,7 +258,7 @@ def test_render_timeidx_out_of_range_is_an_error(wrfout, tmp_path):
     rc = cli.main(["render", "--engine", "matplotlib", str(wrfout), "--products", "t2",
                    "--timeidx", "9", "--out", str(tmp_path / "png")])
     assert rc == 1
-    assert not list((tmp_path / "png").glob("*.png"))
+    assert not list((tmp_path / "png").rglob("*.png"))
 
 
 def test_resolution_tokens_are_trimmed_km_or_integer_metres():
@@ -368,9 +403,10 @@ def test_olr_draws_from_the_field_the_frame_carries(tmp_path, monkeypatch):
     rc = cli.main(["render", "--engine", "matplotlib", str(path),
                    "--products", "olr", "--out", str(out)])
     assert rc == 0
-    produced = [p.name for p in out.glob("*.png")]
-    assert produced == [f"olr_d01-1km_{_STAMPS[0].replace(':', '-')}.png"]
-    assert (produced and (out / produced[0]).stat().st_size > 5_000)
+    drawn = sorted(out.rglob("*.png"))
+    assert [p.name for p in drawn] == [
+        f"olr_d01-1km_{_STAMPS[0].replace(':', '-')}.png"]
+    assert drawn[0].stat().st_size > 5_000
     # Retrieved by name, in the field's own units, with no conversion.
     assert ("OLR", None) in calls, calls
 
@@ -434,7 +470,7 @@ def test_a_frame_without_olr_skips_the_product_rather_than_failing(
     rc = cli.main(["render", "--engine", "matplotlib", str(path),
                    "--products", "olr,t2", "--out", str(out)])
     assert rc == 0
-    assert [p.name for p in out.glob("*.png")] == [
+    assert [p.name for p in out.rglob("*.png")] == [
         f"t2_d01-1km_{_STAMPS[0].replace(':', '-')}.png"]
     err = capsys.readouterr().err
     assert "olr" in err and "not a failure" in err
@@ -471,7 +507,7 @@ def test_wind10_fallback_is_native_units_via_getvar(tmp_path, monkeypatch):
     rc = cli.main(["render", "--engine", "matplotlib", str(path), "--products", "wind10",
                    "--out", str(out)])
     assert rc == 0
-    assert list(out.glob("wind10_*.png"))
+    assert list(out.rglob("wind10_*.png"))
     # The earth-rotated primary was attempted (in knots, via getvar) ...
     assert ("uvmet10", "kt") in calls
     # ... and the fallback retrieved raw fields with NO unit arguments:
@@ -484,30 +520,36 @@ def test_wind10_fallback_is_native_units_via_getvar(tmp_path, monkeypatch):
     assert "1.9438" not in _Path(render.__file__).read_text()
 
 
-def test_the_matplotlib_fallback_announces_itself(monkeypatch, capsys):
-    """A fallback that does not say so is indistinguishable from the real
+def test_the_matplotlib_engine_announces_itself_as_a_workaround(
+        monkeypatch, capsys):
+    """An engine that does not say so is indistinguishable from the real
     thing until someone counts the products.
 
     A pilot spent a whole session on the four-product matplotlib path
     without noticing the 151-product rust catalog was simply not built.
+
+    It is a WORKAROUND rather than a fallback since the render law's
+    one-fallback clause was enforced (audit F7): nothing degrades into
+    it, it is reachable only by typing ``--engine matplotlib``, and
+    "Fixed means default" (Drew 2026-08-10) requires an opt-in remedy to
+    be REPORTED as a workaround on every run -- so the explicit request
+    is exactly the case that must not be silent.  It used to be.
     """
     import argparse
     from pathlib import Path
     from gpuwm import render as render_module
 
-    assert render_module.fallback_notice("rust", "/path/to/rw_wrfbatch") is None
-    # An explicit --engine matplotlib is a choice, not a surprise.
-    assert render_module.fallback_notice("matplotlib", "requested") is None
+    assert render_module.matplotlib_workaround_notice("rust") is None
 
-    notice = render_module.fallback_notice(
-        "matplotlib", "rust renderer not built (gpuwm doctor shows the "
-        "build one-liner)")
+    notice = render_module.matplotlib_workaround_notice("matplotlib")
     assert notice is not None
     # ONE line: a notice that scrolls is a notice that gets skimmed.
     assert "\n" not in notice, notice
+    # The project's own word for a reachable-but-not-default path.
+    assert notice.startswith("WORKAROUND:")
     # The engine actually used ...
     assert "engine matplotlib" in notice
-    assert "rust render engine not available" in notice
+    assert "render law" in notice
     # ... what that costs, against the rust catalog ...
     assert f"{len(render_module.PRODUCTS)} of the rust catalog's " \
            f"{render_module._RUST_CATALOG_PRODUCTS} products" in notice
@@ -518,13 +560,11 @@ def test_the_matplotlib_fallback_announces_itself(monkeypatch, capsys):
     assert "cargo build --release --locked --offline" in notice
 
     # It reaches stderr on a real invocation, before anything else.
-    monkeypatch.setattr(render_module, "_resolve_engine",
-                        lambda requested: ("matplotlib", "rust renderer "
-                                           "unusable: probe exited 1"))
     args = argparse.Namespace(
         pair=None, wrfout=[Path("nonexistent.nc")], timeidx="0",
-        size="1200x900", engine="auto", products="all", list_products=False,
-        out=Path("out"), dpi=110, heavy=False,
+        size="1200x900", engine="matplotlib", products="all",
+        list_products=False, out=Path("out"), dpi=110, heavy=False,
+        layout=render_module.render_layout.DEFAULT_LAYOUT,
         source_label=render_module.DEFAULT_SOURCE_LABEL)
     monkeypatch.setattr(render_module, "render_wrfouts",
                         lambda *a, **k: ([], [], []))
@@ -533,11 +573,11 @@ def test_the_matplotlib_fallback_announces_itself(monkeypatch, capsys):
     # (the stub writes nothing, so the exit code is the empty-output one;
     # what is under test is that the notice was printed, and printed
     # before any product line.)
-    assert "rust render engine not available" in captured.err
-    assert "probe exited 1" in captured.err
+    assert "WORKAROUND:" in captured.err
+    assert "render law" in captured.err
 
 
-def test_the_fallback_notice_is_install_aware_in_one_line(monkeypatch):
+def test_the_workaround_notice_is_install_aware_in_one_line(monkeypatch):
     """A wheel install has no `tools/rustwx` to cd into.
 
     The 1.0.1 remedy contract stopped doctor sending pip users to a
@@ -549,23 +589,21 @@ def test_the_fallback_notice_is_install_aware_in_one_line(monkeypatch):
     """
     from gpuwm import bridges, render as render_module, rustwx
 
-    why = "rust renderer not built (gpuwm doctor shows the build one-liner)"
-
     # Checkout shape: the one-liner, unchanged.
     monkeypatch.setattr(bridges, "sources_present", lambda *a, **k: True)
-    checkout = render_module.fallback_notice("matplotlib", why)
+    checkout = render_module.matplotlib_workaround_notice("matplotlib")
     assert "\n" not in checkout
     assert rustwx.CARGO_BUILD_HINT in checkout
 
     # Wheel shape: still one line, and it no longer names the directory
     # that is not there.
     monkeypatch.setattr(bridges, "sources_present", lambda *a, **k: False)
-    wheel = render_module.fallback_notice("matplotlib", why)
+    wheel = render_module.matplotlib_workaround_notice("matplotlib")
     assert wheel is not None
     assert "\n" not in wheel, wheel
     assert "cd tools" not in wheel, wheel
     assert "gpuwm doctor" in wheel
-    # Still says what the fallback costs, in both shapes.
+    # Still says what the workaround costs, in both shapes.
     for text in (checkout, wheel):
         assert "engine matplotlib" in text
         assert f"{len(render_module.PRODUCTS)} of the rust catalog's" in text
@@ -636,7 +674,7 @@ def test_unknown_domain_identity_keeps_the_native_grid_token(tmp_path):
     rc = cli.main(["render", "--engine", "matplotlib", str(path),
                    "--products", "t2", "--out", str(out)])
     assert rc == 0
-    produced = [p.name for p in out.glob("*.png")]
+    produced = [p.name for p in out.rglob("*.png")]
     assert produced, "the anonymous-domain file rendered nothing"
     for name in produced:
         assert "native_grid" in name, name
@@ -668,7 +706,7 @@ def test_two_anonymous_inputs_refuse_to_overwrite_each_other(tmp_path):
     # One PNG, and a loud non-zero exit -- never two inputs and one
     # silent survivor.
     assert rc == 1
-    assert len(list(out.glob("*.png"))) == 1
+    assert len(list(out.rglob("*.png"))) == 1
 
 
 def test_a_grid_id_out_of_domain_range_is_not_identity(tmp_path):

@@ -85,11 +85,13 @@ from gpuwm.render import register_cli as render_register_cli
 from gpuwm.report_bundle import register_cli as report_register_cli
 from gpuwm.runplan import register_cli as run_plan_register_cli
 from gpuwm.setup_cli import register_cli as setup_register_cli
+from gpuwm.stage_cli import register_cli as stage_register_cli
 from gpuwm.stream import register_cli as stream_register_cli
 from gpuwm.table_assets import register_cli as table_assets_register_cli
 from gpuwm.update_cli import register_cli as update_register_cli
 from gpuwm.version_cli import register_cli as version_register_cli
 from gpuwm.verify import cases
+from gpuwm.verify.spectral_cli import register_cli as spectral_register_cli
 
 #: Discovered verification cases: name -> case module exposing
 #: ``run(outdir) -> dict`` and ``GATES``.  Membership comes from the
@@ -160,6 +162,24 @@ def _join_negative_coordinates(argv: list[str]) -> list[str]:
     return joined
 
 
+#: The spelling every other command-line tool answers to.  `gpuwm
+#: version` is the door and always has been; typing `gpuwm --version`
+#: got an argparse usage error at exit 2, on all three persona walks
+#: (UX finding N24).  Rewritten to the subcommand here, in LEADING
+#: position only, so a subcommand that ever grows a flag of this name
+#: still reaches its own parser -- and so the version door's own flags
+#: (`--offline`, `--pypi-timeout`) work through the alias unchanged.
+_VERSION_ALIAS = "--version"
+
+
+def _rewrite_version_alias(argv: list[str]) -> list[str]:
+    """``gpuwm --version [...]`` -> ``gpuwm version [...]``."""
+
+    if argv and argv[0] == _VERSION_ALIAS:
+        return ["version", *argv[1:]]
+    return list(argv)
+
+
 def _failing_gate(case: str, metrics: dict) -> str | None:
     """Name of the first failing gate metric, or None if all pass.
 
@@ -194,7 +214,11 @@ _INTERRUPT_EXIT_CODE = 130
 _LONG_RUNNING_COMMANDS = frozenset({
     "go", "run", "run-plan", "resume", "fetch", "fetch-geog",
     "fetch-tables", "fetch-bridges", "setup", "verify", "downscale",
-    "enprod", "render", "dual-run", "certify",
+    "enprod", "render", "dual-run", "certify", "spectral",
+    # The unbundled stages run for exactly as long as the welded ones
+    # they were split out of: preprocessing is minutes of static build,
+    # the forecast is the forecast.
+    "prep", "sim",
 })
 
 
@@ -249,6 +273,37 @@ def _layer(error: BaseException, args) -> str:
                   command=f"gpuwm {args.command}")
 
 
+def _run_description() -> str:
+    """`gpuwm run --help`, told what 2.5.0 moved around it.
+
+    This door is unchanged from 2.4.1 and its help was byte-identical
+    to 2.4.1's -- so an upgrader reading it learned nothing about the
+    two stages that now stand alone, the run folder each forecast
+    claims, or the layout `gpuwm render` writes (UX finding N15).  The
+    door still behaves exactly as it did; the paragraph says what else
+    exists now, composed from the modules that own those layouts so it
+    cannot drift from them.
+    """
+
+    from gpuwm import render_layout, run_stamp
+
+    return (
+        "Integrate a config-driven real case in this process, writing "
+        "straight into --outdir.  The same forecast is also reachable as "
+        "two stages that stand alone: `gpuwm prep` builds the prepared "
+        "tree and `gpuwm sim` runs it (`gpuwm go` drives both).  `gpuwm "
+        "sim` gives every forecast its own timestamped run folder -- "
+        + run_stamp.describe("--outdir")
+        + " -- and `gpuwm render` writes "
+        # sep="/" because this paragraph is help text, shared by every
+        # reader on every platform, not a path this process is about to
+        # write; the printed render line is the one that follows the
+        # reader's own separator.
+        + render_layout.describe("--out", sep="/")
+        + ".  Both layouts have a documented flat fallback, labelled a "
+        "workaround.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The whole gpuwm command surface, assembled.
 
@@ -260,7 +315,8 @@ def build_parser() -> argparse.ArgumentParser:
     """
 
     parser = argparse.ArgumentParser(
-        prog="gpuwm", description="GPU-native WRF-ARW-like weather model.")
+        prog="gpuwm", description="GPU-native WRF-ARW-like weather model.",
+        epilog="`gpuwm --version` is an alias for `gpuwm version`.")
     sub = parser.add_subparsers(dest="command", required=True)
     preflight_register_cli(sub)
     ingest_register_cli(sub)
@@ -282,6 +338,11 @@ def build_parser() -> argparse.ArgumentParser:
     table_assets_register_cli(sub)
     bridge_assets_register_cli(sub)
     setup_register_cli(sub)
+    # The three unbundled stages.  `render` is registered above and has
+    # always stood alone; `prep` and `sim` are what `go` used to be the
+    # only way to reach.  Registered BEFORE `go` so the help listing
+    # reads in pipeline order.
+    stage_register_cli(sub)
     go_register_cli(sub)
     adapt_register_cli(sub)
     certify_register_cli(sub)
@@ -290,6 +351,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_plan_register_cli(sub)
     update_register_cli(sub)
     version_register_cli(sub)
+    spectral_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
                       "entry points each one declares")
@@ -316,7 +378,8 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--output", type=Path,
                         default=Path("out/initial_state.npz"), metavar="NPZ",
                         help="initialized-state NPZ output")
-    run = sub.add_parser("run", help="integrate a config-driven real case")
+    run = sub.add_parser("run", help="integrate a config-driven real case",
+                         description=_run_description())
     run.add_argument("config", type=Path, metavar="CONFIG",
                      help=_CONFIG_HELP)
     run.add_argument("--outdir", type=Path, default=Path("out/run"),
@@ -387,10 +450,11 @@ def build_parser() -> argparse.ArgumentParser:
                           "names the id it wants in its refusal")
     # ONE layering convention, registered in ONE place, after every
     # registrar has run.  Every subcommand takes --explain, so the
-    # pointer the refusal boundary appends -- "run gpuwm <command>
-    # --explain for the reason" -- is true whichever command the reader
-    # was running.  A per-command opt-in would have made that pointer a
-    # lie exactly on the commands nobody remembered to opt in.
+    # pointer the refusal boundary appends -- the reader's own
+    # invocation with "--explain" added -- is true whichever command
+    # the reader was running.  A per-command opt-in would have made
+    # that pointer a lie exactly on the commands nobody remembered to
+    # opt in.
     # `add_explain_flag` is idempotent because two registrars share a
     # parser (check, run, resume).
     for subcommand_parser in sub.choices.values():
@@ -399,8 +463,37 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """The `gpuwm` front door: parse one command line, dispatch, exit.
+
+    The body is :func:`_dispatch_argv`; this wrapper exists to bound the
+    invocation.  ``--explain`` is recorded in module state (library code
+    that warns has no ``args`` in reach), and this function is called
+    in-process by more than the console script -- an embedder scripting
+    the CLI, and the test suite, both call it repeatedly in one
+    interpreter.  Stamping that state without giving it back means the
+    NEXT invocation inherits it and its warnings grow an explanation
+    layer nobody asked for.  ``explain_scope`` makes the flag's lifetime
+    this call's, on every exit path including a raised exception.
+    """
+
+    from gpuwm.explain import explain_scope
+    from gpuwm.progress import line_buffer_stdout
+
+    # THE flush discipline, set once for every subcommand.  CPython
+    # block-buffers a redirected stdout, so the GFS route's per-file
+    # lines -- printed as each file landed -- arrived in a reader's log
+    # together, at exit: 9.1 s of a 9.8 s fetch looked like silence (UX
+    # finding N10).  Nothing else in the product has to remember to
+    # flush; a `print` streams because the door said so.
+    line_buffer_stdout()
+    with explain_scope(False):
+        return _dispatch_argv(argv)
+
+
+def _dispatch_argv(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    tokens = list(sys.argv[1:] if argv is None else argv)
+    tokens = _rewrite_version_alias(
+        list(sys.argv[1:] if argv is None else argv))
 
     # Bare `gpuwm domain` at a terminal asks its four questions instead
     # of printing a usage dump.  The session hands back the argv a
@@ -429,8 +522,13 @@ def main(argv: list[str] | None = None) -> int:
     # Library code emits one-line warnings through gpuwm.explain.warn;
     # stamping the flag once here is what lets --explain add their
     # mechanism prose without threading args through every call chain.
-    from gpuwm.explain import set_explain
+    from gpuwm.explain import set_explain, set_invocation
     set_explain(explain_enabled(args))
+    # The tokens AS TYPED (or as the interactive session composed them),
+    # recorded inside the scope `main` opened, so every refusal tail can
+    # print the reader's own line with --explain appended instead of a
+    # bare command name that is itself a usage error (UX finding N8).
+    set_invocation(tokens)
 
     _warn_if_interrupt_is_ignored(args.command)
 
@@ -466,7 +564,15 @@ def main(argv: list[str] | None = None) -> int:
         # `go --dry-run` is exempt and says so on its own leg: a dry run
         # spends nothing and prints the commands a reader would type, so
         # refusing it would block the one gesture that costs nothing.
-        if not (args.command == "go" and getattr(args, "dry_run", False)):
+        # `sim --print-command` is the same gesture on the unbundled
+        # forecast stage -- it answers "what would you run?", which is a
+        # question a third party integrating against the boundary asks
+        # on a machine that has no card at all.
+        _spends_nothing = (
+            (args.command == "go" and getattr(args, "dry_run", False))
+            or (args.command == "sim"
+                and getattr(args, "print_command", False)))
+        if not _spends_nothing:
             capabilities.require_for_command(args.command)
         return _dispatch(args)
     except KeyboardInterrupt:
@@ -604,9 +710,9 @@ def case_door(record: dict) -> str:
 def _dispatch(args) -> int:
     if args.command in ("check", "fetch", "stream", "fetch-geog", "domain", "render",
                         "enprod", "downscale", "doctor", "fetch-tables",
-                        "fetch-bridges", "setup", "go", "adapt", "certify",
-                        "dual-run", "multi-run", "obs", "report", "run-plan",
-                        "update", "version"):
+                        "fetch-bridges", "setup", "prep", "sim", "go", "adapt",
+                        "certify", "dual-run", "multi-run", "obs", "report",
+                        "run-plan", "update", "version", "spectral"):
         return args.func(args)
 
     if args.command == "cases":

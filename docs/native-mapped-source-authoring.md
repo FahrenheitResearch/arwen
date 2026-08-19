@@ -128,6 +128,18 @@ rw-wps --source mapped --source-format grib2 \
   --author-only
 ```
 
+`--input-list FILE` says the same thing as the repeated `--input` flag as a
+file -- one path per line, UTF-8, in the same deterministic time/file order,
+blank lines skipped, nothing interpreted. It exists for command-line length:
+Windows caps a whole command line at 32 KB, and a field-per-file source is
+hundreds of `--input` flags per prepared state (a real ICON-EU cycle is 251).
+Exactly one of the two spellings per invocation; both `rw-wps`/`gpuwm prep`
+and the internal mapped runner accept it, so a `--dry-run` preview of a large
+run stays pasteable. When the per-file spelling is used and the platform
+refuses the internal relaunch's length, the front door retries once through a
+temporary list file by itself -- a command line the platform accepts is never
+rewritten.
+
 Use the exact role names declared by the composition. For an installed
 distribution the launcher discovers its bundled GRIB bridge paths relative to
 the installation, not through `PATH`; explicit decoder flags that resolve to
@@ -168,6 +180,38 @@ The generic mapped runner is reported as runnable but not globally
 stock-WRF-certified. Machine-readable stock-WRF evidence is keyed to exact
 retained mapping/composition SHA-256 pairs; a newly authored pair never
 inherits those gates by sharing a decoder or format.
+
+## Which engine reads the bytes
+
+Nothing above depends on it -- a mapping document is the same document
+either way -- but it changes what a mapped command needs on the machine.
+
+By default the mapped routes decode through `gpuwm_mapped_engine`, one
+executable resolved through the usual bridge ladder
+(`GPUWM_MAPPED_ENGINE_BIN`, this checkout's `tools/rw_wps/target`,
+`libexec/bridges`, the packaged copy, then `~/.gpuwm/bridges`) and held
+to the contract marker `gpuwm-mapped-frameset-v1`. It reads GRIB2 in
+process, so a GRIB2 mapped command needs no `--grib2-inventory` /
+`--grib2-dump` paths at all, and an input manifest seals the ENGINE as
+its decoder rather than the subprocess pair.
+
+Three paths are still decoded by the Python engine on a bare run: a
+cross-source composition, a mapping whose `format` is `grib1`, and a
+mapping whose `format` is `netcdf`. All three are unported work rather
+than a decision, all three are printed by `gpuwm doctor`, and
+`gpuwm_mapped_engine capabilities` is the binary's own statement of what
+it can do -- so if you are authoring a GRIB1 or NetCDF mapping today,
+nothing about the document changes, only which engine reads it.
+
+`--mapped-engine python` (or `GPUWM_MAPPED_ENGINE=python`) runs the
+Python decode path instead. It is a WORKAROUND for a decode the Rust
+engine gets wrong, not a supported mode; manifests sealed against the
+subprocess tools replay on it. Naming a decoder tool explicitly selects
+it for that run, because those flags pin which binary reads the bytes.
+
+`gpuwm doctor` reports the engine and which one a bare run uses. The
+contract, the refusal-class table and the parity gate are in
+`docs/dev/decode-vendor-design.md`.
 
 ## Current boundary
 

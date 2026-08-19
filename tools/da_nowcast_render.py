@@ -1,5 +1,37 @@
 """Map-styled gallery for a ``tools/da_nowcast.py`` case directory.
 
+DEPRECATED FALLBACK for its weather fields, under the render law
+(CLAUDE.md, Drew 2026-08-06).  Every WEATHER FIELD this module draws is
+now drawable by the production Rust renderer, MEASURED 2026-08-17 on this
+lane's own real inputs:
+
+* a leg's column-max reflectivity composite -- ``tools/da_cycle_prepared``
+  writes a real wrfout beside every ``.npz`` it saves (default-on), and
+  ``gpuwm render --engine rust`` draws it.  Proven on an archived case
+  that predates that default by rebuilding the georeference from the
+  case's own ``authority/experiment.toml``: 11 leg composites of
+  ``nowcast_kdvn_202608072200``, 33 production panels;
+* an observation file's own panels -- ``rw_obsgrid`` reads
+  ``gpuwm-obs.radar-grid.v1`` natively (column-max Z, coverage depth,
+  distinct-radar overlap, lowest-tilt radial velocity), proven on a real
+  three-radar file built by the production spine from archive Level-II
+  volumes.
+
+WHAT KEEPS THIS MODULE ALIVE, so it is not a silent second tier: every
+figure below is a MULTI-PANEL COMPOSITION (a lead ROW, a per-cycle
+STRIP, verification PAIRS) or an analysis chart, and the renderer's
+``MapRenderRequest`` composes exactly one panel.  Until there is a
+composition primitive -- ``gpuwm/pair_compose.py`` pastes finished PNGs
+with Pillow and is the shape one would take -- the panels inside these
+sheets are drawn here because the SHEET is drawn here.  Nothing in this
+file should acquire a new single-panel product; that belongs to the
+binaries above.
+
+The analysis charts (:meth:`fig_numbers`, :meth:`fig_scorecard`) are NOT
+demoted: the render law permits matplotlib for charts that are not
+weather fields, and those two are innovation/spread lines and a
+verification table.
+
 Draws every field panel on the ArWen product-map frame, REUSING the
 repo's rendering machinery rather than reinventing it:
 
@@ -1098,6 +1130,19 @@ class Gallery:
 
     def render(self):
         self.out.mkdir(parents=True, exist_ok=True)
+        # Printed where a user actually is, not only in the docstring: a
+        # fallback nobody was told about is how a matplotlib panel ends
+        # up in a product gallery.
+        print("da_nowcast_render: WARNING -- the WEATHER-FIELD panels in "
+              "these sheets are the render law's DEPRECATED FALLBACK, kept "
+              "only because the sheets are multi-panel COMPOSITIONS and "
+              "the renderer composes one panel.  Single-panel product "
+              "tier for the same data:\n"
+              "  gpuwm render --engine rust <leg composite wrfout>\n"
+              "  rw_obsgrid --obs <obs .nc> --out-dir OUT\n"
+              "The innovation/spread chart and the verification table are "
+              "NOT demoted; the render law allows matplotlib for charts "
+              "that are not weather fields.", flush=True)
         self.fig_lead()
         self.fig_strip()
         self.fig_numbers()

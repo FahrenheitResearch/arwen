@@ -7,6 +7,68 @@ before touching the GPU, and advances only the child. This page is the
 workflow plus the measured cost of the one shortcut people take
 (coarse parent output cadence), so you can decide with numbers.
 
+## From a fresh box to a downscaled nest, command by command
+
+This is the complete verified path (walked end to end on a wheel
+install, Windows 11 / RTX 3080, 2026-08-17).  Two facts shape it, and
+knowing them up front saves the two dead ends everyone hits:
+
+1. **The parent must be a run that wrote a gpuwm restart** -- that
+   restart is the physics evidence `--parent-restart` binds.  A
+   *single-domain* `gpuwm domain` emission disables restart writing
+   (`restart_interval_s = 0`; the prepared single-domain runner writes
+   no checkpoints even if you set it), so the README's one-domain
+   quickstart run **cannot be downscaled**.  Emit a nest ladder: ladder
+   emissions set hourly restarts, and the tree runner writes
+   `gpuwmrst_d0N_*.npz` beside the wrfouts.
+2. **A full-physics child needs a child-grid surface file**
+   (`--child-surface-from`), and your own preparation already built
+   one: rw-wps emits `wrfinput_d0N` for every nest under
+   `<prepared>/wrf-native-input/`.  Derive the child at a nest's own
+   geometry and that nest's `wrfinput` is the surface source.
+
+```bash
+# 1. Emit a ladder sized to your card at your point.  The nest's
+#    default history cadence is already 900 s -- the downscale guidance
+#    cadence; d01 writes hourly (add --history-interval 900 to densify).
+gpuwm domain --point 39.7,-84.0 --card 12gb --ladder 12-3 \
+  --source gfs --cycle latest --hours 6 --out myarea.toml
+
+# 2-4. Fetch, then run the chain the closing block prints: materialize
+#    the authority, author the front-door manifest (it prints the
+#    complete rw-wps command), run rw-wps, then paste the
+#    gpuwm-prepared-tree-forecast line rw-wps prints.  The parent run
+#    directory now holds wrfout_d01/d02 frames and gpuwmrst_d0*.npz.
+
+# 5. Derive the child and read the plan.  --dry-run prints placement
+#    and writes the derived TOML without running; if the child needs a
+#    surface source it says so here instead of after you walk away.
+gpuwm downscale RUN/wrfout --parent-domain 1 \
+  --parent-restart RUN/gpuwmrst_d01_<instant>__<set>.npz \
+  --point 39.7,-84.0 --ratio 4 --child-size 120,96 \
+  --hours 2 --out child-run --dry-run
+
+# 6. Point --child-surface-from at the preparation's own wrfinput for
+#    the nest whose geometry the child reuses, and run.  In the
+#    verified walk the derived placement matched the ladder nest's
+#    i/j_parent_start exactly (check the --dry-run line against your
+#    emitted TOML's [[domain]] entries before trusting it).
+gpuwm downscale RUN/wrfout --parent-domain 1 \
+  --parent-restart RUN/gpuwmrst_d01_<instant>__<set>.npz \
+  --point 39.7,-84.0 --ratio 4 --child-size 120,96 \
+  --child-surface-from PREPARED/wrf-native-input/wrfinput_d02 \
+  --hours 2 --out child-run
+```
+
+Measured on the walk above (120x96x49 child at 3 km, 2 h, full
+physics): 480 child steps in 27 s wall on an RTX 3080, `report.json`
+receipts complete.  To downscale the *innermost* nest to a brand-new
+finer grid instead, emit a deeper ladder (`--ladder 12-3-1`) so the
+preparation builds a `wrfinput_d03` on that finer grid -- the forecast
+does not have to run the extra nest; only the preparation has to build
+it.  A microphysics-only child (surface physics off in its
+`--child-config`) runs with no surface source at all.
+
 ## The contract, in order
 
 1. **Prove the parent.** Complete frame inventory, frozen geometry,
@@ -29,7 +91,11 @@ workflow plus the measured cost of the one shortcut people take
    child grid supplies land identity and soil warm start -- mirroring
    `ndown`'s own requirement. Downscaling replaces the meteorology,
    never the land identity. Microphysics-only children run without
-   one.
+   one.  The in-product way to get that file is the preparation's own
+   `wrf-native-input/wrfinput_d0N` (rw-wps emits one per nest; see the
+   walkthrough above).  The refusal fires at the front door -- before
+   any preprocessing -- and `--dry-run` warns instead of refusing so
+   the derived placement can still be read.
 5. **Every run writes `report.json`** with SHA-256 receipts of the
    parent frames, the physics evidence, the surface source, the
    boundary-clock identity, and the outputs.

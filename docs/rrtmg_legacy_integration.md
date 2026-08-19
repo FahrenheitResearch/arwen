@@ -93,7 +93,34 @@ documented, production-inert): the generators take `lat` as a scalar
 dummy, so the batch preps group columns by identical `xlat` bits for
 `idcor=1` + `icld 4/5` — degenerating to per-column calls at
 all-distinct latitudes; production is `idcor=0`/`icld=2`, which never
-reads `lat`. Prep-side FTZ finding: the moisture→radii→cloud-path
+reads `lat`.
+
+**Cloud-overlap boundary — audited 2026-08-18, verdict LEAVE-DECLARED.**
+`rrtmg_mcica._stochastic_cdf` grows the exponential decorrelation profile
+for `overlap in (4, 5)` through `_expf32` (`:121-127`), a Python `for` loop
+over a raveled float32 array, one `expf` per element. That shape is a defect
+wherever a forecast reaches it -- it is the shape the Noah-MP cold start had
+-- so the question is whether a forecast can. It cannot, and there is no
+environment variable and no flag that makes it: `overlap` is `int(icld)` is
+`int(cldovrlp)`, and four independent gates hold that at 2. (1) `cldovrlp`
+is not a `RunConfig` field, so an experiment TOML naming it is refused by
+name at load. (2) A WRF 4/4 namelist declaring `cldovrlp = 4` or `5` is
+refused by `gpuwm/namelist_import.py`, not imported. (3)
+`RRTMGLegacyRadiation._check_pins` refuses every value but 2 before a
+forecast starts, and the adapter passes the literal `cldovrlp=2` to the
+preps anyway. (4) The shipped adapter hands both batch preps the DEVICE
+twins, whose `MCICA_DEVICE_ICLD` is 2 and which fail closed on anything
+else, so the NumPy generators -- the only reader of `_expf32` -- are not
+what a forecast calls at all. The one caller is a direct Python call, which
+is what `tests/test_rrtmg_mcica_overlap_boundary.py` makes: it pins all four
+gates and then walks overlap 4 and 5 against maximum-random with `_expf32`
+counted, so the branch is declared unreachable on evidence rather than
+assumed dead, and the declaration fails loudly the day a knob opens. Wiring
+the branch onto `rrtmg_mcica_wrf.cu` would be device work with no user;
+until there is one, the loop stays where the paired scalar authority can be
+read.
+
+Prep-side FTZ finding: the moisture→radii→cloud-path
 block always runs host-numpy because real columns drive `ciwpth`
 through FP32-subnormal values and every cupy-compiled kernel flushes
 in ALL device arithmetic, comparisons, min/max, AND the f64→f32 cast

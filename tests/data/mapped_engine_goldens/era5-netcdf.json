@@ -1,0 +1,30 @@
+{
+  "decode": {
+    "mapping": {
+      "name": "rw-wps-era5-netcdf.mapping.json",
+      "sha256": "d2c9ee08e45478a64e4d2bba689e9bad1d2e97bde713477ee2a4de26e31d7ad3"
+    },
+    "refusal": {
+      "message": "mapped field(s) ['terrain_height'] have no matching variable in any of the 1 supplied NetCDF file(s): era5_19740403_12.nc",
+      "type": "ValueError"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "era5-netcdf",
+    "verdict": "REFUSED"
+  },
+  "inspect": {
+    "refusal": {
+      "message": "mapped field(s) ['terrain_height'] have no matching variable in any of the 1 supplied NetCDF file(s): era5_19740403_12.nc",
+      "type": "ValueError"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "era5-netcdf",
+    "verdict": "REFUSED"
+  },
+  "measured_on": {
+    "machine": "AMD64",
+    "system": "Windows"
+  },
+  "schema": "gpuwm-mapped-parity-digest-v1",
+  "source": "era5-netcdf"
+}

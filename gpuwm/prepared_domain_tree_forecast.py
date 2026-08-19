@@ -49,12 +49,17 @@ from gpuwm.core.microphysics_transition import (  # noqa: E402
 )
 from gpuwm.experiment import load_experiment  # noqa: E402
 from gpuwm.kernel_compile_notice import (  # noqa: E402
-    COMPILING_STATUS, kernel_compile_notice,
+    COMPILING_STATUS, current_compute_capability, kernel_cache_state,
+    scan_kernel_cache,
 )
 from gpuwm.physics_compat import (  # noqa: E402
     experimental_selection_sentence,
 )
 from gpuwm.io.restart import RestartMismatchError  # noqa: E402
+from gpuwm.supervisor import (  # noqa: E402
+    quarantine_file as supervisor_quarantine_file,
+    replace_file_with_retry as supervisor_replace_file_with_retry,
+)
 from gpuwm.ingest.prepared_cache import (  # noqa: E402
     PreparedCacheReader,
     compare_prepared_domain_config,
@@ -63,6 +68,9 @@ from gpuwm.ingest.prepared_cache import (  # noqa: E402
     prepared_identity_refusal,
     undelayed_identity_defaults,
 )
+from gpuwm import progress_log  # noqa: E402
+from gpuwm.progress_log import (  # noqa: E402
+    ProgressOptions, add_progress_arguments)
 from gpuwm.native_wrf_contract import (  # noqa: E402
     NATIVE_LANDUSE_IDENTITY,
     load_native_static_cache,
@@ -198,6 +206,11 @@ def _without_forecast_stop(exp):
             "sealed extension identity requires ExperimentConfig.run_seconds")
     result = dict(value)
     authoritative_stop = result.pop("run_seconds")
+    # The mixing-length provenance label is identity-inert here for the
+    # same reason gpuwm.core.model.restart_identity_payload drops it:
+    # the chosen value binds on run.mix_isotropic, and an auto-selected
+    # 1 must extend a written 1's sealed legs (and vice versa).
+    result.pop("auto_mix_isotropic", None)
     domains = result.get("domains")
     if not isinstance(domains, list) or not domains:
         raise ValueError(
@@ -249,7 +262,21 @@ def sealed_extension_fingerprint(exp, runtime_identity) -> str:
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
-def _atomic_json(path: Path, payload) -> None:
+def _atomic_json(path: Path, payload, *, heartbeat: bool = False) -> None:
+    """Publish one JSON document atomically, through the supervisor's replace.
+
+    ``heartbeat=True`` is for the progress publications a watcher is
+    TOLD to read (``evidence/progress.json``): on Windows a plain
+    ``open()`` for read denies rename over the file, so a poll racing
+    the republish raised WinError 5 out of ``progress_callback`` and
+    killed the forecast it was reporting on (MEASURED: a 12-3 km tree
+    died at outer step 76 of 120 under a reader on the documented file;
+    ``gpuwm go``'s own stopwatch heartbeat reads it every 20 s, so the
+    product races itself).  The supervisor's doctrine applies verbatim:
+    bounded 0.50 s retry for everyone, then durable receipts fail loudly
+    while a heartbeat quarantines its temporary and the worker stays up
+    -- a stale heartbeat is safer than terminating a healthy CUDA run.
+    """
     path = Path(path)
     temporary = path.with_name(f".{path.name}.partial-{os.getpid()}")
     encoded = (
@@ -260,7 +287,13 @@ def _atomic_json(path: Path, payload) -> None:
         stream.write(encoded)
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    try:
+        supervisor_replace_file_with_retry(temporary, path)
+    except PermissionError:
+        if not heartbeat:
+            raise
+        supervisor_quarantine_file(
+            temporary, reason="heartbeat-sharing-violation")
 
 
 def _json_object(path: Path, label: str) -> dict[str, object]:
@@ -330,7 +363,23 @@ def claim_output_directory(output: Path, *, protected_roots: tuple[Path, ...]) -
     try:
         result.mkdir()
     except FileExistsError:
-        raise FileExistsError(f"refusing existing output directory: {result}") from None
+        # The twin of the single-domain runner's claim, and it had the
+        # twin defect: EXISTS is not the breakage, HOLDS AN EARLIER RUN
+        # is.  `gpuwm sim` allocates this run's stamped folder
+        # create-exclusively before dispatching to either runner, so the
+        # folder handed here always exists and is always empty; refusing
+        # it prevented nothing and killed the route.
+        try:
+            occupied = any(result.iterdir())
+        except OSError:
+            # Unreadable is not empty: we cannot prove there is no
+            # earlier run in there, and accepting on a failed probe is
+            # the one direction that loses data.
+            occupied = True
+        if occupied:
+            raise FileExistsError(
+                f"refusing output directory that already holds a run: "
+                f"{result}") from None
     return result
 
 
@@ -1364,6 +1413,7 @@ def run_prepared_tree(
     health_debug: bool = False,
     sealed_forcing_extension: bool = False,
     observer=None,
+    progress_options=None,
 ) -> dict[str, object]:
     """Restore the prepared domains and execute the existing tree engine.
 
@@ -1374,6 +1424,13 @@ def run_prepared_tree(
     already builds, and -- if it carries the ``output_committed`` hook
     -- each per-domain wrfout as it becomes durable.  ``None`` leaves
     every byte of this runner's behaviour unchanged.
+
+    ``progress_options`` is :class:`gpuwm.progress_log.ProgressOptions`.
+    ``None`` means the DEFAULTS, which are on: one WRF-shaped
+    ``Timing for main:`` line per model time step PER DOMAIN -- so a
+    nest taking 36 substeps inside one root step prints 36 lines, as
+    WRF does -- plus ``progress.jsonl`` and a frame-ready marker per
+    durable history file.
     """
 
     if io_mode not in {"history", "none"}:
@@ -1419,6 +1476,18 @@ def run_prepared_tree(
     evidence.mkdir()
     progress_path = evidence / "progress.json"
     exp = inputs.experiment
+    # Opened before the restore, so the first thing a driving script
+    # reads is this run announcing itself.  The markers and the JSONL
+    # land beside the OUTPUTS (outdir), not under evidence/: they are
+    # what a consumer polls, not what a post-mortem reads.
+    step_log = (progress_options or ProgressOptions()).open(
+        outdir=outdir, start_time=exp.start_time,
+        run_seconds=float(exp.run_seconds))
+    # The kernel cache as this run INHERITED it, before a single kernel
+    # of this run's own is written into it.  Pure filesystem; asking
+    # later reads a cache this run has already been filling, which is
+    # how a card swap stayed silent.
+    kernel_cache_census = scan_kernel_cache()
     started_total = time.perf_counter()
     timing: dict[str, float] = {}
     runtime_identity = _runtime_source_identity()
@@ -1431,6 +1500,7 @@ def run_prepared_tree(
             "requested_run_seconds": float(exp.run_seconds),
             "execution_plan": inputs.execution_plan,
         },
+        heartbeat=True,
     )
 
     estimate = estimate_experiment(
@@ -1480,7 +1550,21 @@ def run_prepared_tree(
     drivers = {}
     initial_perturbation_receipts: list[dict[str, object]] = []
     started = time.perf_counter()
-    compile_notice = kernel_compile_notice()
+    # Arch-aware, like the single-domain road: the cache is keyed by
+    # compute capability, so a box whose card changed has a cache full
+    # of entries it cannot load and recompiles everything in silence.
+    # The device is asked here rather than inside the notice module,
+    # which stays a pure filesystem predicate.
+    _compile_state = kernel_cache_state(
+        compute_capability=current_compute_capability(),
+        census=kernel_cache_census)
+    compile_notice = _compile_state.notice
+    if compile_notice is not None:
+        step_log.announce_kernel_compile(
+            reason=_compile_state.reason,
+            compute_capability=_compile_state.compute_capability,
+            cached_entries=_compile_state.entries,
+            cached_entries_for_this_card=_compile_state.entries_for_capability)
     for domain, grid, bundle in zip(exp.domains, inputs.grids, inputs.domains):
         restored = restore_prepared_cache(
             bundle.cache,
@@ -1536,7 +1620,7 @@ def run_prepared_tree(
                 "model_elapsed_seconds": 0.0,
                 "requested_run_seconds": float(exp.run_seconds),
                 "execution_plan": inputs.execution_plan,
-            })
+            }, heartbeat=True)
             compile_notice = None
         driver = initialize_prepared_physics(
             restored.initial_result,
@@ -1722,9 +1806,16 @@ def run_prepared_tree(
 
     def restart_handler(tree, ticks):
         valid = exp.start_time + timedelta(seconds=ticks / tree.schedule.clock.tick_den)
+        restart_started = time.perf_counter()
         tree._last_checkpoint = write_tree_restart(
             outdir, tree, valid,
             sealed_forcing_extension=sealed_forcing_extension)
+        # WRF prints `Timing for Writing restart for domain N`, and this
+        # one IS the blocking synchronous write WRF's number describes.
+        step_log.restart_written(
+            domain=exp.root.grid_id, valid_time=valid,
+            path=tree._last_checkpoint,
+            wall_seconds=time.perf_counter() - restart_started)
 
     def progress_callback(**event):
         if observer is not None:
@@ -1744,13 +1835,22 @@ def run_prepared_tree(
                 "last_durable_wrfout": event.get("last_durable_wrfout"),
                 "last_checkpoint": event.get("last_checkpoint"),
             },
+            heartbeat=True,
         )
 
     # After the closures, before any submit (the first happens inside
     # execute_experiment below).  `io_mode="none"` has no writers to
     # attach to and commits no outputs, so there is nothing to announce.
-    if observer is not None and writers is not None:
-        writers.attach_progress_callback(observer)
+    #
+    # ONE attach, with every consumer behind it: attach_progress_callback
+    # OVERWRITES the writers' single landing slot, so a second call would
+    # silently unhook the first and the run would keep publishing frames
+    # with the earlier consumer no longer watching.
+    landing = progress_log.LandingFanout(
+        getattr(observer, "output_committed", None),
+        step_log.output_committed if step_log.enabled else None)
+    if landing and writers is not None:
+        writers.attach_progress_callback(landing)
     if relocation_runner is not None and writers is not None:
         # Same seam as the case-data route: a moved domain's later
         # frames must describe the footprint that produced them.
@@ -1787,6 +1887,10 @@ def run_prepared_tree(
     if streaming_report:
         print(f"prepared tree: {streaming_report['summary']}", flush=True)
 
+    # ONE line per model time step per DOMAIN, which on a tree is the
+    # whole point: `progress_callback` fires once per ROOT step, so a
+    # d04 taking 36 substeps inside one of them reported nothing.
+    step_observer = step_log.step_observer if step_log.enabled else None
     try:
         memory_watch.start()
         if writers is None:
@@ -1801,6 +1905,7 @@ def run_prepared_tree(
                 pool_trim_per_period=True,
                 relocation_runner=relocation_runner,
                 steppers=steppers,
+                step_observer=step_observer,
             )
             wrfout_paths = ()
         else:
@@ -1816,11 +1921,21 @@ def run_prepared_tree(
                     pool_trim_per_period=True,
                     relocation_runner=relocation_runner,
                     steppers=steppers,
+                    step_observer=step_observer,
                 )
                 writers.drain()
                 wrfout_paths = writers.paths
         if relocation_runner is not None:
             relocation_runner.close_receipt(model)
+    except BaseException as error:
+        # The last line a driving script reads has to say what happened.
+        step_log.close(status="FAIL",
+                       error=f"{type(error).__name__}: {error}")
+        raise
+    else:
+        # After the drain: every frame this run will ever commit is
+        # durable and carries its marker, so run_end is true when read.
+        step_log.close(status="SUCCESS")
     finally:
         memory_watch.stop()
     cp.cuda.Stream.null.synchronize()
@@ -2059,6 +2174,7 @@ def run_prepared_tree(
             "run_receipt": str((evidence / "run-receipt.json").resolve()),
             "frame_count": len(outputs),
         },
+        heartbeat=True,
     )
     return report
 
@@ -2097,6 +2213,9 @@ def build_parser() -> argparse.ArgumentParser:
               "forcing-prefix contract"))
     parser.add_argument("--health-debug", action="store_true")
     parser.add_argument("--outdir", type=Path, required=True)
+    # The same four flags the single-domain door carries, registered
+    # from the same function so the two cannot drift.
+    add_progress_arguments(parser)
     return parser
 
 
@@ -2200,6 +2319,7 @@ def main(argv=None, *, observer=None) -> int:
             health_debug=args.health_debug,
             observer=observer,
             sealed_forcing_extension=args.sealed_forcing_extension,
+            progress_options=ProgressOptions.from_args(args),
         )
     except MissingTableAssets as error:
         # A refusal, not a failed run: no failed-run-receipt, because

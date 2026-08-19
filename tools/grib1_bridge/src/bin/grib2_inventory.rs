@@ -13,7 +13,15 @@ const INVENTORY_HEADER: &str = concat!(
     "forecast_generating_process_id\tlevel_name\tgdt\tnx\tny\tlat1\tlon1\t",
     "dx\tdy\tlatin1\tlatin2\tlov\tscan_mode\tshape_of_earth\t",
     "resolution_flags\tdrt\tbitmap\tpacked_points\traw_bytes\tdecoded_points\t",
-    "finite_points\tmissing_points\tminimum\tmaximum"
+    "finite_points\tmissing_points\tminimum\tmaximum\t",
+    // The ensemble-identity triple's remaining octets.  `member` above is
+    // the perturbation number (PDT 4.1/4.11); these carry the type of
+    // ensemble forecast, the encoded ensemble size, and the derived-
+    // forecast statistic code (PDT 4.2/4.12), each "-" when the PDT does
+    // not define it.  Without them a consumer cannot tell an ensemble
+    // mean from a member, nor a control from a perturbed forecast: the
+    // fields decode cleanly either way and fail silently downstream.
+    "ensemble_type\tensemble_size\tderived_forecast"
 );
 
 fn read_u64_be(bytes: &[u8]) -> u64 {
@@ -142,7 +150,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ("-".into(), "-".into(), "-".into(), "-".into(), "-".into())
         };
         println!(
-            "{index}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t0x{:02x}\t{}\t0x{:02x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{index}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t0x{:02x}\t{}\t0x{:02x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             message.discipline,
             message.product.parameter_category,
             message.product.parameter_number,
@@ -192,6 +200,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             missing_points,
             minimum,
             maximum,
+            message
+                .product
+                .ensemble_type
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            message
+                .product
+                .num_forecasts_in_ensemble
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            message
+                .product
+                .derived_forecast_type
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
         );
     }
     Ok(())

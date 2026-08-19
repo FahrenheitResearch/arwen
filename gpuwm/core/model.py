@@ -391,6 +391,14 @@ def restart_identity_payload(exp) -> dict:
     # configured block binds, value for value.
     if experiment.get("perturbation") is None:
         experiment.pop("perturbation", None)
+    # The mixing-length provenance label leaves the identity
+    # UNCONDITIONALLY, on the [tiles] convention: it records WHO chose
+    # each domain's mix_isotropic, while the chosen value itself sits on
+    # run.mix_isotropic and binds there.  An auto-selected 1 and a
+    # written 1 integrate the same bytes, so each must resume the
+    # other's checkpoints -- and every pre-feature fingerprint stays
+    # byte-identical because the key is simply absent, as it always was.
+    experiment.pop("auto_mix_isotropic", None)
     for domain in experiment.get("domains", ()):
         for name in RESTART_TOLERATED_DOMAIN_FIELDS:
             domain.pop(name, None)
@@ -725,7 +733,7 @@ def execute_experiment(
         arena_nan_poison: bool = False,
         skip_feedback_path: bool = False,
         pool_trim_per_period: bool = True,
-        relocation_runner=None, steppers=None):
+        relocation_runner=None, steppers=None, step_observer=None):
     """Wire one :class:`ExperimentState` into ``execute_schedule``.
 
     STEP calls the domain's existing dycore, FORCE calls its node-facing
@@ -768,6 +776,16 @@ def execute_experiment(
     unchanged: the same clock refresh either side, the same health
     validators, the same ``refl_10cm_due`` handshake, the same history
     and restart ops on the same cadences.
+
+    ``step_observer`` is called once per DOMAIN per model time step,
+    immediately after that domain's STEP op commits, with
+    ``grid_id``/``step_count``/``model_seconds``/``step_wall_seconds``.
+    It is what lets a front door print WRF's ``Timing for main:`` line
+    per step (:class:`gpuwm.progress_log.StepLog`); ``progress_callback``
+    below cannot, because it fires once per ROOT step and a nest taking
+    36 substeps inside one of those is invisible to it.  ``None`` -- the
+    default -- adds one ``is not None`` test per STEP op and changes
+    nothing else.
     """
     from gpuwm.core.clock import execute_schedule
     from gpuwm.core.dycore import step
@@ -969,6 +987,16 @@ def execute_experiment(
                 phase=f"delayed-start.d{grid_id:02d}")
 
     def on_step(grid_id, clock) -> None:
+        # WRF prints one `Timing for main:` line per model time step per
+        # domain, and THIS is the only place that number exists: the
+        # period-commit callback below fires once per ROOT step, so a
+        # nest taking 36 substeps inside one of them was invisible to
+        # every progress consumer this package had.  One perf_counter
+        # pair, host-side, deliberately WITHOUT a device synchronise --
+        # syncing per step to get a "true" GPU time would serialise the
+        # pipeline the timing exists to observe, and WRF's own number is
+        # host wall time across the step's launches too.
+        started_wall = time.perf_counter()
         with domain_turn(("STEP", grid_id)):
             node = model.node(grid_id)
             if node.clock is not clock:
@@ -1017,6 +1045,29 @@ def execute_experiment(
                 # shape (measured 32.2 GiB peak, 50 s above 31.5 GiB in a
                 # 15-sim-min run). Same byte-inert release, per STEP op.
                 _trim_default_pool()
+        if step_observer is not None:
+            # Outside the turn, after the step committed: a step that
+            # raised is not a step that happened.  Telemetry never fails
+            # a run, so a sink that raises is dropped for that one line.
+            #
+            # POST-STEP values, and they have to be computed rather than
+            # read: `execute_schedule` calls `dom.advance()` AFTER this
+            # hook returns (gpuwm/core/clock.py, the STEP op), so the
+            # clock still holds the state the step started from.
+            # Reporting it raw would number the first step 0 and stamp
+            # it with the previous step's valid time -- off by one, on
+            # every line, in the direction a reader cannot detect.  Same
+            # integer-tick derivation `refresh_model_time(after_step=True)`
+            # uses: one FP64 division of exact integers, never an
+            # accumulation.
+            try:
+                step_observer(
+                    grid_id=grid_id, step_count=clock.step_count + 1,
+                    model_seconds=((clock.ticks + clock.spec.step_ticks)
+                                   / clock.tick_den),
+                    step_wall_seconds=time.perf_counter() - started_wall)
+            except Exception:  # noqa: BLE001 - telemetry never fails a run
+                pass
 
     def on_force(child_id, parent_id, child_clock, parent_clock) -> None:
         with domain_turn(("FORCE", child_id, parent_id)):

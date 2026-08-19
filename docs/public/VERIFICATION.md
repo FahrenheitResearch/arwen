@@ -56,8 +56,9 @@ Four instruments, in increasing scope:
 
 ## 2. The reference case
 
-The deep-validation case is 3 April 1974 (ERA5-initialized), four
-one-way nested domains at 12 km / 3 km / 1 km / 500 m, integrated
+The deep-validation case is a historical severe-weather reference day
+(ERA5-initialized), four one-way nested domains at 12 km / 3 km / 1 km
+/ 500 m, integrated
 12Z-18Z with Thompson microphysics (WRF's own tables, hash-pinned),
 YSU PBL, MM5 surface layer, Noah LSM, Kain-Fritsch on the root, and the
 legacy-RRTMG transcription -- the same option set as the CPU reference.
@@ -78,9 +79,10 @@ half-hourly).
 > stream itself is unchanged -- only the description of how it was
 > compiled was wrong.
 >
-> One file in this repository still carries the old wording as a bare
-> statement, and it is named here rather than fixed:
-> `configs/real74_thompson_1218z_rrtmg_legacy_4dom.toml`, whose header
+> One config in this repository still carries the old wording as a bare
+> statement, and it is named here by its contents rather than fixed:
+> the four-domain 12-18Z Thompson / legacy-RRTMG reference config under
+> `configs/`, whose header
 > comment reads `WRF v4.6.1 d66e442f, ifx, 48 ranks`. That file's
 > SHA-256 **is** the `config_sha256` this manifest, the acceptance band
 > and the certification capsule are all addressed by, so correcting a
@@ -413,10 +415,12 @@ with one exception:
   refuses by name and says the same thing.
 
 The two LES tornado cases are the module half of a case whose other half
-is a config under the repository's `configs/` directory. `configs/` is
-not a Python package and ships in no wheel, so from an installed gpuwm
-name the file with `--config`, or point `GPUWM_CONFIGS_ROOT` at a
-checkout's `configs` directory. `--help` works either way.
+is a config under the repository's `configs/` directory. As of 2.5.0 that
+directory ships in the wheel and the sdist, so an install already has the
+file and needs no argument. Through 2.4.1 it shipped in neither: on an
+older install, or for a config you keep outside the tree, name the file
+with `--config` or point `GPUWM_CONFIGS_ROOT` at the directory holding
+it. `--help` works either way.
 
 ## 7. Reproduce this
 

@@ -82,7 +82,7 @@ class OutputSchema:
             history_interval_s: float, domain_id: int,
             nx: int, ny: int, nz: int) -> tuple[str, ...]:
         """Validate output calendar, filenames, dimensions, and inventory."""
-        import netCDF4
+        from gpuwm import netcdf_bridge
         from gpuwm.io.wrfout import wrfout_filename
 
         paths = tuple(Path(path) for path in paths)
@@ -109,7 +109,7 @@ class OutputSchema:
                 failures.append(f"output is missing: {path}")
                 continue
             try:
-                with netCDF4.Dataset(path) as ds:
+                with netcdf_bridge.open_dataset(path) as ds:
                     if (self.require_complete_publication
                             and int(getattr(ds, "GPUWM_WRITE_COMPLETE", 0)) != 1):
                         failures.append(

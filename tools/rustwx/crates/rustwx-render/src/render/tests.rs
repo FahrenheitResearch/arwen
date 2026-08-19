@@ -1478,3 +1478,175 @@ fn a_subtitle_that_does_not_fit_reports_that_it_was_cut() {
     assert!(!untruncated);
     assert_eq!(whole, text);
 }
+
+/// A regular latitude/longitude mesh, projected into the presentation
+/// projection the direct lane picks for a CONUS-sized window.
+///
+/// This is the geometry every lat/lon SOURCE renders in -- GFS, GDAS,
+/// GEFS, ICON, the AI atmospheres -- once a regional window makes the
+/// adaptive presentation conic.  Its screen footprint is a curved
+/// quadrilateral, not a rectangle.
+fn curved_latlon_footprint(map_w: u32, map_h: u32) -> (ProjectedGrid, Vec<Option<(f32, f32)>>) {
+    let (ny, nx) = (36usize, 71usize);
+    let projector = crate::projection::ProjectionSpec::LambertConformal {
+        standard_parallel_1_deg: 25.833_333_333_333_332,
+        standard_parallel_2_deg: 49.166_666_666_666_664,
+        central_meridian_deg: -95.0,
+    }
+    .build_projector(Some(39.0), None, &[20.0f32], &[-95.0f32])
+    .expect("lambert projector");
+
+    let mut x = Vec::with_capacity(ny * nx);
+    let mut y = Vec::with_capacity(ny * nx);
+    for j in 0..ny {
+        for i in 0..nx {
+            let lat = 20.0 + j as f64;
+            let lon = -130.0 + i as f64;
+            let (px, py) = projector.project(lat, lon);
+            x.push(px);
+            y.push(py);
+        }
+    }
+    let (mut x0, mut x1, mut y0, mut y1) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for (&px, &py) in x.iter().zip(y.iter()) {
+        x0 = x0.min(px);
+        x1 = x1.max(px);
+        y0 = y0.min(py);
+        y1 = y1.max(py);
+    }
+    let extent = MapExtent {
+        x_min: x0,
+        x_max: x1,
+        y_min: y0,
+        y_max: y1,
+    };
+    let pixel_points = x
+        .iter()
+        .zip(y.iter())
+        .map(|(&px, &py)| {
+            extent
+                .to_pixel(px, py, map_w, map_h)
+                .map(|(a, b)| (a as f32, b as f32))
+        })
+        .collect::<Vec<_>>();
+    (ProjectedGrid { x, y, ny, nx }, pixel_points)
+}
+
+/// A native projected grid -- a wrfout on its own Lambert -- is an
+/// axis-aligned rectangle on screen.
+fn rectangular_footprint(map_w: u32, map_h: u32) -> (ProjectedGrid, Vec<Option<(f32, f32)>>) {
+    let (ny, nx) = (36usize, 71usize);
+    let mut x = Vec::with_capacity(ny * nx);
+    let mut y = Vec::with_capacity(ny * nx);
+    for j in 0..ny {
+        for i in 0..nx {
+            x.push(i as f64);
+            y.push(j as f64);
+        }
+    }
+    let extent = MapExtent {
+        x_min: 0.0,
+        x_max: (nx - 1) as f64,
+        y_min: 0.0,
+        y_max: (ny - 1) as f64,
+    };
+    let pixel_points = x
+        .iter()
+        .zip(y.iter())
+        .map(|(&px, &py)| {
+            extent
+                .to_pixel(px, py, map_w, map_h)
+                .map(|(a, b)| (a as f32, b as f32))
+        })
+        .collect::<Vec<_>>();
+    (ProjectedGrid { x, y, ny, nx }, pixel_points)
+}
+
+fn covered_pixel_bounds(
+    grid: &ProjectedGrid,
+    pixels: &[Option<(f32, f32)>],
+    w: u32,
+    h: u32,
+) -> LocalRect {
+    let mask = crate::rasterize::rasterize_projected_coverage_mask(grid.ny, grid.nx, pixels, w, h);
+    LocalRect::from_bounds(raster_alpha_bounds(&mask).expect("some coverage"))
+}
+
+#[test]
+fn resampled_lat_lon_domain_frame_holds_every_drawn_row() {
+    // The defect: `inner_rect_from_coverage` returns the largest
+    // rectangle INSCRIBED in the coverage, which for a curved footprint
+    // is a thin horizontal band -- and `clear_outside` then erases the
+    // rest of the domain.  The aigfs lane saw it as "rw_wrfbatch draws
+    // only about half the south_north rows".
+    let (map_w, map_h) = (1200u32, 800u32);
+    let (grid, pixels) = curved_latlon_footprint(map_w, map_h);
+    let frame = DomainFrame {
+        inset_px: 2,
+        outline_width: 2,
+        source: DomainFrameSource::ProjectedGrid,
+        ..DomainFrame::map_viewport_default()
+    };
+
+    let covered = covered_pixel_bounds(&grid, &pixels, map_w, map_h);
+
+    // The mechanism, pinned so it cannot come back by accident: asked to
+    // INSCRIBE, the same coverage yields a band a fraction of the domain
+    // tall.  This is the arm that shipped, and what it drops is model
+    // data that `clear_outside` then erases.
+    let inscribed =
+        compute_projected_domain_frame_rect(frame, &grid, &pixels, map_w, map_h, 0, true)
+            .expect("a covered domain has a frame");
+    assert!(
+        inscribed.height() * 2 < covered.height(),
+        "the inscribed rectangle of a curved footprint is a band: {} of \
+         {} rows",
+        inscribed.height(),
+        covered.height()
+    );
+
+    let rect = compute_projected_domain_frame_rect(frame, &grid, &pixels, map_w, map_h, 0, false)
+        .expect("a covered domain has a frame");
+
+    assert_eq!(
+        rect,
+        inset_rect(covered, frame.inset_px).expect("inset fits"),
+        "a resampled lat/lon field's frame is the box that holds every \
+         drawn row, not the widest band inscribed inside the curve"
+    );
+    assert!(
+        rect.height() * 100 >= covered.height() * 95,
+        "frame kept {} of {} covered rows",
+        rect.height(),
+        covered.height()
+    );
+}
+
+#[test]
+fn native_projected_domain_frame_still_inscribes_the_rectangle() {
+    // The unchanged half of the contract: a wrfout on its own projection
+    // is a screen rectangle, so inscribing and bounding agree, and the
+    // inscribing path stays exactly where it was.
+    let (map_w, map_h) = (1200u32, 800u32);
+    let (grid, pixels) = rectangular_footprint(map_w, map_h);
+    let frame = DomainFrame {
+        inset_px: 2,
+        outline_width: 2,
+        source: DomainFrameSource::ProjectedGrid,
+        ..DomainFrame::map_viewport_default()
+    };
+
+    let inscribed =
+        compute_projected_domain_frame_rect(frame, &grid, &pixels, map_w, map_h, 0, true)
+            .expect("frame");
+    let bounded =
+        compute_projected_domain_frame_rect(frame, &grid, &pixels, map_w, map_h, 0, false)
+            .expect("frame");
+
+    assert_eq!(inscribed, bounded);
+}

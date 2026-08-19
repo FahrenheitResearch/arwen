@@ -22,13 +22,14 @@ other prepared-route test uses, and no stage subprocess is spawned.
 
 from __future__ import annotations
 
+import datetime
 import json
 from pathlib import Path
 
 import pytest
 
 import gpuwm.runplan as runplan_module
-from gpuwm import go_cli
+from gpuwm import go_cli, run_stamp
 from gpuwm.cli import main as cli_main
 from gpuwm.runplan import (PLAN_SCHEMA, PlanError, estimate_plan, load_plan,
                            resolve_plan)
@@ -212,20 +213,48 @@ def test_a_still_nest_emits_exactly_what_it_always_did(
     without the [relocation] block.  A corridor that leaked into an
     ordinary nested run would change what every existing plan prepares.
     """
+    # The two arms are two separate drives, so each allocates its own
+    # run stamp off the wall clock.  Left to the clock, this row failed
+    # whenever the pair straddled a second -- observed on node-1 as
+    # run-20260818-185602Z against run-20260818-185603Z on the authority
+    # stage -- which is a red that says nothing about corridors.  The
+    # boundary is FORCED here rather than avoided, so the masking below
+    # is exercised on every run instead of once in a while, and a mask
+    # that stopped covering the stamp fails immediately rather than
+    # intermittently.
+    clock = [datetime.datetime(2026, 8, 18, 18, 56, 2,
+                               tzinfo=datetime.timezone.utc)]
+    monkeypatch.setattr(run_stamp, "utcnow", lambda: clock[0])
+
     still = _drive_to_prepare(
         _plan(tmp_path / "a", gfs_tree["still"]), monkeypatch)
+    clock[0] += datetime.timedelta(seconds=1)
     follow = _drive_to_prepare(
         _plan(tmp_path / "b", gfs_tree["follow"]), monkeypatch)
 
     assert "--statics-corridor" not in still["prepare"]
 
-    # The two arms necessarily differ in their output root and in the
-    # name of the config file they were emitted to; both are erased so
-    # what is left is the argv SHAPE, which must be identical.
+    # The two arms necessarily differ in their output root, in the name
+    # of the config file they were emitted to, and in the run stamp each
+    # drive allocated; all three are erased so what is left is the argv
+    # SHAPE, which must be identical.
+    #
+    # The stamp is masked with run_stamp.STAMP_RE -- the product's own
+    # definition of "is this a run folder" -- rather than a pattern
+    # spelled here, so the mask cannot drift from the names run_stamp.py
+    # emits.  Masking hides nothing this row is looking for: the stamp is
+    # derived from the wall clock and the init time, and a corridor
+    # cannot reach either, so it can only ever differ for the reason the
+    # forced tick above makes it differ.
     def _shape(tokens: list[str], root: Path, label: str) -> list[str]:
-        return [token.replace(str(root), "<ROOT>").replace("\\", "/")
-                .replace(f"/{label}.", "/<CONFIG>.")
-                for token in tokens]
+        shaped = []
+        for token in tokens:
+            token = (token.replace(str(root), "<ROOT>").replace("\\", "/")
+                     .replace(f"/{label}.", "/<CONFIG>."))
+            shaped.append("/".join(
+                "<RUN-STAMP>" if run_stamp.STAMP_RE.match(part) else part
+                for part in token.split("/")))
+        return shaped
 
     still_shape = {stage: _shape(tokens, tmp_path / "a", "still")
                    for stage, tokens in still.items()}
@@ -664,13 +693,16 @@ def test_the_same_predicate_feeds_both_hrrr_doors(tmp_path):
 
     # The printed chain: flag present for the mover, absent for the
     # still nest, and on the hierarchy stage rather than the preparer.
+    # Both stages are now spelled `gpuwm prep --source hrrr` (the
+    # shipped door, not the modules behind it), so the two are told
+    # apart by --root-preparation, which is what makes one of them the
+    # hierarchy.
     printed = domain_wizard.hrrr_route_commands(
         base, following, profile=None, data_dir=str(tmp_path / "data"))
     assert "--statics-corridor" in printed
-    hierarchy_block = printed.split("gpuwm.hrrr_hierarchy_direct")[1]
+    root_block, hierarchy_block = printed.split("--root-preparation")
     assert "--statics-corridor" in hierarchy_block
-    assert "--statics-corridor" not in printed.split(
-        "tools.prepare_hrrr_wrf")[1].split("gpuwm.hrrr_hierarchy_direct")[0]
+    assert "--statics-corridor" not in root_block
     assert "--statics-corridor" not in domain_wizard.hrrr_route_commands(
         base, still, profile=None, data_dir=str(tmp_path / "data"))
 

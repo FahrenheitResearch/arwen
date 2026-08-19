@@ -46,6 +46,13 @@ def test_scope_excludes_vendor_and_release_excluded_paths(census):
         assert not cc.is_excluded(record["file"], globs), record["file"]
     assert cc.is_excluded("tools/rustwx/vendor/x.rs", globs)
     assert cc.is_excluded("handoffs/anything.md", globs)
+    # The mapped-engine port vendored a fourth tree.  Its crates-io mirror
+    # and donor snapshot are read-only, so a record pinned inside one would
+    # fail on the next re-vendor with no fix available short of editing
+    # somebody else's source.  The workspace's OWN crates stay in scope.
+    assert cc.is_excluded("tools/rw_wps/vendor/crates-io/x/src/lib.rs", globs)
+    assert not cc.is_excluded(
+        "tools/rw_wps/crates/mapped-engine/src/main.rs", globs)
 
 
 def test_tests_are_in_scope(census):

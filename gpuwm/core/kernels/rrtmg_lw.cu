@@ -427,7 +427,16 @@ extern "C" __global__ void rlw_setcoef(
             }
         }
 
-        float plog = rlw_log(pav[lay - 1]);
+        // Purity guard: an out-of-contract nonpositive pavel would make
+        // plog NaN; !(NaN <= 4.56) then counts the layer into laytrop
+        // and the band kernels index absa/selfref outside their tables
+        // (pool-layout-dependent reads).  The clamp keeps plog finite
+        // and every derived index inside its table's domain; for the
+        // positive pressures the prep contract guarantees it is the
+        // identity, bitwise.
+        float pavl = pav[lay - 1];
+        if (!(pavl > 0.0f)) pavl = 1.0e-6f;
+        float plog = rlw_log(pavl);
         int jpl = (int)RLW_SU(36.0f, RLW_MU(5.0f, RLW_AD(plog, 0.04f)));
         if (jpl < 1) jpl = 1;
         else if (jpl > 58) jpl = 58;

@@ -142,9 +142,33 @@ def test_overlap_statics_mismatches_counts_and_fails_on_a_planted_bit():
     new = footprint(7, 5)
     verdict = ri.overlap_statics_mismatches(old, new, plan)
     assert verdict["pass"] and verdict["mismatched_fields"] == {}
+    assert verdict["within_one_ulp"] == {}
+    # ONE ULP is physics-identical ground (the climatology resamplers'
+    # crop-dependent accumulation order lands there; MEASURED on the
+    # 2011-04-27 case, 3 GREENFRAC values at 5.6e-17): counted advisory,
+    # not a refusal.
+    new["HGT_M"][3, 2] = np.nextafter(new["HGT_M"][3, 2], np.inf)
+    verdict = ri.overlap_statics_mismatches(old, new, plan)
+    assert verdict["pass"]
+    assert verdict["mismatched_fields"] == {}
+    assert verdict["within_one_ulp"] == {"HGT_M": 1}
+    # Two ULPs is a real drift and still refuses.
     new["HGT_M"][3, 2] = np.nextafter(new["HGT_M"][3, 2], np.inf)
     verdict = ri.overlap_statics_mismatches(old, new, plan)
     assert verdict["mismatched_fields"] == {"HGT_M": 1}
+    assert not verdict["pass"]
+    # A NaN in the rebuild fails the adjacency compare and refuses.
+    new["HGT_M"][3, 2] = np.nan
+    verdict = ri.overlap_statics_mismatches(old, new, plan)
+    assert verdict["mismatched_fields"] == {"HGT_M": 1}
+    assert not verdict["pass"]
+    # A category flip on an integer-valued mask refuses exactly as before.
+    new = footprint(7, 5)
+    new["LANDMASK"] = new["LANDMASK"].astype(np.int32)
+    old["LANDMASK"] = old["LANDMASK"].astype(np.int32)
+    new["LANDMASK"][2, 2] = 0
+    verdict = ri.overlap_statics_mismatches(old, new, plan)
+    assert verdict["mismatched_fields"] == {"LANDMASK": 1}
     assert not verdict["pass"]
 
 

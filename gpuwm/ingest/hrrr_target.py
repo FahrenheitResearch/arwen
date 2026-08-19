@@ -14,6 +14,7 @@ from typing import Mapping
 
 import numpy as np
 
+from gpuwm.ingest.source_coverage import SourceCoverageRefusal
 from gpuwm.static.lambert import LambertGrid
 
 
@@ -404,7 +405,11 @@ def required_hrrr_source_window(
     j_end = max(parabolic_j_max, fallback_j_max)
     if (i_start < 0 or j_start < 0
             or i_end >= HRRR_SOURCE_NX or j_end >= HRRR_SOURCE_NY):
-        raise ValueError(
+        # Same breakage, same class as the mapped route's window refusal:
+        # a source grid that does not reach the domain.  A door that owns
+        # one owns both, so the certified native route and a table-added
+        # model answer a distant domain with the same two sentences.
+        raise SourceCoverageRefusal(
             "target domain plus required interpolation halo leaves HRRR "
             "coverage: required zero-based inclusive window "
             f"i={i_start}..{i_end}, j={j_start}..{j_end}; native limits "

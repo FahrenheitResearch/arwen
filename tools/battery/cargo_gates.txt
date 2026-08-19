@@ -1,11 +1,13 @@
 # The Rust workspaces' test suites, as the battery invokes them.
 #
 # WHAT THIS IS
-#   This tree carries two Cargo workspaces that are not decoration: the
+#   This tree carries Cargo workspaces that are not decoration: the
 #   vendored Rusty Weather renderer under tools/rustwx (every product PNG
-#   a run publishes comes out of rw_wrfbatch) and the GRIB decoder under
+#   a run publishes comes out of rw_wrfbatch), the GRIB decoder under
 #   tools/grib1_bridge (every byte of GFS and HRRR the model initialises
-#   from comes through it).  Both ship in the release.  Neither had a leg
+#   from comes through it), and the mapped decode engine under
+#   tools/rw_wps (every mapped source decodes in it by default).  All
+#   ship in the release.  None of them had a leg
 #   on the release battery: `pytest` cannot collect a Rust test, so the
 #   whole of it was invisible to every gate a cut runs, and the only
 #   thing the battery ever asked of these workspaces was that the
@@ -107,6 +109,29 @@
 # rw-wrfbatch, which is this project's.  Every product plot the model
 # publishes is drawn by this workspace, and a release ships its binary.
 
+# The NetCDF WRITER (classic CDF-1/2/5), the first write capability in a
+# workspace that until now only read NetCDF.  Dependency-free on the
+# default feature; its cdylib is the ctypes seam
+# gpuwm/io/nc_writer_bridge.py loads, so a regression here corrupts
+# every byte a Rust-written wrfout carries.  The round-trip suite reads
+# its own output back through an INDEPENDENT reader (netcdf-reader),
+# so a shared misreading of the spec cannot make a broken file look
+# correct.  Floor is its first green run on the merged 2.5.0 tree:
+# 12 lib + 19 round-trip + 1 doctest.
+cpu  tools/rustwx  netcdf-writer  32
+
+# The observation battery's REMAP.  `gpuwm/verify/obs/regrid.py` puts a
+# scattered observation swath and a model field on one grid, and every
+# score the battery reports is read off the result, so a wrong neighbour
+# or an unenforced distance bound does not crash -- it grades an arm
+# against the wrong cells and reports a number.  The suite is the
+# bitwise parity against goldens extracted from the real scipy/numpy
+# path (crates/obs-regrid/golden, tests/parity.rs), plus the
+# lowest-index-wins tie rule that is this crate's one documented
+# divergence from scipy.  Floor is its first green run in this list,
+# 2026-08-18: 23 lib + 4 parity.
+cpu  tools/rustwx  obs-regrid  27
+
 # Meteorological arithmetic: derived fields, ECAPE, the severe-weather
 # family, windowed reductions.  Numbers, not looks -- this is the crate
 # whose answers a diagnostic is read off, so a silent change here is a
@@ -121,6 +146,16 @@ cpu  tools/rustwx  rustwx-contour  7
 # provenance.  Everything else in the workspace agrees through it.
 cpu  tools/rustwx  rustwx-core  26
 
+# Ensemble reduction mathematics: mean, sample spread, neighbourhood
+# exceedance probability, probability-matched mean, and the missingness
+# bookkeeping every one of them publishes.  Numbers, not looks, and the
+# reason the floor is what it is: every test in this crate is a probe
+# whose WRONG answer was once shipped -- a mean that went to +Inf on a
+# stack whose coverage stamp said two thirds, an NMEP that turned a hit
+# into a miss when the radius grew, a PMM that erased the panel's
+# strongest feature.  A silent change here is a wrong forecast product.
+cpu  tools/rustwx  rustwx-ensemble  21
+
 # Field IO and the store-facing readers.
 cpu  tools/rustwx  rustwx-io  59
 
@@ -131,7 +166,7 @@ cpu  tools/rustwx  rustwx-models  97
 # The product catalogue: what each product IS, its scale, its units, its
 # colour treatment.  The largest suite in the workspace and the one the
 # renderer's own regressions land in.
-cpu  tools/rustwx  rustwx-products  291
+cpu  tools/rustwx  rustwx-products  295
 
 # The raster/vector renderer, basemaps, fonts and layout.
 cpu  tools/rustwx  rustwx-render  159
@@ -165,6 +200,16 @@ cpu  tools/rustwx  rw-ingest  61
 # through.  Its correctness reference is BowEcho, and this is the only
 # gate in this tree that compiles it at all.
 cpu  tools/rustwx  rw-nexrad  125
+
+# NetCDF: THE decoder for every NetCDF source the product accepts, since
+# that decode moved off the netCDF4 C library and onto the vendored
+# netcrust reader.  There is deliberately no Python decoder behind it, so
+# this gate is the only thing standing between a broken CF time parse and
+# a wrong initial condition -- and its unit tests are the CF
+# reference-time cases (the unit spellings, the ISO/Zulu variants, and
+# the non-UTC offset that must be REFUSED rather than silently shifted),
+# which is where a calendar bug would otherwise reach a forecast.
+cpu  tools/rustwx  rw-netcdf  5
 
 # Surface and upper-air observations.
 cpu  tools/rustwx  rw-obs  53
@@ -200,6 +245,21 @@ cpu  tools/rustwx  rw-store  146
 # is us.
 cpu  tools/rustwx  rw-wrfbatch  114
 
+# static-fields: THIS project's crate too, and the DEFAULT builder of
+# every WPS-geogrid-equivalent static a domain is built on -- projection
+# grids, WPS_GEOG tile ingest, field building, and the high-resolution
+# overlay warp.  Its claim is byte-identical float64 parity with the
+# Python implementation it replaced, and that claim is exactly the kind
+# nothing else in the tree can check: a wrong terrain height or land
+# mask does not crash, it produces a run whose whole lower boundary is
+# quietly somewhere else.  The suite is that parity, held against
+# goldens extracted from the real Python builder on real source data
+# (crates/static-fields/golden, tests/lane1_goldens.rs), plus the
+# high-resolution warp tolerance parity and the ctypes seam probe the
+# cdylib is loaded through.  Floor is its first green run in this list,
+# 47 across the lib, `highres_parity`, `lane1_goldens` and `seam_probe`.
+cpu  tools/rustwx  static-fields  47
+
 # THE FIXTURE-DEPENDENT HALF OF rw-sat, LISTED AND NOT RUN BY DEFAULT.
 # tests/cloud_products.rs decodes four REAL GOES-19 granules -- COD, CPS,
 # phase, ACHA cloud-top height -- and checks the CWP computation against
@@ -226,3 +286,47 @@ fixtures  tools/rustwx  rw-sat  4  --test cloud_products
 # condition rather than a crash -- the failure mode the whole
 # full-files-over-idx ruling exists to keep visible.
 cpu  tools/grib1_bridge  grib1_bridge  64
+
+# grib-core: the DECODER ITSELF, vendored at tools/grib1_bridge/vendor
+# and a cargo workspace member by the path-dependency rule.  It was
+# ungated until 2026-08-16 for a structural reason worth writing down:
+# the tree carried TWO copies of it, one per workspace, and neither was
+# a listed member of anything, so 8,900 lines that every GRIB byte in
+# the product passes through had no leg at all.  The copies are now one,
+# this is that one, and its suite is what stands between a
+# missing-value-management regression and a field of encoder sentinels
+# published as physical data.  Floor is its first green run after the
+# convergence, 157 across the lib.
+cpu  tools/grib1_bridge  grib-core  157
+
+# --------------------------------------------------------- tools/rw_wps
+# The mapped decode engine workspace: the vendored rw-wps donor snapshot
+# (VENDOR.md) plus gpuwm's own crates/mapped-engine.  It joined this list
+# the day `gpuwm_mapped_engine` joined the release bundle, which is the
+# argument this whole file is built on -- a crate the release SHIPS and
+# nothing compiles.
+
+# mapped-engine: THIS project's crate, and the binary every mapped source
+# decodes in on a bare run (`gpuwm.mapped_engine_bridge.DEFAULT_ENGINE`
+# is `rust`).  Its suite is the decode itself -- selector resolution, the
+# level ladder, the acquisition codecs, the frameset writer -- plus the
+# goldens extracted from the real Python engine on real published bytes,
+# which is the comparison the whole port is judged on.  Floor is its
+# first green run in this list, 61 across the lib and `goldens`.  The
+# goldens target reads the model-gauntlet staging tree when a box has
+# one and runs its cases against nothing when it does not, so this entry
+# is a compile-and-contract leg on a bare runner and a byte-parity leg on
+# a staged one; the Python-side battery
+# (tests/test_mapped_engine_parity.py) is where the cross-engine verdict
+# is read.
+cpu  tools/rw_wps  mapped-engine  61
+
+# rw-wps: the donor mapping/composition/namelist engine this snapshot
+# vendors, and the crate the mapped-engine reads its authority files
+# through.  Gated for the reason grib-core is: it is vendored, so its
+# source does not move with this checkout, but every mapping and
+# composition gpuwm ships is parsed by it, and a schema drift here
+# reaches a run as a source that silently resolves to different records.
+# Floor is the 65 the vendoring recorded green at donor tip (60 lib + 5
+# integration), which is also what it reports here.
+cpu  tools/rw_wps  rw-wps  65

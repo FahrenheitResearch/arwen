@@ -16,6 +16,14 @@ including, loudly, the products the engine refused and why.
 named lon/lat box out of each selected frame with
 :mod:`tilestream.case_crop` and renders the crop instead -- same cells, same
 values, a smaller file.
+
+``--boundary-zone N`` and ``--reports FILE.json`` are the two overlays this
+lane's matplotlib renderer (``tilestream/render_case.py``) drew by hand and
+this one could not: the dashed frame marking where the forecast stops being
+a forecast, and the storm reports it is being read against.  Both go to the
+production renderer through ``gpuwm render --overlays``, which projects
+them into the same frame as the fill, so no panel here is drawn twice by
+two engines.
 """
 
 from __future__ import annotations
@@ -46,6 +54,79 @@ def select(run_dir: Path, every: int, at: tuple[str, ...]) -> list[Path]:
     return files[::max(1, every)]
 
 
+
+#: Marker colours by report kind, the SPC convention: red tornado, green
+#: hail, blue wind.  Named here rather than in the renderer because it is
+#: a reporting convention, not a rendering one.
+REPORT_COLORS = {"torn": "#d0202c", "hail": "#1a8a3c", "wind": "#1f5fd0"}
+
+
+def build_overlays(args, sample_frame: Path):
+    """The overlay JSON this run needs, or ``None``.
+
+    Merged rather than chosen between: a caller who has a hand-written
+    ``--overlays`` file and also wants the boundary box should get both,
+    and having to pick would send them back to hand-editing JSON.
+    """
+
+    import json
+
+    features = {"lines": [], "points": [], "labels": [], "rings": []}
+    if args.overlays is not None:
+        given = json.loads(Path(args.overlays).read_text(encoding="utf-8"))
+        for key in features:
+            features[key].extend(given.get(key, []))
+
+    if args.boundary_zone > 0:
+        box = boundary_zone_box(sample_frame, args.boundary_zone)
+        if box is not None:
+            features["lines"].append(
+                {"points": box, "closed": True, "color": "#20242c",
+                 "width": 2})
+
+    if args.reports is not None:
+        reports = json.loads(Path(args.reports).read_text(encoding="utf-8"))
+        for report in reports:
+            kind = str(report.get("kind", "torn")).lower()
+            features["points"].append({
+                "lat": float(report["lat"]), "lon": float(report["lon"]),
+                "color": REPORT_COLORS.get(kind, "#20242c"),
+                "radius_px": 7, "width_px": 2,
+                "shape": "circle" if kind == "torn" else "cross"})
+
+    if not any(features.values()):
+        return None
+    out = args.out / "overlays.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(features, indent=1), encoding="utf-8")
+    return out
+
+
+def boundary_zone_box(frame: Path, cells: int):
+    """``[(lat, lon), ...]`` of the box ``cells`` in from the domain edge.
+
+    Read off the frame's OWN ``XLAT``/``XLONG`` rather than computed from
+    a namelist: the box has to sit on the grid the forecast was actually
+    written on, and a frame that has been cropped is a different grid than
+    the one the run was configured with.
+    """
+
+    import netCDF4
+    import numpy as np
+
+    with netCDF4.Dataset(frame) as dataset:
+        lat = np.asarray(dataset.variables["XLAT"][0])
+        lon = np.asarray(dataset.variables["XLONG"][0])
+    ny, nx = lat.shape
+    if cells * 2 >= min(ny, nx):
+        print(f"render: --boundary-zone {cells} is at least half of the "
+              f"{ny}x{nx} grid; no box drawn")
+        return None
+    j0, j1 = cells, ny - 1 - cells
+    i0, i1 = cells, nx - 1 - cells
+    corners = [(j0, i0), (j0, i1), (j1, i1), (j1, i0)]
+    return [[float(lat[j, i]), float(lon[j, i])] for j, i in corners]
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run", type=Path, required=True)
@@ -60,6 +141,18 @@ def main(argv=None) -> int:
     ap.add_argument("--crop-dir", type=Path, default=None)
     ap.add_argument("--source-label", default="ArWen")
     ap.add_argument("--heavy", action="store_true")
+    ap.add_argument("--boundary-zone", type=int, default=0, metavar="CELLS",
+                    help="draw a box CELLS in from the domain edge: "
+                         "nothing outside it is a forecast, and a reader "
+                         "who cannot see where the relaxation zone ends "
+                         "will read boundary artefacts as weather")
+    ap.add_argument("--reports", type=Path, default=None, metavar="FILE.json",
+                    help="storm reports to mark, as a JSON list of "
+                         '{"lat":..,"lon":..,"kind":"torn|hail|wind"}')
+    ap.add_argument("--overlays", type=Path, default=None,
+                    metavar="FILE.json",
+                    help="an overlay file to pass through verbatim; "
+                         "--boundary-zone and --reports are merged into it")
     args = ap.parse_args(argv)
 
     files = select(args.run, args.every, tuple(args.at))
@@ -95,6 +188,10 @@ def main(argv=None) -> int:
                "--source-label", args.source_label]
     if args.heavy:
         command.append("--heavy")
+    overlay_file = build_overlays(args, files[0])
+    if overlay_file is not None:
+        command.extend(("--overlays", str(overlay_file)))
+        print(f"render: overlays {overlay_file}")
     command.extend(str(f) for f in files)
     result = subprocess.run(command, cwd=str(REPO))
     written = sorted(args.out.glob("*.png"))

@@ -45,7 +45,7 @@ To re-derive every number in this file from scratch::
 
     tools/thompson_wrf461_oracle/build_aero_probes.sh \
         /path/to/WRF-v4.6.1 /empty/build-dir /path/CCN_ACTIVATE.BIN \
-        gpuwm/data/thompson/tables
+        gpuwm-data/gpuwm_data/data/thompson/tables
     tools/thompson_wrf461_oracle/check_probe_oracles_aero.py \
         <build-dir>/probe-oracle-aero            # the embedded literals
     tools/thompson_wrf461_oracle/measure_probe_oracles_gpu_aero.py \
@@ -397,8 +397,9 @@ def _t_efrw():
         AUXILIARY_TABLE_FILE, AUXILIARY_TABLE_RECORDS,
         read_sequential_records)
 
-    root = (Path(__file__).parents[1] / "gpuwm" / "data" / "thompson"
-            / "tables")
+    from gpuwm.physics_compat import packaged_thompson_table_root
+
+    root = packaged_thompson_table_root()
     records = read_sequential_records(
         root / AUXILIARY_TABLE_FILE, AUXILIARY_TABLE_RECORDS)
     return cp.asarray(np.asfortranarray(records["t_Efrw"]))
@@ -656,8 +657,9 @@ def _t_efsw():
         AUXILIARY_TABLE_FILE, AUXILIARY_TABLE_RECORDS,
         read_sequential_records)
 
-    root = (Path(__file__).parents[1] / "gpuwm" / "data" / "thompson"
-            / "tables")
+    from gpuwm.physics_compat import packaged_thompson_table_root
+
+    root = packaged_thompson_table_root()
     records = read_sequential_records(
         root / AUXILIARY_TABLE_FILE, AUXILIARY_TABLE_RECORDS)
     return cp.asarray(np.asfortranarray(records["t_Efsw"]))

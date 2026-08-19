@@ -34,6 +34,10 @@ support, nor do they live-gate every possible nested layout.
 - `gpuwm-mapped-composition-v2` joins for one or more supplement products,
   exact-one terrain ownership, exact valid-time matching, coordinate-subset
   binding, invariant-terrain checks, and decoder/provenance hashes;
+- cross-source composition: `field_sources` per-field source bindings that
+  take a declared field's values from a DIFFERENT packaged source's decode
+  through that source's own hash-pinned mapping (see the dedicated section
+  below);
 - checked, source-neutral declarative ERA5 0-7/7-28/28-100/100-289 cm and
   GFS 0-10/10-40/40-100/100-200 cm soil contracts, including exact
   per-depth selector binding, remap semantics, and source-land/ocean policy;
@@ -56,6 +60,102 @@ support, nor do they live-gate every possible nested layout.
 - create-only public input-manifest authoring with installed-decoder discovery,
   bridge/GRIB2-tabular-ABI probing, stable-handle hashing, runtime-verifier
   round trip, authority recheck, and atomic no-clobber publication.
+
+## Cross-source composition: per-field source bindings
+
+A composition may declare that a canonical field is sourced from a DIFFERENT
+packaged source's decode -- soil, terrain, and the land mask from a physical
+analysis under an AI-forecast atmosphere, and in general any declared field
+borrowed across products as pure table work.
+
+Grammar (all tables, no per-model code):
+
+- the primary mapping declares each borrowed field with
+  `"provider": "composition_bound"` -- the gap is a declaration, and a
+  mapping carrying one refuses to materialize alone, by name;
+- the composition's `field_sources` binds each gap to one contributing
+  source: `source_id` (the contributing mapping's own name),
+  `mapping_role` + `mapping_sha256` (the contributing source's OWN sealed
+  mapping document, pinned by hash inside the composition), `data_role` /
+  `provenance_role` (its bytes and provenance ride the existing manifest
+  sections, so the inputs-v1 manifest schema is unchanged), the field list,
+  `grid_alignment` (only `exact_coordinate_subset` lands), and a
+  `time_alignment` from the closed set `valid_time_exact`,
+  `cycle_invariant_broadcast`, `source_cycle_analysis_broadcast`;
+- `source_cycle_analysis_broadcast` is the hybrid clock: exactly one donor
+  analysis record whose valid time must BE the primary's source cycle,
+  carried to every primary lead, with every carried time named in the
+  receipt;
+- refusals, each naming its breakage: cross-grid contributions name the
+  missing horizontal regrid capability; member-bearing donors name member
+  alignment; vertical-bearing borrows on a different ladder name vertical
+  interpolation; double provision (primary + binding, supplement + binding,
+  two bindings) names its two providers; an unbound `composition_bound`
+  field, a split soil pair, a wrong-cycle analysis donor, a donor
+  authority-hash mismatch, and a `source_id`/mapping-name disagreement all
+  refuse;
+- provenance receipts gain `contributing_sources`, naming every
+  contributing source with its id, mapping/data/provenance hashes, and the
+  grid/time alignment receipt; single-source receipts are byte-identical to
+  before.
+
+MEASURED on real staged bytes (2026-08-17): an AI-atmosphere primary
+(0.25-degree, 13 levels, two leads of the 2026-08-17 00Z cycle, no soil, no
+land mask, no orography in the product) composed with the same cycle's
+physical 0.25-degree analysis file decoded through the checked-in
+`configs/rw-wps-gfs-pressure-grib2.mapping.json` (mapping SHA-256
+`5b0f41a7f4ddee1116ce8310dfd67827761413908d45402e1f55f32facc61d86`)
+materialized the complete 16-field WRF-real canonical set with 4-layer soil
+and packed the regular-source ABI, in 9.4 s; the 1.0-degree file of the
+same cycle refused by naming the regrid capability, and the 06Z analysis
+under the 00Z primary refused by naming the source-cycle rule
+(`tests/test_cross_source_real_bytes.py`, staged bytes and hashes in the
+model-gauntlet staging manifests).
+
+### The first shipped consumer: the AIGFS hybrid profile, END TO END
+
+`aigfs-gdas-hybrid-grib2-v1` packages the grammar above as a runnable
+front door, adding one generic registry capability: a profile
+`contributing_mappings` slot (`role -> {file, sha256}`) that ships each
+donor mapping as an additional pinned authority, which
+`gpuwm prep --source aigfs` forwards as `--contributing-mapping` and the
+prepared runner's certificate re-verifies (a cross-source receipt must
+carry `contributing_sources` with the packaged donor digests and a PASS
+alignment; a single-source receipt must not).  One donor-side fact the
+grammar forced into the open: a borrowed field must be DIRECTLY selected
+in the donor, and the checked-in GFS table derives 2 m specific humidity
+from RH -- so the profile's donor mapping is that table with the one
+table-data change (`0.1.0` at `heightAboveGround 2`, MEASURED present in
+the GDAS analysis file), not an engine change.
+
+MEASURED end to end on real 2026-08-17 00Z bytes (operational NOMADS
+AIGFS pres+sfc at f000/f006, subCentre 0 on every message, plus the same
+cycle's GDAS 0.25-degree analysis): `gpuwm prep --source aigfs` composed
+and initialized the 30 km demo domain in 11.9 s (decode+compose 7.5 s);
+`gpuwm sim` ran the six-hour window to PASS in 14.8 s wall on the
+RTX 5090 (7 history frames, `prepared_content_sha256` identical across
+two independent preparations); `gpuwm render --engine rust` produced the
+weather panels.  The provenance receipt names both contributing sources
+with mapping/data hashes and the exact carried valid time of the frozen
+analysis surface.  Evidence:
+`Downloads/evidence-gallery/aigfs-hybrid-sim-20260817/`.
+
+The second packaged profile built on this capability is the AI-ensemble
+member hybrid (`aigefs-member-hybrid-grib2-v1`, adapter `aigefs`): a
+12-parameter member atmosphere with six `composition_bound` land-surface
+gaps bound to the packaged physical-analysis donor mapping.  Member bytes
+are staged and verified by `gpuwm-member-prep` (the member identity lives
+in the prep receipt, not the leaf filename), every selector pins the
+individual-member product template so statistics and deterministic bytes
+refuse at decode, and the sim stage's evidence certificate accepts the
+cross-source receipt exactly when the packaged composition declares
+bindings.  MEASURED end to end on the real 2026-08-17 00Z cycle: the
+control and two perturbed members each prepared through
+`gpuwm prep --source aigefs` and ran six GPU forecast hours to PASS
+(34.5-45.2 s wall at 30 km, 50x50x49), with rw_ensbatch ensemble panels
+drawn from the three PASS runs
+(`tests/test_aigefs_member_hybrid_real_bytes.py`,
+`tests/test_cross_source_sim_stage.py`).
 
 ## Current-HEAD real GFS GRIB2 d01-d04 gate (v2)
 

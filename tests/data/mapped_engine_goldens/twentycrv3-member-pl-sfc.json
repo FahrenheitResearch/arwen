@@ -1,0 +1,1583 @@
+{
+  "decode": {
+    "frame_count": 2,
+    "frames": [
+      {
+        "fields": {
+          "air_pressure": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "52aac292e28767b0c6833e938dcf5de38450774ed0a959d3c674176b26284c12",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "Pa"
+          },
+          "air_temperature": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "b15288995b9c9a1a5b27be68fea154f8b6c0b88a6fc739a3da5f34a294cff1a9",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "air_temperature_2m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "88fc2e4a9b310be049ee0c28951551d7a976c26e9174e97fe29bcd99a1ac6c54",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "eastward_wind": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "250f7d0ff840754946f0869d6ab96054f6900494af2a4c9311525e6c9004c358",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "eastward_wind_10m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "62c1c2009438f07fb7788ae907a15f7cbc0b50c173259842a9b449182f291641",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "geopotential_height": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "0b7d5e5612b873de4a2661adef64c6010f3d3563836ee11ee87f5a6c5b6c2dd7",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m"
+          },
+          "land_fraction": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "8ae9e6b05e529169efdc1c7017fa0dc98a7dea92fd29c23a930ae7cda1548ed8",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "1"
+          },
+          "northward_wind": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "54e4dd25fe3ef197b19d59aa4fd835b7927b3f265e36dd79985a7858b86034ee",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "northward_wind_10m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "4265a0e51800ac3391b3a1d4248a90cf45489a89561ae54b2f3d77d15fa68edf",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "relative_humidity_2m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "6c1d650adc7b0cf3cb275cdfe5034bb3299b73e6e2d8853a7a08de686f2d7346",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "%"
+          },
+          "sea_ice_fraction": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "83fbc2e8f0fc636b86d0fe5aa41e159bd3ede224d5f6d310a1a2305dbe335bfa",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "1"
+          },
+          "skin_temperature": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "aa24586a6c2eb0ee4482a3cc01fe1f14263e942643907a7b17d74db09184a62b",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "soil_temperature": {
+            "axes": [
+              "soil",
+              "y",
+              "x"
+            ],
+            "location": "soil",
+            "missing_count": 28028,
+            "sha256": "26cc7d8d76460cecf1abd34a492ed3858f1c1dbf8781a0ce70155f804cd027f6",
+            "shape": [
+              4,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "specific_humidity": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "b72d400818c6824371f79124af1c96d95cf158c06c9b1003d40aae8dc0799480",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
+          "specific_humidity_2m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "e6474e744d39d454650c1866071c082ab89130e096876598940488e5a57dbaa2",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
+          "surface_pressure": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "8f463c72ae9a5653b24ae381e4373e6a59fe06bfaf23eade9463b93dd6daeeaa",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "Pa"
+          },
+          "terrain_height": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "8d6b7c98eac7541b3420cdbdf22554f231583f4aef888d033691476f08065e90",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m"
+          },
+          "volumetric_soil_moisture": {
+            "axes": [
+              "soil",
+              "y",
+              "x"
+            ],
+            "location": "soil",
+            "missing_count": 28028,
+            "sha256": "cef9539d00579c1b86b249535d6445227011d656833ff803451047fef2fb5eed",
+            "shape": [
+              4,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m3 m-3"
+          }
+        },
+        "grid_fingerprint": "5711cdb0147a78b2b82226d703052db0faff33e17b591629fd4b81b9b6a73702",
+        "header_sha256": "2bc2059757a1772eeaa6903aeb4bc9dda129cc19c8af95c704ada3c488c4d56b",
+        "inputs": [
+          {
+            "name": "mem072_1932032100_pl.grb2",
+            "sha256": "f16c1fe1b04c846b0a5ce1ea727dc2f5e92e4a06cd839c237296491079d3f9fe"
+          },
+          {
+            "name": "mem072_1932032100_sfc.grb2",
+            "sha256": "e50cc75a4e5e52d8e7ab4ef6bdd04cebcf42da9103b54ec92e14b4ae129dad13"
+          },
+          {
+            "name": "mem072_1932032103_pl.grb2",
+            "sha256": "4de3916525b71db1d44f4ce4500f5155e3826dc9b8cf6304002b02d73388524d"
+          },
+          {
+            "name": "mem072_1932032103_sfc.grb2",
+            "sha256": "863e8178d4b55cf5cddefebb90d5ecbb32eacdfab4fbeeff806ad2aae165ce5f"
+          }
+        ],
+        "latitude": {
+          "count": 101,
+          "sha256": "bfd34c446134c0a0c7d6b5827b1fa0021b409bf6e1f36bd070b7280a38175878"
+        },
+        "longitude": {
+          "count": 151,
+          "sha256": "f77da05c647a5285e777efb42eccba1ea9def0ca2ef0c6591e22117346be4860"
+        },
+        "member": null,
+        "source_cycle": "1932-03-21T00:00:00",
+        "valid_time": "1932-03-21T00:00:00",
+        "vertical": {
+          "count": 23,
+          "sha256": "3a777515b112deccb2ae048c91420a2288abb9cf5dd99641e30ab66977231015"
+        },
+        "vertical_kind": "pressure",
+        "vertical_units": "Pa"
+      },
+      {
+        "fields": {
+          "air_pressure": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "52aac292e28767b0c6833e938dcf5de38450774ed0a959d3c674176b26284c12",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "Pa"
+          },
+          "air_temperature": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "0dec0b3748cebefee804246766a4b677d11d2daf71f87df56f243b7532691c96",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "air_temperature_2m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "0bc4731ecffa53ad8bd22cfb6da5529e8894ea569639d656d09bfc43c2e177e4",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "eastward_wind": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "5a75b70e5d4f2196dddac92a49919a3b69f1d01f757e2269b881d0143e03896c",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "eastward_wind_10m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "112c49c9bde891cc29ffecc01e7b1d51e981897e0a49f962596655005b7b14d7",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "geopotential_height": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "272f51b8cdc430c17a6c3fb29e994f82ec9b7f1f17e0afe8468cddb572a626a6",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m"
+          },
+          "land_fraction": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "8ae9e6b05e529169efdc1c7017fa0dc98a7dea92fd29c23a930ae7cda1548ed8",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "1"
+          },
+          "northward_wind": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "ac45bb6feae3e98ccd1d82afe28c50b20d89eaad51a8b9041bc85e49bd00981e",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "northward_wind_10m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "953c885681c4b34d18874b65c4404fab2fc1c62375e3a3793de99ca230c2b538",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "relative_humidity_2m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "914d905c01d38a981bcbfaba54b8295ad02fa49797f526b560b80c65029fcaf7",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "%"
+          },
+          "sea_ice_fraction": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "83fbc2e8f0fc636b86d0fe5aa41e159bd3ede224d5f6d310a1a2305dbe335bfa",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "1"
+          },
+          "skin_temperature": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "9a5067231d22598f9dd8fd11624163cf9551a25e2ccb941bc5d4909ca6204f4c",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "soil_temperature": {
+            "axes": [
+              "soil",
+              "y",
+              "x"
+            ],
+            "location": "soil",
+            "missing_count": 28028,
+            "sha256": "77d9b632f0213fa13f179b9c652d93c8c85eb7298ca0793ea0c123d595e9a204",
+            "shape": [
+              4,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "specific_humidity": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "727788eb7a537de67d54032ca9a330c5481c72cc96904495a1a53097560968f6",
+            "shape": [
+              23,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
+          "specific_humidity_2m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "15618b95af82ac80d6cea6146fbf0cfb80d5628f03bcfb3ad376c8e8aae19094",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
+          "surface_pressure": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "9bc988c9bbe4e9edcab04840e77b00deb80e6c9beda2eecc6b2a7371d5b81dbc",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "Pa"
+          },
+          "terrain_height": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "8d6b7c98eac7541b3420cdbdf22554f231583f4aef888d033691476f08065e90",
+            "shape": [
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m"
+          },
+          "volumetric_soil_moisture": {
+            "axes": [
+              "soil",
+              "y",
+              "x"
+            ],
+            "location": "soil",
+            "missing_count": 28028,
+            "sha256": "c51190b27ce87433be27cf5baaa5d29883b5871861a0815a4259daec714be560",
+            "shape": [
+              4,
+              101,
+              151
+            ],
+            "staggering": "none",
+            "units": "m3 m-3"
+          }
+        },
+        "grid_fingerprint": "5711cdb0147a78b2b82226d703052db0faff33e17b591629fd4b81b9b6a73702",
+        "header_sha256": "4b0a48bdb5ecfcd7cd1a7d73b0950f379b3d212603232bac4b90685fccd5940f",
+        "inputs": [
+          {
+            "name": "mem072_1932032100_pl.grb2",
+            "sha256": "f16c1fe1b04c846b0a5ce1ea727dc2f5e92e4a06cd839c237296491079d3f9fe"
+          },
+          {
+            "name": "mem072_1932032100_sfc.grb2",
+            "sha256": "e50cc75a4e5e52d8e7ab4ef6bdd04cebcf42da9103b54ec92e14b4ae129dad13"
+          },
+          {
+            "name": "mem072_1932032103_pl.grb2",
+            "sha256": "4de3916525b71db1d44f4ce4500f5155e3826dc9b8cf6304002b02d73388524d"
+          },
+          {
+            "name": "mem072_1932032103_sfc.grb2",
+            "sha256": "863e8178d4b55cf5cddefebb90d5ecbb32eacdfab4fbeeff806ad2aae165ce5f"
+          }
+        ],
+        "latitude": {
+          "count": 101,
+          "sha256": "bfd34c446134c0a0c7d6b5827b1fa0021b409bf6e1f36bd070b7280a38175878"
+        },
+        "longitude": {
+          "count": 151,
+          "sha256": "f77da05c647a5285e777efb42eccba1ea9def0ca2ef0c6591e22117346be4860"
+        },
+        "member": null,
+        "source_cycle": "1932-03-21T00:00:00",
+        "valid_time": "1932-03-21T03:00:00",
+        "vertical": {
+          "count": 23,
+          "sha256": "3a777515b112deccb2ae048c91420a2288abb9cf5dd99641e30ab66977231015"
+        },
+        "vertical_kind": "pressure",
+        "vertical_units": "Pa"
+      }
+    ],
+    "mapping": {
+      "name": "rw-wps-20crv3-member-grib2.mapping.json",
+      "sha256": "2e9877d51d9c993e83311c87236467b99ce9022638a343985da10ccd195efe09"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "twentycrv3-member-pl-sfc",
+    "verdict": "DECODED"
+  },
+  "inspect": {
+    "inspection": {
+      "frames": [
+        {
+          "decoded_direct_fields": [
+            "air_temperature",
+            "air_temperature_2m",
+            "eastward_wind",
+            "eastward_wind_10m",
+            "geopotential_height",
+            "land_fraction",
+            "northward_wind",
+            "northward_wind_10m",
+            "relative_humidity_2m",
+            "sea_ice_fraction",
+            "skin_temperature",
+            "soil_temperature",
+            "specific_humidity",
+            "surface_pressure",
+            "terrain_height",
+            "volumetric_soil_moisture"
+          ],
+          "fields": {
+            "air_temperature": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 312.48129882812503,
+              "minimum": 191.10263671875,
+              "missing": 0,
+              "sha256": "b15288995b9c9a1a5b27be68fea154f8b6c0b88a6fc739a3da5f34a294cff1a9",
+              "shape": [
+                23,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_pl.grb2:23",
+                "mem072_1932032100_pl.grb2:24",
+                "mem072_1932032100_pl.grb2:25",
+                "mem072_1932032100_pl.grb2:26",
+                "mem072_1932032100_pl.grb2:27",
+                "mem072_1932032100_pl.grb2:28",
+                "mem072_1932032100_pl.grb2:29",
+                "mem072_1932032100_pl.grb2:30",
+                "mem072_1932032100_pl.grb2:31",
+                "mem072_1932032100_pl.grb2:32",
+                "mem072_1932032100_pl.grb2:33",
+                "mem072_1932032100_pl.grb2:34",
+                "mem072_1932032100_pl.grb2:35",
+                "mem072_1932032100_pl.grb2:36",
+                "mem072_1932032100_pl.grb2:37",
+                "mem072_1932032100_pl.grb2:38",
+                "mem072_1932032100_pl.grb2:39",
+                "mem072_1932032100_pl.grb2:40",
+                "mem072_1932032100_pl.grb2:41",
+                "mem072_1932032100_pl.grb2:42",
+                "mem072_1932032100_pl.grb2:43",
+                "mem072_1932032100_pl.grb2:44",
+                "mem072_1932032100_pl.grb2:45"
+              ]
+            },
+            "air_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 308.32158203125005,
+              "minimum": 240.72158203125002,
+              "missing": 0,
+              "sha256": "88fc2e4a9b310be049ee0c28951551d7a976c26e9174e97fe29bcd99a1ac6c54",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:15"
+              ]
+            },
+            "eastward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 73.43439025878907,
+              "minimum": -31.84506530761719,
+              "missing": 0,
+              "sha256": "250f7d0ff840754946f0869d6ab96054f6900494af2a4c9311525e6c9004c358",
+              "shape": [
+                23,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_pl.grb2:67",
+                "mem072_1932032100_pl.grb2:69",
+                "mem072_1932032100_pl.grb2:71",
+                "mem072_1932032100_pl.grb2:73",
+                "mem072_1932032100_pl.grb2:75",
+                "mem072_1932032100_pl.grb2:77",
+                "mem072_1932032100_pl.grb2:79",
+                "mem072_1932032100_pl.grb2:81",
+                "mem072_1932032100_pl.grb2:83",
+                "mem072_1932032100_pl.grb2:85",
+                "mem072_1932032100_pl.grb2:87",
+                "mem072_1932032100_pl.grb2:89",
+                "mem072_1932032100_pl.grb2:91",
+                "mem072_1932032100_pl.grb2:93",
+                "mem072_1932032100_pl.grb2:95",
+                "mem072_1932032100_pl.grb2:97",
+                "mem072_1932032100_pl.grb2:99",
+                "mem072_1932032100_pl.grb2:101",
+                "mem072_1932032100_pl.grb2:103",
+                "mem072_1932032100_pl.grb2:105",
+                "mem072_1932032100_pl.grb2:107",
+                "mem072_1932032100_pl.grb2:109",
+                "mem072_1932032100_pl.grb2:111"
+              ]
+            },
+            "eastward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 18.210803985595703,
+              "minimum": -11.589196014404298,
+              "missing": 0,
+              "sha256": "62c1c2009438f07fb7788ae907a15f7cbc0b50c173259842a9b449182f291641",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:17"
+              ]
+            },
+            "geopotential_height": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 20503.971875000003,
+              "minimum": -106.46678466796875,
+              "missing": 0,
+              "sha256": "0b7d5e5612b873de4a2661adef64c6010f3d3563836ee11ee87f5a6c5b6c2dd7",
+              "shape": [
+                23,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_pl.grb2:0",
+                "mem072_1932032100_pl.grb2:1",
+                "mem072_1932032100_pl.grb2:2",
+                "mem072_1932032100_pl.grb2:3",
+                "mem072_1932032100_pl.grb2:4",
+                "mem072_1932032100_pl.grb2:5",
+                "mem072_1932032100_pl.grb2:6",
+                "mem072_1932032100_pl.grb2:7",
+                "mem072_1932032100_pl.grb2:8",
+                "mem072_1932032100_pl.grb2:9",
+                "mem072_1932032100_pl.grb2:10",
+                "mem072_1932032100_pl.grb2:11",
+                "mem072_1932032100_pl.grb2:12",
+                "mem072_1932032100_pl.grb2:13",
+                "mem072_1932032100_pl.grb2:14",
+                "mem072_1932032100_pl.grb2:15",
+                "mem072_1932032100_pl.grb2:16",
+                "mem072_1932032100_pl.grb2:17",
+                "mem072_1932032100_pl.grb2:18",
+                "mem072_1932032100_pl.grb2:19",
+                "mem072_1932032100_pl.grb2:20",
+                "mem072_1932032100_pl.grb2:21",
+                "mem072_1932032100_pl.grb2:22"
+              ]
+            },
+            "land_fraction": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "8ae9e6b05e529169efdc1c7017fa0dc98a7dea92fd29c23a930ae7cda1548ed8",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:13"
+              ]
+            },
+            "northward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 34.428384399414064,
+              "minimum": -50.051794433593756,
+              "missing": 0,
+              "sha256": "54e4dd25fe3ef197b19d59aa4fd835b7927b3f265e36dd79985a7858b86034ee",
+              "shape": [
+                23,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_pl.grb2:68",
+                "mem072_1932032100_pl.grb2:70",
+                "mem072_1932032100_pl.grb2:72",
+                "mem072_1932032100_pl.grb2:74",
+                "mem072_1932032100_pl.grb2:76",
+                "mem072_1932032100_pl.grb2:78",
+                "mem072_1932032100_pl.grb2:80",
+                "mem072_1932032100_pl.grb2:82",
+                "mem072_1932032100_pl.grb2:84",
+                "mem072_1932032100_pl.grb2:86",
+                "mem072_1932032100_pl.grb2:88",
+                "mem072_1932032100_pl.grb2:90",
+                "mem072_1932032100_pl.grb2:92",
+                "mem072_1932032100_pl.grb2:94",
+                "mem072_1932032100_pl.grb2:96",
+                "mem072_1932032100_pl.grb2:98",
+                "mem072_1932032100_pl.grb2:100",
+                "mem072_1932032100_pl.grb2:102",
+                "mem072_1932032100_pl.grb2:104",
+                "mem072_1932032100_pl.grb2:106",
+                "mem072_1932032100_pl.grb2:108",
+                "mem072_1932032100_pl.grb2:110",
+                "mem072_1932032100_pl.grb2:112"
+              ]
+            },
+            "northward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 13.775209045410158,
+              "minimum": -13.424790954589845,
+              "missing": 0,
+              "sha256": "4265a0e51800ac3391b3a1d4248a90cf45489a89561ae54b2f3d77d15fa68edf",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:18"
+              ]
+            },
+            "relative_humidity_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 100.11147117614746,
+              "minimum": 2.111471176147461,
+              "missing": 0,
+              "sha256": "6c1d650adc7b0cf3cb275cdfe5034bb3299b73e6e2d8853a7a08de686f2d7346",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:16"
+              ]
+            },
+            "sea_ice_fraction": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "83fbc2e8f0fc636b86d0fe5aa41e159bd3ede224d5f6d310a1a2305dbe335bfa",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:14"
+              ]
+            },
+            "skin_temperature": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 307.136181640625,
+              "minimum": 235.136181640625,
+              "missing": 0,
+              "sha256": "aa24586a6c2eb0ee4482a3cc01fe1f14263e942643907a7b17d74db09184a62b",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:3"
+              ]
+            },
+            "soil_temperature": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 306.44462890625,
+              "minimum": 255.44462890625002,
+              "missing": 28028,
+              "sha256": "26cc7d8d76460cecf1abd34a492ed3858f1c1dbf8781a0ce70155f804cd027f6",
+              "shape": [
+                4,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:8",
+                "mem072_1932032100_sfc.grb2:9",
+                "mem072_1932032100_sfc.grb2:10",
+                "mem072_1932032100_sfc.grb2:11"
+              ]
+            },
+            "specific_humidity": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.01688344097137451,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "b72d400818c6824371f79124af1c96d95cf158c06c9b1003d40aae8dc0799480",
+              "shape": [
+                23,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_pl.grb2:46",
+                "mem072_1932032100_pl.grb2:47",
+                "mem072_1932032100_pl.grb2:48",
+                "mem072_1932032100_pl.grb2:49",
+                "mem072_1932032100_pl.grb2:50",
+                "mem072_1932032100_pl.grb2:51",
+                "mem072_1932032100_pl.grb2:52",
+                "mem072_1932032100_pl.grb2:53",
+                "mem072_1932032100_pl.grb2:54",
+                "mem072_1932032100_pl.grb2:55",
+                "mem072_1932032100_pl.grb2:56",
+                "mem072_1932032100_pl.grb2:57",
+                "mem072_1932032100_pl.grb2:58",
+                "mem072_1932032100_pl.grb2:59",
+                "mem072_1932032100_pl.grb2:60",
+                "mem072_1932032100_pl.grb2:61",
+                "mem072_1932032100_pl.grb2:62",
+                "mem072_1932032100_pl.grb2:63",
+                "mem072_1932032100_pl.grb2:64",
+                "mem072_1932032100_pl.grb2:65",
+                "mem072_1932032100_pl.grb2:66",
+                "mem072_1932032100_pl.grb2:113",
+                "mem072_1932032100_pl.grb2:114"
+              ]
+            },
+            "surface_pressure": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 103323.71875,
+              "minimum": 68248.71875,
+              "missing": 0,
+              "sha256": "8f463c72ae9a5653b24ae381e4373e6a59fe06bfaf23eade9463b93dd6daeeaa",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:0"
+              ]
+            },
+            "terrain_height": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 3089.2564697265625,
+              "minimum": -83.4435302734375,
+              "missing": 0,
+              "sha256": "8d6b7c98eac7541b3420cdbdf22554f231583f4aef888d033691476f08065e90",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:1"
+              ]
+            },
+            "volumetric_soil_moisture": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 0.46767285537719727,
+              "minimum": 0.048664043426513676,
+              "missing": 28028,
+              "sha256": "cef9539d00579c1b86b249535d6445227011d656833ff803451047fef2fb5eed",
+              "shape": [
+                4,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032100_sfc.grb2:4",
+                "mem072_1932032100_sfc.grb2:5",
+                "mem072_1932032100_sfc.grb2:6",
+                "mem072_1932032100_sfc.grb2:7"
+              ]
+            }
+          },
+          "member": null,
+          "source_cycle": "1932-03-21T00:00:00",
+          "unresolved_direct_fields": [],
+          "valid_time": "1932-03-21T00:00:00"
+        },
+        {
+          "decoded_direct_fields": [
+            "air_temperature",
+            "air_temperature_2m",
+            "eastward_wind",
+            "eastward_wind_10m",
+            "geopotential_height",
+            "land_fraction",
+            "northward_wind",
+            "northward_wind_10m",
+            "relative_humidity_2m",
+            "sea_ice_fraction",
+            "skin_temperature",
+            "soil_temperature",
+            "specific_humidity",
+            "surface_pressure",
+            "terrain_height",
+            "volumetric_soil_moisture"
+          ],
+          "fields": {
+            "air_temperature": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 306.773388671875,
+              "minimum": 190.96668701171876,
+              "missing": 0,
+              "sha256": "0dec0b3748cebefee804246766a4b677d11d2daf71f87df56f243b7532691c96",
+              "shape": [
+                23,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_pl.grb2:23",
+                "mem072_1932032103_pl.grb2:24",
+                "mem072_1932032103_pl.grb2:25",
+                "mem072_1932032103_pl.grb2:26",
+                "mem072_1932032103_pl.grb2:27",
+                "mem072_1932032103_pl.grb2:28",
+                "mem072_1932032103_pl.grb2:29",
+                "mem072_1932032103_pl.grb2:30",
+                "mem072_1932032103_pl.grb2:31",
+                "mem072_1932032103_pl.grb2:32",
+                "mem072_1932032103_pl.grb2:33",
+                "mem072_1932032103_pl.grb2:34",
+                "mem072_1932032103_pl.grb2:35",
+                "mem072_1932032103_pl.grb2:36",
+                "mem072_1932032103_pl.grb2:37",
+                "mem072_1932032103_pl.grb2:38",
+                "mem072_1932032103_pl.grb2:39",
+                "mem072_1932032103_pl.grb2:40",
+                "mem072_1932032103_pl.grb2:41",
+                "mem072_1932032103_pl.grb2:42",
+                "mem072_1932032103_pl.grb2:43",
+                "mem072_1932032103_pl.grb2:44",
+                "mem072_1932032103_pl.grb2:45"
+              ]
+            },
+            "air_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 302.553173828125,
+              "minimum": 234.45317382812502,
+              "missing": 0,
+              "sha256": "0bc4731ecffa53ad8bd22cfb6da5529e8894ea569639d656d09bfc43c2e177e4",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:15"
+              ]
+            },
+            "eastward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 73.83489990234375,
+              "minimum": -32.165167236328124,
+              "missing": 0,
+              "sha256": "5a75b70e5d4f2196dddac92a49919a3b69f1d01f757e2269b881d0143e03896c",
+              "shape": [
+                23,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_pl.grb2:67",
+                "mem072_1932032103_pl.grb2:69",
+                "mem072_1932032103_pl.grb2:71",
+                "mem072_1932032103_pl.grb2:73",
+                "mem072_1932032103_pl.grb2:75",
+                "mem072_1932032103_pl.grb2:77",
+                "mem072_1932032103_pl.grb2:79",
+                "mem072_1932032103_pl.grb2:81",
+                "mem072_1932032103_pl.grb2:83",
+                "mem072_1932032103_pl.grb2:85",
+                "mem072_1932032103_pl.grb2:87",
+                "mem072_1932032103_pl.grb2:89",
+                "mem072_1932032103_pl.grb2:91",
+                "mem072_1932032103_pl.grb2:93",
+                "mem072_1932032103_pl.grb2:95",
+                "mem072_1932032103_pl.grb2:97",
+                "mem072_1932032103_pl.grb2:99",
+                "mem072_1932032103_pl.grb2:101",
+                "mem072_1932032103_pl.grb2:103",
+                "mem072_1932032103_pl.grb2:105",
+                "mem072_1932032103_pl.grb2:107",
+                "mem072_1932032103_pl.grb2:109",
+                "mem072_1932032103_pl.grb2:111"
+              ]
+            },
+            "eastward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 17.1038818359375,
+              "minimum": -11.596118164062501,
+              "missing": 0,
+              "sha256": "112c49c9bde891cc29ffecc01e7b1d51e981897e0a49f962596655005b7b14d7",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:17"
+              ]
+            },
+            "geopotential_height": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 20528.8359375,
+              "minimum": -131.06340332031252,
+              "missing": 0,
+              "sha256": "272f51b8cdc430c17a6c3fb29e994f82ec9b7f1f17e0afe8468cddb572a626a6",
+              "shape": [
+                23,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_pl.grb2:0",
+                "mem072_1932032103_pl.grb2:1",
+                "mem072_1932032103_pl.grb2:2",
+                "mem072_1932032103_pl.grb2:3",
+                "mem072_1932032103_pl.grb2:4",
+                "mem072_1932032103_pl.grb2:5",
+                "mem072_1932032103_pl.grb2:6",
+                "mem072_1932032103_pl.grb2:7",
+                "mem072_1932032103_pl.grb2:8",
+                "mem072_1932032103_pl.grb2:9",
+                "mem072_1932032103_pl.grb2:10",
+                "mem072_1932032103_pl.grb2:11",
+                "mem072_1932032103_pl.grb2:12",
+                "mem072_1932032103_pl.grb2:13",
+                "mem072_1932032103_pl.grb2:14",
+                "mem072_1932032103_pl.grb2:15",
+                "mem072_1932032103_pl.grb2:16",
+                "mem072_1932032103_pl.grb2:17",
+                "mem072_1932032103_pl.grb2:18",
+                "mem072_1932032103_pl.grb2:19",
+                "mem072_1932032103_pl.grb2:20",
+                "mem072_1932032103_pl.grb2:21",
+                "mem072_1932032103_pl.grb2:22"
+              ]
+            },
+            "land_fraction": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "8ae9e6b05e529169efdc1c7017fa0dc98a7dea92fd29c23a930ae7cda1548ed8",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:13"
+              ]
+            },
+            "northward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 34.06502990722657,
+              "minimum": -51.32337036132813,
+              "missing": 0,
+              "sha256": "ac45bb6feae3e98ccd1d82afe28c50b20d89eaad51a8b9041bc85e49bd00981e",
+              "shape": [
+                23,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_pl.grb2:68",
+                "mem072_1932032103_pl.grb2:70",
+                "mem072_1932032103_pl.grb2:72",
+                "mem072_1932032103_pl.grb2:74",
+                "mem072_1932032103_pl.grb2:76",
+                "mem072_1932032103_pl.grb2:78",
+                "mem072_1932032103_pl.grb2:80",
+                "mem072_1932032103_pl.grb2:82",
+                "mem072_1932032103_pl.grb2:84",
+                "mem072_1932032103_pl.grb2:86",
+                "mem072_1932032103_pl.grb2:88",
+                "mem072_1932032103_pl.grb2:90",
+                "mem072_1932032103_pl.grb2:92",
+                "mem072_1932032103_pl.grb2:94",
+                "mem072_1932032103_pl.grb2:96",
+                "mem072_1932032103_pl.grb2:98",
+                "mem072_1932032103_pl.grb2:100",
+                "mem072_1932032103_pl.grb2:102",
+                "mem072_1932032103_pl.grb2:104",
+                "mem072_1932032103_pl.grb2:106",
+                "mem072_1932032103_pl.grb2:108",
+                "mem072_1932032103_pl.grb2:110",
+                "mem072_1932032103_pl.grb2:112"
+              ]
+            },
+            "northward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 10.284251403808595,
+              "minimum": -13.215748596191407,
+              "missing": 0,
+              "sha256": "953c885681c4b34d18874b65c4404fab2fc1c62375e3a3793de99ca230c2b538",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:18"
+              ]
+            },
+            "relative_humidity_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 100.02990818023682,
+              "minimum": 5.029908180236816,
+              "missing": 0,
+              "sha256": "914d905c01d38a981bcbfaba54b8295ad02fa49797f526b560b80c65029fcaf7",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:16"
+              ]
+            },
+            "sea_ice_fraction": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "83fbc2e8f0fc636b86d0fe5aa41e159bd3ede224d5f6d310a1a2305dbe335bfa",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:14"
+              ]
+            },
+            "skin_temperature": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 302.25668945312503,
+              "minimum": 228.856689453125,
+              "missing": 0,
+              "sha256": "9a5067231d22598f9dd8fd11624163cf9551a25e2ccb941bc5d4909ca6204f4c",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:3"
+              ]
+            },
+            "soil_temperature": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 304.84462890625,
+              "minimum": 255.54462890625,
+              "missing": 28028,
+              "sha256": "77d9b632f0213fa13f179b9c652d93c8c85eb7298ca0793ea0c123d595e9a204",
+              "shape": [
+                4,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:8",
+                "mem072_1932032103_sfc.grb2:9",
+                "mem072_1932032103_sfc.grb2:10",
+                "mem072_1932032103_sfc.grb2:11"
+              ]
+            },
+            "specific_humidity": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.017449297599792482,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "727788eb7a537de67d54032ca9a330c5481c72cc96904495a1a53097560968f6",
+              "shape": [
+                23,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_pl.grb2:46",
+                "mem072_1932032103_pl.grb2:47",
+                "mem072_1932032103_pl.grb2:48",
+                "mem072_1932032103_pl.grb2:49",
+                "mem072_1932032103_pl.grb2:50",
+                "mem072_1932032103_pl.grb2:51",
+                "mem072_1932032103_pl.grb2:52",
+                "mem072_1932032103_pl.grb2:53",
+                "mem072_1932032103_pl.grb2:54",
+                "mem072_1932032103_pl.grb2:55",
+                "mem072_1932032103_pl.grb2:56",
+                "mem072_1932032103_pl.grb2:57",
+                "mem072_1932032103_pl.grb2:58",
+                "mem072_1932032103_pl.grb2:59",
+                "mem072_1932032103_pl.grb2:60",
+                "mem072_1932032103_pl.grb2:61",
+                "mem072_1932032103_pl.grb2:62",
+                "mem072_1932032103_pl.grb2:63",
+                "mem072_1932032103_pl.grb2:64",
+                "mem072_1932032103_pl.grb2:65",
+                "mem072_1932032103_pl.grb2:66",
+                "mem072_1932032103_pl.grb2:113",
+                "mem072_1932032103_pl.grb2:114"
+              ]
+            },
+            "surface_pressure": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 103407.6171875,
+              "minimum": 68287.6171875,
+              "missing": 0,
+              "sha256": "9bc988c9bbe4e9edcab04840e77b00deb80e6c9beda2eecc6b2a7371d5b81dbc",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:0"
+              ]
+            },
+            "terrain_height": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 3089.2564697265625,
+              "minimum": -83.4435302734375,
+              "missing": 0,
+              "sha256": "8d6b7c98eac7541b3420cdbdf22554f231583f4aef888d033691476f08065e90",
+              "shape": [
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:1"
+              ]
+            },
+            "volumetric_soil_moisture": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 0.4676653175354004,
+              "minimum": 0.048664043426513676,
+              "missing": 28028,
+              "sha256": "c51190b27ce87433be27cf5baaa5d29883b5871861a0815a4259daec714be560",
+              "shape": [
+                4,
+                101,
+                151
+              ],
+              "source_references": [
+                "mem072_1932032103_sfc.grb2:4",
+                "mem072_1932032103_sfc.grb2:5",
+                "mem072_1932032103_sfc.grb2:6",
+                "mem072_1932032103_sfc.grb2:7"
+              ]
+            }
+          },
+          "member": null,
+          "source_cycle": "1932-03-21T00:00:00",
+          "unresolved_direct_fields": [],
+          "valid_time": "1932-03-21T03:00:00"
+        }
+      ],
+      "grid": {
+        "fingerprint": "5711cdb0147a78b2b82226d703052db0faff33e17b591629fd4b81b9b6a73702",
+        "nx": 151,
+        "ny": 101,
+        "vertical_count": 23
+      },
+      "inputs": [
+        {
+          "bytes": 2180557,
+          "name": "mem072_1932032100_pl.grb2",
+          "sha256": "f16c1fe1b04c846b0a5ce1ea727dc2f5e92e4a06cd839c237296491079d3f9fe"
+        },
+        {
+          "bytes": 290213,
+          "name": "mem072_1932032100_sfc.grb2",
+          "sha256": "e50cc75a4e5e52d8e7ab4ef6bdd04cebcf42da9103b54ec92e14b4ae129dad13"
+        },
+        {
+          "bytes": 2184370,
+          "name": "mem072_1932032103_pl.grb2",
+          "sha256": "4de3916525b71db1d44f4ce4500f5155e3826dc9b8cf6304002b02d73388524d"
+        },
+        {
+          "bytes": 288306,
+          "name": "mem072_1932032103_sfc.grb2",
+          "sha256": "863e8178d4b55cf5cddefebb90d5ecbb32eacdfab4fbeeff806ad2aae165ce5f"
+        }
+      ],
+      "mapping": {
+        "name": "rw-wps-20crv3-member-grib2.mapping.json",
+        "sha256": "2e9877d51d9c993e83311c87236467b99ce9022638a343985da10ccd195efe09"
+      },
+      "materialization": {
+        "frame_count": 2,
+        "frame_header_sha256": [
+          "2bc2059757a1772eeaa6903aeb4bc9dda129cc19c8af95c704ada3c488c4d56b",
+          "4b0a48bdb5ecfcd7cd1a7d73b0950f379b3d212603232bac4b90685fccd5940f"
+        ],
+        "verdict": "PASS"
+      },
+      "schema": "gpuwm-mapped-source-inspection-v1",
+      "source_format": "grib2",
+      "status": "CANONICAL_FRAMES_MATERIALIZED_NOT_STOCK_WRF_CERTIFIED",
+      "stock_wrf_certified": false
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "twentycrv3-member-pl-sfc",
+    "verdict": "INSPECTED"
+  },
+  "measured_on": {
+    "machine": "AMD64",
+    "system": "Windows"
+  },
+  "schema": "gpuwm-mapped-parity-digest-v1",
+  "source": "twentycrv3-member-pl-sfc"
+}

@@ -1,0 +1,38 @@
+{
+  "schema": "gpuwm-cross-source-hybrid-provenance-v1",
+  "source": "NCEP AIGFS (GraphCast-based 0.25-degree deterministic AI forecast, operational NOMADS line) hybridized with the SAME CYCLE's GDAS 0.25-degree analysis for the land-surface state AIGFS does not publish",
+  "contributing_sources": {
+    "primary_atmosphere": {
+      "product": "NCEP Artificial Intelligence Global Forecast System (AIGFS) v1.x, operational GRIB2",
+      "front_door": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/aigfs.<YYYYMMDD>/<CC>/model/atmos/grib2/aigfs.t<CC>z.<pres|sfc>.f<HHH>.grib2",
+      "authority": "NWS Service Change Notice 25-89 (2025-12-09): operational data on the NCEP NOMADS server ONLY (10-day rolling window, no filter CGI, no operational AWS mirror; MEASURED 2026-08-17)",
+      "identity": {
+        "centre": 7,
+        "subcentre": 0,
+        "generating_process_identifier": 137,
+        "imposter": "the noaa-nws-graphcastgfs-pds bucket serves a DIFFERENT experimental EAGLE run under identical filenames with subCentre 2; every primary selector pins subcenter=0 so the imposter refuses by named identity octet (see the companion rw-wps-aigfs-nomads-grib2 provenance for the full measured comparison)"
+      },
+      "supplies": "the complete 13-level atmosphere (T, q, u, v, gh on 50..1000 hPa), 2 m temperature, 10 m wind -- every field that advances between leads"
+    },
+    "physical_analysis_surface": {
+      "product": "NCEP GDAS 0.25-degree pgrb2 analysis (f000) of the SAME cycle as the primary",
+      "front_doors": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gdas.<YYYYMMDD>/<CC>/atmos/gdas.t<CC>z.pgrb2.0p25.f000 and the noaa-gfs-bdp-pds AWS mirror; full files, no idx subsetting",
+      "identity": {
+        "centre": 7,
+        "subcentre": 0,
+        "same_grid": "regular_ll 1440x721 at 0.25 degrees, GDT 0, north-to-south rows, longitude origin 0 -- byte-identical grid header family to the primary, which is what exact_coordinate_subset alignment requires"
+      },
+      "mapping": "gdas-pgrb2-0p25-analysis-donor-grib2-native (rw-wps-gdas-pgrb2-donor.mapping.json), the checked-in GFS pressure-level table with ONE table-data change: 2 m specific humidity is DIRECTLY selected (0.1.0 at heightAboveGround 2 m, MEASURED present in gdas.t00z.pgrb2.0p25.f000) instead of derived from 2 m RH, because a borrowed field must be directly selected in the donor -- a derived donor field is not decodable in a partitioned donor decode and refuses by name",
+      "supplies": "terrain_height, land_fraction, skin_temperature, surface_pressure, specific_humidity_2m, and the four-layer 0-10/10-40/40-100/100-200 cm soil temperature and volumetric moisture column",
+      "clock": "source_cycle_analysis_broadcast: exactly one donor ANALYSIS record whose valid time must BE the primary source cycle, carried unchanged to every lead; the carried times are named in the composition receipt, and a donor from any other cycle refuses by naming the source-cycle rule"
+    }
+  },
+  "why_hybrid": "the operational AIGFS product is six 3-D fields on 13 pressure levels plus 2 m temperature, 10 m wind, MSLP and accumulated precipitation; it publishes no soil state, no land-sea mask, no orography, no skin temperature, no surface pressure and no 2 m humidity (MEASURED by exhaustive scan of the 2026-08-17 00Z cycle), so the terrain-following interpolation and the land-surface initial state are undefined from AIGFS bytes alone.  The cross-source composition supplies exactly that missing state from the physical analysis the AI model was itself initialized from (the S3 init/ prefix names gdas-0p25-13pl zarr inputs), through the donor's own SHA-256-pinned mapping",
+  "deliberate_exclusions": {
+    "pressure_vertical_velocity": "AIGFS publishes omega (Pa s-1) on all 13 levels, but the canonical target consumes geometric vertical velocity and no omega-to-w conversion capability has landed; the field is left unselected and the vertical_velocity policy is the validated explicit zero, exactly as the proven cross-source fixture spells it",
+    "air_pressure_at_mean_sea_level": "published and real, but the canonical target takes surface_pressure (borrowed from the analysis donor) and never consumes MSLP; unselected rather than decoded into an unused slot",
+    "total_precipitation": "PDT-8 accumulation windows (byte-identical duplicate at f006, shared keys from f012) are interval statistics, not bindable initialization state; never selected"
+  },
+  "frozen_surface_caveat": "skin temperature, surface pressure and 2 m humidity borrowed under the analysis-broadcast clock are FROZEN at the analysis while the AI atmosphere advances; for short leads this is the same class of approximation as WRF's own no-SST-update default, and the receipt names every carried valid time so nothing is silent",
+  "input_identity": "dynamic file paths and SHA-256 values are owned by the mapped-source input manifest, gpuwm-mapped-source-inputs-v1; the donor mapping document is pinned transitively (this composition pins its SHA-256, the manifest pins the composition)"
+}

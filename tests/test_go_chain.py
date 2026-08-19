@@ -26,8 +26,28 @@ from pathlib import Path
 
 import pytest
 
-from gpuwm import go_cli
+from gpuwm import go_cli, run_stamp
 from gpuwm.cli import main as cli_main
+
+
+#: Flags whose value is a path INSIDE this run's tree, in the order the
+#: stages are composed.  A stage fake reads the tree off its own command
+#: rather than assuming one: every run claims its own timestamped folder
+#: under ``--outdir`` (``gpuwm.run_stamp``), so a hard-coded
+#: ``<outdir>/prepared`` is a directory no stage writes to.
+_STAGE_TREE_FLAGS = ("--output-directory", "--output-root", "--outdir",
+                     "--prepared-root", "--render-dir")
+
+
+def _stage_root(command) -> Path:
+    """The run root a composed stage command points into."""
+
+    for flag in _STAGE_TREE_FLAGS:
+        if flag in command:
+            return Path(command[command.index(flag) + 1]).parent
+    raise AssertionError(
+        f"no run-tree flag in {command!r}; the fake cannot tell which "
+        "run folder this stage was composed for")
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +563,23 @@ def test_the_forecast_stage_matches_what_the_front_door_prints(tmp_path,
         assert flag in mine and flag in theirs, flag
         assert str(mine[flag]).replace("\\", "/") == \
             str(theirs[flag]).replace("\\", "/"), flag
-    assert set(mine) == set(theirs)
+
+    # `--progress-format` is the second allowed difference, and the last.
+    # The printed line is for a PERSON at a terminal, so it leaves the
+    # runner's default in place and the WRF-shaped `Timing for main:`
+    # lines land on their screen -- that is the reason to run the stage
+    # by hand.  `go` owns the runner's stdout instead (its subprocess arm
+    # would buffer tens of megabytes of discarded per-step lines) so it
+    # asks for jsonl.  Subtracted rather than excused: the set equality
+    # below still has to hold exactly, so no THIRD flag can drift in
+    # behind this one.
+    assert "--progress-format" in mine, (
+        "go no longer sets the progress transport; drop this subtraction "
+        "rather than leaving it to hide a real difference")
+    assert "--progress-format" not in theirs, (
+        "the printed line now sets a progress transport too, so these two "
+        "should simply be compared directly")
+    assert set(mine) - {"--progress-format"} == set(theirs)
 
 
 def test_the_proof_digest_is_read_not_recomputed(tmp_path, gfs_config):
@@ -690,8 +726,13 @@ def test_a_failed_chain_says_what_it_left_on_disk(
     root = tmp_path / "go"
 
     def fake_run(command, **kwargs):
-        root.mkdir(parents=True, exist_ok=True)
-        (root / "scratch.bin").write_bytes(b"x" * 3_000_000)
+        # Into THIS RUN's tree, read off the stage's own command rather
+        # than assumed: every run claims its own timestamped folder under
+        # --outdir, and a fake that wrote to the case root would be
+        # measuring a directory no stage uses.
+        run_root = _stage_root(command)
+        run_root.mkdir(parents=True, exist_ok=True)
+        (run_root / "scratch.bin").write_bytes(b"x" * 3_000_000)
         return _FakeCompleted(3, stdout="the real diagnosis\n")
 
     monkeypatch.setattr(subprocess, "Popen", _popen_double(fake_run))
@@ -708,7 +749,9 @@ def test_a_failed_chain_says_what_it_left_on_disk(
     assert "safe to remove" in captured.err
     # and it really is still there: the note must not have tidied away
     # the evidence it is describing
-    assert (root / "scratch.bin").exists()
+    run_root = run_stamp.latest(root)
+    assert run_root is not None
+    assert (run_root / "scratch.bin").exists()
 
 
 def test_outdir_and_data_dir_naming_one_directory_is_refused(
@@ -747,7 +790,7 @@ def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text("{}", encoding="utf-8")
         if "--output-root" in command:
-            prepared = plan_root / "prepared"
+            prepared = Path(command[command.index("--output-root") + 1])
             prepared.mkdir(parents=True, exist_ok=True)
             (prepared / "proof.json").write_text(json.dumps({
                 "input_manifest_sha256": "a" * 64,
@@ -760,7 +803,8 @@ def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
             # the forecast had already succeeded.  A forecast that
             # published nothing is a skipped render, not a rendered
             # nothing, so this fake has to publish one.
-            frames = plan_root / "run" / "wrfout"
+            frames = Path(
+                command[command.index("--outdir") + 1]) / "wrfout"
             frames.mkdir(parents=True, exist_ok=True)
             (frames / "wrfout_d01_2026-07-29_18_00_00").write_text(
                 "", encoding="utf-8")
@@ -814,7 +858,7 @@ def test_a_passing_stages_note_survives_the_output_capture(
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text("{}", encoding="utf-8")
         if "--output-root" in command:
-            prepared = plan_root / "prepared"
+            prepared = Path(command[command.index("--output-root") + 1])
             prepared.mkdir(parents=True, exist_ok=True)
             (prepared / "proof.json").write_text(json.dumps({
                 "input_manifest_sha256": "a" * 64,
@@ -854,7 +898,7 @@ def test_explain_replays_every_stage(tmp_path, capsys, monkeypatch,
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text("{}", encoding="utf-8")
         if "--output-root" in command:
-            prepared = plan_root / "prepared"
+            prepared = Path(command[command.index("--output-root") + 1])
             prepared.mkdir(parents=True, exist_ok=True)
             (prepared / "proof.json").write_text(json.dumps({
                 "input_manifest_sha256": "a" * 64,
@@ -951,13 +995,19 @@ def test_a_second_go_into_the_same_tree_is_refused_in_its_own_words(
         tmp_path, capsys, gfs_config, monkeypatch):
     """Re-running the command is the second thing anyone does.
 
-    Every stage is create-only, so the first one refuses a tree an
-    earlier run owns -- correctly, since merging two runs would publish
-    receipts describing neither.  But its message names
+    Every stage is create-only, so a chain refuses a tree an earlier run
+    owns -- correctly, since merging two runs would publish receipts
+    describing neither.  The runner's own message names
     ``--output-directory``, a flag nobody typed to get here, and it
-    arrives after a stage has already been spent reaching it.  `go`
-    answers first, in the vocabulary of the command that was actually
-    run.
+    arrives after a stage has already been spent reaching it, so `go`
+    answers first in the vocabulary of the command that was run.
+
+    What CHANGED in 2.5.0 is which command reaches it.  A bare re-run no
+    longer does: each run claims its own timestamped folder under
+    ``--outdir``, which is what the collaborator running this in a loop
+    asked for.  The refusal now guards the two ways a caller can still
+    put two runs in one tree -- naming an existing run folder, and
+    ``--run-stamp off`` -- and this pins the second, with its wording.
     """
 
     plan_root = tmp_path / "go"
@@ -970,12 +1020,35 @@ def test_a_second_go_into_the_same_tree_is_refused_in_its_own_words(
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")
 
-    assert cli_main(["go", str(gfs_config), "--outdir", str(plan_root)]) == 2
+    assert cli_main(["go", str(gfs_config), "--outdir", str(plan_root),
+                     "--run-stamp", "off"]) == 2
     printed = capsys.readouterr()
     message = printed.out + printed.err
     assert "already exists" in message
     assert "--outdir" in message
     assert "Traceback" not in message
+
+
+def test_a_bare_second_go_claims_its_own_folder_rather_than_refusing(
+        tmp_path, gfs_config):
+    """The complaint, answered: two runs of one config, two trees.
+
+    The stages stay create-only; what changed is that a run no longer
+    walks into the last one's directory to find out.
+    """
+
+    plan_root = tmp_path / "go"
+    (plan_root / "authority").mkdir(parents=True)   # a previous flat run
+    first = go_cli.claim_run_root(
+        go_cli.plan_from_config(gfs_config, outdir=plan_root))
+    second = go_cli.claim_run_root(
+        go_cli.plan_from_config(gfs_config, outdir=plan_root))
+    assert first["root"] != second["root"]
+    for plan in (first, second):
+        assert plan["root"].parent == plan_root
+        assert not plan["authority"].exists(), (
+            "a freshly claimed run folder already holds an authority "
+            "tree, so the create-only refusal would fire on it")
 
 
 # ---------------------------------------------------------------------------
@@ -1035,7 +1108,13 @@ def test_the_memory_gate_refuses_ahead_of_the_fetch_stage(gfs_config,
     message = str(refusal.value)
     assert "BEFORE the fetch stage" in message
     assert "memory-binding phase" in message
-    assert "gpuwm domain --vram-gib" in message
+    # The measured free-VRAM honesty stays; the remedy must be
+    # REACHABLE: the 3080 walk followed `gpuwm domain --vram-gib <free>`
+    # verbatim and was refused at every grid size, because the flag
+    # names a card and the number fed to it was a free-VRAM figure.
+    assert "8.00 GiB free right now" in message
+    assert "gpuwm domain" in message
+    assert "--vram-gib" not in message
     assert "--no-memory-gate" in message
 
 
@@ -1408,3 +1487,66 @@ def test_the_printed_rw_wps_line_and_go_agree_on_the_corridor(tmp_path,
     assert theirs.get("--statics-corridor") is True
     assert mine.get("--statics-corridor") is True
     assert set(mine) == set(theirs)
+
+
+# ---------------------------------------------------------------------------
+# UX finding N18 (2026-08-18 upgrader walk): the run-folder line prints on
+# the real path BEFORE the gates, so a refused `gpuwm go` still teaches the
+# 2.5.0 layout.  Both of the walk's real attempts refused (memory gate,
+# then WPS_GEOG) and the announcement -- which --dry-run prints second --
+# never appeared.
+# ---------------------------------------------------------------------------
+
+def test_a_refused_real_go_still_announces_the_run_folder(
+        gfs_config, tmp_path, monkeypatch, capsys):
+    ran: list[str] = []
+    monkeypatch.setattr(go_cli, "_run_stage",
+                        lambda label, command, **kw: ran.append(label))
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: Path("bridge"))
+    monkeypatch.setattr(
+        go_cli, "memory_gate",
+        lambda plan, **kw: {
+            "verdict": "the forecast is the memory-binding phase at "
+                       "40.00 GiB peak envelope",
+            "refuse": True, "warn": True, "free_bytes": 8 * 1024 ** 3,
+        })
+    args = _args(gfs_config, tmp_path / "out")
+    with pytest.raises(go_cli.GoRefusal):
+        go_cli.go_main(args)
+    assert ran == [], "the gate still fires before any stage"
+    printed = capsys.readouterr().out
+    assert "go: run folder" in printed, (
+        "a refused real run must still say where a run WOULD land")
+    # The same line the dry run prints second: folder name, case root,
+    # and the subtree inventory.
+    assert "authority/, prepared/, run/ and png/" in printed
+
+
+def test_the_real_run_folder_line_agrees_with_the_dry_run(
+        gfs_config, tmp_path, monkeypatch, capsys):
+    """One line, one function, both paths -- the path a reader plans
+    against is the path they get."""
+
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: Path("bridge"))
+    args = _args(gfs_config, tmp_path / "out")
+    args.dry_run = True
+    assert go_cli.go_main(args) == 0
+    dry = [line for line in capsys.readouterr().out.splitlines()
+           if line.startswith("go: run folder")]
+    assert len(dry) == 1
+
+    monkeypatch.setattr(
+        go_cli, "memory_gate",
+        lambda plan, **kw: {
+            "verdict": "the forecast is the memory-binding phase",
+            "refuse": True, "warn": True, "free_bytes": 8 * 1024 ** 3,
+        })
+    args = _args(gfs_config, tmp_path / "out")
+    with pytest.raises(go_cli.GoRefusal):
+        go_cli.go_main(args)
+    real = [line for line in capsys.readouterr().out.splitlines()
+            if line.startswith("go: run folder")]
+    assert len(real) == 1
+    # Same shape up to the stamp (the two invocations claim different
+    # stamped names on a shared case root).
+    assert dry[0].split("run-", 1)[0] == real[0].split("run-", 1)[0]

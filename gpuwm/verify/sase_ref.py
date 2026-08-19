@@ -2007,7 +2007,9 @@ production run lacks the limb BY DESIGN" note this paragraph carried is
 RETIRED (spec-sweep ruling 12).
 
 S3-12 amendment (ADDITIVE e^{3/2} DISSIPATION CHANNEL; gated by
-``RunConfig.sase_additive_dissipation``, DEFAULT False).  This is the
+``RunConfig.sase_additive_dissipation``, DEFAULT True since the
+2026-08-17 real-data confirmation leg -- see the DEFAULT section
+below).  This is the
 fix LD_STABILITY_LIMIT_REJECTED named and did not attempt: it bounds
 the stable-limb amplitude by ADDING a dissipation channel rather than
 by removing the e-linear one, so dissipation is nowhere weaker than
@@ -2153,7 +2155,16 @@ to 9%), with the column's peak subgrid energy below 400 m falling
 2.2013 -> 0.8059 m2/s2.  A later coefficient move that spends the rest
 of that headroom should have to see this number.
 
-DEFAULT FALSE, AND WHY -- this is a status, not a verdict.  Flipping
+DEFAULT: TRUE, AND WHY -- flipped 2026-08-17 on the real-data
+confirmation leg the 08-02 session left named and unflown: the 08-01
+operational configuration (the `gpuwm domain` 12 km NA emission,
+GFS front door, 306x244x49) flown with this channel on, on the
+gate that session set -- run completes, no TKE regrowth above the
+BL, health gate silent.  Under fixed-means-default the channel is a
+correctness remedy for the stable-limb runaway and ships default-on.
+The paragraph that follows is the 08-02 status that governed while
+the default was still False, kept verbatim because its blast-radius
+measurement is the flip's own test plan.  Flipping
 the default was measured this session: 9 of 242 tests move, and every
 one of them is either a bitwise golden (test_split_step_trajectory_
 goldens) or a RED leg that pins a HISTORICAL formulation stack
@@ -2524,7 +2535,7 @@ CKS_BLEND_EXP = 2.0
 #: already implements.  ASSIGNED ONCE FROM THE CITATION; NEVER SWEPT.
 #:
 #: MEASURED CHECK, computed AFTER the value was chosen, not fitted to it
-#: (C:\\Users\\drew\\AppData\\Local\\Temp\\sase_judge\\reflen.py on the
+#: (a throwaway reflen.py under the judge's own temp directory, on the
 #: trusted MYNN reference forecast frame, scoring box B
 #: land, 4808 columns): the coefficient that reproduces the reference
 #: scheme's OWN dissipation q^3/(B1*EL_PBL) when applied to SASE's OWN

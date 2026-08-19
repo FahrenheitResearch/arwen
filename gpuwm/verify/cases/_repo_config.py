@@ -1,19 +1,27 @@
-"""Locating a repository config that the wheel does not ship.
+"""Locating a repository config, wherever this package is running from.
 
 Some case modules are the *module half* of a case whose other half is a
-TOML under the repository's top-level ``configs/`` directory.  That
-directory is not a package and is named by neither
-``[tool.setuptools.packages.find]`` nor ``[tool.setuptools.package-data]``
-in ``pyproject.toml``, so it is in no wheel and in no sdist: the wheel's
-only top-level entries are ``gpuwm``, ``tools`` and ``tilestream``.
+TOML under the repository's top-level ``configs/`` directory.
 
-A case module that resolves its config as ``Path(__file__).parents[3] /
-"configs" / NAME`` therefore points at ``<site-packages>/configs/NAME``
-after ``pip install gpuwm`` -- a path that has never existed on any
-machine.  Reading it produced the generic loader refusal *"... does not
-exist; pass the experiment .toml that `gpuwm domain` wrote"*, which is
-wrong twice over: the wizard does not emit these configs, and the module
-that printed it accepted no path to pass.
+Through 2.4.1 that directory was in no distribution at all: it is not a
+package, and ``[tool.setuptools.packages.find]`` named only ``gpuwm*``,
+``tools`` and ``tilestream*``.  A case module that resolves its config as
+``Path(__file__).parents[3] / "configs" / NAME`` therefore pointed at
+``<site-packages>/configs/NAME`` after ``pip install gpuwm`` -- a path
+that had never existed on any machine.  Reading it produced the generic
+loader refusal *"... does not exist; pass the experiment .toml that
+`gpuwm domain` wrote"*, which is wrong twice over: the wizard does not
+emit these configs, and the module that printed it accepted no path to
+pass.
+
+Since 2.5.0 ``configs`` ships as a top-level directory of the wheel and
+the sdist, so ``<site-packages>/configs/NAME`` is exactly where the file
+now is and this module's first-choice path is the one that resolves.  The
+resolution ladder below is unchanged and still matters: an environment
+that predates 2.5.0, a partial install, or a config a reader keeps outside
+the tree all still land in the refusal path, which is why
+:func:`shipped_in_wheel` asks the filesystem rather than trusting a
+release note.
 
 This module holds the one honest answer.  :func:`locate` returns the
 config when it is really there, and :func:`missing_config_message` builds
@@ -105,8 +113,10 @@ def missing_config_message(name: str, *, flag: str = "--config") -> str:
         lines += [
             "This case is the module half of a case whose other half is a "
             "TOML under the repository's top-level `configs/` directory.  "
-            "`configs/` is not a Python package and ships in no wheel and "
-            "no sdist, so a `pip install gpuwm` has never had this file.",
+            "gpuwm 2.5.0 and later ship that directory beside the package, "
+            "and this install has no copy of it -- so it is either older "
+            "than 2.5.0, where `configs/` was in no wheel and no sdist at "
+            "all, or it is incomplete.",
             "",
         ]
     lines += [

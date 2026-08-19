@@ -135,6 +135,43 @@ tests/test_wrfout_conformance.py
 tests/test_streaming_clock_arming.py
 
 # ---------------------------------------------------------------------------
+# SHARD 1e: the tilestream pytest suites' device halves (2.5.0 release
+# blocker #5).
+#
+# These files ran on NO list -- pyproject's testpaths excluded tilestream/
+# and both battery pytest legs listed tests/ only -- and among what sat
+# unrun was the round-trip gate whose count had drifted (41 pinned against
+# 47 serialized fields: six restart carriers were streaming with no
+# transport proof) and a pinning gate that had never executed under pytest
+# at all.  tilestream/conftest.py extends the marker discipline over the
+# tree, so the stage-1 leg runs their CPU halves and this leg runs the
+# device halves.  Measured 2026-08-16 (5090, wall seconds per isolated
+# invocation): gather 4.0, graphcap 2.6, hoststore 9.5, exchange_pack 1.8,
+# autoplan 20.0.
+#
+# The all-47-names bitwise round trip (device + pinned-host), staggered
+# placement, wrapped-edge references, plan reuse -- the transport's own
+# correctness gate.  Whole module gpu by conftest's detector.
+tilestream/test_gather.py
+# CUDA-graph capture ledger semantics: deferred reads, drains, masked
+# clears, bit-exact replay.  Whole module gpu.
+tilestream/test_graphcap.py
+# The pinned host store: manifest probe, round trip, pinning report,
+# bandwidth floor, budget guards, the 2^31-straddling memcpy3D.  Whole
+# module gpu; its no-card host-memory half is tilestream/test_hostmem.py on
+# stage 1.
+tilestream/test_hoststore.py
+# The exchange pack/unpack seam.  Six single-card tests run anywhere; the
+# four needs-2-visible-GPUs rows skip on a one-card node and are the
+# multi-GPU lane's evidence when they run.
+tilestream/test_exchange_pack.py
+# Function-marked, exactly the shard-1b shape: its CPU half runs on stage 1
+# and here rides along, while its two device tests are the only rows that
+# FALSIFY the planner -- the VRAM model held against a real allocation, and
+# a plan spent on run_tiled reproducing a monolithic run bit-exactly.
+tilestream/test_autoplan.py
+
+# ---------------------------------------------------------------------------
 # SHARD 2 (WEEKLY, not per-cut): the GF cumulus family.
 #
 # The audit's shard-design finding is that defect density is inverted

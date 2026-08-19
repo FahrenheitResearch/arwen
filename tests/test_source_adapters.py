@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 from pathlib import Path
@@ -20,10 +21,14 @@ from gpuwm.physics_compat import (
 )
 from gpuwm.source_adapters import (
     AdapterStatus,
+    SourceKind,
     get_source_adapter,
     source_adapters,
     source_capability_manifest,
 )
+from gpuwm.mapped_engine_bridge import ENGINE_RUST as MAPPED_ENGINE_RUST
+from gpuwm.source_authorities import packaged_profile_ids
+import gpuwm.source_cli
 from gpuwm.source_cli import EXIT_CONFIG, EXIT_USAGE, _parser, main
 from gpuwm.source_frame import (
     FieldDescriptor,
@@ -40,6 +45,9 @@ from gpuwm.source_frame import (
 
 EXPECTED_SOURCE_IDS = (
     "hrrr",
+    "hrrr-prs",
+    "gem-gdps",
+    "icon-eu",
     "hrrr-ak",
     "gfs",
     "gdas",
@@ -57,6 +65,7 @@ EXPECTED_SOURCE_IDS = (
     "rtma",
     "urma",
     "nbm",
+    "rrfs",
     "rrfs-a",
     "rrfs-public",
     "refs",
@@ -104,14 +113,44 @@ def test_forecast_start_hour_is_absent_globally_and_defaults_only_in_hrrr():
 def test_registry_covers_bound_inventory_and_external_source_routes():
     adapters = source_adapters()
     assert tuple(adapter.source_id for adapter in adapters) == EXPECTED_SOURCE_IDS
-    assert len({adapter.source_id for adapter in adapters}) == 27
+    assert len({adapter.source_id for adapter in adapters}) == 31
     assert [adapter.source_id for adapter in adapters if adapter.runnable] == [
         "hrrr",
+        "hrrr-prs",
+        "gem-gdps",
+        "icon-eu",
         "gfs",
+        "gdas",
+        "gefs",
+        "aigfs",
+        "aigefs",
+        "ecmwf-open-data",
+        "aifs",
+        "rap",
+        "rrfs",
         "era5",
         "20crv3",
+        "20crv3-cf",
         "mapped",
     ]
+    # The arbitrary-acceptance seam, asserted as a property rather than as
+    # a list: a source whose mapping ships is decoded through the generic
+    # mapped runner, so it costs table rows and JSON, never a runner.
+    # The one narrowing: an atmosphere-only profile whose composition role
+    # is a PENDING declaration decodes but is not runnable, and its row
+    # must name what has to be composed.
+    from gpuwm.source_authorities import packaged_profile
+    for adapter in adapters:
+        if adapter.packaged_profile is None:
+            continue
+        assert adapter.packaged_profile in packaged_profile_ids()
+        state = packaged_profile(
+            adapter.packaged_profile)["composition_state"]
+        if state == "pending_cross_source":
+            assert adapter.runnable is False
+            assert adapter.composition_requirement
+        else:
+            assert adapter.runnable is True
     hrrr = get_source_adapter("HRRR")
     assert hrrr.status is AdapterStatus.CERTIFIED
     assert hrrr.stock_wrf_gate.startswith("wrf-v4.6.1-pass")
@@ -130,11 +169,16 @@ def test_registry_covers_bound_inventory_and_external_source_routes():
     assert twentycr.status is AdapterStatus.RUNNABLE_NOT_CERTIFIED
     assert twentycr.runner == "twentycrv3_member_grib2_v1"
     assert "max_dom=4" in twentycr.notes
+    assert twentycr.packaged_profile == "20crv3-member-grib2-v1"
     twentycr_cf = get_source_adapter("20cr-netcdf")
     assert twentycr_cf.source_id == "20crv3-cf"
-    assert twentycr_cf.status is AdapterStatus.MEMBER_SELECTION_REQUIRED
-    assert twentycr_cf.runnable is False
-    assert twentycr_cf.runner is None
+    assert twentycr_cf.status is AdapterStatus.RUNNABLE_NOT_CERTIFIED
+    assert twentycr_cf.runnable is True
+    # No runner of its own: the packaged profile IS the difference.
+    assert twentycr_cf.runner == "mapped_composition_v1"
+    assert twentycr_cf.packaged_profile == "20crv3-netcdf-v1"
+    assert twentycr_cf.source_kind is SourceKind.ENSEMBLE_STATISTIC
+    assert "ENSEMBLE MEAN" in twentycr_cf.notes
     mapped = get_source_adapter("mapping-v1")
     assert mapped.status is AdapterStatus.RUNNABLE_NOT_CERTIFIED
     assert mapped.runnable is True
@@ -148,44 +192,30 @@ def test_manifest_binds_inventory_and_does_not_confuse_decode_with_readiness():
     assert manifest["runtime_forbidden"] == ["WPS", "real.exe"]
     assert manifest["rusty_weather_inventory"]["model_id_count"] == 23
     assert len(manifest["rusty_weather_inventory"]["head"]) == 40
-    assert manifest["source_count"] == 27
-    assert manifest["runnable_source_count"] == 5
-    assert set(manifest["packaged_source_authorities"][
-        "20crv3_member_grib2"
-    ]) == {"mapping", "composition", "provenance"}
+    assert manifest["source_count"] == 31
+    assert manifest["runnable_source_count"] == 17
+    assert set(manifest["packaged_source_authorities"]) == set(
+        packaged_profile_ids())
+    for pins in manifest["packaged_source_authorities"].values():
+        assert set(pins) == {"mapping", "composition", "provenance"}
+        assert all(len(digest) == 64 for digest in pins.values())
     assert all("stock_wrf_gate" in value for value in manifest["sources"])
-    assert len(manifest["mapped_stock_wrf_evidence"]) == 3
+    assert len(manifest["mapped_stock_wrf_evidence"]) == 2
     assert all(
         len(value["mapping_sha256"]) == len(value["composition_sha256"]) == 64
         for value in manifest["mapped_stock_wrf_evidence"]
     )
-    retained_pairs = (
-        (
-            "rw-wps-era5-1974-probe.mapping.json",
-            "rw-wps-era5-1974-terrain.composition.json",
-        ),
-        (
-            "rw-wps-era5-netcdf.mapping.json",
-            "rw-wps-era5-netcdf-terrain.composition.json",
-        ),
-    )
-    for evidence, (mapping_name, composition_name) in zip(
-        manifest["mapped_stock_wrf_evidence"][:2],
-        retained_pairs,
-        strict=True,
-    ):
-        assert evidence["mapping_sha256"] == hashlib.sha256(
-            (ROOT / "configs" / mapping_name).read_bytes()
-        ).hexdigest()
-        # Replacing the named soil packings changes the composition authority.
-        # Exact historical stock-WRF evidence must not silently certify the new
-        # declarative contract even though unit gates prove identical soil
-        # arrays for ERA5/GFS.
-        assert evidence["composition_sha256"] != hashlib.sha256(
-            (ROOT / "configs" / composition_name).read_bytes()
-        ).hexdigest()
+    era5_grib1 = manifest["mapped_stock_wrf_evidence"][0]
+    assert era5_grib1["gate"] == "wrf-v4.6.1-pass-era5-grib1-single-domain"
+    # Replacing the named soil packings changes the composition authority.
+    # Exact historical stock-WRF evidence must not silently certify the new
+    # declarative contract even though unit gates prove identical soil
+    # arrays for ERA5/GFS.
+    assert era5_grib1["composition_sha256"] != hashlib.sha256(
+        (ROOT / "configs" / era5_grib1["composition_config"]).read_bytes()
+    ).hexdigest()
 
-    current_gfs = manifest["mapped_stock_wrf_evidence"][2]
+    current_gfs = manifest["mapped_stock_wrf_evidence"][1]
     assert current_gfs["mapping_sha256"] == hashlib.sha256(
         (ROOT / "configs" / "rw-wps-gfs-pressure-grib2.mapping.json").read_bytes()
     ).hexdigest()
@@ -206,7 +236,7 @@ def test_manifest_binds_inventory_and_does_not_confuse_decode_with_readiness():
         "25a643fe34ff1ddd39464129bdcfff074e938ced216608f8cab8d17196ea524c"
 
     invalidated = manifest["invalidated_mapped_stock_wrf_evidence"]
-    assert len(invalidated) == 1
+    assert len(invalidated) == 2
     gfs = invalidated[0]
     assert gfs["gate"] == "wrf-v4.6.1-pass-gfs-grib2-d01-d02"
     assert gfs["mapping_sha256"] == \
@@ -222,6 +252,63 @@ def test_manifest_binds_inventory_and_does_not_confuse_decode_with_readiness():
     assert gfs["replacement_status"] == "stock_wrf_certified_d01_d04_z49"
     assert gfs["replacement_gate"] == current_gfs["gate"]
     assert "evidence does not transfer" in gfs["reason"]
+
+    era5_netcdf = invalidated[1]
+    assert era5_netcdf["gate"] == "wrf-v4.6.1-pass-era5-netcdf-single-domain"
+    assert era5_netcdf["mapping_sha256"] == \
+        "f278705331a81767d4d3532ff4dd4f739242a79b224747f51e722d462142daa8"
+    assert era5_netcdf["replacement_mapping_sha256"] == hashlib.sha256(
+        (ROOT / "configs" / "rw-wps-era5-netcdf.mapping.json").read_bytes()
+    ).hexdigest()
+    assert "evidence does not transfer" in era5_netcdf["reason"]
+    # No stock wrf.exe has been run against the replacement bytes, so the
+    # entry must not name a passing gate for them.  This is the field that
+    # keeps "invalidated" from becoming a quiet re-certification.
+    assert era5_netcdf["replacement_status"] == "stock_wrf_regate_required"
+    assert era5_netcdf["replacement_gate"] is None
+
+
+def test_every_retained_stock_wrf_evidence_still_names_the_bytes_we_ship():
+    """Retained evidence binds the CURRENT config, or it is not evidence.
+
+    The failure this closes, found on the 2.5.0 line: a commit changed
+    ``configs/rw-wps-era5-netcdf.mapping.json`` (adding the accepted-spelling
+    list for ECMWF's time/valid_time rename) and left the stock-WRF evidence
+    pinned to the pre-change bytes.  ``rw-wps --list-sources`` then printed a
+    ``mapping_sha256`` matching no file the product ships, next to a gate
+    string claiming stock wrf.exe had accepted it.
+
+    The old test caught it only because it happened to name that pair by
+    hand.  This one names nothing: every retained entry declares the config
+    it binds, and its hash must be that file's hash.  A future authority
+    that moves without its evidence being re-earned fails here, and an entry
+    that forgets to declare its config fails here too.
+    """
+
+    retained = source_capability_manifest()["mapped_stock_wrf_evidence"]
+    assert retained, "there is no retained stock-WRF evidence to check"
+    checked = 0
+    drifted: list[str] = []
+    for evidence in retained:
+        name = evidence.get("mapping_config")
+        assert isinstance(name, str) and name, (
+            f"retained evidence for gate {evidence.get('gate')!r} does not "
+            f"name the mapping config it binds, so nothing can check it")
+        path = ROOT / "configs" / name
+        assert path.is_file(), f"{name} is named by evidence but not shipped"
+        checked += 1
+        current = hashlib.sha256(path.read_bytes()).hexdigest()
+        if evidence["mapping_sha256"] != current:
+            drifted.append(
+                f"{name}: evidence names {evidence['mapping_sha256']} for gate "
+                f"{evidence.get('gate')!r} but the shipped file is {current}")
+    assert checked == len(retained)
+    assert not drifted, (
+        "retained stock-WRF evidence names bytes this product no longer "
+        "ships.  Re-run the gate on the new authority, or move the entry to "
+        "invalidated_mapped_stock_wrf_evidence with a reason -- do NOT bump "
+        "the hash, which silently certifies changed bytes with a gate that "
+        "was never re-run:\n  " + "\n  ".join(drifted))
 
 
 def _time() -> TimeDescriptor:
@@ -347,7 +434,7 @@ def test_interval_time_semantics_are_explicit():
 def test_cli_lists_machine_readable_inventory(capsys):
     assert main(["--list-sources"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["source_count"] == 27
+    assert payload["source_count"] == 31
     assert (
         payload["canonical_source_frame"]["schema"] == "gpuwm-canonical-source-frame-v1"
     )
@@ -417,17 +504,17 @@ def test_cli_exposes_fail_closed_public_support_matrix(capsys):
 
 
 def test_cli_refuses_unimplemented_source_before_touching_files(capsys):
-    assert main(["--source", "gdas"]) == EXIT_CONFIG
+    assert main(["--source", "nam"]) == EXIT_CONFIG
     error = capsys.readouterr().err
-    assert "REFUSED source=gdas" in error
+    assert "REFUSED source=nam" in error
     # The refusal and the adapter's own reason print by default; the
     # certification-gate paragraph is the mechanism half.
     assert "stock-wrf evidence is a separate certification gate" not in error
     assert "--explain" in error
 
-    assert main(["--source", "gdas", "--explain"]) == EXIT_CONFIG
+    assert main(["--source", "nam", "--explain"]) == EXIT_CONFIG
     explained = capsys.readouterr().err
-    assert "REFUSED source=gdas" in explained
+    assert "REFUSED source=nam" in explained
     assert "stock-wrf evidence is a separate certification gate" in explained
 
 
@@ -439,12 +526,14 @@ def test_a_refusal_with_nothing_to_add_does_not_echo_its_own_status(capsys):
     requirement nor notes said the same thing twice -- and a doubled
     token reads as a truncated message, which sent a node-8 pilot
     looking for the rest of a sentence that was never there.  Fixed
-    source-agnostically: `gdas` was given real notes, but `rap` and
-    `nam` (and every adapter added later with nothing yet to say) were
-    still echoing.
+    source-agnostically: bare rows (and every adapter added later
+    with nothing yet to say) were still echoing.  `rap` and then
+    `gdas` left this test when they became runnable packaged
+    profiles; `nam` and `rrfs-public` are the remaining bare
+    MAPPING_REQUIRED rows.
     """
 
-    for source in ("rap", "nam"):
+    for source in ("nam", "rrfs-public"):
         assert main(["--source", source]) == EXIT_CONFIG
         error = capsys.readouterr().err
         first = error.splitlines()[0]
@@ -460,25 +549,26 @@ def test_a_refusal_with_nothing_to_add_does_not_echo_its_own_status(capsys):
 
     # An adapter that has something to say still says it, on the same
     # line and in the same shape.
-    assert main(["--source", "gdas"]) == EXIT_CONFIG
+    assert main(["--source", "hrrr-ak"]) == EXIT_CONFIG
     error = capsys.readouterr().err
     assert error.splitlines()[0].startswith(
-        "REFUSED source=gdas status="
-        f"{get_source_adapter('gdas').status.value}: ")
-    assert "no ingest route and no front door" in error
+        "REFUSED source=hrrr-ak status="
+        f"{get_source_adapter('hrrr-ak').status.value}: ")
+    assert "Alaska grid/projection and field contract" in error
 
 
-def test_cli_reports_and_refuses_uncertified_20crv3_cf_route(capsys):
+def test_cli_reports_the_runnable_20crv3_netcdf_route(capsys):
     assert main(["--show-source", "20crv3-netcdf"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["source_id"] == "20crv3-cf"
-    assert payload["runnable"] is False
-    assert payload["status"] == "member_selection_and_mapping_required"
-
-    assert main(["--source", "20cr-netcdf"]) == EXIT_CONFIG
-    error = capsys.readouterr().err
-    assert "REFUSED source=20crv3-cf" in error
-    assert "NetCDF-CF route has no public WRF runner" in error
+    assert payload["runnable"] is True
+    assert payload["status"] == "runnable_mapping_not_stock_wrf_certified"
+    assert payload["packaged_profile"] == "20crv3-netcdf-v1"
+    assert payload["runner"] == "mapped_composition_v1"
+    # The two limits that must never be readable only in prose somewhere
+    # else: it is the ensemble MEAN, and its invariants are recovered.
+    assert "ENSEMBLE MEAN" in payload["notes"]
+    assert "no orography and no land mask" in payload["notes"]
 
 
 def _twentycr_args():
@@ -538,6 +628,35 @@ def test_cli_20crv3_rejects_authority_override(capsys):
 
     assert result == EXIT_USAGE
     assert "--mapping is not used by --source 20crv3" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("engine", ("rust", "python"))
+def test_cli_20crv3_forwards_the_mapped_engine_flag(engine, capsys):
+    """The member door honours the engine selector it forwards.
+
+    Named breakage this pins against: before the port, this route built
+    its bundle in `gpuwm.twentycrv3_wrf`'s host Python and never called
+    the composition, so `--mapped-engine rust` either exited 0 while
+    Python decoded (the measured defect) or was refused outright (the
+    member lane's stopgap).  The port routed the door through
+    `decode_composed_source`, so the route follows the engine table like
+    every other composed source and the flag means what it says: it
+    rides the child command, where `gpuwm.twentycrv3_wrf` selects the
+    engine that actually composes.  Silently DROPPING the flag here
+    would resurrect the original defect -- an asked-for engine that
+    never arrives.
+
+    Both spellings, because both now select a real engine on a route
+    that has one.
+    """
+
+    result = main(
+        _twentycr_args() + ["--mapped-engine", engine, "--dry-run"])
+
+    assert result == 0
+    command = capsys.readouterr().out
+    assert f"--mapped-engine {engine}" in command
+    assert "-m gpuwm.twentycrv3_wrf" in command
 
 
 @pytest.mark.parametrize("source", ("gfs", "era5", "20crv3"))
@@ -740,14 +859,23 @@ def test_cli_mapped_rejects_hrrr_history_interval(capsys):
     )
 
 
-def test_cli_mapped_fails_closed_on_incomplete_decoder_or_mixed_args(capsys):
+def test_cli_mapped_fails_closed_on_mixed_args(capsys):
+    """An omitted GRIB2 tool flag is no longer a usage error.
+
+    The dispatch resolves the two tools through the shared bridge
+    ladder when they are omitted (tests/test_prep_tool_ladder.py owns
+    that contract), so the only usage error left in this command line
+    is the flag that belongs to another route -- and it must still be
+    reported as one, before the estate is consulted.
+    """
+
     args = _mapped_args()
     dump_index = args.index("--grib2-dump")
     del args[dump_index : dump_index + 2]
     result = main(args + ["--gfs-series", "/wrong/route.tsv", "--dry-run"])
     assert result == EXIT_USAGE
     error = capsys.readouterr().err
-    assert "--grib2-dump is required for mapped grib2" in error
+    assert "is required for mapped grib2" not in error
     assert "--gfs-series is not used by --source mapped" in error
 
 
@@ -765,6 +893,236 @@ def test_cli_mapped_dry_run_rejects_malformed_or_duplicate_role_bindings(capsys)
     error = capsys.readouterr().err
     assert "--supplement must use" in error
     assert "--provenance repeats singleton role 'terrain'" in error
+
+
+# ---------------------------------------------------------------------------
+# The --input-list spelling, and the argv-limit relaunch net behind it.
+#
+# A field-per-file source publishes one file per field per level per lead,
+# so one initial state is hundreds of --input flags -- and Windows caps a
+# whole command line at 32 KB (CreateProcess reports the excess as
+# WinError 206).  Two answers, one grammar: --input-list carries the same
+# ordered paths as a file, and when the per-file spelling's RELAUNCH is
+# what the platform refuses, the dispatch rewrites its own inner command
+# through a temporary list file and retries once.  A command line the
+# platform accepts is never rewritten -- pinned below.
+# ---------------------------------------------------------------------------
+
+def _mapped_args_with_input_list(tmp_path, source_format="grib2"):
+    args = _mapped_args(source_format)
+    while "--input" in args:
+        index = args.index("--input")
+        del args[index : index + 2]
+    input_list = tmp_path / "inputs.list"
+    input_list.write_bytes(
+        b"/data/source-f000.grb2\r\n\r\n/data/source-f003.grb2\n"
+    )
+    args.extend(("--input-list", str(input_list)))
+    return args, input_list
+
+
+def test_cli_mapped_input_list_composes_the_list_not_the_expansion(
+    tmp_path, capsys
+):
+    args, input_list = _mapped_args_with_input_list(tmp_path)
+    assert main(args + ["--dry-run"]) == 0
+    command = capsys.readouterr().out.replace("\\", "/")
+    assert "-m gpuwm.mapped_direct" in command
+    assert "--input-list " + str(input_list).replace("\\", "/") in command
+    assert "--input /" not in command
+
+
+def test_cli_mapped_refuses_both_input_spellings(tmp_path, capsys):
+    args, _ = _mapped_args_with_input_list(tmp_path)
+    args.extend(("--input", "/data/source-f006.grb2"))
+    assert main(args + ["--dry-run"]) == EXIT_USAGE
+    assert "choose exactly one of --input or --input-list" in (
+        capsys.readouterr().err
+    )
+
+
+def test_cli_mapped_requires_exactly_one_input_spelling(capsys):
+    args = _mapped_args()
+    while "--input" in args:
+        index = args.index("--input")
+        del args[index : index + 2]
+    assert main(args + ["--dry-run"]) == EXIT_USAGE
+    assert "choose exactly one of --input or --input-list" in (
+        capsys.readouterr().err
+    )
+
+
+def test_cli_mapped_input_list_missing_or_empty_refuses_before_any_work(
+    tmp_path, capsys
+):
+    args, input_list = _mapped_args_with_input_list(tmp_path)
+    input_list.write_bytes(b"\r\n\n")
+    assert main(args + ["--dry-run"]) == EXIT_USAGE
+    assert "names no input files" in capsys.readouterr().err
+
+    input_list.unlink()
+    assert main(args + ["--dry-run"]) == EXIT_USAGE
+    assert "--input-list" in capsys.readouterr().err
+
+
+def test_cli_gfs_route_refuses_the_input_list_flag(capsys):
+    result = main(
+        ["--source", "gfs", "--input-list", "/case/inputs.list", "--dry-run"]
+    )
+    assert result == EXIT_USAGE
+    assert "--input-list is not used by --source gfs" in (
+        capsys.readouterr().err
+    )
+
+
+def test_cli_twentycr_route_refuses_the_input_list_flag(capsys):
+    result = main(
+        ["--source", "20crv3", "--input-list", "/case/inputs.list",
+         "--dry-run"]
+    )
+    assert result == EXIT_USAGE
+    assert "--input-list is not used by --source 20crv3" in (
+        capsys.readouterr().err
+    )
+
+
+def test_cli_mapped_authoring_hashes_the_files_the_input_list_names(
+    tmp_path, monkeypatch, capsys
+):
+    args, _ = _mapped_args_with_input_list(tmp_path)
+    for flag in ("--source-sha256s", "--source-sha256s-sha256"):
+        index = args.index(flag)
+        del args[index : index + 2]
+    args.extend(
+        (
+            "--author-input-manifest",
+            str(tmp_path / "authored.inputs.json"),
+            "--author-only",
+        )
+    )
+    observed = {}
+
+    def manifest(output, **kwargs):
+        observed["manifest"] = (output, kwargs)
+        return {"source_format": "grib2", "manifest": {"sha256": "2" * 64}}
+
+    monkeypatch.setattr("gpuwm.source_cli.author_input_manifest", manifest)
+
+    assert main(args) == 0
+    assert observed["manifest"][1]["primary_files"] == [
+        Path("/data/source-f000.grb2"),
+        Path("/data/source-f003.grb2"),
+    ]
+    assert "AUTHORED input_manifest=" in capsys.readouterr().err
+
+
+def test_cli_mapped_relaunch_retries_the_argv_limit_through_a_list_file(
+    monkeypatch,
+):
+    calls: list[list[str]] = []
+    recorded = {}
+
+    def fake_run(command, check=False):
+        calls.append(list(command))
+        if len(calls) == 1:
+            raise OSError(errno.E2BIG, "Argument list too long")
+        list_file = Path(command[command.index("--input-list") + 1])
+        recorded["path"] = list_file
+        recorded["content"] = list_file.read_text(encoding="utf-8")
+        return subprocess.CompletedProcess(command, 7)
+
+    monkeypatch.setattr("gpuwm.source_cli.subprocess.run", fake_run)
+
+    assert main(_mapped_args()) == 7
+    assert len(calls) == 2
+    first, second = calls
+    assert first.count("--input") == 2
+    assert "--input-list" not in first
+    # The retry is the SAME command with the per-file pairs carried by
+    # the list file instead -- nothing else moves, and the list carries
+    # the first command's own path tokens verbatim.
+    base = []
+    moved = []
+    index = 0
+    while index < len(first):
+        if first[index] == "--input":
+            moved.append(first[index + 1])
+            index += 2
+            continue
+        base.append(first[index])
+        index += 1
+    assert second == base + ["--input-list", str(recorded["path"])]
+    assert recorded["content"] == "\n".join(moved) + "\n"
+    assert len(moved) == 2
+    # The temporary list file does not outlive the stage.
+    assert not recorded["path"].exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="winerror is a Windows-only OSError slot")
+def test_cli_mapped_relaunch_retries_createprocess_error_206(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(command, check=False):
+        calls.append(list(command))
+        if len(calls) == 1:
+            raise OSError(22, "The filename or extension is too long",
+                          None, 206)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("gpuwm.source_cli.subprocess.run", fake_run)
+
+    assert main(_mapped_args()) == 0
+    assert len(calls) == 2
+    assert "--input-list" in calls[1]
+
+
+def test_cli_mapped_relaunch_success_never_rewrites_the_command(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(command, check=False):
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("gpuwm.source_cli.subprocess.run", fake_run)
+
+    assert main(_mapped_args()) == 0
+    assert len(calls) == 1
+    assert calls[0].count("--input") == 2
+    assert "--input-list" not in calls[0]
+
+
+def test_cli_relaunch_other_launch_failures_still_report_and_exit_70(
+    monkeypatch, capsys
+):
+    calls: list[list[str]] = []
+
+    def fake_run(command, check=False):
+        calls.append(list(command))
+        raise OSError(errno.ENOENT, "No such file or directory")
+
+    monkeypatch.setattr("gpuwm.source_cli.subprocess.run", fake_run)
+
+    assert main(_mapped_args()) == 70
+    assert len(calls) == 1
+    assert "failed to launch native adapter" in capsys.readouterr().err
+
+
+def test_cli_relaunch_argv_limit_on_the_compact_spelling_reports(
+    tmp_path, monkeypatch, capsys
+):
+    calls: list[list[str]] = []
+
+    def fake_run(command, check=False):
+        calls.append(list(command))
+        raise OSError(errno.E2BIG, "Argument list too long")
+
+    monkeypatch.setattr("gpuwm.source_cli.subprocess.run", fake_run)
+
+    args, _ = _mapped_args_with_input_list(tmp_path)
+    assert main(args) == 70
+    assert len(calls) == 1
+    assert "failed to launch native adapter" in capsys.readouterr().err
 
 
 def test_cli_mapped_author_only_authors_descriptor_and_exact_manifest(
@@ -1621,6 +1979,37 @@ def test_cli_gfs_noahmp_refuses_without_expert_acknowledgement(capsys):
     assert "noahmp-host-column-throughput-v1" in capsys.readouterr().err
 
 
+def _declare_acknowledgement(config: Path, token: str) -> None:
+    """Add TOKEN to ``[experiment].acknowledgements``, the way a user does.
+
+    `gpuwm domain` already emits declarations of its own for some
+    profiles (a longwave-OFF suite carries constant-downward-longwave-v1),
+    so a second ``acknowledgements =`` key spliced in beside that one is a
+    DUPLICATE KEY and the file stops being decodable TOML.  Extending the
+    array that is there is the edit a caller actually makes, and the
+    duplicate-key shape has a refusal test of its own below.
+    """
+    lines = config.read_text(encoding="utf-8").splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.startswith("acknowledgements = ["):
+            head, _, tail = line.rstrip("\n").rpartition("]")
+            separator = "" if head.endswith("[") else ", "
+            lines[index] = f'{head}{separator}"{token}"]{tail}\n'
+            break
+    else:
+        lines = "".join(lines).replace(
+            "[experiment]\n",
+            f'[experiment]\nacknowledgements = ["{token}"]\n', 1).splitlines(
+                keepends=True)
+    config.write_text("".join(lines), encoding="utf-8")
+    # Self-checking fixture: if the wizard's emission moves again, this
+    # fails here, naming the edit, instead of surfacing as an unexplained
+    # front-door exit code three asserts later.
+    declared = tomllib.loads(
+        config.read_text(encoding="utf-8"))["experiment"]["acknowledgements"]
+    assert token in declared, declared
+
+
 @pytest.mark.gpu
 # ^ not for device work: `gpuwm domain` requires the CuPy runtime for its
 #   sizing estimator, so this CLI-level test needs the GPU estate the CI
@@ -1638,13 +2027,7 @@ def test_cli_gfs_accepts_noahmp_acknowledgement_from_experiment_toml(
         "--physics-profile", WSM6_PROFILE_ID,
         "--cycle", "2026-07-29T18", "--out", str(experiment),
     ]) == 0
-    rendered = experiment.read_text(encoding="utf-8").replace(
-        "[experiment]\n",
-        '[experiment]\nacknowledgements = '
-        '["noahmp-host-column-throughput-v1"]\n',
-        1,
-    )
-    experiment.write_text(rendered, encoding="utf-8")
+    _declare_acknowledgement(experiment, "noahmp-host-column-throughput-v1")
     capsys.readouterr()
 
     result = main([
@@ -1667,6 +2050,90 @@ def test_cli_gfs_accepts_noahmp_acknowledgement_from_experiment_toml(
     command = capsys.readouterr().out.replace("\\", "/")
     assert f"--physics-profile {NOAHMP_PROFILE_ID}" in command
     assert "--ack" not in command
+
+
+def test_cli_gfs_names_an_undecodable_experiment_config_not_the_ack_it_holds(
+        tmp_path, capsys):
+    """The concrete breakage: a config that cannot be decoded silently
+    dropped the whole TOML acknowledgement channel, and the refusal that
+    followed told the caller to declare the acknowledgement their own
+    config already carried.  A duplicate ``acknowledgements =`` key is
+    exactly how a hand-edited wizard config gets there -- the wizard
+    emits one of its own for a longwave-OFF suite -- so the caller reads
+    "add acknowledgements = [...]", looks at the line they added, and has
+    nothing to go on.  The decode fault is what this door must name.
+    """
+
+    experiment = tmp_path / "experiment.toml"
+    experiment.write_text(
+        "[experiment]\n"
+        'acknowledgements = ["noahmp-host-column-throughput-v1"]\n'
+        'name = "duplicate-key"\n'
+        'acknowledgements = ["constant-downward-longwave-v1"]\n',
+        encoding="utf-8",
+    )
+
+    result = main([
+        "--source", "gfs",
+        "--gfs-series", "/source/gfs-series.tsv",
+        "--cycle", "2026-07-20_00:00:00",
+        "--bridge", "/bin/gfs_grib2_bridge",
+        "--wps-namelist", "/case/namelist.wps",
+        "--static-input", "/case/static.npz",
+        "--static-receipt", "/case/static-receipt.json",
+        "--experiment-config", str(experiment),
+        "--source-sha256s", "/source/input-manifest.json",
+        "--source-sha256s-sha256", "abc123",
+        "--output-root", "/output",
+        "--physics-profile", NOAHMP_PROFILE_ID,
+        "--dry-run",
+    ])
+
+    assert result == EXIT_USAGE
+    message = capsys.readouterr().err
+    # It names the file, the fact that it did not decode, and the decoder's
+    # own position -- which is what points at the duplicate key.
+    assert "--experiment-config" in message
+    assert "experiment.toml" in message
+    assert "TOML" in message
+    assert "Cannot overwrite a value" in message
+    # And it does NOT send the caller back to write the declaration that
+    # is sitting in the file it could not read.
+    assert "--ack noahmp-host-column-throughput-v1" not in message
+
+
+def test_cli_gfs_defers_a_decodable_but_invalid_experiment_config(
+        tmp_path, capsys):
+    """Decodable TOML that is not a valid experiment stays the direct
+    front door's diagnostic to give, exactly as before: this door reads
+    the acknowledgement channel and nothing else, so it must not grow a
+    second, poorer copy of the experiment loader's refusals.
+    """
+
+    experiment = tmp_path / "experiment.toml"
+    experiment.write_text(
+        '[experiment]\nname = "no-tables-at-all"\n', encoding="utf-8")
+
+    result = main([
+        "--source", "gfs",
+        "--gfs-series", "/source/gfs-series.tsv",
+        "--cycle", "2026-07-20_00:00:00",
+        "--bridge", "/bin/gfs_grib2_bridge",
+        "--wps-namelist", "/case/namelist.wps",
+        "--static-input", "/case/static.npz",
+        "--static-receipt", "/case/static-receipt.json",
+        "--experiment-config", str(experiment),
+        "--source-sha256s", "/source/input-manifest.json",
+        "--source-sha256s-sha256", "abc123",
+        "--output-root", "/output",
+        # A profile that needs no acknowledgement, so the only thing that
+        # could refuse here is a diagnostic this door should not be giving.
+        "--physics-profile", WSM6_PROFILE_ID,
+        "--dry-run",
+    ])
+
+    assert result == 0
+    assert "is not decodable TOML" not in capsys.readouterr().err
 
 
 def test_cli_gfs_d06_hierarchy_routes_source_neutral_controls(capsys):
@@ -1885,13 +2352,19 @@ def test_cli_installed_distribution_rejects_explicit_decoder_substitution(
     assert "--grib2-inventory differs from the decoder bound" in error
 
 
-def test_cli_installed_distribution_uses_manifest_bound_decoders(
-    tmp_path, monkeypatch, capsys
-):
+def _installed_grib2_distribution(tmp_path, monkeypatch, suffix=""):
+    """A sealed installed runtime whose manifest binds both GRIB2 tools.
+
+    This is the estate a wheel user has: a runtime manifest naming the
+    two staged decoders by hash, and the two environment variables the
+    installer exports.  It is the setup both decoder contracts below
+    are argued on -- what changes between them is only the ENGINE.
+    """
+
     bridge_root = tmp_path / "libexec" / "bridges"
     bridge_root.mkdir(parents=True)
-    inventory = bridge_root / "grib2_inventory"
-    dump = bridge_root / "grib2_dump"
+    inventory = bridge_root / f"grib2_inventory{suffix}"
+    dump = bridge_root / f"grib2_dump{suffix}"
     for path, payload in ((inventory, b"inventory"), (dump, b"dump")):
         path.write_bytes(payload)
         path.chmod(0o755)
@@ -1914,50 +2387,90 @@ def test_cli_installed_distribution_uses_manifest_bound_decoders(
     monkeypatch.setenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", str(manifest))
     monkeypatch.setenv("GPUWM_GRIB2_INVENTORY", str(inventory))
     monkeypatch.setenv("GPUWM_GRIB2_DUMP", str(dump))
+    monkeypatch.delenv("GPUWM_MAPPED_ENGINE", raising=False)
+    return inventory, dump
+
+
+def _mapped_args_without_tool_flags():
     args = _mapped_args()
     for flag in ("--grib2-inventory", "--grib2-dump"):
         index = args.index(flag)
         del args[index : index + 2]
+    return args
 
-    assert main(args + ["--dry-run"]) == 0
+
+def test_cli_installed_distribution_binds_the_engine_not_subprocess_decoders(
+    tmp_path, monkeypatch, capsys
+):
+    """The default mapped GRIB2 route decodes IN PROCESS on the Rust engine.
+
+    The route this door composes runs no subprocess decoder at all, so
+    the installed runtime's two staged tools are neither resolved nor
+    forwarded.  Forwarding them would not merely be redundant: an
+    explicit tool pin is the spelling that routes the decode BACK to
+    the Python engine, so a door that helpfully passed the manifest's
+    paths along would silently un-default the engine and report a Rust
+    run that was a Python one.  The engine choice is asserted through
+    the resolver the door actually consults, so this cannot pass by the
+    door having forgotten about engines entirely.
+    """
+
+    inventory, dump = _installed_grib2_distribution(tmp_path, monkeypatch)
+    answers = []
+    real_resolver = gpuwm.source_cli._resolve_mapped_engine
+
+    def _recorded(explicit=None):
+        answer = real_resolver(explicit)
+        answers.append(answer)
+        return answer
+
+    monkeypatch.setattr(gpuwm.source_cli, "_resolve_mapped_engine", _recorded)
+
+    assert main(_mapped_args_without_tool_flags() + ["--dry-run"]) == 0
+    command = capsys.readouterr().out.replace("\\", "/")
+    assert answers == [MAPPED_ENGINE_RUST], answers
+    assert "-m gpuwm.mapped_direct" in command
+    assert "--grib2-inventory" not in command
+    assert "--grib2-dump" not in command
+    assert str(inventory).replace("\\", "/") not in command
+    assert str(dump).replace("\\", "/") not in command
+
+
+def test_cli_installed_distribution_uses_manifest_bound_decoders_on_python(
+    tmp_path, monkeypatch, capsys
+):
+    """The Python engine still binds its decoders out of the manifest.
+
+    ``--mapped-engine python`` is the documented workaround, and on it
+    the decode IS a subprocess: the two tools then come from the sealed
+    installed runtime rather than from whatever happens to be on PATH.
+    Losing this would let an installed distribution launch an unbound
+    decoder, which is the substitution the manifest exists to refuse.
+    """
+
+    inventory, dump = _installed_grib2_distribution(tmp_path, monkeypatch)
+    args = _mapped_args_without_tool_flags()
+
+    assert main(args + ["--mapped-engine", "python", "--dry-run"]) == 0
     command = capsys.readouterr().out.replace("\\", "/")
     assert str(inventory).replace("\\", "/") in command
     assert str(dump).replace("\\", "/") in command
 
 
-def test_cli_installed_windows_distribution_uses_exe_decoders(
+def test_cli_installed_windows_distribution_uses_exe_decoders_on_python(
     tmp_path, monkeypatch, capsys
 ):
-    bridge_root = tmp_path / "libexec" / "bridges"
-    bridge_root.mkdir(parents=True)
-    inventory = bridge_root / "grib2_inventory.exe"
-    dump = bridge_root / "grib2_dump.exe"
-    for path, payload in ((inventory, b"inventory"), (dump, b"dump")):
-        path.write_bytes(payload)
-        path.chmod(0o755)
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            complete_runtime_manifest(
-                {
-                    f"libexec/bridges/{path.name}": {
-                        "bytes": path.stat().st_size,
-                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                        "executable": True,
-                    }
-                    for path in (inventory, dump)
-                }
-            )
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", str(manifest))
-    monkeypatch.setenv("GPUWM_GRIB2_INVENTORY", str(inventory))
-    monkeypatch.setenv("GPUWM_GRIB2_DUMP", str(dump))
-    args = _mapped_args()
-    for flag in ("--grib2-inventory", "--grib2-dump"):
-        index = args.index(flag)
-        del args[index : index + 2]
+    """Same contract, ``.exe`` platform spelling, environment workaround.
+
+    The engine is selected here through ``GPUWM_MAPPED_ENGINE``, the
+    other half of the documented workaround, so both spellings that
+    reach the Python engine stay pinned against the sealed runtime.
+    """
+
+    inventory, dump = _installed_grib2_distribution(
+        tmp_path, monkeypatch, suffix=".exe")
+    monkeypatch.setenv("GPUWM_MAPPED_ENGINE", "python")
+    args = _mapped_args_without_tool_flags()
 
     assert main(args + ["--dry-run"]) == 0
     command = capsys.readouterr().out.replace("\\", "/")

@@ -106,10 +106,17 @@ def wheel_venv(tmp_path_factory):
 
     work = tmp_path_factory.mktemp("pip-reachability")
     wheelhouse = work / "wheelhouse"
+    # This wheel never leaves the temp directory, so the unpinned-tree
+    # refusal (setup.py, tests/test_wheel_pin_gate.py) is explicitly
+    # waived: runner reachability is under test here, not bridge
+    # staging, and a dev checkout's pins are empty by design.
+    build_env = dict(os.environ)
+    build_env["GPUWM_ALLOW_UNPINNED_WHEEL"] = "1"
     subprocess.run(
         [sys.executable, "-m", "pip", "wheel", str(ROOT), "--no-deps",
          "--no-build-isolation", "-w", str(wheelhouse)],
-        check=True, capture_output=True, text=True, timeout=1800)
+        check=True, capture_output=True, text=True, timeout=1800,
+        env=build_env)
     wheels = sorted(wheelhouse.glob("gpuwm-*.whl"))
     assert wheels, "no wheel was built"
 

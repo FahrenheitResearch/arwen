@@ -1,25 +1,23 @@
 """Analysis-hour-first fetch ordering, pinned as a contract.
 
-Every prepared-route fetch already downloads the analysis hour's files
-before any boundary hour's, because each ladder builder returns an
-ascending ``range`` and each loop walks it in order.  That was
-incidental -- a property of three ``range()`` calls that nothing
-asserted -- and it is the property time to first plot depends on: the
-analysis frame is what the first plot is OF, and any future work that
-starts preparation before the whole window has landed can only do so if
-the window lands in this order.
+Every prepared-route fetch hands its transfers to the pool in ladder
+order, analysis lead first (``f000`` by default, ``f{K}`` under
+``--forecast-start-hour K``).  The contract a consumer reads lives at
+the RECEIPT: ``forecast_hours`` claims a contiguous ascending prefix,
+so "the analysis is on disk and verified" is true the moment the first
+hour is claimed -- which is the seam any start-preparation-early work
+attaches to, and it survives the pooled default because admission is in
+submission order no matter when each hour's bytes finish landing.
 
-So it is pinned here, at both ends.  The ladder builders must put the
-forecast-start lead first (``f000`` by default, ``f{K}`` under
-``--forecast-start-hour K``), and each fetch loop must consume the
-ladder in the order it was handed -- for the byte-range HRRR transport,
-for the NOMADS subset transport, and for the ``rw_fetch`` full-file
-backbone.
+Two layers are pinned here:
 
-What this does NOT claim is a speedup.  Reordering buys nothing that is
-not already there; see ``docs/run-plan.md`` for why preparation still
-waits for the whole window, and what would have to change for it not
-to.
+* the ladder builders put the forecast-start lead first, always;
+* under ``--fetch-workers 1`` -- the serial transport, a first-class
+  knob -- the BYTES also land strictly in ladder order, for the
+  byte-range HRRR transport, the NOMADS subset transport, and the
+  ``rw_fetch`` full-file backbone.  The pooled default overlaps
+  transfers, so byte-landing order is deliberately unpinned there; the
+  receipt-order tests are the ones that hold for every pool size.
 """
 
 from __future__ import annotations
@@ -96,9 +94,11 @@ def _hrrr_order(tmp_path, monkeypatch, *, hours):
                                   expected_count=expected_count)
 
     monkeypatch.setattr(hrrr_transport, "_download_product", product)
+    # Byte-landing order is pinned for the SERIAL transport; the pooled
+    # default overlaps transfers and keeps the contract at the receipt.
     fetch.fetch_hrrr(
         cycle=datetime(2026, 7, 28, 5), hours=hours, area=None,
-        out=tmp_path / "hrrr", progress=lambda line: None)
+        out=tmp_path / "hrrr", progress=lambda line: None, file_workers=1)
     return seen
 
 
@@ -239,7 +239,7 @@ def test_the_nomads_subset_transport_walks_the_ladder_in_order(
     fetch.fetch_gfs(
         cycle=datetime(2026, 7, 28, 6), hours=(0, 3, 6),
         area=fetch.parse_area("30,-100,40,-90"), out=tmp_path / "gfs",
-        progress=lambda line: None)
+        progress=lambda line: None, file_workers=1)
 
     leads = [url.split("pgrb2.0p25.f")[1][:3] for url in requested]
     assert leads == ["000", "003", "006"]
@@ -270,7 +270,8 @@ def test_the_full_file_backbone_is_driven_one_hour_at_a_time_in_order(
     fetch.fetch_gfs_fullfile(
         cycle=datetime(2026, 7, 28, 6), hours=(0, 3, 6), area=None,
         out=tmp_path / "gfs-full", engine="rust",
-        engine_bin=tmp_path / "rw_fetch", progress=lambda line: None)
+        engine_bin=tmp_path / "rw_fetch", progress=lambda line: None,
+        file_workers=1)
 
     assert [call["hours"] for call in calls] == [(0,), (3,), (6,)]
     assert {call["mode"] for call in calls} == {"full-file"}

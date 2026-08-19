@@ -34,6 +34,7 @@ terminal.  Nothing is deleted; a layer is chosen.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 
 #: Separates a message's ACTION half from its WHY half inside one string.
@@ -47,6 +48,57 @@ EXPLAIN_MARK = "\n[[explain]]\n"
 
 #: Appended to a layered message printed without ``--explain``.
 _POINTER = "  (run {command} --explain for the reason)"
+
+#: The tokens of the invocation in progress, as the reader typed them
+#: (without the leading ``gpuwm``), or ``None`` outside the CLI.
+#:
+#: Why the pointer needs this: ``--explain`` is a MODIFIER, so a tail
+#: that printed only ``run gpuwm domain --explain`` handed the reader a
+#: line that is itself an argparse usage error -- measured in the UX
+#: persona walks (finding N8), on five doors in one session.  The tail
+#: must be the reader's own full invocation plus the one flag, and only
+#: the front door knows that invocation, so it records it here (through
+#: :func:`explain_scope`, which bounds it to the one call) and
+#: :func:`render` reads it at the print boundary.
+_INVOCATION: tuple[str, ...] | None = None
+
+
+def set_invocation(tokens) -> None:
+    """Record the invocation in progress, for the pointer tail.
+
+    Called by ``gpuwm.cli`` once per dispatch, inside the
+    :func:`explain_scope` that door opened, with the tokens exactly as
+    the reader typed them.  ``None`` forgets it.
+    """
+
+    global _INVOCATION
+    _INVOCATION = (None if tokens is None
+                   else tuple(str(token) for token in tokens))
+
+
+def _shell_word(token: str) -> str:
+    """``token`` spelled so a shell reads it back as one word."""
+
+    if token and not any(char.isspace() for char in token) \
+            and '"' not in token:
+        return token
+    return '"' + token.replace('"', '\\"') + '"'
+
+
+def reinvocation(fallback: str | None = None) -> str | None:
+    """The reader's own command line, re-runnable, else ``fallback``.
+
+    ``fallback`` is the command NAME a call site holds (``gpuwm
+    render``); it is the whole pointer only on a path no front door
+    recorded -- the ``python -m`` doors, an embedder calling a handler
+    directly, a test driving one function.  Recorded beats named,
+    because the name alone produces the dead-end tail this exists to
+    close.
+    """
+
+    if _INVOCATION is None:
+        return fallback
+    return " ".join(("gpuwm", *map(_shell_word, _INVOCATION)))
 
 
 def layered(action: str, why: str) -> str:
@@ -92,10 +144,13 @@ def render(message: str, *, explain: bool, command: str | None = None) -> str:
     why the explanation half is stored verbatim rather than summarized.
 
     Without it the action half stands alone, followed by a pointer at
-    the flag that produces the rest.  ``command`` is what the reader
-    would re-run; when a caller cannot name it the pointer is omitted
-    rather than guessed, because a pointer at a command that does not
-    take ``--explain`` is worse than no pointer.
+    the flag that produces the rest.  The pointer is the reader's OWN
+    invocation with ``--explain`` appended -- re-runnable exactly as
+    printed -- whenever the front door recorded one
+    (:func:`set_invocation`); ``command`` is the fallback name for the
+    paths no door recorded.  When a caller cannot even name the command
+    the pointer is omitted rather than guessed, because a pointer at a
+    command that does not take ``--explain`` is worse than no pointer.
     """
 
     action, why = split(message)
@@ -103,8 +158,9 @@ def render(message: str, *, explain: bool, command: str | None = None) -> str:
         return action
     if explain:
         return f"{action}\n\n{why}"
-    if command:
-        return action + "\n" + _POINTER.format(command=command)
+    line = reinvocation(command)
+    if line:
+        return action + "\n" + _POINTER.format(command=line)
     return action
 
 
@@ -135,17 +191,71 @@ def explain_enabled(args) -> bool:
     return bool(getattr(args, "explain", False))
 
 
-#: Process-wide record of whether this invocation asked for the full
+#: Record of whether the INVOCATION IN PROGRESS asked for the full
 #: layer.  Library code that emits warnings has no ``args`` in reach;
-#: the CLI stamps the flag here once, right after parsing.
+#: a front door stamps the flag here once, right after parsing.
+#:
+#: Module state, so its lifetime has to be the invocation's rather than
+#: the interpreter's -- see :func:`explain_scope`, which is how every
+#: front door sets it.
 _EXPLAIN_ACTIVE = False
 
 
 def set_explain(enabled: bool) -> None:
-    """Record --explain for this process (set once by the CLI)."""
+    """Record --explain for the invocation in progress.
+
+    Called by a front door right after it parses its arguments, from
+    inside the :func:`explain_scope` that door opened.  Setting it
+    outside a scope leaves it set for the rest of the interpreter, which
+    is the defect that context manager exists to prevent.
+    """
 
     global _EXPLAIN_ACTIVE
     _EXPLAIN_ACTIVE = bool(enabled)
+
+
+@contextlib.contextmanager
+def explain_scope(enabled: bool = False):
+    """Bound one front door's --explain state to that one invocation.
+
+    ``gpuwm.cli.main`` and the ``tools/`` doors are ordinary functions,
+    and plenty of callers reach them without spawning a process: the
+    console script, an embedder scripting the CLI, and the test suite
+    most of all.  A door that only ever CALLS :func:`set_explain` leaves
+    the flag standing after it returns, so the NEXT invocation in the
+    same interpreter silently inherits an ``--explain`` it never asked
+    for, and every :func:`warn` it emits grows a mechanism continuation
+    under its one contracted line.
+
+    Measured, not theorised: ``pytest tests/test_doctor.py
+    tests/test_fetch_engine_degrade_guard.py`` put two lines on stderr
+    where the guard contracts one, and the same two files in the
+    opposite order put one -- because ``gpuwm doctor --explain`` ran
+    first and never gave the flag back.  A battery is free to pack its
+    shards either way, so the same tree was red or green by luck of the
+    ordering.
+
+    Entering forces ``enabled`` (a fresh invocation must not start from
+    the last one's answer) and leaving restores whatever was in place
+    before, so scopes nest and a door called from inside another door
+    does not corrupt its caller's layer.
+
+    The recorded invocation (:func:`set_invocation`) has exactly the
+    same lifetime problem -- a pointer naming the LAST invocation's
+    arguments is a lie about this one -- so it is bounded here too:
+    cleared on entry, restored on exit.
+    """
+
+    global _EXPLAIN_ACTIVE, _INVOCATION
+    previous = _EXPLAIN_ACTIVE
+    previous_invocation = _INVOCATION
+    _EXPLAIN_ACTIVE = bool(enabled)
+    _INVOCATION = None
+    try:
+        yield
+    finally:
+        _EXPLAIN_ACTIVE = previous
+        _INVOCATION = previous_invocation
 
 
 #: Callables that also receive every warning, as a typed mapping.
@@ -220,6 +330,7 @@ def warn(action: str, why: str = "") -> None:
 
 __all__ = [
     "EXPLAIN_MARK", "add_explain_flag", "add_warning_observer",
-    "explain_enabled", "layered", "remove_warning_observer", "render",
-    "set_explain", "split", "warn",
+    "explain_enabled", "explain_scope", "layered", "reinvocation",
+    "remove_warning_observer", "render", "set_explain",
+    "set_invocation", "split", "warn",
 ]

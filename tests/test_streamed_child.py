@@ -507,13 +507,20 @@ def test_the_tree_walk_prices_each_domain_against_what_is_left(monkeypatch):
     assert out == {}
     corridor = nest_stream.corridor_claim_bytes(
         child, decision=decisions[2])
-    assert seen[0] is machine
-    assert seen[1].vram_bytes == 10 * 2**30 - resident_claim
+    # The claim a domain leaves behind is MARGINAL: the scripted 6 GiB is a
+    # whole-process price and carries the CUDA context and the rung's
+    # tables, which the tree pays ONCE and the second domain must not be
+    # charged for again.  ``budget_spent_before_bytes`` moves with it.
+    overhead = streaming._process_overhead_bytes(parent)
+    marginal = resident_claim - overhead
+    assert overhead > 0
+    assert seen[0].vram_bytes == machine.vram_budget_bytes
+    assert seen[1].vram_bytes == machine.vram_budget_bytes - marginal
     assert seen[1].vram_headroom == 0.0
     assert decisions[1].detail["road"] == "resident"
-    assert decisions[1].detail["claim_bytes"] == resident_claim
+    assert decisions[1].detail["claim_bytes"] == marginal
     assert decisions[1].detail["corridor_claim_bytes"] == 0
-    assert decisions[2].detail["budget_spent_before_bytes"] == resident_claim
+    assert decisions[2].detail["budget_spent_before_bytes"] == marginal
     assert decisions[2].detail["corridor_claim_bytes"] == corridor > 0
 
 

@@ -1,10 +1,22 @@
 # Getting data
 
-ArWen downloads from four public sources -- ERA5, GFS, GDAS, and
-HRRR -- through one download front door, `gpuwm fetch`, plus the static
-geography tree `gpuwm fetch-geog` downloads and stages. Three of the
-four also *initialize* a run; GDAS stops at the decoder. This page
-covers each route end to end, the manifest handoff into the
+ArWen downloads from **every registered source that has public bytes**
+through one download front door, `gpuwm fetch`, plus the static
+geography tree `gpuwm fetch-geog` downloads and stages. `gpuwm fetch
+--source` accepts:
+
+| | sources |
+|---|---|
+| hand-written transports (this page, in detail) | `gfs`, `gdas`, `hrrr`, `era5` |
+| [packaged route table](#every-other-source-the-packaged-route-table) | `hrrr-prs`, `rap`, `rrfs`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `aifs`, `icon-eu`, `gem-gdps` |
+| refused by name, with a remedy | `20crv3`, `20crv3-cf`, `mapped` -- no public bytes, so `gpuwm prep --source-root` is the door |
+
+Registry aliases work everywhere a source id does: `gdps`, `ifs`,
+`hrrr-wrfprs`, `20cr`, `ai-gfs`. A registered source that is not
+runnable (`nam`, `href`, `rtma`, …) refuses naming its registry status,
+because nothing in this ArWen could read the bytes a download produced.
+
+This page covers each route end to end, the manifest handoff into the
 preprocessor, and honest disk numbers (all measured).
 
 Three routes to keep straight from the start:
@@ -30,6 +42,29 @@ Three routes to keep straight from the start:
 Everything downstream of `fetch` is fail-closed: the Rust GRIB bridges
 validate envelopes, inventories, grids, and hashes before decoding, and
 refuse rather than approximate.
+
+Multi-file downloads are **pooled by default**: up to 6 files move at
+once (`--fetch-workers N` to change it; `1` is the serial transport, a
+knob, not a workaround).  Cold fetch cost is dominated by per-file
+service latency, not bytes, so overlapping requests is where the wall
+clock goes.  Politeness is engine policy, not your problem: NOMADS is
+capped at 2 in-flight requests on top of the node-wide 2.5 s spacing
+governor shared with the Rust backbone, `Retry-After` answers are
+honored, and other hosts take the pool as asked.  Concurrency changes
+no integrity property -- every file passes the same envelope walk,
+record bar and SHA-256 as the serial loop, one failed file still
+refuses by name, an interrupted fetch still records a contiguous
+verified prefix, and `fetch-manifest.json` receipts the run under
+`concurrency`: files, bytes, workers, host caps, wall seconds, the
+serial model and the effective speedup.
+
+Measured cold at the default 6 workers
+([receipt](receipts/fetch-pool-cold-measured.json)): a 4-file GFS
+NOMADS-subset starter fetch takes 10.6 s, and a real 252-file ICON-EU
+state from DWD open data comes down in 71.2 s. Many-file states are
+where the pool earns its keep; on NOMADS the politeness pair is the
+ceiling by design, so a 4-file subset is bounded by the host rather
+than by the pool.
 
 ## GFS (0.25-degree, NOMADS or the S3 archive)
 
@@ -100,7 +135,10 @@ gpuwm fetch --source gfs --cycle 2026-07-29T18 --hours 24 \
   the rolling window. For a cycle past NOMADS retention, `--mode
   full-file` reads the S3 archive directly -- see *Reach* below.
 - Emits `gfs-series.tsv` (relative paths; the directory is relocatable)
-  with each row's certified forecast-process ID, and
+  with each row's certified forecast-process ID, and the same four-file
+  front door every table route leaves: `inputs.txt`, `prep-command.txt`
+  (the bound half -- `--wps-namelist`, `--experiment-config`,
+  `--geog-root` and `--output-root` are yours), `SHA256SUMS`, and
   `fetch-manifest.json` with per-file SHA-256.
 - **Disk:** about 3.3 KB per square degree per forecast hour. Measured:
   ~83 KB/h at 5x5 degrees, ~3 MB/h at 30x30, ~16 MB/h at 60x80.
@@ -227,8 +265,14 @@ area, allow 15 degrees beyond the outer domain.
 ### The manifest handoff (do not hand-author)
 
 The GFS front door requires an input manifest binding every file's
-SHA-256 -- including the bridge executable's own hash. One command
-authors it from the fetch:
+SHA-256 -- including the bridge executable's own hash. **You normally
+never author it yourself:** with the `--source-manifest` pair omitted,
+`gpuwm prep --source gfs` authors and digest-binds it from the fetched
+directory the series lives in, says so on stderr, and proceeds -- so
+bare prep follows the fetch directly. The explicit pair pins an
+existing manifest instead. To author one without running prep (a
+different namelist/config pairing, or a tail series), one command
+writes it from the fetch:
 
 ```bash
 gpuwm fetch --source gfs --author-front-door-manifest \
@@ -320,7 +364,11 @@ gpuwm fetch --source hrrr --cycle 2026-07-28T00 --hours 18 \
   same instant only at lead 0, which is the only lead the front doors
   used to allow. `--valid-time` is still accepted on both, with exactly
   the meaning it had there, so existing scripts keep working; passing
-  both spellings at once is refused rather than ranked.
+  both spellings at once is refused rather than ranked. On the front
+  door itself -- `gpuwm prep --source hrrr`, which is what `gpuwm
+  domain` prints and what you should type -- the flag is
+  `--valid-time`, validated there as an exact hourly HRRR cycle and
+  handed to each stage under the name that stage takes.
 - The fetch prints the complete front-door handoff line
   (`--source-manifest SHA256SUMS --source-manifest-sha256 <digest>`).
 - **Disk:** the default is whole files, so budget **~1.1 GB per
@@ -334,13 +382,95 @@ gpuwm fetch --source hrrr --cycle 2026-07-28T00 --hours 18 \
   ~0.44 GB/h, ~8.4 GB for f00..f18 -- less bandwidth, far more wall
   clock (see the mode discussion below).
 
+## Every other source: the packaged route table
+
+Ten more sources have a runnable packaged decode profile, and until
+2.5.0 none of them had a way to get its bytes -- the 6 h model battery
+brought RRFS's 6.3 GiB down with hand-written `curl`. A capability with
+no front door is engine-proven, not shipped, so acquisition for all ten
+is now **table data**: the packaged document
+`gpuwm/authorities/rw-wps-fetch-routes.v1.json` carries each source's
+hosts, key templates, cycle grammar, lead ladder and file-set
+composition, and `gpuwm/fetch_routes.py` is the one engine that reads
+every row. Adding a model's front door is a row in that file.
+
+```bash
+# one command per source; --cycle is explicit (these producers' lags
+# differ by hours, so there is no honest 'latest' to resolve)
+gpuwm fetch --source rap      --cycle 2026-08-16T00 --hours 6 --out data/rap
+gpuwm fetch --source icon-eu  --cycle 2026-08-17T12 --hours 6 --out data/icon
+gpuwm fetch --source gefs     --cycle 2026-08-17T00 --hours 6 --out data/gefs --member c00
+gpuwm fetch --source aigfs    --cycle 2026-08-17T06 --hours 6 --out data/aigfs
+```
+
+Each run leaves the output directory as a front door, not a pile:
+
+| file | what it is |
+|---|---|
+| `inputs.txt` | the ordered `--input-list` `gpuwm prep` consumes -- the spelling that keeps a field-per-file source's hundreds of inputs inside the 32 KB Windows command line |
+| `prep-command.txt` | the bound half of the prep command, supplement role and all, runnable as written |
+| `SHA256SUMS` | every downloaded and every composed file |
+| `fetch-manifest.json` | request identity, per-file digests, the compose steps, the declared donors, and the pool's concurrency receipt |
+
+**Whole files, in parallel, by default.** Every table route takes the
+whole published object through the shared pool (`--fetch-workers`,
+default 6; NOMADS stays capped at 2 behind the node-wide governor).
+Measured on this box, cold: ICON-EU's 127-object analysis state comes
+down in 35.8 s, and GDPS's 177-object state in 45.4 s. `--mode idx-subset`
+is accepted where a route supports it and otherwise refuses **in the
+row's own words** -- for RRFS, that five of its nine soil layers
+collide on the index's level key, so an index-selected subset silently
+drops them.
+
+**File-set composition is declared, not assumed.** Three shapes appear:
+
+- **A pair that must travel together.** GEFS's `pgrb2a` and `pgrb2b`
+  isobaric level sets are exactly disjoint -- specific humidity, soil
+  layers 2/3/4 and the land-sea mask are entirely in `b` -- so the
+  route concatenates them per valid time into the multi-record form the
+  profile decodes.
+- **One message per file.** ICON-EU (125 bz2 objects per lead plus two
+  time-invariant ones) and GDPS (174 per lead plus the analysis-only
+  invariants) publish a file per variable-level; GDPS's are concatenated
+  per valid time, ICON-EU's are passed as they are.
+- **A surface supplement, under the composition's own role.** RAP,
+  HRRR-prs and IFS bind their in-band surface from the same files; AIFS
+  from its first file; ICON-EU from `HSURF`; GDPS from the analysis
+  orography, which is deliberately held out of the composed primary.
+
+**Cross-source donors are fetched for you.** AIGFS and AIGEFS publish no
+soil, no land mask, no orography, no skin temperature, no surface
+pressure and no 2 m humidity; their packaged profiles bind those
+canonicals to the **same-cycle GDAS analysis**. The fetch says so, pulls
+the donor into `<out>/donor-gdas/`, and binds it in
+`prep-command.txt` -- which is the difference between a source that
+runs and a source that refuses at init naming seven missing surfaces.
+
+**Ensembles keep member identity in the path.** Every AIGEFS member's
+leaf filename is byte-identical, so the download preserves the
+upstream-relative tree under `<out>/upstream/` and the handoff names the
+`gpuwm-member-prep` command that verifies the member before prep sees
+it.
+
+**Host choice can be a correctness question, not a speed one.** AIGFS is
+NOMADS-only on purpose: `noaa-nws-graphcastgfs-pds` publishes objects
+under byte-identical key names that are a *different* product (the
+experimental EAGLE stream, `subCentre` 2 against the operational 0, 65
+pressure messages against 78, 500 hPa geopotential height differing by
+8.7 gpm). Every packaged selector pins `subcenter=0`, so the S3 copies
+refuse at decode -- and nothing in the filename would have told you.
+`--transport aws` on that source refuses and says this.
+
 ## 20CRv3 (ensemble members, you supply the files)
 
 Point this **experimental, runnable** route at NOAA-CIRES-DOE Twentieth
 Century Reanalysis version 3 member GRIB2 files you already hold, and it
 initializes a run from them. Getting hold of the files is the one part
-ArWen does not do for you: there is no fetch route here, so
-`--source-root` takes a directory you filled yourself.
+ArWen does not do for you: `gpuwm fetch --source 20crv3` refuses by
+name -- the every-member archive is not published on an anonymously
+readable endpoint, and only the ensemble-MEAN NetCDF distribution is --
+and points at `--source-root`, which takes a directory you filled
+yourself.
 
 It is not certified: the route is not yet accepted by unchanged stock
 WRF (that gate is pending), and it certifies neither other 20CR
@@ -459,9 +589,10 @@ transport has no whole-file branch at all, so an install without the
 backbone does not merely lose parallel range GETs -- a `--mode
 full-file` request becomes `.idx` subsetting, hundreds of small serial
 range requests per object. A field measurement of the same 419 MB HRRR
-file: **560 s degraded against 27-35 s taken whole**, roughly a 16x
-tax; on NOMADS it is worse, because the rate governor allows one worker
-with a 2.5 s minimum gap. Every degrade therefore prints one `warning:`
+file: **560 s degraded, against 27-35 s taken whole** -- minutes where
+the whole-file route spends seconds, and worse on NOMADS, where the
+rate governor allows one worker with a 2.5 s minimum gap. Every degrade
+therefore prints one `warning:`
 line naming the tax and the fix before any bytes move, and the fetch
 manifest records `engine_selection` -- `rust`, `python-requested`, or
 `python-fallback` -- beside `engine`, so a slow run can be recognised

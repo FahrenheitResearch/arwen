@@ -177,6 +177,8 @@ fn sample_direct_request(model: ModelId) -> DirectBatchRequest {
         subtitle_left_override: None,
         subtitle_right_override: None,
         title_provenance: TitleProvenance::default(),
+        geographic_overlays: None,
+        panel_annotations: None,
     }
 }
 

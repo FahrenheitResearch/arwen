@@ -25,6 +25,7 @@ import subprocess
 import numpy as np
 import pytest
 
+from gpuwm import bridges
 from gpuwm.obs import nexrad
 from gpuwm.obs.radar_grid import read_radar_grid, write_radar_grid
 from gpuwm.obs.superob import SuperobParams, merge_contributions, superob_volume
@@ -226,7 +227,14 @@ def test_an_unknown_censor_code_is_refused_rather_than_ignored(tmp_path):
 def test_resolution_ladder_is_deterministic_and_override_first(monkeypatch):
     monkeypatch.delenv(nexrad.NEXRAD_ENV, raising=False)
     candidates = nexrad.nexrad_candidates()
-    assert len(candidates) == 4
+    # Five rungs since the platform wheel started carrying the binaries:
+    # checkout release, checkout debug, <root>/libexec/bridges beside the
+    # package, gpuwm/libexec/bridges INSIDE it, and ~/.gpuwm/bridges.
+    assert len(candidates) == 5
+    assert any(candidate.is_relative_to(bridges.packaged_bridge_dir())
+               for candidate in candidates), (
+        "the in-package rung is missing, so a wheel install cannot find "
+        "the radar front door it ships")
     assert candidates[0].parts[-2:] == ("release",
                                         nexrad.executable_name("rw_nexrad"))
     monkeypatch.setenv(nexrad.NEXRAD_ENV, str(Path("nowhere") / "rw_nexrad"))

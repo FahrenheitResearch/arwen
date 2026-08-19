@@ -1,0 +1,17 @@
+{
+ "schema": "gpuwm-gefs-member-in-band-terrain-provenance-v1",
+ "source": "NOAA GEFS v12 atmos 0.5-degree member products (pgrb2a + pgrb2b, noaa-gefs-pds)",
+ "field": "terrain_height",
+ "selector": {
+  "format": "grib2",
+  "discipline": 0,
+  "category": 3,
+  "parameter": 5,
+  "level_type": 1,
+  "level_value": 0,
+  "pdt": 1
+ },
+ "time_policy": "decoded at every valid time and required invariant",
+ "member_policy": "one member per preparation: the member axis is carried in every message's PDT (perturbationNumber / typeOfEnsembleForecast) and the frame assembler refuses inputs that mix members; which members exist and how their bytes verify is the packaged rw-wps.members.v1 grammar consumed by gpuwm-member-prep",
+ "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"
+}

@@ -1,4 +1,13 @@
-"""``gpuwm enprod`` ensemble product tests -- CPU-only.
+"""These tests name ``--engine matplotlib`` wherever they assert the
+matplotlib suite's own filename grammar.
+
+`gpuwm enprod --engine` defaults to ``auto``, which takes the Rust
+``rw_ensbatch`` on a checkout that has built it -- so a test asserting
+``refl-ens-mean_d02-3km_<stamp>.png`` is asserting a property of one
+engine and has to say which.  ``tests/test_enprod_rust_engine.py`` covers
+the resolver and the rust route.
+
+``gpuwm enprod`` ensemble product tests -- CPU-only.
 
 The mathematics tests are deliberately hand-computable: a probability
 over five members is a fifth, and a test that only checks "roughly 0.6"
@@ -657,7 +666,8 @@ def test_the_suite_writes_exactly_the_expected_filenames(ensemble_root,
     out = tmp_path / "png"
     rc = cli.main(["enprod", str(ensemble_root), "--field", "refl",
                    "--products", "all", "--neighborhood-km", "0,5",
-                   "--timeidx", "0", "--out", str(out), "--dpi", "72"])
+                   "--timeidx", "0", "--out", str(out), "--dpi", "72",
+                   "--engine", "matplotlib"])
     assert rc == 0
     produced = sorted(p.name for p in out.glob("*.png"))
     assert produced == sorted(
@@ -673,7 +683,8 @@ def test_the_default_field_pair_carries_its_own_thresholds(ensemble_root,
     out = tmp_path / "png"
     rc = cli.main(["enprod", str(ensemble_root), "--field", "refl,uh",
                    "--products", "prob", "--timeidx", "1",
-                   "--out", str(out), "--dpi", "72"])
+                   "--out", str(out), "--dpi", "72",
+                   "--engine", "matplotlib"])
     assert rc == 0
     produced = sorted(p.name for p in out.glob("*.png"))
     assert produced == [
@@ -685,7 +696,8 @@ def test_the_default_field_pair_carries_its_own_thresholds(ensemble_root,
 def test_every_shared_valid_time_is_rendered(ensemble_root, tmp_path):
     out = tmp_path / "png"
     rc = cli.main(["enprod", str(ensemble_root), "--field", "refl",
-                   "--products", "mean", "--out", str(out), "--dpi", "72"])
+                   "--products", "mean", "--out", str(out), "--dpi", "72",
+                   "--engine", "matplotlib"])
     assert rc == 0
     assert sorted(p.name for p in out.glob("*.png")) == [
         f"refl-ens-mean_d02-3km_{stamp}.png" for stamp in _STAMPS]
@@ -699,7 +711,8 @@ def test_two_requests_that_collide_on_one_filename_are_refused(ensemble_root,
     out = tmp_path / "png"
     rc = cli.main(["enprod", str(ensemble_root), "--field", "refl",
                    "--products", "prob", "--threshold", "40,40.0000001",
-                   "--timeidx", "0", "--out", str(out), "--dpi", "72"])
+                   "--timeidx", "0", "--out", str(out), "--dpi", "72",
+                   "--engine", "matplotlib"])
     assert rc == 1
     assert sorted(p.name for p in out.glob("*.png")) == [
         f"refl-ens-p40dbz_d02-3km_{_STAMPS[0]}.png"]
@@ -717,7 +730,8 @@ def test_a_member_missing_from_disk_refuses_the_whole_suite(ensemble_root,
     shutil.rmtree(root / "member_003")
     out = tmp_path / "png"
     rc = cli.main(["enprod", str(root), "--field", "refl", "--products",
-                   "mean", "--out", str(out), "--dpi", "72"])
+                   "mean", "--out", str(out), "--dpi", "72",
+                   "--engine", "matplotlib"])
     assert rc == 2
     assert not out.exists() or not list(out.glob("*.png"))
 
@@ -739,7 +753,8 @@ def test_members_with_surplus_frames_render_the_intersection(
         root / "member_004" / "wrfout_d02_1970-01-01_20-00-00.nc")
     out = tmp_path / "png"
     rc = cli.main(["enprod", str(root), "--field", "refl", "--products",
-                   "mean", "--out", str(out), "--dpi", "72"])
+                   "mean", "--out", str(out), "--dpi", "72",
+                   "--engine", "matplotlib"])
     captured = capsys.readouterr()
     assert rc == 0
     assert list(out.glob("*.png"))
@@ -788,5 +803,5 @@ def test_the_experimental_stamp_reaches_stdout(ensemble_root, tmp_path,
                                                capsys):
     cli.main(["enprod", str(ensemble_root), "--field", "refl", "--products",
               "mean", "--timeidx", "0", "--out", str(tmp_path / "png"),
-              "--dpi", "72"])
+              "--dpi", "72", "--engine", "matplotlib"])
     assert enprod.EXPERIMENTAL_STAMP in capsys.readouterr().out

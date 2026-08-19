@@ -268,6 +268,8 @@ def test_fetch_gfs_writes_series_and_manifest(tmp_path, monkeypatch):
         progress=lambda line: None)
 
     assert len(urls) == 3
+    # Completion order is the pool's business; inspect the f000 request.
+    urls.sort()
     query = dict(parse_qsl(urlsplit(urls[0]).query, keep_blank_values=True))
     assert urlsplit(urls[0]).path.endswith("filter_gfs_0p25.pl")
     assert query["file"] == "gfs.t06z.pgrb2.0p25.f000"
@@ -302,11 +304,12 @@ def test_fetch_gfs_writes_series_and_manifest(tmp_path, monkeypatch):
 def test_fetch_gfs_refreshes_manifest_after_each_verified_hour(
         tmp_path, monkeypatch):
     monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
-    published_hours = []
+    published = []
     original_write = fetch.write_fetch_manifest
 
     def record_write(out, payload):
-        published_hours.append(payload["forecast_hours"])
+        published.append((payload["forecast_hours"],
+                          "concurrency" in payload))
         return original_write(out, payload)
 
     monkeypatch.setattr(fetch, "write_fetch_manifest", record_write)
@@ -316,7 +319,132 @@ def test_fetch_gfs_refreshes_manifest_after_each_verified_hour(
         progress=lambda line: None,
         derived_bar=lambda cycle, **kwargs: fetch.GFS_SUBSET_RECORD_COUNT)
 
-    assert published_hours == [[0], [0, 3], [0, 3, 6]]
+    # One publication per verified hour, in hour order, plus the final
+    # republication that attaches the completed run's concurrency
+    # receipt (which cannot exist until every transfer has finished).
+    assert [hours for hours, _ in published] == [
+        [0], [0, 3], [0, 3, 6], [0, 3, 6]]
+    assert [receipted for _, receipted in published] == [
+        False, False, False, True]
+
+
+def test_fetch_gfs_default_transport_overlaps_transfers(tmp_path,
+                                                        monkeypatch):
+    """Bounded concurrency is the DEFAULT, not a flag.
+
+    Two NOMADS subset requests must genuinely be in flight together
+    under the default pool (the NOMADS politeness cap is 2): each of
+    the first two downloads waits until it has seen the other one
+    start.  A serial transport deadlocks here and fails the timeout.
+    """
+
+    import threading
+    started = {0: threading.Event(), 3: threading.Event()}
+
+    def download(url, destination, **kwargs):
+        hour = int(url.split(".f0", 1)[1][:2])
+        if hour in started:
+            started[hour].set()
+            other = started[3 if hour == 0 else 0]
+            assert other.wait(timeout=30.0), \
+                "the other transfer never started: the transport is serial"
+        _fake_gfs_download(url, destination)
+
+    monkeypatch.setattr(gfs_transport, "_download", download)
+    manifest_path = fetch.fetch_gfs(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3, 6),
+        area=fetch.parse_area("30,-100,40,-90"), out=tmp_path / "gfs",
+        progress=lambda line: None,
+        derived_bar=lambda cycle, **kwargs: fetch.GFS_SUBSET_RECORD_COUNT)
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["forecast_hours"] == [0, 3, 6]
+
+
+def test_fetch_gfs_manifest_receipts_the_concurrency(tmp_path, monkeypatch):
+    from gpuwm import fetch_pool
+
+    monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
+    manifest_path = fetch.fetch_gfs(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3, 6),
+        area=fetch.parse_area("30,-100,40,-90"), out=tmp_path / "gfs",
+        progress=lambda line: None,
+        derived_bar=lambda cycle, **kwargs: fetch.GFS_SUBSET_RECORD_COUNT)
+    manifest = json.loads(manifest_path.read_text())
+    receipt = manifest["concurrency"]
+    assert receipt["schema"] == fetch_pool.POOL_RECEIPT_SCHEMA
+    assert receipt["workers_requested"] == fetch_pool.DEFAULT_FILE_WORKERS
+    assert receipt["workers_effective"] == 3
+    assert receipt["host_caps"] == {"nomads.ncep.noaa.gov": 2}
+    assert receipt["files"] == 3
+    assert receipt["bytes"] == sum(
+        item["bytes"] for item in manifest["files"]
+        if item["role"] == "gfs-subset")
+    assert receipt["wall_seconds"] > 0.0
+    assert receipt["modeled_serial_seconds"] >= 0.0
+    assert "effective_speedup" in receipt
+
+
+def test_fetch_gfs_serial_transport_stays_reachable(tmp_path, monkeypatch):
+    """--fetch-workers 1 is a knob, not a workaround: the caller's
+    thread runs every transfer, in hour order, no pool involved."""
+
+    import threading
+    caller = threading.get_ident()
+    threads = []
+    order = []
+
+    def download(url, destination, **kwargs):
+        threads.append(threading.get_ident())
+        order.append(url.split("file=")[1][:32])
+        _fake_gfs_download(url, destination)
+
+    monkeypatch.setattr(gfs_transport, "_download", download)
+    manifest_path = fetch.fetch_gfs(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3, 6),
+        area=fetch.parse_area("30,-100,40,-90"), out=tmp_path / "gfs",
+        progress=lambda line: None, file_workers=1,
+        derived_bar=lambda cycle, **kwargs: fetch.GFS_SUBSET_RECORD_COUNT)
+    assert set(threads) == {caller}
+    assert order == sorted(order)
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["concurrency"]["workers_effective"] == 1
+
+
+def test_fetch_gfs_concurrent_failure_names_the_hour_and_keeps_prefix(
+        tmp_path, monkeypatch):
+    """One bad file fails the request closed under concurrency too: the
+    refusal still names the hour, and the manifest records exactly the
+    verified contiguous prefix."""
+
+    import threading
+    f000_done = threading.Event()
+
+    def download(url, destination, **kwargs):
+        if ".f000" in url:
+            _fake_gfs_download(url, destination)
+            f000_done.set()
+            return
+        # Both later hours wait for f000 so the verified prefix is
+        # deterministic, then f003 publishes a short (drifted) file.
+        assert f000_done.wait(timeout=30.0)
+        if ".f003" in url:
+            destination.write_bytes(_grib2_stream(7))
+        else:
+            _fake_gfs_download(url, destination)
+
+    monkeypatch.setattr(gfs_transport, "_download", download)
+    out = tmp_path / "gfs"
+    with pytest.raises(ValueError, match="f003, expected 124"):
+        fetch.fetch_gfs(
+            cycle=datetime(2026, 7, 28, 6), hours=(0, 3, 6),
+            area=fetch.parse_area("30,-100,40,-90"), out=out,
+            progress=lambda line: None,
+            derived_bar=lambda cycle, **kwargs:
+            fetch.GFS_SUBSET_RECORD_COUNT)
+    manifest = json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())
+    assert manifest["forecast_hours"] == [0]
+    assert [item["role"] for item in manifest["files"]] == [
+        "gfs-subset", "series"]
 
 
 def test_fetch_gfs_discloses_prime_meridian_full_band_amplification(
@@ -445,6 +573,35 @@ def test_fetch_gfs_fullfile_takes_whole_objects_and_records_the_route(
         path = out / item["name"]
         assert item["sha256"] == hashlib.sha256(
             path.read_bytes()).hexdigest()
+
+
+def test_fetch_gfs_fullfile_pools_transfers_and_receipts(tmp_path,
+                                                         monkeypatch):
+    """The S3 whole-object route rides the same default pool: no NOMADS
+    cap applies to the archive host, and the manifest receipts the run."""
+
+    from gpuwm import fetch_pool
+
+    _fullfile_env(monkeypatch)
+    out = tmp_path / "gfs-full"
+    manifest_path = fetch.fetch_gfs_fullfile(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3, 6), area=None,
+        out=out, progress=lambda line: None)
+    manifest = json.loads(manifest_path.read_text())
+    receipt = manifest["concurrency"]
+    assert receipt["workers_requested"] == fetch_pool.DEFAULT_FILE_WORKERS
+    assert receipt["workers_effective"] == 3
+    assert receipt["host_caps"] == {}
+    assert receipt["files"] == 3
+    assert manifest["forecast_hours"] == [0, 3, 6]
+
+    # And the serial transport stays reachable as a knob.
+    serial_out = tmp_path / "gfs-full-serial"
+    manifest = json.loads(fetch.fetch_gfs_fullfile(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
+        out=serial_out, progress=lambda line: None,
+        file_workers=1).read_text())
+    assert manifest["concurrency"]["workers_effective"] == 1
 
 
 def test_fetch_gfs_fullfile_census_mismatch_quarantines(
@@ -730,15 +887,19 @@ def test_fetch_hrrr_downloads_wrfnat_and_soil_products(tmp_path,
         cycle=datetime(2026, 7, 28, 5), hours=(0, 1), area=None, out=out,
         progress=lambda line: None)
 
-    assert [request.kind for request in seen] == [
-        "atmosphere", "soil", "atmosphere", "soil"]
-    assert seen[0].url.startswith(
+    # Keyed by destination, not by call order: the pooled transport is
+    # free to schedule the four products together.
+    by_name = {request.destination.name: request for request in seen}
+    assert sorted(request.kind for request in seen) == [
+        "atmosphere", "atmosphere", "soil", "soil"]
+    atmosphere0 = by_name["hrrr.t05z.wrfnatf00.grib2"]
+    assert atmosphere0.url.startswith(
         "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20260728/conus/")
-    assert seen[0].url.endswith("hrrr.t05z.wrfnatf00.grib2")
-    assert seen[0].index_url.endswith(".idx")
+    assert atmosphere0.url.endswith("hrrr.t05z.wrfnatf00.grib2")
+    assert atmosphere0.index_url.endswith(".idx")
     # Soil records come from the pressure file but publish as soilfNN.
-    assert seen[1].url.endswith("hrrr.t05z.wrfprsf00.grib2")
-    assert seen[1].destination.name == "hrrr.t05z.soilf00.grib2"
+    soil0 = by_name["hrrr.t05z.soilf00.grib2"]
+    assert soil0.url.endswith("hrrr.t05z.wrfprsf00.grib2")
 
     manifest = json.loads(manifest_path.read_text())
     assert manifest["source"] == "hrrr"
@@ -750,6 +911,61 @@ def test_fetch_hrrr_downloads_wrfnat_and_soil_products(tmp_path,
         digest, name = line.split("  ")
         assert digest == hashlib.sha256(
             (out / name).read_bytes()).hexdigest()
+
+
+def test_fetch_hrrr_pools_products_and_receipts_the_concurrency(
+        tmp_path, monkeypatch):
+    """The HRRR route rides the default pool in plain (non-wait) mode:
+    the manifest receipts the run, and the per-complete-hour checkpoint
+    publications keep their exact serial semantics."""
+
+    from gpuwm import fetch_pool
+
+    monkeypatch.setattr(
+        hrrr_transport, "_download_product", _fake_hrrr_product)
+    published = []
+    original_write = fetch.write_fetch_manifest
+
+    def record_write(out, payload):
+        published.append(payload["forecast_hours"])
+        return original_write(out, payload)
+
+    monkeypatch.setattr(fetch, "write_fetch_manifest", record_write)
+    manifest_path = fetch.fetch_hrrr(
+        cycle=datetime(2026, 7, 28, 5), hours=(0, 1), area=None,
+        out=tmp_path / "hrrr", progress=lambda line: None)
+    manifest = json.loads(manifest_path.read_text())
+    receipt = manifest["concurrency"]
+    assert receipt["workers_requested"] == fetch_pool.DEFAULT_FILE_WORKERS
+    assert receipt["workers_effective"] == 4   # two hours x two products
+    assert receipt["files"] == 4
+    assert published == [[0], [0, 1], [0, 1]]
+
+
+def test_fetch_hrrr_wait_mode_stays_publication_ordered(tmp_path,
+                                                        monkeypatch):
+    """--wait-for follows the cycle as it publishes: each product is
+    polled, then fetched, in order -- the polling is the pacing, so the
+    transfers stay serial regardless of the pool default."""
+
+    calls = []
+
+    def product(request, *, workers, retries, expected_count=-1):
+        calls.append(request.destination.name)
+        return _fake_hrrr_product(request, workers=workers,
+                                  retries=retries,
+                                  expected_count=expected_count)
+
+    monkeypatch.setattr(hrrr_transport, "_download_product", product)
+    fetch.fetch_hrrr(
+        cycle=datetime(2026, 7, 28, 5), hours=(0, 1), area=None,
+        out=tmp_path / "hrrr", progress=lambda line: None,
+        transport="auto", wait=True, wait_timeout_s=60.0,
+        probe=lambda url: True, sleeper=lambda seconds: None)
+    assert calls == [
+        "hrrr.t05z.wrfnatf00.grib2", "hrrr.t05z.soilf00.grib2",
+        "hrrr.t05z.wrfnatf01.grib2", "hrrr.t05z.soilf01.grib2",
+    ]
 
 
 def test_fetch_hrrr_skips_existing_verified_products(tmp_path, monkeypatch):
@@ -1046,6 +1262,54 @@ def test_cli_fetch_gfs_end_to_end_with_mocked_transport(tmp_path,
     assert (out / "gfs-series.tsv").is_file()
 
 
+def test_cli_fetch_workers_knob_plumbs_refuses_and_documents(tmp_path,
+                                                             monkeypatch,
+                                                             capsys):
+    monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
+    out = tmp_path / "gfs"
+    base = ["fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
+            "--hours", "6", "--area", "30,-100,40,-90", "--out", str(out)]
+    assert cli.main(base + ["--fetch-workers", "2"]) == 0
+    capsys.readouterr()
+    manifest = json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())
+    assert manifest["concurrency"]["workers_requested"] == 2
+
+    # Zero names no schedulable pool and refuses before any network.
+    rc = cli.main(base + ["--fetch-workers", "0"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "serial transport" in err and "Traceback" not in err
+
+    # ERA5 is a manual CDS retrieval: nothing to parallelize.
+    rc = cli.main(["fetch", "--source", "era5", "--cycle", "2026-07-28T06",
+                   "--hours", "6", "--area", "30,-100,40,-90",
+                   "--out", str(tmp_path / "era5"), "--fetch-workers", "4"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--fetch-workers" in err and "era5" in err.lower()
+
+
+def test_fetch_throughput_surfaces_the_concurrency_receipt(tmp_path,
+                                                           monkeypatch):
+    monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
+    out = tmp_path / "gfs"
+    fetch.fetch_gfs(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3),
+        area=fetch.parse_area("30,-100,40,-90"), out=out,
+        progress=lambda line: None,
+        derived_bar=lambda cycle, **kwargs: fetch.GFS_SUBSET_RECORD_COUNT)
+    throughput = fetch.fetch_throughput(out)
+    receipt = throughput["concurrency"]
+    assert receipt["workers_requested"] > 0
+    assert receipt["wall_seconds"] > 0.0
+    # A manifest written before the receipt existed says None, not zero.
+    payload = json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())
+    del payload["concurrency"]
+    (out / fetch.FETCH_MANIFEST_NAME).write_text(
+        json.dumps(payload), encoding="utf-8")
+    assert fetch.fetch_throughput(out)["concurrency"] is None
+
+
 # ---------------------------------------------------------------------------
 # Area-blind resume trap: request-identity comparison + --force-refetch
 # ---------------------------------------------------------------------------
@@ -1121,11 +1385,11 @@ def test_gfs_interrupt_manifests_verified_prefix_and_resumes(
     """Ctrl-C is an orderly, byte-honest outcome: the completed prefix
     is digest-bound, an in-flight .part is named but not blessed, and the
     printed command resumes without re-downloading good bytes."""
-    calls = []
-
     def interrupted_download(url, destination, **kwargs):
-        calls.append(destination.name)
-        if len(calls) == 1:
+        # Keyed on the hour, not on call order: the pooled transport is
+        # free to schedule hours together, and the interrupt contract
+        # being pinned here is per-file, not per-schedule.
+        if ".f000" in destination.name:
             _fake_gfs_download(url, destination)
             return
         partial = destination.with_suffix(destination.suffix + ".part")
@@ -1185,7 +1449,7 @@ def test_gfs_interrupt_manifests_verified_prefix_and_resumes(
     assert cli.main(base) == 0
     printed = capsys.readouterr().out
     assert f"{first} exists" in printed and "verified -- skipped" in printed
-    assert resumed == [
+    assert sorted(resumed) == [
         "gfs.t06z.pgrb2.0p25.f003.subset.grib2",
         "gfs.t06z.pgrb2.0p25.f006.subset.grib2",
     ]

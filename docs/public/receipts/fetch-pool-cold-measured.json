@@ -1,0 +1,53 @@
+{
+  "schema": "gpuwm-fetch-pool-cold-measured-v1",
+  "measured": "2026-08-17",
+  "claim": "Cold before/after of the pooled fetch engine, same endpoint, same cycle, serial arm first, pooled arm minutes later; both arms fully downloaded and sha256-verified every file (identical byte sets, arm vs arm).",
+  "cases": {
+    "gfs-nomads-subset-4-files": {
+      "route": "gpuwm fetch --source gfs (nomads-cgi-subset), cycle 2026-08-17T12Z, f000-f009",
+      "endpoint": "nomads.ncep.noaa.gov grib-filter",
+      "serial": {
+        "workers": 1,
+        "wall_seconds": 12.737377,
+        "files": 4,
+        "bytes": 1140210
+      },
+      "pooled": {
+        "workers_requested": 6,
+        "workers_effective": 4,
+        "host_caps": {
+          "nomads.ncep.noaa.gov": 2
+        },
+        "wall_seconds": 10.602158,
+        "files": 4,
+        "bytes": 1140210
+      },
+      "wall_speedup": 1.2,
+      "identical_sha256_sets": true,
+      "note": "Governor-bound by design: the NOMADS politeness pair (2 in-flight cap on top of the node-wide 2.5 s spacing governor) is the ceiling here, and that is the point."
+    },
+    "icon-eu-mapped-252-files": {
+      "route": "tools/measure_fetch_concurrency.py over the icon-eu profile's real product set: 252 objects, leads 000+001 (pressure-level 200, soil-level 34, single-level 16, time-invariant 2), cycle 2026-08-17T12Z",
+      "endpoint": "opendata.dwd.de",
+      "serial": {
+        "workers": 1,
+        "wall_seconds": 407.351628,
+        "files": 252,
+        "bytes": 233686078
+      },
+      "pooled": {
+        "workers_requested": 6,
+        "workers_effective": 6,
+        "host_caps": {},
+        "wall_seconds": 71.216544,
+        "files": 252,
+        "bytes": 233686078
+      },
+      "wall_speedup": 5.72,
+      "identical_sha256_sets": true,
+      "note": "Sum of per-file service seconds ROSE under the pool (422.95 vs 407.35 serial) while wall fell 407.4 -> 71.2 s: the gain is overlap, not a warmed server cache."
+    }
+  },
+  "receipt_fields": "Every arm's receipt carries the committed 'concurrency' block (schema gpuwm-fetch-pool-receipt-v1): files, bytes, workers_requested, workers_effective, host_caps, wall_seconds, modeled_serial_seconds, effective_speedup.",
+  "model_check": "The pre-landing scaling model (ARWEN-PRESIM-SCALING-2026-08-16: cold fetch ~0.47 s + 3.14 s per file, file count dominates) predicted file-count-bound walls; measured serial ICON-EU at 1.62 s/file mean on this link confirms per-file service latency, not bytes, as the driver (0.93 MB mean object)."
+}

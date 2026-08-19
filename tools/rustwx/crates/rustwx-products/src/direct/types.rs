@@ -75,6 +75,18 @@ pub struct DirectBatchRequest {
     /// Where these frames came from, for the headline parenthetical.
     #[serde(default)]
     pub title_provenance: TitleProvenance,
+    /// Caller-supplied map overlays in geographic degrees, projected into
+    /// this recipe's own frame at render time.
+    ///
+    /// gpuwm addition (VENDOR.md).  `None` -- the default and the only
+    /// value every existing caller produces -- executes no code at all, so
+    /// an absent overlay set is byte-identical output.  It sits beside
+    /// `place_label_overlay`, which has always been exactly this shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geographic_overlays: Option<crate::geographic_overlays::MapOverlays>,
+    /// Caller-supplied title/subtitle overrides, applied last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel_annotations: Option<crate::geographic_overlays::PanelAnnotations>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

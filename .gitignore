@@ -4,6 +4,12 @@ __pycache__/
 build/
 dist/
 out/
+# Prebuilt Rust artifacts staged into the package for a platform wheel
+# (tools/stage_wheel_bridges.py).  Built output, never source: a release
+# stages them between `cargo build` and `python -m build`, and a
+# committed copy would be a binary in the tree that nothing rebuilds and
+# that setup.py would silently platform-tag every local wheel from.
+gpuwm/libexec/
 *.nc
 # Declared config artifacts are tracked: the repo-wide *.nc rule silently
 # dropped the committed source-orography assets from a plain `git add`
@@ -26,6 +32,16 @@ tools/hrrr_grib2_bridge-*
 !tools/grib1_bridge/vendor/**
 tools/region_global_dealias/target/
 tools/rustwx/target/
+tools/rw_wps/target/
+!tools/rw_wps/vendor/**
+# Build output only where a vendored crate carries its own manifest and
+# can therefore be built on its own.  NOT `vendor/**/target/`: that also
+# matched vendor/crates-io/cc-1.4.3/src/target/, four real crate source
+# files, so the checked-in mirror was incomplete and an offline
+# `cargo build --locked` in a fresh clone died on a missing checksum.
+# Mirror crates under vendor/crates-io are never built in place.
+tools/rw_wps/vendor/netcrust/target/
+tools/rw_wps/vendor/netcrust/vendor/*/target/
 !tools/rustwx/vendor/**
 # ... but not build output or a lock file cargo drops there when an
 # excluded vendor crate is built on its own manifest.  Build the

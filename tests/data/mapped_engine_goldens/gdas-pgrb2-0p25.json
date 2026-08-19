@@ -1,0 +1,1561 @@
+{
+  "decode": {
+    "frame_count": 2,
+    "frames": [
+      {
+        "fields": {
+          "air_pressure": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "90ed016cf214d5f1e2b755a245424af748fbc8bfc4ab99dba03b1480c6860839",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "Pa"
+          },
+          "air_temperature": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "8b8494ee2977e0312e55a296a6c818a0655eba783d523c2ebee5907430ae9cf6",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "air_temperature_2m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "fa10788afcd575a7159ead9eea5389f2f1122e42ca1a6dcd8929e58120e236a8",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "eastward_wind": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "b23adf6fc068c922fcd84bc388c163226142ea68e3055810e20b6620f98bfc62",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "eastward_wind_10m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "26c6606d816c05d8f26cc823bbcc1d935a3dacceaa7b3d9e5d5ff0ce0ed4e553",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "geopotential_height": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "75d83e68a8aac971c4404cf48371778a3856403b1dcb2e5ba79c3582a109afc5",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m"
+          },
+          "land_fraction": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "95256feb77628bfefb5709d4930ce9a6cd8d9e3ac1488f730eaa6d1db1fdeede",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "1"
+          },
+          "northward_wind": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "fa9c5f5482d0a0196b6774888a45c9bdffe9cfc89b701184505b4e91f210ac79",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "northward_wind_10m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "41d0deebd7c9be62f7b71c6d5eb3c048ca2e46d1e1946ee4b49ad412cb9589cd",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "skin_temperature": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "0fdcf3b2514da8fd76251f101e98a71ddaba87981d1afd6377710ec90d60099d",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "soil_temperature": {
+            "axes": [
+              "soil",
+              "y",
+              "x"
+            ],
+            "location": "soil",
+            "missing_count": 2267168,
+            "sha256": "810093ba05aefdda58c988785765c87c347e589e598fc55f3e01ab37202cfb33",
+            "shape": [
+              4,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "specific_humidity": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "cb414d96f94b9f075e75913fb14db424afe5145e64152643afb89e2082b83efa",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
+          "specific_humidity_2m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "c1390d20d87683b7f5149369559050052bf6885ddb9d911823cfb77b713bf0d2",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
+          "surface_pressure": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "b2cb88f3c4fccd60f32a8369d302888f8b2ae33c03b6b7233e338b1822ddbd8c",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "Pa"
+          },
+          "terrain_height": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "c4d1b51b58194bef3b548ff90a06282303b76c69a36790b29e1ec97e0596aabd",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m"
+          },
+          "volumetric_soil_moisture": {
+            "axes": [
+              "soil",
+              "y",
+              "x"
+            ],
+            "location": "soil",
+            "missing_count": 2748980,
+            "sha256": "83c24505d54de360202f26a56b7ac963b00190b8c78f50889f8d923aab650ffc",
+            "shape": [
+              4,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m3 m-3"
+          }
+        },
+        "grid_fingerprint": "f391584a7d270a121a9f1b19cb91a2c521d995050945ad074a3cd716403d522e",
+        "header_sha256": "c99ce38933074439375c5b4b72f86bbaf11a4a3ff47db4b4910500bd8e4bc20c",
+        "inputs": [
+          {
+            "name": "gdas.t06z.pgrb2.0p25.f000",
+            "sha256": "aeb20a99effadf8f7a8551f085436fddf8a43462df13307575fdf5f1a5fcdfaa"
+          },
+          {
+            "name": "gdas.t06z.pgrb2.0p25.f001",
+            "sha256": "13339966823d90644575046fa9e658a4bc13fe842a31926370d3a751a501f794"
+          }
+        ],
+        "latitude": {
+          "count": 721,
+          "sha256": "ad01633f3901f6162bcdcdc815ac9165553aa5e0a70d659d5f9fe84207fb21e2"
+        },
+        "longitude": {
+          "count": 1440,
+          "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
+        },
+        "member": null,
+        "source_cycle": "2026-08-17T06:00:00",
+        "valid_time": "2026-08-17T06:00:00",
+        "vertical": {
+          "count": 33,
+          "sha256": "a690047119eabfb3ba19ebfef0b75a2e60ee00d3cc061a72124a00963e20c798"
+        },
+        "vertical_kind": "pressure",
+        "vertical_units": "Pa"
+      },
+      {
+        "fields": {
+          "air_pressure": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "90ed016cf214d5f1e2b755a245424af748fbc8bfc4ab99dba03b1480c6860839",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "Pa"
+          },
+          "air_temperature": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "2f06073383c16dbb3abc5ae9a375109019ec60b57e0f6f724f484ed71d92d9e2",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "air_temperature_2m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "9b63e8054aec979346d724cedebb46aa5eb967801dea7e5767aabe986177234b",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "eastward_wind": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "6ac3e8b861db635fd898f2739c595cf6be6e326a931f253f8d24502d9948ecca",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "eastward_wind_10m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "f342c218a5f3e7d52cd7ce8713a270a49e15270d9e68a7106d17622136e92793",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "geopotential_height": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "96f9be563d0e3467a159d25c65abc509398b07594b033958c2ee07c99d675a3a",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m"
+          },
+          "land_fraction": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "95256feb77628bfefb5709d4930ce9a6cd8d9e3ac1488f730eaa6d1db1fdeede",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "1"
+          },
+          "northward_wind": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "83e7fa1fc6a270d5541b40a3868ff48493002260db270f83ff9cce90859f8262",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "northward_wind_10m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "44754b3d5035f1a866fdd83b7f1460f769a631fba17783adeeaddbada18a4dc9",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m s-1"
+          },
+          "skin_temperature": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "951959b8d096e7a77eb09bc0a4197ff7653f74728f24b77d4b8235b8d45c22cb",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "soil_temperature": {
+            "axes": [
+              "soil",
+              "y",
+              "x"
+            ],
+            "location": "soil",
+            "missing_count": 2267168,
+            "sha256": "a323d655c5b11179a80b8d0f130644c34ecd4f773871e4d58b94c718462cf350",
+            "shape": [
+              4,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "K"
+          },
+          "specific_humidity": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "d0056c06eb55e281d75c2506ee5f22e949d4c4ffcdb70a458ee208baca01cd7c",
+            "shape": [
+              33,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
+          "specific_humidity_2m": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "72d4808a52c709c3150a139a471247d2022d142effeec72d108a3b3565bed889",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
+          "surface_pressure": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "ec5bc93aa89bacd48e6a887171de1329aabbb593165e001338f4c0040d33e18f",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "Pa"
+          },
+          "terrain_height": {
+            "axes": [
+              "y",
+              "x"
+            ],
+            "location": "surface",
+            "missing_count": 0,
+            "sha256": "c4d1b51b58194bef3b548ff90a06282303b76c69a36790b29e1ec97e0596aabd",
+            "shape": [
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m"
+          },
+          "volumetric_soil_moisture": {
+            "axes": [
+              "soil",
+              "y",
+              "x"
+            ],
+            "location": "soil",
+            "missing_count": 2748980,
+            "sha256": "9bc3c89f10000ec5dba58a26484e699e997fa2f16cbac2054f92e94ced267f4c",
+            "shape": [
+              4,
+              721,
+              1440
+            ],
+            "staggering": "none",
+            "units": "m3 m-3"
+          }
+        },
+        "grid_fingerprint": "f391584a7d270a121a9f1b19cb91a2c521d995050945ad074a3cd716403d522e",
+        "header_sha256": "95e7df489cb59200c7a13dd47a283e2b68e04f2b108360c4d3b98476d214dc20",
+        "inputs": [
+          {
+            "name": "gdas.t06z.pgrb2.0p25.f000",
+            "sha256": "aeb20a99effadf8f7a8551f085436fddf8a43462df13307575fdf5f1a5fcdfaa"
+          },
+          {
+            "name": "gdas.t06z.pgrb2.0p25.f001",
+            "sha256": "13339966823d90644575046fa9e658a4bc13fe842a31926370d3a751a501f794"
+          }
+        ],
+        "latitude": {
+          "count": 721,
+          "sha256": "ad01633f3901f6162bcdcdc815ac9165553aa5e0a70d659d5f9fe84207fb21e2"
+        },
+        "longitude": {
+          "count": 1440,
+          "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
+        },
+        "member": null,
+        "source_cycle": "2026-08-17T06:00:00",
+        "valid_time": "2026-08-17T07:00:00",
+        "vertical": {
+          "count": 33,
+          "sha256": "a690047119eabfb3ba19ebfef0b75a2e60ee00d3cc061a72124a00963e20c798"
+        },
+        "vertical_kind": "pressure",
+        "vertical_units": "Pa"
+      }
+    ],
+    "mapping": {
+      "name": "rw-wps-gdas-pgrb2-0p25-grib2.mapping.json",
+      "sha256": "f6de7a0a42d86ba1aa7e8cd84d30db79870843c25ccb6aa7ad3a3dbe8b4c4fc5"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "gdas-pgrb2-0p25",
+    "verdict": "DECODED"
+  },
+  "inspect": {
+    "inspection": {
+      "frames": [
+        {
+          "decoded_direct_fields": [
+            "air_temperature",
+            "air_temperature_2m",
+            "eastward_wind",
+            "eastward_wind_10m",
+            "geopotential_height",
+            "land_fraction",
+            "northward_wind",
+            "northward_wind_10m",
+            "skin_temperature",
+            "soil_temperature",
+            "specific_humidity",
+            "specific_humidity_2m",
+            "surface_pressure",
+            "terrain_height",
+            "volumetric_soil_moisture"
+          ],
+          "fields": {
+            "air_temperature": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 319.98177734375,
+              "minimum": 181.52796875,
+              "missing": 0,
+              "sha256": "8b8494ee2977e0312e55a296a6c818a0655eba783d523c2ebee5907430ae9cf6",
+              "shape": [
+                33,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:95",
+                "gdas.t06z.pgrb2.0p25.f000:105",
+                "gdas.t06z.pgrb2.0p25.f000:115",
+                "gdas.t06z.pgrb2.0p25.f000:125",
+                "gdas.t06z.pgrb2.0p25.f000:135",
+                "gdas.t06z.pgrb2.0p25.f000:145",
+                "gdas.t06z.pgrb2.0p25.f000:155",
+                "gdas.t06z.pgrb2.0p25.f000:165",
+                "gdas.t06z.pgrb2.0p25.f000:175",
+                "gdas.t06z.pgrb2.0p25.f000:185",
+                "gdas.t06z.pgrb2.0p25.f000:195",
+                "gdas.t06z.pgrb2.0p25.f000:211",
+                "gdas.t06z.pgrb2.0p25.f000:221",
+                "gdas.t06z.pgrb2.0p25.f000:237",
+                "gdas.t06z.pgrb2.0p25.f000:253",
+                "gdas.t06z.pgrb2.0p25.f000:269",
+                "gdas.t06z.pgrb2.0p25.f000:285",
+                "gdas.t06z.pgrb2.0p25.f000:301",
+                "gdas.t06z.pgrb2.0p25.f000:317",
+                "gdas.t06z.pgrb2.0p25.f000:333",
+                "gdas.t06z.pgrb2.0p25.f000:349",
+                "gdas.t06z.pgrb2.0p25.f000:365",
+                "gdas.t06z.pgrb2.0p25.f000:381",
+                "gdas.t06z.pgrb2.0p25.f000:397",
+                "gdas.t06z.pgrb2.0p25.f000:413",
+                "gdas.t06z.pgrb2.0p25.f000:429",
+                "gdas.t06z.pgrb2.0p25.f000:445",
+                "gdas.t06z.pgrb2.0p25.f000:461",
+                "gdas.t06z.pgrb2.0p25.f000:477",
+                "gdas.t06z.pgrb2.0p25.f000:493",
+                "gdas.t06z.pgrb2.0p25.f000:509",
+                "gdas.t06z.pgrb2.0p25.f000:526",
+                "gdas.t06z.pgrb2.0p25.f000:541"
+              ]
+            },
+            "air_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 319.45231933593755,
+              "minimum": 210.6523193359375,
+              "missing": 0,
+              "sha256": "fa10788afcd575a7159ead9eea5389f2f1122e42ca1a6dcd8929e58120e236a8",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:579"
+              ]
+            },
+            "eastward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 133.5,
+              "minimum": -46.4,
+              "missing": 0,
+              "sha256": "b23adf6fc068c922fcd84bc388c163226142ea68e3055810e20b6620f98bfc62",
+              "shape": [
+                33,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:100",
+                "gdas.t06z.pgrb2.0p25.f000:110",
+                "gdas.t06z.pgrb2.0p25.f000:120",
+                "gdas.t06z.pgrb2.0p25.f000:130",
+                "gdas.t06z.pgrb2.0p25.f000:140",
+                "gdas.t06z.pgrb2.0p25.f000:150",
+                "gdas.t06z.pgrb2.0p25.f000:160",
+                "gdas.t06z.pgrb2.0p25.f000:170",
+                "gdas.t06z.pgrb2.0p25.f000:180",
+                "gdas.t06z.pgrb2.0p25.f000:190",
+                "gdas.t06z.pgrb2.0p25.f000:201",
+                "gdas.t06z.pgrb2.0p25.f000:216",
+                "gdas.t06z.pgrb2.0p25.f000:227",
+                "gdas.t06z.pgrb2.0p25.f000:243",
+                "gdas.t06z.pgrb2.0p25.f000:259",
+                "gdas.t06z.pgrb2.0p25.f000:275",
+                "gdas.t06z.pgrb2.0p25.f000:291",
+                "gdas.t06z.pgrb2.0p25.f000:307",
+                "gdas.t06z.pgrb2.0p25.f000:323",
+                "gdas.t06z.pgrb2.0p25.f000:339",
+                "gdas.t06z.pgrb2.0p25.f000:355",
+                "gdas.t06z.pgrb2.0p25.f000:371",
+                "gdas.t06z.pgrb2.0p25.f000:387",
+                "gdas.t06z.pgrb2.0p25.f000:403",
+                "gdas.t06z.pgrb2.0p25.f000:419",
+                "gdas.t06z.pgrb2.0p25.f000:435",
+                "gdas.t06z.pgrb2.0p25.f000:451",
+                "gdas.t06z.pgrb2.0p25.f000:467",
+                "gdas.t06z.pgrb2.0p25.f000:483",
+                "gdas.t06z.pgrb2.0p25.f000:499",
+                "gdas.t06z.pgrb2.0p25.f000:515",
+                "gdas.t06z.pgrb2.0p25.f000:532",
+                "gdas.t06z.pgrb2.0p25.f000:547"
+              ]
+            },
+            "eastward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 23.0930908203125,
+              "minimum": -23.2769091796875,
+              "missing": 0,
+              "sha256": "26c6606d816c05d8f26cc823bbcc1d935a3dacceaa7b3d9e5d5ff0ce0ed4e553",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:584"
+              ]
+            },
+            "geopotential_height": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 49084.85,
+              "minimum": -419.88665625,
+              "missing": 0,
+              "sha256": "75d83e68a8aac971c4404cf48371778a3856403b1dcb2e5ba79c3582a109afc5",
+              "shape": [
+                33,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:94",
+                "gdas.t06z.pgrb2.0p25.f000:104",
+                "gdas.t06z.pgrb2.0p25.f000:114",
+                "gdas.t06z.pgrb2.0p25.f000:124",
+                "gdas.t06z.pgrb2.0p25.f000:134",
+                "gdas.t06z.pgrb2.0p25.f000:144",
+                "gdas.t06z.pgrb2.0p25.f000:154",
+                "gdas.t06z.pgrb2.0p25.f000:164",
+                "gdas.t06z.pgrb2.0p25.f000:174",
+                "gdas.t06z.pgrb2.0p25.f000:184",
+                "gdas.t06z.pgrb2.0p25.f000:194",
+                "gdas.t06z.pgrb2.0p25.f000:210",
+                "gdas.t06z.pgrb2.0p25.f000:220",
+                "gdas.t06z.pgrb2.0p25.f000:236",
+                "gdas.t06z.pgrb2.0p25.f000:252",
+                "gdas.t06z.pgrb2.0p25.f000:268",
+                "gdas.t06z.pgrb2.0p25.f000:284",
+                "gdas.t06z.pgrb2.0p25.f000:300",
+                "gdas.t06z.pgrb2.0p25.f000:316",
+                "gdas.t06z.pgrb2.0p25.f000:332",
+                "gdas.t06z.pgrb2.0p25.f000:348",
+                "gdas.t06z.pgrb2.0p25.f000:364",
+                "gdas.t06z.pgrb2.0p25.f000:380",
+                "gdas.t06z.pgrb2.0p25.f000:396",
+                "gdas.t06z.pgrb2.0p25.f000:412",
+                "gdas.t06z.pgrb2.0p25.f000:428",
+                "gdas.t06z.pgrb2.0p25.f000:444",
+                "gdas.t06z.pgrb2.0p25.f000:460",
+                "gdas.t06z.pgrb2.0p25.f000:476",
+                "gdas.t06z.pgrb2.0p25.f000:492",
+                "gdas.t06z.pgrb2.0p25.f000:508",
+                "gdas.t06z.pgrb2.0p25.f000:525",
+                "gdas.t06z.pgrb2.0p25.f000:557"
+              ]
+            },
+            "land_fraction": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "95256feb77628bfefb5709d4930ce9a6cd8d9e3ac1488f730eaa6d1db1fdeede",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:681"
+              ]
+            },
+            "northward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 76.69281616210938,
+              "minimum": -74.25599365234375,
+              "missing": 0,
+              "sha256": "fa9c5f5482d0a0196b6774888a45c9bdffe9cfc89b701184505b4e91f210ac79",
+              "shape": [
+                33,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:101",
+                "gdas.t06z.pgrb2.0p25.f000:111",
+                "gdas.t06z.pgrb2.0p25.f000:121",
+                "gdas.t06z.pgrb2.0p25.f000:131",
+                "gdas.t06z.pgrb2.0p25.f000:141",
+                "gdas.t06z.pgrb2.0p25.f000:151",
+                "gdas.t06z.pgrb2.0p25.f000:161",
+                "gdas.t06z.pgrb2.0p25.f000:171",
+                "gdas.t06z.pgrb2.0p25.f000:181",
+                "gdas.t06z.pgrb2.0p25.f000:191",
+                "gdas.t06z.pgrb2.0p25.f000:202",
+                "gdas.t06z.pgrb2.0p25.f000:217",
+                "gdas.t06z.pgrb2.0p25.f000:228",
+                "gdas.t06z.pgrb2.0p25.f000:244",
+                "gdas.t06z.pgrb2.0p25.f000:260",
+                "gdas.t06z.pgrb2.0p25.f000:276",
+                "gdas.t06z.pgrb2.0p25.f000:292",
+                "gdas.t06z.pgrb2.0p25.f000:308",
+                "gdas.t06z.pgrb2.0p25.f000:324",
+                "gdas.t06z.pgrb2.0p25.f000:340",
+                "gdas.t06z.pgrb2.0p25.f000:356",
+                "gdas.t06z.pgrb2.0p25.f000:372",
+                "gdas.t06z.pgrb2.0p25.f000:388",
+                "gdas.t06z.pgrb2.0p25.f000:404",
+                "gdas.t06z.pgrb2.0p25.f000:420",
+                "gdas.t06z.pgrb2.0p25.f000:436",
+                "gdas.t06z.pgrb2.0p25.f000:452",
+                "gdas.t06z.pgrb2.0p25.f000:468",
+                "gdas.t06z.pgrb2.0p25.f000:484",
+                "gdas.t06z.pgrb2.0p25.f000:500",
+                "gdas.t06z.pgrb2.0p25.f000:516",
+                "gdas.t06z.pgrb2.0p25.f000:533",
+                "gdas.t06z.pgrb2.0p25.f000:548"
+              ]
+            },
+            "northward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 20.9434521484375,
+              "minimum": -21.5265478515625,
+              "missing": 0,
+              "sha256": "41d0deebd7c9be62f7b71c6d5eb3c048ca2e46d1e1946ee4b49ad412cb9589cd",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:585"
+              ]
+            },
+            "skin_temperature": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 339.20000000000005,
+              "minimum": 204.8,
+              "missing": 0,
+              "sha256": "0fdcf3b2514da8fd76251f101e98a71ddaba87981d1afd6377710ec90d60099d",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:562"
+              ]
+            },
+            "soil_temperature": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 318.20903320312505,
+              "minimum": 215.6193359375,
+              "missing": 2267168,
+              "sha256": "810093ba05aefdda58c988785765c87c347e589e598fc55f3e01ab37202cfb33",
+              "shape": [
+                4,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:563",
+                "gdas.t06z.pgrb2.0p25.f000:566",
+                "gdas.t06z.pgrb2.0p25.f000:569",
+                "gdas.t06z.pgrb2.0p25.f000:572"
+              ]
+            },
+            "specific_humidity": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.04274341732421875,
+              "minimum": 6.197888851165772e-11,
+              "missing": 0,
+              "sha256": "cb414d96f94b9f075e75913fb14db424afe5145e64152643afb89e2082b83efa",
+              "shape": [
+                33,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:97",
+                "gdas.t06z.pgrb2.0p25.f000:107",
+                "gdas.t06z.pgrb2.0p25.f000:117",
+                "gdas.t06z.pgrb2.0p25.f000:127",
+                "gdas.t06z.pgrb2.0p25.f000:137",
+                "gdas.t06z.pgrb2.0p25.f000:147",
+                "gdas.t06z.pgrb2.0p25.f000:157",
+                "gdas.t06z.pgrb2.0p25.f000:167",
+                "gdas.t06z.pgrb2.0p25.f000:177",
+                "gdas.t06z.pgrb2.0p25.f000:187",
+                "gdas.t06z.pgrb2.0p25.f000:198",
+                "gdas.t06z.pgrb2.0p25.f000:213",
+                "gdas.t06z.pgrb2.0p25.f000:224",
+                "gdas.t06z.pgrb2.0p25.f000:240",
+                "gdas.t06z.pgrb2.0p25.f000:256",
+                "gdas.t06z.pgrb2.0p25.f000:272",
+                "gdas.t06z.pgrb2.0p25.f000:288",
+                "gdas.t06z.pgrb2.0p25.f000:304",
+                "gdas.t06z.pgrb2.0p25.f000:320",
+                "gdas.t06z.pgrb2.0p25.f000:336",
+                "gdas.t06z.pgrb2.0p25.f000:352",
+                "gdas.t06z.pgrb2.0p25.f000:368",
+                "gdas.t06z.pgrb2.0p25.f000:384",
+                "gdas.t06z.pgrb2.0p25.f000:400",
+                "gdas.t06z.pgrb2.0p25.f000:416",
+                "gdas.t06z.pgrb2.0p25.f000:432",
+                "gdas.t06z.pgrb2.0p25.f000:448",
+                "gdas.t06z.pgrb2.0p25.f000:464",
+                "gdas.t06z.pgrb2.0p25.f000:480",
+                "gdas.t06z.pgrb2.0p25.f000:496",
+                "gdas.t06z.pgrb2.0p25.f000:512",
+                "gdas.t06z.pgrb2.0p25.f000:529",
+                "gdas.t06z.pgrb2.0p25.f000:544"
+              ]
+            },
+            "specific_humidity_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 0.02524361314453125,
+              "minimum": 7.13314453125e-06,
+              "missing": 0,
+              "sha256": "c1390d20d87683b7f5149369559050052bf6885ddb9d911823cfb77b713bf0d2",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:580"
+              ]
+            },
+            "surface_pressure": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 105114.76250000001,
+              "minimum": 49703.5625,
+              "missing": 0,
+              "sha256": "b2cb88f3c4fccd60f32a8369d302888f8b2ae33c03b6b7233e338b1822ddbd8c",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:560"
+              ]
+            },
+            "terrain_height": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 5917.819375,
+              "minimum": -355.140625,
+              "missing": 0,
+              "sha256": "c4d1b51b58194bef3b548ff90a06282303b76c69a36790b29e1ec97e0596aabd",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:561"
+              ]
+            },
+            "volumetric_soil_moisture": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.019999998092651367,
+              "missing": 2748980,
+              "sha256": "83c24505d54de360202f26a56b7ac963b00190b8c78f50889f8d923aab650ffc",
+              "shape": [
+                4,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f000:564",
+                "gdas.t06z.pgrb2.0p25.f000:567",
+                "gdas.t06z.pgrb2.0p25.f000:570",
+                "gdas.t06z.pgrb2.0p25.f000:573"
+              ]
+            }
+          },
+          "member": null,
+          "source_cycle": "2026-08-17T06:00:00",
+          "unresolved_direct_fields": [],
+          "valid_time": "2026-08-17T06:00:00"
+        },
+        {
+          "decoded_direct_fields": [
+            "air_temperature",
+            "air_temperature_2m",
+            "eastward_wind",
+            "eastward_wind_10m",
+            "geopotential_height",
+            "land_fraction",
+            "northward_wind",
+            "northward_wind_10m",
+            "skin_temperature",
+            "soil_temperature",
+            "specific_humidity",
+            "specific_humidity_2m",
+            "surface_pressure",
+            "terrain_height",
+            "volumetric_soil_moisture"
+          ],
+          "fields": {
+            "air_temperature": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 321.183671875,
+              "minimum": 181.180234375,
+              "missing": 0,
+              "sha256": "2f06073383c16dbb3abc5ae9a375109019ec60b57e0f6f724f484ed71d92d9e2",
+              "shape": [
+                33,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:95",
+                "gdas.t06z.pgrb2.0p25.f001:105",
+                "gdas.t06z.pgrb2.0p25.f001:115",
+                "gdas.t06z.pgrb2.0p25.f001:125",
+                "gdas.t06z.pgrb2.0p25.f001:135",
+                "gdas.t06z.pgrb2.0p25.f001:145",
+                "gdas.t06z.pgrb2.0p25.f001:155",
+                "gdas.t06z.pgrb2.0p25.f001:165",
+                "gdas.t06z.pgrb2.0p25.f001:175",
+                "gdas.t06z.pgrb2.0p25.f001:185",
+                "gdas.t06z.pgrb2.0p25.f001:195",
+                "gdas.t06z.pgrb2.0p25.f001:211",
+                "gdas.t06z.pgrb2.0p25.f001:221",
+                "gdas.t06z.pgrb2.0p25.f001:237",
+                "gdas.t06z.pgrb2.0p25.f001:253",
+                "gdas.t06z.pgrb2.0p25.f001:269",
+                "gdas.t06z.pgrb2.0p25.f001:285",
+                "gdas.t06z.pgrb2.0p25.f001:301",
+                "gdas.t06z.pgrb2.0p25.f001:317",
+                "gdas.t06z.pgrb2.0p25.f001:333",
+                "gdas.t06z.pgrb2.0p25.f001:349",
+                "gdas.t06z.pgrb2.0p25.f001:365",
+                "gdas.t06z.pgrb2.0p25.f001:381",
+                "gdas.t06z.pgrb2.0p25.f001:397",
+                "gdas.t06z.pgrb2.0p25.f001:413",
+                "gdas.t06z.pgrb2.0p25.f001:429",
+                "gdas.t06z.pgrb2.0p25.f001:445",
+                "gdas.t06z.pgrb2.0p25.f001:461",
+                "gdas.t06z.pgrb2.0p25.f001:477",
+                "gdas.t06z.pgrb2.0p25.f001:493",
+                "gdas.t06z.pgrb2.0p25.f001:509",
+                "gdas.t06z.pgrb2.0p25.f001:526",
+                "gdas.t06z.pgrb2.0p25.f001:541"
+              ]
+            },
+            "air_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 321.22202148437503,
+              "minimum": 211.222021484375,
+              "missing": 0,
+              "sha256": "9b63e8054aec979346d724cedebb46aa5eb967801dea7e5767aabe986177234b",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:580"
+              ]
+            },
+            "eastward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 141.6899951171875,
+              "minimum": -46.059892578125,
+              "missing": 0,
+              "sha256": "6ac3e8b861db635fd898f2739c595cf6be6e326a931f253f8d24502d9948ecca",
+              "shape": [
+                33,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:100",
+                "gdas.t06z.pgrb2.0p25.f001:110",
+                "gdas.t06z.pgrb2.0p25.f001:120",
+                "gdas.t06z.pgrb2.0p25.f001:130",
+                "gdas.t06z.pgrb2.0p25.f001:140",
+                "gdas.t06z.pgrb2.0p25.f001:150",
+                "gdas.t06z.pgrb2.0p25.f001:160",
+                "gdas.t06z.pgrb2.0p25.f001:170",
+                "gdas.t06z.pgrb2.0p25.f001:180",
+                "gdas.t06z.pgrb2.0p25.f001:190",
+                "gdas.t06z.pgrb2.0p25.f001:201",
+                "gdas.t06z.pgrb2.0p25.f001:216",
+                "gdas.t06z.pgrb2.0p25.f001:227",
+                "gdas.t06z.pgrb2.0p25.f001:243",
+                "gdas.t06z.pgrb2.0p25.f001:259",
+                "gdas.t06z.pgrb2.0p25.f001:275",
+                "gdas.t06z.pgrb2.0p25.f001:291",
+                "gdas.t06z.pgrb2.0p25.f001:307",
+                "gdas.t06z.pgrb2.0p25.f001:323",
+                "gdas.t06z.pgrb2.0p25.f001:339",
+                "gdas.t06z.pgrb2.0p25.f001:355",
+                "gdas.t06z.pgrb2.0p25.f001:371",
+                "gdas.t06z.pgrb2.0p25.f001:387",
+                "gdas.t06z.pgrb2.0p25.f001:403",
+                "gdas.t06z.pgrb2.0p25.f001:419",
+                "gdas.t06z.pgrb2.0p25.f001:435",
+                "gdas.t06z.pgrb2.0p25.f001:451",
+                "gdas.t06z.pgrb2.0p25.f001:467",
+                "gdas.t06z.pgrb2.0p25.f001:483",
+                "gdas.t06z.pgrb2.0p25.f001:499",
+                "gdas.t06z.pgrb2.0p25.f001:515",
+                "gdas.t06z.pgrb2.0p25.f001:532",
+                "gdas.t06z.pgrb2.0p25.f001:547"
+              ]
+            },
+            "eastward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 23.94194091796875,
+              "minimum": -23.90805908203125,
+              "missing": 0,
+              "sha256": "f342c218a5f3e7d52cd7ce8713a270a49e15270d9e68a7106d17622136e92793",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:587"
+              ]
+            },
+            "geopotential_height": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 49106.0,
+              "minimum": -421.54143750000003,
+              "missing": 0,
+              "sha256": "96f9be563d0e3467a159d25c65abc509398b07594b033958c2ee07c99d675a3a",
+              "shape": [
+                33,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:94",
+                "gdas.t06z.pgrb2.0p25.f001:104",
+                "gdas.t06z.pgrb2.0p25.f001:114",
+                "gdas.t06z.pgrb2.0p25.f001:124",
+                "gdas.t06z.pgrb2.0p25.f001:134",
+                "gdas.t06z.pgrb2.0p25.f001:144",
+                "gdas.t06z.pgrb2.0p25.f001:154",
+                "gdas.t06z.pgrb2.0p25.f001:164",
+                "gdas.t06z.pgrb2.0p25.f001:174",
+                "gdas.t06z.pgrb2.0p25.f001:184",
+                "gdas.t06z.pgrb2.0p25.f001:194",
+                "gdas.t06z.pgrb2.0p25.f001:210",
+                "gdas.t06z.pgrb2.0p25.f001:220",
+                "gdas.t06z.pgrb2.0p25.f001:236",
+                "gdas.t06z.pgrb2.0p25.f001:252",
+                "gdas.t06z.pgrb2.0p25.f001:268",
+                "gdas.t06z.pgrb2.0p25.f001:284",
+                "gdas.t06z.pgrb2.0p25.f001:300",
+                "gdas.t06z.pgrb2.0p25.f001:316",
+                "gdas.t06z.pgrb2.0p25.f001:332",
+                "gdas.t06z.pgrb2.0p25.f001:348",
+                "gdas.t06z.pgrb2.0p25.f001:364",
+                "gdas.t06z.pgrb2.0p25.f001:380",
+                "gdas.t06z.pgrb2.0p25.f001:396",
+                "gdas.t06z.pgrb2.0p25.f001:412",
+                "gdas.t06z.pgrb2.0p25.f001:428",
+                "gdas.t06z.pgrb2.0p25.f001:444",
+                "gdas.t06z.pgrb2.0p25.f001:460",
+                "gdas.t06z.pgrb2.0p25.f001:476",
+                "gdas.t06z.pgrb2.0p25.f001:492",
+                "gdas.t06z.pgrb2.0p25.f001:508",
+                "gdas.t06z.pgrb2.0p25.f001:525",
+                "gdas.t06z.pgrb2.0p25.f001:557"
+              ]
+            },
+            "land_fraction": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "95256feb77628bfefb5709d4930ce9a6cd8d9e3ac1488f730eaa6d1db1fdeede",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:727"
+              ]
+            },
+            "northward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 74.51076049804688,
+              "minimum": -72.56549072265625,
+              "missing": 0,
+              "sha256": "83e7fa1fc6a270d5541b40a3868ff48493002260db270f83ff9cce90859f8262",
+              "shape": [
+                33,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:101",
+                "gdas.t06z.pgrb2.0p25.f001:111",
+                "gdas.t06z.pgrb2.0p25.f001:121",
+                "gdas.t06z.pgrb2.0p25.f001:131",
+                "gdas.t06z.pgrb2.0p25.f001:141",
+                "gdas.t06z.pgrb2.0p25.f001:151",
+                "gdas.t06z.pgrb2.0p25.f001:161",
+                "gdas.t06z.pgrb2.0p25.f001:171",
+                "gdas.t06z.pgrb2.0p25.f001:181",
+                "gdas.t06z.pgrb2.0p25.f001:191",
+                "gdas.t06z.pgrb2.0p25.f001:202",
+                "gdas.t06z.pgrb2.0p25.f001:217",
+                "gdas.t06z.pgrb2.0p25.f001:228",
+                "gdas.t06z.pgrb2.0p25.f001:244",
+                "gdas.t06z.pgrb2.0p25.f001:260",
+                "gdas.t06z.pgrb2.0p25.f001:276",
+                "gdas.t06z.pgrb2.0p25.f001:292",
+                "gdas.t06z.pgrb2.0p25.f001:308",
+                "gdas.t06z.pgrb2.0p25.f001:324",
+                "gdas.t06z.pgrb2.0p25.f001:340",
+                "gdas.t06z.pgrb2.0p25.f001:356",
+                "gdas.t06z.pgrb2.0p25.f001:372",
+                "gdas.t06z.pgrb2.0p25.f001:388",
+                "gdas.t06z.pgrb2.0p25.f001:404",
+                "gdas.t06z.pgrb2.0p25.f001:420",
+                "gdas.t06z.pgrb2.0p25.f001:436",
+                "gdas.t06z.pgrb2.0p25.f001:452",
+                "gdas.t06z.pgrb2.0p25.f001:468",
+                "gdas.t06z.pgrb2.0p25.f001:484",
+                "gdas.t06z.pgrb2.0p25.f001:500",
+                "gdas.t06z.pgrb2.0p25.f001:516",
+                "gdas.t06z.pgrb2.0p25.f001:533",
+                "gdas.t06z.pgrb2.0p25.f001:548"
+              ]
+            },
+            "northward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 20.85967041015625,
+              "minimum": -21.60032958984375,
+              "missing": 0,
+              "sha256": "44754b3d5035f1a866fdd83b7f1460f769a631fba17783adeeaddbada18a4dc9",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:588"
+              ]
+            },
+            "skin_temperature": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 341.70000000000005,
+              "minimum": 204.60000000000002,
+              "missing": 0,
+              "sha256": "951959b8d096e7a77eb09bc0a4197ff7653f74728f24b77d4b8235b8d45c22cb",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:562"
+              ]
+            },
+            "soil_temperature": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 320.01933593750005,
+              "minimum": 215.6193359375,
+              "missing": 2267168,
+              "sha256": "a323d655c5b11179a80b8d0f130644c34ecd4f773871e4d58b94c718462cf350",
+              "shape": [
+                4,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:563",
+                "gdas.t06z.pgrb2.0p25.f001:566",
+                "gdas.t06z.pgrb2.0p25.f001:569",
+                "gdas.t06z.pgrb2.0p25.f001:572"
+              ]
+            },
+            "specific_humidity": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.044515235498046875,
+              "minimum": 7.775713443756103e-12,
+              "missing": 0,
+              "sha256": "d0056c06eb55e281d75c2506ee5f22e949d4c4ffcdb70a458ee208baca01cd7c",
+              "shape": [
+                33,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:97",
+                "gdas.t06z.pgrb2.0p25.f001:107",
+                "gdas.t06z.pgrb2.0p25.f001:117",
+                "gdas.t06z.pgrb2.0p25.f001:127",
+                "gdas.t06z.pgrb2.0p25.f001:137",
+                "gdas.t06z.pgrb2.0p25.f001:147",
+                "gdas.t06z.pgrb2.0p25.f001:157",
+                "gdas.t06z.pgrb2.0p25.f001:167",
+                "gdas.t06z.pgrb2.0p25.f001:177",
+                "gdas.t06z.pgrb2.0p25.f001:187",
+                "gdas.t06z.pgrb2.0p25.f001:198",
+                "gdas.t06z.pgrb2.0p25.f001:213",
+                "gdas.t06z.pgrb2.0p25.f001:224",
+                "gdas.t06z.pgrb2.0p25.f001:240",
+                "gdas.t06z.pgrb2.0p25.f001:256",
+                "gdas.t06z.pgrb2.0p25.f001:272",
+                "gdas.t06z.pgrb2.0p25.f001:288",
+                "gdas.t06z.pgrb2.0p25.f001:304",
+                "gdas.t06z.pgrb2.0p25.f001:320",
+                "gdas.t06z.pgrb2.0p25.f001:336",
+                "gdas.t06z.pgrb2.0p25.f001:352",
+                "gdas.t06z.pgrb2.0p25.f001:368",
+                "gdas.t06z.pgrb2.0p25.f001:384",
+                "gdas.t06z.pgrb2.0p25.f001:400",
+                "gdas.t06z.pgrb2.0p25.f001:416",
+                "gdas.t06z.pgrb2.0p25.f001:432",
+                "gdas.t06z.pgrb2.0p25.f001:448",
+                "gdas.t06z.pgrb2.0p25.f001:464",
+                "gdas.t06z.pgrb2.0p25.f001:480",
+                "gdas.t06z.pgrb2.0p25.f001:496",
+                "gdas.t06z.pgrb2.0p25.f001:512",
+                "gdas.t06z.pgrb2.0p25.f001:529",
+                "gdas.t06z.pgrb2.0p25.f001:544"
+              ]
+            },
+            "specific_humidity_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 0.025329231115112306,
+              "minimum": 8.271115112304687e-06,
+              "missing": 0,
+              "sha256": "72d4808a52c709c3150a139a471247d2022d142effeec72d108a3b3565bed889",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:581"
+              ]
+            },
+            "surface_pressure": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 105152.725,
+              "minimum": 49688.725000000006,
+              "missing": 0,
+              "sha256": "ec5bc93aa89bacd48e6a887171de1329aabbb593165e001338f4c0040d33e18f",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:560"
+              ]
+            },
+            "terrain_height": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 5917.819375,
+              "minimum": -355.140625,
+              "missing": 0,
+              "sha256": "c4d1b51b58194bef3b548ff90a06282303b76c69a36790b29e1ec97e0596aabd",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:561"
+              ]
+            },
+            "volumetric_soil_moisture": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.019999998092651367,
+              "missing": 2748980,
+              "sha256": "9bc3c89f10000ec5dba58a26484e699e997fa2f16cbac2054f92e94ced267f4c",
+              "shape": [
+                4,
+                721,
+                1440
+              ],
+              "source_references": [
+                "gdas.t06z.pgrb2.0p25.f001:564",
+                "gdas.t06z.pgrb2.0p25.f001:567",
+                "gdas.t06z.pgrb2.0p25.f001:570",
+                "gdas.t06z.pgrb2.0p25.f001:573"
+              ]
+            }
+          },
+          "member": null,
+          "source_cycle": "2026-08-17T06:00:00",
+          "unresolved_direct_fields": [],
+          "valid_time": "2026-08-17T07:00:00"
+        }
+      ],
+      "grid": {
+        "fingerprint": "f391584a7d270a121a9f1b19cb91a2c521d995050945ad074a3cd716403d522e",
+        "nx": 1440,
+        "ny": 721,
+        "vertical_count": 33
+      },
+      "inputs": [
+        {
+          "bytes": 485774980,
+          "name": "gdas.t06z.pgrb2.0p25.f000",
+          "sha256": "aeb20a99effadf8f7a8551f085436fddf8a43462df13307575fdf5f1a5fcdfaa"
+        },
+        {
+          "bytes": 516555944,
+          "name": "gdas.t06z.pgrb2.0p25.f001",
+          "sha256": "13339966823d90644575046fa9e658a4bc13fe842a31926370d3a751a501f794"
+        }
+      ],
+      "mapping": {
+        "name": "rw-wps-gdas-pgrb2-0p25-grib2.mapping.json",
+        "sha256": "f6de7a0a42d86ba1aa7e8cd84d30db79870843c25ccb6aa7ad3a3dbe8b4c4fc5"
+      },
+      "materialization": {
+        "frame_count": 2,
+        "frame_header_sha256": [
+          "c99ce38933074439375c5b4b72f86bbaf11a4a3ff47db4b4910500bd8e4bc20c",
+          "95e7df489cb59200c7a13dd47a283e2b68e04f2b108360c4d3b98476d214dc20"
+        ],
+        "verdict": "PASS"
+      },
+      "schema": "gpuwm-mapped-source-inspection-v1",
+      "source_format": "grib2",
+      "status": "CANONICAL_FRAMES_MATERIALIZED_NOT_STOCK_WRF_CERTIFIED",
+      "stock_wrf_certified": false
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "gdas-pgrb2-0p25",
+    "verdict": "INSPECTED"
+  },
+  "measured_on": {
+    "machine": "AMD64",
+    "system": "Windows"
+  },
+  "schema": "gpuwm-mapped-parity-digest-v1",
+  "source": "gdas-pgrb2-0p25"
+}

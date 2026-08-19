@@ -29,16 +29,28 @@ known; requesting a higher model top then fails before preprocessing.
 
 ## `gpuwm adapt`
 
-`gpuwm adapt` is the create-only front door for an arbitrary GRIB2 source
-whose capabilities can be verified without a named adapter.
+`gpuwm adapt` is the create-only front door for an arbitrary **GRIB2 or
+NetCDF** source whose capabilities can be verified without a named adapter.
+No source name is blessed in advance and no code change is needed for a new
+dataset. `intermediate-format.md` is the format specification.
 
 ```text
 gpuwm adapt --vtable VTABLE --skeleton DESCRIPTOR
 
+# GRIB2: --vtable is the selector authority and is required.
 gpuwm adapt --vtable VTABLE --descriptor DESCRIPTOR
-  --input GRIB2 [--input GRIB2 ...] --output-dir DIR
+  --input FILE [--input FILE ...] --output-dir DIR
   [--grib2-inventory EXE --grib2-dump EXE]
+
+# NetCDF: selectors name CF variables directly, so --vtable is refused
+# and the GRIB2 decoder overrides do not apply.
+gpuwm adapt --descriptor DESCRIPTOR
+  --input FILE [--input FILE ...] --output-dir DIR
 ```
+
+`--skeleton` scaffolds a GRIB descriptor from a Vtable and requires
+`--vtable`; a NetCDF descriptor starts from the worked mapping named in
+`intermediate-format.md`.
 
 Skeleton mode writes a review-required `rw-wps.descriptor.v1` scaffold
 and prints every value it left for you to replace; authoring mode
@@ -46,9 +58,11 @@ refuses that scaffold as a scaffold until they are all replaced,
 rather than as a type error about whichever one it reached first.
 Authoring mode compiles its Vtable selectors, inventories the actual files,
 checks exact fields/levels, target unit/axis/staggering bindings, complete
-declared soil policy, one regular-lat/lon GDT 0 grid, uniform cadence, and
-source-top coverage of the descriptor's model top. Any failure names the
-missing capability and writes no adapter.
+declared soil policy, one regular-lat/lon grid, uniform cadence, and
+source-top coverage of the descriptor's model top. For NetCDF it resolves
+every declared selector and refuses a selector that matches nothing, printing
+both vocabularies -- what the descriptor asked for and what the files contain.
+Any failure names the missing capability and writes no adapter.
 
 Success writes an SHA-256-bound mapping/composition/provenance authority
 triple plus `adapter.inputs.json`. Its exact status is
@@ -72,13 +86,135 @@ can run for each trusted row.
 | `gfs` | ordered `pgrb2.0p25` series, cycle, SHA manifest | One- or three-hour uniform series; 1000..100 hPa and four Noah slabs |
 | `era5` | combined GRIB1, Vtable, orography, SHA manifest | Uniform series beginning at experiment start |
 | `20crv3` | exact filename-member manifest; paired pressure/surface GRIB2 | Packaged immutable authorities; Lambert `max_dom=4`; not stock-WRF certified |
+| `20crv3-cf` | ordered NOAA PSL NetCDF files plus the recovered invariant supplement | The publicly downloadable 20CRv3.  Packaged profile supplies mapping/composition/provenance; ENSEMBLE MEAN, not a member; not stock-WRF certified |
+| `hrrr-prs` | ordered hourly `wrfprs` GRIB2 files | HRRR's public pressure-level product through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- the Lambert grid, grid-relative wind rotation and nine-node RUC soil are table data; in-band terrain; not stock-WRF certified |
+| `rap` | ordered hourly `awip32` GRIB2 files | RAP's 32 km Lambert North-America product through the same packaged-profile route as `hrrr-prs`: complete state in one file per valid time, in-band terrain, nine-node RUC soil, RH-derived humidity; JPEG2000-packed and decoded by the bridge's own codec; not stock-WRF certified |
+| `rrfs` | hourly `prslev` + `2dfld` GRIB2 file PAIRS | RRFS, HRRR's operational successor, through the same packaged-profile route: the 3 km CONUS grid is bit-for-bit HRRR's Lambert; `prslev` carries the 45-level upper air and `2dfld` carries surface/soil/terrain, so both files are passed per valid time; direct SPFH, nine-node RUC soil; not stock-WRF certified |
+| `gem-gdps` | per-valid-time GDPS GRIB2 (Datamart per-variable files, concatenable) plus the analysis terrain record | ECCC's global GDPS through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- 33 pressure levels, the single 0-10 cm ISBA soil layer, and the once-per-cycle analysis invariants (orography, land mask, ice) broadcast by the generic invariant grammar; not stock-WRF certified |
+| `ecmwf-open-data` | ordered three-hourly `oper` GRIB2 step files | ECMWF's open-data IFS at 0.25 degrees through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- 14 pressure levels, dewpoint-derived 2 m humidity, index-addressed IFS soil and cycle-analysis in-band terrain are table data; 0.25-degree open data (CC-BY-4.0), the 9 km HRES is access-restricted; not stock-WRF certified |
+| `gefs` | one verified member's `pgrb2a`+`pgrb2b` pair per valid time (concatenated), staged by `gpuwm-member-prep` | One MEMBER of NCEP's 31-forecast global ensemble through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- the 31-level ladder is the measured exact union of the two products' disjoint isobaric sets, every state selector pins PDT 1 (mean/spread and accumulation twins refuse at the byte level), four Noah soil layers split across the pair; in-band terrain; not stock-WRF certified |
 | `mapped` | mapping, composition, ordered inputs, role bindings, SHA manifest | Generic GRIB1, GRIB2, or NetCDF; new mappings are validated, not certified |
 
 All executing routes require an output path that does not already exist.
 Static fields come from `--geog-root` or a route-specific sealed cache and
 receipt. WPS and experiment/WRF namelists remain explicit authorities.
 
-HRRR, ERA5, GFS, 20CRv3, and mapped routes accept:
+### Which engine decodes a mapped source
+
+Every mapped route decodes through one engine, selected in this order:
+the `--mapped-engine` flag, then the `GPUWM_MAPPED_ENGINE` environment
+variable, then the release default. An unrecognised name refuses rather
+than falling back, so a run can never report one engine and use another.
+
+```text
+--mapped-engine rust     # the Rust mapped engine, in process
+--mapped-engine python   # WORKAROUND -- see below
+```
+
+`python` is a **workaround, not a mode**. It runs the slower Python
+decode path and exists so that a decode the Rust engine gets wrong has a
+way around it while the defect is fixed. Reach for it when a source that
+used to prepare stops preparing, report what differed, and drop it again
+once the fix lands.
+
+Naming a decoder tool explicitly -- `--grib2-inventory`, `--grib2-dump`,
+`--grib1-bridge` -- also selects the Python engine for that run,
+whatever the default is. Those flags pin WHICH BINARY reads the bytes,
+and the Rust engine decodes in process, so honouring the default there
+would silently ignore the pin. Omit them and `gpuwm prep` resolves the
+tools the route needs through the staged-tool ladder, with no flags.
+
+`gpuwm doctor` reports the engine under `mapped decode engine`,
+including which engine a bare run uses on this release.
+
+**On this release the default is the Rust engine**, and it DECODES
+GRIB2, **GRIB1 and NetCDF** records inside `gpuwm_mapped_engine`, with no
+subprocess per file. That is every source FORMAT gpuwm reads.
+`gpuwm doctor` reports `missing` if the engine is not staged, because a
+bare mapped run now needs it.
+
+Decode is not the whole route. `gpuwm prep` COMPOSES on every call --
+terrain subsetting, cross-source borrow, bound fields -- and `compose`
+is declared for those same three formats, so the composition runs in the
+engine too. **A bare prep of a mapped source therefore resolves no
+decoder tools at all**: no `grib2_inventory`, no `grib2_dump`, no
+`grib1_bridge`. The flags below are overrides for pinning a specific
+binary, not requirements, and naming one routes that run to the Python
+engine on purpose.
+
+Every subcommand the mapped route uses -- `decode`, `inspect`,
+`compose` -- is declared for every source format gpuwm reads, so no
+mapped source falls back to Python on a bare run.
+
+**The exact-member door rides the same route.** `gpuwm prep --source
+20crv3` -- the exact-member GRIB2 adapter, not the `--source 20crv3-cf`
+NetCDF one -- verifies its own sealed member manifest, holds the
+archive's product-identity contract against the engine's raw
+record-inventory surface (`gpuwm_mapped_engine inventory`), and then
+composes through `decode_composed_source` like every other packaged
+source, with the verified filename member sealed as an explicit binding
+the composition stamps onto every frame. A bare prep of it resolves no
+subprocess tool; `--mapped-engine python` (or naming a tool) selects
+the documented Python-engine workaround, which still reads the archive
+through `grib2_inventory`/`grib2_dump`. The other non-mapped routes
+(`--source era5`, `--source gfs`) require you to name their bridge with
+`--bridge`, so nothing about them is silent either.
+
+That is a route, not a fallback, and it stays checkable: the engine
+states what it implements (`gpuwm_mapped_engine capabilities`), gpuwm
+reads that list, and a test compares the two against the built binary,
+so the split cannot drift from the artifact. If a future format arrives
+unported, asking for `--mapped-engine rust` on it still goes to the
+engine and returns its own `not_implemented` refusal -- a run that asked
+for Rust never silently gets Python.
+
+## Source spellings
+
+`--source` takes the id in the tables above or any other spelling in
+this one; the names are matched case-insensitively and `_` reads as `-`.
+A model's own name is a spelling, not only the row's id, so the name an
+upstream publisher uses selects its route. This table is the registry's
+own alias data (`--list-sources` prints the same rows as JSON), and a
+test refuses any drift between the two.
+
+| `--source` id | also spelled |
+|---|---|
+| `hrrr` | -- |
+| `hrrr-prs` | `hrrr-pressure`, `hrrr-wrfprs` |
+| `gem-gdps` | `gem`, `gdps`, `gem-global` |
+| `icon-eu` | `dwd-icon-eu`, `icon-eu-regular` |
+| `hrrr-ak` | `hrrrak`, `hrrr-alaska` |
+| `gfs` | `gfs-0p25`, `gfs-0.25` |
+| `gdas` | `gdas-0p25`, `gdas-0.25` |
+| `gefs` | `gefs-ensemble` |
+| `aigfs` | `ai-gfs` |
+| `aigefs` | `ai-gefs` |
+| `hgefs` | `hybrid-gefs` |
+| `ecmwf-open-data` | `ecmwf`, `ifs` |
+| `aifs` | `aifs-v2`, `aifs-single` |
+| `rap` | `rap-awip32` |
+| `nam` | -- |
+| `hiresw` | `hires` |
+| `href` | `href-conus` |
+| `sref` | -- |
+| `rtma` | -- |
+| `urma` | -- |
+| `nbm` | `blend` |
+| `rrfs` | `rrfs-ops` |
+| `rrfs-a` | `rrfsa` |
+| `rrfs-public` | -- |
+| `refs` | `rrfs-ensemble` |
+| `rrfs-firewx` | `firewx` |
+| `wrf` | `wrf-gdex`, `wrf-arw` |
+| `era5` | -- |
+| `20crv3` | `20cr`, `twentycrv3`, `20crv3-member` |
+| `20crv3-cf` | `20crv3-netcdf`, `20cr-netcdf`, `20cr-cf` |
+| `mapped` | `generic-mapped`, `mapping-v1` |
+
+Not every row is runnable on this release; the tables above name the
+routes that execute, and `--list-sources` reports each row's status.
+
+HRRR, ERA5, GFS, both 20CRv3 routes, and mapped routes accept:
 
 ```text
 --preprocess-backend cuda|cpu|auto
@@ -96,6 +232,32 @@ partitions the native budget across those slots and records every effective
 job allocation plus the peak allocation. `--pipeline-workers` independently
 controls 1 through 64 decoder/hour jobs and is never charged to or multiplied
 into the native transform budget.
+
+## When the source does not reach the domain
+
+A source grid that does not cover the requested domain is refused before any
+output root is created, by the front door itself: two lines on stderr,
+nothing on stdout, exit status `78`, and no traceback.
+
+```text
+prep: REFUSED: target points fall outside the source grid: target point
+(0, 0) at lat/lon (34.2972, -102.4465) maps to source index x=-1263.144
+y=76.756, and the source covers x=0..1376 (lon -23.5..62.5) y=0..656
+(lat 29.5..70.5)
+remedy: if the window above is a CROP of a wider grid, re-fetch the source
+with a margin that contains the whole domain -- the interpolation stencil
+reaches one cell beyond every corner.  If the window IS the source's whole
+extent, no crop reaches this domain: move the domain inside the window, or
+prepare it from a source whose grid covers it (--list-sources names every
+source this install runs).
+```
+
+The first uncovered corner, the source index it maps to, and the window the
+source actually covers are all named, because a crop that is too small and a
+regional model that cannot reach the domain have opposite remedies. This is
+the same refusal for every source -- the mapped route, a packaged profile
+and the native route all raise it -- so a regional model added as table data
+gets it with no new code.
 
 ## Native HRRR subset download
 
@@ -131,6 +293,284 @@ and its SHA-256. Member identity remains filename-plus-manifest authoritative
 because the accepted archive profile does not encode it in the GRIB2 PDT.
 The mapping still declares `max_dom=4`, and this runnable route is not yet a
 live unchanged-stock-WRF certificate.
+
+## The 20CRv3 NetCDF route
+
+`gpuwm prep --source 20crv3-cf` reads NOAA PSL's downloadable 20CRv3 --
+one variable per NetCDF file, three-hourly, global 1 degree -- through the
+Rust `rw_netcdf` bridge.  It takes `--input` once per file, one
+`--supplement` (the recovered orography/land-mask file), and the usual
+namelist/geography/experiment/output arguments.  It does NOT take
+`--mapping`, `--composition`, `--provenance` or `--source-format`: the
+packaged profile decides those and byte-checks them, and passing one is
+refused rather than honoured, because a packaged source's name has to mean
+one thing.
+
+## The GDPS route
+
+`gpuwm prep --source gem-gdps` reads ECCC's GDPS 15 km global regular
+lat-lon GRIB2 product from MSC Datamart.  Datamart publishes one
+JPEG2000-packed single-message file per variable and level; concatenate
+each valid time's files into one input (GRIB2 messages are
+self-delimiting) and pass `--input` once per valid time.  The terrain
+supplement is the `GeopotentialHeight_Sfc` ANALYSIS record, passed once
+with `--supplement`: GDPS publishes its invariant surface identities --
+orography, land mask, sea-ice analysis -- only at PT000H, so the
+packaged composition declares the `cycle_invariant_broadcast`
+alignment and the mapping declares the land mask and ice analysis
+`cycle_invariant`; the engine proves the record invariant wherever it
+appears and binds it to every valid time.  Model state is three-hourly
+(P001/P002 are surface-only products).  The soil column is the single
+0-10 cm ISBA layer GDPS publishes, anchored by skin temperature at the
+surface and the deep-soil temperature at 3 m, which is the WRF-real
+treatment of a one-layer source.  Not yet accepted by unchanged stock
+WRF.
+
+## The HRRR pressure-level route
+
+`gpuwm prep --source hrrr-prs` reads HRRR's public `wrfprs` product --
+one GRIB2 file per hourly valid time, each carrying the 39-level pressure
+state, the surface/2 m/10 m fields, in-band terrain and the nine-depth
+RUC soil column -- through the converged GRIB2 bridge.  Pass `--input`
+once per wrfprs file and `--supplement` once per file again (the terrain
+supplement is IN BAND: the same files carry the surface-height record the
+composition binds).  The packaged profile decides the mapping,
+composition, provenance and source format exactly as `20crv3-cf` does;
+the projected Lambert grid, the grid-relative wind rotation and the node
+soil geometry are rows in those documents, not code.  This route is
+distinct from the certified native `--source hrrr` route: it initialises
+from the pressure-level analysis, which is smoother near sharp terrain
+than the native hybrid levels, and it is not yet accepted by unchanged
+stock WRF.
+
+## The RAP route
+
+`gpuwm prep --source rap` reads RAP's `awip32` product -- one GRIB2 file
+per hourly valid time on the 32 km Lambert North-America grid (AWIPS
+grid 221), each carrying the 39-level pressure state (the same ladder as
+HRRR's wrfprs), the surface/2 m/10 m fields, in-band terrain and the
+nine-depth RUC soil column.  Pass `--input` once per awip32 file and
+`--supplement` once per file again (in-band terrain, exactly as
+`hrrr-prs`).  Pressure-level humidity arrives as RH and is converted by
+the mapping's declared derivation -- the same one the GFS profile uses.
+Two honest limits: RAP's 13 km CONUS products are not reachable as
+tables (`awp130pgrb` carries no soil state, and its `awp130bgrb`
+companion duplicates the surface records octet-for-octet so no selector
+separates the pair), and the native `wrfprs` grid is rotated lat-lon
+(GDT 32769), outside the declared grid families.  The route is not yet
+accepted by unchanged stock WRF.
+
+## The GDAS route
+
+`gpuwm prep --source gdas` reads NCEP's analysis-cycle pgrb2 product --
+one 0.25-degree global GRIB2 file per hourly valid time, `f000..f009`
+and nothing after (f010 is a measured 404) -- through the converged
+GRIB2 bridge.  Pass `--input` once per file and `--supplement` once per
+file again (terrain is IN BAND, exactly as `hrrr-prs` and `rap`).  Each
+file carries the 33-level isobaric state with direct specific humidity
+(no RH derivation anywhere on this route), the surface/2 m/10 m fields,
+and the four Noah soil layers, bound by their scaled type-106 depth
+pairs -- the integer `level` key collides between the 0-0.1 m and
+0.1-0.4 m layers, so the depth-pair rows are the layer identity.  Soil
+moisture is an NCEP local-table record (2.0.192 under
+localTablesVersion 1) selected by octets; nothing asks a table to name
+it.  The eight sub-hPa surfaces outside the declared ladder are
+admitted and ignored.
+
+Three honesty facts belong in the same breath as the command.  The
+files this route reads are stamped FORECASTS in the bytes even at hour
+0 (`typeOfProcessedData` fc, generating process 81 at the analysis
+hour, 96 after) -- while the one product stamped an ANALYSIS
+(`pgrb2.1p00.anl`) is a strict subset with no soil, no land mask and no
+2 m/10 m fields, and is not an initialization route.  Publication lags
+the cycle by about seven hours (GDAS is the delayed-cutoff cycle; a
+scheduler assuming GFS timing chases a 404).  And the catalogue is
+record-for-record byte-identical to GFS `pgrb2.0p25` -- only the
+acquisition path says which model a file came from.  The route is not
+yet accepted by unchanged stock WRF.
+
+## The RRFS route
+
+`gpuwm prep --source rrfs` reads RRFS -- HRRR's operational successor,
+flowing today on the `noaa-rrfs-ops-pds` bucket and NOMADS `rrfs/v1.0`,
+with operational implementation dated 2026-10-06.  The HRRR `wrfprs`
+analogue is the `prslev` + `2dfld` product PAIR: `prslev` is pure upper
+air (the 45-level pressure state, 2 hPa top, 70 hPa where HRRR has 75)
+and `2dfld` carries every surface, 2 m/10 m, soil and terrain record.
+Pass `--input` once per file for BOTH products at every valid time, and
+`--supplement` once per `2dfld` file (terrain is in band, but it lives in
+the `2dfld` files).  The 3 km CONUS grid is bit-for-bit HRRR's Lambert --
+measured from real bytes, every geolocating octet identical -- so the
+grid, the grid-relative wind rotation and the nine-node RUC soil column
+ride the packaged documents exactly as `hrrr-prs` does; SPFH is direct,
+so no humidity derivation is involved.
+
+Honest limits, in the same breath: the `natlev` native-level product, the
+3 km North-America rotated grid, the thinned `subset` files and every
+per-member ensemble GRIB2 exist only in the frozen prototype bucket
+`noaa-rrfs-pds` (halted 2026-08-12 by design) and have no live front
+door, so this route does not claim them; the relocatable `firewx` nest
+changes dimensions and corner day to day; REFS publishes derived
+mean/spread/probability products, which cannot initialize a model state;
+and the ops bucket currently lists six days, where rolling retention
+versus feed age is not yet distinguishable.  The route is not yet
+accepted by unchanged stock WRF.
+
+## The AIFS route
+
+`gpuwm prep --source aifs` reads ECMWF's AIFS single deterministic
+forecast from open data -- one 0.25-degree global GRIB2 file per
+six-hourly step -- through the same converged GRIB2 bridge.  Pass
+`--input` once per step file and `--supplement` once with the 0-hour
+file: AIFS publishes its invariants (surface geopotential, land mask) at
+the analysis step ONLY, and the packaged composition declares that with
+`cycle_invariant_broadcast` terrain alignment and a `cycle_invariant`
+land-mask binding rather than any code.  The 13-level pressure ladder,
+the geopotential-to-metres terrain scale, the dewpoint-derived 2 m
+humidity and the two-layer ordinal (WMO type 151) soil column are all
+rows in the packaged documents.
+
+Three limits belong in the same breath as the command.  The published
+soil column stops at 0.28 m, so the deeper Noah layers are WRF's own
+shallow-column interpolation anchored by the skin and static deep-soil
+temperatures.  No snow state and no sea-ice fraction are published, so
+runs initialise bare-ground and open-water everywhere -- a winter or
+polar case should not start from this product.  And an AI emulator
+publishes no hydrometeors, so precipitation fields begin from zero and
+carry the documented spin-up cost.  The route is not yet accepted by
+unchanged stock WRF.
+## The ECMWF open-data route
+
+`gpuwm prep --source ecmwf-open-data` (aliases `ecmwf`, `ifs`) reads
+ECMWF's public 0.25-degree `oper` product -- one GRIB2 file per
+three-hourly step, each carrying the 14-level pressure state, the
+surface/2 m/10 m fields and the four IFS soil layers -- through the
+converged GRIB2 bridge.  Pass `--input` once per step file and
+`--supplement` once per file again: terrain is IN BAND, but ECMWF writes
+the surface geopotential only into the cycle's analysis frame, so the
+packaged composition declares `time_alignment: "cycle_invariant_broadcast"` --
+the one invariance-checked terrain field is carried to every primary
+valid time and the carried times are named in the receipt.  The IFS soil
+column is addressed by ordinal on fixed-surface type 151 rather than by
+metre depths, declared through the composition's
+`selector_depth_binding`; 2 m humidity derives from the published
+dewpoint; winds are earth-relative; the CCSDS-packed records and the
+north-to-south row order are handled by the generic decode.  LICENSING:
+this profile is authored against the 0.25-degree open-data distribution
+(CC-BY-4.0, attribution required).  ECMWF's native 9 km HRES is
+access-restricted -- a data-licensing fact about the feed, not a
+capability limit.  Snow and sea-ice fields remain policy-controlled, and
+the route is not yet accepted by unchanged stock WRF.
+
+Two limits belong in the same breath as the command.  The distribution is
+the ENSEMBLE MEAN analysis, not one of the 80 members -- for a member
+state use `--source 20crv3` over the every-member GRIB2 archive.  And PSL
+publishes no orography and no land mask for 20CRv3, so both are recovered
+from 20CRv3's own fields by
+`tools/build_pressure_level_invariant_supplement.py`, which writes a
+provenance receipt naming the method and the divergence.
+
+`tools/download_20crv3_native_subset.py` fetches a window and builds that
+supplement; `tools/demo_20crv3_netcdf.sh` runs fetch, prep, sim and render
+end to end.  Full detail in `docs/native-20crv3-source-adapter-spec.md`.
+
+## The GEFS member route
+
+`gpuwm prep --source gefs` initialises from ONE verified member of
+NCEP's half-degree global ensemble -- the `pgrb2a` + `pgrb2b` pair of
+the SAME member at each valid time.  The pairing is not advice: the two
+products' isobaric level sets are exactly disjoint (measured zero
+overlap on every state variable; specific humidity has zero messages in
+`pgrb2a`), so the packaged mapping's 31-level ladder is only
+satisfiable by both files together, and the frame assembler's
+one-GRIB-member rule refuses a cross-member mix.  Stage and verify the
+member first with `gpuwm-member-prep` (below), concatenate each valid
+time's verified `pgrb2a`+`pgrb2b` (GRIB2 messages are self-delimiting)
+and pass `--input` once per valid time, then the SAME pair again with
+`--supplement`: terrain is in band but migrates products -- measured,
+the analysis publishes orography in `pgrb2a` and every forecast step
+publishes it in `pgrb2b` -- so only the pair carries it at every valid
+time, where it is proven invariant across the window.  Every state selector
+pins PDT 1, which is what refuses the `geavg`/`gespr` statistic files
+(PDT 2) sharing the member directories and the PDT-11 accumulation
+twins that appear from f003 -- at the byte level, not by filename.
+The four Noah soil layers ride the pair (0-0.1 m in `pgrb2a`, the rest
+in `pgrb2b`) under the measured 66-percent ocean bitmap, keyed by the
+scaled fixed-surface depth bounds because the integer level octet
+collapses the top two layers.  Not yet accepted by unchanged stock WRF.
+
+## Ensemble member preparation (`gpuwm-member-prep`)
+
+Ensemble members are fetched by filename but verified at decode on the
+GRIB ensemble identity -- (productDefinitionTemplate,
+typeOfEnsembleForecast, perturbationNumber) plus the declared encoded
+ensemble size -- and every mismatch refuses naming both what the
+filename claims and what the bytes carry.  Which members exist, how
+their files are named, and what their bytes must say is a packaged
+`rw-wps.members.v1` document (SHA-256-pinned table data); the engine
+knows no ensemble's name.
+
+```text
+gpuwm-member-prep --list-member-sets
+gpuwm-member-prep --describe SET
+gpuwm-member-prep --member-set SET --member ID --verify-only FILE
+gpuwm-member-prep --member-set SET --member ID --cycle YYYY-MM-DDTHH \
+    --steps 0,3 [--products P,P] --inputs ROOT --output ROOT
+```
+
+`--inputs` holds fetched files at their declared upstream-relative
+paths -- the only layout that preserves member identity on feeds whose
+leaf filenames are identical across members.  A verified member is
+staged into `OUTPUT/<set>/<cycle>/<member>/<product>/` with a
+`member-receipt.json` pinning the grammar document, the member
+identity, per-file SHA-256, and the observed ensemble octets.  Ensemble
+means/spreads share the member namespace and decode cleanly as ordinary
+fields, so a statistic claimed as a member refuses by name -- at the
+member-id layer, at the filename layer, and again on the bytes.  The
+declared member set is the sizing authority: the encoded
+`numberOfForecastsInEnsemble` is verified as identity evidence only,
+because real ensembles count their own members incompatibly.
+
+## Ensemble products (`rw_ensbatch`)
+
+The first ensemble renderer on the Rust path.  N member wrfout sets go
+in under caller-chosen numbers; ensemble MEAN, SPREAD, exceedance
+PROBABILITY, probability-matched mean and PAINTBALL panels come out
+through the same store import, projected basemap, styling and PNG
+writer the single-run `rw_wrfbatch` uses.  The engine knows no
+ensemble's name: member identity is the caller's number, stamped on the
+panels and reported on stdout.
+
+A member is a TIME SERIES, not a file.  `frames_per_outfile = 1` is
+WRF's default, so a member normally arrives as N single-frame wrfouts;
+every frame of the one domain enters that member's store together, in
+model-time order, and `--frames` indexes real valid times.  `--member`
+therefore takes either one wrfout or the member directory holding its
+frames, and the manifest route reads the member directory named by each
+`gpuwm-ensemble-manifest.v1` record.
+
+```text
+rw_ensbatch --store-root DIR --out-dir DIR
+    (--manifest ensemble-manifest.json | --member NUMBER=WRFOUT_OR_DIR ...)
+    [--field refl|uh|precip|t2|wspd10]
+    [--products mean,spread,prob,pmm,paintball]
+    [--threshold V] [--neighborhood-km V] [--frames all|N]
+    [--nan-policy mask|refuse] [--pmm-tie-rule flat-index|average]
+    [--accept-status LIST] [--width N] [--height N] [--source-label TEXT]
+    [--overlays FILE.json] [--annotate FILE.json]
+rw_ensbatch --list-fields | --help | --abi
+```
+
+The paintball panel overlays each member's threshold contour in a named
+color, spelled member=color on stdout.  Refusals name their breakage: a
+member directory holding two nests refuses and names both domains,
+because averaging d01 for one member against d02 for another is not an
+ensemble; a member whose manifest status is not accepted is skipped WITH
+its status, so the operator learns the right `--accept-status` from the
+refusal; disagreeing grids refuse; and a member whose store cannot serve
+the requested frame index refuses saying how many frames it has.  Build:
+`cargo build --release --offline -p rw-wrfbatch --bin rw_ensbatch` in
+`tools/rustwx`.
 
 ## Declarative authoring
 

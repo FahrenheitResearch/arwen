@@ -378,6 +378,44 @@ def test_setup_runs_the_steps_in_order_and_prints_one_line_each(
     assert "chatty" not in printed
 
 
+def test_a_bare_setup_says_what_it_did_not_stage(monkeypatch, capsys):
+    """N19: WPS_GEOG is excluded from ``setup`` by design, and a bare
+    run never said so -- the ~16 GB tree surfaced as a refusal at prep
+    time, several commands after the one that would have staged it.
+
+    The size is the surprise, so the size is in the line, next to the
+    command that closes the gap.
+    """
+
+    monkeypatch.setattr(
+        setup_cli, "_run_step", lambda module_name, overrides: (0, ""))
+    monkeypatch.setattr("gpuwm.doctor.collect_checks", lambda: [])
+
+    setup_cli.setup_main(argparse.Namespace(
+        with_geog=False, from_dir=None, explain=False))
+    printed = capsys.readouterr().out
+    assert "WPS_GEOG" in printed
+    assert "16 GB" in printed
+    assert "gpuwm fetch-geog" in printed
+    assert "--with-geog" in printed
+
+
+def test_setup_with_geog_does_not_also_say_it_skipped_it(
+        monkeypatch, capsys):
+    """The note is about what was NOT staged, so asking for it removes
+    the note rather than adding a contradiction."""
+
+    monkeypatch.setattr(
+        setup_cli, "_run_step", lambda module_name, overrides: (0, ""))
+    monkeypatch.setattr("gpuwm.doctor.collect_checks", lambda: [])
+
+    setup_cli.setup_main(argparse.Namespace(
+        with_geog=True, from_dir=None, explain=False))
+    printed = capsys.readouterr().out
+    assert setup_cli.GEOG_SIZE_NOTICE in printed
+    assert "not staged" not in printed
+
+
 def test_setup_explain_replays_every_steps_own_output(monkeypatch, capsys):
     monkeypatch.setattr(
         setup_cli, "_run_step",
@@ -475,8 +513,14 @@ def test_setup_does_not_fetch_geog_unless_asked_and_prints_the_size(
 
     setup_cli.setup_main(argparse.Namespace(
         with_geog=False, from_dir=None, explain=False))
+    printed = capsys.readouterr().out
     assert "gpuwm.geog_assets" not in seen
-    assert "16 GB" not in capsys.readouterr().out
+    # The bare run must not announce a download it is not going to make.
+    # It DOES report the tree as not staged, with the same size, which is
+    # a different sentence -- so this asserts on the notice rather than
+    # on the number appearing anywhere (N19).
+    assert setup_cli.GEOG_SIZE_NOTICE not in printed
+    assert "will download" not in printed
 
     seen.clear()
     setup_cli.setup_main(argparse.Namespace(
@@ -551,3 +595,89 @@ def test_the_noahmp_budget_is_a_warning_not_a_blocker(capsys):
         assert NOAHMP_EXPERT_COLUMN_BUDGET_ENV in err
     finally:
         explain.set_explain(False)
+
+
+# ---------------------------------------------------------------------------
+# --explain belongs to ONE invocation
+# ---------------------------------------------------------------------------
+
+def test_a_front_door_gives_the_explain_flag_back_when_it_returns():
+    """`--explain` must not outlive the command that asked for it.
+
+    `_EXPLAIN_ACTIVE` is module state, because library code that calls
+    `explain.warn` has no `args` in reach.  `gpuwm.cli.main` is also an
+    ordinary function that plenty of callers run in-process rather than
+    by spawning: the console script, an embedder driving the CLI, and
+    the test suite.  A door that stamped the flag and never gave it back
+    therefore handed the flag to the NEXT invocation, whose warnings
+    then printed a mechanism continuation nobody asked for.
+
+    Measured before the fix: `pytest tests/test_doctor.py
+    tests/test_fetch_engine_degrade_guard.py` failed with 2 stderr lines
+    where the guard contracts 1, and the same two files in the opposite
+    order passed -- so a battery could report this tree red or green on
+    how it happened to pack its shards.
+    """
+
+    import gpuwm.cli as cli_module
+
+    assert explain._EXPLAIN_ACTIVE is False  # noqa: SLF001 - that IS the state
+    inside = []
+    with pytest.MonkeyPatch.context() as patch:
+        # Dispatch stubbed so this reads the flag at the deepest point
+        # the CLI sets it for, without running a subcommand.
+        patch.setattr(
+            cli_module, "_dispatch",
+            lambda args: inside.append(explain._EXPLAIN_ACTIVE) or 0)  # noqa: SLF001
+        assert cli_main(["version", "--explain"]) == 0
+    assert inside == [True], (
+        "--explain did not reach library code during the invocation that "
+        "asked for it")
+    assert explain._EXPLAIN_ACTIVE is False, (  # noqa: SLF001
+        "gpuwm.cli.main left --explain set after it returned; the next "
+        "invocation in this interpreter inherits an explanation layer it "
+        "never asked for")
+
+
+def test_the_scope_restores_what_it_found_rather_than_clearing_it():
+    """Nested doors: a scope hands its caller's layer back untouched."""
+
+    with explain.explain_scope(True):
+        assert explain._EXPLAIN_ACTIVE is True  # noqa: SLF001
+        with explain.explain_scope(False):
+            assert explain._EXPLAIN_ACTIVE is False  # noqa: SLF001
+            explain.set_explain(True)
+        assert explain._EXPLAIN_ACTIVE is True, (  # noqa: SLF001
+            "the inner scope cleared its caller's layer instead of "
+            "restoring it")
+    assert explain._EXPLAIN_ACTIVE is False  # noqa: SLF001
+
+
+def test_the_scope_restores_through_a_raised_exception():
+    """A door that refuses still gives the flag back."""
+
+    with pytest.raises(ValueError):
+        with explain.explain_scope(True):
+            raise ValueError("a refusal on the way out")
+    assert explain._EXPLAIN_ACTIVE is False  # noqa: SLF001
+
+
+def test_a_warning_after_an_explain_run_is_one_line_again(capsys):
+    """The measured symptom itself, in one process.
+
+    An `--explain` run followed by a bare `warn` printed the action line
+    AND its `why` continuation, which is how
+    tests/test_fetch_engine_degrade_guard.py counted 2 where it
+    contracts 1. The contract is one line per warning unless THIS
+    invocation asked otherwise.
+    """
+
+    import gpuwm.cli as cli_module
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(cli_module, "_dispatch", lambda args: 0)
+        assert cli_main(["version", "--explain"]) == 0
+    capsys.readouterr()
+    explain.warn("the transport degraded", "the mechanism prose")
+    lines = [line for line in capsys.readouterr().err.splitlines() if line]
+    assert lines == ["warning: the transport degraded"]

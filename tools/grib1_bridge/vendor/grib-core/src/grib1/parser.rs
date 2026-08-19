@@ -89,19 +89,27 @@ impl ProductDefinitionSection {
         (self.century as i32 - 1) * 100 + self.year_of_century as i32
     }
 
-    /// Returns the parameter name from WMO Table 2, if known.
-    pub fn parameter_name(&self) -> Option<&'static str> {
-        tables::parameter_name(self.parameter)
+    /// Resolves the parameter against the table this message cites
+    /// (`table_version` + `center_id`), never against WMO/NCEP table 2
+    /// unconditionally.  `Ok(None)` is a reserved code in a known
+    /// table; `Err` is a cited table this decoder does not carry.
+    pub fn parameter_entry(&self) -> crate::Result<Option<tables::ParameterTableEntry>> {
+        tables::parameter_entry(self.table_version, self.center_id, self.parameter)
     }
 
-    /// Returns the parameter units from WMO Table 2, if known.
-    pub fn parameter_units(&self) -> Option<&'static str> {
-        tables::parameter_units(self.parameter)
+    /// Returns the parameter name from the cited table, if known.
+    pub fn parameter_name(&self) -> crate::Result<Option<&'static str>> {
+        Ok(self.parameter_entry()?.map(|entry| entry.name))
     }
 
-    /// Returns the parameter abbreviation from WMO Table 2, if known.
-    pub fn parameter_abbrev(&self) -> Option<&'static str> {
-        tables::parameter_abbrev(self.parameter)
+    /// Returns the parameter units from the cited table, if known.
+    pub fn parameter_units(&self) -> crate::Result<Option<&'static str>> {
+        Ok(self.parameter_entry()?.and_then(|entry| entry.units))
+    }
+
+    /// Returns the parameter abbreviation from the cited table, if known.
+    pub fn parameter_abbrev(&self) -> crate::Result<Option<&'static str>> {
+        Ok(self.parameter_entry()?.and_then(|entry| entry.abbrev))
     }
 
     /// Returns a human-readable level description.
@@ -334,18 +342,18 @@ impl Grib1Message {
         }
     }
 
-    /// Returns the parameter name, if known.
-    pub fn parameter_name(&self) -> Option<&'static str> {
+    /// Returns the parameter name from the cited table, if known.
+    pub fn parameter_name(&self) -> crate::Result<Option<&'static str>> {
         self.pds.parameter_name()
     }
 
-    /// Returns the parameter units, if known.
-    pub fn parameter_units(&self) -> Option<&'static str> {
+    /// Returns the parameter units from the cited table, if known.
+    pub fn parameter_units(&self) -> crate::Result<Option<&'static str>> {
         self.pds.parameter_units()
     }
 
-    /// Returns the parameter abbreviation, if known.
-    pub fn parameter_abbrev(&self) -> Option<&'static str> {
+    /// Returns the parameter abbreviation from the cited table, if known.
+    pub fn parameter_abbrev(&self) -> crate::Result<Option<&'static str>> {
         self.pds.parameter_abbrev()
     }
 
@@ -1165,7 +1173,7 @@ mod tests {
         assert_eq!(msg.pds.level_value, 500);
         assert_eq!(msg.pds.center_id, 7); // NCEP
         assert_eq!(msg.pds.year(), 2024);
-        assert_eq!(msg.pds.parameter_name(), Some("Temperature"));
+        assert_eq!(msg.pds.parameter_name().unwrap(), Some("Temperature"));
 
         // Check GDS
         assert!(msg.gds.is_some());
@@ -1275,6 +1283,39 @@ mod tests {
             raw: vec![],
         };
         assert_eq!(pds.year(), 2024);
+    }
+
+    #[test]
+    fn test_ecmwf_cited_table_resolves_ecmwf_not_ncep() {
+        // PDS byte 4 (table version) = 128, byte 5 (center) = 98,
+        // byte 9 (parameter) = 130.  ECMWF table 128: Temperature.
+        // NCEP table 2 would say "Mean sea level pressure (ETA)" --
+        // the wrong-table decode this method used to perform.
+        let mut data = build_test_message();
+        data[8 + 3] = 128; // table version
+        data[8 + 4] = 98; // center = ECMWF
+        data[8 + 8] = 130; // parameter
+        let file = Grib1File::from_bytes(&data).unwrap();
+        let msg = &file.messages[0];
+        assert_eq!(msg.pds.parameter_name().unwrap(), Some("Temperature"));
+        assert_eq!(msg.pds.parameter_units().unwrap(), Some("K"));
+        assert_eq!(msg.pds.parameter_abbrev().unwrap(), Some("t"));
+    }
+
+    #[test]
+    fn test_unknown_cited_table_refuses_instead_of_wrong_table() {
+        // Table version 210 is vendored for no center; the lookup must
+        // refuse naming version and parameter, not answer from table 2.
+        let mut data = build_test_message();
+        data[8 + 3] = 210;
+        let file = Grib1File::from_bytes(&data).unwrap();
+        let msg = &file.messages[0];
+        let err = msg.pds.parameter_name().unwrap_err().to_string();
+        assert!(err.contains("version 210"), "{err}");
+        assert!(err.contains("parameter 11"), "{err}");
+        // The decode of VALUES is unaffected: the refusal is scoped to
+        // the table lookup, not to unpacking physics.
+        assert_eq!(msg.values().unwrap().len(), 4);
     }
 
     #[test]

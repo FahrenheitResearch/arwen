@@ -4,7 +4,7 @@
   "provenance": {
     "source": "asos",
     "product": "iem-asos-metar",
-    "uri": "C:\\Users\\drew\\AppData\\Local\\Temp\\claude\\C--Users-drew-gpuwm\\fea7a141-0924-4ca3-8cc3-0d448f2facae\\scratchpad\\sfc-obs\\tests\\fixtures\\asos_surface_real\\observations_subset.csv",
+    "uri": "${TMPDIR}\\claude\\C--Users-drew-gpuwm\\fea7a141-0924-4ca3-8cc3-0d448f2facae\\scratchpad\\sfc-obs\\tests\\fixtures\\asos_surface_real\\observations_subset.csv",
     "sha256": "c67c94c6f54ca6d1bf38c7c1d8f8934cdecf4a04d01a5ca691c148587de42462",
     "fetched_at": "2026-08-05T17:07:32",
     "is_stub": false,

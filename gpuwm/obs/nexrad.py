@@ -23,7 +23,8 @@ import subprocess
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            cargo_build_one_liner, default_bridge_dir,
-                           executable_name)
+                           ensure_executable, executable_name,
+                           packaged_bridge_dir)
 
 #: Environment variable naming a prebuilt NEXRAD front door.
 NEXRAD_ENV = "GPUWM_RW_NEXRAD"
@@ -117,6 +118,7 @@ def nexrad_candidates() -> tuple[Path, ...]:
         crate_dir() / "target" / "release" / filename,
         crate_dir() / "target" / "debug" / filename,
         root / "libexec" / "bridges" / filename,
+        packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
     ))
     return tuple(candidates)
@@ -131,7 +133,7 @@ def find_nexrad_bin() -> Path | None:
     override = os.environ.get(NEXRAD_ENV)
     for candidate in nexrad_candidates():
         if candidate.is_file():
-            return candidate.resolve()
+            return ensure_executable(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{NEXRAD_ENV} names a missing file: {candidate}")

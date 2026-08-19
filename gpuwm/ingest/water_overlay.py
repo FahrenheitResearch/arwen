@@ -214,9 +214,13 @@ def _oriented(latitude, longitude, temperature, valid, path):
 
 
 def _load_netcdf(path: Path, variable: str | None) -> WaterTemperatureOverlay:
-    import netCDF4
+    # A user-supplied SST/water-temperature field is third-party
+    # meteorological data, so it is decoded by the Rust bridge like every
+    # other NetCDF source.  Function-local import for the same reason the
+    # netCDF4 one was: this module's other formats must load without it.
+    from gpuwm import netcdf_bridge
 
-    with netCDF4.Dataset(path) as dataset:
+    with netcdf_bridge.open_dataset(path) as dataset:
         names = list(dataset.variables)
         if variable is not None:
             if variable not in dataset.variables:

@@ -27,17 +27,8 @@ MYNN_SURFACE_INPUTS = (
     "hfx", "qfx", "znt", "qsfc", "ust", "xland", "snowh",
 )
 
-MYNN_SURFACE_OUTPUTS = (
-    "regime", "zol", "rmol", "ust", "ustm", "mol", "psim", "psih",
-    "chs", "chs2", "cqs2", "ch", "flhc", "flqc", "qgh", "qsfc",
-    "hfx", "qfx", "lh", "u10", "v10", "th2", "t2", "q2",
-    "gz1oz0", "wspd", "br", "ck", "cka", "cd", "cda", "wstar",
-    "qstar", "cpm",
-    # module_sf_mynn.F:436 declares ZNT INTENT(INOUT); whichever leaf the
-    # isftcflx arm selects (:635/:641/:643/:647) rewrites it on every water
-    # column and the new value must persist into the next step.
-    "znt",
-)
+from gpuwm.core.physics_inventory import MYNN_SURFACE_OUTPUTS  # noqa: F401  (one home; re-exported here)
+
 
 #: Fields MYNN stages for RUC and RUC leaves intact.  LSMRUC has FLHC/FLQC as
 #: ``INTENT(IN)`` and no UST/CHS2/CQS2 argument (module_sf_ruclsm.F:219-230);

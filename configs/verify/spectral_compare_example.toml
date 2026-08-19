@@ -1,0 +1,93 @@
+schema = "gpuwm.spectral-comparison-source/v1"
+title = "Arwen versus matched WRF: d03 +6 h spectral comparison"
+left_label = "Arwen"
+reference_label = "WRF v4.6.1"
+
+# Remove the lateral-relaxation / edge-taper region before the transform.
+# This value is campaign policy: register it before looking at results.
+crop_cells = 10
+
+# These are defaults. A [[pairs]] record may override dx_m/dy_m, so one
+# registration can score several domains without pretending they share a grid.
+default_dx_m = 1000.0
+default_dy_m = 1000.0
+
+# Half-open intervals: minimum is inclusive, maximum is exclusive.
+# Bands may be unresolved on a domain that is too small/coarse; that is carried
+# as "unresolved" and any gate targeting it becomes INCOMPLETE, never PASS.
+[[bands]]
+name = "grid-adjacent"
+minimum_km = 2.0
+maximum_km = 6.0
+
+[[bands]]
+name = "storm"
+minimum_km = 6.0
+maximum_km = 25.0
+
+[[bands]]
+name = "meso-beta"
+minimum_km = 25.0
+maximum_km = 200.0
+
+[[bands]]
+name = "meso-alpha"
+minimum_km = 200.0
+maximum_km = 1000.0
+
+[[bands]]
+name = "synoptic"
+minimum_km = 1000.0
+
+[[pairs]]
+name = "d03-f006"
+left_path = "../../../out/arwen/wrfout_d03_1974-04-03_18_00_00"
+reference_path = "../../../out/wrf/wrfout_d03_1974-04-03_18_00_00"
+domain = "d03"
+valid_time = "1974-04-03T18:00:00"
+dx_m = 1000.0
+dy_m = 1000.0
+
+# Column-extreme vertical motion. W is vertically staggered in ordinary WRF
+# output, so both sides are put on mass levels before column_max_abs.
+[[fields]]
+name = "w-column-max-abs"
+kind = "scalar"
+variable = "W"
+reduction = "column_max_abs"
+left_destagger = "z"
+reference_destagger = "z"
+units = "m s-1"
+
+# A mass-grid thermodynamic field at one pinned model level.
+[[fields]]
+name = "theta-perturbation-level20"
+kind = "scalar"
+variable = "T"
+reduction = "level"
+level_index = 20
+units = "K"
+
+# Horizontal wind at the same level. The source readers remove the WRF C-grid
+# staggering before the Fourier/Helmholtz transform.
+[[fields]]
+name = "wind-level20"
+kind = "vector"
+u_variable = "U"
+v_variable = "V"
+reduction = "level"
+level_index = 20
+left_u_destagger = "x"
+left_v_destagger = "y"
+reference_u_destagger = "x"
+reference_v_destagger = "y"
+units = "m s-1"
+
+# Intentionally NO [[gates]] here. First generate known-good chaos/member
+# receipts, then derive a candidate fragment with:
+#
+#   python tools/spectral_gate_calibrate.py RECEIPT... \
+#       --percentile 95 --output calibrated-gates.toml
+#
+# Review and paste those pre-declared gates into the campaign spec BEFORE the
+# candidate output is scored. Never calibrate on the candidate being judged.

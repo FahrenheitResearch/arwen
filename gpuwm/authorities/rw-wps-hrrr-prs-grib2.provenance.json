@@ -1,0 +1,16 @@
+{
+ "schema": "gpuwm-hrrr-prs-in-band-terrain-provenance-v1",
+ "source": "NOAA HRRR CONUS wrfprs pressure-level GRIB2 product",
+ "field": "terrain_height",
+ "selector": {
+  "format": "grib2",
+  "discipline": 0,
+  "category": 3,
+  "parameter": 5,
+  "level_type": 1,
+  "level_value": 0
+ },
+ "time_policy": "decoded at every valid time and required invariant",
+ "member_policy": "HRRR is deterministic; no member identity exists",
+ "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"
+}

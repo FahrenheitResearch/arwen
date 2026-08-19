@@ -1,0 +1,19 @@
+{
+  "schema": "gpuwm-gdas-pgrb2-in-band-terrain-provenance-v1",
+  "source": "NCEP GDAS pgrb2 0.25-degree GRIB2 product (gdas.tHHz.pgrb2.0p25.fFFF)",
+  "field": "terrain_height",
+  "selector": {
+    "format": "grib2",
+    "discipline": 0,
+    "category": 3,
+    "parameter": 5,
+    "level_type": 1,
+    "level_value": 0
+  },
+  "unit_note": "the surface record is geopotential height in gpm; the mapping declares the explicit same-unit scale 1.0 to metres",
+  "time_policy": "decoded at every valid time and required invariant",
+  "member_policy": "the deterministic GDAS pgrb2 product carries no member axis in any probed message; the enkfgdas ensemble is a separate netCDF-only product whose member identity exists only in its S3 path",
+  "analysis_cycle_policy": "the route this profile certifies is the hourly f000..f009 pgrb2.0p25 set, whose bytes stamp every hour -- including hour 0 -- a FORECAST (typeOfProcessedData fc, generating process 81 at hour 0 and 96 after); the one product stamped an ANALYSIS (pgrb2.1p00.anl) is a strict 610-record subset missing all soil, the land mask and every 2 m/10 m field, and is not an initialization route",
+  "field_set_parity": "record-for-record byte-identical catalogue to GFS pgrb2.0p25 in the same order (696/696 at f000, 743/743 at f003, MEASURED 2026-08-17 06Z); nothing in the GRIB metadata distinguishes a GDAS file from a GFS file -- only the acquisition path says which it is",
+  "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"
+}

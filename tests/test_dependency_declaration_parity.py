@@ -100,6 +100,16 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     "scipy": ("scipy",),
     "shapefile": ("pyshp",),
     "wrf": ("wrf-rust",),
+    # The companion distribution, split out of this one in 2.5.0 when the
+    # gpuwm wheel measured 103.62 MiB against PyPI's 100 MiB per-file cap.
+    # It carries the RRTMGP and Thompson table directories; gpuwm pins it
+    # `==` and gpuwm.data_assets resolves through it.
+    "gpuwm_data": ("gpuwm-data",),
+    # NO distribution provides this: it is the repository's own mapped
+    # parity battery (tests/test_mapped_engine_parity.py), and tests/ does
+    # not ship.  The two decode instruments that import it are
+    # checkout-only by construction -- see _OPTIONAL_BY_DESIGN.
+    "test_mapped_engine_parity": (),
 }
 
 #: Modules this project deliberately never declares, because a *declared*
@@ -115,10 +125,12 @@ _GUARANTORS: dict[str, tuple[str, str]] = {
     ),
     "affine": (
         "rasterio",
-        "rasterio requires affine, and rasterio has been a base dependency "
-        "since 2.3.3, so a bare install always has it. gpuwm/static/"
-        "highres.py reads it through that guarantee rather than pinning a "
-        "version of somebody else's internal transform type.",
+        "rasterio requires affine, so wherever rasterio resolves affine does "
+        "too. gpuwm/static/highres.py reads it through that guarantee rather "
+        "than pinning a version of somebody else's internal transform type. "
+        "Both are now [geog]-gated together (see _EXTRA_GATED): the one "
+        "function that touches affine is the pure-Python warp fallback's "
+        "raster geometry, which cannot run without rasterio anyway.",
     ),
 }
 
@@ -137,12 +149,32 @@ _GENERATED_SOURCE_CONSUMERS: dict[str, tuple[str, str, str]] = {
         "executable path is a .cmd. The import is inside the generated "
         "source, so no walk of the test file's own AST can see it.",
     ),
+    "gpuwm_data": (
+        "gpuwm/data_assets.py",
+        'COMPANION_PACKAGE = "gpuwm_data"',
+        "gpuwm.data_assets resolves the companion with "
+        "importlib.resources.files(COMPANION_PACKAGE), so the package name "
+        "is a string constant and never an import statement -- deliberately, "
+        "because the module is bytes on disk and importing it would buy "
+        "nothing. No AST walk can see that, and without this row the "
+        "gpuwm-data pin reads as a declared dependency nobody consumes.",
+    ),
 }
 
 #: Modules that are genuinely optional at run time: the importing code has a
 #: try/except and a documented answer for the absent case, so declaring them
 #: would be declaring something the product does not need.
 _OPTIONAL_BY_DESIGN: dict[str, str] = {
+    "test_mapped_engine_parity": (
+        "tools/extract_mapped_engine_goldens.py and "
+        "tools/mapped_engine_parity_sweep.py import the mapped parity "
+        "battery beside the goldens it measures, both under tests/, which "
+        "does not ship. Both are maintainer instruments -- one WRITES the "
+        "committed goldens, the other sweeps the two engines over staged "
+        "private bytes -- so no wheel-user path can reach them. The import "
+        "is guarded and refuses from a wheel by naming the checkout it "
+        "needs."
+    ),
     "packaging": (
         "gpuwm/version_cli.py:_is_behind imports packaging.version inside a "
         "try/ImportError and falls back to an equality comparison it "
@@ -174,6 +206,30 @@ _EXTRA_GATED: dict[str, tuple[tuple[str, ...], str]] = {
     "cupyx": (
         ("gpu-cu12", "gpu-cu13"),
         "Ships inside the same CuPy wheel as `cupy`.",
+    ),
+    "rasterio": (
+        ("geog",),
+        "The high-resolution warp substrate -- GeoTIFF decode, mosaic, void "
+        "fill, clip, the reproject onto the WPS spherical grid -- runs in "
+        "the Rust static-fields library on the bare default of "
+        "[static.highres]. That library is a bundled artifact a wheel "
+        "install stages, so a base install builds high-resolution terrain "
+        "with no rasterio anywhere. What [geog] buys is the PARITY "
+        "FALLBACK the GPUWM_STATIC_PYTHON=1 workaround runs on. "
+        "tests/test_static_highres_warp_routing.py is the gate: it makes "
+        "rasterio unimportable and requires every default high-resolution "
+        "call to still answer.",
+    ),
+    "pyproj": (
+        ("geog",),
+        "Same seam as rasterio: the CRS construction and the point "
+        "transforms belong to the Rust substrate now, and pyproj is what "
+        "the pure-Python parity fallback projects with.",
+    ),
+    "affine": (
+        ("geog",),
+        "Ships with rasterio (see _GUARANTORS) and is read by the same "
+        "fallback body, so it is gated by the same extra.",
     ),
     "wrf": (
         ("render",),
@@ -219,11 +275,6 @@ _EXTRA_GATED: dict[str, tuple[tuple[str, ...], str]] = {
 #: install line somebody already wrote keeps resolving.  Each says what it
 #: used to mean and where that moved.
 _NEUTRALISED_EXTRAS: dict[str, str] = {
-    "geog": (
-        "was rasterio>=1.3 + pyproj>=3.6, for high-resolution terrain. Both "
-        "became base dependencies in 2.3.3. Kept so "
-        "`pip install 'gpuwm[geog]'` still resolves."
-    ),
     "obs": (
         "was scipy>=1.11, for the observation-battery referee's cKDTree. "
         "scipy is a base dependency now: `pip install gpuwm` scores against "
@@ -294,7 +345,11 @@ def _shipped_sources(config: dict) -> list[Path]:
     include = config["tool"]["setuptools"]["packages"]["find"]["include"]
     files: list[Path] = []
     for pattern in include:
-        if pattern.endswith("*"):           # e.g. "gpuwm*": package and children
+        if pattern.endswith(".*"):          # e.g. "gpuwm.*": the SUBpackages
+            root = REPO_ROOT.joinpath(*pattern[:-2].split("."))
+            files.extend(sorted(path for path in root.rglob("*.py")
+                                if path.parent != root))
+        elif pattern.endswith("*"):         # e.g. "tilestream*": tree
             root = REPO_ROOT / pattern[:-1]
             files.extend(sorted(root.rglob("*.py")))
         else:                               # e.g. "tools": that package only
@@ -552,6 +607,15 @@ def test_all_covers_every_extra_a_forecast_user_needs(declaration, pyproject):
         "dev": "the test suite, not a runtime capability",
         "publish": "maintainer-only mirror publishing, needs credentials "
                    "on a dataset repository no user has",
+        "geog": "the PARITY FALLBACK for the high-resolution warp, not "
+                "the warp. The default engine is the Rust static-fields "
+                "library a wheel install stages, so [all] already carries "
+                "high-resolution terrain; adding [geog] would add 118.8 "
+                "MiB of GDAL stack that changes no default and unlocks no "
+                "product. What stops this becoming 2.3.2 again is not the "
+                "aggregate but tests/test_static_highres_warp_routing.py, "
+                "which makes rasterio/pyproj/affine unimportable and "
+                "requires the default terrain build to still answer.",
     }
     for major, other in (("cu12", "cu13"), ("cu13", "cu12")):
         covered = declaration["extras"][f"all-{major}"]
@@ -711,12 +775,21 @@ def test_the_shipped_surface_matches_the_packaging_declaration(pyproject):
     """If the include list changes shape, the scanner above must be revisited."""
 
     include = pyproject["tool"]["setuptools"]["packages"]["find"]["include"]
-    assert include == ["gpuwm*", "tools", "tilestream*"], (
+    assert include == ["gpuwm", "gpuwm.*", "tools", "tilestream*",
+                       "configs*"], (
         f"packages.find include is {include}; _shipped_sources understands "
-        "a trailing '*' as 'this package tree' and a bare name as 'this "
-        "package's top level only'. Teach it the new shape before changing "
-        "this assertion.")
+        "a trailing '.*' as 'this package's subpackages', a trailing '*' as "
+        "'this package tree' and a bare name as 'this package's top level "
+        "only'. Teach it the new shape before changing this assertion.")
     shipped = _shipped_sources(pyproject)
+    # `configs*` was added for the repository configs two headline documents
+    # name, and it is a DATA entry: the scanner above walks it for `.py` the
+    # same way it walks the rest, and must keep finding none. A Python file
+    # appearing under configs/ would join the shipped import surface without
+    # anybody deciding it should.
+    assert not any("/configs/" in p.as_posix() for p in shipped), (
+        "configs/ now carries Python, so it is part of the shipped import "
+        "surface; it was declared as a data directory only")
     assert any(p.as_posix().endswith("gpuwm/cli.py") for p in shipped)
     assert any(p.as_posix().endswith("tools/da_nowcast.py") for p in shipped)
     assert any(p.as_posix().endswith("tilestream/harness.py") for p in shipped)

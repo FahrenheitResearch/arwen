@@ -35,7 +35,7 @@ from pathlib import Path
 from gpuwm import bridges
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            cargo_build_one_liner, default_bridge_dir,
-                           executable_name)
+                           executable_name, packaged_bridge_dir)
 
 #: Environment variable naming a prebuilt renderer executable.
 RENDERER_ENV = "GPUWM_RW_WRFBATCH"
@@ -263,6 +263,7 @@ def renderer_candidates() -> tuple[Path, ...]:
         crate_dir() / "target" / "release" / filename,
         crate_dir() / "target" / "debug" / filename,
         root / "libexec" / "bridges" / filename,
+        packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
     ))
     return tuple(candidates)
@@ -285,7 +286,7 @@ def find_renderer() -> Path | None:
     override = os.environ.get(RENDERER_ENV)
     for candidate in renderer_candidates():
         if candidate.is_file():
-            return candidate.resolve()
+            return bridges.ensure_executable(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{RENDERER_ENV} names a missing file: {candidate}.  "
@@ -457,6 +458,8 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
                  out_dir: Path, products: str, frames: str,
                  width: int, height: int, heavy: bool = False,
                  source_label: str | None = None,
+                 overlays: Path | None = None,
+                 annotate: Path | None = None,
                  ) -> tuple[list[Path], list[str],
                             list[tuple[str, str]]]:
     """Render one wrfout file into ``out_dir``; (written, failures, skipped).
@@ -477,6 +480,53 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
     are read now, and only ``FAILED`` is a failure.
     """
 
+    return run_renderer_series(
+        renderer, (wrfout,), store_root=store_root, out_dir=out_dir,
+        products=products, frames=frames, width=width, height=height,
+        heavy=heavy, source_label=source_label, overlays=overlays,
+        annotate=annotate)
+
+
+def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
+                        out_dir: Path, products: str, frames: str,
+                        width: int, height: int, heavy: bool = False,
+                        source_label: str | None = None,
+                        overlays: Path | None = None,
+                        annotate: Path | None = None,
+                        ) -> tuple[list[Path], list[str],
+                                   list[tuple[str, str]]]:
+    """One invocation over a whole wrfout SERIES, into ONE store.
+
+    ``rw_wrfbatch``'s CLI has always taken ``wrfout...``; what this adds
+    is a Python caller that uses it.  :func:`run_renderer` renders one
+    file per store because per-file isolation is the campaign
+    convention, and that convention is exactly what a WINDOWED product
+    cannot be drawn under: ``qpf_6h`` is a statement about two frames
+    six hours apart ("F012 minus F006", in the engine's own catalog
+    detail), so a store holding only F012 has nothing to difference
+    against and the product is skipped.  The verification door's 6 h
+    accumulation is precisely that shape -- two separate hourly wrfout
+    files -- and it is why this exists rather than a fourth spelling of
+    the same subprocess call.
+
+    The store is the caller's to create and to remove; a series store is
+    deliberately NOT per-file, because merging the frames into one run
+    timeline is the whole point.
+
+    Event parsing and the failure contract are :func:`run_renderer`'s,
+    unchanged: RENDERED/SKIPPED on stdout, FAILED on stderr, and a
+    nonzero exit with no FAILED line reported as one failure carrying
+    the last stderr line.  Messages name the LAST file in the series --
+    the frame whose valid time the panels carry.
+    """
+
+    inputs = [Path(item) for item in wrfouts]
+    if not inputs:
+        raise ValueError(
+            "a render series needs at least one wrfout file; an empty "
+            "series would launch the renderer with no input and read its "
+            "usage line as a failure")
+    subject = inputs[-1]
     command = [
         str(renderer),
         "--store-root", str(store_root),
@@ -490,13 +540,21 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
         command.append("--heavy")
     if source_label:
         command.extend(("--source-label", source_label))
-    command.append(str(wrfout))
+    # 2.5.0: map overlays in geographic degrees and panel annotations.
+    # Absent, the renderer runs no overlay code and the PNGs are
+    # byte-identical to every earlier build -- which is what
+    # ``tools/rustwx_render_regression_gate.py`` gates.
+    if overlays is not None:
+        command.extend(("--overlays", str(overlays)))
+    if annotate is not None:
+        command.extend(("--annotate", str(annotate)))
+    command.extend(str(path) for path in inputs)
     try:
         result = subprocess.run(
             command, capture_output=True, text=True, errors="replace",
             env=renderer_env())
     except OSError as error:
-        return [], [f"{wrfout}: renderer failed to launch: {error}"], []
+        return [], [f"{subject}: renderer failed to launch: {error}"], []
     written: list[Path] = []
     failures: list[str] = []
     skipped: list[tuple[str, str]] = []
@@ -509,16 +567,16 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
         elif line.startswith("SKIPPED "):
             slug, _, reason = line[len("SKIPPED "):].partition(" ")
             skipped.append(
-                (slug, f"{wrfout}: {reason or 'no reason given'}"))
+                (slug, f"{subject}: {reason or 'no reason given'}"))
     for line in (result.stderr or "").splitlines():
         if line.startswith("FAILED "):
-            failures.append(f"{wrfout}: {line[len('FAILED '):]}")
+            failures.append(f"{subject}: {line[len('FAILED '):]}")
     if result.returncode != 0:
         tail = [line for line in (result.stderr or "").splitlines()
                 if line.strip()]
         detail = tail[-1] if tail else f"exit {result.returncode}"
         if not failures:
-            failures.append(f"{wrfout}: {detail}")
+            failures.append(f"{subject}: {detail}")
     return written, failures, skipped
 
 
@@ -528,4 +586,5 @@ __all__ = [
     "basemap_candidates", "crate_dir", "find_renderer", "list_products",
     "probe_renderer", "renderer_candidates", "renderer_env",
     "renderer_remedy", "resolve_basemap_dir", "run_renderer",
+    "run_renderer_series",
 ]

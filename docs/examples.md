@@ -78,8 +78,6 @@ rw-wps --source 20crv3 \
 rw-wps --source 20crv3 \
   --source-manifest /case/20crv3-member072.manifest.json \
   --source-manifest-sha256 MANIFEST_SHA256 \
-  --grib2-inventory /release/libexec/bridges/grib2_inventory \
-  --grib2-dump /release/libexec/bridges/grib2_dump \
   --wps-namelist /case/namelist.wps \
   --geog-root /data/WPS_GEOG \
   --experiment-config /case/experiment.toml \
@@ -87,6 +85,12 @@ rw-wps --source 20crv3 \
   --hierarchy-workers 8 \
   --output-root /case/output-20crv3-member072
 ```
+
+A bare run composes in `gpuwm_mapped_engine` and reads the archive's
+raw record inventory in process, so it names no subprocess decoder.
+`--grib2-inventory`/`--grib2-dump` (or `--mapped-engine python`) select
+the documented Python-engine workaround, which decodes through those
+two executables instead.
 
 The packaged mapping declares `max_dom=4`. Successful preparation is not a
 stock-WRF certificate; preserve the member manifest, packaged-authority and

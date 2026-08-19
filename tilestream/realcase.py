@@ -482,6 +482,7 @@ def prepare_low_water(config_path: str, *, verbose=print):
                                                  release_backend_memory)
     from gpuwm.ingest.real import initialize_real
     from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+    from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
     from gpuwm.ingest.soil_contract import MAPPED_SOIL_TEMPERATURE
     from gpuwm.runtime import (GeogSelection, PreparedRealCase,
                                _cached_static_build, experiment_grid,
@@ -588,7 +589,13 @@ def prepare_low_water(config_path: str, *, verbose=print):
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"], terrain=None, source_orography=None,
         water_temperature=water.values,
-        water_temperature_policy=water_policy, route=WATER_ROUTE_LOW_WATER)
+        water_temperature_policy=water_policy,
+        # Same source, same interpolation, same defect: the tiles
+        # preparers get the sub-source-cell reconstitution too, or
+        # they stop being bit-comparable with the mainline route.
+        soil_mesh=soil_mesh_plan_from_case(
+            snapshots[start_time], (lat, lon), data),
+        route=WATER_ROUTE_LOW_WATER)
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], start_time)
     lai = monthly_interp_to_date(static["LAI12M"], start_time)
     update_diagnostics(state, cfg.hypsometric_opt)
@@ -832,6 +839,7 @@ def prepare_slabbed(config_path: str, *, rows_per_slab: int = 64,
                                                  release_backend_memory)
     from gpuwm.ingest.real import initialize_real
     from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+    from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
     from gpuwm.ingest.soil_contract import MAPPED_SOIL_TEMPERATURE
     from gpuwm.runtime import (GeogSelection, PreparedRealCase,
                                _cached_static_build, experiment_grid,
@@ -963,7 +971,13 @@ def prepare_slabbed(config_path: str, *, rows_per_slab: int = 64,
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"], terrain=None, source_orography=None,
         water_temperature=water.values,
-        water_temperature_policy=water_policy, route=WATER_ROUTE_SLABBED)
+        water_temperature_policy=water_policy,
+        # Same source, same interpolation, same defect: the tiles
+        # preparers get the sub-source-cell reconstitution too, or
+        # they stop being bit-comparable with the mainline route.
+        soil_mesh=soil_mesh_plan_from_case(
+            snapshots[start_time], (lat, lon), data),
+        route=WATER_ROUTE_SLABBED)
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], start_time)
     lai = monthly_interp_to_date(static["LAI12M"], start_time)
     update_diagnostics(state, cfg.hypsometric_opt)

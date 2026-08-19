@@ -519,7 +519,13 @@ def test_a_writer_given_no_run_stamps_no_selector(tmp_path):
 def test_wrf_rust_opens_a_file_carrying_the_selector_globals(tmp_path):
     """What the mandated reader can actually be asked here, and what it cannot.
 
-    wrf-rust 0.2.35 exposes **no** global-attribute accessor: its public
+    wrf-rust exposes **no** global-attribute accessor anywhere in the
+    certified window -- re-MEASURED on 0.2.38, whose ``wrf.__all__`` is the
+    17 names ``ALL_TIMES``, ``Explorer``, ``WrfFile``,
+    ``available_variables``, ``cross_section``, ``get_cartopy``, ``getvar``,
+    ``hovmoller``, ``interplevel``, ``latlon_coords``, ``list_variables``,
+    ``ll_to_xy``, ``panel``, ``plot_field``, ``plot_skewt``, ``plot_wind``,
+    ``profile``, with no attribute reader among them.  A ``WrfFile``'s own
     surface is ``nx/ny/nz/nt``, ``dx``, ``dy``, ``times``, ``path`` and
     ``getvar``, and ``getvar("MP_PHYSICS")`` raises ``unknown variable``
     because a global is not a variable. So the witness for attribute values

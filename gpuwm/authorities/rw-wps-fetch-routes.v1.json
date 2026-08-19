@@ -1,0 +1,492 @@
+{
+  "schema": "gpuwm-fetch-routes-v1",
+  "note": "Acquisition routes: where a registered source's public bytes live, what the cycle and lead grammars are, and how the fetched objects compose into the primary/supplement/donor roles the packaged decode profile binds. This document is DATA. Adding a model's front door is a row here, not a code path; gpuwm/fetch_routes.py is the one engine that reads every row. Every host, path template and ladder below was measured against the live service on the date in `measured`.",
+  "routes": {
+    "hrrr-prs": {
+      "label": "HRRR pressure-level (wrfprs), CONUS",
+      "measured": "2026-08-17",
+      "hosts": [
+        {"name": "aws", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "default": true},
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod"}
+      ],
+      "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+      "ladders": [
+        {"cycle_hours": [0, 6, 12, 18], "steps": [[48, 1]]},
+        {"cycle_hours": null, "steps": [[18, 1]]}
+      ],
+      "cadences": [1],
+      "default_cadence": 1,
+      "layout": "flat",
+      "files": [
+        {
+          "role": "wrfprs",
+          "primary": true,
+          "leads": "all",
+          "path": "hrrr.{YYYYMMDD}/conus/hrrr.t{HH}z.wrfprsf{FF}.grib2",
+          "idx_sidecar": ".idx"
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "the packaged profile hrrr-prs-grib2-v1 declares the whole 39-level pressure ladder plus the nine-node RUC soil column, and an index-selected record subset is bound to no field list -- a dropped declared field is refused at prep, after the download has been paid for"
+      },
+      "prep": {
+        "source": "hrrr-prs",
+        "supplement": {"from": "every_input", "role": "hrrr_prs_in_band_surface"}
+      }
+    },
+
+    "rap": {
+      "label": "RAP awip32 (AWIPS grid 221, 32 km Lambert)",
+      "measured": "2026-08-17",
+      "hosts": [
+        {"name": "aws", "base": "https://noaa-rap-pds.s3.amazonaws.com", "default": true},
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod"}
+      ],
+      "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+      "ladders": [
+        {"cycle_hours": [3, 9, 15, 21], "steps": [[51, 1]]},
+        {"cycle_hours": null, "steps": [[21, 1]]}
+      ],
+      "cadences": [1],
+      "default_cadence": 1,
+      "layout": "flat",
+      "files": [
+        {
+          "role": "awip32",
+          "primary": true,
+          "leads": "all",
+          "path": "rap.{YYYYMMDD}/rap.t{HH}z.awip32f{FF}.grib2",
+          "idx_sidecar": ".idx"
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "every awip32 record is JPEG2000 (DRT 5.40) and the packaged profile rap-awip32-grib2-v1 declares the 39-level ladder with the nine RUC soil nodes; an index-selected subset is bound to no field list and a dropped declared field is refused at prep"
+      },
+      "prep": {
+        "source": "rap",
+        "supplement": {"from": "every_input", "role": "rap_awip32_in_band_surface"}
+      }
+    },
+
+    "rrfs": {
+      "label": "RRFS prslev + 2dfld, 3 km CONUS",
+      "measured": "2026-08-17",
+      "hosts": [
+        {"name": "aws", "base": "https://noaa-rrfs-ops-pds.s3.amazonaws.com", "default": true},
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rrfs/v1.0"}
+      ],
+      "host_note": "noaa-rrfs-pds is the RETIRED prototype feed: it stopped mid-day on 2026-08-12 by design and nothing newer will ever appear there. The operational bucket is noaa-rrfs-ops-pds, and NOMADS serves the same product set under rrfs/v1.0 (rrfs/prod is 403 until the 2026-10-06 implementation).",
+      "cycle_note": "RRFS runs hourly, but only the 00/06/12/18Z cycles publish the hourly prslev/2dfld pair this profile initialises from. MEASURED 2026-08-16: a synoptic cycle holds 1,846 objects with prslev f000..f084; an off-synoptic cycle holds 144, all of them sub-hourly 2dfld, with no prslev at any lead. Offering the off-synoptic cycles here would resolve keys that are 404s.",
+      "cycle_hours": [0, 6, 12, 18],
+      "ladders": [
+        {"cycle_hours": null, "steps": [[84, 1]]}
+      ],
+      "cadences": [1],
+      "default_cadence": 1,
+      "layout": "flat",
+      "files": [
+        {
+          "role": "prslev",
+          "primary": true,
+          "leads": "all",
+          "path": "rrfs.{YYYYMMDD}/{HH}/rrfs.t{HH}z.prslev.3km.f{FFF}.conus.grib2",
+          "idx_sidecar": ".idx"
+        },
+        {
+          "role": "2dfld",
+          "primary": false,
+          "leads": "all",
+          "path": "rrfs.{YYYYMMDD}/{HH}/rrfs.t{HH}z.2dfld.3km.f{FFF}.conus.grib2",
+          "idx_sidecar": ".idx"
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "all nine RRFS soil layers encode a zero thickness and five of them collide on the ecCodes level key, so an index selected by level silently drops five of the nine; the packaged profile selects on the full identity octets of the whole file instead"
+      },
+      "prep": {
+        "source": "rrfs",
+        "supplement": {"from": "role:2dfld", "role": "rrfs_prslev_2dfld_in_band_surface"}
+      }
+    },
+
+    "gefs": {
+      "label": "GEFS v12 pgrb2a+pgrb2b 0.50 deg ensemble member",
+      "measured": "2026-08-17",
+      "hosts": [
+        {"name": "aws", "base": "https://noaa-gefs-pds.s3.amazonaws.com", "default": true},
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gens/prod"}
+      ],
+      "cycle_hours": [0, 6, 12, 18],
+      "ladders": [
+        {"cycle_hours": [0], "steps": [[240, 3], [840, 6]]},
+        {"cycle_hours": null, "steps": [[240, 3], [384, 6]]}
+      ],
+      "cadences": [3, 6],
+      "default_cadence": 3,
+      "layout": "upstream",
+      "members": {
+        "default": "c00",
+        "default_token": "gec00",
+        "perturbed_name_format": "p%02d",
+        "perturbed_token_format": "gep%02d",
+        "perturbed_range": [1, 30],
+        "why_path_identity": "every member's leaf filename is byte-identical across members only in the AI ensembles; GEFS writes the member into the filename, but the member grammar gefs-ensemble-grib2-members-v1 addresses files by their upstream-relative path, so the download preserves it"
+      },
+      "files": [
+        {
+          "role": "pgrb2a",
+          "primary": false,
+          "leads": "all",
+          "path": "gefs.{YYYYMMDD}/{HH}/atmos/pgrb2ap5/{MEMBER}.t{HH}z.pgrb2a.0p50.f{FFF}",
+          "idx_sidecar": ".idx"
+        },
+        {
+          "role": "pgrb2b",
+          "primary": false,
+          "leads": "all",
+          "path": "gefs.{YYYYMMDD}/{HH}/atmos/pgrb2bp5/{MEMBER}.t{HH}z.pgrb2b.0p50.f{FFF}",
+          "idx_sidecar": ".idx"
+        }
+      ],
+      "compose": [
+        {
+          "kind": "concat_per_lead",
+          "roles": ["pgrb2a", "pgrb2b"],
+          "primary": true,
+          "name": "pairs/{MEMBER}.t{HH}z.pair.0p50.f{FFF}.grib2",
+          "why": "the a and b pressure-level sets are exactly disjoint -- specific humidity, soil layers 2/3/4 and the land-sea mask are 100% in b -- so either file alone is a torso. GRIB2 messages are self-delimiting, so the pair concatenated in that order is the multi-record form the profile decodes."
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "the pair is required whole: an index-selected subset of either half cannot restore the disjoint level set the other half carries"
+      },
+      "prep": {
+        "source": "gefs",
+        "supplement": {"from": "every_input", "role": "gefs_member_in_band_surface"}
+      }
+    },
+
+    "aigfs": {
+      "label": "AIGFS v1.1 pres+sfc, 0.25 deg (NOMADS operational)",
+      "measured": "2026-08-17",
+      "hosts": [
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod", "default": true}
+      ],
+      "host_note": "NOMADS ONLY, and the refusal to mirror is deliberate. noaa-nws-graphcastgfs-pds publishes objects under byte-identical key names that are a DIFFERENT product -- the experimental EAGLE stream, subCentre 2 against the operational subCentre 0, 65 pres messages against 78, and 500 hPa geopotential height differing by 8.7 gpm. Every packaged selector pins subcenter=0, so the S3 copies refuse at decode by identity octet. Nothing in the filename distinguishes them. SCN 25-89: 'Data for these models will be on the NCEP NOMADS server only'. NOMADS keeps a 10-day rolling window; there is no archive behind this door.",
+      "cycle_hours": [0, 6, 12, 18],
+      "ladders": [{"cycle_hours": null, "steps": [[384, 6]]}],
+      "cadences": [6],
+      "default_cadence": 6,
+      "layout": "flat",
+      "files": [
+        {
+          "role": "pres",
+          "primary": true,
+          "leads": "all",
+          "path": "aigfs.{YYYYMMDD}/{HH}/model/atmos/grib2/aigfs.t{HH}z.pres.f{FFF}.grib2",
+          "idx_sidecar": ".idx"
+        },
+        {
+          "role": "sfc",
+          "primary": true,
+          "leads": "all",
+          "path": "aigfs.{YYYYMMDD}/{HH}/model/atmos/grib2/aigfs.t{HH}z.sfc.f{FFF}.grib2",
+          "idx_sidecar": ".idx"
+        }
+      ],
+      "donors": [
+        {
+          "source": "gdas",
+          "role": "physical_analysis_surface_data",
+          "leads": [0],
+          "cycle": "same",
+          "why": "AIGFS publishes no soil, no land mask, no orography, no skin temperature, no surface pressure and no 2 m humidity. The packaged profile aigfs-gdas-hybrid-grib2-v1 binds exactly those canonicals to the SAME-CYCLE GDAS analysis; a donor from another cycle or grid refuses by name. Without the donor `gpuwm prep --source aigfs` refuses at init naming the missing surfaces."
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "there is no NOMADS grib-filter CGI for aigfs (filter_aigfs.pl is a 404) -- whole-file transfer is the only route the service offers"
+      },
+      "prep": {
+        "source": "aigfs",
+        "supplement": null
+      }
+    },
+
+    "aigefs": {
+      "label": "AIGEFS v1.0 pres+sfc ensemble member, 0.25 deg",
+      "measured": "2026-08-17",
+      "hosts": [
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/prod", "default": true},
+        {"name": "aws", "base": "https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com/EAGLE_ensemble"}
+      ],
+      "host_note": "the S3 mirror lags NOMADS by about three hours and is the EAGLE experimental line's own bucket; NOMADS is the operational door.",
+      "cycle_hours": [0, 6, 12, 18],
+      "ladders": [{"cycle_hours": null, "steps": [[384, 6]]}],
+      "cadences": [6],
+      "default_cadence": 6,
+      "layout": "upstream",
+      "members": {
+        "default": "mem000",
+        "default_token": "mem000",
+        "perturbed_name_format": "mem%03d",
+        "perturbed_token_format": "mem%03d",
+        "perturbed_range": [0, 30],
+        "why_path_identity": "every AIGEFS member's leaf filename is byte-identical -- the member lives only in the mem<NNN> path component -- so a flat download destroys member identity. The files land under their declared upstream-relative paths, which is exactly what `gpuwm-member-prep --inputs` reads."
+      },
+      "files": [
+        {
+          "role": "pres",
+          "primary": true,
+          "leads": "all",
+          "path": "aigefs.{YYYYMMDD}/{HH}/{MEMBER}/model/atmos/grib2/aigefs.t{HH}z.pres.f{FFF}.grib2",
+          "idx_sidecar": ".idx"
+        },
+        {
+          "role": "sfc",
+          "primary": true,
+          "leads": "all",
+          "path": "aigefs.{YYYYMMDD}/{HH}/{MEMBER}/model/atmos/grib2/aigefs.t{HH}z.sfc.f{FFF}.grib2",
+          "idx_sidecar": ".idx"
+        }
+      ],
+      "donors": [
+        {
+          "source": "gdas",
+          "role": "physical_analysis_surface_data",
+          "leads": [0],
+          "cycle": "same",
+          "why": "the same atmosphere-only gap AIGFS has: aigefs-member-hybrid-grib2-v1 binds the missing land-surface canonicals to the same-cycle GDAS analysis."
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "whole-file only; the AI product publishes no subsetting service and the member verification triple is read from the whole message set"
+      },
+      "prep": {
+        "source": "aigefs",
+        "member_prep": "aigefs-ensemble-grib2-members-v1",
+        "supplement": null
+      }
+    },
+
+    "ecmwf-open-data": {
+      "label": "ECMWF open-data IFS 0.25 deg oper",
+      "measured": "2026-08-17",
+      "hosts": [
+        {"name": "ecmwf", "base": "https://data.ecmwf.int/forecasts", "default": true},
+        {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com"}
+      ],
+      "host_note": "only the 0.25 deg open set is CC-BY-4.0; the 9 km HRES fields are licensed and are not behind this door. IFS publishes LATER than AIFS -- a cycle whose aifs-single tree is complete may hold only a BUFR track file here.",
+      "cycle_hours": [0, 6, 12, 18],
+      "ladders": [
+        {"cycle_hours": [0, 12], "steps": [[144, 3], [360, 6]]},
+        {"cycle_hours": null, "steps": [[144, 3]]}
+      ],
+      "cadences": [3, 6],
+      "default_cadence": 3,
+      "layout": "flat",
+      "files": [
+        {
+          "role": "oper-fc",
+          "primary": true,
+          "leads": "all",
+          "path": "{YYYYMMDD}/{HH}z/ifs/0p25/oper/{YYYYMMDDHHMMSS}-{F}h-oper-fc.grib2",
+          "idx_sidecar": null
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "the .index sidecar beside each object is an ECMWF offset index, not a wgrib .idx, and it answered HTTP 503 on four of four attempts during recon while the GRIB2 beside it fetched cleanly -- a transport built on it would fail on a healthy object"
+      },
+      "prep": {
+        "source": "ecmwf-open-data",
+        "supplement": {"from": "every_input", "role": "ecmwf_open_data_in_band_surface"}
+      }
+    },
+
+    "aifs": {
+      "label": "ECMWF AIFS single 0.25 deg oper",
+      "measured": "2026-08-17",
+      "hosts": [
+        {"name": "ecmwf", "base": "https://data.ecmwf.int/forecasts", "default": true},
+        {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com"}
+      ],
+      "cycle_hours": [0, 6, 12, 18],
+      "ladders": [{"cycle_hours": null, "steps": [[360, 6]]}],
+      "cadences": [6],
+      "default_cadence": 6,
+      "layout": "flat",
+      "files": [
+        {
+          "role": "oper-fc",
+          "primary": true,
+          "leads": "all",
+          "path": "{YYYYMMDD}/{HH}z/aifs-single/0p25/oper/{YYYYMMDDHHMMSS}-{F}h-oper-fc.grib2",
+          "idx_sidecar": null
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "same ECMWF .index sidecar as the IFS route, and the same 503 history; the GRIB2 object is self-describing and is taken whole"
+      },
+      "prep": {
+        "source": "aifs",
+        "supplement": {"from": "first_input", "role": "aifs_single_in_band_surface"}
+      }
+    },
+
+    "icon-eu": {
+      "label": "DWD ICON-EU regular lat-lon, bz2 objects",
+      "measured": "2026-08-17",
+      "hosts": [
+        {"name": "dwd", "base": "https://opendata.dwd.de/weather/nwp/icon-eu/grib", "default": true}
+      ],
+      "host_note": "opendata.dwd.de keeps roughly a rolling day; there is no archive behind this door. Every object is bz2-wrapped and stays that way -- the acquisition codec stages them for the decoder.",
+      "coverage_note": "ICON-EU spans 23.5 W to 62.5 E, 29.5 to 70.5 N. A domain outside that window is refused at prep by the horizontal mapper, which names the offending corner and the window the source covers.",
+      "cycle_hours": [0, 3, 6, 9, 12, 15, 18, 21],
+      "ladders": [
+        {"cycle_hours": [0, 6, 12, 18], "steps": [[78, 1], [120, 3]]},
+        {"cycle_hours": null, "steps": [[30, 1], [48, 6]]}
+      ],
+      "cadences": [1, 3, 6],
+      "default_cadence": 1,
+      "layout": "flat",
+      "axes": {
+        "field": [
+          {"names": ["FI", "RELHUM", "T", "U", "V"], "leveltype": "pressure-level",
+           "level_format": "%d",
+           "levels": [50, 70, 100, 150, 200, 250, 300, 400, 500, 600, 700, 775, 800, 825, 850, 875, 900, 925, 950, 1000]},
+          {"names": ["H_SNOW", "PS", "RELHUM_2M", "T_2M", "T_G", "U_10M", "V_10M", "W_SNOW"],
+           "leveltype": "single-level", "levels": null},
+          {"names": ["T_SO"], "leveltype": "soil-level", "level_format": "%d",
+           "levels": [0, 2, 5, 6, 18, 54, 162, 486, 1458]},
+          {"names": ["W_SO"], "leveltype": "soil-level", "level_format": "%d",
+           "levels": [0, 1, 3, 9, 27, 81, 243, 729]}
+        ],
+        "invariant": [
+          {"names": ["FR_LAND", "HSURF"], "leveltype": "time-invariant", "levels": null}
+        ]
+      },
+      "files": [
+        {
+          "role": "state",
+          "primary": true,
+          "leads": "all",
+          "axis": "field",
+          "path": "{HH}/{field_lower}/icon-eu_europe_regular-lat-lon_{leveltype}_{YYYYMMDDHH}_{FFF}{LEVEL_SUFFIX}_{FIELD}.grib2.bz2",
+          "idx_sidecar": null,
+          "magic": "BZh"
+        },
+        {
+          "role": "invariant",
+          "primary": true,
+          "leads": "none",
+          "axis": "invariant",
+          "path": "{HH}/{field_lower}/icon-eu_europe_regular-lat-lon_time-invariant_{YYYYMMDDHH}_{FIELD}.grib2.bz2",
+          "idx_sidecar": null,
+          "magic": "BZh"
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "each object is already ONE GRIB2 message after bunzip2 -- the file IS the record, so there is nothing left to subset"
+      },
+      "prep": {
+        "source": "icon-eu",
+        "supplement": {"from": "role:invariant", "select": "HSURF",
+                       "role": "icon_eu_invariant_surface"}
+      }
+    },
+
+    "gem-gdps": {
+      "label": "ECCC GDPS (GEM global) 15 km regular lat-lon",
+      "measured": "2026-08-17",
+      "hosts": [
+        {"name": "msc", "base": "https://dd.weather.gc.ca", "default": true}
+      ],
+      "host_note": "MSC Datamart publishes one single-message JPEG2000 file per variable-level. The lead directories run hourly to 240 h, but the full model state exists only every three hours -- the intermediate directories carry surface-only files.",
+      "cycle_hours": [0, 12],
+      "ladders": [{"cycle_hours": null, "steps": [[240, 3]]}],
+      "cadences": [3, 6],
+      "default_cadence": 3,
+      "layout": "flat",
+      "axes": {
+        "field": [
+          {"names": ["AirTemp", "GeopotentialHeight", "SpecificHumidity", "WindU", "WindV"],
+           "level_prefix": "IsbL-", "level_format": "%04d",
+           "levels": [1, 5, 10, 20, 30, 50, 100, 150, 175, 200, 225, 250, 275, 300, 350, 400,
+                      450, 500, 550, 600, 650, 700, 750, 800, 850, 875, 900, 925, 950, 970,
+                      985, 1000, 1015]},
+          {"names": ["AirTemp", "SpecificHumidity"], "level_literal": "AGL-2m"},
+          {"names": ["WindU", "WindV"], "level_literal": "AGL-10m"},
+          {"names": ["Pressure", "RadiativeTemp", "SnowDepth"], "level_literal": "Sfc"},
+          {"names": ["SoilTemp", "SoilVolumetricWaterContent"], "level_literal": "DBS-0to10cm"}
+        ],
+        "analysis_invariant": [
+          {"names": ["LandWaterProportion", "SeaIceFraction"], "level_literal": "Sfc"}
+        ],
+        "terrain": [
+          {"names": ["GeopotentialHeight"], "level_literal": "Sfc"}
+        ]
+      },
+      "files": [
+        {
+          "role": "state", "primary": false, "leads": "all", "axis": "field",
+          "path": "{YYYYMMDD}/WXO-DD/model_gdps/15km/{HH}/{FFF}/{YYYYMMDD}T{HH}Z_MSC_GDPS_{FIELD}_{LEVEL}_LatLon0.15_PT{FFF}H.grib2",
+          "idx_sidecar": null
+        },
+        {
+          "role": "analysis-invariant", "primary": false, "leads": "first",
+          "axis": "analysis_invariant",
+          "path": "{YYYYMMDD}/WXO-DD/model_gdps/15km/{HH}/{FFF}/{YYYYMMDD}T{HH}Z_MSC_GDPS_{FIELD}_{LEVEL}_LatLon0.15_PT{FFF}H.grib2",
+          "idx_sidecar": null
+        },
+        {
+          "role": "terrain", "primary": false, "leads": "first", "axis": "terrain",
+          "path": "{YYYYMMDD}/WXO-DD/model_gdps/15km/{HH}/{FFF}/{YYYYMMDD}T{HH}Z_MSC_GDPS_{FIELD}_{LEVEL}_LatLon0.15_PT{FFF}H.grib2",
+          "idx_sidecar": null
+        }
+      ],
+      "compose": [
+        {
+          "kind": "concat_per_lead",
+          "roles": ["state", "analysis-invariant"],
+          "primary": true,
+          "name": "composed/gdps_{YYYYMMDDHH}_PT{FFF}H.grib2",
+          "why": "GDPS ships one message per file; a valid time is that lead's files concatenated, which is the standard GRIB2 multi-record form. Orography, land mask and the ice analysis exist ONLY at the analysis lead, and the profile declares them once-per-cycle invariants the engine broadcasts, so they join the first composed state and nothing else."
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "each Datamart object is ONE GRIB2 message -- the file IS the record"
+      },
+      "prep": {
+        "source": "gem-gdps",
+        "supplement": {"from": "role:terrain", "role": "gdps_analysis_invariant_surface"}
+      }
+    }
+  },
+
+  "refusals": {
+    "20crv3": {
+      "kind": "private_bytes",
+      "why": "the 20CRv3 every-member GRIB2 archive is not published on an anonymously readable public endpoint; only the ensemble-MEAN NetCDF distribution is, and a member state is not a mean.",
+      "remedy_source_root": true
+    },
+    "20crv3-cf": {
+      "kind": "not_cycle_shaped",
+      "why": "the NOAA PSL 20CRv3 NetCDF distribution is a per-year, per-variable reanalysis archive with no cycle and no forecast lead, so --cycle/--hours describe nothing in it. It is also missing orography and a land mask entirely, which the packaged profile recovers with tools/build_pressure_level_invariant_supplement.py from files you already hold.",
+      "remedy_source_root": true
+    },
+    "mapped": {
+      "kind": "generic_adapter",
+      "why": "`mapped` is the generic declarative adapter, not a product: it names no publisher, no bucket and no file grammar, so there is nothing for a fetch to resolve. It is the door for bytes you already have.",
+      "remedy_source_root": true
+    }
+  }
+}

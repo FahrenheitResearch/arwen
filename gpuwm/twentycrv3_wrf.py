@@ -4,15 +4,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import time
 from typing import Sequence
 
-from gpuwm.mapped_composition import MappedSourceBundle, load_composition
+from gpuwm.ingest.source_coverage import owns_source_coverage_refusal
+from gpuwm.mapped_composition import load_composition
 from gpuwm.mapped_direct import prepare_mapped_wrf
-from gpuwm.mapped_source import _sha256
-from gpuwm.twentycrv3_direct import _manifest, decode_20crv3_grib2
+from gpuwm.mapped_source import (
+    _build_grib2_tools,
+    _grib2_inventory,
+    _mapped_engine_choice,
+    _sha256,
+    load_mapping,
+)
+from gpuwm.twentycrv3_direct import _manifest, _verify_archive_inventory
+
+
+#: The adapter identity every 20CRv3 preparation records.
+SOURCE_ADAPTER = "rw-wps-20crv3-member-grib2-v1"
 
 
 def prepare_20crv3_wrf(
@@ -22,8 +35,8 @@ def prepare_20crv3_wrf(
     provenance: str | Path,
     manifest: str | Path,
     manifest_sha256: str,
-    grib2_inventory: str | Path,
-    grib2_dump: str | Path,
+    grib2_inventory: str | Path | None = None,
+    grib2_dump: str | Path | None = None,
     wps_namelist: str | Path,
     geog_root: str | Path,
     experiment_config: str | Path,
@@ -35,19 +48,39 @@ def prepare_20crv3_wrf(
 ) -> dict[str, object]:
     """Decode one filename-authoritative member and prepare a WRF hierarchy.
 
-    The adapter keeps the custom 20CRv3 manifest as the input authority; it
-    does not translate it into the generic manifest schema or erase the member
-    label that is absent from the supplied GRIB2 PDT. Terrain and exact Noah
-    soil layers are carried directly by the paired surface files.
+    The route's user-facing authority stays its OWN sealed member
+    manifest -- the filename-bound member identity, the pairing contract,
+    the per-file hashes -- and the two gates that authority funds run
+    here, before a byte is composed:
+
+    * PRODUCT IDENTITY.  :func:`_verify_archive_inventory` binds the
+      exact every-member GRIB2 product contract per file.  Its
+      measurement instrument on the bare default is the engine's raw
+      record-inventory surface; on the documented Python-engine
+      workaround (``GPUWM_MAPPED_ENGINE=python`` or an explicit tool
+      pin) it is the subprocess ``grib2_inventory``.  Same contract,
+      same refusal wording, either instrument.
+    * ENSEMBLE IDENTITY.  The verified filename member becomes an
+      EXPLICIT binding in the bridged composition-inputs manifest, and
+      the composition -- whichever engine runs it -- stamps it onto
+      every canonical frame and into the sealed alignment receipt.
+
+    The composition itself then runs through
+    :func:`gpuwm.mapped_direct.prepare_mapped_wrf` and
+    ``decode_composed_source`` like every other composed source: the
+    member manifest is bridged into a generic
+    ``gpuwm-mapped-composition-inputs-v1`` document (deterministic
+    authoring -- two authorings of the same inputs are byte-identical),
+    which the composition receipt seals, while the prepared tree's
+    evidence copy and identity chain stay bound to the member manifest
+    the caller pinned.
     """
 
     mapping = Path(mapping).resolve()
     composition = Path(composition).resolve()
     provenance = Path(provenance).resolve()
     manifest = Path(manifest).resolve()
-    inventory = Path(grib2_inventory).resolve()
-    dump = Path(grib2_dump).resolve()
-    for path in (mapping, composition, provenance, manifest, inventory, dump):
+    for path in (mapping, composition, provenance, manifest):
         if not path.is_file():
             raise FileNotFoundError(path)
 
@@ -61,79 +94,99 @@ def prepare_20crv3_wrf(
     )
     if len(surface) * 2 != len(primary):
         raise ValueError("20CRv3 preparation lost a pressure/surface pair")
+    mapping_document = load_mapping(mapping)
+    if mapping_document["format"] != "grib2":
+        raise ValueError("20CRv3 named adapter requires a GRIB2 mapping")
+    if mapping_document["target"]["boundary_interval_seconds"] \
+            != document["cadence_seconds"]:
+        raise ValueError(
+            "20CRv3 manifest cadence differs from the mapping target contract"
+        )
 
-    decode_started = time.perf_counter()
-    frames, canonical_receipt = decode_20crv3_grib2(
-        mapping=mapping,
-        manifest=manifest,
-        manifest_sha256=manifest_sha256,
+    # WHICH instrument answers the product-identity gate is the same
+    # question as which engine composes: an explicit tool pin or the
+    # documented workaround selects the Python engine and its subprocess
+    # inventory; the bare default reads both in process.
+    inventory = None if grib2_inventory is None \
+        else Path(grib2_inventory).resolve()
+    dump = None if grib2_dump is None else Path(grib2_dump).resolve()
+    if (inventory is None) != (dump is None):
+        raise ValueError(
+            "grib2 inventory and dump tools are an atomic pair on this route"
+        )
+    from gpuwm.mapped_engine_bridge import ENGINE_RUST
+
+    on_rust_engine = _mapped_engine_choice(
+        grib1_bridge=None,
         grib2_inventory=inventory,
         grib2_dump=dump,
+        subcommand="compose",
+        source_format="grib2",
+    ) == ENGINE_RUST
+    if on_rust_engine:
+        from gpuwm.mapped_engine_bridge import engine_record_inventory
+
+        inventories = engine_record_inventory(primary)
+
+        def inventory_rows(source: Path):
+            return inventories[source]
+    else:
+        if inventory is None:
+            inventory, dump = _build_grib2_tools()
+
+        def inventory_rows(source: Path):
+            return _grib2_inventory(source, inventory)
+
+    _verify_archive_inventory(
+        document,
+        primary,
+        inventory_rows,
+        mapping_document["coordinates"]["vertical"]["levels"],
     )
-    decode_seconds = time.perf_counter() - decode_started
-    hashes = {
-        Path(path).resolve(): digest
-        for path, digest in canonical_receipt["input_sha256"].items()
-    }
-    bundle = MappedSourceBundle(
-        frames=frames,
-        mapping_path=mapping,
-        mapping_sha256=_sha256(mapping),
-        composition_path=composition,
-        composition_sha256=_sha256(composition),
-        input_manifest_path=manifest,
-        input_manifest_sha256=_sha256(manifest),
-        decoder_paths={
-            "grib2_inventory": inventory,
-            "grib2_dump": dump,
-        },
-        decoder_sha256={
-            "grib2_inventory": _sha256(inventory),
-            "grib2_dump": _sha256(dump),
-        },
-        terrain_data_paths=surface,
-        terrain_data_sha256=tuple(hashes[path] for path in surface),
-        terrain_provenance_path=provenance,
-        terrain_provenance_sha256=_sha256(provenance),
-        soil_layer_contract=contract["soil_layers"],
-        alignment_receipt={
-            "strategy": "20crv3_in_band_surface_same_grid",
-            "terrain_external_supplement": False,
-            "member": document["member"],
-            "member_identity": document["member_identity"],
-            "surface_file_count": len(surface),
-            "valid_time_count": len(frames),
-            "canonical_receipt_content_sha256": canonical_receipt[
-                "receipt_content_sha256"
-            ],
-            "coordinate_match": "same_decoded_grib2_grid_fingerprint",
-            "terrain_invariant_across_all_times": True,
-        },
-    )
-    return prepare_mapped_wrf(
-        composition=composition,
-        mapping=mapping,
-        primary_files=primary,
-        supplement_files={str(terrain_spec["data_role"]): surface},
-        provenance_files={
-            str(terrain_spec["provenance_role"]): provenance,
-        },
-        input_manifest=manifest,
-        input_manifest_sha256=manifest_sha256,
-        grib2_inventory=inventory,
-        grib2_dump=dump,
-        wps_namelist=wps_namelist,
-        geog_root=geog_root,
-        experiment_config=experiment_config,
-        output_root=output_root,
-        preprocess_backend=preprocess_backend,
-        preprocess_workers=preprocess_workers,
-        cpu_preprocess_bridge=cpu_preprocess_bridge,
-        hierarchy_workers=hierarchy_workers,
-        _predecoded_bundle=bundle,
-        _predecoded_seconds=decode_seconds,
-        _source_adapter="rw-wps-20crv3-member-grib2-v1",
-    )
+
+    from gpuwm.mapped_authoring import author_input_manifest
+
+    with tempfile.TemporaryDirectory(prefix="gpuwm-20crv3-bridge-") as work:
+        bridged = Path(work) / "composition-inputs.json"
+        author_input_manifest(
+            bridged,
+            mapping_path=mapping,
+            composition_path=composition,
+            primary_files=primary,
+            supplement_files={str(terrain_spec["data_role"]): surface},
+            provenance_files={
+                str(terrain_spec["provenance_role"]): provenance,
+            },
+            grib2_inventory=inventory,
+            grib2_dump=dump,
+            expected_format="grib2",
+            member=str(document["member"]),
+            member_identity=str(document["member_identity"]),
+        )
+        return prepare_mapped_wrf(
+            composition=composition,
+            mapping=mapping,
+            primary_files=primary,
+            supplement_files={str(terrain_spec["data_role"]): surface},
+            provenance_files={
+                str(terrain_spec["provenance_role"]): provenance,
+            },
+            input_manifest=bridged,
+            input_manifest_sha256=_sha256(bridged),
+            grib2_inventory=inventory,
+            grib2_dump=dump,
+            wps_namelist=wps_namelist,
+            geog_root=geog_root,
+            experiment_config=experiment_config,
+            output_root=output_root,
+            preprocess_backend=preprocess_backend,
+            preprocess_workers=preprocess_workers,
+            cpu_preprocess_bridge=cpu_preprocess_bridge,
+            hierarchy_workers=hierarchy_workers,
+            _source_manifest=manifest,
+            _source_manifest_sha256=manifest_sha256,
+            _source_adapter=SOURCE_ADAPTER,
+        )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -149,8 +202,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--provenance", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--manifest-sha256", required=True)
-    parser.add_argument("--grib2-inventory", type=Path, required=True)
-    parser.add_argument("--grib2-dump", type=Path, required=True)
+    # NOT required: a bare run composes in the engine and reads the
+    # record inventory in process.  Naming the tools is the explicit
+    # Python-engine pin, exactly as on the generic mapped route.
+    parser.add_argument("--grib2-inventory", type=Path)
+    parser.add_argument("--grib2-dump", type=Path)
+    from gpuwm.mapped_engine_bridge import ENGINES
+
+    parser.add_argument(
+        "--mapped-engine", choices=ENGINES, default=None,
+        help="decode engine override; python is the documented workaround",
+    )
     parser.add_argument("--wps-namelist", type=Path, required=True)
     parser.add_argument("--geog-root", type=Path, required=True)
     parser.add_argument("--experiment-config", type=Path, required=True)
@@ -197,8 +259,16 @@ def _refuse_incompatible_config(path: Path, error: Exception) -> str:
     )
 
 
+@owns_source_coverage_refusal
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.mapped_engine is not None:
+        # Published, not merely remembered, exactly as the generic mapped
+        # runner publishes it: the flag and the documented workaround
+        # spelling must mean one thing to everything downstream.
+        from gpuwm.mapped_engine_bridge import ENGINE_ENV
+
+        os.environ[ENGINE_ENV] = args.mapped_engine
     # Config compatibility first, before any GRIB2 is decoded: a refusal
     # the user can act on beats a traceback twenty minutes in.
     from gpuwm.experiment import load_experiment
@@ -245,4 +315,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["prepare_20crv3_wrf"]
+__all__ = ["SOURCE_ADAPTER", "prepare_20crv3_wrf"]

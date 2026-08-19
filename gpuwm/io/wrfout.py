@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import os
 from pathlib import Path
 import queue
 import threading
@@ -27,6 +28,8 @@ import netCDF4
 
 from gpuwm import perf_timing
 from gpuwm.config import NO_LAND_SURFACE_SOIL_LAYERS, soil_layer_count
+from gpuwm.io.classic_tape import (ClassicDim, ClassicTape, ClassicVariable,
+                                   classic_attr_value)
 from gpuwm.io.wrf_output_schema import (
     HISTORY_FIELDS_BY_NETCDF_NAME, PHYSICS_SELECTOR_GLOBALS,
     SCHEME_OUTPUT_FIELDS, WRF_FIELD_TYPE_INTEGER, WRF_FIELD_TYPE_REAL,
@@ -38,8 +41,68 @@ _COMPLETION_ATTR = "GPUWM_WRITE_COMPLETE"
 # netCDF4 releases the GIL around HDF5 calls, while the shipped HDF5 library
 # is not thread-safe.  Domain D2H streams and staging remain independent; only
 # each worker's create/write/close/reopen/publish netCDF session is serialized.
+# The Rust engine needs no such serialization of its own, but the publish
+# step's self-validation reopens the tape with netCDF4, so the lock stays.
 _NETCDF4_IO_LOCK = threading.Lock()
 _ASYNC_WRITER_POLL_SECONDS = 0.05
+
+#: Which library writes the product tape.  ``rust`` (the DEFAULT) is the
+#: dependency-free classic writer at ``tools/rustwx/crates/netcdf-writer``
+#: behind the :mod:`gpuwm.io.nc_writer_bridge` ctypes seam, emitting the
+#: CDF-2 (``NETCDF3_64BIT_OFFSET``) container.  ``python`` is the
+#: netCDF4/HDF5 writer this module used through 2.4, emitting
+#: ``NETCDF4_CLASSIC`` -- kept reachable as an EXPLICIT WORKAROUND only,
+#: never selected silently.  Their equivalence on real frames is the
+#: dual-write verification in ``tests/test_wrfout_dual_write.py`` and
+#: ``tools/wrfout_dual_write.py``.
+WRFOUT_WRITER_ENV = "GPUWM_WRFOUT_WRITER"
+
+_WRFOUT_ENGINES = ("rust", "python")
+
+
+def resolve_wrfout_engine(engine: str | None = None) -> str:
+    """The writer engine to use: explicit argument, else env, else rust."""
+    value = engine if engine is not None else os.environ.get(
+        WRFOUT_WRITER_ENV, "rust")
+    value = str(value).strip().lower()
+    if value not in _WRFOUT_ENGINES:
+        raise ValueError(
+            f"unknown wrfout writer engine {value!r} "
+            f"(from {WRFOUT_WRITER_ENV!r} or the engine argument); "
+            f"expected one of {_WRFOUT_ENGINES}.  'rust' is the default "
+            "classic writer; 'python' is the netCDF4 workaround.")
+    return value
+
+
+#: The classic-container spelling of an attribute value, and the
+#: netCDF4-shaped facade that puts this tape on the Rust seam.  Both live
+#: in :mod:`gpuwm.io.classic_tape` because the wrfinput/wrfbdy export
+#: writes through the same seam: two copies of this facade is how two
+#: products come to disagree about what the classic writer does.
+_classic_attr_value = classic_attr_value
+_ClassicDim = ClassicDim
+_ClassicTapeVariable = ClassicVariable
+
+#: What a caller of THIS tape should do instead when the header is
+#: already on disk.
+_FROZEN_REMEDY = (
+    "Declare it before the first frame (or pass field_schema), or use "
+    f"the netCDF4 workaround {WRFOUT_WRITER_ENV}=python.")
+
+
+class _ClassicTape(ClassicTape):
+    """The history tape's :class:`~gpuwm.io.classic_tape.ClassicTape`.
+
+    It differs from a bare one in exactly two declared ways: it stamps
+    ``GPUWM_WRITE_COMPLETE`` into the header (last, where the netCDF4
+    path's close-time ``setncattr`` also lands it), and its
+    header-frozen refusal names this writer's own escapes.
+    """
+
+    def __init__(self, path, *, container: str = "cdf2"):
+        super().__init__(path, container=container,
+                         completion_attr=_COMPLETION_ATTR,
+                         frozen_remedy=_FROZEN_REMEDY)
 
 
 def _stringify_and_clear_exception_tracebacks(exc: BaseException) -> str:
@@ -999,8 +1062,42 @@ def quarantine_orphan_wrfouts(directory):
 
 
 class WrfoutWriter:
+    """The product-tape writer.
+
+    ``engine`` selects which library puts the bytes on disk (see
+    :data:`WRFOUT_WRITER_ENV`).  The DEFAULT is the Rust classic writer;
+    ``engine="python"`` (or ``GPUWM_WRFOUT_WRITER=python``) is the
+    netCDF4/HDF5 writer kept as an explicit, documented WORKAROUND.  The
+    schema, the attribute inventory, the validation and the atomic
+    publication protocol are identical on both engines; the container
+    differs (CDF-2 classic vs HDF5 ``NETCDF4_CLASSIC``), which every
+    reader in the estate handles (netCDF4, wrf-rust, ``rw_wrfbatch``,
+    ``rw_netcdf`` -- proved by the dual-write verification).
+    """
+
     def __init__(self, path, *, nx, ny, nz, dx, dy, title="gpuwm",
-                 global_attrs=None, field_schema=None, soil_layers=None):
+                 global_attrs=None, field_schema=None, soil_layers=None,
+                 engine=None):
+        self.engine = resolve_wrfout_engine(engine)
+        if self.engine == "rust":
+            from gpuwm.io import nc_writer_bridge
+
+            reason = nc_writer_bridge.unavailable_reason()
+            if reason is not None:
+                raise RuntimeError(
+                    "the default wrfout engine is the Rust NetCDF writer "
+                    "(the netcdf-writer cdylib behind gpuwm.io."
+                    "nc_writer_bridge) and it is not loadable here, so "
+                    f"the product tape cannot be written:\n  {reason}\n"
+                    "A silent fallback would change the tape's container "
+                    "with build state and quietly un-test the default, so "
+                    "it is refused instead.  Remedies: build the library "
+                    "from a checkout (cd tools/rustwx; cargo build "
+                    "--release --locked --offline -p netcdf-writer; "
+                    "cd ../..), or run `gpuwm fetch-bridges` on an "
+                    f"installed wheel; or set {WRFOUT_WRITER_ENV}=python "
+                    "to select the netCDF4 writer as an explicit "
+                    "workaround.")
         self.nx, self.ny, self.nz = nx, ny, nz
         # WRF's soil axis length is the land-surface scheme's own geometry
         # (Noah/Noah-MP 4, RUC 6 or 9), not a universal constant, so any
@@ -1013,11 +1110,21 @@ class WrfoutWriter:
         # offline_child_smoke.py) were silently taking it.
         self.soil_layers = (NO_LAND_SURFACE_SOIL_LAYERS
                             if soil_layers is None else int(soil_layers))
-        self._final_path = Path(path)
+        # Pinned to ABSOLUTE once, here: the publish-time self-validation
+        # reopens the temp file with netCDF4, and the netCDF-C build in
+        # use refuses a CLASSIC file named by a drive-relative path
+        # (`\tmp\...` -> `NetCDF: Unknown file format`) that it opens
+        # fine absolutely (MEASURED on the same bytes).  Resolving at
+        # construction also makes the fsync/rename sequence immune to a
+        # later cwd change, on both engines.
+        self._final_path = Path(os.path.abspath(path))
         self._final_path.parent.mkdir(parents=True, exist_ok=True)
         self._temp_path = unique_temp_path(self._final_path, hidden=True)
-        self.ds = netCDF4.Dataset(
-            self._temp_path, "w", format="NETCDF4_CLASSIC")
+        if self.engine == "rust":
+            self.ds = _ClassicTape(self._temp_path)
+        else:
+            self.ds = netCDF4.Dataset(
+                self._temp_path, "w", format="NETCDF4_CLASSIC")
         ds = self.ds
         ds.createDimension("Time", None)
         ds.createDimension("DateStrLen", 19)
@@ -1262,7 +1369,6 @@ class WrfoutWriter:
                 "WRF format; sub-second history instants are not supported "
                 "and must not be truncated into an aliased one")
         buf = encoded.ljust(19, b"\x00")
-        self.ds.variables["Times"][t] = np.frombuffer(buf, dtype="S1")
         frame = dict(fields)
         for name, value in self._time_coordinate_fields(time_str).items():
             frame.setdefault(name, value)
@@ -1273,16 +1379,35 @@ class WrfoutWriter:
             raise ValueError(
                 "wrfout frame does not match the creation-time field "
                 f"schema: missing={missing}, extra={extra}")
-        written = 0
+        # Declare every variable of this frame BEFORE its first data byte
+        # lands.  On the Rust engine the classic header freezes at the
+        # first data write, so a variable created mid-frame would be a
+        # named refusal; on netCDF4 this only moves creation ahead of the
+        # Times record write, which leaves variable-creation order -- the
+        # thing HDF5's name heap is laid out by -- exactly as it was.
+        arrays: dict[str, np.ndarray] = {}
         for name, arr in frame.items():
             arr = self._wrf_array(name, np.asarray(arr))
             if name not in self.ds.variables:
                 self._create_variable(name, self._dims_for(name, arr.shape))
+            arrays[name] = arr
+        self.ds.variables["Times"][t] = np.frombuffer(buf, dtype="S1")
+        written = 0
+        for name, arr in arrays.items():
             self.ds.variables[name][t] = arr
             written += int(arr.nbytes)
         timed.count(fields=len(frame), bytes_written=written)
         self._times.append(buf.rstrip(b"\x00").decode("ascii"))
         self._n += 1
+
+    def _abandon_ds(self):
+        """Release the dataset without publishing: abort a classic tape
+        (numrecs stays 0 on the partial file), plain-close a netCDF4 one
+        (no completion attribute, so the sweep quarantines it)."""
+        if isinstance(self.ds, _ClassicTape):
+            self.ds.abort()
+        else:
+            self.ds.close()
 
     def close(self):
         if self._closed:
@@ -1292,8 +1417,15 @@ class WrfoutWriter:
                   for name, variable in self.ds.variables.items()}
         times = tuple(self._times)
         try:
-            self.ds.setncattr(_COMPLETION_ATTR, np.int32(1))
-            self.ds.close()
+            if isinstance(self.ds, _ClassicTape):
+                # The completion attribute is already in the header (the
+                # tape writes it at freeze, last); close() refuses any
+                # tape with an unwritten region, then patches numrecs,
+                # flushes and fsyncs.
+                self.ds.close()
+            else:
+                self.ds.setncattr(_COMPLETION_ATTR, np.int32(1))
+                self.ds.close()
             self._closed = True
             fsync_file(self._temp_path)
             validate_wrfout_file(
@@ -1307,7 +1439,7 @@ class WrfoutWriter:
                 # A half-closed netCDF handle can fail repeatedly.  Preserve
                 # the original publication error and still reach quarantine.
                 with suppress(BaseException):
-                    self.ds.close()
+                    self._abandon_ds()
                 self._closed = True
             if self._temp_path.exists():
                 with suppress(BaseException):
@@ -1321,7 +1453,7 @@ class WrfoutWriter:
         if self._closed:
             return
         with suppress(BaseException):
-            self.ds.close()
+            self._abandon_ds()
         self._closed = True
         if self._temp_path.exists():
             with suppress(BaseException):
@@ -1488,6 +1620,19 @@ class AsyncDomainWrfoutWriter:
             raise RuntimeError("per-domain wrfout writer failed") \
                 from self._failure
 
+    def _peer_failure(self):
+        """The FIRST failure recorded on the shared abort event, if any.
+
+        The abort event is shared across every domain's writer; the
+        exception itself lives on the writer that hit it.  Before this
+        attribute existed, a run whose d01 writer failed reported only
+        d02's bare 'writing was aborted' -- the root cause was recorded
+        on an object nothing consulted and appeared in no log, capsule,
+        or traceback (measured: a 6 h moving-nest run whose only
+        diagnostic was that one sentence).
+        """
+        return getattr(self._abort_event, "first_failure", None)
+
     def _check_admission_liveness(self) -> None:
         """Reject work that no live, healthy worker can consume."""
         self._raise_failure()
@@ -1498,6 +1643,11 @@ class AsyncDomainWrfoutWriter:
             raise RuntimeError("per-domain wrfout worker stopped unexpectedly")
         if self._abort_event.is_set():
             self._raise_failure()
+            peer = self._peer_failure()
+            if peer is not None:
+                raise RuntimeError(
+                    "per-domain wrfout writing was aborted by another "
+                    f"domain's writer: {peer[1]}") from peer[0]
             raise RuntimeError("per-domain wrfout writing was aborted")
 
     def _admit(self, ticket: _AsyncFrame) -> None:
@@ -1764,6 +1914,13 @@ class AsyncDomainWrfoutWriter:
                     if self._failure is None:
                         self._failure = exc
                         self._failure_traceback = failure_traceback
+                # Publish the ROOT CAUSE on the shared event before (or
+                # atomically with) setting it, so every OTHER domain's
+                # liveness refusal can name it instead of the bare
+                # "writing was aborted" (see _peer_failure).
+                if getattr(self._abort_event, "first_failure", None) is None:
+                    self._abort_event.first_failure = (
+                        exc, f"{type(exc).__name__}: {exc}")
                 self._abort_event.set()
             finally:
                 ticket.pinned_refs = ()

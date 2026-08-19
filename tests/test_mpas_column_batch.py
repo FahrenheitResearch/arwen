@@ -1,0 +1,292 @@
+"""CPU-hermetic contract tests for the MPAS column-batch physics seam.
+
+WHAT THIS FILE GATES
+--------------------
+The parts of ``gpuwm/core/mpas_column_batch.py`` that are provable
+without a device: the published API name and its identity with the
+implementation, the leaf-wrapper refusal (the seam's phase entries ARE
+the ARW orchestration function objects), the cadence law the seam owns,
+and the whole constructor refusal surface -- every refusal here fires
+BEFORE the first device allocation, by design.
+
+The behavioural half (read-only inputs, held radiation, buckets,
+restart bit-identity, in-place WSM6) lives in
+``tests/test_mpas_column_batch_gpu.py`` and runs on a rented card.
+
+REVERT-CHECK NOTES.  The cadence tests below pin the exact WRF due
+calendars against the resolved step counts: reverting the seam to a
+private scheduler (or WRF's predicates to anything else) goes red.  The
+identity tests pin the orchestration objects: reverting ``run_phase1``
+to thin per-kernel wrappers cannot keep
+``_PHASE1_ORCHESTRATION is PhysicsDriver.compute`` true while changing
+the call path, because the GPU suite asserts the driver's own counters
+and held state advance through that exact entry.
+"""
+
+import datetime
+
+import numpy as np
+import pytest
+
+from gpuwm.core import mpas_column_batch as mcb
+
+#: The MPAS counterparty's pinned configuration (2026-08-10): model step
+#: 120 s, radiation 600 s, surface/PBL 120 s, cumulus 120 s.
+PINNED = dict(dt=120.0, radiation_seconds=600.0,
+              surface_pbl_seconds=120.0, cumulus_seconds=120.0)
+
+
+def _constructor_kwargs(**overrides):
+    """A fully valid constructor argument set (validation-only tests)."""
+    kwargs = dict(
+        n_levels=20, n_columns=8, dt=120.0,
+        radiation_seconds=600.0, surface_pbl_seconds=120.0,
+        cumulus_seconds=120.0, cumulus_scheme="kf",
+        start_time=datetime.datetime(2021, 6, 1, 18, 0),
+        latitude_deg=np.full(8, 35.0), longitude_deg=np.full(8, -97.0),
+        terrain_height_m=np.zeros(8),
+        z_interface_nominal_m=np.linspace(0.0, 16000.0, 21),
+        p_top_pa=5000.0, dx_m=15000.0)
+    kwargs.update(overrides)
+    return kwargs
+
+
+# ---------------------------------------------------------------------------
+# API identity and the leaf-wrapper refusal.
+# ---------------------------------------------------------------------------
+
+def test_the_published_api_name_is_the_implementation():
+    import gpuwm.core.physics as physics
+    assert physics.run_mpas_column_batch is mcb.run_mpas_column_batch
+    assert "run_mpas_column_batch" in physics.__all__
+
+
+def test_phase1_is_the_arw_orchestration_not_a_wrapper():
+    """Leaf-wrapper refusal: the phase-1 call site IS PhysicsDriver.compute.
+
+    ``run_phase1`` invokes ``type(self)._PHASE1_ORCHESTRATION``; pinning
+    the class attribute to the exact function object the ARW step calls
+    (gpuwm/core/dycore.py:2325) means a rewrite of the seam into
+    per-kernel wrappers must either change this attribute (red here) or
+    keep routing through the driver's own orchestration (not a wrapper).
+    """
+    from gpuwm.core.physics import PhysicsDriver
+    assert mcb.MpasColumnBatchPhysics._PHASE1_ORCHESTRATION \
+        is PhysicsDriver.compute
+
+
+def test_phase2_is_the_arw_microphysics_dispatch():
+    from gpuwm.core import microphysics
+    assert mcb.MpasColumnBatchPhysics._PHASE2_MICROPHYSICS \
+        is microphysics.apply
+
+
+def test_the_prepare_atmosphere_supplied_seam_exists():
+    """The grid-adaptation seam is a read of the state attribute.
+
+    ``_prepare_atmosphere`` must consult ``prepared_physics_atmosphere``
+    before any ARW-grid arithmetic; reverting that hook strands the
+    column batch on the C-grid destagger and this goes red.
+    """
+    import inspect
+
+    from gpuwm.core import physics
+    source = inspect.getsource(physics._prepare_atmosphere)
+    assert "prepared_physics_atmosphere" in source
+
+
+# ---------------------------------------------------------------------------
+# Cadence law (the seam owns the sub-cadences).
+# ---------------------------------------------------------------------------
+
+def test_the_pinned_counterparty_cadences_resolve_exactly():
+    resolved = mcb.resolve_column_batch_cadences(
+        cumulus_scheme="gf", **PINNED)
+    assert resolved["stepra"] == 5
+    assert resolved["stepbl"] == 1
+    assert resolved["stepcu"] == 1
+    assert resolved["radt_minutes"] == 10.0
+    assert resolved["bldt_minutes"] == 2.0
+    # GF carries WRF's pinned cudt=0 spelling (gpuwm/config.py law).
+    assert resolved["cudt_minutes"] == 0.0
+    assert resolved["cu_physics"] == 3
+
+
+def test_radiation_follows_wrf_stepra_calendar():
+    """Due steps 1, 6, 11, ... for the pinned 600 s / 120 s pair.
+
+    Uses WRF's own predicate from gpuwm.core.physics, so this goes red
+    if either the resolution or the calendar drifts.
+    """
+    from gpuwm.core.physics import _radiation_step_due
+    resolved = mcb.resolve_column_batch_cadences(
+        cumulus_scheme="gf", **PINNED)
+    due = [_radiation_step_due(step, resolved["stepra"],
+                               resolved["radt_minutes"])
+           for step in range(1, 11)]
+    assert due == [True, False, False, False, False,
+                   True, False, False, False, False]
+
+
+def test_surface_pbl_and_cumulus_run_every_step_at_dt_cadence():
+    from gpuwm.core.physics import (_cumulus_step_due,
+                                    _surface_pbl_step_due)
+    resolved = mcb.resolve_column_batch_cadences(
+        cumulus_scheme="gf", **PINNED)
+    for step in range(1, 11):
+        assert _surface_pbl_step_due(step, resolved["stepbl"],
+                                     resolved["bldt_minutes"])
+        assert _cumulus_step_due(step, resolved["stepcu"],
+                                 resolved["cudt_minutes"])
+
+
+def test_kf_takes_a_slower_commensurate_cumulus_cadence():
+    from gpuwm.core.physics import _cumulus_step_due
+    resolved = mcb.resolve_column_batch_cadences(
+        dt=120.0, radiation_seconds=600.0, surface_pbl_seconds=120.0,
+        cumulus_seconds=600.0, cumulus_scheme="kf")
+    assert resolved["stepcu"] == 5
+    assert resolved["cudt_minutes"] == 10.0
+    due = [_cumulus_step_due(step, resolved["stepcu"],
+                             resolved["cudt_minutes"])
+           for step in range(1, 11)]
+    # Mandatory step-1 call, then MOD(ITIMESTEP, STEPCU) == 0.
+    assert due == [True, False, False, False, True,
+                   False, False, False, False, True]
+
+
+def test_positive_bldt_keeps_the_raw_ysu_retention_on():
+    """The seam's du/dv come from the driver's retained raw YSU output.
+
+    ``physics_retains_ysu_output`` is bldt-gated; the seam always maps a
+    positive surface/PBL cadence onto a positive bldt, so retention can
+    never silently turn off.  Red if either side of that pact moves.
+    """
+    from gpuwm.config import RunConfig
+    from gpuwm.core.physics import physics_retains_ysu_output
+    resolved = mcb.resolve_column_batch_cadences(
+        cumulus_scheme="gf", **PINNED)
+    assert resolved["bldt_minutes"] > 0.0
+    cfg = RunConfig(nx=8, ny=1, nz=20, dx=15000.0, dy=15000.0,
+                    ztop=16000.0, dt=120.0, run_seconds=0.0,
+                    bl_pbl_physics=1, bldt=resolved["bldt_minutes"])
+    assert physics_retains_ysu_output(cfg)
+
+
+@pytest.mark.parametrize("seconds", [500.0, 130.0, 0.0, -600.0])
+def test_incommensurate_or_nonpositive_cadences_refuse(seconds):
+    with pytest.raises(ValueError):
+        mcb.resolve_column_batch_cadences(
+            dt=120.0, radiation_seconds=seconds,
+            surface_pbl_seconds=120.0, cumulus_seconds=None,
+            cumulus_scheme=None)
+
+
+def test_gf_refuses_any_cadence_but_the_model_step():
+    with pytest.raises(ValueError, match="cudt=0"):
+        mcb.resolve_column_batch_cadences(
+            dt=120.0, radiation_seconds=600.0,
+            surface_pbl_seconds=120.0, cumulus_seconds=240.0,
+            cumulus_scheme="gf")
+
+
+def test_cumulus_seconds_without_a_scheme_refuses():
+    with pytest.raises(ValueError, match="cumulus_scheme"):
+        mcb.resolve_column_batch_cadences(
+            dt=120.0, radiation_seconds=600.0,
+            surface_pbl_seconds=120.0, cumulus_seconds=120.0,
+            cumulus_scheme=None)
+
+
+def test_unknown_cumulus_scheme_refuses():
+    with pytest.raises(ValueError, match="'grell'"):
+        mcb.resolve_column_batch_cadences(
+            dt=120.0, radiation_seconds=600.0,
+            surface_pbl_seconds=120.0, cumulus_seconds=120.0,
+            cumulus_scheme="grell")
+
+
+# ---------------------------------------------------------------------------
+# Constructor refusal surface (all pre-device).
+# ---------------------------------------------------------------------------
+
+def test_a_misspelled_constructor_keyword_refuses_with_its_name():
+    with pytest.raises(TypeError, match="n_levles"):
+        mcb.run_mpas_column_batch(
+            **{**_constructor_kwargs(), "n_levles": 40})
+
+
+@pytest.mark.parametrize("overrides,match", [
+    (dict(n_levels=2), "n_levels"),
+    (dict(n_columns=0), "n_columns"),
+    (dict(dt=0.0), "dt"),
+    (dict(p_top_pa=-100.0), "p_top_pa"),
+    (dict(dx_m=0.0), "dx_m"),
+    (dict(wsm6_hail_opt=3), "wsm6_hail_opt"),
+    (dict(radiation_seconds=500.0), "radiation_seconds"),
+    (dict(cumulus_seconds=240.0, cumulus_scheme="gf"), "cudt=0"),
+    (dict(latitude_deg=np.zeros(3)), "latitude_deg"),
+    (dict(terrain_height_m=np.zeros(3)), "terrain_height_m"),
+    (dict(z_interface_nominal_m=np.linspace(0.0, 1.0, 11)),
+     "z_interface_nominal_m"),
+])
+def test_invalid_constructor_values_refuse_before_device_work(
+        overrides, match):
+    with pytest.raises((ValueError, TypeError), match=match):
+        mcb.run_mpas_column_batch(**_constructor_kwargs(**overrides))
+
+
+def test_descending_nominal_interfaces_refuse():
+    with pytest.raises(ValueError, match="increase strictly upward"):
+        mcb.run_mpas_column_batch(**_constructor_kwargs(
+            z_interface_nominal_m=np.linspace(16000.0, 0.0, 21)))
+
+
+def test_start_time_must_be_a_datetime():
+    with pytest.raises(TypeError, match="datetime"):
+        mcb.run_mpas_column_batch(**_constructor_kwargs(
+            start_time="2021-06-01T18:00"))
+
+
+# ---------------------------------------------------------------------------
+# Setup arithmetic and restart schema.
+# ---------------------------------------------------------------------------
+
+def test_uniform_nominal_spacing_gives_midpoint_interface_weights():
+    fnm, fnp = mcb._interface_weights(np.linspace(0.0, 2000.0, 11))
+    assert fnm.dtype == np.float32 and fnp.dtype == np.float32
+    assert fnm[0] == 0.0 and fnp[0] == 0.0
+    np.testing.assert_array_equal(fnm[1:], np.float32(0.5))
+    np.testing.assert_array_equal(fnp[1:], np.float32(0.5))
+
+
+def test_interface_weights_sum_to_one_on_stretched_meshes():
+    z = np.concatenate([[0.0], np.cumsum(50.0 * 1.12 ** np.arange(30))])
+    fnm, fnp = mcb._interface_weights(z)
+    np.testing.assert_allclose(
+        (fnm + fnp)[1:], 1.0, rtol=0.0, atol=2.0e-7)
+
+
+def test_restart_schema_and_lazy_keys_are_pinned():
+    """The export payload layout is a cross-program contract.
+
+    The MPAS side stores these payloads; a silent schema or key change
+    would restore garbage.  Any deliberate change bumps RESTART_SCHEMA.
+    """
+    assert mcb.RESTART_SCHEMA == "mpas-column-batch-v1"
+    assert mcb._LAZY_RESTART_KEYS == ("cumulus/w0avg",
+                                      "radiation/o33d_grid")
+    assert mcb._OUTPUT_BUFFERS == ("du", "dv", "dtheta", "dqv", "dqc",
+                                   "dqr", "dqi", "dqs", "dqg",
+                                   "h_diabatic")
+
+
+def test_the_tendency_result_carries_the_full_species_set():
+    import dataclasses
+    names = [field.name for field in
+             dataclasses.fields(mcb.MpasColumnPhysicsTendencies)]
+    for required in ("du", "dv", "dtheta", "dqv", "dqc", "dqr", "dqi",
+                     "dqs", "dqg", "h_diabatic", "step_index",
+                     "elapsed_seconds", "radiation_ran",
+                     "surface_pbl_ran", "cumulus_ran"):
+        assert required in names

@@ -152,6 +152,7 @@ def _hrrr_bundle(tmp_path: Path, *, run_seconds: float = 7200.0,
                  history_interval_seconds: float = 900.0,
                  physics_profile: str | None = PROFILE,
                  forcing_hours=(0, 1, 2),
+                 rendered_wps: bool = False,
                  publish_cycle: datetime | None = None) -> _Bundle:
     tables, exp = _hrrr_experiment(
         run_seconds=run_seconds,
@@ -212,7 +213,11 @@ def _hrrr_bundle(tmp_path: Path, *, run_seconds: float = 7200.0,
         prepared_cache=native / "prepared-cache",
         static_cache=static, static_receipt=static_receipt,
         geometry_receipt=geometry, bridge_manifest=bridge,
-        namelist_input=namelist_input, wps_namelist=wps_namelist,
+        namelist_input=namelist_input,
+        # ``None`` is the ROUTE's own case: the native preparation is
+        # driven by a target domain and has no namelist.wps to copy, so
+        # the writer renders one from this experiment.
+        wps_namelist=(None if rendered_wps else wps_namelist),
         source_manifest=source_manifest,
         experiment_config=config,
         source_cycle=publish_cycle or CYCLE,
@@ -304,6 +309,88 @@ def test_experiment_document_leaves_no_file_when_the_reload_disagrees(
 # ---------------------------------------------------------------------
 # the bundle: published by the shipped writer, admitted by the front door
 # ---------------------------------------------------------------------
+
+def test_the_route_renders_the_namelist_it_has_no_file_for(tmp_path):
+    """The native route's missing authority, produced from what it holds.
+
+    A native HRRR preparation is driven by a strict target domain, not by
+    a ``namelist.wps`` -- so there was no such file to publish, and the
+    portable authorities were therefore opt-in behind a flag that made
+    the caller supply one.  A finished tree could then exist that no
+    forecast front door would accept, which is exactly what the Linux
+    shakeout produced on 2026-08-18.
+
+    The numbers were never missing, only the file.  This asserts the
+    rendered namelist reads back as the experiment's own geometry
+    through the FORECAST STAGE'S parser, not through a fixture of its
+    own: same grids, same order, same values.
+    """
+
+    from gpuwm.static.projection import (
+        grids_from_projection_config, grids_from_wps_namelist)
+
+    bundle = _hrrr_bundle(tmp_path, rendered_wps=True)
+    rendered = bundle.root / "namelist.wps"
+    assert rendered.is_file()
+    assert Path(bundle.handoff["wps_namelist"]) == rendered
+
+    observed = grids_from_wps_namelist(rendered)
+    expected = grids_from_projection_config(bundle.experiment)
+    assert len(observed) == len(expected) == 1
+    for name in ("ref_lat", "ref_lon", "truelat1", "truelat2", "stand_lon",
+                 "dx", "dy", "e_we", "e_sn", "known_x", "known_y"):
+        assert getattr(observed[0], name) == getattr(expected[0], name), name
+
+
+def test_preflight_admits_a_bundle_whose_namelist_was_rendered(
+        tmp_path, monkeypatch):
+    """Rendered or supplied, the front door cannot tell and must not.
+
+    The bundle writer binds ``namelist.wps`` by digest either way, so
+    this is the assertion that a default `gpuwm prep --source hrrr` tree
+    -- one where nobody hand-wrote a namelist -- is admitted by the same
+    preflight a hand-supplied one is.
+    """
+
+    _bind_synthetic_geometry(monkeypatch)
+    bundle = _hrrr_bundle(tmp_path, rendered_wps=True)
+    inputs = _preflight(bundle)
+    assert Path(inputs.wps_namelist) == bundle.root / "namelist.wps"
+
+
+def test_sim_accepts_a_published_hrrr_tree_and_composes_its_runner_line(
+        tmp_path):
+    """The other direction of the shakeout's refusal: this tree RUNS.
+
+    ``gpuwm sim`` reads the bundle's own document for source and layout
+    and relays the three digests the single-domain runner binds.  Every
+    path it needs is inside the tree the preparation wrote, so the two
+    commands a reader types name no file they have to produce
+    themselves.
+    """
+
+    from gpuwm import stage_cli
+
+    bundle = _hrrr_bundle(tmp_path, rendered_wps=True)
+    resolved = stage_cli.resolve_bundle(bundle.root)
+    assert resolved["source"] == "hrrr"
+    assert resolved["layout"] == "single"
+
+    command = stage_cli.sim_command(
+        resolved,
+        experiment_config=bundle.root / "experiment.toml",
+        wps_namelist=bundle.root / "namelist.wps",
+        outdir=tmp_path / "out")
+    # The digests are the ones the publisher handed back, relayed rather
+    # than recomputed by this seam.
+    assert (command[command.index("--proof-sha256") + 1]
+            == bundle.handoff["proof_sha256"])
+    assert (command[command.index("--source-manifest-sha256") + 1]
+            == bundle.handoff["source_manifest_sha256"])
+    assert (command[command.index("--prepared-content-sha256") + 1]
+            == bundle.handoff["prepared_content_sha256"])
+    assert command[command.index("--source") + 1] == "hrrr"
+
 
 def test_preflight_admits_a_published_hrrr_bundle(tmp_path, monkeypatch):
     _bind_synthetic_geometry(monkeypatch)
@@ -799,25 +886,82 @@ def test_the_wrapper_publishes_a_bundle_the_front_door_admits(
     assert inputs.proof["source_forecast_hours"] == list(SOURCE_HOURS)
 
 
-def test_without_the_opt_in_the_wrapper_writes_no_portable_document(
+def test_a_bare_preparation_publishes_the_bundle_and_sim_accepts_it(
         tmp_path, monkeypatch):
-    """Reproducibility: the native bundle is what it always was.
+    """The default run, with no --wps-namelist, is a runnable tree.
 
-    Not "roughly the same" -- none of the three portable documents
-    exists, and the receipt says so with a null rather than omitting the
-    field, so a reader never finds a path that is not there.
+    This is the shakeout's exact argv shape.  Before, it produced a
+    finished native bundle carrying none of the portable authorities,
+    and ``gpuwm sim`` refused it -- calling it partial, which it was
+    not.  A prepared tree with no front door is not a prepared tree, so
+    publication is the default now and the flag only chooses WHICH
+    namelist gets bound.
+
+    Every artifact is asserted where a reader would look for it, and the
+    tree is then handed to ``gpuwm sim``'s own resolver rather than to a
+    restatement of what that resolver wants.
     """
 
+    from gpuwm import stage_cli
     from gpuwm.hrrr_prepared_bundle import (
         EXPERIMENT_CONFIG_NAME, PROOF_NAME, SOURCE_MANIFEST_NAME,
         WPS_NAMELIST_NAME, WRF_NAMELIST_NAME)
 
     output, receipt, *_rest = _run_wrapper(
         tmp_path, monkeypatch, publish=False)
-    assert receipt["portable_bundle"] is None
+    handoff = receipt["portable_bundle"]
+    assert handoff is not None
+    assert receipt["portable_bundle_refusal"] is None
     for name in (PROOF_NAME, SOURCE_MANIFEST_NAME, EXPERIMENT_CONFIG_NAME,
                  WPS_NAMELIST_NAME, WRF_NAMELIST_NAME):
-        assert not (output / name).exists()
-    # and the artifacts the native route has always written are there
+        assert (output / name).is_file(), name
+    # the artifacts the native route has always written are untouched
     assert (output / "native" / "prepared-cache" / "header.json").is_file()
     assert (output / "public-wrapper-result.json").is_file()
+
+    resolved = stage_cli.resolve_bundle(output)
+    assert resolved["source"] == "hrrr"
+    assert resolved["layout"] == "single"
+    command = stage_cli.sim_command(
+        resolved, experiment_config=output / EXPERIMENT_CONFIG_NAME,
+        wps_namelist=output / WPS_NAMELIST_NAME, outdir=tmp_path / "out")
+    assert (command[command.index("--proof-sha256") + 1]
+            == handoff["proof_sha256"])
+
+
+def test_a_publication_that_cannot_finish_leaves_the_native_tree_and_says_why(
+        tmp_path, monkeypatch):
+    """The native preparation is not held hostage by the portable half.
+
+    A tree whose portable authorities could not be published is still a
+    complete native tree that the native benchmark runs, so the
+    preparation succeeds -- and the reason is recorded in the receipt
+    where ``gpuwm sim`` reads it back, rather than being lost to a
+    stderr line nobody kept.
+    """
+
+    import tools.prepare_hrrr_wrf as prepare
+
+    from gpuwm import stage_cli
+    from gpuwm.hrrr_prepared_bundle import HrrrBundleError, PROOF_NAME
+
+    def refuse(**_kwargs):
+        raise HrrrBundleError("a prepared case needs at least two frames")
+
+    monkeypatch.setattr(
+        prepare, "publish_hrrr_prepared_bundle", refuse)
+    output, receipt, *_rest = _run_wrapper(
+        tmp_path, monkeypatch, publish=False)
+
+    assert receipt["status"] == "PASS"
+    assert receipt["portable_bundle"] is None
+    assert ("a prepared case needs at least two frames"
+            in receipt["portable_bundle_refusal"])
+    assert not (output / PROOF_NAME).exists()
+    assert (output / "native" / "prepared-cache" / "header.json").is_file()
+
+    with pytest.raises(stage_cli.StageRefusal) as refusal:
+        stage_cli.resolve_bundle(output)
+    sentence = str(refusal.value)
+    assert "a prepared case needs at least two frames" in sentence
+    assert "complete, not partial" in sentence

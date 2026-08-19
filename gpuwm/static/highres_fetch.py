@@ -160,6 +160,25 @@ class CoverageError(RuntimeError):
     missing."""
 
 
+# ---------------------------------------------------------------------------
+# The Rust seam (fixed-means-default).  This module is the network
+# DRIVER -- URL loops, resumable staging, sha256 sidecars, cache
+# admission -- and that stays Python: the bytes it moves are opaque
+# payloads written to disk verbatim.  What is NOT orchestration is the
+# derivation of a cached window from those payloads (decode, mosaic,
+# void fill, clip, re-emit) and the projection of a footprint onto a
+# source CRS.  Both route to the static-fields cdylib by default; the
+# rasterio/pyproj bodies stay as the parity reference and the reported
+# fallback (GPUWM_STATIC_PYTHON=1 or an unloadable library).
+# ---------------------------------------------------------------------------
+
+def _static_rust(operation: str):
+    """The loaded bridge module, or None with the workaround reported."""
+    from . import rust_bridge
+
+    return rust_bridge.route(operation)
+
+
 @dataclass(frozen=True)
 class FootprintBBox:
     """Geographic bounding box of one model domain plus processing halo."""
@@ -670,15 +689,11 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
       ``sea_level_fill`` (0 m on the EGM2008 geoid, the source's own
       vertical datum) and the filled pixel count is returned so the caller
       can refuse if any of it lands on baseline land.
+
+    The derivation itself -- decode, mosaic, void fill, re-emit -- runs
+    in the Rust static-fields library by default; the rasterio body is
+    the parity reference and the reported fallback.
     """
-    try:
-        import rasterio
-        from rasterio.enums import Resampling
-        from rasterio.merge import merge as rasterio_merge
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            geog_unavailable_detail()
-        ) from exc
     tiles = list(tiles)
     if not tiles:
         raise ValueError("terrain window derivation requires >= 1 tile")
@@ -705,6 +720,47 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
     margin_deg = 0.01
     bounds = (bbox.lon_min - margin_deg, bbox.lat_min - margin_deg,
               bbox.lon_max + margin_deg, bbox.lat_max + margin_deg)
+    partial = out_path.with_name(out_path.name + ".partial")
+    bridge = _static_rust("derive_global_terrain_window")
+    if bridge is not None:
+        audit = bridge.highres_derive_window({
+            "kind": "global-terrain-window",
+            "tiles": [str(item.path) for item in tiles],
+            "bounds": list(bounds),
+            "resolution_deg": float(resolution_deg),
+            "sea_level_fill": float(sea_level_fill),
+            "source_nodata": (None if source_nodata is None
+                              else float(source_nodata)),
+            "out_path": str(partial),
+        })
+        os.replace(partial, out_path)
+        audit = {
+            "output_resolution_deg": float(resolution_deg),
+            "output_shape": [int(v) for v in audit["output_shape"]],
+            "sea_level_filled_pixels": int(audit["sea_level_filled_pixels"]),
+            "total_pixels": int(audit["total_pixels"]),
+            "sea_level_fill_m": float(sea_level_fill),
+            "source_nodata": (None if source_nodata is None
+                              else float(source_nodata)),
+            "resampling": str(audit["resampling"]),
+            # The source's own vertical datum: provenance the crate has
+            # no business asserting, because it is a fact about which
+            # PRODUCT was fetched, not about the bytes.
+            "vertical_datum": COPERNICUS_DEM_VERTICAL_DATUM,
+        }
+        sidecar_path.write_text(
+            json.dumps(audit, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8")
+        return record_local_artifact(out_path, url=derivation_url), audit
+
+    try:
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.merge import merge as rasterio_merge
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            geog_unavailable_detail()
+        ) from exc
     datasets = [rasterio.open(item.path) for item in tiles]
     try:
         crs = datasets[0].crs
@@ -723,7 +779,6 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
         holes |= values == np.float32(source_nodata)
     filled = int(np.count_nonzero(holes))
     values[holes] = np.float32(sea_level_fill)
-    partial = out_path.with_name(out_path.name + ".partial")
     with rasterio.open(
             partial, "w", driver="GTiff", height=values.shape[0],
             width=values.shape[1], count=1, dtype="float32", crs=crs,
@@ -818,7 +873,23 @@ def fetch_annual_nlcd(year: int, cache_root: Path, *, urlopen=None
 
 def _soilgrids_window_m(bbox: FootprintBBox) -> tuple[float, float,
                                                       float, float]:
-    """Snap the footprint to a whole-km window on SoilGrids' IGH plane."""
+    """Snap the footprint to a whole-km window on SoilGrids' IGH plane.
+
+    The projection of the perimeter mesh onto the Interrupted Goode
+    Homolosine plane runs in the Rust static-fields library by default;
+    the pyproj body below is the parity reference and the reported
+    fallback.  Snapping and the margin are arithmetic on the four
+    extrema and stay here.
+    """
+    lons = np.linspace(bbox.lon_min, bbox.lon_max, 25)
+    lats = np.linspace(bbox.lat_min, bbox.lat_max, 25)
+    grid_lon, grid_lat = np.meshgrid(lons, lats)
+    bridge = _static_rust("soilgrids window transform")
+    if bridge is not None:
+        x, y = bridge.highres_transform_points(
+            SOILGRIDS_CRS, grid_lon, grid_lat)
+        return _snap_window_m(x, y)
+
     try:
         from pyproj import Transformer
     except ImportError as exc:  # pragma: no cover - exercised without extra
@@ -827,10 +898,13 @@ def _soilgrids_window_m(bbox: FootprintBBox) -> tuple[float, float,
         ) from exc
     transformer = Transformer.from_crs("EPSG:4326", SOILGRIDS_CRS,
                                        always_xy=True)
-    lons = np.linspace(bbox.lon_min, bbox.lon_max, 25)
-    lats = np.linspace(bbox.lat_min, bbox.lat_max, 25)
-    grid_lon, grid_lat = np.meshgrid(lons, lats)
     x, y = transformer.transform(grid_lon, grid_lat)
+    return _snap_window_m(x, y)
+
+
+def _snap_window_m(x, y) -> tuple[float, float, float, float]:
+    """Margin then snap to whole kilometres, so re-preparing a domain
+    hits the WCS cache instead of minting a near-duplicate window."""
     snap = _SOILGRIDS_SNAP_M
     x0 = math.floor((float(np.min(x)) - _SOILGRIDS_MARGIN_M) / snap) * snap
     x1 = math.ceil((float(np.max(x)) + _SOILGRIDS_MARGIN_M) / snap) * snap
@@ -889,14 +963,11 @@ def derive_terrain_window(tiles, bbox: FootprintBBox,
 
     The derivation is cached by the SHA-256 of its inputs (tile digests +
     footprint), so re-preparing a domain reuses it byte-identically.
+
+    Decode, mosaic and re-emit run in the Rust static-fields library by
+    default; the rasterio body is the parity reference and the reported
+    fallback.
     """
-    try:
-        import rasterio
-        from rasterio.merge import merge as rasterio_merge
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            geog_unavailable_detail()
-        ) from exc
     tiles = list(tiles)
     if not tiles:
         raise ValueError("terrain window derivation requires >= 1 tile")
@@ -916,20 +987,36 @@ def derive_terrain_window(tiles, bbox: FootprintBBox,
             fetched_utc=str(cached.get("fetched_utc", "")), cache_hit=True)
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    margin_deg = 0.01
+    bounds = (bbox.lon_min - margin_deg, bbox.lat_min - margin_deg,
+              bbox.lon_max + margin_deg, bbox.lat_max + margin_deg)
+    partial = out_path.with_name(out_path.name + ".partial")
+    bridge = _static_rust("derive_terrain_window")
+    if bridge is not None:
+        bridge.highres_derive_window({
+            "kind": "terrain-window",
+            "tiles": [str(item.path) for item in tiles],
+            "bounds": list(bounds),
+            "out_path": str(partial),
+        })
+        os.replace(partial, out_path)
+        return record_local_artifact(out_path, url=derivation_url)
+
+    try:
+        import rasterio
+        from rasterio.merge import merge as rasterio_merge
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            geog_unavailable_detail()
+        ) from exc
     datasets = [rasterio.open(item.path) for item in tiles]
     try:
         crs = datasets[0].crs
-        margin_deg = 0.01
-        mosaic, transform = rasterio_merge(
-            datasets, bounds=(bbox.lon_min - margin_deg,
-                              bbox.lat_min - margin_deg,
-                              bbox.lon_max + margin_deg,
-                              bbox.lat_max + margin_deg))
+        mosaic, transform = rasterio_merge(datasets, bounds=bounds)
         nodata = datasets[0].nodata
     finally:
         for dataset in datasets:
             dataset.close()
-    partial = out_path.with_name(out_path.name + ".partial")
     with rasterio.open(
             partial, "w", driver="GTiff", height=mosaic.shape[1],
             width=mosaic.shape[2], count=1, dtype=mosaic.dtype, crs=crs,
@@ -943,14 +1030,19 @@ def derive_terrain_window(tiles, bbox: FootprintBBox,
 
 def derive_landcover_window(raster: FetchedFile, bbox: FootprintBBox,
                             cache_root: Path) -> FetchedFile:
-    """Clip the whole NLCD year raster to the footprint (cached)."""
-    try:
-        import rasterio
-        from rasterio.windows import from_bounds
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            geog_unavailable_detail()
-        ) from exc
+    """Clip the whole NLCD year raster to the footprint (cached).
+
+    Decode, the footprint densification into the raster's own CRS, the
+    window arithmetic and the re-emit run in the Rust static-fields
+    library by default; the rasterio body is the parity reference and
+    the reported fallback.  The two SOURCE-COVERAGE refusals come back
+    over the seam as their own return code, so a footprint that leaves
+    the published raster stays a :class:`CoverageError` the user's
+    ``on_refuse`` policy may answer with the 30-arc-second baseline,
+    while a decode fault stays a fault.  The two engines word those two
+    refusals differently -- each names the footprint and the raster --
+    and neither is silent.
+    """
     identity = hashlib.sha256(json.dumps(
         {"source": raster.sha256, "bbox": bbox.as_dict(),
          "kind": "landcover-window-v1"},
@@ -966,6 +1058,32 @@ def derive_landcover_window(raster: FetchedFile, bbox: FootprintBBox,
             fetched_utc=str(cached.get("fetched_utc", "")), cache_hit=True)
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    partial = out_path.with_name(out_path.name + ".partial")
+    bridge = _static_rust("derive_landcover_window")
+    if bridge is not None:
+        from .rust_bridge import StaticCoverageRefusal
+        try:
+            bridge.highres_derive_window({
+                "kind": "landcover-window",
+                "source": str(raster.path),
+                "bounds_lonlat": [bbox.lat_min, bbox.lat_max,
+                                  bbox.lon_min, bbox.lon_max],
+                "margin_m": 2000.0,
+                "out_path": str(partial),
+            })
+        except StaticCoverageRefusal as refusal:
+            partial.unlink(missing_ok=True)
+            raise CoverageError(str(refusal)) from refusal
+        os.replace(partial, out_path)
+        return record_local_artifact(out_path, url=derivation_url)
+
+    try:
+        import rasterio
+        from rasterio.windows import from_bounds
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            geog_unavailable_detail()
+        ) from exc
     with rasterio.open(raster.path) as source:
         left, bottom, right, top = _densified_bounds(
             bbox, source.crs, margin_m=2000.0)

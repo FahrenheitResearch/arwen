@@ -11,6 +11,7 @@ import pytest
 from gpuwm.source_authorities import packaged_gfs_vtable
 
 from gpuwm.mapped_authoring import (
+    _require_declared_unit_scale,
     _stable_file_snapshot,
     DESCRIPTOR_SCHEMA,
     VtableRow,
@@ -690,9 +691,13 @@ def test_manifest_authoring_rejects_mapping_swap_after_snapshot_validation(
         grib1_bridge,
         grib2_inventory,
         grib2_dump,
+        engine=None,
     ):
         assert source_format == "grib2"
         assert grib1_bridge is None
+        # This case pins the two subprocess tools, so the authoring door
+        # is on the Python engine and passes no engine binary through.
+        assert engine is None
         mapping.write_bytes(ERA5_NETCDF_MAPPING.read_bytes())
         return {
             "grib2_inventory": Path(grib2_inventory).resolve(),
@@ -760,3 +765,132 @@ def test_manifest_authoring_rejects_duplicate_mapping_json_keys(tmp_path):
             },
         )
     assert not output.exists()
+
+
+# ---------------------------------------------------------------------------
+# The unit-scale guard, in both directions, against the authorities we ship.
+#
+# The guard (`_require_declared_unit_scale`) landed with no committed test of
+# its own, and the first thing it did was refuse THIS PROJECT'S OWN GFS
+# authority: `land_fraction` is declared `"0/1 Flag" -> "1"` and
+# `volumetric_soil_moisture` `"fraction" -> "m3 m-3"`, both of which are
+# renames of a dimensionless quantity rather than conversions, and neither
+# spelling was in the fold list.  Every route that compiles a descriptor --
+# `gpuwm adapt`, the Vtable importer, the packaged mapping loader -- died on
+# the first field.
+#
+# So the positive direction is not a hand-written pair list: it is every
+# authority the wheel ships, walked, with the number of fields examined
+# reported.  A future spelling that the fold list does not know about fails
+# here on the day it is added, and a walk that examines nothing cannot pass
+# by finding no problems.
+# ---------------------------------------------------------------------------
+
+#: Every directory that holds a shipped mapping/descriptor authority.
+_AUTHORITY_ROOTS = ("configs", "gpuwm/authorities", "gpuwm/data")
+
+
+def _shipped_authority_fields():
+    """(path, field_name, field) for every field of every shipped authority."""
+
+    for relative in _AUTHORITY_ROOTS:
+        for path in sorted((ROOT / relative).rglob("*.json")):
+            try:
+                document = json.loads(path.read_text(encoding="utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if not isinstance(document, dict):
+                continue
+            fields = document.get("fields")
+            if not isinstance(fields, dict):
+                continue
+            for name, field in fields.items():
+                if isinstance(field, dict):
+                    yield path, name, field
+
+
+def test_every_shipped_authority_satisfies_the_unit_scale_guard():
+    """No authority in the wheel is refused by our own descriptor guard."""
+
+    examined = 0
+    with_units = 0
+    authorities: set[str] = set()
+    refused: list[str] = []
+    for path, name, field in _shipped_authority_fields():
+        examined += 1
+        authorities.add(path.relative_to(ROOT).as_posix())
+        units = field.get("units")
+        if isinstance(units, dict) and {"source", "target"} <= set(units):
+            with_units += 1
+        try:
+            _require_declared_unit_scale(name, field)
+        except ValueError as error:
+            refused.append(
+                f"{path.relative_to(ROOT).as_posix()}: {name}: {error}")
+
+    # Counts, not a boolean: a walk that found no authorities would otherwise
+    # report green, which is exactly how this defect reached a release line.
+    # Measured on this tree: 5 authority documents, 92 fields, all 92 of them
+    # declaring a source/target unit pair.  The floors are below those so a
+    # legitimately-added authority does not fail here, but a walk that stops
+    # reaching the directories does.
+    assert len(authorities) >= 5, (
+        f"the authority walk found only {sorted(authorities)}; it is not "
+        f"reaching {_AUTHORITY_ROOTS}")
+    assert examined >= 90, (
+        f"the authority walk examined only {examined} fields across "
+        f"{len(authorities)} documents; it is not reaching the field tables")
+    assert with_units >= 90, (
+        f"only {with_units} of {examined} shipped fields declare a "
+        f"source/target unit pair; the guard would be testing nothing")
+    assert not refused, (
+        "the descriptor unit-scale guard refuses authorities this project "
+        "itself ships, so every compile route dies on them:\n  "
+        + "\n  ".join(refused))
+
+
+def test_the_dimensionless_spellings_the_shipped_authorities_use_are_folded():
+    """A RENAME of a dimensionless quantity needs no declared scale."""
+
+    same_unit_pairs = (
+        ("0/1 Flag", "1"),        # WPS Vtable land/sea flag -> CF dimensionless
+        ("0/1 flag", "1"),        # the same, spelled the way ERA5's Vtable does
+        ("fraction", "m3 m-3"),   # volumetric soil moisture, ERA5 -> WRF
+        ("m3 m-3", "1"),
+        ("m**3 m**-3", "m3 m-3"),
+        ("(0 - 1)", "1"),
+        ("(0-1)", "fraction"),
+        ("m s**-1", "m s-1"),
+        ("m2 s-2", "m**2 s**-2"),
+    )
+    for source, target in same_unit_pairs:
+        _require_declared_unit_scale(
+            "probe", {"units": {"source": source, "target": target}})
+
+
+def test_a_real_conversion_with_no_declared_scale_is_still_refused():
+    """The guard's whole point survives the fold list: counts, both ways."""
+
+    real_conversions = (
+        ("hPa", "Pa"),
+        ("mbar", "Pa"),
+        ("K", "degC"),
+        ("m", "km"),
+        ("%", "1"),          # percent is a factor of 100, not a rename
+        ("%", "fraction"),
+        ("kg m-2", "m"),
+    )
+    refused = 0
+    for source, target in real_conversions:
+        with pytest.raises(ValueError, match="declares no scale"):
+            _require_declared_unit_scale(
+                "probe", {"units": {"source": source, "target": target}})
+        refused += 1
+    assert refused == len(real_conversions)
+
+    # And an explicit scale -- including a deliberate 1.0 -- always satisfies
+    # it, because the author has made the claim.
+    _require_declared_unit_scale(
+        "probe", {"units": {"source": "hPa", "target": "Pa", "scale": 100.0}})
+    _require_declared_unit_scale(
+        "probe", {"units": {"source": "%", "target": "1", "scale": 0.01}})

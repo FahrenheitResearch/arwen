@@ -885,7 +885,7 @@ pub(crate) fn decode_surface_grid(
         .messages
         .first()
         .ok_or("surface family GRIB had no messages")?;
-    Ok(decode_surface_grid_from_sample(sample))
+    decode_surface_grid_from_sample(sample)
 }
 
 pub(crate) fn load_or_decode_surface_cropped(
@@ -959,7 +959,7 @@ fn decode_surface(bytes: &[u8]) -> Result<SurfaceFields, Box<dyn std::error::Err
         ny,
         projection,
         longitude_row_wraps: _,
-    } = decode_surface_grid_from_sample(sample);
+    } = decode_surface_grid_from_sample(sample)?;
 
     let psfc_pa = unpack_message_normalized(find_message(
         &file.messages,
@@ -1019,7 +1019,7 @@ fn decode_surface_cropped(
         ny: _,
         projection,
         longitude_row_wraps,
-    } = decode_surface_grid_from_sample(sample);
+    } = decode_surface_grid_from_sample(sample)?;
 
     let psfc_pa = unpack_message_normalized_cropped(
         find_message(
@@ -1424,8 +1424,10 @@ fn decode_pressure_cropped_with_shape(
     ))
 }
 
-fn decode_surface_grid_from_sample(sample: &Grib2Message) -> SurfaceGridLayout {
-    let (mut lat_raw, mut lon_raw) = grid_latlon(&sample.grid);
+fn decode_surface_grid_from_sample(
+    sample: &Grib2Message,
+) -> Result<SurfaceGridLayout, Box<dyn std::error::Error>> {
+    let (mut lat_raw, mut lon_raw) = grid_latlon(&sample.grid)?;
     if sample.grid.scan_mode & 0x40 != 0 {
         flip_rows(
             &mut lat_raw,
@@ -1444,7 +1446,7 @@ fn decode_surface_grid_from_sample(sample: &Grib2Message) -> SurfaceGridLayout {
         sample.grid.nx as usize,
         sample.grid.ny as usize,
     );
-    SurfaceGridLayout {
+    Ok(SurfaceGridLayout {
         lat: lat_raw,
         lon: lon_raw
             .into_iter()
@@ -1454,14 +1456,14 @@ fn decode_surface_grid_from_sample(sample: &Grib2Message) -> SurfaceGridLayout {
         ny: sample.grid.ny as usize,
         projection: grid_projection_from_grib2_grid(&sample.grid),
         longitude_row_wraps,
-    }
+    })
 }
 
 fn unpack_message_normalized(
     message: &Grib2Message,
 ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
     let mut values = unpack_message_scan_normalized(message)?;
-    rotate_values_to_normalized_longitude_rows(message, &mut values);
+    rotate_values_to_normalized_longitude_rows(message, &mut values)?;
     Ok(values)
 }
 
@@ -1521,14 +1523,17 @@ fn rotate_window_values_to_normalized_longitude_rows(
     }
 }
 
-fn rotate_values_to_normalized_longitude_rows(message: &Grib2Message, values: &mut [f64]) {
+fn rotate_values_to_normalized_longitude_rows(
+    message: &Grib2Message,
+    values: &mut [f64],
+) -> Result<(), Box<dyn std::error::Error>> {
     let nx = message.grid.nx as usize;
     let ny = message.grid.ny as usize;
     if nx == 0 || ny == 0 || values.len() != nx * ny {
-        return;
+        return Ok(());
     }
 
-    let (_lat_raw, mut lon_raw) = grid_latlon(&message.grid);
+    let (_lat_raw, mut lon_raw) = grid_latlon(&message.grid)?;
     if message.grid.scan_mode & 0x40 != 0 {
         flip_rows(&mut lon_raw, nx, ny);
     }
@@ -1543,6 +1548,7 @@ fn rotate_values_to_normalized_longitude_rows(message: &Grib2Message, values: &m
             values[start..end].rotate_left(wrap_idx);
         }
     }
+    Ok(())
 }
 
 fn decode_orography(messages: &[Grib2Message]) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
@@ -2024,14 +2030,14 @@ fn grid_definitions_identical(a: &GridDefinition, b: &GridDefinition) -> bool {
 /// The per-row rotate-left amounts `rotate_values_to_normalized_longitude_rows`
 /// derives from one grid definition (identical derivation: lat/lon from the
 /// grid, scan-0x40 row flip, per-row longitude normalization + first wrap).
-fn row_wraps_for_grid(grid: &GridDefinition) -> Vec<usize> {
+fn row_wraps_for_grid(grid: &GridDefinition) -> Result<Vec<usize>, String> {
     let nx = grid.nx as usize;
     let ny = grid.ny as usize;
-    let (_lat, mut lon) = grid_latlon(grid);
+    let (_lat, mut lon) = grid_latlon(grid).map_err(|err| err.to_string())?;
     if grid.scan_mode & 0x40 != 0 {
         flip_rows(&mut lon, nx, ny);
     }
-    normalized_longitude_row_wraps(&mut lon, nx, ny)
+    Ok(normalized_longitude_row_wraps(&mut lon, nx, ny))
 }
 
 /// One precomputed row-wrap set, valid for every message whose grid
@@ -2045,17 +2051,18 @@ struct RowWrapCache {
 }
 
 impl RowWrapCache {
-    fn prime(&mut self, grid: &GridDefinition) {
+    fn prime(&mut self, grid: &GridDefinition) -> Result<(), String> {
         if self
             .def
             .as_ref()
             .map(|have| grid_definitions_identical(have, grid))
             .unwrap_or(false)
         {
-            return;
+            return Ok(());
         }
-        self.wraps = row_wraps_for_grid(grid);
+        self.wraps = row_wraps_for_grid(grid)?;
         self.def = Some(grid.clone());
+        Ok(())
     }
 
     fn get(&self, grid: &GridDefinition) -> Option<&[usize]> {
@@ -2081,7 +2088,7 @@ fn unpack_message_normalized_cached(
     match cache.get(&message.grid) {
         Some(wraps) => rotate_value_rows_left(&mut values, nx, wraps),
         None => {
-            let wraps = row_wraps_for_grid(&message.grid);
+            let wraps = row_wraps_for_grid(&message.grid)?;
             rotate_value_rows_left(&mut values, nx, &wraps);
         }
     }
@@ -2348,7 +2355,7 @@ fn build_required_volume(
         })
         .collect();
     if let Some(&(_, message_index)) = records.first() {
-        wrap_cache.prime(&file.messages[message_index].grid);
+        wrap_cache.prime(&file.messages[message_index].grid)?;
     }
 
     let mut volume = vec![0.0f64; common.len() * expected];
@@ -2546,7 +2553,7 @@ fn normalized_longitude_row_wraps_from_messages(
         .ok_or("GRIB family had no messages for row-wrap detection")?;
     let nx = sample.grid.nx as usize;
     let ny = sample.grid.ny as usize;
-    let (_lat_raw, mut lon_raw) = grid_latlon(&sample.grid);
+    let (_lat_raw, mut lon_raw) = grid_latlon(&sample.grid)?;
     if sample.grid.scan_mode & 0x40 != 0 {
         flip_rows(&mut lon_raw, nx, ny);
     }

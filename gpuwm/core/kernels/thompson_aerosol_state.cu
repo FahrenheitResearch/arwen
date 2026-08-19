@@ -2,7 +2,7 @@
 //
 // WP-04 -- aerosol state kernels for WRF v4.6.1 aerosol-aware Thompson
 // (mp_physics=28).  Numerical authority is
-// /home/drew/wrf461-pristine/phys/module_mp_thompson.F, commit
+// WRF v4.6.1 phys/module_mp_thompson.F, commit
 // d66e442fccc04111067e29274c9f9eaccc3cef28, zero local modifications.  Every
 // bare line number below refers to that file.
 //

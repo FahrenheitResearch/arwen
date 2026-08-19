@@ -209,8 +209,51 @@ def test_the_fetch_hint_table_accepts_gdas():
     fetch.validate_fetch_hints({"source": "gdas"}, source="gdas")
     fetch.validate_fetch_hints({"source": "gdas", "hours": 0},
                                source="gdas")
-    with pytest.raises(ValueError):
-        fetch.validate_fetch_hints({"source": "gefs"}, source="gefs")
+
+
+def test_the_fetch_hint_table_accepts_every_routed_source():
+    """The validator's vocabulary IS the route table, name for name.
+
+    It used to be a hand-typed four, and the drift that shipped was
+    exactly this: ten table routes opened and every hand-written
+    ``[fetch]`` table naming one of them was refused at config load,
+    while `gpuwm domain` was emitting those same tables.  The emitter
+    (:func:`fetch.fetch_front_door_sources`) and this validator now read
+    one list, so the assertion is that a table naming ANY source the
+    wizard would emit loads -- not that a hand-picked few do.
+    """
+
+    routed = fetch.fetch_front_door_sources()
+    assert routed, "no fetch route in the table; the seam is not answering"
+    assert {"gdas", "gefs"} <= set(routed), routed
+    for name in routed:
+        fetch.validate_fetch_hints({"source": name}, source="experiment.toml")
+
+
+@pytest.mark.parametrize("spelling", ["nam", "hrrr-ak", "gdass"])
+def test_the_fetch_hint_table_refuses_an_unrouted_source_by_name(spelling):
+    """An unrouted spelling is refused, and the refusal names it.
+
+    The breakage: a config whose step 1 cannot be run.  ``nam`` and
+    ``hrrr-ak`` are REGISTERED sources with no fetch route in this
+    ArWen, and ``gdass`` is a typo for one that has a route -- all three
+    describe a download `gpuwm fetch` would not perform, so the table
+    has to be refused at config load rather than at the download, and
+    the refusal has to print the offending spelling and the vocabulary
+    that would have worked.
+    """
+
+    routed = fetch.fetch_front_door_sources()
+    assert spelling not in routed, (
+        f"{spelling} now has a fetch route; this test needs an unrouted "
+        f"spelling, pick one outside {routed}")
+    with pytest.raises(ValueError) as refusal:
+        fetch.validate_fetch_hints({"source": spelling},
+                                   source="experiment.toml")
+    message = str(refusal.value)
+    assert repr(spelling) in message
+    assert "is not one of" in message
+    assert "gdas" in message  # the vocabulary that would have worked
 
 
 def test_a_config_hint_past_the_certified_span_is_refused():
@@ -227,21 +270,24 @@ def test_gdas_prints_no_next_command_that_ends_in_a_refusal(tmp_path,
                                                             capsys):
     """One story across fetch, the registry, and the docs.
 
-    ``rw-wps --source gdas`` refuses -- the adapter declares no
-    field/level/cadence mapping -- so fetch must not print a ``next:``
-    step that walks the user into that refusal, and the front-door
+    GDAS runs through the generic mapped route as a packaged profile
+    now, so the registry row must say so -- runnable, on the mapped
+    runner, naming its packaged profile, no longer redirecting the user
+    to ``--source gfs``.  The half that has not changed: the front-door
     manifest authoring must not print a GFS command over a GDAS series
-    either (that would be a source-identity lie rather than a dead end).
-    Both surfaces instead say what is missing and name the runnable
-    alternative.
+    (that would be a source-identity lie rather than a dead end); it
+    says what is missing instead.
     """
 
-    from gpuwm.source_adapters import get_source_adapter
+    from gpuwm.source_adapters import AdapterStatus, get_source_adapter
 
     adapter = get_source_adapter("gdas")
-    assert not adapter.runnable and adapter.runner is None
+    assert adapter.runnable
+    assert adapter.runner == "mapped_composition_v1"
+    assert adapter.status is AdapterStatus.RUNNABLE_NOT_CERTIFIED
+    assert adapter.packaged_profile == "gdas-pgrb2-0p25-grib2-v1"
     assert adapter.max_forecast_hour == fetch.GDAS_MAX_FORECAST_HOUR
-    assert "--source gfs" in adapter.notes
+    assert "--source gfs" not in adapter.notes
 
     said: list[str] = []
     out = tmp_path / "gdas"

@@ -29,6 +29,7 @@ from gpuwm.hrrr_native_static import (
 from gpuwm.ingest.cpu_backend import resolve_cpu_bridge
 from gpuwm.ingest.hrrr import load_hrrr_native_series
 from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
+from gpuwm.ingest.source_coverage import owns_source_coverage_refusal
 from gpuwm.ingest.nest_init import NestedInputCatalog, ParentInitView
 from gpuwm.ingest.prepared_cache import (
     PreparedCacheReader,
@@ -214,12 +215,13 @@ def _sealed_root_rrtmg_variant(identity: dict[str, object]) -> str | None:
 
 
 def _native_experiment(wps_namelist: Path, namelist_input: Path,
-                       *, rrtmg_variant: str | None = None):
+                       *, rrtmg_variant: str | None = None,
+                       acknowledgements: tuple[str, ...] = ()):
     keywords = ({} if rrtmg_variant is None
                 else {"rrtmg_variant": rrtmg_variant})
     resolved, report = import_namelists(
         wps_namelist, namelist_input, name="native_hrrr_hierarchy",
-        **keywords)
+        acknowledgements=tuple(acknowledgements), **keywords)
     exp = build_experiment(
         tomllib.loads(resolved),
         source=f"native HRRR hierarchy {wps_namelist} + {namelist_input}",
@@ -927,6 +929,7 @@ def prepare_hrrr_hierarchy(
         source_manifest: Path, source_manifest_sha256: str,
         valid_time: datetime, output_root: Path, workers: int = 8,
         cpu_bridge: Path | None = None, statics_corridor=None,
+        acknowledgements: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Verify one root preparation and publish generic stock-WRF inputs.
 
@@ -985,7 +988,8 @@ def prepare_hrrr_hierarchy(
     forcing_hours = tuple(identity.get("forcing_hours", ()))
     native_exp, native_resolved, native_report = _native_experiment(
         Path(wps_namelist), Path(namelist_input),
-        rrtmg_variant=_sealed_root_rrtmg_variant(identity))
+        rrtmg_variant=_sealed_root_rrtmg_variant(identity),
+        acknowledgements=tuple(acknowledgements))
     from gpuwm.static.highres_production import refuse_inert_highres
     refuse_inert_highres(root_domain_spec, lane="native-HRRR static path")
     target = load_hrrr_target_domain(root_domain_spec)
@@ -1248,6 +1252,15 @@ def _parser() -> argparse.ArgumentParser:
              "unchanged for v1.4.0 scripts; use --cycle with "
              "--forecast-start-hour")
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument(
+        "--ack", action="append", default=[], metavar="ID",
+        help="declared-experiment acknowledgement id, forwarded into the "
+             "namelist import (a WRF namelist has no spelling for a gpuwm "
+             "governance declaration, so a profile that requires one -- "
+             "e.g. the shortwave-only suites' "
+             "constant-downward-longwave-v1 -- could never prepare a "
+             "nested tree without this flag); repeatable, exactly as "
+             "tools/prepare_hrrr_wrf.py spells it")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     # Spelled exactly as the GFS door spells it
@@ -1266,6 +1279,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+@owns_source_coverage_refusal
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
     from gpuwm import explain
@@ -1308,6 +1322,7 @@ def main(argv=None) -> int:
         source_manifest=args.source_manifest,
         source_manifest_sha256=args.source_manifest_sha256,
         valid_time=valid_time, output_root=args.output_root,
+        acknowledgements=tuple(args.ack),
         workers=args.workers, cpu_bridge=args.cpu_preprocess_bridge,
         statics_corridor=statics_corridor,
     )

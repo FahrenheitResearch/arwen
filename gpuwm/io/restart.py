@@ -91,7 +91,8 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm import perf_timing
-from gpuwm.config import radiation_scheme_ids
+from gpuwm.config import (MIX_ISOTROPIC_RESTART_BREAK_NOTICE,
+                          radiation_scheme_ids)
 from gpuwm.supervisor import fsync_file
 from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
                                   RRTMG_VARIANT_RTE_RRTMGP, rrtmg_variant)
@@ -439,6 +440,29 @@ PHYSICS_ASSET_PATHS = {
     "noahmp_genparm": Path("data/noahmp/GENPARM.TBL"),
     "kf_lutab": Path("data/kf_lutab/kf_lutab.npz"),
 }
+
+
+def _resolve_physics_asset(relative: Path) -> Path:
+    """Where a ``PHYSICS_ASSET_PATHS`` entry's bytes actually live.
+
+    The KEYS and the recorded ``path`` strings above stay ``gpuwm/``-
+    relative and unchanged: they are written into every restart
+    manifest, and a checkpoint written by one release must stay readable
+    by the next.  Only the resolution moved.  Since 2.5.0 the five
+    ``data/rrtmgp/`` entries ship in the ``gpuwm-data`` companion
+    distribution rather than inside this wheel (see
+    :mod:`gpuwm.data_assets`), so joining them onto the package
+    directory would fail to stat -- and this function's caller turns an
+    unreadable asset into a hard ``RestartManifestError``, which is
+    exactly the wrong verdict for "correct file, moved distribution".
+    """
+
+    from gpuwm import data_assets
+
+    posix = relative.as_posix()
+    if posix.startswith("data/"):
+        return data_assets.data_path(posix[len("data/"):])
+    return _PACKAGE_DIR / relative
 
 # --------------------------------------------------------------------------
 # DomainState attribute classification.
@@ -829,6 +853,12 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # FIELD itself is serialized with the rest of the surface inventory,
     # so a resumed run carries the same numbers whatever this says.
     "glw_provenance",
+    # The surface classification receipt (which source decided XLAND,
+    # per-class column counts under the active xice_threshold).  A
+    # RECEIPT on the same terms as glw_provenance: initialize_physics
+    # rebuilds it at every construction from the serialized mask/category
+    # fields, and nothing in the physics reads it back.
+    "surface_classification",
     "ra_physics", "ra_lw_physics", "ra_sw_physics",
     "radiation_active", "cu_physics", "mp_physics", "surface_enabled",
     # Noah LSM option selectors: plain cfg-derived scalars reconstructed at
@@ -871,6 +901,11 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # advisory that survives a restart silently would hide the repair
     # from the operator reading the resumed log.
     "_shinhong_passenger_advisory",
+    # The Shin-Hong entry-heal advisory latch (the upstream half of the
+    # same class): rebuilt False for the same reason -- a resumed run
+    # whose carried-in e_sgs violates the shinhonginit floor must say so
+    # in ITS log.
+    "_shinhong_entry_advisory",
     "bldt_seconds", "stepbl", "radt_minutes", "cudt_minutes",
     "stepra", "stepcu", "radt_seconds", "cudt_seconds",
     "rainc", "cu_nca", "cu_pratec", "cu_raincv", "cu_expiring",
@@ -1518,7 +1553,7 @@ def _active_asset_identity(cfg, driver) -> dict[str, dict]:
     identity = {}
     for role in roles:
         relative = PHYSICS_ASSET_PATHS[role]
-        path = _PACKAGE_DIR / relative
+        path = _resolve_physics_asset(relative)
         try:
             size = path.stat().st_size
             sha256 = _asset_sha256(path)
@@ -1924,7 +1959,7 @@ def _thompson_setup_identity() -> dict:
 
     The table root resolves exactly as the forecast adapter resolves it
     (:func:`gpuwm.physics_compat.thompson_table_root`: the packaged
-    ``gpuwm/data/thompson/tables`` directory unless
+    ``gpuwm_data/data/thompson/tables`` directory unless
     ``GPUWM_THOMPSON_TABLE_ROOT`` overrides it), so the identity written
     into a checkpoint names the bytes the trajectory actually loaded.
     The ``admission`` token replaces the retired
@@ -2642,10 +2677,20 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             differences.append(
                 f"{key}: restart={stored!r} run={live!r}")
     if differences:
-        raise RestartMismatchError(
+        message = (
             f"restart file {path} was written under a different "
             "configuration; refusing to continue a different model:\n  "
             + "\n  ".join(differences))
+        # Restart honesty for the 2026-08-16 mixing auto-switch: a
+        # checkpoint from the old anisotropic default meeting a run that
+        # selects the isotropic length gets told WHY the default moved
+        # under it and how to resume, not just that a field differs.  A
+        # header written before the knob existed integrated the then-only
+        # value 0, so the absent key reads as 0 here.
+        if (stored_config.get("mix_isotropic", 0) == 0
+                and live_config.get("mix_isotropic") == 1):
+            message += "\n" + MIX_ISOTROPIC_RESTART_BREAK_NOTICE
+        raise RestartMismatchError(message)
 
 
 def _require_physics_setup_match(header: dict, state, cfg, path) -> None:
@@ -2903,6 +2948,38 @@ def _fingerprint_components(model):
     return getattr(model, "_experiment_fingerprint_components", None)
 
 
+def _mix_isotropic_autoswitch_flip(stored, live) -> bool:
+    """Did any domain go anisotropic-in-the-checkpoint to isotropic-live?
+
+    Read off the named ``experiment_identity`` components, defensively:
+    these are checkpoint-header payloads, and a malformed one must
+    produce ``False`` (no notice), never a second failure inside a
+    refusal message.  An absent stored key reads as 0 -- a checkpoint
+    written before the knob existed integrated the then-only value.
+    """
+
+    try:
+        stored_domains = {
+            domain.get("grid_id"): domain.get("run", {})
+            for domain in stored.get("experiment_identity", {})
+            .get("domains", ())
+            if isinstance(domain, Mapping)
+            and isinstance(domain.get("run"), Mapping)}
+        for domain in live.get("experiment_identity", {}).get("domains", ()):
+            if not (isinstance(domain, Mapping)
+                    and isinstance(domain.get("run"), Mapping)):
+                continue
+            counterpart = stored_domains.get(domain.get("grid_id"))
+            if counterpart is None:
+                continue
+            if (counterpart.get("mix_isotropic", 0) == 0
+                    and domain["run"].get("mix_isotropic") == 1):
+                return True
+    except (AttributeError, TypeError):
+        return False
+    return False
+
+
 def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
     """Name what actually differs, and what a restart is allowed to change.
 
@@ -2941,10 +3018,20 @@ def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
                 "matches; the checkpoint predates this restart-identity "
                 "format and must be rerun from the start)")
     named = ", ".join(differing)
-    return (f"{prefix}: {named} differ(s) from the checkpoint.  A restart "
-            "may change the forecast length and the output/restart cadence; "
-            "everything else -- geometry, timestep, physics, nesting, "
-            "prepared inputs -- must be the run that wrote the checkpoint")
+    reason = (
+        f"{prefix}: {named} differ(s) from the checkpoint.  A restart "
+        "may change the forecast length and the output/restart cadence; "
+        "everything else -- geometry, timestep, physics, nesting, "
+        "prepared inputs -- must be the run that wrote the checkpoint")
+    # Same restart honesty as the single-domain door: when the moved
+    # piece is the mixing length going 0 -> 1, the changed DEFAULT (the
+    # 2026-08-16 auto-switch) is named beside the refusal, with the
+    # remedy, instead of leaving "experiment_identity differs" to be
+    # reverse-engineered.
+    if ("experiment_identity" in differing
+            and _mix_isotropic_autoswitch_flip(stored, live)):
+        reason += "\n" + MIX_ISOTROPIC_RESTART_BREAK_NOTICE
+    return reason
 
 
 def write_tree_restart(directory, model, valid_time: datetime, *,

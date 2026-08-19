@@ -110,6 +110,18 @@ GEOG_SIZE_NOTICE = (
     "~1.3 GB compressed, ~16 GB unpacked.  Resumable and re-run safe; "
     "omit --with-geog to skip it and run `gpuwm fetch-geog` later.")
 
+#: Printed when ``setup`` finishes WITHOUT ``--with-geog``.  Excluding
+#: the tree is deliberate -- 16 GB is a decision, not a default -- but
+#: staying silent about it moved the surprise to prep time, several
+#: commands downstream of the one that would have closed the gap.  So
+#: the door that skipped it says so, with the size that makes it a
+#: decision and the command that ends it.
+GEOG_SKIPPED_NOTICE = (
+    "setup: not staged -- WPS_GEOG static geography (~1.3 GB "
+    "compressed, ~16 GB unpacked), which preprocessing reads.  Run "
+    "`gpuwm fetch-geog` when you want it, or re-run setup with "
+    "--with-geog.")
+
 
 def setup_main(args) -> int:
     """Run every staging step, then report the estate.
@@ -157,6 +169,13 @@ def setup_main(args) -> int:
     # same function `gpuwm doctor` runs rather than a summary of it.
     from gpuwm.doctor import (blocking_gaps, collect_checks, format_brief,
                               format_report)
+
+    # Before the estate report, not after: the report is about to list
+    # WPS_GEOG as a gap, and a reader who has just been told setup
+    # deliberately skipped it reads that line as expected rather than as
+    # a failure of the command they typed.
+    if not getattr(args, "with_geog", False):
+        print(GEOG_SKIPPED_NOTICE)
 
     checks = collect_checks()
     print(format_report(checks) if explain else format_brief(checks))

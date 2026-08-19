@@ -1,10 +1,30 @@
-"""Figures from a streamed big-domain forecast, on ArWen's own colour tables.
+"""Figures from a streamed big-domain forecast.
 
-The renderer this tree ships (:mod:`gpuwm.render`) reads wrfout NetCDF through
-``wrf-rust`` and cannot be pointed at a pinned host store, so it is not the
-tool for a domain that never becomes a wrfout.  What it IS the authority for
-is how an ArWen product is supposed to LOOK, and every convention here is
-imported from it rather than reinvented:
+DEPRECATED FALLBACK, under the render law (CLAUDE.md, Drew 2026-08-06):
+weather-field product plots come from the real Rust renderer
+``rw_wrfbatch`` driven through :mod:`gpuwm.rustwx`.  This module's
+matplotlib panels are the fallback, reachable only with
+``--engine matplotlib``, and they are not the product tier.
+
+The premise this file was written on is gone.  It said the production
+renderer "cannot be pointed at a pinned host store, so it is not the tool
+for a domain that never becomes a wrfout" -- and the domain DOES become a
+wrfout now: ``tilestream/run_bigdomain.py`` writes one beside every
+``.npz`` by default (``gpuwm.io.surface_wrfout``), and ``--engine rust``
+here materialises one from any older ``.npz`` that predates that.
+MEASURED 2026-08-17 on a 256x256x33 streamed forecast: 20 production
+products per frame through the real executable, the reflectivity on the
+NWS ladder the panels below imitate.
+
+What the Rust route does NOT yet draw, and why it is not a silent second
+tier: the SIX-PANEL SHEET, the evolution STRIP, the zoom crop and the
+tile-seam overlay are multi-panel COMPOSITION, and ``MapRenderRequest``
+composes one panel.  Composition of finished PNGs is
+:mod:`gpuwm.pair_compose`'s job; until those figures are built that way
+they stay here, and they are the only reason this module still runs.
+
+Every colour convention below is imported from :mod:`gpuwm.render`
+rather than reinvented:
 
 * ``_NWS_COLORS`` / ``_NWS_LEVELS`` -- the standard NWS 5 dBZ reflectivity
   ladder, with ``set_under("none")`` so sub-5 dBZ is transparent instead of
@@ -628,10 +648,102 @@ def _footer(fig, crop: int, nx: int, ny: int, *, top: float,
              fontsize=7.5, color="#444444", wrap=True)
 
 
+#: Products the Rust route asks for.  ``all`` expands from the store
+#: catalog, which is what the streamed lane wants: a snapshot carries
+#: whatever the run wrote, and naming a fixed list here would silently
+#: drop a field the day one is added to the snapshot.
+RUST_PRODUCTS = "all"
+
+
+def sibling_wrfout(npz_path: Path) -> Path:
+    """The wrfout beside an ``.npz``, written from it if it is not there.
+
+    ``tilestream/run_bigdomain.py`` writes one by default now, so the
+    usual answer is "it already exists".  The write-it path is for the
+    ``.npz`` files that predate that default: they carry the coordinates,
+    the composite and the surface fields, so the frame is recoverable
+    exactly rather than approximately.
+    """
+
+    from gpuwm.io.surface_wrfout import (snapshot_wrfout_path,
+                                         write_surface_wrfout)
+    from tilestream.run_bigdomain import (SNAPSHOT_EPOCH,
+                                          _snapshot_time_string)
+
+    target = snapshot_wrfout_path(npz_path)
+    if target.is_file():
+        return target
+    snapshot = dict(np.load(npz_path))
+    write_surface_wrfout(
+        target, snapshot, time_str=_snapshot_time_string(snapshot),
+        dx=float(snapshot["dx"]), grid_id=1, start_time=SNAPSHOT_EPOCH,
+        title=f"gpuwm tile-streamed big domain ({npz_path.stem})")
+    print(f"materialised {target.name} from {npz_path.name}")
+    return target
+
+
+def render_rust(paths, out: Path, *, source_label: str) -> int:
+    """Drive the production renderer over the frames; its exit code.
+
+    A thin driver on purpose: nothing here draws, so there is no second
+    theme to drift from the product tier.
+    """
+
+    import subprocess
+    import sys as _sys
+
+    frames = [sibling_wrfout(path) for path in paths]
+    out.mkdir(parents=True, exist_ok=True)
+    command = [_sys.executable, "-m", "gpuwm.cli", "render",
+               "--engine", "rust", "--products", RUST_PRODUCTS,
+               "--out", str(out), "--source-label", source_label]
+    command.extend(str(frame) for frame in frames)
+    result = subprocess.run(command)
+    drawn = sorted(out.rglob("*.png"))
+    print(f"done: {len(drawn)} product panels from the production renderer")
+    return result.returncode
+
+
+def resolve_engine(request: str) -> tuple[str, str]:
+    """``(engine, why)`` -- the three-way contract ``gpuwm render`` uses.
+
+    An explicit ``rust`` that cannot be honoured raises rather than
+    quietly drawing with the other engine; ``auto`` degrades and NAMES
+    the reason, because a fallback nobody was told about is how a
+    matplotlib panel ends up in a product gallery.
+    """
+
+    if request == "matplotlib":
+        return "matplotlib", "requested"
+    from gpuwm import rustwx
+
+    engine = rustwx.find_renderer()
+    if engine is None:
+        reason = f"rw_wrfbatch is not built ({rustwx.CARGO_BUILD_HINT})"
+        if request == "rust":
+            raise SystemExit(f"bigdomain_render: {reason}")
+        return "matplotlib", reason
+    usable, evidence = rustwx.probe_renderer(engine)
+    if not usable:
+        if request == "rust":
+            raise SystemExit(f"bigdomain_render: {engine}: {evidence}")
+        return "matplotlib", f"{engine}: {evidence}"
+    return "rust", str(engine)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("npz", nargs="+", type=Path)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument(
+        "--engine", default="auto", choices=("auto", "rust", "matplotlib"),
+        help="which renderer draws the panels (default auto).  The render "
+             "law puts weather fields on the Rust renderer; 'auto' uses it "
+             "when this checkout has built it and falls back to matplotlib "
+             "with the reason named, 'rust' refuses rather than "
+             "substituting, and 'matplotlib' selects the DEPRECATED "
+             "fallback outright -- which is also where the multi-panel "
+             "sheets and evolution strips still live")
     ap.add_argument("--crop", type=int, default=16)
     ap.add_argument("--prefix", default="bigdomain")
     ap.add_argument("--run-label", default="ArWen, streamed out-of-core")
@@ -652,6 +764,15 @@ def main() -> None:
     CONFIG_NOTE[0] = args.config_note
     args.out.mkdir(parents=True, exist_ok=True)
     paths = sorted(args.npz)
+
+    engine, why = resolve_engine(args.engine)
+    print(f"bigdomain_render: engine {engine} ({why})")
+    if engine == "rust":
+        raise SystemExit(render_rust(paths, args.out,
+                                     source_label=args.run_label))
+    print("bigdomain_render: WARNING -- the matplotlib panels below are "
+          "the render law's DEPRECATED FALLBACK, not the product tier")
+
     head = np.load(paths[0])
     stem = f"{args.prefix}_streamed_{int(head['nx'])}sq"
 

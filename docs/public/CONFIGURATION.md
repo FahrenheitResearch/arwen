@@ -215,7 +215,7 @@ per-domain VALUE is also refused by name: `bl_pbl_physics = 900`
 | `hmix_k_diag` | (none) | false | bool, per domain | publishes the horizontal eddy viscosities the run's own producer used, under that producer's name: `XKMH`/`XKHH` for `km_opt = 4`, `SASE_KMH`/`SASE_KHH` for the SASE closure. Same units (m2 s-1), same mass grid, so the two are directly comparable. A run with no producer publishes neither pair -- an absent variable cannot be misread as a measured zero. Two extra (nz, ny, nx) planes per frame |
 | `c_s` | `c_s` | 0.25 | > 0 | Smagorinsky constant (smag2d kernel); per-domain |
 | `c_k` | `c_k` | 0.15 | > 0 | km_opt=2 TKE-closure constant, K = c_k sqrt(e) l; the WRF `em_les` reference namelist sets 0.10; per-domain |
-| `mix_isotropic` | `mix_isotropic` | 0 | 0, 1 | 0 = anisotropic mixing lengths, 1 = isotropic (dx dy dz)^(1/3); per-domain |
+| `mix_isotropic` | `mix_isotropic` | auto | 0, 1, `"auto"` | 0 = anisotropic mixing lengths, 1 = isotropic (dx dy dz)^(1/3); per-domain. Unset (or the string `"auto"`) lets the model choose: isotropic where `mix_upper_bound*(dz_max/dx)^2` exceeds 0.25 (announced at load and by `gpuwm check`), the WRF-default anisotropic form otherwise. A written 0 is honoured everywhere, with a warning naming the instability and the measured ratio in the danger zone |
 | `mix_upper_bound` | `mix_upper_bound` | 0.1 | > 0 | non-dimensional cap K <= mix_upper_bound len^2 / dt, applied per direction; per-domain |
 | `tke_upper_bound` | `tke_upper_bound` | 1000.0 | > 0 | km_opt=2 TKE ceiling in m2 s-2, `bound_tke` clamp; per-domain |
 | `tke_heat_flux` | `tke_heat_flux` | 0.0 | finite | prescribed kinematic surface heat flux, K m s-1; consumed under `isfflx` 0 and 2 with the PBL off; per-domain |
@@ -309,6 +309,36 @@ refuse it by name rather than dropping it. What was actually written
 `rh_preserve` -- lands in `initial-perturbation.json` in the run
 directory (the tree runner's `evidence/`), written before integration
 starts.
+
+### `[ingest]` -- soil-state ingest policy (ArWen-only)
+
+One key, and the only reason to write it is to turn a correctness
+remedy OFF for a stock-WRF comparison.
+
+```toml
+[ingest]
+soil_texture_downscale = false   # default: true
+```
+
+A forcing model delivers its soil state on its own mesh -- 0.25 degrees
+for GFS and ERA5 -- and stock WRF uses the interpolated result as-is, so
+`SMOIS` holds no information below the source spacing and prints the
+forcing grid into the 2 m dewpoint as rectangular boxes over land.
+ArWen carries soil moisture across the resolution change as Noah's own
+degree-of-saturation ratio and reconstitutes it against the target
+grid's own 30 arc-second soil texture, and anchors the deep `TSLB`
+layers on the sub-source-cell part of `TMN` with WRF's own
+linear-in-depth weight. Both are ON by default and apply on every
+route, nests included.
+
+`soil_texture_downscale = false` restores the previous, WRF-identical
+behaviour byte for byte. Every run records the soil-state source
+resolution -- and whether the reconstitution ran -- under
+`soil_texture_downscale` in `proof.json`, and preparation prints an
+advisory when the model resolves more than five cells across one source
+cell. Refusals (never silent): an unknown key in the table, or a
+non-boolean value. Full rationale, the WRF references, and the
+measurements in `docs/soil-texture-downscaling.md`.
 
 ## Identity-pinned option families
 

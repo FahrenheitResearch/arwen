@@ -29,6 +29,7 @@ import sys
 import traceback
 
 import numpy as np
+import pytest
 
 from tilestream import harness as H
 from tilestream import hoststore as HS
@@ -162,6 +163,26 @@ def test_round_trip() -> HS.HostDomainStore:
     return store
 
 
+@pytest.fixture(name="store")
+def _pinned_store_for_the_pinning_gate():
+    """A small allocated store for gate 3, under pytest.
+
+    ``main()`` below hands gate 3 the store gate 2 built, but pytest resolves
+    a test's parameters as FIXTURES -- and no fixture named ``store`` existed,
+    so ``test_pinning`` ERRORED at collection on every pytest run and the
+    pinning gate had never executed under the battery at all.  The fixture
+    builds its own store rather than depending on gate 2's, because pytest
+    tests must not order-depend on each other; 24x20x17 dry is the same probe
+    shape gate 1 uses and costs ~1 MB of pinned RAM for the moment it lives.
+    """
+    cfg = H.make_config(24, 20, 17)
+    store = HS.HostDomainStore(cfg, budget_bytes=64 << 20)
+    try:
+        yield store
+    finally:
+        store.free()
+
+
 def test_pinning(store: HS.HostDomainStore) -> None:
     """Gate 3: page-locking actually took effect, per field."""
     print("\n=== gate 3: pinning")
@@ -183,6 +204,11 @@ def test_pinning(store: HS.HostDomainStore) -> None:
         kind = 0
     gate("control: pageable memory reports 0, so the check discriminates",
          kind == 0, f"pageable type={kind}")
+    # Under pytest the two gate() lines above are prints, not assertions --
+    # the script runner counts them, pytest does not -- so the verdicts are
+    # re-stated as asserts AFTER both have printed their evidence.
+    assert report["all_pinned"], report["memory_types"]
+    assert kind == 0, f"pageable control reported type {kind}"
 
 
 def test_bandwidth(cfg_nx: int = 1024, cfg_ny: int = 1024,

@@ -1,5 +1,343 @@
 # Changelog
 
+## Unreleased
+
+New:
+- The whole data path runs on Rust by default: GRIB1, GRIB2 and NetCDF
+  decode, composition, regrid, the static warp, `wrfinput`/`wrfbdy` and
+  product NetCDF writing, and verification renders. Compiled crates on
+  a bare install, no toolchain. Each leg keeps a named Python workaround,
+  none the default.
+- `gpuwm domain --source` reads the source registry: any registered id or
+  alias, cadence from its own row, a refusal naming what a row is missing;
+  a new row needs no wizard code. See [SOURCES.md](docs/public/SOURCES.md).
+- Regional sources carry their native grid as table data: a domain outside
+  coverage refuses at plan time, naming the offending point and covered
+  window. The fitted ladder, the `--area` gate and the suggested box read
+  one definition.
+- `gpuwm domain` emits a runnable `gpuwm fetch` step for every routed
+  source; one with no public bytes emits the same geometry, the
+  hand-staging step named.
+- The forecast horizon each source declares is enforced at the wizard:
+  `--hours` past it refuses naming the horizon, `--forecast-start-hour`
+  refuses on a row with no leads.
+- The wizard says when the source, not the card, stopped the domain search;
+  a saturated fit cannot look comfortable.
+- Mapped sources decode and compose inside `gpuwm_mapped_engine`: a bare
+  `gpuwm prep --source <id>` reads its bytes with no decoder flags and no
+  subprocess per file.
+- The 20CRv3 exact-member route composes in the Rust engine: the sealed
+  member rides the composition manifest into every frame and receipt, and
+  a bare member prep resolves no subprocess decoder; `ENGINE_GAPS` is
+  empty, every prep door decoding on the engine by default.
+- `--mapped-engine rust|python` on `gpuwm prep --source mapped` and
+  `gpuwm.mapped_direct`, `GPUWM_MAPPED_ENGINE` for library callers. `python`
+  is the documented workaround; an unrecognised name refuses.
+  `gpuwm_mapped_engine capabilities` prints what the build implements.
+- The mapped parity battery: seventeen real-byte sources decoded by the
+  Python engine, reduced to per-field SHA-256 the Rust engine must
+  reproduce exactly; goldens are extracted, never authored.
+- The static-field builder runs on Rust by default: everything in
+  `gpuwm/static` processing bytes executes in the `static-fields`
+  cdylib, byte-identical to the numpy reference. `GPUWM_STATIC_PYTHON=1`
+  falls back and says so.
+- One run, one folder: `go`, `sim` and `render` each claim a timestamped
+  `run-...` subdirectory, a rerun gets a second tree, `latest-run.txt`
+  names the newest. Default-on; `--run-stamp off` is the workaround. See
+  `docs/run-output-folders.md`.
+- Adding a model whose mapping can be written down is table work: three
+  SHA-256-pinned JSON documents in `gpuwm/authorities` plus one adapter
+  row. Every source below is proven on real production bytes: prep, GPU
+  forecast to PASS, renders.
+- Ensembles enter as one SHA-256-pinned `rw-wps.members.v1` document plus
+  a registry row; members are verified at decode on the GRIB ensemble
+  identity octets, and a mean or spread claimed as a member refuses by
+  name.
+- Cross-source composition: a field may come from another packaged
+  source's decode (soil, terrain, the land mask under an AI atmosphere).
+  The mapping declares each gap `composition_bound`, `field_sources` binds
+  it to one contributor, same-grid borrowing only; every other shape
+  refuses by name.
+- New initialization sources, each `gpuwm prep --source <id>`: `gdas`,
+  `rap`, `rrfs`, `icon-eu`, `gem`, `ecmwf-open-data` (aliases `ecmwf`,
+  `ifs`), `aifs`, `gefs`, `aigefs`, and `hrrr-prs`, the public hourly
+  wrfprs product beside the native `hrrr` route. `aigfs`, NCEP's
+  GraphCast AI forecast, refuses a solo init naming the seven canonicals
+  it does not publish; its hybrid profile borrows them from the same
+  cycle's GDAS. `20crv3-cf` reads the 20th Century Reanalysis v3, the
+  only route starting a case before the satellite era.
+- Mapped NetCDF sources may span many files, publish a quantity on fewer
+  levels than another, reuse a variable name across quantities, and stack
+  an N-layer quantity in one variable.
+- `rw_ensbatch`, the first ensemble renderer on the Rust path: N member
+  wrfout sets in, mean, spread and paintball panels out through
+  `rw_wrfbatch`'s projection, basemap and PNG writer; bitwise-identical
+  members refuse, so an all-zero spread is never published as measured.
+- `gpuwm fetch --source` accepts every registered source with public
+  bytes: hosts, key grammar and file sets are table data read by one
+  engine, whole files pooled by default (`--fetch-workers N`, NOMADS
+  capped at 2), each output directory carrying the ordered `--input-list`
+  and a runnable `gpuwm prep`. See [DATA.md](docs/public/DATA.md).
+- The wrfout writer runs on the Rust classic NetCDF writer by default;
+  `GPUWM_WRFOUT_WRITER=python` is the named workaround, and a box without
+  the library refuses naming the build.
+- `pip install gpuwm` also installs `gpuwm-data`, the companion carrying
+  the RRTMGP and Thompson tables past PyPI's 100 MiB cap; pinned `==`, a
+  skewed companion refuses by name.
+- Building a wheel refuses while `bridge-pins.json` declares no release
+  and no platforms; `GPUWM_ALLOW_UNPINNED_WHEEL=1` builds an unpublishable
+  dev wheel.
+- `gpuwm go` persists stage timings to `<outdir>/events.jsonl`,
+  default-on, and prints time to first plot.
+- `[ingest] soil_texture_downscale = false` restores stock-WRF soil behaviour
+  byte-for-byte.
+- `gpuwm render --layout flat` restores the single output directory 2.4.1
+  wrote.
+- `docs/public/DOWNSCALE.md` opens with the fresh-box to downscaled-nest
+  walkthrough, verified command-by-command against 2.4.1.
+- `gpuwm spectral` says at which physical wavelengths a forecast and its
+  reference disagree, and how: banded power, amplitude ratios, correlation,
+  coherence, phase error, rotational versus divergent kinetic energy.
+  CPU-only; thresholds only from a predeclared known-good population.
+  See [SPECTRAL_VERIFICATION.md](docs/public/SPECTRAL_VERIFICATION.md).
+- The observation battery's remap runs on the `obs-regrid` crate by
+  default, both registered operators, with `GPUWM_OBSREGRID_PYTHON=1` the
+  scipy workaround.
+- The high-resolution static warp is Rust: decode, mosaic, projection and
+  warp run in the `static-fields` crate by default, honouring
+  `RasterPixelIsPoint`; `rasterio` and `pyproj` are the fallback, in an
+  extra.
+- `wrfinput` and `wrfbdy` are written by the Rust classic-tape writer through
+  one shared facade, with a dual-write verification door.
+- `gpuwm spectral`'s field reads, the preflight orography read and the
+  gridded radar and GOES products run on the Rust NetCDF path; every
+  remaining Python NetCDF reader is declared, and an undeclared one fails
+  a gate.
+- `docs/manual/` is the scientific manual: nine chapters from WRF lineage
+  to the operational envelope, every number citing its receipt.
+- `tools/build_rw_wps_release.py` stages the modules the standalone RW-WPS
+  wheel imports, and names the executor it refuses.
+- Downloads count their bytes: `gpuwm fetch-tables` and the fetch routes
+  print a running size line per object, and a redirected front door streams
+  lines instead of buffering to exit.
+- `gpuwm doctor --source` accepts every registered source id: a registry
+  route answers in one line, deferring to the engine's verdict, so an
+  unbuilt binary is one gap with one remedy.
+- After an upgrade, `gpuwm doctor` opens with what changed since the
+  last version run on this box; `gpuwm run --help` points at it.
+- `docs/public/WITHOUT-A-GPU.md`: install to verified preparation with no
+  card, every command measured, no flags: the bare defaults fall to CPU
+  and say so.
+- `docs/public/GLOSSARY.md` maps the product's vocabulary to the WPS nouns
+  a WRF user knows: prep is WPS plus `real.exe`; sim is `wrf.exe`.
+
+Fixed:
+- README no longer says "No moving nests": storm-following relocation
+  shipped in 1.8.0, so the nesting limits name what is absent (vertical
+  refinement, adaptive time step).
+- `gpuwm render --engine auto` refuses instead of quietly drawing weather
+  fields on matplotlib, and the verify door's synoptic panels come from
+  `rw_wrfbatch`.
+- The shipped public pages name the deep-validation case by its role, not
+  an internal token and date; the reproduction section keeps every literal
+  artifact name a reader types.
+- A run's pictures land in one folder: `gpuwm go` claims its run folder
+  once and renders into it, and `gpuwm render` pointed inside a `run-...`
+  folder adds no second stamp level.
+- A rendered product stays in the `<domain>/<product>/<valid-day>` tree
+  past Windows' 260-character path limit, and `--pair` reads frames at any
+  path length.
+- A wheel install reported a missing mapped decode engine no command could
+  supply; `gpuwm fetch-bridges` stages it, offered by `gpuwm doctor` only
+  when the bundle carries it.
+- The release battery compiles and tests the static-fields crate and
+  mapped-engine workspace, and their goldens carry no developer's absolute
+  path, so a second box reproduces them.
+- `gpuwm domain` sizes to the largest domain one source crop can feed: the
+  180-degree single-crop limit is a fit bound, not an exit-2 refusal.
+- The Windows VRAM envelope is measured, not a 1.75x guess: a forecast
+  fitting a 10 GiB card passes bare `gpuwm check` and `gpuwm go`, and
+  the oversized-domain advisory ranks lighter profiles by priced envelope
+  instead of pointing `--vram-gib` at the gate that refused.
+- `gpuwm fetch` hint tables in `experiment.toml` accept every routed
+  source and refuse an unrouted spelling with the vocabulary that would
+  have worked.
+- The staged DA sweep plan names its case by `${CASE_ROOT}`
+  (`GPUWM_DA_SWEEP_CASE_ROOT` or `--case-root`), carries no machine path,
+  and refuses an unbound case before a card is taken.
+- Grid-relative winds on a declared Lambert source rotated with the
+  projection module's longitude wrap instead of the mapped path's, moving
+  every component by a few ULPs.
+- A mapped frame that cannot initialize WRF is refused where built,
+  so the reported frame is the faulty one; a vertical-coverage refusal
+  no longer spells its levels through numpy's scalar repr, which varied by
+  numpy major.
+- The mapped engine ran on one core, copied the decoded field set five
+  times and hashed every frameset byte twice; it runs concurrently now,
+  every output byte unchanged at every worker count.
+- The two engines refuse alike: undecodable GRIB bytes raise `ValueError`
+  on both, and a broken mapping document runs one grammar validator before
+  dispatch.
+- `python -m build` swept staged native binaries into the sdist;
+  `MANIFEST.in` prunes them and `setup.py` refuses an sdist of a staged
+  tree.
+- `tools/rw_wps` is covered by the vendored-registry gate, comparing each
+  locked version against the vendored manifest, not crate names only.
+- The release machine-path scan read files by suffix, missing `.cu`,
+  `.cuh`, `.wps` and a JSON-escaped Windows marker; the bytes decide
+  scope now.
+- `tools/verify_release_artifacts.py` measures every distribution file
+  against PyPI's cap, refuses oversizes before a cut, and rewrites the
+  staging document's wheel sizes from that measurement.
+- `gpuwm sim` no longer refuses the run folder it just created: both
+  runners accept an empty directory, refusing only a populated one.
+- `gpuwm domain --source hrrr` closes with the two shipped commands, not
+  `tools/` paths no wheel contains and hand-pasted digests.
+- `--statics-corridor` on the hrrr prep door was dropped silently, so a
+  front-door moving nest sealed no child-resolution statics; forwarded
+  now, and the route publishes its portable authorities on every run.
+- `gpuwm sim` stopped calling a finished preparation partial: the
+  completeness check reads the route's own receipt first, and a state with
+  neither the restored surface nor the native soil pair refuses by name.
+- `pip install 'gpuwm[gpu-cu12]'`/`[gpu-cu13]` install a matching CUDA
+  toolkit beside the CuPy wheel; a box with a driver and no toolkit no
+  longer dies at `Failed to find CUDA headers`.
+- `gpuwm doctor` stops prescribing a wheel reinstall for missing CUDA
+  headers: the remedy leads with `cupy-cuda13x[ctk]` at the driver's
+  major.
+- `pip install 'gpuwm[gpu-cu13,render]'` installed no gpuwm on Python
+  3.14; `[render]` resolves `wrf-rust` with no environment marker, so 3.10
+  through 3.14 install.
+- `gpuwm doctor` derives its wheel-matrix sentence from the recorded
+  interpreter ceiling, not a constant beside it.
+- A moving nest cold-restarted every driver-held per-column physics array
+  at each relocation, wiping precipitation and convection memory; also in
+  2.4.1. The continuation moves with the nest now; only the newly exposed
+  strip cold-starts. Default-on.
+- A cross-domain wrfout writer abort names its own root cause, and a
+  missing-Rust-artifact remedy names its own crate.
+- `gpuwm.hrrr_hierarchy_direct` grew `--ack`, so the shortwave-only profiles
+  no longer refuse their own wizard-emitted namelists.
+- The preparation front door owns its refusals: out-of-coverage grids and
+  too-short staged series are their own classes now, sentence plus remedy
+  on stderr, exit `78`, not `ValueError` tracebacks.
+- `--source gem` selects the Canadian global route by the model's common
+  name; it is an alias row now, and the CLI reference carries the
+  alias table.
+- `rw_wrfbatch` draws the whole domain of a latitude/longitude grid, the
+  box holding every drawn row, not a thin inscribed band; projected
+  grids untouched.
+- `rw_ensbatch` reads a member's whole forecast: the roster kept only the
+  newest outfile, so `--frames 0` drew the final valid time under the
+  first's name.
+- `gpuwm-wrf-init --source gfs` answers an undecodable experiment config
+  by naming the decode fault with line and column.
+- `tools/stage_wheel_bridges.py --dest DIR` stages a bridge directory from
+  the same `BUNDLED_ARTIFACTS` declaration the wheel reads, so
+  `~/.gpuwm/bridges` needs no hand-filling.
+- The AI-ensemble adapter row's default product no longer names the
+  ensemble mean, the silent wrong answer the member capability refuses.
+- Watching a forecast's progress file cannot kill it: the `progress.json`
+  republish retries its replace, so a Windows reader racing the rename
+  costs at most a stale heartbeat.
+- A 2.4.x archive downscales again: the `sase_additive_dissipation`
+  default flip made the non-SASE guard refuse the value 2.4.x restart
+  headers record.
+- A config-validation refusal inside `gpuwm downscale --point` carries the
+  validation error's own sentence, not a VRAM answer, and
+  a surface-physics child with no `--child-surface-from` refuses naming an
+  in-product remedy.
+- `gpuwm render --pair` composes the parent-vs-child compare documents:
+  unmatched keys pair across the domain token where each side's stripped
+  key is unambiguous; two nests never cross-pair.
+- The wizard's nest-ladder closing block prints the runnable chain with
+  real paths, and the four `gpuwm downscale` options with no help text
+  declare themselves.
+- `gpuwm prep`'s GRIB2 routes no longer demand `--grib2-inventory` or
+  `--grib2-dump`: every route resolves both through the bridge ladder; the
+  flags stay overrides and a stale binary refuses by name.
+- A field-per-file source prepares on Windows: hundreds of `--input` flags
+  overflowed CreateProcess's 32 KB limit, so the pairs move into a list
+  file, `--input-list FILE`.
+- The render skip notice stopped denying its own exit code: with nothing
+  drawn it says so and points at `--list-products`.
+- Grell-Freitas (`cu_physics = 3`) carries a measured regime note.
+- WPS's own sixteen_pt overshoot on a sharp soil-moisture gradient no
+  longer refuses a whole preparation: within a 0.05 margin the value
+  clamps to the bound with a counted advisory.
+- Shin-Hong's SGS TKE carrier is floored at the scheme's cold-start value
+  at the PBL seam, closing the one input class that reproduced the
+  historical non-finite tke failure.
+- The first-run kernel-compile notice fires when the CuPy cache holds no
+  entry for this card, timed as its own `kernel_compile` phase.
+- `proof.json` records `static_build` and `verify_inputs` inside `total`,
+  and `fetch-manifest.json` splits download from verify, so hash time is
+  never reported as bandwidth.
+- `gpuwm go` is a composition of `gpuwm sim` again; `--progress-format`
+  expresses the only axis where they differ.
+- The soil state no longer carries the forcing model's 0.25-degree mesh:
+  soil moisture crosses the resolution change as Noah's SRATIO wetness
+  against the 30 arc-second texture, nothing leaving [SMCDRY, SMCMAX].
+  Default-on.
+- `gpuwm render` files every picture at
+  `<--out>/<domain>/<product>/<valid-day>/` by default, both engines,
+  filenames and bytes unchanged.
+- The LES mixing remedy is default-on: a domain leaving `mix_isotropic`
+  unset that violates the measured stability criterion runs isotropic
+  mixing, announced at load; a written 0 still resumes an old-default
+  checkpoint.
+- The engine's compose scratch lands beside the prep output, not in
+  system temp where tmpfs boxes died on a disk quota;
+  `GPUWM_COMPOSE_SCRATCH` overrides it and refuses a missing directory by
+  name.
+- Bare-default preprocessing reaches the CPU backend on a box with no
+  CuPy: `--preprocess-backend auto` is the default, the CPU fall is
+  announced, and an explicit `cuda` with no CuPy refuses by name.
+- `gpuwm domain` sizes from a declared budget (`--card`, `--vram-gib`) or
+  a measured card, otherwise refusing with both flags named; the silent 24
+  GiB assumption is gone, and `GPUWM_NO_LOCAL_GPU=1` has one definition,
+  honored before touching any card.
+- A failed render publishes nothing: the run folder and the
+  `latest-run.txt` pointer appear only once the first picture lands.
+- Refusal tails print the reader's own invocation plus `--explain`,
+  re-runnable as printed, on every door.
+- `--bridge` is optional on the era5 and gfs direct routes: omitted, it
+  resolves through the staged-bridge ladder; an empty ladder refuses
+  naming what it searched.
+- An install ahead of PyPI gets its own `gpuwm version` sentence, not
+  upgrade advice.
+- The mapped prep door refuses in sentences at exit `78`: a missing path
+  is named under its flag with the commands producing it; an explicit
+  eta ladder is adopted at its own level count; a config with none gets
+  one refusal naming both level counts and the two reconciling doors.
+- The GFS direct adapter's eta-ladder refusal reads like the mapped
+  door's: both level counts, both vocabularies, both reconciling doors.
+- The GFS route leaves the four-file front door: `gpuwm prep --source gfs`
+  authors and digest-binds its input manifest from the fetched directory,
+  so the printed prep command runs as printed; the `--source-manifest`
+  pair pins an existing manifest, and half the pair refuses.
+- Pasting the printed prep command again re-authors nothing: identical
+  bytes answer `MATCHED` with the same digest; differing bytes refuse
+  naming both digests and the remedy.
+- `gpuwm check` with no measurable card names the missing budget and the
+  flag to type, never a bare exit code.
+- The wizard reconciles its own cadences: a profile cadence landing on a
+  fractional root step snaps to the nearest whole-step value, spoken; a
+  hand-written pair keeps the loader's refusal.
+- A refused `gpuwm go` names its run folder first, the same line the
+  dry-run promises.
+- `gpuwm --version` answers like `gpuwm version`, aliases print on one
+  line, doctor paths keep one separator style, and the ahead-of-PyPI
+  sentence names each version once.
+- A refusal that is already a sentence keeps its own words; a bare path
+  still gets its exception class named.
+- A bare `gpuwm setup` names the 16 GB WPS_GEOG download it skips,
+  so the estate gap reads as expected.
+- `gpuwm_mapped_engine` exits 2 on a refusal, the sibling bridges' usage
+  exit. Exit 3 made the release cut's execute-probe (doctor, the artifact
+  verifier, the publish bridges job) refuse a healthy binary; the seam
+  contract, always nonzero-plus-refusal-JSON, is unchanged.
+
 ## 2.4.1 (2026-08-14)
 
 2.4.0 was tagged but never published: the publish workflow's own test job
@@ -1472,6 +1810,42 @@ the artefact regeneration order, are in
 `docs/release-1.9-assembly-notes.md`.
 
 New:
+- NOAHMP_GLACIER ported (`module_sf_noahmp_glacier.F`, 3,080 lines,
+  the byte-frozen WRF v4.6.1 tree). An active land column whose
+  `IVGTYP` equals `ISICE_TABLE` now dispatches to the dedicated glacier
+  column instead of refusing: `gpuwm/core/noahmp_glacier.py` is the
+  FP32 host authority with file:line anchors,
+  `gpuwm/core/kernels/noahmp_glacier.cu` the CUDA batch, bitwise twins
+  over a multi-regime battery chained 12 steps. Pinned identity
+  `opt_alb=2 opt_snf=1 opt_tbot=2 opt_stc=1 opt_gla=1`; WRF's own
+  balance gates (ERRSW/ERRENG 0.01 W m-2, ERRWAT 0.1 mm) are
+  transcribed as raises. Two defined replacements for WRF's undefined
+  reads (glacier-column HCPCT and EFLXB) are documented in the module.
+  `guard_noahmp_glacier_columns` stays as the backstop and refuses only
+  when the path is disabled. The step census reports `glacier` counts
+  and the execution path that answered them.
+- Noah-MP sea-ice threshold is configurable:
+  `NoahmpRuntimeParameters(xice_threshold=...)`, threaded through
+  `initialize_physics(xice_threshold=...)` and
+  `run_mpas_column_batch(xice_threshold=...)`. WRF's Registry 0.5 stays
+  the default; the chosen value joins the restart identity and the
+  classification receipt.
+- Native XLAND input: `initialize_physics(xland=...)` and
+  `run_mpas_column_batch(xland=...)` consume the caller's XLAND
+  verbatim; derivation from landmask remains only as the documented
+  fallback when no xland is passed. `driver.surface_classification`
+  (and the seam's `surface_classification` property) names which source
+  decided and counts every class: sea ice, open water, SFLX land,
+  glacier land.
+- MPAS physics seam: `gpuwm.core.physics.run_mpas_column_batch` builds a
+  persistent two-phase column-batch seam for an external MPAS CUDA core.
+  Phase 1 runs legacy RRTMG, revised MO, Noah-MP, YSU and GF/KF through
+  the ARW driver's own orchestration (held radiation, KF NCA holds,
+  buckets, counters) and returns raw A-grid du/dv/dtheta/dq* rates with
+  no mass coupling, face interpolation or map factors. Phase 2 runs WSM6
+  in place on the caller's six species plus theta. Restart export and
+  restore round-trip every persisted item and a restored seam continues
+  bit-identically. Contract and semantics in `docs/mpas-seam.md`.
 - WRF RRTM longwave (`ra_lw_physics = 1`), as WRF's classic pair with
   Dudhia shortwave (`ra_sw_physics = 1`). Line transcription of
   `module_ra_rrtm.F`; column smoke of the shipped seams only, no oracle
@@ -1543,6 +1917,18 @@ New:
   ids and TSK, under both policies side by side.
 
 Fixed:
+- Restart identity holds across process boundaries. The legacy RRTMG LW
+  buffer march kept subtracting 4 mb below a column top shallower than
+  the nominal p_top that sized it, `log(play)` went NaN in setcoef, the
+  tropospheric layer count inflated, and the band kernels read outside
+  their coefficient tables, so those columns' longwave answer depended
+  on whatever freed device-pool memory happened to hold. A restore in a
+  fresh process met different pool history than the run that wrote the
+  checkpoint and continued differently. The march now takes the largest
+  per-column step that keeps every buffer level positive (bitwise
+  unchanged for in-contract tops), the setcoef kernel clamps
+  nonpositive pressures before the log, and a pool-poison GPU test pins
+  phase-1 bitwise invariance to freed-pool contents.
 - WSM6 is priced at the tier it compiles rather than at a flat row. The
   kernel frame under-priced local memory above 64 levels by 446 MiB on
   4-domain LES configs. WSM6 and WDM6 both price per domain that selects
@@ -3013,51 +3399,51 @@ topography) are present and unchanged in this release.
 ## 1.5.2 (2026-08-03)
 
 ArWen gains its first scale-aware boundary-layer scheme: Shin-Hong 2015,
-`bl_pbl_physics = 11`. A namelist asking for it now gets it — native
-import, no substitution to YSU — and the scheme's subgrid/resolved
+`bl_pbl_physics = 11`. A namelist asking for it now gets it â€” native
+import, no substitution to YSU â€” and the scheme's subgrid/resolved
 partition adapts continuously with the grid spacing, which is what the
 1 km-to-100 m "gray zone" between mesoscale and LES resolutions needs.
 
 The evidence ships with the claim. The CPU reference implementation is
-bitwise against WRF v4.6.1's own module — max ULP 0, every output
-column, both terrain-flux arms — and the CUDA port holds the heating
+bitwise against WRF v4.6.1's own module â€” max ULP 0, every output
+column, both terrain-flux arms â€” and the CUDA port holds the heating
 tendency bitwise on top of it. Beyond WRF-fidelity, the partition
-itself was measured: a 3200 m → 100 m grid-spacing ladder, six
+itself was measured: a 3200 m â†’ 100 m grid-spacing ladder, six
 independent seeds per rung, scored against acceptance bands registered
 before any run existed, drawn from the published similarity envelope.
 Every gated rung landed in its band, and at 100 m the scheme reproduces
-standard behaviour to within measured noise — scale-awareness in the
-gray zone without corruption at the LES end. The full ladder — every
-seed, every band, the determinism digests — is at
+standard behaviour to within measured noise â€” scale-awareness in the
+gray zone without corruption at the LES end. The full ladder â€” every
+seed, every band, the determinism digests â€” is at
 [docs/public/receipts/grayzone/](docs/public/receipts/grayzone/README.md),
 and [PHYSICS.md](docs/public/PHYSICS.md) states exactly what is proven
 and what is not. The honest label stays **implemented-unverified**: no
 matched free-running forecast comparison has been run with it, and the
 ladder is one idealized case on one card.
 
-Surface-layer pairing rules mirror WRF's own — Shin-Hong runs with
+Surface-layer pairing rules mirror WRF's own â€” Shin-Hong runs with
 `sf_sfclay_physics` 1 or 91, and a namelist pairing it with anything
 else is refused by name with the values that would work, citing the
 line of WRF that enforces the same thing.
 
 One small fix rides along: the note printed when a GFS fetch domain
-crosses 0° longitude now says it is informational — the full-band
+crosses 0Â° longitude now says it is informational â€” the full-band
 widening is handled, the only cost is download size, and the run
 continues unchanged. Field reports were reading the old wording as an
 error.
 
 ## 1.5.1 (2026-08-03)
 
-A hardening release. The published wheel's first week in the field — a
+A hardening release. The published wheel's first week in the field â€” a
 1 km nest on an RTX PRO 6000, cross-architecture runs on an RTX 4090, a
-5060 Ti, and real HRRR forecasts on an RTX 5070 Ti — sent back every
+5060 Ti, and real HRRR forecasts on an RTX 5070 Ti â€” sent back every
 rough edge fixed here, and one thing the 1.5.0 notes had to stop
 claiming is now true.
 
 GFS gained the full-file transport HRRR has had all along: `gpuwm fetch
 --source gfs --mode full-file` takes the whole `pgrb2.0p25` objects
-from the AWS S3 archive — no NOMADS rate governor, no spatial crop, and
-the archive's reach is years where NOMADS keeps about ten days —
+from the AWS S3 archive â€” no NOMADS rate governor, no spatial crop, and
+the archive's reach is years where NOMADS keeps about ten days â€”
 through the Rust backbone's parallel range GETs or the stdlib
 transport. The raw objects differ from the NOMADS crops in row order
 *and* packing; both differences are certified in `gfs_grib2_bridge`
@@ -3066,38 +3452,38 @@ including a bitmap-carrying SOILW pair that pins complex-packing
 missing-value semantics cell for cell, bit for bit. Everything outside
 that proven envelope still refuses by name, the NOMADS crop remains the
 default transport unchanged, and `gpuwm doctor --source gfs` now
-reports the GFS route — decoder and byte transports — the way it
+reports the GFS route â€” decoder and byte transports â€” the way it
 reports HRRR's.
 
 The wizard now emits what the runner accepts: a bare `gpuwm domain`
-produces one 12 km domain — the shape `gpuwm go` runs — instead of the
+produces one 12 km domain â€” the shape `gpuwm go` runs â€” instead of the
 deepest nest tree that fits the card; nest trees are explicit opt-in,
 and refusals name the tree runner with a complete remedy. Sizing a card
 that is not in the machine is priced against the conservative measured
 reference profile instead of a per-class discount, and is labelled an
 estimate everywhere it appears. **Migration:** a config sized near a
 card's ceiling that previously certified as fitting can now be honestly
-refused — re-run the wizard to get a grid the estimate stands behind.
+refused â€” re-run the wizard to get a grid the estimate stands behind.
 
 First-run polish, from the first cross-architecture field run of the
 published wheel: with `GPUWM_CASE_DATA_ROOT` unset, the case-data root
-now follows the platform — the XDG data directory on Linux and macOS
+now follows the platform â€” the XDG data directory on Linux and macOS
 instead of a literal `~/Downloads`, which stays the Windows default
-unchanged. `gpuwm fetch-geog` announces the whole bill — datasets still
-needed, download bytes, unpacked size — before the first byte moves.
+unchanged. `gpuwm fetch-geog` announces the whole bill â€” datasets still
+needed, download bytes, unpacked size â€” before the first byte moves.
 The first forecast on a machine says up front that it is compiling GPU
-kernels for the local card and what that costs (typically 1–3 minutes,
+kernels for the local card and what that costs (typically 1â€“3 minutes,
 cached for every later run), where that time used to pass under a stale
-status and read as a hang. `pip show gpuwm` answers `Apache-2.0` — the
+status and read as a hang. `pip show gpuwm` answers `Apache-2.0` â€” the
 wheel carries the SPDX license expression; building from source now
-needs setuptools ≥ 77. Rendered PNGs are named `arwen_*`, and `--pair`
+needs setuptools â‰¥ 77. Rendered PNGs are named `arwen_*`, and `--pair`
 reads both spellings so older render directories still pair.
 
-From the 5070 Ti findings: `gpuwm update` exists — print-only, it names
+From the 5070 Ti findings: `gpuwm update` exists â€” print-only, it names
 the exact upgrade command for your install and what stays preserved
 across upgrades; the generated HRRR chain prints the two experimental
 Thompson-aerosol exports before preparation instead of leaving them to
-be discovered from a refusal; and the benchmarks grew up — an existing
+be discovered from a refusal; and the benchmarks grew up â€” an existing
 `--outdir` is refused in a sentence rather than a traceback
 (`--allow-existing` reuses without clobbering), the GPU name is decoded
 text instead of a bytes repr, provenance resolves from the installed
@@ -3106,15 +3492,15 @@ selectable with its fixed 362 MiB table cost priced into the estimate,
 and the cold first step is reported apart from the warmed rate so short
 runs stop extrapolating misleadingly.
 
-wrfout frames now carry `OLR` — the top-of-atmosphere outgoing longwave
-the longwave scheme was already computing — with WRF's registry
+wrfout frames now carry `OLR` â€” the top-of-atmosphere outgoing longwave
+the longwave scheme was already computing â€” with WRF's registry
 metadata, present exactly when the attached longwave scheme produces it
 and absent with radiation off. It is output-only and rebuilt rather
 than restart-carried, so checkpoints on disk stay loadable; a resumed
-run reports zeros until its next radiation call — a deliberate,
+run reports zeros until its next radiation call â€” a deliberate,
 documented divergence from WRF's restart handling.
 
-The LES comparison receipts ship with the repository — now true: forty
+The LES comparison receipts ship with the repository â€” now true: forty
 curated receipts and an index at
 [docs/public/receipts/les/](docs/public/receipts/les/README.md) back
 every WRF-comparison, realisation-spread and determinism number
@@ -3124,13 +3510,13 @@ justified. The CBL receipt's VRAM figure splits into `vram_pool_gib`
 (screened) and `vram_device_gib` (environmental), so the documented
 dual-run corruption screen stops false-positiving on a shared card. And
 the single-card determinism known-limit is retired: the same seed is
-bit-identical across three cards — two of them different sm_120
-silicon — and seed-equivalent against sm_89, receipt and claim boundary
+bit-identical across three cards â€” two of them different sm_120
+silicon â€” and seed-equivalent against sm_89, receipt and claim boundary
 in the same directory.
 
 Bookkeeping regenerated on the assembled line: the flush-to-zero claim
 census and route registers re-keyed after 1.5.0's line drift, and one
-stale kernel frame pin corrected to its measured value — re-measured
+stale kernel frame pin corrected to its measured value â€” re-measured
 under two NVRTC majors and offline nvcc before it moved. The NVRTC
 widening boundary in the Thompson control tests moves to 13.1, where
 exact agreement was actually measured.
@@ -3138,7 +3524,7 @@ exact agreement was actually measured.
 ## 1.5.0 (2026-08-03)
 
 This release makes the model usable at the scales storm work actually
-happens at. Two large-eddy-simulation closures are now selectable —
+happens at. Two large-eddy-simulation closures are now selectable â€”
 `km_opt = 3` (3-D Smagorinsky) and `km_opt = 2` (1.5-order prognostic
 TKE), both per-domain, so a coarse parent running a PBL scheme can carry
 a PBL-off LES child in one tree. Both closures were run head-to-head
@@ -3154,7 +3540,7 @@ with no extra download. Its honest label is **implemented-unverified**:
 every device kernel is pinned bitwise against an instrumented WRF oracle
 column by column, a matched free-running forecast comparison has been
 run and published with its limits stated, and a t=0 read-back digest
-backs the initial-state numbers — but the matched comparison did not
+backs the initial-state numbers â€” but the matched comparison did not
 meet the bar to raise the maturity label, and the pages say so; a
 third, pre-registered distribution gate across independent runs reached
 the same verdict by its own declared rule
@@ -3170,8 +3556,8 @@ selectable and GPU-resident, verified against the GABLS1 stable
 boundary-layer intercomparison. It is **EXPERIMENTAL and not
 WRF-verified**, is selected run-wide only (never per nest), and the
 configuration reference says exactly where it is and is not admitted.
-With it comes `km_opt = 0` as a deliberate research control — no
-horizontal mixing operator at all — behind a written acknowledgement so
+With it comes `km_opt = 0` as a deliberate research control â€” no
+horizontal mixing operator at all â€” behind a written acknowledgement so
 it cannot be reached by a mis-set switch.
 
 The domain wizard stops leaving hardware on the table: its internal
@@ -3179,7 +3565,7 @@ search ceiling used to size 64, 96 and 180 GiB cards identically, and
 now a larger card buys a larger domain, with an explicit warning in the
 one case the search bound rather than memory decides. Sizing below 4 km
 with a cumulus scheme active earns a printed advisory (double-counted
-convection, and the per-domain switch that fixes it); 4–10 km earns a
+convection, and the per-domain switch that fixes it); 4â€“10 km earns a
 softer note; neither refuses. HRRR-driven runs got a matching cleanup:
 the wizard derives one coverage envelope from the grid itself and clamps
 the emitted fetch area inward so every emitted hint passes the same
@@ -3187,20 +3573,20 @@ validator that will judge it, the coverage fitter reserves the
 soil-donor search margin instead of discovering it missing later, and
 sub-hour forcing windows use one endpoint convention end to end. One
 tightening to note: a hand-edited fetch area that names ground outside
-the real grid — including clamps that previous releases accepted — is
+the real grid â€” including clamps that previous releases accepted â€” is
 now refused; re-emit the area with this release's wizard, which
 produces a valid box unaided.
 
 Receipts and diagnostics got more honest. The VRAM receipt now reports a
 true high-water mark from a 50 ms watcher, labeled as what it is, with a
-separate pool-peak entry — not a post-trim boundary value that
+separate pool-peak entry â€” not a post-trim boundary value that
 understated the peak. Sea-level pressure is terrain-robust: the
 below-terrain extrapolation is smoothed with a terrain-keyed filter, so
 high-terrain MSLP fields stop ringing. A first run stages the WPS_GEOG
 datasets through the installer with byte accounting, and `gpuwm go`
 prints what each stage holds and what a failed stage left on disk. An
-interrupt anywhere in the `go` chain — including the pre-download memory
-gate — exits with one sentence and code 130.
+interrupt anywhere in the `go` chain â€” including the pre-download memory
+gate â€” exits with one sentence and code 130.
 
 The release workflow accepts both cut motions again: a re-run of a
 partially published cut adopts the assets it already uploaded by content
@@ -3253,9 +3639,9 @@ stream change.
 
 ### Added
 
-- `gpuwm multi-run PLAN.toml` — one independent forecast per physical GPU.
-- `gpuwm stream PLAN.toml` — sealed hourly HRRR forecast streaming.
-- `gpuwm report` — a single redacted file describing a failure.
+- `gpuwm multi-run PLAN.toml` â€” one independent forecast per physical GPU.
+- `gpuwm stream PLAN.toml` â€” sealed hourly HRRR forecast streaming.
+- `gpuwm report` â€” a single redacted file describing a failure.
 
 ### Running long forecasts on consumer cards
 
@@ -4425,7 +4811,7 @@ history files unchanged.
   dependency-graph reorder can no longer swap in the governorless copy
   under the same version string.
 
-## Unreleased — physics reopening battery fixes
+## Unreleased â€” physics reopening battery fixes
 
 ### The documented HRRR front door was dead, and the suite could not see it
 
@@ -5414,8 +5800,8 @@ was not, and three of the four surfaced as tracebacks.
   slug, so a directory holding several nests cannot pair a 3 km panel
   against a 333 m one. Sheet names gain the domain
   (`d02-3km_sbcape-pair.png`); the panel labels are unchanged.
-- Plot subtitles gain the grid spacing the file declares -- `Î”x 3 km`
-  at and above a kilometre, `Î”x 111 m` below it -- on both engines and
+- Plot subtitles gain the grid spacing the file declares -- `ÃŽâ€x 3 km`
+  at and above a kilometre, `ÃŽâ€x 111 m` below it -- on both engines and
   on all four rust render lanes (direct, derived, heavy, windowed).
 - Locally-imported runs are labelled **ArWen** instead of the GDEX
   fetch source inherited from the `wrf` store-model identity, which

@@ -1,0 +1,18 @@
+{
+ "schema": "gpuwm-icon-eu-invariant-surface-provenance-v1",
+ "source": "DWD open-data ICON-EU regular-lat-lon time-invariant HSURF GRIB2 object",
+ "field": "terrain_height",
+ "selector": {
+  "format": "grib2",
+  "discipline": 0,
+  "category": 3,
+  "parameter": 6,
+  "level_type": 1,
+  "level_value": 0,
+  "second_level_type": 101,
+  "second_level_value": 0
+ },
+ "time_policy": "published once per cycle at the cycle reference time; verified byte-invariant and broadcast to every primary valid time",
+ "member_policy": "ICON-EU is deterministic; no member identity exists",
+ "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"
+}

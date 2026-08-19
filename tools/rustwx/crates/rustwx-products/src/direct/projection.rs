@@ -36,6 +36,28 @@ pub fn build_projected_map_with_projection(
         );
     }
 
+    let (options, frame_bounds) =
+        presentation_projected_map_options(projection, bounds, target_ratio);
+    let mut projected =
+        rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
+    projected.inverse_raster_projection =
+        inverse_raster_projection_for_latlon_mesh(projection, frame_bounds, lat_deg, lon_deg);
+    Ok(projected)
+}
+
+/// The options (and the frame bounds they were derived from) that
+/// [`build_projected_map_with_projection`] builds for a non-full-domain
+/// frame.
+///
+/// gpuwm divergence (VENDOR.md): a pure extraction of the body that was
+/// inline above, so [`project_points_with_projection`] can reuse the exact
+/// same option build.  A second, hand-copied option build is how a marker
+/// ends up half a frame away from the fill it is annotating.
+fn presentation_projected_map_options(
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> (ProjectedMapBuildOptions, (f64, f64, f64, f64)) {
     let variant = projection_presentation_variant();
     let presentation_projection = presentation_projection_for_bounds(projection, bounds, variant);
     let frame_bounds = presentation_frame_bounds_for_projection(
@@ -59,11 +81,31 @@ pub fn build_projected_map_with_projection(
     }
     options = options.with_basemap_detail(basemap_detail_for_bounds(frame_bounds));
     options.domain.pad_fraction = presentation_pad_fraction_for_bounds(frame_bounds);
-    let mut projected =
-        rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
-    projected.inverse_raster_projection =
-        inverse_raster_projection_for_latlon_mesh(projection, frame_bounds, lat_deg, lon_deg);
-    Ok(projected)
+    (options, frame_bounds)
+}
+
+/// Where `(lat, lon)` degree pairs land in the projected space
+/// [`build_projected_map_with_projection`] produced for the same mesh,
+/// projection, bounds and aspect ratio.
+///
+/// gpuwm addition (VENDOR.md).  This is the seam every hand-rolled
+/// matplotlib overlay in the tree needed and could not have: radar sites
+/// and their range rings, SPC storm reports, a domain-boundary box, tile
+/// seams.  Additive -- no existing caller.
+pub fn project_points_with_projection(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+    points: &[(f64, f64)],
+) -> Result<Vec<(f64, f64)>, Box<dyn std::error::Error>> {
+    let options = if full_domain_projected_frame_enabled(projection, bounds) {
+        full_domain_projected_map_options(lat_deg, lon_deg, projection, bounds, target_ratio)
+    } else {
+        presentation_projected_map_options(projection, bounds, target_ratio).0
+    };
+    rustwx_render::project_geographic_points_with_options(lat_deg, lon_deg, &options, points)
 }
 
 pub fn build_requested_projected_map_with_projection(
@@ -173,13 +215,15 @@ fn build_natural_projected_map_with_projection_inner(
     Ok(projected)
 }
 
-fn build_full_domain_projected_map_with_projection(
+/// The same pure extraction as [`presentation_projected_map_options`], for
+/// the full-domain frame branch (VENDOR.md).
+fn full_domain_projected_map_options(
     lat_deg: &[f32],
     lon_deg: &[f32],
     projection: Option<&GridProjection>,
     bounds: (f64, f64, f64, f64),
     target_ratio: f64,
-) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
+) -> ProjectedMapBuildOptions {
     let mut options = ProjectedMapBuildOptions::full_domain(target_ratio);
     if let Some(projection) = projection {
         options = options.with_projection(projection.clone());
@@ -187,6 +231,19 @@ fn build_full_domain_projected_map_with_projection(
     let basemap_bounds = latlon_mesh_bounds(lat_deg, lon_deg).unwrap_or(bounds);
     options = options.with_basemap_detail(basemap_detail_for_bounds(basemap_bounds));
     options.domain.pad_fraction = full_domain_projected_frame_pad_fraction();
+    options
+}
+
+fn build_full_domain_projected_map_with_projection(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
+    let options =
+        full_domain_projected_map_options(lat_deg, lon_deg, projection, bounds, target_ratio);
+    let basemap_bounds = latlon_mesh_bounds(lat_deg, lon_deg).unwrap_or(bounds);
     let mut projected =
         rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
     projected.inverse_raster_projection =

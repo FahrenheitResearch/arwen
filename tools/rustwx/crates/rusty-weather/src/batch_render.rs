@@ -114,6 +114,15 @@ pub struct BatchRenderRequest {
     pub output_width: u32,
     pub output_height: u32,
     pub limits: BatchRenderLimits,
+    /// gpuwm addition (VENDOR.md): map overlays in geographic degrees,
+    /// projected into each product's own frame at render time
+    /// (`rw_wrfbatch --overlays FILE.json`).  `None` -- what every caller
+    /// that does not pass the flag produces -- runs no overlay code, so
+    /// the default render stays byte-identical.
+    pub geographic_overlays: Option<rustwx_products::geographic_overlays::MapOverlays>,
+    /// gpuwm addition (VENDOR.md): title/subtitle overrides
+    /// (`rw_wrfbatch --annotate FILE.json`).
+    pub panel_annotations: Option<rustwx_products::geographic_overlays::PanelAnnotations>,
 }
 
 impl BatchRenderRequest {
@@ -140,6 +149,8 @@ impl BatchRenderRequest {
             date_yyyymmdd: None,
             cycle_utc: None,
             source: None,
+            geographic_overlays: None,
+            panel_annotations: None,
             output_width: 1_200,
             output_height: 900,
             limits: BatchRenderLimits::default(),
@@ -1199,6 +1210,8 @@ fn render_config(
         output_height: request.output_height,
         png_compression: PngCompressionMode::Fast,
         place_label_overlay: None,
+        geographic_overlays: request.geographic_overlays.clone(),
+        panel_annotations: request.panel_annotations.clone(),
     }
 }
 
@@ -1398,6 +1411,23 @@ fn resolve_render_domain(
 
 fn native_grid_domain(store: &StoreFieldSource) -> Result<DomainSpec, String> {
     let (latitudes, longitudes) = store.grid_coordinates();
+    native_grid_domain_from_coordinates(latitudes, longitudes)
+}
+
+/// The native-grid render domain of a bare lat/lon mesh.
+///
+/// gpuwm divergence (VENDOR.md): a pure extraction of
+/// [`native_grid_domain`]'s body so the sibling binaries that render
+/// ensemble reductions and observation grids frame their panels on the
+/// EXACT same bounds arithmetic -- the antimeridian-aware longitude
+/// choice, the degenerate-extent padding, the pole clamp -- rather than a
+/// second, subtly different copy.  Two framings of one grid is how a
+/// member-mean panel stops overlaying the deterministic panel it is meant
+/// to be compared against.
+pub fn native_grid_domain_from_coordinates(
+    latitudes: &[f32],
+    longitudes: &[f32],
+) -> Result<DomainSpec, String> {
     if latitudes.is_empty() || latitudes.len() != longitudes.len() {
         return Err(format!(
             "grid.rwg coordinate lengths are invalid (lat {}, lon {})",

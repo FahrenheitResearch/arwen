@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod derived;
 pub mod direct;
 pub mod ecape;
+pub mod geographic_overlays;
 pub mod gridded;
 pub mod heavy;
 pub mod hrrr;

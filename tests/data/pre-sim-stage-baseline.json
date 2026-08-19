@@ -1,0 +1,228 @@
+{
+  "schema": "gpuwm.pre-sim-stage-baseline/v1",
+  "what_this_is": [
+    "The measured cost of every stage on the road to sim step 1, pinned so",
+    "that each Rust replacement of a pre-sim stage lands with a before/after",
+    "number instead of an impression.  Diff against it by running a bare",
+    "`gpuwm go` on an equivalent case and reading <outdir>/events.jsonl:",
+    "gpuwm.chain_events.stage_walls returns the same keys as stage_seconds",
+    "here, and gpuwm.chain_events.summarize returns the totals.",
+    "",
+    "These numbers are NOT a gate and must never become one.  They were taken",
+    "on one box, on one card, against one NOAA cycle, and a slower or faster",
+    "reading is information rather than a failure.  What the suite DOES hold",
+    "is that the stage names here are names the chain still emits, so a",
+    "rename cannot silently turn this file into a comparison against nothing,",
+    "and that the pinned prepare receipt accounts for itself."
+  ],
+  "provenance": {
+    "box": "Drew's Windows 11 workstation, 32-thread CPU (the reference box)",
+    "card": "NVIDIA RTX 3080 (sm_86); this box's 5090 moved to node-2 on 2026-08-15",
+    "date": "2026-08-16",
+    "gpuwm_version": "2.5.0.dev, integration/release-2.5.0 at ed4c0ef69 plus this instrumentation lane",
+    "case": "GFS 12 km single domain, 142x112x49, cycle 2026-08-16T18Z, 6 h, thompson-mp8-ysu-mm5-noah-validation-v1 (the 3080 cannot fit the wizard's default Morrison+RRTMGP suite)",
+    "measured_by": [
+      "cold + normal-size rows: ARWEN-PREP-PROFILING-AUDIT-2026-08-16.md, a",
+      "timestamping driver around a bare `gpuwm go` plus the run's own receipts.",
+      "warm row: this lane's own instrumented runs, read straight out of",
+      "events.jsonl / proof.json / progress.jsonl -- three alternating repeats,",
+      "medians reported, spread stated."
+    ],
+    "caveats": [
+      "The forecast leg ran a reduced physics suite because of the card.  The",
+      "pre-sim path -- fetch, decode, static build, cache write, export -- is",
+      "physics- and card-independent, so its numbers carry across; the forecast",
+      "and render numbers do not.",
+      "The cold run's step 1 is NVRTC compilation for sm_86 against a cache",
+      "holding 7,164 sm_120 entries.  A full-radiation suite makes that longer;",
+      "it does not change the warm number.",
+      "The warm rows reuse an existing download via --data-dir, so the fetch",
+      "stage verifies rather than transfers: its bytes_per_second is null by",
+      "construction and `verified_bytes` is where its bytes are counted."
+    ]
+  },
+  "normal_size_prepare": {
+    "what": "The same prep chain at the documented normal size, stages run individually",
+    "case": "398x320x49 12 km, Morrison profile, cycle 2026-08-16T18Z",
+    "authority_seconds": 0.35,
+    "fetch_seconds": 11.7,
+    "fetch_bytes": 55000000,
+    "fetch_bytes_per_second": 4700000,
+    "manifest_seconds": 0.9,
+    "prepare_seconds": 36.0,
+    "chain_seconds": 49.0,
+    "shipped_prepare_timing_seconds": {
+      "decode": 1.8367253,
+      "initialize_all_times": 9.9261277,
+      "write_prepared_cache": 1.0748438,
+      "direct_wrf_export": 7.8593034,
+      "total": 34.8141967
+    },
+    "shipped_receipt_coverage": 0.5946,
+    "note": [
+      "shipped_prepare_timing_seconds is the receipt as 2.4.1/2.5.0-dev wrote",
+      "it, kept verbatim because it is the defect: its named children account",
+      "for 59% of its own total and the missing 14.1 s -- the static build --",
+      "was timed only behind GPUWM_PERF_TIMING.  gpuwm.stage_timing now refuses",
+      "a receipt under 90%."
+    ]
+  },
+  "runs": {
+    "cold": {
+      "cache_state": "cold",
+      "what": "First run: cold download, kernel cache with no sm_86 entries",
+      "stage_seconds": {
+        "boot": 1.7,
+        "authority": 0.4,
+        "fetch": 11.3,
+        "manifest": 2.4,
+        "prepare": 15.1,
+        "forecast": 111.1,
+        "render": 41.1
+      },
+      "fetch_bytes": 41000000,
+      "forecast_phase_seconds": {
+        "runner_setup_to_step_1": 5.7,
+        "first_step": 51.1,
+        "first_step_excess": 49.8,
+        "integration_and_writer_drain": 54.3
+      },
+      "launch_to_step_1_seconds": 87.6,
+      "launch_to_first_plot_seconds": 144.0,
+      "launch_to_done_seconds": 183.0,
+      "prepare_timing_seconds": {
+        "decode": 1.4092067,
+        "initialize_all_times": 3.3025074,
+        "write_prepared_cache": 0.242063,
+        "direct_wrf_export": 2.624714,
+        "total": 11.2664514
+      },
+      "prepare_timing_is": "the SHIPPED receipt, uninstrumented (67% covered). The cold run pre-dates this lane and was not re-taken; a cold re-run means dropping the whole CuPy kernel cache, which is not a thing to do to a working box for a baseline row."
+    },
+    "warm": {
+      "cache_state": "warm",
+      "what": "Repeat run of the shipped default: warm OS/page/kernel caches, download reused via --data-dir, every value below read straight out of the run's own events.jsonl / proof.json / progress.jsonl / report.json",
+      "stage_seconds": {
+        "boot": 1.281,
+        "authority": 0.301,
+        "fetch": 1.458,
+        "manifest": 0.756,
+        "prepare": 7.404,
+        "forecast": 49.829,
+        "render": 33.963
+      },
+      "stage_seconds_spread": "4 warm repeats on the day: render 33.9-35.4 s, forecast 49.8-50.3 s, every other stage within 0.4 s",
+      "process_wall_seconds": 95.03,
+      "accounted_seconds": 94.99,
+      "unaccounted_seconds": 0.037,
+      "fetch_bytes": 18751935,
+      "fetch_downloaded_bytes": 0,
+      "fetch_bytes_per_second": null,
+      "fetch_note": "null bandwidth is correct and deliberate: this run reused an existing --data-dir, so it verified 18.75 MB rather than transferring any. Bandwidth over a verify-skip read 1.09 GB/s before that distinction existed.",
+      "forecast_phase_seconds": {
+        "preflight_verify": 1.055355,
+        "restore_prepared_cache": 0.445389,
+        "initialize_physics": 0.029129,
+        "first_step": 1.329338,
+        "first_step_excess": null,
+        "integration_and_writer_drain": 47.108332
+      },
+      "first_step_ratio_to_neighbours": [9.5, 10.2, 9.2],
+      "launch_to_step_1_seconds": 15.7,
+      "launch_to_step_1_derivation": "DERIVED, not separately stopwatched: boot+authority+fetch+manifest+prepare (11.200) + the forecast stage's pre-step-log head (49.829 stage - 47.108 step-log wall = 2.721) + restore 0.445 + initialize_physics 0.029 + step 1 1.329.",
+      "launch_to_first_plot_seconds": 20.449,
+      "launch_to_first_plot_source": "first-products receipt (engine-measured); the same case with the early render off reached its first picture at 62.7 s",
+      "launch_to_done_seconds": 95.03,
+      "prepare_timing_seconds": {
+        "verify_inputs": 0.199,
+        "static_build": 1.747,
+        "decode": 0.955,
+        "initialize_all_times": 1.671,
+        "write_prepared_cache": 0.176,
+        "direct_wrf_export": 1.584,
+        "total": 6.582
+      },
+      "prepare_timing_is": "the INSTRUMENTED receipt this lane produces, 96.2% covered. The same stage's shipped-shape receipt on this box covered 69%.",
+      "report_timing_seconds": {
+        "preflight_verify": 1.055,
+        "restore_prepared_cache": 0.445,
+        "initialize_physics": 0.029,
+        "forecast_execution_with_async_io": 46.067,
+        "final_writer_drain": 0.084,
+        "forecast_and_io_inclusive": 46.152,
+        "canonical_final_state_digest": 0.095,
+        "total": 48.003
+      },
+      "report_timing_note": "report.json's keys nest by design (forecast_and_io_inclusive contains forecast_execution_with_async_io and final_writer_drain), so its children over-sum and the stage_timing coverage rule does not apply to it. What this lane added is preflight_verify, which was published as a status and recorded nowhere."
+    }
+  },
+  "card_swap_reproduction": {
+    "what": "The audit's field case, staged and reproduced on this box the day the fix landed: 200 real sm_120 cache entries against the sm_86 card, CUPY_CACHE_DIR pointed at them, a bare `gpuwm go` on the same warm case.",
+    "why_it_is_here": "Before the fix this run said nothing at all: the cache was not empty, so the notice never fired, and 52 s of recompilation ran inside model step 1's wall. It is pinned because it is the one reading that shows every part of this lane working at once.",
+    "stage_seconds": {
+      "boot": 1.346,
+      "authority": 0.335,
+      "fetch": 1.401,
+      "manifest": 0.759,
+      "prepare": 15.704,
+      "forecast": 103.761,
+      "render": 34.669
+    },
+    "process_wall_seconds": 158.01,
+    "unaccounted_seconds": 0.035,
+    "forecast_phase_seconds": {
+      "preflight_verify": 1.091444,
+      "restore_prepared_cache": 0.443302,
+      "initialize_physics": 0.477489,
+      "kernel_compile": 53.376814,
+      "first_step": 53.504672,
+      "first_step_excess": 53.376814,
+      "integration_and_writer_drain": 100.991964
+    },
+    "kernel_compile_evidence": {
+      "reason": "stalled_first_step",
+      "detected_by": "model step 1 exceeded 15 s",
+      "compute_capability": "86",
+      "cached_entries_at_forecast_launch": 261,
+      "cached_entries_for_this_card": 61,
+      "note": "61 of the 261 were written by the chain's OWN preprocessing stage, which uses the GPU. That is why predicting the compile from the cache census is not sufficient on its own and the run also measures the stall: a census taken at forecast launch already reads as warm."
+    },
+    "terminal_signal": "`gpuwm go`'s heartbeat printed `COMPILING_GPU_KERNELS` at 0m20s and 0m40s, where before it printed RUNNING with nothing said about the wait.",
+    "launch_to_first_plot_seconds": 28.563,
+    "prepare_timing_seconds": {
+      "verify_inputs": 0.191,
+      "static_build": 1.742,
+      "decode": 0.95,
+      "initialize_all_times": 10.004,
+      "write_prepared_cache": 0.175,
+      "direct_wrf_export": 1.573,
+      "total": 14.89
+    }
+  },
+  "instrumented_overhead": {
+    "what": "The cost of this instrumentation itself, measured on this box the day it landed",
+    "method": "Same warm case, alternating arms, `git archive ed4c0ef69` for the base tree against the instrumented tree, PYTHONPATH selecting which, GPUWM_RW_WRFBATCH pinned so both arms use the same rust render engine. Both arms produced 1,148 PNGs.",
+    "base_wall_seconds": [97.1, 95.78, 95.22],
+    "instrumented_wall_seconds": [95.45, 96.35, 95.02],
+    "delta_seconds": -0.42,
+    "verdict": "not measurable: -0.4% of the wall, inside the base arm's own 1.9 s spread",
+    "time_to_first_plot_feature": {
+      "what": "The early render (S5) is a feature rather than overhead, and it is the one part of this lane that can cost wall clock: a render subprocess runs concurrently with the forecast and contends for CPU.",
+      "base_wall_seconds": [98.15, 99.78, 93.62],
+      "with_early_render_wall_seconds": [108.67, 99.99, 99.97, 95.03],
+      "time_to_first_plot_seconds": [22, 21, 20, 20.4],
+      "without_early_render_time_to_first_plot_seconds": [63.2, 62.8, 62.7],
+      "verdict": "0 to +5 s of total wall -- the four with-early-render walls straddle the base arm's own spread -- buys first-plot at ~20 s instead of ~63 s. Both arms wrote the same 1,148 PNGs."
+    }
+  },
+  "cross_checks": [
+    "Node-2 (Linux, RTX 5090), 2026-08-16 standup: full 3 h GFS 12 km CONUS `go`, 161 s end to end including 660 PNGs.",
+    "docs/public/FIRST-LIGHT.md (Linux node-3, RTX 4070, 342x272x49): fetch 50.3 s, authorities <1 s, rw-wps 2 m 52 s, 6 h forecast 523 s, render 21.8 s."
+  ],
+  "how_to_take_a_new_reading": [
+    "1. gpuwm go CONFIG --outdir <new dir>            # bare, no flags",
+    "2. python -c \"import json,sys; from gpuwm.chain_events import summarize, stage_walls, read_chain_events; p=sys.argv[1]; print(json.dumps({'stages': stage_walls(read_chain_events(p)), 'summary': summarize(p)}, indent=2))\" <outdir>/events.jsonl",
+    "3. Record the box, the card, the date, the version and the case beside it.",
+    "   A number without those five is not comparable to anything."
+  ]
+}

@@ -42,7 +42,7 @@ from gpuwm.hrrr_forecast import (
 from gpuwm.hrrr_native_static import sha256_file
 from gpuwm.hrrr_prepared_bundle import (
     EXPERIMENT_CONFIG_NAME as PORTABLE_EXPERIMENT_CONFIG_NAME,
-    publish_hrrr_prepared_bundle)
+    HrrrBundleError, publish_hrrr_prepared_bundle)
 from gpuwm.namelist_seal import namelist_extension_invariant
 
 
@@ -1258,13 +1258,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--namelist-input", type=Path, required=True)
     parser.add_argument(
         "--wps-namelist", type=Path,
-        help=("the &geogrid namelist.wps this domain was sized from.  "
-              "Supplying it publishes the PORTABLE bundle beside the "
-              "native one -- proof.json, a role-keyed source manifest "
-              "and the experiment authority -- which is what a "
-              "config-driven forecast stage (the cycling radar-DA "
-              "driver) binds.  Without it the output root is exactly "
-              "what it has always been"))
+        help=("YOUR &geogrid namelist.wps, bound into the portable "
+              "bundle in place of the one this route renders from the "
+              "domain it was given.  The portable bundle -- proof.json, "
+              "a role-keyed source manifest, the experiment authority "
+              "and namelist.wps -- is published on every run, so this "
+              "flag changes WHICH namelist is bound, never WHETHER the "
+              "bundle exists"))
     parser.add_argument(
         "--physics-profile",
         choices=SINGLE_DOMAIN_PHYSICS_PROFILES,
@@ -1355,6 +1355,20 @@ def _require_microphysics_tables(profile: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """This tool's front door; the body is :func:`_prepare_from_argv`.
+
+    Same reason as `gpuwm.cli.main`: `--explain` lives in module state
+    because library warnings have no `args` in reach, and this function
+    is called in-process (the tests import this module and call it), so
+    a stamp that outlives the call leaks an explanation layer into the
+    next one.  `explain_scope` bounds it to this invocation.
+    """
+
+    with explain.explain_scope(False):
+        return _prepare_from_argv(argv)
+
+
+def _prepare_from_argv(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     explain.set_explain(explain.explain_enabled(args))
     cycle, _legacy = resolve_cycle_flags(
@@ -1432,13 +1446,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.extend_root_preparation is not None:
         if args.wps_namelist is not None:
             # A sealed extension joins one more hour onto a root that
-            # already published its own authorities; publishing a second,
-            # different set beside it would leave two proofs describing
-            # one bundle.  Refuse rather than silently drop the flag.
+            # already published its own authorities; binding a second,
+            # different namelist beside them would leave two proofs
+            # describing one bundle.  Refuse rather than silently drop
+            # the flag.
             raise ValueError(
-                "--wps-namelist publishes the portable bundle for a NEW "
-                "preparation; a sealed extension inherits the root's own "
-                "authorities and must not republish them")
+                "--wps-namelist binds a namelist into a NEW preparation's "
+                "portable bundle; a sealed extension inherits the root's "
+                "own authorities and must not republish them")
         return _sealed_extension(
             args, valid_time=valid_time,
             source_forecast_hours=source_forecast_hours,
@@ -1476,13 +1491,20 @@ def main(argv: list[str] | None = None) -> int:
         # some other path the operator happened to pass is not a bundle
         # anyone else can bind.  Same link, same canonical names, same
         # bytes -- and a reused external static stays reused.
-        if args.sealed_prepared_cache or args.wps_namelist is not None:
-            sealed_static = output / "native-static.npz"
-            sealed_receipt = output / "native-static-receipt.json"
-            _link_file_create(static_cache, sealed_static)
-            _link_file_create(static_receipt, sealed_receipt)
-            static_cache = sealed_static
-            static_receipt = sealed_receipt
+        #
+        # Unconditional, because the portable bundle is published on
+        # every run now.  It used to be gated on the two flags that
+        # implied a portable product, which left the default --static-cache
+        # run publishing nothing: the bundle writer refuses a static cache
+        # outside the root ("is outside the bundle root"), so the one
+        # decision that made the authority publishable was taken only when
+        # someone had already asked for it by name.
+        sealed_static = output / "native-static.npz"
+        sealed_receipt = output / "native-static-receipt.json"
+        _link_file_create(static_cache, sealed_static)
+        _link_file_create(static_receipt, sealed_receipt)
+        static_cache = sealed_static
+        static_receipt = sealed_receipt
     geometry_command = [
         sys.executable,
         str(REPO / "tools" / "write_hrrr_native_geometry_receipt.py"),
@@ -1535,13 +1557,16 @@ def main(argv: list[str] | None = None) -> int:
         "--history-interval-seconds", str(args.history_interval_seconds),
         "--outdir", str(native / "preparation-report"),
     ]
-    if args.wps_namelist is not None:
-        # Only the benchmark holds the experiment tables this route
-        # builds in code, so only it can render the authority a
-        # config-driven stage will bind.
-        benchmark.extend((
-            "--publish-experiment-config",
-            str(output / PORTABLE_EXPERIMENT_CONFIG_NAME)))
+    # Unconditional.  Only the benchmark holds the experiment tables this
+    # route builds in code, so only it can render the authority a
+    # config-driven stage will bind -- and every prepared tree needs one,
+    # because every prepared tree is something `gpuwm sim` should be able
+    # to run.  It used to be published only when --wps-namelist was
+    # supplied, which is how a finished tree could exist that no forecast
+    # front door would accept.
+    benchmark.extend((
+        "--publish-experiment-config",
+        str(output / PORTABLE_EXPERIMENT_CONFIG_NAME)))
     if args.sealed_prepared_cache:
         benchmark.append("--sealed-prepared-cache")
     for acknowledgement in args.ack:
@@ -1612,14 +1637,35 @@ def main(argv: list[str] | None = None) -> int:
         output=output / "wrf-native-input")
     export_seconds = time.perf_counter() - export_started
 
-    # ---- the portable half, published only when asked for --------------
+    # ---- the portable half, published on every run ---------------------
     # Everything above this line is the certified native preparation and
-    # is untouched.  This adds the three documents a config-driven
-    # forecast stage binds, from values already on disk: the cache's own
-    # source identity, the preparation report's preprocessing receipt,
-    # and digests of files this wrapper just wrote.
+    # is untouched.  This adds the documents a config-driven forecast
+    # stage binds, from values already on disk: the cache's own source
+    # identity, the preparation report's preprocessing receipt, and
+    # digests of files this wrapper just wrote.
+    #
+    # It used to be gated on --wps-namelist, because the caller's
+    # namelist was the one authority this route could not produce.  It
+    # can now: the route holds the experiment those numbers come from,
+    # and the bundle writer renders a namelist.wps from it and checks it
+    # with the forecast stage's own geometry validator.  So publication
+    # is the DEFAULT, and --wps-namelist means "bind mine instead of the
+    # rendered one".  MEASURED 2026-08-18: a prep that exited 0 with
+    # every wrfinput/wrfbdy on disk left a tree `gpuwm sim` refused,
+    # because nothing here had published the digests it binds.
+    #
+    # A publication that cannot be completed does not fail the
+    # preparation -- the native tree it would have described is finished
+    # and valid, and the native benchmark runs it.  The reason is
+    # recorded and printed instead, and `gpuwm sim` reads it back off
+    # this receipt when it refuses the tree, so the chain says the same
+    # thing at both ends.
     portable_bundle = None
-    if args.wps_namelist is not None:
+    portable_bundle_refusal = None
+    try:
+        # Read inside the guard on purpose: every input the publication
+        # needs is an input the publication can fail on, and a run that
+        # cannot publish still has a native tree worth keeping.
         cache_header = json.loads(
             (native / "prepared-cache" / "header.json").read_text(
                 encoding="utf-8"))
@@ -1630,7 +1676,8 @@ def main(argv: list[str] | None = None) -> int:
             geometry_receipt=geometry_receipt,
             bridge_manifest=bridge_manifest,
             namelist_input=namelist_input,
-            wps_namelist=args.wps_namelist.resolve(),
+            wps_namelist=(None if args.wps_namelist is None
+                          else args.wps_namelist.resolve()),
             source_manifest=source_manifest,
             experiment_config=output / PORTABLE_EXPERIMENT_CONFIG_NAME,
             source_cycle=valid_time,
@@ -1646,15 +1693,31 @@ def main(argv: list[str] | None = None) -> int:
             domain_spec=(args.domain_spec.resolve()
                          if args.domain_spec is not None else None),
             namelist_extension_invariant=namelist_invariant)
+    except (HrrrBundleError, OSError, TypeError, ValueError, KeyError) as error:
+        portable_bundle_refusal = (
+            f"{type(error).__name__}: {error}")
+        print(
+            "prepare-hrrr-wrf: the native preparation finished, and the "
+            "portable authorities a config-driven forecast binds "
+            f"(proof.json, {PORTABLE_EXPERIMENT_CONFIG_NAME}, namelist.wps) "
+            f"were NOT published: {portable_bundle_refusal}\n"
+            "  what still works: the native bundle in this output root, run "
+            "by tools/hrrr_single_domain_benchmark.py --prepared-cache\n"
+            "  what does not: `gpuwm sim` on this root, which binds those "
+            "authorities and will say so",
+            file=sys.stderr)
 
     result = {
         "status": "PASS",
         "stock_wrf_export": stock_wrf_export,
         # The three pins a forecast stage passes beside --prepared-root,
-        # or None when the portable bundle was not requested.  Same rule
-        # as bridge_manifest_sha256 below: each stage publishes the
-        # digests the stage after it must bind.
+        # or None with the reason beside it when the publication could
+        # not be completed.  Same rule as bridge_manifest_sha256 below:
+        # each stage publishes the digests the stage after it must bind
+        # -- and when it cannot, it records why, here, where `gpuwm sim`
+        # reads it back so both ends of the chain say the same thing.
         "portable_bundle": portable_bundle,
+        "portable_bundle_refusal": portable_bundle_refusal,
         # Named only when it exists.  A path in a receipt is a claim
         # that the artifact is there; a skipped or refused export must
         # not leave one behind for a reader to trip over.

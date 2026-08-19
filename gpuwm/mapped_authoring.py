@@ -32,9 +32,11 @@ from gpuwm.mapped_composition import (
     _verify_manifest,
     load_composition,
 )
+from gpuwm.mapped_engine_bridge import ENGINE_RUST as _ENGINE_RUST
 from gpuwm.mapped_source import (
     MAPPING_SCHEMA,
     _grib_selectors_overlap,
+    _mapped_engine_choice,
     _require_authority_snapshot,
     _sha256,
     _snapshot_authority,
@@ -338,6 +340,82 @@ class VtableRow:
             "units": self.units,
             "description": self.description,
         }
+
+
+#: Unit spellings that mean "dimensionless", collapsed to one token.
+#: ECMWF writes a fraction as ``(0 - 1)``; CF writes ``1``.
+#:
+#: ``0/1 flag`` and ``m3 m-3`` are here because THIS PROJECT'S OWN SHIPPED
+#: AUTHORITIES use them and were refused without them: every mapping and
+#: descriptor in ``configs/`` and ``gpuwm/authorities/`` declares
+#: ``land_fraction`` as ``"0/1 Flag" -> "1"`` (the WPS Vtable spelling of a
+#: land/sea mask, which is what ``Vtable.GFS.rw-wps`` and
+#: ``Vtable.ERA5_CDO`` carry) and ``volumetric_soil_moisture`` as
+#: ``"fraction" -> "m3 m-3"`` (cubic metres of water per cubic metre of
+#: soil -- a ratio of like quantities, so dimensionless, and numerically
+#: the same number as the fraction ECMWF delivers).  Both are RENAMES.
+#: Percent is deliberately NOT here: ``%`` really is a factor of 100 and
+#: must declare ``"scale": 0.01``.
+#:
+#: Matched after ``_canonical_unit`` has dropped ``**`` and collapsed
+#: whitespace, and compared lower-case, so ``m**3 m**-3`` and ``0/1 Flag``
+#: reach this set as ``m3 m-3`` and ``0/1 flag``.
+_DIMENSIONLESS = {
+    "1", "(0-1)", "(0 - 1)", "fraction", "-", "0/1 flag", "m3 m-3",
+}
+
+
+def _canonical_unit(text: str) -> str:
+    """One spelling for one unit, so a RENAME is not read as a CONVERSION.
+
+    ECMWF writes exponents as ``m s**-1`` and ``m**2 s**-2``; CF writes
+    ``m s-1`` and ``m2 s-2``.  Those pairs are the same unit spelled two
+    ways and legitimately convert with scale 1.0.  ``hPa`` and ``Pa`` are
+    not, and that is the distinction this makes.
+    """
+
+    collapsed = " ".join(str(text).replace("**", "").split()).strip()
+    return "1" if collapsed.lower() in _DIMENSIONLESS else collapsed
+
+
+def _require_declared_unit_scale(field_name: str, field: Mapping[str, object]) -> None:
+    """A real unit change must declare its factor, not inherit 1.0.
+
+    The failure this closes: a descriptor may say
+    ``units = {"source": "hPa", "target": "Pa"}`` and omit ``scale``.
+    ``_unit_transform`` defaults the factor to 1.0, so the values pass
+    through a hundred times too small, and every gate downstream agrees
+    -- the vertical-coverage check compares the wrong number against
+    ``model_top_pa`` and passes, and hPa reach ``initialize_real`` as Pa.
+    Measured on a real descriptor: pressure levels compiled to
+    ``[10.0, 8.5, 5.0, 2.5]`` hPa-as-Pa instead of
+    ``[1000, 850, 500, 250]``, with a PASS receipt.
+
+    Silence is only safe when source and target are the same unit, so
+    that is exactly what is allowed to stay silent.  A declared ``scale``
+    -- including a deliberate 1.0 -- always satisfies this: the author
+    who writes it has made the claim explicitly.
+    """
+
+    units = field.get("units")
+    if not isinstance(units, Mapping):
+        return
+    if "scale" in units or "offset" in units:
+        return
+    source = units.get("source")
+    target = units.get("target")
+    if not isinstance(source, str) or not isinstance(target, str):
+        return
+    if _canonical_unit(source) == _canonical_unit(target):
+        return
+    raise ValueError(
+        f"field {field_name!r} converts units from {source!r} to {target!r} "
+        f"but declares no scale, so the conversion would silently apply a "
+        f"factor of 1.0.  Add \"scale\" (and \"offset\" if the zero point "
+        f"moves) to that field's units -- for example hPa -> Pa is "
+        f"\"scale\": 100.0.  If the two spellings are the same unit, say so "
+        f"with an explicit \"scale\": 1.0."
+    )
 
 
 def _parse_wps_vtable_bytes(data: bytes, label: str) -> tuple[VtableRow, ...]:
@@ -678,6 +756,7 @@ def compile_mapping_descriptor(
             allowed=_FIELD_KEYS | {"vtable_selectors"},
             required={"units", "source_axes", "target_axes", "location", "missing"},
         )
+        _require_declared_unit_scale(field_name, field)
         imported = field.pop("vtable_selectors", None)
         derived = isinstance(field.get("derivation"), str) and bool(field["derivation"])
         if source_format == "netcdf":
@@ -933,6 +1012,77 @@ def _verified_decoder_snapshot(path: Path, role: str) -> _FileSnapshot:
     return snapshot
 
 
+def _resolve_existing_manifest(output_path: Path, manifest_digest: str
+                               ) -> bool:
+    """Write, skip, or refuse -- decided on the bytes, not on existence.
+
+    Returns ``True`` when nothing is at ``output_path`` and this call
+    should publish, ``False`` when the file already holds exactly the
+    manifest this call composed (so there is nothing to write and
+    nothing to complain about), and raises when it holds something
+    else.
+
+    The refusal keeps every property it had -- a manifest already on
+    disk binds a run to bytes THIS authoring did not seal, and silently
+    replacing it would move that binding under a reader who never asked
+    -- and it now names the two commands that resolve it, because the
+    walked failure was a documented "runnable as written" command that
+    exited 78 with no next step (UX finding N13).
+    """
+
+    try:
+        if not output_path.exists():
+            return True
+        if output_path.is_file() and _sha256(output_path) == manifest_digest:
+            return False
+    except OSError as error:                          # pragma: no cover
+        raise FileExistsError(
+            f"cannot read the manifest already at {output_path}: {error}\n"
+            f"  remedy: delete {output_path.name} and re-run, or pass "
+            "--author-input-manifest a path this process can read"
+        ) from error
+    on_disk = (_sha256(output_path) if output_path.is_file()
+               else "not a regular file")
+    raise FileExistsError(
+        f"refusing to overwrite {output_path}: it already holds a "
+        f"different input manifest (on disk {on_disk}, this authoring "
+        f"{manifest_digest}), and a run bound to the file on disk would "
+        "be bound to bytes this authoring did not seal.\n"
+        f"  remedy: delete {output_path.name} and re-run the command, or "
+        "point --author-input-manifest at a path that does not exist yet")
+
+
+def _authoring_receipt(output_path: Path, mapping, manifest_bytes: bytes,
+                       manifest_digest: str, primary, supplements,
+                       provenance, decoders, *, reauthored: bool
+                       ) -> dict[str, object]:
+    """The one receipt shape, whether bytes were written or matched.
+
+    ``reauthored`` is the only difference: ``False`` means the file was
+    already exactly this manifest, which is what a second paste of a
+    printed prep command produces.  Callers print a different line for
+    it; nothing downstream branches on it, because the manifest a run
+    binds is byte-identical either way.
+    """
+
+    return {
+        "schema": MANIFEST_AUTHORING_SCHEMA,
+        "status": "PASS_IDENTITY_BOUND_NOT_STOCK_WRF_CERTIFIED",
+        "reauthored": reauthored,
+        "manifest": {
+            "path": str(output_path),
+            "bytes": len(manifest_bytes),
+            "sha256": manifest_digest,
+        },
+        "source_format": mapping["format"],
+        "primary_file_count": len(primary),
+        "supplement_file_count": sum(len(paths)
+                                     for paths in supplements.values()),
+        "provenance_file_count": len(provenance),
+        "decoder_file_count": len(decoders),
+    }
+
+
 def author_input_manifest(
     output_path: str | Path,
     *,
@@ -945,12 +1095,40 @@ def author_input_manifest(
     grib2_inventory: str | Path | None = None,
     grib2_dump: str | Path | None = None,
     expected_format: str | None = None,
+    member: str | None = None,
+    member_identity: str | None = None,
 ) -> dict[str, object]:
-    """Create and round-trip an exact composition input manifest."""
+    """Create and round-trip an exact composition input manifest.
 
+    ``member``/``member_identity`` declare an EXPLICIT ensemble member
+    binding for archives whose product octets carry none: the caller's
+    own verified authority (a filename-bound member manifest, for one)
+    names the member, and this manifest seals it so the composition
+    stamps it onto every canonical frame.  The pair is atomic -- a
+    member with no identity policy is a number with no provenance, and
+    an identity policy with no member binds nothing.
+    """
+
+    if (member is None) != (member_identity is None):
+        raise ValueError(
+            "member and member_identity are an atomic pair: the manifest "
+            "seals WHICH member and WHAT authority named it together"
+        )
+    if member is not None and (
+        not isinstance(member, str) or not member.strip()
+        or not isinstance(member_identity, str) or not member_identity.strip()
+    ):
+        raise ValueError(
+            "member and member_identity must be non-empty strings"
+        )
     output_path = Path(output_path).resolve()
-    if output_path.exists():
-        raise FileExistsError(f"refusing to overwrite {output_path}")
+    # NOT a bare existence check.  ``data/<source>/prep-command.txt`` is
+    # documented "runnable as written" and every route prints it as the
+    # next command; pasting it a second time -- which is what a reader
+    # does after fixing an unrelated flag -- met exit 78 and no remedy
+    # (UX finding N13).  Re-authoring is decided on CONTENT, below,
+    # once the manifest this call would write is known: identical bytes
+    # are a no-op, and different bytes still refuse, now by name.
     mapping_path = Path(mapping_path).resolve()
     composition_path = Path(composition_path).resolve()
     (
@@ -979,15 +1157,44 @@ def author_input_manifest(
     provenance = {
         str(role): Path(path).resolve() for role, path in provenance_files.items()
     }
+    # The manifest seals WHICH BINARY read the bytes, so the decoder
+    # inventory has to be the one the run will actually use.  On the
+    # Rust engine that is one in-process engine rather than the
+    # subprocess pair, and a manifest sealed against the pair would then
+    # be replayed under a decoder that never ran -- evidence naming the
+    # wrong binary is worse than no evidence, so the two routes seal
+    # different rows and `decode_composed_source` refuses a mismatch.
+    engine_binary = None
+    if _mapped_engine_choice(
+        grib1_bridge=grib1_bridge,
+        grib2_inventory=grib2_inventory,
+        grib2_dump=grib2_dump,
+        subcommand="decode",
+        source_format=str(mapping["format"]),
+    ) == _ENGINE_RUST:
+        from gpuwm.mapped_engine_bridge import require_engine
+
+        engine_binary = require_engine()
     decoders = _decoder_inventory(
         str(mapping["format"]),
         grib1_bridge=grib1_bridge,
         grib2_inventory=grib2_inventory,
         grib2_dump=grib2_dump,
+        engine=engine_binary,
     )
-    terrain = composition["supplements"]["terrain_height"]
-    expected_supplements = {str(terrain["data_role"])}
-    expected_provenance = {str(terrain["provenance_role"])}
+    # A cross-source composition may have no terrain supplement (terrain
+    # bound to a contributing source) and adds one data/provenance role per
+    # field_sources binding; the manifest's role inventory is exactly the
+    # union the composition declares, either way.
+    terrain = composition["supplements"].get("terrain_height")
+    expected_supplements: set[str] = set()
+    expected_provenance: set[str] = set()
+    if terrain is not None:
+        expected_supplements.add(str(terrain["data_role"]))
+        expected_provenance.add(str(terrain["provenance_role"]))
+    for binding in (composition.get("field_sources") or {}).values():
+        expected_supplements.add(str(binding["data_role"]))
+        expected_provenance.add(str(binding["provenance_role"]))
     if set(supplements) != expected_supplements:
         raise ValueError(
             "supplement role inventory differs from the composition contract"
@@ -1053,6 +1260,13 @@ def author_input_manifest(
         "schema": INPUT_MANIFEST_SCHEMA,
         "mapping_sha256": fingerprints[mapping_path][0],
         "composition_sha256": fingerprints[composition_path][0],
+        # Written only when declared, so every manifest authored before
+        # the member binding existed is byte-identical to what the same
+        # authoring produces today.
+        **(
+            {"member": member, "member_identity": member_identity}
+            if member is not None else {}
+        ),
         "primary_files": [
             _path_row(path, parent, fingerprints[path]) for path in primary
         ],
@@ -1071,6 +1285,11 @@ def author_input_manifest(
     }
     manifest_bytes = _canonical_json(payload)
     manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    reauthored = _resolve_existing_manifest(output_path, manifest_digest)
+    if not reauthored:
+        return _authoring_receipt(output_path, mapping, manifest_bytes,
+                                  manifest_digest, primary, supplements,
+                                  provenance, decoders, reauthored=False)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     candidate = output_path.with_name(
         f".{output_path.name}.candidate-{os.getpid()}-{uuid.uuid4().hex[:12]}"
@@ -1115,20 +1334,9 @@ def author_input_manifest(
         raise
     finally:
         candidate.unlink(missing_ok=True)
-    return {
-        "schema": MANIFEST_AUTHORING_SCHEMA,
-        "status": "PASS_IDENTITY_BOUND_NOT_STOCK_WRF_CERTIFIED",
-        "manifest": {
-            "path": str(output_path),
-            "bytes": len(manifest_bytes),
-            "sha256": manifest_digest,
-        },
-        "source_format": mapping["format"],
-        "primary_file_count": len(primary),
-        "supplement_file_count": sum(len(paths) for paths in supplements.values()),
-        "provenance_file_count": len(provenance),
-        "decoder_file_count": len(decoders),
-    }
+    return _authoring_receipt(output_path, mapping, manifest_bytes,
+                              manifest_digest, primary, supplements,
+                              provenance, decoders, reauthored=True)
 
 
 __all__ = [

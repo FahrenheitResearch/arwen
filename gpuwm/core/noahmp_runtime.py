@@ -216,6 +216,247 @@ def _slab_path_selected() -> bool:
     return _resolve_leaf_evaluator() is evaluate_leaf_batch_on_device
 
 
+def _glacier_evaluate_on_device(inputs, count, dt):
+    from gpuwm.core.noahmp_glacier_gpu import evaluate_glacier_columns
+    return evaluate_glacier_columns(inputs, count, dt)
+
+
+def _glacier_evaluate_on_host(inputs, count, dt):
+    from gpuwm.core.noahmp_glacier_gpu import (
+        evaluate_glacier_columns_on_host)
+    return evaluate_glacier_columns_on_host(inputs, count, dt)
+
+
+#: Which glacier evaluator the dispatch uses -- the same module-attribute
+#: doctrine as :data:`LEAF_BATCH_EVALUATOR`: the CUDA batch by default,
+#: rebindable by a test, and ``GPUWM_NOAHMP_HOST_LEAVES=1`` selects the
+#: paired CPython transcription for a whole process.
+GLACIER_BATCH_EVALUATOR = _glacier_evaluate_on_device
+
+
+def _resolve_glacier_evaluator():
+    if os.environ.get(HOST_LEAVES_ENV, "") == "1":
+        return _glacier_evaluate_on_host
+    return GLACIER_BATCH_EVALUATOR
+
+
+def _glacier_execution_provenance(evaluator) -> str:
+    """The execution-provenance token the census publishes when the
+    glacier path runs: which implementation answered the columns."""
+    if evaluator is _glacier_evaluate_on_device:
+        return ("noahmp-glacier/cuda "
+                "(gpuwm/core/kernels/noahmp_glacier.cu)")
+    if evaluator is _glacier_evaluate_on_host:
+        return "noahmp-glacier/host (gpuwm/core/noahmp_glacier.py)"
+    return f"noahmp-glacier/bound:{getattr(evaluator, '__name__', repr(evaluator))}"
+
+
+def _glacier_lsm_step(fields, atmosphere, glacier_mask, *, params, coszen,
+                      dt, dzs, evaluator) -> None:
+    """Run NOAHMP_GLACIER over the masked columns and write the driver's
+    glacier arm back into ``fields``.
+
+    The marshalling is ``module_sf_noahmpdrv.F``'s glacier arm
+    (:765, :1045-1063): the same ``Q_ML``/``P_ML``/``Z_ML`` forcing the
+    ordinary column receives, ``PRCP = PRECIP_IN/DT``, and
+    ``TBOT = MIN(TBOT, 263.15)``.  The write-back is the arm's own fixed
+    assignments (:1065-1150) plus the shared block (:1223-1400) evaluated
+    with the glacier outputs -- including the ``undefined_value``
+    overwrites of the vegetation carriers, which WRF performs every step
+    and which are therefore state, not noise.  ``mutates fields`` only at
+    the masked columns; runs after both paths' ordinary write-back, which
+    never touches these columns.
+    """
+    import cupy as cp
+
+    mask_host = cp.asnumpy(glacier_mask) if hasattr(
+        glacier_mask, "__cuda_array_interface__") else np.asarray(
+        glacier_mask)
+    gj, gi = np.nonzero(mask_host)
+    count = int(gj.size)
+    if count == 0:
+        return
+    at = (gj, gi)
+    dt32 = f32(dt)
+
+    def host2(name):
+        return cp.asnumpy(fields[name])[at].astype(np.float32, copy=False)
+
+    def forcing(name, level=0):
+        return cp.asnumpy(
+            atmosphere[name][level]).astype(np.float32, copy=False)[at]
+
+    temperature = forcing("temperature")
+    qv = forcing("qv")
+    u = forcing("u")
+    v = forcing("v")
+    dz1 = forcing("dz")
+    p_int0 = forcing("p_interface", 0)
+    p_int1 = forcing("p_interface", 1)
+    one = np.float32(1.0)
+    half = np.float32(0.5)
+    q_ml = qv / (one + qv)                       # :758  Q_ML = QV/(1+QV)
+    z_ml = half * dz1                            # :756
+    p_ml = (p_int1 + p_int0) * half              # :755
+    rainbl = host2("rainbl")
+    prcp = rainbl / np.float32(dt32)             # :765
+    tbot = np.minimum(host2("tmn"), np.float32(263.15))   # :1050
+    cosz = cp.asnumpy(cp.asarray(coszen, dtype=cp.float32))[at]
+
+    isnow = cp.asnumpy(fields["isnowxy"])[at].astype(np.int32, copy=False)
+    snice = cp.asnumpy(fields["snicexy"])[:, gj, gi].T.astype(
+        np.float32, copy=False)
+    snliq = cp.asnumpy(fields["snliqxy"])[:, gj, gi].T.astype(
+        np.float32, copy=False)
+    # FICEOLD (:1026-1029): live slots divide unguarded, the rest stay 0.
+    slot = np.arange(NSNOW, dtype=np.int32)[None, :]
+    live = slot >= (isnow[:, None] + NSNOW)
+    ficeold = np.zeros((count, NSNOW), dtype=np.float32)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        np.divide(snice, snice + snliq, out=ficeold, where=live)
+
+    tslb = cp.asnumpy(fields["tslb"])[:, gj, gi].T
+    tsno = cp.asnumpy(fields["tsnoxy"])[:, gj, gi].T
+    inputs = {
+        "cosz": cosz, "sfctmp": temperature, "sfcprs": p_ml, "uu": u,
+        "vv": v, "q2": q_ml, "soldn": host2("swdown"), "prcp": prcp,
+        "lwdn": host2("glw"), "tbot": tbot, "zlvl": z_ml,
+        "qsnow": host2("qsnowxy"), "sneqvo": host2("sneqvoxy"),
+        "albold": host2("alboldxy"), "cm": host2("cmxy"),
+        "ch": host2("chxy"), "sneqv": host2("snow"),
+        "snowh": host2("snowh"), "tg": host2("tgxy"),
+        "tauss": host2("taussxy"), "qsfc": host2("qsfc"),
+        "isnow": isnow, "ficeold": ficeold,
+        "smc": cp.asnumpy(fields["smois"])[:, gj, gi].T,
+        "sh2o": cp.asnumpy(fields["sh2o"])[:, gj, gi].T,
+        "zsnso": cp.asnumpy(fields["zsnsoxy"])[:, gj, gi].T,
+        "stc": np.concatenate((tsno, tslb), axis=1),
+        "snice": snice, "snliq": snliq,
+        "zsoil": zsoil_from_dzs(dzs),
+    }
+    r = evaluator(inputs, count, float(dt32))
+
+    # ---- write-back: the glacier arm (:1065-1150) + shared (:1223-1400)
+    def dev(name):
+        return cp.asarray(np.ascontiguousarray(r[name]))
+
+    def put2(carrier, name):
+        fields[carrier][at] = dev(name)
+
+    undef = np.float32(f32(UNDEFINED_VALUE))
+    zero = np.float32(0.0)
+    dt32f = np.float32(dt32)
+
+    put2("tsk", "trad")
+    put2("hfx", "fsh")
+    put2("grdflx", "ssoil")
+    fields["smstav"][at] = zero                              # :1233-1234
+    fields["smstot"][at] = zero
+    runsf_mm = dev("runsrf") * dt32f                         # :1146 RUNSF*dt
+    runsb_mm = dev("runsub") * dt32f                         # :1147 RUNSB*dt
+    fields["sfcrunoff"][at] = fields["sfcrunoff"][at] + runsf_mm
+    fields["udrunoff"][at] = fields["udrunoff"][at] + runsb_mm
+    salb = dev("albedo")
+    lit = salb > np.float32(-999.0)                          # :1231-1233
+    fields["albedo"][at] = cp.where(lit, salb, fields["albedo"][at])
+    fields["snowc"][at] = np.float32(1.0)                    # :1065 FSNO=1
+    fields["smois"][:, gj, gi] = dev("smc").T
+    fields["sh2o"][:, gj, gi] = dev("sh2o").T
+    stc = dev("stc")
+    fields["tslb"][:, gj, gi] = stc[:, NSNOW:].T
+    fields["tsnoxy"][:, gj, gi] = stc[:, :NSNOW].T
+    fields["zsnsoxy"][:, gj, gi] = dev("zsnso").T
+    fields["snicexy"][:, gj, gi] = dev("snice").T
+    fields["snliqxy"][:, gj, gi] = dev("snliq").T
+    put2("snow", "sneqv")
+    put2("snowh", "snowh")
+    fields["isnowxy"][at] = cp.asarray(r["isnow"].astype(np.int32))
+    fields["canwat"][at] = zero            # CANLIQ = CANICE = 0 (:1150-1151)
+    fields["acsnow"][at] = (fields["acsnow"][at]
+                            + cp.asarray(rainbl) * dev("fpice"))
+    ponding = (dev("ponding") + dev("ponding1")) + dev("ponding2")
+    fields["acsnom"][at] = (fields["acsnom"][at]
+                            + (dev("qmelt") * dt32f + ponding))
+    fields["pondingxy"][at] = ponding
+    put2("emiss", "emissi")
+    put2("qsfc", "qsfc")
+    # The vegetation carriers take the arm's own constants every step
+    # (:1066-1104): undefined_value where WRF writes it, zero where it
+    # writes zero.  QRAINXY and PGSXY are pass-through, exactly as in WRF.
+    fields["tvxy"][at] = undef
+    put2("tgxy", "tg")
+    fields["canliqxy"][at] = zero
+    fields["canicexy"][at] = zero
+    fields["eahxy"][at] = undef
+    fields["tahxy"][at] = undef
+    put2("cmxy", "cm")
+    put2("chxy", "ch")
+    fields["fwetxy"][at] = undef
+    put2("sneqvoxy", "sneqvo")
+    put2("alboldxy", "albold")
+    put2("qsnowxy", "qsnow")
+    fields["wslakexy"][at] = undef
+    fields["waxy"][at] = undef
+    fields["lai"][at] = undef              # XLAIXY = PLAI = undefined
+    fields["xsaixy"][at] = undef
+    put2("taussxy", "tauss")
+    fields["z0"][at] = np.float32(0.002)   # :1137 Z0WRF = 0.002
+    fields["znt"][at] = np.float32(0.002)
+    fields["t2mvxy"][at] = undef
+    put2("t2mbxy", "t2m")
+    # :1285-1286 run for every column; for the glacier arm Q2MV is the
+    # undefined_value and the quotient is what WRF publishes.
+    fields["q2mvxy"][at] = undef / (np.float32(1.0) - undef)
+    q2b = dev("q2e")
+    fields["q2mbxy"][at] = q2b / (np.float32(1.0) - q2b)
+    put2("tradxy", "trad")
+    fields["fvegxy"][at] = zero
+    fields["runsfxy"][at] = runsf_mm
+    fields["runsbxy"][at] = runsb_mm
+    fields["ecanxy"][at] = zero
+    put2("edirxy", "edir")
+    fields["etranxy"][at] = zero
+    put2("fsaxy", "fsa")
+    put2("firaxy", "fira")
+    fields["rssunxy"][at] = undef
+    fields["rsshaxy"][at] = undef
+    # :1305-1314 with RSSUN = undefined <= 0: the conductance is closed.
+    fields["rs"][at] = zero
+    fields["chvxy"][at] = undef
+    put2("chbxy", "ch")
+    fields["canhsxy"][at] = zero
+    put2("fpicexy", "fpice")
+    put2("qsnbotxy", "qsnbot")
+    put2("qmeltxy", "qmelt")
+    put2("eflxbxy", "eflxb")               # defined replacement (glacier.py)
+    put2("qfx", "edir")                    # :1141 QFX = ESOIL
+    put2("lh", "fgev")                     # :1142 LH = FGEV
+    # :1381-1394 with the glacier column's own HCPCT (defined replacement
+    # for WRF's loop-carried read; gpuwm/core/noahmp_glacier.py docstring).
+    hcpct = dev("hcpct")
+    zsnso = dev("zsnso")
+    isnow_out = cp.asarray(r["isnow"].astype(np.int32))
+    soil_energy = cp.zeros(count, dtype=cp.float32)
+    snow_energy = cp.zeros(count, dtype=cp.float32)
+    nsoil = fields["tslb"].shape[0]
+    for k in range(-NSNOW + 1, nsoil + 1):
+        slot_k = k + NSNOW - 1
+        live_k = k >= isnow_out + 1
+        top = k == isnow_out + 1
+        above = zsnso[:, slot_k - 1] if slot_k > 0 else zero
+        thickness = cp.where(top, -zsnso[:, slot_k],
+                             above - zsnso[:, slot_k])
+        term = ((thickness * hcpct[:, slot_k])
+                * (stc[:, slot_k] - np.float32(273.16))) * np.float32(0.001)
+        contribution = cp.where(live_k, term, zero)
+        if k >= 1:
+            soil_energy = soil_energy + contribution
+        else:
+            snow_energy = snow_energy + contribution
+    fields["soilenergy"][at] = soil_energy
+    fields["snowenergy"][at] = snow_energy
+
+
 @dataclass
 class _StagedColumn:
     """One land column suspended at a leaf call, waiting for its batch."""
@@ -290,9 +531,12 @@ NSNOW = 3
 #: own second line.
 NSOIL = 4
 
-#: ``XICE_THRESHOLD``, WRF Registry default 0.5.  gpuwm has no namelist field
-#: for it, so it is pinned here and published in
-#: :data:`NOAHMP_RUNTIME_RESTRICTIONS` rather than left implicit.
+#: ``XICE_THRESHOLD``, WRF Registry default 0.5.  This is the DEFAULT, not
+#: a pin: :class:`NoahmpRuntimeParameters` accepts ``xice_threshold=`` so a
+#: caller whose ice analysis is fractional (the MPAS seam's collaborator
+#: runs 0.02) classifies sea ice where their data says it is.  Every
+#: consumer -- the two ``noahmp_lsm_step`` bodies, the glacier guard and
+#: the post-LSM T2/Q2 ownership -- reads ``params.xice_threshold``.
 XICE_THRESHOLD = 0.5
 
 #: ``undefined_value``, ``module_sf_noahmpdrv.F:629``.  Reaches the column as
@@ -345,28 +589,37 @@ NOAHMP_DIAGNOSTICS_2D = (
 NOAHMP_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
     (
         "glacier_columns",
-        "a post-static pre-forecast scan refuses any active land column "
-        "whose VEGTYP equals ISICE_TABLE; the runtime check remains a "
-        "backstop",
-        "module_sf_noahmpdrv.F:1043-1150 routes it to NOAHMP_GLACIER "
-        "(module_sf_noahmp_glacier.F, 3,080 lines), which is not ported.  "
-        "Falling through to NOAHMP_SFLX would run a vegetated land model on "
-        "an ice sheet.",
+        "an active land column whose VEGTYP equals ISICE_TABLE dispatches "
+        "to the ported NOAHMP_GLACIER column (gpuwm/core/noahmp_glacier.py "
+        "on the host, gpuwm/core/kernels/noahmp_glacier.cu on the device), "
+        "never to NOAHMP_SFLX; guard_noahmp_glacier_columns refuses only "
+        "when the path is disabled (glacier_path=False)",
+        "module_sf_noahmpdrv.F:1045-1150 routes it to NOAHMP_GLACIER "
+        "(module_sf_noahmp_glacier.F, 3,080 lines, sha256 bf94f352...), "
+        "transcribed at the pinned identity opt_alb=2 opt_snf=1 opt_tbot=2 "
+        "opt_stc=1 opt_gla=1.  Two defined replacements for WRF's "
+        "undefined reads are documented in that module's docstring "
+        "(HCPCT/EFLXB).",
     ),
     (
         "sea_ice_columns",
-        "XICE >= 0.5 columns take WRF's skip (SH2O=1, XLAI=0.01) and are "
-        "otherwise untouched",
+        "XICE >= xice_threshold columns take WRF's skip (SH2O=1, "
+        "XLAI=0.01) and are otherwise untouched",
         "This is what WRF does (:715-723).  It is listed because the skip "
         "means no sea-ice surface energy balance exists in a Noah-MP run: "
         "TSK/HFX/QFX over sea ice keep whatever the surface layer left.",
     ),
     (
         "xice_threshold",
-        f"pinned at {XICE_THRESHOLD}",
-        "WRF's XICE_THRESHOLD is a namelist value; gpuwm has no "
-        "configuration field for it, so it cannot be varied and the "
-        "Registry default is pinned.",
+        f"defaults to WRF's Registry {XICE_THRESHOLD}; configurable per "
+        "run through NoahmpRuntimeParameters(xice_threshold=...) and the "
+        "seams that construct it (initialize_physics, "
+        "run_mpas_column_batch)",
+        "WRF's XICE_THRESHOLD is a namelist value.  A fractional sea-ice "
+        "analysis (the MPAS collaborator's runs at 0.02) classifies "
+        "columns the Registry default would hand to the land model; the "
+        "chosen value is part of the restart identity and the "
+        "classification census reports how many columns each class took.",
     ),
     (
         "diagnostic_inventory",
@@ -427,26 +680,58 @@ NOAHMP_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
 
 
 class NoahmpGlacierColumnError(NotImplementedError):
-    """A column reached the glacier entry point, which is not ported."""
+    """A glacier column exists but the ported glacier path is disabled."""
+
+
+def classify_noahmp_surface(xland, xice, vegtyp, *, xice_threshold, isice):
+    """The driver's column partition (``module_sf_noahmpdrv.F:715-725``,
+    ``:1045``) as one pure function over numpy or cupy arrays.
+
+    ``sea_ice`` is decided FIRST and by ``XICE`` alone -- a column at or
+    above the threshold takes WRF's sea-ice skip whatever XLAND says.
+    ``open_water`` is what remains of ``XLAND >= 1.5``.  ``land`` is
+    everything else, and ``glacier`` is its ``VEGTYP == ISICE_TABLE``
+    subset, which dispatches to NOAHMP_GLACIER rather than NOAHMP_SFLX.
+    ``sflx_land`` is the complement that runs the ordinary column.
+
+    This is the seam the native-XLAND contract hangs on: a category-15
+    fractional-ice column carrying native ``xland = 1`` with
+    ``xice < xice_threshold`` classifies ``land`` + ``glacier`` here (the
+    ice-surface physics), while a derived ``xland = 2`` for the same
+    column would classify it ``open_water`` and run no surface at all.
+    """
+    thr = np.float32(xice_threshold)
+    sea_ice = xice >= thr
+    open_water = ((xland - np.float32(1.5)) >= np.float32(0.0)) & ~sea_ice
+    land = ~(sea_ice | open_water)
+    glacier = land & (vegtyp == int(isice))
+    return {"sea_ice": sea_ice, "open_water": open_water, "land": land,
+            "glacier": glacier, "sflx_land": land & ~glacier}
 
 
 def guard_noahmp_glacier_columns(fields, params: "NoahmpRuntimeParameters"):
-    """Refuse Noah-MP glacier columns before forecast state can advance.
+    """Admit or refuse Noah-MP glacier columns before state can advance.
 
-    WRF v4.6.1 ``module_sf_noahmpdrv.F:1043`` routes these columns to
-    ``NOAHMP_GLACIER``.  That solver is out of scope; running ``NOAHMP_SFLX``
-    would be a different surface.  Sea-ice/open-water columns are excluded
-    with the same masks as the runtime driver.
+    WRF v4.6.1 ``module_sf_noahmpdrv.F:1045`` routes these columns to
+    ``NOAHMP_GLACIER``, which IS ported (:mod:`gpuwm.core.noahmp_glacier`)
+    and dispatched by both ``noahmp_lsm_step`` bodies.  The refusal
+    survives as the backstop for the one state it still owns: glacier
+    columns present while ``params.glacier_path`` is False (a test or an
+    operator disabling the path deliberately).  Running ``NOAHMP_SFLX``
+    on them was never an option in either state.
     """
     import cupy as cp
 
     xice = cp.asarray(fields["xice"])
     xland = cp.asarray(fields["xland"])
     vegtyp = cp.asarray(fields["ivgtyp"])
-    active_land = ((xice < np.float32(XICE_THRESHOLD))
-                   & (xland < np.float32(1.5)))
-    offending = active_land & (vegtyp == int(params.land_use.isice))
+    masks = classify_noahmp_surface(
+        xland, xice, vegtyp, xice_threshold=params.xice_threshold,
+        isice=int(params.land_use.isice))
+    offending = masks["glacier"]
     if not bool(cp.any(offending)):
+        return
+    if params.glacier_path:
         return
     flat = int(cp.argmax(offending.reshape(-1)).item())
     j, i = (int(value) for value in np.unravel_index(
@@ -455,8 +740,8 @@ def guard_noahmp_glacier_columns(fields, params: "NoahmpRuntimeParameters"):
     raise NoahmpGlacierColumnError(
         "post-static Noah-MP glacier guard: first offending active land "
         f"cell is (j={j}, i={i}), VEGTYP={category}=ISICE_TABLE. "
-        "NOAHMP_GLACIER is not ported; porting it is the follow-up that "
-        "removes this guard.")
+        "The NOAHMP_GLACIER path is disabled on these parameters "
+        "(glacier_path=False) and NOAHMP_SFLX is not a substitute for it.")
 
 
 class NoahmpRuntimeParameters:
@@ -471,7 +756,25 @@ class NoahmpRuntimeParameters:
     """
 
     def __init__(self, bundle=None, *,
-                 dataset_identifier: str = DEFAULT_VEGETATION_DATASET):
+                 dataset_identifier: str = DEFAULT_VEGETATION_DATASET,
+                 xice_threshold: float = XICE_THRESHOLD,
+                 glacier_path: bool = True):
+        # Keyword-only with no **kwargs: a misspelled keyword refuses with
+        # its name (house convention), never lands as an ignored attribute.
+        threshold = float(xice_threshold)
+        if not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            raise ValueError(
+                f"xice_threshold must be a finite fraction in [0, 1], got "
+                f"{xice_threshold!r} (WRF Registry default "
+                f"{XICE_THRESHOLD})")
+        #: The sea-ice classification threshold every consumer reads.
+        #: WRF-compat default 0.5; a fractional-ice caller (the MPAS seam's
+        #: collaborator runs 0.02) sets its own.
+        self.xice_threshold = threshold
+        #: The ported NOAHMP_GLACIER dispatch, default ON.  False makes
+        #: guard_noahmp_glacier_columns refuse glacier columns again --
+        #: the red-on-revert state, never a shipping configuration.
+        self.glacier_path = bool(glacier_path)
         self.bundle = load_noahmp_parameters() if bundle is None else bundle
         self.dataset_identifier = str(dataset_identifier)
         categories, veg = self.bundle.vegetation_groups(
@@ -581,8 +884,18 @@ class NoahmpRuntimeParameters:
                           "phys/module_sf_noahmplsm.F:NOAHMP_SFLX",
             "dataset_identifier": self.dataset_identifier,
             "nsnow": int(NSNOW),
-            "xice_threshold": float(XICE_THRESHOLD),
+            "xice_threshold": float(self.xice_threshold),
             "column_solver": "host-fp32+device-vegeflux-v1",
+            # The glacier dispatch is part of the trajectory identity: a
+            # restart written with it enabled must not resume with it off,
+            # and the threshold above decides which columns it owns.
+            "glacier": {
+                "wrf_source": "phys/module_sf_noahmp_glacier.F:"
+                              "NOAHMP_GLACIER",
+                "sha256": "bf94f3522c3b9c2c9cfbb34fa7e485ff58519106db4345"
+                          "20968793409a520579",
+                "enabled": bool(self.glacier_path),
+            },
             "tables": payload,
         }
 
@@ -669,9 +982,55 @@ def zsoil_from_dzs(dzs) -> np.ndarray:
     return zsoil
 
 
+#: Every field the cold start reads or writes, pulled to the host once.
+#: Shared by both arms so a carrier cannot be present in one and absent from
+#: the other -- which would be a parity failure that only showed up as a
+#: forecast seeded from an uninitialised array.
+_COLD_START_SLAB = ("snow", "snowh", "canwat", "tslb", "smois", "sh2o",
+                    "tsk", "xice", "ivgtyp", "isltyp", "lai",
+                    *NOAHMP_STATE_2D, *NOAHMP_STATE_INT_2D,
+                    *NOAHMP_STATE_SNOW_3D, *NOAHMP_STATE_SNOWSOIL_3D)
+
+#: Every carrier ``NOAHMP_INIT`` leaves changed.  The rest of the slab above
+#: is input (``tsk``, ``xice``, ``ivgtyp``, ``isltyp``) or Registry-zero state
+#: the routine has no argument for (``taussxy``, ``pgsxy``, 2114-2153's
+#: comment).  ``tests/test_noahmp_cold_start_device.py`` compares exactly this
+#: set between the two arms and asserts the set itself, so a carrier added to
+#: one arm and not the other cannot slip past the parity gate.
+COLD_START_WRITES = (
+    "snow", "snowh", "canwat", "tslb", "smois", "sh2o", "lai",
+    "isnowxy", "zsnsoxy", "tsnoxy", "snicexy", "snliqxy",
+    "tvxy", "tgxy", "canicexy", "canliqxy", "eahxy", "tahxy",
+    "cmxy", "chxy", "fwetxy", "sneqvoxy", "alboldxy",
+    "qsnowxy", "qrainxy", "wslakexy", "waxy", "xsaixy",
+)
+
+#: Setting this to ``1`` forces the paired numpy authority for the one-time
+#: cold start -- the same doctrine as :data:`HOST_LEAVES_ENV` and
+#: :data:`STAGED_COLUMNS_ENV`, for the routine that runs before the first
+#: step rather than inside it.  A parity run sets it to produce the scalar
+#: reference the device arm is compared against.
+HOST_COLD_START_ENV = "GPUWM_NOAHMP_HOST_COLD_START"
+
+
+def _resolve_cold_start():
+    """Which arm answers the cold start on this call.
+
+    ``HOST_LEAVES_ENV`` is honoured as well as the dedicated switch: a process
+    that asked for the CPython authority for the whole column solver and still
+    got a device cold start would be publishing host step numbers on top of a
+    state the device produced.
+    """
+    if os.environ.get(HOST_COLD_START_ENV, "") == "1":
+        return cold_start_on_host
+    if os.environ.get(HOST_LEAVES_ENV, "") == "1":
+        return cold_start_on_host
+    return COLD_START_EVALUATOR
+
+
 def noahmp_cold_start(fields, *, params: NoahmpRuntimeParameters,
                       dzs) -> None:
-    """``NOAHMP_INIT`` + ``SNOW_INIT`` over the whole slab, on the host.
+    """``NOAHMP_INIT`` + ``SNOW_INIT`` over the whole slab.
 
     Runs once, at driver construction, exactly where WRF runs it
     (``phys/module_physics_init.F`` calls NOAHMP_INIT before the first step).
@@ -684,19 +1043,202 @@ def noahmp_cold_start(fields, *, params: NoahmpRuntimeParameters,
     declares it and never reads it.  ``FNDSNOWH`` is passed true: gpuwm's
     ingest always carries a physical snow depth, and the false branch
     (``SNOWH = SNOW * 0.005``) would silently replace it.
+
+    The columns are answered by :func:`cold_start_on_device` -- the CUDA
+    driver kernel ``gpuwm/core/kernels/noahmp_driver.cu``, which
+    ``gpuwm/core/preflight.py`` already prices into every scheme-4 compile.
+    :func:`cold_start_on_host` is the paired scalar authority behind
+    ``GPUWM_NOAHMP_HOST_COLD_START=1``; the two are byte-for-byte equal and
+    ``tests/test_noahmp_cold_start_device.py`` is what says so.
     """
     import cupy as cp
 
     slab = {name: np.ascontiguousarray(cp.asnumpy(fields[name]))
-            for name in ("snow", "snowh", "canwat", "tslb", "smois", "sh2o",
-                         "tsk", "xice", "ivgtyp", "isltyp", "lai",
-                         *NOAHMP_STATE_2D, *NOAHMP_STATE_INT_2D,
-                         *NOAHMP_STATE_SNOW_3D, *NOAHMP_STATE_SNOWSOIL_3D)}
-    ny, nx = slab["tsk"].shape
+            for name in _COLD_START_SLAB}
     nsoil = slab["tslb"].shape[0]
     if nsoil != NSOIL:
         raise ValueError(
             f"Noah-MP cold start is four-layer only, got nsoil={nsoil}")
+
+    _resolve_cold_start()(slab, params=params, dzs=dzs)
+
+    for name, array in slab.items():
+        fields[name][...] = cp.asarray(array)
+
+
+def cold_start_on_device(slab, *, params: NoahmpRuntimeParameters,
+                         dzs) -> None:
+    """``NOAHMP_INIT`` + ``SNOW_INIT`` for the whole slab, on the GPU.
+
+    One thread per column through ``noahmp_driver_noahmp_init``, whose
+    bitwise identity with the unmodified WRF v4.6.1 driver over
+    ``gpuwm/data/noahmp/oracle/noahmp-driver.csv`` is the gate in
+    ``tests/test_noahmp_driver_cuda.py`` (``max_ulp == 0``, no tolerance
+    anywhere).  This is the marshalling that was missing: the kernel and its
+    wrappers were finished and verified with no production caller, so every
+    Noah-MP run compiled ``noahmp_driver.cu`` and then cold-started 360,000
+    columns through the CPython transcription at 18.4-38.8 us each.
+
+    Chunked at :data:`SLAB_COLUMN_CHUNK`, the same explicit bound the
+    per-timestep slab packers carry: the staging arrays are
+    ``chunk x stride`` and never ``nx*ny x stride``, so the one-time cold
+    start cannot decide a nest's peak VRAM.
+    """
+    import cupy as cp
+
+    from gpuwm.core.noahmp_driver_gpu import (NI_IN, NI_IN_STRIDE, NI_IX,
+                                              NI_IX_STRIDE, NI_OUT,
+                                              run_noahmp_init)
+
+    ny, nx = slab["tsk"].shape
+    nsoil = slab["tslb"].shape[0]
+    ncol = ny * nx
+    identity = params.land_use
+    dz = np.asarray(dzs, dtype=np.float32)
+
+    for name in _COLD_START_SLAB:
+        if not slab[name].flags["C_CONTIGUOUS"]:
+            # The unpack writes through ``reshape(ncol)``, which is a view
+            # only while the carrier is contiguous.  On a strided one it
+            # would be a copy, every kernel answer would land in a temporary
+            # and be discarded, and the forecast would start from the zeros
+            # initialize_physics allocated -- TV = TG = 0 K, silently.
+            raise ValueError(
+                f"Noah-MP cold start: {name} is not C-contiguous")
+
+    vegtyp = np.ascontiguousarray(slab["ivgtyp"]).reshape(ncol).astype(
+        np.int32)
+    soiltyp = np.ascontiguousarray(slab["isltyp"]).reshape(ncol).astype(
+        np.int32)
+
+    # 2047-2057: WRF aborts.  A zero ISLTYP is what an ingest path that forgot
+    # the soil category produces, and running with it would index the table at
+    # -1.  Scanned before the launch and reported at the first offending
+    # column in the host arm's own row-major order, so the two arms refuse the
+    # same grid with the same words.
+    offending = np.flatnonzero(soiltyp < 1)
+    if offending.size:
+        j, i = divmod(int(offending[0]), nx)
+        raise ValueError(
+            f"Noah-MP cold start: ISLTYP={int(soiltyp[offending[0]])} at "
+            f"(j={j}, i={i})")
+
+    # BEXP/SMCMAX/PSISAT and SLA are ``<NAME>_TABLE(index)`` reads, one per
+    # distinct category rather than one per column -- a 360,000-column nest
+    # carries a handful of land-use and soil classes.
+    bexp = np.empty(ncol, dtype=np.float32)
+    smcmax = np.empty(ncol, dtype=np.float32)
+    psisat = np.empty(ncol, dtype=np.float32)
+    for category in np.unique(soiltyp):
+        rows = soiltyp == category
+        bexp[rows] = params.soil_value("BB", int(category))
+        smcmax[rows] = params.soil_value("MAXSMC", int(category))
+        psisat[rows] = params.soil_value("SATPSI", int(category))
+    sla = np.empty(ncol, dtype=np.float32)
+    for category in np.unique(vegtyp):
+        sla[vegtyp == category] = params.veg_value("SLA", int(category))
+
+    def flat(name, layer=None):
+        """One carrier as a flat ``ncol`` view, in the grid's row-major order.
+
+        The same order ``vegtyp`` and ``soiltyp`` above were flattened in and
+        the same order the host arm's ``j``/``i`` loop visits, which is what
+        makes the ISLTYP refusal above name the same column WRF would.
+        """
+        array = slab[name] if layer is None else slab[name][layer]
+        return np.ascontiguousarray(array).reshape(ncol)
+
+    for start in range(0, ncol, SLAB_COLUMN_CHUNK):
+        stop = min(start + SLAB_COLUMN_CHUNK, ncol)
+        span = slice(start, stop)
+        n = stop - start
+
+        x = np.zeros((n, NI_IN_STRIDE), dtype=np.float32)
+        ix = np.zeros((n, NI_IX_STRIDE), dtype=np.int32)
+
+        ix[:, NI_IX["nsoil"]] = nsoil
+        ix[:, NI_IX["nsnow"]] = NSNOW
+        # FNDSNOWH true, cropcat 0 and sf_urban_physics 0 are the same three
+        # constants the host arm passes; the pinned option identity
+        # (iopt_run=3, iopt_crop=0, iopt_irr=0, iopt_irrm=0) is what
+        # noahmp_driver.cu is compiled for and has no slot to vary.
+        ix[:, NI_IX["fndsnowh"]] = 1
+        ix[:, NI_IX["vegtyp"]] = vegtyp[span]
+        ix[:, NI_IX["cropcat"]] = 0
+        ix[:, NI_IX["sf_urban_physics"]] = 0
+        ix[:, NI_IX["isice"]] = identity.isice
+        ix[:, NI_IX["isurban"]] = identity.isurban
+        ix[:, NI_IX["iswater"]] = identity.iswater
+        ix[:, NI_IX["isbarren"]] = identity.isbarren
+        for slot, category in enumerate(identity.lcz):
+            ix[:, NI_IX["lcz"] + slot] = category
+
+        x[:, NI_IN["xice"]] = flat("xice")[span]
+        x[:, NI_IN["tsk"]] = flat("tsk")[span]
+        x[:, NI_IN["lai"]] = flat("lai")[span]
+        x[:, NI_IN["bexp"]] = bexp[span]
+        x[:, NI_IN["smcmax"]] = smcmax[span]
+        x[:, NI_IN["psisat"]] = psisat[span]
+        x[:, NI_IN["sla"]] = sla[span]
+        # SLA_TABLE(NATURAL_TABLE) is read only at 2185, on an urban column
+        # with sf_urban_physics > 0.  With sf_urban_physics = 0 every urban
+        # and LCZ column takes the bare branch at 2164-2178, so the slot is
+        # never read; NaN makes a port that read it anyway fail loudly rather
+        # than agree with whatever was in the buffer.
+        x[:, NI_IN["sla_natural"]] = np.float32("nan")
+        x[:, NI_IN["snow"]] = flat("snow")[span]
+        x[:, NI_IN["snowh"]] = flat("snowh")[span]
+        for k in range(nsoil):
+            x[:, NI_IN["dzs"] + k] = dz[k]
+            x[:, NI_IN["tslb"] + k] = flat("tslb", k)[span]
+            x[:, NI_IN["smois"] + k] = flat("smois", k)[span]
+        for k in range(NSNOW + nsoil):
+            x[:, NI_IN["zsnsoxy"] + k] = flat("zsnsoxy", k)[span]
+        for name in NOAHMP_STATE_SNOW_3D:
+            for k in range(NSNOW):
+                x[:, NI_IN[name] + k] = flat(name, k)[span]
+
+        y = cp.asnumpy(run_noahmp_init(x, ix))
+
+        for name, out in (("snow", "snow"), ("snowh", "snowh"),
+                          ("canwat", "canwat"), ("lai", "lai"),
+                          ("tvxy", "tv"), ("tgxy", "tg"),
+                          ("canicexy", "canice"), ("canliqxy", "canliq"),
+                          ("eahxy", "eah"), ("tahxy", "tah"),
+                          ("cmxy", "cm"), ("chxy", "ch"),
+                          ("fwetxy", "fwet"), ("sneqvoxy", "sneqvo"),
+                          ("alboldxy", "albold"), ("qsnowxy", "qsnow"),
+                          ("qrainxy", "qrain"), ("wslakexy", "wslake"),
+                          ("waxy", "wa"), ("xsaixy", "xsai")):
+            slab[name].reshape(ncol)[span] = y[:, NI_OUT[out]]
+        # ISNOWXY is the integer carrier; the kernel returns it as a float
+        # over -3..0, which every integer dtype in the tree holds exactly.
+        slab["isnowxy"].reshape(ncol)[span] = y[:, NI_OUT["isnow"]]
+        for name, out in (("tslb", "tslb"), ("smois", "smois"),
+                          ("sh2o", "sh2o")):
+            for k in range(nsoil):
+                slab[name][k].reshape(ncol)[span] = y[:, NI_OUT[out] + k]
+        for k in range(NSNOW + nsoil):
+            slab["zsnsoxy"][k].reshape(ncol)[span] = y[:, NI_OUT["zsnso"] + k]
+        for name, out in (("tsnoxy", "tsno"), ("snicexy", "snice"),
+                          ("snliqxy", "snliq")):
+            for k in range(NSNOW):
+                slab[name][k].reshape(ncol)[span] = y[:, NI_OUT[out] + k]
+
+
+def cold_start_on_host(slab, *, params: NoahmpRuntimeParameters,
+                       dzs) -> None:
+    """The same cold start, column by column, on the unmodified CPython port.
+
+    This is the paired scalar authority: the routine
+    ``tests/test_noahmp_driver.py`` pins against the WRF v4.6.1 oracle and the
+    reference every parity run compares the device arm to.  It is the shipped
+    path only under ``GPUWM_NOAHMP_HOST_COLD_START=1`` (or the process-wide
+    ``GPUWM_NOAHMP_HOST_LEAVES=1``); a default forecast takes
+    :func:`cold_start_on_device`.
+    """
+    ny, nx = slab["tsk"].shape
+    nsoil = slab["tslb"].shape[0]
     identity = params.land_use
 
     for j in range(ny):
@@ -757,8 +1299,12 @@ def noahmp_cold_start(fields, *, params: NoahmpRuntimeParameters,
             # TAUSSXY and PGSXY are not NOAHMP_INIT arguments; their WRF
             # Registry cold state is 0, which initialize_physics already set.
 
-    for name, array in slab.items():
-        fields[name][...] = cp.asarray(array)
+
+#: Which of the two arms the cold start uses.  A module attribute rather than
+#: an argument -- the same doctrine as :data:`LEAF_BATCH_EVALUATOR` and
+#: :data:`GLACIER_BATCH_EVALUATOR` -- so a parity test can bind the scalar
+#: authority for a whole build without threading a flag through ``physics``.
+COLD_START_EVALUATOR = cold_start_on_device
 
 
 def noahmp_lsm_step(
@@ -898,9 +1444,9 @@ def noahmp_lsm_step(
 
     # ---- :715-725, the two CYCLE ILOOP skips, over the whole slab --------
     # WRF writes these as two ``CYCLE ILOOP`` guards inside DO J / DO I.  The
-    # order matters and is kept: a column with XICE >= XICE_THRESHOLD takes
-    # the sea-ice skip whatever XLAND says.
-    sea_ice = host["xice"] >= np.float32(XICE_THRESHOLD)
+    # order matters and is kept: a column with XICE >= the configured
+    # threshold takes the sea-ice skip whatever XLAND says.
+    sea_ice = host["xice"] >= np.float32(params.xice_threshold)
     open_water = ((host["xland"] - np.float32(1.5)) >= np.float32(0.0)) \
         & ~sea_ice
     is_land = ~(sea_ice | open_water)
@@ -964,16 +1510,23 @@ def noahmp_lsm_step(
                   host_3d["snicexy"] + host_3d["snliqxy"],
                   out=ficeold_3d, where=live_snow)
 
-    # :1043, the glacier entry point.  Reported with its own column index,
-    # because "somewhere in this nest" is not a usable message.
+    # :1045, the glacier entry point: those columns dispatch to the ported
+    # NOAHMP_GLACIER path, run below AFTER the write-back copies (which
+    # rewrite whole arrays and would clobber an earlier glacier result).
+    # ``census["land"]`` counts the columns NOAHMP_SFLX answers;
+    # ``census["glacier"]`` counts NOAHMP_GLACIER's.
     glacier = is_land & (vegtyp_2d == identity.isice)
-    if glacier.any():
+    n_glacier = int(glacier.sum())
+    census["land"] -= n_glacier
+    census["glacier"] = n_glacier
+    if n_glacier and not params.glacier_path:
         gj, gi = (int(v[0]) for v in np.nonzero(glacier))
         raise NoahmpGlacierColumnError(
             f"column (j={gj}, i={gi}) has VEGTYP={identity.isice} == "
-            "ISICE_TABLE, which module_sf_noahmpdrv.F:1043 routes to "
-            "NOAHMP_GLACIER; that entry point is not ported and "
-            "NOAHMP_SFLX is not a substitute for it")
+            "ISICE_TABLE, which module_sf_noahmpdrv.F:1045 routes to "
+            "NOAHMP_GLACIER; that path is disabled on these parameters "
+            "(glacier_path=False) and NOAHMP_SFLX is not a substitute "
+            "for it")
 
     evaluator = _resolve_leaf_evaluator()
     staged: list[_StagedColumn] = []
@@ -985,7 +1538,7 @@ def noahmp_lsm_step(
         _write_back_batch(host, host_3d, staged, nsoil=nsoil, dt=dt32f)
         staged.clear()
 
-    land_j, land_i = np.nonzero(is_land)
+    land_j, land_i = np.nonzero(is_land & ~glacier)
     for j, i in zip(land_j.tolist(), land_i.tolist()):
         vegtyp = int(vegtyp_2d[j, i])
         soiltyp = (int(soiltyp_2d[j, i]),) * nsoil
@@ -1081,6 +1634,13 @@ def noahmp_lsm_step(
         fields[name][...] = cp.asarray(host[name])
     for name, array in host_3d.items():
         fields[name][...] = cp.asarray(array)
+    if n_glacier:
+        glacier_evaluator = _resolve_glacier_evaluator()
+        _glacier_lsm_step(fields, atmosphere, glacier, params=params,
+                          coszen=coszen, dt=dt32, dzs=dzs,
+                          evaluator=glacier_evaluator)
+        census["glacier_path"] = _glacier_execution_provenance(
+            glacier_evaluator)
     _noahmp_post_lsm_diagnostics(fields, params=params)
     return census
 
@@ -1117,14 +1677,14 @@ def _noahmp_post_lsm_diagnostics(fields, *,
     water_or_full_ice = (
         (vegtyp == int(identity.iswater))
         | ((vegtyp == int(identity.isice))
-           & (xice >= f32(XICE_THRESHOLD)))
+           & (xice >= f32(params.xice_threshold)))
     )
     urban_categories = cp.asarray(
         np.asarray((identity.isurban, *identity.lcz), dtype=np.int32))
     urban_or_partial_ice = (
         cp.isin(vegtyp, urban_categories)
         | ((vegtyp == int(identity.isice))
-           & (xice < f32(XICE_THRESHOLD)))
+           & (xice < f32(params.xice_threshold)))
     )
 
     rho = fields["psfc"] / (f32(287.0) * fields["tsk"])
@@ -1264,7 +1824,7 @@ def _lsm_step_slab(
         fields["smois"][...] = cp.where(seaice1[None], one, fields["smois"])
 
     # ---- :715-725, the two CYCLE ILOOP skips -------------------------------
-    sea_ice = xice >= np.float32(XICE_THRESHOLD)
+    sea_ice = xice >= np.float32(params.xice_threshold)
     open_water = ((xland - np.float32(1.5)) >= zero32f) & ~sea_ice
     is_land = ~(sea_ice | open_water)
     fields["sh2o"][...] = cp.where(sea_ice[None], one, fields["sh2o"])
@@ -1298,17 +1858,31 @@ def _lsm_step_slab(
     ficeold = cp.where(live_snow, snice / (snice + fields["snliqxy"]),
                        zero32f).astype(cp.float32)
 
-    # ---- :1043, the glacier entry point ------------------------------------
+    # ---- :1045, the glacier entry point ------------------------------------
+    # Glacier columns dispatch to the ported NOAHMP_GLACIER path; the
+    # ordinary slab below answers only ``is_land & ~glacier``.  The two
+    # column sets are disjoint, so the order between them cannot matter.
     glacier = is_land & (vegtyp == identity.isice)
-    if bool(glacier.any()):
-        gj, gi = (int(w[0]) for w in np.nonzero(cp.asnumpy(glacier)))
-        raise NoahmpGlacierColumnError(
-            f"column (j={gj}, i={gi}) has VEGTYP={identity.isice} == "
-            "ISICE_TABLE, which module_sf_noahmpdrv.F:1043 routes to "
-            "NOAHMP_GLACIER; that entry point is not ported and "
-            "NOAHMP_SFLX is not a substitute for it")
+    n_glacier = int(glacier.sum())
+    census["land"] -= n_glacier
+    census["glacier"] = n_glacier
+    if n_glacier:
+        if not params.glacier_path:
+            gj, gi = (int(w[0]) for w in np.nonzero(cp.asnumpy(glacier)))
+            raise NoahmpGlacierColumnError(
+                f"column (j={gj}, i={gi}) has VEGTYP={identity.isice} == "
+                "ISICE_TABLE, which module_sf_noahmpdrv.F:1045 routes to "
+                "NOAHMP_GLACIER; that path is disabled on these "
+                "parameters (glacier_path=False) and NOAHMP_SFLX is not "
+                "a substitute for it")
+        glacier_evaluator = _resolve_glacier_evaluator()
+        _glacier_lsm_step(fields, atmosphere, glacier, params=params,
+                          coszen=cosz, dt=float(dt32f), dzs=dzs,
+                          evaluator=glacier_evaluator)
+        census["glacier_path"] = _glacier_execution_provenance(
+            glacier_evaluator)
 
-    land_j, land_i = cp.nonzero(is_land)
+    land_j, land_i = cp.nonzero(is_land & ~glacier)
     n_land = int(land_j.size)
     if n_land == 0:
         return census
@@ -1635,7 +2209,11 @@ def _write_back_batch(host, host_3d, staged, *, nsoil, dt) -> None:
 
 
 __all__ = [
+    "COLD_START_EVALUATOR",
+    "COLD_START_WRITES",
     "FOLN",
+    "GLACIER_BATCH_EVALUATOR",
+    "HOST_COLD_START_ENV",
     "NOAHMP_DIAGNOSTICS_2D",
     "NOAHMP_RUNTIME_RESTRICTIONS",
     "NOAHMP_STATE_2D",
@@ -1649,6 +2227,9 @@ __all__ = [
     "NoahmpSolarGeometry",
     "UNDEFINED_VALUE",
     "XICE_THRESHOLD",
+    "classify_noahmp_surface",
+    "cold_start_on_device",
+    "cold_start_on_host",
     "guard_noahmp_glacier_columns",
     "noahmp_cold_start",
     "noahmp_lsm_step",

@@ -38,6 +38,7 @@ from __future__ import annotations
 from fractions import Fraction
 import math
 import re
+import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -64,6 +65,16 @@ WPS_MAP_PROJ_NAMES = {code: name for name, code
 MAP_PROJ_CHARS = {"lambert": "Lambert Conformal",
                   "polar": "Polar Stereographic",
                   "mercator": "Mercator"}
+
+
+def _free_rust_grid_handle(handle: int) -> None:
+    """weakref.finalize target: release a crate grid handle, silently
+    tolerating a bridge already torn down at interpreter exit."""
+    try:
+        from . import rust_bridge
+        rust_bridge.grid_free(handle)
+    except Exception:
+        pass
 
 
 def _wrap180(dlon):
@@ -171,6 +182,79 @@ class ProjectedGrid:
         """wrfout MAP_PROJ_CHAR string."""
         return MAP_PROJ_CHARS[self.map_proj]
 
+    # -- the Rust seam (fixed-means-default) --------------------------------
+    #
+    # The staggered coordinate arrays and derived fields below route to
+    # the static-fields cdylib by default; the numpy bodies stay as the
+    # parity reference and the explicit fallback (GPUWM_STATIC_PYTHON=1
+    # or an unloadable library), reported once per operation through
+    # gpuwm.static.rust_bridge.route.  Scalar ij<->latlon transforms
+    # stay Python: they are orchestration-scale (namelist corners, nest
+    # anchors) and bit-equal to the Rust f64 path by the lane-1 ledger.
+
+    def _rust_spec(self) -> dict:
+        """This grid as the crate's GridSpec JSON document (total: every
+        default -- known point, MOAD centre -- is already resolved)."""
+        return {
+            "kind": self.map_proj,
+            "ref_lat": self.ref_lat, "ref_lon": self.ref_lon,
+            "truelat1": self.truelat1, "truelat2": self.truelat2,
+            "stand_lon": self.stand_lon,
+            "dx": self.dx, "dy": self.dy,
+            "e_we": self.e_we, "e_sn": self.e_sn,
+            "known_x": self.known_x, "known_y": self.known_y,
+            "moad_cen_lat": self.moad_cen_lat,
+            "moad_cen_lon": self.moad_cen_lon,
+        }
+
+    def _rust_handle(self, bridge) -> int:
+        """The cached crate grid handle for this instance.
+
+        A translated grid crosses as reference handle + integer offset
+        (`gpuwm_static_grid_translated`) so the crate delegates through
+        the reference's own floats exactly as :meth:`translated`
+        documents; every other grid crosses as its resolved spec.  A
+        crate refusal here PROPAGATES: with the bridge loaded, a spec
+        the crate refuses is a defect, and a silent fallback would hide
+        it (fixed-means-default).
+        """
+        handle = self.__dict__.get("_rust_grid_handle")
+        if handle is not None:
+            return handle
+        base = self._translation_reference
+        if base is None:
+            handle = bridge.grid_new(self._rust_spec())
+        else:
+            di, dj = self._translation_offset
+            handle = bridge.grid_translated(
+                base._rust_handle(bridge), di, dj, self.e_we, self.e_sn)
+        self.__dict__["_rust_grid_handle"] = handle
+        weakref.finalize(self, _free_rust_grid_handle, handle)
+        return handle
+
+    def _stagger_shape(self, stagger: int) -> tuple[int, int]:
+        return {
+            0: (self.e_sn - 1, self.e_we - 1),  # mass
+            1: (self.e_sn - 1, self.e_we),      # U
+            2: (self.e_sn, self.e_we - 1),      # V
+            3: (self.e_sn, self.e_we),          # corner
+        }[stagger]
+
+    def _rust_arrays(self, stagger: int, kinds: tuple[int, ...]):
+        """Tuple of derived arrays via the seam, or None on fallback.
+
+        ``stagger`` is a ``rust_bridge.STAGGER_*`` code and each kind a
+        ``rust_bridge.ARRAY_*`` code (lat=0, lon=1, mapfac=2, F=3, E=4,
+        sinalpha=5, cosalpha=6)."""
+        from . import rust_bridge
+        bridge = rust_bridge.route("projection arrays")
+        if bridge is None:
+            return None
+        handle = self._rust_handle(bridge)
+        ny, nx = self._stagger_shape(stagger)
+        return tuple(bridge.grid_array(handle, stagger, kind, ny, nx)
+                     for kind in kinds)
+
     # -- staggered coordinate arrays ----------------------------------------
 
     def _grid_xy(self, xoff: float, yoff: float, nx: int, ny: int):
@@ -180,21 +264,33 @@ class ProjectedGrid:
 
     def latlon_mass(self):
         """(lat, lon) at mass points, shape (e_sn-1, e_we-1)."""
+        routed = self._rust_arrays(0, (0, 1))
+        if routed is not None:
+            return routed
         return self.ij_to_latlon(*self._grid_xy(0.0, 0.0,
                                                 self.e_we - 1, self.e_sn - 1))
 
     def latlon_u(self):
         """(lat, lon) at U points, shape (e_sn-1, e_we)."""
+        routed = self._rust_arrays(1, (0, 1))
+        if routed is not None:
+            return routed
         return self.ij_to_latlon(*self._grid_xy(-0.5, 0.0,
                                                 self.e_we, self.e_sn - 1))
 
     def latlon_v(self):
         """(lat, lon) at V points, shape (e_sn, e_we-1)."""
+        routed = self._rust_arrays(2, (0, 1))
+        if routed is not None:
+            return routed
         return self.ij_to_latlon(*self._grid_xy(0.0, -0.5,
                                                 self.e_we - 1, self.e_sn))
 
     def latlon_c(self):
         """(lat, lon) at corner (C/vorticity) points, shape (e_sn, e_we)."""
+        routed = self._rust_arrays(3, (0, 1))
+        if routed is not None:
+            return routed
         return self.ij_to_latlon(*self._grid_xy(-0.5, -0.5,
                                                 self.e_we, self.e_sn))
 
@@ -202,14 +298,23 @@ class ProjectedGrid:
 
     def mapfac_m(self):
         """MAPFAC_M: map factor at mass points (isotropic)."""
+        routed = self._rust_arrays(0, (2,))
+        if routed is not None:
+            return routed[0]
         return self.map_factor(self.latlon_mass()[0])
 
     def mapfac_u(self):
         """MAPFAC_U: map factor at U points."""
+        routed = self._rust_arrays(1, (2,))
+        if routed is not None:
+            return routed[0]
         return self.map_factor(self.latlon_u()[0])
 
     def mapfac_v(self):
         """MAPFAC_V: map factor at V points."""
+        routed = self._rust_arrays(2, (2,))
+        if routed is not None:
+            return routed[0]
         return self.map_factor(self.latlon_v()[0])
 
     def coriolis_m(self):
@@ -219,20 +324,32 @@ class ProjectedGrid:
         hemisphere with no projection-specific handling, exactly as
         geogrid computes geo_em F.
         """
+        routed = self._rust_arrays(0, (3, 4))
+        if routed is not None:
+            return routed
         lat = self.latlon_mass()[0]
         return (2.0 * OMEGA_E * np.sin(lat * _RAD_PER_DEG),
                 2.0 * OMEGA_E * np.cos(lat * _RAD_PER_DEG))
 
     def rotation_m(self):
         """(SINALPHA, COSALPHA) at mass points."""
+        routed = self._rust_arrays(0, (5, 6))
+        if routed is not None:
+            return routed
         return self.rotation(self.latlon_mass()[1])
 
     def rotation_u(self):
         """(SINALPHA, COSALPHA) at U points."""
+        routed = self._rust_arrays(1, (5, 6))
+        if routed is not None:
+            return routed
         return self.rotation(self.latlon_u()[1])
 
     def rotation_v(self):
         """(SINALPHA, COSALPHA) at V points."""
+        routed = self._rust_arrays(2, (5, 6))
+        if routed is not None:
+            return routed
         return self.rotation(self.latlon_v()[1])
 
     # -- nesting -------------------------------------------------------------

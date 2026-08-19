@@ -101,24 +101,71 @@ def test_absent_overlay_is_the_identity():
     assert receipt is None
 
 
+#: The stability anchor this file's overlay work was measured against,
+#: computed at lane base 4211b9e8 before the overlay existed, from the
+#: scaffold and catalog stub below.
+_PRE_SASE_FLIP_FINGERPRINT = (
+    "5ca17be315a646bf4d45ab39450efad46b8d04497c2eaad54166db51b7d1d2d8")
+
+#: The same anchor after ``sase_additive_dissipation`` flipped default-on
+#: in 1a0e8a7f8 ("feat(sase): the additive dissipation channel is the
+#: default, on real-data evidence", merged d996b9dbe).  That flip is the
+#: ONLY reason this hash moved: the test below re-derives the pre-flip
+#: anchor by setting the flag back, so a future drift that is NOT the
+#: SASE flip fails here instead of being rebound on faith.  A default
+#: that changes the integration belongs in the run provenance, so the
+#: hash moving was the fingerprint working.
+_ANCHOR_FINGERPRINT = (
+    "577998f0fc3e1c17f6a082346d7b803f404f3bbe7ed66d50b0449d9e023c6c7a")
+
+
+def _stability_anchor_catalog():
+    return SimpleNamespace(run_provenance={
+        "product_id": "stability-anchor",
+        "files": ({"role": "forcing", "path": "a.grib", "sha256": "00",
+                   "size": 1, "product_id": "era5", "provenance": ""},)})
+
+
 def test_no_overlay_keeps_the_experiment_fingerprint():
     """The option must not move any existing fingerprint when off.
 
-    The anchor hash was computed at lane base 4211b9e8, before this
-    feature existed, from this exact scaffold + catalog stub.  The
-    overlay lives on [case_data]/prepare kwargs, never ExperimentConfig,
-    so the restart identity payload and this hash are untouched.
+    The overlay lives on [case_data]/prepare kwargs, never
+    ExperimentConfig, so the restart identity payload does not see it.
+    The hash below therefore moves only when something else that IS bound
+    to run identity changes -- so far exactly once, for the SASE flip
+    named above.
     """
     from gpuwm.core.model import experiment_fingerprint
     from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
 
     exp = load_scaffold()
-    catalog = SimpleNamespace(run_provenance={
-        "product_id": "stability-anchor",
-        "files": ({"role": "forcing", "path": "a.grib", "sha256": "00",
-                   "size": 1, "product_id": "era5", "provenance": ""},)})
-    assert experiment_fingerprint(exp, catalog) == (
-        "5ca17be315a646bf4d45ab39450efad46b8d04497c2eaad54166db51b7d1d2d8")
+    assert experiment_fingerprint(
+        exp, _stability_anchor_catalog()) == _ANCHOR_FINGERPRINT
+
+
+def test_the_anchor_moved_for_the_sase_default_flip_and_nothing_else():
+    """Name the provenance of the rebind, mechanically.
+
+    Putting the pre-flip default back reproduces the pre-flip anchor
+    byte-for-byte.  That is the whole diff: had a second identity-bound
+    default moved as well, this reconstruction would miss and the rebind
+    above would be exposed as unexplained rather than attributed.
+    """
+    from dataclasses import replace
+
+    from gpuwm.core.model import experiment_fingerprint
+    from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
+
+    exp = load_scaffold()
+    assert all(
+        domain.run.sase_additive_dissipation for domain in exp.domains), (
+        "the additive dissipation channel is default-on since 1a0e8a7f8")
+    pre_flip = replace(exp, domains=tuple(
+        replace(domain, run=replace(
+            domain.run, sase_additive_dissipation=False))
+        for domain in exp.domains))
+    assert experiment_fingerprint(
+        pre_flip, _stability_anchor_catalog()) == _PRE_SASE_FLIP_FINGERPRINT
 
 
 def test_catalog_identity_moves_exactly_when_the_overlay_does():

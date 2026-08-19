@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Render a real HRRR case run: NWS reflectivity, UH, 10 m wind, precip.
+"""Render a real case run: NWS reflectivity, UH, 10 m wind, precip.
+
+DEPRECATED FALLBACK, under the render law (CLAUDE.md, Drew 2026-08-06).
+This module draws WEATHER FIELDS in matplotlib and its inputs are
+ordinary wrfouts, which is exactly what ``rw_wrfbatch`` reads -- so
+``python -m tilestream.render_case_rust`` renders the same case through
+the production renderer and is the product tier.  That driver also
+carries the two overlays this one drew by hand and it could not:
+``--boundary-zone`` (where the forecast stops being a forecast) and
+``--reports``.
+
+Nothing here should acquire a new product.  It stays for a checkout that
+has not built the Rust workspace, and it says so when it runs.
 
 Reuses ``tools/da_nowcast_render.py``'s vendored basemap reader and its
 rustwx Filled-style palette rather than reinventing either, and the NWS dBZ
@@ -338,6 +350,16 @@ def main(argv=None) -> int:
     ap.add_argument("--reports-stem", default=None)
     ap.add_argument("--report-window-min", type=float, default=60.0)
     args = ap.parse_args(argv)
+    # Said where it is READ, not only where it is documented.  A module
+    # docstring is not a notice: a user who reaches these panels reaches
+    # them from a command line, so the demotion is printed there.
+    print("render_case: WARNING -- these matplotlib panels are the render "
+          "law's DEPRECATED FALLBACK.  The product tier for this same run "
+          "directory is:\n"
+          "  python -m tilestream.render_case_rust --run RUN --out OUT\n"
+          "which draws the same fields through rw_wrfbatch and carries "
+          "--boundary-zone and --reports, which this one cannot.",
+          file=sys.stderr)
     markers = json.loads(args.markers) if args.markers else []
     reports = ()
     if args.reports_dir and args.reports_stem:

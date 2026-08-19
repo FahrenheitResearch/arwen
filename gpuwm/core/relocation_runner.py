@@ -54,6 +54,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import warnings
 from fractions import Fraction
 from pathlib import Path
 
@@ -114,7 +116,25 @@ def _atomic_json(path: Path, payload) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True),
                    encoding="utf-8")
-    os.replace(tmp, path)
+    # Windows refuses the atomic rename while ANY reader holds the
+    # destination open -- and this file exists precisely to be read
+    # while the run is alive (a user tailing the receipts killed a 6 h
+    # forecast with WinError 5 here, measured).  Receipts are telemetry:
+    # retry briefly, then keep the run alive and leave the .tmp beside
+    # the stale receipt rather than aborting integration over it.
+    for delay in (0.05, 0.25, 1.0, 2.0):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            time.sleep(delay)
+    try:
+        os.replace(tmp, path)
+    except PermissionError as error:
+        warnings.warn(
+            f"relocation receipts stayed stale at {path} (a reader holds "
+            f"it open: {error}); the current receipts are in {tmp} and "
+            "the next move rewrites both", stacklevel=2)
 
 
 def _cadence_periods(cadence_seconds, schedule) -> int:

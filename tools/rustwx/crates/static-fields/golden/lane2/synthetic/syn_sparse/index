@@ -1,0 +1,13 @@
+type=continuous
+projection=regular_ll
+dx=30.0
+dy=30.0
+known_x=1.0
+known_y=1.0
+known_lat=-75.0
+known_lon=-165.0
+wordsize=1
+tile_x=4
+tile_y=3
+tile_z=1
+sparse=yes

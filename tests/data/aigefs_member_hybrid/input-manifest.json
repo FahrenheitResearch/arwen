@@ -1,0 +1,55 @@
+{
+  "composition_sha256": "9965904c92f08cd71323e2565d7a663863c8ca061f3e991b813b52ad2a6a5d10",
+  "decoders": {
+    "grib2_dump": {
+      "bytes": 621568,
+      "path": "../../../../gpuwm/.claude/worktrees/g2-aigefs/tools/grib1_bridge/target/release/grib2_dump.exe",
+      "sha256": "544a9d8e8ff3f0a2ff0ef3d96899e6280ad2a5af6340d858fdd153d9958bfb13"
+    },
+    "grib2_inventory": {
+      "bytes": 619008,
+      "path": "../../../../gpuwm/.claude/worktrees/g2-aigefs/tools/grib1_bridge/target/release/grib2_inventory.exe",
+      "sha256": "a98f5d75c07d1130ea9eccb237aa118b4c1df90eb9c2dce510455a34b99cb9b0"
+    }
+  },
+  "mapping_sha256": "2d5df9b66b465e72934b97d5f91904fb17bd5137ef885011831b4c698085d5bc",
+  "primary_files": [
+    {
+      "bytes": 79644823,
+      "path": "members/aigefs-quarter-degree-members/20260817T00Z/mem001/pres/aigefs.t00z.pres.f000.grib2",
+      "sha256": "5139df4f902f5896b10ec0e9cfe6c389d41e30b5e6f65969fec2e75eac8c5e1e"
+    },
+    {
+      "bytes": 4040162,
+      "path": "members/aigefs-quarter-degree-members/20260817T00Z/mem001/sfc/aigefs.t00z.sfc.f000.grib2",
+      "sha256": "c30ea4e3c145bbf384a7401e6e5afff06f9b0cc571f927623313ca32fc5e9f00"
+    },
+    {
+      "bytes": 90281968,
+      "path": "members/aigefs-quarter-degree-members/20260817T00Z/mem001/pres/aigefs.t00z.pres.f006.grib2",
+      "sha256": "cf523ced1437705327824a65b81c0ce7b0fd5cb4452c2ccebeace7669db06555"
+    },
+    {
+      "bytes": 5191609,
+      "path": "members/aigefs-quarter-degree-members/20260817T00Z/mem001/sfc/aigefs.t00z.sfc.f006.grib2",
+      "sha256": "0d0effb92da78a7aceba383878dade3f03f75cd48ec1873f8f1b2dbb117dc2e8"
+    }
+  ],
+  "provenance": {
+    "physical_analysis_surface_provenance": {
+      "bytes": 1599,
+      "path": "../../../../gpuwm/.claude/worktrees/g2-aigefs/gpuwm/authorities/rw-wps-aigefs-member-hybrid-grib2.provenance.json",
+      "sha256": "a0439034d605b6215c16445c3f2459d2f027b87ac4d7228d4f1118d3cbf15d23"
+    }
+  },
+  "schema": "gpuwm-mapped-composition-inputs-v1",
+  "supplements": {
+    "physical_analysis_surface_data": [
+      {
+        "bytes": 487306210,
+        "path": "../../../../gpuwm-model-gauntlet-staging/crosssource/gdas.t00z.pgrb2.0p25.f000",
+        "sha256": "ac6c46956358af5fa7e525761c4f36cdce3524f98e825f335ccfc81c779b9f52"
+      }
+    ]
+  }
+}

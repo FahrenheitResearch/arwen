@@ -76,7 +76,6 @@ REQUIRED_WHEEL_PAYLOADS = {
     "gpuwm/source_cli.py",
     "gpuwm/source_authorities.py",
     "gpuwm/source_hierarchy.py",
-    "gpuwm/twentycrv3.py",
     "gpuwm/twentycrv3_direct.py",
     "gpuwm/twentycrv3_wrf.py",
     "gpuwm/wrf_direct.py",
@@ -109,11 +108,19 @@ FORBIDDEN_WHEEL_PAYLOADS = {
     "gpuwm/core/dycore.py",
     "gpuwm/core/physics.py",
 }
+# The radiation and microphysics tables have no business in a
+# preprocessing-only distribution.  Two spellings of the same two
+# directories are listed because they moved: since 2.5.0 `rrtmgp/` and
+# `thompson/tables/` ship in the `gpuwm-data` companion under `gpuwm_data/`,
+# and a prefix list that only knew the old spelling would wave the new one
+# through.  The old prefixes stay because `thompson/oracle*` never moved and
+# a wheel built from an older tag still uses them.
 FORBIDDEN_WHEEL_PREFIXES = (
     "gpuwm/verify/",
     "gpuwm/data/rrtmgp/",
     "gpuwm/data/thompson/",
     "gpuwm/data/wrf_radiation/",
+    "gpuwm_data/",
 )
 
 _PUBLIC_TEXT_SUFFIXES = {

@@ -139,7 +139,7 @@ def test_the_fetch_hint_table_carries_the_lead_and_scopes_it():
         {"source": "hrrr", "cycle": "2026-07-29T18", "hours": 6,
          "forecast_start_hour": 3},
         source="case.toml")
-    with pytest.raises(ValueError, match="source = gfs\\|gdas\\|hrrr only"):
+    with pytest.raises(ValueError, match="max_forecast_hour = 0"):
         fetch.validate_fetch_hints(
             {"source": "era5", "hours": 6, "forecast_start_hour": 3},
             source="case.toml")

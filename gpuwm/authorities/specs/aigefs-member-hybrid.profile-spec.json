@@ -1,0 +1,167 @@
+{
+  "schema": "gpuwm-source-profile-authoring-spec-v1",
+  "about": [
+    "NCEP AIGEFS (Project EAGLE) member forecast, completed by the SAME",
+    "cycle's physical global analysis.  Every document below is derived",
+    "from a proven parent, and the edits state exactly how it differs:",
+    "",
+    "* the primary mapping starts from the cross-source fixture proven",
+    "  against a real AI 0.25-degree 13-level atmosphere.  AIGEFS",
+    "  publishes NO land surface at all (no soil, no land mask, no",
+    "  orography, no skin temperature, no 2 m humidity in any form --",
+    "  byte-measured 2026-08-17), so skin temperature and 2 m specific",
+    "  humidity become composition_bound gaps and the fixture's dewpoint",
+    "  field and its derivation disappear with them.  Every remaining",
+    "  selector pins PDT 1: that is what refuses, at the mapped decode",
+    "  itself, both a deterministic file (PDT 0, no ensemble identity)",
+    "  and an ensemble statistic (PDT 2/12, which would decode cleanly",
+    "  as plausible fields with nothing downstream able to tell).",
+    "* the donor mapping starts from the checked-in analysis mapping and",
+    "  swaps its DERIVED 2 m specific humidity for the direct record the",
+    "  analysis product publishes (0.1.0 at level 103/2, byte-measured in",
+    "  the staged 2026-08-17 00Z file): a partitioned donor decode",
+    "  refuses derived fields by design, so a borrowable field must be",
+    "  directly selected.  The borrowed 2-D surface records pin PDT 0 --",
+    "  a member-bearing donor already refuses by name in the engine, and",
+    "  the pin states the same fact as selector identity.",
+    "* the composition starts from the proven cross-source fixture and",
+    "  extends the one binding's field list with the extra gaps; its",
+    "  soil selectors are the fixture's, unchanged."
+  ],
+  "constants": {
+    "PRIMARY_NAME": "aigefs-member-hybrid-grib2",
+    "DONOR_NAME": "gdas-pgrb2-0p25-analysis-donor-grib2-native",
+    "BORROWED_FIELDS": [
+      "terrain_height",
+      "land_fraction",
+      "soil_temperature",
+      "volumetric_soil_moisture",
+      "skin_temperature",
+      "specific_humidity_2m"
+    ],
+    "SURFACE_GAP_K": {
+      "provider": "composition_bound",
+      "units": {"source": "K", "target": "K"},
+      "source_axes": ["y", "x"],
+      "target_axes": ["y", "x"],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {"kind": "reject"}
+    },
+    "SURFACE_GAP_Q": {
+      "provider": "composition_bound",
+      "units": {"source": "kg kg-1", "target": "kg kg-1"},
+      "source_axes": ["y", "x"],
+      "target_axes": ["y", "x"],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {"kind": "reject"}
+    }
+  },
+  "templates": {},
+  "documents": [
+    {
+      "output": "gpuwm/authorities/rw-wps-aigefs-member-hybrid-grib2.mapping.json",
+      "format": {"indent": 2},
+      "base": {
+        "kind": "file",
+        "path": "tests/data/cross_source/atmosphere-13-level.mapping.json"
+      },
+      "steps": [
+        {"op": "require", "path": ["fields", "dewpoint_temperature_2m"]},
+        {"op": "set", "path": ["name"], "value": {"$const": "PRIMARY_NAME"}},
+        {"op": "set", "path": ["fields", "*", "?selectors", "*", "pdt"], "value": 1},
+        {"op": "set", "path": ["fields", "skin_temperature"], "value": {"$const": "SURFACE_GAP_K"}},
+        {"op": "delete", "path": ["fields", "dewpoint_temperature_2m"]},
+        {"op": "set", "path": ["fields", "specific_humidity_2m"], "value": {"$const": "SURFACE_GAP_Q"}},
+        {"op": "keep_where", "path": ["derivations"], "key": "name", "equals": "pressure-from-coordinate"}
+      ]
+    },
+    {
+      "output": "gpuwm/authorities/rw-wps-gdas-pgrb2-donor.mapping.json",
+      "format": {"indent": 2},
+      "base": {
+        "kind": "file",
+        "path": "configs/rw-wps-gfs-pressure-grib2.mapping.json"
+      },
+      "steps": [
+        {"op": "require", "path": ["fields", "specific_humidity_2m", "derivation"]},
+        {"op": "set", "path": ["name"], "value": {"$const": "DONOR_NAME"}},
+        {"op": "delete", "path": ["fields", "specific_humidity_2m", "derivation"]},
+        {
+          "op": "set",
+          "path": ["fields", "specific_humidity_2m", "selectors"],
+          "value": [
+            {
+              "format": "grib2",
+              "discipline": 0,
+              "category": 1,
+              "parameter": 0,
+              "level_type": 103,
+              "level_value": 2
+            }
+          ]
+        },
+        {"op": "keep_where", "path": ["derivations"], "key": "name", "not_equals": "humidity-2m-from-rh"},
+        {
+          "op": "set",
+          "path": [
+            "fields",
+            ["terrain_height", "land_fraction", "skin_temperature", "specific_humidity_2m"],
+            "selectors",
+            "*",
+            "pdt"
+          ],
+          "value": 0
+        },
+        {
+          "op": "set",
+          "path": ["target", "name"],
+          "value": "gpuwm/WRF-real GDAS pgrb2 0.25-degree analysis donor (direct-selector surface set for cross-source borrowing)"
+        }
+      ]
+    },
+    {
+      "output": "gpuwm/authorities/rw-wps-aigefs-member-hybrid-grib2.composition.json",
+      "format": {"indent": 2},
+      "base": {
+        "kind": "file",
+        "path": "tests/data/cross_source/borrowed-analysis-surface.composition.json"
+      },
+      "steps": [
+        {"op": "require", "path": ["field_sources", "physical_analysis_surface"]},
+        {"op": "set", "path": ["name"], "value": "aigefs-member-hybrid-borrowed-analysis-surface"},
+        {"op": "set", "path": ["field_sources", "physical_analysis_surface", "source_id"], "value": {"$const": "DONOR_NAME"}},
+        {
+          "op": "set",
+          "path": ["field_sources", "physical_analysis_surface", "mapping_sha256"],
+          "value": {"$sha256_of": "gpuwm/authorities/rw-wps-gdas-pgrb2-donor.mapping.json"}
+        },
+        {"op": "set", "path": ["field_sources", "physical_analysis_surface", "fields"], "value": {"$const": "BORROWED_FIELDS"}}
+      ]
+    },
+    {
+      "output": "gpuwm/authorities/rw-wps-aigefs-member-hybrid-grib2.provenance.json",
+      "format": {"indent": 2},
+      "base": {"kind": "empty"},
+      "steps": [
+        {
+          "op": "set",
+          "path": [],
+          "value": {
+            "schema": "gpuwm-aigefs-member-hybrid-borrowed-surface-provenance-v1",
+            "source": "NCEP AIGEFS (Project EAGLE) member forecast GRIB2 product, completed by a same-cycle physical global analysis",
+            "field": "terrain_height",
+            "binding": "physical_analysis_surface",
+            "borrowed_fields": {"$const": "BORROWED_FIELDS"},
+            "units_policy": "terrain enters as the analysis product's surface geopotential height record in metres; no scale is applied",
+            "time_policy": "the AI ensemble member supplies the evolving atmosphere at every forecast step; the borrowed land-surface state is the one analysis record of the SAME cycle, verified by the composition's source_cycle_analysis_broadcast alignment and carried unchanged to every primary valid time, with the carried times named in the receipt",
+            "member_policy": "member identity belongs to the PRIMARY files and is verified by the packaged rw-wps.members.v1 grammar at member preparation; the contributing analysis is deterministic and a member-bearing donor refuses by name",
+            "absence_policy": "the member product publishes no soil temperature, no soil moisture, no land mask, no orography, no skin temperature and no 2 m humidity (byte-measured, 2026-08-17 00Z cycle); every one of those gaps is declared composition_bound in the primary mapping and bound to the analysis donor -- nothing is synthesized",
+            "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -33,15 +33,11 @@ def test_bridge_env_override_wins_and_fails_loud(monkeypatch, tmp_path):
 def test_default_bridge_dir_serves_wheel_installs(monkeypatch, tmp_path):
     """No checkout crate, no env var: the user-level default directory
     (~/.gpuwm/bridges) is the wheel user's documented drop point."""
-    for variable in bridges.BRIDGE_ENV.values():
-        monkeypatch.delenv(variable, raising=False)
-    monkeypatch.setattr(bridges, "crate_dir",
-                        lambda: tmp_path / "no-crate")
-    monkeypatch.setattr(bridges, "_package_parent",
-                        lambda: tmp_path / "site-packages")
-    user_dir = tmp_path / "userdir"
-    user_dir.mkdir()
-    monkeypatch.setattr(bridges, "default_bridge_dir", lambda: user_dir)
+    # The shared helper, so this control covers every rung of the
+    # resolution ladder -- `packaged_bridge_dir` included, which a
+    # platform wheel populates and which no amount of `_package_parent`
+    # redirection moves.
+    user_dir = _wheel_shaped_install(monkeypatch, tmp_path)
     name = bridges.executable_name("gfs_grib2_bridge")
     assert bridges.find_bridge("gfs_grib2_bridge") is None
     (user_dir / name).write_bytes(b"prebuilt")
@@ -98,26 +94,26 @@ def test_doctor_names_missing_extras_with_exact_remedies(monkeypatch):
     assert "matplotlib" not in render.remedy
     # The check 2.3.2 did not have.  rasterio and pyproj were an
     # undocumented extra and nothing reported their absence until a
-    # terrain build had already downloaded 160.7 MiB and died.
-    geog = by_name["geography stack (rasterio + pyproj)"]
-    assert geog.status == "missing"
-    assert "pip install --upgrade gpuwm" in geog.remedy
+    # terrain build had already downloaded 160.7 MiB and died.  What the
+    # row REPORTS moved when the warp substrate flipped onto the Rust
+    # static-fields library: these two are now the parity fallback
+    # GPUWM_STATIC_PYTHON=1 runs on, so the row is `info` -- a wheel
+    # with the library staged builds high-resolution terrain without
+    # them, and the `static builder` row is what reports the engine.
+    geog = by_name["geography stack (rasterio + pyproj, the highres "
+                   "fallback)"]
+    assert geog.status == "info"
+    assert "gpuwm[geog]" in geog.remedy
     assert "rasterio" in geog.remedy and "pyproj" in geog.remedy
-    # Absent-optional: it must not fail the exit code of a base install
-    # that never touches [static.highres].
+    assert "static builder" in geog.detail
+    # Absent-optional: it must not fail the exit code of an install that
+    # runs the shipped default.
     assert geog.blocking is False
 
 
 def test_doctor_reports_missing_bridges_with_the_cargo_line(monkeypatch,
                                                             tmp_path):
-    for variable in bridges.BRIDGE_ENV.values():
-        monkeypatch.delenv(variable, raising=False)
-    monkeypatch.setattr(bridges, "crate_dir",
-                        lambda: tmp_path / "no-crate")
-    monkeypatch.setattr(bridges, "_package_parent",
-                        lambda: tmp_path / "site-packages")
-    monkeypatch.setattr(bridges, "default_bridge_dir",
-                        lambda: tmp_path / "userdir")
+    _wheel_shaped_install(monkeypatch, tmp_path)
     by_name = {check.name: check for check in doctor.collect_checks()}
     gfs = by_name["bridge gfs_grib2_bridge"]
     assert gfs.status == "missing"
@@ -459,6 +455,42 @@ def test_doctor_reports_absent_geography_even_with_the_root_unset(
 # Remedies have to be true for the install that prints them
 # ---------------------------------------------------------------------------
 
+def test_a_checkout_remedy_builds_the_crate_it_promises_the_binary_from():
+    """The `cd` and the "that produces" line must name one crate.
+
+    `artifact_remedy` took `crate_relative`, resolved the DESTINATION
+    path from it, and then fell back to `CARGO_BUILD_HINT` for the
+    build command -- which is frozen to `tools/grib1_bridge`.  Every
+    artifact living anywhere else printed a block that cd'd into the
+    GRIB crate and promised a binary under another crate's target
+    directory.  `rw_netcdf` is the one that matters on this line: NetCDF
+    decode moved to Rust with no Python fallback, so that refusal is the
+    only route a user has, and following it exactly produced no
+    `rw_netcdf` and returned them to the same refusal.
+
+    Checked for every crate the remedies actually name, not just the two
+    in this assertion, so a third crate cannot reintroduce it.
+    """
+
+    from gpuwm import bridges, netcdf_bridge
+
+    for remedy, crate in ((netcdf_bridge.netcdf_remedy(),
+                           bridges.RUSTWX_CRATE_RELATIVE),
+                          (bridges.bridge_remedy("grib1_bridge"),
+                           bridges.CRATE_RELATIVE)):
+        if "no Rust sources" in remedy:
+            continue                     # the pip-install branch, not this one
+        native = crate.replace("/", "\\") if bridges.WINDOWS_SHELL else crate
+        assert f"cd {native};" in remedy or f"cd {native} &&" in remedy, (
+            f"the remedy for {crate} does not cd into it:\n{remedy}")
+        # and the binary it promises really is under that same crate
+        produced = [ln for ln in remedy.splitlines() if "that produces" in ln]
+        assert produced, remedy
+        assert native in produced[0], (
+            f"remedy builds {native} but promises a binary elsewhere:\n"
+            f"{produced[0]}")
+
+
 def test_the_bridge_remedy_is_a_real_bootstrap_on_a_pip_install(
         monkeypatch, tmp_path):
     """A pip machine has no `tools/grib1_bridge` to cd into.
@@ -549,7 +581,22 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
     # matters is that no BRIDGE_ENV entry is missing from it.
     assert set(bridges.BRIDGE_ENV) <= set(bridges.BRIDGE_ABI_MARKERS)
     extra = set(bridges.BRIDGE_ABI_MARKERS) - set(bridges.BRIDGE_ENV)
-    assert extra == {"region_global_dealias"}
+    # Artifacts with markers of their own but no entry in BRIDGE_ENV,
+    # each for a stated reason: the vendored dealias engine (so the cut
+    # can tell an old build from this one), the NetCDF writer behind the
+    # default wrfout engine (a build predating the record dimension loads
+    # cleanly and cannot write Times), the mapped decode engine, which
+    # resolves through its own ladder because it builds in tools/rw_wps
+    # rather than the grib1_bridge crate BRIDGE_ENV's consumers search --
+    # an entry here would answer from a staged copy while a fresh
+    # checkout build sat unused -- and the static-field builder (a build
+    # predating the field build loads cleanly and cannot produce a
+    # single static field), and the observation remap behind the
+    # battery's default plan build (a build predating the plan builder
+    # loads cleanly and silently sends every score back to scipy, whose
+    # exact-tie answers are cKDTree traversal order).
+    assert extra == {"region_global_dealias", "netcdf_writer",
+                     "gpuwm_mapped_engine", "static_fields", "obs_regrid"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(
@@ -601,7 +648,12 @@ def test_the_decoder_door_gates_the_contract_for_every_caller(
     # Doctor calls the resolver AND the gate.  The contract refusal must
     # reach the report as a gap, not as a traceback, and a good binary
     # must still read verified exactly once.
-    for source in doctor.DOCTOR_SOURCES:
+    #
+    # Over SOURCE_DECODERS, which is what this loop always meant: the
+    # three routes with a decoder EXECUTABLE.  `doctor.DOCTOR_SOURCES`
+    # is now the whole source registry (UX finding N17), and the other
+    # routes have no entry in this table to look up.
+    for source in bridges.SOURCE_DECODERS:
         name = bridges.SOURCE_DECODERS[source]
         fake = tmp_path / f"{source}-fake" / bridges.executable_name(name)
         monkeypatch.setenv(bridges.BRIDGE_ENV[name], str(fake))
@@ -1411,8 +1463,13 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
         # artifact, and the whole-report paste then contains a `git clone`
         # the "a checkout has the sources" assertion below rejects.  This
         # list has to grow with `tools/` -- `region_global_dealias` joined
-        # when the region-global dealiaser became the default engine.
-        for crate in ("grib1_bridge", "rustwx", "region_global_dealias"):
+        # when the region-global dealiaser became the default engine, and
+        # `rw_wps` when the mapped decode engine joined the bundle.  It
+        # was measured missing on 2026-08-18: every checkout arm of this
+        # test was red, and the paste it rejected carried `git clone
+        # https://.../arwen gpuwm` from the mapped-engine remedy alone.
+        for crate in ("grib1_bridge", "rustwx", "region_global_dealias",
+                      "rw_wps"):
             (root / "tools" / crate).mkdir(parents=True, exist_ok=True)
             (root / "tools" / crate / "Cargo.toml").write_text(
                 "[package]\n", encoding="utf-8")
@@ -1594,15 +1651,32 @@ def test_the_whole_printed_report_pastes_as_one_sequence(
                        if "cargo build" in remedy]
         assert len(rust_blocks) >= 6, (
             f"the sweep stopped reaching the Rust remedies: {len(rust_blocks)}")
+        offered = 0
         for remedy in rust_blocks:
             commands = [line.strip() for line in remedy.splitlines()
                         if line.strip() and not line.strip().startswith("#")]
-            assert commands and commands[0] == "gpuwm fetch-bridges", (
+            if not commands:
+                # A comment-only block offers no command, so there is no
+                # ordering to get wrong.  It is the honest shape for a
+                # gap with no one-liner on a wheel, and one artifact has
+                # that shape: gpuwm_mapped_engine is in no bundle roster,
+                # so `gpuwm fetch-bridges` cannot supply it and printing
+                # the download would send a reader to a command that
+                # does not fix what they are missing.
+                continue
+            assert commands[0] == "gpuwm fetch-bridges", (
                 f"the prebuilt bundle must be offered first: {commands[:2]}")
             assert all(command == "gpuwm fetch-bridges"
                        for command in commands), (
                 "the source build must be commented out when the bundle "
                 f"is offered: {commands}")
+            offered += 1
+        # The narrowing above must not become a way for the whole
+        # contract to lapse: the bundle-satisfiable artifacts are the
+        # many, and they still have to lead with the download.
+        assert offered >= 5, (
+            f"only {offered} Rust remedy blocks offered the bundle first; "
+            "the comment-only exemption has swallowed the contract")
     else:
         assert not clones, "a checkout has the sources; cloning is noise"
         assert any("cargo build --release --locked --offline" in remedy
@@ -1884,17 +1958,32 @@ def test_the_readme_states_doctors_contract_not_the_old_overclaim():
 # ---------------------------------------------------------------------------
 
 def _wheel_shaped_install(monkeypatch, tmp_path):
-    """A package parent with no checkout crate and no staged bridges."""
+    """A package parent with no checkout crate and no staged bridges.
+
+    Every rung of :func:`gpuwm.bridges.artifact_candidates` is redirected,
+    including ``packaged_bridge_dir``.  That one is easy to miss and was:
+    it derives from the package's own ``__file__`` rather than from
+    ``_package_parent``, so redirecting the parent does NOT move it.  Once
+    the platform-wheel work began staging real binaries into
+    ``gpuwm/libexec/bridges``, the negative controls below resolved those
+    binaries and could never observe ``missing`` -- and one of them is the
+    control proving doctor BLOCKS a stale decoder.  A negative control
+    that cannot fail is worse than no control, so the helper now covers
+    the rung its own docstring already promised.
+    """
 
     site_packages = tmp_path / "site-packages"
     site_packages.mkdir()
     staged = tmp_path / "userdir"
     staged.mkdir()
+    packaged = tmp_path / "no-packaged-bridges"
+    packaged.mkdir()
     for variable in bridges.BRIDGE_ENV.values():
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(bridges, "crate_dir", lambda: tmp_path / "no-crate")
     monkeypatch.setattr(bridges, "_package_parent", lambda: site_packages)
     monkeypatch.setattr(bridges, "default_bridge_dir", lambda: staged)
+    monkeypatch.setattr(bridges, "packaged_bridge_dir", lambda: packaged)
     return staged
 
 
@@ -1995,9 +2084,17 @@ def test_the_default_estate_carries_every_route(monkeypatch):
 
     names = {check.name for check in doctor.collect_checks()}
     for source in doctor.DOCTOR_SOURCES:
-        assert f"{source} route decoder" in names
+        # A route with a decoder EXECUTABLE reports that binary and its
+        # transport on two lines; a registry route reports its packaged
+        # profile and its transport on one.  Either way the default
+        # estate names it, which is the property this test is the gate
+        # for (the naming split arrived with UX finding N17).
+        assert any(name.startswith(f"{source} route") for name in names), (
+            source, sorted(names))
     narrowed = {check.name for check in doctor.collect_checks(("hrrr",))}
     assert "hrrr route decoder" in narrowed
+    one = {check.name for check in doctor.collect_checks(("hrrr-prs",))}
+    assert "hrrr-prs route" in one
 
 
 def test_the_provenance_check_reports_the_path_a_run_will_take():
@@ -2113,6 +2210,47 @@ def test_the_probe_of_a_non_image_returns_in_bounded_time(tmp_path):
     elapsed = time.perf_counter() - started
     assert not ok
     assert elapsed < 5.0, f"the probe took {elapsed:.1f} s"
+
+
+def test_the_release_probe_accepts_the_real_mapped_engine():
+    """Run the ARTIFACT through the exact probe the release cut runs.
+
+    ``tools/verify_release_artifacts.py`` and the publish workflow's
+    bridges job both hand every staged executable to ``_exec_probe``,
+    which accepts exit 0, or exit 1/2 with a diagnostic.  The engine
+    used to answer ``--version`` with its full usage block, the
+    refusal-schema line, and exit 3 -- an orderly refusal wearing the
+    one integer the probe refuses, so a 2.5.0 tag would have burned
+    deterministically on a binary that was perfectly healthy.  Nothing
+    pins 3: the seam contract (design doc section 3, main.rs, and
+    ``mapped_engine_bridge``'s three ``returncode != 0`` call sites)
+    says NONZERO and reads the class from the refusal JSON, so the
+    engine now exits 2 like its siblings and this test binds all three
+    observables on the real exe.
+    """
+
+    from gpuwm import mapped_engine_bridge as engine_bridge
+
+    try:
+        engine = engine_bridge.require_engine()
+    except FileNotFoundError as error:
+        pytest.skip(f"engine not built in this checkout: {error}")
+
+    import subprocess
+
+    probe = subprocess.run(
+        [str(engine), "--version"], capture_output=True, text=True,
+        errors="replace", timeout=doctor._PROBE_TIMEOUT_S)
+    # The orderly-refusal set _exec_probe accepts for a nonzero exit.
+    assert probe.returncode == 2, (
+        f"usage-class refusal exited {probe.returncode}; the release "
+        "probe accepts 0, or 1/2 with a diagnostic")
+    refusal = engine_bridge.parse_refusal(probe.stderr or "")
+    assert refusal is not None and refusal["class"] == "usage", (
+        probe.stderr)
+
+    ok, evidence = doctor._exec_probe(engine)
+    assert ok, f"the release-cut probe refused the built engine: {evidence}"
 
 
 def test_the_header_classifier_accepts_real_images_and_nothing_else(tmp_path):
@@ -2379,7 +2517,15 @@ def _resolve_extra(extras: dict[str, list[str]], name: str) -> set[str]:
 
 
 def _cupy_wheels(requirements) -> set[str]:
-    return {re.split(r"[<>=!~ ]", dep)[0] for dep in requirements
+    """The cupy DISTRIBUTION names an extra reaches, extras stripped.
+
+    ``[`` joins the split set because the requirement carries an extra of
+    its own now -- ``cupy-cuda13x[ctk]>=14.0`` -- and the thing this
+    helper answers is "which wheel", which is the name in front of it.
+    Whether the ``[ctk]`` half is there is asserted on its own line
+    below, where it can say why.
+    """
+    return {re.split(r"[<>=!~ \[]", dep)[0] for dep in requirements
             if dep.startswith("cupy")}
 
 
@@ -2427,6 +2573,45 @@ def test_the_gpu_extras_pin_one_cupy_wheel_per_cuda_major():
     assert not any(dep.startswith("pyshp") for dep in extras["render"]), (
         "pyshp is declared twice; it belongs in the runtime dependencies "
         "only, so there is one place it is pinned")
+
+
+def test_the_gpu_extras_carry_the_cuda_toolkit_cupy_cannot_run_without():
+    """F2's other half: the documented install line must WORK on a bare box.
+
+    MEASURED on weather-node-1 (driver-only Ubuntu, CUDA 13 driver, no
+    nvcc, no /usr/local/cuda, python3.14), 2026-08-17:
+
+      * `pip install cupy-cuda13x`        -> 274 MiB venv; cuBLAS, a
+        self-contained RawModule and a cupy reduction ALL fail with
+        "Failed to find CUDA headers".  Nothing on the GPU works.
+      * `pip install 'cupy-cuda13x[ctk]'` -> 1867 MiB venv; all three ok.
+
+    So the extra a reader is told to install has to be the second one.
+    "Fixed" means a bare default run stops showing the defect, and the
+    bare default run here is the quickstart's own pip line.
+
+    The floor is 14.0 BECAUSE of this: `[ctk]` is a CuPy 14 extra, and
+    pip only WARNS on an extra a resolved version does not provide.  With
+    a 13.x floor a box holding cupy 13.6 would resolve, print a warning
+    nobody reads, install no toolkit, and land back on the broken state
+    this test exists to close.
+    """
+    extras = _extras()
+    for major in (12, 13):
+        resolved = _resolve_extra(extras, f"gpu-cu{major}")
+        wheel = [dep for dep in resolved if dep.startswith("cupy")]
+        assert len(wheel) == 1, resolved
+        assert wheel[0].startswith(f"cupy-cuda{major}x[ctk]"), (
+            f"[gpu-cu{major}] asks for {wheel[0]!r}; without the [ctk] "
+            "extra a driver-only box installs a CuPy that cannot compile "
+            "a kernel or load cuBLAS")
+        assert ">=14.0" in wheel[0], (
+            f"[gpu-cu{major}] is {wheel[0]!r}; CuPy below 14.0 has no "
+            "[ctk] extra and pip only warns, so the toolkit would be "
+            "silently absent")
+        # The one-liner inherits it, since that is the line the
+        # quickstart actually prints.
+        assert wheel[0] in _resolve_extra(extras, f"all-cu{major}")
 
 
 def test_every_cuda_major_doctor_names_has_an_extra_that_exists():

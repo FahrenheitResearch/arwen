@@ -393,8 +393,24 @@ def test_les_accepts_an_explicit_config(module, tmp_path):
     assert str(config) in proc.stdout
 
 
-def test_the_configs_directory_is_really_not_in_the_wheel():
-    """The premise the LES refusal asserts, checked rather than assumed."""
+def test_the_configs_directory_really_is_in_the_wheel():
+    """The premise the LES refusal asserts, checked rather than assumed.
+
+    This pin used to run the other way, and it did its job: it asserted
+    ``configs/`` was in no distribution, so that whoever packaged it would
+    be sent here to bring the refusal's explanation with them. 2.5.0
+    packages it -- ``configs`` is a declared top-level package landing at
+    ``<site-packages>/configs``, which is exactly the path
+    ``_repo_config`` resolves -- so the pin is inverted rather than
+    deleted. Dropping it would let the directory silently fall back out of
+    the wheel while the refusal kept claiming an install has it, and
+    ``docs/public/VERIFICATION.md`` and ``docs/public/LES.md`` both send
+    readers to files under it.
+
+    The wheel-contents measurement lives in
+    ``tests/test_configs_are_packaged.py``; what is checked here is only
+    the premise this file's refusal text depends on.
+    """
 
     import tomllib
 
@@ -404,12 +420,21 @@ def test_the_configs_directory_is_really_not_in_the_wheel():
     packages = setuptools.get("packages", {})
     include = packages.get("find", {}).get("include", [])
     package_data = setuptools.get("package-data", {})
-    assert not any(entry.startswith("configs") for entry in include), (
-        "configs/ is a package now; the LES refusal's explanation is "
-        "out of date")
-    assert "configs" not in package_data, (
-        "configs/ ships as package data now; the LES refusal's "
-        "explanation is out of date")
+    assert any(entry.startswith("configs") for entry in include), (
+        "configs/ is in no distribution again; the LES refusal now tells a "
+        "reader their install is incomplete when it is the packaging that "
+        "regressed")
+    assert "configs" in package_data, (
+        "configs/ is a declared package with no package-data pattern, so "
+        "the wheel carries the directory and none of its files")
+
+    # ...and the refusal must not claim a pip install has never had the
+    # file, which is what it said while the pin ran the other way.
+    from gpuwm.verify.cases import _repo_config
+
+    message = _repo_config.missing_config_message(
+        "les_tornado_100m_mayfield_20211210.toml")
+    assert "has never had this file" not in message
 
 
 # ==========================================================================

@@ -15,13 +15,28 @@ license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "rw_wrfbatch"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rw_wrfbatch"
 path = "src/main.rs"
 
+# The two sibling binaries.  `rw_wrfbatch`'s one-run-per-invocation
+# contract cannot express N members at one valid time, and an observation
+# volume is not a forecast, so neither is a flag on it.
+[[bin]]
+name = "rw_ensbatch"
+path = "src/bin/ensbatch.rs"
+
+[[bin]]
+name = "rw_obsgrid"
+path = "src/bin/obsgrid.rs"
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-grib-core = { path = "../../vendor/grib-core", default-features = false }
+grib-core = { path = "../../../grib1_bridge/vendor/grib-core", default-features = false }
 netcrust = { path = "../../vendor/netcrust" }
 rayon.workspace = true
 serde = { workspace = true }
@@ -30,8 +45,15 @@ sha2 = "0.10"
 thiserror = { workspace = true }
 wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
 rustwx-core = { path = "../rustwx-core" }
+rustwx-ensemble = { path = "../rustwx-ensemble" }
+rustwx-render = { path = "../rustwx-render" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-products = { path = "../rustwx-products" }
 rusty-weather = { path = "../rusty-weather" }
 rw-ingest = { path = "../rw-ingest" }
 rw-store = { path = "../rw-store" }
+# The vendored WSR-88D site table.  `rw_obsgrid` labels an observation
+# file's radars by POSITION against it, because the two id-carrying fields
+# a `gpuwm-obs.radar-grid.v1` file has are both unreadable through this
+# reader (see src/obs_grid.rs).
+wx-radar = { path = "../../vendor/wx-radar" }

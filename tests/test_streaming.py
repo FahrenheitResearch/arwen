@@ -1766,9 +1766,14 @@ def test_a_tree_that_cannot_fit_after_reserving_refuses_with_both_numbers():
     parent, child = _starving_tree_nodes()
     model = _types.SimpleNamespace(
         walk_parent_first=lambda: [parent, child])
-    # 1.0 GiB: the child's 0.82 GiB resident claim leaves the streamed
-    # parent well under the dry rung's per-process floor.
-    machine = Machine(vram_bytes=1 * gib, host_bytes=256 * gib,
+    # 0.85 GiB: the child's MARGINAL resident claim is 0.28 GiB -- its
+    # 0.82 GiB resident price less the 0.55 GiB of CUDA context and dry-rung
+    # tables the process pays once for the whole tree -- and 0.85 less the
+    # tree's one 0.55 GiB overhead leaves the streamed parent under its own
+    # floor.  This test used to say 1.0 GiB, when the walk charged that
+    # overhead again per domain; it is a smaller card now because the
+    # phantom charge was doing the starving.
+    machine = Machine(vram_bytes=int(0.85 * gib), host_bytes=256 * gib,
                       vram_headroom=0.0)
     with pytest.raises(StreamingRefused) as refusal:
         streaming.steppers_for_tree(model, StreamingOptions(mode="auto"),
@@ -1777,7 +1782,200 @@ def test_a_tree_that_cannot_fit_after_reserving_refuses_with_both_numbers():
     assert "reserv" in text.lower()
     assert "d01" in text and "d02" in text
     # Both numbers, in the units the operator configured.
-    assert "1.00 GiB" in text and "0.8" in text
+    assert "0.85 GiB" in text and "0.28" in text
+
+
+# ---- one process, one fixed cost: the tree is not N processes ------------
+
+def _poland_tree_nodes():
+    """The three-domain 9/3/1 km ladder MEASURED on node 1, as nodes.
+
+    Real numbers, not a fixture shape: 200x160 at 9 km over 402x300 at 3 km
+    over 1050x750 at 1 km, 49 eta levels, RTE+RRTMGP with Thompson, YSU and
+    Noah -- the ``full`` rung.  The card was 15.92 GiB (16,303 MiB) with
+    15.245 GiB free, which the shipped 8% headroom turns into the
+    14.025 GiB budget this tree was planned against.
+    """
+    import types
+
+    from gpuwm.config import RunConfig
+    from gpuwm.experiment import DomainConfig
+
+    physics = dict(ra_sw_physics=4, ra_lw_physics=4, mp_physics=8, moist=True,
+                   bl_pbl_physics=1, sf_surface_physics=2,
+                   sf_sfclay_physics=91, km_opt=4)
+    spec = ((1, 200, 160, 9000.0, 30.0, 1, 1, 1),
+            (2, 402, 300, 3000.0, 10.0, 3, 34, 42),
+            (3, 1050, 750, 1000.0, 5.0, 3, 27, 28))
+    nodes, parent = [], None
+    for gid, nx, ny, dx, dt, ratio, istart, jstart in spec:
+        run = RunConfig(nx=nx, ny=ny, nz=49, dx=dx, dy=dx, ztop=20000.0,
+                        dt=dt, run_seconds=600.0, grid_id=gid,
+                        nested=(gid > 1), specified=False, **physics)
+        cfg = DomainConfig(grid_id=gid, parent_id=gid - 1,
+                           i_parent_start=istart, j_parent_start=jstart,
+                           parent_grid_ratio=ratio,
+                           parent_time_step_ratio=ratio,
+                           history_interval_s=600.0, run=run)
+        node = types.SimpleNamespace(cfg=cfg, state=types.SimpleNamespace(),
+                                     parent=parent)
+        nodes.append(node)
+        parent = node
+    return nodes
+
+
+def _decide_poland(monkeypatch, vram_gib=15.245):
+    """Walk the measured tree and hand back its decisions."""
+    import sys
+    import types as _types
+
+    from tilestream.autoplan import Machine
+
+    nodes = _poland_tree_nodes()
+    stub = _types.ModuleType("gpuwm.core.dycore")
+    stub.step = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "gpuwm.core.dycore", stub)
+    model = _types.SimpleNamespace(walk_parent_first=lambda: nodes)
+    machine = Machine(vram_bytes=int(vram_gib * (1024 ** 3)),
+                      host_bytes=int(123.25 * (1024 ** 3)))
+    decisions: dict = {}
+    # The streamed d03 needs a builder to reach a stepper, and building one
+    # needs a card.  The DECISIONS are all taken before any builder runs
+    # (that split is its own contract above), so the refusal the harness
+    # raises here is the missing builder and the arithmetic under test is
+    # already in ``decisions``.
+    try:
+        streaming.steppers_for_tree(model, StreamingOptions(mode="auto"),
+                                    machine=machine, decisions=decisions)
+    except StreamingRefused as exc:
+        assert "builder" in str(exc), exc
+    return machine, decisions
+
+
+def test_the_measured_three_domain_tree_plans_on_the_card_it_ran_on(
+        monkeypatch):
+    """THE DEFECT, against the run that hit it.
+
+    ``autoplan.Footprint.vram_bytes`` prices ONE domain in ONE process, so
+    it carries the CUDA context and the ``full`` rung's k-distribution
+    tables -- 3.760 GiB with the safety factor -- inside every answer.  The
+    walk subtracted that whole number once per DOMAIN, so a three-domain
+    tree paid for three CUDA contexts and three copies of the tables:
+    7.519 GiB of a 15.245 GiB card spent on bytes nothing allocates.  This
+    tree was refused outright with ``CannotPlan: no tile fits in 2.45 GiB``,
+    and the only way to run it was to hand ``[tiles] vram_budget_bytes`` a
+    number 7.519 GiB larger than the card -- a workaround, in the config, in
+    a shipped experiment.
+
+    Priced once, the tree fits with room to spare, and the two resident
+    domains land on the numbers the run itself reported.
+    """
+    machine, decisions = _decide_poland(monkeypatch)
+    gib = 1024 ** 3
+
+    assert set(decisions) == {1, 2, 3}
+    assert decisions[1].stream is False and decisions[2].stream is False
+    assert decisions[3].stream is True
+
+    # The run's own report: d01 4.614 GiB, d02 6.932 GiB resident.  These
+    # are whole-process prices and are NOT what the tree is charged; they
+    # are here because they are the two numbers the measured run published,
+    # and a model that reproduces them is the model that measured run used.
+    assert abs(decisions[1].resident_bytes / gib - 4.614) < 0.005
+    assert abs(decisions[2].resident_bytes / gib - 6.932) < 0.005
+
+
+def test_the_per_process_fixed_cost_is_charged_once_for_the_whole_tree(
+        monkeypatch):
+    """The ledger identity, stated so it cannot drift back.
+
+    ``claim_bytes`` is MARGINAL on every domain, and the tree's bill is one
+    process overhead plus those claims plus the coupling corridors.  The
+    discriminating assertion is the last one: the sum of the WHOLE prices
+    exceeds the card, so a walk that charged whole prices could not have
+    planned this tree at all -- which is exactly what it did.
+    """
+    machine, decisions = _decide_poland(monkeypatch)
+    gib = 1024 ** 3
+
+    overheads = {int(d.detail["tree_process_overhead_bytes"])
+                 for d in decisions.values()}
+    assert len(overheads) == 1, "the tree pays ONE overhead, not one per grid"
+    overhead = overheads.pop()
+    assert abs(overhead / gib - 3.760) < 0.005, overhead / gib
+
+    claims = sum(int(d.detail["claim_bytes"])
+                 + int(d.detail["corridor_claim_bytes"])
+                 for d in decisions.values())
+    assert overhead + claims <= machine.vram_budget_bytes, (
+        f"{(overhead + claims) / gib:.3f} GiB priced against a "
+        f"{machine.vram_budget_bytes / gib:.3f} GiB budget")
+
+    # every claim is genuinely marginal, i.e. strictly below the whole price
+    for gid, d in decisions.items():
+        assert int(d.detail["claim_bytes"]) < int(d.resident_bytes), gid
+
+    # THE CONTROL.  Charged per domain -- the old arithmetic -- the same
+    # tree prices past the card, so this test cannot pass by accident on a
+    # tree that was going to fit either way.
+    per_domain = sum(int(d.resident_bytes) for d in decisions.values())
+    assert per_domain > machine.vram_bytes, (
+        f"{per_domain / gib:.3f} GiB of whole prices against a "
+        f"{machine.vram_bytes / gib:.3f} GiB card")
+    assert abs((per_domain - (overhead + claims)) / gib) > 7.0
+
+
+def test_the_freed_budget_does_not_buy_a_tile_the_radiation_call_kills(
+        monkeypatch):
+    """The other half of the fix, and it is measured on both sides.
+
+    Removing the phantom bytes hands the tile search 7.5 GiB it did not
+    have, and left alone it spends them: at the honest budget it picks a
+    350x250 tile whose steady footprint the measured run put at ~14.34 GiB.
+    Radiation's per-call transient measured +2.74 GiB on that card, so that
+    tiling peaks at 17.08 GiB against a 15.92 GiB card -- dead at the first
+    radiation call, roughly six minutes in.
+
+    With the transient reserved (``autoplan.RADIATION_TRANSIENT_BYTES``),
+    d03 lands on 175x375 instead: the tiling that actually ran, 12 tiles,
+    measured peak 15.46 GiB with 467 MiB of card to spare.
+    """
+    machine, decisions = _decide_poland(monkeypatch)
+    d03 = decisions[3]
+    assert (d03.tile_nx, d03.tile_ny) == (175, 375), (
+        f"d03 took a {d03.tile_nx}x{d03.tile_ny} tile; 350x250 is the one "
+        "the measured run's own analysis says would have died at the first "
+        "radiation call")
+    assert 1050 % d03.tile_nx == 0 and 750 % d03.tile_ny == 0
+    assert d03.nbuffers == 2
+
+
+def test_a_tree_with_no_radiation_reserves_nothing_for_it(monkeypatch):
+    """CONTROL: the reservation must not leak into a dry tree.
+
+    Every dry plan in this project predates the constant.  If the radiation
+    reservation applied where no radiation runs, the whole measured tile
+    ladder would move and nothing in the dry suite would say so.
+    """
+    import sys
+    import types as _types
+
+    from tilestream.autoplan import Machine
+
+    parent, child = _tree_nodes()               # dry rung, no radiation
+    stub = _types.ModuleType("gpuwm.core.dycore")
+    stub.step = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "gpuwm.core.dycore", stub)
+    model = _types.SimpleNamespace(walk_parent_first=lambda: [parent, child])
+    machine = Machine(vram_bytes=8 << 30, host_bytes=64 << 30)
+    decisions: dict = {}
+    streaming.steppers_for_tree(model, StreamingOptions(mode="auto"),
+                                machine=machine, decisions=decisions)
+    assert streaming._tree_radiation_transient_bytes([parent, child]) == 0
+    assert (streaming._tree_budget_bytes(machine, 0)
+            == machine.vram_budget_bytes)
+    # the first domain is still planned against the whole budget
+    assert decisions[1].budget_bytes == machine.vram_budget_bytes
 
 
 def test_the_receipt_records_every_grid_of_the_tree_with_its_road(

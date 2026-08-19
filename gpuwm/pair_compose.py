@@ -26,6 +26,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from gpuwm.render_layout import fs_path, iter_rendered
+
 #: The rust renderer's forecast-hour marker.  Everything before it is the
 #: run's identity (model, init date, cycle), which two compared runs are
 #: expected to differ in; everything after it -- domain token and product
@@ -36,6 +38,11 @@ from pathlib import Path
 #: before the rebrand still holds -- so an old render pairs against a
 #: new one.
 LEAD_MARKER = re.compile(r"^(?:arwen|rustwx)_.+?_f\d{3}_")
+
+#: The domain token a pairing key starts with (``d02-3km_``,
+#: ``d05-111m_``).  ``native_grid`` deliberately does not match: a
+#: pre-token name carries no domain to strip.
+_DOMAIN_TOKEN = re.compile(r"^d\d{2}-[^_]+_")
 
 
 def product_name(path: Path) -> str:
@@ -85,10 +92,44 @@ def compose_pairs(left_dir: Path, right_dir: Path, out_dir: Path, *,
     from PIL import Image, ImageDraw
 
     left_dir, right_dir = Path(left_dir), Path(right_dir)
-    left = {product_name(p): p for p in sorted(left_dir.glob("*.png"))}
-    right = {product_name(p): p for p in sorted(right_dir.glob("*.png"))}
+    # Through the layout walker, not `glob("*.png")`: since 2.5.0 the
+    # render directory is a tree (domain/product/valid-day) and a
+    # top-level glob finds nothing in one, which would have turned
+    # `--pair` into the "no matching product PNGs" refusal on every run
+    # rendered by the shipped default.  The pairing KEY is unchanged --
+    # it is read from the filename, which did not move.
+    left = {product_name(p): p for p in iter_rendered(left_dir)}
+    right = {product_name(p): p for p in iter_rendered(right_dir)}
     common = sorted(left.keys() & right.keys())
-    if not common:
+    pairs: dict[str, tuple[Path, Path]] = {
+        key: (left[key], right[key]) for key in common}
+    # Second pass, for the comparison DOWNSCALE.md documents: a parent
+    # directory against its offline child's is two DIFFERENT domains by
+    # definition, so the domain-bearing keys above share nothing and the
+    # documented command refused (walked 2026-08-17).  Keys the exact
+    # pass left unmatched pair across the domain token -- but only where
+    # the stripped key is unambiguous on its own side, so two nests of
+    # one run in one directory still never cross-pair (that pin
+    # predates this pass and stands).
+    def _stripped_unmatched(mapping, matched):
+        candidates: dict[str, list[tuple[str, Path]]] = {}
+        for key, path in mapping.items():
+            if key in matched:
+                continue
+            token = _DOMAIN_TOKEN.match(key)
+            if token is None:
+                continue
+            candidates.setdefault(key[token.end():], []).append((key, path))
+        return {stripped: group[0] for stripped, group in
+                candidates.items() if len(group) == 1}
+
+    left_stripped = _stripped_unmatched(left, set(common))
+    right_stripped = _stripped_unmatched(right, set(common))
+    for stripped in sorted(set(left_stripped) & set(right_stripped)):
+        (left_key, left_path) = left_stripped[stripped]
+        (right_key, right_path) = right_stripped[stripped]
+        pairs[f"{left_key}_vs_{right_key}"] = (left_path, right_path)
+    if not pairs:
         raise ValueError(
             f"no matching product PNGs between {left_dir} and {right_dir}")
 
@@ -104,10 +145,16 @@ def compose_pairs(left_dir: Path, right_dir: Path, out_dir: Path, *,
     sheets: list[Path] = []
     manifest: list[str] = []
 
-    for product in common:
-        panel_l = _fit(Image.open(left[product]).convert("RGB"),
+    for product in sorted(pairs):
+        left_path, right_path = pairs[product]
+        # Opened through the layout's own spelling: `iter_rendered`
+        # walks as deep as the placement can write, and on Windows that
+        # is past the ordinary API's ceiling.  A composer that listed a
+        # frame and then could not open it would fail a --pair run on
+        # exactly the deep case roots the layout exists to organise.
+        panel_l = _fit(Image.open(fs_path(left_path)).convert("RGB"),
                        panel_width)
-        panel_r = _fit(Image.open(right[product]).convert("RGB"),
+        panel_r = _fit(Image.open(fs_path(right_path)).convert("RGB"),
                        panel_width)
         header = 128 if subtitle else 96
         label_height = 48
@@ -150,7 +197,7 @@ def compose_pairs(left_dir: Path, right_dir: Path, out_dir: Path, *,
         canvas.save(output, optimize=True)
         sheets.append(output)
         manifest.append(
-            f"{product}\t{left[product]}\t{right[product]}\t{output}")
+            f"{product}\t{left_path}\t{right_path}\t{output}")
 
     (out_dir / "manifest.tsv").write_text(
         "product\tleft\tright\tpair\n" + "\n".join(manifest) + "\n",

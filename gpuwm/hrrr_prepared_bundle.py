@@ -84,6 +84,107 @@ def _artifact(path: Path, relative: str) -> dict[str, object]:
     }
 
 
+def render_wps_namelist(experiment) -> str:
+    """The ``&share``/``&geogrid`` namelist this experiment's domains ARE.
+
+    Not a derivation and not a guess: every number below already exists
+    in the experiment's ``[projection]`` table and its per-domain
+    ``RunConfig``, and this writes them in the spelling
+    :func:`gpuwm.static.projection.grids_from_wps_namelist` reads.  The
+    forecast stage's geometry check
+    (``validate_native_lambert_contracts``) compares that reading against
+    ``grids_from_projection_config(exp)`` -- the same table this renders
+    from -- so a namelist rendered here agrees with the experiment by
+    construction, and :func:`_publish_wps_namelist` runs that very check
+    on the bytes before they are allowed to stay.
+
+    It exists because the native HRRR route is driven by a strict target
+    domain, not by a ``namelist.wps``: there is no such file to copy, and
+    the portable authorities the forecast binds include one.  Requiring
+    the caller to hand-write a namelist that restates numbers the route
+    already holds is how the first Linux shakeout ended with a complete
+    prepared tree that ``gpuwm sim`` would not run.
+
+    Floats are written with ``repr``, which round-trips exactly in
+    Python -- the geometry comparison downstream is ``!=`` on floats, so
+    a shortened spelling is a refusal.
+    """
+
+    projection = experiment.projection
+    if projection is None:
+        raise HrrrBundleError(
+            "this experiment carries no [projection] table, so there is no "
+            "map projection to write a namelist.wps from")
+    domains = list(experiment.domains)
+    if not domains:
+        raise HrrrBundleError("this experiment declares no domains")
+
+    def number(value) -> str:
+        return repr(int(value)) if isinstance(value, int) else repr(
+            float(value))
+
+    def row(values) -> str:
+        return ", ".join(number(value) for value in values)
+
+    root = domains[0].run
+    return (
+        "&share\n"
+        " wrf_core = 'ARW',\n"
+        f" max_dom = {len(domains)},\n"
+        " interval_seconds = 3600,\n"
+        " io_form_geogrid = 2,\n"
+        "/\n"
+        "&geogrid\n"
+        f" parent_id         = {row(d.parent_id or 1 for d in domains)},\n"
+        f" parent_grid_ratio = {row(d.parent_grid_ratio for d in domains)},\n"
+        f" i_parent_start    = {row(d.i_parent_start or 1 for d in domains)},\n"
+        f" j_parent_start    = {row(d.j_parent_start or 1 for d in domains)},\n"
+        f" e_we              = {row(d.run.nx + 1 for d in domains)},\n"
+        f" e_sn              = {row(d.run.ny + 1 for d in domains)},\n"
+        " geog_data_res     = 'default',\n"
+        f" dx = {number(root.dx)},\n"
+        f" dy = {number(root.dy)},\n"
+        f" map_proj = {projection.map_proj!r},\n"
+        f" ref_lat   = {number(projection.ref_lat)},\n"
+        f" ref_lon   = {number(projection.ref_lon)},\n"
+        f" truelat1  = {number(projection.truelat1)},\n"
+        f" truelat2  = {number(projection.truelat2)},\n"
+        f" stand_lon = {number(projection.stand_lon)},\n"
+        "/\n")
+
+
+def _publish_wps_namelist(root: Path, experiment, wps_namelist) -> Path:
+    """The bundle's ``namelist.wps``: the caller's, or one rendered here.
+
+    A rendered namelist is validated by the FORECAST STAGE'S OWN
+    geometry check before it is allowed to stay, so a renderer that ever
+    drifts from the experiment fails at the door that wrote it rather
+    than at the door that reads it -- and leaves no file behind claiming
+    a geometry it does not describe.
+    """
+
+    from gpuwm.native_wrf_contract import validate_native_lambert_contract
+
+    target = root / WPS_NAMELIST_NAME
+    if wps_namelist is not None:
+        return _copy_authority(wps_namelist, target)
+    if target.exists():
+        raise HrrrBundleError(f"refusing to replace {target}")
+    target.write_text(render_wps_namelist(experiment),
+                      encoding="utf-8", newline="\n")
+    try:
+        validate_native_lambert_contract(
+            experiment, target, source_name="HRRR")
+    except Exception as error:
+        target.unlink()
+        raise HrrrBundleError(
+            f"the namelist.wps rendered from this experiment does not pass "
+            f"the forecast stage's own geometry check ({error}), so it was "
+            "not published; a bundle carrying it would be refused one stage "
+            "later with the same complaint") from error
+    return target
+
+
 def _copy_authority(source: Path, target: Path) -> Path:
     source = Path(source)
     if not source.is_file():
@@ -121,8 +222,8 @@ def publish_hrrr_prepared_bundle(
         geometry_receipt: Path,
         bridge_manifest: Path,
         namelist_input: Path,
-        wps_namelist: Path,
         source_manifest: Path,
+        wps_namelist: Path | None = None,
         experiment_config: Path,
         source_cycle: datetime,
         source_forecast_hours: Sequence[int],
@@ -191,7 +292,12 @@ def publish_hrrr_prepared_bundle(
             f"cycle f{source_hours[0]:03d} ({start_time.isoformat()})")
 
     # ---- the authorities the front door hashes -------------------------
-    wps_path = _copy_authority(wps_namelist, root / WPS_NAMELIST_NAME)
+    # ``wps_namelist=None`` is the ROUTE's own case, not a shortcut: the
+    # native HRRR preparation is driven by a strict target domain and has
+    # no namelist.wps to copy, so one is rendered from the experiment
+    # this bundle is already bound to and checked by the forecast
+    # stage's own geometry validator before it is kept.
+    wps_path = _publish_wps_namelist(root, experiment, wps_namelist)
     namelist_path = _copy_authority(namelist_input, root / WRF_NAMELIST_NAME)
 
     files = {
@@ -349,4 +455,5 @@ __all__ = [
     "WPS_NAMELIST_NAME",
     "WRF_NAMELIST_NAME",
     "publish_hrrr_prepared_bundle",
+    "render_wps_namelist",
 ]

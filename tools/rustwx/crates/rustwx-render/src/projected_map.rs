@@ -471,6 +471,33 @@ pub fn build_projected_map(
     )
 }
 
+/// Project arbitrary `(lat, lon)` degree pairs into the SAME projected
+/// space [`build_projected_map_with_options`] produces from the same mesh
+/// and the same options.
+///
+/// gpuwm addition (VENDOR.md).  Every projected overlay type in
+/// [`crate::request`] -- points, lines, place labels -- takes projected
+/// coordinates, and until now the only way to obtain any was to be a
+/// basemap feature or a grid cell.  A radar site, a range ring, a storm
+/// report and a domain-boundary box are none of those: they are places,
+/// known in degrees, that have to land where the map already put that
+/// place.  Nothing existing calls this, so it cannot move an existing
+/// pixel; it reuses `resolved_projector` rather than rebuilding one so a
+/// marker can never land in a different frame than the fill it sits on.
+pub fn project_geographic_points_with_options(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    options: &ProjectedMapBuildOptions,
+    points: &[(f64, f64)],
+) -> Result<Vec<(f64, f64)>, Box<dyn Error>> {
+    validate_lat_lon_mesh(lat_deg, lon_deg)?;
+    let projector = resolved_projector(lat_deg, lon_deg, &options.domain)?;
+    Ok(points
+        .iter()
+        .map(|(lat, lon)| projector.project(*lat, *lon))
+        .collect())
+}
+
 fn resolved_projector(
     lat_deg: &[f32],
     lon_deg: &[f32],

@@ -1,0 +1,127 @@
+{
+ "luf": "luf.bin",
+ "iswater": 3,
+ "islake": 5,
+ "landmask": "landmask.bin",
+ "lu_index": "lu_index.bin",
+ "landmask_nolake": "landmask_nl.bin",
+ "lu_index_nolake": "lu_index_nl.bin",
+ "dominant": "dominant.bin",
+ "monthly": "monthly.bin",
+ "monthly_cases": [
+  {
+   "year": 1974,
+   "julian": 51,
+   "mid_month_julian": [
+    15,
+    46,
+    74,
+    105,
+    135,
+    166,
+    196,
+    227,
+    258,
+    288,
+    319,
+    349
+   ],
+   "out": "monthly_1974_51.bin"
+  },
+  {
+   "year": 1974,
+   "julian": 5,
+   "mid_month_julian": [
+    15,
+    46,
+    74,
+    105,
+    135,
+    166,
+    196,
+    227,
+    258,
+    288,
+    319,
+    349
+   ],
+   "out": "monthly_1974_5.bin"
+  },
+  {
+   "year": 1974,
+   "julian": 359,
+   "mid_month_julian": [
+    15,
+    46,
+    74,
+    105,
+    135,
+    166,
+    196,
+    227,
+    258,
+    288,
+    319,
+    349
+   ],
+   "out": "monthly_1974_359.bin"
+  },
+  {
+   "year": 2024,
+   "julian": 46,
+   "mid_month_julian": [
+    15,
+    46,
+    75,
+    106,
+    136,
+    167,
+    197,
+    228,
+    259,
+    289,
+    320,
+    350
+   ],
+   "out": "monthly_2024_46.bin"
+  },
+  {
+   "year": 2024,
+   "julian": 197,
+   "mid_month_julian": [
+    15,
+    46,
+    75,
+    106,
+    136,
+    167,
+    197,
+    228,
+    259,
+    289,
+    320,
+    350
+   ],
+   "out": "monthly_2024_197.bin"
+  },
+  {
+   "year": 2024,
+   "julian": 16,
+   "mid_month_julian": [
+    15,
+    46,
+    75,
+    106,
+    136,
+    167,
+    197,
+    228,
+    259,
+    289,
+    320,
+    350
+   ],
+   "out": "monthly_2024_16.bin"
+  }
+ ]
+}

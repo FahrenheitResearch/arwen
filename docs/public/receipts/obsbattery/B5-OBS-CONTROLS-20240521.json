@@ -28,205 +28,205 @@
         "is_stub": false,
         "matches": true,
         "sha256": "0da5948ad41f0855b90e399bb32240cdcdb3e0dbbb592dec426a8ed3ba1df67b",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-140035.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-140035.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "fd45e415640abddfedfc0e6d41fe768e9308b958e26dff2c6f4328df03903d24",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-150038.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-150038.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "2a3d1b1509b8e9c833690eae37e06b10e4ac28339dc56b6390ba0b6b0bcb7dc2",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-160036.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-160036.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "f6e64f45ba7c8f37462f07146e73442ab01bfaf5928a9501087a3b3b1b347bec",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-170040.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-170040.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "bbdb6d9cf76034b646bc5a3f0f27bc4c6ed5486b6b606524a308727a57787526",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-180036.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-180036.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "4d5068a7ed80c7ddedb204b22009d2751f7bc6931da2eb57bbc2b47d22324ea8",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-190040.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-190040.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "df58af08aafa610578a09b2eccfd45c6a3971a3ecc477b99f8145857e925a587",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-200036.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-200036.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "7cb6c292b2a7f65745b7e669d15fdf521abb5ec4f4ab6897f5364eb35bf02686",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-210037.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-210037.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "0bd824f76981ae5f470f52a5e19f0d69257d5fd7c99ab4634ef67eca6ef42829",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-220042.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-220042.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "29e640753431661e96e23fa98dc7847f04311ed29cd0411b436a836c1de056ab",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-230039.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240521\\MRMS_MergedReflectivityQCComposite_00.50_20240521-230039.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "0306ed91554abf69b930017f408f3b3d9d9500ff662e6021f3262f7618ae30f5",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-000038.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-000038.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "768f2b2680d15bb561c2bd722b90d93f583807668030888a44178c195f379254",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-010042.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-010042.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "74235beb576548a2bd0d861bbf060bf3dfb4ee210291263ac4cdedc0b936c6cb",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-020040.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-020040.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "cca80d1128f189c9b214912461539c66ca34f268411075973a8ee7eef6ca9356",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-030042.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-030042.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "5c11a40c27f97c55923f22b7d2ba6afd09313c2b2543d03a2966c2b0b0a3f0b1",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-040040.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-040040.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "f1d35646cc969c3267b8cdb926a5f76de1c36915bcaef59d1f84b5da34ecc21c",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-050038.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-050038.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "ad4b56dfd964cd08fac81ec087dab7649e05730ce0e21ad054a2973cb6e672b6",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-060040.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240522\\MRMS_MergedReflectivityQCComposite_00.50_20240522-060040.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "067ab27e15fa41babc226095cd7bfd25b8e0e6154aa8474be6538db0e36724ee",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-140040.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-140040.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "16268e2f45412a68037caca8ee2842a06a720948a7b8ae96d9eb5d85842675c8",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-150040.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-150040.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "8bb8adbdc1e8a1aec30306afb99722b018bab1110d3bbe1e0e83c01f9c13d83f",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-160041.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-160041.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "04d44aee537bc441a4cfd8d29f142063e76154140145276af04157574ed0aaf6",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-170041.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-170041.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "936fcccffd521abf8401d1e7cb1391a08486d7cb84110b6186209dabccbba629",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-180035.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-180035.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "74eb76c10cfa10a31135aad1c7be8ab61f593a3697a4c88b6fa057f94fad4285",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-190040.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-190040.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "bd8333df1fc80459d52464daa540929525c9474085a73ccbb00524ef286dc688",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-200041.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-200041.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "a54c5eb44827c665003c50dc5cf8871a2303838b073f57dbefbb1343f43a0360",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-210039.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-210039.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "bdb0b0b8248980358ba176d82736d6da3bfa503d58fe732662dec7698ac99a58",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-220041.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-220041.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "f7b750ec3b19c4c56f299c773536e3873ce3786e67c29cee6db2ab4e7cc5438c",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-230040.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240427\\MRMS_MergedReflectivityQCComposite_00.50_20240427-230040.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "79436c74b7ec3a8e8a402c931033d6a900819625618063ca0df7f52606cd6c9f",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-000037.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-000037.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "16bfc895012b80ae0bc21bef3222cc343fc7b835897d804f6c28339228a72fdc",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-010041.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-010041.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "6b8a50fda579d5f12ff9fdbd1dc291170555d656af67a744bc1e01ebbaadaf1f",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-020042.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-020042.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "6df1da6e7d6e88ab15ce7d04da34d1066d71a1ad657a214a9f69c1b76dbd64b4",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-030040.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-030040.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "e8c851439e3ddfde9b5403fb364f731c40d54e6de68468ef1a2756c876e052c3",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-040043.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-040043.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "0386aa5f644a76f677046e2057fd83f8345a1c3d1290145bdb29478c14ca0740",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-050038.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-050038.grib2.gz"
       },
       {
         "is_stub": false,
         "matches": true,
         "sha256": "fe2d51366fe11cd9fb2863949f99fa44ba52ef001fd25c5615625ef5b12768c5",
-        "uri": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-060039.grib2.gz"
+        "uri": "${OBS_CACHE_ROOT}\\objects\\mrms\\noaa-mrms-pds\\CONUS\\MergedReflectivityQCComposite_00.50\\20240428\\MRMS_MergedReflectivityQCComposite_00.50_20240428-060039.grib2.gz"
       }
     ],
     "stub_inputs": []
@@ -10290,7 +10290,7 @@
     "fixed_points": [],
     "note": "the registered station-shuffle-mutation control compares a real arm's RMSE with and without the derangement and asks whether the rise exceeds the twin band; neither exists yet, so what is measured here is the derangement itself and the rise a perfect arm would suffer under it",
     "seed": 20260804,
-    "station_table": "C:\\Users\\drew\\gpuwm\\cache\\obsbattery\\battery\\asos\\2024-05-21\\stations.json",
+    "station_table": "${OBS_CACHE_ROOT}\\asos\\2024-05-21\\stations.json",
     "stations_in_table": 642,
     "stations_outside_grid": 53,
     "stations_outside_interior": 100,

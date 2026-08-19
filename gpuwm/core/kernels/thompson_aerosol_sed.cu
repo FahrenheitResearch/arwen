@@ -3,7 +3,7 @@
 // Aerosol-aware Thompson (mp_physics=28): number-weighted cloud-water
 // sedimentation and the number-conserving final phase cleanup.
 //
-// Numerical authority is /home/drew/wrf461-pristine/phys/module_mp_thompson.F
+// Numerical authority is WRF v4.6.1 phys/module_mp_thompson.F
 // (WRF v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28, zero local
 // modifications).  Every line number below refers to that file.
 //

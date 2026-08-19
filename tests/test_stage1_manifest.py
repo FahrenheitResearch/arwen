@@ -93,7 +93,14 @@ def test_entries_are_repository_relative_test_files(entry: str) -> None:
     assert "\\" not in entry, (
         f"{entry} uses a backslash; forward slashes only, so the same list "
         "works on the Windows cut box and a Linux runner")
-    assert entry.startswith("tests/"), f"{entry} is not under tests/"
+    # Two trees, both collected by pyproject's testpaths.  tilestream/
+    # joined at the 2.5.0 gating pass (release blocker #5): its pytest
+    # suites ran on no list at all, and the check that used to read "not
+    # under tests/" would have refused the entries that fixed that.  The
+    # breakage this line still prevents is unchanged -- a path outside the
+    # repository's test trees is a typo the leg discovers only at runtime.
+    assert entry.startswith(("tests/", "tilestream/")), (
+        f"{entry} is not under tests/ or tilestream/")
     assert entry.endswith(".py"), f"{entry} is not a Python test file"
 
 

@@ -167,7 +167,8 @@ require_rrtmg_legacy_executable = require_rrtmg_legacy_ready
 # Thompson 8 completed the audited Node-3 CUDA/WRF-oracle forecast lane and
 # the matched four-domain verification rerun of 2026-07-28
 # (docs/thompson-rematch-20260728.md), and the canonical WRF v4.6.1 classic
-# tables now ship as package data (gpuwm/data/thompson/tables).  mp_physics=8
+# tables now ship as package data (gpuwm_data/data/thompson/tables, in the
+# gpuwm-data companion distribution since 2.5.0).  mp_physics=8
 # is therefore selectable first-class: the process-environment enable guard
 # is retired for selection (product decision, product/v1 packaging lane
 # 2026-07-28), and the table root defaults to the packaged directory.
@@ -189,17 +190,26 @@ MP28_REGISTRY_OPTION_ID = "thompson-aerosol-mp28"
 
 
 def packaged_thompson_table_root() -> "Path":
-    """The in-package canonical classic-table directory.
+    """The packaged canonical classic-table directory.
 
     The four assets and their MANIFEST.sha256 are committed under
-    ``gpuwm/data/thompson/tables``; byte identity against
+    ``gpuwm_data/data/thompson/tables`` -- same relative path, same
+    bytes, in the ``gpuwm-data`` companion distribution since 2.5.0
+    (see :mod:`gpuwm.data_assets` for the measurement that split it out).
+    Byte identity against
     ``gpuwm.core.thompson_contract.CLASSIC_TABLE_ASSETS`` is enforced at
     load time, not assumed here.
+
+    Raises the companion's named refusal when ``gpuwm-data`` is missing
+    or version-skewed: this function answers "where does the canonical
+    set live", and a wrong answer there is a load of the wrong bytes.
+    The resolver in :func:`thompson_table_root` is the one that may keep
+    walking, because a *staged* root is an equally canonical answer.
     """
 
-    from pathlib import Path
+    from gpuwm import data_assets
 
-    return Path(__file__).resolve().parent / "data" / "thompson" / "tables"
+    return data_assets.thompson_table_dir()
 
 
 def user_thompson_table_root() -> "Path":
@@ -260,20 +270,38 @@ def thompson_table_root() -> str:
     :func:`user_thompson_table_root` answers instead.  Both roots are
     pinned to the same bytes, so this order chooses a location, never a
     numerical setup.
+
+    Since 2.5.0 the packaged root lives in the ``gpuwm-data`` companion
+    distribution, so asking for it can itself refuse.  That refusal is
+    caught HERE and only here: a complete staged root under
+    ``~/.gpuwm/tables/thompson`` is an equally canonical answer, pinned
+    to the same bytes, and refusing a run that can read every table it
+    needs would name no breakage.  When nothing answers, the companion's
+    refusal is re-raised rather than swallowed, because "no tables
+    anywhere" and "no companion" want different fixes and the second is
+    one pip line.
     """
 
     override = os.environ.get(THOMPSON_TABLE_ROOT_ENV)
     if override:
         return override
-    packaged = packaged_thompson_table_root()
-    if _table_root_is_complete(packaged):
-        return str(packaged)
+    packaged: "Path | None"
+    try:
+        packaged = packaged_thompson_table_root()
+    except (ImportError, OSError) as error:
+        packaged, companion_refusal = None, error
+    else:
+        companion_refusal = None
+        if _table_root_is_complete(packaged):
+            return str(packaged)
     try:
         staged = user_thompson_table_root()
     except (RuntimeError, OSError):  # pragma: no cover - no home directory
-        return str(packaged)
-    if _table_root_is_complete(staged):
+        staged = None
+    if staged is not None and _table_root_is_complete(staged):
         return str(staged)
+    if packaged is None:
+        raise companion_refusal
     return str(packaged)
 
 

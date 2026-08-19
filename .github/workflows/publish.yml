@@ -3,7 +3,10 @@
 #
 # Registered publisher (cross-check on PyPI): project `gpuwm`,
 # owner `FahrenheitResearch`, repository `arwen`, workflow `publish.yml`,
-# environment `pypi`.
+# environment `pypi`.  The companion project `gpuwm-data` is registered as a
+# PENDING trusted publisher on those same coordinates: it does not exist on
+# PyPI until this workflow's first upload creates it, so a 404 from its JSON
+# API is the expected first-cut state, never an error.
 #
 # Two ingresses, one set of proofs.  Publishing a GitHub release is a cut
 # motion -- it is how every release through v1.4.0 shipped -- and a manual
@@ -25,7 +28,11 @@
 #             generate pins; build and prove exact dists)
 #          -> assets (reconcile the proven bridge payload on the draft)
 #          -> authorize_pypi (re-prove draft, assets, and tag commit)
-#          -> publish (push the already-proven dists to PyPI)
+#          -> publish (push the already-proven dists to PyPI:
+#             gpuwm-data FIRST and proven listed, gpuwm only after --
+#             gpuwm==X.Y.Z hard-pins gpuwm-data==X.Y.Z, so a gpuwm that
+#             lands without its companion breaks every fresh
+#             `pip install gpuwm` until the companion exists)
 #          -> release (re-prove everything and promote the draft)
 #
 # `prepare` cannot mutate either public destination.  The GitHub authority
@@ -95,6 +102,8 @@ jobs:
             tests/test_bridge_fetch.py \
             tests/test_table_fetch.py \
             tests/test_package_data_coverage.py \
+            tests/test_companion_distribution.py \
+            tests/test_configs_are_packaged.py \
             tests/test_doctor.py \
             tests/test_doctor_nexrad.py \
             tests/test_cli.py \
@@ -102,6 +111,8 @@ jobs:
             tests/test_namelist_compat.py \
             tests/test_native_wrf_distribution.py \
             tests/test_publish_workflow_state_machine.py \
+            tests/test_publish_dist_shape_agreement.py \
+            tests/test_release_version_declaration.py \
             tests/test_bridge_bundle_adopt.py \
             tests/test_verify_source_bridge_pins.py \
             tests/test_verify_release_artifacts.py
@@ -394,7 +405,7 @@ jobs:
       - name: build the GRIB decoders and the CPU preprocessing library
         working-directory: tools/grib1_bridge
         run: cargo build --release --locked
-      - name: build the fetch backbone and the batch renderer
+      - name: build the fetch backbone, the batch renderer and the NetCDF decoder
         working-directory: tools/rustwx
         run: cargo build --release --locked
       # The vendored dealiasing crate is its own tree, not a member of
@@ -402,6 +413,15 @@ jobs:
       # because --dealias runs it by default.
       - name: build the region-global dealiasing library
         working-directory: tools/region_global_dealias
+        run: cargo build --release --locked
+      # The mapped decode engine is its own workspace (the vendored
+      # rw-wps donor snapshot plus gpuwm's crates/mapped-engine), so it
+      # is built on its own line too.  It ships because
+      # gpuwm.mapped_engine_bridge.DEFAULT_ENGINE is `rust`: without it
+      # in the bundle a wheel user has no mapped decode at all, which is
+      # the DEFAULT decode path.
+      - name: build the mapped decode engine
+        working-directory: tools/rw_wps
         run: cargo build --release --locked
       - name: probe every native artifact on its target runner
         shell: bash
@@ -422,6 +442,7 @@ jobs:
               Path("tools/grib1_bridge/target/release"),
               Path("tools/rustwx/target/release"),
               Path("tools/region_global_dealias/target/release"),
+              Path("tools/rw_wps/target/release"),
           )
           # Each library's ABI entry point comes from the one table that
           # declares it, gpuwm.bridge_assets.LIBRARY_ABI, so this probe
@@ -471,6 +492,7 @@ jobs:
             --search tools/grib1_bridge/target/release \
             --search tools/rustwx/target/release \
             --search tools/region_global_dealias/target/release \
+            --search tools/rw_wps/target/release \
             --out dist-bridges
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -524,7 +546,44 @@ jobs:
             --out gpuwm/data/bridges/bridge-pins.json \
             --manifest dist-bridges/bridge-bundle-manifest.json
       - run: python -m pip install build
-      - run: python -m build
+      # TWO distributions per project: each of gpuwm and gpuwm-data ships
+      # one sdist and one universal py3-none-any wheel.  That is the shape
+      # gpuwm has actually published -- 37 versions of it, the current one
+      # 89,002,457 B against PyPI's 100 MB per-file cap -- and, per
+      # project, it is the shape every later job in this file expects.
+      #
+      # `--clean` first, and it is not decoration: setup.py tags the wheel
+      # from whether `gpuwm/libexec/bridges` exists, so a staged directory
+      # left behind by anything earlier would silently produce a
+      # single-platform wheel wearing the universal wheel's job. The proof
+      # step below re-checks the built wheel carries no staged artifacts
+      # rather than trusting this line.
+      #
+      # A per-platform wheel matrix was added here on the 2.5.0 line and
+      # is removed again: it built three wheels while `publish` (job 9) and
+      # `release` (job 10) both still demanded exactly one, so a cut would
+      # have pushed the tag, created the draft, uploaded every release
+      # asset and then died at job 9 with the version number spent -- the
+      # way 2.4.0 was burned. Per-platform wheels have never shipped, and
+      # resolving the disagreement toward them would have been a release
+      # mechanism change dressed up as a bug fix.
+      #
+      # The prebuilt Rust still reaches users, by the mechanism that has
+      # always delivered it: the per-platform bundles the `bridges` job
+      # builds are published as GitHub release assets, pinned member by
+      # member in gpuwm/data/bridges/bridge-pins.json, and staged by
+      # `gpuwm setup`. Nothing about that path changes here.
+      # The companion is built here too, into the SAME dist/ directory, so
+      # both pairs travel in the one python-dists artifact every later job
+      # re-proves.  gpuwm==X.Y.Z hard-pins gpuwm-data==X.Y.Z; the two are
+      # cut from the same commit and published together, companion first.
+      - name: build the sdists and the universal wheels
+        run: |
+          set -euo pipefail
+          python tools/stage_wheel_bridges.py --clean
+          python -m build
+          python -m build --outdir dist gpuwm-data
+          ls -l dist/
       - name: prove distributions, pins, bundles, and Linux artifacts
         shell: bash
         env:
@@ -533,13 +592,52 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          wheels=(dist/*.whl)
-          sdists=(dist/*.tar.gz)
+          # gpuwm's own pair; the underscore keeps gpuwm_data-* out of a
+          # gpuwm-* glob, and the companion pair has its own proof step.
+          wheels=(dist/gpuwm-*.whl)
+          sdists=(dist/gpuwm-*.tar.gz)
           bundles=(dist-bridges/*.zip)
+          # One wheel and one sdist.  `publish` (job 9) and `release`
+          # (job 10) both re-prove this same python-dists artifact and
+          # both demand exactly these two files, so a count that drifts
+          # here is not a build failure -- it is a cut that pushes the
+          # tag, uploads every asset, and dies at job 9 with the version
+          # spent.  tests/test_publish_dist_shape_agreement.py holds the
+          # three counts to one contract.
           if [ "${#wheels[@]}" -ne 1 ] || [ "${#sdists[@]}" -ne 1 ]; then
-            echo "expected exactly one wheel and one sdist" >&2
+            echo "expected exactly one wheel and one sdist, got ${#wheels[@]} and ${#sdists[@]}" >&2
+            printf '  %s\n' "${wheels[@]}" >&2
             exit 1
           fi
+          # ...and it must be the UNIVERSAL wheel by name.  A bare count of
+          # one would be satisfied by a lone platform wheel, which is the
+          # artifact that has never shipped.
+          for expected in gpuwm-*-py3-none-any.whl; do
+            matches=(dist/$expected)
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "expected exactly one dist/$expected" >&2
+              exit 1
+            fi
+          done
+          # The wheel must be universal in fact and not only in its
+          # filename: setup.py derives the platform tag from whether
+          # `gpuwm/libexec/bridges` exists, so a staged directory that
+          # survived into this build would produce a single-platform wheel
+          # under a py3-none-any name.  Every Rust door on this wheel
+          # refuses BY NAME with a `gpuwm setup` remedy; nothing degrades
+          # into a Python decoder.
+          python - <<'PY'
+          import sys, zipfile, glob
+          path = glob.glob("dist/gpuwm-*-py3-none-any.whl")[0]
+          with zipfile.ZipFile(path) as wheel:
+              stray = [n for n in wheel.namelist()
+                       if n.startswith("gpuwm/libexec/bridges/")]
+          print(f"{path}: {len(stray)} staged artifacts (must be 0)")
+          if stray:
+              print("  the universal wheel carries platform binaries",
+                    file=sys.stderr)
+          sys.exit(1 if stray else 0)
+          PY
           if [ "${#bundles[@]}" -ne 2 ]; then
             echo "expected exactly two platform bundles" >&2
             exit 1
@@ -578,6 +676,62 @@ jobs:
               >../release-proof/release-assets-SHA256SUMS
             sha256sum -c ../release-proof/release-assets-SHA256SUMS
           )
+      # The companion pair, proven with the rigor the gpuwm pair gets
+      # above: exact shape, exact names, sane sizes.  It has its own step
+      # so the state-machine suite can execute this block literally.
+      - name: prove the gpuwm-data distributions
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.cut.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          version="${RELEASE_TAG#v}"
+          data_wheels=(dist/gpuwm_data-*.whl)
+          data_sdists=(dist/gpuwm_data-*.tar.gz)
+          # One wheel and one sdist for the companion too: `publish` (job 9)
+          # re-proves this same python-dists artifact and demands exactly
+          # this shape, so a drift here is a cut that pushes the tag,
+          # uploads every asset, and dies at job 9 with the version spent.
+          if [ "${#data_wheels[@]}" -ne 1 ] || [ "${#data_sdists[@]}" -ne 1 ]; then
+            echo "expected exactly one gpuwm-data wheel and one gpuwm-data sdist, got ${#data_wheels[@]} and ${#data_sdists[@]}" >&2
+            exit 1
+          fi
+          # Version match, to the character.  gpuwm==X.Y.Z hard-pins
+          # gpuwm-data==X.Y.Z, so a companion carrying any other version
+          # publishes a gpuwm no fresh `pip install gpuwm` can resolve.
+          # The exact expected filenames also pin the universal
+          # py3-none-any tag: this distribution is reference tables, and a
+          # platform tag on it is a packaging defect wearing a working
+          # name.
+          if [ "${data_wheels[0]}" != "dist/gpuwm_data-${version}-py3-none-any.whl" ]; then
+            echo "gpuwm-data wheel is not gpuwm_data-${version}-py3-none-any.whl: ${data_wheels[0]}" >&2
+            exit 1
+          fi
+          if [ "${data_sdists[0]}" != "dist/gpuwm_data-${version}.tar.gz" ]; then
+            echo "gpuwm-data sdist is not gpuwm_data-${version}.tar.gz: ${data_sdists[0]}" >&2
+            exit 1
+          fi
+          # Size sanity.  The tables this distribution exists to carry are
+          # ~64 MiB: a dist an order of magnitude under that lost its
+          # payload, and a bare `pip install gpuwm` would then die at the
+          # first radiation or microphysics table read.  Over PyPI's
+          # 100,000,000 B per-file cap (the STRICTER reading
+          # tools/verify_release_artifacts.py enforces for gpuwm) the
+          # upload itself dies at job 9, after the tag is spent -- the
+          # 2.4.0 burn.
+          for path in "${data_wheels[0]}" "${data_sdists[0]}"; do
+            size=$(stat -c '%s' -- "$path")
+            if [ "$size" -lt 10000000 ]; then
+              echo "gpuwm-data distribution lost its payload (${size} B): $path" >&2
+              exit 1
+            fi
+            if [ "$size" -gt 100000000 ]; then
+              echo "gpuwm-data distribution exceeds PyPI's per-file cap (${size} B): $path" >&2
+              exit 1
+            fi
+          done
+          echo "gpuwm-data distributions carry version ${version} inside (10 MB, 100 MB)"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-assets
@@ -895,17 +1049,163 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           files=(dist/*)
-          wheels=(dist/*.whl)
-          sdists=(dist/*.tar.gz)
-          if [ "${#files[@]}" -ne 2 ] || [ "${#wheels[@]}" -ne 1 ] \
-             || [ "${#sdists[@]}" -ne 1 ]; then
-            echo "python-dists must contain exactly one wheel and one sdist" >&2
+          wheels=(dist/gpuwm-*.whl)
+          sdists=(dist/gpuwm-*.tar.gz)
+          data_wheels=(dist/gpuwm_data-*.whl)
+          data_sdists=(dist/gpuwm_data-*.tar.gz)
+          if [ "${#files[@]}" -ne 4 ] || [ "${#wheels[@]}" -ne 1 ] \
+             || [ "${#sdists[@]}" -ne 1 ] || [ "${#data_wheels[@]}" -ne 1 ] \
+             || [ "${#data_sdists[@]}" -ne 1 ]; then
+            echo "python-dists must contain exactly one wheel and one sdist each for gpuwm and gpuwm-data" >&2
             exit 1
           fi
           (
             cd dist
             sha256sum -c ../release-proof/python-dists-SHA256SUMS
           )
+      # gpuwm-data FIRST, and it is ordering with a failure mode attached:
+      # gpuwm==X.Y.Z hard-pins gpuwm-data==X.Y.Z, so if gpuwm landed first
+      # and anything then failed, every fresh `pip install gpuwm` would be
+      # broken until the companion existed.  This order's failure mode --
+      # companion live, gpuwm absent -- breaks nobody and a re-run adopts
+      # it.  The companion may not exist on PyPI at all yet: `gpuwm-data`
+      # is a PENDING trusted publisher on this workflow's exact
+      # coordinates, created by its first upload, so a 404 here means
+      # "every distribution is missing", never an error.
+      - name: reconcile exact PyPI distribution state for gpuwm-data
+        id: pypi_data
+        shell: bash
+        env:
+          PYPI_DATA_PROJECT: gpuwm-data
+          PYPI_VERSION: ${{ needs.cut.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/gpuwm_data-*)
+          mkdir -p dist-upload-data
+          declare -A local_path=()
+          declare -A local_sha=()
+          declare -A local_size=()
+          for path in "${files[@]}"; do
+            name=$(basename "$path")
+            local_path["$name"]="$path"
+            local_sha["$name"]=$(sha256sum -- "$path" | awk '{print $1}')
+            local_size["$name"]=$(stat -c '%s' -- "$path")
+          done
+
+          state="$RUNNER_TEMP/pypi-data-before.json"
+          status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_DATA_PROJECT}/${PYPI_VERSION}/json")
+          case "$status" in
+            200) ;;
+            404) printf '{"urls":[]}\n' >"$state" ;;
+            *) echo "PyPI JSON API returned HTTP $status for ${PYPI_DATA_PROJECT}" >&2; exit 1 ;;
+          esac
+
+          declare -A remote_seen=()
+          mapfile -t remote_names < <(jq -r '.urls[].filename' "$state")
+          for name in "${remote_names[@]}"; do
+            if [[ -z "${local_path[$name]:-}" ]]; then
+              echo "PyPI version carries unexpected distribution: $name" >&2
+              exit 1
+            fi
+            if [[ -n "${remote_seen[$name]:-}" ]]; then
+              echo "PyPI version carries duplicate distribution filename: $name" >&2
+              exit 1
+            fi
+            remote_seen["$name"]=1
+          done
+
+          missing=0
+          for name in "${!local_path[@]}"; do
+            match=$(jq -c --arg name "$name" '[.urls[] | select(.filename == $name)]' "$state")
+            count=$(jq 'length' <<<"$match")
+            if [ "$count" -eq 0 ]; then
+              cp -- "${local_path[$name]}" dist-upload-data/
+              missing=$((missing + 1))
+              continue
+            fi
+            if [ "$count" -ne 1 ] \
+               || [ "$(jq -r '.[0].size' <<<"$match")" != "${local_size[$name]}" ] \
+               || [ "$(jq -r '.[0].digests.sha256' <<<"$match")" != "${local_sha[$name]}" ] \
+               || [ "$(jq -r '.[0].yanked // false' <<<"$match")" != "false" ]; then
+              echo "PyPI distribution differs from the proven artifact: $name" >&2
+              exit 1
+            fi
+            echo "PyPI distribution already matches: $name"
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "upload_required=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "upload_required=true" >>"$GITHUB_OUTPUT"
+          fi
+          echo "missing_count=$missing" >>"$GITHUB_OUTPUT"
+      # The same publisher action, the same OIDC identity: one workflow,
+      # one environment, a second project on the same coordinates.
+      - if: steps.pypi_data.outputs.upload_required == 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist-upload-data/
+      # The hard gate between the two projects.  gpuwm's own reconcile and
+      # upload are unreachable until PyPI provably lists the exact
+      # companion bytes; a failure here fails the job with gpuwm still
+      # unpublished, which is the recoverable state.
+      - name: prove exact gpuwm-data PyPI state before gpuwm publishes
+        shell: bash
+        env:
+          PYPI_DATA_PROJECT: gpuwm-data
+          PYPI_VERSION: ${{ needs.cut.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/gpuwm_data-*)
+          state="$RUNNER_TEMP/pypi-data-after.json"
+          # The same index-lag retry the gpuwm proof below uses: the upload
+          # can return 200 OK a beat before the JSON API lists the version.
+          # Retry ONLY the 404 signature, bounded at five minutes; every
+          # other status and every exact-state assertion keeps single-shot
+          # fail-closed semantics.
+          budget="${PYPI_INDEX_RETRY_BUDGET_SECONDS:-300}"
+          delay="${PYPI_INDEX_RETRY_INITIAL_DELAY_SECONDS:-1}"
+          if [ "$delay" -lt 1 ]; then
+            delay=1
+          fi
+          elapsed=0
+          while :; do
+            status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_DATA_PROJECT}/${PYPI_VERSION}/json")
+            if [ "$status" != "404" ] || [ "$elapsed" -ge "$budget" ]; then
+              break
+            fi
+            pause=$delay
+            remaining=$((budget - elapsed))
+            if [ "$pause" -gt "$remaining" ]; then
+              pause=$remaining
+            fi
+            echo "PyPI index does not list ${PYPI_DATA_PROJECT} ${PYPI_VERSION} yet (HTTP 404); retrying in ${pause}s"
+            sleep "$pause"
+            elapsed=$((elapsed + pause))
+            delay=$((delay * 2))
+          done
+          if [ "$status" != "200" ]; then
+            echo "gpuwm-data exact-state proof returned HTTP $status" >&2
+            exit 1
+          fi
+          if [ "$(jq '.urls | length' "$state")" -ne "${#files[@]}" ]; then
+            echo "gpuwm-data release does not carry the exact distribution set" >&2
+            exit 1
+          fi
+          for path in "${files[@]}"; do
+            name=$(basename "$path")
+            size=$(stat -c '%s' -- "$path")
+            sha=$(sha256sum -- "$path" | awk '{print $1}')
+            match=$(jq -c --arg name "$name" '[.urls[] | select(.filename == $name)]' "$state")
+            if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
+               || [ "$(jq -r '.[0].size' <<<"$match")" != "$size" ] \
+               || [ "$(jq -r '.[0].digests.sha256' <<<"$match")" != "$sha" ] \
+               || [ "$(jq -r '.[0].yanked // false' <<<"$match")" != "false" ]; then
+              echo "gpuwm-data exact-state proof failed for $name" >&2
+              exit 1
+            fi
+          done
       - name: reconcile exact PyPI distribution state
         id: pypi
         shell: bash
@@ -915,7 +1215,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(dist/*)
+          files=(dist/gpuwm-*)
           mkdir -p dist-upload
           declare -A local_path=()
           declare -A local_sha=()
@@ -985,7 +1285,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(dist/*)
+          files=(dist/gpuwm-*)
           state="$RUNNER_TEMP/pypi-after.json"
           # The upload above can return 200 OK a beat before PyPI's JSON API
           # lists the new version -- index lag measured in the hundreds of
@@ -1067,6 +1367,7 @@ jobs:
           RELEASE_TAG: ${{ needs.cut.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.cut.outputs.commit }}
           PYPI_PROJECT: gpuwm
+          PYPI_DATA_PROJECT: gpuwm-data
           PYPI_VERSION: ${{ needs.cut.outputs.version }}
           # The prerelease state release_authority captured.  Promotion
           # preserves it rather than forcing it to false: with the
@@ -1128,7 +1429,11 @@ jobs:
           shopt -s nullglob
           asset_files=(dist-assets/*)
           dist_files=(dist/*)
-          if [ "${#asset_files[@]}" -ne 3 ] || [ "${#dist_files[@]}" -ne 2 ]; then
+          data_dist_files=(dist/gpuwm_data-*)
+          gpuwm_dist_files=(dist/gpuwm-*)
+          if [ "${#asset_files[@]}" -ne 3 ] || [ "${#dist_files[@]}" -ne 4 ] \
+             || [ "${#data_dist_files[@]}" -ne 2 ] \
+             || [ "${#gpuwm_dist_files[@]}" -ne 2 ]; then
             echo "final promotion local artifact sets are not exact" >&2
             exit 1
           fi
@@ -1158,55 +1463,91 @@ jobs:
             fi
           done
 
-          pypi_state="$RUNNER_TEMP/pypi-final.json"
-          # The same index lag the publish job absorbs on its own read of
-          # this endpoint: uploads return 200 OK a beat before PyPI's JSON
-          # API lists the new version, and this read was measured to hit
-          # that window live (uploads at T+0, a 404 here at T+59s while the
-          # publish job's retry logged the same 404s before succeeding).
-          # Retry ONLY this index read, only while it answers 404, with the
-          # same exponential backoff bounded at five minutes total.  Any
-          # other status, and every exact-state assertion below, keeps its
-          # single-shot fail-closed semantics.
-          budget="${PYPI_INDEX_RETRY_BUDGET_SECONDS:-300}"
-          delay="${PYPI_INDEX_RETRY_INITIAL_DELAY_SECONDS:-1}"
-          if [ "$delay" -lt 1 ]; then
-            delay=1
-          fi
-          elapsed=0
-          while :; do
-            pypi_status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$pypi_state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_PROJECT}/${PYPI_VERSION}/json")
-            if [ "$pypi_status" != "404" ] || [ "$elapsed" -ge "$budget" ]; then
-              break
+          # PyPI is proven per project, the companion FIRST, both here and
+          # again after the promotion patch.  gpuwm==X.Y.Z hard-pins
+          # gpuwm-data==X.Y.Z: the state where gpuwm exists without its
+          # companion is the state where a bare `pip install gpuwm` cannot
+          # resolve, so nothing is promoted until BOTH projects list the
+          # exact proven bytes.
+          #
+          # The `retry` mode absorbs the same index lag the publish job
+          # does on its own reads of this endpoint: uploads return 200 OK
+          # a beat before PyPI's JSON API lists the new version, and this
+          # read was measured to hit that window live (uploads at T+0, a
+          # 404 here at T+59s while the publish job's retry logged the
+          # same 404s before succeeding).  Retry ONLY the index read, only
+          # while it answers 404, with exponential backoff bounded at five
+          # minutes total.  Any other status, every read in `once` mode,
+          # and every exact-state assertion keep their single-shot
+          # fail-closed semantics.
+          read_pypi_state() {
+            # $1 = retry|once, $2 = project, $3 = output state file.
+            # Writes the final HTTP status to stdout.
+            local mode="$1" project="$2" state="$3"
+            local budget="${PYPI_INDEX_RETRY_BUDGET_SECONDS:-300}"
+            local delay="${PYPI_INDEX_RETRY_INITIAL_DELAY_SECONDS:-1}"
+            local elapsed=0 status pause remaining
+            if [ "$mode" != "retry" ]; then
+              budget=0
             fi
-            pause=$delay
-            remaining=$((budget - elapsed))
-            if [ "$pause" -gt "$remaining" ]; then
-              pause=$remaining
+            if [ "$delay" -lt 1 ]; then
+              delay=1
             fi
-            echo "PyPI index does not list ${PYPI_PROJECT} ${PYPI_VERSION} yet (HTTP 404); retrying in ${pause}s"
-            sleep "$pause"
-            elapsed=$((elapsed + pause))
-            delay=$((delay * 2))
-          done
-          if [ "$pypi_status" != "200" ] \
-             || [ "$(jq '.urls | length' "$pypi_state")" -ne "${#dist_files[@]}" ]; then
-            echo "final promotion PyPI artifact set changed" >&2
-            exit 1
-          fi
-          for path in "${dist_files[@]}"; do
-            name=$(basename "$path")
-            size=$(stat -c '%s' -- "$path")
-            sha=$(sha256sum -- "$path" | awk '{print $1}')
-            match=$(jq -c --arg name "$name" '[.urls[] | select(.filename == $name)]' "$pypi_state")
-            if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
-               || [ "$(jq -r '.[0].size' <<<"$match")" != "$size" ] \
-               || [ "$(jq -r '.[0].digests.sha256' <<<"$match")" != "$sha" ] \
-               || [ "$(jq -r '.[0].yanked // false' <<<"$match")" != "false" ]; then
-              echo "final promotion PyPI proof failed: $name" >&2
+            while :; do
+              status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$state" --write-out '%{http_code}' "https://pypi.org/pypi/${project}/${PYPI_VERSION}/json")
+              if [ "$status" != "404" ] || [ "$elapsed" -ge "$budget" ]; then
+                break
+              fi
+              pause=$delay
+              remaining=$((budget - elapsed))
+              if [ "$pause" -gt "$remaining" ]; then
+                pause=$remaining
+              fi
+              echo "PyPI index does not list ${project} ${PYPI_VERSION} yet (HTTP 404); retrying in ${pause}s" >&2
+              sleep "$pause"
+              elapsed=$((elapsed + pause))
+              delay=$((delay * 2))
+            done
+            printf '%s' "$status"
+          }
+
+          prove_pypi_project() {
+            # $1 = retry|once, $2 = project, $3 = state file, $4 = message
+            # for a set-level change, $5 = message prefix for a per-file
+            # mismatch; the remaining arguments are the local distribution
+            # files the project must list exactly.
+            local mode="$1" project="$2" state="$3" set_msg="$4" file_msg="$5"
+            shift 5
+            local status path name size sha match
+            status=$(read_pypi_state "$mode" "$project" "$state")
+            if [ "$status" != "200" ] \
+               || [ "$(jq '.urls | length' "$state")" -ne "$#" ]; then
+              echo "$set_msg (${project} HTTP ${status})" >&2
               exit 1
             fi
-          done
+            for path in "$@"; do
+              name=$(basename "$path")
+              size=$(stat -c '%s' -- "$path")
+              sha=$(sha256sum -- "$path" | awk '{print $1}')
+              match=$(jq -c --arg name "$name" '[.urls[] | select(.filename == $name)]' "$state")
+              if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
+                 || [ "$(jq -r '.[0].size' <<<"$match")" != "$size" ] \
+                 || [ "$(jq -r '.[0].digests.sha256' <<<"$match")" != "$sha" ] \
+                 || [ "$(jq -r '.[0].yanked // false' <<<"$match")" != "false" ]; then
+                echo "${file_msg}${name}" >&2
+                exit 1
+              fi
+            done
+          }
+
+          prove_pypi_project retry "$PYPI_DATA_PROJECT" "$RUNNER_TEMP/pypi-data-final.json" \
+            "final promotion PyPI artifact set changed" \
+            "final promotion PyPI proof failed: " \
+            "${data_dist_files[@]}"
+          prove_pypi_project retry "$PYPI_PROJECT" "$RUNNER_TEMP/pypi-final.json" \
+            "final promotion PyPI artifact set changed" \
+            "final promotion PyPI proof failed: " \
+            "${gpuwm_dist_files[@]}"
 
           # Retry safety.  This recognises an already-promoted release so a
           # re-run exits clean instead of trying to promote twice.  The
@@ -1271,26 +1612,17 @@ jobs:
             fi
           done
 
-          promoted_pypi_state="$RUNNER_TEMP/pypi-promoted.json"
-          promoted_pypi_status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$promoted_pypi_state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_PROJECT}/${PYPI_VERSION}/json")
-          if [ "$promoted_pypi_status" != "200" ] \
-             || [ "$(jq '.urls | length' "$promoted_pypi_state")" -ne "${#dist_files[@]}" ]; then
-            echo "immutable release PyPI artifact set changed during promotion" >&2
-            exit 1
-          fi
-          for path in "${dist_files[@]}"; do
-            name=$(basename "$path")
-            size=$(stat -c '%s' -- "$path")
-            sha=$(sha256sum -- "$path" | awk '{print $1}')
-            match=$(jq -c --arg name "$name" '[.urls[] | select(.filename == $name)]' "$promoted_pypi_state")
-            if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
-               || [ "$(jq -r '.[0].size' <<<"$match")" != "$size" ] \
-               || [ "$(jq -r '.[0].digests.sha256' <<<"$match")" != "$sha" ] \
-               || [ "$(jq -r '.[0].yanked // false' <<<"$match")" != "false" ]; then
-              echo "immutable release PyPI artifact changed during promotion: $name" >&2
-              exit 1
-            fi
-          done
+          # The same per-project re-proof, companion first, single-shot:
+          # both projects already answered 200 above, so a 404 here is not
+          # lag but a state change, and it refuses.
+          prove_pypi_project once "$PYPI_DATA_PROJECT" "$RUNNER_TEMP/pypi-data-promoted.json" \
+            "immutable release PyPI artifact set changed during promotion" \
+            "immutable release PyPI artifact changed during promotion: " \
+            "${data_dist_files[@]}"
+          prove_pypi_project once "$PYPI_PROJECT" "$RUNNER_TEMP/pypi-promoted.json" \
+            "immutable release PyPI artifact set changed during promotion" \
+            "immutable release PyPI artifact changed during promotion: " \
+            "${gpuwm_dist_files[@]}"
           # Everything that proves THIS cut published what it built stays a hard
           # gate: the release id, the tag, the release going public with the
           # prerelease state it was captured with, the tag resolving to the

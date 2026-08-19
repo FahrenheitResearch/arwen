@@ -717,14 +717,44 @@ def scan_file(path: Path, rel: str, root: Path | None = None
 
 
 def scan_root(root: Path) -> list[Violation]:
+    """Scan every protected zone under ``root``.
+
+    The walk is confined to :data:`PROTECTED_ZONES` rather than run over
+    the whole of ``root``, because the zones are the entire scan: a file
+    outside them was always discarded, so descending anywhere else buys
+    no coverage and costs everything it touches.
+
+    The breakage that names this: walking all of ``root`` reached
+    ``.worktrees/Documents``, a link out of the repository into the
+    developer's own documents, and stat'd a broken reparse point deep
+    inside it.  ``OSError: [WinError 1920]`` came out of ``is_file()``
+    BEFORE the zone filter could discard the path, so an unreadable file
+    that this gate never intended to read killed the whole scan --
+    ``tests/test_case_token_leakage.py`` red on a tree with nothing
+    wrong in it, and a gate that cannot run is a gate that is not there.
+    Zone membership is a string test on a path, so deciding scope before
+    touching the filesystem is what keeps anything outside the zones --
+    unreadable, enormous, or merely none of this gate's business -- from
+    deciding whether the gate reports.
+
+    Coverage is unchanged: no zone is a prefix of another, so each file
+    is reached exactly once, and the set of files scanned is the same
+    set the whole-tree walk selected.
+    """
+
     found: list[Violation] = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix not in {".py", ".rs", ".json"}:
+    for zone in PROTECTED_ZONES:
+        target = root / zone
+        if not zone.endswith("/"):
+            if target.is_file():
+                found.extend(scan_file(target, zone, root))
             continue
-        rel = path.relative_to(root).as_posix()
-        if not _in_protected_zone(rel):
+        if not target.is_dir():
             continue
-        found.extend(scan_file(path, rel, root))
+        for path in sorted(target.rglob("*")):
+            if path.suffix not in {".py", ".rs", ".json"} or not path.is_file():
+                continue
+            found.extend(scan_file(path, path.relative_to(root).as_posix(), root))
     return found
 
 

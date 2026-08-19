@@ -10,9 +10,12 @@
 
 [workspace]
 members = [
+    "crates/netcdf-writer",
+    "crates/obs-regrid",
     "crates/rustwx-calc",
     "crates/rustwx-contour",
     "crates/rustwx-core",
+    "crates/rustwx-ensemble",
     "crates/rustwx-io",
     "crates/rustwx-models",
     "crates/rustwx-products",
@@ -21,6 +24,7 @@ members = [
     "crates/rw-fetch",
     "crates/rw-fieldcmp",
     "crates/rw-ingest",
+    "crates/rw-netcdf",
     "crates/rw-nexrad",
     "crates/rw-odim",
     "crates/rw-obs",
@@ -28,10 +32,19 @@ members = [
     "crates/rw-goes",
     "crates/rw-store",
     "crates/rw-wrfbatch",
+    "crates/static-fields",
 ]
+## `vendor/grib-core` is deliberately absent from both lists: the GRIB
+## decoder is ONE crate for the whole tree, and it lives at
+## `tools/grib1_bridge/vendor/grib-core`, which is where its VENDOR.md
+## delta discipline (per-file SHA-256, Rust 1.75 spellings) already
+## lives.  This workspace reaches it by path.  Two copies is what the
+## tree had before, and the copy that lived here was the one WITHOUT
+## `missing_value_management`, so every renderer and ingest read of a
+## complex-packed message decoded the encoder's missing-value markers as
+## physical data.  Do not re-vendor a second copy here.
 exclude = [
     "vendor/ecape-rs",
-    "vendor/grib-core",
     "vendor/metrust",
     "vendor/netcrust",
     "vendor/netcrust/vendor/hdf5-reader",
@@ -67,3 +80,14 @@ hdf5-reader = { path = "vendor/netcrust/vendor/hdf5-reader" }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+# The bundled binaries are package data in a platform wheel now, and the
+# wheel is measured against PyPI's 100 MB per-file cap with about four
+# megabytes of headroom (physics tables account for 67 MB of it before a
+# single binary is added).  Symbols are the cheapest megabytes to give
+# back: they are pure debug weight on Linux, where they live inside the
+# ELF rather than in a side .pdb as they do under MSVC.  Nothing that
+# proves an artifact reads them -- the source-revision stamp
+# (`GPUWM_BRIDGE_SOURCE_REV=`) and the contract markers are string
+# constants in .rodata, which stripping does not touch, and the library
+# ABI probe resolves an EXPORTED symbol, which is not a debug symbol.
+strip = "debuginfo"

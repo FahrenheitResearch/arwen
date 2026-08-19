@@ -49,7 +49,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 ureq.workspace = true
-grib-core = { path = "../../vendor/grib-core" }
+grib-core = { path = "../../../grib1_bridge/vendor/grib-core" }
 # The pure-Rust HDF5 reader `rustwx-io` already uses for the same archive.
 # `rw_opera` needs it directly because the European composite states its two
 # sentinels, its four corner coordinates and its production notes as ODIM

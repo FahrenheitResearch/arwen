@@ -19,6 +19,7 @@ inherited number.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import sys
 import time
@@ -26,6 +27,75 @@ from pathlib import Path
 
 import numpy as np
 
+
+
+#: The absolute epoch this idealized lane's elapsed seconds are measured
+#: from.  Stated once and read by both the frame stamp and the run origin,
+#: so a frame's lead time is exactly its elapsed time.
+SNAPSHOT_EPOCH = datetime.datetime(1970, 1, 1)
+
+
+def _write_snapshot_wrfout(npz_path, snap: dict, cfg, tag: str, *, grid=None):
+    """A real wrfout beside the ``.npz``, so the PRODUCTION renderer can
+    draw this run.
+
+    Default-on, because "fixed" means a bare default run stops showing the
+    defect (CLAUDE.md), and the defect here is that a tile-streamed
+    forecast could not be drawn by ``rw_wrfbatch`` at all -- which is why
+    ``tilestream/bigdomain_render.py`` exists and draws weather fields in
+    matplotlib.  ``--no-wrfout`` is the escape.
+
+    Additive in both directions: the ``.npz`` is written first and is
+    untouched, and a snapshot this writer cannot honestly convert (no
+    latitude/longitude in the geography store) is REPORTED and skipped
+    rather than allowed to abort a forecast that is otherwise fine.  The
+    run's own product is the ``.npz``; this is a second copy in a format
+    a different tool reads.
+    """
+
+    from gpuwm.io.surface_wrfout import (SurfaceSnapshotRefusal,
+                                         snapshot_wrfout_path,
+                                         write_surface_wrfout)
+    from gpuwm.io.wrfout import wrf_global_attrs
+
+    stamp = _snapshot_time_string(snap)
+    # The run's OWN Lambert grid and its OWN epoch, not defaults.  Without
+    # them the frame carried MAP_PROJ=0 and no run origin, and rw_wrfbatch
+    # refused the whole file ("has no sound WRF run origin") -- so the
+    # default-on writer produced a file nothing could draw.  MEASURED on a
+    # 256x256x33 streamed forecast, 2026-08-17.
+    attrs = None
+    if grid is not None:
+        attrs = wrf_global_attrs(grid, SNAPSHOT_EPOCH, dt=float(cfg.dt))
+    try:
+        written = write_surface_wrfout(
+            snapshot_wrfout_path(npz_path), snap, time_str=stamp,
+            dx=float(cfg.dx), dy=float(getattr(cfg, "dy", cfg.dx)),
+            global_attrs=attrs, grid_id=1, start_time=SNAPSHOT_EPOCH,
+            title=f"gpuwm tile-streamed big domain ({tag})")
+    except SurfaceSnapshotRefusal as refusal:
+        print(f"    [{tag}] no wrfout: {refusal}")
+        return None
+    print(f"    [{tag}] wrfout {written.name} "
+          f"({written.stat().st_size / 2 ** 20:.1f} MiB) -- render with: "
+          f"gpuwm render --engine rust {written}")
+    return written
+
+
+def _snapshot_time_string(snap: dict) -> str:
+    """WRF's ``Times`` string for a snapshot, from its own elapsed seconds.
+
+    The big-domain forecast is idealized and declares no absolute
+    initialization, so the epoch is the one thing here that is a
+    convention rather than a measurement: 1970-01-01T00:00Z plus the
+    snapshot's elapsed seconds.  It is stated rather than hidden because
+    the LEAD is what the panels are read by, and the lead is exact.
+    """
+
+    elapsed = float(snap.get("elapsed_s", 0.0))
+    when = (SNAPSHOT_EPOCH.replace(tzinfo=datetime.timezone.utc)
+            + datetime.timedelta(seconds=elapsed))
+    return when.strftime("%Y-%m-%d_%H:%M:%S")
 
 def _vram():
     import cupy as cp
@@ -295,6 +365,8 @@ def stage_forecast(args) -> None:
                                   slab_rows=args.refl_slab)
         path = out_dir / f"bigdom_{args.n}_{tag}.npz"
         np.savez_compressed(path, **snap)
+        if args.wrfout:
+            _write_snapshot_wrfout(path, snap, cfg, tag, grid=geo.grid)
         refl = snap.get("REFL_COMPOSITE")
         print(f"    [{tag}] t+{snap['elapsed_s']/60:.0f} min  "
               f"wmax {snap['WMAX'].max():+.1f} / wmin {snap['WMIN'].min():+.1f} m/s"
@@ -377,6 +449,14 @@ def main() -> None:
                     help="'gate' restores harness's seeding amplitudes -- "
                          "the control for bigdomain.NOISE_AMPLITUDES")
     ap.add_argument("--out", default="out")
+    ap.add_argument("--wrfout", action="store_true", default=True,
+                    help="also write a real wrfout NetCDF beside every npz "
+                         "snapshot, so the production Rust renderer "
+                         "(`gpuwm render --engine rust`) can draw this run.  "
+                         "On by default: the render law puts weather fields "
+                         "on that renderer, and without this file there is "
+                         "nothing for it to read")
+    ap.add_argument("--no-wrfout", dest="wrfout", action="store_false")
     ap.add_argument("--steps", type=int, default=8)
     args = ap.parse_args()
     from tilestream import bigdomain

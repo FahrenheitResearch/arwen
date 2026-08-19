@@ -346,8 +346,9 @@ that has been overwritten by the final sample is out of reach; the
 
 The reference implementation of the comparison ordering — schedule
 binding, then inventory, then scalars, then hashes, recording canonical
-state at every history instant and every checkpoint — is the real74
-verification case under `gpuwm/verify/cases/`. Read it if you are
+state at every history instant and every checkpoint — is the
+historical-reference d01 verification case under
+`gpuwm/verify/cases/`. Read it if you are
 building your own comparator.
 
 ## 7. Known detector limits

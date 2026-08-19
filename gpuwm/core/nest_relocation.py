@@ -912,15 +912,21 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     its own references (health validators) so the release actually frees;
     it fires only on the host path, immediately before the release.
 
-    SCOPE, STATED SO IT CANNOT BE ASSUMED AWAY.  What moves is the restart
-    layer's serialised state (:func:`relocatable_attrs`).  Physics
-    CONTINUATION state -- precipitation accumulators, scheme timers,
-    surface fields held by the driver -- is not in that contract and is
-    therefore re-initialised at the new placement by ``on_child_built``,
-    exactly as it already is at every leg boundary of the DA route.  A
-    caller that carries its own continuation inventory can move it with a
-    second :func:`transplant_overlap` against the same plan; nothing here
-    prevents it, and nothing here pretends it happened.
+    SCOPE, STATED SO IT CANNOT BE ASSUMED AWAY.  What THIS PRIMITIVE moves
+    is the restart layer's serialised state (:func:`relocatable_attrs`).
+    Physics CONTINUATION state -- precipitation accumulators, scheme
+    timers, surface fields held by the driver -- is not in that contract:
+    it is the ``on_child_built`` preparer's to carry.  The front-door
+    route preparers (:class:`gpuwm.runtime.RealRelocationChildPreparer`
+    and the prepared-tree subclass) DO carry it -- the land-surface
+    continuation fields by donor-filled transplant, and the registry-
+    derived per-column driver state (KF timers/held rates, precipitation
+    accumulators, W0AVG) through :mod:`gpuwm.core.physics_continuation`
+    -- because a preparer that re-initialised it cold-restarted cumulus
+    on the whole child at every move (the 2026-08-16 moving-nest KF
+    artifact report).  A bespoke ``on_child_built`` that carries nothing
+    still gets a cold child, and its receipt says so
+    (``accumulators_reinitialized``).
     """
     from gpuwm.ingest.nest_init import parent_only_init, seed_rk_time_t_copies
 

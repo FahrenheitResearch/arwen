@@ -720,8 +720,9 @@ def test_ccn_activate_bin_is_committed_and_manifested_but_not_classic():
     """
     import subprocess
 
-    manifest = _ROOT / "gpuwm" / "data" / "thompson" / "tables" \
-        / "MANIFEST.sha256"
+    from gpuwm.physics_compat import packaged_thompson_table_root
+
+    manifest = packaged_thompson_table_root() / "MANIFEST.sha256"
     assert manifest.is_file()
     assert "CCN_ACTIVATE.BIN" in manifest.read_text(encoding="utf-8")
 
@@ -729,7 +730,8 @@ def test_ccn_activate_bin_is_committed_and_manifested_but_not_classic():
     # console codepage, and text=True alone would decode them with the host
     # locale (cp1252 on Windows).
     tracked = subprocess.run(
-        ["git", "ls-files", "--", "gpuwm/data/thompson/tables"],
+        ["git", "ls-files", "--",
+         "gpuwm-data/gpuwm_data/data/thompson/tables"],
         capture_output=True, text=True, encoding="utf-8", cwd=str(_ROOT))
     if tracked.returncode == 0 and tracked.stdout.strip():
         assert "CCN_ACTIVATE.BIN" in tracked.stdout, (

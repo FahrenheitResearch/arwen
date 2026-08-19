@@ -51,10 +51,84 @@ HRRR, GFS, and ERA5 are certified runnable adapters in v1. The named 20CRv3
 route and strict declarative `mapped` engine are runnable, but they are not
 globally certified: stock-WRF evidence is keyed to exact retained source,
 mapping, and composition authorities, and newly authored contracts remain
-validated-not-certified. The separate `20crv3-cf` registry entry exposes
-synthetic-gated NetCDF-CF coordinate discovery, canonical normalization, and
-memory-bounded ensemble streaming; it is not yet a public WRF runner and does
-not inherit the exact GRIB2 route's evidence. HRRR
+validated-not-certified. `20crv3-cf` is the other 20CRv3: NOAA PSL's
+downloadable NetCDF distribution, runnable end to end through the SAME
+generic mapped runner because its mapping, composition and provenance are
+PACKAGED with the wheel and pinned by SHA-256 -- adding it cost three JSON
+documents and one registry row, no runner and no module. It is the
+ensemble MEAN analysis rather than a member, and its orography and land
+mask are recovered from 20CRv3's own published fields because PSL
+publishes neither; both facts are stated in the row's own notes and in
+`docs/native-20crv3-source-adapter-spec.md`, and it does not inherit the
+exact GRIB2 route's evidence. `hrrr-prs` is the same packaged-profile
+shape on HRRR's public pressure-level `wrfprs` product: the Lambert CONUS
+grid, the grid-relative wind rotation and the nine-node RUC soil column
+are declared in its packaged mapping/composition documents and executed
+by the generic mapped engine -- the first PROJECTED source through that
+route, and deliberately distinct from the certified native `hrrr` route,
+whose hybrid-level initialisation and stock-WRF evidence it does not
+inherit. `rap` is the third packaged profile and the arbitrary law's
+named proof: RAP's 32 km `awip32` Lambert product arrived as three JSON
+documents plus registry rows at zero engine cost -- HRRR's grid family,
+wind rotation and node soil carry it, the GFS profile's RH derivation
+supplies its humidity, and its JPEG2000 packing decodes through the
+bridge's own codec.  Its row states what is NOT reachable as tables:
+the 13 km CONUS pair (no soil in `awp130pgrb`; octet-identical surface
+twins across `awp130pgrb`/`awp130bgrb`) and the rotated lat-lon native
+`wrfprs` grid (GDT 32769).
+`ecmwf-open-data` is the same packaged-profile shape on ECMWF's
+public 0.25-degree IFS `oper` product: a plain global GDT-0 feed whose
+14 pressure levels, dewpoint-derived 2 m humidity, ordinal-addressed IFS
+soil (`selector_depth_binding`) and once-per-cycle in-band terrain
+(the cycle-invariant broadcast) are all rows in its packaged documents --
+authored against the CC-BY-4.0 open data; the 9 km native HRES is
+access-restricted, which is a licensing fact, not a capability gap.
+`gem-gdps` (also spelled `gem`) is the same packaged-profile shape on
+ECCC's global GDPS 15 km lat-lon product -- the first non-US model through
+the route; its once-per-cycle analysis invariants (orography, land mask,
+ice) are declared through the generic cycle-invariant/broadcast grammar
+rather than any GDPS code path.
+`gefs` is the same packaged-profile shape on one VERIFIED MEMBER of
+NCEP's half-degree global ensemble, on top of the packaged member
+grammar `gpuwm-member-prep` enforces: the profile's 31-level ladder is
+the measured exact union of the `pgrb2a` and `pgrb2b` disjoint isobaric
+sets (so both files of the same member are mandatory per valid time),
+every state selector pins PDT 1 (the co-published ensemble mean/spread
+and the PDT-11 accumulation twins refuse at the byte level), and the
+four Noah soil layers split across the pair under a 66-percent ocean
+bitmap.  The member axis and the field axis are separate table
+documents; neither names the other's traps in code.
+`aigfs` is the first CROSS-SOURCE HYBRID
+packaged profile, and it is runnable: NCEP's GraphCast-based
+0.25-degree AI forecast ships six 3-D fields on 13 pressure levels plus
+2 m/10 m/MSLP state and NO land surface of any kind, so the hybrid
+mapping declares the seven missing canonicals `composition_bound` and
+its composition binds them to the SAME CYCLE's GDAS 0.25-degree
+analysis (the caller's one supplement) under the
+`source_cycle_analysis_broadcast` clock -- the donor decoding through
+its own SHA-256-pinned mapping, shipped with the profile as a fourth
+authority, and the receipt naming both sources with hashes and every
+carried valid time.  The atmosphere-only profile
+(`aigfs-nomads-grib2-v1`, its composition role an explicit PENDING
+declaration that refuses by naming the missing state) stays shipped as
+the record that a solo init is impossible; a donorless call still
+refuses with the supplement named.  Its acquisition identity is part of
+the product:
+operational bytes are NOMADS-only with `subCentre 0`, while the legacy
+S3 bucket serves a DIFFERENT experimental run under identical filenames
+with `subCentre 2` -- every selector pins the operational octet, so the
+imposter refuses by name.
+`rrfs` is the same packaged-profile shape on HRRR's operational
+successor, flowing today on `noaa-rrfs-ops-pds` and NOMADS `rrfs/v1.0`
+(implementation date 2026-10-06): the 3 km CONUS grid is bit-for-bit
+HRRR's Lambert, so the HRRR wrfprs machinery carries it, and RRFS's own
+facts -- the 45-level ladder (70 hPa where HRRR has 75, 2 hPa top) and
+the state split across a `prslev`/`2dfld` file PAIR per valid time --
+are rows in its packaged documents.  Its row states what has no live
+front door and is not claimed: `natlev` native levels, the 3 km
+North-America rotated grid, thinned `subset` files and per-member
+ensemble GRIB2 exist only in the frozen prototype bucket, and the
+`firewx` nest relocates daily. HRRR
 consumes consecutive downloaded f00 through f12 native/surface GRIB2 files,
 uses the parallel native preparation path, and writes a 12-record WRF
 boundary file.
@@ -205,6 +279,13 @@ the raw hardened GRIB2 decoder because the `.rws` store omits required WRF
 surface/soil state and quantizes volumes.  ERA5 uses gpuwm's native Rust
 GRIB1 decode, GPU interpolation, prepared-cache path, and direct-WRF exporter;
 its certified geometry/physics slice is recorded explicitly in the registry.
+
+A source whose grid is REGIONAL runs only for domains inside that grid.  A
+domain outside it is refused at the front door before any output root is
+created -- two lines naming the first uncovered corner, the source window and
+the remedy, exit status `78`, no traceback -- and that refusal is the same
+one for every source, so a regional model added as table data inherits it.
+`docs/cli-reference.md` shows the exact text.
 
 Surface analyses and postprocessed products such as RTMA, URMA, and NBM must
 be explicitly composed with a complete atmosphere source.  HREF/REFS/SREF

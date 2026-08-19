@@ -33,12 +33,15 @@ from pathlib import Path
 import netCDF4
 import numpy as np
 
+from gpuwm import netcdf_bridge
+
 from gpuwm.explain import warn
 from gpuwm.offline_child import (
     OfflineChildContractError,
     OfflineChildPlacement,
     bind_parent_physics_from_gpuwm_restart,
     bind_parent_physics_from_wrf_namelist,
+    child_surface_requirement,
     read_child_surface_state,
     validate_parent_history,
 )
@@ -153,8 +156,15 @@ def _jsonable_attr(value):
 
 
 def _parent_geometry(path: Path) -> dict[str, object]:
-    """Read the parent grid shape, spacing, latitude/longitude arrays."""
-    with netCDF4.Dataset(path) as dataset:
+    """Read the parent grid shape, spacing, latitude/longitude arrays.
+
+    Through the Rust bridge, unlike :func:`_parent_attrs` above it: this
+    one pulls the XLAT/XLONG FIELDS out of the tape, and decoding a
+    meteorological field is decode work whoever wrote the file.  The
+    attribute reader stays on netCDF4 because reading a global attribute
+    off gpuwm's own output is identity plumbing, not decoding.
+    """
+    with netcdf_bridge.open_dataset(path) as dataset:
         result = {
             "ny": len(dataset.dimensions["south_north"]),
             "nx": len(dataset.dimensions["west_east"]),
@@ -288,8 +298,16 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
     from gpuwm.experiment import DomainConfig
 
     budget = (float(vram_gib) - vram_reserve_gib(float(vram_gib))) * GIB
+    # A size-INDEPENDENT invalidity in the parent's restart-evidence
+    # config must surface as itself: every probe used to swallow it and
+    # the search then reported "no child fits the budget" -- a VRAM
+    # verdict for a validation refusal (walked live 2026-08-17, when a
+    # 2.4.1 restart's recorded key was refused by a newer validation).
+    last_config_error: ValueError | None = None
+    any_size_fit = False
 
     def fits(size: int) -> bool:
+        nonlocal last_config_error, any_size_fit
         try:
             _centered_placement(parent, j0=j0, i0=i0, ratio=ratio,
                                 child_nx=size, child_ny=size)
@@ -297,7 +315,10 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
                 parent_config, parent=parent, ratio=ratio,
                 child_nx=size, child_ny=size, run_seconds=run_seconds,
                 output_interval_s=output_interval_s)
-        except (OfflineChildContractError, ValueError):
+        except OfflineChildContractError:
+            return False
+        except ValueError as error:
+            last_config_error = error
             return False
         from gpuwm.config import RunConfig
         run = RunConfig(**merged)
@@ -310,15 +331,30 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
         subtotal = estimate.resident_bytes + estimate.transient_bytes
         peak = observed_peak_envelope_bytes(
             math.ceil(ALLOCATOR_HEADROOM * subtotal))
-        return peak <= budget
+        if peak <= budget:
+            any_size_fit = True
+            return True
+        return False
+
+    def cannot_plan() -> OfflineChildContractError:
+        # The validation attribution is claimed only when NO probed size
+        # ever fit: a search that saw a genuine fit and still failed is
+        # a budget/geometry story, not a validation one.
+        if last_config_error is not None and not any_size_fit:
+            return OfflineChildContractError(
+                "the derived child config does not validate at any size "
+                "(this is not a VRAM question) -- the parent's restart-"
+                "evidence physics is refused as a child config: "
+                f"{last_config_error}")
+        return OfflineChildContractError(
+            f"no child fits the {vram_gib:g} GiB budget inside this parent")
 
     unit = 2 * ratio
     low, high = 0, 1
     while fits(unit * (high + 1)) and unit * high < 4096:
         high *= 2
     if high == 1 and not fits(unit * 2):
-        raise OfflineChildContractError(
-            f"no child fits the {vram_gib:g} GiB budget inside this parent")
+        raise cannot_plan()
     low = high // 2
     while low + 1 < high:
         mid = (low + high + 1) // 2
@@ -328,8 +364,7 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
             high = mid
     size = unit * (high if fits(unit * high) else low)
     if size < 2 * unit:
-        raise OfflineChildContractError(
-            f"no child fits the {vram_gib:g} GiB budget inside this parent")
+        raise cannot_plan()
     return size
 
 
@@ -471,15 +506,30 @@ def downscale_main(args) -> int:
         raise OfflineChildContractError(
             "pass --child-config TOML or --point LAT,LON")
 
+    from gpuwm.config import load_config, soil_layer_count
+    cfg = load_config(child_config)
+    surface_requirement = child_surface_requirement(cfg)
     if args.child_surface_from is not None:
-        from gpuwm.config import load_config, soil_layer_count
-        cfg = load_config(child_config)
         surface = read_child_surface_state(
             args.child_surface_from, child_ny=cfg.ny, child_nx=cfg.nx,
             num_soil_layers=soil_layer_count(cfg))
         print(f"gpuwm downscale: child surface source "
               f"{surface.path} ({len(surface.fields)} fields, "
               f"{surface.identity['MMINLU']})")
+    elif surface_requirement is not None:
+        # The requirement is knowable HERE, from the config alone.  The
+        # walked failure mode (2.4.1): --dry-run printed a green plan
+        # with "child_surface_from": null and the real run refused for
+        # exactly that null, after the user had walked away.  The real
+        # run now refuses at the front door; the dry run keeps printing
+        # the plan -- deriving the geometry is how a user learns which
+        # child grid to build a surface file FOR -- and warns instead.
+        if not args.dry_run:
+            raise OfflineChildContractError(surface_requirement)
+        warn(surface_requirement,
+             why="--dry-run continues so the derived plan below can be "
+                 "read; the run itself will refuse until a child-grid "
+                 "surface source is supplied.")
 
     lineage = parent_initial_condition(frames[0])
     if int(lineage.get("GPUWM_INITIAL_FORECAST_LEAD_HOURS", 0)):
@@ -509,6 +559,7 @@ def downscale_main(args) -> int:
                       "j_parent_start": j_start},
         "child_surface_from": (None if args.child_surface_from is None
                                else str(args.child_surface_from)),
+        "child_surface_required": surface_requirement is not None,
         "outdir": str(args.out),
     }
     if args.dry_run:
@@ -567,8 +618,14 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--ratio", type=int, default=None,
                         help="refinement ratio (child-config placement: "
                              "required; --point default 3)")
-    parser.add_argument("--i-parent-start", type=int, default=None)
-    parser.add_argument("--j-parent-start", type=int, default=None)
+    parser.add_argument("--i-parent-start", type=int, default=None,
+                        help="1-based west-east parent index of the "
+                             "child's southwest corner (required with "
+                             "--child-config; --point derives it)")
+    parser.add_argument("--j-parent-start", type=int, default=None,
+                        help="1-based south-north parent index of the "
+                             "child's southwest corner (required with "
+                             "--child-config; --point derives it)")
     parser.add_argument("--child-size", default=None, metavar="NX[,NY]",
                         help="explicit child extent for --point")
     # THE DERIVED CONFIG'S [tiles] BLOCK, and only for --point: with
@@ -619,9 +676,14 @@ def register_cli(subparsers) -> None:
                              "identity + soil warm start (required for "
                              "surface-physics children)")
     parser.add_argument("--preprocess-backend", choices=("cuda", "cpu"),
-                        default="cuda")
+                        default="cuda",
+                        help="where the parent-to-child interpolation "
+                             "runs (default cuda; cpu reproduces it "
+                             "off-GPU for verification)")
     parser.add_argument("--health-interval-seconds", type=float,
-                        default=60.0)
+                        default=60.0,
+                        help="model seconds between child health lines "
+                             "(CFL, w_max, NaN check; default 60)")
     parser.add_argument("--out", type=Path, required=True,
                         help="create-only output directory for the child "
                              "run (report.json, wrfout frames, restart)")

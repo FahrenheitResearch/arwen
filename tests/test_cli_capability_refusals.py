@@ -384,8 +384,13 @@ class _Completed:
         self.stderr = ""
 
 
-def test_memory_probe_distinguishes_no_runtime_from_no_card():
+def test_memory_probe_distinguishes_no_runtime_from_no_card(monkeypatch):
     from gpuwm.core import preflight
+
+    # The never-touch-the-local-device switch short-circuits the probe
+    # before the run seam (tests/test_no_local_gpu_contract.py owns that
+    # contract); this test is about the exit-code discrimination behind it.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
 
     reason = preflight.device_memory_probe_reason(
         run=lambda *a, **k: _Completed(preflight.PROBE_EXIT_NO_RUNTIME))
@@ -583,8 +588,14 @@ def test_run_refuses_before_the_config_is_even_read(monkeypatch, capsys,
     text = capsys.readouterr().err
     assert "this command needs cupy" in text
     assert "Traceback" not in text
-    # The config was never opened: its absence is not what was reported.
-    assert "not-here.toml" not in text
+    # The refusal tail is the reader's own invocation (UX finding N8), so
+    # the config path legitimately appears there -- as their argv echoed
+    # back, never as a report about the file.  The config was never
+    # opened: outside that echo, its absence is not what was reported.
+    assert "--explain for the reason" in text
+    body = "\n".join(line for line in text.splitlines()
+                     if "--explain for the reason" not in line)
+    assert "not-here.toml" not in body
 
 
 def test_a_supervisor_error_naming_a_missing_module_is_a_refusal(

@@ -33,7 +33,7 @@ import math
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-import netCDF4
+from gpuwm import netcdf_bridge
 import numpy as np
 
 from gpuwm import perf_timing
@@ -43,7 +43,7 @@ def read_frame_field(path: str | Path, field: str) -> np.ndarray:
     """Read one leading-Time-dimension field as float64, refusing gaps."""
     path = Path(path)
     with perf_timing.stage("verify.read_frame_field") as timed:
-        with netCDF4.Dataset(path) as dataset:
+        with netcdf_bridge.open_dataset(path) as dataset:
             if field not in dataset.variables:
                 raise ValueError(f"history frame {path} is missing {field}")
             variable = dataset.variables[field]

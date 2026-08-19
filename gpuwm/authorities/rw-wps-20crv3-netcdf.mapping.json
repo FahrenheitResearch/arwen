@@ -1,0 +1,867 @@
+{
+  "schema": "rw-wps.mapping.v1",
+  "name": "noaa-20crv3-si-netcdf-native",
+  "format": "netcdf",
+  "coordinates": {
+    "horizontal": {
+      "kind": "variables",
+      "latitude": {
+        "format": "netcdf",
+        "name": [
+          "lat",
+          "latitude"
+        ],
+        "standard_name": "latitude"
+      },
+      "longitude": {
+        "format": "netcdf",
+        "name": [
+          "lon",
+          "longitude"
+        ],
+        "standard_name": "longitude"
+      }
+    },
+    "vertical": {
+      "kind": "pressure",
+      "units": "millibar",
+      "positive": "down",
+      "levels": [
+        100,
+        150,
+        200,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        800,
+        850,
+        900,
+        925,
+        950,
+        975,
+        1000
+      ],
+      "selector": {
+        "format": "netcdf",
+        "name": [
+          "level"
+        ]
+      }
+    },
+    "time": {
+      "kind": "dimension",
+      "units": "hours since 1800-1-1 00:00:0.0",
+      "calendar": "gregorian",
+      "selector": {
+        "name": [
+          "time"
+        ],
+        "standard_name": "time"
+      }
+    }
+  },
+  "fields": {
+    "air_temperature": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "air"
+          ],
+          "attributes": {
+            "level_desc": "Pressure Levels"
+          }
+        }
+      ],
+      "units": {
+        "source": "degK",
+        "target": "K",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "specific_humidity": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "shum"
+          ],
+          "attributes": {
+            "level_desc": "Pressure Levels"
+          }
+        }
+      ],
+      "units": {
+        "source": "kg/kg",
+        "target": "kg kg-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "eastward_wind": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "uwnd"
+          ],
+          "attributes": {
+            "level_desc": "Pressure Levels"
+          }
+        }
+      ],
+      "units": {
+        "source": "m/s",
+        "target": "m s-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "northward_wind": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "vwnd"
+          ],
+          "attributes": {
+            "level_desc": "Pressure Levels"
+          }
+        }
+      ],
+      "units": {
+        "source": "m/s",
+        "target": "m s-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "geopotential_height": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "hgt"
+          ],
+          "attributes": {
+            "level_desc": "Pressure Levels"
+          }
+        }
+      ],
+      "units": {
+        "source": "m",
+        "target": "m"
+      },
+      "source_axes": [
+        "time",
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "air_pressure": {
+      "selectors": [],
+      "derivation": "pressure-from-coordinate",
+      "units": {
+        "source": "millibar",
+        "target": "Pa",
+        "scale": 100.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "vertical",
+        "y",
+        "x"
+      ],
+      "location": "mass",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "surface_pressure": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "pres"
+          ],
+          "attributes": {
+            "level_desc": "Surface"
+          }
+        }
+      ],
+      "units": {
+        "source": "Pa",
+        "target": "Pa"
+      },
+      "source_axes": [
+        "time",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "skin_temperature": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "skt"
+          ],
+          "attributes": {
+            "level_desc": "Surface"
+          }
+        }
+      ],
+      "units": {
+        "source": "degK",
+        "target": "K",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "air_temperature_2m": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "air"
+          ],
+          "attributes": {
+            "level_desc": "2 m"
+          }
+        }
+      ],
+      "units": {
+        "source": "degK",
+        "target": "K",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "specific_humidity_2m": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "shum"
+          ],
+          "attributes": {
+            "level_desc": "2 m"
+          }
+        }
+      ],
+      "units": {
+        "source": "kg/kg",
+        "target": "kg kg-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "eastward_wind_10m": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "uwnd"
+          ],
+          "attributes": {
+            "level_desc": "10 m"
+          }
+        }
+      ],
+      "units": {
+        "source": "m/s",
+        "target": "m s-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "northward_wind_10m": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "vwnd"
+          ],
+          "attributes": {
+            "level_desc": "10 m"
+          }
+        }
+      ],
+      "units": {
+        "source": "m/s",
+        "target": "m s-1",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "land_fraction": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "land"
+          ],
+          "standard_name": "land_binary_mask"
+        }
+      ],
+      "units": {
+        "source": "1",
+        "target": "1"
+      },
+      "source_axes": [
+        "time",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "terrain_height": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "orog"
+          ],
+          "standard_name": "surface_altitude"
+        }
+      ],
+      "units": {
+        "source": "m",
+        "target": "m"
+      },
+      "source_axes": [
+        "time",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
+    },
+    "soil_temperature": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "tsoil"
+          ],
+          "attributes": {
+            "level_desc": "Multiple Subsurface Levels"
+          },
+          "layer_dimension": "level",
+          "layer_value": 0,
+          "layer_units": "cm"
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "tsoil"
+          ],
+          "attributes": {
+            "level_desc": "Multiple Subsurface Levels"
+          },
+          "layer_dimension": "level",
+          "layer_value": 10,
+          "layer_units": "cm"
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "tsoil"
+          ],
+          "attributes": {
+            "level_desc": "Multiple Subsurface Levels"
+          },
+          "layer_dimension": "level",
+          "layer_value": 40,
+          "layer_units": "cm"
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "tsoil"
+          ],
+          "attributes": {
+            "level_desc": "Multiple Subsurface Levels"
+          },
+          "layer_dimension": "level",
+          "layer_value": 100,
+          "layer_units": "cm"
+        }
+      ],
+      "selector_stack_axis": "soil",
+      "units": {
+        "source": "Kelvins",
+        "target": "K",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "soil",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "soil",
+        "y",
+        "x"
+      ],
+      "location": "soil",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "volumetric_soil_moisture": {
+      "selectors": [
+        {
+          "format": "netcdf",
+          "name": [
+            "soilw"
+          ],
+          "attributes": {
+            "level_desc": "Multiple Subsurface Levels"
+          },
+          "layer_dimension": "level",
+          "layer_value": 0,
+          "layer_units": "cm"
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "soilw"
+          ],
+          "attributes": {
+            "level_desc": "Multiple Subsurface Levels"
+          },
+          "layer_dimension": "level",
+          "layer_value": 10,
+          "layer_units": "cm"
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "soilw"
+          ],
+          "attributes": {
+            "level_desc": "Multiple Subsurface Levels"
+          },
+          "layer_dimension": "level",
+          "layer_value": 40,
+          "layer_units": "cm"
+        },
+        {
+          "format": "netcdf",
+          "name": [
+            "soilw"
+          ],
+          "attributes": {
+            "level_desc": "Multiple Subsurface Levels"
+          },
+          "layer_dimension": "level",
+          "layer_value": 100,
+          "layer_units": "cm"
+        }
+      ],
+      "selector_stack_axis": "soil",
+      "units": {
+        "source": "frac.",
+        "target": "m3 m-3",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "time",
+        "soil",
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "soil",
+        "y",
+        "x"
+      ],
+      "location": "soil",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    }
+  },
+  "derivations": [
+    {
+      "name": "pressure-from-coordinate",
+      "operation": "pressure_from_vertical_coordinate"
+    }
+  ],
+  "target": {
+    "name": "gpuwm/WRF-real NOAA 20CRv3 SI NetCDF source",
+    "physics_suite": "source-independent",
+    "max_dom": 4,
+    "require_lateral_boundaries": true,
+    "target_vertical_levels": 49,
+    "soil_layer_count": 4,
+    "boundary_interval_seconds": 10800,
+    "required_fields": [
+      {
+        "name": "air_temperature",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "K"
+      },
+      {
+        "name": "specific_humidity",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "kg kg-1"
+      },
+      {
+        "name": "eastward_wind",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "northward_wind",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "geopotential_height",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "m"
+      },
+      {
+        "name": "air_pressure",
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "location": "mass",
+        "target_units": "Pa"
+      },
+      {
+        "name": "surface_pressure",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "Pa"
+      },
+      {
+        "name": "terrain_height",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "m"
+      },
+      {
+        "name": "skin_temperature",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "K"
+      },
+      {
+        "name": "air_temperature_2m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "K"
+      },
+      {
+        "name": "specific_humidity_2m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "kg kg-1"
+      },
+      {
+        "name": "eastward_wind_10m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "northward_wind_10m",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "m s-1"
+      },
+      {
+        "name": "land_fraction",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "1"
+      },
+      {
+        "name": "soil_temperature",
+        "axes": [
+          "soil",
+          "y",
+          "x"
+        ],
+        "location": "soil",
+        "target_units": "K"
+      },
+      {
+        "name": "volumetric_soil_moisture",
+        "axes": [
+          "soil",
+          "y",
+          "x"
+        ],
+        "location": "soil",
+        "target_units": "m3 m-3"
+      }
+    ],
+    "pressure_requirement": "air_pressure",
+    "policy_controlled_fields": [
+      "cloud_water_mixing_ratio",
+      "rain_water_mixing_ratio",
+      "cloud_ice_mixing_ratio",
+      "snow_mixing_ratio",
+      "graupel_or_hail_mixing_ratio",
+      "vertical_velocity",
+      "snow_water_equivalent",
+      "snow_depth",
+      "sea_ice_fraction"
+    ],
+    "initialization_policies": {
+      "cloud_water_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "rain_water_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "cloud_ice_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "snow_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "graupel_or_hail_mixing_ratio": "explicit_zero_with_adapter_validation",
+      "vertical_velocity": "explicit_zero_with_adapter_validation",
+      "snow_water_equivalent": "published_by_20crv3_but_not_yet_semantically_bound",
+      "snow_depth": "published_by_20crv3_but_not_yet_semantically_bound",
+      "sea_ice_fraction": "published_by_20crv3_as_icec_but_not_yet_bound"
+    }
+  }
+}

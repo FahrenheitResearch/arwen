@@ -233,7 +233,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{DOC} is current")
         return 0
     DOC.parent.mkdir(parents=True, exist_ok=True)
-    DOC.write_text(text, encoding="utf-8")
+    # newline="" so `\n` reaches the file as `\n`.  Python's text mode
+    # translates it to `\r\n` on Windows, and the repository promises
+    # `* -text` -- committed bytes are checkout bytes on every platform.
+    # This tool ran on Windows once and put the only CRLF copy of this
+    # page into the object database; a generator that re-creates the
+    # defect every time it runs is the defect.
+    DOC.write_text(text, encoding="utf-8", newline="")
     print(f"wrote {DOC} ({len(text.splitlines())} lines)")
     return 0
 

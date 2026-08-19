@@ -43,8 +43,17 @@ CLAIM_PATTERN = re.compile(r"ftz|subnormal", re.IGNORECASE)
 #: A census record pins a sentence by its exact text, so registering one
 #: inside a tree we do not author would fail the gate on the next
 #: re-vendor -- and the fix would be to edit somebody else's source.
+#:
+#: ``tools/rw_wps/vendor/`` arrived with the 2.5.0 mapped-engine port, after
+#: this tuple was written, and carries 46 matching lines: the crates-io
+#: mirror (num-traits describes IEEE subnormals in its own doc comments) plus
+#: the read-only donor snapshot of grib-core and netcrust.  Only the
+#: ``vendor/`` subtree is listed, never ``tools/rw_wps/`` itself, because
+#: ``crates/mapped-engine`` beside it IS gpuwm-authored and its claims stay in
+#: scope.  Measured at this tip: all 46 sit under ``vendor/``, none in
+#: authored rw_wps code.
 VENDOR_PREFIXES = ("tools/grib1_bridge/vendor/", "tools/rustwx/vendor/",
-                   "tools/region_global_dealias/")
+                   "tools/region_global_dealias/", "tools/rw_wps/vendor/")
 
 #: The receipt itself.  Registering a measurement against itself is circular:
 #: the bit table and the receipt are the authority these records point AT, so

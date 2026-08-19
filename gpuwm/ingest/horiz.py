@@ -29,6 +29,10 @@ from gpuwm.ingest.soil_contract import (
 )
 
 from gpuwm.ingest.grib import Era5Snapshot
+from gpuwm.ingest.source_coverage import (
+    SourceCoverageRefusal,
+    outside_source_grid_message as _outside_source_grid_message,
+)
 from gpuwm.static.lambert import LambertGrid
 from gpuwm.static.projection import ProjectedGrid
 
@@ -117,34 +121,14 @@ def _regular_coordinates(latitude, longitude, target_lat, target_lon):
     outside = ((x < -eps) | (x > longitude.size - 1 + eps)
                | (y < -eps) | (y > latitude.size - 1 + eps))
     if bool(np.any(outside)):
-        raise ValueError(_outside_source_grid_message(
+        # Its own class, not a bare ValueError: the preparation doors own
+        # this refusal and print it as two sentences, and they can only
+        # do that if a genuine defect in the same call is distinguishable
+        # from a domain the source does not reach.
+        raise SourceCoverageRefusal(_outside_source_grid_message(
             latitude, longitude, target_lat, target_lon, y, x, outside))
     return np.clip(y, 0.0, latitude.size - 1.0), np.clip(
         x, 0.0, longitude.size - 1.0)
-
-
-def _outside_source_grid_message(latitude, longitude, target_lat, target_lon,
-                                 y, x, outside) -> str:
-    """Name the first uncovered target point, its index, and the source span.
-
-    ``target points fall outside the source grid`` on its own named no
-    coordinate and no window, so a user could not tell a genuinely
-    undersized crop from a source axis that does not reach the target --
-    the two have opposite remedies.  The numbers here are the same ones
-    the HRRR coverage refusal prints.
-    """
-
-    first = int(np.argmax(np.asarray(outside).ravel()))
-    index = np.unravel_index(first, np.shape(outside))
-    return (
-        "target points fall outside the source grid: target point "
-        f"{tuple(int(value) for value in index)} at lat/lon "
-        f"({np.asarray(target_lat).ravel()[first]:.4f}, "
-        f"{np.asarray(target_lon).ravel()[first]:.4f}) maps to source "
-        f"index x={np.asarray(x).ravel()[first]:.3f} "
-        f"y={np.asarray(y).ravel()[first]:.3f}, and the source covers "
-        f"x=0..{longitude.size - 1} (lon {longitude[0]:g}..{longitude[-1]:g}) "
-        f"y=0..{latitude.size - 1} (lat {latitude[0]:g}..{latitude[-1]:g})")
 
 
 def _regular_longitude_index(longitude, target_lon):
@@ -183,6 +167,58 @@ def global_longitude_period_columns(longitude, *, tolerance=1.0e-9):
     return period
 
 
+def source_coordinate_transform(snapshot):
+    """Map target ``(lat, lon)`` into the snapshot's own axis plane.
+
+    The identity for a geographic regular source -- the historical meaning
+    of ``snapshot.latitude``/``snapshot.longitude`` -- and, for a source
+    that is regular in its own PROJECTION plane (a declared Lambert grid:
+    HRRR, RAP, NAM), the forward projection of the target's geographic
+    coordinates into that plane, in the same axis units the snapshot's
+    coordinate arrays carry.  Every operator downstream of this pairing
+    (:func:`_regular_coordinates`, the masked WPS chains, the plans) only
+    ever compares target coordinates against the source axes, so ONE
+    transform at the pairing boundary is the entire projected-source
+    story on the target side; the wind basis was already settled at
+    decode time.
+
+    Returns ``(transform, projected)`` where ``transform(lat, lon)``
+    yields ``(y_like, x_like)`` in the snapshot's axis space.
+    """
+
+    projection = getattr(snapshot, "projection", None)
+    if projection is None:
+        def identity(lat, lon):
+            return lat, lon
+
+        return identity, False
+    family = str(projection["family"])
+    if family != "lambert_conformal":
+        raise ValueError(
+            f"unsupported source projection family {family!r}; the "
+            "projected-source transform currently evaluates "
+            "lambert_conformal only"
+        )
+    from gpuwm.mapped_source import declared_lambert_source_grid
+
+    parameters = projection["parameters"]
+    source = declared_lambert_source_grid(parameters)
+    unit = float(parameters["axis_unit_m"])
+    dx = float(parameters["dx_m"])
+    dy = float(parameters["dy_m"])
+
+    def transform(lat, lon):
+        x, y = source.latlon_to_ij(
+            np.asarray(lat, dtype=np.float64),
+            np.asarray(lon, dtype=np.float64))
+        # LambertGrid coordinates are one-based; axis zero sits on the
+        # first grid point, so the axis value of point i is (i-1)*dx.
+        return ((np.asarray(y, dtype=np.float64) - 1.0) * dy / unit,
+                (np.asarray(x, dtype=np.float64) - 1.0) * dx / unit)
+
+    return transform, True
+
+
 def orient_global_source_longitudes(snapshot, *target_longitudes):
     """Cut a globally periodic source axis opposite the target domain.
 
@@ -219,6 +255,12 @@ def orient_global_source_longitudes(snapshot, *target_longitudes):
 
     if not isinstance(snapshot, Era5Snapshot):
         raise TypeError("snapshot must be an Era5Snapshot")
+    if getattr(snapshot, "projection", None) is not None:
+        # A projected source's axes live in its projection plane; there is
+        # no 360-degree ring to re-cut (the unit choice also guarantees
+        # the period detection below never fires -- this guard says so
+        # explicitly rather than by arithmetic accident).
+        return snapshot
     longitude = np.asarray(snapshot.longitude, dtype=np.float64)
     period = global_longitude_period_columns(longitude)
     if period is None:
@@ -346,8 +388,10 @@ def interpolate_lake_skin_temperature(
     if not np.any(water):
         raise ValueError("no finite source-water SKINTEMP is available")
 
+    lake_transform, _ = source_coordinate_transform(snapshot)
+    target_ty, target_tx = lake_transform(target_lat, target_lon)
     y, x = _regular_coordinates(
-        snapshot.latitude, snapshot.longitude, target_lat, target_lon)
+        snapshot.latitude, snapshot.longitude, target_ty, target_tx)
     for j, i in np.argwhere(lakes):
         result[j, i] = _nearest_finite_source_water(
             skin, water, float(y[j, i]), float(x[j, i]))
@@ -1207,12 +1251,23 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     mass_lat, mass_lon = grid.latlon_mass()
     u_lat, u_lon = grid.latlon_u()
     v_lat, v_lon = grid.latlon_v()
+    # ONE pairing rule for source axes and target coordinates: a
+    # geographic source pairs with the target's lat/lon unchanged, a
+    # projected source pairs with the target projected into ITS plane.
+    # Everything below that touches `snapshot.latitude`/`longitude`
+    # together with target coordinates uses the transformed pair; uses of
+    # the target's geographic coordinates alone (rotation angles, shapes,
+    # receipts) stay geographic.
+    transform, _projected_source = source_coordinate_transform(snapshot)
+    mass_ty, mass_tx = transform(mass_lat, mass_lon)
+    u_ty, u_tx = transform(u_lat, u_lon)
+    v_ty, v_tx = transform(v_lat, v_lon)
     mass_plan = engine.regular_plan(
-        snapshot.latitude, snapshot.longitude, mass_lat, mass_lon)
+        snapshot.latitude, snapshot.longitude, mass_ty, mass_tx)
     u_plan = engine.regular_plan(
-        snapshot.latitude, snapshot.longitude, u_lat, u_lon)
+        snapshot.latitude, snapshot.longitude, u_ty, u_tx)
     v_plan = engine.regular_plan(
-        snapshot.latitude, snapshot.longitude, v_lat, v_lon)
+        snapshot.latitude, snapshot.longitude, v_ty, v_tx)
 
     source_fields = snapshot.fields
     masked_names = _MATCH_SURFACE_FIELDS | _WATER_FIELDS | _LAND_FIELDS
@@ -1304,7 +1359,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
             # discontinuous 500-Pa vertical-stencil decision.
             out[name] = engine.float32(_canonical_psfc_bilinear(
                 raw, snapshot.latitude, snapshot.longitude,
-                mass_lat, mass_lon))
+                mass_ty, mass_tx))
             handled.add(name)
             continue
 
@@ -1361,14 +1416,14 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                     land_part, recovered = (
                         _land_pass_with_fractional_second_chance(
                             slab_host, snapshot.latitude, snapshot.longitude,
-                            mass_lat, mass_lon,
+                            mass_ty, mass_tx,
                             land_donors=source_land_host,
                             partial_land_donors=partial_land_host,
                             target_active=target_land_host,
                             chain=_WPS_FULL_CHAIN, fill_value=fill))
                     water_part = wps_masked_field_interpolate(
                         slab_host, snapshot.latitude, snapshot.longitude,
-                        mass_lat, mass_lon,
+                        mass_ty, mass_tx,
                         source_valid=~source_land_host,
                         target_active=~target_land_host,
                         chain=_WPS_FULL_CHAIN, fill_value=fill)
@@ -1378,7 +1433,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                     combined, recovered = (
                         _land_pass_with_fractional_second_chance(
                             slab_host, snapshot.latitude, snapshot.longitude,
-                            mass_lat, mass_lon,
+                            mass_ty, mass_tx,
                             land_donors=source_land_host,
                             partial_land_donors=partial_land_host,
                             target_active=target_active_host,
@@ -1387,7 +1442,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                     recovered = 0
                     combined = wps_masked_field_interpolate(
                         slab_host, snapshot.latitude, snapshot.longitude,
-                        mass_lat, mass_lon,
+                        mass_ty, mass_tx,
                         source_valid=source_valid_host,
                         target_active=target_active_host,
                         chain=chain, fill_value=fill)
@@ -1477,8 +1532,8 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                         else _as_host_float64(source_sst)),
             source_lat=np.asarray(snapshot.latitude, dtype=np.float64),
             source_lon=np.asarray(snapshot.longitude, dtype=np.float64),
-            target_lat=np.asarray(mass_lat, dtype=np.float64),
-            target_lon=np.asarray(mass_lon, dtype=np.float64))
+            target_lat=np.asarray(mass_ty, dtype=np.float64),
+            target_lon=np.asarray(mass_tx, dtype=np.float64))
         water_temperature = assembly.values
         water_temperature_source = assembly.provider
         water_temperature_receipt = assembly.receipt
@@ -1507,6 +1562,7 @@ __all__ = [
     "lambert_rotation",
     "masked_nearest_gpu",
     "rotate_earth_to_grid_gpu",
+    "source_coordinate_transform",
     "rotate_grid_to_earth_gpu",
     "source_orography_from_catalog",
     "wps_masked_field_interpolate",

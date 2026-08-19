@@ -1,0 +1,41 @@
+{
+ "schema": "gpuwm-geog-source-coverage-v1",
+ "status": "PASS",
+ "field": "terrain",
+ "dataset": "topo_gmted2010_30s",
+ "declared_sparse": false,
+ "source_geometry": {
+  "nx_global": 43200,
+  "ny_global": 21600,
+  "wraps_x": true,
+  "extent_basis": "regular_ll_complete",
+  "tile_inventory_bounds": [
+   1,
+   43200,
+   1,
+   21600
+  ]
+ },
+ "source_window": {
+  "x_start": 33115,
+  "x_end": 33126,
+  "y_start": 15535,
+  "y_end": 15546
+ },
+ "required_cells": 144,
+ "covered_cells": 144,
+ "missing_tile_cells": 0,
+ "outside_extent_cells": 0,
+ "coverage_fraction": 1.0,
+ "required_tile_count": 1,
+ "required_tiles": [
+  {
+   "origin": [
+    32401,
+    14401
+   ],
+   "relative_path": "32401-33600.14401-15600",
+   "bytes": 2908872
+  }
+ ]
+}

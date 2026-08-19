@@ -105,6 +105,41 @@ def comparator_argv(gpu_dir: Path, cpu_dir: Path, out_csv: Path,
     ]
 
 
+#: What the receipt calls the throwaway directory the fixture is built
+#: in.  The document a reader follows names their own directories, so
+#: the builder's is scaffolding either way.
+WORK_PLACEHOLDER = "${WORK}"
+
+
+def portable_argv(command: list[str], work: Path) -> list[str]:
+    """``command`` with the builder's own work directory taken out.
+
+    The receipt is package data: it ships inside the wheel and inside
+    the sdist.  Recording ``str(gpu_dir)`` put the builder's temporary
+    directory -- an absolute path under one developer's profile -- into
+    four argv entries of a published file, which is the class the
+    release machine-path scan exists to stop and did not see, because
+    the JSON spelling escapes its separators.
+
+    Replacing the prefix loses nothing the receipt is for: the claim is
+    that the amended flags were accepted and the comparator ran to a
+    zero exit, and a reader following the document supplies their own
+    directories anyway.
+    """
+
+    root = str(work)
+    portable = []
+    for argument in command:
+        if argument == root:
+            portable.append(WORK_PLACEHOLDER)
+        elif argument.startswith(root + os.sep):
+            tail = argument[len(root):].replace(os.sep, "/")
+            portable.append(WORK_PLACEHOLDER + tail)
+        else:
+            portable.append(argument)
+    return portable
+
+
 def run_flags_accepted(argv: list[str]) -> dict[str, object]:
     """Whether the production parser accepts the amended ``gpuwm run`` line."""
     from gpuwm.cli import build_parser
@@ -163,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             "so the document can cite an execution rather than an intention"),
         "comparator": {
             "executed": True,
-            "argv": ["python"] + command[1:],
+            "argv": ["python"] + portable_argv(command, work)[1:],
             "exit_code": completed.returncode,
             "elapsed_seconds": round(elapsed, 3),
             "terminated_without_a_kill": completed.returncode == 0,

@@ -60,8 +60,11 @@ pytestmark = pytest.mark.gpu
 
 _ORACLE = (Path(__file__).parents[1] / "gpuwm" / "data" / "thompson"
            / "oracle-aero")
-_TABLES = (Path(__file__).parents[1] / "gpuwm" / "data" / "thompson"
-           / "tables")
+# Resolved, not joined: the classic-table directory ships in the gpuwm-data
+# companion distribution since 2.5.0.
+from gpuwm.physics_compat import packaged_thompson_table_root  # noqa: E402
+
+_TABLES = packaged_thompson_table_root()
 _KERNELS = Path(__file__).parents[1] / "gpuwm" / "core" / "kernels"
 _HEADER = _KERNELS / "thompson_aerosol_common.cuh"
 

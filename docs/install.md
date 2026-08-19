@@ -23,8 +23,10 @@ fails with instructions instead of hanging), build the vendored Rust
 GRIB bridges (`tools/grib1_bridge`) and the production render engine
 (`tools/rustwx`) with `cargo build --release --locked --offline`
 (`--no-render`/`-NoRender` or `GPUWM_INSTALL_NO_RENDER=1` skips the
-renderer build; `gpuwm render` falls back to matplotlib until a render
-engine exists, and says so on every run that uses the fallback), and
+renderer build; until a render engine exists `gpuwm render` REFUSES,
+naming `gpuwm fetch-bridges` — weather-field product plots come from
+`rw_wrfbatch`, and `--engine matplotlib` is a named workaround that
+announces itself, not an automatic fallback), and
 finish with `gpuwm doctor`, whose exit status the script propagates.
 
 A pip install needs no toolchain for either half: `gpuwm fetch-bridges`
@@ -82,8 +84,43 @@ the one that matches:
 
 | Your box | Extra | Wheel |
 |---|---|---|
-| CUDA 12.x | `[gpu-cu12]`, or `[all-cu12]` with the renderer | `cupy-cuda12x` |
-| CUDA 13, no 12.x runtime libraries | `[gpu-cu13]`, or `[all-cu13]` | `cupy-cuda13x` |
+| CUDA 12.x | `[gpu-cu12]`, or `[all-cu12]` with the renderer | `cupy-cuda12x[ctk]` |
+| CUDA 13, no 12.x runtime libraries | `[gpu-cu13]`, or `[all-cu13]` | `cupy-cuda13x[ctk]` |
+
+**Why `[ctk]`, and how to skip it.** A CuPy wheel carries NVRTC -- the
+compiler -- and no CUDA headers, while CuPy's own kernels include the
+CUDA runtime headers. On a box that has a driver and no toolkit (stock
+Ubuntu with the archive's NVIDIA driver; almost every fresh rental) the
+wheel installs, `import cupy` succeeds, and the first device call of any
+kind dies with `Failed to find CUDA headers`. Measured on a driver-only
+CUDA 13 node, 2026-08-17:
+
+| Install | Venv | cuBLAS / kernel / reduction |
+|---|---|---|
+| `pip install cupy-cuda13x` | 274 MiB | all three fail on missing headers |
+| `pip install 'cupy-cuda13x[ctk]'` | 1867 MiB | all three ok |
+
+So the GPU extras ask for `[ctk]`, which is CuPy's own extra for a
+matching toolkit delivered as wheels (runtime + headers, NVRTC, cuBLAS,
+cuFFT, cuRAND, cuSOLVER, cuSPARSE): about 1.6 GiB, and it is the
+difference between a GPU box that runs and one that cannot execute a
+kernel. The floor moved to CuPy 14.0 with it, because `[ctk]` is a
+CuPy 14 extra and pip only *warns* when a resolved version does not
+provide a requested extra.
+
+If this box already has a matching CUDA toolkit, install the two pieces
+separately and skip the 1.6 GiB:
+
+```bash
+pip install gpuwm && pip install cupy-cuda13x    # or cupy-cuda12x
+```
+
+That is the smaller install, not the safer one: CuPy resolves the wheels
+ahead of a system toolkit, so the `[ctk]` set is also the self-consistent
+one. `gpuwm doctor` judges whichever you chose by compiling a kernel
+from a cold cache and loading cuBLAS, and when the headers are the gap it
+prints `pip install 'cupy-cuda13x[ctk]'` -- the command that closes it --
+rather than a wheel reinstall that cannot.
 
 `nvidia-smi` prints the CUDA version in its header. Getting it wrong is
 quiet until it is not: the cu12 wheel on a CUDA-13-only box imports
@@ -98,8 +135,27 @@ CuPy installed, and names the extra that matches; `install.sh` /
 already names them keeps working; they are aliases for the cu12 pair,
 not a separate pin.
 
-`[render]` = the pinned `wrf-rust` + matplotlib + the demo gallery's
-shapefile reader for `gpuwm render`; add `[dev]` for the test suite:
+`[render]` = `wrf-rust` in its certified window (`>=0.2.39,<0.3` -- a
+window, not an equality, so installing gpuwm never downgrades a newer core
+you already run; 2.5.0's suites are exercised against 0.2.39) + matplotlib
++ the demo gallery's shapefile reader for `gpuwm render`; add `[dev]` for
+the test suite:
+
+**Python 3.10 through 3.14: this extra installs everywhere, and the floor
+is why.** wrf-rust 0.2.39 publishes cp310-cp314 wheels on all five
+platforms (macOS x86_64 and arm64, manylinux x86_64 and aarch64,
+win_amd64). 0.2.38 and earlier stopped at cp313, so on a 3.14 box pip
+fell back to their sdist, that sdist did not build (`the configured
+Python interpreter version (3.14) is newer than PyO3's maximum supported
+version (3.13)`), and because pip fails a whole resolution when one
+requirement fails, `pip install 'gpuwm[gpu-cu13,render]'` installed **no
+gpuwm at all** there. The floor is the remedy: every supported
+interpreter resolves a real wheel, and no environment marker silently
+skips the package on any of them. If you pin an older core yourself on an
+interpreter it has no wheel for, `gpuwm doctor` reports that gap by name
+rather than printing a pip line that cannot work -- the runtime window
+still accepts `>=0.2.35`, so a 0.2.38 already on your box keeps
+rendering.
 
 ```bash
 python -m pip install -e '.[dev]'
@@ -123,7 +179,8 @@ gpuwm doctor
 
 `gpuwm fetch-bridges` downloads one release bundle for this platform --
 the five GRIB decoders, the CPU preprocessing library, the `rw_fetch`
-backbone and the `rw_wrfbatch` renderer -- verifies every artifact
+backbone, the `rw_wrfbatch` renderer and the `gpuwm_mapped_engine`
+decode engine every mapped source runs on -- verifies every artifact
 against the exact size + SHA-256 pins packaged in the wheel, and stages
 them into `~/.gpuwm/bridges`, the directory the resolver already
 searches.  It is re-run safe (present, pin-valid artifacts are left
@@ -167,11 +224,15 @@ nothing.
 `gpuwm doctor` reports exactly which pieces are missing and prints the
 command that fixes each one.
 
-High-resolution static geography needs no extra. Rasterio and pyproj are
-ordinary dependencies of `gpuwm` as of 2.3.3, so every install line on this
-page carries them, and `gpuwm doctor` reports them as `geography stack
-(rasterio + pyproj)`. The `[geog]` extra still exists and is empty, so the
-older `'.[dev,geog]'` line keeps working; it simply adds nothing now.
+High-resolution static geography needs no extra. Its engine is the Rust
+`static-fields` library, which ships in the bridge bundle every install
+line on this page stages, and `gpuwm doctor` reports it as `static
+builder (default static-field engine)`. The `[geog]` extra carries
+rasterio and pyproj, which are the pure-Python **parity fallback** that
+`GPUWM_STATIC_PYTHON=1` runs on -- install it to bisect a divergence
+against the reference implementation, not to get the feature. Doctor
+reports those two as `geography stack (rasterio + pyproj, the highres
+fallback)` and says `info`, not `missing`, when they are absent.
 See `docs/public/HIGHRES-TERRAIN.md` for the worked example. Note that the
 international terrain path is a shipped feature, while the US full-stack
 raster overlay (land use and soil as well as terrain) remains a prototype
@@ -206,16 +267,16 @@ observation battery and the demo gallery's basemaps.
 
 | Extra | Adds | Needed for |
 |---|---|---|
-| `gpuwm[gpu-cu12]` | `cupy-cuda12x` | running the model on a CUDA 12.x box |
-| `gpuwm[gpu-cu13]` | `cupy-cuda13x` | running the model on a CUDA-13-only box |
+| `gpuwm[gpu-cu12]` | `cupy-cuda12x[ctk]` | running the model on a CUDA 12.x box. The `[ctk]` half is a matching CUDA toolkit as wheels, ~1.6 GiB; without it a driver-only box cannot compile a kernel or load cuBLAS |
+| `gpuwm[gpu-cu13]` | `cupy-cuda13x[ctk]` | running the model on a CUDA-13-only box |
 | `gpuwm[gpu]` | alias of `gpu-cu12` | kept so existing install lines keep working |
-| `gpuwm[render]` | `wrf-rust` | `gpuwm render`'s matplotlib engine, `gpuwm enprod`, and derived quantities. The default rust engine needs none of it |
+| `gpuwm[render]` | `wrf-rust>=0.2.39` | `gpuwm render`'s matplotlib engine, `gpuwm enprod`, and derived quantities. The default rust engine needs none of it. The floor is 0.2.39 because that is the oldest release with wheels for every supported interpreter (cp310-cp314); no environment marker, nothing skipped |
 | `gpuwm[dev]` | `pytest`, `psutil` | running the test battery |
 | `gpuwm[publish]` | `huggingface_hub` | maintainers only: publishing the WPS_GEOG mirror snapshot. Needs write credentials nobody else has, so it is deliberately outside `[all]` |
 | `gpuwm[all-cu12]` | `gpu-cu12` + `render` | one line for a CUDA 12.x forecasting box |
 | `gpuwm[all-cu13]` | `gpu-cu13` + `render` | one line for a CUDA-13-only forecasting box |
 | `gpuwm[all]` | alias of `all-cu12` | kept so existing install lines keep working |
-| `gpuwm[geog]` | nothing | **empty as of 2.3.3.** rasterio and pyproj moved into the base install; the name is kept so `pip install 'gpuwm[geog]'` does not fail |
+| `gpuwm[geog]` | `rasterio`, `pyproj` | the pure-Python **parity fallback** for the high-resolution warp (`GPUWM_STATIC_PYTHON=1`). The default engine is the Rust `static-fields` library a bare install stages, so this changes no default and unlocks no product; deliberately outside `[all]` because 118.8 MiB of GDAL stack does not belong in the recommended one-liner for a debugging aid |
 | `gpuwm[obs]` | nothing | **empty as of 2.4.1.** scipy moved into the base install, so scoring a forecast against observations (`gpuwm.verify.obs`) works from `pip install gpuwm`; the name is kept so the old line does not fail |
 | `gpuwm[dealias]` | nothing | **empty as of 2.4.1.** scipy moved into the base install, so the `vad-region` dealiasing engine is selectable from `pip install gpuwm`; the name is kept so the old line does not fail |
 
@@ -287,8 +348,8 @@ the Rust/NumPy path. HRRR's public driver does not yet expose the common
 backend selector.
 
 For the CUDA path, prepare the environment with the CuPy wheel matching
-the box's CUDA major -- `cupy-cuda12x>=13.0` on CUDA 12.x,
-`cupy-cuda13x>=13.6` on a CUDA-13-only box -- omit
+the box's CUDA major -- `cupy-cuda12x[ctk]>=14.0` on CUDA 12.x,
+`cupy-cuda13x[ctk]>=14.0` on a CUDA-13-only box -- omit
 `--skip-gpu`, and verify the runtime receipt generated at install. The
 launcher repeats archive, wheel, bridge, dependency, and selected-backend
 checks rather than trusting an old receipt.

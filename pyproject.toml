@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.4.1"
+version = "2.5.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -28,39 +28,32 @@ requires-python = ">=3.11"
 # a pip install without it ran a whole forecast, then hit the import at
 # capsule time -- emission is non-fatal now, but the dependency is real).
 #
-# rasterio/pyproj are RUNTIME dependencies, not an extra.  They were the
-# [geog] extra through 2.3.2, and that shipped a headline feature nobody
-# could reach: [all] deliberately excludes geog, every quickstart
-# one-liner omits it, and the only mention of the extra anywhere was one
-# source-checkout line in an older doc.  Following HIGHRES-TERRAIN.md on
-# a documented install downloaded 160.7 MiB of Copernicus tiles and then
-# died on the import.
+# rasterio/pyproj are NOT here, and the reason is the whole point: the
+# high-resolution warp substrate -- GeoTIFF decode, CRS construction,
+# the mosaic and void fill, the reprojection onto the WPS spherical grid
+# and the area average -- runs in the Rust `static-fields` library on
+# the bare default of `[static.highres] enabled = true`.  That library
+# is a BUNDLED ARTIFACT (gpuwm.bridge_assets.BUNDLED_ARTIFACTS), staged
+# into a wheel install exactly as the NetCDF writer is, so a bare `pip
+# install gpuwm` builds high-resolution terrain with neither library
+# present.  They moved to the [geog] extra, whose comment below records
+# what they are FOR now.
 #
-# Making them default was weighed against the two things an extra buys,
-# and both were measured rather than assumed:
+# This is not a return to 2.3.2, and the difference is the one that
+# matters.  Through 2.3.2 they were an extra nobody named while being
+# the ONLY engine, so following HIGHRES-TERRAIN.md on a documented
+# install downloaded 160.7 MiB of Copernicus tiles and then died on the
+# import: a headline feature nobody could reach.  They became runtime
+# dependencies in 2.3.3 to fix exactly that.  What changed is not the
+# rule but the fact underneath it -- the feature no longer reads them --
+# and a dependency the shipped configuration never imports is not a
+# reachability guarantee, it is 118.8 MiB of GDAL stack.  The
+# reachability contract is now enforced where the engine actually is:
+# tests/test_static_highres_warp_routing.py makes rasterio, pyproj and
+# affine unimportable and requires every default high-resolution call to
+# still produce its answer.
 #
-#   Platform reach.  rasterio publishes macosx/manylinux/win wheels --
-#   the SAME matrix netCDF4 already publishes, and netCDF4 has been a
-#   hard dependency here for as long as this table has existed.  Adding
-#   it therefore narrows the set of platforms `pip install gpuwm`
-#   succeeds on by exactly nothing.  pyproj is strictly wider still (it
-#   also ships musllinux).  Across the supported range the resolution is
-#   wheel-only: 3.13 takes rasterio 1.5.1, and 3.11 -- which 1.5 dropped
-#   -- backtracks to 1.4.4, whose cp311 wheels exist.  No source build,
-#   so no GDAL toolchain is ever required of a user.
-#
-#   Install size.  Measured +118.8 MiB on a 380.3 MiB base install.
-#   That is real, and it is still less than the 160.7 MiB the broken
-#   path downloaded before failing.
-#
-# The CuPy precedent below does NOT transfer, and that is the whole
-# distinction: CuPy must be an extra because the correct wheel is
-# undecidable at pip time -- one wheel per CUDA major and no environment
-# marker to pick with.  rasterio and pyproj carry no such ambiguity; pip
-# resolves them correctly on every platform this project supports.  An
-# extra there would be a workaround for a problem that does not exist.
-#
-# scipy and pyshp joined them on the same reasoning, one release later,
+# scipy and pyshp stayed on the reasoning rasterio and pyproj arrived on,
 # for two more capabilities that were shipped-but-unreachable:
 #
 #   scipy.  Two capabilities, and the weaker of the two arguments is the
@@ -72,20 +65,37 @@ requires-python = ">=3.11"
 #   selectable, supported, documented engine that every run before that
 #   date used, and without scipy it is not selectable at all.
 #
-#   The unconditional one is gpuwm/verify/obs/regrid.py: every remap plan
-#   the observation battery builds goes through scipy.spatial.cKDTree,
-#   with no second engine and no fallback.  That is the whole referee.
+#   The second was gpuwm/verify/obs/regrid.py, and that claim is DEAD.
+#   It used to read "every remap plan the observation battery builds
+#   goes through scipy.spatial.cKDTree, with no second engine and no
+#   fallback".  Since the obs-regrid port both halves of that module --
+#   the plan build and the apply -- run on
+#   tools/rustwx/crates/obs-regrid by DEFAULT, proven bit-identical to
+#   the scipy path on real staged observation and model grids.  scipy is
+#   now the announced fallback (GPUWM_OBSREGRID_PYTHON=1), which is a
+#   reported workaround, so the battery still needs the package
+#   installed and this dependency stays -- but nothing on a bare default
+#   path reads it.
 #
 #   Both sat behind an [obs]/[dealias] pair that `pip install
 #   'gpuwm[all-cu12]'` -- the README's own recommended line -- did not
 #   pull, and that no quickstart named.
 #
-#   The ingest/decode mandate does not bind this one.  Rust-or-CUDA-only
-#   is a rule about READING and DECODING data; connected components on a
-#   sparse adjacency matrix and a k-d tree over unit vectors are
-#   arithmetic on arrays this project already carries in numpy.
-#   (rasterio/pyproj above ARE decode, are a standing exception, and are
-#   being moved into the Rust stack by the terrain lane.)
+#   This block used to argue that the mandate did not bind either use,
+#   on the reading that Rust-or-CUDA-only is "a rule about READING and
+#   DECODING data".  That reading was WRONG and was never a Drew ruling:
+#   his 2026-08-16 wording is "GRIB decode, NetCDF read/write,
+#   regrid/transform, dealiasing, rendering", and the two operations the
+#   argument exempted are the two the law names beyond decode --
+#   "regrid/transform" is gpuwm/verify/obs/regrid.py's k-d tree and
+#   "dealiasing" is gpuwm/obs/dealias.py's connected-components pass.
+#   The k-d tree half is settled: it is Rust by DEFAULT now.  The
+#   dealiasing half is `vad-region`, which is not the default engine,
+#   and it is open porting work.  This table says who SHIPS a library;
+#   it does not get to say which laws reach it.  Neither use is an
+#   exception, and this file has no authority to declare one -- only
+#   Drew does.  Open work is recorded where open work belongs and not
+#   in a dependency comment.
 #
 #   Cost, measured on cp313/win_amd64: 36.6 MiB of wheel.  Platform reach
 #   is unchanged -- scipy's wheel matrix is a superset of numpy's, which
@@ -102,9 +112,32 @@ requires-python = ">=3.11"
 #   bridges), so the install that draws maps was not the install
 #   carrying the shapefile reader.  73.7 kB of pure Python with no
 #   dependencies of its own; there is no case for making anyone choose.
+#
+# gpuwm-data: the companion distribution carrying the RRTMGP k-distribution
+# NetCDFs and the Thompson microphysics lookup tables, pinned `==` to this
+# exact version.  It is a HARD dependency and never an extra, for the same
+# reason rasterio and scipy above stopped being extras: a bare `pip install
+# gpuwm` that cannot run radiation is not an install, and an extra nobody
+# names is a headline feature nobody can reach.
+#
+# It exists because of a channel limit, not a design preference.  PyPI
+# rejects any file over 100 MiB; the 2.5.0 wheel measured 103.62 MiB with
+# the Rust bridges staged, and those two directories were 64.21 MiB of it.
+# Splitting them leaves gpuwm at 39.41 MiB and gpuwm-data at 64.31 MiB.
+# The companion is pure data -- py3-none-any, one file for every platform.
+#
+# The `==` is not caution, it is the contract: the tables are versioned
+# data read by versioned physics, so a `>=` would let pip pair 2.5.0's
+# radiation with another release's k-distribution and produce numbers
+# instead of an error.  gpuwm.data_assets refuses a mismatch by name at
+# runtime as well, because pip is not the only thing that edits a venv.
+# The literal is restated here rather than computed because
+# `[project].version` must stay a static string (gpuwm.provenance reads it
+# straight out of this file for the code-version receipt);
+# tests/test_companion_distribution.py fails if the two ever disagree.
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
-                "jsonschema>=4.0", "rasterio>=1.3", "pyproj>=3.6",
-                "scipy>=1.11", "pyshp>=2.3"]
+                "jsonschema>=4.0",
+                "scipy>=1.11", "pyshp>=2.3", "gpuwm-data==2.5.0"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 # No `License ::` classifier: PEP 639 deprecates them outright and
 # setuptools >=77 refuses to combine one with the SPDX expression above.
@@ -136,36 +169,120 @@ Changelog = "https://github.com/FahrenheitResearch/arwen/blob/main/CHANGELOG.md"
 # by `gpuwm doctor`, which reads the box's CUDA major straight off the
 # driver -- with or without CuPy installed -- and prints the extra that
 # matches it rather than a cu12 default.
-gpu-cu12 = ["cupy-cuda12x>=13.0"]
-gpu-cu13 = ["cupy-cuda13x>=13.6"]
+#
+# `[ctk]`: THE CUDA TOOLKIT, WHICH THE WHEEL ALONE DOES NOT CARRY.
+#
+# A CuPy wheel ships NVRTC -- the compiler -- and no CUDA headers, and
+# CuPy's own kernels include the CUDA runtime headers.  So on a box with
+# a driver and no toolkit (every stock Ubuntu with the NVIDIA driver
+# from the archive; every fresh rental) the wheel installs, `import
+# cupy` succeeds, and the FIRST device call of any kind dies.  MEASURED
+# on weather-node-1 (CUDA 13 driver, no nvcc, no /usr/local/cuda, no
+# conda), 2026-08-17:
+#
+#   pip install cupy-cuda13x          274 MiB venv; cuBLAS, a
+#                                     self-contained RawModule and a
+#                                     cupy reduction ALL fail with
+#                                     "Failed to find CUDA headers"
+#   pip install 'cupy-cuda13x[ctk]'   1867 MiB venv; all three ok
+#
+# The delta is ~1.6 GiB and it buys the difference between a GPU box
+# that runs and one that cannot execute a single kernel, so the extras
+# carry it.  "Fixed" means a bare default run stops showing the defect,
+# and the bare default run here is the quickstart's own pip line; an
+# opt-in second command would have been a workaround, and the workaround
+# is what 2.4.1 already had (`gpuwm doctor` printing an install line).
+#
+# A box that ALREADY has a matching system toolkit does not need these
+# wheels, and can skip them with
+#
+#     pip install gpuwm && pip install cupy-cuda13x    # or cupy-cuda12x
+#
+# which is documented in docs/install.md.  It is the smaller install,
+# not the safer one: CuPy resolves the wheels ahead of a system toolkit,
+# so the [ctk] set is also the self-consistent one.
+#
+# The floor moves to 14.0 BECAUSE of `[ctk]`: CuPy added that extra in
+# 14.0, and pip only WARNS when a resolved version does not provide a
+# requested extra.  Kept at >=13.0/>=13.6, a box already holding CuPy
+# 13.x would resolve, print a warning nobody reads, install no toolkit,
+# and sit in exactly the broken state this line closes.
+gpu-cu12 = ["cupy-cuda12x[ctk]>=14.0"]
+gpu-cu13 = ["cupy-cuda13x[ctk]>=14.0"]
 gpu = ["gpuwm[gpu-cu12]"]
 # gpuwm render's mandated science core: derived quantities come from the
 # wrf package (pip distribution wrf-rust).  A RANGE, not an exact pin:
 # `==0.2.35` made `pip install gpuwm[render]` DOWNGRADE a user who already
 # ran a newer wrf-rust (field report: 0.2.38 -> 0.2.35), which is a
 # hostile thing to do to the co-developed core on someone else's box.
-# 0.2.35 is the floor because it is what the products are certified
-# against; <0.3 is the ceiling because that is where upstream is free to
-# change the diagnostic surface.  The same window is written once in
-# gpuwm/science_core.py and enforced at runtime from there.
+# <0.3 is the ceiling because that is where upstream is free to change
+# the diagnostic surface.  The same window is written once in
+# gpuwm/science_core.py and enforced at runtime from there, alongside
+# SCIENCE_CORE_CERTIFIED -- the release 2.5.0's suites actually run on
+# (0.2.39, installed from the index as a plain wheel).
 # This extra is ONLY that window now.  pyshp moved into the runtime
 # dependencies above: see the note there for why the shapefile reader had
 # no business riding along with a science core the default render engine
 # does not even use.
-render = ["wrf-rust>=0.2.35,<0.3"]
-# RETAINED AND EMPTY ON PURPOSE.  rasterio/pyproj moved into the runtime
-# dependencies above in 2.3.3, so this extra has nothing left to add.  It
-# is kept because `pip install gpuwm[geog]` is written down in the wild --
-# in 2.3.2's own docs, in shell history, in other people's scripts -- and
-# pip fails an install naming an extra that does not exist.  Deleting it
-# would break the one command that DID work before this release.  Same
-# discipline as the [gpu]/[all] aliases below: never invalidate an
-# install line that already works.
-geog = []
-# RETAINED AND EMPTY ON PURPOSE, exactly as [geog] above.  scipy moved
-# into the runtime dependencies, so neither of these has anything left to
-# add: `pip install gpuwm` now scores against observations and dealiases
-# velocity.  They are kept because both spellings are written down --
+#
+# WHY THE FLOOR IS 0.2.39, and why there is no environment marker on this
+# line.  MEASURED on weather-node-1 (python3.14.4), 2026-08-17: wrf-rust
+# 0.2.38 published no cp314 wheel, so pip fell back to the sdist, and
+# the sdist did not build --
+#
+#   error: failed to run custom build command for `pyo3-ffi v0.23.5`
+#   error: the configured Python interpreter version (3.14) is newer than
+#          PyO3's maximum supported version (3.13)
+#
+# -- and pip fails a WHOLE resolution when one requirement fails.  So on
+# a 3.14 box `pip install 'gpuwm[gpu-cu13,render]'`, which is the line
+# install.sh itself runs, installed no gpuwm at all: fetch, prep, the
+# CUDA runtime and the rust renderer all died for the one package none of
+# them use.
+#
+# Upstream closed it the same day: 0.2.39 publishes cp310-cp314 wheels on
+# all five platforms (macOS x86_64/arm64, manylinux x86_64/aarch64,
+# win_amd64) -- 26 artifacts, MEASURED off the index.  So the remedy is
+# the floor, not a marker: 0.2.39 is the oldest release with a wheel for
+# every interpreter gpuwm supports, and every supported interpreter gets
+# the real package instead of a skip.  A marker left here after the
+# wheels landed would be the same defect pointed the other way -- pip
+# silently skipping a package that installs perfectly, on a box whose
+# install line said it was covered.
+#
+# The RUNTIME floor stays at 0.2.35 (SCIENCE_CORE_FLOOR): a 0.2.38
+# already installed on a 3.13 box renders every product it ever did, and
+# a refusal that cannot name what it prevents does not get to exist.
+render = ["wrf-rust>=0.2.39,<0.3"]
+# The PARITY FALLBACK for the high-resolution warp, and nothing else.
+#
+# What this extra is NOT: the way to get high-resolution terrain.  That
+# runs on the Rust `static-fields` library, on the bare default, from a
+# bare `pip install gpuwm` -- the library is a bundled artifact and
+# `gpuwm doctor` reports it as the `static builder` row.  Installing
+# this changes no default and unlocks no product.
+#
+# What it IS: the two libraries `GPUWM_STATIC_PYTHON=1` runs on.  That
+# switch is the explicit workaround the fixed-means-default law requires
+# a correctness remedy to carry -- it prints a WORKAROUND line, stamps
+# `static_compute` on the receipt, and exists so a divergence can be
+# bisected against the reference implementation the crate's goldens were
+# extracted from.  Deliberately outside [all]: a forecast user needs the
+# default, not the reference, and 118.8 MiB of GDAL stack does not
+# belong in the recommended one-liner for a debugging aid.
+#
+# The name is unchanged on purpose.  `pip install gpuwm[geog]` is
+# written down in the wild -- in 2.3.2's own docs, in shell history, in
+# other people's scripts -- and pip fails an install naming an extra
+# that does not exist.  Same discipline as the [gpu]/[all] aliases
+# below: never invalidate an install line that already works.
+geog = ["rasterio>=1.3", "pyproj>=3.6"]
+# RETAINED AND EMPTY ON PURPOSE.  [geog] above kept its NAME for the same
+# reason and then got contents back; these two kept the name and have
+# nothing left to put in it.  scipy moved into the runtime dependencies,
+# so neither of these has anything to add: `pip install gpuwm` now scores
+# against observations and dealiases velocity.  They are kept because
+# both spellings are written down --
 # 2.3.3's own docs/install.md extras table names them, and until this
 # release two code remedies told readers to run them -- and pip fails an
 # install naming an extra that does not exist.  Never invalidate an
@@ -203,29 +320,37 @@ dev = ["pytest>=8.0", "psutil>=5.9"]
 publish = ["huggingface_hub>=0.23", "h5py>=3.10"]
 # The two extras a person running a forecast on their own card needs,
 # under one name, so the quickstart is one pip line instead of a choice
-# between two that most readers want both of.  It does not name geog
-# because there is nothing left to name: high-resolution geography is in
-# the runtime dependencies as of 2.3.3, so [all] carries it the same way
-# a bare install does.  Through 2.3.2 this line read "deliberately NOT
-# geog", and that reasoning -- authoring tiles is a different job from
-# running the model -- was sound about the JOB and wrong about the
-# consequence: it left the documented terrain path unreachable from
-# every install line the project publishes.
+# between two that most readers want both of.  It does not name geog,
+# and the reason is a fact about what geog now contains rather than a
+# judgement about terrain: [geog] is the pure-Python PARITY FALLBACK for
+# the high-resolution warp, and the warp itself runs on the Rust
+# static-fields library that a bare install already stages.  So [all]
+# carries high-resolution terrain the same way a bare install does --
+# by carrying the engine -- and adding [geog] would add 118.8 MiB of
+# GDAL stack that changes no default and unlocks no product.
 #
-# obs and dealias are absent for the same reason and not a different one:
-# they are empty now.  The 2.3.2 audit's H14 -- "pip install
-# 'gpuwm[all-cu12]' silently ships without velocity dealiasing" -- is
-# closed by scipy being a base dependency, NOT by aggregating a name
-# here.  Aggregation would have been the bandaid: [all] would have been
-# right and a bare `pip install gpuwm` would still have been missing the
-# default dealias engine.
+# That is NOT the 2.3.2 reasoning wearing a new hat.  Through 2.3.2 this
+# line read "deliberately NOT geog" while those libraries were the ONLY
+# engine, which was sound about the JOB (authoring tiles is not running
+# the model) and wrong about the consequence: it left the documented
+# terrain path unreachable from every install line the project
+# publishes.  The test that catches a repeat is not this comment; it is
+# tests/test_static_highres_warp_routing.py, which makes rasterio,
+# pyproj and affine unimportable and requires the default terrain build
+# to still produce its answer.
+#
+# obs and dealias are absent for a different reason again: they are
+# empty.  The 2.3.2 audit's H14 -- "pip install 'gpuwm[all-cu12]'
+# silently ships without velocity dealiasing" -- is closed by scipy
+# being a base dependency, NOT by aggregating a name here.  Aggregation
+# would have been the bandaid: [all] would have been right and a bare
+# `pip install gpuwm` would still have been missing the default dealias
+# engine.
 #
 # The invariant, rather than the enumeration, is what is enforced:
 # tests/test_dependency_declaration_parity.py fails if any extra that is
-# NOT dev, publish or a CUDA-major alternative ever holds a requirement
-# [all-cu12]/[all-cu13] does not.  So the day one of these regains
-# content, the aggregate covers it by construction instead of by somebody
-# remembering -- which is exactly what failed in 2.3.2.
+# NOT dev, publish, a CUDA-major alternative, or recorded as excused
+# ever holds a requirement [all-cu12]/[all-cu13] does not.
 #
 # One [all-*] per CUDA major for the same reason [gpu-*] is split: the
 # quickstart's one-liner is the single most-followed instruction in the
@@ -251,6 +376,11 @@ gpuwm-mapped-inspect = "gpuwm.mapped_source:main"
 # entry points for the spelling the docs and receipts already use.
 gpuwm-prepared-forecast = "gpuwm.prepared_single_domain_forecast:main"
 gpuwm-prepared-tree-forecast = "gpuwm.prepared_domain_tree_forecast:main"
+# The ensemble member front door: verify a declared member's bytes and
+# stage it into a member-addressed prepared tree.  Members are fetched
+# by filename but verified at decode on the GRIB ensemble identity, and
+# ensemble means/spreads that share the member namespace refuse by name.
+gpuwm-member-prep = "gpuwm.member_prep:main"
 
 # `tilestream*` is not optional and not a convenience: it is the streamed
 # transport, and gpuwm/core/streaming.py -- which DOES ship -- imports it at
@@ -266,12 +396,66 @@ gpuwm-prepared-tree-forecast = "gpuwm.prepared_domain_tree_forecast:main"
 #
 # The glob rather than a bare `tilestream`: a bare name ships the top level
 # only, so the first subpackage anyone adds would reproduce exactly the
-# defect this line closes.  The package is flat today and setuptools' find
-# is not a namespace find, so the directories of evidence and receipts under
-# it -- evidence/, evidence-reconcile/, rescued-tools/, skeptic/ -- carry no
-# __init__.py and are not swept in by it.
+# defect this line closes.  The directories of evidence and receipts under it
+# -- evidence/, evidence-reconcile/, rescued-tools/, skeptic/ -- ARE swept in
+# as PEP 420 namespace packages (a pyproject `find` defaults to
+# namespaces = true).  The receipt trees carry no Python and no package-data
+# pattern names them, so what ships from each is an empty directory --
+# EXCEPT rescued-tools/, which is excluded below: it holds .py files, and
+# they are stale FORKS of live modules (boxdelta-forks/driver.py,
+# rings.py, bench.py ... against tilestream/driver.py et al.), so the sweep
+# was shipping a second, silently diverging copy of the transport inside
+# the same wheel.  skeptic/ also carries .py (one-shot probe scripts, not
+# forks of anything live); it ships today and is recorded here rather than
+# swept quietly -- excluding it too is a smaller argument than the forks
+# were, and it can join the exclude list when someone makes it.
+# tests/test_tiles_distribution.py gates the rescued-tools exclusion in
+# both directions (declaration and setuptools measurement).
+#
+# `configs*` is the top-level repository config directory, and it is here
+# rather than under `gpuwm/` for one reason: it must land at
+# `<site-packages>/configs`, which is exactly where
+# gpuwm/verify/cases/_repo_config.py has always looked for it
+# (`Path(__file__).parents[3] / "configs"`).  It had been in NO distribution
+# at all -- 97 files in the repository, 0 in every wheel -- while
+# docs/public/VERIFICATION.md's reproduce recipe and docs/public/LES.md's
+# "see configs/ for a real, config-driven run" both send readers there.  The
+# resolver's refusal was honest and the remedies (`--config`,
+# GPUWM_CONFIGS_ROOT) were real; a headline claim that requires a git
+# checkout to follow is still a headline claim nobody can reach.
+# tests/test_configs_are_packaged.py measures both halves.
+# `gpuwm` and `gpuwm.*` rather than `gpuwm*`, and that is not a tidy-up.
+# These patterns are fnmatch over DIRECTORY names walked from the project
+# root, and this repository holds a second distribution's project directory
+# beside gpuwm/: `gpuwm-data/`.  `gpuwm*` matched it.  MEASURED on
+# `python -m build --wheel`: gpuwm-2.5.0-py3-none-any.whl carried
+# `gpuwm-data/gpuwm_data/__init__.py` and its top_level.txt named
+# `gpuwm-data`, so `pip install gpuwm` wrote a `gpuwm_data` package into
+# site-packages holding no data/ at all -- one fragment of the companion,
+# shipped by the wrong distribution, answering to the companion's import
+# name.  (`gpuwm-data` is not a valid identifier, which is why this was
+# assumed to be impossible; `find` in a pyproject defaults to
+# `namespaces = true`, and a namespace finder does not require one.)
+#
+# The pair is anchored: `gpuwm` matches the package and `gpuwm.*` matches
+# its subpackages, and neither can ever match a sibling PROJECT directory
+# again.  The exclusion below is the second lock rather than the fix -- it
+# holds even if someone re-globs this line.
+# tests/test_package_data_coverage.py measures both the package list and
+# the top-level names it produces, against setuptools' own finder.
 [tool.setuptools.packages.find]
-include = ["gpuwm*", "tools", "tilestream*"]
+include = ["gpuwm", "gpuwm.*", "tools", "tilestream*", "configs*"]
+# rescued-tools is development record that FORKED live modules; shipping the
+# forks put a diverging driver.py/rings.py inside the wheel.  See the note
+# above `include`; the files stay in the repository, only the wheel loses
+# them.
+#
+# gpuwm-data is the OTHER distribution built from this repository
+# (gpuwm-data/pyproject.toml).  It is not this project's to ship in any
+# form, and a partial copy is worse than either whole answer: see the
+# measurement above and MANIFEST.in, which prunes the same directory out
+# of the sdist for the same reason.
+exclude = ["tilestream.rescued-tools*", "gpuwm-data*"]
 
 # Recursive globs, never an enumeration of filenames. The previous per-directory
 # enumeration had drifted 52 files behind the tree -- including parameter tables
@@ -285,6 +469,22 @@ gpuwm = [
     "*.json",
     "authorities/**/*",
     "data/**/*",
+    # The prebuilt Rust artifacts a PLATFORM wheel carries, staged by
+    # tools/stage_wheel_bridges.py between `cargo build --release` and
+    # `python -m build`.  Absent from a source checkout and from the
+    # py3-none-any fallback wheel, which is why the glob is written to
+    # match nothing rather than to fail: setup.py tags the wheel from
+    # whether this directory exists, so "no artifacts" is a valid build
+    # that produces the universal wheel, not an error.
+    #
+    # Shipping them is what makes `pip install gpuwm` a COMPLETE install:
+    # through 2.3.3 the wheel deliberately carried no Rust and every
+    # decoder, the fetch backbone, the renderer and the radar front door
+    # arrived only if `gpuwm setup` later succeeded -- which made a
+    # post-install network step the failure surface on the first command
+    # anyone runs, and left the Rust decode paths unreachable on a bare
+    # install.
+    "libexec/bridges/*",
 ]
 "gpuwm.core.kernels" = ["*.cu", "*.cuh"]
 # The frozen surface-observation network table. It is the thing that turns a
@@ -312,26 +512,38 @@ tools = ["prepare_hrrr_*.sh"]
 # is deliberately not shipped.  tests/test_tiles_distribution.py pins that
 # claim by re-deriving it from the source rather than trusting this comment.
 tilestream = ["output-scaling.json"]
+# The repository configs, recursively and without an enumeration, for the
+# same reason `gpuwm` above is written that way: a per-file list here would
+# drift behind the tree and the first casualty would be whichever config a
+# document had just started naming.  One glob covers the flat files and the
+# five subdirectories (battery/, ensemble/, frozen/, real74/, scaffolds/)
+# alike -- the sibling namespace packages `find` reports for those
+# directories carry no pattern of their own, so every file is claimed once,
+# by this key.  2.74 MB of TOML, JSON, WPS namelists and the five NetCDF
+# terrain overrides the real74 comparison reads.
+configs = ["**/*"]
 
-# Wheel exclusions come in exactly two pinned classes; nothing may be
-# excluded for any other reason, and tests/test_package_data_coverage.py
-# pins both lists exactly.
+# NOTHING is excluded from this wheel any more, and the empty table is the
+# statement.  Both exclusion classes named files under `gpuwm/data/rrtmgp`
+# and `gpuwm/data/thompson/tables`, and BOTH DIRECTORIES MOVED: since 2.5.0
+# they ship in the `gpuwm-data` companion distribution (gpuwm-data/), whose
+# pyproject.toml carries the two lists verbatim, for the same two reasons,
+# beside the files they name.  Nothing was dropped and nothing was
+# loosened -- the four CC-BY-NC-SA-4.0 RFMIP reference results still do not
+# ship, and freezeH2O.dat / qr_acr_qg_V4.dat still arrive only through
+# `gpuwm fetch-tables` under their size + SHA-256 pins.
 #
-# 1. License-driven: the four RFMIP reference-result NetCDFs are
-#    CC-BY-NC-SA-4.0 (gpuwm/data/rrtmgp/PROVENANCE.md): they stay in-repo
-#    as test fixtures, but shipping them in the distributable would attach
-#    a non-commercial restriction to the wheel.  Their license text
-#    (LICENSE-CC-BY-NC-SA-4.0) still ships so PROVENANCE.md stays
-#    resolvable.
-# 2. Size-driven externalized assets: the two largest Thompson tables
-#    would push the wheel and sdist over PyPI's 100 MB per-file cap
-#    (freezeH2O.dat, 243 MiB, additionally exceeds GitHub's 100 MiB blob
-#    limit and is absent from the public repository too).  Both are
-#    published as GitHub release assets and staged by
-#    `gpuwm fetch-tables` (gpuwm/table_assets.py), verified against the
-#    same size + SHA-256 pins every mp8 run enforces
-#    (gpuwm/core/thompson_contract.py).  MANIFEST.in carries the same
-#    two exclusions for the sdist.
+# The move was a channel limit: this wheel measured 103.62 MiB against
+# PyPI's 100 MiB per-file cap with the Rust bridges staged, and those two
+# directories were 64.21 MiB of it.  See gpuwm/data_assets.py, which is the
+# one resolver that knows which distribution holds which directory, and
+# gpuwm-data/README.md for the split.
+#
+# The table is kept rather than deleted so this reasoning has somewhere to
+# live and so re-adding an exclusion is a deliberate edit.  Anything added
+# here must fit one of the two pinned classes, and
+# tests/test_package_data_coverage.py pins both lists across BOTH
+# pyprojects exactly.
 #
 # There WAS a third class -- redistribution-driven -- holding exactly
 # data/thompson/tables/CCN_ACTIVATE.BIN, the aerosol-aware Thompson
@@ -340,25 +552,28 @@ tilestream = ["output-scaling.json"]
 # LICENSE.txt is a public-domain dedication with a notice request rather
 # than a condition, and the notice ships in
 # gpuwm/data/wrf_radiation/LICENSE-WRF.txt.  It is now tracked, listed in
-# gpuwm/data/thompson/tables/MANIFEST.sha256, and swept into the wheel by
-# [tool.setuptools.package-data]'s "data/**/*" glob like every other
-# packaged table.  It is still NOT in thompson_contract.CLASSIC_TABLE_ASSETS
-# and TABLE_SET_ID is unchanged, so mp_physics=8 acquires no dependency on
-# it, and the loader still fails closed on a missing or byte-different
-# table.  Do not re-add an exclusion here without also flipping
+# that directory's MANIFEST.sha256, and swept into the COMPANION wheel by
+# its "data/**/*" glob like every other packaged table.  It is still NOT in
+# thompson_contract.CLASSIC_TABLE_ASSETS and TABLE_SET_ID is unchanged, so
+# mp_physics=8 acquires no dependency on it, and the loader still fails
+# closed on a missing or byte-different table.  Do not re-add an exclusion
+# for it without also flipping
 # thompson_aerosol_contract.AEROSOL_ASSET_REDISTRIBUTED back.
 [tool.setuptools.exclude-package-data]
-gpuwm = [
-    "data/rrtmgp/rfmip-clear-sky-reference-lw-down.nc",
-    "data/rrtmgp/rfmip-clear-sky-reference-lw-up.nc",
-    "data/rrtmgp/rfmip-clear-sky-reference-sw-down.nc",
-    "data/rrtmgp/rfmip-clear-sky-reference-sw-up.nc",
-    "data/thompson/tables/freezeH2O.dat",
-    "data/thompson/tables/qr_acr_qg_V4.dat",
-]
+gpuwm = []
 
 [tool.pytest.ini_options]
 markers = ["gpu: requires a CUDA GPU + cupy",
            "slow: an exhaustive sweep, minutes rather than seconds",
-           "network: live-internet smoke, additionally gated on GPUWM_NETWORK_TESTS=1"]
-testpaths = ["tests"]
+           "network: live-internet smoke, additionally gated on GPUWM_NETWORK_TESTS=1",
+           "static_rust_parity: RED until the static-fields Rust port lanes land (lane/static-rust-port); run with -m static_rust_parity"]
+# Both test trees.  tilestream/ carries 13 pytest suites (312 tests) beside
+# its `python -m` script gates; with only "tests" here, a bare `pytest` --
+# which is what CI and the battery's full-suite legs run -- collected none
+# of them, and 11 failures plus a collection error sat invisible until the
+# 2.5.0 gating pass.  The script gates stay where they are: they define no
+# top-level test_ functions, so collecting their modules adds no tests, and
+# tools/battery/tiles_gates.txt remains their runner.  tilestream/conftest.py
+# extends the GPU-marking discipline over the new tree so `-m "not gpu"` and
+# GPUWM_NO_LOCAL_GPU=1 stay honest there.
+testpaths = ["tests", "tilestream"]

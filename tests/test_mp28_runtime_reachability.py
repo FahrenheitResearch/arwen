@@ -1180,10 +1180,18 @@ def test_an_mp28_wrfinput_without_qncloud_is_refused():
 # 5. Packaging.
 # ---------------------------------------------------------------------------
 
+# argv: <project root> <distribution name> <top-level package directory>.
+# Parameterised because the Thompson tables this file measures moved into
+# the `gpuwm-data` companion distribution in 2.5.0 -- same repository, a
+# second pyproject.toml -- and a probe hard-wired to the root project
+# would have reported "not shipped" for files that ship perfectly well,
+# one distribution over.
 _WHEEL_PROBE = r"""
 import json, os, sys, tomllib
 from pathlib import Path
 repo = Path(sys.argv[1])
+name = sys.argv[2]
+top = sys.argv[3]
 os.chdir(repo)
 import setuptools
 from setuptools.command.build_py import build_py
@@ -1191,12 +1199,12 @@ with (repo / "pyproject.toml").open("rb") as stream:
     tools = tomllib.load(stream)["tool"]["setuptools"]
 skip = {"__pycache__", ".pytest_cache"}
 packages = []
-for dirpath, dirnames, filenames in os.walk(repo / "gpuwm"):
+for dirpath, dirnames, filenames in os.walk(repo / top):
     dirnames[:] = sorted(d for d in dirnames if d not in skip)
     if "__init__.py" in filenames:
         packages.append(".".join(Path(dirpath).relative_to(repo).parts))
 distribution = setuptools.dist.Distribution({
-    "name": "gpuwm", "packages": packages,
+    "name": name, "packages": packages,
     "package_data": tools["package-data"],
     "exclude_package_data": tools.get("exclude-package-data", {}),
 })
@@ -1248,7 +1256,14 @@ def test_the_ccn_activation_blob_is_present_in_the_built_package_data():
     interpreter that does and measures in a subprocess, so the control is
     live in the environment the suite actually runs in.
     """
-    relative = "gpuwm/data/thompson/tables/CCN_ACTIVATE.BIN"
+    # The COMPANION distribution's wheel since 2.5.0: gpuwm/data/thompson/
+    # tables moved to gpuwm-data/gpuwm_data/data/thompson/tables when the
+    # gpuwm wheel measured 103.62 MiB against PyPI's 100 MiB cap.  The
+    # claim under test is unchanged -- gpuwm redistributes WRF's
+    # CCN_ACTIVATE.BIN and a user's install must contain it -- so the probe
+    # follows the file to the distribution that now carries it.
+    project = REPO / "gpuwm-data"
+    relative = "gpuwm_data/data/thompson/tables/CCN_ACTIVATE.BIN"
     interpreter = _interpreter_with_setuptools()
     if interpreter is None:                                 # pragma: no cover
         pytest.skip("no interpreter with setuptools + tomllib is available")
@@ -1257,7 +1272,8 @@ def test_the_ccn_activation_blob_is_present_in_the_built_package_data():
     # host locale (cp1252 on Windows), and this stdout is JSON, which is
     # UTF-8 by specification whatever the console codepage is.
     result = subprocess.run(
-        [interpreter, "-c", _WHEEL_PROBE, str(REPO)],
+        [interpreter, "-c", _WHEEL_PROBE, str(project),
+         "gpuwm-data", "gpuwm_data"],
         capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     shipped = set(json.loads(result.stdout))
@@ -1269,18 +1285,18 @@ def test_the_ccn_activation_blob_is_present_in_the_built_package_data():
     # ...and nothing else moved.  The other Thompson tables that DO ship
     # must still ship, or this change silently broke mp=8.
     for still_shipped in (
-            "gpuwm/data/thompson/tables/qr_acr_qsV2.dat",
-            "gpuwm/data/thompson/tables/thompson_aux_tables.dat",
-            "gpuwm/data/thompson/tables/MANIFEST.sha256"):
+            "gpuwm_data/data/thompson/tables/qr_acr_qsV2.dat",
+            "gpuwm_data/data/thompson/tables/thompson_aux_tables.dat",
+            "gpuwm_data/data/thompson/tables/MANIFEST.sha256"):
         assert still_shipped in shipped, still_shipped
     # The two size-externalized tables stay out, as before.
-    for externalized in ("gpuwm/data/thompson/tables/freezeH2O.dat",
-                         "gpuwm/data/thompson/tables/qr_acr_qg_V4.dat"):
+    for externalized in ("gpuwm_data/data/thompson/tables/freezeH2O.dat",
+                         "gpuwm_data/data/thompson/tables/qr_acr_qg_V4.dat"):
         assert externalized not in shipped, externalized
 
     # The wheel probe globs the FILESYSTEM, so a shipped-but-absent file
     # would pass vacuously.  Say so rather than assume.
-    assert (REPO / relative).is_file(), (
+    assert (project / relative).is_file(), (
         f"{relative} is missing from this tree, so this run measured an "
         "inclusion against an absent file")
 

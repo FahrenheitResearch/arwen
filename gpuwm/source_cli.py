@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import errno
 import hashlib
 import json
 import math
@@ -12,6 +13,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 from gpuwm import __version__
 from gpuwm.explain import add_explain_flag, explain_enabled
@@ -22,7 +24,15 @@ from gpuwm.source_adapters import (
 )
 from gpuwm.source_frame import canonical_field_requirements
 from gpuwm.mapped_authoring import author_input_manifest, author_mapping
-from gpuwm.mapped_source import _load_json_document
+from gpuwm.mapped_engine_bridge import (
+    ENGINE_CAPABILITIES as _MAPPED_ENGINE_CAPABILITIES,
+    ENGINES as _MAPPED_ENGINES,
+    ENGINE_RUST as _MAPPED_ENGINE_RUST,
+    MAPPED_ROUTE_SUBCOMMAND as _MAPPED_ROUTE_SUBCOMMAND,
+    resolve_engine as _resolve_mapped_engine,
+)
+from gpuwm.mapped_source import (_load_json_document, _mapped_engine_choice,
+                                 read_input_list)
 from gpuwm.hrrr_forecast import hrrr_source_window
 from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
 from gpuwm.physics_compat import (
@@ -33,23 +43,64 @@ from gpuwm.physics_compat import (
 EXIT_USAGE = 64
 EXIT_CONFIG = 78
 MAX_PIPELINE_WORKERS = 64
+
+
+def reads_as_a_sentence(detail: str) -> bool:
+    """Does this refusal already say what failed, or is it a bare path?
+
+    ``OSError(path)`` stringifies to the path alone, and a path printed
+    with no sentence around it tells a reader nothing about WHAT failed
+    -- so the refusal boundary labels those with the exception class.
+    A refusal that was WRITTEN as a sentence must not be labelled: "the
+    manifest already on disk is a different one, here is the remedy"
+    does not become clearer with ``FileExistsError:`` in front of it.
+
+    The test is deliberately about SHAPE, not about wording.  An
+    absolute path is recognised by its own opening -- a drive letter and
+    a separator, or a root separator -- because a path with spaces in it
+    (``C:\\Program Files\\...``) is common and a space alone would call
+    it prose.
+    """
+
+    head = next((line for line in detail.splitlines() if line.strip()), "")
+    head = head.strip()
+    if not head:
+        return False
+    if head[0] in "/\\" or head[1:3] in (":\\", ":/"):
+        return False
+    return " " in head
 _SUPPORT_MATRIX = Path(__file__).with_name("native_wrf_support_v1.json")
 _HRRR_DOMAIN_VALIDATION_SCHEMA = "gpuwm-hrrr-domain-validation-v1"
 
 
-def _parser() -> argparse.ArgumentParser:
+def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
+            include_version: bool = True) -> argparse.ArgumentParser:
+    """The preprocessing stage's ONE argument surface.
+
+    ``prog``/``add_help``/``include_version`` exist so ``gpuwm prep``
+    can adopt this exact parser as an argparse ``parents=`` donor rather
+    than restating it.  A second copy of this vocabulary is the drift
+    the whole seam is meant to prevent: the standalone ``rw-wps`` entry
+    point and the ``gpuwm prep`` subcommand must accept the same flags,
+    spelled once.  ``gpuwm`` already owns ``gpuwm version``, so the
+    subcommand donor drops ``--version`` rather than shipping a second
+    spelling of it.
+    """
+
     parser = argparse.ArgumentParser(
-        prog="gpuwm-wrf-init",
+        prog=prog,
+        add_help=add_help,
         description=(
             "Prepare wrfinput/wrfbdy directly from a native meteorological "
             "source without running WPS or real.exe."
         ),
     )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"RW-WPS {__version__}",
-    )
+    if include_version:
+        parser.add_argument(
+            "--version",
+            action="version",
+            version=f"RW-WPS {__version__}",
+        )
     # The same --explain the gpuwm CLI registers on every subcommand.
     # rw-wps is a separate entry point with its own parser, so it needs
     # the flag declared here -- one convention, two front doors.
@@ -173,6 +224,16 @@ def _parser() -> argparse.ArgumentParser:
         help="mapped source file; repeat in deterministic time/file order",
     )
     mapped.add_argument(
+        "--input-list",
+        dest="input_list",
+        type=Path,
+        help="file naming the mapped source files, one path per line, in "
+             "the same deterministic time/file order the repeated --input "
+             "flag spells; the spelling that keeps a field-per-file "
+             "source's hundreds of inputs inside the Windows 32 KB "
+             "command-line limit",
+    )
+    mapped.add_argument(
         "--supplement",
         action="append",
         metavar="ROLE=PATH",
@@ -184,8 +245,46 @@ def _parser() -> argparse.ArgumentParser:
         metavar="ROLE=PATH",
         help="composition provenance binding",
     )
-    mapped.add_argument("--grib2-inventory", type=Path)
-    mapped.add_argument("--grib2-dump", type=Path)
+    mapped.add_argument(
+        "--contributing-mapping",
+        action="append",
+        metavar="ROLE=PATH",
+        help=(
+            "cross-source composition: a contributing source's own mapping "
+            "document under the mapping_role its field_sources binding "
+            "declares; bytes must hash to the composition's pinned SHA-256"
+        ),
+    )
+    mapped.add_argument(
+        "--grib2-inventory",
+        type=Path,
+        help=(
+            "override the GRIB2 inventory tool; omitted, it resolves "
+            "through the shared bridge ladder (GPUWM_GRIB2_INVENTORY, a "
+            "checkout build, the wheel's bundled copy, then the staged "
+            "~/.gpuwm/bridges)"
+        ),
+    )
+    mapped.add_argument(
+        "--grib2-dump",
+        type=Path,
+        help=(
+            "override the GRIB2 dump tool; omitted, it resolves through "
+            "the shared bridge ladder exactly as --grib2-inventory does"
+        ),
+    )
+    mapped.add_argument(
+        "--mapped-engine",
+        choices=_MAPPED_ENGINES,
+        help=(
+            "which engine decodes mapped source bytes; omitted, the "
+            "default engine runs. `python` is a documented WORKAROUND "
+            "-- the slower Python decode path, kept reachable so a "
+            "decode the Rust engine gets wrong has a way around it "
+            "while the defect is fixed -- not a supported mode to "
+            "prefer"
+        ),
+    )
     mapped.add_argument(
         "--hierarchy-workers",
         type=int,
@@ -315,7 +414,11 @@ def _parser() -> argparse.ArgumentParser:
     era5.add_argument(
         "--bridge",
         type=Path,
-        help="prebuilt gpuwm all-Rust source-specific GRIB bridge executable",
+        help="prebuilt gpuwm all-Rust source-specific GRIB bridge "
+             "executable; omitted on the era5/gfs routes it resolves "
+             "through the shared bridge ladder (environment override, a "
+             "checkout build, staged bridges under ~/.gpuwm/bridges) "
+             "exactly as gpuwm go does",
     )
     era5.add_argument(
         "--wps-namelist",
@@ -642,11 +745,14 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
             "--author-only": args.author_only or None,
             "--composition": args.composition,
             "--input": args.mapped_inputs,
+            "--input-list": args.input_list,
             "--supplement": args.supplement,
+            "--contributing-mapping": args.contributing_mapping,
             "--provenance": args.provenance,
             "--grib2-inventory": args.grib2_inventory,
             "--grib2-dump": args.grib2_dump,
             "--hierarchy-workers": args.hierarchy_workers,
+            "--mapped-engine": args.mapped_engine,
             "--sealed-prepared-cache": args.sealed_prepared_cache or None,
             "--extend-root-preparation": args.extend_root_preparation,
         }
@@ -701,10 +807,12 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
             errors.append("--static-receipt (or use --geog-root)")
     # --wps-namelist is DELIBERATELY not in this list.  On the
     # single-domain HRRR route it is optional and it means one thing:
-    # publish the portable authorities beside the native bundle, so a
-    # config-driven forecast stage (the cycling radar-DA driver) can
-    # bind this case.  Omitting it leaves the output root exactly as it
-    # has always been.
+    # bind YOUR namelist into the portable authorities instead of the
+    # one the route renders from the domain it was already given.  The
+    # portable authorities themselves -- proof.json, the role-keyed
+    # source manifest, experiment.toml and namelist.wps -- are published
+    # on every run, because a prepared tree `gpuwm sim` cannot run is a
+    # tree with no front door.
     era5_only = {
         "--grib": args.grib,
         "--vtable": args.vtable,
@@ -726,11 +834,14 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         "--author-only": args.author_only or None,
         "--composition": args.composition,
         "--input": args.mapped_inputs,
+        "--input-list": args.input_list,
         "--supplement": args.supplement,
+        "--contributing-mapping": args.contributing_mapping,
         "--provenance": args.provenance,
         "--grib2-inventory": args.grib2_inventory,
         "--grib2-dump": args.grib2_dump,
         "--hierarchy-workers": args.hierarchy_workers,
+        "--mapped-engine": args.mapped_engine,
         "--no-stock-wrf-export": args.no_stock_wrf_export or None,
         "--statics-corridor": args.statics_corridor,
     }
@@ -822,11 +933,67 @@ def _config_declares_geog_root(experiment_config) -> bool:
     return isinstance(table, dict) and bool(table.get("geog_root"))
 
 
+def _experiment_acknowledgements(
+        experiment_config) -> tuple[tuple[str, ...], str | None]:
+    """The config's ``[experiment].acknowledgements``, or why not.
+
+    Returns the declared ids and ``None``, or ``()`` and one sentence
+    naming a TOML decode fault.
+
+    Only a DECODE fault is named here.  The direct front door owns the
+    full experiment diagnostic and this door must not grow a second,
+    poorer copy of it, so a config that decodes but is not a valid
+    experiment still answers ``((), None)`` and is left to the door that
+    owns it.  What this must not do either is stay silent: a config that
+    does not decode has no ``[experiment].acknowledgements`` to read at
+    all, and swallowing that dropped the whole TOML delivery channel
+    without a word.  The refusal that followed then told the caller to
+    declare an acknowledgement their own config already carried -- and a
+    duplicate ``acknowledgements =`` key is exactly how a hand-edited
+    wizard config gets there, because the wizard emits one of its own for
+    a longwave-OFF suite.  The decoder's message carries the line and
+    column, which is what points at the duplicate key.
+    """
+    if experiment_config is None:
+        return (), None
+    path = Path(experiment_config)
+    if not path.is_file():
+        return (), None
+    try:
+        from gpuwm.experiment import load_experiment
+
+        return tuple(load_experiment(path).acknowledgements), None
+    except (OSError, ValueError):
+        pass
+    # It did not load.  Decide WHY in the one vocabulary this door is
+    # entitled to have an opinion about, through the same authority-bound
+    # reader every other config read on this route uses.
+    import io
+    import tomllib
+
+    from gpuwm.config_authority import read_config_authority
+
+    try:
+        tomllib.load(io.BytesIO(read_config_authority(path).payload))
+    except tomllib.TOMLDecodeError as error:
+        # Caught before ValueError below, which it subclasses.
+        return (), (
+            f"--experiment-config {path} is not decodable TOML ({error}), "
+            f"so its [experiment].acknowledgements cannot be read")
+    except (OSError, RuntimeError, TypeError, ValueError):
+        # Every richer fault stays the direct front door's to report.
+        return (), None
+    return (), None
+
+
 def _required_era5_args(args: argparse.Namespace) -> list[str]:
+    # ``--bridge`` is deliberately NOT required: omitted, it resolves
+    # through the staged-bridge ladder after this validation (see the
+    # dispatch), exactly as FIRST-LIGHT documents.  Demanding it here
+    # was the staged-tool papercut one format earlier (UX finding N12).
     required = {
         "--grib": args.grib,
         "--vtable": args.vtable,
-        "--bridge": args.bridge,
         "--wps-namelist": args.wps_namelist,
         "--experiment-config": args.experiment_config,
         "--source-sha256s": args.source_sha256s,
@@ -873,7 +1040,9 @@ def _required_era5_args(args: argparse.Namespace) -> list[str]:
         "--author-only": args.author_only or None,
         "--composition": args.composition,
         "--input": args.mapped_inputs,
+        "--input-list": args.input_list,
         "--supplement": args.supplement,
+        "--contributing-mapping": args.contributing_mapping,
         "--provenance": args.provenance,
         "--grib2-inventory": args.grib2_inventory,
         "--grib2-dump": args.grib2_dump,
@@ -907,17 +1076,27 @@ def _required_era5_args(args: argparse.Namespace) -> list[str]:
 
 
 def _required_gfs_args(args: argparse.Namespace) -> list[str]:
+    # ``--bridge`` is deliberately NOT required -- see _required_era5_args.
+    #
+    # Neither is the ``--source-manifest`` pair: omitted TOGETHER, the
+    # dispatch authors and digest-binds the front-door input manifest
+    # itself from the fetched directory the series lives in (UX finding
+    # N11 -- demanding it here forced a second `gpuwm fetch
+    # --author-front-door-manifest` call between fetch and prep).  Half
+    # a pair is still refused: a manifest without its digest binds
+    # nothing.
     required = {
         "--gfs-series": args.gfs_series,
         "--cycle": args.cycle,
-        "--bridge": args.bridge,
         "--wps-namelist": args.wps_namelist,
         "--experiment-config": args.experiment_config,
-        "--source-sha256s": args.source_sha256s,
-        "--source-sha256s-sha256": args.source_sha256s_sha256,
         "--output-root": args.output_root,
     }
     errors = [flag for flag, value in required.items() if value is None]
+    if (args.source_sha256s is None) != (args.source_sha256s_sha256 is None):
+        errors.append(
+            "--source-manifest and --source-manifest-sha256 are an "
+            "atomic pair")
     if (args.static_input is None) != (args.static_receipt is None):
         errors.append(
             "--static-input and --static-receipt must be supplied together")
@@ -952,7 +1131,9 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
         "--author-only": args.author_only or None,
         "--composition": args.composition,
         "--input": args.mapped_inputs,
+        "--input-list": args.input_list,
         "--supplement": args.supplement,
+        "--contributing-mapping": args.contributing_mapping,
         "--provenance": args.provenance,
         "--grib2-inventory": args.grib2_inventory,
         "--grib2-dump": args.grib2_dump,
@@ -997,18 +1178,15 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
         acknowledgement_delivery,
         validate_single_domain_physics_profile,
     )
-    toml_acknowledgements = ()
-    if args.experiment_config is not None:
-        config_path = Path(args.experiment_config)
-        if config_path.is_file():
-            try:
-                from gpuwm.experiment import load_experiment
-                toml_acknowledgements = load_experiment(
-                    config_path).acknowledgements
-            except (OSError, ValueError):
-                # The direct front door owns the full experiment diagnostic.
-                # Do not replace it with an acknowledgement side-effect here.
-                pass
+    toml_acknowledgements, undecodable = _experiment_acknowledgements(
+        args.experiment_config)
+    if undecodable is not None:
+        # Refusing here and returning is deliberate: the acknowledgement
+        # channel is unreadable, so every acknowledgement-dependent
+        # verdict below would be computed from a config this door could
+        # not see, and the first of them would contradict the file.
+        errors.append(undecodable)
+        return errors
     acknowledgements, _ = acknowledgement_delivery(
         flag=tuple(args.ack), toml=toml_acknowledgements)
     # Validated only when the caller NAMED a profile.  The old WSM6
@@ -1048,6 +1226,7 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
             "--preprocess-workers": args.preprocess_workers,
             "--cpu-preprocess-bridge": args.cpu_preprocess_bridge,
             "--hierarchy-workers": args.hierarchy_workers,
+            "--mapped-engine": args.mapped_engine,
             "--grib2-inventory": args.grib2_inventory,
             "--grib2-dump": args.grib2_dump,
         }
@@ -1060,8 +1239,9 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
         required = {
             "--source-manifest": args.source_sha256s,
             "--source-manifest-sha256": args.source_sha256s_sha256,
-            "--grib2-inventory": args.grib2_inventory,
-            "--grib2-dump": args.grib2_dump,
+            # --grib2-inventory / --grib2-dump are deliberately NOT
+            # required: omitted, the dispatch resolves both through the
+            # shared bridge ladder, and the flags override it.
             "--wps-namelist": args.wps_namelist,
             "--geog-root": args.geog_root,
             "--experiment-config": args.experiment_config,
@@ -1084,12 +1264,20 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
         "--ack": args.ack or None,
         "--forecast-start-hour": args.forecast_start_hour,
         "--forecast-end-hour": args.forecast_end_hour,
+        # --mapped-engine is deliberately NOT refused here: the member
+        # door runs the same composition as the generic composed route
+        # now, so the route follows the engine table
+        # (`twentycr_on_rust_engine` in `dispatch`) and the flag is
+        # forwarded to the child.  The pre-port refusal guarded a route
+        # that had no engine to select; that route is gone.
         "--mapping": args.mapping,
         "--descriptor": args.descriptor,
         "--author-mapping": args.author_mapping,
         "--composition": args.composition,
         "--input": args.mapped_inputs,
+        "--input-list": args.input_list,
         "--supplement": args.supplement,
+        "--contributing-mapping": args.contributing_mapping,
         "--provenance": args.provenance,
         "--bridge": args.bridge,
         "--vtable": args.vtable,
@@ -1127,11 +1315,133 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
     return errors
 
 
+def _apply_packaged_profile(
+    args: argparse.Namespace, adapter, program: str,
+) -> list[str]:
+    """Fill the mapped front door in from a packaged profile.
+
+    A source whose mapping SHIPS is not a different program.  It is the
+    same declarative mapped route with three of its arguments already
+    decided, so this reads the profile -- format, mapping, composition,
+    provenance, and the two composition roles -- and writes them into the
+    namespace the generic mapped runner already consumes.  Nothing else
+    about the route changes, which is the whole claim: adding a model whose
+    mapping can be written costs a table row and three JSON documents.
+
+    What a caller may still pass is what only they know: the input files,
+    the invariant supplement, the namelist, the geography, the experiment
+    and the output root.  What they may NOT pass is any of the five the
+    profile decides -- an override there would let a run claim a packaged
+    source's name while decoding through a mapping nobody shipped, and the
+    receipt would say 20CRv3 about data that never came from that profile.
+    """
+
+    from gpuwm.source_authorities import (packaged_authorities,
+                                          packaged_contributing_mappings,
+                                          packaged_profile)
+
+    try:
+        profile = packaged_profile(str(adapter.packaged_profile))
+        authorities = packaged_authorities(str(adapter.packaged_profile))
+        contributing = packaged_contributing_mappings(
+            str(adapter.packaged_profile))
+    except (KeyError, FileNotFoundError, RuntimeError) as error:
+        return [f"packaged source profile: {error}"]
+
+    overridden = [
+        flag for flag, value in {
+            "--mapping": args.mapping,
+            "--composition": args.composition,
+            "--provenance": args.provenance,
+            "--descriptor": args.descriptor,
+            "--author-mapping": args.author_mapping,
+            # A cross-source profile ships its donor mapping as a pinned
+            # authority; a caller-supplied one would let a run claim the
+            # packaged name while borrowing through a table nobody
+            # shipped.  (A profile with no bindings takes none either --
+            # the composed decode would refuse a surplus role anyway, and
+            # refusing here names the profile instead.)
+            "--contributing-mapping": args.contributing_mapping,
+        }.items()
+        if value
+    ]
+    errors = [
+        f"{flag} is decided by the packaged {adapter.source_id} profile and "
+        f"cannot be supplied"
+        for flag in overridden
+    ]
+    declared_format = str(profile["source_format"])
+    if args.source_format is not None and args.source_format != declared_format:
+        errors.append(
+            f"--source-format {args.source_format!r} differs from the packaged "
+            f"{adapter.source_id} profile's {declared_format!r}"
+        )
+    if errors:
+        return errors
+
+    args.source_format = declared_format
+    args.mapping = authorities["mapping"]
+    args.composition = authorities["composition"]
+    args.provenance = [
+        f"{profile['provenance_role']}={authorities['provenance']}"
+    ]
+    args.contributing_mapping = [
+        f"{role}={path}" for role, path in sorted(contributing.items())
+    ]
+    # `--supplement` takes a bare path here: the ROLE is the profile's, and
+    # a caller retyping it is a caller who can mistype it.  A binding that
+    # already names the profile's own role is accepted unchanged so the
+    # printed `--dry-run` command can be pasted back.
+    role = str(profile["data_role"])
+    bound = []
+    for value in args.supplement or ():
+        text = str(value)
+        if text.startswith(f"{role}="):
+            bound.append(text)
+        elif "=" in text and not Path(text.split("=", 1)[0]).exists():
+            return [
+                f"--supplement {text!r} names a role, but the packaged "
+                f"{adapter.source_id} profile supplies the role {role!r}; "
+                f"pass the supplement's PATH alone"
+            ]
+        else:
+            bound.append(f"{role}={text}")
+    args.supplement = bound
+    return []
+
+
+def _decodes_in_the_engine(args: argparse.Namespace, source_format: str) -> bool:
+    """Will THIS run decode ``source_format`` inside gpuwm_mapped_engine?
+
+    Two questions, both of which have to be yes: does the engine this
+    run resolves to decode the format at all (read off
+    ``ENGINE_CAPABILITIES``, the same table the router and the docs
+    read, so a build whose engine lacks the format answers no), and did
+    the caller leave the engine at its default rather than pinning
+    ``--mapped-engine python``?
+
+    Named breakage: a decoder-tool FLAG demanded for a format the engine
+    decodes in process is not a harmless extra.  Naming a decoder tool
+    is the spelling that routes a run back to the Python engine, so the
+    demand made the ported decode unreachable through ``gpuwm prep`` --
+    the only GRIB1 prep a user could spell was one that could not use
+    the port.
+    """
+
+    if _resolve_mapped_engine(
+            getattr(args, "mapped_engine", None)) != _MAPPED_ENGINE_RUST:
+        return False
+    return source_format in (
+        _MAPPED_ENGINE_CAPABILITIES.get("decode") or frozenset())
+
+
 def _required_mapped_args(args: argparse.Namespace) -> list[str]:
+    # --contributing-mapping is deliberately NOT required: only a
+    # cross-source composition declares bindings, and the decode refuses a
+    # missing or surplus contributing mapping against the contract itself.
     required = {
         "--source-format": args.source_format,
         "--composition": args.composition,
-        "--input": args.mapped_inputs,
         "--supplement": args.supplement,
         "--provenance": args.provenance,
     }
@@ -1145,6 +1455,12 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
             }
         )
     errors = [flag for flag, value in required.items() if not value]
+    if (not args.mapped_inputs) == (args.input_list is None):
+        # Two transports for one ordered file set: the repeated flag, or
+        # the list file that says the same thing inside the Windows 32 KB
+        # command-line limit.  Exactly one, because accepting both would
+        # leave their relative order unspecified.
+        errors.append("choose exactly one of --input or --input-list")
     existing_mapping = args.mapping is not None
     authored_mapping = args.descriptor is not None or args.author_mapping is not None
     if existing_mapping == authored_mapping:
@@ -1218,12 +1534,28 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
         "--grib2-inventory": args.grib2_inventory,
         "--grib2-dump": args.grib2_dump,
     }
-    required_decoders = {
+    # ``allowed`` is not ``required``: the two GRIB2 tool flags are
+    # OVERRIDES of the shared bridge ladder the dispatch resolves
+    # through when they are omitted, so demanding them here was the
+    # staged-tool papercut -- a refusal asking for paths to executables
+    # ``gpuwm fetch-bridges`` had already staged.
+    #
+    # ``--bridge`` was the same papercut one format later: it stayed
+    # required for GRIB1 on the reasoning that "that route has no ladder
+    # default yet", which stopped being true when the engine gained its
+    # own GRIB1 decode.  The requirement now follows the capability
+    # table -- a format the engine decodes in process needs no decoder
+    # flag, and one it does not still names what it needs at the door
+    # rather than failing deep in the run.
+    allowed_decoders = {
         "grib1": {"--bridge"},
         "grib2": {"--grib2-inventory", "--grib2-dump"},
         "netcdf": set(),
     }.get(args.source_format)
-    if required_decoders is not None:
+    required_decoders = {"grib1": {"--bridge"}}.get(args.source_format, set())
+    if _decodes_in_the_engine(args, args.source_format):
+        required_decoders = set()
+    if allowed_decoders is not None:
         present = {flag for flag, value in decoder_values.items() if value is not None}
         errors.extend(
             f"{flag} is required for mapped {args.source_format}"
@@ -1231,7 +1563,7 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
         )
         errors.extend(
             f"{flag} is not used by mapped {args.source_format}"
-            for flag in sorted(present - required_decoders)
+            for flag in sorted(present - allowed_decoders)
         )
     if args.hierarchy_workers is not None and args.hierarchy_workers not in range(
         1, 33
@@ -1295,6 +1627,19 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
         ]
         if args.cpu_preprocess_bridge is not None:
             command.extend(("--cpu-preprocess-bridge", str(args.cpu_preprocess_bridge)))
+        if args.statics_corridor is not None:
+            # Forwarded, not dropped.  The hierarchy takes this flag
+            # (``--statics-corridor [GRID_IDS]``) and it is what seals
+            # child-resolution statics for a moving nest; the front door
+            # accepted it, composed a command without it, and exited 0,
+            # so a corridor-declaring tree prepared through `gpuwm prep`
+            # reached the tree runner with no corridor set and was
+            # refused there -- one stage after the flag that would have
+            # prevented it was typed.
+            if args.statics_corridor == "all":
+                command.append("--statics-corridor")
+            else:
+                command.extend(("--statics-corridor", args.statics_corridor))
         return command
 
     tools = Path(__file__).resolve().parent.parent / "tools"
@@ -1463,10 +1808,6 @@ def _twentycr_command(args: argparse.Namespace) -> list[str]:
         str(args.source_sha256s),
         "--manifest-sha256",
         str(args.source_sha256s_sha256),
-        "--grib2-inventory",
-        str(args.grib2_inventory),
-        "--grib2-dump",
-        str(args.grib2_dump),
         "--wps-namelist",
         str(args.wps_namelist),
         "--geog-root",
@@ -1476,6 +1817,16 @@ def _twentycr_command(args: argparse.Namespace) -> list[str]:
         "--output-root",
         str(args.output_root),
     ]
+    # Forwarded only when RESOLVED: on the bare default the engine
+    # composes and answers the record-inventory question in process, and
+    # a forwarded tool path is the spelling the route reads as an
+    # explicit Python-engine pin.
+    if args.grib2_inventory is not None:
+        command.extend(("--grib2-inventory", str(args.grib2_inventory)))
+    if args.grib2_dump is not None:
+        command.extend(("--grib2-dump", str(args.grib2_dump)))
+    if args.mapped_engine is not None:
+        command.extend(("--mapped-engine", args.mapped_engine))
     _append_preprocess_options(command, args)
     if args.hierarchy_workers is not None:
         command.extend(("--hierarchy-workers", str(args.hierarchy_workers)))
@@ -1506,15 +1857,33 @@ def _mapped_command(args: argparse.Namespace) -> list[str]:
         "--output-root",
         str(args.output_root),
     ]
-    for path in args.mapped_inputs:
-        command.extend(("--input", str(path)))
+    if args.input_list is not None:
+        # The caller's compact spelling is forwarded as itself: expanding
+        # it here would rebuild the exact command line Windows refuses.
+        command.extend(("--input-list", str(args.input_list)))
+    else:
+        for path in args.mapped_inputs:
+            command.extend(("--input", str(path)))
     for binding in args.supplement:
         command.extend(("--supplement", binding))
     for binding in args.provenance:
         command.extend(("--provenance", binding))
-    if args.source_format == "grib1":
+    for binding in args.contributing_mapping or ():
+        command.extend(("--contributing-mapping", binding))
+    if args.mapped_engine is not None:
+        command.extend(("--mapped-engine", args.mapped_engine))
+    if args.source_format == "grib1" and args.bridge is not None:
+        # Forwarded only when there is something to forward, for the
+        # reason spelled beside the GRIB2 pair below: an omitted bridge
+        # means the engine decodes GRIB1 in process, and forwarding a
+        # path anyway would pin the Python engine -- a default that
+        # silently un-defaults itself.
         command.extend(("--grib1-bridge", str(args.bridge)))
-    elif args.source_format == "grib2":
+    elif args.source_format == "grib2" and args.grib2_inventory is not None:
+        # Forwarded only when there is something to forward.  Omitted,
+        # the mapped route decodes on the default engine; a resolved
+        # pair is forwarded exactly as before so the Python engine keeps
+        # the staged-tool default it already had.
         command.extend(
             (
                 "--grib2-inventory",
@@ -1611,9 +1980,16 @@ def _author_mapped_contract(args: argparse.Namespace) -> dict[str, object]:
             raise
         args.source_sha256s = args.author_input_manifest
         args.source_sha256s_sha256 = receipt["manifest"]["sha256"]
+        # A second paste of the printed prep command re-authors nothing
+        # -- the manifest already on disk is byte-identical to what this
+        # call composed -- and says so rather than claiming a write it
+        # did not make (UX finding N13).
+        verb = "AUTHORED" if receipt.get("reauthored", True) else "MATCHED"
         print(
-            "AUTHORED input_manifest="
-            f"{args.source_sha256s} sha256={args.source_sha256s_sha256}",
+            f"{verb} input_manifest="
+            f"{args.source_sha256s} sha256={args.source_sha256s_sha256}"
+            + ("" if receipt.get("reauthored", True)
+               else "  # already on disk, byte-identical; nothing rewritten"),
             file=sys.stderr,
         )
         result["input_manifest"] = receipt
@@ -1684,16 +2060,45 @@ def _quote_command(command: list[str]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from gpuwm.progress import line_buffer_stdout
+
+    # The standalone console-script door gets the same flush discipline
+    # `gpuwm` sets for its subcommands: a redirected preprocessing run
+    # streams its stage lines instead of delivering them all at exit
+    # (UX finding N10).  `gpuwm prep` comes through `gpuwm.cli.main`,
+    # which has already set it; calling it twice costs nothing.
+    line_buffer_stdout()
     parser = _parser()
-    args = parser.parse_args(argv)
+    return dispatch(parser.parse_args(argv), parser=parser)
+
+
+def dispatch(args: argparse.Namespace, *,
+             parser: argparse.ArgumentParser,
+             program: str = "rw-wps") -> int:
+    """Run the preprocessing stage from an already-parsed namespace.
+
+    Split out of :func:`main` so the stage has ONE body behind TWO front
+    doors: the standalone ``rw-wps``/``gpuwm-wrf-init`` console script,
+    and the ``gpuwm prep`` subcommand that adopts this module's parser
+    through argparse ``parents=``.  Nothing here changed when it was
+    split -- ``main`` is the same parse followed by the same body -- and
+    that is the point: a second implementation of preprocessing is
+    exactly the "one route wearing two names" this seam exists to
+    prevent.
+
+    ``parser`` is whichever parser produced ``args``, because the body
+    calls ``parser.error`` and the usage line a reader sees has to be
+    the usage line of the command they typed.
+    """
+
     # Which tree is executing, before any source bytes are read; and a
     # refusal when this install's version claims contradict each other.
     from gpuwm.provenance_gate import announce_for_main
 
     refusal = announce_for_main(
-        "rw-wps", explain=bool(getattr(args, "explain", False)))
+        program, explain=bool(getattr(args, "explain", False)))
     if refusal is not None:
-        print(f"rw-wps: {refusal}", file=sys.stderr)
+        print(f"{program}: {refusal}", file=sys.stderr)
         return 2
     if args.source_top_pressure_pa is not None and not args.namelist_support_report:
         parser.error(
@@ -1897,7 +2302,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
         else:
-            print("  (run rw-wps --explain for why this bar exists)",
+            print(f"  (run {program} --explain for why this bar exists)",
                   file=sys.stderr)
         return EXIT_CONFIG
 
@@ -1919,11 +2324,42 @@ def main(argv: list[str] | None = None) -> int:
         print("REFUSED: inconsistent runnable adapter declaration", file=sys.stderr)
         return EXIT_CONFIG
 
+    # A packaged profile decides the mapped route's declarative arguments
+    # BEFORE they are validated, so the caller is checked against the
+    # arguments they actually have to supply rather than against five the
+    # distribution already answered.  It also runs before the decoder
+    # binding below, because the profile is what decides SOURCE FORMAT:
+    # until it has, a packaged GRIB2 source looks formatless and the
+    # GRIB2 tool binding would silently not apply to it.
+    if (adapter.packaged_profile is not None
+            and adapter.runner == "mapped_composition_v1"):
+        profile_errors = _apply_packaged_profile(args, adapter, program)
+        if profile_errors:
+            print(
+                "invalid or missing run arguments: " + ", ".join(profile_errors),
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+
+    # The mapped GRIB1 bridge is bound on the same terms as the mapped
+    # GRIB2 tools below: only when the PYTHON engine will decode.  A
+    # bare run on the default engine decodes GRIB1 in process, so
+    # consulting the distribution manifest for a bridge would refuse on
+    # a box that never staged one -- for a subprocess the run is not
+    # going to launch.
+    mapped_grib1_in_engine = (
+        adapter.runner == "mapped_composition_v1"
+        and args.source_format == "grib1"
+        and args.bridge is None
+        and _decodes_in_the_engine(args, "grib1")
+    )
     bridge_variable = {
         "era5_combined_grib1_v1": "GPUWM_GRIB1_BRIDGE",
         "gfs_pgrb2_0p25_v1": "GPUWM_GFS_GRIB2_BRIDGE",
         "mapped_composition_v1": (
-            "GPUWM_GRIB1_BRIDGE" if args.source_format == "grib1" else None
+            "GPUWM_GRIB1_BRIDGE"
+            if args.source_format == "grib1" and not mapped_grib1_in_engine
+            else None
         ),
     }.get(adapter.runner)
     authoring_twentycr = (
@@ -1936,11 +2372,69 @@ def main(argv: list[str] | None = None) -> int:
                 bridge_variable,
                 "--bridge",
             )
-        uses_generic_grib2 = (
+        # The mapped route's GRIB2 tool paths are only wanted when the
+        # PYTHON engine will do the work.  On the Rust engine the work
+        # is in process, and resolving the two executables anyway would
+        # both fail on a machine that never staged them and -- worse --
+        # forward them as explicit tool pins, which is precisely the
+        # spelling that routes a call back to the Python engine.  A
+        # default that silently un-defaults itself is one defect this
+        # avoids.
+        #
+        # The question is asked of the capability table for the
+        # SUBCOMMAND this route runs, not of the engine default.  Asking
+        # the default was the other defect, and it was the worse one:
+        # the engine decodes GRIB2 in process but composes nothing, and
+        # `gpuwm.mapped_direct` composes on every call
+        # (MAPPED_ROUTE_SUBCOMMAND), so a door that read "the default is
+        # Rust" forwarded no tools while the route routed itself to the
+        # Python engine and died in its decoder contract.  Measured on
+        # every one of the twelve registered composition sources.
+        # `_mapped_engine_choice` owns the whole rule -- explicit tool
+        # pins, an explicit engine request, then the table -- so when
+        # the port lane teaches the engine to compose, this door follows
+        # the table with no edit here.
+        mapped_on_rust_engine = (
+            adapter.runner == "mapped_composition_v1"
+            and _mapped_engine_choice(
+                # The grib2 ladder question is only asked of
+                # `--source-format grib2`, and the grib1 bridge for the
+                # grib1 spelling was resolved above; passing it here
+                # would answer "python" for a reason already decided.
+                grib1_bridge=None,
+                grib2_inventory=args.grib2_inventory,
+                grib2_dump=args.grib2_dump,
+                subcommand=_MAPPED_ROUTE_SUBCOMMAND,
+                source_format=args.source_format,
+                explicit=getattr(args, "mapped_engine", None),
+            ) == _MAPPED_ENGINE_RUST
+        )
+        # The member route asks the SAME question the generic composed
+        # route asks, because it now runs the same composition: on the
+        # bare default the engine composes AND answers the raw
+        # record-inventory question in process, so resolving the
+        # subprocess pair would forward explicit tool pins -- the exact
+        # spelling that un-defaults the Rust engine.
+        twentycr_on_rust_engine = (
             adapter.runner == "twentycrv3_member_grib2_v1"
+            and _mapped_engine_choice(
+                grib1_bridge=None,
+                grib2_inventory=args.grib2_inventory,
+                grib2_dump=args.grib2_dump,
+                subcommand=_MAPPED_ROUTE_SUBCOMMAND,
+                source_format="grib2",
+                explicit=getattr(args, "mapped_engine", None),
+            ) == _MAPPED_ENGINE_RUST
+        )
+        uses_generic_grib2 = (
+            (
+                adapter.runner == "twentycrv3_member_grib2_v1"
+                and not twentycr_on_rust_engine
+            )
             or (
                 adapter.runner == "mapped_composition_v1"
                 and args.source_format == "grib2"
+                and not mapped_on_rust_engine
             )
         )
         if not authoring_twentycr and uses_generic_grib2:
@@ -1966,6 +2460,110 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
+    if adapter.runner == "mapped_composition_v1" and args.input_list is not None:
+        # Materialized here -- after the route's own argument validation,
+        # before authoring or command composition -- so a bad list file is
+        # refused at this door in the same sentence shape as any other
+        # argument fault, and everything downstream (manifest authoring,
+        # the composed command) sees the one ordered file set both
+        # spellings describe.
+        try:
+            args.mapped_inputs = read_input_list(args.input_list)
+        except ValueError as error:
+            print(
+                f"invalid or missing run arguments: {error}",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+
+    # The staged-tool default: omitted, the two GRIB2 tool paths resolve
+    # through the same ladder every other bridge uses (environment
+    # override, checkout build, staged bridges, wheel) -- through the
+    # engine's own resolver, so this pre-flight and the route it launches
+    # cannot give different answers.  The flags override it per tool,
+    # exactly like the per-tool environment variables.  After the usage
+    # validation above, deliberately: an argument-vocabulary mistake is
+    # the caller's to fix once, before the estate is consulted.
+    if not authoring_twentycr and uses_generic_grib2 and (
+            args.grib2_inventory is None or args.grib2_dump is None):
+        from gpuwm import mapped_source
+
+        try:
+            inventory, dump = (
+                mapped_source._build_grib2_tools())  # noqa: SLF001 - the resolver of record
+        except (OSError, RuntimeError) as error:
+            print(str(error), file=sys.stderr)
+            return EXIT_CONFIG
+        if args.grib2_inventory is None:
+            args.grib2_inventory = inventory
+        if args.grib2_dump is None:
+            args.grib2_dump = dump
+
+    # The staged-bridge default for the era5/gfs direct routes: an
+    # omitted --bridge resolves through the same ladder every other
+    # bridge uses (environment override, checkout build, libexec,
+    # staged ~/.gpuwm/bridges), through the resolver `gpuwm go` and
+    # `gpuwm doctor` already share, so this door and those cannot give
+    # different answers.  FIRST-LIGHT documented this sentence before
+    # it was true; the measured door demanded the flag and exited 64
+    # (UX finding N12).  The flag stays an override, exactly like the
+    # GRIB2 tool flags above, and the refusal below fires only when the
+    # ladder genuinely resolves nothing -- naming what it searched and
+    # the install-aware remedy, never a bare demand for a path the user
+    # does not have.  After the usage validation, deliberately: an
+    # argument-vocabulary mistake is the caller's to fix once, before
+    # the estate is consulted.
+    ladder_bridge_source = {
+        "era5_combined_grib1_v1": "era5",
+        "gfs_pgrb2_0p25_v1": "gfs",
+    }.get(adapter.runner)
+    if args.bridge is None and ladder_bridge_source is not None:
+        from gpuwm import bridges
+
+        try:
+            args.bridge = bridges.resolve_source_decoder(
+                ladder_bridge_source)
+        except (bridges.DecoderContractError, FileNotFoundError) as error:
+            print(str(error), file=sys.stderr)
+            return EXIT_CONFIG
+
+    # The front-door manifest default for the GFS direct route: with the
+    # ``--source-manifest`` pair omitted, this door authors and
+    # digest-binds the input manifest itself, from the fetched directory
+    # the series lives in -- the same document, through the same
+    # authoring function, that `gpuwm fetch --author-front-door-manifest`
+    # writes.  That second fetch invocation was the whole handoff gap of
+    # UX finding N11: the fetch leaves the four-file front door and prep
+    # follows it directly now.  The explicit pair stays an override and
+    # pins an existing manifest verbatim.
+    if (adapter.runner == "gfs_pgrb2_0p25_v1"
+            and args.source_sha256s is None
+            and args.source_sha256s_sha256 is None):
+        from gpuwm import fetch as fetch_module
+
+        try:
+            manifest_path, manifest_digest = (
+                fetch_module.author_gfs_front_door_manifest(
+                    out=Path(args.gfs_series).parent,
+                    bridge=Path(args.bridge),
+                    wps_namelist=Path(args.wps_namelist),
+                    experiment_config=Path(args.experiment_config),
+                    static_input=args.static_input,
+                    static_receipt=args.static_receipt,
+                    progress=lambda line: None))
+        except (OSError, ValueError) as error:
+            print(f"gfs front-door manifest: {error}", file=sys.stderr)
+            print("  # pass --source-manifest FILE "
+                  "--source-manifest-sha256 DIGEST to bind an existing "
+                  "manifest instead", file=sys.stderr)
+            return EXIT_CONFIG
+        args.source_sha256s = manifest_path
+        args.source_sha256s_sha256 = manifest_digest
+        print(f"prep --source gfs: authored and digest-bound the "
+              f"front-door input manifest itself: {manifest_path} "
+              f"(sha256 {manifest_digest}); the --source-manifest pair "
+              f"pins an existing one instead", file=sys.stderr)
+
     if authoring_twentycr:
         try:
             receipt = _author_twentycr_manifest(args)
@@ -2030,7 +2628,21 @@ def main(argv: list[str] | None = None) -> int:
         try:
             authoring_receipt = _author_mapped_contract(args)
         except (OSError, TypeError, ValueError, RuntimeError) as error:
-            print(f"mapped contract authoring failed: {error}", file=sys.stderr)
+            # ``FileNotFoundError(path)`` stringifies to the bare path,
+            # so without the class name this line printed a path with
+            # no sentence -- a user could not tell WHAT failed about it.
+            # A refusal that already IS a sentence keeps its own words:
+            # the manifest-overwrite refusal names the breakage and a
+            # remedy, and "FileExistsError: refusing to overwrite ..."
+            # labels a sentence twice.
+            detail = str(error)
+            if (isinstance(error, OSError) and not error.strerror
+                    and not reads_as_a_sentence(detail)):
+                detail = f"{type(error).__name__}: {detail}"
+                if isinstance(error, FileNotFoundError):
+                    detail += " (a file this step was told to read does not exist)"
+            print(f"mapped contract authoring failed: {detail}",
+                  file=sys.stderr)
             return EXIT_CONFIG
         if args.author_only:
             print(_json(authoring_receipt))
@@ -2040,12 +2652,89 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(_quote_command(command))
         return 0
+    return _run_native_adapter(command)
+
+
+#: CreateProcess refuses a command line longer than 32,767 characters and
+#: reports the excess as ERROR_FILENAME_EXCED_RANGE.
+_WINDOWS_ARGV_LIMIT_WINERROR = 206
+
+
+def _is_argv_limit_error(error: OSError) -> bool:
+    """Did the PLATFORM refuse the command line's length?
+
+    Windows says WinError 206 out of CreateProcess; POSIX execve says
+    ``E2BIG`` past ``ARG_MAX``.  Nothing else is this error: a missing
+    interpreter or a permission fault must keep today's report.
+    """
+
+    return (
+        getattr(error, "winerror", None) == _WINDOWS_ARGV_LIMIT_WINERROR
+        or error.errno == errno.E2BIG
+    )
+
+
+def _compact_input_argv(command: list[str]) -> tuple[Path, list[str]] | None:
+    """The same command with its ``--input`` pairs carried by a list file.
+
+    ``None`` when there is nothing to compact -- no per-file pairs, or
+    the command already spells ``--input-list`` -- in which case the
+    launch failure is reported exactly as before.
+    """
+
+    paths: list[str] = []
+    rest: list[str] = []
+    index = 0
+    while index < len(command):
+        if command[index] == "--input" and index + 1 < len(command):
+            paths.append(command[index + 1])
+            index += 2
+            continue
+        rest.append(command[index])
+        index += 1
+    if not paths or "--input-list" in rest:
+        return None
+    handle, name = tempfile.mkstemp(prefix="rw-wps-input-list-",
+                                    suffix=".txt")
+    with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+        stream.write("\n".join(paths) + "\n")
+    return Path(name), rest + ["--input-list", name]
+
+
+def _run_native_adapter(command: list[str]) -> int:
+    """Launch the composed adapter command; exit codes pass through.
+
+    The relaunch is the architecture -- the printed ``--dry-run`` command
+    and the executed one are the same object, and the adapters stay
+    separate programs.  What it must not be is the reason a source with
+    hundreds of per-field input files cannot run on Windows: when the
+    PLATFORM refuses the command line's length (and only then -- a
+    command it accepts is never rewritten), the per-file ``--input``
+    pairs move into a temporary list file the adapter reads, and the
+    launch is retried once.  CreateProcess fails before the child
+    exists, so the retry re-runs nothing.
+    """
+
     try:
-        completed = subprocess.run(command, check=False)
+        return subprocess.run(command, check=False).returncode
     except OSError as exc:
-        print(f"failed to launch native adapter: {exc}", file=sys.stderr)
-        return 70
-    return completed.returncode
+        compacted = _compact_input_argv(command) \
+            if _is_argv_limit_error(exc) else None
+        if compacted is None:
+            print(f"failed to launch native adapter: {exc}", file=sys.stderr)
+            return 70
+        list_file, retry_command = compacted
+        try:
+            return subprocess.run(retry_command, check=False).returncode
+        except OSError as second:
+            print(f"failed to launch native adapter: {second}",
+                  file=sys.stderr)
+            return 70
+        finally:
+            try:
+                list_file.unlink()
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

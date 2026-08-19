@@ -15,12 +15,16 @@ the drift guard is mode-blind    the three guard quantities, priced both
                                  ways, must be equal -- the guard cannot
                                  fire *because of* streaming, and equally
                                  cannot protect a streamed run
-the refusal is at admission      ``mode='on'`` MUST raise; ``'off'`` and
-                                 ``'auto'`` must NOT, or the refusal is a
-                                 blanket one and proves nothing
-a route that drops the block     ``gpuwm run`` reads ``exp.tiles``
-                                 nowhere, so it must refuse ``auto`` too --
-                                 and still admit ``off``
+the refusal is at admission      ``refuse_unrouted_streaming`` on a route
+                                 with NO builder must raise for ``'on'``;
+                                 ``'off'`` and ``'auto'`` must not, or the
+                                 refusal is a blanket one and proves nothing
+the routes wire the builders     ``gpuwm run`` and the prepared tree route
+                                 both stream instead of refusing (read out
+                                 of their source, both ends of the seam),
+                                 and ``gpuwm go`` admits ``mode='on'``
+                                 pre-fetch while still refusing an invalid
+                                 [tiles] table on the same side of the fetch
 the receipt names the mode       ``off`` must produce an EMPTY entry (the
                                  pre-streaming receipt, byte for byte), and
                                  ``on`` must produce a non-empty one
@@ -192,26 +196,37 @@ def test_the_run_route_streams_instead_of_refusing():
             "a 'tree' delivery with no refusal")
 
 
-def test_the_refusal_precedes_every_allocation_in_the_route():
-    """Source order, because that is the whole point of the change.
+def test_the_tree_route_streams_instead_of_refusing():
+    """The tree route's half of the wiring, beside the run route's above.
 
-    ``make_stepper`` already refused a builder-less streamed domain.  It did
-    it at the END of the route, after the prepared caches had been restored
-    and the whole resident tree had been built on the card -- i.e. after the
-    allocation the mode exists to avoid.  The property under test is not
-    "does it refuse" but "does it refuse FIRST", and the only honest way to
-    check that without a prepared tree and a card is to read the call order
-    out of the source.
+    THE TEST THIS REPLACES ASSERTED A REFUSAL THAT NO LONGER EXISTS.  It
+    read ``refuse_unrouted_streaming(exp`` out of
+    ``prepared_domain_tree_forecast.py`` and pinned its source position
+    ahead of the allocations -- true on the lane's own base, where the tree
+    route had no streamed-domain builder and the honest thing was to refuse
+    before spending VRAM.  On the release line the route WIRES the builders
+    (``steppers_for_tree`` with ``builders_for_tree``), the file carries a
+    deliberate no-refusal comment at the old call site, and its sibling test
+    above already pins the same fact for ``gpuwm run`` -- so a surviving
+    refusal-order assertion here would be asking the route to refuse the one
+    mode it now serves.  What is pinned instead: the refusal really is GONE
+    from the route (not merely moved after the allocations, which was the
+    original defect), and the wiring that replaced it is present, on both
+    ends of the seam.
     """
     text = (ROOT / "gpuwm" / "prepared_domain_tree_forecast.py").read_text(
         encoding="utf-8")
-    refusal = text.index("refuse_unrouted_streaming(exp")
-    estimate = text.index("estimate = estimate_experiment(")
-    arena = text.index("arena = build_shared_scratch_arena(")
-    late = text.index("steppers_for_tree(")
-    assert refusal < estimate < arena < late, (refusal, estimate, arena, late)
-    return ("the admission refusal precedes estimate_experiment, the shared "
-            "arena allocation and the old late refusal, in that order")
+    assert "refuse_unrouted_streaming(exp" not in text, (
+        "prepared_domain_tree_forecast.py refuses [tiles] again while also "
+        "wiring builders; one of the two is lying to the user")
+    assert "NO streaming refusal for [tiles]" in text, (
+        "the deliberate no-refusal comment left the tree route; if the "
+        "admission design changed, update this gate with it")
+    assert "steppers = streaming.steppers_for_tree(" in text
+    assert "builders=streaming.builders_for_tree(model, exp.tiles)" in text
+    return ("the tree route wires steppers_for_tree/builders_for_tree and "
+            "carries the deliberate no-refusal comment; "
+            "refuse_unrouted_streaming is absent from the file")
 
 
 # --------------------------------------------------------------------------
@@ -304,6 +319,17 @@ def test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one():
     a direction, not a re-fit: reconciling them wants autoplan's 29-point
     measurement redone before either constant moves.
 
+    THE BAND PINS BELOW ARE THE 2.5.0 INTEGRATION LINE'S, re-derived
+    2026-08-18 on the Windows cut box (the envelope's platform form) after
+    the memgate-3080 landing replaced the x1.75-with-pool-constants Windows
+    envelope with the RTX 3080-measured WDDM form: the size-independent
+    term fell from ~8.8 GiB to ~2.9 GiB (MEASURED here: envelope 6.39 GiB
+    at 224^2 x 49 against a 2.90 GiB alloc estimate, 12.39 GiB at 416^2,
+    16.72 GiB at 512^2 -- the fixed part solves to ~2.9 GiB from any two
+    of those rows), so preflight refuses from a LARGER n and every band's
+    low edge rose.  The disagreement is therefore NARROWER on the release
+    line, but not reconciled, and the defect stands.
+
     WHEN THE TWO MODELS ARE RECONCILED, DELETE THIS TEST.  It asserts the
     presence of the defect, which is the only way an arithmetic-only audit
     can keep a silent regression from re-opening it.
@@ -315,24 +341,55 @@ def test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one():
         assert lo is not None, (
             f"no disagreement band on the {name} -- if the models were "
             "reconciled, delete this test; if the ladder changed, re-derive")
-    assert bands["5070"] == (448, 512), bands
-    assert bands["4090"] == (704, 816), bands
-    assert bands["5090"] == (832, 976), bands
+    assert bands["5070"] == (416, 512), bands
+    assert bands["4090"] == (640, 816), bands
+    assert bands["5090"] == (752, 976), bands
     return "; ".join(f"{k}: n in [{v[0]}, {v[1]}]" for k, v in bands.items())
 
 
-def test_gpuwm_go_refuses_before_the_download():
+def test_gpuwm_go_admits_tiles_and_gates_them_before_the_download():
     """END TO END on the one route a first-time user actually types.
 
     ``gpuwm go``'s whole design principle is that a refusal belongs on THIS
     side of the fetch: the memory gate and the geography gate both run before
     the download, because the alternative is spending the user's bandwidth on
-    forcing data for a run that cannot happen.  A ``[tiles]`` block that
-    no stage can honour is the same kind of refusal and now sits beside them.
+    forcing data for a run that cannot happen.  A ``[tiles]`` shape no stage
+    can honour is the same kind of refusal and sits beside them.
 
-    The control is the same config without the block: it must plan cleanly,
-    or this test would pass against a ``plan_from_config`` that refused
-    everything.
+    REWRITTEN FOR 2.5.0, and the refusal this used to assert is why.  It
+    demanded ``plan_from_config`` refuse ``mode = "on"`` outright, quoting
+    "wires no streamed-domain builder" -- a statement about the route that
+    stopped being true when both prepared runners wired
+    ``streaming.builders_for_tree``: the authority stage carries a config's
+    ``[tiles]`` table into the hash-bound experiment.toml byte for byte,
+    the forecast stage reads it and streams, and ``go``'s memory gate
+    prices the streamed envelope.  Re-adding that refusal would reject a
+    config the chain demonstrably runs (MEASURED 2026-08-16: a real
+    ``gpuwm go`` with ``[tiles] mode = "on"``, single 12 km domain,
+    report.json tiles decision STREAM), with a message asserting a
+    breakage that does not exist -- it would fail exactly when the product
+    is fixed; the 2.2.0 admission-gate incident
+    (tests/test_streamed_admission.py) is the ruling on which way the
+    admission verdict goes.
+
+    What WAS still wrong is the silence: the plan recorded nothing about
+    ``[tiles]``, so ``go`` planned six commands that never said the run
+    would stream, and the only evidence was one line five stages in, on a
+    captured stdout.  So the contract now pinned is four-sided:
+
+    * the CONTROL -- the same config without the block -- plans cleanly
+      and records nothing (``plan["tiles"] is None``), or this test would
+      pass against a plan that annotated everything;
+    * ``mode = "on"`` on the single-domain chain PLANS, to the same
+      runner, and the plan records the routing where the banner and the
+      dry run read it -- honored visibly, not silently;
+    * a ``[tiles]`` table no stage could honour -- an invalid mode -- is
+      still REFUSED on this side of the download, as a ``GoRefusal``
+      naming the table, not a traceback after a 160 MiB fetch;
+    * the one ``[tiles]`` shape the chain genuinely cannot run -- a tree
+      whose coupling edge has both ends streamed -- is refused before the
+      fetch by the core's own edge sentence, relayed at load time.  And
+      ``gpuwm go`` proper still refuses the tree as a tree first.
     """
     import contextlib
     import io
@@ -345,6 +402,7 @@ def test_gpuwm_go_refuses_before_the_download():
 
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "go.toml"
+        tree = Path(tmp) / "go_tree.toml"
         with contextlib.redirect_stdout(io.StringIO()):
             rc = cli_main([
                 "domain", "--point=35.3,-97.5", "--card", "24gb",
@@ -352,21 +410,74 @@ def test_gpuwm_go_refuses_before_the_download():
                 "--cycle", "2026-07-29T18", "--hours", "6",
                 "--out", str(out), "--physics-profile",
                 "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"])
-        assert rc == 0, rc
-        # THE CONTROL: the same config, no [tiles], must plan.
-        go_cli.plan_from_config(out, outdir=Path(tmp) / "a")
+            assert rc == 0, rc
+            rc = cli_main([
+                "domain", "--point=35.3,-97.5", "--card", "24gb",
+                "--ladder", "12-3", "--source", "gfs",
+                "--cycle", "2026-07-29T18", "--hours", "6",
+                "--out", str(tree), "--physics-profile",
+                "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"])
+            assert rc == 0, rc
+        # THE CONTROL: the same config, no [tiles], must plan -- silently.
+        control = go_cli.plan_from_config(out, outdir=Path(tmp) / "a")
+        assert control["tiles"] is None, control["tiles"]
+        # The headline: mode = "on" is ADMITTED, planned, routed, and SAID.
         streamed = Path(tmp) / "go_stream.toml"
         streamed.write_text(
             out.read_text(encoding="utf-8") + '\n[tiles]\nmode = "on"\n',
             encoding="utf-8")
+        plan = go_cli.plan_from_config(streamed, outdir=Path(tmp) / "b")
+        assert plan["config"] == streamed, plan["config"]
+        tiles = plan["tiles"]
+        assert tiles is not None, (
+            "gpuwm go planned a [tiles] mode = 'on' config with no record "
+            "of it: the run would stream and the plan never says so")
+        assert tiles["mode"] == "on", tiles
+        assert tiles["asked"] == ["d01"], tiles
+        assert "host store" in tiles["sentence"], tiles["sentence"]
+        assert plan["runner"] == go_cli.RUNNER_MODULE, plan["runner"]
+        # The refusal that still belongs pre-fetch: a table no stage can
+        # honour, refused as a GoRefusal that names the [tiles] key.
+        bad = Path(tmp) / "go_bad.toml"
+        bad.write_text(
+            out.read_text(encoding="utf-8") + '\n[tiles]\nmode = "banana"\n',
+            encoding="utf-8")
         try:
-            go_cli.plan_from_config(streamed, outdir=Path(tmp) / "b")
+            go_cli.plan_from_config(bad, outdir=Path(tmp) / "e")
         except go_cli.GoRefusal as error:
-            assert "wires no streamed-domain builder" in str(error)
-            return ("gpuwm go plans the same config cleanly without "
-                    "[tiles] and refuses it with mode='on', before the "
-                    "fetch stage runs")
-    raise AssertionError("gpuwm go admitted a config it cannot run")
+            assert "[tiles]" in str(error) and "banana" in str(error), error
+        else:
+            raise AssertionError(
+                "gpuwm go planned a config whose [tiles] table no stage can "
+                "honour; that refusal belongs before the download")
+        # THE SHAPE THAT CANNOT RUN: both ends of a coupling edge streamed.
+        # Refused at load, relayed by the door, before the fetch -- through
+        # the tree arm (run-plan's), since go proper never reaches [tiles]
+        # on a tree at all:
+        tree_streamed = Path(tmp) / "go_tree_stream.toml"
+        tree_streamed.write_text(
+            tree.read_text(encoding="utf-8") + '\n[tiles]\nmode = "on"\n',
+            encoding="utf-8")
+        try:
+            go_cli.plan_from_config(
+                tree_streamed, outdir=Path(tmp) / "c", allow_tree=True)
+        except go_cli.GoRefusal as error:
+            assert "BOTH ends streamed" in str(error), str(error)
+        else:
+            raise AssertionError(
+                "a tree with every coupling edge streamed was admitted; "
+                "the coupler refuses that shape at the first FORCE, after "
+                "the fetch and both preparations")
+        try:
+            go_cli.plan_from_config(tree_streamed, outdir=Path(tmp) / "d")
+        except go_cli.GoRefusal as error:
+            assert "single-domain runner" in str(error), str(error)
+        else:
+            raise AssertionError("go proper admitted a domain tree")
+        return ("gpuwm go plans the control silently, records the mode='on' "
+                "routing on the plan, refuses an invalid [tiles] table as a "
+                "GoRefusal, and refuses the both-ends-streamed tree -- all "
+                "before the fetch stage runs")
 
 
 TESTS = [
@@ -375,8 +486,8 @@ TESTS = [
     test_mode_on_is_refused_at_admission,
     test_mode_off_and_auto_are_not_refused,
     test_the_run_route_streams_instead_of_refusing,
-    test_gpuwm_go_refuses_before_the_download,
-    test_the_refusal_precedes_every_allocation_in_the_route,
+    test_gpuwm_go_admits_tiles_and_gates_them_before_the_download,
+    test_the_tree_route_streams_instead_of_refusing,
     test_the_off_receipt_is_empty,
     test_the_on_receipt_names_the_mode_and_the_decision,
     test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one,

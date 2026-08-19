@@ -435,6 +435,10 @@ pub fn render_generic_store_variable(
     // (visual-mode, domain-frame, and chrome-scale aware).  The plain
     // `map_frame_aspect_ratio` built a narrower frame whose subtitle row
     // truncated text that named products fit at the same canvas size.
+    // Borrowed before `stored.grid` is moved into the field below; the
+    // overlay pass needs the same mesh the projection was built from.
+    let stored_lat = stored.grid.lat_deg.clone();
+    let stored_lon = stored.grid.lon_deg.clone();
     let projected = build_projected_map_with_projection(
         &stored.grid.lat_deg,
         &stored.grid.lon_deg,
@@ -474,6 +478,32 @@ pub fn render_generic_store_variable(
     request.projected_lines = projected.lines;
     request.projected_polygons = projected.polygons;
     request.inverse_raster_projection = projected.inverse_raster_projection;
+
+    // gpuwm addition (VENDOR.md): the same `--overlays`/`--annotate`
+    // payload the direct lane applies, projected with the SAME bounds and
+    // aspect ratio this function's own `build_projected_map_with_projection`
+    // call above used.  A generic `var:` panel and a named product panel
+    // of the same run must carry the overlay in the same place.  Both are
+    // `None` unless the flags were passed, so the default render is
+    // byte-unchanged.
+    if let Some(overlays) = config.geographic_overlays.as_ref() {
+        overlays.apply(
+            &mut request,
+            &stored_lat,
+            &stored_lon,
+            source.projection(),
+            config.domain.bounds,
+            direct_map_frame_aspect_ratio(
+                ProductVisualMode::FilledMeteorology,
+                config.output_width,
+                config.output_height,
+                source.projection(),
+            ),
+        )?;
+    }
+    if let Some(annotations) = config.panel_annotations.as_ref() {
+        annotations.apply(&mut request);
+    }
 
     std::fs::create_dir_all(&config.out_dir)?;
     // Same shape as the direct lane's artifact name --

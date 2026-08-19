@@ -240,6 +240,15 @@ def grid_identity_probes(grid) -> dict[str, list[float]]:
     run-machine grid arithmetic must be identical, or the corridor's
     bitwise claim has no floor under it.
     """
+    # Default route: the Rust seam renders the same five probes with
+    # shortest-round-trip formatting, parsing back to the exact float64
+    # bits (fixed-means-default; GPUWM_STATIC_PYTHON=1 falls back to
+    # the arithmetic below as a reported workaround).
+    from . import rust_bridge
+    bridge = rust_bridge.route("grid_identity_probes")
+    if bridge is not None and hasattr(grid, "_rust_handle"):
+        return json.loads(bridge.grid_identity_probes_json(
+            grid._rust_handle(bridge)))
     nx = int(grid.e_we) - 1
     ny = int(grid.e_sn) - 1
     points = {

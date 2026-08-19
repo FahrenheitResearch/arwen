@@ -19,6 +19,8 @@ import numpy as np
 from gpuwm.core.grid import make_vertical_coord
 from gpuwm.experiment import load_experiment, validate_boundary_timing
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
+from gpuwm.ingest.soil_downscale import (
+    declared_soil_texture_downscale, soil_mesh_plan_from_case)
 from gpuwm.ingest.lateral_bc import (
     StateBoundaryFrames,
     attach_lateral_boundaries,
@@ -33,6 +35,12 @@ from gpuwm.ingest.preprocess_backend import (
     resolve_preprocess_backend,
 )
 from gpuwm.ingest.real import initialize_real
+from gpuwm.ingest.source_coverage import (
+    PreparationRefusal,
+    RunInputRefusal,
+    VerticalLadderRefusal,
+    owns_source_coverage_refusal,
+)
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.ingest.water_temperature import WaterTemperatureStatics
 from gpuwm.mapped_composition import (
@@ -42,12 +50,21 @@ from gpuwm.mapped_composition import (
     decode_composed_source,
     mapped_composition_receipt,
 )
+from gpuwm.mapped_engine_bridge import (
+    ENGINE_ENV as _ENGINE_ENV,
+    ENGINE_RUST as _ENGINE_RUST,
+    ENGINES as _ENGINES,
+    MAPPED_ROUTE_SUBCOMMAND as _ROUTE_SUBCOMMAND,
+)
 from gpuwm.mapped_source import (
     _load_json_bytes,
+    _load_json_document,
+    _mapped_engine_choice,
     _require_authority_snapshot,
     _sha256,
     _snapshot_authority,
     load_mapping,
+    read_input_list,
 )
 from gpuwm.native_wrf_contract import (
     canonical_noah_surface,
@@ -142,8 +159,24 @@ def _validate_target_contract(
     boundary_interval_seconds: int | None,
     *,
     hierarchy: bool,
+    experiment_config: Path | None = None,
 ) -> dict[str, object]:
-    """Bind mapped target limits to one resolved experiment and cadence."""
+    """Bind mapped target limits to one resolved experiment and cadence.
+
+    The vertical dimension is the EXPERIMENT'S, not the mapping's: the
+    whole route interpolates onto the experiment's explicit eta ladder
+    (``make_vertical_coord``/``validate_explicit_eta_grid`` read only
+    ``exp``), so a config that carries a valid ladder is adopted at its
+    own level count and the mapping's ``target_vertical_levels`` is
+    recorded as the reference it is.  Refusing a valid ladder over the
+    count named no breakage, and paired with the later shape-(0,) error
+    it formed the circle of UX finding N6: 44 levels refused for 49,
+    then 49 refused for an explicit ladder nothing the user ran had
+    ever written.  What IS refused, in one message with both counts and
+    both reconciling doors, is a config with no ladder at all -- a
+    count alone does not define the interpolation target and WRF's
+    automatic level generator is not implemented.
+    """
 
     target = mapping["target"]
     if not isinstance(target, dict):
@@ -156,16 +189,51 @@ def _validate_target_contract(
             f"{domain_count} domains"
         )
     target_vertical_levels = target["target_vertical_levels"]
-    vertical_mismatch = {
-        f"d{domain.grid_id:02d}": domain.run.nz
-        for domain in exp.domains
-        if domain.run.nz != target_vertical_levels
-    }
-    if vertical_mismatch:
-        raise ValueError(
-            "mapped target vertical levels differ from the experiment: "
-            f"target={target_vertical_levels}, domains={vertical_mismatch}"
+    nz = int(exp.root.run.nz)
+    eta_levels = tuple(getattr(exp.vertical, "eta_levels", ()) or ())
+    config_name = (
+        "the experiment config" if experiment_config is None
+        else str(experiment_config))
+    if not eta_levels:
+        counts = (
+            f"declares nz={nz} mass levels (WRF e_vert={nz + 1}) and no "
+            "explicit eta_levels ladder")
+        against = (
+            f"matching this mapping's reference count"
+            if nz == target_vertical_levels else
+            f"and this mapping's reference target is "
+            f"{target_vertical_levels} levels "
+            f"(WRF e_vert={target_vertical_levels + 1})")
+        raise VerticalLadderRefusal(
+            f"mapped vertical ladder is missing: {config_name} {counts}, "
+            f"{against}.  The mapped route interpolates every forcing "
+            "time onto an explicit full-level eta ladder; a level count "
+            "alone does not define one, and WRF's automatic level "
+            "generator (real.exe) is not implemented",
+            remedy=(
+                f"remedy: two doors reconcile this.  Keep your {nz} "
+                f"levels: add an explicit eta_levels ladder of {nz + 1} "
+                "interfaces -- `eta_levels = [1.0, ..., 0.0]`, strictly "
+                f"decreasing -- to the [shared] block of {config_name}; "
+                "prep adopts your ladder at your level count.  Or use "
+                "the packaged reference ladder: `gpuwm domain` authors "
+                "a config whose [shared] block carries the certified "
+                f"{target_vertical_levels}-level ladder; copy its "
+                "nz/p_top/eta_levels lines into your imported config."))
+    try:
+        validate_explicit_eta_grid(
+            eta_levels, nz=nz, p_top=exp.vertical.p_top,
+            context="mapped experiment vertical ladder",
         )
+    except ValueError as error:
+        raise VerticalLadderRefusal(
+            str(error),
+            remedy=(
+                f"remedy: fix the [shared] eta_levels ladder in "
+                f"{config_name}: nz + 1 entries (WRF e_vert), running "
+                "1.0 (surface) to 0.0 (top), strictly decreasing, with "
+                "p_top in pascals inside the source atmosphere."),
+        ) from error
     if target["require_lateral_boundaries"] is not True:
         raise ValueError(
             "mapped direct export requires a target contract with lateral "
@@ -202,11 +270,85 @@ def _validate_target_contract(
             for domain in exp.domains
         },
         "mapping_max_dom": max_dom,
-        "target_vertical_levels": target_vertical_levels,
+        # The ADOPTED count -- the experiment's, which is what every
+        # array downstream is allocated at; the mapping's declared
+        # count is recorded beside it as the reference it is.
+        "target_vertical_levels": nz,
+        "mapping_reference_vertical_levels": target_vertical_levels,
+        "vertical_levels_adopted_from": (
+            "mapping-reference-count" if nz == target_vertical_levels
+            else "experiment-eta-ladder"),
         "require_lateral_boundaries": True,
         "boundary_interval_seconds": boundary_interval_seconds,
         "hierarchy": hierarchy,
     }
+
+
+#: Which subprocess tools each mapped format's Python engine launches.
+#: The same table ``mapped_composition._decoder_inventory`` enforces;
+#: named here only to say what a MISSING role means to a reader.
+_FORMAT_TOOL_ROLES = {
+    "grib1": ("grib1_bridge",),
+    "grib2": ("grib2_inventory", "grib2_dump"),
+    "netcdf": (),
+}
+
+
+#: The tool-role flag each role is spelled with on the command line.
+_TOOL_ROLE_FLAGS = {
+    "grib1_bridge": "--grib1-bridge",
+    "grib2_inventory": "--grib2-inventory",
+    "grib2_dump": "--grib2-dump",
+}
+
+
+def _decoder_inventory_refusal(message, formats, *, missing=(), extra=()):
+    """The decoder-contract fault, as a refusal this door can deliver.
+
+    Named breakage: a bare ``gpuwm prep`` of any composed GRIB2 source
+    reached ``ValueError: grib2 decoder inventory differs from the
+    contract; missing=['grib2_dump', 'grib2_inventory']`` as an
+    unhandled traceback, so a reader met this package's line numbers
+    before meeting a remedy.  The contract is unchanged and still
+    refuses; this gives the same sentence a delivery.
+
+    The remedy is composed for THIS install, and the two directions get
+    opposite ones because they are opposite faults with the same
+    message shape: a MISSING tool gets the estate answer ``gpuwm
+    doctor`` would print (staged bundle, or a clone and a build), and a
+    tool supplied to a route that decodes in process gets told to drop
+    the pin -- there is nothing here that would ever launch it.
+    """
+
+    from gpuwm import bridges
+    from gpuwm.ingest.source_coverage import DecoderInventoryRefusal
+    from gpuwm.mapped_engine_bridge import ENGINE_ENV, ENGINE_PYTHON
+
+    text = str(message)
+    missing = tuple(sorted(missing))
+    extra = tuple(sorted(extra))
+    label = "+".join(sorted({str(name) for name in formats}))
+    if missing:
+        remedy = (
+            f"remedy: this route composes {label} on the Python engine, "
+            f"which reads it through {', '.join(missing)}.\n"
+            + bridges.bridge_remedy(missing[0])
+            + "\n  # `gpuwm prep` resolves these through the same ladder "
+            "with no flags once they are staged; "
+            + " / ".join(_TOOL_ROLE_FLAGS[role] for role in missing)
+            + " override it.")
+    elif extra:
+        remedy = (
+            "remedy: drop "
+            + " / ".join(_TOOL_ROLE_FLAGS[role] for role in extra)
+            + f" -- this route reads {label} with no such tool and has "
+            "nothing to launch it for.  To decode with those exact "
+            "executables instead, ask for the engine that runs them: "
+            f"{ENGINE_ENV}={ENGINE_PYTHON} (equivalently --mapped-engine "
+            f"{ENGINE_PYTHON}).")
+    else:
+        remedy = DecoderInventoryRefusal.remedy
+    return DecoderInventoryRefusal(text, remedy=remedy)
 
 
 def prepare_mapped_wrf(
@@ -220,6 +362,7 @@ def prepare_mapped_wrf(
     provenance_files: Mapping[str, str | Path],
     input_manifest: str | Path,
     input_manifest_sha256: str,
+    contributing_mappings: Mapping[str, str | Path] | None = None,
     grib1_bridge: str | Path | None = None,
     grib2_inventory: str | Path | None = None,
     grib2_dump: str | Path | None = None,
@@ -233,8 +376,8 @@ def prepare_mapped_wrf(
     preprocess_workers: int | None = None,
     cpu_preprocess_bridge: str | Path | None = None,
     hierarchy_workers: int | None = None,
-    _predecoded_bundle: MappedSourceBundle | None = None,
-    _predecoded_seconds: float | None = None,
+    _source_manifest: str | Path | None = None,
+    _source_manifest_sha256: str | None = None,
     _source_adapter: str = "rw-wps-mapped-composition-v2",
 ) -> dict[str, object]:
     """Build native WRF inputs from one complete mapped-source composition.
@@ -253,6 +396,17 @@ def prepare_mapped_wrf(
     that does not belong to this domain is refused rather than trusted.
     ``geog_root`` remains required either way: the proof's geog_datasets
     binding and any child-domain statics are still resolved from the tree.
+
+    ``_source_manifest``/``_source_manifest_sha256`` are the seam for a
+    NAMED-SOURCE route whose user-facing sealed authority is its own
+    manifest schema (the 20CRv3 member manifest, with its filename-bound
+    member identity): the route verifies its own document, authors the
+    generic composition-inputs manifest FROM it, and hands both here.
+    The composition decodes against the bridged manifest -- which the
+    composition receipt seals -- while the prepared tree's evidence copy,
+    identity chain and proof stay bound to the route's own document, the
+    one its forecast leg re-verifies with the route's own reader.  Absent,
+    the two manifests are the same document and nothing changes.
     """
 
     started = time.perf_counter()
@@ -266,18 +420,99 @@ def prepare_mapped_wrf(
     provenance = {
         str(role): Path(path).resolve() for role, path in provenance_files.items()
     }
+    contributing = {
+        str(role): Path(path).resolve()
+        for role, path in (contributing_mappings or {}).items()
+    }
     input_manifest = Path(input_manifest).resolve()
+    if (_source_manifest is None) != (_source_manifest_sha256 is None):
+        raise ValueError(
+            "source manifest and source manifest SHA are an atomic pair"
+        )
+    if _source_manifest is None:
+        source_manifest_path: Path | None = None
+        source_manifest_sha256: str | None = None
+    else:
+        source_manifest_path = Path(_source_manifest).resolve()
+        source_manifest_sha256 = str(_source_manifest_sha256).lower()
+        if not source_manifest_path.is_file():
+            raise RunInputRefusal(
+                f"mapped run input is missing: --source-manifest names "
+                f"{source_manifest_path}, which does not exist")
+        if _sha256(source_manifest_path) != source_manifest_sha256:
+            raise ValueError(
+                "source manifest bytes differ from the declared SHA-256, so "
+                "the identity chain would be sealed to a document nobody "
+                "verified"
+            )
     mapping_snapshot = _snapshot_authority(mapping, retain_bytes=True)
     mapping_contract = load_mapping(
         mapping,
         _raw=_load_json_bytes(mapping_snapshot.data, "mapping", mapping),
     )
-    decoders = _decoder_inventory(
-        str(mapping_contract["format"]),
-        grib1_bridge=grib1_bridge,
-        grib2_inventory=grib2_inventory,
-        grib2_dump=grib2_dump,
-    )
+    # The decoder role set is the union across the primary's format and
+    # every contributing source's format.  Only the format key is probed
+    # here; ``decode_composed_source`` fully validates each contributing
+    # mapping against the composition's pinned hash before decoding.
+    decode_formats = {str(mapping_contract["format"])}
+    for role, contributing_path in contributing.items():
+        raw = _load_json_document(
+            contributing_path, f"contributing mapping {role!r}",
+        )
+        observed_format = raw.get("format") if isinstance(raw, dict) else None
+        if observed_format in ("grib1", "grib2", "netcdf"):
+            decode_formats.add(str(observed_format))
+    engine_binary = None
+    # This route ALWAYS composes, and every contributing format has to be
+    # one the engine can read: a union with one unported format in it is
+    # a Python-engine job whole, because half a composition decoded by
+    # each engine would be one frameset with two provenances.
+    if all(
+        _mapped_engine_choice(
+            grib1_bridge=grib1_bridge,
+            grib2_inventory=grib2_inventory,
+            grib2_dump=grib2_dump,
+            subcommand=_ROUTE_SUBCOMMAND,
+            source_format=source_format,
+        ) == _ENGINE_RUST
+        for source_format in sorted(decode_formats)
+    ):
+        # Resolved HERE, before any output directory exists, so an
+        # unstaged engine costs a refusal at the door instead of a
+        # half-built preparation: this is the same pre-flight the
+        # subprocess decoders get below.
+        from gpuwm.mapped_engine_bridge import require_engine
+
+        engine_binary = require_engine()
+    try:
+        decoders = _decoder_inventory(
+            sorted(decode_formats),
+            grib1_bridge=grib1_bridge,
+            grib2_inventory=grib2_inventory,
+            grib2_dump=grib2_dump,
+            engine=engine_binary,
+        )
+    except ValueError as error:
+        # Delivered, not demoted: the contract still refuses and still
+        # names the same breakage.  What changes is that a user reading
+        # it meets a remedy instead of nineteen frames of this package's
+        # internals, which is what they met on a bare default prep of
+        # every composed source until 2.5.0.
+        present = {
+            role for role, path in (
+                ("grib1_bridge", grib1_bridge),
+                ("grib2_inventory", grib2_inventory),
+                ("grib2_dump", grib2_dump),
+            ) if path is not None
+        }
+        required = set() if engine_binary is not None else {
+            role for name in decode_formats
+            for role in _FORMAT_TOOL_ROLES[str(name)]
+        }
+        raise _decoder_inventory_refusal(
+            str(error), decode_formats,
+            missing=required - present, extra=present - required,
+        ) from error
     wps_namelist = Path(wps_namelist).resolve()
     geog_root = Path(geog_root).resolve()
     experiment_config = Path(experiment_config).resolve()
@@ -294,22 +529,63 @@ def prepare_mapped_wrf(
         None if static_input is None else Path(static_input).resolve())
     prebuilt_receipt = (
         None if static_receipt is None else Path(static_receipt).resolve())
-    for path in (
-        composition, mapping, input_manifest, wps_namelist,
-        experiment_config, *decoders.values(), *primary,
-        *(path for paths in supplements.values() for path in paths),
-        *provenance.values(),
+    # Every file the caller named, checked under the FLAG that named
+    # it and reported together: the old anonymous loop relayed the
+    # first miss as a bare ``FileNotFoundError`` holding only a path,
+    # which is how a pasted prep command with one wrong working
+    # directory answered a user with a traceback (UX finding N6).
+    labeled = [
+        ("--composition", composition),
+        ("--mapping", mapping),
+        ("--input-manifest", input_manifest),
+        ("--wps-namelist", wps_namelist),
+        ("--experiment-config", experiment_config),
+        *((f"decoder tool {role}", path) for role, path in decoders.items()),
+        *(("--input/--input-list", path) for path in primary),
+        *((f"--supplement {role}", path)
+          for role, paths in supplements.items() for path in paths),
+        *((f"--provenance {role}", path)
+          for role, path in provenance.items()),
+        *((f"--contributing-mapping {role}", path)
+          for role, path in contributing.items()),
         *(() if prebuilt_static is None
-          else (prebuilt_static, prebuilt_receipt)),
-    ):
-        if not path.is_file():
-            raise FileNotFoundError(path)
+          else (("--static-input", prebuilt_static),
+                ("--static-receipt", prebuilt_receipt))),
+        *(() if cpu_bridge is None
+          else (("--cpu-preprocess-bridge", cpu_bridge),)),
+    ]
+    missing = [
+        (flag, path) for flag, path in labeled if not path.is_file()
+    ]
+    if missing:
+        listing = "; ".join(
+            f"{flag} names {path}, which does not exist"
+            for flag, path in missing)
+        remedy = RunInputRefusal.remedy
+        if any(flag == "--experiment-config" for flag, _path in missing):
+            remedy += (
+                "  For --experiment-config: `gpuwm import-namelist WPS "
+                "INPUT --output FILE.toml` translates an existing WRF "
+                "namelist pair into one, and `gpuwm domain` authors one "
+                "from scratch.")
+        raise RunInputRefusal(
+            f"mapped run inputs are missing: {listing}", remedy=remedy)
     if not geog_root.is_dir():
-        raise NotADirectoryError(geog_root)
-    if cpu_bridge is not None and not cpu_bridge.is_file():
-        raise FileNotFoundError(cpu_bridge)
+        raise RunInputRefusal(
+            f"--geog-root names {geog_root}, which is not a directory",
+            remedy=(
+                "remedy: point --geog-root at a staged WPS_GEOG tree.  "
+                "`gpuwm fetch-geog` stages one (~16 GB) and prints the "
+                "root to pass."))
     if output_root.exists():
-        raise FileExistsError(f"refusing to overwrite mapped output {output_root}")
+        raise PreparationRefusal(
+            f"refusing to overwrite mapped output {output_root}: a "
+            "prepared tree is published atomically, and a folder that "
+            "already exists may be a finished run something else reads",
+            remedy=(
+                "remedy: pass a fresh --output-root, or move or remove "
+                "the old folder yourself first; prep never deletes an "
+                "output tree."))
     run_control_before = {
         "wps_namelist": _file_receipt(wps_namelist),
         "experiment_config": _file_receipt(experiment_config),
@@ -331,6 +607,7 @@ def prepare_mapped_wrf(
         exp,
         mapping_contract["target"].get("boundary_interval_seconds"),
         hierarchy=hierarchy,
+        experiment_config=experiment_config,
     )
     cfg = exp.root.run
     if hierarchy:
@@ -348,45 +625,21 @@ def prepare_mapped_wrf(
     )
 
     decode_started = time.perf_counter()
-    if _predecoded_bundle is None:
-        if _predecoded_seconds is not None:
-            raise ValueError(
-                "predecoded timing was supplied without a predecoded bundle"
-            )
-        bundle = decode_composed_source(
-            composition, mapping, primary, supplements, provenance,
-            input_manifest=input_manifest,
-            input_manifest_sha256=input_manifest_sha256,
-            grib1_bridge=decoders.get("grib1_bridge"),
-            grib2_inventory=decoders.get("grib2_inventory"),
-            grib2_dump=decoders.get("grib2_dump"),
-        )
-        decode_seconds = time.perf_counter() - decode_started
-    else:
-        bundle = _predecoded_bundle
-        if _predecoded_seconds is None or _predecoded_seconds < 0.0:
-            raise ValueError(
-                "predecoded bundle requires a nonnegative decode duration"
-            )
-        requested_terrain = tuple(
-            path for paths in supplements.values() for path in paths
-        )
-        if (
-            bundle.mapping_path != mapping
-            or bundle.composition_path != composition
-            or bundle.input_manifest_path != input_manifest
-            or bundle.input_manifest_sha256
-            != input_manifest_sha256.lower()
-            or dict(bundle.decoder_paths) != decoders
-            or bundle.terrain_data_paths != requested_terrain
-            or bundle.terrain_provenance_path
-            not in set(provenance.values())
-        ):
-            raise ValueError(
-                "predecoded bundle authorities differ from the requested "
-                "mapped preparation inputs"
-            )
-        decode_seconds = float(_predecoded_seconds)
+    bundle = decode_composed_source(
+        composition, mapping, primary, supplements, provenance,
+        input_manifest=input_manifest,
+        input_manifest_sha256=input_manifest_sha256,
+        contributing_mappings=contributing,
+        grib1_bridge=decoders.get("grib1_bridge"),
+        grib2_inventory=decoders.get("grib2_inventory"),
+        grib2_dump=decoders.get("grib2_dump"),
+        # The engine's compose scratch holds the whole composed frame
+        # stream; naming this run's destination keeps that stream on the
+        # output's disk-backed filesystem instead of a tmpfs system temp
+        # with a quota smaller than the biggest registered sources.
+        scratch_destination=output_root,
+    )
+    decode_seconds = time.perf_counter() - decode_started
     if bundle.mapping_sha256 != mapping_snapshot.sha256:
         raise ValueError(
             "mapped contract changed between target validation and decode"
@@ -422,6 +675,7 @@ def prepare_mapped_wrf(
         exp,
         boundary_interval_seconds,
         hierarchy=hierarchy,
+        experiment_config=experiment_config,
     )
     source_top_pressure_pa = max(
         float(np.min(snapshot.levels_hpa) * 100.0) for snapshot in snapshots
@@ -435,13 +689,29 @@ def prepare_mapped_wrf(
         )
         grid = grids[0]
     else:
-        validate_explicit_eta_grid(
-            exp.vertical.eta_levels,
-            nz=cfg.nz,
-            p_top=exp.vertical.p_top,
-            source_top_pressure_pa=source_top_pressure_pa,
-            context="mapped direct adapter",
-        )
+        try:
+            validate_explicit_eta_grid(
+                exp.vertical.eta_levels,
+                nz=cfg.nz,
+                p_top=exp.vertical.p_top,
+                source_top_pressure_pa=source_top_pressure_pa,
+                context="mapped direct adapter",
+            )
+        except ValueError as error:
+            # The ladder's shape and values were validated at the door;
+            # what this re-check adds is the SOURCE TOP, so the only
+            # user-reachable raise left here is a model top the staged
+            # atmosphere does not reach.
+            raise VerticalLadderRefusal(
+                str(error),
+                remedy=(
+                    "remedy: lower the model top -- raise p_top in the "
+                    f"experiment config {experiment_config} to a "
+                    "pressure the staged source atmosphere reaches -- "
+                    "or prepare from a source whose levels reach this "
+                    "top (`gpuwm prep --show-source NAME` prints each "
+                    "source's vertical coverage)."),
+            ) from error
 
     static_started = time.perf_counter()
     if prebuilt_static is None:
@@ -551,6 +821,12 @@ def prepare_mapped_wrf(
         source_orography=initial_met.fields["SOURCE_OROGRAPHY"],
         water_temperature=getattr(initial_met, "water_temperature", None),
         water_temperature_policy=water_statics.policy,
+        # Same seam as the elevation lapse above, for moisture and for the
+        # deep temperature: a mapped source's mesh can be coarser than this
+        # grid, and where it is, the soil state gets the target grid's own
+        # soil texture instead of the source cell's average.
+        soil_mesh=soil_mesh_plan_from_case(
+            snapshots[0], grid, experiment_config),
         route=_WATER_ROUTE,
     )
     initialize_seconds = time.perf_counter() - initialize_started
@@ -569,6 +845,18 @@ def prepare_mapped_wrf(
         wrf_path = staging / "wrf-native-input"
         evidence_path = staging / "source-evidence"
         evidence_path.mkdir()
+        # The USER-FACING manifest: the route's own sealed document when
+        # the route bridged one in, otherwise the composition manifest
+        # itself.  The evidence copy, the identity chain and the proof
+        # bind this one -- it is what the forecast leg re-verifies with
+        # the route's own reader -- while the bridged twin stays sealed
+        # inside the composition receipt.
+        published_manifest = (
+            input_manifest if source_manifest_path is None
+            else source_manifest_path)
+        published_manifest_sha256 = (
+            bundle.input_manifest_sha256 if source_manifest_sha256 is None
+            else source_manifest_sha256)
         for source, name, digest in (
             (mapping, "mapping.json", bundle.mapping_sha256),
             (
@@ -577,9 +865,24 @@ def prepare_mapped_wrf(
                 bundle.composition_sha256,
             ),
             (
-                input_manifest,
+                published_manifest,
                 "input-manifest.json",
-                bundle.input_manifest_sha256,
+                published_manifest_sha256,
+            ),
+            # The bridged composition-inputs manifest travels TOO on a
+            # named-source route: the composition receipt seals its
+            # digest, and the forecast leg re-hashes this copy against
+            # that seal -- without the bytes, the receipt's manifest
+            # record would be a digest nothing can re-check once the raw
+            # inputs move.
+            *(
+                ()
+                if source_manifest_path is None
+                else ((
+                    input_manifest,
+                    "composition-inputs.json",
+                    bundle.input_manifest_sha256,
+                ),)
             ),
         ):
             _copy_bound_authority(source, evidence_path / name, digest)
@@ -610,7 +913,7 @@ def prepare_mapped_wrf(
             "adapter": _source_adapter,
             "mapping_sha256": bundle.mapping_sha256,
             "composition_sha256": bundle.composition_sha256,
-            "input_manifest_sha256": bundle.input_manifest_sha256,
+            "input_manifest_sha256": published_manifest_sha256,
             "composition_receipt_sha256": composition_receipt[
                 "receipt_content_sha256"
             ],
@@ -633,6 +936,9 @@ def prepare_mapped_wrf(
                 exp=exp,
                 grids=grids,
                 snapshots=snapshots,
+                # A child sees the catalog, not the config.
+                soil_texture_downscale=declared_soil_texture_downscale(
+                    experiment_config),
                 **forcing_identity,
                 wps_namelist=wps_namelist,
                 geog_root=geog_root,
@@ -644,8 +950,8 @@ def prepare_mapped_wrf(
                 root_soil=soil,
                 root_static_fields=static,
                 root_boundaries=boundaries,
-                bridge_manifest_sha256=bundle.input_manifest_sha256,
-                source_manifest_sha256=bundle.input_manifest_sha256,
+                bridge_manifest_sha256=published_manifest_sha256,
+                source_manifest_sha256=published_manifest_sha256,
                 namelist_sha256=_sha256(experiment_config),
                 source_identity={
                     **source_identity,
@@ -665,7 +971,7 @@ def prepare_mapped_wrf(
                 input_provenance={
                     "mapping_sha256": bundle.mapping_sha256,
                     "composition_sha256": bundle.composition_sha256,
-                    "input_manifest_sha256": bundle.input_manifest_sha256,
+                    "input_manifest_sha256": published_manifest_sha256,
                     "decoder_sha256": dict(bundle.decoder_sha256),
                     "preprocessing": preprocess_receipt,
                     "mapped_target_contract": target_contract,
@@ -692,6 +998,10 @@ def prepare_mapped_wrf(
                 "status": "READY_NOT_YET_STOCK_WRF_GATED",
                 "domain_count": len(exp.domains),
                 "forcing_times": [value.isoformat() for value in times],
+                # The soil-state SOURCE resolution and whether the
+                # sub-source-cell reconstitution ran on it.
+                "soil_texture_downscale": dict(
+                    getattr(soil, "soil_texture_downscale", {}) or {}),
                 forcing_key: list(forcing_axis),
                 "boundary_interval_seconds": boundary_interval_seconds,
                 "target_contract": target_contract,
@@ -747,8 +1057,8 @@ def prepare_mapped_wrf(
             os.replace(staging, output_root)
             return proof
         identity = prepared_cache_identity(
-            bridge_manifest_sha256=bundle.input_manifest_sha256,
-            source_manifest_sha256=bundle.input_manifest_sha256,
+            bridge_manifest_sha256=published_manifest_sha256,
+            source_manifest_sha256=published_manifest_sha256,
             static_cache_sha256=static_output_receipt["sha256"],
             namelist_sha256=_sha256(experiment_config),
             domain_config=exp.root,
@@ -793,6 +1103,10 @@ def prepare_mapped_wrf(
             "schema": PROOF_SCHEMA,
             "status": "READY_NOT_YET_STOCK_WRF_GATED",
             "forcing_times": [value.isoformat() for value in times],
+            # The soil-state SOURCE resolution and whether the
+            # sub-source-cell reconstitution ran on it.
+            "soil_texture_downscale": dict(
+                getattr(soil, "soil_texture_downscale", {}) or {}),
             forcing_key: list(forcing_axis),
             "boundary_interval_seconds": boundary_interval_seconds,
             "execution_inputs": {
@@ -885,9 +1199,19 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--composition", type=Path, required=True)
     parser.add_argument("--mapping", type=Path, required=True)
-    parser.add_argument(
+    # One set of primary files, two transports.  The repeated flag IS
+    # the grammar; the list file carries the same ordered paths for the
+    # command lines Windows cannot launch (CreateProcess caps the whole
+    # line at 32 KB, and a field-per-file source needs hundreds of
+    # inputs per state).
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument(
         "--input", dest="primary_files", action="append", type=Path,
-        required=True,
+    )
+    inputs.add_argument(
+        "--input-list", dest="input_list", type=Path,
+        help="file naming the --input files, one path per line, in the "
+             "same deterministic time/file order",
     )
     parser.add_argument(
         "--supplement", action="append", default=[], metavar="ROLE=PATH",
@@ -896,11 +1220,30 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provenance", action="append", default=[], metavar="ROLE=PATH",
     )
+    parser.add_argument(
+        "--contributing-mapping", action="append", default=[],
+        metavar="ROLE=PATH",
+        help=(
+            "a contributing source's own mapping document for a "
+            "cross-source composition, under the mapping_role its "
+            "field_sources binding declares; the bytes must hash to the "
+            "SHA-256 the composition pins"
+        ),
+    )
     parser.add_argument("--input-manifest", type=Path, required=True)
     parser.add_argument("--input-manifest-sha256", required=True)
     parser.add_argument("--grib1-bridge", type=Path)
     parser.add_argument("--grib2-inventory", type=Path)
     parser.add_argument("--grib2-dump", type=Path)
+    parser.add_argument(
+        "--mapped-engine", choices=_ENGINES, default=None,
+        help=(
+            "which engine decodes the source bytes; omitted, the default "
+            "engine runs. `python` is a WORKAROUND, not a mode: it runs "
+            "the slower Python decode path and is here so a decode the "
+            "Rust engine gets wrong has a way around it while the defect "
+            "is fixed"),
+    )
     parser.add_argument("--wps-namelist", type=Path, required=True)
     # --geog-root stays required even with a prebuilt static cache: the proof
     # binds the resolved geog dataset paths, and child domains in a hierarchy
@@ -922,7 +1265,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument(
         "--preprocess-backend", choices=("cuda", "cpu", "auto"),
-        default="cuda",
+        default="auto",
+        help="where the source-grid/WRF-real setup transforms run "
+             "(default auto: CUDA when the certified runtime is usable, "
+             "otherwise the deterministic parallel CPU backend, "
+             "announced in one line)",
     )
     parser.add_argument("--preprocess-workers", type=int)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
@@ -930,9 +1277,24 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+@owns_source_coverage_refusal
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.mapped_engine is not None:
+        # Published into the environment rather than threaded through
+        # `prepare_mapped_wrf`: the design freezes that signature, and
+        # the environment variable is the SAME switch a library caller
+        # uses, so the flag and the documented workaround cannot drift
+        # into meaning different things.
+        os.environ[_ENGINE_ENV] = args.mapped_engine
+    if args.input_list is not None:
+        # Resolved before any other input is opened, so a bad list file
+        # is refused at the door rather than after the mapping loads.
+        try:
+            args.primary_files = read_input_list(args.input_list)
+        except ValueError as error:
+            parser.error(str(error))
     mapping = load_mapping(args.mapping)
     if mapping["format"] != args.source_format:
         parser.error(
@@ -944,18 +1306,61 @@ def main(argv: Sequence[str] | None = None) -> int:
         "grib2_inventory": args.grib2_inventory,
         "grib2_dump": args.grib2_dump,
     }
-    required_decoders = {
+    present_decoders = {
+        name for name, value in decoder_values.items() if value is not None
+    }
+    # On the Rust engine no subprocess decoder runs, so demanding paths
+    # to one is the staged-tool papercut again: a refusal asking for
+    # executables nothing is going to launch.  The flags stay ACCEPTED
+    # (supplying one is how a caller pins a tool, which routes the call
+    # to the Python engine) but they stop being required.
+    # ``compose`` unconditionally, because `prepare_mapped_wrf` composes
+    # unconditionally -- contributing mappings only widen the format
+    # union, they are not what makes this route a composition.  Asking
+    # ``decode`` for the single-source spelling is what let this
+    # validator wave a bare GRIB2 call through on the Rust engine that
+    # the route then handed to the Python engine with no tools, so the
+    # refusal arrived nineteen frames deep in the decoder contract
+    # instead of here.
+    engine_decodes_in_process = (
+        not present_decoders
+        and _mapped_engine_choice(
+            grib1_bridge=args.grib1_bridge,
+            grib2_inventory=args.grib2_inventory,
+            grib2_dump=args.grib2_dump,
+            subcommand=_ROUTE_SUBCOMMAND,
+            source_format=args.source_format,
+        ) == _ENGINE_RUST
+    )
+    required_decoders = set() if engine_decodes_in_process else {
         "grib1": {"grib1_bridge"},
         "grib2": {"grib2_inventory", "grib2_dump"},
         "netcdf": set(),
     }[args.source_format]
-    present_decoders = {
-        name for name, value in decoder_values.items() if value is not None
-    }
-    if present_decoders != required_decoders:
-        parser.error(
-            f"{args.source_format} requires decoder flags "
-            f"{sorted(required_decoders)}, got {sorted(present_decoders)}"
+    # Stated as the decoder-contract refusal rather than as an argparse
+    # usage error, and in the same sentence the route's own contract
+    # uses.  A bare `usage: ... error: grib2 requires decoder flags` is
+    # the staged-tool papercut in its original form: it demands a flag
+    # pointing at a file the reader may not have, and says nothing about
+    # getting one.  `gpuwm prep` resolves these through the shared
+    # ladder and forwards them, so this door is reached bare only by a
+    # hand-written call -- which deserves the estate answer, not a
+    # vocabulary complaint.
+    if not args.contributing_mapping:
+        unsatisfied = present_decoders != required_decoders
+    else:
+        # A contributing source may decode a different format, so extra
+        # decoder flags are arbitrated by the exact format union inside
+        # prepare_mapped_wrf; the primary's own decoders stay mandatory.
+        unsatisfied = not required_decoders <= present_decoders
+    if unsatisfied:
+        raise _decoder_inventory_refusal(
+            f"{args.source_format} decoder inventory differs from the "
+            f"contract; missing={sorted(required_decoders - present_decoders)}"
+            f", extra={sorted(present_decoders - required_decoders)}",
+            (args.source_format,),
+            missing=required_decoders - present_decoders,
+            extra=present_decoders - required_decoders,
         )
     if args.preprocess_workers is not None and args.preprocess_workers <= 0:
         parser.error("--preprocess-workers must be positive")
@@ -972,6 +1377,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         supplements = _role_bindings(args.supplement, multiple=True)
         provenance = _role_bindings(args.provenance, multiple=False)
+        contributing = _role_bindings(
+            args.contributing_mapping, multiple=False,
+        )
     except ValueError as error:
         parser.error(str(error))
     proof = prepare_mapped_wrf(
@@ -980,6 +1388,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         primary_files=args.primary_files,
         supplement_files=supplements,
         provenance_files=provenance,
+        contributing_mappings=contributing,
         input_manifest=args.input_manifest,
         input_manifest_sha256=args.input_manifest_sha256,
         grib1_bridge=args.grib1_bridge,

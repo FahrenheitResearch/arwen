@@ -38,6 +38,88 @@ import zipfile
 
 _PINS_MEMBER = "gpuwm/data/bridges/bridge-pins.json"
 
+#: PyPI's per-file cap, taken at its STRICTER reading.  "100 MB" is
+#: spelled 100,000,000 B in some of warehouse's own copy and
+#: 104,857,600 B (100 MiB) in others, and a cut must not depend on
+#: which one the index means that day, so the decimal number is the
+#: one enforced here and both headrooms are recorded.
+PYPI_FILE_CAP_BYTES = 100_000_000
+PYPI_FILE_CAP_BYTES_BINARY = 104_857_600
+
+#: How a platform-tagged wheel is told from the universal one.  The
+#: universal wheel is the only artifact PyPI receives today.
+_UNIVERSAL_WHEEL_TAG = "-py3-none-any.whl"
+
+#: Where the staged Rust artifacts live inside a distribution.
+_STAGED_MEMBER_PREFIX = "gpuwm/libexec/bridges/"
+
+
+def _size_record(path: Path, *, published: bool) -> dict:
+    """Bytes, hash and cap verdict for one distribution file."""
+
+    size = path.stat().st_size
+    return {
+        "filename": path.name,
+        "bytes": size,
+        "sha256": _sha256(path),
+        "published": published,
+        "cap_verdict": "PASS" if size <= PYPI_FILE_CAP_BYTES else "OVER",
+        "headroom_bytes_vs_100e6": PYPI_FILE_CAP_BYTES - size,
+        "headroom_bytes_vs_100MiB": PYPI_FILE_CAP_BYTES_BINARY - size,
+    }
+
+
+def _refuse_over_cap(records: list[dict]) -> None:
+    """A file PyPI will reject must fail here, not after the tag is public.
+
+    The upload is the last step of a cut: the tag is pushed, the GitHub
+    release assets are written, and only then does twine hand PyPI the
+    wheel and the sdist.  A file over the cap fails there, with the tag
+    already public and non-reproducible Rust builds behind it -- the
+    burned-tag shape this project has paid for before.  The published
+    pair today has 8.07 MB of headroom on the wheel and 4.76 MB on the
+    sdist, so this is not theoretical margin.
+    """
+
+    over = [record for record in records
+            if record["published"] and record["cap_verdict"] == "OVER"]
+    if not over:
+        return
+    lines = [
+        f"  {record['filename']}: {record['bytes']:,} B, over by "
+        f"{-record['headroom_bytes_vs_100e6']:,} B"
+        for record in over
+    ]
+    raise SystemExit(
+        f"{len(over)} distribution file(s) exceed PyPI's "
+        f"{PYPI_FILE_CAP_BYTES:,} B per-file cap and would be rejected at "
+        "upload, after the tag is public:\n" + "\n".join(lines)
+        + "\nMove the next bulk data directory into "
+          "gpuwm.data_assets.COMPANION_TREES and rebuild both "
+          "distributions -- the route that split gpuwm-data out in 2.5.0 "
+          "when the single wheel reached 103.62 MiB -- or externalise a "
+          "table through `gpuwm fetch-tables` (the route freezeH2O.dat "
+          "and qr_acr_qg_V4.dat already take).  Do not drop a decoder.")
+
+
+def _sibling_distributions(directory: Path, published: set[str]) -> list[Path]:
+    """Distribution files in ``directory`` that are not the published pair.
+
+    A platform wheel is built beside the pure one often enough that the
+    cut should say what it measured rather than ignore it: at this tip
+    the platform pair does not fit under the cap, and a receipt that
+    only ever mentions the universal wheel makes that invisible.
+    """
+
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path for path in directory.iterdir()
+        if path.is_file()
+        and path.name not in published
+        and (path.name.endswith(".whl") or path.name.endswith(".tar.gz"))
+    )
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -115,6 +197,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "naming exactly this commit")
     parser.add_argument("--repo-root", type=Path)
     parser.add_argument("--stage", type=Path)
+    parser.add_argument(
+        "--dist-dir", type=Path, default=None,
+        help="directory the distributions were built into (default: the "
+             "wheel's own directory).  Every distribution file in it is "
+             "measured against PyPI's per-file cap, so a platform pair "
+             "built beside the published pair is reported rather than "
+             "silently ignored")
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -145,6 +234,18 @@ def main(argv: list[str] | None = None) -> int:
     stage = None if args.stage is None else args.stage.resolve()
     receipt_path = args.receipt.resolve()
 
+    dist_dir = (args.dist_dir.resolve() if args.dist_dir is not None
+                else wheel.parent)
+
+    # Size before content: a file PyPI will reject is a cut that dies
+    # after the tag is public, and it costs nothing to know first.
+    distributions = [_size_record(wheel, published=True),
+                     _size_record(sdist, published=True)]
+    for sibling in _sibling_distributions(dist_dir,
+                                          {wheel.name, sdist.name}):
+        distributions.append(_size_record(sibling, published=False))
+    _refuse_over_cap(distributions)
+
     expected_pins = pins_path.read_bytes()
     pins_document = json.loads(expected_pins)
     manifest_document = json.loads(manifest_path.read_bytes())
@@ -153,6 +254,13 @@ def main(argv: list[str] | None = None) -> int:
     assert pins_document["release"] == args.release
     assert manifest_document["release"] == args.release
     assert manifest_document["platforms"] == pins_document["platforms"]
+
+    # The per-file cap is enforced ONCE, by `_refuse_over_cap` above, and
+    # this is where a second copy of that check used to sit.  Two checks
+    # against two spellings of "100 MB" is how a cut learns the looser one
+    # never fires: the decimal cap refuses first, so a 100 MiB loop here
+    # could only ever be dead code carrying a different remedy sentence.
+    # The remedy it carried is now the one `_refuse_over_cap` prints.
 
     # The wheel carries the exact generated bytes, and RECORD binds their hash
     # and size rather than merely naming the member.
@@ -382,19 +490,31 @@ def main(argv: list[str] | None = None) -> int:
         "binaries_proved_by_contract_marker": sorted(vendored_by_marker),
         "installed_module": str(installed),
         "installed_version": gpuwm.__version__ if not args.dry_run else None,
+        # Bytes and hash come from the size pass above rather than being
+        # recomputed: these are 90+ MB files and hashing each twice buys
+        # nothing.
         "wheel": {
             "filename": wheel.name,
-            "bytes": wheel.stat().st_size,
-            "sha256": _sha256(wheel),
+            "bytes": distributions[0]["bytes"],
+            "sha256": distributions[0]["sha256"],
             "pins_bytes_exact": True,
             "record_digest_and_size_exact": True,
         },
         "sdist": {
             "filename": sdist.name,
-            "bytes": sdist.stat().st_size,
-            "sha256": _sha256(sdist),
+            "bytes": distributions[1]["bytes"],
+            "sha256": distributions[1]["sha256"],
             "pins_bytes_exact": True,
         },
+        # Every distribution file in the dist directory, published or
+        # not, against PyPI's per-file cap.  Additive to v2: the two
+        # keys above still describe the published pair, and this says
+        # what else was sitting beside it -- a platform wheel built in
+        # the same tree is 108-112 MB at this tip and would be rejected
+        # at upload, which a receipt naming only the universal wheel
+        # could not show.
+        "pypi_file_cap_bytes": PYPI_FILE_CAP_BYTES,
+        "distributions": distributions,
         "pins": {
             "filename": pins_path.name,
             "bytes": pins_path.stat().st_size,

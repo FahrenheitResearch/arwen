@@ -24,8 +24,9 @@ from pathlib import Path
 import re
 import tempfile
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
+from gpuwm.ingest.source_coverage import ForcingSeriesRefusal
 from gpuwm.mapped_source import (
     MappedSourceFrame,
     _DecodedCollection,
@@ -107,7 +108,8 @@ def discover_20crv3_grib2(source_root: str | Path) -> dict[str, object]:
         raise ValueError(f"20CRv3 pressure/surface pairing gaps: {incomplete}")
     times = tuple(sorted(by_time))
     if len(times) < 2:
-        raise ValueError("20CRv3 lateral boundaries require at least two times")
+        raise ForcingSeriesRefusal(
+            "20CRv3 lateral boundaries require at least two times")
     deltas = tuple(
         int((later - earlier).total_seconds())
         for earlier, later in zip(times, times[1:])
@@ -346,10 +348,19 @@ def _expected_inventory(
 def _verify_archive_inventory(
     document: Mapping[str, object],
     sources: Sequence[Path],
-    inventory_executable: Path,
+    inventory_rows: "Callable[[Path], Sequence[Mapping[str, str]]]",
     pressure_levels: Sequence[float],
 ) -> dict[str, object]:
-    """Bind the exact supplied every-member GRIB2 product identity."""
+    """Bind the exact supplied every-member GRIB2 product identity.
+
+    ``inventory_rows`` is the measurement instrument: the engine's raw
+    record-inventory surface on the bare default
+    (:func:`gpuwm.mapped_engine_bridge.engine_record_inventory`), the
+    subprocess ``grib2_inventory`` on the documented Python-engine
+    workaround.  Both render the same row vocabulary in the same
+    spellings, so this gate's contract and refusal wording are identical
+    whichever instrument measured the bytes.
+    """
 
     manifest_rows = {
         Path(row["path"]).resolve(): row for row in document["files"]
@@ -367,7 +378,7 @@ def _verify_archive_inventory(
             raise ValueError(f"20CRv3 inventory source is absent from manifest: {source}")
         role = str(row_authority["role"])
         valid_time = datetime.fromisoformat(str(row_authority["valid_time"]))
-        rows = _grib2_inventory(source, inventory_executable)
+        rows = list(inventory_rows(source))
         indices = [int(row["index"]) for row in rows]
         if indices != list(range(len(rows))):
             raise ValueError(f"20CRv3 {source.name} field indices are not contiguous")
@@ -489,7 +500,7 @@ def decode_20crv3_grib2(
     archive_inventory = _verify_archive_inventory(
         document,
         sources,
-        inventory,
+        lambda source: _grib2_inventory(source, inventory),
         mapping_document["coordinates"]["vertical"]["levels"],
     )
     decoded = _decode_grib(

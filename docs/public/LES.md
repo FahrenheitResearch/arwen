@@ -420,12 +420,26 @@ argument does not rest on it.
 
 What ships instead is a clean set plus a check that keeps it clean:
 `tests/test_shipped_configs_mixing_stability.py` fails if any config
-under `configs/` arrives on the exposed path, and `gpuwm check` now
-repeats the advisory in its report (and under `advisories` in `--json`)
-rather than leaving it as one line at config load. The check reads the
+under `configs/` arrives on the exposed path, and `gpuwm check`
+repeats the mixing lines in its report (and under `advisories` in
+`--json`) rather than leaving them at config load. The check reads the
 layer depths from the config's eta ladder, and **resolves that ladder
 from `nz`/`ztop` when a config does not write one out** — a config is
 not safer for having left the interfaces implicit.
+
+**The stable length is the default (auto-switch, 2026-08-16).** A
+domain that leaves `mix_isotropic` unset — or writes the sentinel
+`"auto"` — and violates the criterion **runs `mix_isotropic = 1`**: the
+selection is made once at config load, announced with one line naming
+the ratio and the limit, and `gpuwm check` reports that the run WILL
+use isotropic mixing rather than advising that something is wrong. A
+config that **writes `mix_isotropic = 0` keeps it**, in the danger zone
+too; what it gets is the advisory above, now carrying the override
+state. Because `mix_isotropic` is inside the restart fingerprint, a
+checkpoint written under the old anisotropic default does not
+bit-continue under the auto-selected isotropic form — both restart
+doors say so in one line, and writing `mix_isotropic = 0` explicitly is
+the way to resume such a checkpoint.
 
 **The receipts on this page belong to the pre-change bytes.** Every
 measured nested number in §2 was produced with `mix_isotropic = 0`; the

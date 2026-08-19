@@ -83,7 +83,21 @@ fn head_of_clean_checkout() -> Option<String> {
     // Tracked modifications under this workspace mean the binary is not
     // HEAD, whatever HEAD says.  Untracked files (target/, dist output)
     // do not enter the build of tracked sources and are ignored.
-    let dirty = git(&["status", "--porcelain", "-uno", "--", "."])?;
+    //
+    // The second pathspec is the converged GRIB decoder, which is ONE
+    // crate for the whole tree and lives in the bridge workspace.  It is
+    // compiled into binaries built here, so a modified decoder makes
+    // this binary something other than HEAD even though nothing under
+    // this workspace changed.  Naming it is what keeps the release cut's
+    // staleness refusal true after the two vendored copies converged.
+    let dirty = git(&[
+        "status",
+        "--porcelain",
+        "-uno",
+        "--",
+        ".",
+        "../grib1_bridge/vendor/grib-core",
+    ])?;
     if !dirty.is_empty() {
         return None;
     }

@@ -103,7 +103,10 @@ def _classic_table_root():
     override = os.environ.get("GPUWM_THOMPSON_TABLE_ROOT")
     if override:
         candidates.append(Path(override))
-    candidates.append(_REPO / "gpuwm" / "data" / "thompson" / "tables")
+    # Resolved rather than joined: the packaged classic-table directory
+    # ships in the gpuwm-data companion distribution since 2.5.0.
+    from gpuwm.physics_compat import packaged_thompson_table_root
+    candidates.append(packaged_thompson_table_root())
     for root in candidates:
         if all((root / asset.filename).is_file()
                for asset in CLASSIC_TABLE_ASSETS):

@@ -459,17 +459,28 @@ def test_identical_wrfout_comparison_and_required_maps(tmp_path):
     )
 
     nz, ny, nx = 8, 5, 6
+    # The PRODUCTION global-attribute set, not a bare one: the Task 13
+    # panels are drawn by rw_wrfbatch now, and its fail-closed importer
+    # refuses a file with no START_DATE/GRID_ID/DX.  A fixture the real
+    # engine cannot read would make the map half of this test a silent
+    # no-op wherever the renderer IS usable.
     attrs = {
         "MAP_PROJ": 1, "TRUELAT1": 30.0, "TRUELAT2": 60.0,
         "STAND_LON": -83.9297, "MOAD_CEN_LAT": 38.0,
         "CEN_LAT": 38.0, "CEN_LON": -97.0,
         "POLE_LAT": 90.0, "POLE_LON": 0.0,
+        "GRID_ID": 1, "PARENT_ID": 1, "DX": 12000.0, "DY": 12000.0,
+        "I_PARENT_START": 1, "J_PARENT_START": 1, "PARENT_GRID_RATIO": 1,
+        "DT": 60.0, "TITLE": " OUTPUT FROM GPUWM",
+        "START_DATE": "1974-04-04_00:00:00",
+        "SIMULATION_START_DATE": "1974-04-04_00:00:00",
     }
     paths = []
     for hour, rain in ((6, 1.0), (12, 4.5)):
         path = tmp_path / f"wrfout_d01_1974-04-04_{hour:02d}_00_00"
         frame = _synthetic_real_frame(nz, ny, nx)
         frame["RAINNC"] = np.full((ny, nx), rain, np.float32)
+        frame["RAINC"] = np.full((ny, nx), rain / 4.0, np.float32)
         with WrfoutWriter(
                 path, nx=nx, ny=ny, nz=nz, dx=12000.0, dy=12000.0,
                 global_attrs=attrs) as writer:
@@ -483,12 +494,25 @@ def test_identical_wrfout_comparison_and_required_maps(tmp_path):
     assert metrics.v_rmse_ms == {500: 0.0, 700: 0.0, 850: 0.0}
     assert metrics.mslp_pattern_correlation == pytest.approx(1.0)
 
+    # The Task 13 panels come from the production Rust renderer now
+    # (render law, CLAUDE.md Drew 2026-08-06; audit F6), so their names
+    # are the engine's and the case declares only WHICH charts it wants.
+    # With no usable renderer this door draws nothing and says so, which
+    # is the lawful degradation -- the metrics above are the product of
+    # `gpuwm verify`, the panels are its evidence.
+    from gpuwm import render as render_module
+    from gpuwm.verify.cases.real74_d01 import _SYNOPTIC_MAP_SPEC
+
+    try:
+        render_module.require_renderer()
+    except RuntimeError as refusal:
+        pytest.skip(f"this tree's renderer is not usable: "
+                    f"{str(refusal).splitlines()[0]}")
     maps = make_task13_maps(paths[-1], paths[0], tmp_path / "maps")
-    assert {path.name for path in maps} == {
-        "real74_mslp_t2.png",
-        "real74_500hpa.png",
-        "real74_precip_6h.png",
-    }
+    assert maps, "the renderer resolved and still drew no panel"
+    names = [path.name for path in maps]
+    for slug in _SYNOPTIC_MAP_SPEC.products:
+        assert any(slug in name for name in names), (slug, names)
     assert all(path.is_file() and path.stat().st_size > 1000 for path in maps)
 
 

@@ -168,6 +168,72 @@ def _repeated(value, count: int) -> str:
     return _column([value] * count)
 
 
+#: Every switch the route's physics gate reads -- resolved per domain
+#: at emission, per shipped profile at the wizard's pairing gate.
+ROUTE_GATED_SWITCHES = (*REQUIRED_PHYSICS, "bl_pbl_physics",
+                        "ra_lw_physics", "ra_sw_physics", "mp_physics")
+
+
+def route_physics_problems(switches, *, label: str = "") -> list[str]:
+    """The route's objections to one resolved switch set, or ``[]``.
+
+    THE one spelling of the physics slice this route admits.
+    :func:`validate_route_physics` applies it to every domain of a real
+    experiment at emission, and the wizard's pairing predicate
+    (``gpuwm.domain_wizard.profile_route_blocker``) applies it to a
+    shipped profile's switch table both when refusing a pairing and
+    when RANKING lighter-suite advice.  One predicate, shared, so a
+    refusal can never advise a suite this gate turns away and the two
+    readings can never drift.
+    """
+
+    problems = []
+    for switch, required in REQUIRED_PHYSICS.items():
+        observed = switches[switch]
+        if int(observed) != required:
+            problems.append(
+                f"{label}{switch}={observed} "
+                f"(the route requires {required})")
+    pbl = int(switches["bl_pbl_physics"])
+    if pbl not in ADMITTED_PBL_PHYSICS:
+        problems.append(
+            f"{label}bl_pbl_physics={pbl} (the route "
+            f"admits {sorted(ADMITTED_PBL_PHYSICS)}, each pinned by a "
+            "registered HRRR preparation profile)")
+    pair = (int(switches["ra_lw_physics"]), int(switches["ra_sw_physics"]))
+    if pair not in ADMITTED_RADIATION_PAIRS:
+        problems.append(
+            f"{label}(ra_lw_physics, ra_sw_physics)="
+            f"{pair} (the route admits "
+            f"{sorted(ADMITTED_RADIATION_PAIRS)})")
+    if int(switches["mp_physics"]) not in SUPPORTED_MICROPHYSICS:
+        problems.append(
+            f"{label}mp_physics={switches['mp_physics']} "
+            f"(the route supports "
+            f"{sorted(SUPPORTED_MICROPHYSICS)})")
+    return problems
+
+
+def route_physics_blocker(switches) -> str | None:
+    """Why this switch set cannot drive the nested HRRR route, or None.
+
+    The profile-level projection of :func:`validate_route_physics`, for
+    callers holding a suite's switch table rather than a whole
+    experiment -- the wizard's pairing predicate.  The offending
+    switches ride in the FIRST clause, ahead of the layered remedy,
+    because a refusal that hides them behind ``--explain`` names no
+    breakage.
+    """
+
+    problems = route_physics_problems(switches)
+    if not problems:
+        return None
+    return ("this suite cannot drive the nested HRRR route -- "
+            + "; ".join(problems)
+            + ": pass --physics-profile with a route-compatible suite "
+              "(the wizard's --source hrrr default is one)")
+
+
 def validate_route_physics(exp) -> None:
     """Refuse, at emission, a suite the route's own gate will refuse.
 
@@ -178,29 +244,10 @@ def validate_route_physics(exp) -> None:
     problems = []
     for domain in exp.domains:
         run = domain.run
-        for switch, required in REQUIRED_PHYSICS.items():
-            observed = getattr(run, switch)
-            if int(observed) != required:
-                problems.append(
-                    f"d{domain.grid_id:02d} {switch}={observed} "
-                    f"(the route requires {required})")
-        pbl = int(run.bl_pbl_physics)
-        if pbl not in ADMITTED_PBL_PHYSICS:
-            problems.append(
-                f"d{domain.grid_id:02d} bl_pbl_physics={pbl} (the route "
-                f"admits {sorted(ADMITTED_PBL_PHYSICS)}, each pinned by a "
-                "registered HRRR preparation profile)")
-        pair = (int(run.ra_lw_physics), int(run.ra_sw_physics))
-        if pair not in ADMITTED_RADIATION_PAIRS:
-            problems.append(
-                f"d{domain.grid_id:02d} (ra_lw_physics, ra_sw_physics)="
-                f"{pair} (the route admits "
-                f"{sorted(ADMITTED_RADIATION_PAIRS)})")
-        if int(run.mp_physics) not in SUPPORTED_MICROPHYSICS:
-            problems.append(
-                f"d{domain.grid_id:02d} mp_physics={run.mp_physics} "
-                f"(the route supports "
-                f"{sorted(SUPPORTED_MICROPHYSICS)})")
+        problems.extend(route_physics_problems(
+            {switch: getattr(run, switch)
+             for switch in ROUTE_GATED_SWITCHES},
+            label=f"d{domain.grid_id:02d} "))
     if exp.feedback != 0 or exp.smooth_option != 0:
         problems.append(
             f"feedback={exp.feedback}, smooth_option={exp.smooth_option} "
@@ -881,6 +928,8 @@ __all__ = [
     "render_namelist_input",
     "render_target_domain",
     "route_input_paths",
+    "route_physics_blocker",
+    "route_physics_problems",
     "validate_route_physics",
     "verify_axis_authored_keys",
     "verify_round_trip",

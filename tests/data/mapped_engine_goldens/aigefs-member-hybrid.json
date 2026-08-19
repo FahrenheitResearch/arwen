@@ -1,0 +1,569 @@
+{
+  "decode": {
+    "mapping": {
+      "name": "rw-wps-aigefs-member-hybrid-grib2.mapping.json",
+      "sha256": "2d5df9b66b465e72934b97d5f91904fb17bd5137ef885011831b4c698085d5bc"
+    },
+    "refusal": {
+      "message": "fields ['land_fraction', 'skin_temperature', 'soil_temperature', 'specific_humidity_2m', 'terrain_height', 'volumetric_soil_moisture'] are composition_bound: this mapping cannot materialize alone, because those values live in another packaged source's decode; a cross-source composition must bind each of them to a contributing source",
+      "type": "ValueError"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "aigefs-member-hybrid",
+    "verdict": "REFUSED"
+  },
+  "inspect": {
+    "inspection": {
+      "frames": [
+        {
+          "decoded_direct_fields": [
+            "air_temperature",
+            "air_temperature_2m",
+            "eastward_wind",
+            "eastward_wind_10m",
+            "geopotential_height",
+            "northward_wind",
+            "northward_wind_10m",
+            "specific_humidity",
+            "surface_pressure"
+          ],
+          "fields": {
+            "air_temperature": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 316.16,
+              "minimum": 181.70000000000002,
+              "missing": 0,
+              "sha256": "7233194ca2215fc284939bbfdda7f99beadac069a2ed642af3ae920beb10498d",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.pres.f000.grib2:26",
+                "mem001.aigefs.t00z.pres.f000.grib2:27",
+                "mem001.aigefs.t00z.pres.f000.grib2:28",
+                "mem001.aigefs.t00z.pres.f000.grib2:29",
+                "mem001.aigefs.t00z.pres.f000.grib2:30",
+                "mem001.aigefs.t00z.pres.f000.grib2:31",
+                "mem001.aigefs.t00z.pres.f000.grib2:32",
+                "mem001.aigefs.t00z.pres.f000.grib2:33",
+                "mem001.aigefs.t00z.pres.f000.grib2:34",
+                "mem001.aigefs.t00z.pres.f000.grib2:35",
+                "mem001.aigefs.t00z.pres.f000.grib2:36",
+                "mem001.aigefs.t00z.pres.f000.grib2:37",
+                "mem001.aigefs.t00z.pres.f000.grib2:38"
+              ]
+            },
+            "air_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 314.70000000000005,
+              "minimum": 213.5,
+              "missing": 0,
+              "sha256": "068ef5205b2eebc1fedeabb74c317b88799839fd02d80da89011927aeac1aa29",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.sfc.f000.grib2:2"
+              ]
+            },
+            "eastward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 89.1169,
+              "minimum": -48.703,
+              "missing": 0,
+              "sha256": "b18217532e1b478c4e2d7776d880b6f1e3ae83c9b7bb680e0b5bb8cf334efc18",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.pres.f000.grib2:39",
+                "mem001.aigefs.t00z.pres.f000.grib2:40",
+                "mem001.aigefs.t00z.pres.f000.grib2:41",
+                "mem001.aigefs.t00z.pres.f000.grib2:42",
+                "mem001.aigefs.t00z.pres.f000.grib2:43",
+                "mem001.aigefs.t00z.pres.f000.grib2:44",
+                "mem001.aigefs.t00z.pres.f000.grib2:45",
+                "mem001.aigefs.t00z.pres.f000.grib2:46",
+                "mem001.aigefs.t00z.pres.f000.grib2:47",
+                "mem001.aigefs.t00z.pres.f000.grib2:48",
+                "mem001.aigefs.t00z.pres.f000.grib2:49",
+                "mem001.aigefs.t00z.pres.f000.grib2:50",
+                "mem001.aigefs.t00z.pres.f000.grib2:51"
+              ]
+            },
+            "eastward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 23.54,
+              "minimum": -24.84,
+              "missing": 0,
+              "sha256": "c1427245a5197cd9301dc9a8e17946eb46ee640832ce9d6a8a7c6524cdc0541e",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.sfc.f000.grib2:0"
+              ]
+            },
+            "geopotential_height": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 21140.6425,
+              "minimum": -410.004453125,
+              "missing": 0,
+              "sha256": "a9dcbedf69e0c461928179898be58850293280f537c2ce39dec727c22e67a8d0",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.pres.f000.grib2:0",
+                "mem001.aigefs.t00z.pres.f000.grib2:1",
+                "mem001.aigefs.t00z.pres.f000.grib2:2",
+                "mem001.aigefs.t00z.pres.f000.grib2:3",
+                "mem001.aigefs.t00z.pres.f000.grib2:4",
+                "mem001.aigefs.t00z.pres.f000.grib2:5",
+                "mem001.aigefs.t00z.pres.f000.grib2:6",
+                "mem001.aigefs.t00z.pres.f000.grib2:7",
+                "mem001.aigefs.t00z.pres.f000.grib2:8",
+                "mem001.aigefs.t00z.pres.f000.grib2:9",
+                "mem001.aigefs.t00z.pres.f000.grib2:10",
+                "mem001.aigefs.t00z.pres.f000.grib2:11",
+                "mem001.aigefs.t00z.pres.f000.grib2:12"
+              ]
+            },
+            "northward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 78.93,
+              "minimum": -82.16,
+              "missing": 0,
+              "sha256": "39254a2915eec5c3f15724381adbf5e8560799d8f68204d95f7666b490246cf5",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.pres.f000.grib2:52",
+                "mem001.aigefs.t00z.pres.f000.grib2:53",
+                "mem001.aigefs.t00z.pres.f000.grib2:54",
+                "mem001.aigefs.t00z.pres.f000.grib2:55",
+                "mem001.aigefs.t00z.pres.f000.grib2:56",
+                "mem001.aigefs.t00z.pres.f000.grib2:57",
+                "mem001.aigefs.t00z.pres.f000.grib2:58",
+                "mem001.aigefs.t00z.pres.f000.grib2:59",
+                "mem001.aigefs.t00z.pres.f000.grib2:60",
+                "mem001.aigefs.t00z.pres.f000.grib2:61",
+                "mem001.aigefs.t00z.pres.f000.grib2:62",
+                "mem001.aigefs.t00z.pres.f000.grib2:63",
+                "mem001.aigefs.t00z.pres.f000.grib2:64"
+              ]
+            },
+            "northward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 25.03,
+              "minimum": -25.13,
+              "missing": 0,
+              "sha256": "b2cbc283b3d64babb2d246eea03e5a0b3d778eb5ddda570cfef1531603de44d7",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.sfc.f000.grib2:1"
+              ]
+            },
+            "specific_humidity": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.03514330879882813,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "683720b3fd583783232ddc30332f1af629d0f1a1abbe26779a56d04a88462c90",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.pres.f000.grib2:13",
+                "mem001.aigefs.t00z.pres.f000.grib2:14",
+                "mem001.aigefs.t00z.pres.f000.grib2:15",
+                "mem001.aigefs.t00z.pres.f000.grib2:16",
+                "mem001.aigefs.t00z.pres.f000.grib2:17",
+                "mem001.aigefs.t00z.pres.f000.grib2:18",
+                "mem001.aigefs.t00z.pres.f000.grib2:19",
+                "mem001.aigefs.t00z.pres.f000.grib2:20",
+                "mem001.aigefs.t00z.pres.f000.grib2:21",
+                "mem001.aigefs.t00z.pres.f000.grib2:22",
+                "mem001.aigefs.t00z.pres.f000.grib2:23",
+                "mem001.aigefs.t00z.pres.f000.grib2:24",
+                "mem001.aigefs.t00z.pres.f000.grib2:25"
+              ]
+            },
+            "surface_pressure": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 104041.625,
+              "minimum": 50795.225000000006,
+              "missing": 0,
+              "sha256": "6e1ac25c5e49021890ce69b31f551600af02a22bb5eeb8d36cdc2ebd0e43510a",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.sfc.f000.grib2:4"
+              ]
+            }
+          },
+          "member": "1",
+          "source_cycle": "2026-08-17T00:00:00",
+          "unresolved_direct_fields": [
+            "land_fraction",
+            "skin_temperature",
+            "soil_temperature",
+            "specific_humidity_2m",
+            "terrain_height",
+            "volumetric_soil_moisture"
+          ],
+          "valid_time": "2026-08-17T00:00:00"
+        },
+        {
+          "decoded_direct_fields": [
+            "air_temperature",
+            "air_temperature_2m",
+            "eastward_wind",
+            "eastward_wind_10m",
+            "geopotential_height",
+            "northward_wind",
+            "northward_wind_10m",
+            "specific_humidity",
+            "surface_pressure"
+          ],
+          "fields": {
+            "air_temperature": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 320.19,
+              "minimum": 181.29,
+              "missing": 0,
+              "sha256": "3f1ab2175821fec22f41dbc9bf953bc597222d92a9690222d383661bdcf2e193",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.pres.f006.grib2:26",
+                "mem001.aigefs.t00z.pres.f006.grib2:27",
+                "mem001.aigefs.t00z.pres.f006.grib2:28",
+                "mem001.aigefs.t00z.pres.f006.grib2:29",
+                "mem001.aigefs.t00z.pres.f006.grib2:30",
+                "mem001.aigefs.t00z.pres.f006.grib2:31",
+                "mem001.aigefs.t00z.pres.f006.grib2:32",
+                "mem001.aigefs.t00z.pres.f006.grib2:33",
+                "mem001.aigefs.t00z.pres.f006.grib2:34",
+                "mem001.aigefs.t00z.pres.f006.grib2:35",
+                "mem001.aigefs.t00z.pres.f006.grib2:36",
+                "mem001.aigefs.t00z.pres.f006.grib2:37",
+                "mem001.aigefs.t00z.pres.f006.grib2:38"
+              ]
+            },
+            "air_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 318.6,
+              "minimum": 214.0,
+              "missing": 0,
+              "sha256": "b1eee7e21ea57105f680aef3851af7dbc74c7cd68d71c150120fcda5d462f6f8",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.sfc.f006.grib2:2"
+              ]
+            },
+            "eastward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 88.5467,
+              "minimum": -47.2488,
+              "missing": 0,
+              "sha256": "2364ce43d78ff8a54903a1ebffa58ad014360b468ce22237d563522647a73a72",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.pres.f006.grib2:39",
+                "mem001.aigefs.t00z.pres.f006.grib2:40",
+                "mem001.aigefs.t00z.pres.f006.grib2:41",
+                "mem001.aigefs.t00z.pres.f006.grib2:42",
+                "mem001.aigefs.t00z.pres.f006.grib2:43",
+                "mem001.aigefs.t00z.pres.f006.grib2:44",
+                "mem001.aigefs.t00z.pres.f006.grib2:45",
+                "mem001.aigefs.t00z.pres.f006.grib2:46",
+                "mem001.aigefs.t00z.pres.f006.grib2:47",
+                "mem001.aigefs.t00z.pres.f006.grib2:48",
+                "mem001.aigefs.t00z.pres.f006.grib2:49",
+                "mem001.aigefs.t00z.pres.f006.grib2:50",
+                "mem001.aigefs.t00z.pres.f006.grib2:51"
+              ]
+            },
+            "eastward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 22.13,
+              "minimum": -21.81,
+              "missing": 0,
+              "sha256": "a510fe40ac3c0fe6878b4fbec9fb467493251a5f86567e21b2daad44e93aff34",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.sfc.f006.grib2:0"
+              ]
+            },
+            "geopotential_height": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 21119.14875,
+              "minimum": -430.2283203125,
+              "missing": 0,
+              "sha256": "9385a52acd09620283b88395ac88ab0a5575fc47aa26c1d8ed9e7f1d43daa991",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.pres.f006.grib2:0",
+                "mem001.aigefs.t00z.pres.f006.grib2:1",
+                "mem001.aigefs.t00z.pres.f006.grib2:2",
+                "mem001.aigefs.t00z.pres.f006.grib2:3",
+                "mem001.aigefs.t00z.pres.f006.grib2:4",
+                "mem001.aigefs.t00z.pres.f006.grib2:5",
+                "mem001.aigefs.t00z.pres.f006.grib2:6",
+                "mem001.aigefs.t00z.pres.f006.grib2:7",
+                "mem001.aigefs.t00z.pres.f006.grib2:8",
+                "mem001.aigefs.t00z.pres.f006.grib2:9",
+                "mem001.aigefs.t00z.pres.f006.grib2:10",
+                "mem001.aigefs.t00z.pres.f006.grib2:11",
+                "mem001.aigefs.t00z.pres.f006.grib2:12"
+              ]
+            },
+            "northward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 76.18,
+              "minimum": -75.92,
+              "missing": 0,
+              "sha256": "142030fc19caf17d58986062b34da902fc24f5a87b06766489ee60d916610168",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.pres.f006.grib2:52",
+                "mem001.aigefs.t00z.pres.f006.grib2:53",
+                "mem001.aigefs.t00z.pres.f006.grib2:54",
+                "mem001.aigefs.t00z.pres.f006.grib2:55",
+                "mem001.aigefs.t00z.pres.f006.grib2:56",
+                "mem001.aigefs.t00z.pres.f006.grib2:57",
+                "mem001.aigefs.t00z.pres.f006.grib2:58",
+                "mem001.aigefs.t00z.pres.f006.grib2:59",
+                "mem001.aigefs.t00z.pres.f006.grib2:60",
+                "mem001.aigefs.t00z.pres.f006.grib2:61",
+                "mem001.aigefs.t00z.pres.f006.grib2:62",
+                "mem001.aigefs.t00z.pres.f006.grib2:63",
+                "mem001.aigefs.t00z.pres.f006.grib2:64"
+              ]
+            },
+            "northward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 21.13,
+              "minimum": -22.650000000000002,
+              "missing": 0,
+              "sha256": "6814af0cb23bd11b8ea456dc83c7283a9640722699c2ce384a51dc40168d7e2c",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.sfc.f006.grib2:1"
+              ]
+            },
+            "specific_humidity": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.03554752,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "c31e78ed9bf20cd0482e9e81d42c795b4f5b1c45e23dae53d2550c1f2b775418",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.pres.f006.grib2:13",
+                "mem001.aigefs.t00z.pres.f006.grib2:14",
+                "mem001.aigefs.t00z.pres.f006.grib2:15",
+                "mem001.aigefs.t00z.pres.f006.grib2:16",
+                "mem001.aigefs.t00z.pres.f006.grib2:17",
+                "mem001.aigefs.t00z.pres.f006.grib2:18",
+                "mem001.aigefs.t00z.pres.f006.grib2:19",
+                "mem001.aigefs.t00z.pres.f006.grib2:20",
+                "mem001.aigefs.t00z.pres.f006.grib2:21",
+                "mem001.aigefs.t00z.pres.f006.grib2:22",
+                "mem001.aigefs.t00z.pres.f006.grib2:23",
+                "mem001.aigefs.t00z.pres.f006.grib2:24",
+                "mem001.aigefs.t00z.pres.f006.grib2:25"
+              ]
+            },
+            "surface_pressure": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 103938.25,
+              "minimum": 50837.450000000004,
+              "missing": 0,
+              "sha256": "662d8f8aa81cab8503d73209a74f02b887375ebee09f85d5b53b6811718dc9df",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.sfc.f006.grib2:4"
+              ]
+            }
+          },
+          "member": "1",
+          "source_cycle": "2026-08-17T00:00:00",
+          "unresolved_direct_fields": [
+            "land_fraction",
+            "skin_temperature",
+            "soil_temperature",
+            "specific_humidity_2m",
+            "terrain_height",
+            "volumetric_soil_moisture"
+          ],
+          "valid_time": "2026-08-17T06:00:00"
+        }
+      ],
+      "grid": {
+        "fingerprint": "f391584a7d270a121a9f1b19cb91a2c521d995050945ad074a3cd716403d522e",
+        "nx": 1440,
+        "ny": 721,
+        "vertical_count": 13
+      },
+      "inputs": [
+        {
+          "bytes": 79644823,
+          "name": "mem001.aigefs.t00z.pres.f000.grib2",
+          "sha256": "5139df4f902f5896b10ec0e9cfe6c389d41e30b5e6f65969fec2e75eac8c5e1e"
+        },
+        {
+          "bytes": 90281968,
+          "name": "mem001.aigefs.t00z.pres.f006.grib2",
+          "sha256": "cf523ced1437705327824a65b81c0ce7b0fd5cb4452c2ccebeace7669db06555"
+        },
+        {
+          "bytes": 4040162,
+          "name": "mem001.aigefs.t00z.sfc.f000.grib2",
+          "sha256": "c30ea4e3c145bbf384a7401e6e5afff06f9b0cc571f927623313ca32fc5e9f00"
+        },
+        {
+          "bytes": 5191609,
+          "name": "mem001.aigefs.t00z.sfc.f006.grib2",
+          "sha256": "0d0effb92da78a7aceba383878dade3f03f75cd48ec1873f8f1b2dbb117dc2e8"
+        }
+      ],
+      "mapping": {
+        "name": "rw-wps-aigefs-member-hybrid-grib2.mapping.json",
+        "sha256": "2d5df9b66b465e72934b97d5f91904fb17bd5137ef885011831b4c698085d5bc"
+      },
+      "materialization": {
+        "error": "fields ['land_fraction', 'skin_temperature', 'soil_temperature', 'specific_humidity_2m', 'terrain_height', 'volumetric_soil_moisture'] are composition_bound: this mapping cannot materialize alone, because those values live in another packaged source's decode; a cross-source composition must bind each of them to a contributing source",
+        "error_type": "ValueError",
+        "verdict": "INCOMPLETE"
+      },
+      "schema": "gpuwm-mapped-source-inspection-v1",
+      "source_format": "grib2",
+      "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED",
+      "stock_wrf_certified": false
+    },
+    "schema": "gpuwm-mapped-parity-digest-v1",
+    "source": "aigefs-member-hybrid",
+    "verdict": "INSPECTED"
+  },
+  "measured_on": {
+    "machine": "AMD64",
+    "system": "Windows"
+  },
+  "schema": "gpuwm-mapped-parity-digest-v1",
+  "source": "aigefs-member-hybrid"
+}

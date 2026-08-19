@@ -32,10 +32,11 @@ Run it::
     python -m gpuwm.verify.cases.les_tornado_mayfield_20211210 \\
         --config PATH/TO/les_tornado_100m_mayfield_20211210.toml
 
-The config is a repository file under ``configs/``, which is not a
-package and so is in no wheel.  From an installed gpuwm, name it with
-``--config`` or point ``GPUWM_CONFIGS_ROOT`` at a checkout's ``configs``
-directory; the refusal says so itself.
+The config is a repository file under ``configs/``, which gpuwm 2.5.0 and
+later ship beside the package, so an install finds it with no argument.
+Where it is missing -- an older install, or a config kept outside the
+tree -- name it with ``--config`` or point ``GPUWM_CONFIGS_ROOT`` at the
+directory holding it; the refusal says so itself.
 """
 
 from __future__ import annotations

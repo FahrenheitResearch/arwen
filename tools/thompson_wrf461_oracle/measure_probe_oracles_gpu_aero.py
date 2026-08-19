@@ -15,7 +15,9 @@ USAGE
 -----
     python3 measure_probe_oracles_gpu_aero.py PROBE_OUTPUT_DIR [TABLE_ROOT]
 
-TABLE_ROOT defaults to gpuwm/data/thompson/tables and must hold the four
+TABLE_ROOT defaults to this install's packaged classic-table root
+(``gpuwm.physics_compat.packaged_thompson_table_root``, which resolves into
+the ``gpuwm-data`` companion distribution) and must hold the four
 classic assets, including the 255 MB freezeH2O.dat, because
 ``probe_cold_warm_loop`` takes the real rain/cloud collection efficiency
 table.  Requires a CUDA device.
@@ -74,10 +76,16 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     probe_dir = Path(argv[1]).resolve()
-    table_root = Path(argv[2]).resolve() if len(argv) == 3 else (
-        _REPO / "gpuwm" / "data" / "thompson" / "tables")
-
     sys.path.insert(0, str(_REPO))
+    if len(argv) == 3:
+        table_root = Path(argv[2]).resolve()
+    else:
+        # Resolved, never joined: since 2.5.0 this directory ships in the
+        # gpuwm-data companion distribution, and only gpuwm.data_assets
+        # knows where that landed.
+        from gpuwm.physics_compat import packaged_thompson_table_root
+        table_root = packaged_thompson_table_root().resolve()
+
     import cupy as cp
 
     from gpuwm.core.thompson_aerosol_cold import probe_cold_warm_loop

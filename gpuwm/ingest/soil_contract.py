@@ -49,6 +49,7 @@ if NOAH_TARGET_SOIL_LAYERS != _NOAH_NUM_SOIL_LAYERS:
 
 _LINEAR_REMAP = "linear_point_samples"
 _CONSERVATIVE_REMAP = "conservative_layer_means"
+_NODE_REMAP = "linear_node_samples"
 _CANONICAL_SOIL_FIELDS = (
     "soil_temperature",
     "volumetric_soil_moisture",
@@ -104,7 +105,14 @@ def _selector(value: object, label: str) -> dict[str, object]:
             "center", "subcenter", "master_table_version",
             "local_table_version",
         },
-        "netcdf": {"format", "name", "standard_name"},
+        # `layer_*` addresses ONE slice of a producer's own layer dimension,
+        # for the sources that publish an N-layer soil quantity as one
+        # variable rather than as N variables.  See
+        # `gpuwm.mapped_source._validate_layer_slice`.
+        "netcdf": {
+            "format", "name", "standard_name", "attributes",
+            "layer_dimension", "layer_value", "layer_units",
+        },
     }
     if source_format not in allowed:
         raise ValueError(f"{label} has an unsupported selector format")
@@ -124,12 +132,32 @@ def _selector(value: object, label: str) -> dict[str, object]:
     if any(value.get(key) is None for key in required):
         raise ValueError(f"{label} required selector identifiers must not be null")
     if source_format == "netcdf":
-        names = tuple(value.get(key) for key in ("name", "standard_name"))
-        if not any(isinstance(name, str) and name for name in names):
-            raise ValueError(f"{label} needs name and/or standard_name")
-        if any(name is not None and (not isinstance(name, str) or not name)
-               for name in names):
+        # `name` may be an ordered list of accepted spellings of the SAME
+        # variable, so a soil binding survives a producer's rename without
+        # the depth-to-selector pairing being rewritten.
+        configured = value.get("name")
+        spellings = (
+            [] if configured is None
+            else [configured] if isinstance(configured, str)
+            else configured if isinstance(configured, list)
+            else None
+        )
+        if spellings is None or any(
+            not isinstance(name, str) or not name for name in spellings
+        ):
             raise ValueError(f"{label} NetCDF names must be non-empty strings")
+        if len(set(spellings)) != len(spellings):
+            raise ValueError(f"{label} repeats an accepted spelling")
+        standard = value.get("standard_name")
+        if standard is not None and (not isinstance(standard, str) or not standard):
+            raise ValueError(f"{label} NetCDF names must be non-empty strings")
+        if not spellings and not standard:
+            raise ValueError(f"{label} needs name and/or standard_name")
+        from gpuwm.mapped_source import (_validate_layer_slice,
+                                         _validate_selector_attributes)
+
+        _validate_selector_attributes(value, label)
+        _validate_layer_slice(value, label)
         return value
     integer_keys = (
         "parameter", "table_version", "center", "level_type",
@@ -272,11 +300,78 @@ def _layer_bounds(
     return tuple(result)
 
 
-def _validate_mapping_fields(
+def _node_depths(
+    value: object,
+    label: str,
+    *,
+    bind_selectors: bool = False,
+    selector_fields: tuple[str, ...] = _CANONICAL_SOIL_FIELDS,
+) -> tuple[float, ...]:
+    """Validate an ordered list of soil depth NODES (point samples).
+
+    A node source (RUC-family models: HRRR, RAP publish TSOIL/SOILW at
+    depths, not layer means) is a different geometry from a layer source
+    and is declared as one: each row carries the sample ``depth`` in
+    metres and, on the source side, the selector bound to that exact
+    depth.  Requiring the 0 m and 3 m endpoints is what makes the linear
+    remap anchor-free -- the surface and deep values are the source's own
+    samples, not synthetic TSK/TMN brackets.
+    """
+
+    if not isinstance(value, list) or len(value) < 2:
+        raise ValueError(f"{label} must be an ordered list of at least two nodes")
+    depths: list[float] = []
+    selector_formats: set[str] = set()
+    for index, raw in enumerate(value):
+        node_keys = {"depth"}
+        if bind_selectors:
+            node_keys.add("selectors")
+        node = _object(
+            raw,
+            f"{label}[{index}]",
+            allowed=node_keys,
+            required=node_keys,
+        )
+        if bind_selectors:
+            bindings = _object(
+                node["selectors"],
+                f"{label}[{index}].selectors",
+                allowed=set(selector_fields),
+                required=set(selector_fields),
+            )
+            for field_name in selector_fields:
+                selector = _selector(
+                    bindings[field_name],
+                    f"{label}[{index}].selectors.{field_name}",
+                )
+                selector_formats.add(str(selector["format"]))
+        depth = _number(node["depth"], f"{label}[{index}].depth")
+        if depth < 0.0:
+            raise ValueError(f"{label}[{index}].depth must be non-negative")
+        if depths and depth <= depths[-1]:
+            raise ValueError(f"{label} is not strictly ordered shallow-to-deep")
+        depths.append(depth)
+    if bind_selectors and len(selector_formats) != 1:
+        raise ValueError(
+            f"{label} selectors must all use one common source format"
+        )
+    if depths[0] != 0.0 or depths[-1] < 3.0:
+        raise ValueError(
+            f"{label} must sample both endpoints of the WRF soil column: "
+            "the shallowest node at 0.0 m and the deepest at 3.0 m or "
+            "deeper, so the linear node remap needs no synthetic "
+            "surface/deep anchors"
+        )
+    return tuple(depths)
+
+
+def _validate_mapping_node_fields(
     contract: Mapping[str, object],
-    source_bounds: tuple[tuple[float, float], ...],
+    node_depths: tuple[float, ...],
     mapping: Mapping[str, object],
 ) -> None:
+    """The node twin of :func:`_validate_mapping_fields`."""
+
     fields = mapping.get("fields")
     target = mapping.get("target")
     if not isinstance(fields, dict) or not isinstance(target, dict):
@@ -300,7 +395,328 @@ def _validate_mapping_fields(
             )
         missing = field.get("missing")
         if not isinstance(missing, dict) \
-                or missing.get("kind") not in {"reject", "preserve_mask"}:
+                or missing.get("kind") not in {
+                    "reject", "preserve_mask", "landmask_water",
+                }:
+            raise ValueError(
+                f"soil contract field {name!r} must reject missing values or "
+                "preserve an ocean mask for declared repair"
+            )
+        selectors = field.get("selectors", ())
+        if not isinstance(selectors, list) \
+                or len(selectors) != len(node_depths):
+            raise ValueError(
+                f"soil contract requires exactly {len(node_depths)} "
+                f"ordered direct selectors for {name!r}"
+            )
+        declared_selectors = tuple(
+            node["selectors"][name] for node in contract["source_nodes"]
+        )
+        for index, (selector, declared) in enumerate(
+            zip(selectors, declared_selectors)
+        ):
+            if _selector_semantics(selector) != _selector_semantics(declared):
+                raise ValueError(
+                    f"{name} selector {index} differs from the selector "
+                    "bound to its declared soil depth"
+                )
+        # A GRIB2 node is a degenerate type-106 layer whose two fixed
+        # surfaces carry the SAME depth (HRRR's "0.3-0.3 m below ground").
+        # Binding both surfaces to the contract's node depth is what makes
+        # a reordered producer a refusal instead of a silent level swap.
+        if mapping.get("format") == "grib2":
+            for index, (selector, depth) in enumerate(zip(selectors, node_depths)):
+                if not isinstance(selector, dict) \
+                        or selector.get("level_type") != 106 \
+                        or selector.get("second_level_type") != 106 \
+                        or "level_value" not in selector \
+                        or "second_level_value" not in selector:
+                    raise ValueError(
+                        f"{name} selector {index} must declare a GRIB2 "
+                        "depth-below-land node (type 106, both surfaces)"
+                    )
+                observed = (
+                    _number(selector["level_value"], f"{name} selector {index} depth"),
+                    _number(
+                        selector["second_level_value"],
+                        f"{name} selector {index} second depth",
+                    ),
+                )
+                if observed != (depth, depth):
+                    raise ValueError(
+                        f"{name} selector {index} depth {observed!r} differs "
+                        f"from soil contract node {depth!r}"
+                    )
+
+    soil_count = target.get("soil_layer_count")
+    if isinstance(soil_count, bool) or not isinstance(soil_count, int) \
+            or soil_count != len(node_depths):
+        raise ValueError(
+            "mapping target.soil_layer_count differs from the declarative "
+            "source soil-node count"
+        )
+
+
+def _validate_mapping_mixed_node_fields(
+    contract: Mapping[str, object],
+    node_depths: tuple[float, ...],
+    provenance_layers: tuple[tuple[float, float], ...],
+    mapping: Mapping[str, object],
+) -> None:
+    """Node-ladder temperature beside layer-mass moisture, both proven.
+
+    The DWD/TERRA family publishes soil temperature as point samples on
+    the ladder's depths and soil water as COLUMN-INTEGRATED mass over
+    layers whose exact midpoints are those same interior depths.  The
+    contract stays a single node geometry; what this validator adds is
+    the moisture side's provenance proof: the mapping must derive the
+    canonical volumetric moisture from a declared layer-mass field
+    through exactly the two closed-catalog operations
+    (``volumetric_soil_moisture_from_layer_mass`` over the declared
+    bounds, then ``soil_surface_node_from_shallowest``), with the
+    layer-mass selectors bound layer-for-layer.  Anything else claiming
+    the name is refused -- a moisture column must never be fabricated
+    from an unproven chain.
+    """
+
+    fields = mapping.get("fields")
+    target = mapping.get("target")
+    if not isinstance(fields, dict) or not isinstance(target, dict):
+        raise ValueError("soil contract requires a validated mapped-source mapping")
+    temperature_name = str(contract["temperature_field"])
+    moisture_name = str(contract["moisture_field"])
+    provenance = contract["moisture_provenance"]
+    layer_mass_name = str(provenance["layer_mass_field"])
+    volumetric_name = str(provenance["volumetric_field"])
+
+    # -- temperature: the node half, unchanged from the single-geometry rule.
+    field = fields.get(temperature_name)
+    if not isinstance(field, dict):
+        raise ValueError(f"soil contract field {temperature_name!r} is not mapped")
+    if tuple(field.get("target_axes", ())) != ("soil", "y", "x") \
+            or field.get("location") != "soil" \
+            or field.get("staggering", "none") != "none" \
+            or not isinstance(field.get("units"), dict) \
+            or field["units"].get("target") != "K":
+        raise ValueError(
+            f"soil contract field {temperature_name!r} must be unstaggered "
+            "soil/y/x in K"
+        )
+    missing = field.get("missing")
+    if not isinstance(missing, dict) or missing.get("kind") not in {
+        "reject", "preserve_mask", "landmask_water",
+    }:
+        raise ValueError(
+            f"soil contract field {temperature_name!r} must reject missing "
+            "values or carry a declared ocean-missing mask for repair"
+        )
+    selectors = field.get("selectors", ())
+    if not isinstance(selectors, list) or len(selectors) != len(node_depths):
+        raise ValueError(
+            f"soil contract requires exactly {len(node_depths)} ordered "
+            f"direct selectors for {temperature_name!r}"
+        )
+    declared_selectors = tuple(
+        node["selectors"][temperature_name]
+        for node in contract["source_nodes"]
+    )
+    for index, (selector, declared) in enumerate(
+        zip(selectors, declared_selectors)
+    ):
+        if _selector_semantics(selector) != _selector_semantics(declared):
+            raise ValueError(
+                f"{temperature_name} selector {index} differs from the "
+                "selector bound to its declared soil depth"
+            )
+    if mapping.get("format") == "grib2":
+        for index, (selector, depth) in enumerate(zip(selectors, node_depths)):
+            # A GRIB2 node is EITHER a degenerate type-106 layer whose two
+            # surfaces carry the same depth (the HRRR/RUC encoding) or a
+            # single type-106 surface with the second surface genuinely
+            # missing (the DWD/TERRA encoding, octet 255); both pin the
+            # sample to the contract's depth.
+            has_second = "second_level_type" in selector \
+                if isinstance(selector, dict) else False
+            if not isinstance(selector, dict) \
+                    or selector.get("level_type") != 106 \
+                    or "level_value" not in selector \
+                    or (has_second and (
+                        selector.get("second_level_type") != 106
+                        or "second_level_value" not in selector)):
+                raise ValueError(
+                    f"{temperature_name} selector {index} must declare a "
+                    "GRIB2 depth-below-land node (type 106, at the sample "
+                    "depth, with the second surface either matching or "
+                    "absent)"
+                )
+            observed = _number(
+                selector["level_value"],
+                f"{temperature_name} selector {index} depth",
+            )
+            second_observed = (
+                _number(
+                    selector["second_level_value"],
+                    f"{temperature_name} selector {index} second depth",
+                )
+                if has_second else observed
+            )
+            if (observed, second_observed) != (depth, depth):
+                raise ValueError(
+                    f"{temperature_name} selector {index} depth "
+                    f"{(observed, second_observed)!r} differs from soil "
+                    f"contract node {depth!r}"
+                )
+
+    # -- moisture: the derived half.  Chain proven link by link.
+    derivations = {
+        str(item.get("name")): item for item in mapping.get("derivations", [])
+        if isinstance(item, dict)
+    }
+    moisture = fields.get(moisture_name)
+    if not isinstance(moisture, dict):
+        raise ValueError(f"soil contract field {moisture_name!r} is not mapped")
+    if tuple(moisture.get("target_axes", ())) != ("soil", "y", "x") \
+            or moisture.get("location") != "soil" \
+            or moisture.get("staggering", "none") != "none" \
+            or not isinstance(moisture.get("units"), dict) \
+            or moisture["units"].get("target") != "m3 m-3":
+        raise ValueError(
+            f"soil contract field {moisture_name!r} must be unstaggered "
+            "soil/y/x in m3 m-3"
+        )
+    surface_step = derivations.get(str(moisture.get("derivation")))
+    if not isinstance(surface_step, dict) \
+            or surface_step.get("operation") != "soil_surface_node_from_shallowest" \
+            or str(surface_step.get("source")) != volumetric_name:
+        raise ValueError(
+            f"{moisture_name} must derive by soil_surface_node_from_"
+            f"shallowest over {volumetric_name!r}, exactly as the "
+            "moisture provenance declares"
+        )
+    volumetric = fields.get(volumetric_name)
+    if not isinstance(volumetric, dict):
+        raise ValueError(
+            f"moisture provenance field {volumetric_name!r} is not mapped"
+        )
+    mass_step = derivations.get(str(volumetric.get("derivation")))
+    if not isinstance(mass_step, dict) \
+            or mass_step.get("operation") != "volumetric_soil_moisture_from_layer_mass" \
+            or str(mass_step.get("layer_mass")) != layer_mass_name:
+        raise ValueError(
+            f"{volumetric_name} must derive by volumetric_soil_moisture_"
+            f"from_layer_mass over {layer_mass_name!r}, exactly as the "
+            "moisture provenance declares"
+        )
+    declared_bounds = tuple(
+        (float(pair[0]), float(pair[1]))
+        for pair in mass_step.get("layer_bounds_m", ())
+    )
+    if declared_bounds != provenance_layers:
+        raise ValueError(
+            "the layer-mass derivation's layer_bounds_m differ from the "
+            "moisture provenance source_layers; the conversion and the "
+            "geometry must be the same declaration"
+        )
+    layer_mass = fields.get(layer_mass_name)
+    if not isinstance(layer_mass, dict):
+        raise ValueError(
+            f"moisture provenance field {layer_mass_name!r} is not mapped"
+        )
+    if tuple(layer_mass.get("target_axes", ())) != ("soil", "y", "x") \
+            or layer_mass.get("location") != "soil" \
+            or layer_mass.get("staggering", "none") != "none" \
+            or not isinstance(layer_mass.get("units"), dict) \
+            or layer_mass["units"].get("target") != "kg m-2":
+        raise ValueError(
+            f"moisture provenance field {layer_mass_name!r} must be "
+            "unstaggered soil/y/x in kg m-2"
+        )
+    mass_missing = layer_mass.get("missing")
+    if not isinstance(mass_missing, dict) or mass_missing.get("kind") not in {
+        "reject", "preserve_mask", "landmask_water",
+    }:
+        raise ValueError(
+            f"moisture provenance field {layer_mass_name!r} must reject "
+            "missing values or carry a declared ocean-missing mask"
+        )
+    mass_selectors = layer_mass.get("selectors", ())
+    if not isinstance(mass_selectors, list) \
+            or len(mass_selectors) != len(provenance_layers):
+        raise ValueError(
+            f"moisture provenance requires exactly {len(provenance_layers)} "
+            f"ordered direct selectors for {layer_mass_name!r}"
+        )
+    if mapping.get("format") == "grib2":
+        for index, (selector, (top, bottom)) in enumerate(
+            zip(mass_selectors, provenance_layers)
+        ):
+            if not isinstance(selector, dict) \
+                    or selector.get("level_type") != 106 \
+                    or selector.get("second_level_type") != 106 \
+                    or "level_value" not in selector \
+                    or "second_level_value" not in selector:
+                raise ValueError(
+                    f"{layer_mass_name} selector {index} must declare a "
+                    "GRIB2 depth-below-land layer (type 106, both surfaces)"
+                )
+            observed = (
+                _number(
+                    selector["level_value"],
+                    f"{layer_mass_name} selector {index} top",
+                ),
+                _number(
+                    selector["second_level_value"],
+                    f"{layer_mass_name} selector {index} bottom",
+                ),
+            )
+            if observed != (top, bottom):
+                raise ValueError(
+                    f"{layer_mass_name} selector {index} layer {observed!r} "
+                    f"differs from declared bounds {(top, bottom)!r}"
+                )
+
+    soil_count = target.get("soil_layer_count")
+    if isinstance(soil_count, bool) or not isinstance(soil_count, int) \
+            or soil_count != len(node_depths):
+        raise ValueError(
+            "mapping target.soil_layer_count differs from the declarative "
+            "source soil-node count"
+        )
+
+
+def _validate_mapping_fields(
+    contract: Mapping[str, object],
+    source_bounds: tuple[tuple[float, float], ...],
+    mapping: Mapping[str, object],
+) -> None:
+    from gpuwm.mapped_source import layer_slice_depth_metres
+
+    fields = mapping.get("fields")
+    target = mapping.get("target")
+    if not isinstance(fields, dict) or not isinstance(target, dict):
+        raise ValueError("soil contract requires a validated mapped-source mapping")
+    expected = (
+        (str(contract["temperature_field"]), "K"),
+        (str(contract["moisture_field"]), "m3 m-3"),
+    )
+    for name, units in expected:
+        field = fields.get(name)
+        if not isinstance(field, dict):
+            raise ValueError(f"soil contract field {name!r} is not mapped")
+        if tuple(field.get("target_axes", ())) != ("soil", "y", "x") \
+                or field.get("location") != "soil" \
+                or field.get("staggering", "none") != "none" \
+                or not isinstance(field.get("units"), dict) \
+                or field["units"].get("target") != units:
+            raise ValueError(
+                f"soil contract field {name!r} must be unstaggered "
+                f"soil/y/x in {units}"
+            )
+        missing = field.get("missing")
+        if not isinstance(missing, dict) \
+                or missing.get("kind") not in {
+                    "reject", "preserve_mask", "landmask_water",
+                }:
             raise ValueError(
                 f"soil contract field {name!r} must reject missing values or "
                 "preserve an ocean mask for declared repair"
@@ -334,7 +750,44 @@ def _validate_mapping_fields(
         # WMO GRIB2 type 106 is a layer below land in metres.  When the
         # mapping exposes those bounds, bind every positional selector to the
         # declarative source layer instead of trusting list order alone.
-        if mapping.get("format") == "grib2":
+        #
+        # A composition may instead DECLARE that its producer addresses
+        # layers by ordinal on a producer-owned fixed-surface type
+        # (``selector_depth_binding``, e.g. code table 4.5 type 151 with
+        # scaled layer indices, which is how ECMWF products encode soil).
+        # The declared index pair then binds each positional selector to
+        # its declared depth, so a producer that reorders or renumbers its
+        # layers is still a refusal, never a silent level swap.
+        binding = contract.get("selector_depth_binding")
+        if mapping.get("format") == "grib2" and binding is not None:
+            expected_type = binding["level_type"]
+            first_index = binding["first_index"]
+            for index, selector in enumerate(selectors):
+                expected_pair = (first_index + index, first_index + index + 1)
+                if not isinstance(selector, dict) \
+                        or selector.get("level_type") != expected_type \
+                        or selector.get("second_level_type") != expected_type \
+                        or "level_value" not in selector \
+                        or "second_level_value" not in selector:
+                    raise ValueError(
+                        f"{name} selector {index} must declare the bound "
+                        f"index-addressed GRIB2 layer (type {expected_type}, "
+                        "both surfaces)"
+                    )
+                observed = (
+                    _number(selector["level_value"], f"{name} selector {index} index"),
+                    _number(
+                        selector["second_level_value"],
+                        f"{name} selector {index} second index",
+                    ),
+                )
+                if observed != tuple(float(value) for value in expected_pair):
+                    raise ValueError(
+                        f"{name} selector {index} index pair {observed!r} "
+                        f"differs from the declared ordinal layer "
+                        f"{expected_pair!r}"
+                    )
+        elif mapping.get("format") == "grib2":
             for index, (selector, bounds) in enumerate(zip(selectors, source_bounds)):
                 if not isinstance(selector, dict) \
                         or selector.get("level_type") != 106 \
@@ -356,6 +809,39 @@ def _validate_mapping_fields(
                     raise ValueError(
                         f"{name} selector {index} depth {observed!r} differs "
                         f"from soil contract layer {bounds!r}"
+                    )
+
+        # The NetCDF twin of the GRIB2 depth binding above.  A producer that
+        # publishes its soil column as ONE variable with its own layer
+        # dimension is addressed by VALUE on that dimension, and the value
+        # has to be the depth the contract says the selector stands for --
+        # otherwise the ordered list alone decides which layer is which, and
+        # a producer that reorders its layers swaps two soil levels with no
+        # error anywhere.  Either every selector carries the slice or none
+        # does: a half-bound stack is the ambiguity this refuses.
+        if mapping.get("format") == "netcdf":
+            sliced = [
+                index for index, selector in enumerate(selectors)
+                if isinstance(selector, dict) and "layer_value" in selector
+            ]
+            if sliced and len(sliced) != len(selectors):
+                raise ValueError(
+                    f"{name} binds {len(sliced)} of {len(selectors)} soil "
+                    "selectors to a layer value; bind all of them or none"
+                )
+            for index, (selector, bounds) in enumerate(
+                zip(selectors, source_bounds)
+            ):
+                if not sliced:
+                    break
+                depth = layer_slice_depth_metres(selector)
+                if depth is None or not math.isclose(
+                    depth, bounds[0], rel_tol=0.0, abs_tol=1e-9,
+                ):
+                    raise ValueError(
+                        f"{name} selector {index} addresses layer depth "
+                        f"{depth!r} m, which is not the soil contract layer "
+                        f"top {bounds[0]!r} m"
                     )
 
     soil_count = target.get("soil_layer_count")
@@ -391,11 +877,12 @@ def validate_soil_layer_contract(
         "composition.soil_layers",
         allowed={
             "temperature_field", "moisture_field", "depth_units",
-            "source_layers", "target_layers", "remap", "missing",
+            "source_layers", "source_nodes", "target_layers", "remap",
+            "missing", "moisture_provenance", "selector_depth_binding",
         },
         required={
             "temperature_field", "moisture_field", "depth_units",
-            "source_layers", "target_layers", "remap", "missing",
+            "target_layers", "remap", "missing",
         },
     )
     if contract["temperature_field"] != "soil_temperature" \
@@ -407,14 +894,137 @@ def validate_soil_layer_contract(
             "conversion is forbidden"
         )
 
-    source = _layer_bounds(
-        contract["source_layers"],
-        "soil source_layers",
-        bind_selectors=True,
-    )
+    has_layers = contract.get("source_layers") is not None
+    has_nodes = contract.get("source_nodes") is not None
+    if has_layers == has_nodes:
+        raise ValueError(
+            "composition.soil_layers must declare exactly one source "
+            "geometry: source_layers (layer means/midpoints) or "
+            "source_nodes (depth point samples)"
+        )
+    moisture_provenance = contract.get("moisture_provenance")
+    provenance_layers: tuple[tuple[float, float], ...] = ()
+    if moisture_provenance is not None:
+        if not has_nodes:
+            raise ValueError(
+                "composition.soil_layers.moisture_provenance describes "
+                "layer-mass moisture joining a NODE ladder; a layer-geometry "
+                "contract declares its moisture in source_layers directly"
+            )
+        provenance = _object(
+            moisture_provenance,
+            "composition.soil_layers.moisture_provenance",
+            allowed={
+                "kind", "layer_mass_field", "volumetric_field",
+                "source_layers", "surface_policy",
+            },
+            required={
+                "kind", "layer_mass_field", "volumetric_field",
+                "source_layers", "surface_policy",
+            },
+        )
+        if provenance["kind"] != "derived_layer_mass":
+            raise ValueError(
+                "moisture_provenance.kind must be 'derived_layer_mass'"
+            )
+        if provenance["surface_policy"] != "replicate_shallowest":
+            raise ValueError(
+                "moisture_provenance.surface_policy must be "
+                "'replicate_shallowest' (WRF's own moisture endpoint "
+                "convention, module_soil_pre.F)"
+            )
+        for key in ("layer_mass_field", "volumetric_field"):
+            if not isinstance(provenance[key], str) or not provenance[key]:
+                raise ValueError(
+                    f"moisture_provenance.{key} must be a non-empty field name"
+                )
+        provenance_layers = _layer_bounds(
+            provenance["source_layers"],
+            "moisture provenance source_layers",
+        )
+        if provenance_layers[0][0] != 0.0:
+            raise ValueError(
+                "moisture provenance source_layers must begin at the "
+                "0 m surface"
+            )
+    binding = contract.get("selector_depth_binding")
+    if binding is not None:
+        if not has_layers:
+            raise ValueError(
+                "selector_depth_binding describes index-addressed "
+                "source_layers; a node source carries its depths in its "
+                "own selectors"
+            )
+        binding = _object(
+            binding,
+            "composition.soil_layers.selector_depth_binding",
+            allowed={"kind", "level_type", "first_index"},
+            required={"kind", "level_type", "first_index"},
+        )
+        if binding["kind"] != "indexed_fixed_surfaces":
+            raise ValueError(
+                "selector_depth_binding.kind must be "
+                "'indexed_fixed_surfaces': the only declared alternative "
+                "to metre-valued type-106 layers is a producer that "
+                "numbers its layers on its own vertical coordinate"
+            )
+        level_type = binding["level_type"]
+        if isinstance(level_type, bool) or not isinstance(level_type, int) \
+                or not 0 <= level_type <= 254:
+            raise ValueError(
+                "selector_depth_binding.level_type must be a GRIB2 fixed "
+                "surface code in 0..254"
+            )
+        if level_type == 106:
+            raise ValueError(
+                "selector_depth_binding.level_type 106 is refused: WMO "
+                "type 106 fixed surfaces carry metre depths, and declaring "
+                "them ordinals would launder a depth mismatch the default "
+                "metre-valued cross-check exists to refuse"
+            )
+        first_index = binding["first_index"]
+        if isinstance(first_index, bool) or not isinstance(first_index, int) \
+                or first_index < 0:
+            raise ValueError(
+                "selector_depth_binding.first_index must be a non-negative "
+                "integer"
+            )
+        contract["selector_depth_binding"] = binding
+    source: tuple[tuple[float, float], ...] = ()
+    node_depths: tuple[float, ...] = ()
+    if has_nodes:
+        node_depths = _node_depths(
+            contract["source_nodes"],
+            "soil source_nodes",
+            bind_selectors=True,
+            selector_fields=(
+                (str(contract["temperature_field"]),)
+                if moisture_provenance is not None
+                else _CANONICAL_SOIL_FIELDS
+            ),
+        )
+        if moisture_provenance is not None:
+            midpoints = tuple(
+                (top + bottom) / 2.0 for top, bottom in provenance_layers
+            )
+            if len(node_depths) != len(midpoints) + 1 \
+                    or node_depths[1:] != midpoints:
+                raise ValueError(
+                    "moisture provenance layers do not join the node "
+                    "ladder: every interior node depth must be the exact "
+                    "midpoint of one declared layer, with the 0 m surface "
+                    "node supplied by the replicate_shallowest policy; "
+                    f"nodes {node_depths!r} vs layer midpoints {midpoints!r}"
+                )
+    else:
+        source = _layer_bounds(
+            contract["source_layers"],
+            "soil source_layers",
+            bind_selectors=True,
+        )
+        if source[0][0] != 0.0:
+            raise ValueError("soil source_layers must begin at the 0 m surface")
     target = _layer_bounds(contract["target_layers"], "soil target_layers")
-    if source[0][0] != 0.0:
-        raise ValueError("soil source_layers must begin at the 0 m surface")
     if target != NOAH_LAYER_BOUNDS_M:
         raise ValueError(
             f"soil target_layers differ from the selected "
@@ -437,7 +1047,32 @@ def validate_soil_layer_contract(
         required={"kind", "source_value_location", "target_value_location"},
     )
     kind = remap["kind"]
-    if kind == _LINEAR_REMAP:
+    if kind == _NODE_REMAP:
+        if not has_nodes:
+            raise ValueError(
+                f"soil remap kind {_NODE_REMAP!r} requires source_nodes; "
+                "a layer source declares its own remap kind"
+            )
+        if set(remap) != {
+            "kind", "source_value_location", "target_value_location",
+        }:
+            raise ValueError(
+                "linear node remap takes no anchors: the 0 m and 3 m "
+                "endpoint nodes are the source's own samples"
+            )
+        if remap["source_value_location"] != "level_node" \
+                or remap["target_value_location"] != "layer_midpoint":
+            raise ValueError(
+                "linear node remap requires level-node source values and "
+                "layer-midpoint target values (WRF init_soil_3_real's "
+                "FLAG_SOIL_LEVELS geometry)"
+            )
+    elif has_nodes:
+        raise ValueError(
+            f"source_nodes require soil remap kind {_NODE_REMAP!r}; "
+            f"{kind!r} describes a layer source"
+        )
+    elif kind == _LINEAR_REMAP:
         if set(remap) != {
             "kind", "source_value_location", "target_value_location",
             "top_anchor", "bottom_anchor",
@@ -521,18 +1156,54 @@ def validate_soil_layer_contract(
         allowed={"stage", "temperature", "moisture"},
         required={"stage", "temperature", "moisture"},
     )
-    if missing["land"] != "reject" \
-            or ocean["stage"] != "after_horizontal_interpolation" \
+    land_policy = missing["land"]
+    if isinstance(land_policy, Mapping):
+        # A declared, BOUNDED land repair for producers whose soil tiling
+        # disagrees with their land-cover field on a handful of coastal
+        # cells (ECMWF's fractional land mask against its soil tile
+        # mask): the nearest fully defined soil column inside the stated
+        # radius answers, and a land cell beyond it still refuses.
+        land = _object(
+            land_policy,
+            "composition.soil_layers.missing.land",
+            allowed={"kind", "maximum_cells"},
+            required={"kind", "maximum_cells"},
+        )
+        if land["kind"] != "nearest_soil_column_within_cells":
+            raise ValueError(
+                "soil land repair kind must be "
+                "'nearest_soil_column_within_cells'"
+            )
+        radius = land["maximum_cells"]
+        if isinstance(radius, bool) or not isinstance(radius, int) \
+                or not 1 <= radius <= 8:
+            raise ValueError(
+                "soil land repair maximum_cells must be an integer in "
+                "[1, 8]: a wider search would silently paint whole "
+                "regions from one column"
+            )
+    elif land_policy != "reject":
+        raise ValueError(
+            "soil missing land policy must be 'reject' or a bounded "
+            "nearest_soil_column_within_cells repair object"
+        )
+    if ocean["stage"] != "after_horizontal_interpolation" \
             or ocean["temperature"] != "skin_temperature" \
             or _number(ocean["moisture"], "soil ocean moisture repair") != 1.0:
         raise ValueError(
-            "soil missing policy must reject land gaps and repair ocean "
-            "temperature from skin temperature with moisture 1.0 after "
-            "horizontal interpolation"
+            "soil missing policy must repair ocean temperature from skin "
+            "temperature with moisture 1.0 after horizontal interpolation"
         )
 
     if mapping is not None:
-        _validate_mapping_fields(contract, source, mapping)
+        if has_nodes and moisture_provenance is not None:
+            _validate_mapping_mixed_node_fields(
+                contract, node_depths, provenance_layers, mapping,
+            )
+        elif has_nodes:
+            _validate_mapping_node_fields(contract, node_depths, mapping)
+        else:
+            _validate_mapping_fields(contract, source, mapping)
     return contract
 
 
@@ -548,6 +1219,26 @@ def soil_layer_bounds(
         f"soil {key}",
         bind_selectors=key == "source_layers",
     )
+
+
+def soil_node_depths(contract: Mapping[str, object]) -> tuple[float, ...]:
+    """Return an already-validated node contract's sample depths."""
+
+    selector_fields = _CANONICAL_SOIL_FIELDS
+    if contract.get("moisture_provenance") is not None:
+        selector_fields = (str(contract["temperature_field"]),)
+    return _node_depths(
+        contract["source_nodes"], "soil source_nodes", bind_selectors=True,
+        selector_fields=selector_fields,
+    )
+
+
+def soil_source_sample_count(contract: Mapping[str, object]) -> int:
+    """How many soil samples (layers or nodes) the source declares."""
+
+    if contract.get("source_nodes") is not None:
+        return len(contract["source_nodes"])
+    return len(contract["source_layers"])
 
 
 def conservative_overlap_weights(
@@ -579,5 +1270,6 @@ __all__ = [
     "MAPPED_SOIL_MOISTURE", "MAPPED_SOIL_TEMPERATURE",
     "NOAH_LAYER_BOUNDS_M", "NOAH_TARGET_SOIL_LAYERS",
     "conservative_overlap_weights",
-    "soil_layer_bounds", "validate_soil_layer_contract",
+    "soil_layer_bounds", "soil_node_depths", "soil_source_sample_count",
+    "validate_soil_layer_contract",
 ]

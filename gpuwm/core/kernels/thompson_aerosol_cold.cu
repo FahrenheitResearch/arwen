@@ -6,7 +6,7 @@
 // is_aerosol_aware = .TRUE., dustyIce = .TRUE., homogIce = .TRUE.,
 // is_hail_aware = .FALSE., wif_input_opt = 0.
 //
-// Numerical authority: /home/drew/wrf461-pristine/phys/module_mp_thompson.F,
+// Numerical authority: WRF v4.6.1 phys/module_mp_thompson.F,
 // commit d66e442fccc04111067e29274c9f9eaccc3cef28.  Every bare line number
 // below refers to that file.  Structural authority for everything that is
 // NOT aerosol-dependent: gpuwm/core/kernels/thompson.cu's
@@ -212,8 +212,8 @@
 //    zero.  Nothing in this file changed for it.
 //
 // C. WAVE 4 -- AGAINST WRF'S OWN POST-SOURCE TENDENCIES, not against a
-//    reduction of them.  A scratch build under /home/drew/mp28-oracle-work/
-//    wp06/ compiles a COPY of module_mp_thompson.F carrying only added
+//    reduction of them.  A scratch build of the WP-06 oracle, outside the
+//    tree, compiles a COPY of module_mp_thompson.F carrying only added
 //    `write` statements (plus three added PUBLIC probe subroutines whose
 //    bodies are verbatim transcriptions of statements already in the file),
 //    links the same stub_wrf.o / module_mp_radar.o / run_column_aero.o with

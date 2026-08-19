@@ -44,6 +44,7 @@ pub use projected_map::{
     GeographicBounds, ProjectedBasemap, ProjectedBasemapBuildOptions, ProjectedDomainBuildOptions,
     ProjectedFrameSource, ProjectedMap, ProjectedMapBuildOptions, build_projected_domain,
     build_projected_map, build_projected_map_with_options,
+    project_geographic_points_with_options,
 };
 pub use projection::{LambertConformal, ProjectionSpec};
 pub use render::{

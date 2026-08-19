@@ -272,10 +272,11 @@ prints:
 
 ```
 gpuwm check: experiment config myconfig.toml: this run's window includes local night (first at 2024-10-09T23:15Z at 27.5, -82.5) while domain(s) 1 run shortwave radiation with longwave OFF (ra_sw_physics 1 = Dudhia, ra_lw_physics 0; a suite matching no shipped profile).  Choose a nocturnally valid profile (both radiation streams on -- e.g. morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1, the wizard's default), or declare the validation experiment by adding acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"] to [experiment].  With ra_lw_physics 0 this configuration also FABRICATES its downward longwave, which is a second and separate claim, so the declaration it needs is both tokens together: acknowledgements = ["asymmetric-radiation-nocturnal-window-v1", "constant-downward-longwave-v1"].  Two claims, two tokens
-  (run gpuwm check --explain for the reason)
+  (run gpuwm check myconfig.toml --explain for the reason)
 ```
 
-`gpuwm check --explain` adds the paragraph explaining why. A config it
+The tail is your own invocation with `--explain` appended, re-runnable
+exactly as printed; it adds the paragraph explaining why. A config it
 accepts still prints the ordinary memory-sizing report, so there is no
 silence to wait for: read the refusal, not the volume of output.
 

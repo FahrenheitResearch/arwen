@@ -1,9 +1,62 @@
-# Sdist-side twin of the size-driven [tool.setuptools.exclude-package-data]
-# entries in pyproject.toml (exclude-package-data governs the wheel only).
-# The two largest Thompson tables are externalized: published as GitHub
-# release assets and staged by `gpuwm fetch-tables` under the SHA-256 pins
-# in gpuwm/core/thompson_contract.py.  Without these lines the sdist
-# exceeds PyPI's 100 MB per-file cap.
-# tests/test_package_data_coverage.py pins this file against the wheel list.
-exclude gpuwm/data/thompson/tables/freezeH2O.dat
-exclude gpuwm/data/thompson/tables/qr_acr_qg_V4.dat
+# Deliberately empty of prunes, and the two absences are worth naming so
+# neither gets "fixed" back in.
+#
+# 1. The two externalized Thompson tables (freezeH2O.dat, qr_acr_qg_V4.dat)
+#    were excluded here through 2.4.1 because without those lines this
+#    sdist exceeded PyPI's 100 MiB per-file cap.  The directory holding
+#    them moved to the `gpuwm-data` companion distribution in 2.5.0, so
+#    the exclusions moved with it: see gpuwm-data/MANIFEST.in.  There is
+#    nothing under gpuwm/ left to exclude.
+#
+# 2. The top-level `configs/` directory reaches the sdist already:
+#    setuptools folds `[tool.setuptools.package-data]` into the source
+#    distribution's default file set, so the one declaration that puts the
+#    97 repository configs in the wheel puts them in the sdist too
+#    (measured, not assumed -- tests/test_configs_are_packaged.py runs
+#    sdist._add_defaults_python and counts them).
+#    docs/public/VERIFICATION.md's reproduce recipe and docs/public/LES.md
+#    both name files under it, so a prune here would make those pages
+#    unfollowable from a source build.
+#
+# tests/test_package_data_coverage.py pins this file against the wheel
+# exclusion lists in both pyprojects.
+
+# The ONE rule left, and it is about the OTHER distribution rather than
+# about any file's size or license.  `gpuwm-data/` belongs to the
+# companion distribution built from `gpuwm-data/pyproject.toml`, and a
+# fragment of it inside gpuwm's own artifacts is worse than either whole
+# answer: a build carrying `gpuwm_data/__init__.py` and none of its data
+# is a package that says where the tables are and has none.
+#
+# BOTH artifacts leaked it, by two different mechanisms, and this line
+# only ever closed one of them:
+#
+#   sdist -- setuptools' default file set sweeps every .py under the
+#     project root, which put `gpuwm-data/gpuwm_data/__init__.py`, and
+#     nothing else, inside gpuwm's sdist.  `prune` is the fix and is
+#     below.
+#   wheel -- [tool.setuptools.packages.find]'s `include` was `gpuwm*`,
+#     which is fnmatch over directory names and matched `gpuwm-data`.
+#     An earlier version of this comment asserted the opposite -- that
+#     `gpuwm-data` is not a valid identifier so no wheel could contain
+#     it -- and the built wheel disproved it: a pyproject `find` defaults
+#     to `namespaces = true`, and a namespace finder needs no identifier.
+#     Fixed where it belongs, in pyproject.toml's `include`/`exclude`,
+#     and gated by tests/test_package_data_coverage.py.
+prune gpuwm-data
+
+# The staged Rust artifacts are wheel payload, and a SOURCE
+# distribution has no business carrying one platform's executables.
+# Measured on the 2.5.0 Linux shakeout: `python -m build` after
+# `tools/stage_wheel_bridges.py --platform linux-x86_64` swept all 18
+# native ELF artifacts in here -- the sdist went from 95,236,252 B to
+# 114,906,421 B and shipped Linux binaries as source.  `package-data`
+# sweeps the directory into the wheel deliberately (that is the whole
+# platform-wheel design) and setuptools folds the same declaration into
+# the sdist's default file set, so this is the line that separates the
+# two.  setup.py additionally REFUSES an sdist of a staged tree: with
+# the prune alone, `python -m build` would build its wheel from the
+# pruned sdist and quietly produce a py3-none-any wheel while the
+# operator was staging for a platform one.
+# tests/test_sdist_excludes_staged_bridges.py measures both halves.
+prune gpuwm/libexec/bridges

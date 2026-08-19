@@ -97,6 +97,10 @@ struct Args {
     heavy: bool,
     list_products: bool,
     source_label: String,
+    /// `--overlays FILE.json`: map overlays in geographic degrees.
+    overlays: Option<rustwx_products::geographic_overlays::MapOverlays>,
+    /// `--annotate FILE.json`: title/subtitle overrides.
+    annotations: Option<rustwx_products::geographic_overlays::PanelAnnotations>,
     inputs: Vec<PathBuf>,
 }
 
@@ -198,6 +202,8 @@ fn parse_args() -> Result<Invocation, CliError> {
     let mut heavy = false;
     let mut list_products = false;
     let mut source_label = DEFAULT_SOURCE_LABEL.to_string();
+    let mut overlays_path: Option<PathBuf> = None;
+    let mut annotate_path: Option<PathBuf> = None;
     let mut inputs = Vec::new();
     let mut raw = std::env::args().skip(1);
 
@@ -249,6 +255,19 @@ fn parse_args() -> Result<Invocation, CliError> {
                 }
                 source_label = value.trim().to_string();
             }
+            // Absent, these two run no code at all: every product this
+            // build already draws is byte-identical without them, which
+            // `tools/rustwx_render_regression_gate.py` is the gate for.
+            "--overlays" => {
+                overlays_path = Some(PathBuf::from(
+                    raw.next().ok_or("--overlays requires a JSON file")?,
+                ));
+            }
+            "--annotate" => {
+                annotate_path = Some(PathBuf::from(
+                    raw.next().ok_or("--annotate requires a JSON file")?,
+                ));
+            }
             "--heavy" => heavy = true,
             "--list-products" => list_products = true,
             "--help" | "-h" => return Err(CliError::Help),
@@ -286,6 +305,16 @@ fn parse_args() -> Result<Invocation, CliError> {
         heavy,
         list_products,
         source_label,
+        overlays: overlays_path
+            .as_deref()
+            .map(rustwx_products::geographic_overlays::MapOverlays::load)
+            .transpose()
+            .map_err(CliError::Usage)?,
+        annotations: annotate_path
+            .as_deref()
+            .map(rustwx_products::geographic_overlays::PanelAnnotations::load)
+            .transpose()
+            .map_err(CliError::Usage)?,
         inputs,
     })))
 }
@@ -608,6 +637,8 @@ fn run(args: Args) -> Result<(), String> {
         date_yyyymmdd: None,
         cycle_utc: None,
         source: None,
+        geographic_overlays: args.overlays,
+        panel_annotations: args.annotations,
         output_width: args.width,
         output_height: args.height,
         limits,
@@ -892,6 +923,8 @@ mod tests {
             heavy: false,
             list_products: false,
             source_label: DEFAULT_SOURCE_LABEL.to_string(),
+            overlays: None,
+            annotations: None,
             inputs,
         }
     }

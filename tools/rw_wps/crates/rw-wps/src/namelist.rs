@@ -1,0 +1,427 @@
+//! Typed Rust binding for the authoritative RW-WPS namelist support report.
+//!
+//! The gpuwm preprocessing engine owns the scientific classification.  The
+//! standalone Rust frontend owns path binding, process execution, schema
+//! validation, and refusal of contradictory PASS/FAIL evidence.
+
+use crate::{RwWpsError, io_error};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+pub const NAMELIST_SUPPORT_SCHEMA: &str = "rw-wps.namelist-support.v1";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamelistSupportRequest {
+    pub wps: PathBuf,
+    pub input: PathBuf,
+    pub source_top_pressure_pa: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NamelistSupportReport {
+    pub schema: String,
+    pub verdict: String,
+    pub max_dom: Option<u16>,
+    pub classifications: NamelistClassifications,
+    pub geometry: NamelistGeometry,
+    pub vertical: Option<NamelistVertical>,
+    pub required_state: RequiredStateReport,
+    pub issues: Vec<NamelistIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NamelistClassifications {
+    pub preprocessing_relevant: Vec<NamelistSetting>,
+    pub physics_state_relevant: Vec<NamelistSetting>,
+    pub runtime_output_only: Vec<NamelistSetting>,
+    pub legacy_stage_only: Vec<NamelistSetting>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NamelistSetting {
+    pub source: String,
+    pub section: String,
+    pub key: String,
+    pub values: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NamelistGeometry {
+    pub domain_count: usize,
+    pub domains: Vec<NamelistDomain>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NamelistDomain {
+    pub grid_id: u16,
+    pub parent_id: u16,
+    pub parent_grid_ratio: u16,
+    pub parent_time_step_ratio: u16,
+    pub i_parent_start: u32,
+    pub j_parent_start: u32,
+    pub e_we: u32,
+    pub e_sn: u32,
+    pub mass_nx: u32,
+    pub mass_ny: u32,
+    pub dx_m: f64,
+    pub dy_m: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NamelistVertical {
+    pub e_vert: usize,
+    pub mass_levels: usize,
+    pub eta_levels: Vec<f64>,
+    pub p_top_requested_pa: f64,
+    pub hybrid_opt: u16,
+    pub etac: f64,
+    pub source_top_pressure_pa: Option<f64>,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredStateReport {
+    pub stock_wrf_export: StockWrfExportReport,
+    pub gpuwm_runtime: GpuwmRuntimeReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StockWrfExportReport {
+    pub verdict: String,
+    pub target: String,
+    pub domains: Vec<StockWrfDomainState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GpuwmRuntimeReport {
+    pub verdict: String,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StockWrfDomainState {
+    pub grid_id: u16,
+    pub mp_physics: u16,
+    pub microphysics: String,
+    pub bl_pbl_physics: u16,
+    pub sf_sfclay_physics: u16,
+    pub sf_surface_physics: u16,
+    pub num_soil_layers: u16,
+    pub wrfinput_fields: Vec<WrfStateField>,
+    pub runtime_state_not_wrfinput: Vec<WrfStateField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WrfStateField {
+    pub registry_name: String,
+    pub netcdf_name: String,
+    #[serde(default)]
+    pub collection: Option<String>,
+    pub dtype: String,
+    pub dimensions: Vec<String>,
+    #[serde(default)]
+    pub units: Option<String>,
+    pub initialization: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NamelistIssue {
+    pub code: String,
+    pub location: String,
+    pub message: String,
+    pub action: String,
+}
+
+pub fn build_namelist_support_args(request: &NamelistSupportRequest) -> Vec<OsString> {
+    let mut args = vec![
+        OsString::from("--namelist-support-report"),
+        OsString::from("--wps-namelist"),
+        request.wps.as_os_str().to_owned(),
+        OsString::from("--namelist-input"),
+        request.input.as_os_str().to_owned(),
+    ];
+    if let Some(value) = request.source_top_pressure_pa {
+        args.push(OsString::from("--source-top-pressure-pa"));
+        args.push(OsString::from(value.to_string()));
+    }
+    args
+}
+
+pub fn query_namelist_support(
+    engine: &OsStr,
+    request: &NamelistSupportRequest,
+) -> Result<NamelistSupportReport, RwWpsError> {
+    require_file(&request.wps, "namelist.wps")?;
+    require_file(&request.input, "namelist.input")?;
+    if let Some(value) = request.source_top_pressure_pa
+        && (!value.is_finite() || value <= 0.0)
+    {
+        return Err(RwWpsError::Config(format!(
+            "source top pressure must be finite and positive, got {value:?}"
+        )));
+    }
+
+    let args = build_namelist_support_args(request);
+    let output = Command::new(engine)
+        .args(&args)
+        .output()
+        .map_err(|source| {
+            RwWpsError::Engine(format!(
+                "cannot run {} for namelist support: {source}",
+                Path::new(engine).display()
+            ))
+        })?;
+    let report: NamelistSupportReport =
+        serde_json::from_slice(&output.stdout).map_err(|error| {
+            RwWpsError::Engine(format!(
+                "native engine emitted an invalid namelist support report: {error}; stderr: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        })?;
+    validate_namelist_support_report(&report)?;
+    if output.status.success() != (report.verdict == "PASS") {
+        return Err(RwWpsError::Engine(format!(
+            "native engine exit status {} contradicts namelist verdict {}",
+            output.status, report.verdict
+        )));
+    }
+    Ok(report)
+}
+
+pub fn validate_namelist_support_report(report: &NamelistSupportReport) -> Result<(), RwWpsError> {
+    if report.schema != NAMELIST_SUPPORT_SCHEMA {
+        return Err(RwWpsError::Engine(format!(
+            "unsupported namelist support schema {:?}",
+            report.schema
+        )));
+    }
+    if report.verdict != "PASS" && report.verdict != "FAIL" {
+        return Err(RwWpsError::Engine(format!(
+            "invalid namelist verdict {:?}",
+            report.verdict
+        )));
+    }
+    let passed = report.verdict == "PASS";
+    if passed != (report.required_state.stock_wrf_export.verdict == "PASS") {
+        return Err(RwWpsError::Engine(
+            "top-level and stock-WRF namelist verdicts contradict".to_owned(),
+        ));
+    }
+    if passed != report.issues.is_empty() {
+        return Err(RwWpsError::Engine(
+            "PASS must have no issues and FAIL must have at least one issue".to_owned(),
+        ));
+    }
+    if report.geometry.domain_count != report.geometry.domains.len() {
+        return Err(RwWpsError::Engine(
+            "namelist geometry domain_count differs from its domain array".to_owned(),
+        ));
+    }
+    if let Some(max_dom) = report.max_dom
+        && report.geometry.domain_count != 0
+        && usize::from(max_dom) != report.geometry.domain_count
+    {
+        return Err(RwWpsError::Engine(
+            "namelist max_dom differs from parsed geometry domain count".to_owned(),
+        ));
+    }
+    for (index, domain) in report.geometry.domains.iter().enumerate() {
+        if usize::from(domain.grid_id) != index + 1
+            || domain.mass_nx + 1 != domain.e_we
+            || domain.mass_ny + 1 != domain.e_sn
+            || !domain.dx_m.is_finite()
+            || !domain.dy_m.is_finite()
+            || domain.dx_m <= 0.0
+            || domain.dy_m <= 0.0
+        {
+            return Err(RwWpsError::Engine(format!(
+                "invalid parsed geometry for d{:02}",
+                index + 1
+            )));
+        }
+    }
+    if let Some(vertical) = &report.vertical {
+        if vertical.e_vert != vertical.mass_levels + 1
+            || vertical.eta_levels.len() != vertical.e_vert
+            || vertical.eta_levels.first() != Some(&1.0)
+            || vertical.eta_levels.last() != Some(&0.0)
+            || !vertical
+                .eta_levels
+                .windows(2)
+                .all(|pair| pair[0].is_finite() && pair[0] > pair[1])
+            || !vertical.p_top_requested_pa.is_finite()
+            || vertical.p_top_requested_pa <= 0.0
+        {
+            return Err(RwWpsError::Engine(
+                "invalid explicit vertical grid in namelist support report".to_owned(),
+            ));
+        }
+    }
+    if passed
+        && report.required_state.stock_wrf_export.domains.len() != report.geometry.domain_count
+    {
+        return Err(RwWpsError::Engine(
+            "PASS report does not inventory every parsed WRF domain".to_owned(),
+        ));
+    }
+    for domain in &report.required_state.stock_wrf_export.domains {
+        if !matches!(domain.mp_physics, 6 | 8 | 10) {
+            return Err(RwWpsError::Engine(format!(
+                "stock-WRF PASS inventory contains undeclared mp_physics={}",
+                domain.mp_physics
+            )));
+        }
+        for field in domain
+            .wrfinput_fields
+            .iter()
+            .chain(&domain.runtime_state_not_wrfinput)
+        {
+            if field.dtype != "float32"
+                || field.dimensions != ["Time", "bottom_top", "south_north", "west_east"]
+            {
+                return Err(RwWpsError::Engine(format!(
+                    "invalid stock-WRF state declaration for {}",
+                    field.netcdf_name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_file(path: &Path, label: &str) -> Result<(), RwWpsError> {
+    let metadata = std::fs::metadata(path).map_err(|source| io_error(path, source))?;
+    if !metadata.is_file() {
+        return Err(RwWpsError::Config(format!(
+            "{label} path {} is not a regular file",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn field(name: &str, collection: Option<&str>) -> Value {
+        json!({
+            "registry_name": name.to_ascii_lowercase(),
+            "netcdf_name": name,
+            "collection": collection,
+            "dtype": "float32",
+            "dimensions": ["Time", "bottom_top", "south_north", "west_east"],
+            "units": if collection == Some("scalar") { "# kg-1" } else { "kg kg-1" },
+            "initialization": "zero_if_source_absent"
+        })
+    }
+
+    fn valid_json(mp_physics: u16) -> Value {
+        let mut fields = vec![field("QVAPOR", Some("moist"))];
+        if mp_physics == 8 {
+            fields.push(field("QNICE", Some("scalar")));
+            fields.push(field("QNRAIN", Some("scalar")));
+        }
+        json!({
+            "schema": NAMELIST_SUPPORT_SCHEMA,
+            "verdict": "PASS",
+            "max_dom": 1,
+            "classifications": {
+                "preprocessing_relevant": [],
+                "physics_state_relevant": [],
+                "runtime_output_only": [],
+                "legacy_stage_only": []
+            },
+            "geometry": {"domain_count": 1, "domains": [{
+                "grid_id": 1, "parent_id": 0, "parent_grid_ratio": 1,
+                "parent_time_step_ratio": 1, "i_parent_start": 1,
+                "j_parent_start": 1, "e_we": 101, "e_sn": 81,
+                "mass_nx": 100, "mass_ny": 80, "dx_m": 12000.0,
+                "dy_m": 12000.0
+            }]},
+            "vertical": {
+                "e_vert": 4, "mass_levels": 3,
+                "eta_levels": [1.0, 0.7, 0.3, 0.0],
+                "p_top_requested_pa": 5000.0, "hybrid_opt": 2,
+                "etac": 0.2, "source_top_pressure_pa": null,
+                "coverage": "deferred_to_source_mapping"
+            },
+            "required_state": {
+                "stock_wrf_export": {"verdict": "PASS", "target": "unchanged WRF v4.6.1", "domains": [{
+                    "grid_id": 1, "mp_physics": mp_physics,
+                    "microphysics": if mp_physics == 8 { "Thompson" } else { "WSM6" },
+                    "bl_pbl_physics": 1, "sf_sfclay_physics": 91,
+                    "sf_surface_physics": 2, "num_soil_layers": 4,
+                    "wrfinput_fields": fields,
+                    "runtime_state_not_wrfinput": []
+                }]},
+                "gpuwm_runtime": {"verdict": "PASS", "reasons": []}
+            },
+            "issues": []
+        })
+    }
+
+    #[test]
+    fn python_schema_round_trips_through_typed_rust_binding() {
+        let report: NamelistSupportReport = serde_json::from_value(valid_json(8)).unwrap();
+        validate_namelist_support_report(&report).unwrap();
+        let round_trip = serde_json::to_value(report).unwrap();
+        assert_eq!(round_trip["schema"], NAMELIST_SUPPORT_SCHEMA);
+        assert_eq!(
+            round_trip["required_state"]["stock_wrf_export"]["domains"][0]["wrfinput_fields"][2]["netcdf_name"],
+            "QNRAIN"
+        );
+    }
+
+    #[test]
+    fn schema_drift_and_false_pass_fail_closed() {
+        let mut drift = valid_json(6);
+        drift["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<NamelistSupportReport>(drift).is_err());
+
+        let mut contradiction = valid_json(6);
+        contradiction["issues"] = json!([{
+            "code": "X", "location": "&physics/x", "message": "bad", "action": "fix"
+        }]);
+        let report: NamelistSupportReport = serde_json::from_value(contradiction).unwrap();
+        assert!(validate_namelist_support_report(&report).is_err());
+    }
+
+    #[test]
+    fn invocation_preserves_paths_and_source_top() {
+        let request = NamelistSupportRequest {
+            wps: PathBuf::from("a/namelist.wps"),
+            input: PathBuf::from("b/namelist.input"),
+            source_top_pressure_pa: Some(5000.0),
+        };
+        assert_eq!(
+            build_namelist_support_args(&request),
+            [
+                "--namelist-support-report",
+                "--wps-namelist",
+                "a/namelist.wps",
+                "--namelist-input",
+                "b/namelist.input",
+                "--source-top-pressure-pa",
+                "5000",
+            ]
+            .map(OsString::from)
+        );
+    }
+}
