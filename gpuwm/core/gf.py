@@ -19,25 +19,42 @@ test_the_corrected_k22_ledger_entry (three fixture cases move, all three
 rejected either way, zero output words differ).
 
 Recorded deviations of THIS seam (the kernel behind it is bitwise; these
-are about what the engine can hand it today, and they are the plumb-list
-for the label upgrade):
+are about what the engine can hand it today):
 
-1. **Forcing tendencies.**  GFDRV's forced states (``tn``/``qo``) sum
-   advective (RTHFTEN/RQVFTEN), radiative (RTHRATEN) and boundary-layer
-   (RTHBLTEN/RQVBLTEN) forcing.  The engine's dycore does not yet export
-   an advective theta/qv forcing pair, and the PBL stack couples its
-   rates before the driver retains them -- so this adapter feeds the
-   radiative term (held by the driver and read through ``bind_driver``)
-   and ZEROS for the other two.  The instability closures still see the
-   current state and the omega/moisture-convergence closures are fully
-   fed (``omeg = -g*rho*w`` is computed from the live fields); what is
-   degraded is the rate-of-change closure family's forcing and, with
-   ``ishallow=1``, the shallow ``blqe`` member (``dhdt = 0``).
+1. **Forcing tendencies** (CLOSED, task #243).  GFDRV's forced states
+   (``tn``/``qo``) sum advective (RTHFTEN/RQVFTEN), radiative (RTHRATEN)
+   and boundary-layer (RTHBLTEN/RQVBLTEN) forcing, and all four auxiliary
+   lanes are read off the bound driver:
+   ``gf_rthdynten``/``gf_rqvdynten`` (the integrator's advective rates --
+   the ARW dycore exports them at RK stage 1 of every step into
+   ``state.rthften``/``state.rqvften``, bound at driver construction; the
+   MPAS driver computes its own exactly as native v8.4.1's
+   mpas_atm_time_integration.F:6936 + :2789 construction) and
+   ``gf_rthblten``/``gf_rqvblten`` (the PBL slot's raw rates, retained by
+   ``PhysicsDriver._couple_pbl_slot`` under WRF's between-calls
+   persistence contract -- YSU, MYJ, MYNN, Shin-Hong and SASE all fill
+   the slot on the same terms, exactly as WRF's cumulus driver reads
+   RTHBLTEN/RQVBLTEN without asking which scheme wrote them).  A lane
+   whose driver attribute is ``None`` feeds zeros -- what a driverless
+   adapter and the parity harnesses get.
+
+   THE ADVECTIVE LANE IS PURE ADVECTION, deliberately.
+   ``module_cumulus_driver.F:867`` pre-folds ``RTHRATEN + RTHBLTEN`` into
+   ``RTHFTEN`` for G3SCHEME and NTIEDTKESCHEME only; GFSCHEME is not in
+   that list because the kernel sums the three lanes itself at
+   ``kernels/gf.cu:4146``.  Handing this adapter a pre-folded RTHFTEN
+   would integrate the boundary layer and the sky twice.
 2. **Convective momentum tendencies.**  The kernel computes GF's
    dudt/dvdt; :class:`CumulusResult` carries no momentum slots, so they
-   are not yet coupled.  WRF couples them.
+   are not yet coupled.  WRF couples them; MPAS-A v8.4.1 does NOT
+   (its cu_grell_freitas call carries no rucuten/rvcuten), so for the
+   MPAS seam this is native parity, not a gap.
 3. **w on mass levels** is the KF-precedent average
    ``0.5*(w[k] + w[k+1])`` of the staggered field.
+4. **dx** is per-column when the driver carries ``gf_dx_column``
+   ([ny, nx], metres); the scalar ``cfg.dx`` otherwise.  WRF's own GFDRV
+   takes dx(i,j), so the per-column feed is the WRF interface, not an
+   extension.
 
 Ice routing follows WRF's own ``F_QI`` gate: with a prognostic ``qi`` the
 258 K split routes cold condensate to RQICUTEN; without one, everything
@@ -123,6 +140,18 @@ class GrellFreitas:
             rthraten = cp.zeros((nz, ny, nx), dtype=DTYPE)
         zeros_lev = cp.zeros((ncol, nz), dtype=DTYPE)
 
+        def held_lane(name):
+            """Driver-held auxiliary forcing lane, zeros when absent."""
+            lane = (None if self._driver is None
+                    else getattr(self._driver, name, None))
+            if lane is None:
+                return zeros_lev
+            if lane.shape != (nz, ny, nx):
+                raise ValueError(
+                    f"driver {name} must be [nz, ny, nx]={nz, ny, nx}, "
+                    f"got {lane.shape}")
+            return cols(lane)
+
         lvin = cp.empty((ncol, len(_IN_LEV), nz), dtype=DTYPE)
         lvin[:, _IN_LEV.index("u"), :] = cols(atmosphere["u"])
         lvin[:, _IN_LEV.index("v"), :] = cols(atmosphere["v"])
@@ -135,11 +164,11 @@ class GrellFreitas:
         lvin[:, _IN_LEV.index("dz8w"), :] = cols(atmosphere["dz"])
         lvin[:, _IN_LEV.index("p8w"), :] = cols(
             atmosphere["p_interface"][:-1])
-        lvin[:, _IN_LEV.index("rthften"), :] = zeros_lev   # deviation 1
-        lvin[:, _IN_LEV.index("rqvften"), :] = zeros_lev   # deviation 1
+        lvin[:, _IN_LEV.index("rthften"), :] = held_lane("gf_rthdynten")
+        lvin[:, _IN_LEV.index("rqvften"), :] = held_lane("gf_rqvdynten")
         lvin[:, _IN_LEV.index("rthraten"), :] = cols(rthraten)
-        lvin[:, _IN_LEV.index("rthblten"), :] = zeros_lev  # deviation 1
-        lvin[:, _IN_LEV.index("rqvblten"), :] = zeros_lev  # deviation 1
+        lvin[:, _IN_LEV.index("rthblten"), :] = held_lane("gf_rthblten")
+        lvin[:, _IN_LEV.index("rqvblten"), :] = held_lane("gf_rqvblten")
 
         # WRF hands the scheme its model DT (module_cumulus_driver.F:1028)
         # -- the outer clock when the case integrates internal substeps,
@@ -151,7 +180,17 @@ class GrellFreitas:
         scin[:, 2] = fields["qfx"].reshape(ncol)
         scin[:, 3] = fields["xland"].reshape(ncol)
         scin[:, 4] = clock_dt
-        scin[:, 5] = DTYPE(cfg.dx)
+        dx_column = (None if self._driver is None
+                     else getattr(self._driver, "gf_dx_column", None))
+        if dx_column is None:
+            scin[:, 5] = DTYPE(cfg.dx)
+        else:
+            if dx_column.shape != (ny, nx):
+                raise ValueError(
+                    f"driver gf_dx_column must be [ny, nx]={ny, nx}, "
+                    f"got {dx_column.shape}")
+            scin[:, 5] = cp.asarray(
+                dx_column, dtype=DTYPE).reshape(ncol)
 
         iin = cp.empty((ncol, 3), dtype=cp.int32)
         iin[:, 0] = fields["kpbl"].reshape(ncol)

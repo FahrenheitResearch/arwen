@@ -31,10 +31,17 @@ import cupy as cp
 
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import DTYPE
+from gpuwm.physics_vertical_contract import (
+    outside_vertical_bounds, refuse_vertical_levels)
 
 _TPB = 32
 _VALIDATE_TPB = 256
 _KMAX = 128
+
+#: The launcher's first-call vertical bound, restated for front doors by
+#: ``gpuwm.physics_vertical_contract.SHINHONG_VERTICAL_LEVEL_BOUNDS`` and
+#: bound to it by ``tests/test_pbl_vertical_bounds.py``.
+VERTICAL_LEVEL_BOUNDS = (4, _KMAX)
 
 _SHINHONG_3D_FLOAT_OUTPUTS = (
     "du", "dv", "dtheta", "dqv", "dqc", "dqi", "exch_h", "tke", "el",
@@ -85,10 +92,15 @@ def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
     if len(shape) != 3:
         raise ValueError(f"theta must have shape (nz, ny, nx), got {shape}")
     nz, ny, nx = shape
-    if nz > _KMAX:
-        raise ValueError(f"nz={nz} exceeds SHINHONG_KMAX={_KMAX}")
-    if nz < 4:
-        raise ValueError(f"Shin-Hong requires nz >= 4, got {nz}")
+    if outside_vertical_bounds(nz, VERTICAL_LEVEL_BOUNDS):
+        raise refuse_vertical_levels(
+            "Shin-Hong PBL", VERTICAL_LEVEL_BOUNDS, nz,
+            breakage=(
+                "one CUDA thread owns a whole column and holds it in "
+                f"per-thread local memory at SHINHONG_KMAX={_KMAX} "
+                "(kernels/shinhong.cu), and the scheme's YSU-inherited "
+                "counter-gradient and entrainment indexing needs four levels "
+                "to exist."))
     for name, arr in columns.items():
         if not isinstance(arr, cp.ndarray) or arr.shape != shape:
             raise ValueError(f"{name} must be a CuPy array with shape {shape}")

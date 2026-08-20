@@ -888,6 +888,105 @@ def test_synthetic_state_roundtrips_bit_exactly(monkeypatch, tmp_path,
                                              "scratch/mp_rainnc"}
 
 
+def _grell_freitas_shim_state(cfg, monkeypatch):
+    """A host-backed ``cu_physics=3`` state with its real GF adapter bound.
+
+    ``write_restart`` refuses an active cumulus scheme with no attached
+    driver (the identity block), and the GF identity resolves the REAL
+    adapter class -- so the checkpoint these tests write is the one a
+    Grell-Freitas run writes, not a stand-in with a different key set.
+    """
+    import gpuwm.core.physics as physics
+
+    from gpuwm.core.gf import GrellFreitas
+
+    state = _shim_state(cfg, monkeypatch)
+    monkeypatch.setattr(physics, "cp", _NumpyCupyShim)
+    driver = physics.PhysicsDriver(
+        state, cfg, fields={}, sfclay_result=None, noah_params=None,
+        cumulus=GrellFreitas())
+    state.physics = driver
+    return state, driver
+
+
+def test_the_advective_forcing_pair_roundtrips_and_only_where_it_exists(
+        monkeypatch, tmp_path):
+    """WRF RTHFTEN/RQVFTEN cross a resume, and cost nobody else a key.
+
+    THE BREAKAGE.  The pair is written by RK stage 1 of step N and read by
+    the cumulus call at the TOP of step N+1, so between a resume and its
+    first cumulus call there is no producer -- exactly h_diabatic's
+    lifecycle.  Classified REBUILT it would resume from a zeroed buffer
+    and hand Grell-Freitas one step of hard zeros in the middle of a
+    trajectory, silently and finitely.  So it is SERIALIZED, and this cell
+    is the byte-level proof.
+
+    The second half is the price: a cu_physics without an advective
+    consumer must not gain two archive members, or every checkpoint on
+    disk for every other configuration would stop resuming.
+    """
+    cfg = _cfg(moist=True, mp_physics=10, cu_physics=3, cudt_minutes=0.0)
+    state, _ = _grell_freitas_shim_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, seed=20260820)
+    state.elapsed_seconds = 600.0
+
+    manifest = restart.state_manifest(state)
+    assert {"state/rthften", "state/rqvften"} <= set(manifest)
+
+    path = restart.write_restart(tmp_path / "gf.npz", state, cfg)
+    fresh, _ = _grell_freitas_shim_state(cfg, monkeypatch)
+    _fill_setup(fresh)
+    restart.restore_restart(path, fresh, cfg)
+    for name in restart.ADVECTIVE_FORCING_STATE:
+        source = getattr(state, name)
+        assert source.any(), f"{name} was never filled"
+        assert getattr(fresh, name).tobytes() == source.tobytes(), name
+
+    # Every other cumulus selection keeps its exact archive inventory.
+    for cu_physics in (0, 1):
+        other_cfg = _cfg(moist=True, mp_physics=10, cu_physics=cu_physics,
+                         cudt_minutes=0.0)
+        other = _shim_state(other_cfg, monkeypatch)
+        other_manifest = restart.state_manifest(other)
+        assert not (set(other_manifest)
+                    & {"state/rthften", "state/rqvften"}), cu_physics
+
+
+def test_a_checkpoint_predating_the_advective_export_is_refused_by_name(
+        monkeypatch, tmp_path):
+    """The refusal names the change and the remedy, not two sorted lists.
+
+    A Grell-Freitas checkpoint written before the dycore exported the pair
+    is two state members short.  The key-set check already refused it, but
+    with a diff of two long sorted lists the operator had to spot the
+    difference by eye and then guess whether it was recoverable.  Refusals
+    name the breakage AND the remedy.
+    """
+    cfg = _cfg(moist=True, mp_physics=10, cu_physics=3, cudt_minutes=0.0)
+    state, _ = _grell_freitas_shim_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, seed=20260820)
+    path = restart.write_restart(tmp_path / "gf.npz", state, cfg)
+
+    def _drop_the_pair(payload, header):
+        for name in restart.ADVECTIVE_FORCING_STATE:
+            payload.pop(f"state/{name}")
+
+    legacy = _rewrite_restart_archive(
+        path, tmp_path / "legacy.npz", _drop_the_pair)
+
+    fresh, _ = _grell_freitas_shim_state(cfg, monkeypatch)
+    _fill_setup(fresh)
+    with pytest.raises(restart.RestartMismatchError) as excinfo:
+        restart.restore_restart(legacy, fresh, cfg)
+    message = str(excinfo.value)
+    assert "predates the dycore's advective forcing export" in message
+    assert "rthften" in message and "rqvften" in message
+    assert "RTHFTEN/RQVFTEN" in message
+    assert "Remedy:" in message
+
+
 def test_restore_normalizes_spec_zone_ring_microphysics(monkeypatch,
                                                         tmp_path):
     """v5 migration pin: a checkpoint seeded with nonzero spec-zone ring
@@ -2196,6 +2295,65 @@ def test_sealed_tree_restart_extends_root_and_restores_rebuilt_child(
     assert np.array_equal(resumed_child.state.u, source_child.state.u,
                           equal_nan=True)
     assert resumed_child.coupler.valid is False
+
+
+def test_tree_restart_at_exactly_the_stop_tick_reports_a_complete_run(
+        monkeypatch, tmp_path):
+    """A restore point that IS the stop tick means the run finished.
+
+    The 24 h four-domain reproduction integrated every tick, wrote every
+    history frame and its final checkpoint, and then the supervisor
+    relaunched from that final checkpoint: each fresh worker restored at
+    ``elapsed_ticks == run_ticks`` and raised, so a scientifically
+    complete run reported failure with rc 1.  Nothing is broken at that
+    point -- the state is exactly the state the run stopped on -- so the
+    restore reports completion and the route finalizes.
+    """
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0,
+        payload_seed=31)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+
+    resumed, _ = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0,
+        payload_seed=91)
+    info = restart.restore_tree_restart(root_path, resumed)
+
+    assert info.already_complete is True
+    assert info.elapsed_ticks == 3600
+    assert resumed.root.clock.ticks == 3600
+    # The state still restored: completion is not a skipped restore.
+    assert np.array_equal(resumed.root.state.u, source.root.state.u,
+                          equal_nan=True)
+
+
+def test_tree_restart_past_the_stop_tick_refuses_and_names_the_remedy(
+        monkeypatch, tmp_path):
+    """A checkpoint BEYOND the stop is still a genuine mismatch.
+
+    The completion case above must not swallow this one: a checkpoint
+    later than the configured stop means the run this checkpoint came
+    from is longer than the run being asked for, and integrating it
+    backwards is not a thing.  The refusal names that and names the key
+    to change, which the bare ``nothing left before stop`` sentence did
+    not.
+    """
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0,
+        payload_seed=31)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+
+    resumed, _ = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=1800.0,
+        payload_seed=91)
+    with pytest.raises(restart.RestartMismatchError) as caught:
+        restart.restore_tree_restart(root_path, resumed)
+
+    message = str(caught.value)
+    assert "3600" in message and "1800" in message
+    assert "run_seconds" in message
 
 
 def _grell_freitas_tree(monkeypatch, *, seed=61):

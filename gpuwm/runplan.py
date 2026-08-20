@@ -121,12 +121,15 @@ EVENT_SCHEMA = "gpuwm.run-plan.event.v1"
 MANIFEST_SCHEMA = "gpuwm.run-manifest.v1"
 
 #: The documents this module answers ``--resolve``/``--estimate``/
-#: ``--probe`` with.  Versioned for the same reason the others are: a
-#: front end pins what it parses.
+#: ``--probe``/``--catalog``/``--sources``/``--physics-profiles`` with.
+#: Versioned for the same reason the others are: a front end pins what
+#: it parses.
 RESOLVE_SCHEMA = "gpuwm.run-plan.resolved.v1"
 ESTIMATE_SCHEMA = "gpuwm.run-plan.estimate.v1"
 PROBE_SCHEMA = "gpuwm.run-plan.probe.v1"
 CATALOG_SCHEMA = "gpuwm.run-plan.catalog.v1"
+SOURCES_SCHEMA = "gpuwm.run-plan.sources.v1"
+PHYSICS_PROFILES_SCHEMA = "gpuwm.run-plan.physics-profiles.v1"
 
 EVENTS_FILENAME = "events.jsonl"
 MANIFEST_FILENAME = "run-manifest.json"
@@ -256,18 +259,145 @@ _INTENT_DELIVERY = {
 #: The filename the generated config takes inside the run directory.
 GENERATED_CONFIG_NAME = "intent-config.toml"
 
-#: The one source whose emitted config the ``experiment`` route can
-#: actually run.  Not a policy invented here -- the wizard writes a
-#: ``[case_data]`` table for ERA5 and for nothing else, because (its
-#: words) "the config-driven route decodes native GRIB1 = ERA5 today"
-#: (domain_wizard.py:3445).  A GFS or HRRR emission is a real config,
-#: but its consumer is the native/prepared front door, and those are
-#: not routes yet.
-_CASE_DATA_SOURCES = frozenset({"era5"})
+#: The registry ``runner`` ids the run-plan chains execute.  Dispatch is
+#: by RUNNER -- a declared implementation-route fact on the registry row
+#: -- never by model name, which is what lets a row added to
+#: ``gpuwm.source_adapters._ADAPTERS`` become intent-drivable with zero
+#: code change here (the arbitrary acceptance test).
+#:
+#: ``_CASE_DATA_RUNNER`` is the combined-GRIB1 preparation the
+#: config-driven ``experiment`` route hosts: the wizard writes a
+#: ``[case_data]`` table exactly for that decode family
+#: (domain_wizard.py, the ERA5 arm), and ``gpuwm run`` consumes it.
+#: ``_HRRR_CHAIN_RUNNER`` names the native HRRR tool route
+#: :func:`_hrrr_chain` drives.  ``_STAGED_CHAIN_RUNNER`` is the
+#: declarative mapped-composition route: every packaged source on it is
+#: prepared by ``gpuwm prep`` from the table-route fetch's own bound
+#: handoff and run by the prepared forecast runners, which is what
+#: :func:`_staged_chain` composes.
+_CASE_DATA_RUNNER = "era5_combined_grib1_v1"
+_HRRR_CHAIN_RUNNER = "hrrr_f00_f12_v1"
+_STAGED_CHAIN_RUNNER = "mapped_composition_v1"
 
-#: Sources the prepared route can drive end to end.  gfs runs `gpuwm
-#: go`'s chain; hrrr runs its own, which `go` refuses by construction.
-_PREPARED_SOURCES = frozenset({"gfs", "hrrr"})
+
+def intent_drivability() -> dict[str, dict[str, Any]]:
+    """Which run-plan routes an INTENT can drive each registered source on.
+
+    ``{source_id: {"routes": [...], "chain": str | None,
+    "refusal": str | None}}`` for every registry row, DERIVED from
+    declared facts and never from a list of model names kept here:
+
+    * the row is ``runnable`` (a strict implementation route exists);
+    * it declares ``forcing_interval_seconds``, so ``gpuwm domain`` can
+      emit a ``namelist.wps`` for it (:func:`wizard_planable_source_ids`
+      is that exact predicate);
+    * a chain of this front door can execute the wizard's emission:
+      the config-driven ``experiment`` route for the combined-GRIB1
+      runner, ``gpuwm go``'s chain for the sources go itself declares
+      (``ORCHESTRATED_SOURCES``), the native HRRR chain for its runner,
+      and the staged fetch->prep->sim chain for a mapped-composition
+      row whose packaged profile is composed, whose acquisition is a
+      table fetch route (the route's bound prep handoff is what the
+      chain composes its preparation from), and which declares no
+      member set (member selection is ``gpuwm-member-prep``'s and an
+      intent carries no member axis).
+
+    A row that fails one of those carries the FIRST missing fact as its
+    ``refusal`` -- the registry's own vocabulary, never "unknown
+    source", so a front end can show the reader what is actually absent.
+    """
+
+    from gpuwm import fetch_routes
+    from gpuwm.go_cli import ORCHESTRATED_SOURCES
+    from gpuwm.source_adapters import (source_adapters,
+                                       wizard_planable_source_ids)
+    from gpuwm.source_authorities import packaged_profile
+
+    planable = set(wizard_planable_source_ids())
+    table = set(fetch_routes.route_ids())
+    legacy = set(fetch_routes.LEGACY_ROUTE_SOURCES)
+
+    def _one(adapter) -> dict[str, Any]:
+        source = adapter.source_id
+        if adapter.runner == _CASE_DATA_RUNNER and source in planable:
+            return {"routes": ["experiment"], "chain": "experiment",
+                    "refusal": None}
+        if not adapter.runnable:
+            return {"routes": [], "chain": None, "refusal": (
+                f"the registry row for {source!r} declares no runnable "
+                f"implementation route (status "
+                f"{adapter.status.value!r}), so there is nothing for an "
+                "intent to drive")}
+        if source not in planable:
+            return {"routes": [], "chain": None, "refusal": (
+                f"the registry row for {source!r} declares no "
+                "forcing_interval_seconds, so `gpuwm domain` has no "
+                "boundary cadence to write into an emitted namelist.wps "
+                "and cannot plan it")}
+        if adapter.member_set is not None:
+            return {"routes": [], "chain": None, "refusal": (
+                f"the registry row for {source!r} declares member set "
+                f"{adapter.member_set!r}: member selection and "
+                "verification belong to `gpuwm-member-prep`, and an "
+                "intent carries no member axis, so a chain composed "
+                "here would prepare an unselected ensemble")}
+        fetch_kind = ("table" if source in table
+                      else "legacy" if source in legacy else None)
+        if fetch_kind is None:
+            return {"routes": [], "chain": None, "refusal": (
+                f"no acquisition route is registered for {source!r} "
+                f"(`gpuwm fetch --source {source}` refuses), so the "
+                "chain's fetch stage has no way to bring its bytes")}
+        if source in ORCHESTRATED_SOURCES:
+            return {"routes": ["prepared"], "chain": "prepared:go",
+                    "refusal": None}
+        if adapter.runner == _HRRR_CHAIN_RUNNER:
+            return {"routes": ["prepared"], "chain": "prepared:hrrr",
+                    "refusal": None}
+        if adapter.runner == _STAGED_CHAIN_RUNNER:
+            if fetch_kind != "table":
+                return {"routes": [], "chain": None, "refusal": (
+                    f"{source!r} is acquired over a legacy transport, "
+                    "which publishes no bound mapped-prep handoff "
+                    f"({fetch_routes.PREP_ARGUMENTS_NAME}); the staged "
+                    "chain composes its preparation from that handoff, "
+                    "so this source needs a table acquisition route "
+                    "before an intent can drive it")}
+            profile_id = adapter.packaged_profile
+            if profile_id is None:
+                return {"routes": [], "chain": None, "refusal": (
+                    f"the registry row for {source!r} names the "
+                    "declarative mapped route but ships no packaged "
+                    "profile, so a preparation would need a "
+                    "caller-authored mapping, which an intent cannot "
+                    "supply")}
+            try:
+                state = str(packaged_profile(profile_id)
+                            ["composition_state"])
+            except Exception as error:  # noqa: BLE001 - report, not raise
+                return {"routes": [], "chain": None, "refusal": (
+                    f"the packaged profile {profile_id!r} for "
+                    f"{source!r} is unreadable: {error}")}
+            if state != "composed":
+                return {"routes": [], "chain": None, "refusal": (
+                    f"the packaged profile {profile_id!r} for "
+                    f"{source!r} declares composition_state {state!r}, "
+                    "so no preparation can compose it yet")}
+            return {"routes": ["prepared"], "chain": "prepared:staged",
+                    "refusal": None}
+        return {"routes": [], "chain": None, "refusal": (
+            f"the registry row for {source!r} names runner "
+            f"{adapter.runner!r}, which no run-plan chain executes")}
+
+    return {adapter.source_id: _one(adapter)
+            for adapter in source_adapters()}
+
+
+def _intent_sources_for(route: str) -> frozenset[str]:
+    """The source ids whose intent the named route drives, derived live."""
+
+    return frozenset(source for source, verdict in intent_drivability()
+                     .items() if route in verdict["routes"])
 
 #: ``gpuwm run``'s own documented default output directory.  A plan that
 #: omits ``output_root`` lands where the command it wraps would have.
@@ -550,27 +680,60 @@ def _build_intent(intent: object, *, route: str) -> dict[str, Any]:
                 "Vtable from the bridge; neither is yours to set."))
 
     source = intent.get("source", "era5")
-    if (not ROUTES[route].needs_case_data
-            and source not in _PREPARED_SOURCES):
+    _refuse_undrivable_intent_source(str(source), route=route)
+    return dict(intent)
+
+
+def _refuse_undrivable_intent_source(source: str, *, route: str) -> None:
+    """Refuse an intent source this route cannot drive, naming the fact.
+
+    Three shapes, each with its own true sentence:
+
+    * a registered source no route can drive from an intent -- the
+      refusal is the DERIVED one from :func:`intent_drivability`, which
+      names the missing registry fact (no acquisition route, a member
+      set, no forcing cadence...), never "unknown source";
+    * a registered source another route drives -- the refusal names
+      that route, so the remedy is one edited field;
+    * a name the registry does not hold at all -- the wizard's own
+      vocabulary, relayed by naming the door that lists what exists.
+    """
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    try:
+        canonical = get_source_adapter(source).source_id
+    except ValueError as error:
+        raise PlanError(layered(
+            f"run plan 'config.intent' names source {source!r}, which "
+            "is not in the source registry.",
+            f"{error}  `gpuwm run-plan --sources` lists every "
+            "registered source and whether an intent can drive it.")
+        ) from error
+    verdict = intent_drivability().get(canonical)
+    if verdict is None:                                  # pragma: no cover
+        raise PlanError(
+            f"run plan 'config.intent' names source {source!r}, which "
+            "the registry holds but the drivability derivation did not "
+            "answer for; that is a defect in this front door")
+    if route in verdict["routes"]:
+        return
+    if verdict["routes"]:
+        other = ", ".join(f'route = "{name}"'
+                          for name in verdict["routes"])
         raise PlanError(layered(
             f"run plan 'config.intent' names source {source!r}, which "
             f"the {route!r} route cannot drive.",
-            "This route drives " + ", ".join(sorted(_PREPARED_SOURCES))
-            + ".  An era5 intent belongs on route = \"experiment\", "
-            "which consumes its [case_data] declarations directly."))
-    if ROUTES[route].needs_case_data and source not in _CASE_DATA_SOURCES:
-        raise PlanError(layered(
-            f"run plan 'config.intent' names source {source!r}, which "
-            f"the {route!r} route cannot run from an intent.",
-            "`gpuwm domain` writes a [case_data] table -- the declared "
-            "inputs a config-driven run needs -- only for era5, because "
-            "the config-driven route decodes native GRIB1 = ERA5 today "
-            "(gpuwm/domain_wizard.py:3445).  A gfs or hrrr emission is "
-            "a real config, but its consumer is the native/prepared "
-            "front door, and that is not a run-plan route yet.  Use "
-            "source = \"era5\", or supply a complete config with "
-            "config.path / config.inline."))
-    return dict(intent)
+            f"An intent for {canonical!r} runs on {other}: "
+            + ("its emission carries a [case_data] table the "
+               "config-driven route consumes directly."
+               if "experiment" in verdict["routes"] else
+               "its emission carries no [case_data] table, so it runs "
+               "on the prepared chain, not the config-driven one.")))
+    raise PlanError(layered(
+        f"run plan 'config.intent' names source {source!r}, which no "
+        "run-plan route can drive from an intent.",
+        str(verdict["refusal"])))
 
 
 def intent_arguments(intent: Mapping[str, Any], *, out: Path
@@ -695,6 +858,13 @@ _FOLLOW_STATICS_DELIVERY: dict[str, str | None] = {
     # same digest relay, so the tree runner cannot tell the two apart
     # and this table says the same word for both.
     "prepared:hrrr": "statics_corridor",
+    # The staged mapped chain cannot: rw-wps's mapped arm refuses
+    # --statics-corridor by name ("--statics-corridor is not used by
+    # --source mapped"), because the corridor builder is the GFS arm's
+    # geography stage and the declarative mapped preparation has no
+    # equivalent.  ``None`` refuses a follow config at resolve time,
+    # before the fetch, with the detail below.
+    "prepared:staged": None,
 }
 
 
@@ -715,17 +885,42 @@ _CORRIDOR_STAGE = {
 def _chain_key(route: str, config_source: str | None) -> str:
     """Which chain this plan dispatches to.
 
-    The prepared route is two chains wearing one name:
-    :func:`_hrrr_chain` drives the HRRR tools, everything else goes to
-    ``gpuwm go``'s rw-wps chain.  :func:`_execute_prepared_route`
+    The prepared route is three chains wearing one name:
+    :func:`_hrrr_chain` drives the native HRRR tools,
+    :func:`_staged_chain` drives the fetch->prep->sim staged route for
+    the packaged mapped-composition sources, and everything else goes
+    to ``gpuwm go``'s rw-wps chain.  :func:`_execute_prepared_route`
     branches on this function rather than on its own copy of the test,
     so the chain that RUNS and the chain the refusal above was decided
     for are the same chain by construction.
+
+    The fork is decided by the SOURCE'S REGISTRY ROW -- the same
+    :func:`intent_drivability` derivation the resolve-time refusals
+    read -- never by a list of model names here.  A source the
+    derivation cannot place (unregistered, or undrivable) falls to the
+    ``go`` chain, whose own refusal names its orchestrated set; that is
+    the behaviour every such config already had.
     """
     if route != "prepared":
         return route
-    return ("prepared:hrrr" if (config_source or "").lower() == "hrrr"
-            else "prepared:go")
+    source = (config_source or "").strip()
+    if source:
+        verdict = intent_drivability().get(_canonical_source_id(source))
+        if verdict is not None and (verdict["chain"] or "").startswith(
+                "prepared:"):
+            return str(verdict["chain"])
+    return "prepared:go"
+
+
+def _canonical_source_id(source: str) -> str:
+    """The registry id for a name or alias, or the name unchanged."""
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    try:
+        return get_source_adapter(source).source_id
+    except ValueError:
+        return source
 
 
 def follow_statics_decision(exp, *, chain: str) -> dict[str, Any] | None:
@@ -794,8 +989,18 @@ _CORRIDOR_RESOLUTION_NOTE = {
 #: stage learned to seal a corridor.  The machinery stays because a
 #: chain added tomorrow may not be able to, and the generic sentence in
 #: :func:`_follow_unsupported_refusal` would then be its stand-in until
-#: someone writes it a better one.
-_FOLLOW_UNSUPPORTED_DETAIL: dict[str, str] = {}
+#: someone writes it a better one.  The staged mapped chain is that
+#: chain: its preparation is rw-wps's declarative mapped arm, which
+#: refuses ``--statics-corridor`` by name, so a moving nest has no
+#: statics source anywhere on the route.
+_FOLLOW_UNSUPPORTED_DETAIL: dict[str, str] = {
+    "prepared:staged": (
+        "its preparation is rw-wps's declarative mapped arm, which "
+        "refuses --statics-corridor by name (the corridor builder "
+        "belongs to the GFS arm's geography stage), so nothing on this "
+        "chain can seal child-resolution statics over the nest's travel"
+    ),
+}
 
 
 def _follow_unsupported_refusal(chain: str, grid_id: int) -> str:
@@ -865,6 +1070,12 @@ _STREAMING_DELIVERY: dict[str, str] = {
     "experiment": "tree",
     "prepared:go": "root_only",
     "prepared:hrrr": "root_only",
+    # The staged chain's forecast is the same single-domain runner the
+    # HRRR chain hosts, reached through the same --tiles flag; its tree
+    # arm reads the user's own config, which carries [tiles] itself.
+    # Declared root_only because prepared_domain_builder refuses a nest
+    # at build time on the prepared runners either way.
+    "prepared:staged": "root_only",
 }
 
 
@@ -2429,12 +2640,12 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
               progress=prep_root / "progress.json",
               observer=_GoObserver(observer))
 
-    # Armed before either forecast arm, with the very dict `_hrrr_render`
+    # Armed before either forecast arm, with the very dict `_chain_render`
     # will hand the finalize stage below, so the frame rendered as it
     # lands and the frames rendered at the end agree on both the output
     # directory and the product spec by construction.
     observer.arm_first_products(
-        _hrrr_render_plan(plan, forecast_dir=forecast_dir, run_dir=run_dir))
+        _chain_render_plan(plan, forecast_dir=forecast_dir, run_dir=run_dir))
 
     if len(exp.domains) > 1:
         # A nested HRRR run takes a THIRD stage between the root
@@ -2456,7 +2667,7 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
         _hrrr_tree_forecast(
             tree_root=tree_root, config_path=config_path,
             forecast_dir=forecast_dir, observer=observer)
-        return _hrrr_render(plan, forecast_dir=forecast_dir,
+        return _chain_render(plan, forecast_dir=forecast_dir,
                             run_dir=run_dir, observer=observer)
 
     # The preparer publishes its own handoff -- prepared_root, the three
@@ -2561,7 +2772,7 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     # was produced, and the wizard's printed HRRR chain has no render
     # step at all, so this is the one place the sources are made to
     # agree.
-    return _hrrr_render(plan, forecast_dir=forecast_dir, run_dir=run_dir,
+    return _chain_render(plan, forecast_dir=forecast_dir, run_dir=run_dir,
                         observer=observer)
 
 
@@ -2688,31 +2899,190 @@ def _hrrr_tree_forecast(*, tree_root: Path, config_path: Path,
             "refusal is above")
 
 
-def _hrrr_render_plan(plan: RunPlan, *, forecast_dir: Path,
-                      run_dir: Path) -> dict[str, Any]:
-    """The plan dict this chain's render stage runs on.
+def _chain_render_plan(plan: RunPlan, *, forecast_dir: Path,
+                       run_dir: Path) -> dict[str, Any]:
+    """The plan dict a staged chain's render stage runs on.
 
-    One function because it now has two readers: the finalize render
-    below, and the early render armed before the forecast.  Two copies
-    of this literal is exactly how a run ends up publishing its first
-    frame into one directory and the rest into another.
+    One function because it has several readers: the finalize render
+    below, and the early render armed before each chain's forecast.
+    Two copies of this literal is exactly how a run ends up publishing
+    its first frame into one directory and the rest into another.
     """
 
     return {"run": forecast_dir, "render": run_dir / "chain" / "png",
             "render_products": plan.run_options.get("render_products")}
 
 
-def _hrrr_render(plan: RunPlan, *, forecast_dir: Path, run_dir: Path,
-                 observer: RunObserver) -> Mapping[str, Any]:
-    """go's render stage against this chain's output, then the summary."""
+def _chain_render(plan: RunPlan, *, forecast_dir: Path, run_dir: Path,
+                  observer: RunObserver) -> Mapping[str, Any]:
+    """go's render stage against a staged chain's output, then the summary."""
 
     from gpuwm.go_cli import _render_stage
 
     observer.enter_stage("finalize", phase="render")
     _render_stage(
-        _hrrr_render_plan(plan, forecast_dir=forecast_dir, run_dir=run_dir),
+        _chain_render_plan(plan, forecast_dir=forecast_dir, run_dir=run_dir),
         explain=False, observer=_GoObserver(observer))
     return _chain_summary(run_dir / "chain", observer=observer)
+
+
+def _run_prep(arguments: Sequence[str]) -> None:
+    """Run ``gpuwm prep`` -- the preprocessing stage -- in this process.
+
+    Through the real parser and the real dispatch, exactly as
+    :func:`_run_fetch` drives ``gpuwm fetch``: there is no second
+    preparation implementation here and there must never be one.
+    Separate from its caller so a test can observe the composed argv
+    without preparing anything.
+    """
+
+    from gpuwm.cli import build_parser
+
+    args = build_parser().parse_args(["prep", *arguments])
+    code = args.func(args)
+    if code:
+        raise RuntimeError(
+            f"`gpuwm prep {' '.join(str(a) for a in arguments)}` exited "
+            f"{code}; its own refusal is above")
+
+
+def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
+                  observer: RunObserver, run_dir: Path) -> Mapping[str, Any]:
+    """The staged route for a packaged mapped source: fetch, prep, sim.
+
+    The documented per-stage chain for every packaged
+    mapped-composition source -- ``gpuwm fetch`` (a table acquisition
+    route), ``gpuwm prep`` (rw-wps's declarative mapped arm, its
+    packaged profile already bound), then the prepared forecast runner
+    -- driven rather than printed, with each stage's refusals left
+    entirely alone.  Nothing here knows a model's name: which sources
+    arrive at this function is :func:`_chain_key`'s answer, derived
+    from the registry row, and every argument below is composed from an
+    artifact a stage published.
+
+    The preparation's arguments are the FETCH ROUTE'S OWN bound
+    handoff: the table route writes ``prep-arguments.json`` beside the
+    bytes it verified (the ordered ``--input-list``, every
+    ``--supplement`` role binding, the manifest authoring flag), and
+    this chain appends only the four values the handoff declares are
+    the caller's -- the WPS namelist, the experiment config, the
+    geography root and the output root.  Composing those bindings here
+    instead would be a second copy of the route table, which is the
+    drift the handoff artifact exists to end.
+    """
+
+    from gpuwm import fetch_routes
+
+    raw = tomllib.load(io.BytesIO(config_path.read_bytes()))
+    hints = dict(raw.get("fetch") or {})
+    intent = plan.config_intent or {}
+    data_dir = Path(plan.run_options.get("data_dir")
+                    or intent.get("data_dir") or (run_dir / "data"))
+    geog_root = plan.run_options.get("geog_root") or intent.get("geog_root")
+    if geog_root is None:
+        from gpuwm.geog_assets import default_geog_root
+
+        geog_root = default_geog_root()
+    # The wizard writes the WPS namelist beside every emission, under
+    # the config's own stem; the mapped preparation binds it by digest.
+    namelist = config_path.with_name(f"{config_path.stem}.namelist.wps")
+    if not namelist.is_file():
+        raise PlanError(
+            f"the staged route reads {namelist.name} beside "
+            f"{config_path.name}, and `gpuwm domain` writes it at "
+            "emission; this config was not emitted with one")
+    prep_root = run_dir / "chain" / "prep"
+    forecast_dir = run_dir / "chain" / "run"
+
+    # -- fetch ---------------------------------------------------------
+    observer.enter_stage("fetch", phase="fetch")
+    fetch_report = _run_fetch(
+        _fetch_arguments_from_hints(hints, out=data_dir), run_dir)
+    handoff_path = data_dir / fetch_routes.PREP_ARGUMENTS_NAME
+    handoff = _read_json_object(handoff_path)
+    if handoff.get("schema") != fetch_routes.PREP_ARGUMENTS_SCHEMA:
+        raise PlanError(
+            f"the fetch left no readable {fetch_routes.PREP_ARGUMENTS_NAME} "
+            f"in {data_dir}, so the preparation stage has no bound "
+            "argument handoff to compose from; the table routes write "
+            "one beside every verified fetch")
+    unfetched = handoff.get("unbound_supplement_roles") or []
+    if unfetched:
+        raise PlanError(
+            f"the fetch handoff {handoff_path} leaves the supplement "
+            f"role(s) {sorted(unfetched)} unbound, and this chain has "
+            "no way to supply them; the fetch route's own notes in "
+            f"{fetch_routes.PREP_COMMAND_NAME} say what each one needs")
+    observer.finish_stage(fetch=fetch_report)
+
+    # -- prepare -------------------------------------------------------
+    observer.enter_stage("prepare", phase="prepare")
+    arguments = [str(token) for token in handoff.get("argv") or []]
+    arguments += [
+        # The four the handoff declares are the caller's, and no more.
+        "--wps-namelist", str(namelist),
+        "--experiment-config", str(config_path),
+        "--geog-root", str(geog_root),
+        "--output-root", str(prep_root),
+    ]
+    _run_prep(arguments)
+    observer.finish_stage(prepared_root=str(prep_root))
+
+    # -- forecast ------------------------------------------------------
+    # The bundle speaks for itself: `resolve_bundle` reads which source
+    # prepared it and whether it is one domain or a tree, and
+    # `sim_command` relays the digests the runner re-derives and binds.
+    # The experiment config and namelist handed over are the SAME files
+    # the preparation consumed -- the mapped proof records their
+    # receipts, so the runner's identity check passes on exactly them.
+    from gpuwm import stage_cli
+
+    bundle = stage_cli.resolve_bundle(prep_root)
+    profile = (plan.run_options.get("physics_profile")
+               or intent.get("physics_profile"))
+    command = stage_cli.sim_command(
+        bundle, experiment_config=config_path,
+        wps_namelist=namelist if bundle["layout"] == "single" else None,
+        outdir=forecast_dir,
+        physics_profile=None if profile is None else str(profile),
+        progress_format="jsonl")
+    argv = command[3:]
+    if exp.tiles.enabled and bundle["layout"] == "single":
+        # Same shape and same reason as the HRRR chain: the prepared
+        # authority carries no [tiles] table, so the mode travels as
+        # the runner's own flag and stays out of the bundle identity.
+        argv += ["--tiles", json.dumps(dataclasses.asdict(exp.tiles),
+                                       sort_keys=True)]
+    observer.arm_first_products(
+        _chain_render_plan(plan, forecast_dir=forecast_dir,
+                           run_dir=run_dir))
+    observer.enter_stage("forecast", phase="forecast")
+    _staged_forecast(argv, layout=str(bundle["layout"]), observer=observer)
+
+    # -- render --------------------------------------------------------
+    return _chain_render(plan, forecast_dir=forecast_dir, run_dir=run_dir,
+                         observer=observer)
+
+
+def _staged_forecast(argv: list[str], *, layout: str,
+                     observer: RunObserver) -> None:
+    """The prepared forecast runner, hosted in this process.
+
+    In process for the same reason the HRRR chain hosts its forecast:
+    the runner's per-step progress and its per-wrfout landing hook
+    reach the observer directly, so time-to-first-plot is real.
+    """
+
+    if layout == "tree":
+        from gpuwm import prepared_domain_tree_forecast as runner
+    else:
+        from gpuwm import prepared_single_domain_forecast as runner
+
+    code = runner.main(argv, observer=observer)
+    if code:
+        raise RuntimeError(
+            f"the staged forecast stage exited {code}; its own refusal "
+            "is above")
 
 
 def _chain_summary(chain: Path, *,
@@ -2795,10 +3165,13 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     # chain that function names, and this is where the naming becomes a
     # dispatch.  One function, so a config cannot be judged as one chain
     # and then run as the other.
-    if _chain_key(plan.route,
-                  (raw.get("fetch") or {}).get("source")) == "prepared:hrrr":
+    chain = _chain_key(plan.route, (raw.get("fetch") or {}).get("source"))
+    if chain == "prepared:hrrr":
         return _hrrr_chain(plan, config_path=Path(config_path), exp=exp,
                            observer=observer, run_dir=plan.run_dir)
+    if chain == "prepared:staged":
+        return _staged_chain(plan, config_path=Path(config_path), exp=exp,
+                             observer=observer, run_dir=plan.run_dir)
 
     tokens = ["go", str(config_path), "--outdir",
               str(plan.run_dir / "chain")]
@@ -3533,6 +3906,326 @@ def render_catalog() -> dict[str, Any]:
     return document
 
 
+def _source_coverage_facts(window: Any) -> dict[str, Any] | None:
+    """A registry coverage window as JSON, or ``None`` for a global source.
+
+    Type-agnostic on purpose: every window type in
+    :mod:`gpuwm.source_coverage` answers ``envelope``/``centre``/
+    ``describe``, so a window shape added later needs no arm here.  The
+    ``grid`` block is the dataclass verbatim, which is where a consumer
+    finds whatever a particular window type declares beyond the corners.
+    """
+
+    if window is None:
+        return None
+    south, west, north, east = window.envelope()
+    centre_lat, centre_lon = window.centre()
+    return {
+        "kind": type(window).__name__,
+        "south": south, "west": west, "north": north, "east": east,
+        "centre_lat": centre_lat, "centre_lon": centre_lon,
+        "describe": window.describe(),
+        "grid": dataclasses.asdict(window),
+    }
+
+
+def _source_fetch_facts(fetch_routes: Any, source_id: str) -> dict[str, Any]:
+    """Which transport, if any, can bring this source's bytes.
+
+    Three set memberships decide the answer, never a name: the route
+    table, the legacy-transport tuple, and the table's own named
+    refusals.  ``route_for`` is asked ONLY on the two arms that have no
+    transport, because it raises "has its own transport" for a legacy
+    row -- true, and not a refusal.  Reporting that sentence as one
+    would send a reader hunting for a fetch route that already works.
+    """
+
+    if source_id in set(fetch_routes.route_ids()):
+        return {"kind": "table_route", "route_id": source_id, "refusal": None}
+    if source_id in set(fetch_routes.LEGACY_ROUTE_SOURCES):
+        return {"kind": "legacy_transport", "route_id": None, "refusal": None}
+    kind = ("refused" if source_id in set(fetch_routes.refusal_ids())
+            else "none")
+    refusal = None
+    try:
+        fetch_routes.route_for(source_id)
+    except Exception as error:  # noqa: BLE001 - a query mode reports
+        refusal = str(error).split("[[explain]]")[0].strip()
+    return {"kind": kind, "route_id": None, "refusal": refusal}
+
+
+def source_inventory() -> dict[str, Any]:
+    """Every registered source and what its registry row declares, as JSON.
+
+    THE picker document.  Front ends used to carry their own list of
+    models -- three hand-written rows in one case -- which meant a
+    source added to the registry was invisible until someone edited a
+    GUI, and a row that changed maturity kept its old colour forever.
+    This asks the registry instead, exactly as ``--catalog`` asks the
+    renderer rather than transcribing its products.
+
+    Every field below is COPIED from a registry table.  There is no
+    dict keyed by model name and no branch on a source id anywhere in
+    this function, which is what makes adding a model table work: a row
+    appended to ``gpuwm.source_adapters._ADAPTERS`` appears here with
+    zero code change, and ``tests/test_runplan.py`` grafts one on to
+    prove it.
+
+    Three shapes are worth naming for whoever renders this:
+
+    ``display_name`` is the registry's own DISPLAY-NAME column, and
+    ``title`` now carries it too (it used to repeat ``source_id``, which
+    is why every consumer showed raw ids and any front end that wanted a
+    human name kept its own id-to-name lookup -- a per-model table).  A
+    row that declares no name reads back as its id, so a grafted row
+    still renders.  The name is not invented here: inventing it here
+    would be the same forbidden table one repo to the left.
+
+    ``credentials`` is the registry's CREDENTIAL column, resolved
+    against THIS box: what the row declares it needs configured, where
+    that lives here, whether it is there, and what breaks if it is not.
+    A row that declares nothing says exactly that -- not "this source is
+    public", which is a promise about a provider the registry cannot
+    make.  Existence only ever leaves this door; the credential's value
+    is never read.
+
+    ``run_plan.intent_supported`` is narrower than ``maturity.runnable``
+    and says so on every row.  The registry can decode far more sources
+    than the run-plan INTENT door can drive from a point-and-cycle, and
+    a picker that hid the difference would offer launches the resolver
+    refuses.  Rows the intent cannot drive are still listed, with the
+    engine's own reasons attached, because a truthful "not from here"
+    is worth more than a short menu.
+
+    Nothing here raises.  A registry lookup that fails puts its
+    exception text in the affected row's ``error`` (or the envelope's,
+    when the manifest itself is unavailable) and the document still
+    prints -- the same shape :func:`render_catalog` uses for a box with
+    no renderer.  A traceback out of a JSON front door is a defect.
+    """
+
+    from gpuwm import __version__
+    from gpuwm import fetch_routes
+    from gpuwm.source_adapters import (source_adapters,
+                                       source_capability_manifest,
+                                       wizard_planable_source_ids)
+    from gpuwm.source_credentials import credentials_block
+
+    document: dict[str, Any] = {
+        "schema": SOURCES_SCHEMA,
+        "gpuwm_version": str(__version__),
+        "registry_schema": None,
+        "source_count": None,
+        "runnable_source_count": None,
+        "readiness_rule": None,
+        "certification_rule": None,
+        "routes": {name: route.summary
+                   for name, route in sorted(ROUTES.items())},
+        "sources": [],
+    }
+    try:
+        manifest = source_capability_manifest()
+        document.update({
+            "registry_schema": manifest["schema"],
+            "source_count": manifest["source_count"],
+            "runnable_source_count": manifest["runnable_source_count"],
+            "readiness_rule": manifest["readiness_rule"],
+            "certification_rule": manifest["certification_rule"],
+        })
+    except Exception as error:  # noqa: BLE001 - a query mode reports
+        document["error"] = f"{type(error).__name__}: {error}"
+
+    try:
+        planable = set(wizard_planable_source_ids())
+    except Exception as error:  # noqa: BLE001 - a query mode reports
+        planable = set()
+        document.setdefault("error", f"{type(error).__name__}: {error}")
+
+    try:
+        drivability = intent_drivability()
+    except Exception as error:  # noqa: BLE001 - a query mode reports
+        drivability = {}
+        document.setdefault("error", f"{type(error).__name__}: {error}")
+
+    rows: list[dict[str, Any]] = []
+    for adapter in source_adapters():
+        try:
+            verdict = drivability.get(
+                adapter.source_id,
+                {"routes": [], "chain": None,
+                 "refusal": "the intent drivability derivation is "
+                            "unavailable; its error is on the envelope"})
+            rows.append({
+                "source_id": adapter.source_id,
+                # The registry's display-name column, with its declared
+                # fallback to the id; `title` repeats it for consumers
+                # already reading that key.  See the docstring.
+                "display_name": adapter.display_title,
+                "title": adapter.display_title,
+                # What the row declares must be configured before its
+                # bytes can be acquired, resolved against this box.
+                "credentials": credentials_block(adapter.credentials),
+                "aliases": list(adapter.aliases),
+                "upstream_model_id": adapter.upstream_model_id,
+                "source_kind": adapter.source_kind.value,
+                "file_family": adapter.file_family,
+                "decoder": adapter.decoder,
+                "default_product": adapter.default_product,
+                "required_products": list(adapter.required_products),
+                "max_forecast_hour": adapter.max_forecast_hour,
+                "upstream_ingest": adapter.upstream_ingest,
+                "forcing_interval_seconds": adapter.forcing_interval_seconds,
+                "packaged_profile": adapter.packaged_profile,
+                "member_set": adapter.member_set,
+                "composition_requirement": adapter.composition_requirement,
+                "runner": adapter.runner,
+                "notes": adapter.notes,
+                "wizard_planable": adapter.source_id in planable,
+                # The registry's own words, unmapped.  It records an
+                # AdapterStatus and two rule sentences, and that is the
+                # whole maturity fact; a front end colours them, it does
+                # not translate them into a second vocabulary.
+                "maturity": {
+                    "status": adapter.status.value,
+                    "runnable": adapter.runnable,
+                    "stock_wrf_gate": adapter.stock_wrf_gate,
+                    "field_mapping": adapter.field_mapping,
+                    "level_mapping": adapter.level_mapping,
+                    "cadence_mapping": adapter.cadence_mapping,
+                },
+                "coverage": _source_coverage_facts(adapter.coverage_window),
+                "fetch": _source_fetch_facts(fetch_routes, adapter.source_id),
+                "run_plan": {
+                    "intent_routes": sorted(verdict["routes"]),
+                    "intent_supported": bool(verdict["routes"]),
+                    # The chain the prepared route would dispatch this
+                    # source to, and -- for an undrivable row -- the
+                    # derived refusal naming the missing registry fact.
+                    # A front end relays the sentence; it does not
+                    # translate it.
+                    "intent_chain": verdict["chain"],
+                    "intent_refusal": verdict["refusal"],
+                },
+            })
+        except Exception as error:  # noqa: BLE001 - a query mode reports
+            # One unreadable row does not cost a picker the other
+            # thirty.  The row is present, named, and carries why.
+            rows.append({
+                "source_id": getattr(adapter, "source_id", None),
+                "error": f"{type(error).__name__}: {error}",
+            })
+    document["sources"] = rows
+    return json.loads(json.dumps(document, default=_jsonable))
+
+
+def physics_profile_menu() -> dict[str, Any]:
+    """Which physics suite each registered source can run, as one document.
+
+    The source x profile cross-product, evaluated against the SAME
+    admissibility rules that refuse at emission -- the route's physics
+    gate, the registry's land-surface offer, the nocturnal-validity
+    class, and the component-owned vertical bounds.  Owner design,
+    2026-08-20: "why cant every model have multiple unique working
+    default".
+
+    This exists because a picker had no way to ask.  ArWen Studio ships
+    a physics list hand-typed out of gpuwm 1.7.1, which cannot know that
+    the native HRRR route refuses every Kain-Fritsch suite, so it offers
+    launches that refuse -- and the refusal a user then met named
+    another suite that the same route refuses.  Both halves are the same
+    missing object: nobody could ask what a source can actually run.
+
+    :mod:`gpuwm.physics_menu` owns the derivation; this function is the
+    envelope, exactly as :func:`source_inventory` is the envelope over
+    :func:`intent_drivability`.  There is no dict keyed by model name
+    and no branch on a source id or a profile id anywhere in either, so
+    a row appended to ``gpuwm.source_adapters._ADAPTERS`` and a suite
+    appended to ``gpuwm.domain_wizard.WIZARD_PHYSICS_PROFILES`` both
+    appear here with zero code change; ``tests/test_physics_menu.py``
+    grafts one of each to prove it.
+
+    Two shapes are worth naming for whoever renders this:
+
+    ``profiles`` is the source-INDEPENDENT half -- what a suite runs,
+    its nocturnal class, its registry maturity, the level-count window
+    every one of its components accepts.  ``sources[].profiles`` is the
+    per-source half and carries the six facts a picker needs per cell:
+    ``profile_id``, ``admissible``, ``why_not`` (the route's own refusal
+    sentence, verbatim), ``is_default``, ``day_only`` and ``maturity``.
+    The two lists are parallel and in the same order, so a front end can
+    zip them.
+
+    ``sources[].nocturnal_remedy`` is the answer to "this suite meets a
+    night window, now what" FOR THIS SOURCE.  It names a suite the
+    source's route admits, and when that suite is the source's own
+    default it says to stop passing the flag rather than naming an id
+    that will change.  The wizard's refusal reads this same field, so
+    the printed remedy and the menu cannot drift.
+
+    Nothing here raises.  A lookup that fails puts its exception text in
+    the affected row's ``error`` (or the envelope's) and the document
+    still prints -- a traceback out of a JSON front door is a defect.
+    """
+
+    from gpuwm import __version__
+    from gpuwm import physics_menu
+    from gpuwm.physics_registry import registry_sha256
+    from gpuwm.source_adapters import (source_adapters,
+                                       source_capability_manifest)
+
+    document: dict[str, Any] = {
+        "schema": PHYSICS_PROFILES_SCHEMA,
+        "gpuwm_version": str(__version__),
+        "registry_schema": None,
+        "physics_registry_sha256": None,
+        "source_count": None,
+        "profile_count": None,
+        "admissibility_rules": [],
+        "profiles": [],
+        "sources": [],
+    }
+    try:
+        document["registry_schema"] = source_capability_manifest()["schema"]
+    except Exception as error:  # noqa: BLE001 - a query mode reports
+        document["error"] = f"{type(error).__name__}: {error}"
+    try:
+        document["physics_registry_sha256"] = registry_sha256()
+        document["admissibility_rules"] = physics_menu.admissibility_rules()
+    except Exception as error:  # noqa: BLE001 - a query mode reports
+        document.setdefault("error", f"{type(error).__name__}: {error}")
+
+    profiles: list[dict[str, Any]] = []
+    for profile in physics_menu.shipped_profiles():
+        try:
+            profiles.append(physics_menu.profile_facts(profile))
+        except Exception as error:  # noqa: BLE001 - a query mode reports
+            # One unreadable suite does not cost a picker the other
+            # eleven.  The row is present, named, and carries why.
+            profiles.append({
+                "profile_id": profile,
+                "error": f"{type(error).__name__}: {error}",
+            })
+    document["profiles"] = profiles
+    document["profile_count"] = len(profiles)
+
+    from gpuwm.domain_wizard import profile_route_blocker
+
+    rows: list[dict[str, Any]] = []
+    for adapter in source_adapters():
+        try:
+            rows.append(physics_menu.source_menu(
+                adapter.source_id, display_name=adapter.display_title,
+                blocker=profile_route_blocker))
+        except Exception as error:  # noqa: BLE001 - a query mode reports
+            rows.append({
+                "source_id": getattr(adapter, "source_id", None),
+                "error": f"{type(error).__name__}: {error}",
+            })
+    document["sources"] = rows
+    document["source_count"] = len(rows)
+    return json.loads(json.dumps(document, default=_jsonable))
+
+
 def probe_environment(*, readiness: bool = True) -> dict[str, Any]:
     """This machine's device inventory and readiness, as one JSON document.
 
@@ -3663,7 +4356,8 @@ def probe_environment(*, readiness: bool = True) -> dict[str, Any]:
         "plan": PLAN_SCHEMA, "event": EVENT_SCHEMA,
         "manifest": MANIFEST_SCHEMA, "resolve": RESOLVE_SCHEMA,
         "estimate": ESTIMATE_SCHEMA, "probe": PROBE_SCHEMA,
-        "catalog": CATALOG_SCHEMA}
+        "catalog": CATALOG_SCHEMA, "sources": SOURCES_SCHEMA,
+        "physics_profiles": PHYSICS_PROFILES_SCHEMA}
     return json.loads(json.dumps(document, default=_jsonable))
 
 
@@ -3695,6 +4389,19 @@ def run_plan_main(args: argparse.Namespace) -> int:
         with contextlib.redirect_stdout(sys.stderr):
             document = render_catalog()
         return answer(document)
+    if getattr(args, "sources", False):
+        # Same redirect, same reason as --catalog above: the registry
+        # imports print, and stdout is the machine channel.
+        with contextlib.redirect_stdout(sys.stderr):
+            document = source_inventory()
+        return answer(document)
+    if getattr(args, "physics_profiles", False):
+        # Same redirect, same reason as --catalog above: the physics and
+        # source registries import print, and stdout is the machine
+        # channel.
+        with contextlib.redirect_stdout(sys.stderr):
+            document = physics_profile_menu()
+        return answer(document)
     if getattr(args, "probe", False):
         with contextlib.redirect_stdout(sys.stderr):
             document = probe_environment(
@@ -3703,7 +4410,8 @@ def run_plan_main(args: argparse.Namespace) -> int:
     if args.plan is None:
         raise PlanError(
             "gpuwm run-plan needs a PLAN.json, or one of --probe / "
-            "--catalog (which need no plan)")
+            "--catalog / --sources / --physics-profiles (which need no "
+            "plan)")
 
     plan = load_plan(args.plan)
     if getattr(args, "resolve", False):
@@ -3768,6 +4476,20 @@ def register_cli(subparsers: argparse._SubParsersAction) -> None:
              "document -- what may be put in the render_products run "
              "option -- and run nothing; needs no plan")
     mode.add_argument(
+        "--sources", action="store_true",
+        help="print the source registry as one JSON document -- every "
+             "registered source, what each one's row declares, and which "
+             "run-plan route can drive it from an intent -- and run "
+             "nothing; needs no plan")
+    mode.add_argument(
+        "--physics-profiles", dest="physics_profiles", action="store_true",
+        help="print the per-source physics menu as one JSON document -- "
+             "every registered source crossed with every shipped physics "
+             "suite, saying which pairings this product can actually "
+             "prepare, why each refused one is refused, which suite that "
+             "source's bare run binds, and which suites run shortwave "
+             "with longwave off -- and run nothing; needs no plan")
+    mode.add_argument(
         "--probe", action="store_true",
         help="print this machine's device inventory and runtime-estate "
              "readiness as one JSON document; needs no plan.  The "
@@ -3806,13 +4528,16 @@ if __name__ == "__main__":
 __all__ = [
     "CATALOG_SCHEMA", "DEFAULT_OUTPUT_ROOT", "ESTIMATE_SCHEMA", "EVENTS_FILENAME",
     "EVENT_SCHEMA", "EVENT_TAGS", "MANIFEST_FILENAME", "MANIFEST_SCHEMA",
-    "PLAN_SCHEMA", "PROBE_SCHEMA", "RESOLVE_SCHEMA", "ROUTES", "STAGES",
+    "PHYSICS_PROFILES_SCHEMA",
+    "PLAN_SCHEMA", "PROBE_SCHEMA", "RESOLVE_SCHEMA", "ROUTES",
+    "SOURCES_SCHEMA", "STAGES",
     "GENERATED_CONFIG_NAME",
     "EventStream", "PlanError", "Route", "RunObserver", "RunPlan",
     "build_plan", "collect_warnings", "corridor_estimate",
     "declared_inputs", "domain_size_floor",
     "estimate_plan", "execute_plan", "follow_statics_decision",
-    "generate_intent_config", "render_catalog",
+    "generate_intent_config", "physics_profile_menu", "render_catalog",
+    "source_inventory",
     "intent_arguments", "load_plan", "probe_environment", "read_events",
     "register_cli", "resolve_fetch_cycle", "resolve_plan",
     "run_plan_main", "streaming_decision", "write_manifest",

@@ -578,6 +578,52 @@ def _add_slow_tendencies(state: DomainState, cfg: RunConfig,
         add_coriolis_curvature(state, cfg, ru, rv)
 
 
+def capture_advective_theta_forcing(state: DomainState) -> None:
+    """EXPORT the stage's pure advective theta rate as WRF ``RTHFTEN``.
+
+    The exact inverse of :func:`add_h_diabatic_tendency`'s coupling:
+    ``rth_t`` forces the WRF-coupled theta and carries an extra ``1/msfty``
+    (see :func:`_add_slow_tendencies`), so the uncoupled K s-1 rate a
+    cumulus scheme wants is ``rth_t * msfty / (c1h*mut + c2h)`` with the
+    stage's own total dry mass ``mut``.  Same units, same one-step lag and
+    the same producer/consumer split as ``h_diabatic``.
+
+    CALL SITE IS THE CONTRACT.  This must run in the window after
+    :func:`_add_slow_tendencies` returns -- where ``rth_t`` holds the flux
+    divergence of theta and nothing else -- and before
+    ``physics_tendencies.add_to_slow``, :func:`add_h_diabatic_tendency`,
+    :func:`add_diffusion_tendencies` and the lateral-boundary fold touch
+    it.  WRF's ``module_cumulus_driver.F:867`` pre-folds
+    ``RTHRATEN + RTHBLTEN`` into ``RTHFTEN`` for G3SCHEME and
+    NTIEDTKESCHEME and NOT for GFSCHEME, which sums the lanes itself
+    (``gpuwm/core/kernels/gf.cu:4146``), so an export taken one line later
+    makes the scheme integrate the boundary layer and the radiation twice.
+    ``tests/test_dycore_advective_forcing_export.py`` is the gate.
+
+    WHAT THE NUMBER IS, precisely, because "advective tendency" is
+    ambiguous and the difference is measurable: this is the flux-form
+    TRANSPORT tendency of the coupled scalar divided by the stage dry
+    mass, which is the quantity ``rth_t`` carries and the quantity the
+    h_diabatic coupling inverts.  It differs from the material derivative
+    ``-v.grad(theta)`` by the mass-divergence term
+    ``theta*(dmu/dt)/mu`` -- order 1e-3 K s-1 against a measured 3e-3
+    K s-1 rms on a 12 km CONUS domain, so it is a stated part of the
+    export rather than a rounding detail.  Both halves of the pair use
+    the same construction and the same reference mass, so the theta and
+    qv rates GF sums are consistent with each other.
+
+    A no-op on a state with no advective-forcing consumer, where the
+    buffers are ``None``.
+    """
+    if getattr(state, "rthften", None) is None:
+        return
+    rate = state.rth_t / (state.c1h[:, None, None] * state.total_mu()[None]
+                          + state.c2h[:, None, None])
+    if state.has_msf:                                  # WRF: the /msfty
+        rate *= state.msft[None]                       # rth_t carries
+    state.rthften[...] = rate
+
+
 def add_h_diabatic_tendency(state: DomainState) -> None:
     """ADD the retained microphysics heating to the coupled theta tendency.
 
@@ -2487,6 +2533,15 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         # horizontal_pressure_gradient plus every acoustic substep.
         stage_cq = prepare_moist_cq(state, cfg)
         _add_slow_tendencies(state, cfg, ru, rv, ww, cq=stage_cq)
+        if istage == 0:
+            # WRF RTHFTEN for the cumulus schemes that take it.  THIS LINE
+            # is the whole contract: rth_t holds the stage reference
+            # fluxes' theta advection and nothing else until the next
+            # statement folds physics into it (see the function's
+            # docstring for the GFSCHEME double-count trap).  Stage 1
+            # matches the once-per-step capture convention h_diabatic and
+            # the qv lateral tendency already use.
+            capture_advective_theta_forcing(state)
         if physics_tendencies is not None:
             physics_tendencies.add_to_slow(state)
         if cfg.mp_physics != 0:                       # WRF rk_addtend_dry's
@@ -2568,7 +2623,11 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
                     final=(istage == len(stages) - 1),
                     apply_relax=(istage == 0),
                     physics_tendencies=physics_tendencies,
-                    fixed_tendencies=fixed_scalars)
+                    fixed_tendencies=fixed_scalars,
+                    # WRF RQVFTEN, the qv half of the cumulus advective
+                    # forcing pair.  Stage 1, where the non-PD branch runs
+                    # and the tendency is still pure advection.
+                    export_advective_forcing=(istage == 0))
             if getattr(state, "tke", None) is not None:
                 from gpuwm.core.moist import advance_tke_stage
                 advance_tke_stage(

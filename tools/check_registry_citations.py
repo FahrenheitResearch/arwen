@@ -96,6 +96,7 @@ EXTERNAL: dict[str, str] = {
     "bl_ysu.F90": _WRF,
     "module_bl_shinhong.F": _WRF,
     "module_bl_ysu.F": _WRF,
+    "module_cumulus_driver.F": _WRF,
     "dyn_em/module_diffusion_em.F": _WRF,
     "dyn_em/module_em.F": _WRF,
     "dyn_em/module_first_rk_step_part2.F": _WRF,
@@ -168,10 +169,10 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # so a citation that slides onto the other closure's launcher -- the
     # one drift these two are actually at risk of, since the bodies are
     # near-identical -- fails here instead of reading plausibly.
-    "gpuwm/core/dycore.py:862": (
+    "gpuwm/core/dycore.py:908": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=2:"),
-    "gpuwm/core/dycore.py:952": (
+    "gpuwm/core/dycore.py:998": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=3:"),
 }

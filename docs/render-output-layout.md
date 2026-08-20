@@ -152,3 +152,21 @@ Byte-identical output, both ways.
   stage renders into, and its `first-products.json` receipt names each
   picture by its path **relative to the render directory** (posix
   spelling), so `render_dir / entry["name"]` finds it on any platform.
+
+## The delivered tree holds products only
+
+The Rust renderer needs a working store for the intermediate hour files
+it builds before it draws.  That store is scratch, and it does **not**
+live in the tree you are delivered: it lives in a sibling directory
+named after the render directory with `.render-scratch` appended
+(`png.render-scratch/rwstore-xxxxxxxx`), created for one renderer
+invocation and removed when it finishes.
+
+It matters because the removal is best-effort by nature -- a
+memory-mapped hour file can hold its handle past the renderer's exit --
+and because scratch is present *during* the render whether or not it is
+removed cleanly afterwards.  Both showed up on real deliveries:
+leftover scratch directories sitting among the products, with paths long
+enough to break a Windows directory listing, and a `tar` of a tree being
+rendered into dying with `File removed before we read it`.  Copy, tar,
+sync or scan a render directory at any moment and you get pictures.

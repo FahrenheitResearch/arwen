@@ -15,6 +15,7 @@ while the forecast owns the card.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -386,6 +387,86 @@ def test_the_receipt_names_the_frame_and_every_picture_by_digest(tmp_path):
     assert "--products" in on_disk["command"]
 
 
+def test_the_receipt_states_what_its_instant_measures(tmp_path):
+    """One definition, written where the number is.
+
+    THE DRIFT THIS CLOSES, measured on both 3080 walks: `go` printed
+    "time to first plot 0m 46s (first-products receipt)" while the
+    earliest PNG in the published run tree carried 2m 45s.  Two
+    quantities were both being called time to first plot and the receipt
+    named neither, so a reader could not tell which one they held.
+    """
+
+    from gpuwm.first_products import FIRST_PLOT_DEFINITION
+
+    plan, _frame, _receipt = _published(tmp_path)
+    on_disk = read_receipt(plan["render"])
+
+    assert on_disk["measures"] == FIRST_PLOT_DEFINITION
+    assert "published_unix_ms" in FIRST_PLOT_DEFINITION
+    assert "readable at its final path" in FIRST_PLOT_DEFINITION
+    assert "LATER mtime" in FIRST_PLOT_DEFINITION
+
+
+def test_a_rewritten_picture_is_no_longer_the_one_the_receipt_stamped(
+        tmp_path):
+    """The check the digests structurally cannot make.
+
+    The early picture and the finalize one are byte-identical by
+    construction, so a re-render leaves every recorded sha256 matching
+    and moves only the mtime -- which is exactly what a reader comparing
+    the printed number against the tree is looking at.
+    """
+
+    from gpuwm.first_products import published_pictures_are_original
+
+    plan, _frame, receipt = _published(tmp_path)
+    render_dir = plan["render"]
+    assert published_pictures_are_original(receipt, render_dir) is True
+
+    picture = render_dir / receipt["written"][0]["name"]
+    later = (receipt["published_unix_ms"] + 120_000) / 1000.0
+    os.utime(picture, (later, later))
+    assert published_pictures_are_original(receipt, render_dir) is False
+
+    # ...and the digests still match, which is the point.
+    remaining, already, _note = published_frames([_frame], plan)
+    assert already == [_frame] and remaining == []
+
+
+def test_a_missing_picture_is_not_an_original_one_either(tmp_path):
+    from gpuwm.first_products import published_pictures_are_original
+
+    plan, _frame, receipt = _published(tmp_path)
+    (plan["render"] / receipt["written"][0]["name"]).unlink()
+    assert published_pictures_are_original(receipt, plan["render"]) is False
+
+
+def test_an_unset_product_spec_is_the_render_default_not_a_different_one(
+        tmp_path):
+    """`go` asks the runner for the explicit ``all``; the finalize stage
+    leaves ``--products`` off, and ``gpuwm render`` defaults to ``all``.
+    Comparing the two spellings literally made every `go` receipt look
+    like it had been drawn for a different product set, so the skip this
+    module exists for never happened on the front door people use."""
+
+    from gpuwm.first_products import (DEFAULT_RENDER_PRODUCTS,
+                                      effective_products)
+
+    assert DEFAULT_RENDER_PRODUCTS == "all"
+    assert effective_products(None) == "all"
+    assert effective_products("") == "all"
+    assert effective_products("  ") == "all"
+    assert effective_products("all") == "all"
+    assert effective_products(" refl,t2 ") == "refl,t2"
+
+    plan, frame, _receipt = _published(tmp_path, products="all")
+    plan["render_products"] = None
+    remaining, already, note = published_frames([frame], plan)
+    assert already == [frame], note
+    assert remaining == []
+
+
 def test_finalize_drops_the_frame_the_receipt_proves(tmp_path):
     plan, frame, _receipt = _published(tmp_path)
     later = _frame(tmp_path, "wrfout_d01_1974-04-03_19_00_00")
@@ -535,7 +616,7 @@ def test_the_hrrr_chain_arms_with_the_dict_its_finalize_stage_uses(
     They are two call sites in one function, minutes of forecast apart.
     Two copies of the literal is exactly how a run publishes its first
     frame into one directory and the rest into another, so both read
-    ``_hrrr_render_plan`` -- and this is what says so.
+    ``_chain_render_plan`` -- and this is what says so.
     """
 
     from types import SimpleNamespace
@@ -547,7 +628,7 @@ def test_the_hrrr_chain_arms_with_the_dict_its_finalize_stage_uses(
     forecast_dir = tmp_path / "chain" / "run"
     run_dir = tmp_path
 
-    armed = runplan._hrrr_render_plan(
+    armed = runplan._chain_render_plan(
         plan, forecast_dir=forecast_dir, run_dir=run_dir)
     assert armed == {"run": forecast_dir,
                      "render": run_dir / "chain" / "png",
@@ -558,7 +639,7 @@ def test_the_hrrr_chain_arms_with_the_dict_its_finalize_stage_uses(
                         lambda p, **kw: seen.append(dict(p)))
     monkeypatch.setattr(runplan, "_chain_summary", lambda *a, **kw: {})
     events = EventStream(tmp_path / "events.jsonl", mirror=None)
-    runplan._hrrr_render(
+    runplan._chain_render(
         plan, forecast_dir=forecast_dir, run_dir=run_dir,
         observer=RunObserver(events, root_domain=1))
     events.close()
@@ -575,7 +656,7 @@ def test_arming_the_hrrr_chain_dict_produces_a_live_trigger(tmp_path):
 
     events = EventStream(tmp_path / "events.jsonl", mirror=None)
     observer = RunObserver(events, root_domain=1)
-    observer.arm_first_products(runplan._hrrr_render_plan(
+    observer.arm_first_products(runplan._chain_render_plan(
         SimpleNamespace(run_options={"render_products": "refl"}),
         forecast_dir=tmp_path / "run", run_dir=tmp_path))
 
@@ -585,15 +666,34 @@ def test_arming_the_hrrr_chain_dict_produces_a_live_trigger(tmp_path):
 
     # And the same chain with no products asks for nothing.
     quiet = RunObserver(events, root_domain=1)
-    quiet.arm_first_products(runplan._hrrr_render_plan(
+    quiet.arm_first_products(runplan._chain_render_plan(
         SimpleNamespace(run_options={}),
         forecast_dir=tmp_path / "run", run_dir=tmp_path))
     events.close()
     assert quiet.first_products is None
 
 
-def test_an_observer_without_the_hook_renders_exactly_as_it_always_did(
-        wrf_package, tmp_path, monkeypatch):
+def test_a_proven_receipt_is_honoured_without_an_armed_trigger(
+        wrf_package, tmp_path, monkeypatch, capsys):
+    """The receipt is a fact on disk, not a property of this process.
+
+    THIS TEST USED TO ASSERT THE OPPOSITE -- "no trigger, so no receipt
+    is consulted and every frame is drawn" -- and that is precisely the
+    defect it was pinning.  `gpuwm go` never arms the trigger: it asks
+    the runner SUBPROCESS for the early render on its command line
+    (``go_cli.forecast_command``) and keeps its process isolation.  So on
+    the front door people use, the skip never happened, this stage redrew
+    the frame the early render had already published, and the published
+    tree's earliest picture carried the FINALIZE timestamp (2m 45s on
+    both 3080 walks) while the receipt said 46s -- a headline
+    contradicted by the only artifact a reader can check.
+
+    Nothing about the safety changed: ``published_frames`` re-checks the
+    frame and every picture the receipt names against their recorded
+    digests before a single frame is dropped, and the test below feeds it
+    a receipt that no longer holds.
+    """
+
     from gpuwm import go_cli
 
     _a_box_that_can_draw(monkeypatch)
@@ -605,10 +705,42 @@ def test_an_observer_without_the_hook_renders_exactly_as_it_always_did(
 
     assert go_cli._render_stage(plan, explain=False, observer=None)
 
-    # No trigger, so no receipt is consulted and every frame is drawn --
-    # including the one an early render happens to have published.
+    # The one frame was published early and proven by digest, so this
+    # stage has nothing left to draw and says so.
+    assert commands == []
+    printed = capsys.readouterr().out
+    assert "already published by the early render" in printed
+    assert "digests verified" in printed
+    assert str(frame.name) in printed
+
+
+def test_an_unproven_receipt_is_not_honoured_without_a_trigger_either(
+        wrf_package, tmp_path, monkeypatch, capsys):
+    """The control on the test above: reading the receipt off disk is not
+    trusting it.  A picture that no longer matches its digest sends every
+    frame back through the render stage, with the reason said out loud."""
+
+    from gpuwm import go_cli
+    from gpuwm.first_products import FIRST_PRODUCTS_RECEIPT, read_receipt
+
+    _a_box_that_can_draw(monkeypatch)
+    plan, frame, _receipt = _published(tmp_path)
+    receipt = read_receipt(plan["render"])
+    picture = plan["render"] / receipt["written"][0]["name"]
+    picture.write_bytes(picture.read_bytes() + b"edited")
+
+    commands = []
+    monkeypatch.setattr(
+        go_cli, "_run_stage",
+        lambda label, command, **kw: commands.append(list(command)))
+
+    assert go_cli._render_stage(plan, explain=False, observer=None)
+
     assert len(commands) == 1
     assert str(frame) in commands[0]
+    printed = capsys.readouterr().out
+    assert "early-render receipt not used" in printed
+    assert (plan["render"] / FIRST_PRODUCTS_RECEIPT).is_file()
 
 
 # ---------------------------------------------------------------------------

@@ -60,9 +60,17 @@ auditable local deltas required by the native GFS bridge:
   sign-magnitude like the two fixed-surface scales beside it -- read as
   two's complement, `0x82` turned a 300 K threshold into 3e126.
   `second_fixed_surface()` states the 255 "no second surface" code as an
-  `Option` pair for callers that model absence that way.
+  `Option` pair for callers that model absence that way.  From the L137
+  hybrid closure (2026-08-19) it also parses Section 4's optional
+  coordinate list -- NV at octets 6-7 and the trailing IEEE-f32 values
+  (`ProductDefinition.coordinate_values`), the channel hybrid model
+  levels publish their half-level A/B coefficients through; the tail is
+  located by the fixed lengths of templates 4.0/4.1/4.2, an unmodeled
+  template with NV > 0 refuses by name, and a tail short of its
+  declared count refuses rather than rereading template octets as
+  coefficients.
   Patched-file SHA-256:
-  `e6628f9f8aaf5b669c57bc2bed9965505d84c282e15eb9a17ce0b16d269c6eb4`.
+  `74c7f0c4e968438ad2d5e91709ab1d7db4357d559a54158d7595d6360f9365dc`.
 - `src/grib2/mod.rs` re-exports that identification value object, and
   `MissingValueMode` / `missing_value_mode` beside the unpackers.
   Patched-file SHA-256:

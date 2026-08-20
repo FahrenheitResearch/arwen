@@ -14,7 +14,80 @@ import math
 import numpy as np
 
 
+class PhysicsVerticalPreflightError(ValueError):
+    """Resolved physics cannot execute on the requested vertical grid.
+
+    Lives here rather than beside the preflight because the LAUNCHERS raise
+    it too: the preparation-time gate and the first-call rejection inside a
+    physics module are the same refusal met at two moments, and a user who
+    reaches the second one has already paid for fetch and preparation.  A
+    ``ValueError`` subclass so every existing ``except ValueError`` around a
+    launcher keeps working.
+    """
+
+
+def vertical_bounds_wording(bounds: tuple[int | None, int | None]) -> str:
+    """The one spelling of a level-count bound, shared by every refusal."""
+
+    minimum, maximum = bounds
+    if minimum is None and maximum is None:
+        raise ValueError("a vertical bound must constrain at least one end")
+    if minimum is None:
+        return f"nz <= {maximum}"
+    if maximum is None:
+        return f"nz >= {minimum}"
+    return f"{minimum} <= nz <= {maximum}"
+
+
+def outside_vertical_bounds(nz: int,
+                            bounds: tuple[int | None, int | None]) -> bool:
+    """True when ``nz`` violates either end of a component's bound."""
+
+    minimum, maximum = bounds
+    return ((minimum is not None and nz < minimum)
+            or (maximum is not None and nz > maximum))
+
+
+def refuse_vertical_levels(label: str,
+                           bounds: tuple[int | None, int | None],
+                           nz: int, *, breakage: str,
+                           ) -> PhysicsVerticalPreflightError:
+    """Build the launcher-side refusal in the preflight's own grammar.
+
+    ``breakage`` names what would go wrong and what to do instead, because a
+    refusal that only restates the number tells a user nothing they can act
+    on.  The sentence before it is byte-identical to the line
+    ``validate_resolved_physics_vertical_levels`` emits, so the two surfaces
+    read as one gate rather than two.
+    """
+
+    return PhysicsVerticalPreflightError(
+        f"{label} requires {vertical_bounds_wording(bounds)}, got nz={nz}: "
+        f"{breakage}  `gpuwm check` refuses this configuration before a run "
+        "starts; reaching it here means the preparation gate was bypassed.")
+
+
 MYNN_VERTICAL_LEVEL_BOUNDS = (5, None)
+#: YSU.  The ceiling is ``YSU_KMAX`` in ``kernels/ysu.cu``: one CUDA thread
+#: owns a whole column and holds it in per-thread local memory at that fixed
+#: depth.  The floor is the launcher's own ``nz >= 4`` -- the counter-gradient
+#: and entrainment layers the scheme indexes need four levels to exist.
+YSU_VERTICAL_LEVEL_BOUNDS = (4, 128)
+#: Shin-Hong, the same pair for the same two reasons (``SHINHONG_KMAX``, and
+#: the scheme shares YSU's column indexing).  Held as its own name rather
+#: than aliased to YSU's: the two kernels are separate translation units a
+#: future change could size differently.
+SHINHONG_VERTICAL_LEVEL_BOUNDS = (4, 128)
+#: MYJ.  ``MYJ_KMAX`` in ``kernels/myjpbl.cu`` for the ceiling; the floor is
+#: where VDIFQ's tridiagonal chain still has interior rows and MIXLEN's
+#: profile smoothing can read ``REL(K-1)``/``REL(K+1)``.
+MYJ_VERTICAL_LEVEL_BOUNDS = (4, 128)
+#: SASE.  ``SASE_KMAX`` in ``kernels/sase.cu``, which is the same number as
+#: ``gpuwm.core.sase_limits.MAX_COLUMN_LEVELS`` and ``gpuwm.config
+#: .SASE_MAX_NZ``: the implicit vertical solve keeps three FP64 columns of
+#: that depth in per-thread local memory.  The floor is where the solve stops
+#: being an identity -- one interior face needs two levels.
+SASE_VERTICAL_LEVEL_BOUNDS = (2, 128)
 KF_VERTICAL_LEVEL_BOUNDS = (8, 128)
 # Grell-Freitas: the inversion-layer search clamps kend to ktf-8 and its
 # second-derivative stencil then reaches ktf-1, so a column shorter than 12

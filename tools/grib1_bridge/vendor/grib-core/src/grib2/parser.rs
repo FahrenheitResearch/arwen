@@ -128,6 +128,13 @@ pub struct ProductDefinition {
     pub statistical_time_range_unit: Option<u8>,
     /// Length of statistical time range (PDT 4.8, 4.11, 4.12).
     pub time_range_length: Option<u32>,
+    /// Optional coordinate values from the tail of Section 4 (octets 6-7
+    /// declare the count NV; the values are IEEE-754 f32, one per
+    /// coordinate, in the last NV*4 octets).  Hybrid-coordinate model
+    /// levels carry their half-level A (Pa) then B coefficients here —
+    /// ECMWF L137 publishes 276 values: 138 A, then 138 B.  Empty when
+    /// NV is 0.
+    pub coordinate_values: Vec<f64>,
 }
 
 /// Data representation from Section 5.
@@ -301,6 +308,7 @@ impl Default for ProductDefinition {
             end_of_interval: None,
             statistical_time_range_unit: None,
             time_range_length: None,
+            coordinate_values: Vec::new(),
         }
     }
 }
@@ -1120,7 +1128,52 @@ fn parse_section4(sec: &[u8]) -> Result<ProductDefinition, String> {
         _ => {}
     }
 
+    prod.coordinate_values = parse_section4_coordinate_values(sec, template)?;
+
     Ok(prod)
+}
+
+/// Read the optional coordinate values from the tail of Section 4.
+///
+/// Octets 6-7 declare NV, the number of IEEE-754 f32 values appended
+/// after the product definition template; hybrid model levels carry
+/// their half-level A/B coefficients this way.  The tail can only be
+/// located when the template's fixed length is known, so an unmodeled
+/// template with NV > 0 refuses rather than reinterpreting template
+/// octets as coefficients — finite, plausible, and wrong, the failure
+/// mode nothing downstream would catch.
+fn parse_section4_coordinate_values(sec: &[u8], template: u16) -> Result<Vec<f64>, String> {
+    let nv = read_u16(sec, 5)? as usize;
+    if nv == 0 {
+        return Ok(Vec::new());
+    }
+    let fixed = match template {
+        0 => 34,
+        1 => 37,
+        2 => 36,
+        other => {
+            return Err(format!(
+                "Section 4 declares {nv} coordinate values behind product \
+                 definition template {other}, whose fixed length is not \
+                 modeled here; the coordinate tail cannot be located"
+            ))
+        }
+    };
+    let need = fixed + 4 * nv;
+    if sec.len() < need {
+        return Err(format!(
+            "Section 4 declares {nv} coordinate values but is {} bytes; \
+             template {template} plus the coordinate tail needs {need}",
+            sec.len()
+        ));
+    }
+    let start = sec.len() - 4 * nv;
+    let mut values = Vec::with_capacity(nv);
+    for index in 0..nv {
+        let bits = read_u32(sec, start + 4 * index)?;
+        values.push(f32::from_bits(bits) as f64);
+    }
+    Ok(values)
 }
 
 /// Parse the probability metadata common to PDT 4.5 and 4.9.
@@ -1502,6 +1555,80 @@ mod tests {
         sec[spec_base] = 1;
         sec[spec_base + 2] = 1;
         sec[spec_base + 3..spec_base + 7].copy_from_slice(&length_hours.to_be_bytes());
+    }
+
+    #[test]
+    fn parse_section4_reads_the_pv_coordinate_octets() {
+        // A model-level PDT 4.0 whose Section 4 carries NV=6 coordinate
+        // values: three half-level A coefficients in Pa, then three
+        // half-level B coefficients, each an IEEE-754 f32 in the last
+        // NV*4 octets of the section (WMO FM 92 GRIB2, Section 4
+        // octets 6-7 and the trailing optional coordinate list).
+        let coefficients: [f32; 6] = [0.0, 5000.0, 0.0, 0.0, 0.5, 1.0];
+        let mut sec = vec![0u8; 34 + 24];
+        seed_common_section4(&mut sec, 0);
+        sec[5..7].copy_from_slice(&6u16.to_be_bytes());
+        for (index, value) in coefficients.iter().enumerate() {
+            let base = 34 + 4 * index;
+            sec[base..base + 4].copy_from_slice(&value.to_bits().to_be_bytes());
+        }
+        let product = parse_section4(&sec).expect("section 4 should parse");
+        assert_eq!(
+            product.coordinate_values,
+            vec![0.0, 5000.0, 0.0, 0.0, 0.5, 1.0]
+        );
+    }
+
+    #[test]
+    fn parse_section4_without_pv_octets_yields_no_coordinate_values() {
+        let mut sec = vec![0u8; 34];
+        seed_common_section4(&mut sec, 0);
+        let product = parse_section4(&sec).expect("section 4 should parse");
+        assert!(product.coordinate_values.is_empty());
+    }
+
+    #[test]
+    fn parse_section4_refuses_pv_octets_short_of_their_declared_count() {
+        // NV=6 declares 24 trailing octets; the section has room for 2
+        // values.  Reading the tail anyway would reinterpret template
+        // octets as coefficients — finite, plausible, wrong.
+        let mut sec = vec![0u8; 34 + 8];
+        seed_common_section4(&mut sec, 0);
+        sec[5..7].copy_from_slice(&6u16.to_be_bytes());
+        let error = parse_section4(&sec).expect_err("truncated pv must refuse");
+        assert!(error.contains("coordinate values"), "{error}");
+    }
+
+    #[test]
+    fn parse_section4_refuses_pv_octets_on_an_unmodeled_template() {
+        // PDT 4.8's fixed part is variable-length (time-range
+        // specifications), so the tail cannot be located without
+        // modeling it; decoding anyway would misread statistics octets
+        // as coefficients.
+        let mut sec = vec![0u8; 58 + 8];
+        seed_common_section4(&mut sec, 8);
+        seed_statistical_window(&mut sec, 34, 1);
+        sec[5..7].copy_from_slice(&2u16.to_be_bytes());
+        let error = parse_section4(&sec).expect_err("unmodeled pv must refuse");
+        assert!(error.contains("template"), "{error}");
+    }
+
+    #[test]
+    fn parse_section4_reads_pv_octets_behind_an_ensemble_template() {
+        // PDT 4.1 (ensemble member): fixed part is 37 octets, pv follows.
+        let mut sec = vec![0u8; 37 + 8];
+        seed_common_section4(&mut sec, 1);
+        sec[34] = 3;
+        sec[35] = 7;
+        sec[36] = 20;
+        sec[5..7].copy_from_slice(&2u16.to_be_bytes());
+        for (index, value) in [1000.0f32, 0.25f32].iter().enumerate() {
+            let base = 37 + 4 * index;
+            sec[base..base + 4].copy_from_slice(&value.to_bits().to_be_bytes());
+        }
+        let product = parse_section4(&sec).expect("section 4 should parse");
+        assert_eq!(product.coordinate_values, vec![1000.0, 0.25]);
+        assert_eq!(product.perturbation_number, Some(7));
     }
 
     #[test]

@@ -10,6 +10,26 @@ restart_interval_s = 0.0
 # The smallest honest HRRR pressure-profile demo: one 12 km Lambert domain
 # over the Southern Plains, one hour between two hourly wrfprs analyses,
 # both radiation streams on.  Nothing here is declared away.
+#
+# source: hrrr-prs (the public wrfprs product, packaged mapped profile).
+# Three commands run it, and the fetch writes the middle one for you:
+#   gpuwm fetch --source hrrr-prs --cycle 2026-08-15T00 --hours 1 --out DATA
+#   gpuwm prep --source hrrr-prs --input-list DATA/inputs.txt ...
+#       --experiment-config THIS --wps-namelist THIS.namelist.wps
+#       --output-root DIR     (DATA/prep-command.txt is runnable as written)
+#   gpuwm sim DIR --experiment-config THIS
+#       --wps-namelist THIS.namelist.wps --outdir OUT
+#
+# sized for a 10 GiB card: `gpuwm check --budget-gib 8.75 --vram-gib 10`
+# PASSes with a forecast peak envelope of 5.17 GiB against an 8.24 GiB
+# budget -- 3.07 GiB of headroom, the widest margin of the four HRRR-family
+# demos, which is what makes this the one to try first on a small card.
+# measured peak VRAM: 4.25 GiB held by the forecast process, sampled once a
+# second on an RTX 5070 Ti under Linux (three repeat runs read 4356, 4336
+# and 4356 MiB, so the sampler's own spread is about 20 MiB).
+# measured wall time: fetch 120 s (two whole wrfprs files), prepare 29 s,
+# forecast 8 s for 50 steps on a warm kernel cache, render 20 s for 1134
+# product PNGs across the six frames.
 
 [projection]
 map_proj = "lambert"

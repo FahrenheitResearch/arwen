@@ -119,7 +119,7 @@ def _drive(tmp_path, monkeypatch, follow=False, **intent):
     monkeypatch.setattr(
         tree, "main",
         lambda argv, *, observer=None: captured.update(argv=list(argv)) or 0)
-    monkeypatch.setattr(runplan_module, "_hrrr_render",
+    monkeypatch.setattr(runplan_module, "_chain_render",
                         lambda plan, **kwargs: {"ok": True})
 
     with contextlib.redirect_stdout(io.StringIO()):

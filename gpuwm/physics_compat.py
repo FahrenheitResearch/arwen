@@ -21,6 +21,12 @@ from types import MappingProxyType
 from typing import Mapping
 
 from gpuwm.explain import layered, warn
+#: Re-exported, not redefined.  The class lives in
+#: ``gpuwm.physics_vertical_contract`` because the physics LAUNCHERS raise it
+#: too and they must not import this module; a second class here would mean a
+#: caller's ``except`` caught the preparation-time refusal and missed the
+#: identical first-call one.
+from gpuwm.physics_vertical_contract import PhysicsVerticalPreflightError
 from gpuwm.wrf461_compatibility import (
     PBL_OPTIONS,
     SURFACE_LAYER_OPTIONS,
@@ -1311,14 +1317,28 @@ def nocturnal_radiation_refusal(
     caused_by = (
         f"profile {profile}" if profile is not None
         else "a suite matching no shipped profile")
+    # ROUTE-SAFE, BECAUSE ROUTE-AWARE IS NOT AVAILABLE HERE (2026-08-20).
+    #
+    # A loaded experiment carries no forcing source -- ExperimentConfig
+    # has no such field -- so this refusal cannot pick the remedy the
+    # active source's route admits, the way the wizard's own nocturnal
+    # refusal now does.  What it CAN do is name a suite no registered
+    # source's route refuses, computed rather than assumed.  It used to
+    # name the gfs/era5 default, which the native HRRR route refuses for
+    # cu_physics=1, so a user who took the example met a second refusal.
+    from gpuwm.physics_menu import universally_admissible_profile
+
+    example = universally_admissible_profile() or MORRISON_PROFILE_ID
     return layered(
         f"this run's window includes local night (first at "
         f"{night:%Y-%m-%dT%H:%M}Z at {ref_lat:.4g}, {ref_lon:.4g}) while "
         f"domain(s) {grid_ids} run shortwave radiation with longwave OFF "
         f"(ra_sw_physics {sw} = {sw_names.get(sw, 'scheme %d' % sw)}, "
         f"ra_lw_physics 0; {caused_by}).  Choose a nocturnally valid "
-        f"profile (both radiation streams on -- e.g. "
-        f"{MORRISON_PROFILE_ID}, the wizard's default), or declare the "
+        f"profile (both radiation streams on -- e.g. {example}, which "
+        f"every registered source's route admits; `gpuwm run-plan "
+        f"--physics-profiles` lists what each source admits), or "
+        f"declare the "
         f"validation experiment by adding acknowledgements = "
         f'["{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}"] to [experiment].  '
         f"With ra_lw_physics 0 this configuration also FABRICATES its "
@@ -1710,10 +1730,6 @@ def validate_physics_capabilities(
     return resolved
 
 
-class PhysicsVerticalPreflightError(ValueError):
-    """Resolved physics cannot execute on the requested vertical grid."""
-
-
 def validate_resolved_physics_vertical_levels(
         settings: Mapping[str, object] | object, *,
         p_top: float | None = None,
@@ -1749,16 +1765,13 @@ def validate_resolved_physics_vertical_levels(
             "minimum": minimum,
             "maximum": maximum,
         })
-        below = minimum is not None and nz < minimum
-        above = maximum is not None and nz > maximum
-        if below or above:
-            if minimum is None:
-                wording = f"nz <= {maximum}"
-            elif maximum is None:
-                wording = f"nz >= {minimum}"
-            else:
-                wording = f"{minimum} <= nz <= {maximum}"
-            violations.append(f"{label} requires {wording}, got nz={nz}")
+        # One spelling, shared with the launcher-side refusals so a user who
+        # somehow reaches the first-call rejection reads the same sentence.
+        from gpuwm.physics_vertical_contract import (
+            outside_vertical_bounds, vertical_bounds_wording)
+        if outside_vertical_bounds(nz, bounds):
+            violations.append(f"{label} requires "
+                              f"{vertical_bounds_wording(bounds)}, got nz={nz}")
 
     from gpuwm.physics_vertical_contract import (
         KESSLER_VERTICAL_LEVEL_BOUNDS,
@@ -1768,17 +1781,34 @@ def validate_resolved_physics_vertical_levels(
         MAX_LEGACY_SHORTWAVE_LAYERS,
         MAX_RRTMGP_LAYERS,
         MORRISON_VERTICAL_LEVEL_BOUNDS,
+        MYJ_VERTICAL_LEVEL_BOUNDS,
         MYNN_VERTICAL_LEVEL_BOUNDS,
         NSSL2_VERTICAL_LEVEL_BOUNDS,
+        SASE_VERTICAL_LEVEL_BOUNDS,
+        SHINHONG_VERTICAL_LEVEL_BOUNDS,
         THOMPSON_AEROSOL_VERTICAL_LEVEL_BOUNDS,
         THOMPSON_VERTICAL_LEVEL_BOUNDS,
         WSM6_VERTICAL_LEVEL_BOUNDS,
+        YSU_VERTICAL_LEVEL_BOUNDS,
         legacy_radiation_layer_counts,
         rrtmgp_above_model_layer_counts,
     )
 
-    if resolved.get("pbl") == "mynn":
-        bounded("MYNN PBL", MYNN_VERTICAL_LEVEL_BOUNDS)
+    # EVERY implemented PBL scheme, not just the one that happened to be
+    # asked about.  The defect this closes: the preflight covered cumulus,
+    # radiation and microphysics, so a 130-level YSU configuration passed
+    # `gpuwm check` and both preparation stages and then died on the first
+    # physics call, after the user had paid for fetch and preparation.
+    pbl_bounds = {
+        "mynn": ("MYNN PBL", MYNN_VERTICAL_LEVEL_BOUNDS),
+        "ysu": ("YSU PBL", YSU_VERTICAL_LEVEL_BOUNDS),
+        "myj": ("MYJ PBL", MYJ_VERTICAL_LEVEL_BOUNDS),
+        "shinhong": ("Shin-Hong PBL", SHINHONG_VERTICAL_LEVEL_BOUNDS),
+        "sase": ("SASE PBL", SASE_VERTICAL_LEVEL_BOUNDS),
+    }
+    pbl = resolved.get("pbl")
+    if pbl in pbl_bounds:
+        bounded(*pbl_bounds[pbl])
     if resolved.get("cumulus") == "kain-fritsch":
         bounded("Kain-Fritsch cumulus", KF_VERTICAL_LEVEL_BOUNDS)
     if resolved.get("cumulus") == "grell-freitas":

@@ -71,6 +71,7 @@ from gpuwm.ingest.prepared_cache import (  # noqa: E402
 from gpuwm import progress_log  # noqa: E402
 from gpuwm.progress_log import (  # noqa: E402
     ProgressOptions, add_progress_arguments)
+from gpuwm.receipt_paths import receipt_basename  # noqa: E402
 from gpuwm.native_wrf_contract import (  # noqa: E402
     NATIVE_LANDUSE_IDENTITY,
     load_native_static_cache,
@@ -851,7 +852,7 @@ def _validate_domain_receipt(
         or verification.get("payload_bytes") != reader.payload_bytes
     ):
         raise ValueError(f"d{domain.grid_id:02d} cache verification receipt differs")
-    if Path(verification.get("path", "")).name != "prepared-cache":
+    if receipt_basename(verification.get("path", "")) != "prepared-cache":
         raise ValueError(f"d{domain.grid_id:02d} cache receipt path is not relocatable")
     if bundle.resolve() != geometry_path.parent.resolve():
         raise RuntimeError("domain artifact path escaped its bundle")
@@ -909,6 +910,17 @@ def preflight_prepared_tree(
     # nest.
     from gpuwm.experiment import refuse_unrouted_spawn
     refuse_unrouted_spawn(exp, "prepared domain-tree")
+    # Same governance, same position, different capability: this route
+    # restores every domain from a prepared cache and marks it started,
+    # so it holds no activation context and no on_domain_start callback.
+    # A delayed child would sit at tick 0 while its parent advanced and
+    # the run would die at the first period boundary with a bare
+    # "tick-exact sync violated" traceback.  Task #205 fixed the
+    # activation-epoch REFL_10CM stash that killed delayed activation on
+    # the experiment-tree route; THIS shape is a different, still
+    # unimplemented one, and it says so by name.
+    from gpuwm.experiment import refuse_delayed_activation
+    refuse_delayed_activation(exp, "prepared domain-tree")
     # NO streaming refusal for [tiles]: this route wires a streamed-domain
     # builder (streaming.builders_for_tree, below), so mode = 'on' is
     # supported.  The refusal that stood here was written before the wiring
@@ -1404,6 +1416,22 @@ def _rebind_rebuilt_state(state, workspace) -> None:
             setattr(state, name, workspace.view(name, value.shape, value.dtype))
 
 
+def _completed_execution_report(model):
+    """The honest zero-work report for a restore that landed on the stop.
+
+    Counters stay at zero because nothing was integrated, and the clocks
+    are the restored clocks, which is what every downstream consumer of
+    this report reads.  Fabricating step counts here would put a run's
+    work on a process that did none of it.
+    """
+    from gpuwm.core.clock import ExecutionReport
+
+    clocks = {int(grid_id): node.clock
+              for grid_id, node in model.nodes_by_grid_id.items()}
+    return ExecutionReport(
+        histories={grid_id: 0 for grid_id in clocks}, clocks=clocks)
+
+
 def run_prepared_tree(
     inputs: PreparedTreeInputs,
     *,
@@ -1729,12 +1757,18 @@ def run_prepared_tree(
             outdir=outdir, radiation_workspace=radiation_workspace)
         if inputs.statics_corridor is not None else None)
 
+    restart_info = None
     if restart is not None:
         checkpoint = validate_manifest_checkpoint(Path(restart))
-        restore_tree_restart(
+        restart_info = restore_tree_restart(
             checkpoint, model,
             sealed_forcing_extension=sealed_forcing_extension)
         model._resumed = True
+    # Same ruling as the case-data route: a restore point that IS the
+    # stop tick is a finished run, and the schedule executor refuses a
+    # start period at the end of the schedule, so this route decides it
+    # here rather than handing a user a bare ValueError.
+    already_complete = runtime._restart_is_complete(restart_info)
 
     initial_health = {}
     for grid_id, node in nodes.items():
@@ -1774,6 +1808,9 @@ def run_prepared_tree(
             initial_condition=inputs.source_identity.get(
                 "initial_condition"),
             source=inputs.source,
+            # The tree-wide [output] history selection; each domain's own
+            # `output = {...}` overrides it inside the writer set.
+            history_selection=exp.output,
         )
         if io_mode == "history"
         else None
@@ -1893,26 +1930,19 @@ def run_prepared_tree(
     step_observer = step_log.step_observer if step_log.enabled else None
     try:
         memory_watch.start()
+        if already_complete:
+            print(
+                "prepared tree: restart point is this configuration's stop "
+                f"tick ({model.schedule.clock.run_ticks} ticks, "
+                f"{float(exp.run_seconds):g} s of model time); the run is "
+                "already complete, finalizing without integrating",
+                flush=True)
         if writers is None:
-            execution = execute_experiment(
-                model,
-                history_handler=None,
-                restart_handler=restart_handler,
-                progress_callback=progress_callback,
-                validate_state=True,
-                health_debug=health_debug,
-                skip_feedback_path=True,
-                pool_trim_per_period=True,
-                relocation_runner=relocation_runner,
-                steppers=steppers,
-                step_observer=step_observer,
-            )
-            wrfout_paths = ()
-        else:
-            with writers:
-                execution = execute_experiment(
+            execution = (
+                _completed_execution_report(model) if already_complete
+                else execute_experiment(
                     model,
-                    history_handler=history_handler,
+                    history_handler=None,
                     restart_handler=restart_handler,
                     progress_callback=progress_callback,
                     validate_state=True,
@@ -1922,7 +1952,25 @@ def run_prepared_tree(
                     relocation_runner=relocation_runner,
                     steppers=steppers,
                     step_observer=step_observer,
-                )
+                ))
+            wrfout_paths = ()
+        else:
+            with writers:
+                execution = (
+                    _completed_execution_report(model) if already_complete
+                    else execute_experiment(
+                        model,
+                        history_handler=history_handler,
+                        restart_handler=restart_handler,
+                        progress_callback=progress_callback,
+                        validate_state=True,
+                        health_debug=health_debug,
+                        skip_feedback_path=True,
+                        pool_trim_per_period=True,
+                        relocation_runner=relocation_runner,
+                        steppers=steppers,
+                        step_observer=step_observer,
+                    ))
                 writers.drain()
                 wrfout_paths = writers.paths
         if relocation_runner is not None:

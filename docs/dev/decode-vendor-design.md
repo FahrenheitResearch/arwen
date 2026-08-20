@@ -709,9 +709,46 @@ measured it.  The two GRIB cases hide it (their inputs sit at a fixed
 path outside the repository); the NetCDF sample lives beside the golden
 and therefore moves with the checkout, and the digest differed between
 two worktrees of the SAME commit while every field array matched to the
-byte.  Both sides now compare under the repository's one mask -- input
+byte.  Both sides then compared under the repository's one mask -- input
 paths reduced to basenames, the rule
 `tests/test_mapped_engine_parity.py` already used.
+
+**The mask was half the story (2026-08-20).**  Carried to a second BOX
+rather than a second worktree, the masked digest went red again: the
+golden recorded on the Windows desktop failed on weather-node-1.  Two
+findings, both measured on the same bytes:
+
+* the netCDF case: 35 of 38 arrays bit-identical, and the three produced
+  by the two `exp`-based humidity derivations apart by at most 3 ULP --
+  4.1e-16 relative;
+* the Lambert case: all four wind components differ, because the
+  grid-relative wind rotation is `sin`/`cos`.
+
+A transcendental's last bit is the box's libm.  Everything else in the
+decode -- integer unpack plus IEEE add, multiply, divide -- is
+bit-reproducible, which is why only these moved.
+
+So the header digest is not the thing to make portable by masking harder.
+Both engines now publish `frame_header_sha256_portable` beside the raw
+digest under one declared, versioned rule
+(`gpuwm-portable-frame-header-v1`, `gpuwm.source_frame.portable_frame_header`
+and `mapped_engine::portable`): input paths reduced to basenames, and
+each libm-dependent field's `data_reference` replaced by
+`libm:<canonical_name>`.  The libm-dependent set is READ FROM THE
+MAPPING -- fields with a declared `derivation`, plus the rotated wind
+pairs when the declaration says the source publishes grid-relative
+components -- so it is table work for a new model, not a code path.
+
+What the portable digest still gates: grid, vertical coordinates, times,
+policies, units, shapes, dtypes, the field roster by name, and the exact
+array digest of every other field.  What it no longer gates is compared
+by VALUE instead: the goldens record five statistics per libm-dependent
+field (minimum, maximum, sum, sum of magnitudes, sum of squares) and
+assert them within a declared 1e-12 relative tolerance -- four orders
+above the measured cross-box spread, and far below any change of
+formula, unit, level order or dependency.  The raw and masked digests
+stay in each golden as DECLARED PER-BOX VALUES under `per_box`, with the
+recording box named.
 
 ## 9. Concurrency inside the engine (normative)
 

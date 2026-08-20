@@ -50,7 +50,9 @@ Two hard properties a WRF user must plan around:
   (129/193/257) chosen by `nz`; above 256 the host raises before any launch, a loud
   refusal rather than a skipped kernel. Nothing above 128 has a run receipt yet, and
   Kain-Fritsch's own bound still refuses `cu_physics=1` above 128
-  [docs/public/LES.md:327-333].
+  [docs/public/LES.md:327-333]. The same ceiling binds every PBL scheme except
+  MYNN: YSU, Shin-Hong, MYJ and SASE hold one column per thread at a compiled
+  `KMAX = 128`, and `gpuwm check` names that refusal before a run starts.
 
 ## 2.3 Projections
 

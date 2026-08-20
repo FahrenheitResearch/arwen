@@ -396,6 +396,40 @@ _PACKAGED_PROFILES = MappingProxyType({
         data_role="rrfs_prslev_2dfld_in_band_surface",
         provenance_role="rrfs_prslev_2dfld_in_band_surface_provenance",
     ),
+    # ERA5 on its NATIVE 137 hybrid sigma-pressure model levels -- the
+    # first shipped profile whose vertical coordinate is not a pressure
+    # ladder.  The A/B interface coefficients ride IN BAND as the GRIB2
+    # Section-4 coordinate-values (pv) octets, so nothing about this
+    # source needs a per-model channel: the decode reads the 276 values
+    # the producer wrote, materializes p = A + B*ps, and integrates
+    # geopotential height hydrostatically from the borrowed terrain.
+    # The model-level product publishes the prognostic atmosphere and
+    # NOTHING else -- no soil, no land mask, no orography, no skin
+    # temperature, no 2 m or 10 m diagnostics, and surface pressure only
+    # as lnsp (which affine-only unit transforms cannot exponentiate) --
+    # so the same-hour ERA5 pressure-level/single-level analysis is the
+    # cross-source donor for all ten of those fields, decoded through
+    # its own pinned mapping.  Proven on real 2026-05-30 CDS bytes: both
+    # engines byte-identical on air_pressure and geopotential_height
+    # (max ULP 0) and a preparation to rc 0.
+    "era5-model-level-l137-grib2-v1": _profile(
+        "rw-wps-era5-model-level-l137-grib2",
+        source_format="grib2",
+        mapping="51b656c17ba0bd29e3df7a8b07f8367be9cad731d9ee210fd7ae545c4da830ac",
+        composition="012bffc1322363560101ed393bb098e78f2cc013219ebf1e123561d6c0c0a05e",
+        provenance="3c6477f94c1ab3428c5f3f1d6fb29c57ca9620dfecf41d600ca165df8609da7c",
+        data_role="physical_analysis_surface_data",
+        provenance_role="physical_analysis_surface_provenance",
+        contributing_mappings={
+            "physical_analysis_surface_mapping": {
+                "file": "rw-wps-era5-plev-surface-donor.mapping.json",
+                "sha256": (
+                    "38bb519c8cad40afd422f3f9b03c0bedcac8512df43b3867"
+                    "58c18a64334fe060"
+                ),
+            },
+        },
+    ),
 })
 
 

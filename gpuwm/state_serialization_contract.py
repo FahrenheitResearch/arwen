@@ -17,6 +17,23 @@ STATE_SERIALIZED_ATTRS = (
     "u", "v", "w", "thp", "php", "mup",
     "p", "al", "alt",
     "qv", "qc", "qr", "h_diabatic",
+    # WRF RTHFTEN/RQVFTEN: the dycore's pure advective theta/qv forcing
+    # pair, exported at RK stage 1 of step N and read by the cumulus call
+    # at the top of step N+1.  SERIALIZED for h_diabatic's reason exactly:
+    # the producer is a dycore stage that has not run yet when a resume
+    # reaches its first cumulus call, so nothing can refill them and a
+    # re-zeroed resume would feed the scheme one step of hard zeros in the
+    # middle of a trajectory.  (The MPAS seam's identically-named driver
+    # lanes stay REBUILT -- their caller refills them inside every
+    # run_phase1 -- and that argument covers the seam only.)
+    #
+    # Absent (None) on every state whose cu_physics is outside
+    # gpuwm.config.CUMULUS_ADVECTIVE_FORCING_SCHEMES, and both the writer
+    # and the reader skip on None, so no existing non-GF restart inventory
+    # moves.  A GF checkpoint written before this pair existed DOES move:
+    # its state key set is two members short and the reader refuses it by
+    # name rather than resuming with an unwritten lane.
+    "rthften", "rqvften",
     # WRF's prognostic SGS TKE (Registry.EM_COMMON:312 ``state real tke ikj
     # dyn_em 2 - r``): the trailing ``r`` puts it in the restart stream, and
     # nothing reconstructs it -- a resumed km_opt=2 run that re-zeroed the
@@ -253,7 +270,28 @@ def setup_fingerprint(state, *, error_type: type[Exception] = ValueError) -> str
     return digest.hexdigest()
 
 
+#: The dycore's exported advective forcing pair (WRF RTHFTEN/RQVFTEN) as
+#: a NAME TABLE, so a reader's key-set refusal can say WHICH change moved
+#: the layout instead of printing two sorted lists.  Its members are two
+#: of :data:`STATE_SERIALIZED_ATTRS` above, and the argument for their
+#: presence there is the argument for this table.
+#:
+#: It lives HERE rather than beside the restart reader because both sides
+#: of the tolerance need it and only one of them is a forecast module:
+#: ``gpuwm.io.restart`` REFUSES a mid-trajectory GF checkpoint that lacks
+#: the pair, and ``gpuwm.ingest.prepared_cache`` TOLERATES a prepared
+#: cache that lacks it -- a cache is the t=0 state, where the pair is
+#: identically zero.  prepared_cache is preprocessing and ships in the
+#: standalone RW-WPS wheel, which stages no restart reader at all, so
+#: reading the table out of ``gpuwm.io.restart`` put a staged module in
+#: that wheel reaching for a deliberately absent one and
+#: ``tools/build_rw_wps_release.py`` refused to stage.  A name table is
+#: data; this module is where this package's serialization data lives.
+ADVECTIVE_FORCING_STATE = ("rthften", "rqvften")
+
+
 __all__ = [
+    "ADVECTIVE_FORCING_STATE",
     "LATERAL_BOUNDARY_PREFIX_SCHEMA",
     "STATE_SERIALIZED_ATTRS",
     "STATE_SETUP_ARRAYS",

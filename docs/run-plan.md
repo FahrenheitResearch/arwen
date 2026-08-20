@@ -120,21 +120,31 @@ not the root's. The wizard round-trips its emitted bytes through the
 real loader before writing, so a bad value is refused with the loader's
 own sentence and no file lands.
 
-#### Intent is ERA5-only on the `experiment` route
+#### Which sources an intent drives is derived, not listed
+
+Whether an intent can drive a source is **derived from its registry
+row**, never from a list of model names kept in run-plan
+(`gpuwm.runplan.intent_drivability`): the row must be runnable, declare
+a forcing cadence (so `gpuwm domain` can emit its `namelist.wps`), have
+an acquisition route, and sit on an implementation route one of this
+door's chains executes. A row added to the registry with those facts is
+intent-drivable with zero code change here. An intent naming a source
+that fails a fact is refused up front **with that fact** — a member
+set that needs `gpuwm-member-prep`, a missing acquisition route, a
+missing cadence — never with "unknown source".
 
 `gpuwm domain` writes a `[case_data]` table — the declared inputs a
-config-driven run needs — **only for `source = "era5"`**, because the
-config-driven route decodes native GRIB1 = ERA5 today. A GFS or HRRR
-emission is a real config, but its consumer is the native/prepared front
-door, and those are not run-plan routes yet. An intent plan naming
-another source on this route is refused up front, with that reason.
+config-driven run needs — only for the combined-GRIB1 decode family
+(`era5` today), so those sources run on the `experiment` route and
+every other drivable source runs on `prepared`. An intent naming a
+source on the wrong route is refused naming the right one.
 
 ### Routes
 
 | route | what it is | source |
 |---|---|---|
 | `experiment` | the config-driven route: one experiment TOML with its `[case_data]` inputs, prepared and integrated in this process — what `gpuwm run CONFIG` executes | era5 |
-| `prepared` | the native prepared-cache chain, in the documented order | **gfs** or **hrrr**, single domain |
+| `prepared` | the native prepared-cache chain, in the documented order | **gfs**, **hrrr**, or any packaged mapped source with a table fetch route (icon-eu, rap, rrfs, hrrr-prs, gem-gdps, aifs, aigfs, ecmwf-open-data — the registry's facts decide, not this list) |
 
 **The credential-free path is `prepared` + `gfs`.** ERA5 needs a
 Copernicus CDS key; GFS is public. A `prepared` plan therefore runs end
@@ -153,6 +163,22 @@ the hierarchy document rw-wps left in the prepared root. `go`'s other
 refusals (an ERA5 `[case_data]` config, another source) surface
 verbatim as a `failed` event, and the interactive `gpuwm go` command
 keeps its own tree refusal.
+
+**A packaged mapped source** (icon-eu, rap, rrfs, hrrr-prs, …) runs the
+**staged chain**: `gpuwm fetch` (its table acquisition route) →
+`gpuwm prep` (rw-wps's declarative mapped arm, the packaged profile
+already bound) → the prepared forecast runner, in process. The
+preparation's arguments are relayed from the fetch route's own
+published handoff (`prep-arguments.json`: the ordered `--input-list`,
+every `--supplement` role binding, the manifest authoring flag); the
+chain appends only the four values the handoff declares are the
+caller's — `--wps-namelist` (the wizard's emission beside the config),
+`--experiment-config`, `--geog-root` and `--output-root`. The forecast
+is bound off the bundle exactly as `gpuwm sim` binds it
+(`stage_cli.resolve_bundle` + `sim_command`), then rendered by `go`'s
+render stage. Which source lands on this chain is the registry row's
+answer (`runner = "mapped_composition_v1"`, a composed packaged
+profile, a table fetch route, no member set) — never a name list.
 
 **hrrr** runs its own chain, because `go` refuses the source by
 construction (`ORCHESTRATED_SOURCES = ("gfs",)`): fetch →
@@ -224,6 +250,7 @@ refuses.
 | `experiment` | the route holds the geography source for the whole run and rebuilds each footprint at move time. Nothing prepared, nothing priced. |
 | `prepared` + gfs | the preparation seals a **statics corridor** and the tree runner crops it. Run-plan composes `--statics-corridor` on the rw-wps prepare stage. |
 | `prepared` + hrrr | the same corridor, sealed by the **hierarchy stage**. Run-plan composes `--statics-corridor` on `gpuwm.hrrr_hierarchy_direct`. |
+| `prepared` + a packaged mapped source | **refused at resolve time**: rw-wps's mapped arm refuses `--statics-corridor` by name, so nothing on the staged chain can seal one. The refusal names the corridor-sealing chains and the corridor-free routes out. |
 
 On either prepared chain the preparation seals child-resolution
 statics over each child's whole parent extent beside the other
@@ -624,6 +651,99 @@ would offer products that do not exist. The parse is checked against the rendere
 count, and a disagreement is reported in `parse_warning` with the raw
 output carried, rather than silently returning a short list.
 
+**`--sources`** → `gpuwm.run-plan.sources.v1`. The source registry's own
+rows: every registered source with its display name, aliases, kind, file
+family, decoder, products, forecast horizon, cadence, packaged profile,
+coverage window (or `null` for a global product), maturity, credential
+prerequisites, and how its bytes are acquired — a table route, its own
+legacy transport, or the table's named refusal carried verbatim. The rows
+come out in the registry's order, so a picker shows the engine's order
+rather than one it invented, and a model added to the registry appears
+here with **no code change** on either side of the seam.
+
+`display_name` is the registry's display-name column — the name a person
+would say (`HRRR (pressure levels)`, `GEM GDPS (Canadian global)`), not
+the id. `title` carries the same string, so a consumer already reading
+it shows the name with no change; a row that declares no name reads back
+as its id.
+
+`credentials` is what the row declares must be **configured** before its
+bytes can be acquired, resolved against the box that answered:
+`required`, a one-line `summary`, and an `items` entry per credential
+with `display_name`, `location_kind` (`home_file` / `env_var`),
+`location`, `location_display` (the path or variable as it is on this
+box), `needed_for`, `breakage`, `obtain_url`, `present`, and the
+`status_message` to show. Existence only ever leaves the door — the
+credential's value is never read. A row that declares nothing says
+exactly that; it does **not** say the source is public, which is a
+promise about a provider the registry cannot make. Adding a source that
+needs an account key is one registry row, and no front end carries an
+exception table for it.
+
+Read `run_plan.intent_supported` before offering a launch. The registry
+is wider than this front door: it declares more rows than a run-plan
+**intent** (a point, a cycle, a source) can drive, and the field is the
+**derived** verdict of `gpuwm.runplan.intent_drivability` — registry
+facts, never a hand-kept list, so a registered source with a runnable
+route, a forcing cadence, an acquisition route and an executable chain
+is intent-drivable the moment its row lands. `run_plan.intent_routes`
+names the route(s), `run_plan.intent_chain` the prepared-route chain
+the dispatch would take, and — on an undrivable row —
+`run_plan.intent_refusal` carries the derived sentence naming the
+missing fact (a member set that needs `gpuwm-member-prep`, no
+acquisition route, no cadence). Every row is listed either way,
+because a truthful "not from an intent" beats a short menu.
+The envelope carries `gpuwm_version` and the registry's `readiness_rule`
+and `certification_rule`, so the maturity words a front end shows are the
+engine's and not a second vocabulary. The document is roughly 65 kB.
+
+**`--physics-profiles`** → `gpuwm.run-plan.physics-profiles.v1`. The
+per-source physics menu: every registered source crossed with every
+shipped physics suite, computed against the same admissibility rules
+that refuse at emission. This is the answer to "what can THIS model
+actually run", which nothing could ask before — a front end that wanted
+a physics list had to type one, and a typed list cannot know that the
+native HRRR route refuses every Kain-Fritsch suite because its 3 km grid
+resolves its own convection.
+
+`profiles[]` is the source-independent half, in the wizard door's own
+order (nocturnally valid suites first): `summary`, the scheme selectors,
+`day_only` with its reason, `maturity` (the physics registry's template
+maturity plus the verification word), `vertical_levels` (the level-count
+window every component of the suite accepts, from the same preflight
+that refuses a 130-level YSU configuration), and the full `switches`
+table.
+
+`sources[]` is the per-source half, in registry order, and its
+`profiles[]` list is parallel to the top-level one so a consumer can zip
+them. Each cell carries `profile_id`, `admissible`, `why_not` (the
+route's own refusal sentence, **verbatim** — never paraphrased, so the
+menu and the refusal read as one gate), `is_default`, `day_only`,
+`maturity`, and `select_with` (the flag to pass, or `omit
+--physics-profile` for the default).
+
+Each source row also carries `default_profile_id` — what a bare run on
+that source binds — with `default_basis` saying why, `admissible_count`,
+and `nocturnal_remedy`: the way forward when a daytime-only suite meets
+a window with local night **on this source**. That field is what the
+wizard's own nocturnal refusal now prints, so a printed remedy can never
+name a suite the active source's route then refuses.
+
+The default is **derived**, not tabled: the door's declared default when
+this source's route admits it and it runs both radiation streams, else
+the next suite in the listed order that satisfies both. A source added
+to the registry gets a working default with **no code change**, and so
+does a suite added to the shipped list.
+
+`admissibility_rules[]` names the rules the cells were computed against
+and who owns each one — the route emission gate with its declared
+`required_physics` / `admitted_pbl_physics` /
+`admitted_radiation_pairs` / `supported_microphysics`, the registry's
+land-surface offer declaration, the nocturnal-validity predicate, and
+the vertical-level bounds — so a front end can say *why* a cell is
+closed without reimplementing the reasoning. The document is roughly
+250 kB.
+
 **`--probe`** → `gpuwm.run-plan.probe.v1`. Device inventory (name, UUID,
 driver, VRAM total/used/free) read through NVML only — **no CUDA context
 is created**, so it is safe to poll on a busy card. Plus route and schema
@@ -785,6 +905,22 @@ same environment, naming one frame instead of all of them.
 
 Pictures are published by `os.replace` out of a scratch directory, so a
 reader watching the render output sees a whole PNG or none.
+
+`gpuwm go` reads the receipt off disk the same way, whether or not the
+chain hosted the render that wrote it — it does not, because `go` asks
+the runner subprocess for the early render on its command line and keeps
+its process isolation. Every digest check above still gates the skip.
+
+**What the receipt's clock means.** `published_unix_ms` is the wall-clock
+instant at which every picture named in `written` was readable at its
+final path under the render directory, and the receipt carries that
+sentence in its own `measures` field. A picture found there with a later
+mtime was rewritten afterwards, so the instant no longer describes
+anything on disk; the chain checks that before it quotes the number, and
+falls back to the earliest picture's own mtime — labelled as the coarser
+measurement — when it does not hold. Before that check, `go` could print
+`time to first plot 0m 46s (first-products receipt)` for a run whose
+earliest published PNG carried 2m 45s.
 
 ### Measured
 

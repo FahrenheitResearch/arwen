@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 import subprocess
+from collections.abc import Sequence as _ABCSequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -863,177 +864,216 @@ def _fields_tile_stream(document: Mapping[str, object],
     return cursor == declared_bytes
 
 
-def read_frameset(directory: str | Path) -> tuple[Any, ...]:
-    """Rebuild canonical frames from a frameset directory.
+class FrameSet(_ABCSequence):
+    """The frames of a written frameset, materialized ONE at a time.
 
-    Every array is re-hashed against the document, and the rebuilt
-    dataclasses re-run their own validators (cheap beside a decode), so
-    an engine that wrote an array its manifest does not describe is
-    caught here instead of inside a preparation.
+    Named breakage: reading a frameset whole makes a preparation's host
+    memory scale with the NUMBER OF VALID TIMES.  Measured on real RRFS
+    bytes (3 km CONUS, 45 pressure levels, one 300x300 target), a bare
+    default prep peaked at 35.2 GiB for two valid times and 67.0 GiB for
+    four -- 15.9 GiB per additional time, of which the frames read whole
+    are the largest single term -- so the seven-time preparation the
+    source's own forecast cadence asks for needed ~114 GiB and died on
+    every box smaller than that.  Nothing downstream ever needs two
+    valid times at once: the initialize loop takes them one at a time
+    and keeps only the perimeter frames.
+
+    So this reads the DOCUMENT once -- schema, stream length, the
+    scalars and per-field digests of every frame -- and reads a frame's
+    arrays only when that frame is asked for, keeping the most recent
+    one so a caller that touches the same index twice does not pay
+    twice.  What a frame costs is unchanged, and so are its bytes: the
+    arrays are the same little-endian float64 values the memory-mapped
+    read produced, verified against the same per-field digests.
+
+    What moves is WHEN a corrupt array is caught.  It is caught when its
+    frame is read rather than before the first frame is built.  No
+    number from an unverified frame reaches a preparation either way --
+    a mapped preparation publishes its output tree atomically at the end
+    -- and every frame the route consumes is verified, because the route
+    consumes them all.
     """
 
-    import numpy as np
-
-    directory = Path(directory)
-    document = json.loads(
-        (directory / FRAMES_DOCUMENT).read_text(encoding="utf-8"))
-    schema = str(document.get("schema"))
-    if schema != FRAMESET_SCHEMA:
-        raise ValueError(
-            f"{directory / FRAMES_DOCUMENT} declares schema {schema!r}; "
-            f"this release reads {FRAMESET_SCHEMA!r}")
-    stream_document = dict(document["stream"])
-    stream = (directory / str(stream_document.get("path", FRAMES_STREAM)))
-    size = stream.stat().st_size
-    if size != int(stream_document["bytes"]):
-        raise ValueError(
-            f"{stream} carries {size} bytes; the frameset declares "
-            f"{stream_document['bytes']}")
-    # Read through a memory map: a real source frameset is multi-gigabyte
-    # (a 0.25-degree analysis with 41 levels runs to ~1.8 GB per frame),
-    # and reading it whole would double the peak footprint of every
-    # decode this seam is meant to make cheaper.
-    #
-    # The whole-stream digest is verified ONLY when the fields leave
-    # bytes it alone would cover.  Both writers pack the fields
-    # contiguously in document order, so :func:`_fields_tile_stream`
-    # normally holds and every byte of the stream is inside exactly one
-    # field -- whose own sha256 is checked below, over the same bytes,
-    # and binds dtype and shape as well.  Re-hashing the whole file for
-    # that case was a second full pass for an answer already in hand
-    # (measured: 4.7 s of a 12.3 s read on a 7.5 GiB frameset).  The
-    # breakage the fallback still prevents: a stream carrying bytes no
-    # field claims -- padding, a gap, a truncated last field -- which
-    # per-field hashing would never look at.
-    if not _fields_tile_stream(document, int(stream_document["bytes"])):
-        digest = hashlib.sha256()
-        with stream.open("rb") as handle:
-            for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
-                digest.update(block)
-        observed = digest.hexdigest()
-        if observed != str(stream_document["sha256"]):
+    def __init__(self, directory: str | Path, *, retain: object = None):
+        self._directory = Path(directory)
+        document = json.loads(
+            (self._directory / FRAMES_DOCUMENT).read_text(encoding="utf-8"))
+        schema = str(document.get("schema"))
+        if schema != FRAMESET_SCHEMA:
             raise ValueError(
-                f"{stream} hashes to {observed}; the frameset declares "
-                f"{stream_document['sha256']}")
-    payload = (
-        np.memmap(stream, dtype=np.uint8, mode="r")
-        if size else np.zeros(0, dtype=np.uint8))
-    try:
-        return _frames_from_document(document, stream_document, payload)
-    finally:
-        # Closed explicitly, not left to the collector: on Windows an
-        # open mapping holds the file, and the caller's very next act is
-        # to delete the engine's working directory.  Every array the
-        # frames keep is a copy (the dataclasses copy on construction),
-        # so nothing here is left pointing at the map.
-        mapping_handle = getattr(payload, "_mmap", None)
-        if mapping_handle is not None:
-            mapping_handle.close()
-
-
-def _hash_workers(count: int) -> int:
-    """How many threads to verify ``count`` field digests with.
-
-    ``hashlib`` releases the GIL while it hashes a buffer this large --
-    a source field array is megabytes at least -- so the digests are the
-    one part of the read that scales with cores.  Capped at six from the
-    measurement, not from taste: on a 7.5 GiB frameset (32 cores) the
-    whole read took 8.04 s at one thread, 3.95 s at four, 3.56 s at six
-    and 3.53 s at eight -- past six the hashing is no longer what the
-    read is waiting on, and a cap keeps a preparation that already runs
-    several sources at once from oversubscribing the box.
-    """
-
-    return max(1, min(6, count, os.cpu_count() or 1))
-
-
-def _verify_field_digests(plan) -> None:
-    """Re-hash every mapped field array against the document.
-
-    The breakage this prevents: an engine (or a disk) that produced
-    array bytes its own manifest does not describe, which would enter a
-    preparation as silently wrong numbers.  Under the tiling check in
-    :func:`read_frameset` this is also the ONLY pass that reads the
-    stream's bytes for verification, so it is not sampled -- it is
-    spread over threads instead, and mismatches are still reported in
-    document order so one broken frameset always names the same field.
-    """
-
-    from concurrent.futures import ThreadPoolExecutor
-
-    from gpuwm.mapped_source import _array_sha256
-
-    arrays = [array for _, _, array in plan]
-    workers = _hash_workers(len(arrays))
-    if workers == 1:
-        observed = [_array_sha256(array) for array in arrays]
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            observed = list(pool.map(_array_sha256, arrays))
-    for (index, field_document, _), digest in zip(plan, observed):
-        declared = str(field_document["sha256"])
-        if digest != declared:
-            name = str(field_document["name"])
+                f"{self._directory / FRAMES_DOCUMENT} declares schema "
+                f"{schema!r}; this release reads {FRAMESET_SCHEMA!r}")
+        stream_document = dict(document["stream"])
+        self._stream = self._directory / str(
+            stream_document.get("path", FRAMES_STREAM))
+        size = self._stream.stat().st_size
+        self._declared_bytes = int(stream_document["bytes"])
+        if size != self._declared_bytes:
             raise ValueError(
-                f"frame {index} field {name!r} hashes to {digest}; "
+                f"{self._stream} carries {size} bytes; the frameset "
+                f"declares {stream_document['bytes']}")
+        # The whole-stream digest is verified ONLY when the fields leave
+        # bytes it alone would cover.  Both writers pack the fields
+        # contiguously in document order, so :func:`_fields_tile_stream`
+        # normally holds and every byte of the stream is inside exactly
+        # one field -- whose own sha256 is checked at materialization,
+        # over the same bytes, and binds dtype and shape as well.  The
+        # breakage the fallback still prevents: a stream carrying bytes
+        # no field claims -- padding, a gap, a truncated last field --
+        # which per-field hashing would never look at.  It streams
+        # through a fixed buffer, so it costs one pass and no residency.
+        if not _fields_tile_stream(document, self._declared_bytes):
+            digest = hashlib.sha256()
+            with self._stream.open("rb") as handle:
+                for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+                    digest.update(block)
+            observed = digest.hexdigest()
+            if observed != str(stream_document["sha256"]):
+                raise ValueError(
+                    f"{self._stream} hashes to {observed}; the frameset "
+                    f"declares {stream_document['sha256']}")
+        self._entries = list(document["frames"])
+        #: The object whose lifetime the stream file needs -- the
+        #: engine's scratch directory handle.  Held here so the frames
+        #: cannot outlive the bytes they read from.
+        self._retain = retain
+        self._cached_index: int | None = None
+        self._cached_frame: Any = None
+
+    # -- the document, without touching an array -------------------
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    @property
+    def directory(self) -> Path:
+        return self._directory
+
+    @property
+    def valid_times(self) -> tuple[datetime, ...]:
+        return tuple(
+            datetime.fromisoformat(str(entry["valid_time"]))
+            for entry in self._entries)
+
+    @property
+    def members(self) -> tuple[str | None, ...]:
+        return tuple(
+            None if entry["member"] is None else str(entry["member"])
+            for entry in self._entries)
+
+    @property
+    def mapping_sha256s(self) -> tuple[str, ...]:
+        return tuple(str(entry["mapping_sha256"]) for entry in self._entries)
+
+    def input_sha256(self, index: int) -> dict[str, str]:
+        return {
+            str(key): str(value)
+            for key, value in dict(
+                self._entries[index]["input_sha256"]).items()}
+
+    def field_names(self, index: int) -> tuple[str, ...]:
+        return tuple(
+            str(field["name"]) for field in self._entries[index]["fields"])
+
+    def field_digest(self, index: int, name: str) -> str:
+        """The declared ``_array_sha256`` of one field.
+
+        The same digest :meth:`_materialize` checks the read bytes
+        against, so a receipt built from it names the array that
+        actually reached the preparation -- an engine that wrote a
+        digest its own bytes do not match refuses when the frame is
+        read, before the tree is published.
+        """
+
+        for field in self._entries[index]["fields"]:
+            if str(field["name"]) == name:
+                return str(field["sha256"])
+        raise KeyError(f"frame {index} carries no field {name!r}")
+
+    def field_count(self, index: int) -> int:
+        return len(self._entries[index]["fields"])
+
+    def header(self, index: int) -> Any:
+        return _header_from_document(self._entries[index]["header"])
+
+    # -- one frame's arrays ----------------------------------------
+
+    def field(self, index: int, name: str) -> Any:
+        """One field of one frame, read and verified on its own.
+
+        For the checks that need a single array -- the vertical
+        coverage of the source column, the canonical terrain -- reading
+        one field instead of a whole valid time is the difference
+        between one array and the twenty a frame carries.
+        """
+
+        if self._cached_index == index:
+            return self._cached_frame.fields[name]
+        for document in self._entries[index]["fields"]:
+            if str(document["name"]) == name:
+                return self._read_field(index, document)
+        raise KeyError(f"frame {index} carries no field {name!r}")
+
+    def _read_field(self, index: int, document: Mapping[str, Any]) -> Any:
+        import numpy as np
+
+        from gpuwm.mapped_source import CanonicalField, _array_sha256
+
+        name = str(document["name"])
+        start = int(document["offset"])
+        length = int(document["length"])
+        shape = tuple(int(size) for size in document["shape"])
+        dtype = str(document["dtype"])
+        if dtype != STREAM_DTYPE:
+            raise ValueError(
+                f"frame {index} field {name!r} declares dtype "
+                f"{dtype!r}; the stream carries {STREAM_DTYPE!r}")
+        if start < 0 or start + length > self._declared_bytes:
+            raise ValueError(
+                f"frame {index} field {name!r} claims bytes "
+                f"[{start}, {start + length}) of a "
+                f"{self._declared_bytes}-byte stream")
+        array = np.empty(shape, dtype=np.dtype(STREAM_DTYPE))
+        buffer = memoryview(array).cast("B")
+        if len(buffer) != length:
+            raise ValueError(
+                f"frame {index} field {name!r} declares {length} bytes "
+                f"for shape {list(shape)}, which needs {len(buffer)}")
+        with self._stream.open("rb") as handle:
+            handle.seek(start)
+            read = handle.readinto(buffer)
+        if read != length:
+            raise ValueError(
+                f"frame {index} field {name!r} ends at byte "
+                f"{start + int(read or 0)} of a stream that declares "
+                f"{self._declared_bytes}")
+        observed = _array_sha256(array)
+        declared = str(document["sha256"])
+        if observed != declared:
+            raise ValueError(
+                f"frame {index} field {name!r} hashes to {observed}; "
                 f"the frameset declares {declared}")
+        return CanonicalField(
+            name=name,
+            units=str(document["units"]),
+            axes=tuple(str(axis) for axis in document["axes"]),
+            location=str(document["location"]),
+            staggering=str(document["staggering"]),
+            values=array,
+            missing_count=int(document["missing_count"]),
+            source_references=tuple(
+                str(value) for value in document["source_references"]),
+        )
 
+    def _materialize(self, index: int) -> Any:
+        from gpuwm.mapped_source import MappedSourceFrame
 
-def _frames_from_document(document, stream_document, payload):
-    """Rebuild the frames named by an already-verified frameset stream."""
-
-    import numpy as np
-
-    from gpuwm.mapped_source import CanonicalField, MappedSourceFrame
-
-    # Every field's view is taken first, then every digest is verified,
-    # then the dataclasses are built.  The views cost nothing -- they are
-    # windows on the mapping, not copies -- and holding them all at once
-    # is what lets the digests, the one pass that reads all the bytes,
-    # run together instead of one field at a time.
-    plan: list[tuple[int, Mapping[str, Any], Any]] = []
-    for index, entry in enumerate(document["frames"]):
-        for field_document in entry["fields"]:
-            name = str(field_document["name"])
-            start = int(field_document["offset"])
-            length = int(field_document["length"])
-            shape = tuple(int(size) for size in field_document["shape"])
-            dtype = str(field_document["dtype"])
-            if dtype != STREAM_DTYPE:
-                raise ValueError(
-                    f"frame {index} field {name!r} declares dtype "
-                    f"{dtype!r}; the stream carries {STREAM_DTYPE!r}")
-            if start < 0 or start + length > int(stream_document["bytes"]):
-                raise ValueError(
-                    f"frame {index} field {name!r} claims bytes "
-                    f"[{start}, {start + length}) of a "
-                    f"{stream_document['bytes']}-byte stream")
-            array = (
-                payload[start:start + length]
-                .view(np.dtype(STREAM_DTYPE)).reshape(shape))
-            plan.append((index, field_document, array))
-    _verify_field_digests(plan)
-
-    verified = iter(plan)
-    frames: list[Any] = []
-    for index, entry in enumerate(document["frames"]):
-        fields: dict[str, Any] = {}
-        for _ in entry["fields"]:
-            _, field_document, array = next(verified)
-            name = str(field_document["name"])
-            fields[name] = CanonicalField(
-                name=name,
-                units=str(field_document["units"]),
-                axes=tuple(str(axis) for axis in field_document["axes"]),
-                location=str(field_document["location"]),
-                staggering=str(field_document["staggering"]),
-                values=array,
-                missing_count=int(field_document["missing_count"]),
-                source_references=tuple(
-                    str(value) for value in field_document["source_references"]
-                ),
-            )
-        frames.append(MappedSourceFrame(
+        entry = self._entries[index]
+        fields = {
+            str(document["name"]): self._read_field(index, document)
+            for document in entry["fields"]
+        }
+        return MappedSourceFrame(
             valid_time=datetime.fromisoformat(str(entry["valid_time"])),
             member=None if entry["member"] is None else str(entry["member"]),
             source_cycle=datetime.fromisoformat(str(entry["source_cycle"])),
@@ -1044,14 +1084,82 @@ def _frames_from_document(document, stream_document, payload):
             vertical_values=_axis_values(entry["vertical_values"], "vertical"),
             fields=fields,
             mapping_sha256=str(entry["mapping_sha256"]),
-            input_sha256={
-                str(key): str(value)
-                for key, value in dict(entry["input_sha256"]).items()
-            },
+            input_sha256=self.input_sha256(index),
             grid_fingerprint=str(entry["grid_fingerprint"]),
             header=_header_from_document(entry["header"]),
-        ))
-    return tuple(frames)
+        )
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return _FrameSetSlice(self, range(*index.indices(len(self))))
+        position = int(index)
+        if position < 0:
+            position += len(self._entries)
+        if not 0 <= position < len(self._entries):
+            raise IndexError(position)
+        if self._cached_index == position:
+            return self._cached_frame
+        # The previous frame is dropped BEFORE the next is read, so the
+        # peak is one valid time and not two.
+        self._cached_index = None
+        self._cached_frame = None
+        frame = self._materialize(position)
+        self._cached_index = position
+        self._cached_frame = frame
+        return frame
+
+    def close(self) -> None:
+        """Drop the retained frame and the engine scratch it read from."""
+
+        self._cached_index = None
+        self._cached_frame = None
+        retain, self._retain = self._retain, None
+        cleanup = getattr(retain, "cleanup", None)
+        if cleanup is not None:
+            cleanup()
+
+
+class _FrameSetSlice(_ABCSequence):
+    """A contiguous window on a :class:`FrameSet`, still one at a time."""
+
+    def __init__(self, frames: FrameSet, positions: range):
+        self._frames = frames
+        self._positions = positions
+
+    def __len__(self) -> int:
+        return len(self._positions)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return _FrameSetSlice(
+                self._frames, self._positions[index])
+        return self._frames[self._positions[int(index)]]
+
+
+def open_frameset(directory: str | Path, *, retain: object = None) -> FrameSet:
+    """Open a frameset directory without reading a single array.
+
+    ``retain`` is the object whose lifetime the stream file needs -- the
+    engine's scratch directory handle -- so a caller can hand ownership
+    over instead of deleting the bytes the frames still read from.
+    """
+
+    return FrameSet(directory, retain=retain)
+
+
+def read_frameset(directory: str | Path) -> tuple[Any, ...]:
+    """Rebuild EVERY canonical frame from a frameset directory.
+
+    Every array is re-hashed against the document and the rebuilt
+    dataclasses re-run their own validators, so an engine that wrote an
+    array its manifest does not describe is refused rather than
+    believed.  The whole set is resident when this returns; a route that
+    consumes one valid time at a time wants :func:`open_frameset`.
+    """
+
+    return tuple(FrameSet(directory))
+
+
 
 
 # --------------------------------------------------------------------
@@ -1291,6 +1399,7 @@ __all__ = [
     "FRAMESET_SCHEMA",
     "FRAMES_DOCUMENT",
     "FRAMES_STREAM",
+    "FrameSet",
     "MAPPED_ROUTE_SUBCOMMAND",
     "PROGRESS_SCHEMA",
     "RECORD_INVENTORY_SCHEMA",
@@ -1303,6 +1412,7 @@ __all__ = [
     "engine_remedy",
     "find_engine",
     "frameset_document",
+    "open_frameset",
     "parse_refusal",
     "read_frameset",
     "refusal_error",

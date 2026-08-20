@@ -1900,6 +1900,14 @@ def _mapped_command(args: argparse.Namespace) -> list[str]:
                 str(args.hierarchy_workers),
             )
         )
+    # The one thing the generic runner cannot know: which registered
+    # source id this preparation is FOR.  It is what the prepared
+    # forecast binds to, so without it the mapped route could finish and
+    # print no run command at all -- while the GFS route printed a
+    # complete hash-bound one -- and a reader hunting the digests by
+    # hand lands on proof.json's `proof_content_sha256`, which is the
+    # one value --proof-sha256 never accepts.
+    command.extend(("--prepared-forecast-source", str(args.source)))
     return command
 
 

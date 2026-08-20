@@ -366,6 +366,46 @@ fn streamline_auto_mode_disables_regular_latlon_grids() {
     ));
 }
 
+/// The front door outranks the environment, and saying nothing changes
+/// nothing.
+///
+/// The concrete breakage: streamlines had no command-line spelling at all,
+/// so a user could ask for a wind product and had no visible switch for
+/// which wind layer to draw. Once a flag exists it has to WIN — a
+/// `--streamlines` overruled by a stale `RUSTWX_WIND_STREAMLINES=0` in a
+/// shell profile would be a flag that lies, with nothing on screen saying
+/// why.
+#[test]
+fn a_command_line_streamline_request_outranks_the_environment() {
+    // The setting is process-wide; this is the only test that moves it.
+    static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    crate::shared_context::set_wind_streamline_request(None);
+    let unasked = static_streamline_setting();
+
+    crate::shared_context::set_wind_streamline_request(Some(true));
+    assert_eq!(static_streamline_setting(), StreamlineSetting::Enabled);
+    assert!(streamlines_enabled_for_grid(
+        static_streamline_setting(),
+        &periodic_global_grid()
+    ));
+
+    crate::shared_context::set_wind_streamline_request(Some(false));
+    assert_eq!(static_streamline_setting(), StreamlineSetting::Disabled);
+    assert!(!streamlines_enabled_for_grid(
+        static_streamline_setting(),
+        &periodic_global_grid()
+    ));
+
+    crate::shared_context::set_wind_streamline_request(None);
+    assert_eq!(
+        static_streamline_setting(),
+        unasked,
+        "clearing the request must hand the choice back untouched"
+    );
+}
+
 #[test]
 fn inverse_raster_latlon_maps_clip_regional_bounds() {
     let bounds = (110.0, 180.0, -50.0, 0.0);

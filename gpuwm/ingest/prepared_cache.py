@@ -1429,6 +1429,58 @@ def extend_prepared_cache(path, *, predecessor, suffix, identity,
     }
 
 
+def reconcile_cached_state_inventory(stored_names, expected_names):
+    """Return the cached state names to read, or refuse by name.
+
+    A prepared cache carries the restart contract's serialised-state
+    inventory as of the build that WROTE it, and this build's active
+    configuration says what it EXPECTS.  Ordinarily those must match
+    exactly: a cache from a different configuration, or from a build
+    carrying state this one does not, is a different experiment.
+
+    ONE tolerance, and it is bounded by an argument rather than by a
+    version number.  A prepared cache is the t = 0 state by construction
+    (``write_prepared_cache`` takes an ``initial_result``; nothing here
+    carries a clock), so the dycore's advective forcing pair -- WRF
+    RTHFTEN/RQVFTEN, written by an RK stage that has not run -- is
+    identically zero in every cache that could contain it, which is also
+    WRF's own ``start_em`` cold start.  A cache missing exactly that pair
+    was therefore written by a build that had no exporter, and restoring
+    the freshly allocated zeros loses nothing: the numbers are the same
+    numbers.  Every prepared tree already on disk keeps working.
+
+    A CHECKPOINT gets no such tolerance and the asymmetry is the point.
+    It is mid-trajectory, the pair is genuinely non-zero there, and a
+    resume that re-zeroed it would integrate a different forecast --
+    ``gpuwm.io.restart`` refuses that case by name.
+    """
+    from gpuwm.state_serialization_contract import (
+        ADVECTIVE_FORCING_STATE)
+
+    stored = list(stored_names)
+    expected = list(expected_names)
+    if stored == expected:
+        return stored
+    extra = [name for name in stored if name not in expected]
+    missing = [name for name in expected if name not in stored]
+    tolerated = set(ADVECTIVE_FORCING_STATE)
+    if (not extra and missing and set(missing) <= tolerated
+            and stored == [name for name in expected
+                           if name not in set(missing)]):
+        return stored
+    detail = []
+    if missing:
+        detail.append(f"the cache is missing {', '.join(missing)}")
+    if extra:
+        detail.append(f"the cache carries {', '.join(extra)}, "
+                      "which this configuration does not allocate")
+    raise PreparedCacheMismatchError(
+        "prepared cache state inventory differs from the active config: "
+        + "; ".join(detail)
+        + ".  Prepare the case again with this build, or run it under the "
+          "configuration the cache was prepared for.")
+
+
 def restore_prepared_cache(path, *, expected_identity, cfg, static,
                            allow_nested_without_lbc: bool = False
                            ) -> RestoredPreparedCache:
@@ -1502,10 +1554,9 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
     expected_state_names = [
         name for name in STATE_SERIALIZED_ATTRS
         if getattr(state, name, None) is not None]
-    if metadata["state_names"] != expected_state_names:
-        raise PreparedCacheMismatchError(
-            "prepared cache state inventory differs from the active config")
-    for name in expected_state_names:
+    stored_state_names = reconcile_cached_state_inventory(
+        metadata["state_names"], expected_state_names)
+    for name in stored_state_names:
         host = reader.read_array(f"state/{name}")
         target = getattr(state, name)
         if tuple(host.shape) != tuple(target.shape) or host.dtype != target.dtype:
@@ -1599,6 +1650,7 @@ __all__ = [
     "compare_prepared_identity", "effective_prepared_domain_config",
     "prepared_cache_identity",
     "prepared_domain_config_identity", "prepared_identity_refusal",
+    "reconcile_cached_state_inventory",
     "extend_prepared_cache", "restore_prepared_cache",
     "select_prepared_met_fields", "undelayed_identity_defaults",
     "write_prepared_cache",

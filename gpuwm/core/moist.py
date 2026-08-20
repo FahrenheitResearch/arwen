@@ -522,11 +522,34 @@ def _update_scalar_in_place(q, q0, tend, c1h, c2h, mu0, mu, dt_eff: float,
     kern(*args)
 
 
+def _capture_advective_qv_forcing(state: DomainState, tend, mu0) -> None:
+    """EXPORT the stage's pure advective qv rate as WRF ``RQVFTEN``.
+
+    ``tend`` is the WRF-coupled advective tendency of qv carrying an extra
+    ``1/msfty`` (``rk_update_scalar`` multiplies it back), so the
+    uncoupled kg kg-1 s-1 rate is ``tend * msfty / (c1h*mu0 + c2h)`` with
+    the TIME-T column mass -- the same reference mass
+    :func:`gpuwm.core.dycore.capture_advective_theta_forcing` divides by,
+    which is what makes the exported pair one rate set rather than two.
+
+    ``mu0`` is the (ny, nx) time-t column mass the caller already formed.
+    A no-op on a state with no advective-forcing consumer.
+    """
+    if getattr(state, "rqvften", None) is None:
+        return
+    rate = tend / (state.c1h[:, None, None] * mu0[None]
+                   + state.c2h[:, None, None])
+    if state.has_msf:
+        rate *= state.msft[None]
+    state.rqvften[...] = rate
+
+
 def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                           ru, rv, ww, dt_eff: float, final: bool,
                           apply_relax: bool = True,
                           physics_tendencies=None,
-                          fixed_tendencies=None) -> None:
+                          fixed_tendencies=None,
+                          export_advective_forcing: bool = False) -> None:
     """Advance qv/qc/qr one RK stage from their time-t copies (``*0``).
 
     Called by ``dycore.step`` after each stage's acoustic loop with that
@@ -557,6 +580,16 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
     relax rows additively, spec rows replacing the advective tendency;
     the spec rows are subsequently overwritten by
     ``apply_state_boundary_values`` exactly as in WRF.
+
+    ``export_advective_forcing`` (the dycore passes ``istage == 0``) writes
+    the qv half of the cumulus advective forcing pair, WRF's ``RQVFTEN``,
+    from the untouched flux divergence -- see
+    :func:`_capture_advective_qv_forcing`.  It is a SECOND hook site from
+    theta's, not a duplicate: theta advects with the RK stage reference
+    fluxes and qv with the acoustic time-averaged ones, so the two rates
+    are captured where their own fluxes are.  The final PD stage cannot
+    serve: its tendency is the advection of a source-folded scalar
+    (``_pd_fold_sources``), which is no longer pure advection.
     """
     nz, ny, nx = state.p.shape
     mu0 = state.mub2d + state.mup0                     # time-t column mass
@@ -669,6 +702,17 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                                    open_x=boundary_x, open_y=boundary_y,
                                    msf=state.msft, has_msf=state.has_msf,
                                    spec=boundary_forced)
+            if export_advective_forcing and name == "qv":
+                # WRF RQVFTEN.  The window is exactly here: ``tend`` holds
+                # the acoustic time-averaged flux divergence of qv and
+                # nothing else -- the msft multiply, the lateral spec/relax
+                # fold and the physics/fixed sources inside the fused
+                # update all come after, and the shared ``moist_rq_t``
+                # scratch is overwritten by qc on the very next iteration.
+                # Uncoupled by the same time-t column mass the theta
+                # export uses (dycore.capture_advective_theta_forcing), so
+                # the pair is one consistent rate set.
+                _capture_advective_qv_forcing(state, tend, mu0)
             held = held_lbc.get(name)
             # A lateral tendency landing in ``tend`` below would be scaled a
             # second time if the msf coupling waited for the fused update, so

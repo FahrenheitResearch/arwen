@@ -1311,25 +1311,26 @@ def test_cycle_selection_refuses_leapfrog_and_stale_active(tmp_path):
         stream._select_cycle(plan, backend, after_cycle=after)
 
 
-def test_a_delayed_child_stream_plan_refuses_at_plan_load(tmp_path):
-    """Task #205 flipped this pin.  This test used to run a full cycle
-    and assert the materialized experiment.toml and namelists PRESERVED
-    the delayed child start -- acceptance that ended at the activation
-    epoch with "REFL_10CM output is due but no microphysics-time field
-    is stashed".  The stream plan now refuses at load, before any cycle
-    spends anything; the materialization contract returns when delayed
-    activation gains its activation-epoch stash."""
-    with pytest.raises(ValueError, match="delayed nest activation"):
+def test_a_delayed_child_stream_plan_refuses_before_it_spends(tmp_path):
+    """Every stream leg runs the PREPARED-tree runner, which restores its
+    domains from caches and cannot bring one to life mid-run.  Task #205
+    fixed the activation-epoch REFL_10CM stash on the `gpuwm run` route;
+    this route still has no activation callback, so the plan refuses at
+    load -- before a cycle is fetched or prepared -- and says which door
+    does run it."""
+    with pytest.raises(ValueError) as caught:
         _make_plan(
             tmp_path, cycle_count=1, target_lead=1, delayed_child=True)
+    message = str(caught.value)
+    assert "gpuwm stream route does not implement delayed nest " \
+           "activation" in message
+    assert "`gpuwm run`" in message
 
 
-def test_child_start_at_first_leg_endpoint_is_refused(tmp_path):
-    """The leg-endpoint case now sits behind the categorical task #205
-    refusal: every delayed child refuses at plan load, endpoint
-    included.  The stream-side endpoint gate ("start before the first
-    one-hour stream leg ends") stays in the source for the day the
-    categorical refusal lifts."""
+def test_child_start_at_first_leg_endpoint_keeps_its_own_refusal(tmp_path):
+    """Ordering pin: the stream's own endpoint gate is more specific than
+    the route refusal below it, so a child starting AT the first leg's
+    end keeps the sentence about the checkpoint it would break."""
     plan = _make_plan(tmp_path, cycle_count=1, target_lead=1)
     source = plan.experiment_config
     source.write_text(
@@ -1340,7 +1341,7 @@ def test_child_start_at_first_leg_endpoint_is_refused(tmp_path):
             "start_time = 2026-07-23T01:00:00"),
         encoding="utf-8")
 
-    with pytest.raises(ValueError, match="delayed nest activation"):
+    with pytest.raises(ValueError, match="start before the first one-hour"):
         stream.load_stream_plan(plan.path)
 
 

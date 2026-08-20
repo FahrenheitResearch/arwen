@@ -44,6 +44,121 @@ pub struct DecodedCollection {
     pub direct: BTreeMap<DirectKey, DirectValue>,
     pub source_cycles: BTreeMap<TimeKey, NaiveDateTime>,
     pub grid_fingerprint: String,
+    /// Resolved hybrid A (Pa) / B coefficients for a
+    /// hybrid_sigma_pressure vertical: N+1 half-level interfaces or N
+    /// full-level values, top of the atmosphere first.  Empty on every
+    /// other vertical kind (`_DecodedCollection.hybrid_a/hybrid_b`).
+    pub hybrid_a: Vec<f64>,
+    pub hybrid_b: Vec<f64>,
+}
+
+/// `mapped_source._HYBRID_LITERAL_ABS_TOL` / `_REL_TOL`: pv rides IEEE
+/// f32 and literals are authored from the provider's published table of
+/// the same numbers, so print rounding separates them by well under
+/// 1e-3 Pa in A and 1e-6 in B — while a wrong-model ladder moves
+/// adjacent coefficients by tens of Pa.
+const HYBRID_LITERAL_ABS_TOL: f64 = 1e-3;
+const HYBRID_LITERAL_REL_TOL: f64 = 1e-6;
+
+/// `mapped_source._resolve_hybrid_coefficients`.
+fn resolve_hybrid_coefficients(
+    mapping: &Mapping,
+    nlevels: usize,
+    record_pv: &[f64],
+) -> Result<(Vec<f64>, Vec<f64>)> {
+    let literals = mapping.hybrid_literals()?;
+    if !record_pv.is_empty() {
+        if record_pv.len() % 2 != 0 {
+            return Err(frame_invalid(format!(
+                "pv coordinate list length {} is not an even A+B split",
+                record_pv.len()
+            )));
+        }
+        let half = record_pv.len() / 2;
+        if half != nlevels + 1 && half != nlevels {
+            return Err(frame_invalid(format!(
+                "hybrid coefficient count mismatch: the pv coordinate \
+                 octets carry {half} A and {half} B coefficients; \
+                 {nlevels} levels accept {} (half-level interfaces) or \
+                 {nlevels} (full levels)",
+                nlevels + 1
+            )));
+        }
+        let a_values = &record_pv[..half];
+        let b_values = &record_pv[half..];
+        if a_values
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+        {
+            return Err(frame_invalid(
+                "pv A coefficients must be finite and non-negative (Pa)",
+            ));
+        }
+        if b_values
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0 || *value > 1.0)
+        {
+            return Err(frame_invalid(
+                "pv B coefficients must be finite within [0, 1]",
+            ));
+        }
+        if let Some((literal_a, literal_b)) = literals {
+            for (label, declared, observed) in [
+                ("hybrid_a", &literal_a, a_values),
+                ("hybrid_b", &literal_b, b_values),
+            ] {
+                if declared.len() != observed.len() {
+                    return Err(frame_invalid(format!(
+                        "inline vertical.{label} declares {} coefficients \
+                         but the source's pv octets carry {}; the literals \
+                         disagree with the bytes",
+                        declared.len(),
+                        observed.len()
+                    )));
+                }
+                for (index, (lit, pv)) in
+                    declared.iter().zip(observed.iter()).enumerate()
+                {
+                    let tolerance =
+                        HYBRID_LITERAL_ABS_TOL + HYBRID_LITERAL_REL_TOL * pv.abs();
+                    if (lit - pv).abs() > tolerance {
+                        return Err(frame_invalid(format!(
+                            "inline vertical.{label} literals disagree with \
+                             the source's pv octets at index {index}: \
+                             literal {lit} vs pv {pv}"
+                        )));
+                    }
+                }
+            }
+        }
+        return Ok((a_values.to_vec(), b_values.to_vec()));
+    }
+    if let Some((literal_a, literal_b)) = literals {
+        let count = literal_a.len();
+        if count != nlevels + 1 && count != nlevels {
+            return Err(frame_invalid(format!(
+                "hybrid coefficient count mismatch: vertical.hybrid_a \
+                 declares {count} coefficients; {nlevels} levels accept \
+                 {} (half-level interfaces) or {nlevels} (full levels)",
+                nlevels + 1
+            )));
+        }
+        return Ok((literal_a, literal_b));
+    }
+    Err(frame_invalid(
+        "hybrid_sigma_pressure source supplies no A/B coefficients: the \
+         selected records carry no pv coordinate octets and the mapping \
+         declares no inline vertical.hybrid_a/hybrid_b literals",
+    ))
+}
+
+/// The literal-only resolution the NetCDF route uses (its bytes carry
+/// no pv channel).
+pub fn resolve_hybrid_literals_only(
+    mapping: &Mapping,
+    nlevels: usize,
+) -> Result<(Vec<f64>, Vec<f64>)> {
+    resolve_hybrid_coefficients(mapping, nlevels, &[])
 }
 
 /// `mapped_source._assemble_grib`.
@@ -184,6 +299,42 @@ pub fn assemble_grib(mapping: &Mapping, records: &[GribRecord]) -> Result<Decode
         chosen.expect("one level set")
     };
 
+    let (hybrid_a, hybrid_b) = if mapping.vertical_kind()? == "hybrid_sigma_pressure" {
+        // Every selected vertical-bearing record states the whole ladder
+        // in its pv octets; one source has one ladder, so disagreement
+        // is a mixed-source input, not a choice to make.
+        let mut pv_lists: BTreeSet<Vec<u64>> = BTreeSet::new();
+        let mut chosen_pv: Vec<f64> = Vec::new();
+        for ((_time, _member, name), group) in &matched {
+            if !mapping
+                .field(name)?
+                .target_axes()?
+                .iter()
+                .any(|axis| axis == "vertical")
+            {
+                continue;
+            }
+            for position in group {
+                let pv = &records[*position].coordinate_values;
+                pv_lists.insert(pv.iter().map(|value| value.to_bits()).collect());
+                if !pv.is_empty() {
+                    chosen_pv = pv.clone();
+                }
+            }
+        }
+        let nonempty = pv_lists.iter().filter(|list| !list.is_empty()).count();
+        if nonempty > 1 || (nonempty == 1 && pv_lists.len() > 1) {
+            return Err(frame_invalid(
+                "selected GRIB records do not share one pv coordinate \
+                 list; hybrid A/B coefficients must be identical across \
+                 the source",
+            ));
+        }
+        resolve_hybrid_coefficients(mapping, vertical_values.len(), &chosen_pv)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     // ONE TASK PER MAPPED FIELD.  Below this point every field is
     // independent work over disjoint slices of the same immutable
     // records: stack the group, resolve missing cells, convert units,
@@ -242,6 +393,8 @@ pub fn assemble_grib(mapping: &Mapping, records: &[GribRecord]) -> Result<Decode
         direct,
         source_cycles: cycles,
         grid_fingerprint,
+        hybrid_a,
+        hybrid_b,
     })
 }
 
@@ -726,4 +879,80 @@ pub fn rotate_grid_relative_winds(
         result.insert(key, value);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hybrid_mapping(literals: Option<(&str, &str)>) -> Mapping {
+        let vertical = match literals {
+            Some((a, b)) => format!(
+                r#""kind": "hybrid_sigma_pressure", "units": "1",
+                   "surface_pressure_field": "surface_pressure",
+                   "hybrid_a": {a}, "hybrid_b": {b}"#
+            ),
+            None => r#""kind": "hybrid_sigma_pressure", "units": "1",
+                       "surface_pressure_field": "surface_pressure""#
+                .to_owned(),
+        };
+        let text = format!(
+            r#"{{"schema": "rw-wps.mapping.v1", "name": "t", "format": "grib2",
+                "coordinates": {{"vertical": {{{vertical}}}}}, "fields": {{}}}}"#
+        );
+        let bytes = text.as_bytes().to_vec();
+        Mapping {
+            sha256: crate::digest::bytes_sha256(&bytes),
+            doc: crate::node::Node::parse(&bytes).unwrap(),
+            path: "<test>".to_owned(),
+        }
+    }
+
+    const PV: [f64; 8] = [0.0, 6000.0, 4000.0, 0.0, 0.0, 0.24, 0.7, 1.0];
+
+    #[test]
+    fn pv_octets_resolve_into_an_a_then_b_split() {
+        let mapping = hybrid_mapping(None);
+        let (a, b) = resolve_hybrid_coefficients(&mapping, 3, &PV).unwrap();
+        assert_eq!(a, vec![0.0, 6000.0, 4000.0, 0.0]);
+        assert_eq!(b, vec![0.0, 0.24, 0.7, 1.0]);
+    }
+
+    #[test]
+    fn literals_supply_the_ladder_when_the_bytes_carry_no_pv() {
+        let mapping = hybrid_mapping(Some((
+            "[0.0, 6000.0, 4000.0, 0.0]",
+            "[0.0, 0.24, 0.7, 1.0]",
+        )));
+        let (a, b) = resolve_hybrid_coefficients(&mapping, 3, &[]).unwrap();
+        assert_eq!(a, vec![0.0, 6000.0, 4000.0, 0.0]);
+        assert_eq!(b, vec![0.0, 0.24, 0.7, 1.0]);
+    }
+
+    #[test]
+    fn literals_disagreeing_with_pv_refuse_naming_the_index() {
+        let mapping = hybrid_mapping(Some((
+            "[0.0, 6100.0, 4000.0, 0.0]",
+            "[0.0, 0.24, 0.7, 1.0]",
+        )));
+        let refusal = resolve_hybrid_coefficients(&mapping, 3, &PV).unwrap_err();
+        assert!(refusal.message.contains("index 1"), "{}", refusal.message);
+    }
+
+    #[test]
+    fn no_pv_and_no_literals_refuses_naming_both_channels() {
+        let mapping = hybrid_mapping(None);
+        let refusal = resolve_hybrid_coefficients(&mapping, 3, &[]).unwrap_err();
+        assert!(refusal.message.contains("pv"), "{}", refusal.message);
+        assert!(refusal.message.contains("hybrid_a"), "{}", refusal.message);
+    }
+
+    #[test]
+    fn pv_half_count_is_held_to_the_declared_ladder() {
+        let mapping = hybrid_mapping(None);
+        let long_pv: Vec<f64> = (0..12).map(f64::from).collect();
+        let refusal = resolve_hybrid_coefficients(&mapping, 3, &long_pv).unwrap_err();
+        assert!(refusal.message.contains('6'), "{}", refusal.message);
+        assert!(refusal.message.contains('4'), "{}", refusal.message);
+    }
 }

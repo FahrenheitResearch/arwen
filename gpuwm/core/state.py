@@ -46,7 +46,8 @@ except Exception as _error:  # pragma: no cover - isolated subprocess
     cp = None
     _CUPY_UNAVAILABLE = _error
 
-from gpuwm.config import SASE_PBL_SCHEME, RunConfig
+from gpuwm.config import (
+    CUMULUS_ADVECTIVE_FORCING_SCHEMES, SASE_PBL_SCHEME, RunConfig)
 from gpuwm.core import constants as c
 from gpuwm.core.grid import BaseState, VerticalCoord, rebalance_hydrostatic
 # Single source for the SASE realizability floor (the e_sgs cold-start
@@ -426,6 +427,32 @@ class DomainState:
             # is impossible and re-zeroing silently drops one step of
             # retained heating on the first resumed trajectory.
             self.h_diabatic = zeros(nz, ny, nx)
+            # WRF RTHFTEN/RQVFTEN (Registry.EM_COMMON, the ``cu_physics``
+            # forcing pair): the PURE ADVECTIVE theta and vapour rates the
+            # dycore exports once per step for a cumulus scheme that reads
+            # them.  Uncoupled, K s-1 and kg kg-1 s-1 -- the same units and
+            # the same one-step lag as ``h_diabatic`` above, and written by
+            # the same kind of producer (RK stage 1 of step N, consumed by
+            # the physics call at the top of step N+1).
+            #
+            # Allocated only for the schemes that read them
+            # (CUMULUS_ADVECTIVE_FORCING_SCHEMES), so a Kain-Fritsch or
+            # cumulus-off run's device footprint is unchanged to the byte.
+            # ``None`` elsewhere, exactly like the dry branch's h_diabatic:
+            # the restart writer, the state hash and the health census all
+            # skip on None, so no existing inventory moves.
+            #
+            # RESTART: SERIALIZED, not rebuilt.  Nothing between a resume
+            # and the first post-resume cumulus call can refill them -- the
+            # producer is a dycore stage that has not run yet -- so a
+            # re-zeroed resume would hand the scheme one step of hard zeros
+            # in the middle of a trajectory.  That is the h_diabatic
+            # argument verbatim.
+            if cfg.cu_physics in CUMULUS_ADVECTIVE_FORCING_SCHEMES:
+                self.rthften = zeros(nz, ny, nx)
+                self.rqvften = zeros(nz, ny, nx)
+            else:
+                self.rthften = self.rqvften = None
             if cfg.mp_physics == 50:
                 # P3 one-category (Registry.EM_COMMON:3038).  Deliberately
                 # NOT folded into the tuple below: P3 has ONE ice category
@@ -590,6 +617,10 @@ class DomainState:
             self.qv = self.qc = self.qr = None
             self.qv0 = self.qc0 = self.qr0 = None
             self.h_diabatic = None
+            # A dry state runs no cumulus scheme (initialize_physics refuses
+            # cu_physics without moisture), so the advective forcing pair
+            # has no consumer here either.
+            self.rthften = self.rqvften = None
 
         # WRF two-time-level prognostic TKE (Registry.EM_COMMON:312,
         # ``state real tke ikj dyn_em 2 - r``), the km_opt=2 carrier.

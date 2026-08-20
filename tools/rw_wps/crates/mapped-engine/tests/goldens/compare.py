@@ -129,10 +129,21 @@ def main(argv: list[str] | None = None) -> int:
             expected_materialization["frame_count"],
             document["materialization"]["frame_count"],
         )
+        # The PORTABLE digest, not the raw one: the raw header quotes each
+        # field's absolute input paths and every derived field's array
+        # digest, and both of those are identities of the box rather than
+        # of the decode (a derived field's last bits come from the box's
+        # libm).  Comparing the raw one made this script fail on any
+        # machine but the recording one, with every decoded number right.
         compare(
-            "materialization.frame_header_sha256",
-            expected_materialization["frame_header_sha256"],
-            document["materialization"]["frame_header_sha256"],
+            "materialization.portable_rule",
+            expected_materialization.get("portable_rule"),
+            document["materialization"].get("portable_rule"),
+        )
+        compare(
+            "materialization.frame_header_sha256_portable",
+            expected_materialization["frame_header_sha256_portable"],
+            document["materialization"]["frame_header_sha256_portable"],
         )
 
     if differences:

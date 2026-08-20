@@ -214,7 +214,25 @@ def test_legacy_asymmetric_night_config_refuses_at_load_naming_everything():
     assert "ra_lw_physics 0" in message
     assert THOMPSON_PROFILE_ID in message           # the profile that did it
     assert "skin temperature" in message            # the physics
-    assert MORRISON_PROFILE_ID in message           # remedy 1: sane profile
+    # Remedy 1: a sane profile -- and one that is ROUTE-SAFE.
+    #
+    # This used to assert MORRISON_PROFILE_ID, and that was the defect
+    # (2026-08-20): a loaded config carries no forcing source, so this
+    # refusal cannot know which route will run it, and the example it
+    # named is refused by the native HRRR route for cu_physics=1.  A
+    # user who took it met a second refusal.  The example is computed
+    # now, and the property it must have is the one asserted here:
+    # every registered source's route admits it.
+    from gpuwm.domain_wizard import profile_route_blocker
+    from gpuwm.physics_menu import universally_admissible_profile
+    from gpuwm.source_adapters import source_adapters
+
+    example = universally_admissible_profile()
+    assert example is not None
+    assert example in message
+    for adapter in source_adapters():
+        assert profile_route_blocker(example, adapter.source_id) is None, (
+            adapter.source_id)
     assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK in message  # remedy 2: declare
 
 

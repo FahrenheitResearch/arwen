@@ -183,8 +183,8 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["schema"] == "gpuwm-runner-capabilities-v1"
     assert payload["supported_sources"] == [
         "20crv3", "20crv3-cf", "aifs", "aigefs", "aigfs",
-        "ecmwf-open-data", "era5", "gdas", "gefs", "gem-gdps", "gfs",
-        "hrrr", "hrrr-prs", "icon-eu", "rap", "rrfs"]
+        "ecmwf-open-data", "era5", "era5-l137", "gdas", "gefs",
+        "gem-gdps", "gfs", "hrrr", "hrrr-prs", "icon-eu", "rap", "rrfs"]
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
     assert payload["report_schema"] == runner.REPORT_SCHEMA
     assert payload["window"]["limit_policy"] \
@@ -1893,6 +1893,22 @@ def _preflight_fixture(fixture, *, physics_profile=runner.PHYSICS_PROFILE,
         history_interval_seconds=history_interval_seconds)
 
 
+def _preflight_fixture_with_proof_sha(fixture, proof_sha256: str):
+    """``_preflight_fixture`` with one digest replaced, nothing else."""
+
+    history_interval_seconds = load_experiment(
+        fixture.experiment).root.history_interval_s
+    return runner.preflight_prepared_forecast(
+        source=fixture.source, prepared_root=fixture.prepared,
+        proof_sha256=proof_sha256,
+        source_manifest_sha256=_sha256(fixture.source_manifest),
+        prepared_content_sha256=fixture.content_sha256,
+        experiment_config=fixture.experiment, wps_namelist=fixture.wps,
+        physics_profile=runner.PHYSICS_PROFILE,
+        run_seconds=fixture.run_seconds,
+        history_interval_seconds=history_interval_seconds)
+
+
 def test_preflight_accepts_exact_member_20crv3_mapped_direct_d01(
         tmp_path, monkeypatch):
     fixture = _prepared_fixture(tmp_path, "20crv3")
@@ -2450,6 +2466,94 @@ def test_preflight_accepts_exact_member_20crv3_mapped_hierarchy_d01(
     assert inputs.source_member == "072"
     assert inputs.export_source_receipt["mp_physics"] == 6
     runner._verify_inputs_unchanged(inputs)
+
+
+def _proof_content_sha(fixture) -> str:
+    """The field INSIDE proof.json, which is not the file's digest."""
+
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    content = proof["proof_content_sha256"]
+    assert content != _sha256(fixture.proof), (
+        "instrument blind: the content field and the file digest are "
+        "equal in this fixture, so the confusion cannot be reproduced")
+    return content
+
+
+def test_the_proof_content_field_passed_as_proof_sha256_is_named(tmp_path):
+    """The digest confusion the mapped route walks a reader into.
+
+    ``--proof-sha256`` wants the sha256 of the FILE ``proof.json``.  The
+    document carries a field spelled ``proof_content_sha256``, and a
+    reader with no printed command to paste finds that field, passes it,
+    and gets `ValueError: preparation proof SHA differs from
+    --proof-sha256` -- one sentence that names neither which digest is
+    wanted, nor what was given, nor that the value they read out of the
+    file can never match by construction.
+    """
+
+    fixture = _prepared_fixture(tmp_path, "20crv3")
+    content = _proof_content_sha(fixture)
+
+    with pytest.raises(runner.PreparationProofDigestMismatch) as refused:
+        _preflight_fixture_with_proof_sha(fixture, content)
+
+    message = str(refused.value)
+    assert "proof_content_sha256" in message
+    assert _sha256(fixture.proof) in message and content in message
+    assert "sha256 of the file" in message
+
+
+def test_a_digest_that_is_neither_says_it_is_neither(tmp_path):
+    """The other arm: a stale or mistyped digest is not the content one."""
+
+    fixture = _prepared_fixture(tmp_path, "20crv3")
+    _proof_content_sha(fixture)  # the fixture really carries the field
+
+    with pytest.raises(runner.PreparationProofDigestMismatch) as refused:
+        _preflight_fixture_with_proof_sha(fixture, "0" * 64)
+
+    message = str(refused.value)
+    assert "neither" in message
+    assert _sha256(fixture.proof) in message and "0" * 64 in message
+
+
+def test_the_forecast_door_refuses_the_content_sha_without_a_traceback(
+        tmp_path, monkeypatch, capsys):
+    """Through main(): a refusal, an exit code, and no work started.
+
+    A traceback where a user can land is a defect, and this one landed
+    after the door had already claimed an output directory.
+    """
+
+    fixture = _prepared_fixture(tmp_path, "20crv3", physics_profile=None)
+    content = _proof_content_sha(fixture)
+
+    def never(*args, **kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("execution started on a refused preparation")
+
+    monkeypatch.setattr(runner, "run_prepared_forecast", never)
+    outdir = tmp_path / "outdir"
+    rc = runner.main([
+        "--source", "20crv3",
+        "--prepared-root", str(fixture.prepared),
+        "--proof-sha256", content,
+        "--source-manifest-sha256", _sha256(fixture.source_manifest),
+        "--prepared-content-sha256", fixture.content_sha256,
+        "--experiment-config", str(fixture.experiment),
+        "--wps-namelist", str(fixture.wps),
+        "--io-mode", "history",
+        "--outdir", str(outdir),
+    ])
+    captured = capsys.readouterr()
+
+    assert rc == 2
+    assert "Traceback" not in captured.err
+    assert "--proof-sha256 refused" in captured.err
+    assert "proof_content_sha256" in captured.err
+    assert _sha256(fixture.proof) in captured.err and content in captured.err
+    # Refused before any directory was claimed: a mistyped digest must
+    # not leave a run directory behind to clean up.
+    assert not outdir.exists()
 
 
 def test_20crv3_preflight_rejects_stale_mapped_proof_content_hash(
@@ -3089,7 +3193,7 @@ def test_preflight_rejects_wrong_source_adapter_even_when_bundle_is_self_consist
 def test_preflight_rejects_pinned_proof_drift_before_cache_restore(
         tmp_path):
     fixture = _prepared_fixture(tmp_path, "gfs")
-    with pytest.raises(ValueError, match="proof SHA differs"):
+    with pytest.raises(ValueError, match=r"--proof-sha256 refused"):
         runner.preflight_prepared_forecast(
             source="gfs", prepared_root=fixture.prepared,
             proof_sha256="0" * 64,

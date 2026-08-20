@@ -29,6 +29,8 @@ import numpy as np
 
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import DTYPE
+from gpuwm.physics_vertical_contract import (
+    outside_vertical_bounds, refuse_vertical_levels)
 
 _TPB = 128
 
@@ -69,15 +71,16 @@ def launch_myj_pbl(columns, surface, state, tke, outputs, *,
     """
     shape = surface["psfc"].shape
     nz = int(columns["dz"].shape[0])
-    if nz > MYJ_MAX_COLUMN_LEVELS:
-        raise ValueError(
-            f"the MYJ PBL kernel holds at most {MYJ_MAX_COLUMN_LEVELS} "
-            f"levels per column (MYJ_KMAX in kernels/myjpbl.cu), got {nz}; "
-            "raise the define and re-measure rather than truncating")
-    if nz < MYJ_MIN_COLUMN_LEVELS:
-        raise ValueError(
-            f"the MYJ PBL needs at least {MYJ_MIN_COLUMN_LEVELS} levels: "
-            "its TKE tridiagonal solve has no interior rows below that")
+    bounds = (MYJ_MIN_COLUMN_LEVELS, MYJ_MAX_COLUMN_LEVELS)
+    if outside_vertical_bounds(nz, bounds):
+        raise refuse_vertical_levels(
+            "MYJ PBL", bounds, nz,
+            breakage=(
+                "the kernel holds at most "
+                f"{MYJ_MAX_COLUMN_LEVELS} levels per column (MYJ_KMAX in "
+                "kernels/myjpbl.cu) -- raise the define and re-measure "
+                "rather than truncating -- and below the floor its TKE "
+                "tridiagonal solve has no interior rows."))
     column_arrays = []
     for name in _COLUMN_INPUTS:
         array = columns.get(name)

@@ -80,8 +80,25 @@ because the rule is about specialized *data* reaching generic code.
 
 Usage
 -----
-    python tools/check_case_token_leakage.py <root> [<root> ...]
-    python tools/check_case_token_leakage.py <root> --emit-baseline
+    python tools/check_case_token_leakage.py <path> [<path> ...]
+    python tools/check_case_token_leakage.py <path> --emit-baseline
+
+An argument is a path to scan, NOT a root the zones are spelled against.
+Every zone above is relative to a REPOSITORY root, so each argument is
+resolved by walking up to the nearest directory that actually holds one of
+them; the argument then narrows the scan to the zones inside it.  ``.`` and
+``gpuwm`` and ``gpuwm/core/dyn`` are all lawful, and all report paths -- and
+therefore baseline keys -- relative to the repository.
+
+THE BREAKAGE THAT NAMES THIS, measured at ``b858ad824``: the arguments used
+to be handed to :func:`scan_root` as roots.  With ``root=gpuwm`` the zone
+``gpuwm/core/`` resolved to ``gpuwm/gpuwm/core``, which does not exist, so
+``python tools/check_case_token_leakage.py gpuwm tools tests docs`` -- the
+line every lane and every close/verify wave ran by hand -- scanned ZERO
+files and printed the same clean bill of health a clean tree prints.  Months
+of hand-runs and reports quoted a scan of nothing as a green gate.  So the
+count of files scanned is now printed on every run, and a target that
+selects no zone is a refusal rather than a pass.
 
 Exits non-zero when an occurrence appears that the baseline does not name.
 Known pre-existing occurrences live in the sidecar baseline, each with a
@@ -98,6 +115,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Sequence
 
 # Tokens naming one case or one forcing source.  Matched case-insensitively.
 # Purely numeric tokens are only a violation when glued into a longer
@@ -742,11 +760,25 @@ def scan_root(root: Path) -> list[Violation]:
     set the whole-tree walk selected.
     """
 
+    return scan_zones(root, PROTECTED_ZONES)[0]
+
+
+def scan_zones(root: Path, zones: Sequence[str]
+               ) -> tuple[list[Violation], int]:
+    """``(violations, files scanned)`` over ``zones`` beneath ``root``.
+
+    The file count is returned rather than inferred because "no violation"
+    and "no file" print identically and are opposite verdicts: the CLI
+    reported the first for months while doing the second.
+    """
+
     found: list[Violation] = []
-    for zone in PROTECTED_ZONES:
+    scanned = 0
+    for zone in zones:
         target = root / zone
         if not zone.endswith("/"):
             if target.is_file():
+                scanned += 1
                 found.extend(scan_file(target, zone, root))
             continue
         if not target.is_dir():
@@ -754,8 +786,82 @@ def scan_root(root: Path) -> list[Violation]:
         for path in sorted(target.rglob("*")):
             if path.suffix not in {".py", ".rs", ".json"} or not path.is_file():
                 continue
+            scanned += 1
             found.extend(scan_file(path, path.relative_to(root).as_posix(), root))
-    return found
+    return found, scanned
+
+
+def zones_under(prefix: str | None) -> tuple[str, ...]:
+    """The protected zones a scan of ``prefix`` covers.
+
+    ``None`` -- the argument WAS the repository root -- is every zone.  A
+    prefix that contains zones selects those zones; a prefix that lives
+    inside a directory zone selects itself, so pointing the tool at one
+    subdirectory of the core scans that subdirectory rather than silently
+    widening back to the whole zone or narrowing to nothing.
+    """
+
+    if not prefix:
+        return PROTECTED_ZONES
+    inside = prefix.rstrip("/") + "/"
+    covered: list[str] = []
+    for zone in PROTECTED_ZONES:
+        if zone == prefix.rstrip("/") or zone.startswith(inside):
+            covered.append(zone)
+        elif zone.endswith("/") and inside.startswith(zone):
+            covered.append(inside)
+    return tuple(dict.fromkeys(covered))
+
+
+def _holds_a_zone(directory: Path) -> bool:
+    """Whether ``directory`` is a repository root the zones are spelled for."""
+
+    for zone in PROTECTED_ZONES:
+        try:
+            if (directory / zone).exists():
+                return True
+        except OSError:
+            # Same reason the walk is confined to the zones: an unreadable
+            # reparse point on the way past must not decide this answer.
+            continue
+    return False
+
+
+def resolve_target(target: Path) -> tuple[Path, str | None] | None:
+    """``(repository root, subtree prefix)`` for one CLI argument.
+
+    ``None`` when no directory at or above ``target`` holds a protected
+    zone -- there is nothing this gate can say about such a path, and
+    saying "clean" about it is the defect this function exists to close.
+
+    The root is the REPOSITORY, never the argument, because every baseline
+    key is a repository-relative path: a scan rooted at ``gpuwm`` would
+    report ``core/dyn.py`` and match no baseline entry even if it did look
+    at the file.
+    """
+
+    resolved = Path(target).resolve()
+    candidate = resolved if resolved.is_dir() else resolved.parent
+    while True:
+        if _holds_a_zone(candidate):
+            if candidate == resolved:
+                return candidate, None
+            return candidate, resolved.relative_to(candidate).as_posix()
+        if candidate.parent == candidate:
+            return None
+        candidate = candidate.parent
+
+
+def target_refusal(target: Path) -> str:
+    """Why a target this gate cannot scan is refused, and what to pass."""
+
+    return (
+        f"{target}: nothing to scan. No directory at or above it holds any "
+        f"of the {len(PROTECTED_ZONES)} protected zones, so this run would "
+        "examine zero files -- and a zero-file scan prints exactly what a "
+        "clean tree prints, which is how a case token in the numerical core "
+        "reads green for months. Pass the repository root, or a path inside "
+        "it: python tools/check_case_token_leakage.py .")
 
 
 def partition(
@@ -772,7 +878,11 @@ def partition(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("roots", nargs="+", type=Path)
+    parser.add_argument(
+        "roots", nargs="+", type=Path, metavar="PATH",
+        help="a repository root, or any path inside one; the zones are "
+             "spelled against the repository, so the repository is found "
+             "by walking up from what you pass")
     parser.add_argument("--show-baseline", action="store_true")
     parser.add_argument(
         "--emit-baseline",
@@ -784,8 +894,30 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     found: list[Violation] = []
-    for root in args.roots:
-        found.extend(scan_root(root.resolve()))
+    scanned = 0
+    zone_count = 0
+    for target in args.roots:
+        resolved = resolve_target(target)
+        if resolved is None:
+            print(target_refusal(target), file=sys.stderr)
+            return 2
+        root, prefix = resolved
+        zones = zones_under(prefix)
+        violations, files = scan_zones(root, zones)
+        found.extend(violations)
+        scanned += files
+        zone_count += len(zones)
+
+    if scanned == 0:
+        print(
+            f"{' '.join(str(t) for t in args.roots)}: scanned 0 file(s) "
+            f"across {zone_count} selected zone(s). Every protected zone "
+            "the arguments selected is absent from this tree, so this run "
+            "would report a clean bill of health without reading anything. "
+            "Pass the repository root: "
+            "python tools/check_case_token_leakage.py .",
+            file=sys.stderr)
+        return 2
 
     if args.emit_baseline:
         skeleton = {
@@ -814,7 +946,8 @@ def main(argv: list[str] | None = None) -> int:
         print()
 
     if new:
-        print(f"case/source token in a generic position ({len(new)}):")
+        print(f"case/source token in a generic position ({len(new)} of "
+              f"{scanned} file(s) scanned in {zone_count} protected zone(s)):")
         for violation in new:
             print(f"  {violation}")
             print(f"      key: {violation.key}")
@@ -828,7 +961,8 @@ def main(argv: list[str] | None = None) -> int:
     debt = sum(1 for v in suppressed if reason_is_debt(BASELINE[v.key]))
     print(
         f"no NEW case/source token in a generic position "
-        f"({len(suppressed)} known occurrence(s) suppressed; "
+        f"(scanned {scanned} file(s) in {zone_count} protected zone(s); "
+        f"{len(suppressed)} known occurrence(s) suppressed; "
         f"{debt} of them carried as unretired violations)"
     )
     return 0

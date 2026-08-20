@@ -508,6 +508,7 @@ def test_the_runtime_tree_history_frame_consumes_the_mp28_refl_handoff():
     from types import SimpleNamespace
 
     from gpuwm import runtime
+    from gpuwm.core import refl
 
     field = np.zeros((2, 3, 4), dtype=np.float32)
     submitted = []
@@ -518,9 +519,14 @@ def test_the_runtime_tree_history_frame_consumes_the_mp28_refl_handoff():
             submitted.append((ticks, refl_field))
 
     class _Refl:
-        @staticmethod
-        def consume_refl_10cm(state):
-            return field
+        # The stub MIRRORS gpuwm.core.refl: only the consumer is faked
+        # (that is what this pin measures).  The due predicate and the
+        # domain-start reader are the real ones, so a stub cannot make
+        # the site look reachable by answering a question differently
+        # from the module it stands in for.
+        consume_refl_10cm = staticmethod(lambda state: field)
+        refl_10cm_stash_is_due = staticmethod(refl.refl_10cm_stash_is_due)
+        domain_start_ticks_of = staticmethod(refl.domain_start_ticks_of)
 
     class _UhDiag:
         @staticmethod
@@ -603,14 +609,17 @@ def test_the_nest_history_refl_handoff_admits_28():
     """
     from types import SimpleNamespace
 
+    from gpuwm.core import refl
     from gpuwm.verify.cases import nest_ideal_common
 
     consumed = []
 
     class _Refl:
-        @staticmethod
-        def consume_refl_10cm(state):
-            consumed.append(state)
+        # Mirrors gpuwm.core.refl; only the consumer is faked.  See the
+        # tree-history pin above for why the predicate stays real.
+        consume_refl_10cm = staticmethod(consumed.append)
+        refl_10cm_stash_is_due = staticmethod(refl.refl_10cm_stash_is_due)
+        domain_start_ticks_of = staticmethod(refl.domain_start_ticks_of)
 
     node = SimpleNamespace(
         cfg=SimpleNamespace(run=SimpleNamespace(mp_physics=28), grid_id=1),

@@ -165,6 +165,17 @@ pub struct VerticalCoordinate {
     pub positive: Option<PositiveDirection>,
     #[serde(default)]
     pub levels: Vec<f64>,
+    /// Inline hybrid A coefficients in Pa (declared-data fallback; the
+    /// primary channel is the GRIB pv coordinate octets read at decode).
+    #[serde(default)]
+    pub hybrid_a: Vec<f64>,
+    /// Inline hybrid B coefficients (dimensionless, within [0, 1]).
+    #[serde(default)]
+    pub hybrid_b: Vec<f64>,
+    /// RETIRED: a coefficient vector cannot be a mapping field (fields
+    /// require y/x axes), so these names validated data no code could
+    /// consume.  Kept deserializable so validation refuses them by name
+    /// instead of a bare unknown-key parse error.
     #[serde(default)]
     pub hybrid_a_field: Option<String>,
     #[serde(default)]
@@ -980,25 +991,88 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
         mapping.coordinates.vertical.kind,
         VerticalKind::HybridSigmaPressure
     ) {
+        let vertical = &mapping.coordinates.vertical;
+        if vertical.surface_pressure_field.is_none() {
+            error(
+                "incomplete_hybrid_coordinate",
+                None,
+                "vertical.surface_pressure_field is required for hybrid_sigma_pressure"
+                    .to_owned(),
+            );
+        }
         for (label, value) in [
-            (
-                "hybrid_a_field",
-                &mapping.coordinates.vertical.hybrid_a_field,
-            ),
-            (
-                "hybrid_b_field",
-                &mapping.coordinates.vertical.hybrid_b_field,
-            ),
-            (
-                "surface_pressure_field",
-                &mapping.coordinates.vertical.surface_pressure_field,
-            ),
+            ("hybrid_a_field", &vertical.hybrid_a_field),
+            ("hybrid_b_field", &vertical.hybrid_b_field),
         ] {
-            if value.is_none() {
+            if value.is_some() {
                 error(
-                    "incomplete_hybrid_coordinate",
+                    "retired_hybrid_coefficient_field",
                     None,
-                    format!("vertical.{label} is required for hybrid_sigma_pressure"),
+                    format!(
+                        "vertical.{label} is retired: hybrid A/B coefficients \
+                         arrive in the GRIB pv coordinate octets or as inline \
+                         vertical.hybrid_a/hybrid_b literal arrays; a field \
+                         name cannot carry a coefficient vector"
+                    ),
+                );
+            }
+        }
+        if vertical.hybrid_a.is_empty() != vertical.hybrid_b.is_empty() {
+            error(
+                "hybrid_literal_pairing",
+                None,
+                "vertical.hybrid_a and vertical.hybrid_b must be declared \
+                 together; one half of a coefficient pair prices no pressure"
+                    .to_owned(),
+            );
+        } else if !vertical.hybrid_a.is_empty() {
+            if vertical.hybrid_a.len() != vertical.hybrid_b.len() {
+                error(
+                    "hybrid_literal_pairing",
+                    None,
+                    format!(
+                        "vertical.hybrid_a and vertical.hybrid_b must have the \
+                         same length; got {} and {}",
+                        vertical.hybrid_a.len(),
+                        vertical.hybrid_b.len()
+                    ),
+                );
+            }
+            if vertical
+                .hybrid_a
+                .iter()
+                .any(|value| !value.is_finite() || *value < 0.0)
+            {
+                error(
+                    "hybrid_literal_range",
+                    None,
+                    "vertical.hybrid_a must be finite and non-negative (Pa)".to_owned(),
+                );
+            }
+            if vertical
+                .hybrid_b
+                .iter()
+                .any(|value| !value.is_finite() || *value < 0.0 || *value > 1.0)
+            {
+                error(
+                    "hybrid_literal_range",
+                    None,
+                    "vertical.hybrid_b must be finite within [0, 1]".to_owned(),
+                );
+            }
+            let nlevels = vertical.levels.len();
+            let count = vertical.hybrid_a.len();
+            if nlevels > 0 && count != nlevels + 1 && count != nlevels {
+                error(
+                    "hybrid_literal_count",
+                    None,
+                    format!(
+                        "hybrid coefficient count mismatch: vertical.hybrid_a \
+                         declares {count} coefficients; {nlevels} declared \
+                         levels accept {} (half-level interfaces) or {nlevels} \
+                         (full levels)",
+                        nlevels + 1
+                    ),
                 );
             }
         }
@@ -2336,6 +2410,8 @@ pub fn mapping_template(format: SourceFormat) -> NativeMapping {
                 },
                 positive: Some(PositiveDirection::Down),
                 levels: Vec::new(),
+                hybrid_a: Vec::new(),
+                hybrid_b: Vec::new(),
                 hybrid_a_field: None,
                 hybrid_b_field: None,
                 surface_pressure_field: None,

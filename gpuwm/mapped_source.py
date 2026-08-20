@@ -45,11 +45,13 @@ from gpuwm.ingest.soil_contract import (
     MAPPED_SOIL_TEMPERATURE,
 )
 from gpuwm.source_frame import (
+    PORTABLE_HEADER_RULE,
     FieldDescriptor,
     GridDescriptor,
     SourceFrameHeader,
     TimeDescriptor,
     VerticalDescriptor,
+    portable_frame_header_sha256,
     validate_source_frame,
 )
 
@@ -112,6 +114,17 @@ _DERIVATION_ARGUMENTS = {
     # join a node ladder whose surface sample the provider publishes
     # only for temperature.
     "soil_surface_node_from_shallowest": ({"source"}, set()),
+    # 3-D geopotential height built hydrostatically from surface
+    # geopotential and virtual temperature up the hybrid half-level
+    # pressure ladder -- ECMWF's own model-level build-up (their z is
+    # not archivable on all 137 levels; the provider derives it the
+    # same way).  Surface pressure rides in through the vertical
+    # coordinate's declared surface_pressure_field, the same channel
+    # the hybrid pressure derivation consumes.
+    "geopotential_height_hydrostatic": (
+        {"temperature", "specific_humidity", "surface_geopotential_height"},
+        {"gravity_m_s2"},
+    ),
 }
 _CANONICAL_REQUIREMENTS = {
     "air_temperature": (("vertical", "y", "x"), "mass", "K"),
@@ -763,6 +776,7 @@ def load_mapping(
         "mapping.coordinates.vertical",
         allowed={
             "kind", "selector", "units", "positive", "levels",
+            "hybrid_a", "hybrid_b",
             "hybrid_a_field", "hybrid_b_field", "surface_pressure_field",
         },
         required={"kind", "units"},
@@ -786,17 +800,81 @@ def load_mapping(
     if len(set(numeric_levels)) != len(numeric_levels):
         raise ValueError("vertical.levels must be a unique numeric list")
     if vertical["kind"] == "hybrid_sigma_pressure":
-        missing = [
-            name for name in (
-                "hybrid_a_field", "hybrid_b_field", "surface_pressure_field"
-            ) if not vertical.get(name)
+        # The coefficient channels are the GRIB pv coordinate octets
+        # (primary, read from the bytes at decode) and inline
+        # vertical.hybrid_a/hybrid_b literal arrays (the declared-data
+        # fallback that keeps pv-less providers on the table-work
+        # path).  The retired *_field spellings named mapping fields,
+        # and a coefficient VECTOR cannot be a mapping field (fields
+        # require y/x axes), so those keys validated data no code
+        # could ever consume — the L137 proof lane's gap G1.
+        for legacy in ("hybrid_a_field", "hybrid_b_field"):
+            if vertical.get(legacy) is not None:
+                raise ValueError(
+                    f"vertical.{legacy} is retired: hybrid A/B "
+                    "coefficients arrive in the GRIB pv coordinate "
+                    "octets or as inline vertical.hybrid_a/hybrid_b "
+                    "literal arrays; a field name cannot carry a "
+                    "coefficient vector"
+                )
+        if not vertical.get("surface_pressure_field"):
+            raise ValueError(
+                "hybrid vertical coordinate is incomplete: "
+                "['surface_pressure_field']"
+            )
+        _string(
+            vertical["surface_pressure_field"],
+            "vertical.surface_pressure_field",
+        )
+        declared_literals = [
+            name for name in ("hybrid_a", "hybrid_b")
+            if vertical.get(name) is not None
         ]
-        if missing:
-            raise ValueError(f"hybrid vertical coordinate is incomplete: {missing}")
-        for name in (
-            "hybrid_a_field", "hybrid_b_field", "surface_pressure_field"
-        ):
-            _string(vertical[name], f"vertical.{name}")
+        if len(declared_literals) == 1:
+            raise ValueError(
+                "vertical.hybrid_a and vertical.hybrid_b must be "
+                "declared together; one half of a coefficient pair "
+                "prices no pressure"
+            )
+        if declared_literals:
+            arrays = {}
+            for name in ("hybrid_a", "hybrid_b"):
+                raw = vertical[name]
+                if not isinstance(raw, list) or not raw:
+                    raise ValueError(
+                        f"vertical.{name} must be a non-empty numeric list"
+                    )
+                arrays[name] = [
+                    _number(value, f"vertical.{name}[{index}]")
+                    for index, value in enumerate(raw)
+                ]
+            if len(arrays["hybrid_a"]) != len(arrays["hybrid_b"]):
+                raise ValueError(
+                    "vertical.hybrid_a and vertical.hybrid_b must have "
+                    f"the same length; got {len(arrays['hybrid_a'])} and "
+                    f"{len(arrays['hybrid_b'])}"
+                )
+            if any(not math.isfinite(value) or value < 0.0
+                   for value in arrays["hybrid_a"]):
+                raise ValueError(
+                    "vertical.hybrid_a must be finite and non-negative (Pa)"
+                )
+            if any(not math.isfinite(value) or not 0.0 <= value <= 1.0
+                   for value in arrays["hybrid_b"]):
+                raise ValueError(
+                    "vertical.hybrid_b must be finite within [0, 1]"
+                )
+            if numeric_levels:
+                count = len(arrays["hybrid_a"])
+                nlevels = len(numeric_levels)
+                if count not in (nlevels + 1, nlevels):
+                    raise ValueError(
+                        "hybrid coefficient count mismatch: "
+                        f"vertical.hybrid_a declares {count} "
+                        f"coefficients; {nlevels} declared levels accept "
+                        f"{nlevels + 1} (half-level interfaces) or "
+                        f"{nlevels} (full levels)"
+                    )
 
     time = _object(
         coordinates["time"],
@@ -1039,6 +1117,21 @@ def load_mapping(
                     )
                 netcdf_selectors[identity] = (field_name, index)
 
+    if vertical["kind"] == "hybrid_sigma_pressure":
+        pressure_field = str(vertical["surface_pressure_field"])
+        if pressure_field not in fields:
+            raise ValueError(
+                f"vertical.surface_pressure_field names {pressure_field!r}, "
+                "which mapping.fields does not declare"
+            )
+        pressure_units = fields[pressure_field]["units"]["target"]
+        if pressure_units != "Pa":
+            raise ValueError(
+                f"vertical.surface_pressure_field {pressure_field!r} must "
+                f"resolve in Pa; fields.{pressure_field}.units.target is "
+                f"{pressure_units!r}"
+            )
+
     derivations = mapping.get("derivations", [])
     if not isinstance(derivations, list):
         raise TypeError("mapping.derivations must be a list")
@@ -1052,6 +1145,7 @@ def load_mapping(
                 "name", "operation", "source", "u", "v", "relative_humidity",
                 "temperature", "pressure", "dewpoint", "geopotential", "gravity_m_s2",
                 "layer_mass", "layer_bounds_m", "water_density_kg_m3",
+                "specific_humidity", "surface_geopotential_height",
             },
             required={"name", "operation"},
         )
@@ -1100,9 +1194,17 @@ def load_mapping(
                     f"derivations[{index}].gravity_m_s2 must be finite and positive"
                 )
         if operation == "pressure_from_vertical_coordinate" \
-                and vertical["kind"] != "pressure":
+                and vertical["kind"] not in {"pressure", "hybrid_sigma_pressure"}:
             raise ValueError(
-                "pressure_from_vertical_coordinate requires a pressure vertical coordinate"
+                "pressure_from_vertical_coordinate requires a pressure or "
+                "hybrid_sigma_pressure vertical coordinate"
+            )
+        if operation == "geopotential_height_hydrostatic" \
+                and vertical["kind"] != "hybrid_sigma_pressure":
+            raise ValueError(
+                "geopotential_height_hydrostatic integrates the hybrid "
+                "half-level ladder, which requires a hybrid_sigma_pressure "
+                "vertical coordinate"
             )
         if operation == "volumetric_soil_moisture_from_layer_mass":
             bounds = derivation.get("layer_bounds_m")
@@ -1507,6 +1609,11 @@ class _DecodedCollection:
     direct: Mapping[tuple[datetime, str | None, str], _DirectValue]
     source_cycles: Mapping[tuple[datetime, str | None], datetime]
     grid_fingerprint: str
+    #: Resolved hybrid A (Pa) / B coefficients for a hybrid_sigma_pressure
+    #: vertical: N+1 half-level interfaces or N full-level values, top of
+    #: the atmosphere first.  None on every other vertical kind.
+    hybrid_a: np.ndarray | None = None
+    hybrid_b: np.ndarray | None = None
 
 
 #: How a selector was satisfied.  Reported, never inferred silently.
@@ -2504,6 +2611,16 @@ def _decode_netcdf(mapping: Mapping[str, object], files: Sequence[Path]) -> _Dec
             np.ascontiguousarray(reference_latitude).tobytes()
             + np.ascontiguousarray(reference_longitude).tobytes()
         ).hexdigest()
+    hybrid_a = hybrid_b = None
+    if str(mapping["coordinates"]["vertical"].get("kind")) == "hybrid_sigma_pressure" \
+            and reference_vertical.size:
+        # NetCDF bytes carry no pv channel; a hybrid NetCDF source rides
+        # entirely on the mapping's inline literals.
+        hybrid_a, hybrid_b = _resolve_hybrid_coefficients(
+            mapping["coordinates"]["vertical"],
+            int(reference_vertical.size),
+            record_pv=(),
+        )
     return _DecodedCollection(
         reference_latitude,
         reference_longitude,
@@ -2511,6 +2628,8 @@ def _decode_netcdf(mapping: Mapping[str, object], files: Sequence[Path]) -> _Dec
         MappingProxyType(direct),
         MappingProxyType(cycles),
         grid_fingerprint,
+        hybrid_a=hybrid_a,
+        hybrid_b=hybrid_b,
     )
 
 
@@ -2539,6 +2658,12 @@ class _GribRecord:
     latitude: np.ndarray
     longitude: np.ndarray
     grid_fingerprint: str
+    #: Section 4's optional coordinate list (the pv octets): half-level
+    #: A (Pa) then B hybrid coefficients on model-level records.  Empty
+    #: when the message carries none; always empty for GRIB1, whose
+    #: vertical-coordinate parameters live in the GDS this route does
+    #: not read (inline mapping literals cover GRIB1 hybrid sources).
+    coordinate_values: tuple[float, ...] = ()
 
 
 def _embedded_valid_time(
@@ -2723,13 +2848,27 @@ def _build_grib2_tools() -> tuple[Path, Path]:
             "cargo", "build", "--locked", "--offline", "--release",
             "--bin", "grib2_inventory", "--bin", "grib2_dump",
         ]
-        completed = subprocess.run(
-            command, cwd=crate, text=True, capture_output=True, check=False
-        )
+        try:
+            completed = subprocess.run(
+                command, cwd=crate, text=True, capture_output=True,
+                check=False
+            )
+        except OSError:
+            raise bridges.BridgeBuildError(
+                bridges.cargo_missing_refusal(
+                    "grib2_inventory/grib2_dump", bridges.CRATE_RELATIVE),
+                failure_class="cargo-not-installed") from None
         if completed.returncode:
-            detail = (completed.stderr or completed.stdout).strip()
-            raise RuntimeError(
-                f"failed to build vendored GRIB2 tools: {detail}")
+            # Same classifier as the GRIB1 route -- one table, two call
+            # sites, so a newly-observed build failure is named
+            # identically wherever it is met.
+            detail = "\n".join(
+                part for part in (completed.stdout, completed.stderr) if part)
+            raise bridges.BridgeBuildError(
+                bridges.cargo_build_refusal(
+                    "grib2_inventory/grib2_dump", bridges.CRATE_RELATIVE,
+                    returncode=completed.returncode, output=detail),
+                failure_class=bridges.classify_cargo_failure(detail)[0])
         suffix = ".exe" if os.name == "nt" else ""
         inventory = crate / "target" / "release" / f"grib2_inventory{suffix}"
         dump = crate / "target" / "release" / f"grib2_dump{suffix}"
@@ -2802,6 +2941,39 @@ _ROTATED_WIND_PAIRS = (
     ("eastward_wind", "northward_wind"),
     ("eastward_wind_10m", "northward_wind_10m"),
 )
+
+def libm_dependent_fields(mapping: Mapping[str, object]) -> frozenset[str]:
+    """The fields this mapping produces through a transcendental.
+
+    Two productions in this engine call ``exp``/``sin``/``cos``, and a
+    transcendental's last bit is the box's libm, not the decode's answer:
+
+    * a field with a declared ``derivation`` (the humidity relations);
+    * both wind pairs, when the declaration says the source publishes
+      grid-relative components and the engine rotates them.
+
+    Everything else is integer unpack plus IEEE add/multiply/divide, which
+    is bit-reproducible on any conforming machine -- MEASURED 2026-08-20,
+    Windows desktop against weather-node-1: identical to the byte on every
+    array but these.
+
+    Read from the mapping's own declarations, so a new model is table
+    work: nothing here names a source.
+    """
+
+    fields = mapping.get("fields", {})
+    names = {
+        name for name, specification in fields.items()
+        if isinstance(specification, dict)
+        and isinstance(specification.get("derivation"), str)
+        and specification["derivation"]
+    }
+    declaration = _mapping_grid_declaration(mapping)
+    if declaration.get("wind_basis") == "grid_relative_with_rotation":
+        for pair in _ROTATED_WIND_PAIRS:
+            names.update(name for name in pair if name in fields)
+    return frozenset(names)
+
 
 _LAMBERT_PARAMETER_KEYS = frozenset({
     "latin1", "latin2", "lov", "lat1", "lon1", "dx_m", "dy_m",
@@ -3040,6 +3212,13 @@ _GRIB2_INVENTORY_REQUIRED_COLUMNS = frozenset({
     "gdt", "nx", "ny", "lat1", "lon1", "dx", "dy", "latin1",
     "latin2", "lov", "scan_mode", "shape_of_earth", "resolution_flags",
     "drt", "bitmap",
+    # Section 4's pv coordinate octets -- the hybrid A/B channel -- are
+    # deliberately NOT here.  They are required where they are the
+    # coordinate, which is :func:`_require_pv_where_hybrid` below, not on
+    # every inventory: a sea-surface-temperature record has no vertical
+    # coordinate to lose, and demanding pv of it made a stale
+    # grib2_inventory refuse a round trip that was never about hybrid
+    # levels at all.
 })
 _GRIB2_DUMP_REQUIRED_COLUMNS = frozenset({
     "index", "discipline", "category", "parameter",
@@ -3053,6 +3232,53 @@ _GRIB2_INVENTORY_DUMP_PARITY_COLUMNS = (
     "level_type", "level_value", "second_level_type", "second_level_value",
     "member", "pdt", "drt", "nx", "ny", "scan_mode", "bitmap",
 )
+
+
+#: GRIB2 code table 4.5 level types whose vertical coordinate IS the
+#: Section-4 pv octets -- the hybrid A/B coefficient pair a record's
+#: pressure is rebuilt from.  105 is the hybrid level ECMWF's L137
+#: ladder is published on; 118 and 119 are the hybrid-height and
+#: hybrid-pressure spellings WMO defines beside it.  A record on any of
+#: them has no vertical position at all without the coefficients.
+_GRIB2_HYBRID_LEVEL_TYPES = frozenset({105, 118, 119})
+
+
+def _require_pv_where_hybrid(
+    rows: Sequence[Mapping[str, str]], *, label: str
+) -> None:
+    """Refuse a HYBRID inventory whose decoder cannot state the pv octets.
+
+    The breakage this prevents is the L137 proof lane's gap G1: a
+    grib2_inventory built before the pv column decodes a hybrid source
+    into empty coefficient tuples, so every level lands at whatever the
+    fallback puts it at and nothing says a word.
+
+    It is asked of hybrid records ONLY, and that is the whole correction
+    landed on 2026-08-20.  ``pv`` was briefly a required column of every
+    GRIB2 inventory, which made a decoder without it refuse reads that
+    have no vertical coordinate to lose -- measured on the 2.5.1 battery,
+    where a sea-surface-temperature GRIB2 round trip failed with "missing
+    required columns ['pv']" about a field on a single surface level.  A
+    refusal has to name the breakage it prevents, and there is no hybrid
+    coefficient to lose on a record that has none.
+    """
+
+    if not rows or "pv" in rows[0]:
+        return
+    hybrid = sorted({
+        int(row["level_type"]) for row in rows
+        if int(row["level_type"]) in _GRIB2_HYBRID_LEVEL_TYPES})
+    if not hybrid:
+        return
+    raise ValueError(
+        f"{label} carries hybrid-level records (level_type "
+        + ", ".join(str(value) for value in hybrid)
+        + ") and states no 'pv' column, so the Section-4 hybrid A/B "
+          "coefficients cannot be read and those records have no vertical "
+          "coordinate.  The decoder that wrote this inventory predates the "
+          "pv octets: rebuild it (cargo build --release --manifest-path "
+          "tools/grib1_bridge/Cargo.toml)."
+    )
 
 
 def _parse_grib2_tsv(
@@ -3121,11 +3347,13 @@ def _grib2_inventory(source: Path, executable: Path) -> list[dict[str, str]]:
             f"{completed.returncode} without a diagnostic, which is "
             "about the tool, not the bytes")
     rows = [line for line in completed.stdout.splitlines() if not line.startswith("#")]
-    return _parse_grib2_tsv(
+    parsed = _parse_grib2_tsv(
         rows,
         required=_GRIB2_INVENTORY_REQUIRED_COLUMNS,
         label="GRIB2 inventory",
     )
+    _require_pv_where_hybrid(parsed, label=f"GRIB2 inventory for {source}")
+    return parsed
 
 
 def _regular_latlon_frame(
@@ -3171,6 +3399,23 @@ def _regular_latlon_frame(
         latitude = latitude[::-1].copy()
         values = values[::-1, :]
     return latitude, longitude, values.copy()
+
+
+def _coordinate_values(row: Mapping[str, str]) -> tuple[float, ...]:
+    """A record's Section-4 coordinate octets, or the empty tuple.
+
+    ``-`` is the decoder saying the record carries none.  An ABSENT
+    column is a decoder that cannot say either way, and
+    :func:`_require_pv_where_hybrid` has already refused that inventory
+    if any record needed the answer -- so reaching here without the
+    column means no record did, and the empty tuple is the truth rather
+    than a guess.
+    """
+
+    raw = row.get("pv", "-")
+    if raw == "-":
+        return ()
+    return tuple(float(value) for value in raw.split(","))
 
 
 def _grib2_records(
@@ -3284,6 +3529,7 @@ def _grib2_records(
                 time_semantics=(int(row["pdt"]),),
                 values=values, latitude=latitude, longitude=longitude,
                 grid_fingerprint=fingerprint,
+                coordinate_values=_coordinate_values(row),
             ))
         return tuple(result)
 
@@ -3460,6 +3706,108 @@ def _grib2_wanted_indices(
     return wanted
 
 
+#: Literal-vs-pv agreement tolerance.  The pv octets ride IEEE-754 f32
+#: (about 7 significant digits) and inline literals are authored from
+#: the provider's published table of the same numbers, so print
+#: rounding can separate them by well under 1e-3 Pa in A and 1e-6 in B
+#: -- while a wrong-model ladder moves adjacent coefficients by tens of
+#: Pa or whole percent.  abs 1e-3 + rel 1e-6 admits the former and
+#: names the latter.
+_HYBRID_LITERAL_ABS_TOL = 1e-3
+_HYBRID_LITERAL_REL_TOL = 1e-6
+
+
+def _resolve_hybrid_coefficients(
+    vertical: Mapping[str, object],
+    nlevels: int,
+    *,
+    record_pv: tuple[float, ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    """The one A/B ladder a hybrid decode runs on.
+
+    Primary channel: the records' pv coordinate octets (A half then B
+    half, the GRIB encoding).  Declared-data fallback: inline
+    ``vertical.hybrid_a``/``hybrid_b`` literal arrays, which keep
+    providers whose bytes carry no pv on the table-work path.  When
+    both exist they must agree; the bytes are then the values used.
+    Counts are held to nlevels+1 (half-level interfaces) or nlevels
+    (full levels).
+    """
+
+    literals: tuple[np.ndarray, np.ndarray] | None = None
+    if vertical.get("hybrid_a") is not None:
+        literals = (
+            np.asarray([float(value) for value in vertical["hybrid_a"]],
+                       dtype=np.float64),
+            np.asarray([float(value) for value in vertical["hybrid_b"]],
+                       dtype=np.float64),
+        )
+    if record_pv:
+        pv = np.asarray(record_pv, dtype=np.float64)
+        if pv.size % 2:
+            raise ValueError(
+                f"pv coordinate list length {pv.size} is not an even "
+                "A+B split"
+            )
+        half = pv.size // 2
+        if half not in (nlevels + 1, nlevels):
+            raise ValueError(
+                "hybrid coefficient count mismatch: the pv coordinate "
+                f"octets carry {half} A and {half} B coefficients; "
+                f"{nlevels} levels accept {nlevels + 1} (half-level "
+                f"interfaces) or {nlevels} (full levels)"
+            )
+        a_values, b_values = pv[:half], pv[half:]
+        if not np.isfinite(a_values).all() or np.any(a_values < 0.0):
+            raise ValueError(
+                "pv A coefficients must be finite and non-negative (Pa)"
+            )
+        if not np.isfinite(b_values).all() \
+                or np.any(b_values < 0.0) or np.any(b_values > 1.0):
+            raise ValueError(
+                "pv B coefficients must be finite within [0, 1]"
+            )
+        if literals is not None:
+            for label, declared, observed in (
+                ("hybrid_a", literals[0], a_values),
+                ("hybrid_b", literals[1], b_values),
+            ):
+                if declared.size != observed.size:
+                    raise ValueError(
+                        f"inline vertical.{label} declares {declared.size} "
+                        "coefficients but the source's pv octets carry "
+                        f"{observed.size}; the literals disagree with the "
+                        "bytes"
+                    )
+                tolerance = _HYBRID_LITERAL_ABS_TOL \
+                    + _HYBRID_LITERAL_REL_TOL * np.abs(observed)
+                misfit = np.abs(declared - observed) > tolerance
+                if misfit.any():
+                    index = int(np.argmax(misfit))
+                    raise ValueError(
+                        f"inline vertical.{label} literals disagree with "
+                        f"the source's pv octets at index {index}: literal "
+                        f"{float(declared[index])!r} vs pv "
+                        f"{float(observed[index])!r}"
+                    )
+        return a_values, b_values
+    if literals is not None:
+        count = int(literals[0].size)
+        if count not in (nlevels + 1, nlevels):
+            raise ValueError(
+                "hybrid coefficient count mismatch: vertical.hybrid_a "
+                f"declares {count} coefficients; {nlevels} levels accept "
+                f"{nlevels + 1} (half-level interfaces) or {nlevels} "
+                "(full levels)"
+            )
+        return literals
+    raise ValueError(
+        "hybrid_sigma_pressure source supplies no A/B coefficients: the "
+        "selected records carry no pv coordinate octets and the mapping "
+        "declares no inline vertical.hybrid_a/hybrid_b literals"
+    )
+
+
 def _assemble_grib(
     mapping: Mapping[str, object], records: Sequence[_GribRecord]
 ) -> _DecodedCollection:
@@ -3538,6 +3886,30 @@ def _assemble_grib(
         if not level_sets or len(set(level_sets)) != 1:
             raise ValueError("GRIB atmospheric fields do not share one complete vertical inventory")
         vertical_values = np.asarray(level_sets[0], dtype=np.float64)
+
+    hybrid_a = hybrid_b = None
+    if str(mapping["coordinates"]["vertical"].get("kind")) == "hybrid_sigma_pressure":
+        # Every selected vertical-bearing record states the whole ladder
+        # in its pv octets; one source has one ladder, so disagreement
+        # is a mixed-source input, not a choice to make.
+        pv_lists = {
+            tuple(record.coordinate_values)
+            for (_time, _member, field_name), group in matched.items()
+            if "vertical" in mapping["fields"][field_name]["target_axes"]
+            for record in group
+        }
+        nonempty = {pv for pv in pv_lists if pv}
+        if len(nonempty) > 1 or (nonempty and len(pv_lists) > 1):
+            raise ValueError(
+                "selected GRIB records do not share one pv coordinate "
+                "list; hybrid A/B coefficients must be identical across "
+                "the source"
+            )
+        hybrid_a, hybrid_b = _resolve_hybrid_coefficients(
+            mapping["coordinates"]["vertical"],
+            int(vertical_values.size),
+            record_pv=next(iter(nonempty)) if nonempty else (),
+        )
 
     direct: dict[tuple[datetime, str | None, str], _DirectValue] = {}
     cycles: dict[tuple[datetime, str | None], datetime] = {}
@@ -3682,6 +4054,8 @@ def _assemble_grib(
         direct=MappingProxyType(direct),
         source_cycles=MappingProxyType(cycles),
         grid_fingerprint=next(iter(grid_fingerprints)),
+        hybrid_a=hybrid_a,
+        hybrid_b=hybrid_b,
     )
 
 
@@ -4023,12 +4397,56 @@ def _specific_humidity_from_rh(
     return mixing_ratio / (1.0 + mixing_ratio)
 
 
+#: Hydrostatic constants: ECMWF's own model-level geopotential build-up
+#: (their compute-z-on-model-levels reference), so the derived heights
+#: agree with the provider's archived pressure-level z.  Rd in J kg-1
+#: K-1; the virtual factor is Rv/Rd - 1.
+_HYDROSTATIC_RD = 287.06
+_HYDROSTATIC_VIRTUAL = 0.609133
+#: The provider's top-of-model clamp: the top interface pressure of a
+#: full hybrid ladder is 0 Pa, whose logarithm does not exist, so the
+#: top full level integrates against 0.1 Pa with alpha = ln 2.
+_HYDROSTATIC_TOP_PA = 0.1
+
+
+def _hybrid_half_level_pressure(
+    collection: _DecodedCollection,
+    surface_pressure: np.ndarray,
+    name: str,
+) -> np.ndarray:
+    """The (N+1, y, x) or (N, y, x) ladder p = A + B * ps, gated strict."""
+
+    if collection.hybrid_a is None or collection.hybrid_b is None:
+        raise ValueError(
+            f"{name} requires resolved hybrid A/B coefficients, which this "
+            "decoded collection does not carry"
+        )
+    if not np.isfinite(surface_pressure).all() \
+            or np.any(surface_pressure <= 0.0):
+        raise ValueError(
+            f"{name} requires finite positive surface pressure to price "
+            "the hybrid ladder"
+        )
+    ladder = collection.hybrid_a[:, None, None] \
+        + collection.hybrid_b[:, None, None] * surface_pressure[None, :, :]
+    if not np.all(ladder[1:] > ladder[:-1]):
+        raise ValueError(
+            f"{name} hybrid pressure must increase strictly from the top "
+            "of the atmosphere downward at every cell; the resolved A/B "
+            "ladder does not (check coefficient order against the "
+            "declared levels)"
+        )
+    return ladder
+
+
 def _evaluate_derivation(
     operation: Mapping[str, object],
     available: Mapping[str, CanonicalField],
     collection: _DecodedCollection,
     field: Mapping[str, object],
     name: str,
+    *,
+    vertical: Mapping[str, object] | None = None,
 ) -> tuple[np.ndarray, tuple[str, ...], tuple[str, ...]]:
     kind = str(operation["operation"])
 
@@ -4038,6 +4456,24 @@ def _evaluate_derivation(
             return available[dependency_name]
         except KeyError as error:
             raise KeyError(dependency_name) from error
+
+    def surface_pressure_dependency() -> CanonicalField:
+        if vertical is None:
+            raise ValueError(
+                f"{name} requires the mapping's vertical coordinate to "
+                "resolve its declared surface pressure field"
+            )
+        pressure_name = str(vertical["surface_pressure_field"])
+        try:
+            resolved = available[pressure_name]
+        except KeyError as error:
+            raise KeyError(pressure_name) from error
+        if tuple(resolved.axes) != ("y", "x"):
+            raise ValueError(
+                f"{name} requires the declared surface pressure field "
+                f"{pressure_name!r} on ('y', 'x') axes; got {resolved.axes}"
+            )
+        return resolved
 
     if kind == "copy":
         source = dependency("source")
@@ -4067,12 +4503,29 @@ def _evaluate_derivation(
                 f"{name} pressure derivation currently requires source_axes "
                 "['vertical','y','x']"
             )
-        raw = np.broadcast_to(
-            collection.vertical_values[:, None, None],
-            (collection.vertical_values.size,
-             collection.latitude.size, collection.longitude.size),
-        )
-        references = ("@coordinate.vertical",)
+        if vertical is not None \
+                and str(vertical.get("kind")) == "hybrid_sigma_pressure":
+            # p = A + B*ps on the resolved ladder: half-level interfaces
+            # average to full levels; full-level coefficients state the
+            # level pressure directly.
+            pressure = surface_pressure_dependency()
+            ladder = _hybrid_half_level_pressure(
+                collection, pressure.values, name,
+            )
+            if ladder.shape[0] == collection.vertical_values.size + 1:
+                raw = 0.5 * (ladder[:-1] + ladder[1:])
+            else:
+                raw = ladder
+            references = (
+                "@coordinate.vertical.hybrid", *pressure.source_references,
+            )
+        else:
+            raw = np.broadcast_to(
+                collection.vertical_values[:, None, None],
+                (collection.vertical_values.size,
+                 collection.latitude.size, collection.longitude.size),
+            )
+            references = ("@coordinate.vertical",)
     elif kind == "relative_humidity_from_dewpoint":
         dewpoint = dependency("dewpoint")
         temperature = dependency("temperature")
@@ -4150,6 +4603,77 @@ def _evaluate_derivation(
         shallowest = np.take(source.values, [0], axis=soil_axis)
         raw = np.concatenate([shallowest, source.values], axis=soil_axis)
         references = source.source_references
+    elif kind == "geopotential_height_hydrostatic":
+        temperature = dependency("temperature")
+        humidity = dependency("specific_humidity")
+        surface_height = dependency("surface_geopotential_height")
+        pressure = surface_pressure_dependency()
+        axes = _axes(field["source_axes"], f"fields.{name}.source_axes")
+        if axes != ("vertical", "y", "x"):
+            raise ValueError(
+                f"{name} hydrostatic derivation currently requires "
+                "source_axes ['vertical','y','x']"
+            )
+        if tuple(temperature.axes) != axes or tuple(humidity.axes) != axes:
+            raise ValueError(
+                f"{name} hydrostatic derivation requires temperature and "
+                "specific humidity on ('vertical', 'y', 'x') axes"
+            )
+        if tuple(surface_height.axes) != ("y", "x"):
+            raise ValueError(
+                f"{name} hydrostatic derivation requires surface "
+                "geopotential height on ('y', 'x') axes"
+            )
+        gravity = float(operation.get("gravity_m_s2", 9.80665))
+        if not math.isfinite(gravity) or gravity <= 0.0:
+            raise ValueError(f"{name} declares invalid gravity")
+        nlevels = int(collection.vertical_values.size)
+        ladder = _hybrid_half_level_pressure(collection, pressure.values, name)
+        if ladder.shape[0] != nlevels + 1:
+            raise ValueError(
+                f"{name} hydrostatic integration requires half-level "
+                f"interface coefficients: {nlevels} levels need "
+                f"{nlevels + 1} A/B values, this source resolves "
+                f"{ladder.shape[0]}"
+            )
+        # ECMWF's model-level build-up: virtual temperature per full
+        # level, geopotential accumulated interface to interface from
+        # the surface upward, the full level placed by its alpha.
+        virtual = temperature.values * (
+            1.0 + _HYDROSTATIC_VIRTUAL * humidity.values
+        )
+        if not np.isfinite(virtual).all() or np.any(virtual <= 0.0):
+            raise ValueError(
+                f"{name} hydrostatic integration requires finite positive "
+                "virtual temperature"
+            )
+        log2 = math.log(2.0)
+        phi_half = gravity * np.asarray(surface_height.values, dtype=np.float64)
+        raw = np.empty(
+            (nlevels, phi_half.shape[0], phi_half.shape[1]), dtype=np.float64,
+        )
+        for level in range(nlevels - 1, -1, -1):
+            below = ladder[level + 1]
+            above = ladder[level]
+            positive_above = above > 0.0
+            log_ratio = np.log(
+                below / np.where(positive_above, above, _HYDROSTATIC_TOP_PA)
+            )
+            alpha = np.where(
+                positive_above,
+                1.0 - (above / (below - above)) * log_ratio,
+                log2,
+            )
+            energy = _HYDROSTATIC_RD * virtual[level]
+            raw[level] = (phi_half + energy * alpha) / gravity
+            phi_half = phi_half + energy * log_ratio
+        references = (
+            "@derived.hydrostatic",
+            *temperature.source_references,
+            *humidity.source_references,
+            *surface_height.source_references,
+            *pressure.source_references,
+        )
     else:
         raise ValueError(f"unsupported derivation operation {kind!r}")
 
@@ -4174,6 +4698,8 @@ def _frame_header(
     vertical_values: np.ndarray,
     fields: Mapping[str, CanonicalField],
     source_id: str,
+    hybrid_a: np.ndarray | None = None,
+    hybrid_b: np.ndarray | None = None,
 ) -> SourceFrameHeader:
     vertical = mapping["coordinates"]["vertical"]
     vertical_kind = str(vertical["kind"])
@@ -4186,6 +4712,14 @@ def _frame_header(
             }.get(vertical_kind, vertical_kind),
             level_count=int(vertical_values.size),
             level_values=tuple(float(value) for value in vertical_values),
+            a_coefficients=(
+                () if hybrid_a is None
+                else tuple(float(value) for value in hybrid_a)
+            ),
+            b_coefficients=(
+                () if hybrid_b is None
+                else tuple(float(value) for value in hybrid_b)
+            ),
             positive=str(vertical.get("positive", "down")),
             units=str(vertical["units"]),
         )
@@ -4336,7 +4870,8 @@ def _materialize_frames(
                 operation = derivations[derivation_name]
                 try:
                     values, axes, references = _evaluate_derivation(
-                        operation, available, collection, field, name
+                        operation, available, collection, field, name,
+                        vertical=mapping["coordinates"]["vertical"],
                     )
                 except KeyError:
                     continue
@@ -4389,6 +4924,7 @@ def _materialize_frames(
             latitude=collection.latitude, longitude=collection.longitude,
             vertical_values=collection.vertical_values, fields=available,
             source_id=str(mapping["name"]),
+            hybrid_a=collection.hybrid_a, hybrid_b=collection.hybrid_b,
         )
         frames.append(MappedSourceFrame(
             valid_time=valid_time, member=member, source_cycle=source_cycle,
@@ -5122,6 +5658,19 @@ def _inspect_mapped_source_python(
                 ).hexdigest()
                 for frame in frames
             ],
+            # Beside the raw digest, never instead of it: the raw one is an
+            # identity of THIS box (input paths, and a derived field's libm
+            # last bits); the portable one is what another box can
+            # reproduce, and therefore what a recorded golden may assert.
+            # See gpuwm.source_frame.portable_frame_header for the rule.
+            "frame_header_sha256_portable": [
+                portable_frame_header_sha256(
+                    frame.header, inputs=sources,
+                    libm_dependent=libm_dependent_fields(mapping),
+                )
+                for frame in frames
+            ],
+            "portable_rule": PORTABLE_HEADER_RULE,
         }
         status = "CANONICAL_FRAMES_MATERIALIZED_NOT_STOCK_WRF_CERTIFIED"
 
@@ -5265,6 +5814,18 @@ def mapped_frames_to_regular_snapshots(
                 f"prognostic fields {present_unsupported}"
             )
         canonical = frame.fields
+        if "air_pressure" not in canonical:
+            # The header may satisfy its pressure requirement through a
+            # declared hybrid coordinate, but the regular-source join
+            # interpolates on a 3-D pressure FIELD; a waiver cannot be
+            # interpolated.  (The L137 proof lane's probe 6 died here as
+            # a bare KeyError.)
+            raise ValueError(
+                "mapped frames carry no air_pressure field; a "
+                "hybrid_sigma_pressure mapping materializes one with a "
+                "'pressure_from_vertical_coordinate' derivation "
+                "(p = A + B*ps on its resolved coefficient ladder)"
+            )
         pressure = canonical["air_pressure"].values
         if not np.isfinite(pressure).all() or np.any(pressure <= 0.0):
             raise ValueError("mapped air pressure must be finite and positive")

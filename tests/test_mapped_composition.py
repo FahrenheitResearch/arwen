@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
@@ -567,6 +568,60 @@ def test_composition_time_alignment_grammar_is_closed(tmp_path):
         load_composition(path, MAPPING)
 
 
+class _StubFrameSet(Sequence):
+    """A frameset stand-in with the document surface the seal reads.
+
+    The real one answers valid times, members, mapping digests and
+    per-field digests from ``frames.json`` without touching an array,
+    which is what keeps a seven-time preparation from holding seven
+    valid times.  A stub that only yielded frames would let that
+    regress unnoticed here.
+    """
+
+    def __init__(self, frames, retain=None):
+        self._frames = tuple(frames)
+        self.retain = retain
+        self.closed = False
+
+    def __len__(self):
+        return len(self._frames)
+
+    def __getitem__(self, index):
+        return self._frames[index]
+
+    @property
+    def valid_times(self):
+        return tuple(frame.valid_time for frame in self._frames)
+
+    @property
+    def members(self):
+        return tuple(frame.member for frame in self._frames)
+
+    @property
+    def mapping_sha256s(self):
+        return tuple(frame.mapping_sha256 for frame in self._frames)
+
+    def field_names(self, index):
+        return tuple(self._frames[index].fields)
+
+    def field_count(self, index):
+        return len(self._frames[index].fields)
+
+    def field_digest(self, index, name):
+        from gpuwm.mapped_source import _array_sha256
+
+        return _array_sha256(self._frames[index].fields[name].values)
+
+    def header(self, index):
+        return self._frames[index].header
+
+    def close(self):
+        self.closed = True
+        cleanup = getattr(self.retain, "cleanup", None)
+        if cleanup is not None:
+            cleanup()
+
+
 def _engine_compose_harness(tmp_path, monkeypatch):
     """Drive ``_compose_through_engine`` with a fake engine seam.
 
@@ -597,11 +652,17 @@ def _engine_compose_harness(tmp_path, monkeypatch):
         lambda *args, **kwargs: engine_calls.append(dict(kwargs)))
     frame = SimpleNamespace(
         mapping_sha256="mapping-hash",
+        member=None,
+        valid_time=datetime(2026, 8, 17, 0),
         fields={"terrain_height": SimpleNamespace(
             values=np.zeros((2, 2), dtype=np.float64))},
     )
+    # The route opens the frameset lazily and hands it the scratch
+    # handle, so the stub answers the document questions the seal asks
+    # and records whether the handle was released.
     monkeypatch.setattr(
-        mapped_engine_bridge, "read_frameset", lambda _directory: (frame,))
+        mapped_engine_bridge, "open_frameset",
+        lambda _directory, retain=None: _StubFrameSet((frame,), retain))
     monkeypatch.setattr(
         mapped_engine_bridge, "read_composition_evidence",
         lambda _directory: {

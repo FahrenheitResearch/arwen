@@ -1740,6 +1740,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-mpas"
+version = "0.1.0"
+dependencies = [
+ "netcrust",
+ "rayon",
+ "rw-store",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "rw-netcdf"
 version = "0.1.0"
 dependencies = [
@@ -1836,6 +1849,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "grib-core",
+ "netcdf-writer",
  "netcrust",
  "rayon",
  "rustwx-core",

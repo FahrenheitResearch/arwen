@@ -319,16 +319,31 @@ def test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one():
     a direction, not a re-fit: reconciling them wants autoplan's 29-point
     measurement redone before either constant moves.
 
-    THE BAND PINS BELOW ARE THE 2.5.0 INTEGRATION LINE'S, re-derived
-    2026-08-18 on the Windows cut box (the envelope's platform form) after
-    the memgate-3080 landing replaced the x1.75-with-pool-constants Windows
-    envelope with the RTX 3080-measured WDDM form: the size-independent
-    term fell from ~8.8 GiB to ~2.9 GiB (MEASURED here: envelope 6.39 GiB
-    at 224^2 x 49 against a 2.90 GiB alloc estimate, 12.39 GiB at 416^2,
-    16.72 GiB at 512^2 -- the fixed part solves to ~2.9 GiB from any two
-    of those rows), so preflight refuses from a LARGER n and every band's
-    low edge rose.  The disagreement is therefore NARROWER on the release
-    line, but not reconciled, and the defect stands.
+    THE BAND PINS BELOW ARE THE 2.5.1 LINE'S, re-derived 2026-08-20 on
+    the Windows cut box (the envelope's platform form).  They moved for
+    the second time in three days, and both moves are the same shape:
+    preflight's envelope fell, so it refuses from a LARGER n, so every
+    band's LOW edge rose while every HIGH edge stayed exactly where it
+    was.  That asymmetry is the evidence the move is preflight's alone --
+    the high edge is autoplan's "resident stops fitting" crossing, and
+    autoplan has not been touched.
+
+    * 2026-08-18, the memgate-3080 landing: the x1.75-with-pool-constants
+      Windows envelope became the RTX 3080-measured WDDM form and the
+      size-independent term fell from ~8.8 GiB to ~2.9 GiB.  Lows rose to
+      416/640/752.
+    * 2026-08-20, the measured-VRAM-reserve landing: the fit gate stopped
+      paying for the same bytes twice -- the machine-peak envelope
+      carries the CUDA context and the kernel backing store, and the
+      budget had subtracted them again -- and the context stopped being
+      one card's 2026-07-26 reading applied to every card.  MEASURED
+      here now: envelope 6.14 GiB at 224^2 x 49 against a 2.90 GiB alloc
+      estimate (was 6.39), 11.13 GiB at 416^2 (was 12.39), 14.75 GiB at
+      512^2 (was 16.72), with the size-independent non-pool term at 2.74
+      GiB.  Lows rose to 448/704/832.
+
+    The disagreement is therefore NARROWER again on this line, but it is
+    not reconciled, and the defect stands.
 
     WHEN THE TWO MODELS ARE RECONCILED, DELETE THIS TEST.  It asserts the
     presence of the defect, which is the only way an arithmetic-only audit
@@ -341,9 +356,9 @@ def test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one():
         assert lo is not None, (
             f"no disagreement band on the {name} -- if the models were "
             "reconciled, delete this test; if the ladder changed, re-derive")
-    assert bands["5070"] == (416, 512), bands
-    assert bands["4090"] == (640, 816), bands
-    assert bands["5090"] == (752, 976), bands
+    assert bands["5070"] == (448, 512), bands
+    assert bands["4090"] == (704, 816), bands
+    assert bands["5090"] == (832, 976), bands
     return "; ".join(f"{k}: n in [{v[0]}, {v[1]}]" for k, v in bands.items())
 
 

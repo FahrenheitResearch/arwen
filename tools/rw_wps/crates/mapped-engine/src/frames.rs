@@ -45,11 +45,29 @@ fn utc_isoformat(value: NaiveDateTime) -> String {
     format!("{}+00:00", naive_isoformat(value))
 }
 
-/// `mapped_source._materialize_frames`.
-pub fn materialize_frames(
-    mapping: &Mapping,
-    collection: &DecodedCollection,
-) -> Result<Vec<MappedSourceFrame>> {
+/// The frame keys a frameset will carry, plus the mapping-level facts
+/// every frame is built against.
+///
+/// Split out of `materialize_frames` so a frameset can be MATERIALIZED
+/// AND WRITTEN one valid time at a time.  Named breakage, measured on
+/// real RRFS bytes (3 km CONUS, 45 pressure levels): building every
+/// frame before writing any of them held the decoded collection and a
+/// full second copy of every valid time's arrays at once, so the engine
+/// peaked at 9.0 GiB per forcing time and a seven-time compose needed
+/// 67 GiB of host memory.  Nothing about the frameset needs two frames
+/// resident: the stream is written sequentially, and each frame's
+/// digests cover only its own arrays.
+pub struct FramePlan {
+    /// Valid time and member, in the order the frameset writes them.
+    pub keys: Vec<(NaiveDateTime, Option<String>)>,
+    /// Field names in the mapping's declared order.
+    pub declared_names: Vec<String>,
+    /// The names a frame must carry to initialize WRF.
+    pub required_names: BTreeSet<String>,
+}
+
+/// Every check a frameset can make before reading a valid time's arrays.
+pub fn plan_frames(mapping: &Mapping, collection: &DecodedCollection) -> Result<FramePlan> {
     let declared_names = mapping.field_names()?;
     let mut unbound: Vec<String> = Vec::new();
     for field in mapping.fields()? {
@@ -78,162 +96,7 @@ pub fn materialize_frames(
         ));
     }
     let required_names: BTreeSet<String> = mapping.required_field_names()?.into_iter().collect();
-    let mut frames = Vec::with_capacity(keys.len());
-    for (valid_time, member) in &keys {
-        let mut available: BTreeMap<String, CanonicalField> = BTreeMap::new();
-        for ((time, member_value, field_name), direct) in &collection.direct {
-            if time != valid_time || member_value != member {
-                continue;
-            }
-            let field = mapping.field(field_name)?;
-            available.insert(
-                field_name.clone(),
-                CanonicalField {
-                    name: field_name.clone(),
-                    units: field.units_target()?.to_owned(),
-                    axes: direct.axes.clone(),
-                    location: field.location()?.to_owned(),
-                    staggering: field.staggering().to_owned(),
-                    values: direct.values.clone(),
-                    missing_count: direct.missing_count,
-                    source_references: direct.references.clone(),
-                }
-                .validated()?,
-            );
-        }
-        let mut pending: BTreeSet<String> = BTreeSet::new();
-        for field in mapping.fields()? {
-            if field.derivation().is_some() {
-                pending.insert(field.name.clone());
-            }
-        }
-        while !pending.is_empty() {
-            let mut progress = false;
-            for name in pending.clone() {
-                let field = mapping.field(&name)?;
-                let derivation_name = field.derivation().expect("pending entries are derived");
-                let operation = mapping.derivation(derivation_name).ok_or_else(|| {
-                    mapping_invalid(format!(
-                        "field {name} names unknown derivation '{derivation_name}'"
-                    ))
-                })?;
-                let Some((values, axes, references)) =
-                    evaluate_derivation(operation, &available, collection, &field, &name)?
-                else {
-                    continue;
-                };
-                let missing_count = array::count_nan(&values);
-                available.insert(
-                    name.clone(),
-                    CanonicalField {
-                        name: name.clone(),
-                        units: field.units_target()?.to_owned(),
-                        axes,
-                        location: field.location()?.to_owned(),
-                        staggering: field.staggering().to_owned(),
-                        values,
-                        missing_count,
-                        source_references: references,
-                    }
-                    .validated()?,
-                );
-                pending.remove(&name);
-                progress = true;
-            }
-            if !progress {
-                let stuck: Vec<String> = pending.iter().cloned().collect();
-                return Err(frame_invalid(format!(
-                    "derived fields have missing dependencies or a cycle: {}",
-                    stuck.join(", ")
-                )));
-            }
-        }
-        // The frame states its fields in the mapping's own declared order:
-        // assembly order is the PRODUCER's record layout, and a broadcast
-        // invariant lands after the per-time records, so two frames with
-        // identical field SETS could otherwise disagree about sequence.
-        let ordered: Vec<CanonicalField> = declared_names
-            .iter()
-            .filter_map(|name| available.get(name).cloned())
-            .collect();
-        let present: BTreeSet<&str> = ordered.iter().map(|field| field.name.as_str()).collect();
-        let missing: Vec<&String> = required_names
-            .iter()
-            .filter(|name| !present.contains(name.as_str()))
-            .collect();
-        if !missing.is_empty() {
-            let missing = crate::refusal::python_list_repr(&missing);
-            return Err(frame_invalid(format!(
-                "mapped frame at {valid_time} lacks required fields {missing}"
-            )));
-        }
-        for field in &ordered {
-            let finite_required = required_names.contains(&field.name)
-                && field.name != "soil_temperature"
-                && field.name != "volumetric_soil_moisture";
-            if finite_required && field.values.iter().any(|value| !value.is_finite()) {
-                return Err(frame_invalid(format!(
-                    "required mapped field {} is not finite at {valid_time}",
-                    field.name
-                )));
-            }
-        }
-        if let Some(soil_count) = mapping.soil_layer_count()?.filter(|count| *count > 0) {
-            for name in ["soil_temperature", "volumetric_soil_moisture"] {
-                let field = ordered
-                    .iter()
-                    .find(|field| field.name == name)
-                    .ok_or_else(|| {
-                        frame_invalid(format!("mapped frame at {valid_time} lacks {name}"))
-                    })?;
-                let axis = field
-                    .axes
-                    .iter()
-                    .position(|axis| axis == "soil")
-                    .ok_or_else(|| frame_invalid(format!("{name} has no soil axis")))?;
-                let observed = field.values.shape()[axis] as i64;
-                if observed != soil_count {
-                    return Err(frame_invalid(format!(
-                        "{name} has {observed} layers, target declares {soil_count}"
-                    )));
-                }
-            }
-        }
-        let source_cycle = collection.source_cycles[&(*valid_time, (*member).clone())];
-        validate_frame_axes(collection, &ordered)?;
-        let header = frame_header(
-            mapping,
-            *valid_time,
-            source_cycle,
-            collection,
-            &ordered,
-        )?;
-        require_wrf_initial_state(&header)?;
-        frames.push(MappedSourceFrame {
-            valid_time: *valid_time,
-            member: (*member).clone(),
-            source_cycle,
-            latitude: collection.latitude.clone(),
-            longitude: collection.longitude.clone(),
-            vertical_kind: mapping
-                .vertical()?
-                .get("kind")
-                .and_then(crate::node::Node::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            vertical_units: mapping
-                .vertical()?
-                .get("units")
-                .and_then(crate::node::Node::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            vertical_values: collection.vertical_values.clone(),
-            fields: ordered,
-            header,
-        });
-    }
-
-    let times: Vec<NaiveDateTime> = frames.iter().map(|frame| frame.valid_time).collect();
+    let times: Vec<NaiveDateTime> = keys.iter().map(|(time, _member)| *time).collect();
     let mut sorted = times.clone();
     sorted.sort();
     sorted.dedup();
@@ -276,15 +139,222 @@ pub fn materialize_frames(
             )));
         }
     }
-    let inventories: BTreeSet<Vec<String>> = frames
+    Ok(FramePlan {
+        keys: keys.into_iter().cloned().collect(),
+        declared_names,
+        required_names,
+    })
+}
+
+/// ONE valid time's canonical frame -- `mapped_source._materialize_frames`
+/// for a single key.
+pub fn materialize_frame(
+    mapping: &Mapping,
+    collection: &DecodedCollection,
+    plan: &FramePlan,
+    valid_time: NaiveDateTime,
+    member: &Option<String>,
+) -> Result<MappedSourceFrame> {
+    let declared_names = &plan.declared_names;
+    let required_names = &plan.required_names;
+    let mut available: BTreeMap<String, CanonicalField> = BTreeMap::new();
+    for ((time, member_value, field_name), direct) in &collection.direct {
+        if *time != valid_time || member_value != member {
+            continue;
+        }
+        let field = mapping.field(field_name)?;
+        available.insert(
+            field_name.clone(),
+            CanonicalField {
+                name: field_name.clone(),
+                units: field.units_target()?.to_owned(),
+                axes: direct.axes.clone(),
+                location: field.location()?.to_owned(),
+                staggering: field.staggering().to_owned(),
+                values: direct.values.clone(),
+                missing_count: direct.missing_count,
+                source_references: direct.references.clone(),
+            }
+            .validated()?,
+        );
+    }
+    let mut pending: BTreeSet<String> = BTreeSet::new();
+    for field in mapping.fields()? {
+        if field.derivation().is_some() {
+            pending.insert(field.name.clone());
+        }
+    }
+    while !pending.is_empty() {
+        let mut progress = false;
+        for name in pending.clone() {
+            let field = mapping.field(&name)?;
+            let derivation_name = field.derivation().expect("pending entries are derived");
+            let operation = mapping.derivation(derivation_name).ok_or_else(|| {
+                mapping_invalid(format!(
+                    "field {name} names unknown derivation '{derivation_name}'"
+                ))
+            })?;
+            let Some((values, axes, references)) = evaluate_derivation(
+                operation,
+                &available,
+                collection,
+                &field,
+                &name,
+                mapping.vertical()?,
+            )?
+            else {
+                continue;
+            };
+            let missing_count = array::count_nan(&values);
+            available.insert(
+                name.clone(),
+                CanonicalField {
+                    name: name.clone(),
+                    units: field.units_target()?.to_owned(),
+                    axes,
+                    location: field.location()?.to_owned(),
+                    staggering: field.staggering().to_owned(),
+                    values,
+                    missing_count,
+                    source_references: references,
+                }
+                .validated()?,
+            );
+            pending.remove(&name);
+            progress = true;
+        }
+        if !progress {
+            let stuck: Vec<String> = pending.iter().cloned().collect();
+            return Err(frame_invalid(format!(
+                "derived fields have missing dependencies or a cycle: {}",
+                stuck.join(", ")
+            )));
+        }
+    }
+    // The frame states its fields in the mapping's own declared order:
+    // assembly order is the PRODUCER's record layout, and a broadcast
+    // invariant lands after the per-time records, so two frames with
+    // identical field SETS could otherwise disagree about sequence.
+    // MOVED out of `available`, not cloned out of it.  `available`
+    // is this valid time's own map and nothing below reads it
+    // again, so cloning made a second full copy of every array in
+    // the frame -- on a 3 km CONUS source with a 45-level ladder
+    // that is 4.2 GiB per valid time of duplicate, live at the
+    // moment the next valid time starts assembling.  Same fields,
+    // same order, same bytes.
+    let ordered: Vec<CanonicalField> = declared_names
         .iter()
-        .map(|frame| frame.fields.iter().map(|field| field.name.clone()).collect())
+        .filter_map(|name| available.remove(name))
         .collect();
+    let present: BTreeSet<&str> = ordered.iter().map(|field| field.name.as_str()).collect();
+    let missing: Vec<&String> = required_names
+        .iter()
+        .filter(|name| !present.contains(name.as_str()))
+        .collect();
+    if !missing.is_empty() {
+        let missing = crate::refusal::python_list_repr(&missing);
+        return Err(frame_invalid(format!(
+            "mapped frame at {valid_time} lacks required fields {missing}"
+        )));
+    }
+    for field in &ordered {
+        let finite_required = required_names.contains(&field.name)
+            && field.name != "soil_temperature"
+            && field.name != "volumetric_soil_moisture";
+        if finite_required && field.values.iter().any(|value| !value.is_finite()) {
+            return Err(frame_invalid(format!(
+                "required mapped field {} is not finite at {valid_time}",
+                field.name
+            )));
+        }
+    }
+    if let Some(soil_count) = mapping.soil_layer_count()?.filter(|count| *count > 0) {
+        for name in ["soil_temperature", "volumetric_soil_moisture"] {
+            let field = ordered
+                .iter()
+                .find(|field| field.name == name)
+                .ok_or_else(|| {
+                    frame_invalid(format!("mapped frame at {valid_time} lacks {name}"))
+                })?;
+            let axis = field
+                .axes
+                .iter()
+                .position(|axis| axis == "soil")
+                .ok_or_else(|| frame_invalid(format!("{name} has no soil axis")))?;
+            let observed = field.values.shape()[axis] as i64;
+            if observed != soil_count {
+                return Err(frame_invalid(format!(
+                    "{name} has {observed} layers, target declares {soil_count}"
+                )));
+            }
+        }
+    }
+    let source_cycle = collection.source_cycles[&(valid_time, member.clone())];
+    validate_frame_axes(collection, &ordered)?;
+    let header = frame_header(
+        mapping,
+        valid_time,
+        source_cycle,
+        collection,
+        &ordered,
+    )?;
+    require_wrf_initial_state(&header)?;
+    Ok(MappedSourceFrame {
+        valid_time,
+        member: member.clone(),
+        source_cycle,
+        latitude: collection.latitude.clone(),
+        longitude: collection.longitude.clone(),
+        vertical_kind: mapping
+            .vertical()?
+            .get("kind")
+            .and_then(crate::node::Node::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        vertical_units: mapping
+            .vertical()?
+            .get("units")
+            .and_then(crate::node::Node::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        vertical_values: collection.vertical_values.clone(),
+        fields: ordered,
+        header,
+    })
+}
+
+/// One field inventory across the whole series, from the names alone.
+///
+/// Collected as each frame is written rather than from a held set of
+/// frames: the names are a few hundred bytes per valid time, and a
+/// frameset that fails this is scratch that is deleted whole, so no
+/// caller ever sees a partially written stream.
+pub fn require_one_inventory(inventories: &BTreeSet<Vec<String>>) -> Result<()> {
     if inventories.len() != 1 {
         return Err(frame_invalid(
             "mapped field inventory changes between valid times",
         ));
     }
+    Ok(())
+}
+
+/// The whole series at once -- `inspect` and the goldens want this.
+///
+/// A frameset WRITE does not: see `write_frameset`, which materializes
+/// one valid time, writes it, and drops it.
+pub fn materialize_frames(
+    mapping: &Mapping,
+    collection: &DecodedCollection,
+) -> Result<Vec<MappedSourceFrame>> {
+    let plan = plan_frames(mapping, collection)?;
+    let mut frames = Vec::with_capacity(plan.keys.len());
+    let mut inventories: BTreeSet<Vec<String>> = BTreeSet::new();
+    for (valid_time, member) in &plan.keys {
+        let frame = materialize_frame(mapping, collection, &plan, *valid_time, member)?;
+        inventories.insert(frame.fields.iter().map(|f| f.name.clone()).collect());
+        frames.push(frame);
+    }
+    require_one_inventory(&inventories)?;
     Ok(frames)
 }
 
@@ -380,8 +450,11 @@ fn frame_header(
             "coordinate": coordinate,
             "level_count": collection.vertical_values.len(),
             "level_values": collection.vertical_values,
-            "a_coefficients": Vec::<f64>::new(),
-            "b_coefficients": Vec::<f64>::new(),
+            // The resolved hybrid ladder (empty on every other vertical
+            // kind) — the tuples both engines used to hard-code empty,
+            // which validate_source_frame rightly refused.
+            "a_coefficients": collection.hybrid_a,
+            "b_coefficients": collection.hybrid_b,
             "positive": vertical
                 .field("positive")
                 .and_then(crate::node::Node::as_str)
@@ -658,9 +731,17 @@ pub fn write_frameset(
     directory: &std::path::Path,
     mapping: &Mapping,
     collection: &DecodedCollection,
-    frames: &[MappedSourceFrame],
     input_sha256: &BTreeMap<String, String>,
 ) -> Result<Value> {
+    // ONE valid time is materialized at a time, written, and dropped.
+    // Building every frame first held a full second copy of the whole
+    // forcing series beside the decoded collection: on a 3 km CONUS
+    // source with a 45-level ladder that is 9.0 GiB per forcing time,
+    // and a seven-time compose peaked at 67 GiB.  The stream is written
+    // sequentially and each frame's digests cover only its own arrays,
+    // so nothing here ever needed two frames at once.
+    let plan = plan_frames(mapping, collection)?;
+    let mut inventories: BTreeSet<Vec<String>> = BTreeSet::new();
     std::fs::create_dir_all(directory).map_err(|error| {
         crate::refusal::missing_input(format!(
             "cannot create output directory {}: {error}",
@@ -680,8 +761,11 @@ pub fn write_frameset(
     // single array.  Accumulated as the bytes go out rather than by
     // re-reading the file: a real frameset is multi-gigabyte.
     let mut stream_digest = <sha2::Sha256 as sha2::Digest>::new();
-    let mut frame_documents = Vec::with_capacity(frames.len());
-    for frame in frames {
+    let mut frame_documents = Vec::with_capacity(plan.keys.len());
+    for (valid_time, member) in &plan.keys {
+        let frame = materialize_frame(mapping, collection, &plan, *valid_time, member)?;
+        let frame = &frame;
+        inventories.insert(frame.fields.iter().map(|f| f.name.clone()).collect());
         // Every field's array digest for this frame, computed
         // CONCURRENTLY and consumed by position below.  The digests are
         // independent of the stream layout -- each covers one field's
@@ -765,6 +849,11 @@ pub fn write_frameset(
             "header": frame.header,
         }));
     }
+    // Checked once the whole series has been written, from the names
+    // alone.  The frameset is scratch until the caller reads it back,
+    // so a series that fails here is deleted whole; nothing partial is
+    // ever handed on.
+    require_one_inventory(&inventories)?;
     stream.flush().map_err(|error| {
         crate::refusal::missing_input(format!("cannot flush the frame stream: {error}"))
     })?;

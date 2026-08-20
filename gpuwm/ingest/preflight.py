@@ -248,6 +248,14 @@ class InputCatalog:
         })
 
 
+#: The issue code for "this install could not BUILD the decoder", as
+#: distinct from "the decoder ran and your bytes are wrong".  Its own
+#: code because the two have different remedies and because every check
+#: downstream of it measures an empty catalog -- see
+#: :meth:`PreflightReport.format`.
+DECODER_BUILD_CODE = "decoder-build"
+
+
 @dataclass(frozen=True)
 class PreflightIssue:
     code: str
@@ -322,6 +330,22 @@ class PreflightReport:
         if errors:
             lines.append(f"failures={len(errors)} (all independent checks ran)")
             lines.extend(f"- {issue.format()}" for issue in errors)
+            if any(issue.code == DECODER_BUILD_CODE for issue in errors):
+                # Measured 2026-08-20: a cargo build that could not
+                # relink produced this report with SIX failures, five of
+                # them naming forcing fields, levels and times.  All five
+                # were computed against an empty catalog, because the
+                # decoder never ran -- so a reader went hunting for a
+                # missing variable in a file nothing had opened.  The
+                # aggregate contract stands (every independent check
+                # still runs and is still shown); what was missing is
+                # the sentence saying which of them measured anything.
+                lines.append(
+                    "note: the [" + DECODER_BUILD_CODE + "] failure above "
+                    "is a BUILD, not your data -- the decoder never ran, so "
+                    "every check under it measured an EMPTY catalog and not "
+                    "your inputs.  Fix that one first; the rest are echoes "
+                    "of it.")
         else:
             lines.append(f"checks={len(self.checks)}")
         if warnings:
@@ -609,11 +633,26 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
                 decodable, case_data.vtable, content_sha256=content_hashes
             )
         except Exception as exc:
-            issues.append(PreflightIssue(
-                "grib-decode",
-                f"could not decode/merge forcing inputs: {exc}",
-                path=decodable[0] if len(decodable) == 1 else None,
-            ))
+            # A BUILD failure and a DECODE failure are different
+            # findings with different remedies, and relaying both as
+            # "could not decode/merge forcing inputs" is what let a
+            # locked-DLL cargo error read as a problem with the reader's
+            # GRIB.  The decoder's own module raises BridgeBuildError
+            # for the first; everything else is the second.
+            from gpuwm.bridges import BridgeBuildError
+
+            if isinstance(exc, BridgeBuildError):
+                issues.append(PreflightIssue(
+                    DECODER_BUILD_CODE,
+                    "the GRIB1 decoder this route needs could not be "
+                    f"built here, so no input was read: {exc}",
+                ))
+            else:
+                issues.append(PreflightIssue(
+                    "grib-decode",
+                    f"could not decode/merge forcing inputs: {exc}",
+                    path=decodable[0] if len(decodable) == 1 else None,
+                ))
     elif not decodable:
         issues.append(PreflightIssue(
             "grib-decode", "no structurally valid GRIB1 forcing file remains"
@@ -1659,8 +1698,53 @@ def preflight_report(exp, case_data) -> PreflightReport:
     return PreflightReport(catalog, tuple(failures), tuple(checks))
 
 
+#: The document ``gpuwm check --json`` puts on stdout when the INPUT
+#: preflight stops the run.  Versioned, because a consumer that has to
+#: tell "the estimator answered" from "nothing got that far" is reading
+#: a contract and not a convenience.
+INPUT_PREFLIGHT_FAILURE_SCHEMA = "gpuwm.check.input-preflight-failure.v1"
+
+
+def _failure_document(config, *, failures=(), warnings=(), report=None,
+                      refusal=None) -> dict:
+    """The JSON stdout owes a machine caller when the preflight stops.
+
+    ``gpuwm check --alloc --json`` used to write NOTHING to stdout on
+    this path: the report goes to stderr in --json mode and the composed
+    dispatcher short-circuits before the memory estimator, so the only
+    thing a caller running ``json.loads(stdout)`` ever saw was a parse
+    error -- for a cargo build that could not relink, measured
+    2026-08-20.  A build error must never reach a program as a corrupt
+    reply, so this channel always carries a document.
+    """
+
+    def _issue(issue) -> dict:
+        return {"code": issue.code, "message": issue.message,
+                "path": None if issue.path is None else str(issue.path),
+                "variable": issue.variable, "severity": issue.severity}
+
+    document: dict = {
+        "schema": INPUT_PREFLIGHT_FAILURE_SCHEMA,
+        "stage": "input-preflight",
+        "config": str(config),
+        "ok": False,
+        "failures": [_issue(issue) for issue in failures],
+        "warnings": [_issue(issue) for issue in warnings],
+    }
+    if refusal is not None:
+        # The preflight could not even be RUN.  Its own sentence is the
+        # whole finding, so it is carried verbatim rather than mapped
+        # into a code this module made up.
+        document["refusal"] = str(refusal)
+        document["refusal_type"] = type(refusal).__name__
+    if report is not None:
+        document["report"] = report
+    return document
+
+
 def _check_command(args) -> int:
     import io
+    import json
     import os
     import sys
     import tomllib
@@ -1711,10 +1795,31 @@ def _check_command(args) -> int:
                 "memory preflight.",
                 file=stream)
             return 0
-    exp, case_data = load_experiment_case(args.config)
-    report = preflight_report(exp, case_data)
+    machine = getattr(args, "json", False)
+    try:
+        exp, case_data = load_experiment_case(args.config)
+        report = preflight_report(exp, case_data)
+    except Exception as refusal:
+        # Anything that stops the preflight from producing a report at
+        # all -- a config that will not load, a decoder that will not
+        # build.  In --json mode it still owes stdout a document; in
+        # text mode it is re-raised so the front door's refusal boundary
+        # prints it exactly as it always has.
+        if not machine:
+            raise
+        print(json.dumps(_failure_document(args.config, refusal=refusal),
+                         indent=2), flush=True)
+        print(f"gpuwm input preflight: FAIL\n{refusal}", file=sys.stderr)
+        return 1
     print(report.format(), file=stream)
-    return 0 if report.ok else 1
+    if report.ok:
+        return 0
+    if machine:
+        print(json.dumps(
+            _failure_document(args.config, failures=report.errors,
+                              warnings=report.warnings,
+                              report=report.format()), indent=2), flush=True)
+    return 1
 
 
 def register_cli(subparsers):

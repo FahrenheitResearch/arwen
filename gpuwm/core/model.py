@@ -330,7 +330,16 @@ RESTART_TOLERATED_EXPERIMENT_FIELDS = (
     # would therefore refuse exactly the operation it exists for: a
     # forecast that outgrew its card resuming on the card it outgrew.
     # See gpuwm.core.streaming.identity_payload_entry.
-    "tiles")
+    "tiles",
+    # [output] selects which variables reach the HISTORY tape
+    # (gpuwm.io.history_selection).  It changes no number the model
+    # computes and touches no checkpoint: checkpoints are separate files
+    # written from model state by gpuwm.io.restart, never from the
+    # history frame.  Binding it would refuse the operation the surface
+    # exists for -- a run that filled its disk resuming with a trimmed
+    # tape -- so a trimmed run resumes a full run's checkpoints and back
+    # again.  Same law as "tiles" above.
+    "output")
 RESTART_TOLERATED_DOMAIN_FIELDS = ("history_interval_s",)
 RESTART_TOLERATED_RUN_FIELDS = (
     "run_seconds", "output_interval_s", "restart_interval_s")
@@ -419,6 +428,12 @@ def restart_identity_payload(exp) -> dict:
         # card resuming streamed.  Same law as the tree-wide table above
         # (RESTART_TOLERATED_EXPERIMENT_FIELDS "tiles").
         domain.pop("tiles", None)
+        # The per-domain [output] selection leaves UNCONDITIONALLY too,
+        # and for the same reason: it decides which variables reach the
+        # HISTORY tape and binds no number the model computes.  A domain
+        # that wrote the full inventory must resume trimmed, and one that
+        # trimmed must resume full.
+        domain.pop("output", None)
         run = domain.get("run", {})
         for name in RESTART_TOLERATED_RUN_FIELDS:
             run.pop(name, None)

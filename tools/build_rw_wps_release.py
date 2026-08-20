@@ -98,6 +98,29 @@ _TOP_LEVEL_EXCLUDES = {
     # run to plan, and staging it would offer a command that cannot execute
     # one, which is exactly the reason go_cli.py is excluded above.
     "runplan.py",
+    # `gpuwm speedrun` and the capsule module behind it.  A speedrun
+    # times the SHIPPED chain end to end by driving `gpuwm go` as a
+    # subprocess -- prepare, forecast, render -- and seals a capsule of
+    # the walls; `gpuwm go` is excluded directly above, so the door
+    # here would offer a command whose only action is to invoke a
+    # command this wheel does not carry.  A preprocessing wheel runs no
+    # forecast, so it has no course to run and no clock to seal.
+    #
+    # It is also how this surfaced: gpuwm/speedrun.py reaches
+    # gpuwm.verify.cases._repo_config to find a course's config, and
+    # gpuwm.verify is the developer verification package RW-WPS omits
+    # entirely -- so the staging scan refused rather than shipping a
+    # module that would raise at first use.
+    "speedrun.py",
+    "speedrun_cli.py",
+    # `gpuwm sources` -- the human listing of the source registry.  It is
+    # a CLI door and nothing else: its only importer anywhere is
+    # gpuwm/cli.py, excluded at the top of this list, and it reaches
+    # gpuwm.runplan (excluded above) for the inventory it prints.  A
+    # wheel with no CLI has no door to register it on, so staging it put
+    # a module in the wheel reaching for a deliberately absent one and
+    # this builder's own unresolved-import scan refused the staging.
+    "sources_cli.py",
     # These product orchestrators both execute forecasts: multi-run dispatches
     # isolated supervisor workers, while stream extends forecasts through
     # restart checkpoints.  Neither exposes an RW-WPS preprocessing surface,
@@ -242,7 +265,31 @@ _OBS_EXCLUDES = {"sources.py"}
 #: (``gpuwm.io.nc_writer_bridge``) is function-local and already staged.
 #: It carries no forecast executor -- it is the shared classic-NetCDF
 #: tape both NetCDF products write through, nothing more.
-_IO_MODULES = {"__init__.py", "classic_tape.py", "nc_writer_bridge.py"}
+#: The gpuwm.io modules this wheel stages.  An ALLOWLIST, and the
+#: comment on ``_FORBIDDEN_STAGED_FILES`` below says why that is a
+#: hazard: gpuwm/io is partially staged, so "add one more name" is a
+#: mistake somebody can make.  The bar for a name here is that the
+#: module is DATA or GRAMMAR -- no CuPy, no netCDF4, no runtime, no
+#: forecast executor -- and that something the wheel actually does
+#: needs it.
+#:
+#: ``wrf_output_schema`` and ``history_selection`` joined on 2026-08-20
+#: and both clear that bar: the schema module is a transcribed WRF
+#: Registry table importing nothing but the standard library, and
+#: history_selection is the ``[output]`` block's grammar, importing only
+#: it and gpuwm.explain.  What needs them is the CONFIG READER --
+#: ``gpuwm.config.load_history_selection`` resolves ``[output]`` at the
+#: one load every front door shares, and ``gpuwm.render`` reads the same
+#: module's product-input table at module scope.  Without them staged, a
+#: preprocessing install could not read a config carrying an ``[output]``
+#: block at all.  Neither reaches ``gpuwm.io.wrfout``: the Registry
+#: metadata table the vocabulary is built from moved INTO
+#: wrf_output_schema the same day, precisely so that reading a config
+#: does not import the forecast output writer (and gpuwm.supervisor and
+#: netCDF4 behind it).  tests/test_history_selection.py pins that
+#: boundary against the artifact.
+_IO_MODULES = {"__init__.py", "classic_tape.py", "history_selection.py",
+               "nc_writer_bridge.py", "wrf_output_schema.py"}
 _ROOT_DATA = {
     "native_wrf_support_v1.json",
     "physics_registry_v2.json",
@@ -278,6 +325,23 @@ _FORBIDDEN_STAGED_FILES = {
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/physics_menu.py", "gpuwm.domain_wizard"):
+        "the WIZARD'S PROSE, and only that: physics_summary() inside "
+        "profile_facts() and _radiation_words() inside "
+        "nocturnal_remedy().  Their only callers anywhere are "
+        "gpuwm/runplan.py (`gpuwm run-plan --physics-profiles`) and "
+        "gpuwm/domain_wizard.py itself, and both modules are excluded "
+        "above -- a preprocessing wheel plans no run and builds no "
+        "domain.  The route a preparation-only install DOES reach this "
+        "module on is physics_compat.nocturnal_radiation_refusal() -> "
+        "universally_admissible_profile(), which runs at the one "
+        "experiment load every front door shares; that path reads "
+        "gpuwm.physics_compat and gpuwm.source_adapters, both staged, "
+        "and touches neither name above.  It reached the wizard until "
+        "2026-08-20, when the suite list, the declared default and "
+        "profile_route_blocker moved to gpuwm.physics_compat for "
+        "exactly this reason: a table the whole product reads must not "
+        "sit behind a door this wheel does not have",
     ("gpuwm/core/kernels/__init__.py", "gpuwm.certify.kernel_manifest"):
         "certification kernel-manifest recording, reached only after the "
         "CuPy import inside the loader; RW-WPS stages no forecast executor "

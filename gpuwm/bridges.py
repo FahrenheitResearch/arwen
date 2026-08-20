@@ -102,15 +102,17 @@ BRIDGE_ABI_MARKERS = {
         b"J_END"),
     # The inventory contract grew the ensemble-identity columns
     # (typeOfEnsembleForecast, encoded ensemble size, derived-forecast
-    # statistic code) beside the perturbation number it always carried.
-    # The marker is the new header tail, which only a binary speaking
-    # the grown contract contains: a stale build would inventory an
-    # ensemble file without the octets that tell a mean from a member,
-    # and the member-identity gate would refuse it at run time with a
-    # rebuild remedy -- this catches it statically instead.
+    # statistic code) beside the perturbation number it always carried,
+    # and then the pv column (Section 4's coordinate octets -- the
+    # hybrid A/B coefficient channel).  The marker is the header tail,
+    # which only a binary speaking the grown contract contains: a stale
+    # build would inventory a hybrid model-level file without the
+    # coefficients that price its pressure ladder, and the decode gate
+    # would refuse it at run time with a rebuild remedy -- this catches
+    # it statically instead.
     "grib2_inventory": (
         b"minimum\tmaximum\t"
-        b"ensemble_type\tensemble_size\tderived_forecast"),
+        b"ensemble_type\tensemble_size\tderived_forecast\tpv"),
     "grib2_dump": (
         b"parameter\tcenter\tsubcenter\tmaster_table_version\t"
         b"local_table_version\tlevel_type"),
@@ -788,6 +790,167 @@ class DecoderContractError(RuntimeError):
     """
 
 
+class BridgeBuildError(RuntimeError):
+    """A cargo build that could not produce a bridge, named by CLASS.
+
+    A third state beside "installed and wrong" and "not installed at
+    all": the sources are here, the build was attempted, and the build
+    itself failed -- for a reason that is almost never about the code.
+    Its own class because the remedy differs from both neighbours and
+    because a caller relaying it must be able to say "this was a build,
+    not your data".
+
+    ``failure_class`` carries the short slug
+    :func:`classify_cargo_failure` assigned, so a caller can branch on
+    the CLASS without re-parsing English.
+    """
+
+    def __init__(self, message: str, *, failure_class: str = "build-failed"):
+        super().__init__(message)
+        self.failure_class = failure_class
+
+
+#: Cargo/linker failure CLASSES, as ``(slug, needles, sentence)`` rows.
+#:
+#: A TABLE, so a newly-observed failure mode is a row and not another
+#: branch.  Each ``needles`` entry is matched case-insensitively against
+#: cargo's combined output; the first row that matches names the class.
+#: Order matters only where one output could match two rows, and the
+#: specific rows are therefore first.
+#:
+#: The first row is the one that cost the reproduction: on Windows a
+#: cdylib that any live process has mapped cannot be replaced, so cargo
+#: fails at the *link* step with a filesystem error, several screens
+#: below a wall of unrelated compiler warnings.  It is not a code
+#: failure and re-running it changes nothing until the holder exits.
+CARGO_FAILURE_CLASSES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("artifact-held-open",
+     ("being used by another process", "os error 32", "access is denied",
+      "os error 5", "text file busy", "os error 26", "permission denied"),
+     "a build artifact could not be replaced because another process on "
+     "this machine has it open -- a running gpuwm, another worktree's "
+     "build, a debugger or an antivirus scan.  Nothing about the source "
+     "is wrong and re-running changes nothing until the holder exits"),
+    ("build-lock-held",
+     ("blocking waiting for file lock",),
+     "another cargo is already building in this target directory and "
+     "this one could not take the lock"),
+    ("lockfile-out-of-date",
+     ("the lock file needs to be updated", "--locked"),
+     "the checked-in Cargo.lock does not match the manifests, and this "
+     "build runs --locked so it will not silently update it"),
+    ("vendor-incomplete",
+     ("no matching package", "failed to select a version",
+      "unable to get packages from source", "not in the vendored sources"),
+     "the vendored dependency set does not satisfy this lockfile, and "
+     "this build runs --offline so it cannot fetch the difference"),
+)
+
+#: What a caller sees when no row matched.  Still names the class -- a
+#: build -- because the defect being guarded is a build error read as
+#: something else entirely.
+_UNCLASSIFIED_CARGO_FAILURE = (
+    "build-failed",
+    "the cargo build did not complete; its own error lines are below")
+
+#: How many of cargo's error lines are relayed as evidence.  The point
+#: of classifying is that the reader does not have to read a compiler's
+#: warning wall to find the cause, so this is a tail and not a dump.
+_CARGO_EVIDENCE_LINES = 6
+
+
+def classify_cargo_failure(output: str) -> tuple[str, str]:
+    """``(slug, sentence)`` for cargo's own output.  Never raises."""
+
+    lowered = (output or "").lower()
+    for slug, needles, sentence in CARGO_FAILURE_CLASSES:
+        if any(needle in lowered for needle in needles):
+            return slug, sentence
+    return _UNCLASSIFIED_CARGO_FAILURE
+
+
+def _cargo_evidence(output: str) -> str:
+    """Cargo's error lines, without the warning wall around them.
+
+    ``warning:`` blocks are the bulk of a normal build's output and they
+    are why the reproduction's real cause -- ``failed to remove file`` --
+    arrived twelve lines down.  Prefer the ``error``/``Caused by`` lines;
+    fall back to the tail only when there are none.
+    """
+
+    lines = [line.rstrip() for line in (output or "").splitlines()
+             if line.strip()]
+    keep: list[str] = []
+    in_error = False
+    for line in lines:
+        stripped = line.strip().lower()
+        if stripped.startswith(("error", "caused by")):
+            in_error = True
+        elif stripped.startswith(("warning:", "warning[", "note:", "help:",
+                                  "= note:", "= help:", "compiling ",
+                                  "finished ", "checking ")):
+            in_error = False
+            continue
+        if in_error:
+            keep.append(line)
+    tail = keep or lines
+    return "\n".join(f"    {line}" for line in tail[-_CARGO_EVIDENCE_LINES:])
+
+
+def cargo_build_refusal(artifact: str, crate_relative: str, *,
+                        returncode: int, output: str,
+                        one_liner: str | None = None) -> str:
+    """The sentence a failed ``cargo build`` for ``artifact`` deserves.
+
+    Three parts, in the order a stuck reader needs them: WHAT failed (a
+    build, named), WHY (the class), and the REMEDY this install can
+    actually take -- the staged bundle where one exists, the build
+    one-liner where the sources do.
+    """
+
+    slug, sentence = classify_cargo_failure(output)
+    remedy = install_aware_one_line_hint(
+        one_liner or cargo_build_one_liner(crate_relative),
+        crate_relative, artifact)
+    if slug == "artifact-held-open":
+        remedy = ("close whatever holds the file (the path is in the "
+                  "evidence below), then re-run this command -- or use a "
+                  "copy that is already built: " + remedy)
+    elif slug == "build-lock-held":
+        remedy = ("wait for the other build to finish and re-run this "
+                  "command -- or use a copy that is already built: "
+                  + remedy)
+    return (
+        f"the Rust bridge `{artifact}` is not built here and building it "
+        f"in {crate_relative} FAILED (cargo exited {returncode}).\n"
+        f"  why: {sentence}.\n"
+        f"  remedy: {remedy}\n"
+        f"  cargo said:\n{_cargo_evidence(output)}")
+
+
+def cargo_missing_refusal(artifact: str, crate_relative: str) -> str:
+    """``cargo`` itself could not be started.  A refusal, not an OSError.
+
+    The build path used to let ``FileNotFoundError: [WinError 2]`` out
+    of ``subprocess.run`` untouched, so an install with sources and no
+    Rust toolchain ended in a traceback naming ``cargo`` with no hint
+    that a toolchain is what is missing.
+    """
+
+    return (
+        f"the Rust bridge `{artifact}` is not built here, and `cargo` "
+        "could not be started to build it -- no Rust toolchain is on "
+        "PATH.\n"
+        "  why: this install carries the crate sources but nothing that "
+        "can compile them, so no route to the decoder exists until one "
+        "of the two is supplied.\n"
+        "  remedy: " + install_aware_one_line_hint(
+            cargo_build_one_liner(crate_relative), crate_relative, artifact)
+        + "\n  # install Rust first if that route is the one taken:\n"
+        f"  {rust_toolchain_install_command()}\n"
+        f"  {cargo_activation_command()}")
+
+
 def resolve_source_decoder(source: str) -> Path:
     """THE decoder ``source``'s preparation will launch, or a refusal.
 
@@ -1102,6 +1265,8 @@ __all__ = [
     "REPOSITORY_URL", "RUSTWX_CRATE_RELATIVE", "WINDOWS_SHELL",
     "artifact_candidates", "cargo_build_one_liner",
     "artifact_remedy", "bridge_candidates", "bridge_remedy",
+    "BridgeBuildError", "CARGO_FAILURE_CLASSES", "cargo_build_refusal",
+    "cargo_missing_refusal", "classify_cargo_failure",
     "build_from_clone_hint", "cargo_activation_command",
     "cargo_is_installed", "crate_dir", "default_bridge_dir",
     "executable_name", "find_artifact", "find_bridge",

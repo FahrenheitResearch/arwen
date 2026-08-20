@@ -75,6 +75,18 @@ pub struct WrfProcessOptions {
     pub heavy_ecape: bool,
     #[serde(default = "default_true")]
     pub raw_extras: bool,
+    /// Ingest every stored `(Time, south_north, west_east)` plane the file
+    /// carries, including ones no catalog in this tree names.
+    ///
+    /// Default ON. It is what makes `--products var:wrf_<name>` able to
+    /// reach a variable a user added to their own WRF Registry: without it
+    /// the science route writes only its two fixed catalogs and the
+    /// renderer refuses with `stored 2-D variable "wrf_<name>" does not
+    /// exist`. Turning it OFF is a SPEED choice, not a correctness one —
+    /// enumerating a file's variables needs the NetCDF metadata index that
+    /// the wrf-core fast path otherwise never builds.
+    #[serde(default = "default_true")]
+    pub stored_planes: bool,
     #[serde(default)]
     pub only: Vec<String>,
     #[serde(default)]
@@ -88,6 +100,7 @@ impl Default for WrfProcessOptions {
             diagnostics: true,
             heavy_ecape: false,
             raw_extras: true,
+            stored_planes: true,
             only: Vec::new(),
             skip: Vec::new(),
         }
@@ -252,7 +265,7 @@ const PROFILE_FNV64_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// WRF-specific science marker. Keep this in the processing profile and the
 /// writer provenance so a reflectivity-method change cannot silently replace
 /// an older imported run.
-const WRF_PROCESS_SCIENCE_MARKER: &str = "wrf_science_v3";
+const WRF_PROCESS_SCIENCE_MARKER: &str = "wrf_science_v4";
 const COMPOSITE_REFLECTIVITY_FILTER: &str = "maxdbz";
 const COMPOSITE_REFLECTIVITY_STORE: &str = "composite_reflectivity";
 const REFLECTIVITY_1KM_FILTER: &str = "reflectivity_1km";
@@ -755,6 +768,35 @@ fn process_paths_with_target(
             WrfFile::open(path).map_err(|err| err.to_string())
         })
         .map_err(|err| format!("Open WRF {} failed after preflight: {err}", path.display()))?;
+        // The wrf-core reader answers by NAME; it cannot LIST what a file
+        // carries, and listing is the whole question a user-added plane
+        // asks. netcrust's index answers it. Built once per file, only
+        // when the stored-plane pass is on, and only for enumeration and
+        // units -- every plane's values still come off the wrf-core fast
+        // path through `PlaneSource`. It is the metadata indexing the
+        // post-processed probe was reordered to avoid paying on raw files,
+        // so the option that turns this pass off is the way back to that
+        // cost profile.
+        let stored_plane_index = if options.stored_planes {
+            let _ = tx.send(WrfProcessMessage::Progress(format!(
+                "Indexing {} for stored 2-D planes",
+                display_name(path)
+            )));
+            match netcrust::open(path) {
+                Ok(index) => Some(index),
+                Err(err) => {
+                    all_notes.push(format!(
+                        "{}: stored 2-D planes unavailable: {err}; a variable \
+                         this file carries but no product catalog names will \
+                         not render through var:<name>",
+                        display_name(path)
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         for record in &plan.records {
             let timeidx = record.time_index;
             let storage_slot = record.storage_slot;
@@ -768,7 +810,14 @@ fn process_paths_with_target(
             let mut progress = |message: String| {
                 let _ = tx.send(WrfProcessMessage::Progress(message));
             };
-            let fields = read_wrf_products(&file, path, timeidx, options, &mut progress)?;
+            let fields = read_wrf_products(
+                &file,
+                path,
+                timeidx,
+                options,
+                stored_plane_index.as_ref(),
+                &mut progress,
+            )?;
             if fields.canonical.is_empty() && fields.derived.is_empty() && fields.volumes.is_empty()
             {
                 return Err(format!(
@@ -864,6 +913,7 @@ fn read_wrf_products(
     path: &Path,
     timeidx: usize,
     options: &WrfProcessOptions,
+    stored_plane_index: Option<&netcrust::File>,
     progress: &mut impl FnMut(String),
 ) -> Result<WrfHourFields, String> {
     // Validate hostile/corrupt dimensions before xlat/xlong can allocate
@@ -1100,6 +1150,16 @@ fn read_wrf_products(
             push_derived_output(&mut fields, raw, output, shape.len());
         }
     }
+
+    push_stored_planes(
+        &mut fields,
+        file,
+        stored_plane_index,
+        timeidx,
+        shape,
+        options,
+        progress,
+    );
 
     // The cloud-cover chart recipes resolve canonical entire-atmosphere
     // selectors.  wrf-core's `cloudfrac` diagnostic (already computed and
@@ -1549,6 +1609,101 @@ fn push_reflectivity_products(
                 .notes
                 .push(format!("{REFLECTIVITY_1KM_STORE} unavailable: {err}")),
         }
+    }
+}
+
+/// Every stored `(Time, south_north, west_east)` plane the file carries
+/// that this import has not already produced under some other name.
+///
+/// The concrete breakage this prevents: a variable a user added to their
+/// own WRF Registry — `MSLP_ANOM`, a bespoke tracer, an in-house
+/// diagnostic — is in the wrfout but in neither of this route's two fixed
+/// catalogs, so it never reached the store and the generic
+/// `--products var:wrf_mslp_anom` answered
+/// `stored 2-D variable "wrf_mslp_anom" does not exist`. The remedy is
+/// metadata-level on purpose: the plane is carried through under the same
+/// `wrf_<sanitized>` name the light import already gives it, so nothing
+/// about a new user variable needs new product code.
+///
+/// Two rules keep it additive. A name this import already produced is
+/// skipped, so the canonical, unit-checked, earth-relative fields win over
+/// the raw plane behind them (`T2` stays `temperature_2m` AND keeps its
+/// existing `wrf_t2` browse plane from the diagnostic registry). And the
+/// planes answer the same `--only`/`--skip` token grammar under the Raw
+/// group as the rest of the import.
+fn push_stored_planes(
+    fields: &mut WrfHourFields,
+    file: &WrfFile,
+    index: Option<&netcrust::File>,
+    timeidx: usize,
+    shape: GridShape,
+    options: &WrfProcessOptions,
+    progress: &mut impl FnMut(String),
+) {
+    if !options.stored_planes {
+        return;
+    }
+    let Some(index) = index else {
+        // Only reachable when the caller could not build the metadata
+        // index; it already reported why, and the science suite above is
+        // unaffected, so this is a note-free no-op rather than a refusal.
+        return;
+    };
+    let mut produced = fields
+        .canonical
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<std::collections::HashSet<_>>();
+    produced.extend(fields.derived.iter().map(|field| field.name.clone()));
+
+    let source = crate::local_import::PlaneSource::new(index, Some(file), timeidx);
+    let planes = crate::local_import::read_raw_wrf_mass_grid_fields_where(
+        &source,
+        shape.nx,
+        shape.ny,
+        progress,
+        &mut |wrf_name, store_name| {
+            !produced.contains(store_name)
+                && options.should_process(wrf_name, Some(store_name), WrfProductGroup::Raw)
+        },
+    );
+    match planes {
+        Ok(planes) => {
+            if !planes.is_empty() {
+                progress(format!(
+                    "carried {} stored 2-D plane(s) no product catalog names: {}",
+                    planes.len(),
+                    planes
+                        .iter()
+                        .map(|field| field.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            for plane in planes {
+                if plane.values.len() != shape.len() {
+                    fields.notes.push(format!(
+                        "{} skipped: carries {} values; expected {}",
+                        plane.name,
+                        plane.values.len(),
+                        shape.len()
+                    ));
+                    continue;
+                }
+                fields.derived.push(OwnedDerivedField {
+                    name: plane.name,
+                    units: plane.units,
+                    values: plane.values,
+                });
+            }
+        }
+        // A failed sweep costs the user's own planes, not the hour: the
+        // science suite above is already built and independently valid.
+        Err(err) => fields.notes.push(format!(
+            "stored 2-D planes unavailable: {err}; a variable this file \
+             carries but no product catalog names will not render through \
+             var:<name>"
+        )),
     }
 }
 
@@ -2230,6 +2385,7 @@ fn processing_profile_suffix(options: &WrfProcessOptions) -> String {
             u8::from(normalized.diagnostics),
             u8::from(normalized.heavy_ecape),
             u8::from(normalized.raw_extras),
+            u8::from(normalized.stored_planes),
         ],
     );
     for (label, tokens) in [
@@ -2319,7 +2475,7 @@ fn writer_build() -> &'static str {
         env!("CARGO_PKG_NAME"),
         " ",
         env!("CARGO_PKG_VERSION"),
-        " wrf_science_v3"
+        " wrf_science_v4"
     )
 }
 

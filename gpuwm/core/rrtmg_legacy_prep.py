@@ -1431,8 +1431,87 @@ def _cloud_properties_b(xp, iceflg, inflg, qc1d, qi1d, qs1d, cldfra1d,
     return clwpth, ciwpth, cswpth, rel, rei, res, resnow1d
 
 
+_PERFWAVE_DEVICE_XP = "unset"
+
+
+def _perfwave_device_xp():
+    """CuPy when a usable CUDA device is present, else None.  Cached.
+
+    Import failure or a device-less box falls back to the host path, so
+    this is a performance decision only -- never a correctness one.
+    """
+    global _PERFWAVE_DEVICE_XP
+    if _PERFWAVE_DEVICE_XP == "unset":
+        module = None
+        try:
+            import cupy as _cupy
+
+            if int(_cupy.cuda.runtime.getDeviceCount()) > 0:
+                module = _cupy
+        except Exception:
+            module = None
+        _PERFWAVE_DEVICE_XP = module
+    return _PERFWAVE_DEVICE_XP
+
+
+def _o3data_b_device(cp, prlevh):
+    """Device twin of :func:`_o3data_b` -- same float32 ops, same order.
+
+    Every element is still ``(pk - ppwrkh[jj])``, ``_neg_part`` of it,
+    ``(pb2-pb1)-pt2+pt1``, ``w*o3wrk[jj]`` in float32, computed exactly
+    once.  The only structural change is that the 31 table intervals are
+    evaluated as one batched elementwise expression over a leading jj
+    axis instead of 31 separate ones; elementwise float32 ops are
+    per-element independent, so this cannot move a bit.  The
+    accumulation over jj stays STRICTLY SEQUENTIAL, so the float32
+    rounding chain of ``acc`` -- the only order-sensitive part -- is
+    untouched.  ``astype(f32, copy=False)`` replaces ``astype(f32)``
+    where the operand is already float32: a float32->float32 cast is the
+    identity, so this drops a copy kernel, not a rounding.
+    """
+    f32 = np.float32
+    tabs = _tables(cp)
+    o3wrk = tabs["o3wrk"]
+    ppwrkh = tabs["ppwrkh"]
+    m = prlevh.shape[1] - 1
+    pk = prlevh[:, :m]
+    pk1 = prlevh[:, 1:m + 1]
+
+    def _neg_part(diff):
+        return cp.where(diff > _ZERO, diff, _ZERO).astype(f32, copy=False)
+
+    lower = ppwrkh[0:31][:, None, None]
+    upper = ppwrkh[1:32][:, None, None]
+    pk_b = pk[None, :, :]
+    pk1_b = pk1[None, :, :]
+
+    pb1 = _neg_part((pk_b - lower).astype(f32, copy=False))
+    pb2 = _neg_part((pk_b - upper).astype(f32, copy=False))
+    pt1 = _neg_part((pk1_b - lower).astype(f32, copy=False))
+    pt2 = _neg_part((pk1_b - upper).astype(f32, copy=False))
+    w = (pb2 - pb1).astype(f32, copy=False)
+    del pb1, pb2
+    w = (w - pt2).astype(f32, copy=False)
+    del pt2
+    w = (w + pt1).astype(f32, copy=False)
+    del pt1
+    contribution = (w * o3wrk[:, None, None]).astype(f32, copy=False)
+    del w
+
+    acc = cp.zeros((prlevh.shape[0], m), f32)
+    for jj in range(31):
+        acc = (acc + contribution[jj]).astype(f32, copy=False)
+    return (acc / (pk - pk1).astype(f32, copy=False)).astype(f32, copy=False)
+
+
 def _o3data_b(xp, prlevh):
     """Batch twin of :func:`_o3data`; prlevh is (ncol, m+1)."""
+    if xp is np:
+        device = _perfwave_device_xp()
+        if device is not None:
+            return device.asnumpy(
+                _o3data_b_device(device, device.asarray(prlevh))
+            )
     f32 = np.float32
     tabs = _tables(xp)
     o3wrk = tabs["o3wrk"]
@@ -1468,7 +1547,17 @@ def _varint_b(xp, plev):
     branch gather through a clamped safe index; their interpolated
     values are discarded (the denominators are table constants, never
     zero, so no out-of-domain arithmetic happens on any lane).
+
+    Host arrays are re-entered with ``xp`` bound to CuPy when a device is
+    present (S3b of the perf wave): the body below is already generic in
+    ``xp`` and fully vectorised, so the device path executes the
+    identical float32 expression, and searchsorted on the negated table
+    performs the identical strict comparisons on identical bits.
     """
+    if xp is np:
+        device = _perfwave_device_xp()
+        if device is not None:
+            return device.asnumpy(_varint_b(device, device.asarray(plev)))
     f32 = np.float32
     tabs = _tables(xp)
     pprof = tabs["pprof"]

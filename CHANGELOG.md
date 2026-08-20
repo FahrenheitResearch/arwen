@@ -1,6 +1,211 @@
 # Changelog
 
-## Unreleased
+## 2.5.1 (2026-08-20)
+
+New:
+- `gpuwm sources` lists every registered forcing source and what this
+  release can do with each one; `gpuwm sources ID` prints one row in full,
+  by id or alias. `--json` serves the same document as
+  `gpuwm run-plan --sources`.
+- Registry rows carry a display name and their credential prerequisites,
+  emitted through `--sources`: what must be configured before a source's
+  bytes can be acquired, where it lives on this machine, whether it is
+  there, and what breaks without it. Existence only -- a key's value is
+  never read. A source that needs an account key is one registry row; no
+  front end carries an exception table for it.
+- run-plan intents are composed from the registry row instead of a
+  hardcoded list: icon-eu, rap, rrfs, hrrr-prs, gem-gdps, aifs, aigfs and
+  ecmwf-open-data join gfs/hrrr/era5 through the same door, eleven of the
+  eighteen runnable rows carrying an intent. The prepared route grows a
+  staged fetch->prep->sim chain composed from the fetch
+  route's own bound handoff (prep-arguments.json, new beside
+  prep-command.txt); --sources rows carry intent_chain and intent_refusal.
+  An intent naming an undrivable source is refused with the missing
+  registry fact (member set, no acquisition route, no cadence), never a
+  hardcoded-list bounce.
+- `gpuwm run-plan --sources` prints the source registry as one JSON
+  document (`gpuwm.run-plan.sources.v1`): every registered row, its
+  coverage, maturity and fetch route, and whether a run-plan intent can
+  drive it. A front end picks from the engine's list instead of its own.
+- `[output]` selects which variables the wrfout files carry:
+  `preset = "full"` (the default), `"minimal"`, `"severe"`, or your own
+  `history_vars` / `history_drop` lists; the same table sits inline on a
+  `[[domain]]`, so a 1 km child can write surface fields while its parent
+  keeps everything. Config resolution warns which render products a
+  selection costs, per domain, naming product and variable; the render
+  front door refuses those products by name with the remedy. Trimmed runs
+  stamp `GPUWM_HISTORY_PRESET` / `GPUWM_HISTORY_SELECTION` /
+  `GPUWM_HISTORY_DROPPED`; a default run stamps nothing. Measured on a
+  two-domain forecast: 35% off the 3 km parent's frames, 81% off the
+  1 km child's.
+- `gpuwm render --streamlines` / `--barbs` choose how wind is drawn on
+  every product carrying a wind layer. Neither given, the automatic
+  per-grid choice is unchanged; `RUSTWX_WIND_STREAMLINES` still works and
+  the flags outrank it.
+- `gpuwm run-plan --physics-profiles` answers which physics suites run on
+  a given source and which that source's own row defaults to, computed
+  from the registry rather than a per-source table.
+- `gpuwm speedrun` runs a named course and emits a signed record. Two
+  courses ship, `regional-12km-6h` and `nested-12km-3km-3h`, with the
+  records under `evidence/speedrun/`. See SPEEDRUN.md.
+- `era5-l137` is a registered runnable source: ERA5 on its native 137
+  model levels, aliases `era5-model-level` and `era5-ml`. It declares the
+  Copernicus CDS key as a credential; acquisition runs through the
+  provider's own client, so the row carries no gpuwm fetch route and no
+  run-plan intent.
+- Twenty-two example configurations across eleven sources, two each for
+  ecmwf-open-data, era5, era5-l137, gdas, gem-gdps, gfs, hrrr, hrrr-prs,
+  icon-eu, rap and rrfs. Each was run end to end -- fetch, prepare,
+  forecast, render -- and each header records the domain, the `gpuwm
+  check` peak envelope against a 10 GiB budget, and the peak device
+  memory and stage timings its run measured. The forecasts were executed
+  on a 16 GiB RTX 5070 Ti against a computed 10 GiB budget; these are
+  configurations SIZED for a 10 GiB budget, not configurations proven on
+  a 10 GiB card. Two need non-default flags and are workarounds, not
+  fixes: gdas requires `gpuwm fetch --mode full-file --cadence 1`
+  because the default NOMADS subset emits 21 of the profile's 33
+  isobaric levels and the fetch door's default cadence is three-hourly
+  against an hourly contract; ecmwf-open-data has no one-command chain
+  and must be driven as separate fetch, prep and sim stages.
+- The prepared-tree runner and `gpuwm stream` refuse a delayed
+  `[[domain]] start_time` by name and point at `gpuwm run`; both restore
+  every domain from a prepared cache and cannot activate one mid-run.
+
+Fixed:
+- A run that reaches its stop tick reports success. Restarting from a run's
+  own final checkpoint is completion, not an error: the route finalizes and
+  exits 0 on both the tree and single-domain paths. A checkpoint from beyond
+  the stop is still refused, and that refusal names the breakage and the key
+  to change.
+- The stretch after the last model step -- drain, device synchronize,
+  trajectory digest, receipts, and the hash pass over every emitted frame --
+  publishes a named finalizing heartbeat, and the frame hash counts itself
+  off frame by frame. It used to publish nothing, so on a large run the
+  supervisor's stale-integration watchdog killed a worker that was finishing
+  normally. Emitted frames are hashed once per run, not twice.
+- A restore the worker refused is no longer relaunched. Three fresh processes
+  rediscovering one refusal also overwrote each other's failure capsules,
+  which destroyed the evidence for the first failure. Crashes elsewhere still
+  get their fresh-process recovery attempts.
+- The no-fetch-route refusal pointed at `gpuwm sources`, which did not exist.
+  It does now, and the sentence names the one-row spelling too.
+- A cargo build that cannot finish (an artifact another process holds open, a
+  build lock, an incomplete vendor set) refuses by name with the artifact and
+  a remedy, instead of relaying a compiler warning wall under "could not
+  decode/merge forcing inputs". `gpuwm check --json` always writes a JSON
+  document to stdout; a failing input preflight used to leave it empty, so a
+  build error reached a calling program as a JSON parse error. The preflight
+  also tells a decoder that could not be BUILT from data that is wrong, and
+  says which failures below it measured an empty catalog rather than inputs.
+- The per-thread local-frame table is a ceiling over named compile platforms
+  instead of one box's reading; six rows were under-pricing sm_86 cards by up
+  to 0.17 GiB of backing store, and one kernel module had no row at all.
+  `gpuwm check`'s binding-phase line no longer charges the CUDA context and
+  backing store twice -- on a loaded 10 GiB card it called a configuration
+  1.61 GiB over budget that `gpuwm go` ran to completion.
+- A delivered render tree contains only products: the Rust renderer's working
+  store moved out of the output directory into a sibling scratch directory,
+  cleaned on exit, so it cannot be left among the pictures and cannot race a
+  copy of a tree being rendered into.
+- The `gpuwm domain` next-steps pointer and interactive prompt derive their
+  credential line from the registry row instead of a hardcoded per-source
+  branch, so any source that declares one gets the pointer.
+- The MPAS render-bridge Python pair refuses to run as a product path, exits
+  78 and prints the Rust command that supersedes it; it stays reachable as
+  the parity reference behind an explicit flag.
+- VRAM sizing charged a run's CUDA context and kernel backing store
+  twice -- once inside the peak envelope and again in the budget it was
+  compared against -- so a 10 GiB card was refused the smallest domain
+  the hrrr ladder can express. The same grid now fits with room to spare.
+  A 550 x 550 x 49 full-physics run is admitted on a 15.24 GiB card
+  instead of refused; the streamed-admission pin moves to 576 x 576, the
+  smallest domain that genuinely does not fit, and the newly admitted run
+  is pinned as its own statement because it is user-visible.
+- A GRIB2 source with no hybrid vertical coordinate reads again. The
+  Section-4 pv octets became a required column of every inventory, so a
+  single-surface record such as a sea-surface temperature failed a round
+  trip with "missing required columns ['pv']" with no vertical
+  coordinate to lose. pv is required of hybrid-level records only
+  (level_type 105, 118, 119), where a decoder that cannot state them is
+  refused by name, naming the level type, the column and the rebuild.
+  Both directions are tested.
+- The standalone RW-WPS preprocessing wheel builds again. Reading a
+  config imported the forecast output writer: the history vocabulary was
+  built at module scope through a function-local import of the wrfout
+  writer, which pulls in the supervisor and netCDF4, so importing a
+  preparation module dragged in the whole executor. The metadata table
+  moves to the data module that owns it, and the boundary is pinned
+  against the artifact.
+- No shipped file carries a developer's absolute paths. The shipped
+  docstrings take a `<user>` template and the affected tests assemble
+  their fixtures from a user fragment, so the strings the functions under
+  test receive are unchanged real spellings.
+- The domain wizard measured your card and then priced its kernel memory
+  against a different one, disagreeing with `gpuwm check` on the same
+  machine. Both doors price the card that is present.
+- The Linux memory envelope charged no allowance for pool retention and
+  sat below the measured peak of every instrumented forecast. The
+  allowance follows the radiation scheme rather than the operating
+  system, and is charged wherever that scheme runs.
+- The CUDA context was priced from one 2026-07 reading of one card,
+  which under-charged a Linux RTX 5090 by 215 MiB. It is measured on the
+  card in the machine.
+- On Windows, free VRAM was read from an instrument that counts memory
+  the driver would have to evict from your desktop -- 5.7 GiB of a
+  10 GiB card. Budgets use the smaller, machine-wide figure.
+- Grell-Freitas cumulus receives the boundary-layer forcing WRF's own
+  cumulus driver hands it; the engine built those rates every step and
+  fed the scheme zeros. Every boundary-layer scheme supplies them now,
+  not only YSU. Measured, one forecast hour from the same analysis with
+  YSU: at 12 km domain-total convective rainfall moves 12.8% and cloud
+  water 22% of its own spatial variation, with single points moving up
+  to 2.5 m/s in the 10 m wind and 1.2 K at 2 m; at 3 km, where the
+  scheme damps itself, convective rainfall moves 3.3%. No shipped
+  physics profile selects Grell-Freitas, so a default run is unchanged;
+  the two shipped configs that do select it both pair it with YSU and
+  change. On the MPAS seam shallow convection is on, dx is per column,
+  and the advective forcing pair arrives too; the ArWen dycore exports
+  no advective pair, so RTHFTEN/RQVFTEN stay zero there.
+- A nest that starts later than the experiment now runs to completion.
+  Its first history frame is that domain's own analysis frame and carries
+  no REFL_10CM, exactly as d01's frame at t = 0 does; every frame after
+  it carries the field. The 2.5.0 upfront refusal named this crash and
+  retires with it.
+- `gpuwm check` sizes the selected PBL scheme against its kernel column
+  bound. A 130-level YSU configuration used to pass check and both
+  preparation stages, then die on the first physics call.
+- The health gate's potential-temperature ceiling follows the configured
+  model lid instead of a flat 600 K, so a deep-top initial state such as
+  a 20 hPa top is no longer refused as runaway; the refusal names the
+  lid-derived threshold it applied.
+- Render: a 2-D variable you added to your own file is drawable by name
+  with `--products var:`. The science import kept only the fields its
+  fixed catalogs named; every stored `(Time, south_north, west_east)`
+  plane is now imported, which also makes the surface suite renderable
+  with no new product code.
+- `gpuwm doctor` checks the staged Rust artifacts against this release's
+  pins, not just that they exist and launch; a stale `~/.gpuwm/bridges`
+  is a blocking finding with `gpuwm fetch-bridges` as the remedy.
+  `python -m gpuwm.doctor` prints the report and returns the console
+  script's exit code instead of silent 0. Slow probes name themselves on
+  stderr while they run; the report itself is unchanged.
+- The mapped preparation route prints its ready-to-run forecast command
+  with all three digests filled in, like the GFS route; it used to finish
+  silently. `--proof-sha256` refuses by name, states that it wants the
+  sha256 of the proof.json file, prints both digests, and says outright
+  when the value given is the document's own `proof_content_sha256`.
+- The generated CLI reference covers every installed console script;
+  `gpuwm-member-prep` and its twelve options were named by no document.
+- `gpuwm go` no longer redraws the frame its early render already
+  published, and `time to first plot` is checked against the pictures in
+  the render tree before it is printed.
+- `tools/check_case_token_leakage.py` scans the zones it names and
+  reports the file count; passing a subtree used to scan zero files and
+  always print green.
+- `tools/ci_test_replay.py` builds its venv with setuptools, so the
+  replay runs on Python 3.12+.
+
+## 2.5.0 (2026-08-19)
 
 New:
 - The whole data path runs on Rust by default: GRIB1, GRIB2 and NetCDF
@@ -6056,3 +6261,4 @@ validated, component evidence elsewhere.
 Pre-release development history, internal milestone evidence, and
 per-change hashes are recorded in PROVENANCE.md and the focused status
 documents rather than duplicated here.
+

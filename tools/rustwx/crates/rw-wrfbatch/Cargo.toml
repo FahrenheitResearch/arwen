@@ -57,3 +57,12 @@ rw-store = { path = "../rw-store" }
 # a `gpuwm-obs.radar-grid.v1` file has are both unreadable through this
 # reader (see src/obs_grid.rs).
 wx-radar = { path = "../../vendor/wx-radar" }
+
+# Test scope only; the shipped binaries do not link it.  The stored-plane
+# tests need a wrfout to exist before they can assert anything about
+# importing one, and `netcdf-writer` is this workspace's classic-NetCDF
+# emitter -- the one thing in the tree that can write a `Times`-carrying
+# record file.
+[dev-dependencies]
+netcdf-writer = { path = "../netcdf-writer" }
+rw-store = { path = "../rw-store" }

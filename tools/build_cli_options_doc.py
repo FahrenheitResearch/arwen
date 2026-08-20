@@ -74,6 +74,20 @@ NOTES: dict[str, str] = {
 #: Doors that are the same program reached by a second name.
 ALIASES = {"gpuwm-wrf-init": "rw-wps"}
 
+#: Console-script modules whose parser factory is not ``build_parser``.
+#: Everything absent from this table is asked for ``build_parser``, and a
+#: module that answers neither is a refusal below rather than a silent
+#: omission.
+PARSER_FACTORY = {"gpuwm.source_cli": "_parser"}
+
+#: Doors that are NOT console scripts: a mode flag that selects a second
+#: program inside one script, with its own parser and its own options.
+#: Name -> ``(module, factory)``.
+MODE_FLAG_DOORS = {
+    "gpuwm-prepared-forecast --materialize-authorities": (
+        "gpuwm.prepared_single_domain_forecast", "build_materialize_parser"),
+}
+
 #: What the page prints for an option whose parser declares no help.
 #: The flag is still NAMED, which is the reachability contract; the
 #: missing sentence is a separate, smaller debt, and the parity test
@@ -120,6 +134,32 @@ def _options(parser: argparse.ArgumentParser) -> list[tuple[str, str]]:
     return sorted(rows)
 
 
+def console_scripts() -> dict[str, str]:
+    """``[project.scripts]`` from ``pyproject.toml``, name -> target.
+
+    The door list used to be a hand-written literal, and the failure mode
+    it has is the one every hand-written mirror of a real table has:
+    `gpuwm-member-prep` shipped as an installed console script for a
+    whole release with no section on the reference page and no document
+    naming any of its options, because adding the entry point and adding
+    the line here were two separate acts and only the first happened.
+
+    Reading the same table setuptools reads makes them one act.
+    """
+
+    import tomllib
+
+    manifest = REPO_ROOT / "pyproject.toml"
+    if not manifest.exists():
+        raise SystemExit(
+            f"{manifest} is not there, so the console-script table this "
+            "page is generated from cannot be read.  This generator is a "
+            "repository tool; run it from a source checkout.")
+    scripts = tomllib.loads(
+        manifest.read_text(encoding="utf-8"))["project"]["scripts"]
+    return dict(scripts)
+
+
 def doors() -> dict[str, argparse.ArgumentParser]:
     """Every documented command door, name -> parser."""
 
@@ -149,17 +189,28 @@ def doors() -> dict[str, argparse.ArgumentParser]:
     walk(build_parser(), "gpuwm")
 
     def built(module: str, attr: str = "build_parser"):
-        return getattr(importlib.import_module(module), attr)()
+        loaded = importlib.import_module(module)
+        factory = getattr(loaded, attr, None)
+        if factory is None:
+            raise SystemExit(
+                f"{module} is a console-script door and declares no "
+                f"{attr}(), so this page cannot read its options and "
+                f"every one of them would ship undocumented.  Give the "
+                f"module a build_parser() that returns the parser its "
+                f"main() uses, or name its factory in PARSER_FACTORY.")
+        return factory()
 
-    out["rw-wps"] = built("gpuwm.source_cli", "_parser")
-    out["gpuwm-mapped-inspect"] = built("gpuwm.mapped_source")
-    out["gpuwm-wrf-runtime-check"] = built("gpuwm.native_wrf_distribution")
-    out["gpuwm-prepared-forecast"] = built(
-        "gpuwm.prepared_single_domain_forecast")
-    out["gpuwm-prepared-forecast --materialize-authorities"] = built(
-        "gpuwm.prepared_single_domain_forecast", "build_materialize_parser")
-    out["gpuwm-prepared-tree-forecast"] = built(
-        "gpuwm.prepared_domain_tree_forecast")
+    # Driven by the entry-point table rather than by a literal, so a new
+    # console script is a documented door on the day it is installable.
+    for name, target in sorted(console_scripts().items()):
+        if name in ALIASES:
+            continue  # the same program, printed once under its own name
+        module = target.split(":")[0]
+        if module == "gpuwm.cli":
+            continue  # the subcommand walk above IS this door
+        out[name] = built(module, PARSER_FACTORY.get(module, "build_parser"))
+    for name, (module, attr) in sorted(MODE_FLAG_DOORS.items()):
+        out[name] = built(module, attr)
     return out
 
 

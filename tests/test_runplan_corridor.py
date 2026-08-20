@@ -492,18 +492,19 @@ def test_a_still_hrrr_tree_says_nothing_about_corridors(tmp_path):
                 if item.get("key") == "statics_corridor"]
 
 
-def test_no_chain_this_door_dispatches_to_refuses_a_moving_nest():
+def test_only_the_staged_chain_refuses_a_moving_nest():
     """The delivery table's current truth, stated as a test.
 
-    Every chain `_chain_key` can name can now feed a moving nest.  The
-    refusal machinery stays for a chain added tomorrow that cannot --
-    which is why the completeness guards below still run -- but nothing
-    reachable today takes that path.
+    The GFS and HRRR chains feed a moving nest; the staged mapped
+    chain cannot -- rw-wps's mapped arm refuses --statics-corridor by
+    name -- and so it is the one ``None`` entry, refusing a follow
+    config at resolve time rather than minutes downstream.
     """
     from gpuwm.runplan import _FOLLOW_STATICS_DELIVERY
 
-    assert not [chain for chain, delivery
-                in _FOLLOW_STATICS_DELIVERY.items() if delivery is None]
+    assert [chain for chain, delivery
+            in _FOLLOW_STATICS_DELIVERY.items()
+            if delivery is None] == ["prepared:staged"]
 
 
 # ---------------------------------------------------------------------------
@@ -520,12 +521,15 @@ def test_every_chain_declares_where_a_moving_nest_gets_its_statics():
     against the routes that actually exist.
     """
     from gpuwm.runplan import ROUTES, _FOLLOW_STATICS_DELIVERY, _chain_key
+    from gpuwm.source_adapters import source_adapters
 
     reachable = set()
     for route in ROUTES:
         # The prepared route forks on the config's [fetch].source; every
-        # other route is its own chain.
-        for source in (None, "gfs", "hrrr", "era5"):
+        # other route is its own chain.  Every registered id is walked,
+        # so a chain a registry row can reach cannot hide from this
+        # completeness gate.
+        for source in (None, *(a.source_id for a in source_adapters())):
             reachable.add(_chain_key(route, source))
     assert reachable == set(_FOLLOW_STATICS_DELIVERY)
 

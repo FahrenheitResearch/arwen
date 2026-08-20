@@ -24,6 +24,15 @@ gpuwm/libexec/
 # are force-added; this negation is what makes the NEXT fresh add keep
 # them, and tests/test_package_data_coverage.py gates it.
 !gpuwm-data/gpuwm_data/data/**/*.nc
+# Third spring of the same rule: rw-store's classic-netCDF writer pins its
+# byte layout against three tiny fixtures written by the netCDF-C library,
+# and `include_bytes!` them.  They were authored on lane/mpas-render-bridge
+# and silently dropped from every commit there, so the crate's test build
+# only ever compiled in the worktree that still had the untracked files --
+# `cargo test -p rw-store` failed to compile the instant the lane merged
+# anywhere else.  The generator sits beside them (make_goldens.py); this
+# negation is what keeps the regenerated copies tracked.
+!tools/rustwx/crates/rw-store/tests/goldens/*.nc
 # Externalized table asset: published as a GitHub release asset and
 # staged by `gpuwm fetch-tables` (never in the public git history --
 # GitHub rejects blobs over 100 MiB).  The development tree force-tracks

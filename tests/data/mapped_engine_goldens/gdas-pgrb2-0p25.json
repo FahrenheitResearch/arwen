@@ -1541,6 +1541,11 @@
           "c99ce38933074439375c5b4b72f86bbaf11a4a3ff47db4b4910500bd8e4bc20c",
           "95e7df489cb59200c7a13dd47a283e2b68e04f2b108360c4d3b98476d214dc20"
         ],
+        "frame_header_sha256_portable": [
+          "2778b1860d4982c57c0353f0671d6c239364411cd01ada51770db211ccb94e59",
+          "713ec578379babdfd472eb1728c483dd88c0681f22c7c812b8f40d7f320d1bef"
+        ],
+        "portable_rule": "gpuwm-portable-frame-header-v1",
         "verdict": "PASS"
       },
       "schema": "gpuwm-mapped-source-inspection-v1",

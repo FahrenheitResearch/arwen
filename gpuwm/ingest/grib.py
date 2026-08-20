@@ -400,18 +400,49 @@ def build_rust_bridge(*, release: bool = True) -> Path:
         command = ["cargo", "build", "--locked", "--offline"]
         if release:
             command.append("--release")
-        result = subprocess.run(
-            command, cwd=crate, text=True, capture_output=True, check=False
-        )
+        try:
+            result = subprocess.run(
+                command, cwd=crate, text=True, capture_output=True,
+                check=False
+            )
+        except OSError:
+            # `cargo` itself could not be started.  A refusal naming the
+            # missing toolchain, never a bare WinError 2 traceback out
+            # of subprocess.
+            raise bridges.BridgeBuildError(
+                bridges.cargo_missing_refusal(
+                    "grib1_bridge", bridges.CRATE_RELATIVE),
+                failure_class="cargo-not-installed") from None
         if result.returncode:
-            detail = (result.stderr or result.stdout).strip()
-            raise RuntimeError(f"failed to build Rust GRIB1 bridge: {detail}")
+            # A BUILD failure, named by class -- so it can never reach a
+            # caller wearing a data failure's face.  The reproduction:
+            # `gpuwm check --alloc` in a fresh worktree, with this
+            # crate's cdylib held open by another process, relayed
+            # cargo's whole warning wall under "could not decode/merge
+            # forcing inputs" and then reported five more failures about
+            # forcing fields nothing had read.
+            detail = "\n".join(part for part in (result.stdout, result.stderr)
+                               if part)
+            raise bridges.BridgeBuildError(
+                bridges.cargo_build_refusal(
+                    "grib1_bridge", bridges.CRATE_RELATIVE,
+                    returncode=result.returncode, output=detail),
+                failure_class=bridges.classify_cargo_failure(detail)[0])
         profile = "release" if release else "debug"
         suffix = ".exe" if os.name == "nt" else ""
         executable = crate / "target" / profile / f"grib1_bridge{suffix}"
         if not executable.is_file():
-            raise RuntimeError(
-                f"cargo succeeded but bridge is missing: {executable}")
+            raise bridges.BridgeBuildError(
+                f"cargo reported success in {bridges.CRATE_RELATIVE} but "
+                f"the bridge it should have produced is not there: "
+                f"{executable}.\n"
+                "  why: the build wrote somewhere else (a CARGO_TARGET_DIR "
+                "in this environment) or was interrupted between linking "
+                "and rename, so nothing here can decode GRIB1.\n"
+                "  remedy: " + bridges.install_aware_one_line_hint(
+                    bridges.CARGO_BUILD_HINT, bridges.CRATE_RELATIVE,
+                    "grib1_bridge"),
+                failure_class="artifact-absent-after-build")
         return executable
     prebuilt = bridges.find_bridge("grib1_bridge")
     if prebuilt is not None:

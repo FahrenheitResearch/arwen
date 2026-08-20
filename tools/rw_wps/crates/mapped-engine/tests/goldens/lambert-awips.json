@@ -846,6 +846,335 @@
     "c6a5b48798dec8b1bbad5b091ed3877609d447bf36e3cecf2f7cf141e55d649b",
     "50723fc925b24b5606a67e4033caaab98a88750db518f0e28eabb64b05f5ef64"
   ],
+  "libm_dependent_fields": [
+    "air_pressure",
+    "eastward_wind",
+    "eastward_wind_10m",
+    "northward_wind",
+    "northward_wind_10m",
+    "specific_humidity"
+  ],
+  "libm_dependent_statistics": [
+    {
+      "air_pressure": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 100000.0,
+        "minimum": 5000.0,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": 197937967500.0,
+        "sum_absolute": 197937967500.0,
+        "sum_square": 1.337652216875e+16
+      },
+      "eastward_wind": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 65.79779685617021,
+        "minimum": -35.882380013882546,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": 10411057.134675931,
+        "sum_absolute": 28693697.016840663,
+        "sum_square": 390314098.52645355
+      },
+      "eastward_wind_10m": {
+        "axes": [
+          "y",
+          "x"
+        ],
+        "maximum": 20.50304783416062,
+        "minimum": -18.19378456063933,
+        "nonfinite": 0,
+        "shape": [
+          277,
+          349
+        ],
+        "sum": -66613.25422368184,
+        "sum_absolute": 323803.0111954108,
+        "sum_square": 1733227.3697201607
+      },
+      "northward_wind": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 67.30102189880635,
+        "minimum": -70.53260475021216,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": 170344.52391474202,
+        "sum_absolute": 20913400.77290751,
+        "sum_square": 250797462.86808914
+      },
+      "northward_wind_10m": {
+        "axes": [
+          "y",
+          "x"
+        ],
+        "maximum": 16.697105510701057,
+        "minimum": -18.27798933095541,
+        "nonfinite": 0,
+        "shape": [
+          277,
+          349
+        ],
+        "sum": -12296.457690861476,
+        "sum_absolute": 271955.35033717187,
+        "sum_square": 1321112.8640548286
+      },
+      "specific_humidity": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 0.028035571206147046,
+        "minimum": 9.99999000001e-07,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": 13495.13528538756,
+        "sum_absolute": 13495.13528538756,
+        "sum_square": 126.28016016931895
+      }
+    },
+    {
+      "air_pressure": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 100000.0,
+        "minimum": 5000.0,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": 197937967500.0,
+        "sum_absolute": 197937967500.0,
+        "sum_square": 1.337652216875e+16
+      },
+      "eastward_wind": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 66.45689402103257,
+        "minimum": -35.45928838280019,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": 10323351.57826102,
+        "sum_absolute": 28743235.584989958,
+        "sum_square": 391067175.08770204
+      },
+      "eastward_wind_10m": {
+        "axes": [
+          "y",
+          "x"
+        ],
+        "maximum": 21.791915369661567,
+        "minimum": -22.33539338639711,
+        "nonfinite": 0,
+        "shape": [
+          277,
+          349
+        ],
+        "sum": -70883.03228248132,
+        "sum_absolute": 322023.739508412,
+        "sum_square": 1731277.1493486566
+      },
+      "northward_wind": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 66.90847895585539,
+        "minimum": -68.8755202323248,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": -146943.60392387837,
+        "sum_absolute": 21002744.903076448,
+        "sum_square": 253442216.02509114
+      },
+      "northward_wind_10m": {
+        "axes": [
+          "y",
+          "x"
+        ],
+        "maximum": 17.00789157142932,
+        "minimum": -15.06307489634186,
+        "nonfinite": 0,
+        "shape": [
+          277,
+          349
+        ],
+        "sum": -14835.503009219186,
+        "sum_absolute": 271305.01875157736,
+        "sum_square": 1314410.6771144255
+      },
+      "specific_humidity": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 0.027471272318723733,
+        "minimum": 9.99999000001e-07,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": 13525.696459921088,
+        "sum_absolute": 13525.696459921088,
+        "sum_square": 126.83004792442493
+      }
+    },
+    {
+      "air_pressure": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 100000.0,
+        "minimum": 5000.0,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": 197937967500.0,
+        "sum_absolute": 197937967500.0,
+        "sum_square": 1.337652216875e+16
+      },
+      "eastward_wind": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 67.49322001177502,
+        "minimum": -35.56960707439963,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": 10124154.742418135,
+        "sum_absolute": 28785346.37322449,
+        "sum_square": 391868211.386321
+      },
+      "eastward_wind_10m": {
+        "axes": [
+          "y",
+          "x"
+        ],
+        "maximum": 19.848519509870105,
+        "minimum": -19.399781891657558,
+        "nonfinite": 0,
+        "shape": [
+          277,
+          349
+        ],
+        "sum": -77819.39557224809,
+        "sum_absolute": 324190.6919000867,
+        "sum_square": 1773323.7693974674
+      },
+      "northward_wind": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 64.99578515763889,
+        "minimum": -68.9054134225479,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": -385041.615918712,
+        "sum_absolute": 21058468.507086713,
+        "sum_square": 255872522.58490917
+      },
+      "northward_wind_10m": {
+        "axes": [
+          "y",
+          "x"
+        ],
+        "maximum": 18.417974704735443,
+        "minimum": -15.652070560093481,
+        "nonfinite": 0,
+        "shape": [
+          277,
+          349
+        ],
+        "sum": -14254.494132273867,
+        "sum_absolute": 271852.0314120108,
+        "sum_square": 1327961.5370829657
+      },
+      "specific_humidity": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 0.02616081520386647,
+        "minimum": 9.99999000001e-07,
+        "nonfinite": 0,
+        "shape": [
+          39,
+          277,
+          349
+        ],
+        "sum": 13524.957409721133,
+        "sum_absolute": 13524.957409721133,
+        "sum_square": 126.86250346097684
+      }
+    }
+  ],
+  "libm_relative_tolerance": 1e-12,
   "mapping": "gpuwm/authorities/rw-wps-rap-awip32-grib2.mapping.json",
   "mapping_sha256": "61a1041ee68dff3202eb6d37a7492b57f634899bbde7e0c7644f78679634f55e",
   "materialization": {
@@ -860,7 +1189,29 @@
       "c93b1f0fd9d4476322c6f3d8586bbb04642269cecc95337d02799ca92012e514",
       "1bb43bce861a85197762d477323512ef2cd4205e2a2f9d32373a8aa43b7fe857"
     ],
+    "frame_header_sha256_portable": [
+      "9ee60b6f03362308a0f675d0103015554c1d72e0fd93ae952a761c1eb6dd60e2",
+      "9a9c84d361429f05ab37d59f357379662ab2160cbc9ed727a5191c71b0765787",
+      "200689c9071cfaa58a694db675e5fd6c6a3c98140ba0e7cfad485d24582bb073"
+    ],
+    "portable_rule": "gpuwm-portable-frame-header-v1",
     "verdict": "PASS"
+  },
+  "per_box": {
+    "note": "the two header digests and the array digest of every libm-dependent field are exact identities of this box; the statistics beside them are this box's values, and are compared within 1e-12 relative",
+    "recorded_on": {
+      "machine": "AMD64",
+      "node": "DESKTOP-6T8MA71",
+      "python": "3.13.7",
+      "release": "11",
+      "system": "Windows"
+    },
+    "values": [
+      "materialization.frame_header_sha256",
+      "materialization.frame_header_sha256_masked",
+      "frames[*].fields[libm_dependent].sha256",
+      "libm_dependent_statistics[*] (compared within tolerance)"
+    ]
   },
   "produced_by": "gpuwm.mapped_source.inspect_mapped_source",
   "source_format": "grib2",

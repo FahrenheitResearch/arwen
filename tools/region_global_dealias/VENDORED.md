@@ -17,7 +17,7 @@ from a tree inside the checkout with `cargo build --release --locked
 remote ref still pointing where it did. `tools/grib1_bridge/vendor/` does
 the same for `grib-core`. The recorded commit above is what makes the copy
 auditable: `git diff` against that ref in the upstream clone is the proof
-that nothing here diverges.
+that nothing here diverges except the one declared line below.
 
 The crate has **no dependencies**, so nothing else came with it.
 
@@ -32,15 +32,25 @@ Not copied: the WebAssembly build outputs (`dealias.wasm`,
 build script and the CI workflow. gpuwm drives the **native C ABI**
 (`bw_dealias`, `bw_dealias_rift_v1`) through `ctypes`, so the JavaScript
 half of upstream is not part of this integration. Dropping it is a
-subtraction, never an edit: no file kept here differs from upstream by a
-byte.
+subtraction, never an edit: no *code* file kept here differs from
+upstream by a byte, and the one notice line that does is declared below.
 
-## Nothing in here is modified
+## Nothing in here is modified, with one declared exception
 
-The solver, the FFI layer and the tests are Drew's. Changes belong
-upstream and arrive here by re-vendoring at a newer commit and updating
-the sha above, `gpuwm.obs.dealias_region.UPSTREAM_COMMIT`, and the
-Py-ART parity receipt. `tests/test_obs_dealias_region.py` pins the ABI
+`LICENSE-MIT`'s copyright line reads `2026 region-global-dealias
+contributors` rather than upstream's entity name, matching the house
+convention every other notice in this repository follows. Same rights
+holder, same grant, same terms; the only difference is how the holder is
+spelled. It is recorded here because this file's job is to make a `git
+diff` against the pinned upstream commit interpretable, and that diff
+now has exactly one hunk in it. Upstream will carry the same spelling
+whenever it is next touched, and this note retires when it does.
+
+Nothing else differs. The solver, the FFI layer and the tests are
+Drew's. Changes belong upstream and arrive here by re-vendoring at a
+newer commit and updating the sha above,
+`gpuwm.obs.dealias_region.UPSTREAM_COMMIT`, and the Py-ART parity
+receipt. `tests/test_obs_dealias_region.py` pins the ABI
 version and the three structure layouts, so a re-vendor that changes the
 contract fails a test rather than returning different numbers.
 

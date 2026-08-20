@@ -669,6 +669,42 @@ def refl_10cm_is_stashed(state) -> bool:
     return driver is not None and driver.refl_10cm is not None
 
 
+def refl_10cm_stash_is_due(ticks: int, *, domain_start_ticks: int = 0
+                           ) -> bool:
+    """Does a history frame at ``ticks`` consume a microphysics stash?
+
+    ONE predicate for every consume site, because the answer is a
+    property of the handoff and not of the route asking.  A stash exists
+    only after a microphysics step OF THAT DOMAIN has run with
+    ``refl_10cm_due`` (:func:`stash_refl_10cm` is reachable from nowhere
+    else), so the frame due at the domain's own start tick -- its
+    analysis frame, before any of its steps -- consumes nothing.
+
+    ``domain_start_ticks`` is that tick, on the domain's own clock
+    (``DomainClock.spec.start_ticks``).  It is 0 for a domain that starts
+    with the experiment and the ACTIVATION EPOCH for a nest that starts
+    later.  Reading the absolute 0 there is defect #205: an activating
+    nest's first frame consumed a stash no step had produced, and the
+    run died at that frame with "REFL_10CM output is due but no
+    microphysics-time field is stashed" -- deterministically, hours of
+    integration in.
+    """
+    return int(ticks) != int(domain_start_ticks)
+
+
+def domain_start_ticks_of(node) -> int:
+    """The start tick of ``node``'s own clock, 0 when it carries none.
+
+    The tree routes hand :class:`gpuwm.core.model.DomainNode` objects to
+    the history seam and every one of those carries a
+    :class:`gpuwm.core.clock.DomainClock`.  A node without one is a
+    single-domain or hand-built caller, whose domain starts with the
+    experiment by construction -- the same 0 the field defaults to.
+    """
+    spec = getattr(getattr(node, "clock", None), "spec", None)
+    return int(getattr(spec, "start_ticks", 0) or 0)
+
+
 def consume_refl_10cm(state):
     """Consume and clear the one-frame REFL_10CM handoff exactly once."""
     driver = getattr(state, "physics", None)

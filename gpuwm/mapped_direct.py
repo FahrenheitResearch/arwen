@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
 import time
 from types import SimpleNamespace
 from typing import Mapping, Sequence
@@ -98,6 +99,53 @@ def _canonical(value: object) -> str:
 #: and receipt.  One name for every composition that reaches this
 #: adapter, 20CRv3 included.
 _WATER_ROUTE = "the mapped rw-wps route"
+
+
+def _forcing_series(bundle):
+    """The bundle's snapshots in valid-time order.
+
+    A composed bundle answers with a sequence that packs ONE valid time
+    when that time is asked for and drops it when the next is, which is
+    what keeps a seven-time preparation from holding seven valid times
+    (the measured 15.9 GiB per forcing time on a 3 km CONUS source).  A
+    caller that hands over a plain tuple -- an adapter fixture, a route
+    that already has its snapshots -- is sorted the way it always was.
+    """
+
+    snapshots = bundle.regular_snapshots()
+    ordered = getattr(snapshots, "sorted_by_valid_time", None)
+    if ordered is not None:
+        return ordered()
+    return tuple(sorted(
+        snapshots, key=lambda snapshot: snapshot.valid_time))
+
+
+def _forcing_valid_times(snapshots) -> tuple:
+    """Every forcing valid time, without packing a snapshot to read one."""
+
+    declared = getattr(snapshots, "valid_times", None)
+    if declared is not None:
+        return tuple(declared)
+    return tuple(snapshot.valid_time for snapshot in snapshots)
+
+
+def _source_top_pressure_pa(snapshots) -> float:
+    """The highest source level the whole forcing series reaches, in Pa.
+
+    Read from the pressure field alone where the series can do that:
+    packing a whole valid time to answer one number would read every
+    array a frame carries, for every forcing time, before the first one
+    is interpolated.
+    """
+
+    levels = getattr(snapshots, "source_pressure_hpa", None)
+    if levels is None:
+        return max(
+            float(np.min(snapshot.levels_hpa) * 100.0)
+            for snapshot in snapshots)
+    return max(
+        float(np.min(levels(index)) * 100.0)
+        for index in range(len(snapshots)))
 
 
 def _file_receipt(path: Path) -> dict[str, object]:
@@ -648,10 +696,8 @@ def prepare_mapped_wrf(
     if dict(bundle.decoder_paths) != decoders:
         raise ValueError("decoded decoder paths differ from requested decoders")
     composition_receipt = mapped_composition_receipt(bundle)
-    snapshots = tuple(sorted(
-        bundle.regular_snapshots(), key=lambda snapshot: snapshot.valid_time,
-    ))
-    times = tuple(snapshot.valid_time for snapshot in snapshots)
+    snapshots = _forcing_series(bundle)
+    times = _forcing_valid_times(snapshots)
     if not times or times[0] != exp.start_time:
         raise ValueError(
             f"mapped forcing must begin at {exp.start_time}, got {times[:1]}"
@@ -677,9 +723,7 @@ def prepare_mapped_wrf(
         hierarchy=hierarchy,
         experiment_config=experiment_config,
     )
-    source_top_pressure_pa = max(
-        float(np.min(snapshot.levels_hpa) * 100.0) for snapshot in snapshots
-    )
+    source_top_pressure_pa = _source_top_pressure_pa(snapshots)
     if hierarchy:
         grids = validate_native_lambert_contracts(
             exp,
@@ -1055,6 +1099,10 @@ def prepare_mapped_wrf(
                 encoding="utf-8",
             )
             os.replace(staging, output_root)
+            # The composed frame stream is spent: every valid time has
+            # been interpolated and the tree is published, so the engine
+            # scratch it streamed from goes now rather than at collection.
+            bundle.close()
             return proof
         identity = prepared_cache_identity(
             bridge_manifest_sha256=published_manifest_sha256,
@@ -1154,8 +1202,13 @@ def prepare_mapped_wrf(
             encoding="utf-8",
         )
         os.replace(staging, output_root)
+        # The composed frame stream is spent: every valid time has been
+        # interpolated and the tree is published, so the engine scratch
+        # it streamed from goes now rather than at collection.
+        bundle.close()
         return proof
     except BaseException:
+        bundle.close()
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
@@ -1274,7 +1327,73 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--preprocess-workers", type=int)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     parser.add_argument("--hierarchy-workers", type=int)
+    parser.add_argument(
+        "--prepared-forecast-source", default=None, metavar="ID",
+        help="the source id the finished bundle is run under, so this "
+             "door can print the complete hash-bound forecast command "
+             "when it is done; `gpuwm prep`/`rw-wps` forward the "
+             "--source you gave them, and a hand-written call that "
+             "omits it gets prose instead of a command",
+    )
     return parser
+
+
+def _next_command_lines(args, proof: Mapping[str, object]) -> list[str]:
+    """What this door says after the proof document, on stderr.
+
+    The GFS, ERA5 and 20CRv3 front doors all finish by printing the
+    prepared-forecast command with its three digests filled in, and the
+    mapped route -- the one every packaged source runs on -- printed
+    nothing at all.  A user who had just prepared a cycle was left to
+    hand-extract three SHA-256 values from a 42 KB JSON document, and
+    the first value the document offers under a hash-shaped name,
+    ``proof_content_sha256``, is the one that can never be right.
+
+    Where a complete command cannot be printed, this prints prose saying
+    so.  It never prints a partial one: the whole value of the line is
+    that it runs when pasted, and the two ways it could not are a
+    preparation made from a user's own mapping (which the prepared
+    runners do not accept by name) and a hand-written call to this
+    module that never said which source id it is preparing.
+    """
+
+    # `packaged_profile_sources()`, NOT the forecast runner's own
+    # SUPPORTED_SOURCES, and the reason is a packaging boundary rather
+    # than a preference: the RW-WPS standalone distribution stages this
+    # preprocessing module and deliberately EXCLUDES the forecast
+    # executor, so importing it here breaks that wheel
+    # (tests/test_native_wrf_distribution.py catches it).  The two sets
+    # cannot drift: the runner builds `_MAPPED_PACKAGED_PROFILE` from
+    # this same table, and every id in it is one it accepts -- held by
+    # test_every_packaged_source_is_a_source_the_runner_accepts.
+    from gpuwm.gfs_direct import prepared_forecast_next_command
+    from gpuwm.source_adapters import packaged_profile_sources
+
+    source = args.prepared_forecast_source
+    if source is None:
+        return [
+            "",
+            "rw-wps: preparation complete.  No forecast command is "
+            "printed because this call named no prepared-forecast source "
+            "id; pass --prepared-forecast-source ID (the same id `gpuwm "
+            "prep --source` takes) to get the complete hash-bound "
+            "command here.",
+        ]
+    if source not in packaged_profile_sources():
+        return [
+            "",
+            f"rw-wps: preparation complete, and there is no forecast "
+            f"command to print for --source {source}: the "
+            f"prepared-forecast runners bind a bundle to a PACKAGED "
+            f"source certificate, and this preparation was made from a "
+            f"mapping of your own.  The bundle under "
+            f"{args.output_root} is complete; a run of it goes through "
+            f"the same runner with a packaged source id.",
+        ]
+    return prepared_forecast_next_command(
+        proof, output_root=args.output_root,
+        experiment_config=args.experiment_config,
+        wps_namelist=args.wps_namelist, source=source)
 
 
 @owns_source_coverage_refusal
@@ -1406,6 +1525,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         hierarchy_workers=args.hierarchy_workers,
     )
     print(json.dumps(proof, indent=2, sort_keys=True, allow_nan=False))
+    for line in _next_command_lines(args, proof):
+        print(line, file=sys.stderr)
     return 0
 
 

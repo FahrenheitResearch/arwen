@@ -1279,18 +1279,28 @@ def test_the_gate_asks_the_card_in_a_subprocess_and_prices_its_answer(
     gate = go_cli.memory_gate(plan)
     assert gate["free_bytes"] == payload["free_bytes"]
 
-    from gpuwm.core.preflight import (ReservePolicy, _load_experiment_any,
+    from gpuwm.core.preflight import (EXTERNAL_MARGIN_BYTES, ReservePolicy,
+                                      _load_experiment_any,
                                       profile_from_device_probe)
 
     profile = profile_from_device_probe(payload)
     assert profile is not None
     assert profile.name == _PROBE_PROFILE["name"]
     exp = _load_experiment_any(plan["config"])
+    # The budget the ENVELOPE is warned against is free VRAM less the
+    # other-process margin -- the only thing the envelope does not
+    # already model.  It used to be free less the whole ALLOCATION
+    # reserve, and that reserve carries the CUDA context and the
+    # local-memory backing store the envelope carries too, so the gate
+    # warned about a card the configuration fits (task 206).
+    assert gate["budget_bytes"] == (payload["free_bytes"]
+                                    - EXTERNAL_MARGIN_BYTES)
+    # The allocation reserve is still what the allocation gate spends,
+    # and it is still priced against the card the PROBE described.
     reserve = ReservePolicy.n0_alloc(
         exp, profile=profile,
         estimate_bytes=gate["phases"].forecast.alloc_estimate_bytes)
-    assert gate["budget_bytes"] == (payload["free_bytes"]
-                                    - reserve.reserve_bytes)
+    assert reserve.device_overhead_bytes > 0
     peak = gate["phases"].peak_envelope_bytes
     assert gate["refuse"] == (peak > payload["free_bytes"])
     assert gate["warn"] == (peak > gate["budget_bytes"])

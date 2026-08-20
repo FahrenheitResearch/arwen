@@ -21,7 +21,13 @@ const INVENTORY_HEADER: &str = concat!(
     // not define it.  Without them a consumer cannot tell an ensemble
     // mean from a member, nor a control from a perturbed forecast: the
     // fields decode cleanly either way and fail silently downstream.
-    "ensemble_type\tensemble_size\tderived_forecast"
+    "ensemble_type\tensemble_size\tderived_forecast\t",
+    // Section 4's optional coordinate list (the pv octets), comma-joined
+    // shortest-round-trip f64 renderings, "-" when the message carries
+    // none.  Hybrid model-level records publish their half-level A (Pa)
+    // then B coefficients here; without this column a hybrid vertical
+    // coordinate is declared but no coefficient ever reaches a consumer.
+    "pv"
 );
 
 fn read_u64_be(bytes: &[u8]) -> u64 {
@@ -149,8 +155,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else {
             ("-".into(), "-".into(), "-".into(), "-".into(), "-".into())
         };
+        let pv = if message.product.coordinate_values.is_empty() {
+            "-".to_owned()
+        } else {
+            message
+                .product
+                .coordinate_values
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<String>>()
+                .join(",")
+        };
         println!(
-            "{index}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t0x{:02x}\t{}\t0x{:02x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{index}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t0x{:02x}\t{}\t0x{:02x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             message.discipline,
             message.product.parameter_category,
             message.product.parameter_number,
@@ -212,6 +229,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .product
                 .derived_forecast_type
                 .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            pv,
         );
     }
     Ok(())

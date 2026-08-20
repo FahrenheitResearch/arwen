@@ -10,6 +10,7 @@ snapshot feed the child initialization barriers.
 
 from __future__ import annotations
 
+from collections.abc import Sequence as _ABCSequence
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
@@ -196,7 +197,13 @@ def _validated_forcing_series(
         forcing_hours: Sequence[int] | None = None,
         forcing_offsets_seconds: Sequence[int] | None = None,
 ) -> tuple[tuple[object, ...], tuple[int, ...], tuple[datetime, ...], int]:
-    snapshots = tuple(snapshots)
+    # A sequence is kept AS the sequence.  A streamed forcing series
+    # packs one valid time when that time is asked for; `tuple()` would
+    # hold every one of them at once, which is the residency the mapped
+    # route streams to avoid, and this validator reads nothing but each
+    # snapshot's valid time and type.
+    if not isinstance(snapshots, _ABCSequence):
+        snapshots = tuple(snapshots)
     if (forcing_hours is None) == (forcing_offsets_seconds is None):
         raise ValueError(
             "nested source forcing requires exactly one of forcing_hours "
@@ -233,8 +240,14 @@ def _validated_forcing_series(
     if interval_seconds <= 0:
         raise ValueError("nested source forcing cadence must be positive")
 
-    times = tuple(getattr(snapshot, "valid_time", None)
-                  for snapshot in snapshots)
+    # A streamed series publishes its valid times from the frameset
+    # document; reading them off the snapshots would pack every forcing
+    # time to look at one attribute of each.
+    declared = getattr(snapshots, "valid_times", None)
+    times = (
+        tuple(declared) if declared is not None
+        else tuple(getattr(snapshot, "valid_time", None)
+                   for snapshot in snapshots))
     if not all(isinstance(value, datetime) for value in times):
         raise TypeError("every nested source snapshot needs a datetime")
     if times[0] != exp.start_time:
@@ -247,7 +260,13 @@ def _validated_forcing_series(
                 f"nested source snapshot times differ from {coordinate_name}")
     if offsets[-1] < exp.run_seconds:
         raise ValueError("nested source forcing does not cover the run")
-    if len({type(snapshot) for snapshot in snapshots}) != 1:
+    # One adapter type across the series, checked WITHOUT retaining a
+    # snapshot: the set holds types, and each snapshot is released as
+    # the next is read.
+    kinds = set()
+    for index in range(len(snapshots)):
+        kinds.add(type(snapshots[index]))
+    if len(kinds) != 1:
         raise TypeError("nested source snapshots must use one adapter type")
     return snapshots, offsets, times, interval_seconds
 

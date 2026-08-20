@@ -1613,6 +1613,11 @@
           "e62ff3702e1aca72dca2c30ef942684eff1bad7dee0ab3e38fe8ef480f413a61",
           "36fb322e7257c9b0255b7bf5b98bd47dd76e32f0d36d419792fcb1595458e552"
         ],
+        "frame_header_sha256_portable": [
+          "31eebbee00ae8798be39953d72bbaa421d82ba52dbcc0837ff1f4cb2a3513089",
+          "e85686872c447e4a17d2e76edf08eb579e2395e093d55a3251a2cb011b9b792f"
+        ],
+        "portable_rule": "gpuwm-portable-frame-header-v1",
         "verdict": "PASS"
       },
       "schema": "gpuwm-mapped-source-inspection-v1",

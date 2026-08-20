@@ -68,7 +68,7 @@ ROUTE_TABLE_SCHEMA = "gpuwm-fetch-routes-v1"
 #: resolving a key shape nothing was measured against.  Kept in sync by
 #: ``tests/test_fetch_routes.py``.
 ROUTE_TABLE_SHA256 = (
-    "9859a3b5d3e3f3bab3f7b46ef86258a2259eaaa4d2e9ea4d2c1083cbf1739f83"
+    "fe8702a3071265eab9fe095d562bf1de669c9ede12caca25c768c6ab4fda15bb"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own
@@ -360,12 +360,37 @@ def route_for(source: str) -> Route:
         adapter = source_adapters.get_source_adapter(source_id)
     except ValueError as error:
         raise ValueError(str(error)) from error
+    # TWO different absences, and they had one sentence between them.
+    # "No route" for an unrunnable row means the decode is missing, so a
+    # download would buy nothing.  "No route" for a RUNNABLE row means
+    # only the transport is missing -- this ArWen reads those bytes and
+    # prepares them, it just cannot go and get them -- and telling such
+    # a reader "the registry row is not runnable" is a false statement
+    # of cause that stops them at a door that is actually open.
+    if adapter.runnable:
+        why = (
+            "no acquisition route is registered for this source, so this "
+            f"ArWen has no way to download its bytes.  {adapter.source_id} "
+            "IS runnable: bring the files yourself and the prepared route "
+            "reads them")
+        remedy = (
+            "  remedy: `gpuwm prep --source "
+            f"{adapter.source_id} --source-root DIR --source-manifest "
+            "DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the "
+            "designed door for a source this ArWen cannot download.\n")
+    else:
+        why = (
+            f"the registry row is not runnable ({adapter.status.value}); "
+            "nothing in this ArWen could read the bytes a download "
+            "produced")
+        remedy = ""
     raise ValueError(
         f"--source {adapter.source_id}: no fetch route.\n"
-        f"  why: the registry row is not runnable ({adapter.status.value}); "
-        "nothing in this ArWen could read the bytes a download produced.\n"
+        f"  why: {why}.\n"
+        f"{remedy}"
         "  see: `gpuwm sources` for what each registered source can do "
-        "today.")
+        "today, or `gpuwm sources " + adapter.source_id + "` for this "
+        "row in full.")
 
 
 # --------------------------------------------------------------------------
@@ -804,6 +829,15 @@ SHA256SUMS_NAME = "SHA256SUMS"
 INPUT_LIST_NAME = "inputs.txt"
 PREP_COMMAND_NAME = "prep-command.txt"
 
+#: The same bound half, as machine-readable argv tokens.  The text file
+#: above is a reader's; this one is a CALLER'S -- ``gpuwm run-plan``'s
+#: staged chain composes its preparation from it, so the binding is
+#: relayed from the fetch's own artifact instead of being re-derived
+#: from a second copy of the route table.  Tokens, not a command
+#: string, so no quoting convention has to round-trip Windows paths.
+PREP_ARGUMENTS_NAME = "prep-arguments.json"
+PREP_ARGUMENTS_SCHEMA = "gpuwm-fetch-prep-arguments-v1"
+
 _USER_AGENT = "gpuwm-fetch/2.5 (+https://github.com/arwenweather)"
 _CHUNK = 1 << 20
 
@@ -1138,23 +1172,28 @@ def write_handoff(plan: FetchPlan, out: Path, *,
         encoding="utf-8", newline="\n")
 
     prep_source = str(plan.route.prep.get("source", plan.source_id))
-    arguments = [f"--source {prep_source}",
-                 f"--input-list {_q(inputs.resolve())}"]
+    tokens: list[str] = ["--source", prep_source,
+                        "--input-list", str(inputs.resolve())]
     for path in plan.supplement_files:
         binding = (f"{plan.supplement_role}={(out / path).resolve()}"
                    if plan.supplement_role else str((out / path).resolve()))
-        arguments.append(f"--supplement {_q(binding)}")
+        tokens += ["--supplement", binding]
     unfetched: list[DonorRequest] = []
     for donor in plan.donors:
         supplied = (donor_files or {}).get(donor.role)
         if supplied is None:
             unfetched.append(donor)
             continue
-        arguments.append(
-            "--supplement "
-            + _q(f"{donor.role}={Path(supplied).resolve()}"))
-    arguments.append(
-        f"--author-input-manifest {_q(out.resolve() / 'inputs.json')}")
+        tokens += ["--supplement", f"{donor.role}={Path(supplied).resolve()}"]
+    tokens += ["--author-input-manifest", str(out.resolve() / "inputs.json")]
+    # The text rendering below derives from the SAME tokens, so the two
+    # spellings of this handoff cannot disagree.
+    arguments = [f"{flag} {_q(value)}"
+                 for flag, value in zip(tokens[::2], tokens[1::2])]
+
+    _write_prep_arguments(
+        out, plan=plan, prep_source=prep_source, tokens=tokens,
+        unfetched=unfetched)
 
     header = [
         f"# {plan.route.label}",
@@ -1197,6 +1236,41 @@ def write_handoff(plan: FetchPlan, out: Path, *,
     return inputs, command
 
 
+def _write_prep_arguments(out: Path, *, plan: "FetchPlan", prep_source: str,
+                          tokens: list[str],
+                          unfetched: list[DonorRequest]) -> Path:
+    """The bound prep handoff as one JSON document a caller composes from.
+
+    ``argv`` is the exact token list ``prep-command.txt`` renders --
+    the source binding, the ordered input list, every supplement role
+    the route table and the fetched donors decided, and the manifest
+    authoring flag.  What is NOT here is exactly what the text file's
+    footer says is the caller's: ``--wps-namelist``,
+    ``--experiment-config``, ``--geog-root`` and ``--output-root``.
+    ``unbound_supplement_roles`` names any donor role this fetch could
+    not supply, so a caller refuses before composing a preparation that
+    rw-wps would refuse deeper.
+    """
+
+    document = {
+        "schema": PREP_ARGUMENTS_SCHEMA,
+        "source": plan.source_id,
+        "prep_source": prep_source,
+        "cycle": f"{plan.cycle:%Y-%m-%dT%H}",
+        "argv": list(tokens),
+        "caller_supplies": ["--wps-namelist", "--experiment-config",
+                            "--geog-root", "--output-root"],
+        "unbound_supplement_roles": sorted(
+            donor.role for donor in unfetched),
+        "member": plan.member,
+        "member_set": plan.member_set,
+    }
+    path = out / PREP_ARGUMENTS_NAME
+    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8", newline="\n")
+    return path
+
+
 def _q(value) -> str:
     text = str(value)
     return text if all(ch not in text for ch in ' \t"\'') else shlex.quote(text)
@@ -1224,6 +1298,7 @@ __all__ = [
     "ComposePart", "ComposeRow", "ComposeStep", "DonorRequest", "DonorRow",
     "FetchPlan", "FileRow", "Host", "INPUT_LIST_NAME",
     "LEGACY_ROUTE_SOURCES", "MANIFEST_NAME", "PATH_TOKENS",
+    "PREP_ARGUMENTS_NAME", "PREP_ARGUMENTS_SCHEMA",
     "PREP_COMMAND_NAME", "PlannedObject", "ROUTE_MANIFEST_SCHEMA",
     "ROUTE_TABLE_NAME", "ROUTE_TABLE_SCHEMA", "ROUTE_TABLE_SHA256", "Route",
     "SHA256SUMS_NAME", "all_fetchable_sources", "check_prior_request",

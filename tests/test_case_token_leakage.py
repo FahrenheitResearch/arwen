@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,13 +31,17 @@ from tools.check_case_token_leakage import (
     BASELINE,
     BASELINE_ERROR,
     BASELINE_PATH,
+    PROTECTED_ZONES,
     Violation,
     load_baseline,
     partition,
     reason_is_a_decision,
     reason_is_debt,
+    resolve_target,
     scan_file,
     scan_root,
+    scan_zones,
+    zones_under,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -525,3 +531,128 @@ def test_the_new_instruments_are_in_a_protected_zone():
                      "tools/certify_band_from_ensemble.py"):
         assert relative in PROTECTED_ZONES
         assert (REPO_ROOT / relative).is_file()
+
+
+# --------------------------------------------------------------------------
+# the CLI scans what it claims to scan
+# --------------------------------------------------------------------------
+#
+# MEASURED at b858ad824: ``python tools/check_case_token_leakage.py gpuwm
+# tools tests docs`` -- the invocation every lane and every close/verify
+# wave ran by hand -- scanned ZERO files and printed green every time.
+# ``main`` handed each argument to ``scan_root`` as a repository root, and
+# ``scan_root`` spells its zones relative to a REPOSITORY root, so with
+# ``root=gpuwm`` the zone ``gpuwm/core/`` resolved to ``gpuwm/gpuwm/core``
+# and matched nothing.  A gate that scans nothing prints exactly what a
+# clean tree prints, which is the silent-green family this repository has
+# been bitten by before (the ``grep -c`` fallback, the buffered log).
+#
+# These pins hold the CLI to its own claim: it scans the zones, it says
+# how many files that was, and it refuses rather than reporting on a
+# target that selects none of them.
+
+CLI = REPO_ROOT / "tools" / "check_case_token_leakage.py"
+
+
+def _cli(*argv: str, cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(CLI), *argv],
+        cwd=str(cwd), capture_output=True, text=True)
+
+
+def _leaky_tree(tmp_path: Path) -> Path:
+    """A scratch repository root with one planted token in the core."""
+    root = tmp_path / "root"
+    module = root / "gpuwm" / "core" / "leaky.py"
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text("def f():\n    hrrr_nodes = 1\n    return hrrr_nodes\n",
+                      encoding="utf-8")
+    return root
+
+
+def test_the_cli_scans_a_subtree_argument_rather_than_discarding_it(
+        tmp_path: Path):
+    """THE defect.  ``... gpuwm`` must scan the zones under ``gpuwm/``.
+
+    The planted token sits in ``gpuwm/core/``, a protected zone, and the
+    argument names the subtree that contains it.  Before this fix the run
+    exited 0 with "0 known occurrence(s) suppressed".
+    """
+
+    root = _leaky_tree(tmp_path)
+    completed = _cli("gpuwm", cwd=root)
+    assert completed.returncode == 1, completed.stdout + completed.stderr
+    assert "hrrr_nodes" in completed.stdout, completed.stdout
+
+
+def test_the_cli_scans_the_same_file_whether_given_the_root_or_the_subtree(
+        tmp_path: Path):
+    """A subtree argument narrows the scan; it never silently empties it."""
+
+    root = _leaky_tree(tmp_path)
+    whole = _cli(".", cwd=root)
+    part = _cli("gpuwm", cwd=root)
+    assert whole.returncode == 1, whole.stdout + whole.stderr
+    assert part.returncode == 1, part.stdout + part.stderr
+    assert "gpuwm/core/leaky.py" in whole.stdout
+    assert "gpuwm/core/leaky.py" in part.stdout
+
+
+def test_the_cli_says_how_many_files_it_scanned():
+    """The number that makes a zero-file scan visible instead of green.
+
+    The tool printed "0 known occurrence(s) suppressed" against a
+    29-entry baseline for months and nobody read it as a scan of
+    nothing.  A file count is not a diagnosis anybody has to infer.
+    """
+
+    completed = _cli(".", cwd=REPO_ROOT)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "scanned" in completed.stdout, completed.stdout
+    assert " 0 file(s)" not in completed.stdout, completed.stdout
+
+
+def test_the_documented_multi_argument_invocation_scans_the_real_zones():
+    """The exact hand-run line, on this repository, over real files."""
+
+    completed = _cli("gpuwm", "tools", "crates", cwd=REPO_ROOT)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "scanned" in completed.stdout
+    assert " 0 file(s)" not in completed.stdout, completed.stdout
+
+
+def test_a_target_holding_no_protected_zone_is_refused(tmp_path: Path):
+    """A scan of nothing must not be reportable as a clean tree."""
+
+    empty = tmp_path / "not-a-checkout"
+    empty.mkdir()
+    completed = _cli(str(empty), cwd=tmp_path)
+    assert completed.returncode == 2, completed.stdout + completed.stderr
+    message = completed.stderr
+    assert "protected zone" in message, message
+    assert "check_case_token_leakage.py ." in message, message
+
+
+def test_resolve_target_finds_the_repository_root_above_a_subtree():
+    """The baseline is keyed on REPOSITORY-relative paths, so the root the
+    scan reports against has to be the repository, not the argument."""
+
+    assert resolve_target(REPO_ROOT / "gpuwm") == (REPO_ROOT, "gpuwm")
+    assert resolve_target(REPO_ROOT) == (REPO_ROOT, None)
+
+
+def test_zones_under_a_subtree_are_the_zones_inside_it():
+    assert zones_under(None) == PROTECTED_ZONES
+    inside = zones_under("gpuwm")
+    assert "gpuwm/core/" in inside
+    assert "tools/matched_wrfout_envelope.py" not in inside
+    # A target INSIDE a directory zone narrows that zone to the target.
+    assert zones_under("gpuwm/core/dyn") == ("gpuwm/core/dyn/",)
+
+
+def test_scan_zones_counts_the_files_it_read(tmp_path: Path):
+    root = _leaky_tree(tmp_path)
+    violations, files = scan_zones(root, zones_under("gpuwm"))
+    assert files == 1
+    assert [v.path for v in violations] == ["gpuwm/core/leaky.py"] * 2
+    assert scan_zones(root, zones_under("tools"))[1] == 0

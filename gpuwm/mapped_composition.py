@@ -39,6 +39,7 @@ source with its hashes.
 from __future__ import annotations
 
 import copy
+from collections.abc import Sequence as _ABCSequence
 from dataclasses import dataclass, field as dataclass_field, replace as _dataclass_replace
 from datetime import datetime
 import hashlib
@@ -767,6 +768,11 @@ def _compose_terrain(
         direct=MappingProxyType(direct),
         source_cycles=primary.source_cycles,
         grid_fingerprint=primary.grid_fingerprint,
+        # The composed frame keeps the PRIMARY's vertical identity, its
+        # hybrid coefficient ladder included: the borrow injects surface
+        # and soil planes, never a vertical coordinate.
+        hybrid_a=primary.hybrid_a,
+        hybrid_b=primary.hybrid_b,
     ), receipt
 
 
@@ -810,6 +816,8 @@ def _bind_manifest_member(
         direct=MappingProxyType(direct),
         source_cycles=MappingProxyType(cycles),
         grid_fingerprint=collection.grid_fingerprint,
+        hybrid_a=collection.hybrid_a,
+        hybrid_b=collection.hybrid_b,
     )
 
 
@@ -1032,6 +1040,11 @@ def _compose_bound_fields(
         direct=MappingProxyType(direct),
         source_cycles=primary.source_cycles,
         grid_fingerprint=primary.grid_fingerprint,
+        # The composed frame keeps the PRIMARY's vertical identity, its
+        # hybrid coefficient ladder included: the borrow injects surface
+        # and soil planes, never a vertical coordinate.
+        hybrid_a=primary.hybrid_a,
+        hybrid_b=primary.hybrid_b,
     ), receipt
 
 
@@ -1060,14 +1073,24 @@ class MappedSourceBundle:
     )
 
     def __post_init__(self) -> None:
-        frames = tuple(self.frames)
-        if not frames or any(_EXTERNAL_FIELD not in frame.fields for frame in frames):
+        # A streamed frameset is NOT tupled here: `tuple()` would read
+        # every valid time's arrays to hold them, which is the residency
+        # this route exists to avoid.  It answers the same two questions
+        # from its own document instead -- which fields a frame carries,
+        # and each field's declared digest -- and the digest is the one
+        # the frame is checked against when it is actually read, so a
+        # terrain array that does not match its declaration refuses
+        # before the preparation publishes anything.
+        frames = self.frames
+        summary = _frame_summary(frames)
+        if not len(frames) or any(
+                _EXTERNAL_FIELD not in names for _time, names, _digest in summary):
             raise ValueError("composed source bundle lacks terrain in a canonical frame")
-        terrain_hashes = {
-            _array_sha256(frame.fields[_EXTERNAL_FIELD].values) for frame in frames
-        }
+        terrain_hashes = {digest for _time, _names, digest in summary}
         if len(terrain_hashes) != 1:
             raise ValueError("composed canonical terrain changes across forcing times")
+        if not isinstance(frames, _ABCSequence):
+            frames = tuple(frames)
         object.__setattr__(self, "frames", frames)
         object.__setattr__(
             self, "alignment_receipt", MappingProxyType(dict(self.alignment_receipt))
@@ -1100,47 +1123,181 @@ class MappedSourceBundle:
         object.__setattr__(self, "terrain_data_sha256", terrain_sha)
 
     def regular_snapshots(self):
-        """Pack the WRF-real ABI with explicit soil and zero policies."""
+        """Pack the WRF-real ABI with explicit soil and zero policies.
 
-        land_policy = self.soil_layer_contract["missing"]["land"]
-        packed = mapped_frames_to_regular_snapshots(
-            self.frames,
-            soil_land_repair=(
-                land_policy if isinstance(land_policy, Mapping) else None
-            ),
+        ONE valid time at a time.  Packing them all up front allocated
+        five zero-filled hydrometeor arrays PER TIME the size of the
+        source pressure field -- on a 3 km CONUS source with a 45-level
+        ladder that is 3.2 GiB per valid time of nothing but zeros,
+        held from the first time to the last, beside the frames.  The
+        route that consumes these takes one snapshot, interpolates it,
+        keeps its perimeter and drops it (see
+        ``start_last_forcing_order``), so nothing ever needed two.
+
+        The returned object indexes, iterates and slices like the tuple
+        it replaces, and each snapshot it yields is element-for-element
+        the one the all-at-once packing produced.
+        """
+
+        return _RegularSnapshots(self)
+
+    def close(self) -> None:
+        """Release the decode scratch these frames stream from, if any."""
+
+        release = getattr(self.frames, "close", None)
+        if release is not None:
+            release()
+
+
+#: The absent prognostic fields a composition initializes to explicit
+#: zero, and the regular-source name each lands under.
+_ZERO_INITIALIZED = {
+    "cloud_water_mixing_ratio": "QC",
+    "rain_water_mixing_ratio": "QR",
+    "cloud_ice_mixing_ratio": "QI",
+    "snow_mixing_ratio": "QS",
+    "graupel_or_hail_mixing_ratio": "QG",
+}
+
+
+def _frame_summary(frames) -> tuple[tuple[object, tuple[str, ...], str], ...]:
+    """``(valid_time, field names, terrain digest)`` per frame, cheaply.
+
+    A streamed frameset answers all three from its own document without
+    reading an array; a materialized tuple of frames answers them from
+    the frames it already holds.  One shape, so the invariants above
+    read the same either way.
+    """
+
+    digest = getattr(frames, "field_digest", None)
+    if digest is None:
+        return tuple(
+            (frame.valid_time, tuple(frame.fields),
+             _array_sha256(frame.fields[_EXTERNAL_FIELD].values)
+             if _EXTERNAL_FIELD in frame.fields else "")
+            for frame in frames)
+    times = frames.valid_times
+    summary = []
+    for index in range(len(frames)):
+        names = frames.field_names(index)
+        summary.append((
+            times[index], names,
+            digest(index, _EXTERNAL_FIELD) if _EXTERNAL_FIELD in names else ""))
+    return tuple(summary)
+
+
+class _RegularSnapshots(_ABCSequence):
+    """The regular-source ABI of a composed bundle, one time at a time.
+
+    Named breakage: materializing every valid time's snapshot at once
+    made a preparation's host memory scale with the number of forcing
+    times -- both the frames the snapshots read and the five zero
+    hydrometeor arrays each snapshot allocates.  Measured on real 3 km
+    CONUS bytes, that is what took a seven-time preparation past 100 GiB
+    and killed it on smaller boxes.
+
+    Indexing is one-deep cached, so a caller that reads the same index
+    twice in a row pays once; asking for a different index drops the
+    previous snapshot BEFORE reading the next, so the peak is one.
+    """
+
+    def __init__(self, bundle: "MappedSourceBundle",
+                 order: tuple[int, ...] | None = None):
+        self._bundle = bundle
+        self._order = (
+            tuple(range(len(bundle.frames))) if order is None else tuple(order))
+        land_policy = bundle.soil_layer_contract["missing"]["land"]
+        self._soil_land_repair = (
+            land_policy if isinstance(land_policy, Mapping) else None)
+        self._cached_position: int | None = None
+        self._cached_snapshot = None
+
+    def __len__(self) -> int:
+        return len(self._order)
+
+    @property
+    def valid_times(self) -> tuple[object, ...]:
+        """Every snapshot's valid time, without packing one."""
+
+        frames = self._bundle.frames
+        times = getattr(frames, "valid_times", None)
+        if times is None:
+            times = tuple(frame.valid_time for frame in frames)
+        return tuple(times[index] for index in self._order)
+
+    def sorted_by_valid_time(self) -> "_RegularSnapshots":
+        """The same snapshots in valid-time order."""
+
+        times = self.valid_times
+        order = sorted(range(len(self._order)), key=lambda index: times[index])
+        return _RegularSnapshots(
+            self._bundle, tuple(self._order[index] for index in order))
+
+    def source_pressure_hpa(self, position: int):
+        """The level ladder of one snapshot, read from pressure alone.
+
+        The vertical-coverage check needs the source column's top and
+        nothing else.  Reading the whole valid time for it would be
+        twenty arrays where one answers, so a streamed frameset is asked
+        for the pressure field on its own.
+        """
+
+        index = self._order[int(position)]
+        frames = self._bundle.frames
+        field = getattr(frames, "field", None)
+        if field is None:
+            pressure = frames[index].fields["air_pressure"].values
+        else:
+            pressure = field(index, "air_pressure").values
+        return np.median(np.asarray(pressure), axis=(1, 2)) / 100.0
+
+    def _pack(self, index: int):
+        frame = self._bundle.frames[index]
+        snapshot = mapped_frames_to_regular_snapshots(
+            (frame,), soil_land_repair=self._soil_land_repair)[0]
+        fields = dict(snapshot.fields)
+        if "SOURCE_OROGRAPHY" not in fields:
+            raise ValueError(
+                "canonical terrain did not reach the regular-source ABI")
+        if MAPPED_SOIL_TEMPERATURE not in fields \
+                or MAPPED_SOIL_MOISTURE not in fields:
+            raise ValueError("canonical mapped soil arrays are absent")
+        pressure = np.asarray(fields["PRES"])
+        policies = frame.header.initialization_policies
+        for canonical, output in _ZERO_INITIALIZED.items():
+            if policies.get(canonical) != "explicit_zero_with_adapter_validation":
+                raise ValueError(
+                    f"absent {canonical} lacks the supported explicit-zero policy"
+                )
+            fields[output] = np.zeros_like(pressure)
+        return Era5Snapshot(
+            valid_time=snapshot.valid_time,
+            levels_hpa=snapshot.levels_hpa,
+            latitude=snapshot.latitude,
+            longitude=snapshot.longitude,
+            fields=fields,
+            projection=snapshot.projection,
         )
-        result = []
-        zero_fields = {
-            "cloud_water_mixing_ratio": "QC",
-            "rain_water_mixing_ratio": "QR",
-            "cloud_ice_mixing_ratio": "QI",
-            "snow_mixing_ratio": "QS",
-            "graupel_or_hail_mixing_ratio": "QG",
-        }
-        for frame, snapshot in zip(self.frames, packed):
-            fields = dict(snapshot.fields)
-            if "SOURCE_OROGRAPHY" not in fields:
-                raise ValueError("canonical terrain did not reach the regular-source ABI")
-            if MAPPED_SOIL_TEMPERATURE not in fields \
-                    or MAPPED_SOIL_MOISTURE not in fields:
-                raise ValueError("canonical mapped soil arrays are absent")
-            pressure = np.asarray(fields["PRES"])
-            policies = frame.header.initialization_policies
-            for canonical, output in zero_fields.items():
-                if policies.get(canonical) != "explicit_zero_with_adapter_validation":
-                    raise ValueError(
-                        f"absent {canonical} lacks the supported explicit-zero policy"
-                    )
-                fields[output] = np.zeros_like(pressure)
-            result.append(Era5Snapshot(
-                valid_time=snapshot.valid_time,
-                levels_hpa=snapshot.levels_hpa,
-                latitude=snapshot.latitude,
-                longitude=snapshot.longitude,
-                fields=fields,
-                projection=snapshot.projection,
-            ))
-        return tuple(result)
+
+    def __getitem__(self, position):
+        if isinstance(position, slice):
+            return _RegularSnapshots(
+                self._bundle,
+                tuple(self._order[index]
+                      for index in range(*position.indices(len(self._order)))))
+        value = int(position)
+        if value < 0:
+            value += len(self._order)
+        if not 0 <= value < len(self._order):
+            raise IndexError(position)
+        if self._cached_position == value:
+            return self._cached_snapshot
+        self._cached_position = None
+        self._cached_snapshot = None
+        snapshot = self._pack(self._order[value])
+        self._cached_position = value
+        self._cached_snapshot = snapshot
+        return snapshot
 
 
 def _decoder_inventory(
@@ -1405,11 +1562,16 @@ def _compose_through_engine(
     engine's to remember.
 
     ``scratch_destination`` places the engine's scratch -- which holds
-    the whole composed frame stream until read-back -- on the same
-    filesystem as the preparation output; see
-    :func:`_compose_scratch_base` for the resolution order and the
-    tmpfs quota failure it prevents.  The scratch is deleted after
-    read-back, success or failure, either way.
+    the whole composed frame stream -- on the same filesystem as the
+    preparation output; see :func:`_compose_scratch_base` for the
+    resolution order and the tmpfs quota failure it prevents.
+
+    The scratch OUTLIVES this call on purpose.  The returned bundle
+    reads one valid time at a time out of the frame stream instead of
+    holding every time in host memory, so the bytes have to still be
+    there while the preparation walks them; the frameset owns the
+    scratch handle and deletes the tree when it is closed or collected.
+    A failure before the bundle exists deletes it here.
     """
 
     import os
@@ -1418,11 +1580,12 @@ def _compose_through_engine(
     from gpuwm import mapped_engine_bridge
 
     scratch_base = _compose_scratch_base(scratch_destination)
-    with tempfile.TemporaryDirectory(
+    work = tempfile.TemporaryDirectory(
         prefix="gpuwm-mapped-compose-",
         dir=None if scratch_base is None else os.fspath(scratch_base),
-    ) as work:
-        directory = Path(work) / "composed"
+    )
+    try:
+        directory = Path(work.name) / "composed"
         mapped_engine_bridge.run_engine(
             "compose",
             mapping=mapping_path,
@@ -1436,13 +1599,66 @@ def _compose_through_engine(
             input_manifest_sha256=manifest_sha256,
         )
         evidence = mapped_engine_bridge.read_composition_evidence(directory)
-        frames = mapped_engine_bridge.read_frameset(directory)
+        frames = mapped_engine_bridge.open_frameset(directory, retain=work)
+        return _composed_bundle_from_frames(
+            frames=frames,
+            evidence=evidence,
+            engine_name=mapped_engine_bridge.ENGINE_NAME,
+            mapping_path=mapping_path,
+            composition_path=composition_path,
+            manifest_path=manifest_path,
+            contributing=contributing,
+            contract=contract,
+            bindings=bindings,
+            terrain_spec=terrain_spec,
+            decoders=decoders,
+            snapshots=snapshots,
+            before=before,
+            member=member,
+            member_identity=member_identity,
+            supplements=supplements,
+            provenance=provenance,
+        )
+    except BaseException:
+        work.cleanup()
+        raise
 
-    for frame in frames:
-        if frame.mapping_sha256 != before[str(mapping_path)]:
+
+def _composed_bundle_from_frames(
+    *,
+    frames,
+    evidence,
+    engine_name: str,
+    mapping_path: Path,
+    composition_path: Path,
+    manifest_path: Path,
+    contributing: Mapping[str, Path],
+    contract: Mapping[str, object],
+    bindings: Mapping[str, Mapping[str, object]],
+    terrain_spec: Mapping[str, object] | None,
+    decoders: Mapping[str, Path],
+    snapshots: Mapping[Path, _AuthoritySnapshot],
+    before: Mapping[str, str],
+    member: str | None,
+    member_identity: str | None,
+    supplements: Mapping[str, Sequence[Path]],
+    provenance: Mapping[str, Path],
+) -> MappedSourceBundle:
+    """Seal an engine-composed frameset into a bundle.
+
+    Every check here reads the frameset's DOCUMENT -- the per-frame
+    scalars the engine wrote beside the arrays -- so sealing a
+    preparation does not have to read a single valid time's numbers.
+    The arrays are checked against the same document when each frame is
+    actually read, which is the only place they can be wrong.
+    """
+
+    mapped_engine_bridge_name = engine_name
+    for digest in frames.mapping_sha256s:
+        if digest != before[str(mapping_path)]:
             raise RuntimeError(
-                f"{mapped_engine_bridge.ENGINE_NAME} composed against "
-                f"mapping bytes hashing to {frame.mapping_sha256}; this "
+                f"{mapped_engine_bridge_name} composed against "
+                f"mapping bytes hashing to {digest}; this "
                 f"call verified {mapping_path} at "
                 f"{before[str(mapping_path)]}, so the bundle would be "
                 "bound to a document nobody checked")
@@ -1450,10 +1666,10 @@ def _compose_through_engine(
         # The manifest bound an explicit ensemble member; an engine that
         # returned frames without it decoded under a contract this call
         # did not seal, for an ENSEMBLE source.
-        stamped = {frame.member for frame in frames}
+        stamped = set(frames.members)
         if stamped != {member}:
             raise RuntimeError(
-                f"{mapped_engine_bridge.ENGINE_NAME} returned frames with "
+                f"{mapped_engine_bridge_name} returned frames with "
                 f"member(s) {sorted(str(value) for value in stamped)}; the "
                 f"sealed input manifest binds explicit member {member!r}, "
                 "so the ensemble identity did not survive the engine")
@@ -1462,7 +1678,7 @@ def _compose_through_engine(
                 or recorded_alignment.get("member_identity")
                 != member_identity):
             raise RuntimeError(
-                f"{mapped_engine_bridge.ENGINE_NAME} composed an alignment "
+                f"{mapped_engine_bridge_name} composed an alignment "
                 "receipt without the manifest's explicit member binding, "
                 "so the preparation's sealed receipt would lose the "
                 "ensemble identity")
@@ -1473,7 +1689,7 @@ def _compose_through_engine(
     recorded = {str(record["binding"]) for record in contributing_records}
     if recorded != set(bindings):
         raise RuntimeError(
-            f"{mapped_engine_bridge.ENGINE_NAME} composed "
+            f"{mapped_engine_bridge_name} composed "
             f"{sorted(recorded)} cross-source bindings; the composition "
             f"declares {sorted(bindings)}, so a declared borrow either "
             "did not happen or was invented")
@@ -1926,6 +2142,30 @@ def decode_composed_source(
     )
 
 
+def _receipt_times(bundle: MappedSourceBundle):
+    frames = bundle.frames
+    times = getattr(frames, "valid_times", None)
+    if times is None:
+        return tuple(frame.valid_time for frame in frames)
+    return times
+
+
+def _receipt_frames(bundle: MappedSourceBundle) -> list[dict[str, object]]:
+    frames = bundle.frames
+    digest = getattr(frames, "field_digest", None)
+    if digest is None:
+        return [{
+            "header_sha256": _canonical_sha256(frame.header.to_dict()),
+            "terrain_sha256": _array_sha256(frame.fields[_EXTERNAL_FIELD].values),
+            "field_count": len(frame.fields),
+        } for frame in frames]
+    return [{
+        "header_sha256": _canonical_sha256(frames.header(index).to_dict()),
+        "terrain_sha256": digest(index, _EXTERNAL_FIELD),
+        "field_count": frames.field_count(index),
+    } for index in range(len(frames))]
+
+
 def mapped_composition_receipt(bundle: MappedSourceBundle) -> dict[str, object]:
     """Return immutable evidence for the complete canonical materialization."""
 
@@ -1986,12 +2226,14 @@ def mapped_composition_receipt(bundle: MappedSourceBundle) -> dict[str, object]:
         ),
         "soil_layers": dict(bundle.soil_layer_contract),
         "frame_count": len(bundle.frames),
-        "valid_times": [frame.valid_time.isoformat() for frame in bundle.frames],
-        "frames": [{
-            "header_sha256": _canonical_sha256(frame.header.to_dict()),
-            "terrain_sha256": _array_sha256(frame.fields[_EXTERNAL_FIELD].values),
-            "field_count": len(frame.fields),
-        } for frame in bundle.frames],
+        # Read from the frameset's own document where there is one, so
+        # sealing a receipt does not pull every valid time's arrays back
+        # into host memory.  The numbers are the same either way: the
+        # terrain digest recorded here is exactly the digest each frame
+        # is checked against when it is read, so a preparation that
+        # publishes this receipt read arrays that match it.
+        "valid_times": [value.isoformat() for value in _receipt_times(bundle)],
+        "frames": _receipt_frames(bundle),
     }
     payload["receipt_content_sha256"] = _canonical_sha256(payload)
     return payload

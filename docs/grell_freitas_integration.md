@@ -67,15 +67,38 @@ output words differ at either boundary.
 
 The kernel is bitwise; these are about what the engine can hand it today.
 
-1. **Forcing tendencies.** GFDRV sums advective (`RTHFTEN`/`RQVFTEN`),
-   radiative (`RTHRATEN`) and boundary-layer (`RTHBLTEN`/`RQVBLTEN`)
-   forcing into its forced state. The adapter feeds the **radiative** term
-   (read off the driver through `bind_driver`) and **zeros** for the other
-   two: the dycore exports no advective theta/qv forcing pair, and the PBL
-   stack couples its rates before the driver retains them. Degraded: the
-   rate-of-change closure family's forcing, and with `ishallow = 1` the
-   shallow `blqe` member (`dhdt = 0`). The instability closures see the
-   current state and the omega/moisture-convergence closures are fully fed.
+1. **Forcing tendencies — CLOSED.** GFDRV sums advective
+   (`RTHFTEN`/`RQVFTEN`), radiative (`RTHRATEN`) and boundary-layer
+   (`RTHBLTEN`/`RQVBLTEN`) forcing into its forced state, and all four
+   lanes are now fed, all read off the driver through `bind_driver`. The
+   boundary-layer pair is the PBL slot's own raw dry-theta/qv rates,
+   retained by `PhysicsDriver._couple_pbl_slot` whichever of YSU, MYJ,
+   MYNN, Shin-Hong or SASE holds the slot, which is how WRF's own
+   cumulus driver reads RTHBLTEN/RQVBLTEN. The advective pair is the
+   integrator's export: on the ARW path the dycore captures pure theta
+   and qv advection at RK stage 1 of every step, uncouples it to
+   K s<sup>-1</sup> and kg kg<sup>-1</sup> s<sup>-1</sup>, and leaves it
+   in `state.rthften`/`state.rqvften` for the next step's cumulus call —
+   the same one-step producer/consumer lag `h_diabatic` has. (The MPAS
+   seam's caller supplies its own.) The rate-of-change closure family
+   therefore sees its advective forcing, the instability closures see
+   the current state, the omega/moisture-convergence closures are fully
+   fed, and with `ishallow = 1` the shallow `blqe` member sees a real
+   `dhdt`.
+
+   The export is **pure advection**, deliberately.
+   `module_cumulus_driver.F:867` pre-folds `RTHRATEN + RTHBLTEN` into
+   `RTHFTEN` for `G3SCHEME` and `NTIEDTKESCHEME` and **not** for
+   `GFSCHEME`, which sums the three lanes itself
+   (`kernels/gf.cu:4146`). A pre-folded RTHFTEN here would make GF
+   integrate the boundary layer and the sky twice.
+
+   **Restart consequence, stated plainly:** the pair is serialized
+   state, so a `cu_physics = 3` checkpoint written before this landed
+   carries two fewer state arrays than this build expects and is
+   refused by name. Resume from a checkpoint this build wrote, or start
+   the run again from its prepared state. No other configuration's
+   checkpoints move.
 2. **Convective momentum tendencies.** The kernel computes GF's
    `dudt`/`dvdt`; `CumulusResult` carries no momentum slots, so they are
    not coupled. WRF couples them.

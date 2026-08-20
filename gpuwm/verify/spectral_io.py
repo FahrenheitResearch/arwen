@@ -56,13 +56,75 @@ def file_identity(path: str | Path) -> dict[str, object]:
     }
 
 
+#: The ceiling on non-finite cells in a plane about to be transformed, and
+#: the reason it is zero.  This is not conservatism: a two-dimensional FFT is
+#: a dense sum over every cell, so ONE NaN reaches every retained Fourier
+#: mode.  Every band power, every correlation, every gate on the whole plane
+#: becomes NaN, and a receipt would then grade the entire field on the two
+#: cells that were bad.  There is no fraction of the plane at which that
+#: stops being true, so there is no fraction to tune.
+NONFINITE_CELL_CEILING = 0
+
+#: Cells listed by coordinate in the refusal before it says "and N more".
+#: Enough to tell an edge artifact from a scattered fill value, short enough
+#: that a whole-plane failure does not print a million tuples.
+_REPORTED_CELLS = 6
+
+
+def _locate(flags: np.ndarray) -> str:
+    """Coordinates of the first offending cells, capped."""
+
+    found = np.argwhere(flags)
+    shown = ", ".join(
+        "(" + ", ".join(str(int(axis)) for axis in cell) + ")"
+        for cell in found[:_REPORTED_CELLS])
+    if len(found) > _REPORTED_CELLS:
+        shown += f", and {len(found) - _REPORTED_CELLS} more"
+    return shown
+
+
 def _finite_array(value: object, *, label: str) -> np.ndarray:
     masked = np.ma.asarray(value)
     if np.ma.isMaskedArray(masked) and np.any(np.ma.getmaskarray(masked)):
-        raise ValueError(f"{label} carries masked/missing values")
+        flags = np.ma.getmaskarray(masked)
+        count = int(np.count_nonzero(flags))
+        raise ValueError(
+            f"{label} carries {count} of {flags.size} cells masked or set to "
+            f"a missing value, at {_locate(flags)}. A spectral score is a "
+            "two-dimensional Fourier transform, so a single missing cell "
+            "reaches every retained Fourier mode and every band power, "
+            "correlation and gate on the whole plane becomes NaN -- the "
+            "ceiling on missing cells is "
+            f"{NONFINITE_CELL_CEILING} and cannot be raised. Either score a "
+            "variable that is filled everywhere on this grid, or set "
+            "crop_cells in the registration so the scored window excludes "
+            "the masked frame, or fill the gap in a separately receipted "
+            "product first -- this reader will not invent values.")
     array = np.asarray(masked, dtype=np.float64)
-    if array.size == 0 or not np.all(np.isfinite(array)):
-        raise ValueError(f"{label} is empty or non-finite")
+    if array.size == 0:
+        raise ValueError(
+            f"{label} carries no cells: its shape is {list(array.shape)}. "
+            "A spectral score needs a plane at least 8x8 after cropping and "
+            "reduction. Check the variable name, the time index, and the "
+            "level index in the registration; a zero-length axis usually "
+            "means one of them selected nothing.")
+    nonfinite = ~np.isfinite(array)
+    if np.any(nonfinite):
+        count = int(np.count_nonzero(nonfinite))
+        nan_count = int(np.count_nonzero(np.isnan(array)))
+        raise ValueError(
+            f"{label} carries {count} of {array.size} non-finite cells "
+            f"(nan={nan_count}, inf={count - nan_count}), at "
+            f"{_locate(nonfinite)}. A spectral score is a two-dimensional "
+            "Fourier transform, so one non-finite cell reaches every "
+            "retained Fourier mode and every band power, correlation and "
+            "gate on the whole plane becomes NaN -- the ceiling on "
+            f"non-finite cells is {NONFINITE_CELL_CEILING} and cannot be "
+            "raised. Either score a variable that is finite everywhere on "
+            "this grid, or set crop_cells in the registration so the scored "
+            "window excludes the affected frame, or fix the field in the "
+            "producing run -- this reader will not substitute a fill value "
+            "and score it as data.")
     return array
 
 
@@ -319,6 +381,7 @@ def load_plane(source: Mapping[str, object]) -> tuple[np.ndarray, dict[str, obje
 
 
 __all__ = [
+    "NONFINITE_CELL_CEILING",
     "DESTAGGER", "NETCDF_SIGNATURES", "NETCDF_SUFFIXES", "REDUCTIONS",
     "SUPPORTED_SUFFIXES", "apply_destagger", "destagger", "file_identity",
     "load_array", "load_plane", "reduce_to_plane", "sha256_file",

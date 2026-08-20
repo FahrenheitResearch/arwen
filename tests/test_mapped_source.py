@@ -828,6 +828,67 @@ def test_grib2_tsv_rejects_pre_authority_abi():
         )
 
 
+def _inventory_row(**overrides):
+    """One inventory row with every required column, minus ``pv``."""
+
+    row = {name: "0" for name in
+           mapped_source._GRIB2_INVENTORY_REQUIRED_COLUMNS}
+    row.update(index="0", member="-", scan_mode="0x40", bitmap="true",
+               level_type="1", level_value="0",
+               second_level_type="255", second_level_value="0")
+    row.update(overrides)
+    return row
+
+
+def test_a_surface_inventory_without_pv_is_read_not_refused():
+    """The pv octets are required where they are the COORDINATE.
+
+    A sea-surface-temperature record sits on a single surface level and
+    has no hybrid coefficients to lose, so a decoder that cannot state
+    the pv column tells it nothing it needed.  Demanding the column of
+    every inventory made exactly this read fail -- measured on the 2.5.1
+    battery, ``GRIB2 inventory is missing required columns ['pv']`` about
+    a water-temperature round trip.
+    """
+
+    rows = [_inventory_row(level_type="1"), _inventory_row(index="1",
+                                                           level_type="100")]
+    mapped_source._require_pv_where_hybrid(rows, label="GRIB2 inventory")
+    assert mapped_source._coordinate_values(rows[0]) == ()
+    assert "pv" not in mapped_source._GRIB2_INVENTORY_REQUIRED_COLUMNS
+
+
+@pytest.mark.parametrize("level_type", ("105", "118", "119"))
+def test_a_hybrid_inventory_without_pv_is_refused_by_name(level_type):
+    """And the L137 gap stays closed, which is the other half.
+
+    A hybrid record's vertical position IS the A/B pair, so a decoder
+    that cannot state it decodes the record into empty coefficient
+    tuples and every level lands wherever the fallback puts it.  The
+    refusal names the level type, the missing column and the rebuild.
+    """
+
+    rows = [_inventory_row(level_type="1"),
+            _inventory_row(index="1", level_type=level_type)]
+    with pytest.raises(ValueError, match="hybrid-level records") as caught:
+        mapped_source._require_pv_where_hybrid(
+            rows, label="GRIB2 inventory")
+    message = str(caught.value)
+    assert level_type in message
+    assert "'pv'" in message
+    assert "grib1_bridge" in message
+
+
+def test_a_hybrid_inventory_that_states_pv_is_read():
+    """The column present is the whole requirement; ``-`` is an answer."""
+
+    rows = [_inventory_row(level_type="105", pv="0.0,1.0,20.0,0.9"),
+            _inventory_row(index="1", level_type="105", pv="-")]
+    mapped_source._require_pv_where_hybrid(rows, label="GRIB2 inventory")
+    assert mapped_source._coordinate_values(rows[0]) == (0.0, 1.0, 20.0, 0.9)
+    assert mapped_source._coordinate_values(rows[1]) == ()
+
+
 def test_authority_snapshot_accepts_unchanged_executable_suffix(tmp_path):
     executable = tmp_path / "decoder.exe"
     executable.write_bytes(b"stable-decoder-bytes")

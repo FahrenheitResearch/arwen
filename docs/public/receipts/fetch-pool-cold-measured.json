@@ -22,7 +22,6 @@
         "files": 4,
         "bytes": 1140210
       },
-      "wall_speedup": 1.2,
       "identical_sha256_sets": true,
       "note": "Governor-bound by design: the NOMADS politeness pair (2 in-flight cap on top of the node-wide 2.5 s spacing governor) is the ceiling here, and that is the point."
     },
@@ -43,11 +42,11 @@
         "files": 252,
         "bytes": 233686078
       },
-      "wall_speedup": 5.72,
       "identical_sha256_sets": true,
       "note": "Sum of per-file service seconds ROSE under the pool (422.95 vs 407.35 serial) while wall fell 407.4 -> 71.2 s: the gain is overlap, not a warmed server cache."
     }
   },
+  "derived_ratios": "Deliberately absent, and nothing measured was removed with them. This file sits under docs/public and is linked from docs/public/DATA.md and from the published manual, so it is a release-facing surface, and Drew's 2026-08-18 ruling keeps comparative speed ratios and x-factor headlines off those. Both arms' wall seconds, file counts and byte counts are recorded above exactly as measured; the two 'wall_speedup' fields this receipt used to headline (pooled against serial) were the ratio the ruling names, and they are the only thing that went. Run-time receipts the tool writes per fetch keep their own 'effective_speedup' field: those are machine receipts, not a published surface.",
   "receipt_fields": "Every arm's receipt carries the committed 'concurrency' block (schema gpuwm-fetch-pool-receipt-v1): files, bytes, workers_requested, workers_effective, host_caps, wall_seconds, modeled_serial_seconds, effective_speedup.",
   "model_check": "The pre-landing scaling model (ARWEN-PRESIM-SCALING-2026-08-16: cold fetch ~0.47 s + 3.14 s per file, file count dominates) predicted file-count-bound walls; measured serial ICON-EU at 1.62 s/file mean on this link confirms per-file service latency, not bytes, as the driver (0.93 MB mean object)."
 }

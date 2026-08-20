@@ -353,6 +353,10 @@ fn grib1_record(
             i64::from(pds.p1),
             i64::from(pds.p2),
         ],
+        // GRIB1 keeps its vertical-coordinate parameters in the GDS,
+        // which this decoder does not read; a GRIB1 hybrid source
+        // declares inline vertical.hybrid_a/hybrid_b literals instead.
+        coordinate_values: Vec::new(),
         values: array,
         latitude: grid.latitude.clone(),
         longitude: grid.longitude.clone(),

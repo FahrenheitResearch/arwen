@@ -2961,6 +2961,89 @@ class CudaSW:
                 lay[i] = _laysolfr_lower(laytrop, jp_host, lr)
         return lay
 
+    def _laysolfr_band_spec(self):
+        """(layreffr, is_upper, has_layreffr) for SW bands 16..29.
+
+        Host-side table constants, read once per engine instance.
+        """
+        spec = getattr(self, "_laysolfr_spec", None)
+        if spec is None:
+            layreffr = np.zeros(NBNDSW, dtype=np.int32)
+            is_upper = np.zeros(NBNDSW, dtype=bool)
+            has_lr = np.zeros(NBNDSW, dtype=bool)
+            for i, band in enumerate(range(16, 16 + NBNDSW)):
+                value = self.tab.kg[band].get("layreffr")
+                if value is None:            # band 26: laysolfr = laytrop
+                    continue
+                has_lr[i] = True
+                layreffr[i] = int(value)
+                is_upper[i] = band in (16, 17, 27, 28, 29)
+            spec = (layreffr, is_upper, has_lr)
+            self._laysolfr_spec = spec
+        return spec
+
+    def _laysolfr_batch_device(self, jp_d, laytrop_d, nlayers):
+        """Batch laysolfr entirely on device -- exact device twin of the
+        host scans :func:`_laysolfr_lower` / :func:`_laysolfr_upper`.
+
+        Both scans are pure INTEGER comparisons over jp with no floating
+        point anywhere, so the vectorised form is bit-exact by
+        construction rather than by tolerance.  Reproduced exactly:
+
+        lower  laysolfr = laytrop; for lay = 1..laytrop, if
+               jp[lay-1] < lr and jp[lay] >= lr then
+               laysolfr = min(lay+1, laytrop).  The LAST satisfying lay
+               wins (the scalar loop keeps overwriting).
+        upper  laysolfr = nlayers; for lay = laytrop+1..nlayers, if
+               jp[lay-2] < lr and jp[lay-1] >= lr then laysolfr = lay.
+               Last wins.  At lay == 1 the scalar code indexes jp[-1],
+               i.e. jp[nlayers-1]; the modulo below reproduces that
+               Python wrap rather than silently diverging from it.
+
+        jp[lay] at lay == nlayers is unreachable in the lower scan
+        (it needs lay <= laytrop <= nlayers-1, and the scalar code would
+        raise IndexError otherwise), so clamping that gather index is
+        never observable.
+        """
+        cp = self.cp
+        layreffr_h, is_upper_h, has_lr_h = self._laysolfr_band_spec()
+        nlayers = int(nlayers)
+
+        lay = cp.arange(1, nlayers + 1, dtype=cp.int32)      # (nlayers,)
+        jp_a = jp_d                                          # jp[lay-1]
+        jp_b = jp_d[:, cp.minimum(lay, nlayers - 1)]         # jp[lay]
+        jp_c = jp_d[:, (lay - 2) % nlayers]                  # jp[lay-2]
+
+        lr = cp.asarray(layreffr_h)[None, :, None]           # (1,nb,1)
+        upper = cp.asarray(is_upper_h)[None, :, None]
+        has_lr = cp.asarray(has_lr_h)[None, :]               # (1,nb)
+        trop = laytrop_d[:, None, None]                      # (nc,1,1)
+        layb = lay[None, None, :]                            # (1,1,nl)
+
+        a = jp_a[:, None, :]
+        b = jp_b[:, None, :]
+        c = jp_c[:, None, :]
+        cond = cp.where(
+            upper,
+            (layb >= trop + 1) & (c < lr) & (a >= lr),
+            (layb <= trop) & (a < lr) & (b >= lr),
+        )                                                    # (nc,nb,nl)
+
+        found = cond.any(axis=2)
+        # index of the LAST satisfying layer along the layer axis
+        last = (nlayers - 1) - cp.ascontiguousarray(
+            cond[:, :, ::-1]).argmax(axis=2).astype(cp.int32)
+        lay_last = (last + 1).astype(cp.int32)               # (nc,nb)
+
+        trop2 = laytrop_d[:, None]
+        lower_result = cp.where(
+            found, cp.minimum(lay_last + 1, trop2), trop2)
+        upper_result = cp.where(found, lay_last, cp.int32(nlayers))
+        result = cp.where(
+            cp.asarray(is_upper_h)[None, :], upper_result, lower_result)
+        # band 26 carries no layreffr: laysolfr = laytrop
+        return cp.where(has_lr, result, trop2).astype(cp.int32)
+
     def taumol(self, nlayers, sc):
         cp = self.cp
         taug = cp.zeros((nlayers, NGPTSW), cp.float32, order="F")
@@ -3314,10 +3397,9 @@ class CudaSW:
         swhrc = cp.zeros((ncol, nlayers), dtype=cp.float32)
 
         iceflg = int(iceflgsw)
-        # _laysolfr is a pure integer function of (laytrop, jp) for a
-        # fixed table set; memoizing it is caching, not new numerics
-        # (wide batches tile the same columns many times over).
-        lays_cache = {}
+        # laysolfr is computed on device from the resident jp/laytrop
+        # (see _laysolfr_batch_device); the old host memo was rebuilt on
+        # every call, so it never survived a step and is gone.
         for c0 in range(0, ncol, chunk):
             c1 = min(c0 + chunk, ncol)
             nc = c1 - c0
@@ -3407,23 +3489,13 @@ class CudaSW:
                  reals_d["fac00"], reals_d["fac01"], reals_d["fac10"],
                  reals_d["fac11"]))
             # laytrop per column: integer sum of the tropopause flags
-            # (exact); jp comes down for the same host-side integer
-            # laysolfr scans the per-column driver runs.
+            # (exact).  jp and laytrop stay resident: laysolfr is the
+            # same integer scan, run on device (S3a of the perf wave).
             laytrop_d = ints_d["tflag"].sum(axis=1, dtype=cp.int32)
-            jp_h = cp.asnumpy(ints_d["jp"])
-            laytrop_h = cp.asnumpy(laytrop_d)
             del play_d, tlay_d, coldry_d, wkl_d
 
-            lays = np.zeros((nc, NBNDSW), dtype=np.int32)
-            for i in range(nc):
-                ck = (int(laytrop_h[i]), jp_h[i].tobytes())
-                hit = lays_cache.get(ck)
-                if hit is None:
-                    hit = self._laysolfr(int(laytrop_h[i]), nlayers,
-                                         jp_h[i])
-                    lays_cache[ck] = hit
-                lays[i] = hit
-            laysolfr_d = cp.asarray(lays)
+            laysolfr_d = self._laysolfr_batch_device(
+                ints_d["jp"], laytrop_d, nlayers)
 
             # ---- taumol + sfluxzen ----------------------------------
             taug_d = cp.zeros((nc, NGPTSW, nlayers), dtype=cp.float32)

@@ -57,7 +57,7 @@ Options are listed with the help text the tool itself prints.  Positional argume
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--json` | emit the checks as JSON |
-| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,ecmwf-open-data,era5,gdas,gefs,gem-gdps,gfs,hgefs,hiresw,href,hrrr,hrrr-ak,hrrr-prs,icon-eu,mapped,nam,nbm,rap,refs,rrfs,rrfs-a,rrfs-firewx,rrfs-public,rtma,sref,urma,wrf}` | report only this data route's own resolution (repeatable) alongside the shared estate: what its preparation will decode with, and the byte transport its fetch will use. The choices are the source registry -- the same list `gpuwm fetch` and `gpuwm prep` take. Omitted, every route this build knows is reported |
+| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,ecmwf-open-data,era5,era5-l137,gdas,gefs,gem-gdps,gfs,hgefs,hiresw,href,hrrr,hrrr-ak,hrrr-prs,icon-eu,mapped,nam,nbm,rap,refs,rrfs,rrfs-a,rrfs-firewx,rrfs-public,rtma,sref,urma,wrf}` | report only this data route's own resolution (repeatable) alongside the shared estate: what its preparation will decode with, and the byte transport its fetch will use. The choices are the source registry -- the same list `gpuwm fetch` and `gpuwm prep` take. Omitted, every route this build knows is reported |
 
 ## `gpuwm domain`
 
@@ -79,12 +79,12 @@ Options are listed with the help text the tool itself prints.  Positional argume
 | `--name` | experiment name (default derived from the center) |
 | `--nest-history-interval SECONDS` | the same, for every NESTED domain (default 900). Nests write more often than the root by default because resolving what the root cannot, over a shorter window, is the point of running one. Ignored for a single-domain ladder |
 | `--out TOML` | emitted experiment TOML path |
-| `--physics-profile {morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1,nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1,nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1,thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1,thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1,wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1,wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-ysu-mm5-noah-validation-v1,wsm6-ysu-mm5-noah-no-radiation-v1,wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1,wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1}` | shipped physics suite to emit; taken verbatim from the registry the prepared-forecast runner validates against, so the emitted config passes its guard as written. Read the names: the *-no-radiation-* and *-validation-* profiles run reduced physics with longwave OFF and are NOT nocturnally valid -- selecting one for a window that includes local night is REFUSED unless you declare it yourself with --ack. NOT every profile runs on every route: --source hrrr cannot prepare morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1 or nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1 or nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1 or wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1 or wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 or wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1 or wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1 or wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1; --source gfs cannot prepare wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 or wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1 or wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1 -- the wizard refuses those pairings and names the missing component rather than emitting a config the front door would reject. (gfs/era5 default: morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1, full RTE+RRTMGP + Kain-Fritsch, nocturnally valid; hrrr default: thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1, Thompson + full RRTMG lw+sw, no cumulus at 3 km, nocturnally valid) |
+| `--physics-profile {morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1,nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1,nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1,thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1,thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1,wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1,wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-ysu-mm5-noah-validation-v1,wsm6-ysu-mm5-noah-no-radiation-v1,wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1,wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1}` | shipped physics suite to emit; taken verbatim from the registry the prepared-forecast runner validates against, so the emitted config passes its guard as written. Read the names: the *-no-radiation-* and *-validation-* profiles run reduced physics with longwave OFF and are NOT nocturnally valid -- selecting one for a window that includes local night is REFUSED unless you declare it yourself with --ack. NOT every profile runs on every route: --source hrrr cannot prepare morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1 or nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1 or nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1 or wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1 or wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 or wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1 or wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1 or wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1; --source gfs cannot prepare wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 or wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1 or wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1 -- the wizard refuses those pairings and names the missing component rather than emitting a config the front door would reject. (--source era5, the default source, binds morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1; every source has its own computed default and its own admissible set -- `gpuwm run-plan --physics-profiles` prints the whole table) |
 | `--point LAT,LON` | domain center in decimal degrees. \|lat\| 90 is refused, and so is any center whose FITTED domain reaches the pole -- a domain containing one is unsupported -- so the usable limit is set by the domain's size, not by the center, and lands well short of 90 (near \|lat\| 72 on the default card and ladder, further equatorward as either grows). The refusal names the fitted size when it fires; the projection is auto-selected from \|lat\| (<25 Mercator, 25-60 Lambert conformal, >60 polar stereographic) unless --projection is set. Negative (southern/western) values work in both forms: --point -33.87,151.21 and --point=-33.87,151.21 |
 | `--polygon GEOJSON` | local GeoJSON Polygon, MultiPolygon, Feature, or FeatureCollection; the minimum antimeridian-aware bounds supply the center and every emitted level is fitted around the geometry |
 | `--projection {auto,lambert,mercator,polar}` | map projection override (default: auto by center latitude; all three are oracle-gated against WRF v4.6.1 module_llxy) |
 | `--root-dx KM` | custom root grid spacing in km [0.05, 200]; use with --chain instead of --ladder |
-| `--source SOURCE` | forcing source: any registered source id or alias -- hrrr, hrrr-prs, gem-gdps, icon-eu, gfs, gdas, gefs, aigfs, aigefs, ecmwf-open-data, aifs, rap, rrfs, era5, 20crv3, 20crv3-cf today (`gpuwm prep --list-sources` lists the whole registry). It sets the boundary cadence written into the companion namelist.wps, bounds the domain by the source's own grid where that grid is regional, and (era5) declares [case_data]. A source `gpuwm fetch` cannot download yet emits the same geometry with the acquisition step named instead of a [fetch] table |
+| `--source SOURCE` | forcing source: any registered source id or alias -- hrrr, hrrr-prs, gem-gdps, icon-eu, gfs, gdas, gefs, aigfs, aigefs, ecmwf-open-data, aifs, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf today (`gpuwm prep --list-sources` lists the whole registry). It sets the boundary cadence written into the companion namelist.wps, bounds the domain by the source's own grid where that grid is regional, and (era5) declares [case_data]. A source `gpuwm fetch` cannot download yet emits the same geometry with the acquisition step named instead of a [fetch] table |
 | `--vram-gib N` | total VRAM in GiB (alternative to --card) |
 | `--vtable` | era5: Vtable override (default: the packaged Vtable.ERA5_CDO, copied beside the TOML) |
 
@@ -225,6 +225,7 @@ Options are listed with the help text the tool itself prints.  Positional argume
 | `--geog-root DIR` | staged WPS_GEOG tree (default: the one `gpuwm fetch-geog` stages into) |
 | `--no-memory-gate` | skip the before-the-fetch memory check that refuses a configuration whose binding phase cannot fit this card's free VRAM |
 | `--outdir DIR` | the case directory: it holds the cached download and one timestamped run folder per run, each carrying that run's authority, prepared, run and png trees (default <config-stem>-go beside the config). Point it at an existing run-... folder and that folder is used as given |
+| `--products LIST` | which products the render stage draws: a comma-separated list of catalog slugs, 'all' (the default -- the renderer's whole catalog), or 'none' to stop after the forecast. The same spelling `gpuwm render --products` takes |
 | `--run-stamp {on,off}` | put this run's authority, prepared, run and png trees in its own timestamped folder under --outdir (default on): --outdir/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --outdir, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 
 ## `gpuwm import-namelist`
@@ -417,6 +418,7 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--annotate FILE.json` | rust engine: override the panel title and the three subtitle slots (title, title_suffix, subtitle_left, subtitle_center, subtitle_right). A short badge belongs in the centre slot; anything sentence-length belongs on the left, which owns the row's width |
+| `--barbs` | rust engine: draw the wind as BARBS, overruling both the automatic choice and any inherited RUSTWX_WIND_STREAMLINES |
 | `--dpi N` | PNG resolution, matplotlib engine (default 150) |
 | `--engine {auto,rust,matplotlib}` | render engine: the vendored Rusty Weather renderer (campaign plot quality; 151 implicit-render catalog candidates per file) or the matplotlib workaround; 'auto' (default) uses rust whenever its binary is built and probes as runnable, and REFUSES otherwise rather than drawing weather fields with matplotlib -- 'matplotlib' asks for that workaround by name and announces itself |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
@@ -433,6 +435,7 @@ Takes no options of its own.
 | `--run-stamp {on,off}` | put this run's PNGs in its own timestamped folder under --out (default on): --out/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --out, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 | `--size WxH` | output pixels, rust engine (default 1200x900) |
 | `--source-label TEXT` | model/provenance label stamped on every plot (default 'ArWen <the executing version>'); set it when rendering wrfout files this model did not produce, so the sheet does not claim them |
+| `--streamlines` | rust engine: draw the wind as STREAMLINES instead of barbs on every product that carries a wind layer. Without either flag the engine keeps its automatic choice (streamlines on curvilinear and projected grids, barbs on plain lat/lon), and the RUSTWX_WIND_STREAMLINES environment variable still works; this flag and --barbs outrank it |
 | `--timeidx N|all` | frame index within each file, or 'all' (default) |
 
 ## `gpuwm report`
@@ -485,8 +488,10 @@ Takes no options of its own.
 | `--estimate` | print this plan's VRAM estimate and output-frame counts as one JSON document, and run nothing |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--no-readiness` | with --probe, report the device inventory only: the NVML-only half, safe to poll on a card that is busy |
+| `--physics-profiles` | print the per-source physics menu as one JSON document -- every registered source crossed with every shipped physics suite, saying which pairings this product can actually prepare, why each refused one is refused, which suite that source's bare run binds, and which suites run shortwave with longwave off -- and run nothing; needs no plan |
 | `--probe` | print this machine's device inventory and runtime-estate readiness as one JSON document; needs no plan. The device inventory is NVML only and creates no CUDA context; the readiness half runs `gpuwm doctor`'s checks, which verify by execution and do create one |
 | `--resolve` | print the fully resolved configuration plus every automatic resolution as one JSON document, and run nothing |
+| `--sources` | print the source registry as one JSON document -- every registered source, what each one's row declares, and which run-plan route can drive it from an intent -- and run nothing; needs no plan |
 
 ## `gpuwm setup`
 
@@ -511,6 +516,13 @@ Takes no options of its own.
 | `--runner {auto,single,tree}` | which runner arm to use. 'auto' (default) reads it off the bundle's own schema and domain count; the explicit values exist for a caller who knows better and wants to be refused precisely when they do not |
 | `--wps-namelist WPS` | the namelist.wps this preparation consumed; required for a single-domain forecast, unused by the tree runner |
 
+## `gpuwm sources`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--json` | emit the registry document instead of the table -- the gpuwm.run-plan.sources.v1 schema, narrowed to the one row when ID is given |
+
 ## `gpuwm spectral`
 
 | option | what it does |
@@ -522,6 +534,12 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--rehash-inputs` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm spectral cross-box`
+
+| option | what it does |
+|---|---|
+| `--tolerance` | override the declared tolerance (1e-12); the default is measured, so a campaign widening it says why in its record |
 
 ## `gpuwm spectral pins`
 
@@ -553,6 +571,23 @@ Takes no options of its own.
 |---|---|
 | `--output RECEIPT.json` | _(the parser declares no help text for this option)_ |
 | `--plot-dir DIR` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm speedrun`
+
+| option | what it does |
+|---|---|
+| `--cold-cache-dir DIR` | EMPTY this directory and point CUPY_CACHE_DIR at it for the run, so a cold-cache record can be set on a machine whose own cache is warm. It never touches the inherited cache |
+| `--compare ('A', 'B')` | compare two records. REFUSED, by name, when they are not records of the same course, the same product set and the same compile mode |
+| `--compile-mode {cold,warm}` | which kernel-cache class this record belongs to (default: whatever the course declares). The door MEASURES the cache before the clock starts and refuses a mismatch, because the one-time NVRTC compile is roughly a minute and it is always inside the clock -- a cold record and a warm record are different records and are never compared |
+| `--determinism ('ARM_A', 'ARM_B')` | the dual-run byte screen: two capsules from two runs of one course on one machine. These cards carry no ECC, so this is the only thing that may set a determinism claim |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--geog-root DIR` | staged WPS_GEOG tree (default: the one `gpuwm fetch-geog` stages into) |
+| `--json` | with --list, emit the table as JSON, including each course's digest and product-set digest |
+| `--leaderboard CAPSULE` | emit the SPEEDRUN.md tables for these capsules, one table per comparability class |
+| `--list` | list the courses, their product sets and the off-the-clock command that stages each course's bytes |
+| `--out DIR` | where the run tree and the capsule go (default speedrun/<course>). The capsule is written as speedrun-capsule.json inside the run's own timestamped folder |
+| `--staged DIR` | the directory holding this course's already-staged input bytes. Required to run a course: the clock starts here, so the download must have happened before the door is called |
+| `--verify CAPSULE` | verify one capsule's seal and evidence and print its record line, instead of running anything |
 
 ## `gpuwm static`
 
@@ -600,6 +635,23 @@ Takes no options of its own.
 | `--input-manifest-sha256` | _(the parser declares no help text for this option)_ |
 | `--mapping` | _(the parser declares no help text for this option)_ |
 
+## `gpuwm-member-prep`
+
+| option | what it does |
+|---|---|
+| `--cycle YYYY-MM-DDTHH` | the model cycle whose member is staged, in UTC; it selects the declared upstream-relative paths under --inputs and is recorded in the staging receipt |
+| `--describe SET` | print one packaged member set's declared members, statistics and products, then exit |
+| `--grib2-inventory` | override the resolved inventory executable |
+| `--inputs ROOT` | root holding fetched files at their declared upstream-relative paths |
+| `--list-member-sets` | print the packaged member sets and exit |
+| `--member ID` | declared member id |
+| `--member-set SET` | packaged member-set id (see --list-member-sets) |
+| `--members-document JSON` | explicit rw-wps.members.v1 document instead of a packaged set (its SHA-256 is recorded in the receipt) |
+| `--output ROOT` | root the member-addressed prepared tree is written under |
+| `--products P,P` | comma-separated declared products (default: all declared) |
+| `--steps H,H,...` | forecast hours to prepare, e.g. 0,3,6 |
+| `--verify-only FILE` | verify one file's bytes against --member and print the evidence; nothing is staged |
+
 ## `gpuwm-prepared-forecast`
 
 `--tiles JSON` is the only way to stream this route: its hash-bound experiment cannot carry a `[tiles]` table, so the table rides on the flag.  `--render-products` (with `--render-dir`) is render-on-first-committed-frame, off by absence.  `--materialize-authorities` and `--show-capabilities` each select a DIFFERENT program with its own options and must be the first argument on the line.
@@ -626,7 +678,7 @@ Takes no options of its own.
 | `--render-products SPEC` | `gpuwm render --products`' own spec -- a comma-separated product list, or `all`, or `none` -- for the FIRST frame this run commits, rendered on a worker thread while the forecast is still integrating. Absent is off, and off is the default: there is deliberately no second switch, so "which products" has one answer that cannot disagree with itself. The first frame is the analysis at t = 0, durable before a single step is integrated |
 | `--run-seconds` | forecast length; must equal the hash-bound experiment's run_seconds, and defaults to it when omitted |
 | `--show-capabilities` | print this runner's capability JSON and exit; it must be the only argument |
-| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,ecmwf-open-data,era5,gdas,gefs,gem-gdps,gfs,hrrr,hrrr-prs,icon-eu,rap,rrfs}` | _(the parser declares no help text for this option)_ |
+| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,ecmwf-open-data,era5,era5-l137,gdas,gefs,gem-gdps,gfs,hrrr,hrrr-prs,icon-eu,rap,rrfs}` | _(the parser declares no help text for this option)_ |
 | `--source-manifest-sha256` | _(the parser declares no help text for this option)_ |
 | `--stream-init {auto,resident,store}` | which road a STREAMED forecast builds its domain on. `resident` restores the prepared cache into one full-domain DomainState, attaches physics to it and lets the streaming seam copy it into the pinned host store -- the road with the parity proof, and the one that caps the domain at the size of the CARD rather than of the machine (MEASURED at nz = 49: the prepared case costs about 15 780 B/column, so 1024x1024 is refused on a 16 GB card while the streamed forecast it would have fed needs about 6 GiB). `store` fills the same store one ROW SLAB at a time and never allocates a domain-shaped device array, so the ceiling is the machine's pinned RAM. `auto`, the default, prices the resident state from the cache's own state/* manifest times the measured physics headroom and takes the resident road wherever it fits inside 0.80 of the card's free memory. Meaningful only when the run streams: with [tiles] off the resident state IS the domain and this flag changes nothing |
 | `--tiles JSON` | the [tiles] table this forecast integrates under, as a JSON object with the keys gpuwm.core.streaming.StreamingOptions takes (mode/tile_nx/tile_ny/nbuffers/halo/store/write_mode/pipeline/vram_budget_bytes/host_budget_bytes). For the caller whose hash-bound experiment cannot carry one: the native HRRR chain hands this runner the authority its preparer BUILT, which has no [tiles] table, so a user's block had nowhere to ride. Validated by the same StreamingOptions.from_mapping the config front door uses, and binds no identity -- omitted, the hash-bound experiment's own table (usually none) runs |
@@ -641,7 +693,7 @@ Takes no options of its own.
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--output-directory` | _(the parser declares no help text for this option)_ |
 | `--physics-profile` | shipped suite to materialize into the experiment; omitted, the base config's own physics is published unchanged and its WRF-verification status is reported |
-| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,ecmwf-open-data,era5,gdas,gefs,gem-gdps,gfs,hrrr,hrrr-prs,icon-eu,rap,rrfs}` | _(the parser declares no help text for this option)_ |
+| `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,ecmwf-open-data,era5,era5-l137,gdas,gefs,gem-gdps,gfs,hrrr,hrrr-prs,icon-eu,rap,rrfs}` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm-prepared-tree-forecast`
 

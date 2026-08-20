@@ -588,15 +588,15 @@ def test_synthetic_import_resolves_and_reports(tmp_path):
     assert ("geogrid", "geog_data_path") in dropped_keys
 
 
-def test_import_of_staggered_start_columns_refuses_by_name(tmp_path):
-    """WRF's delayed-nest start pattern (staggered start columns)
-    refuses AT IMPORT with task #205's named refusal: the importer
-    round-trips its emission through build_experiment, so a config that
-    would die at the activation epoch never reaches a run.  This test
-    used to pin acceptance -- and acceptance meant every downstream gate
-    passed and the run was killed hours in by the missing
-    activation-epoch REFL_10CM stash.  Five-minute forcing acceptance is
-    proven through load on the un-staggered variant, unchanged."""
+def test_import_accepts_real_shaped_staggered_start_columns_and_five_minute_forcing(
+        tmp_path):
+    """WRF's delayed-nest start pattern imports and loads again.
+
+    2.5.0 flipped this pin to expect a refusal, because a delayed child
+    that loaded then died at its activation epoch on the missing
+    REFL_10CM stash.  Task #205 fixed that at the consume sites, so the
+    importer round-trips the staggered start columns through
+    build_experiment and the resolved TOML carries d02's own start."""
     wps = WPS_TEXT.replace(
         "start_date = '1999-05-03_12:00:00', "
         "'1999-05-03_12:00:00',",
@@ -610,21 +610,16 @@ def test_import_of_staggered_start_columns_refuses_by_name(tmp_path):
         " start_second = 00, 00,").replace(
             "interval_seconds = 21600", "interval_seconds = 300")
 
-    with pytest.raises(ValueError, match="delayed nest activation"):
-        import_namelists(
-            *_pair(tmp_path, wps=wps, inp=inp), name="staggered-five-minute")
+    toml_text, _report = import_namelists(
+        *_pair(tmp_path, wps=wps, inp=inp), name="staggered-five-minute")
+    resolved = tmp_path / "staggered-five-minute.toml"
+    resolved.write_text(toml_text, encoding="utf-8")
+    exp = load_experiment(resolved)
 
-    wps300 = WPS_TEXT.replace(
-        "interval_seconds = 21600", "interval_seconds = 300")
-    inp300 = INPUT_TEXT.replace(
-        "interval_seconds = 21600", "interval_seconds = 300")
-    toml300, _report300 = import_namelists(
-        *_pair(tmp_path, wps=wps300, inp=inp300), name="five-minute")
-    resolved300 = tmp_path / "five-minute.toml"
-    resolved300.write_text(toml300, encoding="utf-8")
-    exp = load_experiment(resolved300)
     assert exp.domain_start_time(1) == datetime(1999, 5, 3, 12, 0)
-    assert exp.domain_start_offset_exact(2) == 0
+    assert exp.domain_start_time(2) == datetime(1999, 5, 3, 12, 5)
+    assert exp.domain_start_offset_exact(2) == Fraction(300)
+    assert "start_time = 1999-05-03T12:05:00" in toml_text
 
 
 def test_imported_two_domain_geometry_passes_native_hierarchy_contract(

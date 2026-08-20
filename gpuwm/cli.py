@@ -79,6 +79,7 @@ from gpuwm.explain import (add_explain_flag, explain_enabled, render,
 from gpuwm.fetch import register_cli as fetch_register_cli
 from gpuwm.geog_assets import register_cli as geog_register_cli
 from gpuwm.go_cli import register_cli as go_register_cli
+from gpuwm.speedrun_cli import register_cli as speedrun_register_cli
 from gpuwm.ingest.preflight import register_cli as ingest_register_cli
 from gpuwm.multi_run import register_cli as multi_run_register_cli
 from gpuwm.obs.cli import register_cli as obs_register_cli
@@ -86,6 +87,7 @@ from gpuwm.render import register_cli as render_register_cli
 from gpuwm.report_bundle import register_cli as report_register_cli
 from gpuwm.runplan import register_cli as run_plan_register_cli
 from gpuwm.setup_cli import register_cli as setup_register_cli
+from gpuwm.sources_cli import register_cli as sources_register_cli
 from gpuwm.stage_cli import register_cli as stage_register_cli
 from gpuwm.stream import register_cli as stream_register_cli
 from gpuwm.table_assets import register_cli as table_assets_register_cli
@@ -345,11 +347,21 @@ def build_parser() -> argparse.ArgumentParser:
     # reads in pipeline order.
     stage_register_cli(sub)
     go_register_cli(sub)
+    # Registered beside `go` because it IS `go`, on a fixed course, with a
+    # clock and a sealed capsule around it.  The internal bench surface:
+    # release-facing pages carry capability statements, this one carries
+    # seconds.
+    speedrun_register_cli(sub)
     adapt_register_cli(sub)
     certify_register_cli(sub)
     multi_run_register_cli(sub)
     report_register_cli(sub)
     run_plan_register_cli(sub)
+    # The human view of the same registry `run-plan --sources` serves as
+    # JSON.  Registered beside it so the two doors read as one pair in
+    # the help listing, and because every no-route refusal in
+    # `gpuwm.fetch_routes` now points at this one by name.
+    sources_register_cli(sub)
     update_register_cli(sub)
     version_register_cli(sub)
     spectral_register_cli(sub)
@@ -722,7 +734,19 @@ def _dispatch(args) -> int:
                         "enprod", "downscale", "doctor", "fetch-tables",
                         "fetch-bridges", "setup", "prep", "sim", "go", "adapt",
                         "certify", "dual-run", "multi-run", "obs", "report",
-                        "run-plan", "update", "version", "spectral"):
+                        "run-plan", "sources", "update", "version",
+                        "spectral") or getattr(args, "func", None) is not None:
+        # The `or` clause is not decoration.  The tuple is a transcribed
+        # list of subcommand names, and a subcommand added without a
+        # line here did not get "unrouted" -- it fell through to the
+        # config-driven path below and met
+        # `read_config_authority(args.config)` on a namespace that has
+        # no `config`, which is an AttributeError traceback at a user
+        # for the crime of typing a command that exists.  A registrar
+        # that set `func` has said where its command goes; that is the
+        # thing to dispatch on, and it cannot go stale.  The tuple stays
+        # because `spectral` is routed by name and carries its own
+        # sub-dispatch rather than a top-level `func`.
         return args.func(args)
 
     if args.command == "cases":

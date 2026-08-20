@@ -36,6 +36,7 @@ from gpuwm.mapped_engine_bridge import ENGINE_RUST as _ENGINE_RUST
 from gpuwm.mapped_source import (
     MAPPING_SCHEMA,
     _grib_selectors_overlap,
+    _load_json_bytes,
     _mapped_engine_choice,
     _require_authority_snapshot,
     _sha256,
@@ -1094,6 +1095,7 @@ def author_input_manifest(
     grib1_bridge: str | Path | None = None,
     grib2_inventory: str | Path | None = None,
     grib2_dump: str | Path | None = None,
+    contributing_mappings: Mapping[str, str | Path] | None = None,
     expected_format: str | None = None,
     member: str | None = None,
     member_identity: str | None = None,
@@ -1107,6 +1109,17 @@ def author_input_manifest(
     stamps it onto every canonical frame.  The pair is atomic -- a
     member with no identity policy is a number with no provenance, and
     an identity policy with no member binds nothing.
+
+    ``contributing_mappings`` supplies each cross-source binding's own
+    mapping document under its declared ``mapping_role``, exactly as
+    ``decode_composed_source`` takes them.  On the subprocess-tool
+    route they are REQUIRED for a composition whose contributing
+    sources span another format: the manifest seals WHICH BINARY read
+    the bytes, ``decode_composed_source`` verifies against the union
+    of every decoded format's roles, and a manifest sealed from the
+    primary's format alone (a GRIB2 atmosphere borrowing from a GRIB1
+    archive) named an inventory the composition then rightly refused.
+    The engine route is unaffected: one in-process role either way.
     """
 
     if (member is None) != (member_identity is None):
@@ -1175,8 +1188,51 @@ def author_input_manifest(
         from gpuwm.mapped_engine_bridge import require_engine
 
         engine_binary = require_engine()
+    # The union of every format this composition decodes, exactly the
+    # set `decode_composed_source` verifies the manifest against.  Each
+    # supplied contributing mapping is held to the composition's own
+    # sha256 pin before its format is believed.
+    formats: set[str] = {str(mapping["format"])}
+    bindings = composition.get("field_sources") or {}
+    supplied_contributing = {
+        str(role): Path(path).resolve()
+        for role, path in (contributing_mappings or {}).items()
+    }
+    expected_mapping_roles = {
+        str(binding["mapping_role"]) for binding in bindings.values()
+    }
+    unknown_roles = set(supplied_contributing) - expected_mapping_roles
+    if unknown_roles:
+        raise ValueError(
+            "contributing mapping role(s) "
+            f"{sorted(unknown_roles)} are not declared by the composition"
+        )
+    for binding_name in sorted(bindings):
+        binding = bindings[binding_name]
+        donor_path = supplied_contributing.get(str(binding["mapping_role"]))
+        if donor_path is None:
+            continue
+        donor_snapshot = _snapshot_authority(donor_path, retain_bytes=True)
+        pinned = str(binding["mapping_sha256"])
+        if donor_snapshot.sha256 != pinned:
+            raise ValueError(
+                f"contributing source binding {binding_name!r} authority "
+                f"hash mismatch: the composition pins {pinned}, the "
+                f"supplied mapping bytes hash to {donor_snapshot.sha256}"
+            )
+        donor_mapping = load_mapping(
+            donor_path,
+            _raw=_load_json_bytes(
+                donor_snapshot.data, "contributing mapping", donor_path,
+            ),
+        )
+        formats.add(str(donor_mapping["format"]))
     decoders = _decoder_inventory(
-        str(mapping["format"]),
+        # The historical single-format call shape survives; the union
+        # tuple appears only when a contributing source really spans
+        # another format.
+        str(mapping["format"]) if len(formats) == 1
+        else tuple(sorted(formats)),
         grib1_bridge=grib1_bridge,
         grib2_inventory=grib2_inventory,
         grib2_dump=grib2_dump,

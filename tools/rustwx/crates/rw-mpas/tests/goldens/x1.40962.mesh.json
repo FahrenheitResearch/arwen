@@ -1,0 +1,548 @@
+{
+ "canonical_numbering": {
+  "edge": "unordered cell pair (a,b) a<b, sorted lexicographically",
+  "edge_bijection_with_file": true,
+  "vertex": "sorted cell triple (a,b,c), sorted lexicographically",
+  "vertex_bijection_with_file": true
+ },
+ "container": "RWGOLD01 v1, little-endian",
+ "dims": {
+  "TWO": 2,
+  "codeLen": 1,
+  "maxEdges": 10,
+  "maxEdges2": 20,
+  "nCells": 40962,
+  "nEdges": 122880,
+  "nVertices": 81920,
+  "vertexDegree": 3
+ },
+ "field_stats_over_all_elements": {
+  "angleEdge": {
+   "dtype": "f64",
+   "fsum": -175.92918858159328,
+   "max": 3.141592653589793,
+   "mean": -0.0014317154018684349,
+   "min": -3.141592653589793,
+   "n": 122880,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "e8ef821d3df1a13b162e374a26239c802b8bc701f04f107f8f6e2f5afdbc2e5e",
+   "shape": [
+    122880
+   ]
+  },
+  "areaCell": {
+   "dtype": "f64",
+   "fsum": 12.566370614359172,
+   "max": 0.0003166670314876824,
+   "mean": 0.00030678117802741985,
+   "min": 0.00021083735029641182,
+   "n": 40962,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "122fdc7c60ec654936bd9c353abdccc3c3b87d7f935c26aac87cf202300bd120",
+   "shape": [
+    40962
+   ]
+  },
+  "areaTriangle": {
+   "dtype": "f64",
+   "fsum": 12.566370614359172,
+   "max": 0.0001587103352423265,
+   "mean": 0.00015339807878856412,
+   "min": 0.00011039953579742082,
+   "n": 81920,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "be9b840694addd21d6bc923f997b5b0a3ecd85d5fb85b15820a9737653f31c50",
+   "shape": [
+    81920
+   ]
+  },
+  "cellsOnCell": {
+   "dtype": "i32",
+   "fsum": 7299528781,
+   "max": 40962,
+   "min": 1,
+   "n": 409620,
+   "sha256_raw_le": "f03b8ea17d98f2afba30c52186c25868f4aad4a79dc2d0aa58f01007207b825d",
+   "shape": [
+    40962,
+    10
+   ]
+  },
+  "cellsOnEdge": {
+   "dtype": "i32",
+   "fsum": 5033779140,
+   "max": 40962,
+   "min": 1,
+   "n": 245760,
+   "sha256_raw_le": "560bf07c6c6b0be522c1b9720822a2cce30fec10b7a8f454756e6684903952d1",
+   "shape": [
+    122880,
+    2
+   ]
+  },
+  "cellsOnVertex": {
+   "dtype": "i32",
+   "fsum": 5033779140,
+   "max": 40962,
+   "min": 1,
+   "n": 245760,
+   "sha256_raw_le": "67ce55f4743a7c2387035501e442aebbdb763930214b700ced91620dbf7ff573",
+   "shape": [
+    81920,
+    3
+   ]
+  },
+  "dcEdge": {
+   "dtype": "f64",
+   "fsum": 2317.461707808978,
+   "max": 0.019959650265712742,
+   "mean": 0.01885955165860171,
+   "min": 0.015236700859531663,
+   "n": 122880,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "c21b1e81de4227465ebe33dc590f5f8a2dedb2ae550391515af45c39a30650fc",
+   "shape": [
+    122880
+   ]
+  },
+  "dvEdge": {
+   "dtype": "f64",
+   "fsum": 1338.0280576237685,
+   "max": 0.012874358488794632,
+   "mean": 0.010888900208526762,
+   "min": 0.0070656237965525115,
+   "n": 122880,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "77fa4b41244ec6bf0ee17da273dbf9ae116bbb4ec41e82bfd424b7553e348f41",
+   "shape": [
+    122880
+   ]
+  },
+  "edgesOnCell": {
+   "dtype": "i32",
+   "fsum": 25223676966,
+   "max": 122880,
+   "min": 1,
+   "n": 409620,
+   "sha256_raw_le": "c3ad9f650a27f9b3b9b0fa3540febae41c5fe14f76d7ccfad2cb029a2e67e50b",
+   "shape": [
+    40962,
+    10
+   ]
+  },
+  "edgesOnEdge": {
+   "dtype": "i32",
+   "fsum": 75494400276,
+   "max": 122880,
+   "min": 0,
+   "n": 2457600,
+   "sha256_raw_le": "48f7585043be62848e082437787a417ac16c7fd9388fbc189272081c9cb701b0",
+   "shape": [
+    122880,
+    20
+   ]
+  },
+  "edgesOnVertex": {
+   "dtype": "i32",
+   "fsum": 15099617280,
+   "max": 122880,
+   "min": 1,
+   "n": 245760,
+   "sha256_raw_le": "5f5fb5f00d36ce5326fbd07ff2705305774c6a5495a27026ecd39951fdb5da11",
+   "shape": [
+    81920,
+    3
+   ]
+  },
+  "indexToCellID": {
+   "dtype": "i32",
+   "fsum": 838963203,
+   "max": 40962,
+   "min": 1,
+   "n": 40962,
+   "sha256_raw_le": "c11cf33a33e5309331091af6d16059b718ce6be0dd319793a0f03110d9f00812",
+   "shape": [
+    40962
+   ]
+  },
+  "indexToEdgeID": {
+   "dtype": "i32",
+   "fsum": 7549808640,
+   "max": 122880,
+   "min": 1,
+   "n": 122880,
+   "sha256_raw_le": "57903083a02b458f03604aa2951b20cbacd53ed0f5128317c1cf933407f21e53",
+   "shape": [
+    122880
+   ]
+  },
+  "indexToVertexID": {
+   "dtype": "i32",
+   "fsum": 3355484160,
+   "max": 81920,
+   "min": 1,
+   "n": 81920,
+   "sha256_raw_le": "1cea14be110a0986686fc85e38a2e3e142969340ed9d9c086814da67eaf28877",
+   "shape": [
+    81920
+   ]
+  },
+  "kiteAreasOnVertex": {
+   "dtype": "f64",
+   "fsum": 12.566370614359172,
+   "max": 5.471249747009516e-05,
+   "mean": 5.113269292952137e-05,
+   "min": 3.411603185576053e-05,
+   "n": 245760,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "1effb4886fffecb06b656090c4d06d0604c2f9393846c0feb678447019ff2bb0",
+   "shape": [
+    81920,
+    3
+   ]
+  },
+  "latCell": {
+   "dtype": "f64",
+   "fsum": -1.320510313068074e-09,
+   "max": 1.5707963267948966,
+   "mean": -3.223744722103594e-14,
+   "min": -1.5707963267948966,
+   "n": 40962,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "f7827d5b1de2902d4c875dbbd3ab0ccf0a3d7eb50dc41bd836134847b9ec9a30",
+   "shape": [
+    40962
+   ]
+  },
+  "latEdge": {
+   "dtype": "f64",
+   "fsum": -3.9635598454311385e-09,
+   "max": 1.5631779763651206,
+   "mean": -3.225553259628205e-14,
+   "min": -1.563177976365135,
+   "n": 122880,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "1b92fd2ae6a1a387ce4568355163be2be6d1460128124a02b3813d447976d57f",
+   "shape": [
+    122880
+   ]
+  },
+  "latVertex": {
+   "dtype": "f64",
+   "fsum": -2.6438411460105726e-09,
+   "max": 1.561379623493314,
+   "mean": -3.227345148938687e-14,
+   "min": -1.5613796234933144,
+   "n": 81920,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "cbb55ca53a8c5d603d66ca2d820b966b07aa34c8cf277fc8f24f5bbb8f518991",
+   "shape": [
+    81920
+   ]
+  },
+  "lonCell": {
+   "dtype": "f64",
+   "fsum": 128660.14564202412,
+   "max": 6.283037970489225,
+   "mean": 3.140963469606565,
+   "min": 2.7217698849922847e-05,
+   "n": 40962,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "7281aa128894edc78218797f57c91f294e9a4fb7b90346667cc4408a3b20f524",
+   "shape": [
+    40962
+   ]
+  },
+  "lonEdge": {
+   "dtype": "f64",
+   "fsum": 385936.6658444145,
+   "max": 6.283164975090181,
+   "mean": 3.1407606269890502,
+   "min": 0.0001983673120965573,
+   "n": 122880,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "175c9103f311fbe5eaaaeac9755e4bc2c00a2cf0f0c6e24f0a7cdbbbf7016176",
+   "shape": [
+    122880
+   ]
+  },
+  "lonVertex": {
+   "dtype": "f64",
+   "fsum": -15.79974157231342,
+   "max": 3.1415635803801925,
+   "mean": -0.00019286793911515407,
+   "min": -3.1415642794597143,
+   "n": 81920,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "140bcd1e89050e4f7b5e0eccb4d5aff51cf5a9f1be7f680bc2a908e282e9134e",
+   "shape": [
+    81920
+   ]
+  },
+  "meshDensity": {
+   "dtype": "f64",
+   "fsum": 40962.0,
+   "max": 1.0,
+   "mean": 1.0,
+   "min": 1.0,
+   "n": 40962,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "de1b51fa2ed1385bcc6282dfa718c03cc268d7e82170c1db882048fb361f9a5f",
+   "shape": [
+    40962
+   ]
+  },
+  "nEdgesOnCell": {
+   "dtype": "i32",
+   "fsum": 245760,
+   "histogram": {
+    "5": 12,
+    "6": 40950
+   },
+   "max": 6,
+   "min": 5,
+   "n": 40962,
+   "sha256_raw_le": "11dede32dda6fde77b33702435444f7a69e323adacbc3bf1ad4321692a1fcbac",
+   "shape": [
+    40962
+   ]
+  },
+  "nEdgesOnEdge": {
+   "dtype": "i32",
+   "fsum": 1228740,
+   "histogram": {
+    "9": 60,
+    "10": 122820
+   },
+   "max": 10,
+   "min": 9,
+   "n": 122880,
+   "sha256_raw_le": "f74f3855b484f172a402fcd8c12efbd00cddf0885fffdc495215a711cf2919c9",
+   "shape": [
+    122880
+   ]
+  },
+  "nominalMinDc": {
+   "dtype": "f64",
+   "fsum": 0.018834670673428942,
+   "max": 0.018834670673428942,
+   "mean": 0.018834670673428942,
+   "min": 0.018834670673428942,
+   "n": 1,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "f79b4c129cd35501f878f8fbcdf874988d4ea263af64c38d37bbac90dbfbc55c",
+   "shape": []
+  },
+  "verticesOnCell": {
+   "dtype": "i32",
+   "fsum": 10066452480,
+   "max": 81920,
+   "min": 0,
+   "n": 409620,
+   "sha256_raw_le": "15e719f5d9dc8ed2e0bb9fe271a2b5e729e011dcbe44e28483ff0b74a87f5acb",
+   "shape": [
+    40962,
+    10
+   ]
+  },
+  "verticesOnEdge": {
+   "dtype": "i32",
+   "fsum": 10066452480,
+   "max": 81920,
+   "min": 1,
+   "n": 245760,
+   "sha256_raw_le": "f06edfcf4d03e07e9a5eb9b9646b648ab6f04f30b4f5ca6269cebd0b4e5f7ed0",
+   "shape": [
+    122880,
+    2
+   ]
+  },
+  "weightsOnEdge": {
+   "dtype": "f64",
+   "fsum": 32.4275405058026,
+   "max": 0.22083620764462009,
+   "mean": 1.3194800010499103e-05,
+   "min": -0.22083620764448478,
+   "n": 2457600,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "914bc94abaa1682e36dacabbd297ef47d623f006162d24ad8639f0cd0c60448d",
+   "shape": [
+    122880,
+    20
+   ]
+  },
+  "xCell": {
+   "dtype": "f64",
+   "fsum": -1.1454604088968033e-08,
+   "max": 0.9999978218862025,
+   "mean": -2.7963976585537896e-13,
+   "min": -0.9999978218862026,
+   "n": 40962,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "7a4e9e1c4234137edeed3ddfab3eb7f00a352f4b86c682296e72152def43e8c6",
+   "shape": [
+    40962
+   ]
+  },
+  "xEdge": {
+   "dtype": "f64",
+   "fsum": -3.43663968947765e-08,
+   "max": 0.9999719831518836,
+   "mean": -2.796744538962931e-13,
+   "min": -0.9999719831518833,
+   "n": 122880,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "24a89db6d1d887e0197afe914ef345834abda66c753726b1250e6b955c462f1d",
+   "shape": [
+    122880
+   ]
+  },
+  "xVertex": {
+   "dtype": "f64",
+   "fsum": -2.290684259368737e-08,
+   "max": 0.9999589284872744,
+   "mean": -2.7962454337997276e-13,
+   "min": -0.9999589284872742,
+   "n": 81920,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "920beedd08be73c7cee777ff776afc766e6b0858771801895370a69b08640d0a",
+   "shape": [
+    81920
+   ]
+  },
+  "yCell": {
+   "dtype": "f64",
+   "fsum": -3.5151807740496206e-11,
+   "max": 0.999957820705496,
+   "mean": -8.58156528990191e-16,
+   "min": -0.9999578207054968,
+   "n": 40962,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "edc7142be7785d181cc277e4b4f63ecb411cbce80cf813ee7c504986e4bbb7cf",
+   "shape": [
+    40962
+   ]
+  },
+  "yEdge": {
+   "dtype": "f64",
+   "fsum": -1.0586117619914496e-10,
+   "max": 0.9999888285969549,
+   "mean": -8.615004573498125e-16,
+   "min": -0.999988828596949,
+   "n": 122880,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "1ca9231c6f9987cdc0df2b7e06f45a5fcac85cae249e785fc1e3022d5ac17b9b",
+   "shape": [
+    122880
+   ]
+  },
+  "yVertex": {
+   "dtype": "f64",
+   "fsum": -7.03150656427285e-11,
+   "max": 0.9999983213220441,
+   "mean": -8.583382036465881e-16,
+   "min": -0.9999983213220438,
+   "n": 81920,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "eb411a121822b922d4ed7ea363e783f5dd9c911d068ea96eff63dcef1e5c48ea",
+   "shape": [
+    81920
+   ]
+  },
+  "zCell": {
+   "dtype": "f64",
+   "fsum": -9.234096459405914e-10,
+   "max": 1.0,
+   "mean": -2.254308007276479e-14,
+   "min": -1.0,
+   "n": 40962,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "0b2c05e22fa328b7bbbdfa98909d9a3e4301f52576cbaf58d7f89ea1929ac0a3",
+   "shape": [
+    40962
+   ]
+  },
+  "zEdge": {
+   "dtype": "f64",
+   "fsum": -2.77157389608749e-09,
+   "max": 0.9999709805087208,
+   "mean": -2.255512610748283e-14,
+   "min": -0.9999709805087209,
+   "n": 122880,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "17d027c69b8202efbe6c5eace3b3693f36d726865b60061806cb3774fe800f12",
+   "shape": [
+    122880
+   ]
+  },
+  "zVertex": {
+   "dtype": "f64",
+   "fsum": -1.8487778038079467e-09,
+   "max": 0.9999556631770945,
+   "mean": -2.2568088425389973e-14,
+   "min": -0.9999556631770945,
+   "n": 81920,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "79c72459bfcb9e081b55ecbe60df8542fddaa77046f80d7461a7d98a6d033eeb",
+   "shape": [
+    81920
+   ]
+  }
+ },
+ "global_attrs": {
+  "file_id": "854b2600",
+  "is_periodic": "NO",
+  "mesh_spec": "1.1",
+  "on_a_sphere": "YES",
+  "sphere_radius": 1.0,
+  "x_period": 0.0,
+  "y_period": 0.0
+ },
+ "golden_bytes": 4957480,
+ "golden_sha256": "8afecf40e60d7a2fdb3a7723e22fe99caa6ba4fe43e02816279a5962aa5c84df",
+ "measured": {
+  "abs_radius_minus_one_max": 2.220446049250313e-16,
+  "euler_nCells_minus_nEdges_plus_nVertices": 2,
+  "fsum_single_element_resolution_limit_abs": 7.746760047680491e-16,
+  "latCell_vs_asin_z_max_rad": 3.552713678800501e-15,
+  "lonCell_vs_atan2_yx_max_rad": 8.881784197001252e-16,
+  "nEdgesOnCell_histogram": {
+   "5": 12,
+   "6": 40950
+  },
+  "nEdgesOnEdge_equals_neoc_c0_plus_c1_minus_2_violations": 0,
+  "padding_fill_rule": {
+   "cellsOnCell": "repeat of last valid entry (measured 100%)",
+   "edgesOnCell": "max of valid entries (measured 100%)",
+   "verticesOnCell": "0 in the file's 1-based numbering (measured 100%)",
+   "weightsOnEdge": "exactly 0.0 (measured, 0 nonzero padding slots)"
+  },
+  "sum_areaCell_over_4pi": 1.0,
+  "sum_areaTriangle_over_4pi": 1.0,
+  "sum_kiteAreas_over_4pi": 1.0,
+  "sum_six_minus_nEdgesOnCell": 12,
+  "weightsOnEdge_nonzero_padding_slots": 0
+ },
+ "mesh": "x1.40962",
+ "sampling": {
+  "cell": {
+   "n_sampled": 2054,
+   "n_total": 40962,
+   "stride": 20
+  },
+  "edge": {
+   "n_sampled": 2056,
+   "n_total": 122880,
+   "stride": 60
+  },
+  "rule": "index % stride == 0, UNION {0, n-1}, UNION argmin/argmax of every metric",
+  "vertex": {
+   "n_sampled": 2051,
+   "n_total": 81920,
+   "stride": 40
+  }
+ },
+ "source_bytes": 56039332,
+ "source_file": "x1.40962.grid.nc",
+ "source_sha256": "9a9e1909a755dac209462ceb0bfffd77ac1b37503169568b7f296707ee612bb9"
+}

@@ -1,0 +1,19 @@
+{
+  "dx_m": 3000.0,
+  "dy_m": 3000.0,
+  "map_proj": "lambert",
+  "name": "hrrr_native_quick_demo",
+  "nx": 118,
+  "ny": 112,
+  "nz": 49,
+  "ref_lat": 35.3,
+  "ref_lon": -97.5,
+  "relax_zone": 4,
+  "schema": "gpuwm-hrrr-target-domain-v1",
+  "spec_bdy_width": 5,
+  "spec_zone": 1,
+  "stand_lon": -97.5,
+  "time_step_seconds": 15,
+  "truelat1": 25.3,
+  "truelat2": 45.3
+}

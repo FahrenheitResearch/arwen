@@ -1145,10 +1145,18 @@ ships with the section-offset indexing corrected (WRF's MAXLOC
 off-by-one lives behind a parity-suite flag; measured on the fixture,
 the correction moves 3 rejected cases and zero output words), the
 inversion-layer search clamps WRF's out-of-bounds `t_cup(kend+8)` read
-(clamp count zero on the fixture, asserted), and the engine seam feeds
-the advective/boundary-layer halves of the forcing as zeros with
-convective momentum tendencies not yet coupled -- the plumb-list any
-label upgrade must clear. The uncertified half is the same sentence
+(clamp count zero on the fixture, asserted), and convective momentum
+tendencies are not yet coupled -- the plumb-list any label upgrade must
+clear. All four forcing lanes are fed. The boundary-layer half: whichever
+scheme holds the PBL slot hands GFDRV its own raw heating and moistening
+rates, the way WRF's cumulus driver does. The advective half
+(`RTHFTEN`/`RQVFTEN`): the dycore exports pure theta and qv advection
+once per step and the scheme reads it on the next one, the same one-step
+lag the retained microphysics heating has. Because that pair is
+restart-carried state, a `cu_physics = 3` checkpoint written by an
+earlier build is refused by name on resume and the run must restart from
+its prepared state; no other configuration's checkpoints are
+affected. The uncertified half is the same sentence
 YSU, MYNN and Shin-Hong carry: no matched ArWen-versus-WRF forecast
 trajectory has been run with `cu_physics = 3`, and no real-case
 verification receipt exists -- which is why the label is

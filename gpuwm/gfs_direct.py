@@ -1919,6 +1919,22 @@ def prepared_forecast_next_command(
     content = (cache.get("content_sha256")
                if isinstance(cache, Mapping) else None)
     manifest_digest = proof.get("input_manifest_sha256")
+    if not isinstance(manifest_digest, str):
+        # The mapped single-domain proof records the published manifest's
+        # digest inside its composition receipt instead of at the top
+        # level, and it is the SAME digest: the copy this command points
+        # the runner at, `source-evidence/input-manifest.json`, is
+        # written from those bytes and verified against this value at
+        # publication.  Without the fallback a perfectly ordinary
+        # single-domain mapped bundle -- every packaged source runs on
+        # one -- looked manifest-less here and got the multi-domain
+        # hierarchy command printed for it, which is the wrong runner.
+        composition = proof.get("source_composition")
+        record = (composition.get("input_manifest")
+                  if isinstance(composition, Mapping) else None)
+        if isinstance(record, Mapping) and isinstance(
+                record.get("sha256"), str):
+            manifest_digest = record["sha256"]
     if not isinstance(content, str) or not isinstance(manifest_digest, str):
         # The multi-domain hierarchy product.  Its runner binds the
         # experiment config by digest too, so the full command is

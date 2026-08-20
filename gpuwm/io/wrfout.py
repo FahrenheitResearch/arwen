@@ -32,7 +32,8 @@ from gpuwm.io.classic_tape import (ClassicDim, ClassicTape, ClassicVariable,
                                    classic_attr_value)
 from gpuwm.io.wrf_output_schema import (
     HISTORY_FIELDS_BY_NETCDF_NAME, PHYSICS_SELECTOR_GLOBALS,
-    SCHEME_OUTPUT_FIELDS, WRF_FIELD_TYPE_INTEGER, WRF_FIELD_TYPE_REAL,
+    REGISTRY_VAR_META, SCHEME_OUTPUT_FIELDS, WRF_FIELD_TYPE_INTEGER,
+    WRF_FIELD_TYPE_REAL,
 )
 from gpuwm.supervisor import (fsync_file, quarantine_file,
                               replace_file_with_retry, unique_temp_path)
@@ -124,156 +125,13 @@ def _stringify_and_clear_exception_tracebacks(exc: BaseException) -> str:
     return rendered
 
 
-#: WRF Registry metadata ``name -> (description, units)`` for the
-#: variables gpuwm writes; unknown names get empty strings.
-_VAR_META = {
-    "U": ("x-wind component", "m s-1"),
-    "V": ("y-wind component", "m s-1"),
-    "W": ("z-wind component", "m s-1"),
-    "T": ("perturbation potential temperature theta-t0", "K"),
-    "P": ("perturbation pressure", "Pa"),
-    "PB": ("BASE STATE PRESSURE", "Pa"),
-    "PH": ("perturbation geopotential", "m2 s-2"),
-    "PHB": ("base-state geopotential", "m2 s-2"),
-    "MU": ("perturbation dry air mass in column", "Pa"),
-    "MUB": ("base state dry air mass in column", "Pa"),
-    "QVAPOR": ("Water vapor mixing ratio", "kg kg-1"),
-    "QCLOUD": ("Cloud water mixing ratio", "kg kg-1"),
-    "QRAIN": ("Rain water mixing ratio", "kg kg-1"),
-    "QICE": ("Ice mixing ratio", "kg kg-1"),
-    "QSNOW": ("Snow mixing ratio", "kg kg-1"),
-    "QGRAUP": ("Graupel mixing ratio", "kg kg-1"),
-    "QHAIL": ("Hail mixing ratio", "kg kg-1"),
-    "QNDROP": ("Droplet number mixing ratio", "# kg-1"),
-    "QNCLOUD": ("cloud water Number concentration", "  kg(-1)"),
-    "QNRAIN": ("Rain Number concentration", "  kg(-1)"),
-    "QNICE": ("Ice Number concentration", "  kg-1"),
-    "QNSNOW": ("Snow Number concentration", "  kg(-1)"),
-    "QNGRAUPEL": ("Graupel Number concentration", "  kg(-1)"),
-    "QNHAIL": ("Hail Number concentration", "# kg(-1)"),
-    "QNCCN": ("CCN Number concentration", "# kg(-1)"),
-    # QNWFA/QNIFA/QNWFA2D/QNIFA2D (mp_physics=28) are deliberately NOT here.
-    # They have transcribed rows -- with NetCDF type, FieldType and the
-    # stagger the writer cross-checks -- in
-    # gpuwm.io.wrf_output_schema.THOMPSON_AEROSOL_OUTPUT_FIELDS, which
-    # _create_variable consults BEFORE this fallback table.  Same reason the
-    # precipitation accumulators moved out below: two tables describing one
-    # field is how two tables come to disagree about one field.
-    "QVGRAUPEL": ("Graupel Particle Volume", "m(3) kg(-1)"),
-    "QVHAIL": ("Hail Particle Volume", "m(3) kg(-1)"),
-    # P3 one-category (mp_physics=50).  Transcribed verbatim from
-    # Registry.EM_COMMON:555-558, whose IO string ``i0rhusdf`` carries the
-    # ``h`` that puts both in WRF's history stream.  They are what makes an
-    # mp=50 wrfout more than a one-moment ice field: without the rime pair a
-    # reader cannot recover rime fraction qir/qi or rime density qir/qib,
-    # which are the two indices P3's whole ice inventory is built on.
-    "QIR": ("Rime ice mass-1 mixing ratio", "kg kg(-1)"),
-    "QIB": ("Rime ice volume-1 mixing ratio", "m(3) kg(-1)"),
-    # Registry.EM_COMMON:1596 (verified against the reference wrfout's
-    # REFL_10CM attributes).  Opt-in: cases merge the field into their
-    # frame dict (gpuwm.core.refl.compute_refl_10cm supplies the values).
-    "REFL_10CM": ("Radar reflectivity (lamda = 10 cm)", "dBZ"),
-    # Registry.EM_COMMON:2083 (nwp_output package, IO "rh02").  Present
-    # exactly when the run carries the accumulator (nwp_diagnostics = 1;
-    # gpuwm.core.uh_diag owns the per-step update and the post-write reset).
-    "UP_HELI_MAX": ("MAX UPDRAFT HELICITY", "m2 s-2"),
-    "HGT": ("Terrain Height", "m"),
-    "PSFC": ("SFC PRESSURE", "Pa"),
-    # RAINC/RAINSH/RAINNC/SNOWNC/GRAUPELNC/HAILNC used to live here.  They
-    # are now in gpuwm.io.wrf_output_schema.PRECIPITATION_OUTPUT_FIELDS,
-    # because they are no longer merely *described* by this table -- they are
-    # emitted unconditionally, and the thing that decides that has to be the
-    # same thing that carries their Registry metadata.  Two tables describing
-    # one field is how two tables come to disagree about one field.
-    "SNOW": ("SNOW WATER EQUIVALENT", "kg m-2"),
-    "SNOWH": ("PHYSICAL SNOW DEPTH", "m"),
-    "SNOWC": ("FLAG INDICATING SNOW COVERAGE (1 FOR SNOW COVER)", ""),
-    "TSLB": ("SOIL TEMPERATURE", "K"),
-    "SMOIS": ("SOIL MOISTURE", "m3 m-3"),
-    "SH2O": ("SOIL LIQUID WATER", "m3 m-3"),
-    "SWDOWN": ("DOWNWARD SHORT WAVE FLUX AT GROUND SURFACE", "W m-2"),
-    "GLW": ("DOWNWARD LONG WAVE FLUX AT GROUND SURFACE", "W m-2"),
-    # Registry.EM_COMMON:1839, transcribed verbatim beside its two
-    # surface-flux neighbours.  ``ij`` mass grid, no stagger, real -- so
-    # the dimension table and the FieldType default already describe it
-    # correctly and it needs no row of its own.
-    "OLR": ("TOA OUTGOING LONG WAVE", "W m-2"),
-    "TSK": ("SURFACE SKIN TEMPERATURE", "K"),
-    "T2": ("TEMP at 2 M", "K"),
-    "TH2": ("POT TEMP at 2 M", "K"),
-    "Q2": ("QV at 2 M", "kg kg-1"),
-    "U10": ("U at 10 M", "m s-1"),
-    "V10": ("V at 10 M", "m s-1"),
-    "UST": ("U* IN SIMILARITY THEORY", "m s-1"),
-    "HFX": ("UPWARD HEAT FLUX AT THE SURFACE", "W m-2"),
-    "QFX": ("UPWARD MOISTURE FLUX AT THE SURFACE", "kg m-2 s-1"),
-    "LH": ("LATENT HEAT FLUX AT THE SURFACE", "W m-2"),
-    "TKE_SASE": ("SASE prognostic subgrid turbulence kinetic energy",
-                 "m2 s-2"),
-    "TKE_SHINHONG": ("Shin-Hong published subgrid turbulence kinetic "
-                     "energy diagnostic", "m2 s-2"),
-    # The SPLIT SUBGRID-FLUX DIAGNOSTIC (RunConfig sase_flux_diag, off by
-    # default; per domain).  Four z-FACE fields on the mass column --
-    # (nz+1, ny, nx), stagger "Z", registered exactly like W -- carrying
-    # the closure's own vertical subgrid fluxes with the conditional-
-    # venting channel separated from the K_v implicit vertical diffusion
-    # channel.  BOTH CHANNELS ARE POSITIVE UPWARD and both divide by the
-    # SAME lowest-level moist density the venting deposit divides by, so
-    # VENT + DIFF is the closure's total subgrid flux and its
-    # convergence is the model's own scalar increment.  Face 0 is +0.0
-    # by the interface contract: the surface flux is owned by HFX/QFX
-    # and is not double-counted here.
-    "SASE_FQV_VENT": ("SASE vent subgrid water vapor flux, positive up",
-                      "kg m-2 s-1"),
-    "SASE_FQV_DIFF": ("SASE Kv subgrid water vapor flux, positive up",
-                      "kg m-2 s-1"),
-    "SASE_FTH_VENT": ("SASE vent subgrid heat flux, positive up",
-                      "W m-2"),
-    "SASE_FTH_DIFF": ("SASE Kv subgrid heat flux, positive up",
-                      "W m-2"),
-    # The HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (RunConfig hmix_k_diag,
-    # off by default; per domain).  Two (nz, ny, nx) mass-grid fields
-    # carrying the horizontal mixing coefficients the run's own producer
-    # used, under that producer's name: XKMH/XKHH are WRF's Registry
-    # names for the km_opt = 4 2-D Smagorinsky viscosities, SASE_KMH/
-    # SASE_KHH the SASE closure's governed horizontal diffusivity and
-    # the K_h = KMH/Pr_t(f) its scalar channel rides.  Same units, same
-    # grid, same meaning, so the two are directly comparable -- which is
-    # the point: SASE's claim to replace the km_opt operator is a claim
-    # about this number.  A run with NO horizontal mixing producer (the
-    # acknowledged km_opt = 0 control) publishes NEITHER pair, so an
-    # absent variable says "no operator ran" and can never be misread as
-    # a measured zero.  Instantaneous: the value the last completed
-    # model step used, not a history-interval mean.
-    "XKMH": ("HORIZONTAL MOMENTUM EDDY VISCOSITY", "m2 s-1"),
-    "XKHH": ("HORIZONTAL HEAT EDDY VISCOSITY", "m2 s-1"),
-    "SASE_KMH": ("SASE governed horizontal momentum diffusivity",
-                 "m2 s-1"),
-    "SASE_KHH": ("SASE governed horizontal scalar diffusivity, KMH/Pr_t",
-                 "m2 s-1"),
-    "PBLH": ("PBL HEIGHT", "m"),
-    "GRDFLX": ("GROUND HEAT FLUX", "W m-2"),
-    "PSIM": ("SIMILARITY STABILITY FUNCTION FOR MOMENTUM", ""),
-    "PSIH": ("SIMILARITY STABILITY FUNCTION FOR HEAT", ""),
-    "XLAT": ("LATITUDE, SOUTH IS NEGATIVE", "degree_north"),
-    "XLONG": ("LONGITUDE, WEST IS NEGATIVE", "degree_east"),
-    "XLAT_U": ("LATITUDE, SOUTH IS NEGATIVE", "degree_north"),
-    "XLONG_U": ("LONGITUDE, WEST IS NEGATIVE", "degree_east"),
-    "XLAT_V": ("LATITUDE, SOUTH IS NEGATIVE", "degree_north"),
-    "XLONG_V": ("LONGITUDE, WEST IS NEGATIVE", "degree_east"),
-    "MAPFAC_M": ("Map scale factor on mass grid", ""),
-    "MAPFAC_U": ("Map scale factor on u-grid", ""),
-    "MAPFAC_V": ("Map scale factor on v-grid", ""),
-    "F": ("Coriolis sine latitude term", "s-1"),
-    "E": ("Coriolis cosine latitude term", "s-1"),
-    "LU_INDEX": ("LAND USE CATEGORY", ""),
-    "LANDMASK": ("LAND MASK (1 FOR LAND, 0 FOR WATER)", ""),
-    "SINALPHA": ("Local sine of map rotation", ""),
-    "COSALPHA": ("Local cosine of map rotation", ""),
-    "P_TOP": ("PRESSURE TOP OF THE MODEL", "Pa"),
-    "ZNU": ("eta values on half (mass) levels", ""),
-    "ZNW": ("eta values on full (w) levels", ""),
-}
+#: WRF Registry metadata ``name -> (description, units)``, read from
+#: the schema module that owns it.  The table moved there so
+#: ``gpuwm.io.history_selection`` can read the NAMES at
+#: config-resolution time without importing this writer -- and the
+#: supervisor, netCDF4 and runtime behind it.  Kept bound here under
+#: the name the writer has always used.
+_VAR_META = REGISTRY_VAR_META
 
 #: Staggered dimension -> WRF ``stagger`` attribute value.  WRF appends
 #: ``_stag`` to a dimension's dataset name exactly when the field is staggered
@@ -1564,6 +1422,16 @@ class AsyncDomainWrfoutWriter:
     #: looks to learn the feature is optional.
     grid_id = None
     landing_observer = None
+    #: This domain's ``[output]`` history-variable selection
+    #: (:class:`gpuwm.io.history_selection.HistorySelection`), or ``None``
+    #: -- which means the same thing ``HistorySelection.FULL`` does:
+    #: write every variable the run produces and stamp no attribute.
+    #: Declared here for the same reason the two above are: the test
+    #: suite builds CPU-only shells of this class with
+    #: ``object.__new__``, and an optional feature that exists only on
+    #: the ``__init__`` path turns every such construction into an
+    #: AttributeError on the worker thread.
+    history_selection = None
 
     @staticmethod
     def _new_ticket_queue() -> queue.Queue:
@@ -1575,7 +1443,7 @@ class AsyncDomainWrfoutWriter:
 
     def __init__(self, *, nx, ny, nz, dx, dy, title, global_attrs,
                  abort_event=None, soil_layers=None, grid_id=None,
-                 landing_observer=None):
+                 landing_observer=None, history_selection=None):
         import cupy as cp
 
         #: Which domain this writer is, and who to tell when one of its
@@ -1587,6 +1455,7 @@ class AsyncDomainWrfoutWriter:
         #: merely queued.
         self.grid_id = None if grid_id is None else int(grid_id)
         self.landing_observer = landing_observer
+        self.history_selection = history_selection
         self.nx, self.ny, self.nz = int(nx), int(ny), int(nz)
         # Same contract as WrfoutWriter: the only production caller
         # (open_domain_writer below) resolves this from the domain's cfg.
@@ -1673,6 +1542,40 @@ class AsyncDomainWrfoutWriter:
                     self._pending -= 1
                     self._condition.notify_all()
 
+    def _history_plan(self, produced) -> tuple[frozenset[str], dict]:
+        """(names to write, global attributes recording the selection).
+
+        Resolved ONCE per frame, before a single byte is staged, because
+        that is what makes the selection worth having: a dropped 3-D
+        volume must never cross the PCIe bus, and filtering at write
+        time would copy every one of them host-ward first.  On a 400^2 x
+        50 domain that is the majority of what the user is trying to
+        save.
+
+        A ``None`` selection -- and ``preset = "full"`` with no drop
+        list -- keeps everything and stamps nothing, so a default run's
+        frame and its header are exactly what they were before this
+        surface existed.
+        """
+        selection = self.history_selection
+        if selection is None or selection.writes_everything:
+            return frozenset(produced), {}
+        return frozenset(selection.select(produced)), \
+            selection.wrfout_attrs(produced)
+
+    def _frame_attrs(self, global_attrs, history_attrs) -> dict | None:
+        """The ticket's global-attribute override, or ``None`` for none.
+
+        The history stamp has to reach the FILE, so it is folded onto
+        whichever attribute set this frame was going to carry: the
+        per-frame override when the caller supplied one (carrier
+        provenance), the writer's standing set otherwise.
+        """
+        if not history_attrs:
+            return None if global_attrs is None else dict(global_attrs)
+        base = self.global_attrs if global_attrs is None else global_attrs
+        return {**base, **history_attrs}
+
     def submit(self, path, valid_time, state, *, extra_fields=None,
                refl_field=None, frame=None, global_attrs=None) -> None:
         """Queue a nonblocking, stream-ordered snapshot of one domain.
@@ -1736,6 +1639,12 @@ class AsyncDomainWrfoutWriter:
             state, include_diagnostic_pressure=True)
         if refl_field is not None:
             device_fields["REFL_10CM"] = refl_field
+        # The [output] selection, resolved BEFORE the staging loop below
+        # so a dropped field costs no D2H at all -- see _history_plan.
+        produced = list(device_fields)
+        produced.extend(name for name in (extra_fields or ())
+                        if name not in device_fields)
+        keep, history_attrs = self._history_plan(produced)
         ready = cp.cuda.Event()
         ready.record(producer)
         self.stream.wait_event(ready)
@@ -1745,6 +1654,8 @@ class AsyncDomainWrfoutWriter:
         pinned_refs: list[object] = []
         with self.stream:
             for name, value in device_fields.items():
+                if name not in keep:
+                    continue
                 if isinstance(value, np.ndarray):
                     # Already on host: staging it through the device would
                     # be a pure bounce (measured ~1.8 GiB of cached device
@@ -1765,7 +1676,7 @@ class AsyncDomainWrfoutWriter:
             for name, value in (extra_fields or {}).items():
                 # Prognostic/state-derived fields win (notably child HGT,
                 # which is blended while static HGT_M remains unblended).
-                if name not in host_fields:
+                if name not in host_fields and name in keep:
                     host_fields[name] = np.ascontiguousarray(value)
             done = cp.cuda.Event()
             done.record(self.stream)
@@ -1779,8 +1690,7 @@ class AsyncDomainWrfoutWriter:
             device_refs=tuple(device_refs),
             pinned_refs=tuple(pinned_refs),
             valid_time=valid_time,
-            global_attrs=(None if global_attrs is None
-                          else dict(global_attrs)))
+            global_attrs=self._frame_attrs(global_attrs, history_attrs))
         self._admit(ticket)
 
     def _admit_host_frame(self, path, valid_time, frame, *, extra_fields,
@@ -1809,6 +1719,17 @@ class AsyncDomainWrfoutWriter:
         """
         import cupy as cp
 
+        frame = dict(frame)
+        # Same [output] selection, same place in the order: before any
+        # staging.  A streamed domain's carriers are already on the host,
+        # but REFL_10CM may still be a live device array, and a dropped
+        # name must not be copied, borrowed or declared either way.
+        produced = list(frame)
+        if refl_field is not None and "REFL_10CM" not in produced:
+            produced.append("REFL_10CM")
+        produced.extend(name for name in (extra_fields or ())
+                        if name not in produced)
+        keep, history_attrs = self._history_plan(produced)
         host_fields: dict[str, np.ndarray] = {}
         device_refs: list[object] = []
         pinned_refs: list[object] = []
@@ -1816,14 +1737,16 @@ class AsyncDomainWrfoutWriter:
         ready.record(producer)
         self.stream.wait_event(ready)
         with self.stream:
-            for name, value in dict(frame).items():
+            for name, value in frame.items():
+                if name not in keep:
+                    continue
                 host_fields[name] = self._host_or_staged(
                     value, device_refs, pinned_refs)
-            if refl_field is not None:
+            if refl_field is not None and "REFL_10CM" in keep:
                 host_fields["REFL_10CM"] = self._host_or_staged(
                     refl_field, device_refs, pinned_refs)
             for name, value in (extra_fields or {}).items():
-                if name not in host_fields:
+                if name not in host_fields and name in keep:
                     host_fields[name] = np.ascontiguousarray(value)
             done = cp.cuda.Event()
             done.record(self.stream)
@@ -1835,8 +1758,7 @@ class AsyncDomainWrfoutWriter:
             device_refs=tuple(device_refs),
             pinned_refs=tuple(pinned_refs),
             valid_time=valid_time,
-            global_attrs=(None if global_attrs is None
-                          else dict(global_attrs))))
+            global_attrs=self._frame_attrs(global_attrs, history_attrs)))
 
     def _host_or_staged(self, value, device_refs, pinned_refs) -> np.ndarray:
         """A host array for one field, staging it off the device if needed."""
@@ -2058,9 +1980,16 @@ def _carrier_attrs(policy: str, rows) -> dict:
 class PerDomainWrfoutWriters:
     """One asynchronous writer/side stream per domain in an experiment."""
 
+    #: The tree-wide ``[output]`` history selection this writer set was
+    #: built with (``ExperimentConfig.output``), or ``None`` for the FULL
+    #: default.  A class attribute so the verification cases and the
+    #: idealized runners, which construct this object without one, are
+    #: unaffected.
+    history_selection = None
+
     def __init__(self, model, output_dir, *, start_time, title,
                  initial_condition=None, source=None,
-                 progress_callback=None):
+                 progress_callback=None, history_selection=None):
         """``initial_condition`` is the preparation receipt's provenance
         block, stamped onto every domain's frames so the durable artifact
         states what its initial state was and not only when it began.
@@ -2079,6 +2008,7 @@ class PerDomainWrfoutWriters:
         from gpuwm.runtime import _global_wrf_attrs, _metadata_frame
 
         self.model = model
+        self.history_selection = history_selection
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.start_time = start_time
@@ -2110,10 +2040,24 @@ class PerDomainWrfoutWriters:
                     feedback=getattr(model, "_feedback_provenance", None),
                     initial_condition=initial_condition, source=source),
                 abort_event=self._abort_event,
-                grid_id=node.cfg.grid_id)
+                grid_id=node.cfg.grid_id,
+                history_selection=self._selection_for(node.cfg))
         self.last_durable_wrfout = None
         if progress_callback is not None:
             self.attach_progress_callback(progress_callback)
+
+    def _selection_for(self, domain_cfg):
+        """One domain's ``[output]`` selection: its own, else the tree's.
+
+        Per domain and not per tree because that is where the bytes
+        actually are: a 1 km child at the same history cadence as its
+        12 km parent writes an order of magnitude more of them, and
+        "keep the parent whole, trim the child" has to be sayable.
+        """
+        from gpuwm.io.history_selection import resolve
+
+        return resolve(self.history_selection,
+                       getattr(domain_cfg, "output", None))
 
     def attach_progress_callback(self, progress_callback) -> None:
         """Bind the output-landing hook onto every per-domain writer.
@@ -2191,7 +2135,8 @@ class PerDomainWrfoutWriters:
                 feedback=getattr(self.model, "_feedback_provenance", None),
                 initial_condition=self._initial_condition,
                 source=self._source),
-            abort_event=self._abort_event)
+            abort_event=self._abort_event,
+            history_selection=self._selection_for(node.cfg))
 
     def refresh_domain(self, grid_id: int, *, grid, static_fields) -> None:
         """Re-derive one domain's frame metadata after a relocation.

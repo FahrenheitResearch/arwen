@@ -73,6 +73,70 @@ def _plot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cross_box(args: argparse.Namespace) -> int:
+    """Compare two boxes' receipts under the declared tolerance.
+
+    The breakage this answers: two boxes scoring the SAME input bytes produce
+    different receipt hashes -- measured, and correct, because the last bits
+    of an FFT belong to the box.  Diffing the hashes therefore says
+    "different" every time and a campaign cannot tell a port from a defect.
+    This compares the numbers instead.
+    """
+
+    left = spectral_receipt.check_file(args.receipt, rehash_inputs=False)
+    right = spectral_receipt.check_file(args.other, rehash_inputs=False)
+    tolerance = (spectral_compare.CROSS_BOX_TOLERANCE
+                 if args.tolerance is None else float(args.tolerance))
+    # NOT ``registration_sha256``: that binds the RESOLVED absolute paths, so
+    # two boxes registering the same campaign always disagree and this door
+    # would refuse every real comparison.  Measured that way against the
+    # artifact before this line was written.  The policy hash is the
+    # campaign -- bands, fields, gates, crop, pins -- with the paths reduced
+    # to basenames.
+    if (left["registration_policy_sha256"]
+            != right["registration_policy_sha256"]):
+        raise ValueError(
+            "these two receipts were scored under different campaign policy "
+            f"({left['registration_policy_sha256'][:12]} and "
+            f"{right['registration_policy_sha256'][:12]}), so a value "
+            "difference would be the bands, fields, gates or crop differing "
+            "rather than the boxes. Register both boxes from ONE source "
+            "TOML -- differing absolute paths are fine, the policy hash "
+            "ignores them -- and compare those receipts.")
+    left_inputs = {item["path"].split("/")[-1].split("\\")[-1]: item["sha256"]
+                   for item in left["inputs"]}
+    right_inputs = {item["path"].split("/")[-1].split("\\")[-1]: item["sha256"]
+                    for item in right["inputs"]}
+    if left_inputs != right_inputs:
+        raise ValueError(
+            "these two receipts did not read the same input bytes (compared "
+            "by file name and full-file SHA-256), so a value difference "
+            "would be the data differing, not the boxes. Copy the same "
+            "files to both boxes and rescore.")
+    print(f"rule {spectral_compare.CROSS_BOX_RULE['rule']}")
+    print(f"tolerance {tolerance:g}")
+    print(f"receipt_sha256 {left['receipt_sha256']}")
+    print(f"receipt_sha256 {right['receipt_sha256']}")
+    print(f"receipt_sha256_equal "
+          f"{left['receipt_sha256'] == right['receipt_sha256']}")
+    total = 0
+    for one, other in zip(left["comparisons"], right["comparisons"]):
+        rows = spectral_compare.cross_box_differences(
+            one["result"], other["result"], tolerance=tolerance)
+        for row in rows:
+            total += 1
+            print(f"differs {one['pair']}:{one['field']}:{row['band']}:"
+                  f"{row['component']}:{row['metric']} "
+                  f"left={row['left']!r} right={row['right']!r} "
+                  f"difference={row['difference']}")
+    print(f"differences {total}")
+    if total == 0:
+        print("agree: every metric is inside the declared tolerance; the "
+              "receipt hashes differ because a receipt hash is a this-box "
+              "identity, not a portable one")
+    return 0 if total == 0 else 1
+
+
 def _pins(_args: argparse.Namespace) -> int:
     print(json.dumps({
         "spectral_compare": spectral_compare.implementation_registration(),
@@ -123,6 +187,19 @@ def register_cli(subparsers) -> argparse.ArgumentParser:
     plot.add_argument("receipt", type=Path, metavar="RECEIPT.json")
     plot.add_argument("--output-dir", type=Path, required=True, metavar="DIR")
     plot.set_defaults(func=_plot)
+
+    cross_box = commands.add_parser(
+        "cross-box",
+        help="compare two boxes' receipts by value under the declared "
+             "tolerance, not by hash")
+    cross_box.add_argument("receipt", type=Path, metavar="RECEIPT.json")
+    cross_box.add_argument("other", type=Path, metavar="OTHER-RECEIPT.json")
+    cross_box.add_argument(
+        "--tolerance", type=float, default=None,
+        help="override the declared tolerance "
+             f"({spectral_compare.CROSS_BOX_TOLERANCE:g}); the default is "
+             "measured, so a campaign widening it says why in its record")
+    cross_box.set_defaults(func=_cross_box)
 
     pins = commands.add_parser(
         "pins", help="print the exact arithmetic pins and both pin hashes")

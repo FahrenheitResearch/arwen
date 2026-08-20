@@ -113,8 +113,24 @@ ignored, because a dropped key runs a default under the name of your value.
   must equal `units` exactly.
 - If `levels` is non-empty it must equal the file's coordinate values exactly.
   A mismatch is refused, not interpolated.
-- `hybrid_sigma_pressure` additionally requires `hybrid_a_field`,
-  `hybrid_b_field` and `surface_pressure_field`.
+- `hybrid_sigma_pressure` additionally requires `surface_pressure_field`,
+  naming the declared field (in Pa, on `y`/`x`) that closes p = A + B·ps.
+  The A/B coefficients arrive through one of two channels:
+  the records' **GRIB pv coordinate octets** (primary — ERA5 model levels
+  publish 2·(N+1) values, half-level A in Pa then B), or inline
+  **`hybrid_a`/`hybrid_b` literal arrays** (the declared-data fallback for
+  providers whose bytes carry no pv, NetCDF included). Counts are held to
+  N+1 (half-level interfaces) or N (full levels) against `levels`; when
+  both channels are present they must agree, and the bytes win. The
+  retired `hybrid_a_field`/`hybrid_b_field` spellings are refused by
+  name — a coefficient vector cannot be a mapping field.
+  `air_pressure` is then materialized with a
+  `pressure_from_vertical_coordinate` derivation (full levels as the mean
+  of their bounding interfaces), and 3-D `geopotential_height` — which
+  hybrid model-level archives usually do not carry — with a
+  `geopotential_height_hydrostatic` derivation (surface geopotential +
+  virtual temperature integrated up the half-level ladder, ECMWF's own
+  build-up; provenance `@derived.hydrostatic`).
 
 ### 2.3 `coordinates.time`
 
@@ -236,7 +252,10 @@ Computed fields, declared not inferred:
 | `specific_humidity_from_dewpoint` | `dewpoint`, `temperature`, `pressure` |
 | `relative_humidity_from_dewpoint` | `dewpoint`, `temperature` |
 | `geopotential_height` | `geopotential`, optional `gravity_m_s2` |
-| `pressure_from_vertical_coordinate` | — |
+| `pressure_from_vertical_coordinate` | — (pressure verticals broadcast the ladder; hybrid verticals compute p = A + B·ps through the declared `surface_pressure_field`) |
+| `geopotential_height_hydrostatic` | `temperature`, `specific_humidity`, `surface_geopotential_height`, optional `gravity_m_s2` (hybrid verticals only; needs N+1 interface coefficients) |
+| `volumetric_soil_moisture_from_layer_mass` | `layer_mass`, `layer_bounds_m`, optional `water_density_kg_m3` |
+| `soil_surface_node_from_shallowest` | `source` |
 
 Dependency cycles and missing dependencies are refused at load.
 

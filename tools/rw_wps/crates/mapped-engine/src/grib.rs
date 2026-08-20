@@ -43,6 +43,10 @@ pub struct GribRecord {
     pub second_level_value: Option<f64>,
     pub process_identity: Option<(i64, i64)>,
     pub time_semantics: Vec<i64>,
+    /// Section 4's optional coordinate list (the pv octets): the
+    /// half-level A (Pa) then B hybrid coefficients on model-level
+    /// records.  Empty when the message carries none.
+    pub coordinate_values: Vec<f64>,
     pub values: ArrayD<f64>,
     pub latitude: Vec<f64>,
     pub longitude: Vec<f64>,
@@ -634,6 +638,7 @@ fn grib2_record(
             message.product.forecast_generating_process_id as i64,
         )),
         time_semantics: vec![message.product.template as i64],
+        coordinate_values: message.product.coordinate_values.clone(),
         values: array,
         latitude,
         longitude,

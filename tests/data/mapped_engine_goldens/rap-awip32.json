@@ -1853,6 +1853,11 @@
           "231b02ac18de4f6a6804838d8b39fa46292587196ddf86e23cd29953555b3d9f",
           "e47405cf380e3aefecb20ecdcda5745d2d8a6603738697d571ce603419c0e15d"
         ],
+        "frame_header_sha256_portable": [
+          "9ee60b6f03362308a0f675d0103015554c1d72e0fd93ae952a761c1eb6dd60e2",
+          "9a9c84d361429f05ab37d59f357379662ab2160cbc9ed727a5191c71b0765787"
+        ],
+        "portable_rule": "gpuwm-portable-frame-header-v1",
         "verdict": "PASS"
       },
       "schema": "gpuwm-mapped-source-inspection-v1",

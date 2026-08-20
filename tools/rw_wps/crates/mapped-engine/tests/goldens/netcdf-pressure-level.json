@@ -482,19 +482,193 @@
   "input_sha256": [
     "6099bb2caad3a933a6fecf5d213d28efd61e7a780c31fa0145a97ded41b81980"
   ],
+  "libm_dependent_fields": [
+    "air_pressure",
+    "geopotential_height",
+    "specific_humidity",
+    "specific_humidity_2m"
+  ],
+  "libm_dependent_statistics": [
+    {
+      "air_pressure": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 100000.0,
+        "minimum": 100.0,
+        "nonfinite": 0,
+        "shape": [
+          37,
+          6,
+          9
+        ],
+        "sum": 83959200.0,
+        "sum_absolute": 83959200.0,
+        "sum_square": 6010949520000.0
+      },
+      "geopotential_height": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 15393.886094265923,
+        "minimum": 101.97162129779284,
+        "nonfinite": 0,
+        "shape": [
+          37,
+          6,
+          9
+        ],
+        "sum": 15480361.857848153,
+        "sum_absolute": 15480361.857848153,
+        "sum_square": 158914536591.5843
+      },
+      "specific_humidity": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 0.0005664647100712887,
+        "minimum": 5.971386752388791e-05,
+        "nonfinite": 0,
+        "shape": [
+          37,
+          6,
+          9
+        ],
+        "sum": 0.3575236309187644,
+        "sum_absolute": 0.3575236309187644,
+        "sum_square": 8.983231969764652e-05
+      },
+      "specific_humidity_2m": {
+        "axes": [
+          "y",
+          "x"
+        ],
+        "maximum": 0.0035098158714346917,
+        "minimum": 0.001703365270046234,
+        "nonfinite": 0,
+        "shape": [
+          6,
+          9
+        ],
+        "sum": 0.13573219807875558,
+        "sum_absolute": 0.13573219807875558,
+        "sum_square": 0.0003563510081057896
+      }
+    },
+    {
+      "air_pressure": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 100000.0,
+        "minimum": 100.0,
+        "nonfinite": 0,
+        "shape": [
+          37,
+          6,
+          9
+        ],
+        "sum": 83959200.0,
+        "sum_absolute": 83959200.0,
+        "sum_square": 6010949520000.0
+      },
+      "geopotential_height": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 30693.45801063564,
+        "minimum": 15401.543537667512,
+        "nonfinite": 0,
+        "shape": [
+          37,
+          6,
+          9
+        ],
+        "sum": 46048906.54675485,
+        "sum_absolute": 46048906.54675485,
+        "sum_square": 1100286003509.4229
+      },
+      "specific_humidity": {
+        "axes": [
+          "vertical",
+          "y",
+          "x"
+        ],
+        "maximum": 0.7585227906154042,
+        "minimum": 0.009737019803249569,
+        "nonfinite": 0,
+        "shape": [
+          37,
+          6,
+          9
+        ],
+        "sum": 115.30017962516396,
+        "sum_absolute": 115.30017962516396,
+        "sum_square": 38.41038161706096
+      },
+      "specific_humidity_2m": {
+        "axes": [
+          "y",
+          "x"
+        ],
+        "maximum": 0.006900240728255897,
+        "minimum": 0.0035559103445022304,
+        "nonfinite": 0,
+        "shape": [
+          6,
+          9
+        ],
+        "sum": 0.2738097900114584,
+        "sum_absolute": 0.2738097900114584,
+        "sum_square": 0.0014404299752196687
+      }
+    }
+  ],
+  "libm_relative_tolerance": 1e-12,
   "mapping": "configs/rw-wps-era5-netcdf.mapping.json",
   "mapping_sha256": "d2c9ee08e45478a64e4d2bba689e9bad1d2e97bde713477ee2a4de26e31d7ad3",
   "materialization": {
     "frame_count": 2,
     "frame_header_sha256": [
-      "2e0e235d3c28b010a08c14fc959d477be954c83ed008eb3ac3200c5d597aa32e",
-      "0d5771f5d680f56bd3d09564112989bbeef411fe08583870488f96d02ae5d6f6"
+      "62a8eac49ef2ad850cca9f2bb13f1c179481ac38564e48b2860238a8e7058368",
+      "81235fd0b9d78f7c56e27b3ba1eea051609f77b9e9701a6383f1f02bc10d15a3"
     ],
     "frame_header_sha256_masked": [
       "9162a40d1f5172dfff252dcd60e350fc9865a53aa82ccae42e4abc54a0dc2ac8",
       "e9f5d36e21166a301ef842374bc97393366490c22d354366d0bb42b536ecbba3"
     ],
+    "frame_header_sha256_portable": [
+      "f524fe5d06905939d42f2d75984e2e9f41f13c0582671ee8a1dfd442af3ac132",
+      "002bfde9cc206030b638f9152a83eef9e9e20da80021d05a0dce67bcd16df937"
+    ],
+    "portable_rule": "gpuwm-portable-frame-header-v1",
     "verdict": "PASS"
+  },
+  "per_box": {
+    "note": "the two header digests and the array digest of every libm-dependent field are exact identities of this box; the statistics beside them are this box's values, and are compared within 1e-12 relative",
+    "recorded_on": {
+      "machine": "AMD64",
+      "node": "DESKTOP-6T8MA71",
+      "python": "3.13.7",
+      "release": "11",
+      "system": "Windows"
+    },
+    "values": [
+      "materialization.frame_header_sha256",
+      "materialization.frame_header_sha256_masked",
+      "frames[*].fields[libm_dependent].sha256",
+      "libm_dependent_statistics[*] (compared within tolerance)"
+    ]
   },
   "produced_by": "gpuwm.mapped_source.inspect_mapped_source",
   "source_format": "netcdf",

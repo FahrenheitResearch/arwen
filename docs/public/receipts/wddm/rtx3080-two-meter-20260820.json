@@ -1,0 +1,64 @@
+{
+ "card": "NVIDIA GeForce RTX 3080 10 GiB, Windows 11 WDDM (drew-desktop)",
+ "tip": "163f4e72c3fd on lane/pins-3080 (base fd1d0699d)",
+ "suite": "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1, 12 km, nz 49, 6 h GFS 2026-08-20T06Z, single domain",
+ "why": "Task 240 read the 2026-08-19 calibration's `machine peak minus desktop baseline` as the run's cost and concluded the model was 0.76 GiB conservative.  These points sample BOTH meters at once: the machine-wide NVML series at 250 ms, and the runtime's own 20 Hz cudaMemGetInfo watcher, which on WDDM does not see the desktop compositor's allocations and is therefore the run's OWN device footprint.",
+ "instruments": {
+  "machine": "nvidia-smi --query-gpu=memory.used -lms 250, minus a median-of-8 baseline sampled just before launch",
+  "process": "report.json memory.gpu_peak_sampling probes (cuda_device_used / cupy_pool_total / cupy_pool_used), 20 Hz through the whole forecast"
+ },
+ "runs": [
+  {
+   "name": "t60x48",
+   "returncode": 0,
+   "wall_seconds": 32.2,
+   "baseline_used_gib": 1.624,
+   "machine_delta_gib": 4.589,
+   "process_device_peak_gib": 5.479,
+   "pool_total_peak_gib": 3.728,
+   "pool_used_peak_gib": 1.672,
+   "measured_non_pool_gib": 1.751,
+   "evicted_gib": 0.89
+  },
+  {
+   "name": "t80x64",
+   "returncode": 0,
+   "wall_seconds": 44.1,
+   "baseline_used_gib": 1.693,
+   "machine_delta_gib": 5.464,
+   "process_device_peak_gib": 6.266,
+   "pool_total_peak_gib": 4.516,
+   "pool_used_peak_gib": 2.161,
+   "measured_non_pool_gib": 1.75,
+   "evicted_gib": 0.802
+  },
+  {
+   "name": "t110x88",
+   "returncode": 0,
+   "wall_seconds": 57.9,
+   "baseline_used_gib": 1.819,
+   "machine_delta_gib": 5.312,
+   "process_device_peak_gib": 6.411,
+   "pool_total_peak_gib": 4.662,
+   "pool_used_peak_gib": 2.465,
+   "measured_non_pool_gib": 1.749,
+   "evicted_gib": 1.099
+  }
+ ],
+ "reproducibility": {
+  "note": "t60x48 was run twice.  The PROCESS meter repeated to the byte (5,883,035,648 B and 4,002,509,824 B pool both times); the MACHINE meter moved 4.350 -> 4.589 GiB for the same run, because the desktop baseline it subtracts is not the same twice.",
+  "process_device_peak_bytes_run1": 5883035648,
+  "process_device_peak_bytes_run2": 5883035648,
+  "machine_delta_gib_run1": 4.35,
+  "machine_delta_gib_run2": 4.589,
+  "wrfout_frames_byte_identical": "7/7"
+ },
+ "model": {
+  "note": "printed by the real `gpuwm check` front door on the live card",
+  "t60x48_envelope_gib": 5.4,
+  "t80x64_envelope_gib": 5.49,
+  "t110x88_envelope_gib": 5.67,
+  "t140x112_envelope_gib": 5.9
+ },
+ "finding": "The model sits BETWEEN the two meters.  Against the machine meter it is an envelope (over by 0.03-1.05 GiB across these points and the repeat).  Against the run's own device footprint it is 0.08-0.78 GiB SHORT.  The 0.76 GiB the task called reclaimable slack is the eviction term: measured 0.80-1.13 GiB of desktop residency paged out while the run held the card.  Cutting the model by 0.76 GiB would have turned t80x64 -- measured on the same card minutes later -- from 0.03 GiB of margin into a 0.74 GiB under-prediction on the very meter the gate compares against."
+}

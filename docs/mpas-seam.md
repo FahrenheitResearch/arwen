@@ -70,6 +70,19 @@ seam = run_mpas_column_batch(
   follow `MOD(ITIMESTEP, STEP*) == 0` with the mandatory step-1 call.
 - `cumulus_scheme="gf"` requires `cumulus_seconds == dt`. That is WRF's
   own pinned `cudt = 0` law for Grell-Freitas.
+- `gf_ishallow=` toggles GF's shallow scheme (CUP_gf_sh). The default is
+  ON for `cumulus_scheme="gf"` because native MPAS v8.4.1 hardwires
+  `ishallow = 1` (mpas_atmphys_vars.F:340) -- shallow OFF was the
+  pre-parity behaviour and remains reachable only as an explicit
+  `gf_ishallow=0` A/B arm. Refused for non-GF schemes.
+- `dx_column_m=` optionally supplies per-column dx (metres, one value
+  per column) for GF's scale-awareness on variable-resolution meshes,
+  where the scalar `dx_m` is wrong for most of the globe. Native
+  feeds `len_disp / meshDensity**0.25` per cell
+  (mpas_atmphys_driver_convection.F:718); WRF's GFDRV itself takes
+  dx(i,j), so this is the WRF interface, not an extension. Omitting it
+  keeps the scalar `dx_m` for every column. GF is the only consumer;
+  the scalar `dx_m` still feeds everything else.
 - `z_interface_nominal_m` is the 1-D nominal vertical mesh. It supplies
   the WRF `fnm/fnp` interface-interpolation weights the legacy RRTMG
   temperature prep consumes.
@@ -80,7 +93,8 @@ seam = run_mpas_column_batch(
 out = seam.run_phase1(dt=120.0, u=u, v=v, theta=theta,
                       pressure=p, pressure_interface=p8w,
                       z_interface=z8w, w=w, rho_dry=rho,
-                      qv=qv, qc=qc, qr=qr, qi=qi, qs=qs, qg=qg)
+                      qv=qv, qc=qc, qr=qr, qi=qi, qs=qs, qg=qg,
+                      rthdynten=rthdynten, rqvdynten=rqvdynten)
 ```
 
 - Runs legacy RRTMG, the revised-MO surface layer, Noah-MP, YSU, and
@@ -103,6 +117,58 @@ out = seam.run_phase1(dt=120.0, u=u, v=v, theta=theta,
   (`gpuwm/core/dycore.py`, `add_h_diabatic_tendency`). It is reported
   separately, never folded into `dtheta`; apply it or decline it
   explicitly.
+- `rthdynten=`/`rqvdynten=` ([nz, ncol] float32, K s-1 dry theta and
+  kg kg-1 s-1) are GF's RTHFTEN/RQVFTEN advective forcing lanes --
+  native MPAS v8.4.1's own construction (mpas_atm_time_integration.F:
+  6936 advective theta_m rate, :2789 moist-to-dry conversion), computed
+  at the END of the caller's previous dynamics step. `None` zeroes the
+  lane, which is native's t=0 tend_physics state and the pre-upgrade
+  behaviour. The seam copies both into seam-owned persistent buffers;
+  GF's RTHBLTEN/RQVBLTEN lanes come from the driver's own retained raw
+  PBL-slot rates and need no caller input.
+
+### Which lanes each path actually fills
+
+The four lanes are driver-held, so what reaches GFDRV depends on which
+driver is bound. Recorded so the ARW and MPAS answers are not assumed to
+be the same:
+
+- `gf_rthblten` / `gf_rqvblten`
+  - MPAS seam: the retained raw YSU rates.
+  - ARW: the retained raw rates of whichever scheme holds the PBL
+    slot.
+- `gf_rthdynten` / `gf_rqvdynten`
+  - MPAS seam: the caller's exported advective rates.
+  - ARW: the dycore's own export. It captures pure theta and qv
+    advection at RK stage 1 of every step into
+    `state.rthften`/`state.rqvften`, which the driver binds at
+    construction — the same one-step producer/consumer lag `h_diabatic`
+    has, and pure advection on both halves (`module_cumulus_driver.F:867`
+    pre-folds RTHRATEN+RTHBLTEN for G3/NTiedtke only, never for
+    GFSCHEME).
+- `gf_dx_column`
+  - MPAS seam: per-column dx.
+  - ARW: the scalar `cfg.dx`.
+
+Every PBL scheme the driver dispatches -- YSU (1), MYJ (2), MYNN (5),
+Shin-Hong (11) and SASE -- hands `couple_ysu_tendencies` the same raw
+`dtheta`/`dqv` mapping, and those ARE WRF's RTHBLTEN/RQVBLTEN whichever
+scheme filled them, so `PhysicsDriver._couple_pbl_slot` retains them at
+one shared site rather than per scheme. None is a special case and none
+is left feeding zeros.
+
+RTHFTEN/RQVFTEN on the ARW path WAS the one remaining lane where WRF fed
+something and this engine fed nothing. It was a dycore-export gap rather
+than an adapter gap — the adapter read the lane the moment a driver set
+it — and the dycore now sets it. Every lane GFDRV takes is live on both
+paths.
+
+The ARW pair is restart-carried state (`state/rthften`,
+`state/rqvften`), because the producer is a dycore stage that has not
+run yet when a resume reaches its first cumulus call. The MPAS seam's
+buffers stay REBUILT: the caller refills them inside every
+`run_phase1`, so a resumed seam overwrites whatever a checkpoint could
+have carried.
 - Read-only guarantee: phase 1 leaves every input array byte-identical.
   Negative `qv` values are accepted and clamped `max(qv, 0)` in seam
   scratch, matching MPAS bulk physics. The seam never refuses them.

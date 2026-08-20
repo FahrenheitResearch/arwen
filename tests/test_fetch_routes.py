@@ -13,6 +13,7 @@ The live smoke -- one small real object per route -- is
 from __future__ import annotations
 
 from datetime import datetime
+import json
 
 import pytest
 
@@ -543,6 +544,55 @@ def test_the_handoff_binds_the_input_list_and_the_supplement_role(tmp_path):
     assert not body[-1].endswith("\\")
     assert "rrfs_prslev_2dfld_in_band_surface=" in text
     assert text.count("--supplement") == 2
+
+
+def test_the_handoff_publishes_machine_readable_prep_arguments(tmp_path):
+    """`prep-arguments.json` carries the SAME binding as the text file.
+
+    The staged run-plan chain composes its preparation from this
+    document, so it must hold argv TOKENS (no quoting convention to
+    round-trip), the caller-owned flags by name, and an explicit list
+    of any supplement role this fetch left unbound.
+    """
+
+    plan = fetch_routes.resolve_request(
+        "rrfs", cycle=datetime(2026, 8, 17, 0), hours=1)
+    fetch_routes.run_plan(plan, out=tmp_path,
+                          downloader=_fake_downloader([]),
+                          progress=lambda *_: None)
+    inputs, command = fetch_routes.write_handoff(plan, tmp_path)
+    document = json.loads(
+        (tmp_path / fetch_routes.PREP_ARGUMENTS_NAME).read_text())
+    assert document["schema"] == fetch_routes.PREP_ARGUMENTS_SCHEMA
+    argv = document["argv"]
+    assert argv[:4] == ["--source", "rrfs", "--input-list",
+                        str(inputs.resolve())]
+    assert argv.count("--supplement") == 2
+    assert "--author-input-manifest" in argv
+    assert document["unbound_supplement_roles"] == []
+    assert document["caller_supplies"] == [
+        "--wps-namelist", "--experiment-config", "--geog-root",
+        "--output-root"]
+    # Token for token, the text command is these argv pairs rendered.
+    text = command.read_text()
+    for flag, value in zip(argv[::2], argv[1::2]):
+        assert flag in text
+        assert value.split("=")[0] in text
+
+
+def test_the_prep_arguments_name_an_unbound_donor_role(tmp_path):
+    """A donor this fetch did not bring is a named hole, not a surprise."""
+
+    plan = fetch_routes.resolve_request(
+        "aigfs", cycle=datetime(2026, 8, 17, 0), hours=6)
+    fetch_routes.run_plan(plan, out=tmp_path,
+                          downloader=_fake_downloader([]),
+                          progress=lambda *_: None)
+    fetch_routes.write_handoff(plan, tmp_path)
+    document = json.loads(
+        (tmp_path / fetch_routes.PREP_ARGUMENTS_NAME).read_text())
+    assert document["unbound_supplement_roles"] == [
+        "physical_analysis_surface_data"]
 
 
 def test_the_handoff_names_member_prep_for_an_ensemble_route(tmp_path):

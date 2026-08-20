@@ -1570,6 +1570,15 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
             axis_fingerprint(&[&latitude, &longitude]),
         ),
     };
+    let (hybrid_a, hybrid_b) = if mapping.vertical_kind()? == "hybrid_sigma_pressure"
+        && !vertical_values.is_empty()
+    {
+        // NetCDF bytes carry no pv channel; a hybrid NetCDF source
+        // rides entirely on the mapping's inline literals.
+        crate::assemble::resolve_hybrid_literals_only(mapping, vertical_values.len())?
+    } else {
+        (Vec::new(), Vec::new())
+    };
     Ok(DecodedCollection {
         latitude,
         longitude,
@@ -1577,6 +1586,8 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
         direct,
         source_cycles: cycles,
         grid_fingerprint,
+        hybrid_a,
+        hybrid_b,
     })
 }
 

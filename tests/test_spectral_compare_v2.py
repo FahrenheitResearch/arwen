@@ -9,8 +9,25 @@ import pytest
 
 from gpuwm.verify import spectral_compare
 
-COMMITTED_V2_PINS_SHA256 = (
+# The v2 arithmetic was re-pinned on 2026-08-20 under a new SCHEMA id, not by
+# quietly moving a literal.  Two calibrated guards changed what the arithmetic
+# does, so the old pin no longer describes it:
+#
+#   * a wavelength within 8 ulp of a declared band edge is snapped onto that
+#     edge before the inclusive/exclusive rule, because the 1/|k| round trip
+#     put 80 of 2,414,712 measured modes in the wrong band and every one was
+#     a domain-scale |j|=1 mode; and
+#   * a band whose power is at or below 1e-22 of the plane's own mean square
+#     is unresolved, because a constant 273.15 K plane scored a
+#     0.9999999999999997 correlation with itself.
+#
+# ``gpuwm.spectral-comparison-pins/v1`` and its hash remain the correct
+# identity for anything scored before that date; a receipt carrying the old
+# pin is refused by name rather than reinterpreted.
+SUPERSEDED_V2_PINS_SHA256 = (
     "51517e31336c7b415efe4cc969f62f740b003d95bc2ad14ea88f54f7849b0f5c")
+COMMITTED_V2_PINS_SHA256 = (
+    "697f8e9e2a0d6baef4ea5681263549875fd1b3ac3e38a54ce42042ad8c6d4f89")
 
 DX = 1000.0
 N = 128
@@ -43,6 +60,10 @@ def test_implementation_pins_are_hash_bound_and_v1_is_not_reused():
     assert spectral_compare._canonical_hash(registration["pins"]) == (
         spectral_compare.IMPLEMENTATION_PINS_SHA256)
     assert "additive" in registration["pins"]["relationship_to_v1"]
+    assert (spectral_compare.IMPLEMENTATION_PINS_SCHEMA
+            == "gpuwm.spectral-comparison-pins/v2")
+    assert (spectral_compare.IMPLEMENTATION_PINS_SHA256
+            != SUPERSEDED_V2_PINS_SHA256)
 
 
 def test_bands_refuse_overlap_and_duplicate_names():

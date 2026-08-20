@@ -756,15 +756,20 @@ pub fn run_decode(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> R
     }
     let collection = decode_collection(&mapping, &files, progress)?;
     progress(json!({"event": "assembled", "valid_times": collection.source_cycles.len()}));
-    let frames = crate::frames::materialize_frames(&mapping, &collection)?;
     let output = PathBuf::from(invocation.output.as_ref().expect("decode requires --output"));
-    let document =
-        crate::frames::write_frameset(&output, &mapping, &collection, &frames, &digests)?;
+    // The frames are materialized INSIDE the writer, one valid time at
+    // a time; holding the whole series here to count it was a second
+    // full copy of every forcing time's arrays.
+    let document = crate::frames::write_frameset(&output, &mapping, &collection, &digests)?;
+    let frame_count = document
+        .get("frames")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
     Ok(json!({
         "event": "receipt",
         "subcommand": "decode",
         "schema": crate::FRAMESET_SCHEMA,
-        "frames": frames.len(),
+        "frames": frame_count,
         "output": output.display().to_string(),
         "grid_fingerprint": collection.grid_fingerprint,
         "stream_bytes": document
@@ -863,6 +868,7 @@ pub fn run_inspect(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         }));
     }
 
+    let libm_dependent = crate::portable::libm_dependent_fields(&mapping);
     let materialization = match crate::frames::materialize_frames(&mapping, &collection) {
         Ok(frames) => json!({
             "verdict": "PASS",
@@ -873,6 +879,17 @@ pub fn run_inspect(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
                     canonical_json(&frame.header).as_bytes()
                 ))
                 .collect::<Vec<String>>(),
+            // Beside the raw digest, never instead of it: the raw one is
+            // an identity of THIS box (input paths, and a derived field's
+            // libm last bits); the portable one is what another box can
+            // reproduce, and therefore what a recorded golden may assert.
+            "frame_header_sha256_portable": frames
+                .iter()
+                .map(|frame| crate::portable::portable_frame_header_sha256(
+                    &frame.header, &files, &libm_dependent
+                ))
+                .collect::<Vec<String>>(),
+            "portable_rule": crate::portable::PORTABLE_HEADER_RULE,
         }),
         Err(refusal) => json!({
             "verdict": "INCOMPLETE",

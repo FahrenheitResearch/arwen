@@ -924,6 +924,148 @@ def test_supervise_monitor_kills_stale_integrating_worker(monkeypatch,
     assert processes[0].terminated
 
 
+def test_supervise_will_not_relaunch_a_restore_the_worker_refused(
+        monkeypatch, tmp_path):
+    """A refused restore is deterministic: the same bytes refuse again.
+
+    The 24 h reproduction spent three fresh processes rediscovering one
+    refusal over one checkpoint, and each attempt's failure capsule
+    overwrote the one before it -- so the evidence for what killed the
+    FIRST worker was destroyed by the relaunches.  Nothing between
+    attempts can change a restore's answer: same config digest, same
+    file, same reader.
+    """
+    config, checkpoint, processes = _install_scripted_supervisor(
+        monkeypatch, tmp_path, [
+            [{"status": "preparing:restore-tree-checkpoint", "step": 0},
+             {"capsule": {
+                 "type": "RestartMismatchError",
+                 "message": "tree restart is at 200 ticks but this "
+                            "configuration stops at 100 ticks",
+                 "phase": "preparing:restore-tree-checkpoint"},
+              "exit": 1}],
+            [{"status": "preparing:restore-tree-checkpoint", "step": 0},
+             {"exit": 1}],
+        ], real_capsule_reader=True)
+
+    with pytest.raises(SupervisorError,
+                       match="deterministic relaunch loop") as caught:
+        supervise_experiment(
+            config, tmp_path / "out", restart=checkpoint,
+            max_restarts=3, poll_seconds=0.05)
+
+    assert len(processes) == 1
+    assert "tree restart is at 200 ticks" in str(caught.value)
+
+
+def test_supervise_still_relaunches_a_crash_that_is_not_a_refused_restore(
+        monkeypatch, tmp_path):
+    """CONTROL: fresh-process recovery is not being switched off.
+
+    A worker that dies mid-integration may well succeed on a fresh CUDA
+    context, which is what the recovery attempts exist for.
+    """
+    config, checkpoint, processes = _install_scripted_supervisor(
+        monkeypatch, tmp_path, [
+            [{"status": "integrating", "step": 3}, {"exit": 11}],
+            [{"status": "integrating", "step": 3},
+             {"status": "complete", "step": 6, "exit": 0}],
+        ])
+
+    result = supervise_experiment(
+        config, tmp_path / "out", restart=checkpoint,
+        max_restarts=3, poll_seconds=0.05)
+
+    assert result.attempts == 2
+    assert len(processes) == 2
+
+
+def test_supervise_waits_out_a_worker_that_already_published_complete(
+        monkeypatch, tmp_path):
+    """A finished worker must not be killed on its way out the door.
+
+    After the last integration step the worker still has durable work:
+    drain the history writers, and hash every emitted frame into the
+    success capsule.  On a 24 h four-domain run that is hundreds of GiB
+    of reading with no model step left to beat on, and the integration
+    watchdog cannot tell that from a hang -- so it SIGTERMed a worker
+    that had already published its terminal ``complete`` record, and the
+    supervisor then replayed the finished run as a restart loop.  A
+    published terminal record retires the watchdog: there is no
+    integration left to be stale.
+    """
+    config, checkpoint, processes = _install_scripted_supervisor(
+        monkeypatch, tmp_path, [[
+            {"status": "integrating", "step": 2},
+            {"status": "complete", "step": 2},
+            {}, {}, {},
+            {"exit": 0},
+        ]], clock_step=61.0)
+
+    result = supervise_experiment(
+        config, tmp_path / "out", restart=checkpoint,
+        max_restarts=0, poll_seconds=0.05)
+
+    assert result.attempts == 1
+    assert result.heartbeat.status == "complete"
+    assert processes[0].terminated is False
+
+
+def test_supervise_still_fails_loudly_when_a_worker_dies_after_complete(
+        monkeypatch, tmp_path):
+    """CONTROL: retiring the watchdog must not trust the record alone.
+
+    ``complete`` is what the worker BELIEVES; the exit status is what
+    happened.  A worker that publishes complete and then dies writing its
+    receipts still failed, and still says so.
+    """
+    config, checkpoint, _ = _install_scripted_supervisor(
+        monkeypatch, tmp_path, [[
+            {"status": "integrating", "step": 2},
+            {"status": "complete", "step": 2},
+            {"exit": 3},
+        ]])
+
+    with pytest.raises(SupervisorError, match="worker exited with status 3"):
+        supervise_experiment(
+            config, tmp_path / "out", restart=checkpoint,
+            max_restarts=0, poll_seconds=0.05)
+
+
+def test_heartbeat_admits_a_named_finalizing_phase():
+    """Finalization is a published phase, not a silence."""
+    assert _heartbeat(
+        status="finalizing:hash-output-frames"
+    ).status == "finalizing:hash-output-frames"
+    with pytest.raises(ValueError, match="invalid heartbeat status"):
+        _heartbeat(status="finalising")
+
+
+def test_runtime_heartbeat_publishes_a_named_finalizing_phase(tmp_path):
+    progress = RuntimeHeartbeat(
+        tmp_path / "run-progress.json", run_id="run-1",
+        config_sha256="b" * 64, started_at_utc="2026-07-16T00:00:00Z")
+    progress.finalizing("hash-output-frames")
+    record = read_heartbeat(tmp_path / "run-progress.json")
+    assert record.status == "finalizing:hash-output-frames"
+    assert progress.last_phase == "finalizing:hash-output-frames"
+
+
+def test_finalizing_is_forward_progress_from_integrating_and_never_reverts():
+    integrating = _heartbeat(
+        status="integrating", updated_at_utc="2026-07-16T00:00:01Z")
+    finalizing = _heartbeat(
+        status="finalizing:drain-history-writers",
+        updated_at_utc="2026-07-16T00:00:02Z")
+    assert supervisor._heartbeat_regression(integrating, finalizing) is None
+
+    for backward in ("integrating", "preparing:prepare-case"):
+        later = _heartbeat(
+            status=backward, updated_at_utc="2026-07-16T00:00:03Z")
+        regression = supervisor._heartbeat_regression(finalizing, later)
+        assert regression is not None and "finalizing" in regression
+
+
 def test_supervise_monitor_slow_preparation_has_no_default_timeout(
         monkeypatch, tmp_path):
     config, _, processes = _install_scripted_supervisor(

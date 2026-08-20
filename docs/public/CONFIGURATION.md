@@ -11,9 +11,9 @@ switches you could have typed, never a gate on what you may write
 
 ArWen's configuration surface is the experiment TOML
 (`[experiment]` / `[projection]` / `[shared]` / `[[domain]]` /
-`[case_data]` / `[perturbation]`), and the import contract is *never
-silent*: every namelist key lands in exactly one of three report
-sections --
+`[case_data]` / `[perturbation]` / `[tiles]` / `[output]`), and the
+import contract is *never silent*: every namelist key lands in exactly
+one of three report sections --
 
 - **translated** -- a TOML value came out of it (including the three
   ratified physics substitutions);
@@ -30,6 +30,19 @@ emits the WRF value explicitly so an imported experiment resolves the
 way WRF would. Physics *selection* values and their maturity labels
 live in [PHYSICS.md](PHYSICS.md); this page covers the knobs around
 them.
+
+## `[output]` -- which variables the wrfout files carry
+
+WRF's `iofields_filename`, as a selection over the inventory the run
+already produces. `preset = "full"` (the default) writes everything;
+`"minimal"` and `"severe"` are named sets; `history_vars` /
+`history_drop` are explicit include and exclude lists, mutually
+exclusive. The same table sits inline on a `[[domain]]` as
+`output = { ... }` and overrides the tree-wide one for that domain, as
+`[tiles]` does. It changes no number the model computes and does not
+enter the restart identity, so a trimmed run resumes a full run's
+checkpoints. Full page:
+[OUTPUT-VARIABLES.md](OUTPUT-VARIABLES.md).
 
 ## `[case_data]` -- the inputs a config-driven run declares
 
@@ -138,13 +151,22 @@ exactly, chained in float32 exactly as WRF chains it.
 steps. The adaptive time step (`use_adaptive_time_step`) is refused.
 
 Each `[[domain]]` may also carry an offset-free `start_time`. It defaults to
-`[experiment].start_time`; d01 must equal that root start -- and, in this
-release, so must every child. Delayed nest activation is refused at load: a
-run that accepted it died at the activation epoch, where the child's first
-history frame is due before any microphysics step has stashed its
-microphysics-time REFL_10CM field. Start every domain at the experiment start.
-A delayed `start_time` that is also off its parent's step clock or an
-external-forcing seam keeps its more specific structural refusal.
+`[experiment].start_time`; d01 must equal that root start. A delayed child is
+dormant until its timestamp, then follows the ordinary parent-state nest
+initialization path -- it initializes from the analysis valid at its
+activation instant, so that instant must be one the declared inputs decode.
+The timestamp must be an exact boundary of its parent's step clock and an
+exact external-forcing seam. Its first history frame is the domain's own
+analysis frame and carries no `REFL_10CM`, exactly as d01's frame at t = 0
+does; every frame after it carries the field. Restart headers persist
+`STARTED`/`NOT_STARTED` lifecycle state, so resuming before the timestamp does
+not initialize the child early.
+
+Delayed activation is a `gpuwm run` capability. The prepared-tree runner
+(`gpuwm-prepared-tree-forecast`, which `gpuwm stream` and the wizard's nested
+route drive) restores every domain from a prepared cache and has no way to
+bring one to life mid-run, so it refuses a delayed `start_time` by name and
+tells you which door runs it.
 
 External boundary cadence has no whole-hour rule. It must be a positive,
 uniform whole-second interval and an exact integer number of d01 steps because

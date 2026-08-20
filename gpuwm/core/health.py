@@ -143,6 +143,52 @@ NOAHMP_SNOW_LAYERS = 3
 #: The largest plant growth stage ``GROWING_GDD`` assigns.
 NOAHMP_MAX_GROWTH_STAGE = 8
 
+#: The lid the theta ceiling below was calibrated at: WRF's default model
+#: top, 100 hPa.
+THETA_CEILING_REFERENCE_LID_PA = 10000.0
+
+#: The ceiling that calibration produced, and the value this gate applied at
+#: every lid until it was made lid-aware.
+THETA_CEILING_AT_REFERENCE_LID_K = 600.0
+
+
+def theta_ceiling_for_lid(p_top: float | None) -> float:
+    """The total-theta ceiling for a run whose model top is ``p_top`` Pa.
+
+    600 K is not a property of the atmosphere.  It is a property of the
+    atmosphere UNDER A 100 hPa LID: potential temperature is a level's
+    temperature carried down the dry adiabat to 1000 hPa, so the SAME
+    physically ordinary stratospheric air reads ~600 K under a 100 hPa lid
+    and ~950 K under a 20 hPa one.  Held flat, the ceiling therefore refused
+    legitimate deep-top initial states -- a real 20 hPa-top ERA5 state tripped
+    it -- while the thing it exists to catch, a thermodynamic runaway, reaches
+    thousands of kelvin and is nowhere near either number.
+
+    So the ceiling is carried, not widened.  The quantity kept fixed is the
+    LID TEMPERATURE the gate admits: 600 K at 100 hPa is
+    ``600 * (100/1000)**RCP`` = 310.6 K, which is what this gate has always
+    admitted at the top of a column, and every lid now admits exactly that
+    same temperature.  The result is byte-identical to the old ceiling at the
+    reference lid and never tighter than it at a shallower one (a lid below
+    the reference is clamped rather than allowed to close the gate on
+    configurations that pass today).
+
+    ``p_top=None`` is the honest answer for a state whose base has not been
+    loaded yet -- ``DomainState.p_top`` is None until :meth:`load_base` runs --
+    and returns the calibrated ceiling rather than guessing a lid.
+    """
+
+    from gpuwm.core.constants import RCP
+
+    if p_top is None:
+        return THETA_CEILING_AT_REFERENCE_LID_K
+    lid = float(p_top)
+    if (not math.isfinite(lid) or lid <= 0.0
+            or lid >= THETA_CEILING_REFERENCE_LID_PA):
+        return THETA_CEILING_AT_REFERENCE_LID_K
+    return THETA_CEILING_AT_REFERENCE_LID_K * float(
+        (THETA_CEILING_REFERENCE_LID_PA / lid) ** RCP)
+
 
 def gpu_integer_policy(name: str, dtype: Any) -> int | None:
     """Device-gate storage policy for one collected field.
@@ -181,6 +227,12 @@ class FieldRule:
     lower: float | None = None
     upper: float | None = None
     strict_lower: bool = False
+    #: Why THIS bound and not another one, appended to the refusal when the
+    #: bound is derived from the run rather than fixed by a kernel.  A
+    #: derived ceiling that reports only its number reads exactly like a
+    #: silently loosened gate, which is the thing a reader must be able to
+    #: rule out.  Never uploaded to the device: the kernel compares numbers.
+    bound_note: str | None = None
 
     @property
     def status_bit(self) -> int:
@@ -244,15 +296,26 @@ def _leaf(name: str) -> str:
     return name.lower().replace("[", ".").replace("]", "").split(".")[-1]
 
 
-def rule_for_field(name: str) -> FieldRule:
-    """Return the shared CPU/CUDA rule for a named model field."""
+def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
+    """Return the shared CPU/CUDA rule for a named model field.
+
+    ``p_top`` is the run's configured model-top pressure in pascals, supplied
+    by :func:`collect_state_fields` off the state's own base.  Only the total
+    theta bound reads it, and only because that bound is a lid temperature
+    rather than a fixed number; see :func:`theta_ceiling_for_lid`.
+    """
     lower_name = name.lower()
     leaf = _leaf(name)
     if lower_name.startswith("lbc."):
         return FieldRule("lateral_boundary")
     if lower_name.startswith("nest."):
         return FieldRule("nest_table")
-    if lower_name.startswith("held.") or leaf == "h_diabatic":
+    # ``rthften``/``rqvften`` are the dycore's exported advective forcing
+    # pair (WRF RTHFTEN/RQVFTEN): rates in K s-1 and kg kg-1 s-1 with the
+    # same standing as h_diabatic -- a held tendency has no physical
+    # ceiling, and finiteness is the whole gate.
+    if (lower_name.startswith("held.")
+            or leaf in ("h_diabatic", "rthften", "rqvften")):
         return FieldRule("held_tendency")
     if leaf in ("u", "v"):
         return FieldRule("wind", -500.0, 500.0)
@@ -261,12 +324,24 @@ def rule_for_field(name: str) -> FieldRule:
     if leaf == "thp":
         # State collection supplies total theta through the base-state
         # auxiliary descriptor; the perturbation itself is never bounded.
-        # 600 K intentionally admits the legal ~495 K WK82 20-km sounding
-        # plus a useful perturbation margin while still catching runaway
-        # thermodynamic state.  The previous 500 K cap could reject a legal
-        # idealized state even though production currently installs this gate
-        # only on real-case runs.
-        return FieldRule("theta", 100.0, 600.0)
+        # The ceiling is the run's LID carried down the dry adiabat rather
+        # than a fixed number -- see theta_ceiling_for_lid, which reproduces
+        # the calibrated 600 K exactly at the 100 hPa reference lid (the
+        # value that admits the legal ~495 K WK82 20-km sounding with a
+        # useful perturbation margin) and opens only as far as a deeper lid
+        # physically requires.
+        ceiling = theta_ceiling_for_lid(p_top)
+        note = None
+        if ceiling != THETA_CEILING_AT_REFERENCE_LID_K:
+            note = (
+                f"the ceiling is this run's {float(p_top):g} Pa model lid "
+                f"carried down the dry adiabat: the same "
+                f"{THETA_CEILING_AT_REFERENCE_LID_K:g} K admitted at the "
+                f"{THETA_CEILING_REFERENCE_LID_PA:g} Pa reference lid, which "
+                "is one admitted lid temperature and not a loosened gate; a "
+                "value above it is runaway thermodynamics, not a deep model "
+                "top")
+        return FieldRule("theta", 100.0, ceiling, bound_note=note)
     if leaf == "php":
         return FieldRule("geopotential", -1.0e8, 1.0e8)
     if leaf == "mup":
@@ -328,10 +403,11 @@ def rule_for_field(name: str) -> FieldRule:
 
 def field_from_array(name: str, values: Any, *, auxiliary: Any | None = None,
                      aux_mode: str | None = None,
-                     plane_size: int = 0) -> HealthField:
+                     plane_size: int = 0,
+                     p_top: float | None = None) -> HealthField:
     """Build one descriptor using :func:`rule_for_field`."""
-    return HealthField(name, values, rule_for_field(name), auxiliary,
-                       aux_mode, int(plane_size))
+    return HealthField(name, values, rule_for_field(name, p_top=p_top),
+                       auxiliary, aux_mode, int(plane_size))
 
 
 def _is_array(value: Any) -> bool:
@@ -373,8 +449,13 @@ def _walk_arrays(value: Any, prefix: str, *, seen: set[int] | None = None,
     return result
 
 
+#: ``collect_state_fields(p_top=...)`` default: read the lid off the state.
+_LID_FROM_STATE = object()
+
+
 def collect_state_fields(state: Any, *, backend: str = "cpu",
-                         extra_tables: Mapping[str, Any] | None = None
+                         extra_tables: Mapping[str, Any] | None = None,
+                         p_top: Any = _LID_FROM_STATE,
                          ) -> tuple[HealthField, ...]:
     """Collect the mutable synchronized state covered by the health gate.
 
@@ -385,6 +466,15 @@ def collect_state_fields(state: Any, *, backend: str = "cpu",
     """
     if backend not in ("cpu", "gpu"):
         raise ValueError("backend must be 'cpu' or 'gpu'")
+    # The run's own model lid, read off the state rather than passed in, so
+    # every road that gates a state -- the resident device gate, the CPU
+    # mirror, the pinned-host store gate -- derives the same theta ceiling
+    # from the same object.  ``DomainState.p_top`` is None until load_base
+    # runs; theta_ceiling_for_lid answers with the calibrated ceiling then.
+    # A road whose state object is a SLAB-HEIGHT TEMPLATE names its own lid
+    # instead: the domain's base carries it, the template may not.
+    lid = getattr(state, "p_top", None) if p_top is _LID_FROM_STATE else p_top
+    p_top = None if lid is None else float(lid)
     result: list[HealthField] = []
     for name in (
             "u", "v", "w", "thp", "php", "mup", "p", "al", "alt",
@@ -392,7 +482,11 @@ def collect_state_fields(state: Any, *, backend: str = "cpu",
             "ns", "ng", "nwfa", "nifa",
             "qh", "qndrop", "qnr", "qni", "qns", "qng",
             "qnh", "qnn", "qvolg", "qvolh", "effc", "effr", "effi",
-            "effs", "h_diabatic"):
+            "effs", "h_diabatic",
+            # The dycore's exported advective forcing pair.  Absent on a
+            # state with no cumulus consumer, and the None skip below is
+            # what keeps every other census unchanged.
+            "rthften", "rqvften"):
         value = getattr(state, name, None)
         if value is None:
             continue
@@ -405,12 +499,13 @@ def collect_state_fields(state: Any, *, backend: str = "cpu",
                 plane = int(np.prod(value.shape[1:], dtype=np.int64))
                 result.append(field_from_array(
                     name, value, auxiliary=thb, aux_mode="level",
-                    plane_size=plane))
+                    plane_size=plane, p_top=p_top))
             else:
                 result.append(field_from_array(
-                    name, value, auxiliary=thb, aux_mode="direct"))
+                    name, value, auxiliary=thb, aux_mode="direct",
+                    p_top=p_top))
         else:
-            result.append(field_from_array(name, value))
+            result.append(field_from_array(name, value, p_top=p_top))
 
     driver = getattr(state, "physics", None)
     if driver is not None:
@@ -540,7 +635,9 @@ def _reason(value: float, rule: FieldRule) -> str:
         op = ">" if rule.strict_lower else ">="
         return f"value {value!r} violates lower bound {op} {rule.lower!r}"
     if rule.upper is not None and value > rule.upper:
-        return f"value {value!r} exceeds upper bound {rule.upper!r}"
+        reason = f"value {value!r} exceeds upper bound {rule.upper!r}"
+        return reason if rule.bound_note is None else (
+            f"{reason} ({rule.bound_note})")
     return "unknown invariant failure"
 
 
@@ -589,7 +686,8 @@ def validate_store_fields(state: Any, carriers: Mapping[str, Any],
                           domain_shape: tuple[int, int],
                           auxiliaries: Mapping[str, Any] | None = None,
                           phase: str | None = None,
-                          extra_tables: Mapping[str, Any] | None = None
+                          extra_tables: Mapping[str, Any] | None = None,
+                          p_top: Any = _LID_FROM_STATE,
                           ) -> tuple[ValidationReport, dict[str, Any]]:
     """THE FULL-STATE GATE, over a streamed domain's pinned HOST store.
 
@@ -636,7 +734,8 @@ def validate_store_fields(state: Any, carriers: Mapping[str, Any],
     excluded: list[str] = []
     seen: set[tuple] = set()
     for field in collect_state_fields(state, backend="gpu",
-                                      extra_tables=extra_tables):
+                                      extra_tables=extra_tables,
+                                      p_top=p_top):
         if gpu_integer_policy(field.name, field.values.dtype) is None:
             excluded.append(field.name)
             continue
@@ -918,8 +1017,11 @@ def benchmark_validator(state: Any, *, repeats: int = 20,
 
 __all__ = [
     "FieldRule", "HealthCheckError", "HealthField", "MAX_HEALTH_FIELDS",
-    "STATUS_BITS", "StateHealthValidator", "ValidationReport",
+    "STATUS_BITS", "StateHealthValidator",
+    "THETA_CEILING_AT_REFERENCE_LID_K", "THETA_CEILING_REFERENCE_LID_PA",
+    "ValidationReport",
     "benchmark_validator", "collect_state_fields", "cuda_source",
     "field_from_array", "gpu_integer_policy", "rule_for_field",
+    "theta_ceiling_for_lid",
     "validate_fields_cpu", "validate_state_cpu", "validate_store_fields",
 ]

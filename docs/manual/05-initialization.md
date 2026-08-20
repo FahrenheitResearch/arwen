@@ -80,8 +80,7 @@ contiguous verified prefix; the manifest carries a `concurrency` receipt block
 [docs/public/DATA.md; tests/test_fetch_pool.py]. Measured cold, identical byte
 sets both ways: ICON-EU's 252 objects (233.7 MB) complete in 71.22 s under the
 pool, and the GFS NOMADS subset (4 files, 1.14 MB) in 10.60 s, a wall the
-politeness cap sets by design, not bandwidth. The serial arms, and the ratio
-between the arms, live in the receipt
+politeness cap sets by design, not bandwidth. The serial arms live in the receipt
 [docs/public/receipts/fetch-pool-cold-measured.json, measured 2026-08-17].
 
 The receipt's own note: the sum of per-file service seconds rose under the pool

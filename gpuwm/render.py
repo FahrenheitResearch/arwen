@@ -33,6 +33,20 @@ production catalog and were not it.
 side-by-side comparison sheets (:mod:`gpuwm.pair_compose`) -- either
 engine's output pairs.
 
+``--streamlines`` / ``--barbs`` choose how the wind is drawn on every
+product carrying a wind layer.  Neither given, the engine keeps its
+automatic per-grid choice (streamlines on curvilinear and projected
+grids, barbs on plain lat/lon) and the invocation is byte-identical to
+every earlier release.  ``RUSTWX_WIND_STREAMLINES`` still works and
+these two outrank it: a flag a stale shell export could silently
+overrule would be a flag that lies.
+
+``--products var:<stored name>`` draws any 2-D field the wrfout carries,
+INCLUDING one added to a user's own WRF Registry -- ``MSLP_ANOM`` is
+imported as ``wrf_mslp_anom`` and rendered by ``--products
+var:wrf_mslp_anom`` with no product definition written anywhere.
+``--list-products`` names every ``var:`` row a given file can serve.
+
 Both engines file what they draw through :mod:`gpuwm.render_layout`:
 ``<--out>/<domain>/<product>/<valid-day>/<file>.png``, by default and
 without a flag.  Every picture used to land in one directory, which on
@@ -82,6 +96,7 @@ the failure names the missing dependency and the install command.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import subprocess
@@ -91,6 +106,7 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm import explain, render_layout, run_stamp
+from gpuwm.io.history_selection import PRODUCT_HISTORY_INPUTS
 from gpuwm.science_core import SCIENCE_CORE_REQUIREMENT
 
 #: The pip requirement the render products are certified against, quoted
@@ -757,21 +773,23 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
     return written, failures, skipped
 
 
-#: The matplotlib engine's per-product wrfout variable needs.  Two
-#: readers now: the --list-products availability report, and the render
-#: loop's own pre-check (:func:`missing_declared_inputs`), so the status
-#: a listing prints and the decision a render makes come from one table
-#: rather than from a table and an exception.
+#: The matplotlib engine's per-product wrfout variable needs, READ OFF
+#: gpuwm's own render product catalog rather than declared again here.
+#:
+#: Three readers now: the --list-products availability report, the render
+#: loop's own pre-check (:func:`missing_declared_inputs`), and the
+#: ``[output]`` history-selection plan-time dependency warning
+#: (:func:`gpuwm.io.history_selection.lost_products`).  They read ONE
+#: table, so the status a listing prints, the decision a render makes,
+#: and the products a config is warned it is about to lose cannot
+#: disagree about which variable a product needs.
+#:
+#: This view is restricted to :data:`PRODUCTS` because it is the
+#: matplotlib engine's own catalog; the shared table additionally
+#: carries the rust catalog slugs those names alias onto, which this
+#: engine cannot draw.
 _MPL_PRODUCT_NEEDS = {
-    "refl": ("REFL_10CM",),
-    "t2": ("T2",),
-    "wind10": ("U10", "V10"),
-    "precip": ("RAINC|RAINNC",),
-    # OLR is present exactly when the attached longwave scheme produced
-    # it, so a radiation-off run lists this product as missing-fields
-    # rather than failing -- which is the honest report of that run.
-    "olr": ("OLR",),
-}
+    name: PRODUCT_HISTORY_INPUTS[name] for name in PRODUCTS}
 
 
 def missing_declared_inputs(present, product: str) -> list[str]:
@@ -792,6 +810,144 @@ def missing_declared_inputs(present, product: str) -> list[str]:
         if not any(option in present for option in options):
             missing.append(" or ".join(options))
     return missing
+
+
+#: The global attribute a trimmed run stamps into its own wrfout, naming
+#: the variables it deliberately did not write
+#: (:meth:`gpuwm.io.history_selection.HistorySelection.wrfout_attrs`).
+#: A full-default run stamps nothing, so its absence means "nothing was
+#: dropped" and never "this file is old".
+HISTORY_DROPPED_ATTR = "GPUWM_HISTORY_DROPPED"
+
+
+def history_dropped_variables(path) -> frozenset[str]:
+    """The variables this wrfout's own run chose not to write.
+
+    Empty when the file does not say -- a full-default run, or any
+    artifact written before ``[output]`` existed.  Empty is also the
+    answer for a file that cannot be opened at all: this is a
+    DIAGNOSTIC, and it must never be the reason a render dies.  A file
+    that is really unreadable fails loudly a moment later, in the render
+    itself, with a message about the file rather than about a table.
+    """
+
+    try:
+        import netCDF4
+
+        with netCDF4.Dataset(Path(path)) as dataset:
+            raw = getattr(dataset, HISTORY_DROPPED_ATTR, "")
+    except Exception:
+        return frozenset()
+    return frozenset(
+        name for name in str(raw).split(",") if name.strip()) or frozenset()
+
+
+def history_killed_products(paths, product_tokens) -> dict[str, str]:
+    """Requested products whose inputs THIS RUN dropped -> why, by name.
+
+    The mapping comes from gpuwm's own render product catalog
+    (:data:`gpuwm.io.history_selection.PRODUCT_HISTORY_INPUTS`), which is
+    also what the ``[output]`` plan-time warning reads -- so a product
+    the config warned about is the same product named here.
+
+    Two deliberate abstentions.  ``all`` asks for whatever the file
+    supports and is not a request for a specific product, so it is never
+    reported.  A token the table does not carry is not claimed: the
+    renderer owns 151 products and answers for their inputs itself
+    through ``--list-products``; inventing a dependency here for a recipe
+    this table has not verified is the correct-looking-wrong-mapping
+    defect ``wind10`` already cost once.
+    """
+
+    from gpuwm.io.history_selection import PRODUCT_HISTORY_INPUTS
+
+    dropped: set[str] = set()
+    for path in paths:
+        dropped |= history_dropped_variables(path)
+    if not dropped:
+        return {}
+    killed: dict[str, str] = {}
+    for token in product_tokens:
+        token = str(token).strip()
+        if token == "all":
+            continue
+        requirements = PRODUCT_HISTORY_INPUTS.get(token)
+        if not requirements:
+            continue
+        lost = [" or ".join(requirement.split("|"))
+                for requirement in requirements
+                if all(option in dropped
+                       for option in requirement.split("|"))]
+        if lost:
+            killed[token] = (
+                f"{token} is drawn from {', '.join(lost)}, which this "
+                "run's [output] history_drop / preset did not write")
+    return killed
+
+
+def _history_selection_action(killed: dict[str, str], *, everything: bool
+                              ) -> str:
+    lines = "\n".join(f"  {detail}." for detail in killed.values())
+    head = ("gpuwm render: every product you asked for needs a variable "
+            "this run did not write."
+            if everything else
+            "note: render cannot draw "
+            f"{', '.join(sorted(killed))} from these file(s) -- the "
+            "variable(s) they need were not written.")
+    return (
+        f"{head}\n{lines}\n"
+        "  remedy: re-run without dropping the variable(s) -- delete the "
+        "name from [output] history_drop, or widen the preset (severe "
+        "keeps the storm-scale volumes, full keeps everything).\n"
+        "  # to see what THIS file can still draw:\n"
+        "  #   gpuwm render --list-products FILE")
+
+
+_HISTORY_SELECTION_WHY = (
+    "The file says so itself: a run that trimmed its history stamps "
+    f"{HISTORY_DROPPED_ATTR} into every wrfout it writes, naming the "
+    "variables it chose not to write.  Without that stamp the only "
+    "available answer would be 'not in file', which reads like a "
+    "damaged artifact rather than a configuration choice made before "
+    "the run -- and the remedy for the two is not the same.\n\n"
+    "The product-to-variable mapping is gpuwm's own render product "
+    "catalog (gpuwm.io.history_selection.PRODUCT_HISTORY_INPUTS), the "
+    "same table the [output] plan-time warning reads at config "
+    "resolution, so the product named here is the product that warning "
+    "named hours earlier.")
+
+
+def history_selection_refusal(paths, product_tokens) -> str | None:
+    """Refusal text when EVERY requested product lost an input, else None.
+
+    Nothing can be drawn, so this is a refusal and not a note: it is
+    raised at the front door, before a run directory is claimed and
+    before a wrfout is opened for rendering, and it names the variable,
+    the product and the way back.
+    """
+
+    tokens = [str(token).strip() for token in product_tokens
+              if str(token).strip()]
+    killed = history_killed_products(paths, tokens)
+    if not killed or set(killed) != set(tokens):
+        return None
+    return explain.layered(_history_selection_action(killed, everything=True),
+                           _HISTORY_SELECTION_WHY)
+
+
+def history_selection_notice(paths, product_tokens) -> str | None:
+    """One ``note:`` line for the requested products this run cannot draw.
+
+    The survivors are still drawn -- refusing the whole command because
+    one product of four lost its input would be worse than the silence
+    it replaces.
+    """
+
+    killed = history_killed_products(paths, product_tokens)
+    if not killed:
+        return None
+    return explain.layered(_history_selection_action(killed, everything=False),
+                           _HISTORY_SELECTION_WHY)
 
 
 def _file_variables(path: Path) -> set[str] | None:
@@ -959,6 +1115,7 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
                        layout: str = render_layout.DEFAULT_LAYOUT,
                        overlays: Path | None = None,
                        annotate: Path | None = None,
+                       streamlines: bool | None = None,
                        ) -> tuple[list[Path], list[str],
                                   list[tuple[str, str]]]:
     """One store over a whole wrfout SERIES; ``(written, failures, skipped)``.
@@ -981,8 +1138,6 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
     other render.
     """
 
-    import tempfile
-
     from gpuwm import rustwx
 
     series = [Path(item) for item in paths]
@@ -995,16 +1150,13 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
     subject = series[-1]
     token = domain_token(_domain_tag(subject), _grid_spacing_m(subject))
     width, height = size
-    store = Path(tempfile.mkdtemp(prefix=".rwstore-", dir=outdir))
-    try:
+    with scratch_store(outdir) as store:
         written, failures, skipped = rustwx.run_renderer_series(
             renderer, series, store_root=store, out_dir=outdir,
             products=products, frames="all" if timeidx is None
             else str(timeidx), width=width, height=height, heavy=heavy,
             source_label=source_label, overlays=overlays,
-            annotate=annotate)
-    finally:
-        _remove_scratch_store(store)
+            annotate=annotate, streamlines=streamlines)
     written = [_place_engine_output(png, outdir, token, layout)
                for png in written]
     return written, failures, skipped
@@ -1017,6 +1169,7 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                         layout: str = render_layout.DEFAULT_LAYOUT,
                         overlays: Path | None = None,
                         annotate: Path | None = None,
+                        streamlines: bool | None = None,
                         ) -> tuple[list[Path], list[str],
                                    list[tuple[str, str]]]:
     """Rusty Weather engine; ``(written, failures, skipped)``.
@@ -1049,22 +1202,19 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
     failures: list[str] = []
     skipped: list[tuple[str, str]] = []
     for path in (Path(p) for p in paths):
-        import tempfile
         # The domain this file PROVES, read the same way the matplotlib
         # engine reads it, from the file's own GRID_ID/DX.  The engine
         # spells the same token into its filenames, but evidence from
         # the file beats a transcription, and one file's outputs all
         # belong to one nest whatever any filename says.
         token = domain_token(_domain_tag(path), _grid_spacing_m(path))
-        store = Path(tempfile.mkdtemp(prefix=".rwstore-", dir=outdir))
-        try:
+        with scratch_store(outdir) as store:
             file_written, file_failures, file_skipped = rustwx.run_renderer(
                 renderer, path, store_root=store, out_dir=outdir,
                 products=products, frames=frames, width=width,
                 height=height, heavy=heavy, source_label=source_label,
-                overlays=overlays, annotate=annotate)
-        finally:
-            _remove_scratch_store(store)
+                overlays=overlays, annotate=annotate,
+                streamlines=streamlines)
         file_written = [_place_engine_output(png, outdir, token, layout)
                         for png in file_written]
         written.extend(file_written)
@@ -1168,6 +1318,73 @@ def _place_engine_output(png: Path, outdir: Path, domain: str,
               f"({error}): {png}", file=sys.stderr)
         return png
     return target
+
+
+#: A render's working scratch lives BESIDE the delivered tree, in
+#: ``<delivery><SCRATCH_SUFFIX>/``, never inside it.
+SCRATCH_SUFFIX = ".render-scratch"
+
+
+def scratch_root_for(outdir) -> Path:
+    """Where working scratch for a delivery to ``outdir`` belongs.
+
+    A SIBLING of the delivered directory.  Scratch used to be created
+    inside it (``mkdtemp(dir=outdir)``), which breaks a delivery two
+    ways, both seen on 2026-08-20: 25 ``.rwstore-*`` directories were
+    left inside a delivered product folder, with paths long enough that
+    Windows could not list the folder at all; and a ``tar`` pull of the
+    tree raced a live render -- ``tar: .rwstore-p_4f7zzy: File removed
+    before we read it``.  The removal is best-effort by nature (a
+    memory-mapped hour file can hold its handle past process exit), so
+    the guarantee "a delivered tree contains only products" cannot rest
+    on cleanup.  It rests on the location.
+
+    The sibling is taken beside the CASE ROOT, not beside the run
+    folder: what gets pulled, tarred and browsed is the case folder the
+    caller named with ``--out``, so scratch parked one level inside it
+    would still be in the archive and still be in the way.  A run folder
+    is recognised by its own name (``run_stamp.is_run_folder``), so this
+    needs nothing threaded through from the door.
+    """
+
+    outdir = Path(os.path.abspath(outdir))
+    anchor = outdir.parent if run_stamp.is_run_folder(outdir) else outdir
+    return anchor.parent / f"{anchor.name}{SCRATCH_SUFFIX}"
+
+
+@contextlib.contextmanager
+def scratch_store(outdir, *, prefix: str = "rwstore-"):
+    """One renderer invocation's working store, outside the delivery.
+
+    Removed on exit; the sibling root goes with the last store in it, so
+    concurrent renders into the same delivery each keep their own and
+    none removes another's (``rmdir`` refuses a non-empty directory).
+
+    A parent directory that cannot hold the sibling (read-only, or a
+    delivery written straight into a mount point) is not a reason to
+    fail a render OR to fall back into the delivered tree: the store
+    goes to the system temp area instead, named so it is recognisable.
+    """
+
+    import tempfile
+
+    root = scratch_root_for(outdir)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        store = Path(tempfile.mkdtemp(prefix=prefix, dir=root))
+    except OSError as error:
+        root = Path(tempfile.mkdtemp(prefix="gpuwm-render-scratch-"))
+        store = Path(tempfile.mkdtemp(prefix=prefix, dir=root))
+        print(f"render: scratch beside {outdir} was not writable "
+              f"({error}); working store is {store}", file=sys.stderr)
+    try:
+        yield store
+    finally:
+        _remove_scratch_store(store)
+        try:
+            root.rmdir()
+        except OSError:
+            pass
 
 
 def _remove_scratch_store(store: Path) -> None:
@@ -1852,6 +2069,27 @@ def render_main(args: argparse.Namespace) -> int:
             print(blank, file=sys.stderr)
     if args.list_products:
         return list_products_main(args, engine)
+    # THE [output] PRE-CHECK, before a run directory is claimed and
+    # before a wrfout is opened for rendering.  A run that trimmed its
+    # history says so in its own files, so a request for a product whose
+    # input that run dropped is answerable HERE, by name, with the way
+    # back -- instead of the bare "not in file" this used to become,
+    # which reads like a damaged artifact rather than the configuration
+    # choice it is.  Exempt: --list-products (it exists to answer this),
+    # and --products all (a request for whatever the file supports).
+    requested = ([token.strip() for token in args.products.split(",")
+                  if token.strip()])
+    history_refusal = history_selection_refusal(args.wrfout, requested)
+    if history_refusal is not None:
+        print(explain.render(
+            history_refusal, explain=explain.explain_enabled(args),
+            command="gpuwm render"), file=sys.stderr)
+        return 2
+    history_note = history_selection_notice(args.wrfout, requested)
+    if history_note is not None:
+        print(explain.render(
+            history_note, explain=explain.explain_enabled(args),
+            command="gpuwm render"), file=sys.stderr)
     print(f"render: engine {engine} ({why})")
     # AFTER every refusal and after --list-products: this creates a
     # directory, and a command that draws nothing must leave none --
@@ -1885,7 +2123,8 @@ def render_main(args: argparse.Namespace) -> int:
                     args.wrfout, products=rust_products, timeidx=timeidx,
                     outdir=args.out, size=size, heavy=args.heavy,
                     source_label=args.source_label, layout=args.layout,
-                    overlays=args.overlays, annotate=args.annotate)
+                    overlays=args.overlays, annotate=args.annotate,
+                    streamlines=args.streamlines)
             except (RuntimeError, ValueError) as exc:
                 print("render: " + explain.render(
                     str(exc), explain=explain.explain_enabled(args),
@@ -1990,6 +2229,23 @@ def register_cli(subparsers) -> None:
         help="rust engine: also compute the heavy ECAPE product family "
              "at import (SBECAPE/SBNCAPE/SBECIN, ECAPE SCP/EHI/...; "
              "adds substantial per-frame import time)")
+    wind = parser.add_mutually_exclusive_group()
+    wind.add_argument(
+        "--streamlines", dest="streamlines", action="store_true",
+        default=None,
+        help="rust engine: draw the wind as STREAMLINES instead of "
+             "barbs on every product that carries a wind layer.  "
+             "Without either flag the engine keeps its automatic "
+             "choice (streamlines on curvilinear and projected grids, "
+             "barbs on plain lat/lon), and the RUSTWX_WIND_STREAMLINES "
+             "environment variable still works; this flag and --barbs "
+             "outrank it")
+    wind.add_argument(
+        "--barbs", dest="streamlines", action="store_false",
+        default=None,
+        help="rust engine: draw the wind as BARBS, overruling both the "
+             "automatic choice and any inherited "
+             "RUSTWX_WIND_STREAMLINES")
     parser.add_argument(
         "--overlays", type=Path, metavar="FILE.json",
         help="rust engine: draw map overlays given in geographic DEGREES "

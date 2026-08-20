@@ -552,7 +552,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicit rw-wps.members.v1 document instead of a packaged "
              "set (its SHA-256 is recorded in the receipt)")
     parser.add_argument("--member", metavar="ID", help="declared member id")
-    parser.add_argument("--cycle", type=_parse_cycle, metavar="YYYY-MM-DDTHH")
+    parser.add_argument(
+        "--cycle", type=_parse_cycle, metavar="YYYY-MM-DDTHH",
+        help="the model cycle whose member is staged, in UTC; it selects "
+             "the declared upstream-relative paths under --inputs and is "
+             "recorded in the staging receipt")
     parser.add_argument(
         "--steps", type=_parse_steps, metavar="H,H,...",
         help="forecast hours to prepare, e.g. 0,3,6")

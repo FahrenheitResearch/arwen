@@ -96,10 +96,12 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from gpuwm.config import (DEFAULT_COLUMN_CHUNK, MYJ_PBL_SCHEME,
+from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
+                          DEFAULT_COLUMN_CHUNK, MYJ_PBL_SCHEME,
                           MYJ_SFCLAY_SCHEME, SASE_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
+from gpuwm.core import kernel_frame_recordings as _kernel_frame_recordings
 from gpuwm.experiment import DomainConfig, ExperimentConfig
 
 # ---------------------------------------------------------------------------
@@ -320,13 +322,71 @@ OBSERVED_PEAK_OVER_FOOTPRINT = PEAK_ENVELOPE_FACTORS["windows"]
 #: docs/public/receipts/wddm/rtx3080-wddm-calibration-20260819.json
 #: (every run's measured and priced terms), beside the walk capture in
 #: Downloads/ux-walks-replay/gpu-walk-3080.md.
-WDDM_POOL_SLACK_FRACTION = 0.20
+#: 2026-08-20 AMENDMENT (task 206) -- THIS TERM IS NOT WDDM'S, AND IT IS
+#: NOT EVERY SUITE'S.  It is the LEGACY-RRTMG call-peak retention, and it
+#: splits on the radiation lane on both driver models and all four cards
+#: anyone has instrumented.  Pool HELD over the itemized estimate:
+#:
+#:   ==============  ==========  =================  =================
+#:   card            driver      rte-rrtmgp         legacy-RRTMG
+#:   ==============  ==========  =================  =================
+#:   RTX 3080        WDDM        0.939-0.988        up to 1.47
+#:   RTX 5090        Linux       0.879-0.921        1.134, 1.166
+#:   RTX 5070 Ti     Linux       0.910-0.956        1.172-1.186
+#:   RTX 4080        Linux       0.94-1.00          (not instrumented)
+#:   ==============  ==========  =================  =================
+#:
+#: Three campaigns, two driver models, and the same boundary each time:
+#: the legacy engines' LW/SW call-peak workspace is retained by the pool
+#: between calls and the itemization does not model it, while the
+#: rte-rrtmgp lane's pool tracks the itemization to within a few percent.
+#: Charging every suite for a mechanism only one of them has cost an
+#: rte-rrtmgp configuration 20% of its estimate for nothing.
+#:
+#: What was wrong BEFORE this amendment, and it is the safety half: the
+#: term was charged by DRIVER MODEL, which meant Linux paid none of it at
+#: all.  The Linux envelope then under-predicted every one of fifteen
+#: instrumented legacy-RRTMG forecasts:
+#: paragraph above said so: "re-measure there before exporting this term
+#: -- the retention mechanism is a CuPy pool behaviour, not WDDM's, but
+#: no Linux legacy-RRTMG run has been instrumented".  Fifteen have been
+#: now, on two Linux cards, and the Linux envelope UNDER-PREDICTED every
+#: one of them:
+#:
+#:   ==============  =======  ==========  ==========  ==========  ========
+#:   card            runs     estimate    held/est    measured    residual
+#:   ==============  =======  ==========  ==========  ==========  ========
+#:   RTX 5070 Ti     10       5.47 GiB    1.172-1.186  7.61-7.69  +0.39..+0.47
+#:   RTX 5090         5       5.47 GiB    1.176-1.186  9.08-9.13  +0.69..+0.74
+#:   ==============  =======  ==========  ==========  ==========  ========
+#:
+#: The 2.5.0 release battery's shared 300x300x49 legacy-RRTMG domain,
+#: whole 6 h forecasts, each run's own 20 Hz watcher receipt; residual is
+#: against the Linux envelope AS IT SHIPPED, i.e. with no slack term at
+#: all.  The worst point needs 0.095 of the estimate on top of the
+#: 0.5 GiB constant; the WDDM lane's already-shipped 0.20 covers it with
+#: better than 2x margin and is the same mechanism measured on the same
+#: allocator, so the term is charged on every DRIVER MODEL and priced by
+#: RADIATION LANE instead.  Receipts:
+#: docs/public/receipts/linux/linux-vram-calibration-20260820.json,
+#: docs/public/receipts/wddm/rtx3080-wddm-calibration-20260819.json.
+POOL_SLACK_FRACTION = 0.20
+
+#: The name this term shipped under while it was believed to be a WDDM
+#: property.  Kept so the 2.5.0 receipts written in its terms still read.
+WDDM_POOL_SLACK_FRACTION = POOL_SLACK_FRACTION
 
 #: What the Windows affine envelope rests on, printed beside the number.
 ENVELOPE_WDDM_BASIS = (
     "measured, RTX 3080 10 GiB / Windows 11 WDDM, six whole bare-default "
     "forecasts machine-wide at 0.25 s over a 2.5x span of itemized "
     "estimate, rte-rrtmgp + legacy-RRTMG suites")
+
+#: ...and what the Linux one rests on, since 2026-08-20.
+ENVELOPE_LINUX_POOL_BASIS = (
+    "measured, RTX 5070 Ti 16 GiB and RTX 5090 32 GiB / Linux, fifteen "
+    "whole release-battery forecasts sampled at 20 Hz, CuPy pool held "
+    "1.17-1.19x the itemized estimate")
 
 
 #: The platform names this accounting has evidence for.  ``linux``
@@ -708,7 +768,8 @@ def machine_peak_envelope_bytes(
         *, alloc_estimate_bytes: int, non_pool_bytes: int,
         domains: int = 1,
         footprint_projection_bytes: int | None = None,
-        family: str = "linux") -> int:
+        family: str = "linux",
+        legacy_radiation: bool = True) -> int:
     """The machine-wide peak a run of this configuration should reach.
 
     AFFINE, not multiplicative.  The old form was ``factor x projection``
@@ -744,9 +805,20 @@ def machine_peak_envelope_bytes(
               + ENVELOPE_UNMODELLED_BYTES
               + math.ceil(ENVELOPE_PER_NEST_FRACTION * nests
                           * int(alloc_estimate_bytes)))
-    if family == "windows":
-        affine += math.ceil(WDDM_POOL_SLACK_FRACTION
-                            * int(alloc_estimate_bytes))
+    # Charged on every driver model and priced by RADIATION LANE: the
+    # retention is the legacy engines' call-peak workspace sitting in the
+    # CuPy pool between calls, which is a property of the suite and of
+    # the allocator, not of WDDM (see POOL_SLACK_FRACTION for the three
+    # campaigns that split on it).  While it was Windows-only the Linux
+    # envelope under-predicted every instrumented run on both Linux
+    # cards; while it was unconditional it charged the rte-rrtmgp lane
+    # 20% for a mechanism that lane does not have.
+    #
+    # The default is to CHARGE it.  A caller that has not said which
+    # radiation lane it is on gets the conservative answer; an envelope
+    # that guesses optimistically is not an envelope.
+    if legacy_radiation:
+        affine += math.ceil(POOL_SLACK_FRACTION * int(alloc_estimate_bytes))
     return affine
 
 
@@ -839,6 +911,54 @@ POOL_RESERVED_OVER_ESTIMATE_FRACTION = 0.03
 CUDA_CONTEXT_BYTES = 432 * 1024 ** 2
 
 
+#: What a CUDA context grows by once a forecast has loaded its kernel
+#: modules, over the BARE context a fresh process stands up.
+#:
+#: MEASURED 2026-08-20 (task 206), two Linux cards, driver 13030.  The
+#: bare context is read by ``tools/vram_reserve_probe.py`` in a process
+#: that creates a context and allocates one byte; the run-time figure is
+#: ``device footprint peak - pool-held peak`` from fifteen whole
+#: forecasts' own 20 Hz :class:`~gpuwm.core.gpu_mem_watch.
+#: GpuPeakMemoryWatcher` receipts, minus the reservation law's backing
+#: store for the frame those runs launched:
+#:
+#:   ==============  ==========  ============  ==========
+#:   card            bare        at run time   growth
+#:   ==============  ==========  ============  ==========
+#:   RTX 5070 Ti      230.0 MiB   382.8 MiB     152.8 MiB
+#:   RTX 5070 Ti      230.0 MiB   386.5 MiB     156.5 MiB
+#:   RTX 5090         506.0 MiB   659.7 MiB     153.7 MiB
+#:   RTX 5090         506.0 MiB   664.3 MiB     158.3 MiB
+#:   ==============  ==========  ============  ==========
+#:
+#: The growth is a CONSTANT across a 2.4x span of card -- which is what
+#: NVRTC module images and the driver's own working set should be, and
+#: is not what a flat total context can be.  192 MiB rounds the worst
+#: measurement up; an envelope must not round down.
+#:
+#: This is what RETIRES :data:`CUDA_CONTEXT_BYTES` as the charged term.
+#: That constant is one 2026-07-26 reading of one card, and applied
+#: everywhere it was wrong in BOTH directions at once: 48 MiB high on a
+#: 5070 Ti and 215 MiB LOW on the very 5090 it was taken from, once that
+#: card ran under Linux rather than WDDM.  A term that under-charges is
+#: not conservative, it is an OOM waiting for a big enough card.
+CONTEXT_RUNTIME_GROWTH_BYTES = 192 * 1024 ** 2
+
+#: Bare-context bytes per resident thread, for a card nobody has measured.
+#:
+#: Same campaign, the three cards' bare contexts over their
+#: resident-thread capacities: 1,748 B (RTX 3080, WDDM, with a live
+#: desktop sharing the card), 2,243 B (RTX 5070 Ti) and 2,032 B
+#: (RTX 5090).  2,304 B is the round figure above all three, so an
+#: unmeasured card is never priced below any card that was.
+#:
+#: A MODELLED number, and it says so wherever it is printed
+#: (:func:`non_pool_basis`).  A present card is always measured instead:
+#: this rate exists for ``--card``/``--vram-gib`` sizing of a machine
+#: that is somewhere else.
+MODELLED_BARE_CONTEXT_BYTES_PER_RESIDENT_THREAD = 2304
+
+
 @dataclass(frozen=True)
 class DeviceLocalMemoryProfile:
     """The device constants the local-memory reservation law needs."""
@@ -847,23 +967,92 @@ class DeviceLocalMemoryProfile:
     multiprocessor_count: int
     max_threads_per_multiprocessor: int
     default_stack_limit_bytes: int = 1024
+    #: Device bytes a bare CUDA context holds on THIS card, measured.
+    #: ``None`` for a card that is not in the machine, which is then
+    #: priced from
+    #: :data:`MODELLED_BARE_CONTEXT_BYTES_PER_RESIDENT_THREAD`.
+    bare_context_bytes: int | None = None
 
     @property
     def resident_thread_capacity(self) -> int:
         return (self.multiprocessor_count
                 * self.max_threads_per_multiprocessor)
 
+    @property
+    def context_is_measured(self) -> bool:
+        return self.bare_context_bytes is not None
+
+    @property
+    def cuda_context_bytes(self) -> int:
+        """Device bytes this card's CUDA context holds during a run.
+
+        The bare context -- measured on the card when it is present,
+        modelled from its resident-thread capacity when it is not --
+        plus :data:`CONTEXT_RUNTIME_GROWTH_BYTES`, the module-load growth
+        both instrumented Linux cards showed to within 5 MiB of each
+        other.
+        """
+        bare = self.bare_context_bytes
+        if bare is None:
+            bare = (MODELLED_BARE_CONTEXT_BYTES_PER_RESIDENT_THREAD
+                    * self.resident_thread_capacity)
+        return int(bare) + CONTEXT_RUNTIME_GROWTH_BYTES
+
     def reservation_bytes(self, max_local_size_bytes: int) -> int:
         """Device bytes the driver reserves for a launched kernel whose
         per-thread local frame is ``max_local_size_bytes``.  Zero when the
         frame fits the default stack, whose store the context already
-        carries."""
+        carries.
+
+        VERIFIED EXACT 2026-08-20 on three cards and both driver models
+        (``tools/vram_reserve_probe.py``, validated in both directions:
+        frames at or under the default stack step exactly zero device
+        bytes, frames above it step this product to the byte on WDDM and
+        to within 1.5 MiB on Linux).  The law is not the defect; what was
+        wrong was the profile it was evaluated on.
+        """
         over = int(max_local_size_bytes) - self.default_stack_limit_bytes
         return 0 if over <= 0 else over * self.resident_thread_capacity
 
 
+def non_pool_basis(profile: "DeviceLocalMemoryProfile") -> str:
+    """One sentence naming the card row a non-pool charge came from.
+
+    Printed beside the number.  A grid-independent term large enough to
+    refuse a card on its own has to be traceable to the reading that
+    made it, or the reader has no way to tell a measurement from an
+    assumption -- which is the whole history of this module.
+    """
+
+    if profile.context_is_measured:
+        return (
+            f"measured on this card ({profile.name}, "
+            f"{profile.multiprocessor_count} SMs x "
+            f"{profile.max_threads_per_multiprocessor} threads): CUDA "
+            f"context {profile.cuda_context_bytes / GIB:.2f} GiB "
+            f"(bare {profile.bare_context_bytes / GIB:.2f} + "
+            f"{CONTEXT_RUNTIME_GROWTH_BYTES / GIB:.2f} module-load growth) "
+            f"plus the local-memory backing store of its kernel set")
+    return (
+        f"modelled for an absent card ({profile.name}, "
+        f"{profile.multiprocessor_count} SMs x "
+        f"{profile.max_threads_per_multiprocessor} threads): CUDA context "
+        f"{profile.cuda_context_bytes / GIB:.2f} GiB from the measured "
+        f"{MODELLED_BARE_CONTEXT_BYTES_PER_RESIDENT_THREAD} B per resident "
+        f"thread, plus the local-memory backing store of its kernel set.  "
+        f"Sizing for the machine you are on measures this instead")
+
+
 #: Measured 2026-07-26 from ``cudaGetDeviceProperties`` +
 #: ``cudaDeviceGetLimit(cudaLimitStackSize)`` on the run host.
+#:
+#: ``bare_context_bytes`` is deliberately left unset even though this
+#: card's bare context WAS measured (530,579,456 B, weather-node-2,
+#: 2026-08-20).  This profile is what an ABSENT card is priced against,
+#: and the absent-card path may never be more optimistic than the
+#: present-card one -- the 2026-08-03 lesson that retired
+#: :data:`CARD_CLASS_MULTIPROCESSORS`.  A card in the machine is
+#: measured (:func:`local_memory_profile_from_device`).
 MEASURED_LOCAL_MEMORY_PROFILE = DeviceLocalMemoryProfile(
     name="NVIDIA GeForce RTX 5090",
     multiprocessor_count=170,
@@ -915,19 +1104,73 @@ def card_local_memory_profile(
     return MEASURED_LOCAL_MEMORY_PROFILE
 
 
+def _nvml_used_bytes_or_none() -> int | None:
+    """Device-wide used bytes from NVML, or ``None`` if unreadable."""
+    try:
+        from gpuwm.supervisor import _run_nvidia_smi
+
+        text = _run_nvidia_smi(["--query-gpu=memory.used",
+                                "--format=csv,noheader,nounits"])
+        return int(text.strip().splitlines()[0]) * 1024 ** 2
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def measured_bare_context_bytes(before: int | None, after: int | None, *,
+                                stack_store_bytes: int) -> int | None:
+    """A bare CUDA context's cost from an NVML reading either side of it.
+
+    NVML and not ``cudaMemGetInfo``: ``total - free`` counts every other
+    process on the card, and on a WDDM desktop that is gigabytes of
+    somebody else's compositor (the 3080 read 1.12 GiB that way against a
+    174 MiB delta).  What this process ADDED is the delta.
+
+    Two ways the delta can lie, and both are refused rather than
+    smoothed: a context that already existed makes it ~0, and a desktop
+    that freed memory mid-reading can make it negative or absurd.  A
+    reading below the default-stack backing store the driver MUST have
+    allocated is not a measurement of this context, and neither is one
+    above 4 GiB.  ``None`` means "unmeasured", which prices from
+    :data:`MODELLED_BARE_CONTEXT_BYTES_PER_RESIDENT_THREAD` and says so.
+    """
+
+    if before is None or after is None:
+        return None
+    delta = int(after) - int(before)
+    if delta < int(stack_store_bytes) or delta > 4 * GIB:
+        return None
+    return delta
+
+
 def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
-    """Read the profile off the attached device (``--alloc`` path only)."""
+    """Read the profile off the attached device (``--alloc`` path only).
+
+    Also MEASURES this card's bare CUDA context when this call is what
+    creates it, which is the whole point of reading a present card
+    instead of pricing it from a table: see
+    :func:`measured_bare_context_bytes` for why a context that already
+    existed reads as unmeasured rather than as zero.
+    """
+    # Read the card BEFORE the first CUDA call below, which is what
+    # stands the context up.
+    before = _nvml_used_bytes_or_none()
     # ``gpuwm multi-run`` masks one physical UUID into each check process;
     # CUDA ordinal 0 is therefore the selected logical device, not a claim
     # that every run belongs on the machine's physical index zero.
     props = cp.cuda.runtime.getDeviceProperties(0)
     name = props["name"]
+    stack_limit = int(cp.cuda.runtime.deviceGetLimit(0))
+    capacity = (int(props["multiProcessorCount"])
+                * int(props["maxThreadsPerMultiProcessor"]))
+    after = _nvml_used_bytes_or_none()
     return DeviceLocalMemoryProfile(
         name=name.decode() if isinstance(name, bytes) else str(name),
         multiprocessor_count=int(props["multiProcessorCount"]),
         max_threads_per_multiprocessor=int(
             props["maxThreadsPerMultiProcessor"]),
-        default_stack_limit_bytes=int(cp.cuda.runtime.deviceGetLimit(0)),
+        default_stack_limit_bytes=stack_limit,
+        bare_context_bytes=measured_bare_context_bytes(
+            before, after, stack_store_bytes=stack_limit * capacity),
     )
 
 
@@ -935,9 +1178,27 @@ def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
 #: driver reports it in ``CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES`` after NVRTC
 #: compiles ``gpuwm/core/kernels/<module>.cu`` with the shipped options and
 #: NO integer defines injected -- i.e. at each module's unspecialized bound.
-#: Measured 2026-07-26 over every ``extern "C" __global__`` symbol in every
-#: module; regenerated and compared by
-#: ``tests/test_preflight.py::test_the_recorded_local_frames_match_the_driver``.
+#:
+#: THIS IS A CEILING OVER NAMED COMPILE PLATFORMS, not one box's reading.
+#: A frame is what NVRTC emitted for one target architecture at one
+#: compiler build, and measured three ways it moves with both: ``gf``,
+#: ``noah``, ``thompson_aerosol_warm`` and ``ysu`` move with the
+#: architecture at a fixed compiler, ``nssl2_fused_gs``, ``rrtmgp_cloud``
+#: and ``shinhong`` move with the compiler build at a fixed architecture,
+#: and ``noahmp_leaves`` moves with both.  The readings themselves, each
+#: naming its box, its ``sm_`` target and its NVRTC build, live in
+#: :mod:`gpuwm.core.kernel_frame_recordings`; every row below is the
+#: element-wise MAXIMUM over them, checked against them at import.
+#:
+#: Under-pricing is what a rail gate cannot survive -- one byte of frame
+#: is one byte times the whole resident-thread capacity of device memory
+#: nobody charged for -- so a platform nobody has measured is priced at
+#: the ceiling, never at an average or at the nearest box.  Rows recorded
+#: 2026-07-26 through 2026-08-20; regenerated and compared against the
+#: compiler in front of it by ``tests/test_preflight.py::
+#: test_the_recorded_local_frames_match_the_driver``, which asserts EXACT
+#: equality only on a platform this tree has a recording for, and the
+#: never-below-a-measurement invariant on every other.
 #:
 #: Three modules do not launch at their unspecialized bound: ``kf``,
 #: ``refl`` and ``wdm6_refl`` compile their column arrays to the
@@ -974,9 +1235,18 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "ftz_probe": 0,
     # Grell-Freitas: one thread owns one whole GFDRV column, so the frame
     # is the deep+shallow local-array stack (measured on the driver probe,
-    # nz=40 tier).
-    "gf": 22416,
+    # nz=40 tier).  sm_86 compiles it 1,568 B WIDER than sm_120 does
+    # (23,984 against 22,416), which on a 68-SM card is 0.15 GiB of
+    # backing store the sm_120 row did not charge for; the ceiling is the
+    # sm_86 reading.
+    "gf": 23984,
     "health": 0,
+    # The tile-streamed health reduction (gpuwm/core/streaming.py:1728).
+    # It holds no local frame on either measured architecture.  The row
+    # exists because the ``.cu`` does: it shipped with the out-of-core
+    # merge after the last 5090 reading, so the regeneration gate had a
+    # module it could not even enumerate until 2026-08-20.
+    "health_tile": 0,
     # The batched symmetric eigensolver the radar-DA analysis factors with
     # (gpuwm/core/jacobi_eigh.py).  It holds NO local frame at any tier: the
     # whole k x k problem lives in dynamic SHARED memory, which is priced at
@@ -1052,7 +1322,10 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "mynn_surface": 0,
     "nest": 0,
     "nest_microphysics": 0,
-    "noah": 176,
+    # sm_86 compiles Noah 48 B wider than sm_120 (224 against 176); the
+    # ceiling is the sm_86 reading.  Well under the default stack either
+    # way, so it reserves nothing on any card.
+    "noah": 224,
     "noahmp_bareflux": 0,
     "noahmp_fluxprep": 0,
     "noahmp_leaves": 272,
@@ -1066,7 +1339,9 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "nssl2": 15504,
     "nssl2_diagnostics": 0,
     "nssl2_driver_support": 15504,
-    "nssl2_fused_gs": 112,
+    # NVRTC 13.3.33 emits 216 B here where 13.0.48 emitted 112, at the
+    # same sm_120 target: a COMPILER-build move, not an architecture one.
+    "nssl2_fused_gs": 216,
     "nssl2_nucond": 0,
     "nssl2_qvexcess": 0,
     "openbc": 0,
@@ -1079,7 +1354,9 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "wdm6_refl": 16128,
     "rrtmg_lw": 0,
     "rrtmg_mcica_wrf": 0,
-    "rrtmgp_cloud": 0,
+    # Another compiler-build move at a fixed sm_120: 0 B on NVRTC 13.0.48,
+    # 40 B on 13.3.33.
+    "rrtmgp_cloud": 40,
     "rrtmgp_gas": 512,
     "rrtmgp_mcica": 0,
     "rrtmgp_rte": 5152,
@@ -1093,7 +1370,11 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # fixed SHINHONG_KMAX = 128 tier, one thread per column -- the ysu.cu
     # shape, one tier up); shinhong_partition_probe and the validation
     # kernel hold no local frame.
-    "shinhong": 14040,
+    # Compiler-build move at a fixed sm_120: NVRTC 13.3.33 emits 17,160 B
+    # against 13.0.48's 14,040, and the ceiling is the wider one.  On a
+    # 170-SM card that is 0.74 GiB more backing store than the original
+    # reading charged.
+    "shinhong": 17160,
     "shinhong_validation": 0,
     "smag2d": 0,
     "spec_bdy": 0,
@@ -1131,7 +1412,9 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # either way: it is a MAX over the selected modules, and mp_physics=28
     # always co-selects ``thompson`` at 11,264 B.
     "thompson_aerosol_state": 40,
-    "thompson_aerosol_warm": 0,
+    # Architecture move at a fixed NVRTC 13.0.48: 0 B on sm_120, 112 B on
+    # sm_86.
+    "thompson_aerosol_warm": 112,
     "tke_budget": 0,
     "uh_diag": 0,
     "vert_interp": 768,
@@ -1157,6 +1440,82 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "ysu": 9232,
     "ysu_validation": 0,
 }
+
+#: The readings the ceiling above is made of, each naming its box, its
+#: target architecture and its NVRTC build.
+KERNEL_LOCAL_FRAME_RECORDINGS = _kernel_frame_recordings.\
+    KERNEL_LOCAL_FRAME_RECORDINGS
+
+#: Re-export so a caller that has a recording can price against it
+#: without importing a second module.
+KernelFrameRecording = _kernel_frame_recordings.KernelFrameRecording
+
+if dict(KERNEL_MAX_LOCAL_SIZE_BYTES) != _kernel_frame_recordings.frame_ceiling():
+    _low = sorted(
+        module for module, frame
+        in _kernel_frame_recordings.frame_ceiling().items()
+        if KERNEL_MAX_LOCAL_SIZE_BYTES.get(module, -1) != frame)
+    raise RuntimeError(
+        "KERNEL_MAX_LOCAL_SIZE_BYTES must be exactly the element-wise "
+        "maximum over gpuwm.core.kernel_frame_recordings: "
+        f"{', '.join(_low)} disagree.  A row below a measurement "
+        "under-charges the local-memory backing store on the platform "
+        "that measured it")
+
+
+def kernel_frame_recording_for(fingerprint) -> "KernelFrameRecording | None":
+    """The frame recording taken on THIS compile platform, or ``None``.
+
+    Matched on the two
+    :func:`gpuwm.certify.compile_platform.compile_platform_fingerprint`
+    keys that decide code generation -- the target architecture and the
+    NVRTC build.  ``None`` means "nobody has measured this compiler on
+    this architecture", which is the case the ceiling exists for.
+    """
+
+    return _kernel_frame_recordings.recording_for(fingerprint)
+
+
+@dataclass(frozen=True)
+class UnderPricedKernelFrame:
+    """A module whose real frame is wider than the shipped row.
+
+    ``unpriced_device_bytes`` is the whole point: the reservation is
+    ``(frame - default stack) x resident-thread capacity``, so a frame
+    delta is a device-memory delta the fit gate never charged.  A run
+    admitted on the short number does not fail at the gate -- it fails
+    later, out of memory, with nothing pointing back here.
+    """
+
+    module: str
+    shipped_bytes: int
+    observed_bytes: int
+    unpriced_device_bytes: int
+
+
+def under_priced_kernel_frames(
+        observed, *, profile: "DeviceLocalMemoryProfile | None" = None
+) -> dict[str, UnderPricedKernelFrame]:
+    """Modules this compiler emits WIDER than :data:`KERNEL_MAX_LOCAL_SIZE_BYTES`.
+
+    Empty is the only acceptable answer on any machine: over-pricing
+    costs headroom, under-pricing breaches the rail.  A module the
+    shipped table does not know about is reported too, priced against
+    zero -- an unpriced module is the worst case of the same defect.
+    """
+
+    profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
+    capacity = profile.resident_thread_capacity
+    over: dict[str, UnderPricedKernelFrame] = {}
+    for module, frame in dict(observed).items():
+        shipped = int(KERNEL_MAX_LOCAL_SIZE_BYTES.get(module, 0))
+        if int(frame) <= shipped:
+            continue
+        over[module] = UnderPricedKernelFrame(
+            module=module, shipped_bytes=shipped, observed_bytes=int(frame),
+            unpriced_device_bytes=(int(frame) - shipped) * capacity)
+    return over
+
 
 @dataclass(frozen=True)
 class LevelSpecializedFrame:
@@ -1778,8 +2137,16 @@ def non_pool_device_bytes(
         exp: ExperimentConfig, *,
         profile: DeviceLocalMemoryProfile | None = None) -> int:
     """Device residency of a gpuwm process that the CuPy pool never reports:
-    the CUDA context plus the local-memory backing store."""
-    return CUDA_CONTEXT_BYTES + kernel_local_memory_bytes(
+    the CUDA context plus the local-memory backing store.
+
+    Both terms are properties of the DEVICE, so both are read off the
+    profile.  The context used to be a flat
+    :data:`CUDA_CONTEXT_BYTES` -- one card's 2026-07-26 reading charged
+    to every card on every platform, which measured 48 MiB high on a
+    5070 Ti and 215 MiB LOW on a Linux 5090 (task 206).
+    """
+    profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
+    return profile.cuda_context_bytes + kernel_local_memory_bytes(
         exp, profile=profile)
 
 
@@ -2174,6 +2541,13 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     if cfg.moist:
         for name in ("qv", "qc", "qr", "qv0", "qc0", "qr0", "h_diabatic"):
             shapes[name] = m
+        if cfg.cu_physics in CUMULUS_ADVECTIVE_FORCING_SCHEMES:
+            # WRF RTHFTEN/RQVFTEN, allocated by the same table predicate
+            # gpuwm/core/state.py uses.  Two persistent mass-point rates
+            # priced in the VRAM projection for the schemes that read them
+            # and for nobody else.
+            shapes["rthften"] = m
+            shapes["rqvften"] = m
         if cfg.mp_physics == 50:
             # P3 one-category (Registry.EM_COMMON:3038, and the mp==50 arm
             # of gpuwm/core/state.py): ONE ice mass with rime mass and rime
@@ -4470,6 +4844,12 @@ class ExperimentMemoryEstimate:
     non_pool_device_bytes: int = 0
     #: Which envelope family priced it (``linux``/``windows``/...).
     envelope_family: str = "linux"
+    #: Does this configuration run the LEGACY RRTMG engines?  That is
+    #: what decides the pool-slack term (:data:`POOL_SLACK_FRACTION`) --
+    #: the retained LW/SW call-peak workspace three campaigns measured on
+    #: the legacy lane and on no other.  Defaults to charging it: a
+    #: caller that has not said gets the conservative answer.
+    uses_legacy_radiation: bool = True
 
     @property
     def resident_bytes(self) -> int:
@@ -4551,14 +4931,21 @@ class ExperimentMemoryEstimate:
             alloc_estimate_bytes=self.alloc_estimate_bytes,
             non_pool_bytes=self.envelope_intercept_bytes,
             domains=len(self.domains),
-            family=self.envelope_family)
+            family=self.envelope_family,
+            legacy_radiation=self.uses_legacy_radiation)
 
     @property
     def envelope_basis(self) -> str:
-        """The evidence behind this platform's envelope terms."""
+        """The evidence behind this configuration's envelope terms."""
+        if not self.uses_legacy_radiation:
+            return ENVELOPE_AFFINE_BASIS
+        # The slack term is the legacy lane's, and its evidence is the
+        # union of the campaigns that measured that lane on each driver
+        # model -- naming only the local platform's would credit half of
+        # what the number rests on.
         if self.envelope_family == "windows":
-            return ENVELOPE_WDDM_BASIS
-        return ENVELOPE_AFFINE_BASIS
+            return f"{ENVELOPE_WDDM_BASIS}; {ENVELOPE_LINUX_POOL_BASIS}"
+        return f"{ENVELOPE_AFFINE_BASIS}; {ENVELOPE_LINUX_POOL_BASIS}"
 
     def peak_envelope_terms(self) -> str:
         """The envelope's arithmetic, exactly as it was evaluated.
@@ -4571,14 +4958,14 @@ class ExperimentMemoryEstimate:
         nests = max(0, len(self.domains) - 1)
         nest_term = (f" + {ENVELOPE_PER_NEST_FRACTION:.0%} of the estimate "
                      f"x {nests} nest(s)" if nests else "")
-        wddm_term = (
-            f" + {WDDM_POOL_SLACK_FRACTION:.0%} of the estimate WDDM "
-            f"pool slack" if self.envelope_family == "windows" else "")
+        slack_term = (
+            f" + {POOL_SLACK_FRACTION:.0%} of the estimate legacy-RRTMG "
+            f"pool slack" if self.uses_legacy_radiation else "")
         return (f"estimate {self.alloc_estimate_bytes / GIB:.2f} + "
                 f"non-pool {self.envelope_intercept_bytes / GIB:.2f} (CUDA "
                 f"context + local-memory backing store) + "
                 f"{ENVELOPE_UNMODELLED_BYTES / GIB:.2f} unmodelled"
-                f"{nest_term}{wddm_term} = "
+                f"{nest_term}{slack_term} = "
                 f"{self.peak_envelope_bytes / GIB:.2f} GiB")
 
 
@@ -4833,6 +5220,7 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
                     forcing_interval_seconds: float
                     = DEFAULT_FORCING_INTERVAL_SECONDS,
                     vram_gib: float | None = None,
+                    profile: DeviceLocalMemoryProfile | None = None,
                     ) -> IngestMemoryEstimate:
     """Itemize the preprocessing phase of ``exp``'s WHOLE DOMAIN TREE.
 
@@ -4885,6 +5273,10 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
         nest_state_bytes=sum(nbytes for _, nbytes in nest_items),
         widest_domain_time_bytes=widest,
         nest_state_items=tuple(nest_items),
+        # This card's context, not the retired flat constant: ingest
+        # stands up the same CUDA context the forecast does.
+        context_bytes=(MEASURED_LOCAL_MEMORY_PROFILE if profile is None
+                       else profile).cuda_context_bytes,
         device_overhead_bytes=platform_projection_constants(
             vram_gib=vram_gib)[1],
     )
@@ -5086,7 +5478,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
                 key, forcing_interval_seconds)
         ingest = estimate_ingest(
             exp, source=key, forcing_interval_seconds=float(cadence),
-            vram_gib=vram_gib)
+            vram_gib=vram_gib, profile=profile)
     resident_forecast = forecast.peak_envelope_bytes
     streamed = streamed_forecast_envelope(exp, machine=machine)
     return PhaseMemoryEstimate(
@@ -5204,6 +5596,7 @@ def estimate_experiment(
             exp, profile=(card_local_memory_profile(vram_gib)
                           if profile is None else profile)),
         envelope_family=envelope_platform(vram_gib=vram_gib),
+        uses_legacy_radiation=uses_legacy,
     )
 
 
@@ -5972,8 +6365,46 @@ def live_device_local_memory_profile() -> DeviceLocalMemoryProfile | None:
 #: hides the reason a run cannot begin is worse than no gate.
 _DEVICE_MEMORY_PROBE_SOURCE = """\
 import json
+import subprocess
 import sys
 
+# SELF-CONTAINED ON PURPOSE.  This source runs in a bare interpreter to
+# answer "is there a card, and what is it"; importing gpuwm here would
+# make the answer depend on the very install the caller may be asking
+# about, and it did: importing one helper from gpuwm.core.preflight
+# turned the "no CuPy here" exit code into an ImportError traceback,
+# which is the exact confusion PROBE_EXIT_NO_RUNTIME exists to end.
+
+def _nvml_used_bytes():
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=60)
+        if out.returncode != 0:
+            return None
+        return int(out.stdout.strip().splitlines()[0]) * 1024 * 1024
+    except Exception:
+        return None
+
+
+def _bare_context(before, after, stack_store):
+    # Mirrors preflight.measured_bare_context_bytes; a reading below the
+    # default-stack backing store the driver must have allocated is not a
+    # measurement of this context, and neither is one above 4 GiB.
+    if before is None or after is None:
+        return None
+    delta = int(after) - int(before)
+    if delta < int(stack_store) or delta > 4 * 1024 ** 3:
+        return None
+    return delta
+
+
+# BEFORE cupy: this interpreter has no CUDA context yet, so the NVML
+# reading here is the card without us on it.  That is what makes the
+# delta below THIS process's context cost rather than the whole card's
+# residency, which on a WDDM desktop is mostly somebody else's.
+_before = _nvml_used_bytes()
 try:
     import cupy as cp
 except ImportError as error:
@@ -5984,8 +6415,30 @@ try:
     free, total = cp.cuda.runtime.memGetInfo()
     props = cp.cuda.runtime.getDeviceProperties(0)
     name = props["name"]
+    _stack = int(cp.cuda.runtime.deviceGetLimit(0))
+    _capacity = (int(props["multiProcessorCount"])
+                 * int(props["maxThreadsPerMultiProcessor"]))
+    _used_now = _nvml_used_bytes()
+    _bare = _bare_context(_before, _used_now, _stack * _capacity)
+    # THE SMALLER OF THE TWO INSTRUMENTS, always.  On WDDM the display
+    # driver can evict other processes' allocations, so cudaMemGetInfo
+    # answers "free if everything else were paged out" -- measured
+    # 2026-08-20 on an RTX 3080 with a loaded desktop, four consecutive
+    # samples: memGetInfo said 9,097 MiB free while NVML said 3,375-3,405
+    # MiB, a stable 5.7 GiB over-statement of a 10 GiB card.  A budget
+    # built on the larger figure spends memory the run would have to
+    # evict a desktop to get.  Same idiom as the device rail: an
+    # ADDITIONAL ceiling, never a widening.  On Linux the two agree and
+    # this is a no-op.
+    # From the BEFORE reading -- the card without this probe's own
+    # context on it.  The run's context is charged by the reserve, so
+    # taking it out of free as well would bill it twice.
+    _nvml_free = None if _before is None else max(0, int(total) - _before)
+    _free = int(free) if _nvml_free is None else min(int(free), _nvml_free)
     payload = {
-        "free_bytes": int(free),
+        "free_bytes": _free,
+        "free_bytes_memgetinfo": int(free),
+        "free_bytes_nvml": _nvml_free,
         "total_bytes": int(total),
         "profile": {
             "name": (name.decode() if isinstance(name, bytes)
@@ -5993,8 +6446,8 @@ try:
             "multiprocessor_count": int(props["multiProcessorCount"]),
             "max_threads_per_multiprocessor": int(
                 props["maxThreadsPerMultiProcessor"]),
-            "default_stack_limit_bytes": int(
-                cp.cuda.runtime.deviceGetLimit(0)),
+            "default_stack_limit_bytes": _stack,
+            "bare_context_bytes": _bare,
         },
     }
 except Exception:
@@ -6112,6 +6565,12 @@ def profile_from_device_probe(payload) -> DeviceLocalMemoryProfile | None:
     profile = payload.get("profile") if isinstance(payload, dict) else None
     if not isinstance(profile, dict):
         return None
+    bare = profile.get("bare_context_bytes")
+    if isinstance(bare, bool) or not isinstance(bare, int) or bare <= 0:
+        # Absent or unusable reads as UNMEASURED, never as zero: a probe
+        # from an older build simply does not carry the field, and a
+        # zero-byte CUDA context is not a thing this could mean.
+        bare = None
     try:
         return DeviceLocalMemoryProfile(
             name=str(profile["name"]),
@@ -6120,9 +6579,42 @@ def profile_from_device_probe(payload) -> DeviceLocalMemoryProfile | None:
                 profile["max_threads_per_multiprocessor"]),
             default_stack_limit_bytes=int(
                 profile["default_stack_limit_bytes"]),
+            bare_context_bytes=bare,
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+#: How close a declared card size has to be to the local card's measured
+#: total to BE the local card.  Capacities are reported in whole MiB and
+#: converted through GiB floats on the way in, so an exact comparison
+#: would fail on rounding alone; 0.5% is far tighter than the gap between
+#: any two card tiers.
+LOCAL_CARD_MATCH_TOLERANCE = 0.005
+
+
+def declares_the_local_card(card_total_gib: float | None) -> bool:
+    """Is ``--vram-gib`` naming the card that is in this machine?
+
+    A declaration is normally a statement about hardware that is
+    somewhere else, and that is priced against the conservative
+    reference profile.  But the wizard declares the size of the card it
+    just MEASURED when it hands the emitted config to ``gpuwm check``,
+    and substituting a 170-SM reference under a 68-SM card there made
+    the two doors disagree about one machine.
+
+    False whenever the local card cannot be read: an unreadable card
+    cannot be the one being described, and the reference profile is the
+    safe answer.
+    """
+
+    if card_total_gib is None:
+        return False
+    total = device_physical_total_bytes()
+    if not total:
+        return False
+    declared = float(card_total_gib) * GIB
+    return abs(declared - total) <= LOCAL_CARD_MATCH_TOLERANCE * total
 
 
 def check_main(args) -> int:
@@ -6166,6 +6658,22 @@ def check_main(args) -> int:
     #: 5090 profile when a declared budget says the target is elsewhere.
     profile = (None if getattr(args, "budget_gib", None) is not None
                else live_device_local_memory_profile())
+    if profile is None and declares_the_local_card(card_total_gib):
+        # A DECLARED budget for THIS card.  ``--budget-gib`` alone means
+        # "the caller states the budget", not "the caller is describing
+        # another machine" -- and the wizard's own follow-up check is
+        # exactly that case: it sizes the card it just measured, states
+        # the budget it sized against, and used to have the reference
+        # 5090 profile substituted underneath it.  The wizard then read
+        # 68 SMs and the check it printed read 170, on one card, and the
+        # emission failed its own verification (task 206).
+        #
+        # Recognised by CAPACITY: ``--vram-gib`` naming the same total
+        # this machine's card reports IS this machine's card.  A
+        # declaration for any other size keeps the conservative
+        # reference profile, which is what sizing hardware you do not
+        # have is supposed to get.
+        profile = live_device_local_memory_profile()
     if profile is None:
         profile = card_local_memory_profile(card_total_gib)
     # The retention term is a fraction OF the estimate, so the estimate is
@@ -6250,6 +6758,23 @@ def check_main(args) -> int:
                 import cupy as cp
                 free = int(cp.cuda.runtime.memGetInfo()[0])
                 free_source = "measured"
+                # ...and never MORE than the card actually has free.
+                # ``memGetInfo`` answers "free if every other process
+                # were evicted", which under WDDM it can be: measured
+                # 2026-08-20 on a loaded RTX 3080 desktop, four
+                # consecutive samples, memGetInfo said 9,097 MiB free
+                # while NVML said 3,375-3,405 -- 5.7 GiB of a 10 GiB
+                # card.  Spending that is spending a desktop's memory.
+                total_now = device_physical_total_bytes()
+                used_now = device_wide_used_bytes()
+                if total_now and used_now is not None:
+                    nvml_free = max(0, int(total_now) - int(used_now))
+                    if nvml_free < free:
+                        free = nvml_free
+                        free_source = ("measured machine-wide (the CUDA "
+                                       "runtime reported more, counting "
+                                       "memory the driver would have to "
+                                       "evict from other processes)")
             except Exception:
                 free = None
             if free is not None and card_total_gib is not None:
@@ -6311,10 +6836,26 @@ def check_main(args) -> int:
     envelope = (forecast_envelope if phases is None
                 else phases.peak_envelope_bytes)
     binding_phase = "forecast" if phases is None else phases.binding_phase
+    #: What the ENVELOPE is compared against.  NOT ``budget``: that is
+    #: the allocation gate's budget and it has already subtracted the
+    #: CUDA context and the local-memory backing store, which
+    #: ``peak_envelope_bytes`` carries as its intercept.  Comparing the
+    #: two charged one process for its own non-pool residency twice --
+    #: 2.91 GiB of a 10 GiB card, on the walk that opened task 206 -- and
+    #: warned that a configuration would not fit a card it fits.
+    #:
+    #: The envelope models the whole device residency this process
+    #: reaches, so what is left outside it is other processes, which is
+    #: :data:`EXTERNAL_MARGIN_BYTES`.  Same seam the wizard sizes with
+    #: (:func:`gpuwm.domain_wizard.sizing_budget_bytes`), so the door
+    #: that emits a config and the door that verifies it cannot disagree.
+    envelope_budget = (None if free is None
+                       else max(0, int(free) - EXTERNAL_MARGIN_BYTES))
     #: The report's own prose says this configuration may not fit.  It is
     #: read here, before either renderer, because the exit code has to
     #: carry it whether or not anybody reads the text.
-    envelope_over_budget = budget is not None and envelope > budget
+    envelope_over_budget = (envelope_budget is not None
+                            and envelope > envelope_budget)
     if args.json:
         payload = {
             "config": str(args.config), "experiment": exp.name,
@@ -6356,9 +6897,16 @@ def check_main(args) -> int:
             "non_pool_device_bytes": estimate.non_pool_device_bytes,
             "envelope_unmodelled_bytes": ENVELOPE_UNMODELLED_BYTES,
             "envelope_per_nest_fraction": ENVELOPE_PER_NEST_FRACTION,
+            # Keyed by RADIATION LANE since 2026-08-20, not by driver
+            # model.  The old key name is kept because 2.5.0 receipts
+            # read it; ``envelope_pool_slack_fraction`` is its name now.
             "envelope_wddm_pool_slack_fraction": (
-                WDDM_POOL_SLACK_FRACTION
-                if estimate.envelope_family == "windows" else 0.0),
+                POOL_SLACK_FRACTION
+                if estimate.uses_legacy_radiation else 0.0),
+            "envelope_pool_slack_fraction": (
+                POOL_SLACK_FRACTION
+                if estimate.uses_legacy_radiation else 0.0),
+            "envelope_legacy_radiation": estimate.uses_legacy_radiation,
             "envelope_basis": estimate.envelope_basis,
             "local_memory_profile": estimate.non_pool_device_bytes and
                 profile.name,
@@ -6388,8 +6936,9 @@ def check_main(args) -> int:
             "free_bytes_capped_to_physical_bytes": capped_to,
             "budget_bytes": budget,
             "budget_underwater_bytes": budget_underwater_bytes,
+            "envelope_budget_bytes": envelope_budget,
             "observed_peak_envelope_exceeds_budget": (
-                None if budget is None else envelope_over_budget),
+                None if envelope_budget is None else envelope_over_budget),
             "gates": gates,
         }
         if phases is None:
@@ -6481,16 +7030,22 @@ def check_main(args) -> int:
         # expression is PEP 701 (Python 3.12+) syntax, and the supported
         # floor is 3.11 -- the 1.2.0 release workflow failed on exactly
         # this line before any wheel was published.
+        # THIS CARD's context, not the retired flat constant: the two
+        # numbers used to disagree on the same page, because this display
+        # line kept CUDA_CONTEXT_BYTES while the envelope beside it moved
+        # to the per-card term (task 206).
+        context_bytes = profile.cuda_context_bytes
         remeasured_bytes = (estimate.alloc_estimate_bytes + widest
-                            + CUDA_CONTEXT_BYTES
+                            + context_bytes
                             + reserve.retention_residual_bytes)
         print(f"  NON-POOL: CUDA context "
-              f"{_format_bytes(CUDA_CONTEXT_BYTES)} + local-memory backing "
+              f"{_format_bytes(context_bytes)} + local-memory backing "
               f"store {_format_bytes(widest)} "
               f"({len(physics_kernel_modules(exp))} kernel modules selected)"
               f"; RE-MEASURED device-footprint projection "
               f"{_format_bytes(remeasured_bytes)}"
               " (the TIER 3 line above is the retired zero-step probe model)")
+        print(f"  NON-POOL BASIS: {non_pool_basis(profile)}")
         family = envelope_platform(vram_gib=card_total_gib)
         if family == "windows":
             provenance = (
@@ -6541,7 +7096,22 @@ def check_main(args) -> int:
                   f"[streaming; holding all "
                   f"{ingest.n_forcing_times} times would resident "
                   f"{_format_bytes(ingest.unstreamed_resident_bytes)}]")
-            print(f"  BINDING PHASE: {phases.verdict(budget)}.")
+            # ``envelope_budget``, NOT ``budget``.  This one printed line
+            # was the last place the task-206 double count survived: it
+            # compared the machine-peak ENVELOPE -- which carries the
+            # CUDA context and the local-memory backing store as its
+            # intercept -- against the ALLOCATION budget, from which the
+            # allocation reserve has already subtracted those same
+            # bytes.  Measured 2026-08-20 on the loaded RTX 3080, 5.75
+            # GiB free: it printed "5.40 GiB peak envelope; that EXCEEDS
+            # the 3.79 GiB budget by 1.61 GiB" while the exit code (read
+            # off ``envelope_over_budget``, which uses the line below)
+            # said 0.15 GiB, and `gpuwm go` on the same config seconds
+            # later admitted it and ran to rc 0 with output byte-
+            # identical to the roomy run.  A report whose sentence and
+            # whose exit code disagree by 1.46 GiB of budget teaches the
+            # reader to ignore one of them.
+            print(f"  BINDING PHASE: {phases.verdict(envelope_budget)}.")
         print(f"  reserve {reserve.reserve_bytes / GIB:.2f} GiB "
               f"(retention {reserve.retention_residual_bytes / GIB:.2f} + "
               f"overhead {reserve.device_overhead_bytes / GIB:.2f} + "
@@ -6555,16 +7125,30 @@ def check_main(args) -> int:
             # a card that is not in this machine, and the report has to
             # say so beside the verdict, not leave "fits" to read as a
             # measurement.
-            print(f"  ESTIMATE FOR HARDWARE NOT PRESENT: the free figure "
-                  f"above is declared, not measured -- this preflight is "
-                  f"sizing a card that is not in this machine.  Non-pool "
-                  f"terms are priced against the conservative measured "
-                  f"reference device profile ({profile.name}, "
-                  f"{profile.multiprocessor_count} SMs), the largest "
-                  f"known-device intercept, so the estimate is never more "
-                  f"optimistic than a present-card measurement; verify "
-                  f"with `gpuwm check` on the real card before trusting "
-                  f"the margin.")
+            if declares_the_local_card(card_total_gib):
+                # Declared, but declared about THIS card -- which is what
+                # the wizard's own follow-up check does.  Saying "hardware
+                # not present" about the card in the machine, and pricing
+                # it on a reference profile to match, is how one box got
+                # two answers for one card.
+                print(f"  DECLARED BUDGET, MEASURED CARD: the free figure "
+                      f"above is declared rather than sampled, so it does "
+                      f"not move with what else is on the card right now; "
+                      f"the card itself is this machine's and its "
+                      f"grid-independent terms are "
+                      f"{non_pool_basis(profile)}.")
+            else:
+                print(f"  ESTIMATE FOR HARDWARE NOT PRESENT: the free "
+                      f"figure above is declared, not measured -- this "
+                      f"preflight is sizing a card that is not in this "
+                      f"machine.  Non-pool terms are priced against the "
+                      f"conservative measured reference device profile "
+                      f"({profile.name}, "
+                      f"{profile.multiprocessor_count} SMs), the largest "
+                      f"known-device intercept, so the estimate is never "
+                      f"more optimistic than a present-card measurement; "
+                      f"verify with `gpuwm check` on the real card before "
+                      f"trusting the margin.")
         if budget_underwater_bytes:
             print(f"  NO BUDGET AT ALL: the reserve alone is "
                   f"{_format_bytes(reserve.reserve_bytes)} against "
@@ -6627,8 +7211,11 @@ def check_main(args) -> int:
                 vram_gib=card_total_gib) == "windows" else "budget")
             print(f"  WARNING: observed peak envelope "
                   f"{_format_bytes(envelope)} exceeds the {budget_word} "
-                  f"{_format_bytes(budget)} by "
-                  f"{_format_bytes(envelope - budget)}.  The gates above "
+                  f"{_format_bytes(envelope_budget)} -- free VRAM less the "
+                  f"{_format_bytes(EXTERNAL_MARGIN_BYTES)} other-process "
+                  f"margin, which is all the envelope does not already "
+                  f"model -- by {_format_bytes(envelope - envelope_budget)}. "
+                  f" The gates above "
                   f"compare the itemized estimate; the envelope is what "
                   f"the machine is measured to reach, so this "
                   f"configuration may run out of budget even though the "
@@ -6749,7 +7336,10 @@ def register_cli(subparsers) -> None:
 __all__ = [
     "CORE_KERNEL_MODULES", "CUDA_CONTEXT_BYTES", "DeviceLocalMemoryProfile",
     "POOL_RESERVED_OVER_ESTIMATE_FRACTION",
-    "KERNEL_MAX_LOCAL_SIZE_BYTES", "MEASURED_LOCAL_MEMORY_PROFILE",
+    "KERNEL_MAX_LOCAL_SIZE_BYTES", "KERNEL_LOCAL_FRAME_RECORDINGS",
+    "KernelFrameRecording", "kernel_frame_recording_for",
+    "UnderPricedKernelFrame", "under_priced_kernel_frames",
+    "MEASURED_LOCAL_MEMORY_PROFILE",
     "CHAINED_TRANSLATION_UNIT_FRAMES", "ChainedTranslationUnitFrame",
     "UNMEASURED_KERNEL_MODULES", "local_memory_profile_from_device",
     "cap_free_to_physical", "device_physical_total_bytes",

@@ -11,6 +11,15 @@ Arwen has two deliberately separate spectral metric classes.
    physical wavelength bands, including amplitude, signed phase/location
    agreement, error power, and rotational/divergent kinetic energy.
 
+The second class was re-pinned on 2026-08-20 under
+`gpuwm.spectral-comparison-pins/v2`, because two calibrated guards changed
+what the arithmetic does: a wavelength within 8 ulp of a declared band edge is
+snapped onto that edge before the inclusive/exclusive rule, and a band with no
+resolvable variance is `unresolved` rather than scored. Both are measured, and
+both are described below. A receipt written under the previous pin is refused
+by name rather than reinterpreted; the frozen v1 chaos-envelope metric and its
+hash are untouched.
+
 The second class does **not** replace pointwise RMSE, FSS, object verification,
 conservation receipts, or the v1 chaos envelope. It answers a different
 question:
@@ -65,7 +74,17 @@ The v2 regional contract is:
 6. Keep only `k > 0` through the smaller physical axis Nyquist. This circular
    support disk has complete directional coverage; diagonal-only corner modes
    are not scored.
-7. Sum mode contributions in half-open physical wavelength bands.
+7. Sum mode contributions in half-open physical wavelength bands. A mode's
+   wavelength is recovered as `1/|k|`, and that round trip is not exact, so a
+   wavelength within 8 ulp of a declared edge is snapped onto the edge before
+   the inclusive/exclusive rule is applied. Measured over 2,414,712 retained
+   modes on 48 grids, the unsnapped comparison graded 80 modes into the wrong
+   band, and every one of them was a `|j|` = 1 domain-scale mode — the most
+   energetic the disk retains. Which band it landed in depended on the float
+   spelling of `dx`, so `n` = 100 at `dx` = 1000 m and `n` = 200 at
+   `dx` = 500 m, describing the same physical wavelength, disagreed. Snapping
+   neither widens nor narrows a band: a shared edge snaps identically in both
+   bands that touch it, and a declared gap between two bands stays a gap.
 
 For a scalar transform `F`, mode power is
 
@@ -133,6 +152,9 @@ gpuwm spectral score \
 
 # Audit receipt bytes and, optionally, rehash all source files.
 gpuwm spectral check out/spectral-receipt.json --rehash-inputs
+
+# Compare two boxes' receipts by value under the declared tolerance.
+gpuwm spectral cross-box out/box-a-receipt.json out/box-b-receipt.json
 ```
 
 A convenience command preserves the same publication order:
@@ -159,7 +181,34 @@ The reader supports:
 - one-array `.npy` fixtures.
 
 NetCDF time selection is applied only when the leading dimension explicitly
-identifies time. Masked, missing, empty, or nonfinite values are refusals.
+identifies time.
+
+### The ceiling on non-finite cells is zero
+
+Masked, missing, empty, and non-finite values are refusals, and the ceiling is
+**zero cells** — not conservatism. A two-dimensional FFT is a dense sum over
+every cell, so one NaN reaches every retained Fourier mode: every band power,
+every correlation and every gate on the whole plane becomes NaN, and a receipt
+would then grade the entire field on the cells that were bad. There is no
+fraction of a plane at which that stops being true, so there is no fraction to
+tune.
+
+The refusal says how many cells, which kind, and where:
+
+```text
+.../left.npz:W carries 2 of 4096 non-finite cells (nan=1, inf=1), at
+(10, 10), (11, 12). A spectral score is a two-dimensional Fourier
+transform, so one non-finite cell reaches every retained Fourier mode and
+every band power, correlation and gate on the whole plane becomes NaN --
+the ceiling on non-finite cells is 0 and cannot be raised. Either score a
+variable that is finite everywhere on this grid, or set crop_cells in the
+registration so the scored window excludes the affected frame, or fix the
+field in the producing run -- this reader will not substitute a fill value
+and score it as data.
+```
+
+An empty selection and a masked source each get their own message, so a
+mistyped level index does not read as a corrupt field.
 
 ### Reductions
 
@@ -251,6 +300,24 @@ Every source receipt SHA-256 is written into the fragment header. Review and
 paste the fragment into the campaign TOML **before** scoring the candidate.
 Never include the candidate being judged in the calibration population.
 
+### A gate targets a component and a metric that component carries
+
+A gate names a `component` and a `metric`, and not every component produces
+every metric. `scalar`, `total`, `rotational` and `divergent` carry the full
+band metric set; the synthetic `partition` row carries only
+`left_divergent_energy_fraction`,
+`reference_divergent_energy_fraction` and their
+`divergent_energy_fraction_difference`.
+
+A gate naming a pair the table does not have is refused at **registration**,
+before any model output is opened, and the refusal lists what that component
+does carry. It used to be accepted: the partition row republished the total
+component's `reference_power` so the `minimum_reference_power` floor could
+reach it, so a gate declaring `component = "partition"`,
+`metric = "reference_power"` silently graded the total-KE row, and
+`spectral_gate_calibrate.py` built two gates out of one measurement. The floor
+now travels under a key that is not a metric.
+
 Gate outcomes are fail closed:
 
 - any violated gate: `fail`;
@@ -272,12 +339,24 @@ A registration binds:
 - v2 arithmetic pins and hash; and
 - the existing v1 spectral pin hash.
 
+A registration carries two digests. `registration_sha256` binds the resolved
+absolute paths, which is what makes it a durable pin on one box.
+`registration_policy_sha256` is the same policy with the pair paths reduced to
+basenames — the campaign, without where the bytes happened to sit — and it is
+what two boxes may compare.
+
 A score receipt additionally binds:
 
 - full-file SHA-256 and size for every source;
 - resolved source dimensions and reductions;
+- the evaluator, under `code`: the gpuwm version and git commit, resolved by
+  the same builder the certification capsule uses, so a run's capsule and its
+  spectral receipt cannot name two different commits;
+- the declared reproducibility rule, under `reproducibility`;
 - all scalar/vector comparison rows;
-- gate rows and verdict; and
+- gate rows and verdict, each evaluated row carrying a `row_id` unique per
+  matched pair (a `pair = "*"` gate produces one row per pair, and they used
+  to share the gate's single `id`); and
 - a self-hash over the complete receipt.
 
 `gpuwm spectral check --rehash-inputs` detects a source file changed after the
@@ -300,13 +379,109 @@ Vector fields receive one set for total, rotational, and divergent energy.
 
 ## Limits and cautions
 
-### A taper changes a pure Helmholtz mode
+### A taper changes a pure Helmholtz mode, and by how much
 
 A nonperiodic regional field needs a taper. Multiplication by the Hann window
 convolves neighboring Fourier modes, so a mathematically pure divergent or
 rotational test wave acquires a small component in the other partition. The
 synthetic controls require strong separation, not impossible post-window
 purity.
+
+The size of that effect is measured, not left as a caution. Write `m` for the
+number of times a band's longest retained wavelength fits across the scored
+window. Then
+
+```text
+leakage ~= 0.34 / m²
+```
+
+of that mode's energy lands in the other partition. Measured 2026-08-20 over
+38 cases, `n` = 64 to 256, `m` = 2 to 32, crop 0 and 8: the fitted coefficient
+rises from 0.314 at `m` = 2 to 0.340 at `m` = 32, and rotational and divergent
+leak by the same amount to every digit printed. The estimate is meaningful
+only for `m` at least 1; a band whose wavelength is longer than the scored
+window has no partition worth reading.
+
+| Wavelengths across the window | Leakage into the other partition |
+|---:|---:|
+| 2 | 8% |
+| 6 | 1% |
+| 18 | 0.1% |
+| 32 | 0.03% |
+
+Every vector band in a receipt now carries its own
+`wavelengths_across_scored_window` and `helmholtz_leakage_estimate`, and the
+result carries a `helmholtz_leakage` block naming the model and the scored
+window. **A divergent-fraction difference smaller than the leakage at that
+band's scale is the window talking, not the model.** Cropping shrinks the
+window without shortening the wave, so a large crop makes the longest bands
+worse, not better.
+
+### Two boxes agree on the numbers, not on the receipt hash
+
+A receipt self-hash is a **this-box identity**. It says what this machine
+measured from these input bytes; it is not portable, and comparing two boxes
+by hash reports "different" every time.
+
+Measured 2026-08-20 on sha256-identical input and module bytes, over two
+independent pairs — a 192x192 scalar and vector probe, and a 128x128 pair
+scored through the real `gpuwm spectral run` door — between the Windows
+desktop (Python 3.13.7, numpy 2.2.6, UCRT) and weather-node-1 (Python 3.14.4,
+numpy 2.3.5, glibc 2.43): 169 of 489 metric values were bit-identical and the
+rest differed. Repeating a run on either box reproduced it to the bit, so the
+spread is the boxes, not the run.
+
+The declared rule is `gpuwm-spectral-cross-box-v1`, quoted into every receipt
+under `reproducibility`, and it compares values in four classes:
+
+| Class | Compared against | Measured worst |
+|---|---|---:|
+| exact (`mode_count`, band edges) | nothing; must be equal | 0 |
+| power-dimensioned (`left_power`, `error_power`, the cross-spectrum, …) | the band's own reference power | 7.7304e-16 |
+| bounded (`spectral_correlation`, `coherence_squared`, the phase error in degrees, the fractions) | the metric's own declared range | 1.1102e-14 |
+| unbounded ratios (`power_ratio`, `normalized_error_power`, …) | the larger of the two magnitudes | 7.7498e-15 |
+
+The declared tolerance is **1e-12**: 90x the measured worst case and 23x the
+`sqrt(N_modes)·eps` accumulation bound (4.26e-14) for the larger plane. That
+bound reaches the tolerance near a 4500x4500 plane, so a campaign scoring a
+larger one remeasures. Any real arithmetic defect — a wrong band, window, or
+normalization — moves a metric by order 1e-3, nine decades clear of this.
+
+Power-dimensioned and bounded metrics get a scale of their own because
+several of them are analytically zero. The imaginary cross-spectrum of two
+real fields cancels across conjugate pairs, and every phase metric collapses
+when the candidate is a pure rescaling of the reference — two numbers that
+are both zero have no ratio worth quoting.
+
+Compare two boxes with the door, not with `sha256sum`:
+
+```bash
+gpuwm spectral cross-box out/windows-receipt.json out/node1-receipt.json
+```
+
+It exits 0 when every value is inside the tolerance and 1 when one is not,
+naming the pair, field, band, component and metric that moved. Both receipts
+must come from **one source TOML**; differing absolute paths are fine, because
+the check is on `registration_policy_sha256`, which is the campaign policy
+with the pair paths reduced to basenames. The raw `registration_sha256` binds
+the resolved paths and never matches across boxes.
+
+### A band with no variance is unresolved, not perfect
+
+A plane held at a constant does not detrend to exactly zero — it detrends to
+float cancellation residue. Measured: a constant 273.15 K field scored a
+`spectral_correlation` of 0.9999999999999997 against itself, which is a 0.95
+correlation gate passing on a field with no structure in it, and whether it
+happens depends on whether the constant is a dyadic rational (1.0 and
+101325.0 give exact zero; 273.15 does not).
+
+A band whose power is at or below **1e-22** of the plane's own mean square is
+therefore reported `unresolved`, and any gate on it becomes `INCOMPLETE`,
+never `PASS`. That floor is calibrated between two measured populations:
+constant planes (84 cases, `n` = 8 to 512, 12 plausible constants) peaked at
+2.784e-31, and real structure at the float32 storage quantization limit — the
+finest structure a history file can carry — measured 1.24e-14. The floor sits
+8.6 decades above the noise and 8.1 decades below the signal.
 
 ### This version does not regrid
 

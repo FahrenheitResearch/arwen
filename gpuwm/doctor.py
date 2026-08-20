@@ -59,6 +59,7 @@ that assigns those four words is stated once, in :func:`blocking_gaps`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import ctypes
 from dataclasses import dataclass
 import hashlib
@@ -2567,6 +2568,199 @@ def _bundle_coverage_checks() -> list[Check]:
     return checks
 
 
+#: The staged-estate line's name, referenced by tests and by the
+#: coverage bookkeeping below.  One string, because a report line whose
+#: name is spelled twice is a line two readers can disagree about.
+_STAGED_ESTATE_NAME = ("staged bridge estate (the bytes the routes "
+                       "resolve vs this release's pins)")
+
+
+def _staged_estate_check() -> Check:
+    """Are the artifacts this box RESOLVES the bytes this release pinned?
+
+    Every other artifact line in this report asks a question of one
+    binary: is it there, does it launch, does it declare this contract.
+    node-1 answered yes to all three on an estate staged in August by an
+    earlier release -- the files were present, they launched, and
+    :data:`gpuwm.bridges.BRIDGE_ABI_MARKERS` only moves when a contract
+    version bumps, which it had not -- so ``gpuwm doctor`` printed no
+    gaps and exited 0, and the first ``gpuwm prep`` refused with rc 78.
+
+    The question this check asks is the one ``gpuwm fetch-bridges``
+    asks and doctor did not: are these the exact bytes -- size and
+    SHA-256 -- that the release this wheel came from published?  It is
+    asked of the file each consumer's own resolution ladder would pick
+    (:func:`gpuwm.bridges.find_artifact`), not of a directory listing,
+    because what a route runs is what the ladder returns.
+
+    Three verdicts, and the difference between them is who owns the
+    bytes:
+
+    * A mismatch on a file under :func:`gpuwm.bridges.default_bridge_dir`
+      is a gap.  That directory is exactly what ``gpuwm fetch-bridges``
+      writes, so one command closes it.
+    * A mismatch on a file resolved anywhere else -- an environment
+      override, a checkout's ``target/release`` -- is reported and does
+      NOT block.  A cargo build never matches a release pin, and
+      offering to re-fetch a directory that binary does not live in
+      would name a breakage that is not there.
+    * Absent is somebody else's line.  Every bundled artifact already
+      has a check that names it when it is not staged, and printing the
+      same gap twice gives a reader two counts of one estate.
+    """
+
+    try:
+        from gpuwm import bridge_assets
+    except Exception as error:                   # noqa: BLE001 - reported
+        return Check(
+            _STAGED_ESTATE_NAME, "untested",
+            f"not tested -- the packaged pins could not be loaded "
+            f"({type(error).__name__}: {error}), so doctor cannot say "
+            "whether the staged artifacts are this release's bytes",
+            "# reinstall so the packaged pins load:\n" + REINSTALL_HINT,
+            action="reinstall gpuwm", brief="pins module unreadable",
+            group=_GROUP_BRIDGES)
+
+    platform = bridge_assets.host_platform()
+    try:
+        pins = bridge_assets.load_pins()
+    except Exception as error:                   # noqa: BLE001 - reported
+        return Check(
+            _STAGED_ESTATE_NAME, "untested",
+            f"not tested -- the packaged pins document is unusable "
+            f"({type(error).__name__}: {error})",
+            "# reinstall so the packaged pins load:\n" + REINSTALL_HINT,
+            action="reinstall gpuwm", brief="pins document unusable",
+            group=_GROUP_BRIDGES)
+    bundle = pins.bundle_for(platform)
+    if bundle is None:
+        # A source checkout, or a platform no bundle is published for.
+        # Both are normal and neither is a gap; saying which one it is
+        # keeps the reader from reading silence as a pass.
+        reason = (f"this build's packaged pins declare no release "
+                  f"(a checkout stamps them at cut time)"
+                  if pins.release is None else
+                  f"this release's pins carry no bundle for "
+                  f"{bridge_assets.host_platform_description()}")
+        return Check(
+            _STAGED_ESTATE_NAME, "info",
+            f"not compared -- {reason}, so there is nothing to check the "
+            "staged artifacts against.  A released wheel carries pins and "
+            "this line compares every artifact's bytes against them",
+            brief="no pins to compare against", group=_GROUP_BRIDGES,
+            blocking=False)
+
+    by_name = {artifact.name: artifact
+               for artifact in bridge_assets.BUNDLED_ARTIFACTS}
+    staged_dir = bridges.default_bridge_dir()
+    current: list[str] = []
+    stale: list[str] = []
+    foreign: list[str] = []
+    absent: list[str] = []
+    for pin in bundle.binaries:
+        artifact = by_name.get(pin.artifact)
+        if artifact is None:
+            # A pins document from a release this code does not know.
+            # Fall back to the staged directory, which is the rung the
+            # pins are about.
+            resolved = staged_dir / pin.filename
+            resolved = resolved if resolved.is_file() else None
+        else:
+            try:
+                resolved = bridges.find_artifact(artifact.env_var,
+                                                 pin.filename)
+            except FileNotFoundError:
+                # The override names a missing file.  Its own check
+                # already reports that by name.
+                absent.append(pin.filename)
+                continue
+        if resolved is None:
+            absent.append(pin.filename)
+        elif bridge_assets.matches_pin(resolved, pin):
+            current.append(pin.filename)
+        elif _under(resolved, staged_dir):
+            stale.append(f"{pin.filename} ({resolved.stat().st_size:,} B, "
+                         f"pinned {pin.bytes:,} B)")
+        else:
+            foreign.append(f"{pin.filename} at {resolved}")
+
+    assets_note = ""
+    try:
+        held, stale_assets, absent_assets = bridge_assets.classify_assets(
+            staged_dir, bundle)
+    except Exception:                            # noqa: BLE001 - optional
+        held, stale_assets, absent_assets = [], [], []
+    if bundle.assets and (stale_assets or absent_assets):
+        assets_note = (
+            f"; {len(stale_assets) + len(absent_assets)} of "
+            f"{len(bundle.assets)} pinned map asset file(s) under "
+            f"{staged_dir / bridge_assets.ASSET_ROOT} are missing or stale, "
+            "so the renderer draws plots without coastlines or borders")
+
+    census = (f"{len(current)} of {len(bundle.binaries)} artifact(s) match "
+              f"the bytes {pins.release} published")
+    if stale:
+        return Check(
+            _STAGED_ESTATE_NAME, "missing",
+            f"{len(stale)} artifact(s) staged at {staged_dir} are NOT this "
+            f"release's bytes: {', '.join(stale)}.  They exist and they "
+            "launch, so every other line above passes them; a route that "
+            "runs one of them meets a contract this release never tested "
+            f"({census}){assets_note}",
+            "gpuwm fetch-bridges\n"
+            "  # replaces every artifact whose bytes do not match the\n"
+            "  # packaged pins, then re-verifies size and SHA-256",
+            action="gpuwm fetch-bridges",
+            brief=f"{len(stale)} staged artifact(s) predate this release",
+            group=_GROUP_BRIDGES, severity=SEVERITY_BROKEN)
+    if stale_assets or absent_assets:
+        return Check(
+            _STAGED_ESTATE_NAME, "missing",
+            f"every staged artifact matches this release's pins ({census})"
+            + assets_note,
+            "gpuwm fetch-bridges\n"
+            "  # stages the pinned map assets beside the binaries",
+            action="gpuwm fetch-bridges",
+            brief=f"{len(stale_assets) + len(absent_assets)} map asset "
+                  "file(s) missing or stale",
+            group=_GROUP_BRIDGES, blocking=False,
+            severity=SEVERITY_DEGRADED)
+    if foreign:
+        return Check(
+            _STAGED_ESTATE_NAME, "info",
+            f"{len(foreign)} artifact(s) resolve from outside "
+            f"{staged_dir} and are not the bytes {pins.release} published, "
+            "which is what a local build or an environment override looks "
+            f"like: {'; '.join(foreign)}.  `gpuwm fetch-bridges` would not "
+            f"change what these routes run ({census})",
+            brief=f"{len(foreign)} artifact(s) built or overridden locally",
+            group=_GROUP_BRIDGES, blocking=False)
+    if not current:
+        return Check(
+            _STAGED_ESTATE_NAME, "info",
+            f"no pinned artifact is staged at {staged_dir}; each one's own "
+            "line above names what it costs and how to get it",
+            brief="nothing staged to compare", group=_GROUP_BRIDGES,
+            blocking=False)
+    return Check(
+        _STAGED_ESTATE_NAME, "verified",
+        f"{census}"
+        + (f"; {len(absent)} not staged (reported by their own lines above)"
+           if absent else "")
+        + (f"; {len(held)} map asset file(s) verified" if held else ""),
+        brief=f"{len(current)} of {len(bundle.binaries)} match the pins",
+        group=_GROUP_BRIDGES)
+
+
+def _under(path: Path, directory: Path) -> bool:
+    """Is ``path`` inside ``directory``?  Never raises."""
+
+    try:
+        return path.resolve().is_relative_to(directory.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def _obs_front_door_checks() -> list[Check]:
     """Every observation front door, reported by name.
 
@@ -4364,18 +4558,45 @@ def _default_route_order() -> tuple[str, ...]:
     return tuple(executable) + tuple(sorted(rest, key=rank))
 
 
-def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
+def collect_checks(sources: tuple[str, ...] | None = None,
+                   progress: Callable[[str], None] | None = None
+                   ) -> list[Check]:
     """The estate, plus every named data route's own resolution.
 
     ``sources=None`` means every route this build knows, which is what
     a bare ``gpuwm doctor`` runs: the report that said "no gaps" before
     a route died on a path it had never resolved is the reason these
     are in the default estate rather than behind a flag.
+
+    ``progress`` is called with the name of each phase as that phase
+    begins, and is how the caller narrates a wait.  Measured on a first
+    contact: 7.0 s wall, 6.1 s of it silent -- a subprocess import per
+    declared package (1.4 s here) and the non-repository import probe
+    (2.1 s here) between them own most of it, and neither said what it
+    was doing.  The phases are coarse on purpose: one line per second
+    or so of work, not one per check, because thirty lines of narration
+    for a four-second command is the same wall by another name.
+
+    It is a callback rather than a print because this function is the
+    library surface every test and every embedder calls, and a
+    diagnostic that writes to a stream nobody asked for is not one.
+    :func:`doctor_main` is what routes it to stderr, where it cannot
+    enter the report.
     """
+
+    def phase(name: str) -> None:
+        if progress is not None:
+            progress(name)
 
     selected = (_default_route_order() if sources is None
                 else tuple(sources))
     checks: list[Check] = []
+    # Its own phase, not folded into the packages one below, because on
+    # a box that HAS a GPU these three are the expensive ones: each
+    # spawns a short-lived device subprocess (the cuBLAS pairing, a
+    # cold-cache NVRTC compile, the eigensolver), and a reader whose
+    # driver is wedged waits here longest of all.
+    phase("the GPU runtime (cupy wheel, kernel headers, radar-DA solver)")
     version = ".".join(str(v) for v in sys.version_info[:3])
     if sys.version_info >= (3, 11):
         checks.append(Check("python", "verified", f"{version} (>= 3.11)",
@@ -4400,11 +4621,15 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     # runtime dependencies now, and the extras block below defers to
     # this check rather than probing them a second time.
     checks.append(_geog_stack_check())
+    # The measured slow span on a box with no GPU: one short-lived
+    # subprocess import per package this install's metadata declares.
+    phase("python packages this install declares (one import each)")
     # Every extra this INSTALL declares, in the packaging's own order.
     # Through 2.3.2 the only Python-package line here was a single
     # "render extra" that probed wrf and matplotlib, so `obs`,
     # `dealias` and pyshp were absent from a 40 KB report.
     checks.extend(_extras_checks())
+    phase("rust engines, bridges and the staged estate")
     checks.append(_rust_renderer_check())
     checks.append(_renderer_tree_check())
     checks.append(_fetch_backbone_check())
@@ -4424,15 +4649,22 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     # bundle carries have a line above?  Twice it did not, and both
     # times doctor called the estate green.
     checks.extend(_bundle_coverage_checks())
+    # After every per-artifact line, because it is the question none of
+    # them answers: are these the bytes this release published?  A
+    # staged estate from an earlier release passes all of them and then
+    # refuses at the first preparation.
+    checks.append(_staged_estate_check())
     # After the bridges, because it is the question the five `ok bridge`
     # lines above do NOT answer: whether the route that needs two of
     # them can actually reach them.
     checks.append(_mapped_grib2_route_check())
     checks.append(_cpu_library_check())
+    phase("physics tables and static inputs")
     checks.append(_thompson_tables_check())
     checks.append(_noah_tables_check())
     checks.append(_arbitrary_input_check())
     checks.extend(_case_data_root_check())
+    phase("install identity and provenance")
     checks.append(_distribution_manifest_check())
     checks.append(_provenance_check())
     checks.append(_install_identity_check())
@@ -4442,6 +4674,8 @@ def collect_checks(sources: tuple[str, ...] | None = None) -> list[Check]:
     # binary the same question twenty-eight times would put the whole
     # expansion of `--source` on doctor's wall clock.
     engine = _mapped_engine_check()
+    if selected:
+        phase(f"{len(selected)} data route(s): decoder and byte transport")
     for source in selected:
         checks.extend(_source_route_checks(source, engine))
     return checks
@@ -4817,9 +5051,30 @@ def upgrade_note(installed: str | None, path: Path | None = None
     return "\n".join(block)
 
 
+def _progress_to_stderr(phase: str) -> None:
+    """Narrate one phase on stderr, flushed, prefixed by the command.
+
+    stderr and not stdout, for the reason the report's own header is
+    printed outside :func:`format_report`: the two report layers are
+    pinned verbatim by golden tests and ``--json`` is a machine
+    surface.  Progress belongs beside the report, never inside it, and
+    stderr is where a reader watching a terminal sees it and a pipeline
+    reading the document does not.
+
+    Flushed on every line because block buffering is what made this
+    silent in the first place: a redirected stream holds narration
+    until exit, which is the same wall the reader was already staring
+    at.
+    """
+
+    print(f"gpuwm doctor: checking {phase}...", file=sys.stderr,
+          flush=True)
+
+
 def doctor_main(args) -> int:
     sources = getattr(args, "source", None) or None
-    checks = collect_checks(tuple(sources) if sources else None)
+    checks = collect_checks(tuple(sources) if sources else None,
+                            progress=_progress_to_stderr)
     if getattr(args, "json", False):
         print(json.dumps(
             [check.__dict__ for check in checks], indent=2))
@@ -4886,6 +5141,44 @@ def register_cli(subparsers) -> None:
     return parser
 
 
+def main(argv: list[str] | None = None) -> int:
+    """``python -m gpuwm.doctor``: the same report, the same exit code.
+
+    This module had no ``__main__`` guard, so the module door imported
+    it and exited 0 having printed nothing -- and the reader who typed
+    it was, by definition, someone whose install was already confusing
+    them.  A silent 0 from a diagnostic is the worst answer available:
+    it reads as "no gaps".
+
+    It builds its surface from THE registrar the console script uses --
+    :func:`register_cli` for the flags this subcommand owns, and
+    :func:`gpuwm.explain.add_explain_flag` for the one
+    :func:`gpuwm.cli.build_parser` puts on every subcommand -- so the
+    two doors cannot drift into taking different arguments.  It does not
+    import :mod:`gpuwm.cli`, and that is deliberate rather than
+    incidental: the standalone RW-WPS distribution stages this module
+    and does NOT stage the CLI, so a door that reached for it would
+    answer a reader on that wheel with an ImportError traceback, which
+    is the same silence in a louder font.
+    """
+
+    import argparse
+
+    from gpuwm.explain import add_explain_flag, explain_scope
+
+    holder = argparse.ArgumentParser(add_help=False)
+    parser = register_cli(holder.add_subparsers())
+    add_explain_flag(parser)
+    parser.prog = "python -m gpuwm.doctor"
+    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    # The same bounded lifetime `gpuwm.cli.main` gives the flag: library
+    # code that warns reads it from module state, and leaving it set
+    # would hand the next invocation in this interpreter an explanation
+    # layer nobody asked for.
+    with explain_scope(explain_enabled(args)):
+        return doctor_main(args)
+
+
 def __getattr__(name: str):
     """``doctor.DOCTOR_SOURCES``, resolved on first read and cached.
 
@@ -4911,6 +5204,10 @@ __all__ = ["Check", "DOCTOR_SOURCES", "DOCTOR_STATE_ENV",
            "SETUP_ACTIONS", "SEVERITY_BROKEN", "SEVERITY_DEGRADED",
            "SEVERITY_OPT_IN", "SEVERITY_UNREACHABLE", "blocking_gaps",
            "collect_checks", "declared_requirements", "doctor_main",
-           "format_brief", "format_report", "geography_gaps",
+           "format_brief", "format_report", "geography_gaps", "main",
            "register_cli", "severity_census", "state_path",
            "upgrade_note"]
+
+
+if __name__ == "__main__":                    # pragma: no cover - the door
+    raise SystemExit(main())

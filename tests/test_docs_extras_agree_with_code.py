@@ -371,6 +371,48 @@ def test_the_door_registry_is_real():
     assert total > 300, total
 
 
+def test_every_installed_console_script_is_a_documented_door():
+    """The door registry is driven by `[project.scripts]`, not by memory.
+
+    Rule 4 makes an undocumented FLAG impossible, and said nothing about
+    an undocumented PROGRAM.  `gpuwm-member-prep` -- the ensemble-member
+    front door, a console script every `pip install gpuwm` puts on the
+    PATH -- appeared nowhere on the reference page, because the door list
+    was a hand-written literal and nobody added a line to it.  Every one
+    of its eleven options was therefore unreachable from any document,
+    which is the 2.3.2 defect wearing a different hat.
+
+    So the generator reads the same table setuptools reads, and this
+    holds it to that: a script name in `pyproject.toml` is a door.
+    """
+
+    from tools.build_cli_options_doc import ALIASES, console_scripts
+
+    scripts = console_scripts()
+    assert len(scripts) >= 8, scripts
+    assert "gpuwm-member-prep" in scripts, (
+        "the instrument is blind: pyproject declares no member-prep "
+        "script, so this test could not see it missing")
+    built = _doors()
+    offenders = []
+    for name in sorted(scripts):
+        if name in ALIASES:
+            continue
+        if name == "gpuwm":
+            # The subcommand tree IS this door; it has no options of its
+            # own beyond the ones its subcommands carry.
+            if not any(door.startswith("gpuwm ") for door in built):
+                offenders.append(name)
+            continue
+        if name not in built:
+            offenders.append(name)
+    assert not offenders, (
+        "these console scripts are installed on every user's PATH and "
+        "the generated CLI reference has no section for them, so no "
+        "document names a single one of their options:\n  "
+        + "\n  ".join(offenders))
+
+
 def test_the_invocation_reader_tells_commands_from_prose():
     """The instrument, against known answers, BOTH directions."""
     doors = _doors()

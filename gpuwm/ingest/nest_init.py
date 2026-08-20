@@ -1371,7 +1371,19 @@ def parent_only_init(child_dc: DomainConfig,
                           ("qni", ""), ("qns", ""), ("qng", ""),
                           ("qnh", ""), ("qnn", ""), ("qvolg", ""),
                           ("qvolh", ""),
-                          ("h_diabatic", "")):
+                          ("h_diabatic", ""),
+                          # The dycore's exported advective forcing pair
+                          # (WRF RTHFTEN/RQVFTEN).  Mass-stagger, the same
+                          # generic SINT path every scalar takes.  A child
+                          # cold-starts with no previous dynamics step of
+                          # its own, so without these rows its first
+                          # cumulus call would see hard zeros in exactly
+                          # the lane the parent has been feeding -- and
+                          # unlike h_diabatic they are NOT reset on a
+                          # microphysics-scheme boundary, because they are
+                          # a dynamics product and carry nothing the
+                          # departing scheme owned.
+                          ("rthften", ""), ("rqvften", "")):
         source = getattr(parent, name, None)
         target = getattr(child, name, None)
         if target is None:

@@ -1,0 +1,552 @@
+{
+ "canonical_numbering": {
+  "edge": "unordered cell pair (a,b) a<b, sorted lexicographically",
+  "edge_bijection_with_file": true,
+  "vertex": "sorted cell triple (a,b,c), sorted lexicographically",
+  "vertex_bijection_with_file": true
+ },
+ "container": "RWGOLD01 v1, little-endian",
+ "dims": {
+  "TWO": 2,
+  "codeLen": 1,
+  "maxEdges": 10,
+  "maxEdges2": 20,
+  "nCells": 163842,
+  "nEdges": 491520,
+  "nVertices": 327680,
+  "vertexDegree": 3
+ },
+ "field_stats_over_all_elements": {
+  "angleEdge": {
+   "dtype": "f64",
+   "fsum": 46074.00336966424,
+   "max": 3.141592653589793,
+   "mean": 0.09373779982434945,
+   "min": -3.141592653589793,
+   "n": 491520,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "efa26ec89dbf8ec9bacadae019e6f09e9d6da7d61bdbf5191c2b4b525afc66e1",
+   "shape": [
+    491520
+   ]
+  },
+  "areaCell": {
+   "dtype": "f64",
+   "fsum": 12.566370614359172,
+   "max": 0.00022483114978607375,
+   "mean": 7.669810313814023e-05,
+   "min": 7.198613266959111e-06,
+   "n": 163842,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "bf2fca3bd44d6b12c190b3bccef2b329ed7fa0f51f165f44fa1842df290f6e3f",
+   "shape": [
+    163842
+   ]
+  },
+  "areaTriangle": {
+   "dtype": "f64",
+   "fsum": 12.566370614359172,
+   "max": 0.00010778989636695242,
+   "mean": 3.834951969714103e-05,
+   "min": 3.767301614044876e-06,
+   "n": 327680,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "769cf32cc15b3cc8fb898c837630ccaba892f4a2372977cb12300f51d6bf7b35",
+   "shape": [
+    327680
+   ]
+  },
+  "cellsOnCell": {
+   "dtype": "i32",
+   "fsum": 115968508195,
+   "max": 163842,
+   "min": 1,
+   "n": 1638420,
+   "sha256_raw_le": "7afcfb355789605858d428dccab04788779cad38fdb22977cc991c7d74a97f64",
+   "shape": [
+    163842,
+    10
+   ]
+  },
+  "cellsOnEdge": {
+   "dtype": "i32",
+   "fsum": 80532934764,
+   "max": 163842,
+   "min": 1,
+   "n": 983040,
+   "sha256_raw_le": "a53b1c9bf9e5c0e026c7253b9026f4711bc973acd376f70a6e996adfa584b2d3",
+   "shape": [
+    491520,
+    2
+   ]
+  },
+  "cellsOnVertex": {
+   "dtype": "i32",
+   "fsum": 80532934764,
+   "max": 163842,
+   "min": 1,
+   "n": 983040,
+   "sha256_raw_le": "45f5324691c3502d8d021f5ade7ff5887448bd9a7b55e2eba231b087aa1a5928",
+   "shape": [
+    327680,
+    3
+   ]
+  },
+  "dcEdge": {
+   "dtype": "f64",
+   "fsum": 4016.5396389721855,
+   "max": 0.019059428127179343,
+   "mean": 0.008171670814966198,
+   "min": 0.002808418654641977,
+   "n": 491520,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "8d79d82be99b5c0299e81c7be52e63de19c55b79df4296da7976ef05c85a63b6",
+   "shape": [
+    491520
+   ]
+  },
+  "dvEdge": {
+   "dtype": "f64",
+   "fsum": 2319.237829763874,
+   "max": 0.01310678039834725,
+   "mean": 0.004718501444018298,
+   "min": 0.0001836370804784817,
+   "n": 491520,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "08331ba95e59ac69004437443f591adca7dd0dafdbf59ffc06220d15a6ed5bc9",
+   "shape": [
+    491520
+   ]
+  },
+  "edgesOnCell": {
+   "dtype": "i32",
+   "fsum": 403108665460,
+   "max": 491520,
+   "min": 1,
+   "n": 1638420,
+   "sha256_raw_le": "4d832ad5326acb9795c68bdb93c6fe1d347753dd82006f52a60dd99460d793fb",
+   "shape": [
+    163842,
+    10
+   ]
+  },
+  "edgesOnEdge": {
+   "dtype": "i32",
+   "fsum": 1207968413483,
+   "max": 491520,
+   "min": 0,
+   "n": 9830400,
+   "sha256_raw_le": "8e08d98300b6f0b652c0f55ffb8d163db05b0cc9870f2d1701d88f2e8f46e9a7",
+   "shape": [
+    491520,
+    20
+   ]
+  },
+  "edgesOnVertex": {
+   "dtype": "i32",
+   "fsum": 241592401920,
+   "max": 491520,
+   "min": 1,
+   "n": 983040,
+   "sha256_raw_le": "f8b6c93c4996086c1f788d964fa056887235e13c0da713631112215d679be133",
+   "shape": [
+    327680,
+    3
+   ]
+  },
+  "indexToCellID": {
+   "dtype": "i32",
+   "fsum": 13422182403,
+   "max": 163842,
+   "min": 1,
+   "n": 163842,
+   "sha256_raw_le": "19c44b8ad2ef9189dae2c6951536354e5c5538c176690c631881215e93e408b4",
+   "shape": [
+    163842
+   ]
+  },
+  "indexToEdgeID": {
+   "dtype": "i32",
+   "fsum": 120796200960,
+   "max": 491520,
+   "min": 1,
+   "n": 491520,
+   "sha256_raw_le": "612df443d67f09d9245b242490b20f3525146a16c85ebf993f3e8010dd8fd3b2",
+   "shape": [
+    491520
+   ]
+  },
+  "indexToVertexID": {
+   "dtype": "i32",
+   "fsum": 53687255040,
+   "max": 327680,
+   "min": 1,
+   "n": 327680,
+   "sha256_raw_le": "0d3a60da2181ef5af0aa427ffd3006d9bd69a9cebcb8fe9cd0c1993ccb0f9406",
+   "shape": [
+    327680
+   ]
+  },
+  "kiteAreasOnVertex": {
+   "dtype": "f64",
+   "fsum": 12.566370614359172,
+   "max": 4.570608451333166e-05,
+   "mean": 1.2783173232380343e-05,
+   "min": 1.1617202022590678e-06,
+   "n": 983040,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "3a73cb5b2546e6d7b2fd3ce5808346be88364110732f2960dfb0d05f0f3a1995",
+   "shape": [
+    327680,
+    3
+   ]
+  },
+  "latCell": {
+   "dtype": "f64",
+   "fsum": 59237.617038357654,
+   "max": 1.565927295033675,
+   "mean": 0.3615533076888567,
+   "min": -1.5664952445951603,
+   "n": 163842,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "3443d0997bb697feb2a33853f99597f807e593facfddee4ecc2df75701460d29",
+   "shape": [
+    163842
+   ]
+  },
+  "latEdge": {
+   "dtype": "f64",
+   "fsum": 177711.73527054526,
+   "max": 1.569245337407651,
+   "mean": 0.3615554509898789,
+   "min": -1.567356480964408,
+   "n": 491520,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "ac2956af932797099818074d70a3972f019b98d50bdfcb0cbe3f65463f8c7887",
+   "shape": [
+    491520
+   ]
+  },
+  "latVertex": {
+   "dtype": "f64",
+   "fsum": 118473.55011668021,
+   "max": 1.5687185226447538,
+   "mean": 0.36155258214318914,
+   "min": -1.566394840380626,
+   "n": 327680,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "99f42e4e8d5d4c3b759df92d36ff8a89de98b5ba4c5d3b07ef688ca9e5ce9a92",
+   "shape": [
+    327680
+   ]
+  },
+  "lonCell": {
+   "dtype": "f64",
+   "fsum": 648799.5455089408,
+   "max": 6.283090674466282,
+   "mean": 3.959909824763741,
+   "min": 2.7672804691594613e-05,
+   "n": 163842,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "0824c497677f390b809d875b01a4cd0afd4608b003933318c964f5bd342358b9",
+   "shape": [
+    163842
+   ]
+  },
+  "lonEdge": {
+   "dtype": "f64",
+   "fsum": 1946372.0645832526,
+   "max": 6.2831560236563435,
+   "mean": 3.9599041027491304,
+   "min": 3.700659560768425e-05,
+   "n": 491520,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "085a30368c73a9e12fa0c060fe4d01d7cacf6f04ad9f45074ab7fae19e556869",
+   "shape": [
+    491520
+   ]
+  },
+  "lonVertex": {
+   "dtype": "f64",
+   "fsum": 1297562.432608487,
+   "max": 6.283180455921935,
+   "mean": 3.9598462909194554,
+   "min": 8.035357199380747e-05,
+   "n": 327680,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "d27036e3514e81925633377f6b31c9b66cd2c0bc86c790b36413f55c0d90c409",
+   "shape": [
+    327680
+   ]
+  },
+  "meshDensity": {
+   "dtype": "f64",
+   "fsum": 64301.20581199706,
+   "max": 0.9990553674389346,
+   "mean": 0.39245862362518197,
+   "min": 0.003906250000000719,
+   "n": 163842,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "6c82138aa2b02495ce7b22e3152c76f699474f98be741ecdd01be1e3d0d1b8c5",
+   "shape": [
+    163842
+   ]
+  },
+  "nEdgesOnCell": {
+   "dtype": "i32",
+   "fsum": 983040,
+   "histogram": {
+    "5": 44,
+    "6": 163766,
+    "7": 32
+   },
+   "max": 7,
+   "min": 5,
+   "n": 163842,
+   "sha256_raw_le": "4e69bb0c7ee4ddaef51f2499c210365dffeb1fa5a50ef59a17a7b859043923cf",
+   "shape": [
+    163842
+   ]
+  },
+  "nEdgesOnEdge": {
+   "dtype": "i32",
+   "fsum": 4915204,
+   "histogram": {
+    "9": 207,
+    "10": 491103,
+    "11": 209,
+    "12": 1
+   },
+   "max": 12,
+   "min": 9,
+   "n": 491520,
+   "sha256_raw_le": "8132a0ccc99e722e4dad6ead7fcee2cd678db937a9c3d918df8cf753ce2d2102",
+   "shape": [
+    491520
+   ]
+  },
+  "nominalMinDc": {
+   "dtype": "f64",
+   "fsum": 0.003923889723631029,
+   "max": 0.003923889723631029,
+   "mean": 0.003923889723631029,
+   "min": 0.003923889723631029,
+   "n": 1,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "c0468a1bfb3f0d0dcbd929ff6bb72e14a6c4573b8b93e8aa19e7a6151e178efa",
+   "shape": []
+  },
+  "verticesOnCell": {
+   "dtype": "i32",
+   "fsum": 161061765120,
+   "max": 327680,
+   "min": 0,
+   "n": 1638420,
+   "sha256_raw_le": "a5aa1834603107f29c3a72c711751958590e4a85d3469aa9f161ad4b6dde31c7",
+   "shape": [
+    163842,
+    10
+   ]
+  },
+  "verticesOnEdge": {
+   "dtype": "i32",
+   "fsum": 161061765120,
+   "max": 327680,
+   "min": 1,
+   "n": 983040,
+   "sha256_raw_le": "eb7e4b7e8d8d39daae9a10b537e2250141e1496a2f457bd665bf3fc7f55c4ddd",
+   "shape": [
+    491520,
+    2
+   ]
+  },
+  "weightsOnEdge": {
+   "dtype": "f64",
+   "fsum": 74.92537973335001,
+   "max": 0.2776973012541601,
+   "mean": 7.621803765192669e-06,
+   "min": -0.27687963900417656,
+   "n": 9830400,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "e4c5ae51cf469bd91fbdc80ccbdba7e515fae3ae005d2b2cfee71fc65a6b5bfe",
+   "shape": [
+    491520,
+    20
+   ]
+  },
+  "xCell": {
+   "dtype": "f64",
+   "fsum": -9047.938901086281,
+   "max": 0.9999985952956832,
+   "mean": -0.055223562341074214,
+   "min": -0.9999961281597567,
+   "n": 163842,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "dacddcdf23cd86af0a175f4554c5fb78212eadc5ae6628a02737dbd451673ebf",
+   "shape": [
+    163842
+   ]
+  },
+  "xEdge": {
+   "dtype": "f64",
+   "fsum": -27143.606741046846,
+   "max": 0.9999823695103055,
+   "mean": -0.055223809287611586,
+   "min": -0.9999902675186403,
+   "n": 491520,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "dbd12439f60423d479f2d65b30a9bb9abe031992210f0d8b697836f7d80e6afa",
+   "shape": [
+    491520
+   ]
+  },
+  "xVertex": {
+   "dtype": "f64",
+   "fsum": -18095.566804180213,
+   "max": 0.9999768769234869,
+   "mean": -0.05522328736627262,
+   "min": -0.9999835903469867,
+   "n": 327680,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "c378a317a24d77b1be066f72a4a0ea5464d676b709b4770d03264a81e411577b",
+   "shape": [
+    327680
+   ]
+  },
+  "yCell": {
+   "dtype": "f64",
+   "fsum": -63973.04096778808,
+   "max": 0.9999948666338916,
+   "mean": -0.3904556888208645,
+   "min": -0.9999975355993471,
+   "n": 163842,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "d71345db6eb13763e42b2d81dd7d6c8a28e9cff84c8f654ac63d4c300cdf4497",
+   "shape": [
+    163842
+   ]
+  },
+  "yEdge": {
+   "dtype": "f64",
+   "fsum": -191917.76308955508,
+   "max": 0.9999909943263057,
+   "mean": -0.39045768857738256,
+   "min": -0.9999993361500037,
+   "n": 491520,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "e17d4b9960fb0873732ac60e2a31d67a01123fcfae799751d9ca7a99055d1611",
+   "shape": [
+    491520
+   ]
+  },
+  "yVertex": {
+   "dtype": "f64",
+   "fsum": -127943.98650376788,
+   "max": 0.9999853168964179,
+   "mean": -0.3904540603752682,
+   "min": -0.9999982985401923,
+   "n": 327680,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "3773c228fb89f91b000ca4f3cf409f967615524b066228627bee53760482b206",
+   "shape": [
+    327680
+   ]
+  },
+  "zCell": {
+   "dtype": "f64",
+   "fsum": 52392.67724202743,
+   "max": 0.9999881462882728,
+   "mean": 0.3197756206713018,
+   "min": -0.9999907503602151,
+   "n": 163842,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "ab4c7b348c04daa3e18d0610194c1f9d0270224f308e5f8e014ce235a3e43a78",
+   "shape": [
+    163842
+   ]
+  },
+  "zEdge": {
+   "dtype": "f64",
+   "fsum": 157176.90754438884,
+   "max": 0.9999987972162014,
+   "mean": 0.3197772370287859,
+   "min": -0.9999940837361649,
+   "n": 491520,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "cdba791e9764b33921743519dc339bd20f7671cf787b9b2f362dc4904e03b773",
+   "shape": [
+    491520
+   ]
+  },
+  "zVertex": {
+   "dtype": "f64",
+   "fsum": 104783.63295584012,
+   "max": 0.9999978413657334,
+   "mean": 0.31977427049511753,
+   "min": -0.9999903134743109,
+   "n": 327680,
+   "n_nonfinite": 0,
+   "sha256_raw_le": "01915c877baf5e2707ae4304c47bb3e3fa07cebd9c3a45ab0fc6fc470edb3068",
+   "shape": [
+    327680
+   ]
+  }
+ },
+ "global_attrs": {
+  "file_id": "0cdcc1f9",
+  "is_periodic": "NO",
+  "mesh_spec": "1.1",
+  "on_a_sphere": "YES",
+  "sphere_radius": 1.0,
+  "x_period": 0.0,
+  "y_period": 0.0
+ },
+ "golden_bytes": 15772792,
+ "golden_sha256": "258045644166806f2f3be19a0173136c656c385d11306fd8e7acdcaf06ae6426",
+ "measured": {
+  "abs_radius_minus_one_max": 6.661338147750939e-16,
+  "euler_nCells_minus_nEdges_plus_nVertices": 2,
+  "fsum_single_element_resolution_limit_abs": 7.689229569902979e-16,
+  "latCell_vs_asin_z_max_rad": 1.6209256159527285e-14,
+  "lonCell_vs_atan2_yx_max_rad": 1.748455611405575e-07,
+  "nEdgesOnCell_histogram": {
+   "5": 44,
+   "6": 163766,
+   "7": 32
+  },
+  "nEdgesOnEdge_equals_neoc_c0_plus_c1_minus_2_violations": 0,
+  "padding_fill_rule": {
+   "cellsOnCell": "repeat of last valid entry (measured 100%)",
+   "edgesOnCell": "max of valid entries (measured 100%)",
+   "verticesOnCell": "0 in the file's 1-based numbering (measured 100%)",
+   "weightsOnEdge": "exactly 0.0 (measured, 0 nonzero padding slots)"
+  },
+  "sum_areaCell_over_4pi": 1.0,
+  "sum_areaTriangle_over_4pi": 1.0,
+  "sum_kiteAreas_over_4pi": 1.0,
+  "sum_six_minus_nEdgesOnCell": 12,
+  "weightsOnEdge_nonzero_padding_slots": 0
+ },
+ "mesh": "x4.163842",
+ "sampling": {
+  "cell": {
+   "n_sampled": 2057,
+   "n_total": 163842,
+   "stride": 80
+  },
+  "edge": {
+   "n_sampled": 2059,
+   "n_total": 491520,
+   "stride": 240
+  },
+  "rule": "index % stride == 0, UNION {0, n-1}, UNION argmin/argmax of every metric",
+  "vertex": {
+   "n_sampled": 2053,
+   "n_total": 327680,
+   "stride": 160
+  }
+ },
+ "source_bytes": 224139172,
+ "source_file": "x4.163842.grid.nc",
+ "source_sha256": "48e747157bb1f0b83b96505e268699dfb562b4c1428468cb91457fbb03b1be55"
+}

@@ -23,10 +23,12 @@ import numpy as np
 
 from gpuwm.config import (
     load_config,
+    load_history_selection,
     load_streaming_options,
     radiation_scheme_ids,
     soil_layer_count,
 )
+from gpuwm.io.history_selection import HISTORY_VOCABULARY
 from gpuwm.io.wrfout import INITIAL_CONDITION_GLOBAL_ATTRS
 from gpuwm.offline_child import (
     OfflineChildContractError,
@@ -385,7 +387,8 @@ def _output_fields(state, initial, refl_field=None,
 
 def _write_frame(path: Path, state, cfg, initial, valid_time,
                  projection_attrs: dict[str, object], placement,
-                 refl_field=None, surface=None) -> None:
+                 refl_field=None, surface=None,
+                 history_selection=None) -> None:
     from gpuwm.io.wrfout import WrfoutWriter
 
     attrs = dict(projection_attrs)
@@ -419,6 +422,17 @@ def _write_frame(path: Path, state, cfg, initial, valid_time,
             "%Y-%m-%d_%H:%M:%S"),
         "GPUWM_OFFLINE_CHILD": np.int32(1),
     })
+    frame = _output_fields(state, initial, refl_field=refl_field,
+                           surface=surface)
+    # The child's own [output] selection, from its own child config.  A
+    # refined child at a fraction of the parent's spacing is exactly the
+    # domain whose history fills a disk, and `gpuwm downscale` is the one
+    # RunConfig-TOML route that writes a wrfout, so the table is real
+    # here rather than validated-and-ignored.  ``None`` -- and the FULL
+    # default -- leaves the frame and the header byte-identical.
+    if history_selection is not None:
+        frame, history_attrs = history_selection.apply(frame)
+        attrs.update(history_attrs)
     path.parent.mkdir(parents=True, exist_ok=True)
     with WrfoutWriter(
             path, nx=cfg.nx, ny=cfg.ny, nz=cfg.nz,
@@ -427,10 +441,7 @@ def _write_frame(path: Path, state, cfg, initial, valid_time,
             global_attrs=attrs,
             # The soil axis is the selected LSM's geometry, not a constant.
             soil_layers=soil_layer_count(cfg)) as writer:
-        writer.write_frame(
-            valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
-            _output_fields(state, initial, refl_field=refl_field,
-                           surface=surface))
+        writer.write_frame(valid_time.strftime("%Y-%m-%d_%H:%M:%S"), frame)
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
@@ -454,6 +465,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     # no card to be knowable, so a malformed block fails here rather than
     # after the whole archive has been interpolated.
     tiles = load_streaming_options(args.child_config)
+    # Read at ADMISSION as well, and for the same reason: an unknown
+    # variable name or a history_vars/history_drop clash refuses HERE,
+    # before a parent archive is opened, rather than at the first frame.
+    history_selection = load_history_selection(args.child_config)
+    history_selection.warn_lost_products(
+        HISTORY_VOCABULARY, where=f"child d{cfg.grid_id:02d}")
     if not cfg.specified or cfg.nested:
         raise OfflineChildContractError(
             "child config must set specified=true and nested=false")
@@ -588,7 +605,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         path = outdir / wrfout_filename(valid, domain_id=cfg.grid_id)
         _write_frame(path, child, cfg, initial, valid,
                      projection_attrs, placement, refl_field=refl,
-                     surface=surface)
+                     surface=surface, history_selection=history_selection)
         output_paths.append(path)
         # History-interval reset of the UP_HELI_MAX window (no-op unless
         # the child config enables nwp_diagnostics; the synchronous

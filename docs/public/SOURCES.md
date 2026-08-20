@@ -32,6 +32,7 @@ List the whole registry with `gpuwm prep --list-sources`, or one row with
 | `rap` | `rap-awip32` | 1 h | f051 | AWIPS 221, 349x277 Lambert at 32 km (North America) |
 | `rrfs` | `rrfs-ops` | 1 h | f084 | 1799x1059 Lambert at 3 km (CONUS; HRRR's grid, measured identical) |
 | `era5` | -- | 6 h | analysis only | global |
+| `era5-l137` | `era5-model-level`, `era5-ml` | 1 h | analysis only | global |
 | `20crv3` | `20cr`, `twentycrv3`, `20crv3-member` | 3 h | analysis only | global |
 | `20crv3-cf` | `20crv3-netcdf`, `20cr-netcdf`, `20cr-cf` | 3 h | analysis only | global |
 
@@ -107,11 +108,12 @@ domain, which is a different question from how many bytes come down.
 
 ## Sources with no fetch door
 
-Three runnable rows refuse a download by name, and the refusal states the
+Four runnable rows refuse a download by name, and the refusal states the
 breakage rather than reporting a gap:
 
 | source | why there is no route | what to do instead |
 |---|---|---|
+| `era5-l137` | ERA5 model-level data is a queued Copernicus CDS MARS request (dataset `reanalysis-era5-complete`, `levtype=ml`), not files at a predictable URL, and the request runs under your own CDS account | submit the request yourself for the model-level file and its same-hour pressure-level/single-level companion, then `gpuwm prep --source era5-l137 --source-root DIR --source-manifest DIR/SHA256SUMS --source-manifest-sha256 <digest>` |
 | `20crv3` | the every-member GRIB2 archive is not published on an anonymously readable public endpoint; only the ensemble-MEAN NetCDF distribution is, and a member state is not a mean | stage the files, then `gpuwm prep --source 20crv3 --source-root DIR --source-manifest DIR/SHA256SUMS --source-manifest-sha256 <digest>` |
 | `20crv3-cf` | the NOAA PSL NetCDF distribution is a per-year, per-variable reanalysis archive with no cycle and no forecast lead, so `--cycle`/`--hours` describe nothing in it | same `--source-root` door; the packaged profile rebuilds the missing orography and land mask with `tools/build_pressure_level_invariant_supplement.py` |
 | `mapped` | the generic declarative adapter is not a product: it names no publisher, no bucket and no file grammar, so there is nothing to resolve | it *is* the door for bytes you already have -- supply the mapping document |

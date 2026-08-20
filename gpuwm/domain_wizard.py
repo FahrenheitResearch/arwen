@@ -78,6 +78,7 @@ from types import MappingProxyType
 import numpy as np
 
 from gpuwm.core.preflight import (CUDA_CONTEXT_BYTES,
+                                  non_pool_basis,
                                   ENVELOPE_UNMODELLED_BYTES,
                                   EXTERNAL_MARGIN_BYTES, GIB,
                                   INGEST_PEAK_ENVELOPE_BASIS,
@@ -113,6 +114,8 @@ from gpuwm.hrrr_route_inputs import (ROUTE_DEFAULT_PHYSICS_PROFILE,
                                      coverage_refusal, route_input_paths,
                                      route_physics_blocker,
                                      write_hrrr_route_inputs)
+from gpuwm.physics_menu import (WIZARD_PHYSICS_PROFILES,
+                                profile_route_blocker)
 from gpuwm.source_adapters import (get_source_adapter, source_adapters,
                                    source_coverage_window,
                                    source_forcing_interval_seconds,
@@ -490,6 +493,30 @@ def source_has_fetch_front_door(source: str) -> bool:
     return source in fetch_front_door_sources()
 
 
+def source_credential_notes(source: str) -> list[str]:
+    """Pointer lines for what SOURCE needs configured and does not have.
+
+    The registry row's CREDENTIAL column, wrapped for a terminal.  This
+    used to be an ``if source == <one id>`` arm in two places, so a
+    second source needing an account key would have needed two more
+    arms; now a declared credential reaches every door that asks here,
+    and a row that declares none produces no line at all.
+
+    Never raises.  An unresolvable source id is the caller's business to
+    refuse -- printing a traceback in place of a pointer would replace a
+    helpful line with a broken command.
+    """
+
+    from gpuwm.source_adapters import get_source_adapter
+    from gpuwm.source_credentials import absent_credential_notes
+
+    try:
+        adapter = get_source_adapter(source)
+    except Exception:  # noqa: BLE001 - an advisory line, not a gate
+        return []
+    return absent_credential_notes(adapter.credentials)
+
+
 def _candidate_fetch_hints(source: str) -> dict | None:
     """The ``[fetch]`` stub a sizing candidate carries, or ``None``.
 
@@ -662,6 +689,7 @@ _PER_DOMAIN_PHYSICS = ("radt", "cu_physics", "cudt_minutes",
 #: radiation (shortwave on, longwave off) are never a default on any
 #: door; they stay selectable explicitly and are emitted with the
 #: nocturnal declaration (see render_config).
+#:
 DEFAULT_PHYSICS_PROFILE = MORRISON_PROFILE_ID
 
 #: The default suite's physics switches, in the registry's OWN radiation
@@ -693,35 +721,12 @@ DEFAULT_SUITE_PHYSICS = {
 #: The profiles the prepared single-domain forecast runner accepts, in
 #: the order the help lists them.
 #:
-#: The two legacy-RRTMG Thompson entries were absent until 1.8, and their
-#: absence was the reason ``--source hrrr`` could not be given a
-#: nocturnally valid default: they are the ONLY full-radiation suites the
-#: nested HRRR route's physics gate admits (every other 4/4 profile
-#: carries ``cu_physics = 1``, which
-#: :data:`gpuwm.hrrr_route_inputs.REQUIRED_PHYSICS` refuses because HRRR's
-#: 3 km grid is convection permitting), so a door that did not offer them
-#: could only default HRRR to a shortwave-on/longwave-off suite.
-#:
-#: The nocturnally valid suites come first and the asymmetric ones after,
-#: which is why the two radiation-bearing MYNN rows sit at the end of the
-#: first block rather than beside the MYNN rows they mirror.  They close
-#: the gap that made this ordering a trap: until 1.8.7 every MYNN entry in
-#: this list was shortwave-on/longwave-off, so a reader who wanted MYNN
-#: had to leave the nocturnally valid block to get it.
-WIZARD_PHYSICS_PROFILES = (
-    MORRISON_PROFILE_ID,
-    NSSL2_PROFILE_ID,
-    NSSL2_LEGACY_RRTMG_PROFILE_ID,
-    THOMPSON_LEGACY_RRTMG_PROFILE_ID,
-    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
-    MYNN_RTE_RRTMGP_PROFILE_ID,
-    MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
-    THOMPSON_PROFILE_ID,
-    WSM6_PROFILE_ID,
-    MYNN_PROFILE_ID,
-    RUC_PROFILE_ID,
-    MYNN_RUC_PROFILE_ID,
-)
+#: DEFINED in :mod:`gpuwm.physics_menu` and imported above, with the
+#: ordering rationale (nocturnally valid suites first, the two
+#: legacy-RRTMG Thompson entries as the only full-radiation suites the
+#: nested HRRR route admits) written out there.  Re-exported under this
+#: name because every reader in the tree spells it
+#: ``domain_wizard.WIZARD_PHYSICS_PROFILES``.
 
 
 def _radiation_words(switches: dict) -> str:
@@ -1223,12 +1228,29 @@ def resolved_physics_profile(source: str, requested: str | None
     An explicit ``--physics-profile`` always wins -- including one the
     HRRR routes will refuse, which is refused at emission with the
     switch named rather than silently replaced.
+
+    The DEFAULT is derived, not tabled.  This function used to read
+    ``if source == "hrrr": return HRRR_DEFAULT_PROFILE`` and hand every
+    other source the gfs/era5 default -- which is a branch on a model
+    name, and it only answered correctly because exactly one source had
+    ever had a route gate written for it.  A second gated source would
+    have been handed a default its own route refuses, and a bare run on
+    it could not start.
+
+    :func:`gpuwm.physics_menu.default_profile_for` computes it instead:
+    the first suite in this module's listed order that the source's
+    route admits and that runs both radiation streams.  That reproduces
+    both defaults this product shipped -- ``tests/test_physics_menu.py``
+    binds the native HRRR route's answer to
+    :data:`gpuwm.hrrr_route_inputs.ROUTE_DEFAULT_PHYSICS_PROFILE` and
+    the rest to :data:`DEFAULT_PHYSICS_PROFILE` -- and it is what lets a
+    source registered tomorrow get a working default as table work.
     """
     if requested is not None:
         return requested
-    if source == "hrrr":
-        return HRRR_DEFAULT_PROFILE
-    return DEFAULT_PHYSICS_PROFILE
+    from gpuwm.physics_menu import default_profile_for
+
+    return default_profile_for(source)
 
 
 def profile_switches(profile: str | None) -> dict:
@@ -3110,25 +3132,40 @@ def experiment_from_text(text: str, *, source: str) -> ExperimentConfig:
 
 def sizing_budget_bytes(exp: ExperimentConfig, *, free_bytes: int,
                         vram_gib: float | None,
-                        forcing_interval_seconds: float) -> int:
-    """The budget THIS configuration gets out of ``free_bytes``.
+                        forcing_interval_seconds: float,
+                        profile=None) -> int:
+    """The budget the machine-peak ENVELOPE is compared against.
 
-    Not a flat number.  ``gpuwm check`` subtracts a reserve computed from
-    the experiment -- its widest kernel's local-memory backing store, the
-    CUDA context, a retention fraction of its own estimate and the
-    external margin -- so a fit loop that assumes a flat reserve is
-    sizing against a budget the verifier will not agree to.  It did, and
-    both NSSL2 profiles emitted configs that failed their own check at
-    every card size.  This is the same call, on the same experiment.
+    ``free_bytes`` minus what this process's own envelope does not model,
+    and nothing else.  :func:`~gpuwm.core.preflight.
+    machine_peak_envelope_bytes` is a model of the WHOLE device residency
+    a run of this configuration reaches -- the itemized pool, the CUDA
+    context, the local-memory backing store of its kernel set, the
+    measured pool slack and the measured residue -- so the only thing
+    left outside it is OTHER processes, which is exactly
+    :data:`~gpuwm.core.preflight.EXTERNAL_MARGIN_BYTES`.
+
+    IT USED TO SUBTRACT THE ALLOCATION RESERVE, and the allocation
+    reserve carries the non-pool residency too.  The envelope was then
+    compared against a budget from which its own CUDA context and its own
+    backing store had ALREADY been removed: one process charged twice for
+    the same bytes.  On a 10 GiB RTX 3080 that was 2.91 GiB of a 10 GiB
+    card spent twice, and the hrrr ladder's SMALLEST layout -- 60x48 --
+    was refused on a card that fits it (task 206; the acceptance walk is
+    in the lane report).  The two doors are still coherent, and more
+    strictly than before: this comparison is provably tighter than
+    ``gpuwm check``'s allocation gate at every grid size, so a wizard
+    PASS remains a check PASS (``test_vram_measured_reserve.py::
+    test_the_fit_gate_is_never_looser_than_the_allocation_gate``).
+
+    ``profile`` is the device the non-pool terms were priced against and
+    is accepted so callers can pass the card they MEASURED; it does not
+    enter this arithmetic, and is kept in the signature because every
+    caller of this function has to have decided it.
     """
 
-    estimate = estimate_experiment(
-        exp, forcing_interval_seconds=forcing_interval_seconds,
-        vram_gib=vram_gib)
-    reserve = ReservePolicy.n0_alloc(
-        exp, profile=card_local_memory_profile(vram_gib),
-        estimate_bytes=estimate.alloc_estimate_bytes)
-    return int(free_bytes) - reserve.reserve_bytes
+    del exp, vram_gib, forcing_interval_seconds, profile  # see above
+    return int(free_bytes) - EXTERNAL_MARGIN_BYTES
 
 
 def _lighter_profiles_than(profile: str | None, source: str,
@@ -3190,10 +3227,22 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                root_dx_m: float = ROOT_DX_M,
                profile: str | None = DEFAULT_PHYSICS_PROFILE,
                vram_gib: float | None = None,
+               device_profile=None,
                acknowledgements: tuple[str, ...] = (),
                ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
     """Largest centered layout whose peak envelope fits the budget, with
     headroom left over.
+
+    ``device_profile`` is the CARD the non-pool terms are priced against
+    -- the one this machine MEASURED when no ``--card``/``--vram-gib``
+    was declared, and ``None`` (the conservative reference) when the
+    caller is sizing for a machine that is somewhere else.  It used to be
+    ``None`` unconditionally, so a wizard that had just measured a 68-SM
+    RTX 3080 priced that card's local-memory backing store on the 170-SM
+    reference profile: 1.49 GiB of another card's shader count, on the
+    one term shrinking the grid cannot move, while ``gpuwm check`` on the
+    same box used the live profile and disagreed (task 206, open task
+    #162's mechanism).
 
     Bisects a continuous scale factor; every candidate is validated by the
     real experiment loader (clearance, cadence, ratio rules) and priced by
@@ -3234,10 +3283,10 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         # preprocessing -- the phase it had never priced.
         phases = estimate_phases(
             exp, source=source, forcing_interval_seconds=interval,
-            vram_gib=vram_gib)
+            vram_gib=vram_gib, profile=device_profile)
         budget = sizing_budget_bytes(
             exp, free_bytes=free_bytes, vram_gib=vram_gib,
-            forcing_interval_seconds=interval)
+            forcing_interval_seconds=interval, profile=device_profile)
         return dims, exp, phases.peak_envelope_bytes, budget
 
     def uncovered(exp, dims) -> str | None:
@@ -3307,17 +3356,37 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     # innermost nest has any interior at all (:func:`_min_hosting_scale`).
     min_scale = _min_hosting_scale(ratios)
     dims, exp, envelope, budget = candidate(min_scale)
-    if budget <= 0:
-        # A capacity is never negative.  Say the reserve alone is the
-        # whole card rather than printing a "-0.7 GiB budget" for the
-        # envelope to be compared against.
+    #: The part of the envelope no grid can move: this suite's CUDA
+    #: context, the local-memory backing store of its kernel set, and the
+    #: measured residue.  When THAT alone is the whole card there is
+    #: nothing to size -- every layout on every ladder is refused for the
+    #: same reason, and the fit loop's per-layout refusal would name a
+    #: grid the reader cannot usefully shrink.
+    #:
+    #: This used to be spelled ``budget <= 0``, which worked only while
+    #: the budget subtracted the whole allocation reserve.  It no longer
+    #: does (that reserve carries the same non-pool bytes the envelope
+    #: carries, and charging both is the double count task 206 removed),
+    #: so the floor is asked directly instead of inferred from a
+    #: subtraction that has stopped containing it.
+    floor_estimate = estimate_experiment(
+        exp, forcing_interval_seconds=interval, vram_gib=vram_gib,
+        profile=device_profile)
+    grid_independent = (floor_estimate.envelope_intercept_bytes
+                        + ENVELOPE_UNMODELLED_BYTES)
+    if budget <= 0 or grid_independent >= budget:
         raise DomainFitError(
             f"this card has no budget for ladder {label} at all: the "
-            f"suite's reserve (CUDA context + the local-memory backing "
-            f"store of its kernel set + the external margin) is "
-            f"{(free_bytes - budget) / GIB:.2f} GiB against about "
-            f"{free_bytes / GIB:.2f} GiB free.  Choose a physics profile "
-            f"with a smaller kernel set, or a larger card")
+            f"suite's grid-independent envelope (CUDA context + the "
+            f"local-memory backing store of its kernel set + the "
+            f"measured unmodelled residue) is "
+            f"{grid_independent / GIB:.2f} GiB, and with the "
+            f"{EXTERNAL_MARGIN_BYTES / GIB:.2f} GiB external margin that "
+            f"is already the whole of about "
+            f"{free_bytes / GIB:.2f} GiB free -- before the grid asks for "
+            f"a single byte, so no smaller layout on any ladder can "
+            f"help.  Choose a physics profile with a smaller kernel set, "
+            f"or a larger card")
     smallest_uncovered = uncovered(exp, dims)
     if smallest_uncovered is not None:
         raise DomainFitError(
@@ -3332,7 +3401,8 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         # "so a smaller grid cannot help" beside a printed 0%, which is
         # a sentence contradicting the number in front of it.
         floor = estimate_experiment(
-            exp, forcing_interval_seconds=interval, vram_gib=vram_gib)
+            exp, forcing_interval_seconds=interval, vram_gib=vram_gib,
+            profile=device_profile)
         constants = (floor.envelope_intercept_bytes
                      + ENVELOPE_UNMODELLED_BYTES)
         share = (100.0 * constants / envelope if envelope else 0.0)
@@ -3353,7 +3423,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             "smaller grid on this ladder to fall back to")
         phases = estimate_phases(
             exp, source=source, forcing_interval_seconds=interval,
-            vram_gib=vram_gib)
+            vram_gib=vram_gib, profile=device_profile)
         # Name the THIRD lever too.  A large share of the envelope is the
         # selected kernel set's own local-memory backing store, so the
         # suite is often the cheapest thing to change -- and after 1.8
@@ -3380,7 +3450,8 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                 return estimate_phases(
                     candidate_exp, source=source,
                     forcing_interval_seconds=interval,
-                    vram_gib=vram_gib).peak_envelope_bytes
+                    vram_gib=vram_gib,
+                    profile=device_profile).peak_envelope_bytes
             except Exception:
                 return None
 
@@ -3622,6 +3693,7 @@ def verify_polygon_containment(exp: ExperimentConfig,
 def fit_polygon_ladder(*, footprint: PolygonFootprint,
                        buffers_km: tuple[float, ...],
                        free_bytes: int, hours: int,
+                       device_profile=None,
                        start_time: datetime, projection: dict, source: str,
                        name: str, ratios: tuple[int, ...],
                        root_dx_m: float = ROOT_DX_M,
@@ -3694,10 +3766,10 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
     phases = estimate_phases(
         exp, source=source,
         forcing_interval_seconds=interval,
-        vram_gib=vram_gib)
+        vram_gib=vram_gib, profile=device_profile)
     budget_bytes = sizing_budget_bytes(
         exp, free_bytes=free_bytes, vram_gib=vram_gib,
-        forcing_interval_seconds=interval)
+        forcing_interval_seconds=interval, profile=device_profile)
     if budget_bytes <= 0 or phases.peak_envelope_bytes > budget_bytes:
         layout = ", ".join(
             f"d{index:02d} {nx}x{ny}"
@@ -3715,10 +3787,8 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
             detail = phases.verdict(budget_bytes)
         else:
             detail = (
-                "this configuration's own reserve (CUDA context + the "
-                "local-memory backing store of its kernel set + a "
-                "retention fraction of its estimate + the external "
-                f"margin) is already "
+                "the external margin this card must keep for other "
+                f"processes is already "
                 f"{(free_bytes - budget_bytes) / GIB:.2f} GiB against "
                 f"about {free_bytes / GIB:.2f} GiB free")
         raise DomainFitError(
@@ -3980,53 +4050,11 @@ def _print_geog_help() -> None:
     print("    " + ", ".join(GEOG_DATASETS))
 
 
-#: Emission-route physics gates, by source id.  These sources' emission
-#: routes through a runner module carrying its OWN physics gate
-#: (:func:`write_hrrr_route_inputs` ->
-#: :func:`gpuwm.hrrr_route_inputs.validate_route_physics`), so the
-#: pairing predicate below consults that module's spelling of the gate
-#: -- never a restatement, which is how advice came to filter one
-#: hard-coded source while every other source's advice went out
-#: unchecked.  A TABLE, not a code path: a source that gains a routed
-#: emission gains its gate at every surface reading this predicate --
-#: advice ranking, the pre-emission refusal, ``--help``'s caveat -- by
-#: adding a row here.
-_ROUTE_EMISSION_PHYSICS_GATES = {
-    "hrrr": route_physics_blocker,
-}
-
-
-def profile_route_blocker(profile, source) -> str | None:
-    """Why ``source`` cannot prepare ``profile``, or ``None``.
-
-    The registry answer plus the emission route's own physics gate,
-    resolved through the same calls the front doors make, so a caller
-    asking "can this pairing run", a runner asking "may this pairing
-    run" and a refusal RANKING alternative suites cannot give
-    different answers.
-    """
-
-    from gpuwm.physics_compat import (
-        land_surface_component_for_selector, land_surface_route_blocker,
-        single_domain_runtime_switches,
-    )
-
-    if profile is None or source is None:
-        return None
-    try:
-        switches = single_domain_runtime_switches(profile)
-    except (KeyError, ValueError):
-        return None
-    named = land_surface_component_for_selector(
-        switches.get("sf_surface_physics"))
-    if named is not None:
-        blocker = land_surface_route_blocker(named, source=str(source))
-        if blocker is not None:
-            return blocker
-    emission_gate = _ROUTE_EMISSION_PHYSICS_GATES.get(str(source))
-    if emission_gate is None:
-        return None
-    return emission_gate(switches)
+#: The pairing predicate -- why a source cannot prepare a profile, or
+#: ``None`` -- and the emission-route gate table behind it.  Both are
+#: DEFINED in :mod:`gpuwm.physics_menu` and imported above; the
+#: predicate is re-exported under this name because every reader in the
+#: tree spells it ``domain_wizard.profile_route_blocker``.
 
 
 def profiles_blocked_on_source(source: str) -> tuple[str, ...]:
@@ -4075,6 +4103,32 @@ def _profile_help_route_note() -> str:
               "front door would reject.  ")
 
 
+#: The source ``--source`` binds when none is named.  One constant, read
+#: by the flag and by the help sentence below, because the help used to
+#: state two sources' defaults as literal text and a route gate moving
+#: would have left it lying.
+DEFAULT_WIZARD_SOURCE = "era5"
+
+
+def _profile_help_default_note() -> str:
+    """The ``--help`` sentence about what a bare run binds.
+
+    DERIVED.  This sentence used to read "(gfs/era5 default: <id> ...;
+    hrrr default: <id> ...)" -- two source names and two profile ids
+    typed into help text, correct on the day they were written and
+    silently wrong the moment a route gate moves or a third gated source
+    is registered.  Every source has its own computed default now, so
+    help names the DEFAULT source's and points at the door that answers
+    for the rest rather than pretending to enumerate them.
+    """
+
+    default = resolved_physics_profile(DEFAULT_WIZARD_SOURCE, None)
+    return (f"(--source {DEFAULT_WIZARD_SOURCE}, the default source, "
+            f"binds {default}; every source has its own computed default "
+            "and its own admissible set -- `gpuwm run-plan "
+            "--physics-profiles` prints the whole table)")
+
+
 def _refuse_profile_its_source_cannot_prepare(profile, source) -> None:
     """Do not emit a config the named source's front door will refuse.
 
@@ -4102,8 +4156,27 @@ def _refuse_profile_its_source_cannot_prepare(profile, source) -> None:
             f"--source {source}: {head}", detail))
 
 
+def resolve_sizing_card(card: str | None, vram_gib: float | None):
+    """The VRAM the wizard sizes against, the CARD, and where they came from.
+
+    Returns ``(vram_gib, device_profile, sentence)``.  ``device_profile``
+    is the measured local card when nothing was declared and ``None``
+    when the caller declared one -- a declaration says "size for a
+    machine that need not be this one", and that machine's shader count
+    is unknown, so it keeps the conservative reference profile.
+
+    THE PROFILE IS THE POINT.  The capacity was already measured here;
+    what was thrown away was the rest of the probe's answer, so a wizard
+    that knew it was looking at a 68-SM RTX 3080 priced that card's
+    local-memory backing store against a 170-SM reference and charged it
+    1.49 GiB it does not have (task 206).
+    """
+
+    return _resolve_vram_budget(card, vram_gib)
+
+
 def _resolve_vram_budget(card: str | None,
-                         vram_gib: float | None) -> tuple[float, str | None]:
+                         vram_gib: float | None):
     """The VRAM the wizard sizes against, and where the number came from.
 
     Three sources, in the only defensible order:
@@ -4123,26 +4196,34 @@ def _resolve_vram_budget(card: str | None,
        that integrates nothing on a card (the 2.5.0 persona walks'
        finding).
 
-    Returns ``(vram_gib, sentence)`` where ``sentence`` is the
-    measurement announcement to print, or ``None`` for a declaration.
+    Returns ``(vram_gib, device_profile, sentence)``.  ``sentence`` is
+    the measurement announcement to print, or ``None`` for a
+    declaration; ``device_profile`` is the MEASURED card, or ``None``
+    for a declaration -- which prices against the conservative reference
+    profile, because the machine being sized for is somewhere else.
     """
 
     if card is not None:
-        return CARD_VRAM_GIB[card], None
+        return CARD_VRAM_GIB[card], None, None
     if vram_gib is not None:
-        return float(vram_gib), None
+        return float(vram_gib), None, None
     probe = device_memory_probe_subprocess()
     total = probe.get("total_bytes") if isinstance(probe, dict) else None
     if isinstance(total, int) and not isinstance(total, bool) and total > 0:
         measured = total / GIB
-        profile = probe.get("profile") if isinstance(probe, dict) else None
-        name = (profile or {}).get("name") if isinstance(profile, dict) \
-            else None
+        # The SAME probe answer, used WHOLE.  Reading the capacity out of
+        # it and dropping the shader census beside it is exactly how a
+        # measured 68-SM card came to be priced on a 170-SM profile.
+        device_profile = profile_from_device_probe(probe)
+        name = device_profile.name if device_profile is not None else None
         card_words = f"{name}, " if name else ""
-        return measured, (
+        basis = ("" if device_profile is None else
+                 f"; grid-independent terms {non_pool_basis(device_profile)}")
+        return measured, device_profile, (
             f"domain: no --card/--vram-gib declared, so the budget is the "
             f"measured local card ({card_words}{measured:g} GiB total); "
-            f"declare --card or --vram-gib to size for another machine")
+            f"declare --card or --vram-gib to size for another machine"
+            f"{basis}")
     reason = (device_memory_probe_reason()
               or "the local card could not be measured")
     tiers = "/".join(sorted(CARD_VRAM_GIB))
@@ -4191,7 +4272,7 @@ def domain_main(args) -> int:
         raise ValueError("--card and --vram-gib are mutually exclusive")
     _refuse_profile_its_source_cannot_prepare(
         getattr(args, "physics_profile", None), args.source)
-    vram_gib, budget_sentence = _resolve_vram_budget(
+    vram_gib, device_profile, budget_sentence = _resolve_vram_budget(
         args.card, args.vram_gib)
     if budget_sentence is not None:
         print(budget_sentence)
@@ -4308,6 +4389,20 @@ def domain_main(args) -> int:
     if (declared_night is not None
             and ASYMMETRIC_RADIATION_NOCTURNAL_ACK not in acknowledgements):
         from gpuwm.explain import layered
+        from gpuwm.physics_menu import nocturnal_remedy
+
+        # THE REMEDY IS THIS SOURCE'S, NOT A FIXED ID (2026-08-20).
+        #
+        # This sentence used to name MORRISON_PROFILE_ID on every
+        # source.  On --source hrrr that is a Kain-Fritsch suite, and
+        # the pairing refusal above (_refuse_profile_its_source_cannot_
+        # prepare) then refuses it for cu_physics=1, because the route's
+        # 3 km grid resolves its own convection.  So the user was handed
+        # a remedy that leads to the next refusal, which names nothing.
+        # The remedy comes off the computed per-source menu now -- the
+        # same table `gpuwm run-plan --physics-profiles` serves -- so it
+        # cannot name a suite this source's route refuses.
+        remedy = nocturnal_remedy(args.source)
         raise ValueError(layered(
             f"profile {profile} runs shortwave with longwave OFF and this "
             f"window includes local night (first at "
@@ -4315,10 +4410,12 @@ def domain_main(args) -> int:
             f"{projection['ref_lat']:.4g}, {projection['ref_lon']:.4g}), so "
             f"the config this would emit is one every front door refuses "
             f"at load.  Choose a nocturnally valid profile with both "
-            f"radiation streams on -- --physics-profile "
-            f"{MORRISON_PROFILE_ID} -- or, if you mean the daytime "
-            f"validation suite and accept the night, declare it yourself "
-            f"with --ack {ASYMMETRIC_RADIATION_NOCTURNAL_ACK}",
+            f"radiation streams on that --source {args.source} can "
+            f"actually prepare -- {remedy['instruction']} -- or, if you "
+            f"mean the daytime validation suite and accept the night, "
+            f"declare it yourself with --ack "
+            f"{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}.  `gpuwm run-plan "
+            f"--physics-profiles` lists every suite this source admits",
             "Shortwave heats the surface by day while no longwave scheme "
             "runs, so after sunset the surface radiates to space with no "
             "downward longwave to balance it: skin temperature craters, "
@@ -4353,6 +4450,7 @@ def domain_main(args) -> int:
                 hours=args.hours, start_time=start_time,
                 projection=projection, source=args.source, name=name,
                 profile=profile, vram_gib=vram_gib,
+                device_profile=device_profile,
                 acknowledgements=acknowledgements)
         else:
             level_buffers = _buffers_for_levels(
@@ -4363,6 +4461,7 @@ def domain_main(args) -> int:
                 hours=args.hours, start_time=start_time,
                 projection=projection, source=args.source, name=name,
                 profile=profile, vram_gib=vram_gib,
+                device_profile=device_profile,
                 acknowledgements=acknowledgements)
         ladder = "-".join(f"{v:g}" for v in _ladder_dx_km(ratios, root_dx_m))
     else:
@@ -4392,6 +4491,7 @@ def domain_main(args) -> int:
                         hours=args.hours, start_time=start_time,
                         projection=projection, source=args.source, name=name,
                         profile=profile, vram_gib=vram_gib,
+                        device_profile=device_profile,
                         acknowledgements=acknowledgements)
                     candidate_buffers = None
                 else:
@@ -4403,7 +4503,7 @@ def domain_main(args) -> int:
                         free_bytes=free_bytes, hours=args.hours,
                         start_time=start_time, projection=projection,
                         source=args.source, name=name, profile=profile,
-                        vram_gib=vram_gib,
+                        vram_gib=vram_gib, device_profile=device_profile,
                         acknowledgements=acknowledgements)
             except DomainFitError as error:
                 if args.ladder != "auto" or fixed_buffer_depth:
@@ -4540,17 +4640,18 @@ def domain_main(args) -> int:
     exp = experiment_from_text(text, source=str(out))
     interval = source_forcing_interval_seconds(args.source)
     estimate = estimate_experiment(
-        exp, forcing_interval_seconds=interval, vram_gib=vram_gib)
+        exp, forcing_interval_seconds=interval, vram_gib=vram_gib,
+        profile=device_profile)
     phases = estimate_phases(
         exp, source=args.source, forcing_interval_seconds=interval,
-        vram_gib=vram_gib)
+        vram_gib=vram_gib, profile=device_profile)
     envelope = phases.peak_envelope_bytes
     # The budget the EMITTED config gets -- its own reserve, not a flat
     # one, which is the number `gpuwm check --budget-gib` is handed below
     # so the two commands cannot disagree about the same file.
     budget = sizing_budget_bytes(
         exp, free_bytes=free_bytes, vram_gib=vram_gib,
-        forcing_interval_seconds=interval)
+        forcing_interval_seconds=interval, profile=device_profile)
     budget_gib = budget / GIB
     if envelope > budget:
         raise DomainFitError(
@@ -4858,12 +4959,13 @@ def _print_next_steps(fetch_command: str, check_command: str,
     ``gpuwm fetch`` line sat at line 15 of 20 and the reader concluded
     the tool did not work.
 
-    The ERA5 route earns one extra line, and only when it is true: the
-    Copernicus API needs a personal key file that nothing in this
-    project can create, and its absence otherwise surfaces as a cdsapi
-    exception with nothing pointing back here.  ``gpuwm fetch --source
-    era5`` already prints the full five-step procedure; this names the
-    prerequisite at the moment the reader is deciding what to run.
+    A source whose acquisition needs something CONFIGURED first earns
+    one extra line under step 1, and only when it is not configured: a
+    key file nothing in this project can create otherwise surfaces as
+    the provider client's own exception several commands later, with
+    nothing pointing back here.  The line is the registry row's
+    CREDENTIAL column, not an arm for a particular source -- a row that
+    declares one gets the pointer with nothing edited here.
     """
 
     if not explain:
@@ -4881,13 +4983,8 @@ def _print_next_steps(fetch_command: str, check_command: str,
     print(f"  1. {acquire[0]}")
     for line in acquire[1:]:
         print(f"     {line}")
-    if source == "era5":
-        from gpuwm.fetch import cds_credentials_path, cds_credentials_present
-
-        if not cds_credentials_present():
-            print(f"     ERA5 needs a Copernicus CDS key first: no "
-                  f"{cds_credentials_path()} yet -- the fetch above "
-                  "prints the account and key steps.")
+    for note in source_credential_notes(source):
+        print(f"     {note}")
     print(f"  2. {check_command}"
           + ("   # after the fetch lands" if deferred else ""))
     if check_command_declared:
@@ -4986,12 +5083,7 @@ def register_cli(subparsers) -> None:
                              "includes local night is REFUSED unless you "
                              "declare it yourself with --ack.  "
                              + _profile_help_route_note()
-                             + "(gfs/era5 default: " + MORRISON_PROFILE_ID
-                             + ", full RTE+RRTMGP + Kain-Fritsch, "
-                             "nocturnally valid; hrrr default: "
-                             + HRRR_DEFAULT_PROFILE
-                             + ", Thompson + full RRTMG lw+sw, no cumulus "
-                             "at 3 km, nocturnally valid)")
+                             + _profile_help_default_note())
     parser.add_argument(
         "--ack", action="append", default=[], metavar="ID",
         help="declare a governed experiment, written verbatim into the "
@@ -5035,7 +5127,7 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--hours", type=int, default=6, metavar="N",
                         help="forecast length (run_seconds = N*3600)")
     parser.add_argument(
-        "--source", default="era5", metavar="SOURCE",
+        "--source", default=DEFAULT_WIZARD_SOURCE, metavar="SOURCE",
         # NO `choices=`, deliberately.  This used to be
         # choices=("gfs", "hrrr", "era5") while the product shipped
         # sixteen runnable sources, so argparse answered `--source rap`
@@ -5098,7 +5190,7 @@ def register_cli(subparsers) -> None:
 __all__ = [
     "CARD_VRAM_GIB", "CUMULUS_CONVECTION_PERMITTING_DX_KM",
     "CUMULUS_GRAY_ZONE_TOP_DX_KM",
-    "DEFAULT_LADDER",
+    "DEFAULT_LADDER", "DEFAULT_WIZARD_SOURCE",
     "DomainFitError", "GEOG_DATASETS", "GRAY_ZONE_DX_KM",
     "LADDER_RATIOS", "MAX_FETCH_ABS_LAT", "POLE_CLEARANCE_DEG",
     "ROOT_DX_M", "ROOT_TIME_STEP_S", "TROPICAL_ROOT_TIME_STEP_S",

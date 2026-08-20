@@ -2362,7 +2362,7 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
     thresholds and radii and one engine invocation renders one of each.
     """
 
-    from gpuwm import rustwx_lanes
+    from gpuwm import render, rustwx_lanes
 
     engine_path = rustwx_lanes.find_ensemble_bin()
     manifest = Path(ens_root) / MANIFEST_FILENAME
@@ -2370,32 +2370,38 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
         print(f"enprod: no ensemble manifest at {manifest}", file=sys.stderr)
         return 2
     outdir = Path(outdir)
-    store_root = outdir / "_ens_store"
     written: list[Path] = []
     failures: list[str] = []
     frames = None if timeidx is None else int(timeidx)
-    for name in fields:
-        spec = FIELDS[name]
-        field_thresholds = thresholds or (spec.default_threshold,)
-        for threshold in field_thresholds:
-            for radius_km in (radii or (0.0,)):
-                paths, problems, skipped, report = (
-                    rustwx_lanes.run_ensemble_renderer(
-                        engine_path, manifest, store_root=store_root,
-                        out_dir=outdir, field=name,
-                        products=",".join(products), threshold=threshold,
-                        neighborhood_km=radius_km, frames=frames,
-                        nan_policy=nan_policy, pmm_tie_rule=tie_rule,
-                        accept_status=",".join(accept_status),
-                        source_label=source_label))
-                written.extend(paths)
-                failures.extend(problems)
-                for slug, reason in skipped:
-                    print(f"enprod: skipped {slug}: {reason}")
-                for key in ("members", "coverage", "pmm_ties",
-                            "paintball_legend"):
-                    if key in report:
-                        print(f"enprod: {key} {report[key]}")
+    # The engine's member store is WORKING SCRATCH, so it lives beside
+    # the delivered panels, not in them: a delivered product tree holds
+    # products only (gpuwm.render.scratch_store names the breakage).
+    # It used to be `outdir / "_ens_store"`, which was never removed at
+    # all.
+    with render.scratch_store(outdir, prefix="ensstore-") as store_root:
+        for name in fields:
+            spec = FIELDS[name]
+            field_thresholds = thresholds or (spec.default_threshold,)
+            for threshold in field_thresholds:
+                for radius_km in (radii or (0.0,)):
+                    paths, problems, skipped, report = (
+                        rustwx_lanes.run_ensemble_renderer(
+                            engine_path, manifest, store_root=store_root,
+                            out_dir=outdir, field=name,
+                            products=",".join(products),
+                            threshold=threshold,
+                            neighborhood_km=radius_km, frames=frames,
+                            nan_policy=nan_policy, pmm_tie_rule=tie_rule,
+                            accept_status=",".join(accept_status),
+                            source_label=source_label))
+                    written.extend(paths)
+                    failures.extend(problems)
+                    for slug, reason in skipped:
+                        print(f"enprod: skipped {slug}: {reason}")
+                    for key in ("members", "coverage", "pmm_ties",
+                                "paintball_legend"):
+                        if key in report:
+                            print(f"enprod: {key} {report[key]}")
     for path in written:
         print(f"enprod: {path}")
     if failures:

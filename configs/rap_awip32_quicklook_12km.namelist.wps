@@ -1,0 +1,37 @@
+&share
+ wrf_core = 'ARW',
+ max_dom = 1,
+ start_date = '2026-08-20_12:00:00',
+ end_date   = '2026-08-20_15:00:00',
+ interval_seconds = 3600,
+ io_form_geogrid = 2,
+/
+
+&geogrid
+ parent_id         = 1,
+ parent_grid_ratio = 1,
+ i_parent_start    = 1,
+ j_parent_start    = 1,
+ e_we              = 181,
+ e_sn              = 151,
+ geog_data_res     = 'default',
+ dx = 12000,
+ dy = 12000,
+ map_proj = 'lambert',
+ ref_lat   = 38.5,
+ ref_lon   = -97.5,
+ truelat1  = 28.5,
+ truelat2  = 48.5,
+ stand_lon = -97.5,
+ geog_data_path = 'WPS_GEOG',
+/
+
+&ungrib
+ out_format = 'WPS',
+ prefix = 'RAPAWIP32',
+/
+
+&metgrid
+ fg_name = 'RAPAWIP32',
+ io_form_metgrid = 2,
+/

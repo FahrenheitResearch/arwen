@@ -717,6 +717,8 @@ pub fn bind_manifest_member(
         direct,
         source_cycles,
         grid_fingerprint: collection.grid_fingerprint,
+        hybrid_a: collection.hybrid_a,
+        hybrid_b: collection.hybrid_b,
     })
 }
 
@@ -856,7 +858,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             progress,
         )?;
         let (composed, receipt) =
-            crate::join::compose_terrain(&combined, &supplement, &terrain.time_alignment)?;
+            crate::join::compose_terrain(combined, &supplement, &terrain.time_alignment)?;
         combined = composed;
         alignment_receipt = Some(receipt);
         progress(json!({"event": "composed_terrain", "objects": files.len()}));
@@ -893,7 +895,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             progress,
         )?;
         let (composed, receipt) =
-            crate::join::compose_bound_fields(&combined, &donor_collection, binding)?;
+            crate::join::compose_bound_fields(combined, &donor_collection, binding)?;
         combined = composed;
         let provenance_path = &provenance[&binding.provenance_role];
         let mut fields = binding.fields.clone();
@@ -941,15 +943,21 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     }
 
     let union = union_mapping(&mapping, &donors, &composition.bindings)?;
-    let frames = crate::frames::materialize_frames(&union, &combined)?;
     let output = std::path::PathBuf::from(
         invocation
             .output
             .as_ref()
             .expect("compose requires --output"),
     );
-    let document =
-        crate::frames::write_frameset(&output, &union, &combined, &frames, &digests)?;
+    // One valid time is materialized, written and dropped inside the
+    // writer.  The composed collection is then the only whole-series
+    // object left, which is what took a seven-time 3 km CONUS compose
+    // to 67 GiB of host memory.
+    let document = crate::frames::write_frameset(&output, &union, &combined, &digests)?;
+    let frame_count = document
+        .get("frames")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
     // The alignment receipt a composed bundle is judged on: the terrain
     // supplement's when there is one, otherwise the receipt of the
     // binding that supplies terrain.  `MappedSourceBundle` requires one,
@@ -990,7 +998,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         "event": "receipt",
         "subcommand": "compose",
         "schema": crate::FRAMESET_SCHEMA,
-        "frames": frames.len(),
+        "frames": frame_count,
         "output": output.display().to_string(),
         "grid_fingerprint": combined.grid_fingerprint,
         "bindings": composition.bindings.len(),
@@ -1229,6 +1237,8 @@ mod tests {
             direct,
             source_cycles,
             grid_fingerprint: "fixture-grid".to_owned(),
+            hybrid_a: Vec::new(),
+            hybrid_b: Vec::new(),
         }
     }
 

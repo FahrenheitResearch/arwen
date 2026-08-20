@@ -45,6 +45,27 @@ tile_ny = 200
 """
 
 
+#: The smallest domain on the card above that the RESIDENT model still
+#: refuses, and the control below's subject.
+#:
+#: IT USED TO BE 550, and the reason it moved is a fix, not a drift.  The
+#: measured-VRAM-reserve landing of 2026-08-20 found the fit gate paying
+#: for the same bytes twice: the machine-peak envelope already carries
+#: the CUDA context and the kernel backing store, and it was compared
+#: against a budget that had subtracted those same bytes AGAIN as part of
+#: the allocation reserve.  Charging each measured byte once moved
+#: 550^2 x 49 from 15.36 GiB against a 13.09 GiB budget to 15.03 GiB
+#: against 14.74 -- it FITS now, and refusing it was the defect.
+#: MEASURED here on this card: 550^2 admits resident at 15.03 GiB, 576^2
+#: refuses at 16.09 GiB against the 14.74 GiB budget, and 576^2 with the
+#: same [tiles] table is admitted at 6.71 GiB.
+#:
+#: A control has to be a run the gate genuinely cannot admit.  Leaving it
+#: pointed at 550^2 would have asserted the old double charge, which is
+#: pinning a bug rather than a contract.
+_OVER_BUDGET_NX = 576
+
+
 def _config(tmp_path, *, nx=550, ny=550, tiles=_TILES, name="exp"):
     """One GFS-shaped experiment TOML with a single root domain.
 
@@ -145,16 +166,51 @@ def test_the_streamed_config_a_user_types_is_admitted_with_no_flags(
 def test_the_same_config_without_tiles_is_still_refused(tmp_path, card):
     """THE CONTROL, and the reason the test above is not vacuous.
 
-    Byte for byte the same domain with the ``[tiles]`` table removed still
-    does not fit this card, and must still be refused.  Without this, a
-    gate that had simply stopped refusing anything would pass the
-    regression test above.
+    A domain this card genuinely cannot hold resident is still refused
+    when the ``[tiles]`` table is removed, and admitted byte for byte
+    when it is there.  Without the pair, a gate that had simply stopped
+    refusing anything would pass the regression test above.
+
+    The subject is ``_OVER_BUDGET_NX``, not the 550 the headline test
+    uses, and that constant carries the measurement: charging the CUDA
+    context and the kernel backing store ONCE instead of twice made
+    550^2 x 49 fit this card, so 550 stopped being a control the day the
+    double charge was fixed.
+    """
+    over = {"nx": _OVER_BUDGET_NX, "ny": _OVER_BUDGET_NX}
+
+    gate = go_cli.memory_gate(
+        _plan(_config(tmp_path, tiles="", name="resident", **over)))
+    assert gate["refuse"] is True, gate["verdict"]
+    assert gate["phases"].streamed_forecast is False
+    assert "EXCEEDS" in gate["verdict"]
+
+    # ... and [tiles] is what makes the difference, on the same domain.
+    streamed = go_cli.memory_gate(
+        _plan(_config(tmp_path, name="streamed", **over)))
+    assert streamed["refuse"] is False, streamed["verdict"]
+    assert streamed["phases"].streamed_forecast
+
+
+def test_the_headline_domain_now_fits_this_card_resident(tmp_path, card):
+    """The double charge is gone, and this is the byte that proves it.
+
+    550^2 x 49 full physics on 15.24 GiB free was the 2.2.0 finding's own
+    subject and it was REFUSED resident, at 15.36 GiB against a 13.09 GiB
+    budget.  The budget had subtracted the CUDA context and the kernel
+    backing store that the envelope already carried, so 2.91 GiB of a
+    card was spent twice.  Charged once, the run fits and the gate admits
+    it with no flags.
+
+    Pinned as its own statement rather than left implicit in the control
+    above, because it is a USER-VISIBLE admission change: a run the
+    previous release refused now starts.
     """
     gate = go_cli.memory_gate(_plan(_config(tmp_path, tiles="")))
 
-    assert gate["refuse"] is True
+    assert gate["refuse"] is False, gate["verdict"]
     assert gate["phases"].streamed_forecast is False
-    assert "EXCEEDS" in gate["verdict"]
+    assert gate["phases"].forecast_envelope_bytes < CARD_FREE_BYTES
 
 
 def test_a_domain_too_big_even_streamed_is_refused_in_streamed_numbers(

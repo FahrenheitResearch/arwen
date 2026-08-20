@@ -179,7 +179,7 @@ def _drive(tmp_path, monkeypatch, *, tiles="", nested=False):
         tree, "main",
         lambda argv, *, observer=None: captured.update(
             tree=[str(part) for part in argv]) or 0)
-    monkeypatch.setattr(runplan_module, "_hrrr_render",
+    monkeypatch.setattr(runplan_module, "_chain_render",
                         lambda plan, **kwargs: {"ok": True})
 
     runplan_module._hrrr_chain(
@@ -465,9 +465,12 @@ def test_every_chain_declares_what_tiles_does_on_it():
     forecast stage will never read the table.
     """
 
+    from gpuwm.source_adapters import source_adapters
+
+    sources = (None, *(a.source_id for a in source_adapters()))
     chains = {runplan_module._chain_key(route, source)
               for route in runplan_module.ROUTES
-              for source in (None, "gfs", "hrrr", "era5")}
+              for source in sources}
     assert chains <= set(runplan_module._STREAMING_DELIVERY)
     assert set(runplan_module._STREAMING_DELIVERY) == chains
 

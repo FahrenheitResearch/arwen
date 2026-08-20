@@ -34,6 +34,18 @@ def _selection(nz: int, **overrides):
     ("label", "selector", "inside", "outside"),
     (
         ("MYNN PBL", {"bl_pbl_physics": 5}, 5, 4),
+        # The PBL column kernels hold one whole column in per-thread local
+        # memory at a compiled KMAX, and their implicit vertical solves need
+        # a minimum number of interior rows.  Both ends are first-call
+        # rejections inside the launcher, so both belong in the preflight.
+        ("YSU PBL", {"bl_pbl_physics": 1}, 128, 129),
+        ("YSU PBL", {"bl_pbl_physics": 1}, 4, 3),
+        ("MYJ PBL", {"bl_pbl_physics": 2}, 128, 129),
+        ("MYJ PBL", {"bl_pbl_physics": 2}, 4, 3),
+        ("Shin-Hong PBL", {"bl_pbl_physics": 11}, 128, 129),
+        ("Shin-Hong PBL", {"bl_pbl_physics": 11}, 4, 3),
+        ("SASE PBL", {"bl_pbl_physics": 900}, 128, 129),
+        ("SASE PBL", {"bl_pbl_physics": 900}, 2, 1),
         ("Kain-Fritsch cumulus", {"cu_physics": 1}, 8, 7),
         ("Kain-Fritsch cumulus", {"cu_physics": 1}, 128, 129),
         # GF's floor is the inversion-layer search window (kend clamps to

@@ -193,6 +193,15 @@ _FIELD_CODES = {name: code for code, name in enumerate(_MP18_FIELDS)}
 _SOURCE_MASS_FIELDS = ("qv", "qc", "qr", "qi", "qs", "qg")
 _DIAGNOSED_FIELDS = ("qndrop", "qnr", "qni", "qns", "qng", "qnn", "qvolg")
 _ZEROED_FIELDS = ("qh", "qnh", "qvolh")
+#: Child-local state a microphysics-scheme boundary resets rather than
+#: inherits.  ``rthften``/``rqvften`` -- the dycore's exported advective
+#: forcing pair -- are DELIBERATELY ABSENT and the reason is the membership
+#: rule: this tuple is the state the DEPARTING SCHEME owned, and a
+#: scheme boundary invalidates a closure's retained products (h_diabatic's
+#: latent heating, the held rates, the accumulators) but says nothing about
+#: the dynamics.  The advective theta/qv rates are a dycore product,
+#: identical whichever microphysics ran, so they interpolate from the
+#: parent with every other transported field (gpuwm/ingest/nest_init.py).
 _RESET_FIELDS = (
     "h_diabatic", "held_tendencies", "precipitation_accumulators",
 )

@@ -47,6 +47,7 @@ import numpy as np
 
 from gpuwm import physics_mode as physics_mode_module
 from gpuwm.core import streaming as streaming_module
+from gpuwm.io import history_selection as history_selection_module
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK,
                           EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT,
                           MIX_ISOTROPIC_AUTO, RunConfig,
@@ -264,6 +265,13 @@ _DOMAIN_KEYS = frozenset({
     # is how "stream the parent, keep the child resident" -- and its
     # inverse -- are said explicitly rather than left to the planner.
     "tiles",
+    # The per-domain [output] override (gpuwm/io/history_selection.py): a
+    # domain carrying `output = {...}` selects its OWN history variables,
+    # and the tree-wide [output] table is the default for every domain
+    # that does not.  This is how "keep the full inventory on the parent,
+    # trim the 1 km child that writes ten times the bytes" is said
+    # explicitly rather than applied to the whole tree.
+    "output",
     *_DOMAIN_RUN_OVERRIDES,
 })
 _DOMAIN_REQUIRED = ("grid_id", "parent_id", "i_parent_start",
@@ -662,6 +670,19 @@ class DomainConfig:
     #: that ran resident must resume streamed.  See
     #: ``streaming.identity_payload_entry``.
     tiles: "object | None" = None
+    #: This domain's own ``[output]`` history-variable selection
+    #: (:class:`gpuwm.io.history_selection.HistorySelection`), or ``None``
+    #: to take the tree-wide table.  ``None`` is the inherit contract and
+    #: drops out of the restart identity, so every experiment written
+    #: before the surface existed keeps its exact fingerprint.
+    #:
+    #: Like ``tiles`` and unlike ``spawn``, a DECLARED value binds nothing
+    #: either: the selection decides which variables reach the HISTORY
+    #: tape and changes no number the model computes, so a run that
+    #: trimmed its history must resume from a checkpoint written by one
+    #: that did not.  Checkpoints are separate files written from model
+    #: state (:mod:`gpuwm.io.restart`), never from the history frame.
+    output: "object | None" = None
 
 
 @dataclass(frozen=True)
@@ -898,6 +919,14 @@ class ExperimentConfig:
     #: code path, only the absence of one.  Excluded from the restart
     #: identity on purpose: see ``streaming.identity_payload_entry``.
     tiles: "streaming_module.StreamingOptions" = streaming_module.OFF
+    #: The resolved tree-wide [output] block
+    #: (:mod:`gpuwm.io.history_selection`).  An experiment that never
+    #: mentions it carries ``HistorySelection.FULL``, which writes every
+    #: variable the run produces and stamps no attribute -- the default
+    #: is what every run before this surface existed did, byte for byte.
+    #: Excluded from the restart identity for the same reason ``tiles``
+    #: is: it changes no number the model computes.
+    output: "object" = history_selection_module.FULL
     #: grid_ids whose ``mix_isotropic`` was CHOSEN BY THE MODEL because
     #: the config left it unset or wrote the ``"auto"`` sentinel (Drew's
     #: 2026-08-16 auto-switch ruling; ``resolve_auto_mix_isotropic``).
@@ -1744,7 +1773,7 @@ def _parent_before_child(domain_tables: list, source: str) -> list:
 def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain",
-                    "relocation", "perturbation", "tiles")
+                    "relocation", "perturbation", "tiles", "output")
     # [ingest] is INGEST POLICY, and it is validated-and-dropped HERE
     # rather than added to the companion list above.  The companion
     # tables declare INPUTS: dropping one loses a setting, so the caller
@@ -1935,6 +1964,16 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     # file, bit-exact in all of them.
     tiles = streaming_module.StreamingOptions.from_mapping(
         raw.get("tiles"), source=source)
+
+    # ---- [output] ---------------------------------------------------
+    # ABSENT is the FULL contract, and it is the shared FULL object
+    # rather than a fresh one: writing every variable the run produces is
+    # what every run before this surface existed did, byte for byte, and
+    # a trimmed tape is a thing a user asks for.  Like [tiles] it
+    # contributes nothing to the restart identity -- see the `output`
+    # field's docstring on ExperimentConfig.
+    output = history_selection_module.HistorySelection.from_mapping(
+        raw.get("output"), source=source)
 
     # ---- [shared] ------------------------------------------------------
     shared = dict(raw.get("shared", {}))
@@ -2211,43 +2250,19 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                     f"{dt_by_id[parent_id]} s exactly, "
                     f"(child-parent start offset)/dt = "
                     f"{parent_steps}.")
-            # Task #205: delayed nest activation passed every gate here
-            # and then deterministically killed the run at the activation
-            # epoch, hours of integration in.  Ordering is deliberate --
-            # the structural refusals above (window, parent precedence,
-            # step alignment) stay first, because those configs remain
-            # invalid even once delayed activation gains its
-            # activation-epoch stash and this refusal is lifted.  A
-            # domain that also declares spawn is left for the spawn
-            # block's own refusal below ("activation time belongs to its
-            # trigger"), which names that conflict more precisely than
-            # this one can.
-            if domain_start != start_time and "spawn" not in dom:
-                raise ValueError(layered(
-                    "delayed nest activation is refused: start_time = "
-                    f"{domain_start.isoformat()} on d{grid_id:02d} of "
-                    f"{source} is later than [experiment].start_time = "
-                    f"{start_time.isoformat()}, and a run that accepts "
-                    "it dies at the activation epoch, where the child's "
-                    "first history frame is due before any microphysics "
-                    "step has stashed its microphysics-time REFL_10CM "
-                    "field. Start every [[domain]] at "
-                    "[experiment].start_time (remove this start_time "
-                    "key).",
-                    "The tree history writer consumes a "
-                    "microphysics-time REFL_10CM stash for every frame "
-                    "after the experiment's own t = 0 "
-                    "(gpuwm.runtime._submit_tree_history_frame -> "
-                    "gpuwm.core.refl.consume_refl_10cm), and the stash "
-                    "is produced only inside a microphysics step of the "
-                    "same domain.  A delayed child's first history frame "
-                    "is due AT its activation epoch, before any of its "
-                    "steps has run, so the consume raises 'REFL_10CM "
-                    "output is due but no microphysics-time field is "
-                    "stashed' and the run dies there, deterministically. "
-                    "Refusing upfront replaces accepting the config and "
-                    "burning the run; a config whose domains all start "
-                    "together at [experiment].start_time is unaffected."))
+            # Task #205 RETIRED the categorical refusal that stood here.
+            # It named a real breakage -- a delayed child's first history
+            # frame consumed a REFL_10CM stash no step of that domain had
+            # produced, and the run died at the activation epoch -- and
+            # that breakage is fixed at the consume sites
+            # (gpuwm.core.refl.refl_10cm_stash_is_due asks the DOMAIN's
+            # own start tick).  A delayed start is a supported shape on
+            # the experiment-tree route again, proven by a bare-default
+            # GPU run whose d02 activates 6 h in.  The structural
+            # refusals above (window, parent precedence, step alignment)
+            # are untouched, and the routes that still lack activation
+            # machinery refuse BY ROUTE through
+            # :func:`refuse_delayed_activation` rather than here.
 
         # --- spawn: the dormant-nest declaration ------------------------
         spawn_cfg = None
@@ -2309,6 +2324,25 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             domain_tiles = streaming_module.StreamingOptions.from_mapping(
                 dict(dom["tiles"]),
                 source=f"[[domain]] grid_id = {grid_id} of {source}")
+
+        # --- output: this domain's own history variables -----------------
+        # Same parser as the tree-wide table, same vocabulary, same
+        # refusals, and the same all-or-nothing override rule: a domain
+        # that speaks replaces the tree-wide selection entirely rather
+        # than merging key by key, because "the preset from the tree, the
+        # drop list from the domain" is a configuration nobody can read
+        # off the file.
+        domain_output = None
+        if "output" in dom:
+            if not isinstance(dom["output"], dict):
+                raise ValueError(
+                    f"output on [[domain]] grid_id = {grid_id} of {source} "
+                    "must be an inline TABLE, e.g. output = { preset = "
+                    f"\"minimal\" }}, got {dom['output']!r}.")
+            domain_output = (
+                history_selection_module.HistorySelection.from_mapping(
+                    dict(dom["output"]),
+                    source=f"[[domain]] grid_id = {grid_id} of {source}"))
 
         # Flags: root takes external specified LBCs, children are nested
         # -- WRF &bdy_control, bundle namelist.input specified=T,F,F,F /
@@ -2659,7 +2693,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             history_interval_s=history_interval_s, run=run,
             time_step=time_step, time_step_fract_num=fract_num,
             time_step_fract_den=fract_den, start_time=domain_start,
-            spawn=spawn_cfg, tiles=domain_tiles)
+            spawn=spawn_cfg, tiles=domain_tiles,
+            output=domain_output)
         domains.append(dc)
         by_id[grid_id] = dc
         dt_by_id[grid_id] = dt_ex
@@ -2753,13 +2788,27 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         relocation=relocation,
         physics_mode=physics_mode,
         perturbation=perturbation,
-        tiles=tiles)
+        tiles=tiles, output=output)
     # The mixing-length auto-switch runs HERE, at the one load every
     # front door shares, so run/go/check, both prepared runners and the
     # wizard's candidate loop all execute (and announce) the same
     # selection; the advisory pass further down then sees the RESOLVED
     # tree and warns only about written-out exposures.
     experiment = resolve_auto_mix_isotropic(experiment, auto_mix_ids, source)
+    # THE PLAN-TIME DEPENDENCY CHECK for [output].  gpuwm owns the render
+    # product catalog, so it can resolve which products die with which
+    # dropped variables and say so HERE -- at the one load every front
+    # door shares -- rather than leaving the user to discover it hours
+    # later at render time with a directory of missing PNGs.  It is a
+    # WARNING and not a refusal: shedding a product to get the disk back
+    # is exactly what the surface is for.  A full-default tree resolves
+    # to FULL on every domain and this loop says nothing.
+    for dc in experiment.domains:
+        selection = history_selection_module.resolve(
+            experiment.output, dc.output)
+        selection.warn_lost_products(
+            history_selection_module.HISTORY_VOCABULARY,
+            where=f"d{dc.grid_id:02d} of {source}")
     # [tiles] against the TREE, and it needs the assembled experiment
     # because neither half of the question is answerable alone: the block
     # is parsed hundreds of lines above, the parent_id edges hundreds of
@@ -3244,6 +3293,52 @@ def active_experiment(exp: ExperimentConfig,
 def pre_spawn_experiment(exp: ExperimentConfig) -> ExperimentConfig:
     """The startup tree: every dormant nest removed, nothing spawned."""
     return active_experiment(exp, None)
+
+
+def delayed_domain_ids(exp: ExperimentConfig) -> tuple[int, ...]:
+    """grid_ids of every domain that activates later than the experiment."""
+    return tuple(dc.grid_id for dc in exp.domains
+                 if exp.domain_start_time(dc.grid_id) != exp.start_time)
+
+
+def refuse_delayed_activation(exp: ExperimentConfig, route: str) -> None:
+    """Fail loud where a delayed nest start has no activation machinery.
+
+    Delayed activation is a supported shape on the experiment-tree route
+    (``gpuwm run``): that route holds an activation context, and the
+    executor's ``on_domain_start`` initializes the child from the
+    analysis at its activation time before its first step.  A route that
+    builds its domains from prepared caches holds neither -- every node
+    is started at the experiment's t = 0 and no callback exists to bring
+    one to life later -- so a delayed child there stays at tick 0 while
+    the rest of the tree advances, and the executor's tick-exact sync
+    check raises ``tick-exact sync violated after period 0: grid_id=2 at
+    0 ticks, boundary N``.  A traceback with no remedy in it is what this
+    refusal replaces.
+    """
+    delayed = delayed_domain_ids(exp)
+    if not delayed:
+        return
+    named = ", ".join(
+        f"d{gid:02d} at {exp.domain_start_time(gid).isoformat()}"
+        for gid in delayed)
+    raise ValueError(layered(
+        f"the {route} route does not implement delayed nest activation; "
+        f"{named} start(s) later than [experiment].start_time = "
+        f"{exp.start_time.isoformat()}, and this route has no way to "
+        "bring a domain to life mid-run. Start every [[domain]] at "
+        "[experiment].start_time here, or run the config through "
+        "`gpuwm run`, which activates delayed nests.",
+        "A delayed nest is initialized at its activation epoch from the "
+        "analysis valid at that instant, by "
+        "gpuwm.core.model.execute_experiment's on_domain_start using the "
+        "activation context gpuwm.core.model.build_experiment attaches "
+        "(the input catalog, the case data and the radiation "
+        "workspace).  This route restores each domain from a prepared "
+        "cache instead: there is no catalog to re-ingest from and no "
+        "activation callback, so the domain would sit at tick 0 while "
+        "its parent advanced and the run would die at the first period "
+        "boundary with 'tick-exact sync violated'."))
 
 
 def refuse_unrouted_spawn(exp: ExperimentConfig, route: str) -> None:

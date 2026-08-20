@@ -84,6 +84,7 @@ from gpuwm.native_wrf_contract import (  # noqa: E402
 )
 from gpuwm.progress_log import (  # noqa: E402
     ProgressOptions, add_progress_arguments)
+from gpuwm.receipt_paths import receipt_basename  # noqa: E402
 from gpuwm.supervisor import atomic_write_json  # noqa: E402
 from gpuwm.physics_compat import (  # noqa: E402
     KESSLER_PROFILE_ID,
@@ -167,11 +168,6 @@ PHYSICS_PROFILES = (
     MYNN_NOAHMP_PHYSICS_PROFILE,
     MYNN_NOAHMP_RTE_RRTMGP_PHYSICS_PROFILE,
 )
-SUPPORTED_SOURCES = frozenset({
-    "gfs", "era5", "20crv3", "20crv3-cf", "hrrr", "hrrr-prs",
-    "aifs", "aigefs", "aigfs", "ecmwf-open-data", "gdas", "gefs",
-    "gem-gdps", "icon-eu", "rap", "rrfs"})
-
 #: Sources prepared through the declarative mapped route against a
 #: PACKAGED profile -- source id -> the profile id
 #: :mod:`gpuwm.source_authorities` pins.
@@ -196,6 +192,15 @@ _MAPPED_PACKAGED_PROFILE = {
     for source, profile_id in packaged_profile_sources().items()
     if packaged_profile(profile_id)["composition_state"] == "composed"
 }
+
+#: Every ``--source`` this stage runs a prepared bundle for: the three
+#: sources with their own direct runners, plus every composed packaged
+#: profile.  DERIVED, because the prep front door prints a ready-to-run
+#: forecast command for any packaged source it prepared -- so a literal
+#: list that fell behind the registry would print a command the very
+#: next stage refuses by name, which is worse than not printing one.
+SUPPORTED_SOURCES = frozenset(
+    {"gfs", "era5", "hrrr"} | set(_MAPPED_PACKAGED_PROFILE))
 
 # ---------------------------------------------------------------------------
 # Why "mapped" is not in that set, and what it would take -- scoped
@@ -485,110 +490,71 @@ _NEST_MICROPHYSICS_TRANSITION = "same-scheme-only"
 #: resolved pair, never key by key; see :func:`_declared_physics_conflicts`.
 _RADIATION_SELECTION_KEYS = frozenset({
     "ra_physics", "ra_lw_physics", "ra_sw_physics"})
+# The four per-source lookups below, and the two legacy companions
+# after them, are DERIVED for the mapped rows and then overridden for
+# the routes that genuinely differ.  They used to be literal id lists,
+# and every composed packaged profile spelled the identical value in
+# all six -- so adding a registry row meant remembering six more edits,
+# and forgetting one surfaced as a bare `KeyError` inside the stage
+# that runs a prepared bundle rather than as a refusal a user could
+# act on.  The arbitrary acceptance test says a new model is table
+# work; this is the seam where that used to stop being true.
+#
+# The overrides are the whole of what is NOT generic: `gfs`, `era5` and
+# `hrrr` have their own direct runners and their own document schemas,
+# and `20crv3` writes its OWN input-manifest schema because its member
+# identity is sealed there -- a difference the stage reads to decide
+# whether to demand a member manifest, so it must survive.
 _SOURCE_SCHEMA = {
+    # Any composed mapped preparation writes this one; the packaged
+    # profile, not the schema, is what says WHICH source it is.
+    **{source: "gpuwm-mapped-composition-inputs-v1"
+       for source in _MAPPED_PACKAGED_PROFILE},
     "gfs": "gpuwm-gfs-direct-input-manifest-v1",
     "era5": "gpuwm-era5-direct-input-manifest-v1",
     "20crv3": "gpuwm-20crv3-grib2-inputs-v1",
-    # Any composed mapped preparation writes this one; the packaged
-    # profile, not the schema, is what says WHICH source it is.
-    "20crv3-cf": "gpuwm-mapped-composition-inputs-v1",
     "hrrr": "gpuwm-hrrr-native-input-manifest-v1",
-    "hrrr-prs": "gpuwm-mapped-composition-inputs-v1",
-    "gdas": "gpuwm-mapped-composition-inputs-v1",
-    "gefs": "gpuwm-mapped-composition-inputs-v1",
-    "gem-gdps": "gpuwm-mapped-composition-inputs-v1",
-    "aifs": "gpuwm-mapped-composition-inputs-v1",
-    "aigfs": "gpuwm-mapped-composition-inputs-v1",
-    "aigefs": "gpuwm-mapped-composition-inputs-v1",
-    "ecmwf-open-data": "gpuwm-mapped-composition-inputs-v1",
-    "icon-eu": "gpuwm-mapped-composition-inputs-v1",
-    "rap": "gpuwm-mapped-composition-inputs-v1",
-    "rrfs": "gpuwm-mapped-composition-inputs-v1",
 }
 _PROOF_SCHEMA = {
+    **{source: "gpuwm-mapped-direct-wrf-proof-v1"
+       for source in _MAPPED_PACKAGED_PROFILE},
     "gfs": "gpuwm-gfs-direct-wrf-proof-v3",
     "era5": "gpuwm-era5-direct-wrf-proof-v2",
-    "20crv3": "gpuwm-mapped-direct-wrf-proof-v1",
-    "20crv3-cf": "gpuwm-mapped-direct-wrf-proof-v1",
     "hrrr": "gpuwm-hrrr-native-direct-wrf-proof-v1",
-    "hrrr-prs": "gpuwm-mapped-direct-wrf-proof-v1",
-    "gdas": "gpuwm-mapped-direct-wrf-proof-v1",
-    "gefs": "gpuwm-mapped-direct-wrf-proof-v1",
-    "gem-gdps": "gpuwm-mapped-direct-wrf-proof-v1",
-    "aifs": "gpuwm-mapped-direct-wrf-proof-v1",
-    "aigfs": "gpuwm-mapped-direct-wrf-proof-v1",
-    "aigefs": "gpuwm-mapped-direct-wrf-proof-v1",
-    "ecmwf-open-data": "gpuwm-mapped-direct-wrf-proof-v1",
-    "icon-eu": "gpuwm-mapped-direct-wrf-proof-v1",
-    "rap": "gpuwm-mapped-direct-wrf-proof-v1",
-    "rrfs": "gpuwm-mapped-direct-wrf-proof-v1",
 }
 _LEGACY_PROOF_SCHEMAS = {
+    # The mapped proof has never had an earlier revision, so no mapped
+    # source accepts a legacy document.
+    **{source: frozenset() for source in _MAPPED_PACKAGED_PROFILE},
     # v2 remains independently verifiable.  It predates the explicit
     # front-door physics selection receipt and therefore cannot be promoted
     # to v3 by inference.
     "gfs": frozenset({"gpuwm-gfs-direct-wrf-proof-v2"}),
     "era5": frozenset(),
-    "20crv3": frozenset(),
-    "20crv3-cf": frozenset(),
     # New in this runner as of the DA background lane: there is no
     # earlier HRRR bundle for it to have to accept.
     "hrrr": frozenset(),
-    "hrrr-prs": frozenset(),
-    "gdas": frozenset(),
-    "gefs": frozenset(),
-    "gem-gdps": frozenset(),
-    "aifs": frozenset(),
-    "aigfs": frozenset(),
-    "aigefs": frozenset(),
-    "ecmwf-open-data": frozenset(),
-    "icon-eu": frozenset(),
-    "rap": frozenset(),
-    "rrfs": frozenset(),
 }
 _HIERARCHY_PROOF_SCHEMA = {
+    **{source: "gpuwm-mapped-native-hierarchy-proof-v1"
+       for source in _MAPPED_PACKAGED_PROFILE},
     "gfs": "gpuwm-gfs-native-hierarchy-proof-v2",
     "era5": "gpuwm-era5-native-hierarchy-proof-v1",
-    "20crv3": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "20crv3-cf": "gpuwm-mapped-native-hierarchy-proof-v1",
     # HRRR's multi-domain route is gpuwm.hrrr_hierarchy_direct feeding
     # gpuwm.prepared_domain_tree_forecast, a designed division of labour
     # this lane does not widen.  Naming a schema no HRRR preparation
     # writes keeps _resolve_prepared_layout's generic path from matching
     # by accident; the explicit refusal below is what a caller sees.
     "hrrr": "gpuwm-hrrr-native-hierarchy-proof-unreachable-here",
-    "hrrr-prs": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "gdas": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "gefs": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "gem-gdps": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "aifs": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "aigfs": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "aigefs": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "ecmwf-open-data": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "icon-eu": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "rap": "gpuwm-mapped-native-hierarchy-proof-v1",
-    "rrfs": "gpuwm-mapped-native-hierarchy-proof-v1",
 }
 _LEGACY_HIERARCHY_PROOF_SCHEMAS = {
+    **{source: frozenset() for source in _MAPPED_PACKAGED_PROFILE},
     # v1 predates the front-door physics receipt the v2 hierarchy proof
     # carries and cannot be promoted to it by inference, the same rule
     # the direct proof's v2 lives under.
     "gfs": frozenset({"gpuwm-gfs-native-hierarchy-proof-v1"}),
     "era5": frozenset(),
-    "20crv3": frozenset(),
-    "20crv3-cf": frozenset(),
     "hrrr": frozenset(),
-    "hrrr-prs": frozenset(),
-    "gdas": frozenset(),
-    "gefs": frozenset(),
-    "gem-gdps": frozenset(),
-    "aifs": frozenset(),
-    "aigfs": frozenset(),
-    "aigefs": frozenset(),
-    "ecmwf-open-data": frozenset(),
-    "icon-eu": frozenset(),
-    "rap": frozenset(),
-    "rrfs": frozenset(),
 }
 #: The EXACT top-level inventory of the two documents
 #: :mod:`gpuwm.mapped_direct` publishes -- the mapped route's direct
@@ -625,34 +591,22 @@ MAPPED_HIERARCHY_PROOF_KEYS = frozenset({
     "proof_content_sha256",
 })
 _SOURCE_ADAPTER = {
-    "gfs": "gfs-pgrb2-0p25-direct-v1",
-    "era5": "era5-grib1-direct-v1",
-    "20crv3": "rw-wps-20crv3-member-grib2-v1",
-    # The generic mapped adapter, truthfully: the packaged NetCDF profile
-    # is prepared by `gpuwm.mapped_direct` with nothing model-specific in
+    # The generic mapped adapter, truthfully: a packaged profile is
+    # prepared by `gpuwm.mapped_direct` with nothing model-specific in
     # the code path, so the adapter string is the mapped one and WHICH
     # profile it was is bound where it actually lives -- the mapping and
     # composition digests, checked byte for byte above.  Writing a
-    # 20CRv3-shaped adapter id here would be a per-model label on a route
+    # per-model adapter id here would be a per-model label on a route
     # that has no per-model half.
-    "20crv3-cf": "rw-wps-mapped-composition-v2",
+    **{source: "rw-wps-mapped-composition-v2"
+       for source in _MAPPED_PACKAGED_PROFILE},
+    "gfs": "gfs-pgrb2-0p25-direct-v1",
+    "era5": "era5-grib1-direct-v1",
+    # The one mapped route whose adapter id IS model-specific, because
+    # its member identity is sealed by a packaged member manifest.
+    "20crv3": "rw-wps-20crv3-member-grib2-v1",
     # The adapter identity gpuwm/source_adapters.py declares for HRRR.
     "hrrr": "hrrr-native-state-v1",
-    # Same truthful mapped adapter id as 20crv3-cf: WHICH profile it was
-    # is bound by the packaged mapping/composition digests, not a label.
-    "hrrr-prs": "rw-wps-mapped-composition-v2",
-    "gdas": "rw-wps-mapped-composition-v2",
-    "gefs": "rw-wps-mapped-composition-v2",
-    "gem-gdps": "rw-wps-mapped-composition-v2",
-    "aifs": "rw-wps-mapped-composition-v2",
-    "aigfs": "rw-wps-mapped-composition-v2",
-    "aigefs": "rw-wps-mapped-composition-v2",
-    "ecmwf-open-data": "rw-wps-mapped-composition-v2",
-    # Same truthful mapped adapter id: WHICH profile it was is bound by
-    # the packaged mapping/composition digests, not a label.
-    "icon-eu": "rw-wps-mapped-composition-v2",
-    "rap": "rw-wps-mapped-composition-v2",
-    "rrfs": "rw-wps-mapped-composition-v2",
 }
 _DECODER_IMPLEMENTATION = {
     "gfs": "gpuwm-all-rust-gfs-grib2-bridge",
@@ -2370,6 +2324,93 @@ def _require_digest(value, label: str) -> str:
     return value
 
 
+class PreparationProofDigestMismatch(ValueError):
+    """``--proof-sha256`` is not this preparation proof's file digest.
+
+    Its own class because the CLI has to tell this apart from every other
+    admission failure: it is the one a correct, complete, uncorrupted
+    preparation produces when the reader took the digest from the wrong
+    place, and the remedy is a different string to paste rather than a
+    re-run of anything.
+    """
+
+
+def _proof_digest_refusal(
+        proof_path: Path, given: str, actual: str,
+) -> PreparationProofDigestMismatch:
+    """The named refusal for a ``--proof-sha256`` that does not match.
+
+    ``preparation proof SHA differs from --proof-sha256`` was the whole
+    message, it arrived as an uncaught traceback, and it named neither
+    which of the two digests in play is wanted nor what was given.  The
+    document carries a field spelled ``proof_content_sha256`` -- the
+    canonical hash of its own content WITHOUT that field -- and a reader
+    hunting a digest inside a 42 KB proof finds that one first.  It can
+    never equal the file digest, so the confusion is a dead end that the
+    old sentence left the reader to discover.
+    """
+
+    breakage = (
+        "this digest is what binds the forecast to the exact preparation "
+        "that produced it, so a run past a mismatch would integrate a "
+        "preparation nobody certified")
+    content = None
+    try:
+        document = json.loads(Path(proof_path).read_text(encoding="utf-8"))
+        if isinstance(document, Mapping):
+            content = document.get("proof_content_sha256")
+    except (OSError, UnicodeDecodeError, ValueError):
+        content = None
+    if isinstance(content, str) and content == given:
+        what = (
+            "the value given is that document's own "
+            "\"proof_content_sha256\" field, which covers the proof's "
+            "content WITHOUT that field and therefore never equals the "
+            "file's digest")
+    elif isinstance(content, str):
+        what = (
+            "the value given matches neither the file nor the document's "
+            "own \"proof_content_sha256\" field")
+    else:
+        what = "the value given is not that file's digest"
+    return PreparationProofDigestMismatch(
+        f"--proof-sha256 refused: it must be the sha256 of the file "
+        f"{proof_path}, and {what}.  {breakage[0].upper()}{breakage[1:]}.\n"
+        f"  expected (sha256 of the file proof.json): {actual}\n"
+        f"  given    (--proof-sha256):                {given}\n"
+        f"  Remedy: pass the expected digest above.  `rw-wps` and `gpuwm "
+        f"prep` print the complete forecast command, with this digest "
+        f"and the other two already filled in, when a preparation "
+        f"finishes.")
+
+
+def _proof_digest_refusal_at_the_door(args) -> str | None:
+    """The ``--proof-sha256`` answer a door can give before doing work.
+
+    Returns the refusal text, or ``None`` when there is nothing to say
+    here -- either the digest matches, or the prepared root is not there
+    at all, which is the preflight's refusal to give and not this one's.
+    The check is the same digest comparison the preflight makes, so the
+    two cannot disagree about what the flag means.
+    """
+
+    try:
+        _require_digest(args.proof_sha256, "proof-sha256")
+    except ValueError as error:
+        return f"--proof-sha256 refused: {error}"
+    proof_path = Path(args.prepared_root) / "proof.json"
+    if not proof_path.is_file():
+        return None
+    try:
+        actual = _sha256(proof_path)
+    except OSError:
+        return None
+    if actual == args.proof_sha256:
+        return None
+    return str(_proof_digest_refusal(
+        proof_path.resolve(), args.proof_sha256, actual))
+
+
 def _require_file(path: Path, label: str) -> Path:
     path = Path(path)
     if not path.is_file():
@@ -3045,7 +3086,7 @@ def _twentycrv3_manifest_file_specs(
         filename = row.get("filename")
         if (not isinstance(path_value, str) or not path_value
                 or not isinstance(filename, str)
-                or Path(path_value).name != filename):
+                or receipt_basename(path_value) != filename):
             raise ValueError(
                 f"20CRv3 manifest file row {index} has an unsafe path/name")
         match = _TWENTYCRV3_FILENAME.fullmatch(filename)
@@ -3285,7 +3326,7 @@ def _mapped_composition_manifest_file_specs(
             if key in normalized:
                 raise ValueError("mapped composition manifest repeats a role")
             normalized[key] = {
-                "name": Path(path_value).name,
+                "name": receipt_basename(path_value),
                 "path": path_value,
                 "bytes": byte_count,
                 "sha256": _require_digest(
@@ -3342,7 +3383,8 @@ def _manifest_file_specs(
                 f"portable source manifest role {role!r} is malformed")
         name = spec.get("name")
         if (not isinstance(name, str) or not name
-                or Path(name).name != name or Path(name).is_absolute()):
+                or receipt_basename(name) != name
+                or Path(name).is_absolute()):
             raise ValueError(
                 f"portable source manifest role {role!r} has an unsafe name")
         normalized[role] = {
@@ -3797,16 +3839,57 @@ def _execution_plan_receipt(
 def _validate_execution_file_receipt(
         receipt, actual: Path, label: str,
 ) -> None:
+    """Bind a run-control file to the bytes the preparation validated.
+
+    IDENTITY IS THE DIGEST.  The recorded ``path`` is provenance -- where
+    the preparation found the file on the machine that prepared it -- and
+    it is spelled in that machine's dialect.  This used to compare
+    ``Path(path_value).name`` against the supplied file's name, which
+    reads a recorded string with the RUNNING platform's separator rules:
+    a Windows-prepared tree records ``C:\\...\\experiment.toml``, POSIX
+    finds no separator in it, ``.name`` is the whole string, and the
+    comparison failed on a tree whose bytes and SHA-256 matched exactly.
+    A prepared tree therefore could not cross platforms -- prepare on the
+    desktop, run on the node -- and the refusal said the receipt
+    "differs from supplied file", blaming content that was identical.
+
+    A name difference over identical bytes was never a content
+    difference, and it prevents no breakage, so it is not a refusal.  The
+    two facts that ARE the binding are checked here, separately, and the
+    refusal names whichever one moved.
+    """
+
     if not isinstance(receipt, dict) or set(receipt) != {
             "path", "bytes", "sha256"}:
         raise ValueError(f"mapped {label} execution receipt is malformed")
     path_value = receipt.get("path")
-    if (not isinstance(path_value, str)
-            or Path(path_value).name != actual.name
-            or receipt.get("bytes") != actual.stat().st_size
-            or receipt.get("sha256") != _sha256(actual)):
+    if not isinstance(path_value, str) or not path_value:
         raise ValueError(
-            f"mapped {label} execution receipt differs from supplied file")
+            f"mapped {label} execution receipt records no source path, so "
+            "the file this preparation read cannot be named in any "
+            "refusal about it. Re-prepare with a distribution that writes "
+            "the provenance path.")
+    differences: list[str] = []
+    actual_bytes = actual.stat().st_size
+    if receipt.get("bytes") != actual_bytes:
+        differences.append(
+            f"the receipt records {receipt.get('bytes')!r} bytes and the "
+            f"supplied file is {actual_bytes}")
+    actual_sha256 = _sha256(actual)
+    if receipt.get("sha256") != actual_sha256:
+        differences.append(
+            f"the receipt records sha256 {receipt.get('sha256')!r} and the "
+            f"supplied file hashes to {actual_sha256}")
+    if differences:
+        raise ValueError(
+            f"mapped {label} execution receipt does not describe {actual}: "
+            + "; ".join(differences)
+            + ". A prepared tree is bound to the exact run-control bytes "
+            "it was prepared from, so running it against different bytes "
+            "would integrate a configuration the preparation never "
+            f"validated. The preparation read this file as {path_value!r}; "
+            "supply the bytes that receipt describes, or re-prepare "
+            "against the file you have.")
 
 
 def _validate_packaged_mapped_evidence(
@@ -4128,12 +4211,12 @@ def _validate_packaged_mapped_evidence(
         # path the decode actually opened.  The digest is the binding; the
         # name is what makes the pairing readable in a refusal.
         expected_terrain = [
-            (Path(str(row.get("path"))).name, row.get("sha256"))
+            (receipt_basename(row.get("path")), row.get("sha256"))
             for row in supplement_rows
         ]
         recorded = receipt.get("terrain_products")
         if not isinstance(recorded, list) or [
-            (Path(str(row.get("path"))).name, row.get("sha256"))
+            (receipt_basename(row.get("path")), row.get("sha256"))
             for row in recorded
             if isinstance(row, dict) and set(row) == {"path", "sha256"}
         ] != expected_terrain:
@@ -4848,8 +4931,10 @@ def preflight_prepared_forecast(
     experiment_config = _require_file(experiment_config, "experiment config")
     wps_namelist = _require_file(wps_namelist, "WPS namelist")
 
-    if _sha256(proof_path) != proof_sha256:
-        raise ValueError("preparation proof SHA differs from --proof-sha256")
+    actual_proof_sha256 = _sha256(proof_path)
+    if actual_proof_sha256 != proof_sha256:
+        raise _proof_digest_refusal(
+            proof_path, proof_sha256, actual_proof_sha256)
     if _sha256(source_manifest_path) != source_manifest_sha256:
         raise ValueError(
             "portable source manifest SHA differs from "
@@ -5351,10 +5436,24 @@ def _verify_inputs_unchanged(inputs: PreparedForecastInputs) -> None:
         raise RuntimeError("prepared cache changed during execution")
 
 
-def _consume_due_native_refl_10cm(state, ticks: int, consumer):
-    """Consume the scheme-native field staged by an output-due MP call."""
+def _consume_due_native_refl_10cm(state, ticks: int, consumer, *,
+                                  domain_start_ticks: int = 0):
+    """Consume the scheme-native field staged by an output-due MP call.
 
-    if (ticks != 0 and state.qv is not None
+    ``domain_start_ticks`` is the DOMAIN's own start tick, not the
+    experiment's: the frame due there is the analysis frame, which
+    precedes every step of that domain and therefore every stash.  It is
+    0 on this runner -- a single domain starts with its experiment -- and
+    the parameter exists so the shared predicate
+    (:func:`gpuwm.core.refl.refl_10cm_stash_is_due`) is asked the same
+    question here as at the tree seam, where a nest that activates later
+    made the absolute-0 reading kill the run at its first frame (#205).
+    """
+    from gpuwm.core.refl import refl_10cm_stash_is_due
+
+    if (refl_10cm_stash_is_due(ticks,
+                               domain_start_ticks=domain_start_ticks)
+            and state.qv is not None
             and state.physics.mp_physics in REFL_10CM_MICROPHYSICS):
         return consumer(state)
     return None
@@ -5875,6 +5974,12 @@ def _store_full_state_health(bundle, cfg, *, phase: str) -> dict[str, object]:
         bundle.store,
         domain_shape=(int(cfg.ny), int(cfg.nx)),
         auxiliaries=_store_health_auxiliaries(bundle, cfg),
+        # The DOMAIN's model lid, from the same base object
+        # ``DomainState.load_base`` reads it out of on the resident road.
+        # The theta ceiling is that lid carried down the dry adiabat, so a
+        # template that never loaded a base would otherwise gate a deep-top
+        # domain against the 100 hPa reference ceiling and refuse it.
+        p_top=getattr(bundle.base, "p_top", None),
         phase=phase)
     record = _strict_json(vars(report))
     record["armed"] = True
@@ -6139,7 +6244,7 @@ def run_prepared_forecast(
     from gpuwm.core.model import (
         DomainNode, ExperimentState, ModelRuntimeStatus, execute_experiment,
     )
-    from gpuwm.core.refl import consume_refl_10cm
+    from gpuwm.core.refl import consume_refl_10cm, domain_start_ticks_of
     from gpuwm.core.uh_diag import reset_up_heli_max
     from gpuwm.ingest.hrrr_physics import initialize_prepared_physics
     from gpuwm.runtime import declared_constant_glw
@@ -6391,7 +6496,11 @@ def run_prepared_forecast(
         # forecast-lead initialization may live -- separate the artifact
         # from its run directory and that provenance is gone.
         initial_condition=inputs.proof.get("initial_condition"),
-        source=inputs.source)
+        source=inputs.source,
+        # The tree-wide [output] history selection; a single-domain run's
+        # own `output = {...}` on its [[domain]] table overrides it inside
+        # the writer set, exactly as it does on a tree.
+        history_selection=exp.output)
     model._io_manager = writers
     forecast_started = time.perf_counter()
 
@@ -6447,7 +6556,8 @@ def run_prepared_forecast(
                 + _stability_diagnosis(sample, current.state, current.cfg.run)
                 + f"; sample {sample}")
         refl = _consume_due_native_refl_10cm(
-            current.state, ticks, consume_refl_10cm)
+            current.state, ticks, consume_refl_10cm,
+            domain_start_ticks=domain_start_ticks_of(current))
         writers.submit(current, ticks, refl_field=refl)
         # History-interval reset of the UP_HELI_MAX window
         # (module_diag_nwp.F:246-269; gpuwm's ratified placement is
@@ -7496,6 +7606,16 @@ def main(argv=None, *, observer=None) -> int:
         # --explain ...` exits 2 on `unrecognized arguments`.
         print(split_explanation(str(refused))[0], file=sys.stderr)
         return 2
+    # Before the clock defaults, before `--tiles`, and above all before
+    # the output directory is claimed: `--proof-sha256` is the digest a
+    # reader is most likely to take from the wrong place, and answering
+    # it from inside the preflight meant a traceback AFTER a run
+    # directory had been created for them to clean up.
+    proof_refusal = _proof_digest_refusal_at_the_door(args)
+    if proof_refusal is not None:
+        print(f"prepared_single_domain_forecast: {proof_refusal}",
+              file=sys.stderr)
+        return 2
     # After the capability gate, because the clock defaults are READ FROM
     # THE CONFIG: a reader with no runtime should hear about the runtime,
     # not about the shape of a file whose contents cannot matter yet.
@@ -7621,6 +7741,15 @@ def main(argv=None, *, observer=None) -> int:
                 None if not durable_inventory
                 else durable_inventory[-1]["path"]),
         }, heartbeat=True)
+        if isinstance(error, PreparationProofDigestMismatch):
+            # A run that never started, not one that failed: the door
+            # check above catches every command-line spelling of this,
+            # and this is the same answer for the paths that reach the
+            # preflight some other way.  A traceback where a user can
+            # land is the defect; the refusal names both digests.
+            print(f"prepared_single_domain_forecast: {error}",
+                  file=sys.stderr)
+            return 2
         raise
     print(json.dumps({
         "schema": report["schema"],

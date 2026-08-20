@@ -108,6 +108,12 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
     # is gated by tests/test_mp_accepted_builds.py.
     my2_cfg = dataclasses.replace(d01_cfg, mp_physics=9)
     wdm6_cfg = dataclasses.replace(d01_cfg, mp_physics=16)
+    # Grell-Freitas owns the two names in
+    # gpuwm.config.CUMULUS_ADVECTIVE_FORCING_SCHEMES' allocation -- the
+    # dycore's exported advective forcing pair (WRF RTHFTEN/RQVFTEN) --
+    # and no other configuration allocates them, so the arm joins for the
+    # same reason NSSL, P3, MY2 and WDM6 do.
+    gf_cfg = dataclasses.replace(d01_cfg, cu_physics=3)
     names = (set(pf.state_array_shapes(d01_cfg))
              | set(pf.state_array_shapes(nssl_cfg))
              | set(pf.state_array_shapes(les_cfg))
@@ -115,7 +121,8 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
              | set(pf.state_array_shapes(sase_cfg))
              | set(pf.state_array_shapes(p3_cfg))
              | set(pf.state_array_shapes(my2_cfg))
-             | set(pf.state_array_shapes(wdm6_cfg)))
+             | set(pf.state_array_shapes(wdm6_cfg))
+             | set(pf.state_array_shapes(gf_cfg)))
     classified = (set(restart.STATE_SERIALIZED_ATTRS)
                   | set(restart.STATE_REBUILT_ATTRS)
                   | set(restart.STATE_SETUP_ARRAYS))
@@ -132,6 +139,13 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
         assert name in restart.STATE_SERIALIZED_ATTRS
     for name in ("qir0", "qib0"):
         assert name in restart.STATE_REBUILT_ATTRS
+    # Same guard for the advective forcing pair: it is cross-step state the
+    # producer cannot rebuild before its first post-resume consumer, so it
+    # is SERIALIZED and must never be demoted to rebuilt to dodge the
+    # checkpoint layout change.
+    for name in restart.ADVECTIVE_FORCING_STATE:
+        assert name in restart.STATE_SERIALIZED_ATTRS
+        assert name not in restart.STATE_REBUILT_ATTRS
 
 
 def test_state_shape_formulas_staggering():
@@ -2383,14 +2397,24 @@ def test_check_cli_estimator_json(capsys):
     # retention_residual is 3% of the alloc estimate, which carries the
     # ring lane's 27,388,032 B: +821,641 B over the ports-branch pin,
     # and 3% of the OLR estimate is a further +118,818 B.
-    assert payload["reserve_bytes"] == 3811771131
+    # 2026-08-20 (task 206): +349,962,240 B on the pin, all of it the
+    # CUDA-context term.  This is the ABSENT-card path (--budget-gib for
+    # a card that is not in this machine), which prices the context from
+    # the measured 2,304 B per resident thread plus the module-load
+    # growth -- 766 MiB against the retired flat 432 MiB.  The flat
+    # constant was one 2026-07-26 reading and it UNDER-charged this very
+    # card by 215 MiB once it ran under Linux; an absent card is priced
+    # above every card that has been measured, on purpose.
+    assert payload["reserve_bytes"] == 4161733371
+    reference = pf.card_local_memory_profile(None)
     assert payload["reserve_components"]["device_overhead_bytes"] == (
-        pf.CUDA_CONTEXT_BYTES + 2143272960)
+        reference.cuda_context_bytes + 2143272960)
     assert payload["kernel_local_memory_bytes"] == 2143272960
     assert "kf" in payload["kernel_modules"]
     assert pf.kernel_local_frame_bytes(
         load_experiment_case(CONFIG_4DOM)[0])["kf"] == 9216
-    assert payload["run_time_reserve_bytes"] == 6065468018
+    # Same +349,962,240 B context shift as ``reserve_bytes`` above.
+    assert payload["run_time_reserve_bytes"] == 6415430258
     assert payload["reserve_components"]["retention_residual_bytes"] == (
         math.ceil(0.03 * payload["alloc_estimate_bytes"]))
 
@@ -2525,17 +2549,24 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     payload = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert payload["observed_peak_envelope_platform"] == "windows"
-    assert payload["envelope_wddm_pool_slack_fraction"] == \
-        pf.WDDM_POOL_SLACK_FRACTION
-    # The measured affine model, term for term.
+    # Zero for this configuration: the fraction is the LEGACY-RRTMG
+    # lane's retained call-peak workspace, and this case is rte-rrtmgp.
+    assert payload["envelope_pool_slack_fraction"] == 0.0
+    assert payload["envelope_wddm_pool_slack_fraction"] == 0.0
+    # The measured affine model, term for term.  This case runs the
+    # rte-rrtmgp radiation lane, whose pool tracks the itemization at
+    # 0.88-1.00x on every card instrumented, so it carries NO pool-slack
+    # term -- that mechanism is the legacy engines' retained call-peak
+    # workspace (task 206).  While the term was keyed to WDDM this same
+    # configuration paid 20% of its estimate for it on Windows and
+    # nothing for it on Linux, and neither figure described the run.
+    assert payload["envelope_legacy_radiation"] is False
     assert payload["observed_peak_envelope_bytes"] == (
         payload["alloc_estimate_bytes"]
         + payload["non_pool_device_bytes"]
         + pf.ENVELOPE_UNMODELLED_BYTES
         + math.ceil(pf.ENVELOPE_PER_NEST_FRACTION
                     * (len(payload["domains"]) - 1)
-                    * payload["alloc_estimate_bytes"])
-        + math.ceil(pf.WDDM_POOL_SLACK_FRACTION
                     * payload["alloc_estimate_bytes"]))
     # ...and strictly below what the retired multiplier would have said.
     assert payload["observed_peak_envelope_bytes"] < int(
@@ -2545,7 +2576,10 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "WDDM pool slack" in out
+    # This case is the rte-rrtmgp lane, so the slack term is absent from
+    # the printed arithmetic entirely -- and the retired multiplicative
+    # floor stays gone.
+    assert "pool slack" not in out
     assert "WDDM floor" not in out
     assert "WARNING: observed peak envelope" not in out
     # The forecast is no longer the only phase this report prices, so the
@@ -3566,10 +3600,19 @@ def test_specializing_the_bound_is_what_lets_the_cumulus_config_through():
     """
     legs = _rail_gate(CONFIG_4DOM_MYNN_KF, rail_mib=29500, other_mib=3381)
     assert legs["alloc_estimate_le_wddm_budget"] is True
+    # The saving this test measures is the FRAME specialization, so both
+    # sides are priced with the same CUDA context.  They were not, once
+    # the context became a per-card term (task 206): the as-built figure
+    # keeps the 2026-07 flat constant by construction, and subtracting a
+    # reserve carrying the reference card's larger context turned a
+    # compile-time-array saving into a saving mixed with an accounting
+    # change.  Prices both against the same reference profile.
+    reference = pf.card_local_memory_profile(None)
     saved = (_as_built_overhead(CONFIG_4DOM_MYNN_KF)
-             - pf.ReservePolicy.n0_alloc(
+             - pf.CUDA_CONTEXT_BYTES
+             - (pf.ReservePolicy.n0_alloc(
                  load_experiment_case(CONFIG_4DOM_MYNN_KF)[0]
-             ).device_overhead_bytes)
+             ).device_overhead_bytes - reference.cuda_context_bytes))
     assert round(saved / 1024 ** 2) == 3698
 
 
@@ -3643,10 +3686,31 @@ def test_the_recorded_local_frames_match_the_driver():
     value is the only one the recorded constant may be compared against;
     the assertion is exact, the same production reader runs in the probe,
     and no launch order in this process can move the answer.
+
+    WHAT IS ASSERTED AGAINST WHAT (rewritten 2026-08-20, task 201/202).
+    A frame is what NVRTC emitted for one target architecture at one
+    compiler build, not a property of the source, so this test used to
+    judge every machine by one box's reading and went red on the desktop
+    the moment its card changed.  It now asks two different questions:
+
+    * on a compile platform this tree HAS a recording for, exact
+      equality against THAT recording -- full strength, and stronger
+      than before, because a box can no longer pass by matching somebody
+      else's numbers;
+    * on every platform, recorded or not, the invariant that actually
+      protects a user: no module may compile WIDER than the shipped
+      ceiling.  Wider means the reservation law under-charges by the
+      frame delta times the whole resident-thread capacity, and a run
+      admitted on the short number does not fail at the gate, it OOMs
+      later with nothing pointing back here.
+
+    That is not a skip: it is the assertion whose breakage can be named.
     """
     import re
     import subprocess
     import sys
+
+    from gpuwm.certify import compile_platform
 
     cp = pytest.importorskip("cupy")
     from gpuwm.core.kernels import load_module
@@ -3682,7 +3746,46 @@ def test_the_recorded_local_frames_match_the_driver():
             widest = max(widest, int(attributes["local_size_bytes"]))
         observed[path.stem] = widest
     assert uncompilable == set(pf.UNMEASURED_KERNEL_MODULES)
-    assert observed == pf.KERNEL_MAX_LOCAL_SIZE_BYTES
+
+    # The shipped table must know about every module that compiled, and
+    # about nothing that does not exist.  This is what caught health_tile
+    # -- a ``.cu`` that shipped with the out-of-core merge and had no row
+    # in either table, so the regeneration gate could not enumerate it.
+    assert set(observed) == set(pf.KERNEL_MAX_LOCAL_SIZE_BYTES)
+
+    fingerprint = compile_platform.compile_platform_fingerprint()
+    recording = pf.kernel_frame_recording_for(fingerprint)
+    if recording is not None:
+        mine = {module: observed[module] for module in recording.frames
+                if module in observed}
+        assert mine == dict(recording.frames), (
+            f"this box IS {recording.box} "
+            f"(sm_{recording.compute_capability}, NVRTC "
+            f"{recording.nvrtc_build}) and its own recording has gone "
+            "stale; re-measure it with "
+            "`python tools/vram_reserve_probe.py frames` and move the row "
+            "in gpuwm/core/kernel_frame_recordings.py")
+        if recording.complete:
+            assert set(recording.frames) == set(observed)
+
+    profile = pf.local_memory_profile_from_device(cp)
+    over = pf.under_priced_kernel_frames(observed, profile=profile)
+    assert not over, (
+        "these modules compile WIDER on this platform (sm_"
+        f"{fingerprint['device_compute_capability']}, NVRTC "
+        f"{fingerprint['nvrtc_build']}) than the shipped ceiling, so the "
+        "local-memory reservation under-charges and a run this card "
+        "cannot hold would be admitted: "
+        + "; ".join(
+            f"{row.module} {row.observed_bytes} B against "
+            f"{row.shipped_bytes} B = "
+            f"{row.unpriced_device_bytes / 1024 ** 3:.3f} GiB unpriced"
+            for row in sorted(over.values(),
+                              key=lambda r: -r.unpriced_device_bytes))
+        + ".  Remedy: add this platform as a KernelFrameRecording in "
+        "gpuwm/core/kernel_frame_recordings.py (the ceiling is the "
+        "element-wise maximum over the recordings, so adding one raises "
+        "every row it needs to raise and nothing else)")
 
 # ---------------------------------------------------------------------------
 # Noah-MP land-surface transients (noahmp_lsm_transient_shapes)
@@ -3994,6 +4097,13 @@ FLEET_4080_FORECAST_RUNS = (
 #: SM count of the card every row above was measured on.
 FLEET_4080_MULTIPROCESSORS = 76
 
+#: ...and the radiation lane every row above ran, which is what decides
+#: the pool-slack term (:data:`gpuwm.core.preflight.POOL_SLACK_FRACTION`).
+#: These are the default morrison-kf-RTE-RRTMGP suite, whose pool tracked
+#: the itemization at 0.94-1.00x -- the lane that does NOT retain a
+#: call-peak workspace between radiation calls.
+FLEET_4080_LEGACY_RADIATION = False
+
 
 def _fleet_4080_non_pool_bytes(nz: int = 49) -> int:
     """The non-pool term a 4080 carries for the default suite at ``nz``."""
@@ -4021,7 +4131,8 @@ def test_the_envelope_bounds_every_instrumented_run():
             FLEET_4080_FORECAST_RUNS):
         envelope = pf.machine_peak_envelope_bytes(
             alloc_estimate_bytes=int(estimate_gib * GIB),
-            non_pool_bytes=non_pool, domains=domains, family="linux")
+            non_pool_bytes=non_pool, domains=domains, family="linux",
+            legacy_radiation=FLEET_4080_LEGACY_RADIATION)
         assert envelope >= measured_gib * GIB, label
         over = envelope / (measured_gib * GIB) - 1.0
         worst_over = max(worst_over, over)
@@ -4058,37 +4169,48 @@ def test_the_envelope_has_an_intercept_that_does_not_scale_with_the_grid():
     non_pool = _fleet_4080_non_pool_bytes()
     small = pf.machine_peak_envelope_bytes(
         alloc_estimate_bytes=2 * GIB, non_pool_bytes=non_pool,
-        family="linux")
+        family="linux", legacy_radiation=FLEET_4080_LEGACY_RADIATION)
     large = pf.machine_peak_envelope_bytes(
         alloc_estimate_bytes=4 * GIB, non_pool_bytes=non_pool,
-        family="linux")
+        family="linux", legacy_radiation=FLEET_4080_LEGACY_RADIATION)
     assert large - small == 2 * GIB, "the pool side is 1:1"
     assert large < 2 * small, "an intercept is not a multiplier"
     # And the intercept is the thing this module already itemizes.
     assert small - 2 * GIB == non_pool + pf.ENVELOPE_UNMODELLED_BYTES
 
 
-def test_the_wddm_term_is_the_measured_slack_not_the_multiplier():
-    """Windows = the affine form + the measured pool-slack fraction.
+def test_the_pool_slack_term_is_the_measured_slack_not_the_multiplier():
+    """The affine form + the measured pool-slack fraction.
 
     The retired multiplicative floor turned a 5.66 GiB footprint into a
     9.91 GiB envelope on the 3080 walk while the run measured 2.6 GiB;
     the calibrated term is proportional to the ESTIMATE (worst measured
     +0.30x, legacy-RRTMG pool retention) and the footprint projection is
     display-only.
+
+    2026-08-20 (task 206): the term is no longer keyed to WDDM.  It was,
+    and the Linux envelope consequently under-predicted every one of
+    fifteen instrumented legacy-RRTMG forecasts on two Linux cards.  The
+    boundary it really splits on is the RADIATION LANE -- measured on
+    both driver models -- so the two families now price the same
+    configuration identically and the lane is what moves the number.
     """
 
-    linux = pf.machine_peak_envelope_bytes(
-        alloc_estimate_bytes=8 * GIB, non_pool_bytes=GIB, family="linux")
-    windows = pf.machine_peak_envelope_bytes(
-        alloc_estimate_bytes=8 * GIB, non_pool_bytes=GIB,
-        footprint_projection_bytes=20 * GIB, family="windows")
-    assert windows == linux + math.ceil(
-        pf.WDDM_POOL_SLACK_FRACTION * 8 * GIB)
+    legacy = dict(alloc_estimate_bytes=8 * GIB, non_pool_bytes=GIB,
+                  legacy_radiation=True)
+    modern = dict(alloc_estimate_bytes=8 * GIB, non_pool_bytes=GIB,
+                  legacy_radiation=False)
+    for family in ("linux", "windows"):
+        assert (pf.machine_peak_envelope_bytes(**legacy, family=family)
+                == pf.machine_peak_envelope_bytes(**modern, family=family)
+                + math.ceil(pf.POOL_SLACK_FRACTION * 8 * GIB))
+    assert (pf.machine_peak_envelope_bytes(**legacy, family="linux")
+            == pf.machine_peak_envelope_bytes(**legacy, family="windows"))
     # The footprint projection no longer moves the envelope at all.
-    assert windows == pf.machine_peak_envelope_bytes(
-        alloc_estimate_bytes=8 * GIB, non_pool_bytes=GIB,
-        footprint_projection_bytes=200 * GIB, family="windows")
+    assert pf.machine_peak_envelope_bytes(
+        **legacy, footprint_projection_bytes=20 * GIB,
+        family="windows") == pf.machine_peak_envelope_bytes(
+        **legacy, footprint_projection_bytes=200 * GIB, family="windows")
 
 
 def test_the_absent_card_profile_is_the_conservative_measured_reference():

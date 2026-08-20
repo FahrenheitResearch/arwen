@@ -50,6 +50,12 @@ command-line bins and their 9.8 MB test fixtures.
 
 ## Deliberate divergences from the source tree
 
+0. `LICENSE`'s copyright line reads `2026 rustwx contributors` rather
+   than upstream's entity name, matching the house convention every
+   other notice in this repository follows. Same rights holder, same
+   grant, same MIT terms; the only difference is how the holder is
+   spelled. Upstream will carry the same spelling whenever it is next
+   touched.
 1. `crates/rusty-weather/Cargo.toml` is trimmed to the library target:
    the bins and their deps (clap, image, mimalloc, libmimalloc-sys,
    ecape-rs, rw-ingest, windows-sys) are dropped, as are the bin-only
@@ -817,6 +823,59 @@ command-line bins and their 9.8 MB test fixtures.
 
         crates/rw-wrfbatch/src/bin/ensbatch.rs
                                                       107d11b1117714ce -> 0020a250b792120b
+
+16. `crates/rw-store/src/netcdf_classic.rs` is new, beside (not instead
+    of) `netcdf3.rs`, with its golden fixtures under
+    `crates/rw-store/tests/goldens/`.  `netcdf3.rs` writes the narrow
+    slice the hour exporter needs -- CDF-2, fixed dimensions, `NC_FLOAT`
+    only, no record dimension -- and a wrfout frame needs an unlimited
+    `Time`, an `NC_CHAR` `Times(Time, DateStrLen)`, `NC_INT`
+    bookkeeping variables, and, for a whole-mesh initial condition,
+    CDF-5's 64-bit sizes.  The new module covers CDF-1/CDF-2/CDF-5 with
+    record-dimension support and `NC_CHAR`/`NC_SHORT`/`NC_INT`/
+    `NC_FLOAT`/`NC_DOUBLE` variables; still pure Rust, still no HDF5
+    write binding.  It is a sibling rather than an edit so the
+    exporter's proven byte path keeps its exact shape -- nothing this
+    lane did changes a byte `netcdf3.rs` emits, and its tests are
+    untouched.  The three `tests/goldens/golden_cdf*.nc` fixtures were
+    written by the netCDF-C library through python-netCDF4 (the
+    generator script sits beside them); the new module's tests assert
+    byte-for-byte equality against all three, which is what pins the
+    CDF-5 field widths the published grammar leaves ambiguous.
+
+    Upstream reconciliation, for Drew: this is a gpuwm-authored
+    addition to a vendored crate, so it is a candidate to hand back to
+    the Studio workspace rather than to carry as a fork forever.  It
+    has no gpuwm-specific coupling -- no case names, no wrfout
+    vocabulary, just the classic format -- so it grafts onto the source
+    tree as-is if he wants it there.
+17. `crates/rw-mpas` is new (not in the source workspace): the MPAS mesh
+    and history-to-wrfout render bridge, a Rust port of the two Python
+    tools the MPAS lane had been converting frames with
+    (`mpas_resample_weights.py` and `mpas_history_to_wrfout.py`).  It
+    reads through `netcrust` and writes through
+    `rw_store::netcdf_classic`, so the whole path is pure Rust with no
+    HDF5 write binding, no Python and no SciPy.  Its own nearest-cell
+    k-d tree replaces `scipy.spatial.cKDTree`.
+
+    It reproduces the reference bit for bit: the weights digest -- which
+    hashes the entire int32 nearest-cell index array -- matches on both
+    render windows, and the emitted frames match variable for variable,
+    28.9 million float values on the focus window and 375.8 million on
+    the global one, with every variable attribute and every shared
+    global attribute identical.  Receipt in
+    `evidence/rw-mpas-converter-parity.json`.
+
+    Generic by construction: no case name, no site name and no campaign
+    name appears in the crate.  The window catalogue is two named
+    windows with published specifications, and the field map is WRF
+    variable names against MPAS variable names.
+
+    Upstream reconciliation, for Drew: this is gpuwm-authored, in a new
+    crate, and it depends only on `netcrust` and `rw-store` -- so it
+    hands back to the Studio workspace cleanly if he wants it there.
+    Whether MPAS support belongs in his renderer workspace at all is his
+    call, not this lane's.
 
 ## vendor/crates-io
 

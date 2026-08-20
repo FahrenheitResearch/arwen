@@ -797,6 +797,30 @@ RUC_OPTION_IDENTITY: dict[str, object] = {
 SURFACE_LAYER_SCHEMES = (0, 1, 2, 5, 91)
 #: WRF sf_surface_physics values in gpuwm's schema.
 LAND_SURFACE_SCHEMES = (0, 2, 3, 4)
+
+#: ``cu_physics`` values whose scheme consumes the dycore's PURE ADVECTIVE
+#: theta/qv forcing pair -- WRF's ``RTHFTEN``/``RQVFTEN``.
+#:
+#: A TABLE, not a branch.  The dycore's export, the state allocation, the
+#: VRAM projection and the restart inventory all read this one set, so
+#: admitting a further consumer (WRF's G3, GD or NTiedtke, each of which
+#: takes the same two arguments from ``module_cumulus_driver.F``) is one
+#: entry here and nothing else.
+#:
+#: Grell-Freitas (3) is the entry today.  Kain-Fritsch (1) is deliberately
+#: absent: WRF's ``module_cumulus_driver.F`` KFETASCHEME arm passes no
+#: RTHFTEN/RQVFTEN at all, so allocating the pair for a KF run would price
+#: two full [nz, ny, nx] arrays nothing reads.
+#:
+#: THE FOLD TRAP, recorded where the table is: WRF's cumulus driver
+#: pre-folds ``RTHRATEN + RTHBLTEN`` into ``RTHFTEN`` at
+#: ``module_cumulus_driver.F:867`` for G3SCHEME and NTIEDTKESCHEME ONLY.
+#: GFSCHEME is not in that list -- GF sums the advective, radiative and
+#: boundary-layer lanes itself.  The dycore therefore exports PURE
+#: ADVECTION, and any scheme added to this set that expects the pre-folded
+#: form must do that fold in its own adapter rather than moving the
+#: export, or it double-counts the heating GF must not see twice.
+CUMULUS_ADVECTIVE_FORCING_SCHEMES = frozenset({3})
 #: ``bl_pbl_physics`` value selecting the SASE closure.
 #:
 #: SASE is an ArWen-only scheme -- a Scale-Adaptive Stress-Energetics
@@ -1376,7 +1400,33 @@ _RUN_CONFIG_TABLES = ("grid", "dynamics", "run")
 #: one route whose domains are MOST likely to outgrow the card, a child
 #: refined out of an archived parent, was the one route that could not ask
 #: to stream.
-_KNOWN_TABLES = (*_RUN_CONFIG_TABLES, "tiles")
+#: ``[output]`` joins it on exactly the same terms.  It selects which
+#: history variables reach the product tape
+#: (:mod:`gpuwm.io.history_selection`) and changes no number the model
+#: computes, so it is not a RunConfig table either and does not enter a
+#: restart identity -- a run that trimmed its history must resume from a
+#: checkpoint written by one that did not, and the checkpoint stream is
+#: a different file written from model state.
+_KNOWN_TABLES = (*_RUN_CONFIG_TABLES, "tiles", "output")
+
+
+def load_history_selection(path: str | Path):
+    """The ``[output]`` block of a RunConfig TOML, or the shared FULL object.
+
+    Separate from :func:`load_config` and not a field on what it returns,
+    for the reason :func:`load_streaming_options` gives: ``RunConfig``'s
+    fields bind into every restart identity, and which variables the
+    HISTORY tape carries must not.  Both readers go through the same
+    config authority, so they read the same bytes of the same file.
+    """
+    import io
+
+    from gpuwm.config_authority import read_config_authority
+    from gpuwm.io.history_selection import HistorySelection
+
+    authority = read_config_authority(path)
+    raw = tomllib.load(io.BytesIO(authority.payload))
+    return HistorySelection.from_mapping(raw.get("output"), source=str(path))
 
 
 def load_streaming_options(path: str | Path):
@@ -1419,6 +1469,10 @@ def load_config(path: str | Path) -> RunConfig:
     # not in -- and a caller that reads only the RunConfig must not be the
     # reason a typo survives admission.
     load_streaming_options(path)
+    # Same treatment for [output], and for the same reason: a misspelled
+    # history_drop that silently does nothing is how a run comes to write
+    # the full inventory under the name of your selection.
+    load_history_selection(path)
     known_keys = {f.name for f in fields(RunConfig)}
     merged: dict = {}
     key_table: dict[str, str] = {}

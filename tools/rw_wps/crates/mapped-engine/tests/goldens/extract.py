@@ -148,12 +148,93 @@ def _masked_header_digests(
     ]
 
 
+#: How far apart two boxes' libm-dependent values may be and still be the
+#: same answer.  MEASURED 2026-08-20, same bytes, Windows desktop (UCRT)
+#: against weather-node-1 (glibc): at most 3 ULP -- 4.1e-16 relative -- on
+#: the three arrays the two ``exp``-based humidity derivations produce,
+#: with every non-transcendental array bit-identical.  1e-12 sits four
+#: orders above that measurement and eleven below any change of formula,
+#: unit, level order or dependency, which is the breakage this catches.
+LIBM_RELATIVE_TOLERANCE = 1e-12
+
+
+def _libm_dependent_names(mapping: pathlib.Path) -> list[str]:
+    """The mapping's transcendental-touched fields, engine's own rule."""
+
+    from gpuwm.mapped_source import libm_dependent_fields
+
+    return sorted(libm_dependent_fields(json.loads(mapping.read_text(encoding="utf-8"))))
+
+
+def _libm_statistics(
+    mapping: pathlib.Path, files: list[pathlib.Path]
+) -> list[dict[str, object]]:
+    """Per frame, the value identity of each libm-dependent field.
+
+    Such an array cannot be compared across boxes by digest, so it is
+    compared by VALUE under :data:`LIBM_RELATIVE_TOLERANCE`.  Five
+    statistics, not one: a single sum can be cancelled by a sign flip,
+    while min, max, the sum, the sum of magnitudes and the sum of squares
+    together cannot be moved by any rearrangement that leaves the array
+    wrong.
+    """
+
+    import numpy as np
+
+    from gpuwm.mapped_source import decode_mapped_source
+
+    rows: list[dict[str, object]] = []
+    for frame in decode_mapped_source(mapping, files):
+        entry: dict[str, object] = {}
+        for name in _libm_dependent_names(mapping):
+            field = frame.fields.get(name)
+            if field is None:
+                continue
+            values = np.asarray(field.values, dtype=np.float64)
+            finite = values[np.isfinite(values)]
+            entry[name] = {
+                "axes": list(field.axes),
+                "shape": [int(size) for size in values.shape],
+                "nonfinite": int(values.size - finite.size),
+                "minimum": None if finite.size == 0 else float(finite.min()),
+                "maximum": None if finite.size == 0 else float(finite.max()),
+                "sum": float(finite.sum()),
+                "sum_absolute": float(np.abs(finite).sum()),
+                "sum_square": float((finite.astype(np.float64) ** 2).sum()),
+            }
+        rows.append(entry)
+    return rows
+
+
+def _recording_box() -> dict[str, str]:
+    """Name the box whose per-box values this golden records."""
+
+    import platform
+
+    return {
+        "node": platform.node(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", required=True, choices=sorted(CASES))
     arguments = parser.parse_args(argv)
 
     sys.path.insert(0, str(REPOSITORY))
+    # The goldens are what the PYTHON engine measured -- that is the whole
+    # claim of this file, and the front door's default engine is Rust, so
+    # without this the extractor would record the Rust engine's answer and
+    # the crate test would be comparing the Rust engine to itself.  It read
+    # right and proved nothing.
+    from gpuwm import mapped_engine_bridge as engine_bridge
+
+    os.environ[engine_bridge.ENGINE_ENV] = engine_bridge.ENGINE_PYTHON
+
     from gpuwm.mapped_source import inspect_mapped_source
 
     case = CASES[arguments.case]
@@ -194,16 +275,43 @@ def main(argv: list[str] | None = None) -> int:
         "materialization": {
             key: value
             for key, value in document["materialization"].items()
-            if key in {"verdict", "frame_count", "frame_header_sha256"}
+            if key in {
+                "verdict", "frame_count", "frame_header_sha256",
+                "frame_header_sha256_portable", "portable_rule",
+            }
         },
     }
     if golden["materialization"].get("verdict") == "PASS":
-        # Recorded BESIDE the raw digest, not instead of it: the raw one
-        # says what this machine measured, the masked one is what another
-        # checkout can reproduce.  The crate test compares the masked one.
+        # Recorded BESIDE the portable digest, never instead of it.  Both
+        # of these are DECLARED PER-BOX VALUES -- they name what
+        # ``recorded_on`` measured and nothing more -- because the
+        # canonical header quotes absolute input paths AND the array
+        # digest of every derived field, whose last bits are the box's
+        # libm.  The crate test asserts
+        # ``frame_header_sha256_portable`` (paths reduced to basenames,
+        # derived digests elided by name) and compares the derived arrays
+        # themselves by value, under DERIVED_RELATIVE_TOLERANCE.
         golden["materialization"]["frame_header_sha256_masked"] = (
             _masked_header_digests(mapping, files)
         )
+        golden["per_box"] = {
+            "recorded_on": _recording_box(),
+            "values": [
+                "materialization.frame_header_sha256",
+                "materialization.frame_header_sha256_masked",
+                "frames[*].fields[libm_dependent].sha256",
+                "libm_dependent_statistics[*] (compared within tolerance)",
+            ],
+            "note": (
+                "the two header digests and the array digest of every "
+                "libm-dependent field are exact identities of this box; the "
+                "statistics beside them are this box's values, and are "
+                f"compared within {LIBM_RELATIVE_TOLERANCE:g} relative"
+            ),
+        }
+        golden["libm_relative_tolerance"] = LIBM_RELATIVE_TOLERANCE
+        golden["libm_dependent_fields"] = _libm_dependent_names(mapping)
+        golden["libm_dependent_statistics"] = _libm_statistics(mapping, files)
     target = pathlib.Path(__file__).resolve().parent / f"{arguments.case}.json"
     target.write_text(
         json.dumps(golden, indent=2, sort_keys=True) + "\n", encoding="utf-8"

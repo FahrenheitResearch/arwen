@@ -27,7 +27,11 @@ Classification argument (audit2 restart findings, adjudicated here):
 * SERIALIZED — read across step boundaries and not reconstructable:
   prognostics (+ Morrison moments and effective radii, which feed the NEXT
   radiation call), ``h_diabatic`` (WRF ``rdu``, Registry.EM_COMMON:1389 —
-  re-zeroing drops one step of retained heating), the km_opt=2 prognostic
+  re-zeroing drops one step of retained heating), the dycore's exported
+  advective forcing pair ``rthften``/``rqvften`` (WRF RTHFTEN/RQVFTEN, on
+  the schemes that read them — same lifecycle as ``h_diabatic``: the
+  producer is an RK stage that has not run yet when a resume reaches its
+  first cumulus call), the km_opt=2 prognostic
   SGS TKE carrier ``tke`` (WRF ``r``, Registry.EM_COMMON:312 — a developed
   turbulence field with no reconstruction route), the live microphysics
   accumulators in scratch (``mp_*``; the driver's diagnostic dataclass aliases
@@ -106,6 +110,7 @@ from gpuwm.core.nssl2_contract import (
     resolve_nssl2_mode_for_config,
 )
 from gpuwm.state_serialization_contract import (
+    ADVECTIVE_FORCING_STATE,
     LATERAL_BOUNDARY_PREFIX_SCHEMA,
     STATE_SERIALIZED_ATTRS,
     STATE_SETUP_ARRAYS,
@@ -297,6 +302,18 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
 #: string ``i01{17}rhdu``, whose ``r`` is the restart stream.
 THOMPSON_AEROSOL_RESTART_STATE = ("nc", "nwfa", "nifa")
 THOMPSON_AEROSOL_RESTART_SURFACE_STATE = ("nwfa2d", "nifa2d")
+
+#: The dycore's exported advective forcing pair (WRF RTHFTEN/RQVFTEN),
+#: named so the reader's key-set refusal can say WHICH change moved the
+#: layout and what to do about it instead of printing two sorted lists.
+#: Present only on a state whose cu_physics is in
+#: ``gpuwm.config.CUMULUS_ADVECTIVE_FORCING_SCHEMES``; every other
+#: configuration's checkpoint inventory is untouched by this pair.
+#:
+#: DEFINED in :mod:`gpuwm.state_serialization_contract` and imported
+#: above -- the prepared-cache side of the same tolerance needs it, and
+#: that side ships in a wheel that stages no restart reader.  Re-exported
+#: here under the name every reader in the tree spells.
 SURFACE_LAYER_ALGORITHM_IDENTITIES = {
     0: "disabled",
     1: "revised-mm5-surface-layer-v1",
@@ -895,6 +912,42 @@ DRIVER_REBUILT_ATTRS = frozenset({
     "carriers_need_producer_refresh",
     "tendencies", "last_ysu", "refl_10cm", "microphysics",
     "nssl2_binding",
+    # Grell-Freitas' four auxiliary forcing lanes and its per-column dx
+    # (WRF GFDRV's RTHFTEN/RQVFTEN/RTHBLTEN/RQVBLTEN inputs and dx(i,j)).
+    # All five are rebuilt, and each for its own reason:
+    #
+    #   gf_dx_column is a sealed STATIC.  The caller supplies it at
+    #   construction and it never changes during a run, so a resume gets
+    #   the identical vector from the identical constructor argument --
+    #   carrying it would archive a constant.
+    #
+    #   gf_rthdynten/gf_rqvdynten are BOUND REFERENCES to the integrator's
+    #   own buffers, never storage this driver owns, so archiving them
+    #   here would write the same numbers twice under two names.  On the
+    #   ARW path they alias state.rthften/state.rqvften, which ARE
+    #   serialized -- as STATE, in STATE_SERIALIZED_ATTRS, and rebound by
+    #   the resumed driver's constructor.  On the MPAS path they alias
+    #   seam-owned buffers the caller REFILLS at every run_phase1 before
+    #   GF reads them (gpuwm/core/mpas_column_batch.py), so a resumed
+    #   run's first phase-1 call overwrites whatever a checkpoint could
+    #   have carried.  Neither owner loses anything by this entry.
+    #
+    #   gf_rthblten/gf_rqvblten are the PBL slot's retained RAW rates --
+    #   whichever of YSU, MYJ, MYNN, Shin-Hong or SASE holds the slot --
+    #   refilled by the next due PBL call.  Divergence recorded, not
+    #   hidden: WRF's
+    #   Registry keeps RTHBLTEN/RQVBLTEN across a restart, and gpuwm does
+    #   not, so a resumed run whose cumulus call falls BEFORE its first
+    #   post-resume PBL call feeds GF zero boundary-layer forcing for that
+    #   one step.  That is native MPAS's own t=0 tend_physics state rather
+    #   than an invented one, it cannot occur at all when the PBL runs
+    #   every step (bldt == dt, the MPAS seam's own cadence), and the
+    #   alternative -- adding four full [nz,ny,nx] rate fields to the
+    #   archive -- changes the key layout and rejects every checkpoint
+    #   already on disk, which is not a price a one-step transient gets to
+    #   charge.
+    "gf_rthdynten", "gf_rqvdynten", "gf_rthblten", "gf_rqvblten",
+    "gf_dx_column",
     # The Shin-Hong passenger-repair advisory latch (task #206): a
     # print-once flag, not state.  Rebuilt False at driver init, so a
     # resumed run that needs the repair says so once again -- an
@@ -2873,6 +2926,11 @@ class TreeRestartInfo:
     phase: str
     paths_by_grid_id: dict[int, Path]
     headers_by_grid_id: dict[int, dict]
+    #: The restore point IS this configuration's stop tick, so the run
+    #: this checkpoint came from finished.  The state is restored exactly
+    #: as it would be for any other resume; there is simply nothing left
+    #: to integrate, and the route finalizes instead of stepping.
+    already_complete: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -3338,10 +3396,26 @@ def restore_tree_restart(path, model, *,
     if ticks % model.schedule.period_ticks != 0:
         raise RestartMismatchError(
             f"tree restart tick {ticks} is not PERIOD_BEGIN")
-    if ticks >= model.schedule.clock.run_ticks:
+    run_ticks = model.schedule.clock.run_ticks
+    # A restore point BEYOND the stop is a real mismatch: the checkpoint
+    # comes from a longer run than the one being resumed, and there is no
+    # way to integrate backwards to the requested stop.  A restore point
+    # exactly AT the stop is not -- it is the state a finished run ended
+    # on, so the route finalizes and reports success instead of raising.
+    # The favor-class 24 h reproduction died here: the supervisor
+    # relaunched from the run's own final checkpoint and every fresh
+    # worker refused at ticks == run_ticks, turning a complete run into
+    # rc 1.
+    already_complete = ticks == run_ticks
+    if ticks > run_ticks:
         raise RestartMismatchError(
-            f"tree restart at {ticks} ticks has nothing left before stop "
-            f"{model.schedule.clock.run_ticks}")
+            f"tree restart is at {ticks} ticks ({ticks / tick_den:g} s of "
+            f"model time) but this configuration stops at {run_ticks} ticks "
+            f"({run_ticks / tick_den:g} s), so the checkpoint comes from a "
+            "LONGER run than the one being resumed and there is no state to "
+            "integrate backwards to.  Resume from a checkpoint at or before "
+            "the stop, or raise [experiment] run_seconds to at least "
+            f"{ticks / tick_den:g}")
 
     # All refusal checks over all members precede the first mutation.
     for gid, node in nodes.items():
@@ -3369,7 +3443,8 @@ def restore_tree_restart(path, model, *,
     model._last_checkpoint = paths[root_id]
     return TreeRestartInfo(
         elapsed_ticks=ticks, tick_den=tick_den, phase=PERIOD_BEGIN,
-        paths_by_grid_id=paths, headers_by_grid_id=headers)
+        paths_by_grid_id=paths, headers_by_grid_id=headers,
+        already_complete=already_complete)
 
 
 def _validate_scratch_target(state, slot: str, host: np.ndarray,
@@ -3803,9 +3878,26 @@ def _validate_restart(path, state, cfg, *,
     expected_state = {name for name in STATE_SERIALIZED_ATTRS
                       if getattr(state, name, None) is not None}
     if set(stored_state) != expected_state:
+        missing = expected_state - set(stored_state)
+        detail = ""
+        if missing == set(ADVECTIVE_FORCING_STATE):
+            # The ONE key-layout change this release makes, named with its
+            # remedy rather than left as a two-list diff the reader has to
+            # difference by eye.  A checkpoint written before the dycore
+            # exported the pair carries every other array this run needs.
+            detail = (
+                "  This checkpoint predates the dycore's advective forcing "
+                f"export ({', '.join(sorted(missing))}, WRF RTHFTEN/"
+                "RQVFTEN): it was written by a build whose cumulus scheme "
+                "was fed hard zeros for that lane, so resuming it here "
+                "would either continue a different forecast or start the "
+                "lane from an unwritten buffer.  Remedy: resume from a "
+                "checkpoint this build wrote, or start the run again from "
+                "its prepared state.")
         raise RestartMismatchError(
             f"restart state arrays {sorted(set(stored_state))} do not "
-            f"match this configuration's state {sorted(expected_state)}")
+            f"match this configuration's state {sorted(expected_state)}."
+            f"{detail}")
     for name, host in stored_state.items():
         _check_array(host, getattr(state, name), f"state/{name}")
 
@@ -4089,6 +4181,7 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
 
 
 __all__ = [
+    "ADVECTIVE_FORCING_STATE",
     "CONFIG_RUN_LENGTH_FIELDS", "DRIVER_REBUILT_ATTRS",
     "DRIVER_SERIALIZED_ATTRS", "DRIVER_TENDENCY_ATTRS",
     "CUMULUS_ALGORITHM_IDENTITIES", "LAND_SURFACE_ALGORITHM_IDENTITIES",

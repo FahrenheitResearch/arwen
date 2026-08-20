@@ -245,6 +245,20 @@ cpu  tools/rustwx  rw-store  146
 # is us.
 cpu  tools/rustwx  rw-wrfbatch  114
 
+# rw-mpas: THIS project's crate too, and the DEFAULT route from an MPAS
+# history frame to a picture -- `rw_mpas_convert` gathers an unstructured
+# mesh onto a structured render window and writes the wrfout-shaped
+# classic netCDF frame the pinned renderer opens, and `rw_mpas_init`
+# builds the mesh side.  It replaced tools/mpas_render_bridge's Python,
+# which stays only as the reference the parity record
+# (evidence/rw-mpas-converter-parity.json: 127 of 127 PNGs
+# byte-identical) is about, so this crate is the only thing between a
+# wrong resample weight and an MPAS product plot that is plausible and
+# in the wrong place -- a mesh-to-grid gather that picks the wrong cell
+# does not crash, it draws the storm somewhere else.  Floor is its
+# first green run in this list, 2026-08-20: 61 across the lib.
+cpu  tools/rustwx  rw-mpas  61
+
 # static-fields: THIS project's crate too, and the DEFAULT builder of
 # every WPS-geogrid-equivalent static a domain is built on -- projection
 # grids, WPS_GEOG tile ingest, field building, and the high-resolution
@@ -295,9 +309,12 @@ cpu  tools/grib1_bridge  grib1_bridge  64
 # the product passes through had no leg at all.  The copies are now one,
 # this is that one, and its suite is what stands between a
 # missing-value-management regression and a field of encoder sentinels
-# published as physical data.  Floor is its first green run after the
-# convergence, 157 across the lib.
-cpu  tools/grib1_bridge  grib-core  157
+# published as physical data.  Floor was its first green run after the
+# convergence, 157 across the lib; raised to 162 when the Section-4 pv
+# coordinate octets (the hybrid A/B channel) joined the parse with five
+# tests of their own -- a build without them decodes a hybrid source
+# into empty coefficient tuples, exactly the L137 proof lane's gap G1.
+cpu  tools/grib1_bridge  grib-core  162
 
 # --------------------------------------------------------- tools/rw_wps
 # The mapped decode engine workspace: the vendored rw-wps donor snapshot
@@ -311,15 +328,18 @@ cpu  tools/grib1_bridge  grib-core  157
 # is `rust`).  Its suite is the decode itself -- selector resolution, the
 # level ladder, the acquisition codecs, the frameset writer -- plus the
 # goldens extracted from the real Python engine on real published bytes,
-# which is the comparison the whole port is judged on.  Floor is its
-# first green run in this list, 61 across the lib and `goldens`.  The
+# which is the comparison the whole port is judged on.  Floor was its
+# first green run in this list, 61 across the lib and `goldens`; raised
+# to 114 when the hybrid_sigma_pressure closure landed (pv harvest,
+# hybrid pressure, hydrostatic height -- the derivations a hybrid
+# initialization is read off).  The
 # goldens target reads the model-gauntlet staging tree when a box has
 # one and runs its cases against nothing when it does not, so this entry
 # is a compile-and-contract leg on a bare runner and a byte-parity leg on
 # a staged one; the Python-side battery
 # (tests/test_mapped_engine_parity.py) is where the cross-engine verdict
 # is read.
-cpu  tools/rw_wps  mapped-engine  61
+cpu  tools/rw_wps  mapped-engine  114
 
 # rw-wps: the donor mapping/composition/namelist engine this snapshot
 # vendors, and the crate the mapped-engine reads its authority files

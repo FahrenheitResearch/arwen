@@ -33,7 +33,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from gpuwm import fetch_guard
-from gpuwm.experiment import load_experiment
+from gpuwm.experiment import load_experiment, refuse_delayed_activation
 from gpuwm.fetch import (
     FETCH_MANIFEST_SCHEMA,
     HRRR_DEFAULT_MODE,
@@ -277,6 +277,14 @@ def load_stream_plan(path: str | Path) -> StreamPlan:
             "every domain must start before the first one-hour stream leg "
             "ends; checkpoint f001 cannot carry a never-started child "
             f"reliably (late grid ids: {late_starts})")
+    # AT PLAN LOAD, before a cycle is fetched or prepared.  Every leg of a
+    # stream runs `python -m gpuwm.prepared_domain_tree_forecast`, which
+    # restores each domain from a prepared cache and cannot bring one to
+    # life mid-run, so the runner's own refusal would fire -- correctly,
+    # but only after the cycle's fetch and preparation had been paid for.
+    # The endpoint gate above keeps its more specific sentence for the
+    # shape it names.
+    refuse_delayed_activation(experiment, "gpuwm stream")
 
     acknowledgements = prepare.get("acknowledgements", [])
     if (not isinstance(acknowledgements, list)

@@ -860,3 +860,40 @@ tests/test_spectral_receipt_v2.py
 # of thing a source-adding lane introduces without noticing, and every
 # cut ships whatever is in those files.  1.0 s, CPU-only.
 tests/test_case_token_leakage.py
+
+# The local twin of publish.yml's `test` job.  The class of breakage:
+# the replay builds its own venv, CI's 3.11 interpreter ships setuptools
+# and a 3.12+ venv does not, and two of the job's own packaging tests
+# REFUSE without it -- so on any modern box the replay went red on its
+# harness while the job it replays was fine, and a harness whose verdict
+# is about itself cannot be pointed at a public snapshot before a cut.
+# The venv-building row is network-gated and skips by default; what runs
+# here is the premise (the job's files need setuptools) and the seed
+# list.  <1 s, CPU-only.
+tests/test_ci_test_replay.py
+
+# Three 2.5.1 headline features whose suites were never enumerated here.
+# The class of breakage is the same for all three and it is the one this
+# release exists to stop: a feature ships, its door is the thing users are
+# told to reach for, and the gate that decides whether the release is
+# green never runs a line of it.  A regression in any of them reaches a
+# user before it reaches a test.
+#
+# [output] variable selection: the writer trims wrfout by preset or by
+# list, and the plan-time dependency warning is what stops a trimmed
+# history silently costing a render product.  Untested here, a selection
+# that drops a field a product needs becomes a render failure at the far
+# end of a run instead of a warning at the near end.
+tests/test_history_selection.py
+
+# The advective forcing pair: RTHFTEN/RQVFTEN leave the dycore for the
+# cumulus driver.  462 lines proving the lane WRF feeds and we used not
+# to.  Untested here, the pair silently reverts to zeros and Grell-Freitas
+# runs on half its forcing -- which is exactly the defect the lane closed,
+# and it would come back invisibly.
+tests/test_dycore_advective_forcing_export.py
+
+# The speedrun door and its signed record.  Untested here, a course that
+# no longer runs, or a record whose signature stops verifying, is found by
+# whoever tries to reproduce a published number rather than by the gate.
+tests/test_speedrun.py

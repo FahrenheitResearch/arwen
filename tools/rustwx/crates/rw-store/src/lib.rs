@@ -15,6 +15,7 @@ pub mod index;
 pub mod ingest;
 pub mod lock;
 pub mod netcdf3;
+pub mod netcdf_classic;
 pub mod reader;
 pub mod run;
 pub mod validate;

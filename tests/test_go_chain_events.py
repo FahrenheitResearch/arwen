@@ -13,8 +13,10 @@ reader, whose stages account for the process.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -23,8 +25,9 @@ import pytest
 
 from gpuwm import chain_events, go_cli, run_stamp
 from gpuwm.chain_events import (
-    BOOT_STAGE, CHAIN_EVENTS_FILENAME, TTFP_FROM_MTIME, TTFP_FROM_RECEIPT,
-    GoChainEvents, read_chain_events, stage_walls, summarize,
+    BOOT_STAGE, CHAIN_EVENTS_FILENAME, TTFP_DEFINITION, TTFP_FROM_MTIME,
+    TTFP_FROM_RECEIPT, GoChainEvents, read_chain_events, stage_walls,
+    summarize,
 )
 from gpuwm.cli import main as cli_main
 from gpuwm.runplan import EVENT_SCHEMA, EVENT_TAGS
@@ -167,6 +170,13 @@ def _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog, *,
             frames.mkdir(parents=True, exist_ok=True)
             frame = frames / "wrfout_d01_2026-07-29_18_00_00"
             frame.write_text("", encoding="utf-8")
+            # A SECOND frame, because a real forecast publishes more than
+            # one and the early render claims exactly the first.  With a
+            # one-frame run the finalize stage has nothing left to draw
+            # and does not run at all, which is a lawful outcome but not
+            # the one the stage-list pins describe.
+            (frames / "wrfout_d01_2026-07-29_19_00_00").write_text(
+                "", encoding="utf-8")
             _write_step_log(run)
             if early_render and "--render-products" in command:
                 _publish_early_render(
@@ -221,24 +231,44 @@ def _write_step_log(run_dir: Path) -> None:
         json.dumps({"status": "PASS"}), encoding="utf-8")
 
 
-def _publish_early_render(render_dir: Path, frame: Path) -> None:
-    """What ``gpuwm.first_products`` leaves behind, receipt included."""
+def _publish_early_render(render_dir: Path, frame: Path, *,
+                          published_unix_ms: int | None = None) -> None:
+    """What ``gpuwm.first_products`` leaves behind, receipt included.
 
-    from gpuwm.first_products import (FIRST_PRODUCTS_RECEIPT,
+    The digests are REAL, because the finalize stage checks them before
+    it skips anything: a fixture with placeholder digests would exercise
+    the "receipt not trusted" branch on every run and prove nothing about
+    the branch that matters.
+    """
+
+    from gpuwm.first_products import (FIRST_PLOT_DEFINITION,
+                                      FIRST_PRODUCTS_RECEIPT,
                                       FIRST_PRODUCTS_SCHEMA)
 
+    stamp = int(time.time() * 1000) if published_unix_ms is None \
+        else int(published_unix_ms)
     picture = render_dir / "d01" / "analysis.png"
     picture.parent.mkdir(parents=True, exist_ok=True)
     picture.write_bytes(b"\x89PNG")
+    # The publish is os.replace, which carries the renderer's own mtime;
+    # a stamped receipt needs pictures no younger than its instant or it
+    # describes files that were rewritten afterwards.
+    os.utime(picture, (stamp / 1000.0, stamp / 1000.0))
     (render_dir / FIRST_PRODUCTS_RECEIPT).write_text(json.dumps({
         "schema": FIRST_PRODUCTS_SCHEMA,
-        "published_unix_ms": int(time.time() * 1000),
+        "measures": FIRST_PLOT_DEFINITION,
+        "published_unix_ms": stamp,
         "frame": str(frame), "domain": 1,
+        "frame_sha256": _sha256(frame),
         "valid_time": "2026-07-29T18:00:00",
         "render_products": "all",
-        "written": [{"name": "d01/analysis.png", "sha256": "c" * 64}],
+        "written": [{"name": "d01/analysis.png", "sha256": _sha256(picture)}],
         "render_seconds": 2.5,
     }), encoding="utf-8")
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +568,117 @@ def test_the_early_render_receipt_stamps_when_it_published(tmp_path):
     ttfp = observer.time_to_first_plot(render_dir=render_dir)
     assert ttfp["source"] == TTFP_FROM_RECEIPT
     assert 25.0 < ttfp["seconds"] < 35.0
+
+
+# ---------------------------------------------------------------------------
+# S5b: the number and the published tree say the same thing
+# ---------------------------------------------------------------------------
+#
+# MEASURED on both 3080 walks (44 s and 46 s): `go` printed "time to first
+# plot 0m 46s (first-products receipt)" while the earliest PNG in the
+# published run tree carried 2m 45s, sixteen seconds after the render stage
+# started at 2m 29s.  Both numbers were real.  The early render published at
+# 46 s; the finalize stage then redrew the same frame and overwrote those
+# same paths, because `go`'s observer is not a first-products HOST and the
+# branch that skips an already-published frame was reachable only from one.
+# So the headline named an instant at which nothing in the tree existed, and
+# a reader who checks the artifact stops believing the headline.
+
+
+def _synthetic_run_tree(tmp_path: Path, *, launch_unix_ms: int,
+                        published_at_s: float) -> tuple[Path, Path]:
+    """A render directory as a finished run leaves one."""
+
+    render_dir = tmp_path / "render"
+    render_dir.mkdir()
+    frame = tmp_path / "wrfout_d01_2026-07-29_18_00_00"
+    frame.write_text("", encoding="utf-8")
+    _publish_early_render(
+        render_dir, frame,
+        published_unix_ms=launch_unix_ms + int(published_at_s * 1000))
+    return render_dir, frame
+
+
+def test_a_rewritten_picture_stops_the_receipt_instant_being_quoted(
+        tmp_path: Path):
+    """THE contradiction, on a synthetic run folder.
+
+    The receipt says 46 s.  The picture it names carries 2m 45s, because
+    something redrew it.  The receipt's instant now describes no file on
+    disk, so the tree's own earliest picture is the honest answer and the
+    source says which measurement that was.
+    """
+
+    launch_unix_ms = int(time.time() * 1000) - 200_000
+    render_dir, _frame = _synthetic_run_tree(
+        tmp_path, launch_unix_ms=launch_unix_ms, published_at_s=46.0)
+
+    rewritten = (launch_unix_ms + 165_000) / 1000.0
+    os.utime(render_dir / "d01" / "analysis.png", (rewritten, rewritten))
+
+    observer = GoChainEvents(launch_monotonic=time.monotonic() - 200.0,
+                             launch_unix_ms=launch_unix_ms)
+    ttfp = observer.time_to_first_plot(render_dir=render_dir)
+    assert ttfp["source"] == TTFP_FROM_MTIME
+    assert ttfp["seconds"] == pytest.approx(165.0, abs=2.0)
+    # ...and the receipt is still readable, still says what it said, and
+    # now carries the fact that made it unquotable.
+    early = observer.first_products_receipt(render_dir=render_dir)
+    assert early["seconds_from_launch"] == pytest.approx(46.0, abs=2.0)
+    assert early["pictures_still_original"] is False
+
+
+def test_an_untouched_picture_keeps_the_receipt_instant(tmp_path: Path):
+    """The control.  Same tree, same receipt, nothing rewrote the picture."""
+
+    launch_unix_ms = int(time.time() * 1000) - 200_000
+    render_dir, _frame = _synthetic_run_tree(
+        tmp_path, launch_unix_ms=launch_unix_ms, published_at_s=46.0)
+
+    observer = GoChainEvents(launch_monotonic=time.monotonic() - 200.0,
+                             launch_unix_ms=launch_unix_ms)
+    ttfp = observer.time_to_first_plot(render_dir=render_dir)
+    assert ttfp["source"] == TTFP_FROM_RECEIPT
+    assert ttfp["seconds"] == pytest.approx(46.0, abs=2.0)
+    assert observer.first_products_receipt(
+        render_dir=render_dir)["pictures_still_original"] is True
+
+
+def test_the_printed_number_never_predates_the_tree(
+        tmp_path, monkeypatch, gfs_config, staged_geog, capsys):
+    """The property, over a whole chain: the reported instant is one at
+    which a picture in the published tree actually existed."""
+
+    _, root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog)
+    capsys.readouterr()
+    summary = summarize(root / CHAIN_EVENTS_FILENAME)
+    reported = summary["launch_unix_ms"] + int(
+        summary["time_to_first_plot_seconds"] * 1000)
+    pictures = sorted(root.rglob("*.png"))
+    assert pictures, "the chain published no picture at all"
+    earliest = min(int(path.stat().st_mtime * 1000) for path in pictures)
+    assert earliest <= reported + 2000, (earliest, reported)
+
+
+def test_the_summary_states_what_the_number_measures():
+    """Two quantities were both called time to first plot; the stream now
+    says which one it is carrying."""
+
+    assert "still present in the render tree" in TTFP_DEFINITION
+
+
+def test_the_early_frame_is_not_redrawn_by_the_finalize_stage(
+        tmp_path, monkeypatch, gfs_config, staged_geog, capsys):
+    """The anchor fix.  `go` never hosts the early render, so the skip was
+    unreachable and the finalize stage overwrote the early pictures --
+    which is what moved the tree's earliest mtime to 2m 45s."""
+
+    _, root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog)
+    printed = capsys.readouterr().out
+    assert "1 frame already published by the early render" in printed
+    assert "digests verified" in printed
+    summary = summarize(root / CHAIN_EVENTS_FILENAME)
+    assert summary["time_to_first_plot_source"] == TTFP_FROM_RECEIPT
 
 
 # ---------------------------------------------------------------------------

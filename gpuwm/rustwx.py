@@ -460,6 +460,7 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
                  source_label: str | None = None,
                  overlays: Path | None = None,
                  annotate: Path | None = None,
+                 streamlines: bool | None = None,
                  ) -> tuple[list[Path], list[str],
                             list[tuple[str, str]]]:
     """Render one wrfout file into ``out_dir``; (written, failures, skipped).
@@ -484,7 +485,7 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
         renderer, (wrfout,), store_root=store_root, out_dir=out_dir,
         products=products, frames=frames, width=width, height=height,
         heavy=heavy, source_label=source_label, overlays=overlays,
-        annotate=annotate)
+        annotate=annotate, streamlines=streamlines)
 
 
 def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
@@ -493,6 +494,7 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
                         source_label: str | None = None,
                         overlays: Path | None = None,
                         annotate: Path | None = None,
+                        streamlines: bool | None = None,
                         ) -> tuple[list[Path], list[str],
                                    list[tuple[str, str]]]:
     """One invocation over a whole wrfout SERIES, into ONE store.
@@ -540,6 +542,12 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
         command.append("--heavy")
     if source_label:
         command.extend(("--source-label", source_label))
+    # The wind layer, when the caller asked for one.  ``None`` adds no
+    # argument at all, so an invocation that never mentions the wind is
+    # byte-identical to every earlier release and
+    # ``RUSTWX_WIND_STREAMLINES`` keeps its existing meaning.
+    if streamlines is not None:
+        command.append("--streamlines" if streamlines else "--barbs")
     # 2.5.0: map overlays in geographic degrees and panel annotations.
     # Absent, the renderer runs no overlay code and the PNGs are
     # byte-identical to every earlier build -- which is what

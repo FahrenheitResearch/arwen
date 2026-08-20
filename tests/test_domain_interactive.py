@@ -276,13 +276,24 @@ def test_era5_has_no_latest_and_the_prompt_refuses_it_there(monkeypatch,
 
 @pytest.mark.parametrize("present", [True, False])
 def test_choosing_era5_names_the_cds_key_only_when_it_is_absent(
-        monkeypatch, present):
-    """Same rule as the NEXT block: a pointer, and only when it is true."""
+        monkeypatch, tmp_path, present):
+    """Same rule as the NEXT block: a pointer, and only when it is true.
+
+    The pointer is the registry row's credential column now, so the
+    fixture moves HOME rather than stubbing a presence function: what
+    is measured is the file the declared location names.
+    """
+
+    from gpuwm import fetch
+
+    home = tmp_path / "home"
+    home.mkdir()
+    if present:
+        (home / fetch.CDSAPIRC_NAME).write_text("url: x\nkey: y\n")
+    monkeypatch.setattr(fetch.Path, "home", staticmethod(lambda: home))
 
     lines: list[str] = []
     _answers(monkeypatch, ["35.3,-97.5", "era5", "2026-07-29T18", "", ""])
-    monkeypatch.setattr("gpuwm.fetch.cds_credentials_present",
-                        lambda: present)
     _no_gpu(monkeypatch)
     interactive.collect(printer=lambda *a, **k: lines.append(" ".join(
         str(x) for x in a)))

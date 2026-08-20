@@ -1759,6 +1759,34 @@ class PhysicsDriver:
             state, optional_components=cumulus_components)
         self.rthratenlw = cp.zeros(state.p.shape, dtype=DTYPE)
         self.rthratensw = cp.zeros(state.p.shape, dtype=DTYPE)
+        # GF forcing lanes (WRF GFDRV's RTHFTEN/RQVFTEN/RTHBLTEN/RQVBLTEN
+        # inputs).  The dynamics pair is DYNAMICS-owned: whichever
+        # integrator runs supplies it.  On the ARW path that is the
+        # dycore's own export, bound here to the state buffers
+        # ``rthften``/``rqvften`` it writes in place at RK stage 1 of every
+        # step (gpuwm/core/dycore.py::capture_advective_theta_forcing and
+        # gpuwm/core/moist.py::_capture_advective_qv_forcing); a host
+        # driver that integrates its OWN dynamics -- the MPAS column-batch
+        # seam, whose state is not a DomainState and carries neither
+        # attribute -- overwrites these two attributes with its own
+        # persistent buffers after construction.  ``None`` still means "no
+        # dynamics forcing exporter" and the GF adapter feeds zeros exactly
+        # as before, which is what a cumulus scheme outside
+        # CUMULUS_ADVECTIVE_FORCING_SCHEMES gets.  The PBL pair is retained by
+        # _couple_pbl_slot from whichever scheme holds the PBL slot --
+        # YSU, MYJ, MYNN, Shin-Hong or SASE all hand it the same raw
+        # dtheta/dqv rates; WRF semantics: RTHBLTEN/RQVBLTEN persist
+        # between PBL calls, so retention of the last computed rates IS
+        # the WRF contract.  gf_dx_column optionally carries a
+        # per-column dx ([ny, nx], metres) for meshes where one scalar dx
+        # is a lie; None keeps cfg.dx.
+        self.gf_rthdynten: cp.ndarray | None = getattr(
+            state, "rthften", None)
+        self.gf_rqvdynten: cp.ndarray | None = getattr(
+            state, "rqvften", None)
+        self.gf_rthblten: cp.ndarray | None = None
+        self.gf_rqvblten: cp.ndarray | None = None
+        self.gf_dx_column: cp.ndarray | None = None
         # OLR, WRF's TOA outgoing longwave (Registry.EM_COMMON:1839).  The
         # buffer exists exactly when the attached longwave scheme declares
         # it computes a top-of-atmosphere upward flux, so the variable's
@@ -2812,6 +2840,37 @@ class PhysicsDriver:
         f["wspd"][...] = cp.maximum(wspd, DTYPE(0.001))
         f["ch"][...] = f["chs"]
 
+    def _couple_pbl_slot(self, cfg: RunConfig,
+                         rates: Mapping[str, cp.ndarray],
+                         state: DomainState | None = None,
+                         ) -> PhysicsTendencies:
+        """Mass-couple a PBL slot's raw rates AND retain GF's forcing lanes.
+
+        Every PBL scheme in this driver ends its due call by handing the
+        SAME raw A-grid rate set to :func:`couple_ysu_tendencies` -- that
+        mapping's ``dtheta``/``dqv`` are WRF's RTHBLTEN/RQVBLTEN
+        (K s-1 dry theta, kg kg-1 s-1), whichever scheme filled them.
+        WRF's cumulus driver hands those two arrays to GFDRV regardless of
+        ``bl_pbl_physics``; the arrays persist between PBL calls, so
+        retaining the last computed rates IS the WRF contract.
+
+        THE BREAKAGE THIS SEAM PREVENTS: retention used to live in
+        ``_run_ysu`` alone, so a run pairing Grell-Freitas with MYJ, MYNN,
+        Shin-Hong or SASE fed the cumulus scheme ZEROS for its
+        boundary-layer forcing while a YSU run fed it the real rates --
+        the same defect the YSU retention closed, left open for four
+        schemes out of five.  Coupling and retention are one call here so
+        that a PBL scheme added later cannot be wired up correctly and
+        still silently starve the cumulus scheme.
+        """
+        # Raw, PRE-coupling: couple_ysu_tendencies multiplies into NEW
+        # arrays (chm * rates["dtheta"]) and never writes back, so these
+        # references stay the physical rates GFDRV wants.
+        self.gf_rthblten = rates["dtheta"]
+        self.gf_rqvblten = rates["dqv"]
+        return couple_ysu_tendencies(
+            self.state if state is None else state, cfg, rates)
+
     def _run_myj_pbl(self, atmosphere: Mapping[str, cp.ndarray],
                      cfg: RunConfig) -> None:
         """Run the MYJ PBL (bl_pbl_physics=2).
@@ -2872,7 +2931,7 @@ class PhysicsDriver:
         f["mixht"][...] = out["mixht"]
         f["exch_h"][...] = out["exch_h"]
         f["el_myj"][...] = out["el_myj"]
-        self.pbl_tendencies = couple_ysu_tendencies(self.state, cfg, out)
+        self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -3161,7 +3220,10 @@ class PhysicsDriver:
         f["kpbl"][...] = out["kpbl"]
         f["exch_h"][...] = out["exch_h"]
         f["exch_m"][...] = out["exch_m"]
-        self.pbl_tendencies = couple_ysu_tendencies(self.state, cfg, out)
+        # GF's RTHBLTEN/RQVBLTEN lanes are retained inside the shared
+        # coupling seam, so YSU gets them on exactly the same terms as
+        # every other scheme in the PBL slot.
+        self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -3213,7 +3275,7 @@ class PhysicsDriver:
             bl_mynn_tkeadvect=cfg.bl_mynn_tkeadvect,
             icloud_bl=cfg.icloud_bl)
         validate_mynn_tendencies(out)
-        self.pbl_tendencies = couple_ysu_tendencies(self.state, cfg, out)
+        self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -3374,7 +3436,7 @@ class PhysicsDriver:
         # The scheme's own subgrid energy, written back in place so the
         # restart alias and every diagnostic reader see the same array.
         self.state.e_sgs[...] = out["tke"]
-        self.pbl_tendencies = couple_ysu_tendencies(self.state, cfg, out)
+        self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -3980,7 +4042,7 @@ class PhysicsDriver:
         except FloatingPointError:
             self.sase_nan_guard_fires += 1
             raise
-        pbl = couple_ysu_tendencies(state, cfg, rates)
+        pbl = self._couple_pbl_slot(cfg, rates, state=state)
         pbl.rw = couple_sase_w_tendency(state, cfg, dw)
         self.pbl_tendencies = pbl
         self.last_sase_ledger = ledger

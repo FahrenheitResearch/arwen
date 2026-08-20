@@ -44,7 +44,7 @@ import math
 import os
 import time
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Mapping
 
@@ -166,6 +166,10 @@ class RealCaseRunSummary:
     #: Per-domain canonical trajectory digest, or ``None`` with the
     #: instrumentation disabled (see :func:`trajectory_digest_enabled`).
     trajectory_digest: dict | None = None
+    #: The path/bytes/SHA-256 record for every emitted frame, hashed once
+    #: during finalization and handed on so the supervisor's success
+    #: capsule does not re-read the same bytes a second time.
+    frame_records: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -185,6 +189,10 @@ class ExperimentRunSummary:
     #: Per-domain canonical trajectory digest, or ``None`` with the
     #: instrumentation disabled (see :func:`trajectory_digest_enabled`).
     trajectory_digest: dict | None = None
+    #: The path/bytes/SHA-256 record for every emitted frame, hashed once
+    #: during finalization and handed on so the supervisor's success
+    #: capsule does not re-read the same hundreds of GiB a second time.
+    frame_records: tuple[Mapping[str, object], ...] = ()
 
 
 #: Environment switch that turns the trajectory-digest instrumentation off.
@@ -228,10 +236,21 @@ class _SingleDomainDigestClock:
         "the digest carries the DomainClock initial value")
 
 
-def _frame_records(paths) -> list[dict[str, object]]:
-    """Every emitted frame with the SHA-256 of the bytes now on disk."""
+def _frame_records(paths, *, progress_callback=None
+                   ) -> list[dict[str, object]]:
+    """Every emitted frame with the SHA-256 of the bytes now on disk.
+
+    This is the longest silence in a large run: a 250 m nest's frame set
+    is hundreds of GiB, and re-reading all of it after the last model
+    step used to publish nothing at all.  The supervisor's integration
+    watchdog reads that silence as a hang and kills the worker, so every
+    frame publishes one beat naming how far through the set it is.
+    """
     records = []
-    for path in paths:
+    total = len(paths)
+    for index, path in enumerate(paths, start=1):
+        _finalizing_progress(
+            progress_callback, f"hash-output-frames-{index}-of-{total}")
         path = Path(path)
         digest = hashlib.sha256()
         with path.open("rb") as handle:
@@ -245,7 +264,9 @@ def _frame_records(paths) -> list[dict[str, object]]:
 
 def _emit_front_door_capsule(outdir, *, emission_site: str, exp,
                              data: CaseDataConfig, wrfout_paths,
-                             trajectory_digest, io_mode: str) -> Path:
+                             trajectory_digest, io_mode: str,
+                             frame_records=None,
+                             progress_callback=None) -> Path:
     """Write the front door's certification capsule.
 
     Unconditional: it does not consult ``exp.feedback``, because a receipt
@@ -273,7 +294,9 @@ def _emit_front_door_capsule(outdir, *, emission_site: str, exp,
         "output_title": data.output_title,
     }
     output = {
-        "frames": _frame_records(wrfout_paths),
+        "frames": (list(frame_records) if frame_records is not None
+                   else _frame_records(
+                       wrfout_paths, progress_callback=progress_callback)),
         "trajectory_digest": trajectory_digest,
     }
     return emit_run_capsule(
@@ -2451,6 +2474,57 @@ def _preparation_progress(progress_callback, phase: str) -> None:
         reporter(phase)
 
 
+def _finalizing_progress(progress_callback, phase: str) -> None:
+    """Publish one named beat from the stretch after the last model step.
+
+    Same optional-hook convention as :func:`_preparation_progress`.  It
+    exists because that stretch -- drain, device synchronize, trajectory
+    digest, receipts, and a SHA-256 pass over every emitted frame -- has
+    no model step to beat on, and on a large run it outlasts the
+    supervisor's stale-integration threshold.  Silence there is
+    indistinguishable from a hang, so a completing worker was killed and
+    the finished run replayed as a restart loop.
+    """
+    reporter = getattr(progress_callback, "finalizing", None)
+    if reporter is not None:
+        reporter(phase)
+
+
+def _resumed_start_step(*, elapsed_seconds: float, dt: float,
+                        outer_steps: int, run_seconds: float) -> int:
+    """The first outer step after a restore on the one-domain route.
+
+    Equal to ``outer_steps`` means the restore point IS the stop: the run
+    this checkpoint came from finished, the integration loop has zero
+    iterations, and the route finalizes to a summary.  PAST the stop is
+    the genuine mismatch -- a checkpoint from a longer run than the one
+    being resumed -- and it refuses by name.  The equality used to refuse
+    with the mismatch, which is how a complete run reported rc 1.
+    """
+    start = whole_step_count(elapsed_seconds, dt, "restart elapsed_seconds")
+    if start > outer_steps:
+        raise ValueError(
+            f"restart file is at {elapsed_seconds} s of model time but this "
+            f"configuration stops at run_seconds={run_seconds}, so the "
+            "checkpoint comes from a LONGER run than the one being resumed "
+            "and there is no state to integrate backwards to.  Resume from a "
+            "checkpoint at or before the stop, or raise [experiment] "
+            f"run_seconds to at least {elapsed_seconds}")
+    return start
+
+
+def _restart_is_complete(restart_info) -> bool:
+    """Whether a tree restore landed exactly on this run's stop tick.
+
+    ``None`` is a cold start, and any restore before the stop still has
+    integration to do.  A restore AT the stop has none: the schedule
+    executor refuses a start period at or past the end of the schedule,
+    so falling through to it would trade this named completion for a
+    bare ValueError.
+    """
+    return bool(getattr(restart_info, "already_complete", False))
+
+
 def _output_committed(progress_callback, *, domain_id: int,
                       valid_time: datetime, path: Path) -> None:
     """Tell an interested callback that one wrfout is durable.
@@ -2732,13 +2806,14 @@ def integrate_prepared_case(
         # file's member set to BE the store's.
         info = (stepper.restore_restart(last_checkpoint, cfg) if streamed
                 else restore_restart(last_checkpoint, state, cfg))
-        start_outer_step = whole_step_count(
-            info.elapsed_seconds, cfg.dt, "restart elapsed_seconds")
-        if start_outer_step >= outer_steps:
-            raise ValueError(
-                f"restart file is already at {info.elapsed_seconds} s; "
-                f"nothing to integrate before run_seconds="
-                f"{run_seconds}")
+        start_outer_step = _resumed_start_step(
+            elapsed_seconds=info.elapsed_seconds, dt=cfg.dt,
+            outer_steps=outer_steps, run_seconds=run_seconds)
+        if start_outer_step == outer_steps:
+            print(
+                "  restart point is this configuration's stop "
+                f"({run_seconds:g} s of model time): the run is already "
+                "complete, finalizing without integrating")
         trackers = info.run_trackers
         if trackers is not None:
             # Summary continuity: an interrupted-and-resumed run reports
@@ -2910,12 +2985,14 @@ def integrate_prepared_case(
                 last_durable_wrfout=(outputs[-1] if outputs else None),
                 last_checkpoint=last_checkpoint, phase="post-d01-sync",
                 step_wall_seconds=time.perf_counter() - outer_started)
+    _finalizing_progress(progress_callback, "synchronize-device")
     cp.cuda.runtime.deviceSynchronize()
 
     # After the final device synchronization and after every history frame is
     # durable, so the digest observes the trajectory and cannot join it.
     trajectory_digest = None
     if trajectory_digest_enabled():
+        _finalizing_progress(progress_callback, "trajectory-digest")
         from gpuwm.state_digest import canonical_state_digest
 
         trajectory_digest = {
@@ -3307,13 +3384,22 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             restart_path=restart, progress_callback=progress_callback,
             health_debug=health_debug, feedback=experimental_feedback,
             stepper=single_stepper)
+        _finalizing_progress(progress_callback, "provenance-receipts")
         _write_feedback_provenance_receipt(
             outdir, exp, resumed=restart is not None)
+        # Hashed once, here, and carried on the summary: same reason as
+        # the tree route below -- the supervisor's success capsule used
+        # to re-read every emitted frame a second time.
+        frame_records = _frame_records(
+            summary.wrfout_paths, progress_callback=progress_callback)
+        _finalizing_progress(progress_callback, "run-capsule")
         _emit_front_door_capsule(
             outdir, emission_site="runtime.run_experiment:single-domain",
             exp=exp, data=data, wrfout_paths=summary.wrfout_paths,
-            trajectory_digest=summary.trajectory_digest, io_mode="history")
-        return summary
+            trajectory_digest=summary.trajectory_digest, io_mode="history",
+            frame_records=frame_records)
+        return dataclass_replace(
+            summary, frame_records=tuple(frame_records))
 
     _preparation_progress(progress_callback, "build-domain-tree")
     from gpuwm.core.model import build_experiment, execute_experiment
@@ -3337,16 +3423,24 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     spawn_runner = build_real_spawn_runner(exp, data, model, outdir)
     _write_initial_perturbation_receipt(
         outdir, exp, getattr(model, "_initial_perturbation_receipts", ()))
+    restart_info = None
     if restart is not None:
         _preparation_progress(progress_callback, "validate-checkpoint")
         restart = validate_manifest_checkpoint(restart)
         _preparation_progress(progress_callback, "restore-tree-checkpoint")
-        restore_tree_restart(restart, model)
+        restart_info = restore_tree_restart(restart, model)
+    # A restore whose point IS the stop tick is a finished run, not an
+    # error and not an integration: the executor refuses a start period
+    # at the end of the schedule, so this decides here, once.
+    already_complete = _restart_is_complete(restart_info)
 
     _preparation_progress(progress_callback, "initialize-domain-writers")
     with PerDomainWrfoutWriters(
             model, outdir, start_time=exp.start_time,
             title=data.output_title,
+            # The tree-wide [output] history selection; each domain's own
+            # `output = {...}` overrides it inside the writer set.
+            history_selection=exp.output,
             progress_callback=progress_callback) as writers:
         model._io_manager = writers
         if relocation_runner is not None:
@@ -3391,7 +3485,17 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             exp.tiles, streaming_decisions)
         if streaming_report:
             print(f"  [tiles] {streaming_report['summary']}")
-        if spawn_runner is None:
+        if already_complete:
+            # Not a skipped run: the restore above put the finished state
+            # back in memory, and everything below -- drain, digest,
+            # receipts, capsule -- still runs, so this exits 0 with a
+            # summary instead of refusing a run that already happened.
+            print(
+                "  restart point is this configuration's stop tick "
+                f"({model.schedule.clock.run_ticks} ticks, "
+                f"{float(exp.run_seconds):g} s of model time): the run is "
+                "already complete, finalizing without integrating")
+        elif spawn_runner is None:
             execute_experiment(
                 model, history_handler=history_handler,
                 restart_handler=restart_handler,
@@ -3416,14 +3520,17 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                 progress_callback=progress_callback,
                 health_debug=health_debug,
                 steppers=steppers)
+        _finalizing_progress(progress_callback, "drain-history-writers")
         writers.drain()
         paths = writers.paths
+    _finalizing_progress(progress_callback, "synchronize-device")
     import cupy as cp
     cp.cuda.runtime.deviceSynchronize()
     # After the writer drain above and after the final device synchronization,
     # so the digest observes the trajectory and cannot participate in it.
     trajectory_digest = None
     if trajectory_digest_enabled():
+        _finalizing_progress(progress_callback, "trajectory-digest")
         from gpuwm.state_digest import canonical_state_digest
 
         # AT THE END OF THE RUN, the other half of refresh_state's stated
@@ -3439,16 +3546,23 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                 node.state, node.clock, scope="trajectory")
             for grid_id, node in sorted(model.nodes_by_grid_id.items())
         }
+    _finalizing_progress(progress_callback, "provenance-receipts")
     transition_path, transition_sha, transitions = \
         _write_microphysics_transition_receipt(
             outdir, model, exp, resumed=restart is not None)
     feedback_path, feedback_sha, feedback_receipt = \
         _write_feedback_provenance_receipt(
             outdir, exp, resumed=restart is not None)
+    # Hashed ONCE, here, and carried on the summary: the supervisor's
+    # success capsule used to re-read the same frames a second time, so
+    # the whole output set was digested twice at the end of every run.
+    frame_records = _frame_records(paths, progress_callback=progress_callback)
+    _finalizing_progress(progress_callback, "run-capsule")
     _emit_front_door_capsule(
         outdir, emission_site="runtime.run_experiment:domain-tree",
         exp=exp, data=data, wrfout_paths=paths,
-        trajectory_digest=trajectory_digest, io_mode="history")
+        trajectory_digest=trajectory_digest, io_mode="history",
+        frame_records=frame_records)
     return ExperimentRunSummary(
         wrfout_paths=paths,
         completed_seconds=model.root.clock.elapsed_seconds,
@@ -3460,7 +3574,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         feedback_provenance=feedback_receipt,
         feedback_provenance_receipt=feedback_path,
         feedback_provenance_receipt_sha256=feedback_sha,
-        trajectory_digest=trajectory_digest)
+        trajectory_digest=trajectory_digest,
+        frame_records=tuple(frame_records))
 
 
 def _submit_tree_history_frame(writers, node, ticks: int) -> None:
@@ -3471,9 +3586,25 @@ def _submit_tree_history_frame(writers, node, ticks: int) -> None:
     restart callback drains the resulting D2H publication before writing the
     tree checkpoint.  A restored model suppresses this already-committed
     callback per due domain, so no missing stash is ever read.
+
+    The due predicate is THE DOMAIN'S OWN, not the experiment's.  This
+    read used to be ``ticks != 0``, which is the right question only for
+    a domain that starts with the experiment: a nest activating later
+    has its first history frame due AT its activation epoch, before any
+    of its steps has run, and consuming there raised "REFL_10CM output
+    is due but no microphysics-time field is stashed" and killed the run
+    at that frame (#205).  ``refl_10cm_stash_is_due`` asks the same
+    question against the domain's own start tick, so the root's tick-0
+    analysis frame and an activating nest's activation-epoch analysis
+    frame are the one case they both are -- and every frame after either
+    is unchanged.
     """
+    from gpuwm.core.refl import domain_start_ticks_of, refl_10cm_stash_is_due
+
     refl_field = None
-    if (ticks != 0 and node.state.qv is not None
+    if (refl_10cm_stash_is_due(
+                ticks, domain_start_ticks=domain_start_ticks_of(node))
+            and node.state.qv is not None
             and node.state.physics.mp_physics in REFL_10CM_MICROPHYSICS):
         from gpuwm.core.refl import consume_refl_10cm
         refl_field = consume_refl_10cm(node.state)

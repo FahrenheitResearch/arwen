@@ -3496,11 +3496,35 @@ fn read_raw_wrf_mass_grid_fields(
     ny: usize,
     progress: &mut dyn FnMut(String),
 ) -> Result<Vec<RawField2D>, ImportError> {
+    read_raw_wrf_mass_grid_fields_where(src, nx, ny, progress, &mut |_, _| true)
+}
+
+/// The raw `(Time, south_north, west_east)` plane sweep, with a caller
+/// predicate over `(wrf_name, store_name)`.
+///
+/// The full science import (`wrf_process`) shares this so a plane a USER
+/// added to their WRF Registry reaches the store under the same
+/// `wrf_<sanitized>` name the light import gives it — which is the exact
+/// spelling `--products var:<name>` resolves. It needs the predicate
+/// because that route has already computed a large catalog of fields under
+/// their own names and must neither duplicate nor shadow them, and because
+/// its `--only`/`--skip` token grammar has to reach these planes too.
+pub(crate) fn read_raw_wrf_mass_grid_fields_where(
+    src: &PlaneSource,
+    nx: usize,
+    ny: usize,
+    progress: &mut dyn FnMut(String),
+    accept: &mut dyn FnMut(&str, &str) -> bool,
+) -> Result<Vec<RawField2D>, ImportError> {
     let mut seen = HashSet::<String>::new();
     let mut raw = Vec::new();
     for var in src.nc.variables()? {
         let wrf_name = var.name();
         if !is_raw_wrf_mass_grid_variable(&var, nx, ny) || !raw_wrf_variable_allowed(wrf_name) {
+            continue;
+        }
+        let name = format!("wrf_{}", sanitize_store_var_name(wrf_name));
+        if name == "wrf_" || !accept(wrf_name, &name) {
             continue;
         }
         // One line per raw plane: on a compressed 250 m wrfout each first-
@@ -3512,8 +3536,7 @@ fn read_raw_wrf_mass_grid_fields(
         if plane.nx != nx || plane.ny != ny {
             continue;
         }
-        let name = format!("wrf_{}", sanitize_store_var_name(wrf_name));
-        if name == "wrf_" || !seen.insert(name.clone()) {
+        if !seen.insert(name.clone()) {
             continue;
         }
         raw.push(RawField2D {
@@ -3702,7 +3725,7 @@ fn read_wrf_wind_rotation(
 /// and ~8M minor page faults per 800×800 plane on compressed 250 m wrfouts
 /// (allocation churn — docs/wrf-import-large-grids.md) versus tens of ms
 /// for wrf-core reading the same slice.
-struct PlaneSource<'a> {
+pub(crate) struct PlaneSource<'a> {
     nc: &'a NcFile,
     wrf: Option<&'a WrfFile>,
     time_index: usize,
@@ -3713,7 +3736,7 @@ struct PlaneSource<'a> {
 }
 
 impl<'a> PlaneSource<'a> {
-    fn new(nc: &'a NcFile, wrf: Option<&'a WrfFile>, time_index: usize) -> Self {
+    pub(crate) fn new(nc: &'a NcFile, wrf: Option<&'a WrfFile>, time_index: usize) -> Self {
         Self {
             nc,
             wrf,

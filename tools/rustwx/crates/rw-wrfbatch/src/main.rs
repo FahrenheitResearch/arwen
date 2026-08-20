@@ -96,6 +96,10 @@ struct Args {
     height: u32,
     heavy: bool,
     list_products: bool,
+    /// `--streamlines` / `--barbs`: the wind layer this invocation asks
+    /// for.  `None` leaves `RUSTWX_WIND_STREAMLINES`, and then the
+    /// automatic per-grid choice, in charge.
+    streamlines: Option<bool>,
     source_label: String,
     /// `--overlays FILE.json`: map overlays in geographic degrees.
     overlays: Option<rustwx_products::geographic_overlays::MapOverlays>,
@@ -106,8 +110,8 @@ struct Args {
 
 fn usage() -> &'static str {
     "usage: rw_wrfbatch --store-root DIR --out-dir DIR [--products all|SLUGS] \
-[--frames all|N] [--width N] [--height N] [--heavy] [--source-label TEXT] \
-[--list-products] wrfout...\n       rw_wrfbatch --help | --abi"
+[--frames all|N] [--width N] [--height N] [--heavy] [--streamlines|--barbs] \
+[--source-label TEXT] [--list-products] wrfout...\n       rw_wrfbatch --help | --abi"
 }
 
 /// What went wrong, and therefore what the user should be shown.
@@ -201,6 +205,7 @@ fn parse_args() -> Result<Invocation, CliError> {
     let mut height = 900u32;
     let mut heavy = false;
     let mut list_products = false;
+    let mut streamlines: Option<bool> = None;
     let mut source_label = DEFAULT_SOURCE_LABEL.to_string();
     let mut overlays_path: Option<PathBuf> = None;
     let mut annotate_path: Option<PathBuf> = None;
@@ -269,6 +274,13 @@ fn parse_args() -> Result<Invocation, CliError> {
                 ));
             }
             "--heavy" => heavy = true,
+            // The wind layer, at the front door.  Drawing streamlines was
+            // reachable only through RUSTWX_WIND_STREAMLINES, a name in no
+            // help text and no document, so the capability was engine-only.
+            // The variable still works; these two outrank it, because a
+            // flag the environment can silently overrule is a lie.
+            "--streamlines" => streamlines = Some(true),
+            "--barbs" => streamlines = Some(false),
             "--list-products" => list_products = true,
             "--help" | "-h" => return Err(CliError::Help),
             // Answered before anything else is validated, and on stdout:
@@ -304,6 +316,7 @@ fn parse_args() -> Result<Invocation, CliError> {
         height,
         heavy,
         list_products,
+        streamlines,
         source_label,
         overlays: overlays_path
             .as_deref()
@@ -490,6 +503,10 @@ fn import_note_line(note: &str) -> String {
 }
 
 fn run(args: Args) -> Result<(), String> {
+    // Recorded before any product lane builds a wind layer, and cleared to
+    // `None` when neither flag was given so RUSTWX_WIND_STREAMLINES and the
+    // automatic per-grid choice keep their existing meaning.
+    rustwx_products::shared_context::set_wind_streamline_request(args.streamlines);
     let options = WrfProcessOptions {
         heavy_ecape: args.heavy,
         ..WrfProcessOptions::default()
@@ -922,6 +939,7 @@ mod tests {
             height: 900,
             heavy: false,
             list_products: false,
+            streamlines: None,
             source_label: DEFAULT_SOURCE_LABEL.to_string(),
             overlays: None,
             annotations: None,

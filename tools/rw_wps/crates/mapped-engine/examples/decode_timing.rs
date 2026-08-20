@@ -181,7 +181,6 @@ fn main() {
             std::path::Path::new(directory),
             &mapping,
             &collection,
-            &frames,
             &digests,
         )
         .expect("frameset writes");

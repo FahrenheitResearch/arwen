@@ -991,7 +991,22 @@ pub(super) enum StreamlineSetting {
     Disabled,
 }
 
-fn static_streamline_setting() -> StreamlineSetting {
+/// The streamline choice in force: an explicit front-door request first,
+/// then `RUSTWX_WIND_STREAMLINES`, then the automatic per-grid decision.
+///
+/// The command line outranks the environment on purpose. A user who types
+/// `--streamlines` and gets barbs because a shell profile exported
+/// `RUSTWX_WIND_STREAMLINES=0` months ago has no way to see why, and the
+/// flag would silently be a lie. The variable keeps working for every
+/// caller that has been setting it.
+pub(super) fn static_streamline_setting() -> StreamlineSetting {
+    if let Some(request) = crate::shared_context::wind_streamline_request() {
+        return if request {
+            StreamlineSetting::Enabled
+        } else {
+            StreamlineSetting::Disabled
+        };
+    }
     std::env::var("RUSTWX_WIND_STREAMLINES")
         .ok()
         .map(|value| match value.trim().to_ascii_lowercase().as_str() {

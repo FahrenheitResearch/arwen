@@ -1,0 +1,85 @@
+{
+  "schema": "gpuwm.speedrun-courses/v1",
+  "note": "Courses are TABLE DATA.  Adding one is a row here plus its two asset files under configs/speedrun/; gpuwm/speedrun.py contains no per-course branch and tests/test_speedrun.py fails if one appears.  Every field a record is compared on is hashed into the row digest, so editing a course retires its records rather than silently re-ranking them.",
+  "courses": [
+    {
+      "id": "regional-12km-6h",
+      "kind": "regional",
+      "title": "Regional 12 km, six hours",
+      "summary": "One 178x144x49 Lambert domain at 12 km over the continental interior, six forecast hours against three-hourly global boundaries, hourly history.  The shape a first-time user's `gpuwm go` actually runs, sized so its MEASURED forecast envelope still leaves headroom on a loaded ten-gigabyte desktop card.",
+      "source": "gfs",
+      "cycle": "2026-08-14T00",
+      "area": "14.55,-126.28,60.87,-68.72",
+      "experiment_config": "regional-12km-6h.toml",
+      "wps_namelist": "regional-12km-6h.namelist.wps",
+      "forecast_seconds": 21600,
+      "boundary_interval_seconds": 10800,
+      "history_interval_seconds": 3600,
+      "domains": 1,
+      "grid": [
+        {"grid_id": 1, "nx": 178, "ny": 144, "nz": 49, "dx_m": 12000, "time_step_s": 60}
+      ],
+      "physics_profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "vram_gib_minimum": 10,
+      "measured_forecast_envelope_gib": 3.87,
+      "compile_mode": "cold",
+      "staged_inputs": {
+        "count": 3,
+        "patterns": ["gfs.t*z.pgrb2.0p25.f0*.grib2"],
+        "note": "f000, f003, f006 of the pinned cycle, area-subset.  The bytes are pinned by digest in every capsule; where they came from is off the clock."
+      },
+      "fetch_command": "gpuwm fetch --source gfs --cycle 2026-08-14T00 --hours 6 --area 14.55,-126.28,60.87,-68.72 --out <STAGED>",
+      "product_set_id": "standard-8/v1",
+      "products": [
+        "composite_reflectivity",
+        "2m_temperature",
+        "2m_dewpoint",
+        "mslp_10m_winds",
+        "total_qpf",
+        "500mb_height_winds",
+        "850mb_temperature_height_winds",
+        "sbcape"
+      ]
+    },
+    {
+      "id": "nested-12km-3km-3h",
+      "kind": "nested",
+      "title": "Nested 12 km parent with a 3 km child, three hours",
+      "summary": "A two-domain tree: an 84x68x49 parent at 12 km carrying a 168x136x49 child at 3 km, three forecast hours.  Exercises the domain-tree runner, nest initialisation and the per-nest render layout on the same card the regional course fits.",
+      "source": "gfs",
+      "cycle": "2026-08-14T00",
+      "area": "19.14,-118.65,56.72,-76.35",
+      "experiment_config": "nested-12km-3km-3h.toml",
+      "wps_namelist": "nested-12km-3km-3h.namelist.wps",
+      "forecast_seconds": 10800,
+      "boundary_interval_seconds": 10800,
+      "history_interval_seconds": 3600,
+      "domains": 2,
+      "grid": [
+        {"grid_id": 1, "nx": 84, "ny": 68, "nz": 49, "dx_m": 12000, "time_step_s": 60},
+        {"grid_id": 2, "nx": 168, "ny": 136, "nz": 49, "dx_m": 3000, "parent_grid_ratio": 4}
+      ],
+      "physics_profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "vram_gib_minimum": 10,
+      "measured_forecast_envelope_gib": 3.85,
+      "compile_mode": "cold",
+      "staged_inputs": {
+        "count": 2,
+        "patterns": ["gfs.t*z.pgrb2.0p25.f0*.grib2"],
+        "note": "f000 and f003 of the pinned cycle, area-subset."
+      },
+      "fetch_command": "gpuwm fetch --source gfs --cycle 2026-08-14T00 --hours 3 --area 19.14,-118.65,56.72,-76.35 --out <STAGED>",
+      "product_set_id": "standard-8/v1",
+      "products": [
+        "composite_reflectivity",
+        "2m_temperature",
+        "2m_dewpoint",
+        "mslp_10m_winds",
+        "total_qpf",
+        "500mb_height_winds",
+        "850mb_temperature_height_winds",
+        "sbcape"
+      ]
+    }
+  ]
+}

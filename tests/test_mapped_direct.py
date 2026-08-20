@@ -285,6 +285,11 @@ def _install_prepare_fakes(
     )
     bundle = SimpleNamespace(
         regular_snapshots=lambda: snapshots,
+        # The real bundle owns the engine's compose scratch while the
+        # route streams valid times out of it, and the route releases
+        # it when the tree is published; a stub without `close` would
+        # let that release quietly stop happening.
+        close=lambda: None,
         mapping_sha256="1" * 64,
         composition_sha256="2" * 64,
         input_manifest_sha256="3" * 64,
@@ -1469,3 +1474,149 @@ def test_mapped_cli_forwards_the_prebuilt_static_pair(monkeypatch, capsys):
     # --geog-root is still mandatory on this route.
     assert observed["geog_root"] == Path("/static/WPS_GEOG")
     assert '"status": "PASS"' in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# The next command.  Every other native front door that reaches a prepared
+# bundle finishes by printing the forecast line with its digests filled in
+# -- GFS, ERA5 and 20CRv3 all do.  The mapped route, which is the one every
+# packaged source (icon-eu, rap, gefs, rrfs, ...) runs on, printed nothing,
+# so a user who had just prepared a cycle had to hand-extract three SHA-256
+# values out of a 42 KB proof document, and the one they reached for first
+# -- the `proof_content_sha256` field inside it -- is the one value that
+# can never be right.
+# ---------------------------------------------------------------------------
+
+def _staged_mapped_proof(tmp_path, monkeypatch):
+    """A prepare double that writes a real proof.json, as the route does."""
+
+    output_root = tmp_path / "prepared"
+    # The real single-domain mapped proof's shape, taken off one: there
+    # is NO top-level `input_manifest_sha256` on this route -- the
+    # published manifest's digest lives in the composition receipt, and
+    # `source-evidence/input-manifest.json` is written from those bytes
+    # and verified against it.  A fixture that invented the top-level
+    # key would have passed while the real document routed the reader to
+    # the multi-domain runner.
+    proof = {
+        "schema": mapped_direct.PROOF_SCHEMA,
+        "status": "PASS",
+        "source_composition": {"input_manifest": {"sha256": _DIGEST}},
+        "prepared_cache": {"content_sha256": "b" * 64},
+        "physics": {"profile": "gpuwm-wsm6-ysu-noah-rrtmg-v1"},
+    }
+
+    def prepare(**kwargs):
+        root = Path(kwargs["output_root"])
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "proof.json").write_text(
+            json.dumps(proof, indent=2, sort_keys=True), encoding="utf-8")
+        return proof
+
+    monkeypatch.setattr(
+        mapped_direct, "load_mapping", lambda path: {"format": "grib2"})
+    monkeypatch.setattr(mapped_direct, "prepare_mapped_wrf", prepare)
+    return output_root
+
+
+def _mapped_argv(output_root, tmp_path, *extra):
+    return [
+        "--source-format", "grib2",
+        "--composition", str(tmp_path / "composition.json"),
+        "--mapping", str(tmp_path / "mapping.json"),
+        "--input", str(tmp_path / "f000.grib2"),
+        "--input-manifest", str(tmp_path / "input-manifest.json"),
+        "--input-manifest-sha256", _DIGEST,
+        "--wps-namelist", str(tmp_path / "namelist.wps"),
+        "--geog-root", str(tmp_path / "WPS_GEOG"),
+        "--experiment-config", str(tmp_path / "experiment.toml"),
+        "--output-root", str(output_root),
+        *extra,
+    ]
+
+
+def test_every_packaged_source_is_a_source_the_runner_accepts():
+    """The seam that lets this door answer without the forecast import.
+
+    `_next_command_lines` decides whether to print a command by asking
+    `packaged_profile_sources()`, because the RW-WPS standalone wheel
+    stages this preprocessing module and excludes the forecast executor
+    -- importing the runner here breaks that distribution.  What makes
+    the substitution sound is that the runner builds its own mapped
+    table from this one, so anything this door prints a command for is
+    an id `--source` takes.  Held here rather than assumed.
+    """
+
+    from gpuwm.prepared_single_domain_forecast import (
+        SUPPORTED_SOURCES, _MAPPED_PACKAGED_PROFILE,
+    )
+    from gpuwm.source_adapters import packaged_profile_sources
+
+    packaged = set(packaged_profile_sources())
+    assert packaged, "no packaged sources at all -- instrument is blind"
+    assert packaged <= SUPPORTED_SOURCES, sorted(packaged - SUPPORTED_SOURCES)
+    assert packaged == set(_MAPPED_PACKAGED_PROFILE), sorted(
+        packaged ^ set(_MAPPED_PACKAGED_PROFILE))
+    # ...and the id a user's own mapping prepares under is NOT one of
+    # them, which is the arm that prints prose instead.
+    assert "mapped" not in packaged
+
+
+def test_the_mapped_route_prints_its_ready_to_run_forecast_command(
+        monkeypatch, capsys, tmp_path):
+    output_root = _staged_mapped_proof(tmp_path, monkeypatch)
+
+    assert mapped_direct.main(_mapped_argv(
+        output_root, tmp_path,
+        "--prepared-forecast-source", "icon-eu")) == 0
+
+    captured = capsys.readouterr()
+    # stdout stays the machine-readable proof document, exactly as before.
+    assert json.loads(captured.out)["status"] == "PASS"
+    proof_digest = hashlib.sha256(
+        (output_root / "proof.json").read_bytes()).hexdigest()
+    for expected in (
+            "python -m gpuwm.prepared_single_domain_forecast",
+            "--source icon-eu",
+            f"--proof-sha256 {proof_digest}",
+            f"--source-manifest-sha256 {_DIGEST}",
+            f"--prepared-content-sha256 {'b' * 64}",
+            "--physics-profile gpuwm-wsm6-ysu-noah-rrtmg-v1",
+            "--io-mode history --outdir",
+    ):
+        assert expected in captured.err, expected
+
+
+def test_a_mapping_of_your_own_says_why_no_command_can_be_printed(
+        monkeypatch, capsys, tmp_path):
+    """`--source mapped` prepares, and no prepared runner accepts it.
+
+    Prose, never a command: the prepared-forecast runners take only the
+    packaged source ids, so printing a line with `--source mapped` in it
+    would be printing a command that exits 2 when pasted.
+    """
+
+    output_root = _staged_mapped_proof(tmp_path, monkeypatch)
+
+    assert mapped_direct.main(_mapped_argv(
+        output_root, tmp_path,
+        "--prepared-forecast-source", "mapped")) == 0
+
+    captured = capsys.readouterr()
+    assert "python -m gpuwm.prepared_single_domain_forecast \\" \
+        not in captured.err
+    assert "mapped" in captured.err
+    assert "no forecast command" in captured.err
+
+
+def test_an_unnamed_prepared_source_still_says_the_preparation_is_done(
+        monkeypatch, capsys, tmp_path):
+    """The hand-written `python -m gpuwm.mapped_direct` call."""
+
+    output_root = _staged_mapped_proof(tmp_path, monkeypatch)
+
+    assert mapped_direct.main(_mapped_argv(output_root, tmp_path)) == 0
+
+    captured = capsys.readouterr()
+    assert "preparation complete" in captured.err
+    assert "--prepared-forecast-source" in captured.err

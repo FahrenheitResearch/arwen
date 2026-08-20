@@ -34,20 +34,107 @@ RECEIPT_SCHEMA = "gpuwm.spectral-comparison-receipt/v1"
 
 _ALLOWED_KINDS = ("scalar", "vector")
 _ALLOWED_GATE_TRANSFORMS = ("identity", "absolute")
-_GATE_METRICS = frozenset({
-    "left_power", "reference_power", "error_power",
-    "amplitude_mismatch_power", "phase_location_error_power",
-    "left_fraction_of_valid_power", "reference_fraction_of_valid_power",
-    "power_ratio", "amplitude_ratio", "normalized_error_power",
-    "phase_location_fraction_of_error", "spectral_correlation",
-    "coherence_squared", "weighted_mean_absolute_phase_error_degrees",
-    "left_divergent_energy_fraction", "reference_divergent_energy_fraction",
-    "divergent_energy_fraction_difference",
-})
+
+#: Metrics a real band/component row carries.  Shared by the three real
+#: components; ``partition`` is the synthetic row and carries only the two
+#: divergent fractions and their difference.
+_BAND_METRICS = (
+    "amplitude_mismatch_power", "amplitude_ratio", "coherence_squared",
+    "error_power", "left_fraction_of_valid_power", "left_power",
+    "normalized_error_power", "phase_location_error_power",
+    "phase_location_fraction_of_error", "power_ratio", "reference_power",
+    "reference_fraction_of_valid_power", "spectral_correlation",
+    "weighted_mean_absolute_phase_error_degrees",
+)
+
+#: WHICH metrics each gate-addressable component actually produces.
+#:
+#: The breakage this table names: the synthetic ``partition`` row used to
+#: republish the ``total`` component's ``reference_power`` verbatim so the
+#: ``minimum_reference_power`` floor could be applied to it.  That copy was
+#: gate-addressable, so a campaign writing ``component = "partition"``,
+#: ``metric = "reference_power"`` silently graded the total-KE row instead,
+#: and ``tools/spectral_gate_calibrate.py`` -- which groups by
+#: (pair, field, component, band, metric) -- built two gates out of one
+#: measurement.  The floor now travels under ``gate_reference_power``, which
+#: is not a metric, and a gate naming a metric its component does not carry
+#: is refused at REGISTRATION, before any model output is opened.
+#:
+#: Adding a component or a metric is a row here, not a branch anywhere.
+COMPONENT_METRICS: dict[str, tuple[str, ...]] = {
+    "scalar": _BAND_METRICS,
+    "total": _BAND_METRICS,
+    "rotational": _BAND_METRICS,
+    "divergent": _BAND_METRICS,
+    "partition": (
+        "divergent_energy_fraction_difference",
+        "left_divergent_energy_fraction",
+        "reference_divergent_energy_fraction",
+    ),
+}
+
+#: The key a gate's ``minimum_reference_power`` floor is read from.  Every
+#: row carries it; on a real component it equals that component's own
+#: ``reference_power``, and on the ``partition`` row it is the total
+#: component's, because the partition fractions are only meaningful where
+#: the total energy is.
+GATE_FLOOR_KEY = "gate_reference_power"
+
+_GATE_METRICS = frozenset(
+    metric for metrics in COMPONENT_METRICS.values() for metric in metrics)
+
+
+def metrics_for_component(component: str) -> tuple[str, ...]:
+    """The metrics ``component`` produces, or ``()`` if it is not a component."""
+
+    return COMPONENT_METRICS.get(str(component), ())
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _code_identity() -> dict[str, object]:
+    """The evaluator identity, from the capsule builder that already owns it.
+
+    Imported at call time: ``gpuwm.certify.capsule`` pulls in the supervisor
+    for ``git_commit``, and ``gpuwm spectral`` is CPU-only and must stay
+    importable in a minimal environment.  A tree without git still answers --
+    ``git_commit`` returns its own unavailable marker rather than raising --
+    so a receipt is never blocked on it.
+    """
+
+    from gpuwm.certify import capsule  # noqa: PLC0415
+
+    return json.loads(json.dumps(capsule.code_identity()))
+
+
+def policy_parameters(parameters: Mapping[str, object]) -> dict[str, object]:
+    """The registration's policy with every box-specific path removed.
+
+    ``registration_sha256`` binds the RESOLVED absolute paths of every pair,
+    which is what makes it a durable pin on this box -- and what makes it
+    useless for asking whether two boxes ran the same campaign.  Measured on
+    a real pair of runs: the same source TOML, the same input bytes, and two
+    registration hashes, because one box spells the file
+    ``C:\\Users\\<user>\\...\\candidate.npz`` and the other
+    ``/home/<user>/.../candidate.npz``.
+
+    The policy digest is the same parameters with ``left_path`` and
+    ``reference_path`` replaced by their basenames.  What a campaign
+    declared -- bands, fields, gates, crop, pins -- survives; where the bytes
+    happened to sit does not.  This is the portable-frame-header rule
+    applied to a registration: the raw digest keeps its meaning, and a
+    second, declared one is what may be compared between boxes.
+    """
+
+    portable = json.loads(json.dumps(dict(parameters), allow_nan=False))
+    for pair in portable.get("pairs", []):
+        for key in ("left_path", "reference_path"):
+            if key in pair:
+                pair[key] = os.path.basename(str(pair[key]).replace("\\", "/"))
+    portable["path_policy"] = "basenames only; see policy_parameters"
+    return portable
 
 
 def canonical_hash(value: object) -> str:
@@ -281,6 +368,19 @@ def _normalise_gate(record: Mapping[str, object], *, index: int,
         raise ValueError(f"gate {index} names unknown pair {pair!r}")
     if metric not in _GATE_METRICS:
         raise ValueError(f"gate {index} names unknown metric {metric!r}")
+    carried = metrics_for_component(component)
+    if not carried:
+        raise ValueError(
+            f"gate {index} names unknown component {component!r}; a gate "
+            f"targets one of {sorted(COMPONENT_METRICS)}")
+    if metric not in carried:
+        raise ValueError(
+            f"gate {index} declares component {component!r} and metric "
+            f"{metric!r}, but a {component!r} row does not carry that "
+            f"metric -- it carries {list(carried)}. Grading it would read "
+            "a different component's number under this gate's name. Either "
+            f"target a component that produces {metric!r}, or keep "
+            f"{component!r} and choose one of the metrics it carries.")
     if transform not in _ALLOWED_GATE_TRANSFORMS:
         raise ValueError(
             f"gate transform must be one of {_ALLOWED_GATE_TRANSFORMS}")
@@ -396,6 +496,8 @@ def make_registration(source_toml: str | Path) -> dict[str, object]:
         "parameters": parameters,
     }
     registration["registration_sha256"] = canonical_hash(parameters)
+    registration["registration_policy_sha256"] = canonical_hash(
+        policy_parameters(parameters))
     return registration
 
 
@@ -403,7 +505,7 @@ def validate_registration(value: Mapping[str, object]) -> dict[str, object]:
     registration = dict(value)
     required = {
         "schema", "registered_utc", "source_toml", "source_toml_sha256",
-        "parameters", "registration_sha256",
+        "parameters", "registration_sha256", "registration_policy_sha256",
     }
     missing = required - set(registration)
     if missing:
@@ -415,6 +517,10 @@ def validate_registration(value: Mapping[str, object]) -> dict[str, object]:
         raise ValueError("spectral registration parameters must be an object")
     if canonical_hash(parameters) != registration["registration_sha256"]:
         raise ValueError("spectral registration hash does not match its pins")
+    expected_policy = canonical_hash(policy_parameters(parameters))
+    if registration.get("registration_policy_sha256") != expected_policy:
+        raise ValueError(
+            "spectral registration policy hash does not match its pins")
     if (parameters.get("spectral_compare_pins_sha256")
             != spectral_compare.IMPLEMENTATION_PINS_SHA256):
         raise ValueError("spectral comparison implementation pins do not match")
@@ -515,7 +621,10 @@ def _gate_rows(comparison: Mapping[str, object]) -> list[dict[str, object]]:
     result = comparison["result"]
     rows = []
     for row in spectral_compare.metric_rows(result):
-        rows.append({"pair": pair, "field": field, **row})
+        rows.append({
+            "pair": pair, "field": field, **row,
+            GATE_FLOOR_KEY: row.get("reference_power"),
+        })
     if result.get("kind") == "vector":
         for band in result.get("bands", []):
             left_fraction = band.get("left_divergent_energy_fraction")
@@ -532,7 +641,12 @@ def _gate_rows(comparison: Mapping[str, object]) -> list[dict[str, object]]:
                 "divergent_energy_fraction_difference": (
                     None if left_fraction is None or reference_fraction is None
                     else float(left_fraction) - float(reference_fraction)),
-                "reference_power": band.get("components", {}).get(
+                # The floor, NOT a metric: the partition fractions are only
+                # meaningful where the total energy is, so the floor is read
+                # from the total component.  Publishing it as
+                # ``reference_power`` made it gate-addressable, and a gate on
+                # the partition row then graded the total component's power.
+                GATE_FLOOR_KEY: band.get("components", {}).get(
                     "total", {}).get("reference_power"),
             })
     return rows
@@ -563,14 +677,21 @@ def evaluate_gates(comparisons: Sequence[Mapping[str, object]],
                    and row["component"] == gate["component"]
                    and (gate["pair"] == "*" or row["pair"] == gate["pair"])]
         if not matches:
-            results.append({**gate, "status": "incomplete",
+            results.append({**gate, "row_id": f"{gate['id']}@-",
+                            "status": "incomplete",
                             "reason": "gate target matched no comparison row"})
             continue
         for row in matches:
             raw = row.get(gate["metric"])
-            reference_power = row.get("reference_power")
+            reference_power = row.get(GATE_FLOOR_KEY)
             record = {
                 **gate,
+                # A ``pair = "*"`` gate matches one row per pair, and every
+                # one of those rows used to carry the gate's single ``id``.
+                # The registration guarantees unique gate ids; the receipt
+                # then broke it, so anything joining evaluated rows on id --
+                # an audit, the calibrator -- silently merged pairs.
+                "row_id": f"{gate['id']}@{row['pair']}",
                 "pair": row["pair"],
                 "raw_value": raw,
                 "reference_power": reference_power,
@@ -621,6 +742,11 @@ def score_registration(value: Mapping[str, object]) -> dict[str, object]:
         "schema": RECEIPT_SCHEMA,
         "generated_utc": _utc_now(),
         "registration_sha256": registration["registration_sha256"],
+        # The same registration on two boxes hashes differently, because a
+        # registration binds RESOLVED absolute paths.  Measured on a real
+        # pair of runs.  The policy hash is what two boxes can compare.
+        "registration_policy_sha256": registration[
+            "registration_policy_sha256"],
         "registration_source_toml_sha256": registration["source_toml_sha256"],
         "spectral_compare_pins_sha256": (
             spectral_compare.IMPLEMENTATION_PINS_SHA256),
@@ -628,6 +754,16 @@ def score_registration(value: Mapping[str, object]) -> dict[str, object]:
         "title": registration["parameters"]["title"],
         "left_label": registration["parameters"]["left_label"],
         "reference_label": registration["parameters"]["reference_label"],
+        # The evaluator, resolved by the certification capsule's own builder
+        # so a run's capsule and its spectral receipt cannot name different
+        # commits.  A receipt already bound the arithmetic and the input
+        # bytes; the code that ran between them was the missing third.
+        "code": _code_identity(),
+        # What these numbers reproduce to, and what they do NOT: the receipt
+        # self-hash is a THIS-BOX identity.  Measured, not assumed -- see
+        # spectral_compare.CROSS_BOX_RULE.
+        "reproducibility": json.loads(
+            json.dumps(spectral_compare.CROSS_BOX_RULE)),
         "inputs": inputs,
         "comparisons": comparisons,
         "gates": gate_result,
@@ -642,7 +778,9 @@ def validate_receipt(value: Mapping[str, object], *,
     receipt = dict(value)
     required = {
         "schema", "generated_utc", "registration_sha256",
+        "registration_policy_sha256",
         "spectral_compare_pins_sha256", "legacy_spectral_v1_pins_sha256",
+        "code", "reproducibility",
         "inputs", "comparisons", "gates", "verdict", "receipt_sha256",
     }
     missing = required - set(receipt)

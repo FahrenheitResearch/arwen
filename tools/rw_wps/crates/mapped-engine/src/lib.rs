@@ -31,6 +31,7 @@ pub mod lambert;
 pub mod model;
 pub mod ncdf;
 pub mod node;
+pub mod portable;
 pub mod refusal;
 pub mod threads;
 

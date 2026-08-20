@@ -310,13 +310,12 @@ def collect(*, printer=print) -> list[str]:
     source = resolve_source(
         _ask("  source (gfs/hrrr/era5, or any registered source)",
              DEFAULT_SOURCE, _validate_source))
-    if source == "era5":
-        from gpuwm.fetch import cds_credentials_path, cds_credentials_present
+    # What this source needs configured, from its registry row -- not an
+    # arm for one id.  A row that declares nothing prints nothing.
+    from gpuwm.domain_wizard import source_credential_notes
 
-        if not cds_credentials_present():
-            printer(f"  note: era5 needs a Copernicus CDS key and there is "
-                    f"no {cds_credentials_path()} yet; gfs and hrrr need "
-                    "no account.")
+    for note in source_credential_notes(source):
+        printer(f"  note: {note}")
 
     # `latest` is only offered where something can resolve it: it means
     # "the newest cycle whose objects are published", which only the fetch

@@ -75,7 +75,16 @@ def _unavailable(reason: str) -> dict[str, Any]:
     return {"status": STATUS_UNAVAILABLE, "reason": reason}
 
 
-def _code_section(code: Mapping[str, Any] | None) -> dict[str, Any]:
+def code_identity(code: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Which code produced these numbers.
+
+    Public because a capsule is not the only artifact that has to answer it.
+    A spectral receipt binds the arithmetic pins and the input bytes but not
+    the evaluator; building a second resolver there would let a capsule and a
+    receipt from one run name two different commits, with nothing in either
+    saying which is right.  One builder, one answer.
+    """
+
     import gpuwm
     from gpuwm.supervisor import git_commit
 
@@ -88,6 +97,10 @@ def _code_section(code: Mapping[str, Any] | None) -> dict[str, Any]:
         "runtime_source_sha256": supplied.get("runtime_source_sha256"),
     }
     return section
+
+
+def _code_section(code: Mapping[str, Any] | None) -> dict[str, Any]:
+    return code_identity(code)
 
 
 def _schema_document() -> dict[str, Any]:
@@ -262,6 +275,7 @@ __all__ = [
     "SCHEMA_PATH",
     "CapsuleValidationError",
     "build_capsule",
+    "code_identity",
     "emit_capsule",
     "emit_run_capsule",
     "gpu_cuda_stack_identity",

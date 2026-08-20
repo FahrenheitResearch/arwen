@@ -216,6 +216,27 @@ fetches no forcing data.
   unusable rather than degrading to matplotlib weather fields.
 - `--source-label TEXT` -- set this when rendering frames this model did
   not produce, so the sheet does not claim them.
+- `--streamlines` / `--barbs` -- how the wind is drawn on every product
+  that carries a wind layer. Without either flag the engine keeps its
+  automatic choice (streamlines on curvilinear and projected grids,
+  barbs on plain lat/lon); `RUSTWX_WIND_STREAMLINES` still works and
+  these two outrank it.
+
+### Your own variables
+
+`--products var:<stored name>` draws any 2-D field the wrfout carries,
+including one you added to your own WRF Registry: a `(Time,
+south_north, west_east)` variable named `MSLP_ANOM` is imported as
+`wrf_mslp_anom` and rendered by
+
+```
+gpuwm render wrfout_d01_* --products var:wrf_mslp_anom --out out/render
+```
+
+with no product definition to write. `--list-products` names every
+`var:` row a file can serve. The panel gets a neutral full-range fill
+and the variable's own units; no curated colortable is claimed for a
+field this tree has never seen.
 
 ---
 

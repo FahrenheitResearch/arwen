@@ -78,6 +78,38 @@ FIRST_PRODUCTS_RECEIPT = "first-products.json"
 #: reconstructing what a run published and when.
 FIRST_PRODUCTS_SCHEMA = "gpuwm.first-products.v1"
 
+#: ONE definition of the receipt's instant, carried IN the receipt.
+#:
+#: THE DRIFT THIS CLOSES, measured on both 3080 walks: `gpuwm go` printed
+#: "time to first plot 0m 46s (first-products receipt)" while the earliest
+#: PNG in the published run tree carried 2m 45s.  Two different quantities
+#: were both being called time to first plot -- the instant this render
+#: published, and the mtime of whatever picture is in the tree now -- and
+#: nothing said which the number was.  A reader who checks the artifact and
+#: finds it contradicts the headline stops believing the headline.
+FIRST_PLOT_DEFINITION = (
+    "published_unix_ms is the wall-clock instant at which every picture "
+    "named in 'written' was readable at its final path under the render "
+    "directory. A picture found there with a LATER mtime was rewritten "
+    "afterwards, and this instant then describes nothing on disk."
+)
+
+#: What ``gpuwm render`` draws when nobody passes ``--products``
+#: (``gpuwm/render.py``'s own default).  The early render is asked for the
+#: explicit spelling because it is given a command line; the finalize stage
+#: leaves the flag off.  Comparing the two literally made every `go` run's
+#: receipt look like it had been drawn for a different product set than the
+#: stage that could have skipped it, so the skip never happened there.
+DEFAULT_RENDER_PRODUCTS = "all"
+
+#: Slack between a published picture's mtime and the instant stamped for
+#: it.  The publish is ``os.replace``, which carries the mtime the RENDERER
+#: wrote -- at or before the stamp -- and a coarse-granularity filesystem
+#: (FAT rounds to 2 s) can land the recorded mtime either side of it.  This
+#: is that granularity and nothing more: a finalize re-render lands minutes
+#: later, which is the case this check exists to catch.
+_MTIME_SLACK_MS = 2000
+
 #: Where the render runs before its output is published.  A dot-prefixed
 #: sibling of the pictures rather than a system temp directory, so the
 #: publish below is a rename WITHIN one filesystem and therefore atomic;
@@ -107,6 +139,18 @@ def early_render_requested(render_products: Any) -> bool:
         return False
     text = str(render_products).strip()
     return bool(text) and text.lower() != "none"
+
+
+def effective_products(render_products: Any) -> str:
+    """The product spec a render will actually draw.
+
+    ``None``/empty is not "no products" -- it is ``gpuwm render``'s own
+    default -- so the two spellings of the same request compare equal
+    instead of looking like two different renders.
+    """
+
+    text = "" if render_products is None else str(render_products).strip()
+    return text or DEFAULT_RENDER_PRODUCTS
 
 
 def _sha256_file(path: Path) -> str:
@@ -325,6 +369,9 @@ class FirstProducts:
 
         announced = {
             "schema": FIRST_PRODUCTS_SCHEMA,
+            # One definition, written down where the number is, so a
+            # consumer never has to guess which quantity it is holding.
+            "measures": FIRST_PLOT_DEFINITION,
             # THE TIME-TO-FIRST-PLOT INSTANT, on the wall clock.
             #
             # The report hook below carries seconds-from-start, which is
@@ -383,6 +430,41 @@ def read_receipt(render_dir: Path) -> dict[str, Any] | None:
     return payload
 
 
+def published_pictures_are_original(receipt: Mapping[str, Any],
+                                    render_dir: Path) -> bool:
+    """Whether the pictures this receipt names still carry its instant.
+
+    A digest cannot answer this.  The early picture and the finalize one
+    are byte-identical by construction -- both stages compose the render
+    command from the same plan dict, and a test renders both ways and
+    compares the bytes -- so a re-render leaves every recorded sha256
+    matching and moves only the mtime.  The mtime is therefore the whole
+    of the evidence, and it is exactly what a reader comparing the
+    printed number against the tree is looking at.
+
+    ``False`` also for a receipt whose pictures have gone: an instant
+    stamped for files that are not there describes nothing either.
+    """
+
+    published = receipt.get("published_unix_ms")
+    written = receipt.get("written")
+    if not isinstance(published, int) or not isinstance(written, list):
+        return False
+    if not written:
+        return False
+    for entry in written:
+        if not isinstance(entry, dict):
+            return False
+        picture = Path(render_dir) / str(entry.get("name") or "")
+        try:
+            stamp = Path(fs_path(picture)).stat().st_mtime
+        except OSError:
+            return False
+        if int(stamp * 1000) > published + _MTIME_SLACK_MS:
+            return False
+    return True
+
+
 def _receipt_still_holds(receipt: Mapping[str, Any], *, render_dir: Path,
                          render_products: Any) -> str | None:
     """Why this receipt may not be trusted, or ``None`` when it may.
@@ -392,9 +474,9 @@ def _receipt_still_holds(receipt: Mapping[str, Any], *, render_dir: Path,
     on the strength of one is only sound while the claim is still true.
     """
 
-    declared = str(receipt.get("render_products") or "")
-    wanted = str(render_products or "")
-    if declared.strip() != wanted.strip():
+    declared = effective_products(receipt.get("render_products"))
+    wanted = effective_products(render_products)
+    if declared != wanted:
         return (f"it was rendered for --products {declared!r} and this "
                 f"stage renders {wanted!r}")
     frame = Path(str(receipt.get("frame") or ""))
@@ -454,11 +536,15 @@ def published_frames(frames: Sequence[Path], plan: Mapping[str, Any]
 
 
 __all__ = [
+    "DEFAULT_RENDER_PRODUCTS",
     "DEFAULT_WAIT_SECONDS",
+    "FIRST_PLOT_DEFINITION",
     "FIRST_PRODUCTS_RECEIPT",
     "FIRST_PRODUCTS_SCHEMA",
     "FirstProducts",
     "early_render_requested",
+    "effective_products",
     "published_frames",
+    "published_pictures_are_original",
     "read_receipt",
 ]

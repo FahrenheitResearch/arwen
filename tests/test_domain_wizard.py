@@ -624,13 +624,22 @@ def test_fit_fills_card_budget(tmp_path, card):
 
 def test_the_wizard_budgets_with_the_platform_envelope_factor(
         tmp_path, capsys, monkeypatch):
-    """Same card, same ladder: Linux gets a bigger grid than Windows.
+    """Same card, same ladder: each platform sizes and says what it applied.
 
-    The 1.75 envelope models WDDM.  Two instrumented Linux 4090 pilots
-    (node 1: 19.80 GiB predicted vs 8.32 GiB actual; node 2: 19.94 vs
-    9.0) showed the peak landing at or below the raw footprint there, so
-    the wizard must price Linux at the measured-preliminary 1.15 and say
-    which factor it applied.
+    HISTORY, because the assertion inverted.  This test used to demand
+    ``linux_cells > windows_cells``, from the era when Windows carried a
+    1.75 multiplier and 4.12 GiB of pool constants that Linux did not.
+    Both of those are retired, and 2026-08-20 (task 206) measured the
+    last surviving difference -- the pool-slack fraction -- and found it
+    is not a driver-model property at all: it is the legacy-RRTMG lane's
+    retained call-peak workspace, and Linux showed the same 1.17-1.19x
+    the WDDM calibration had measured.  Charging it by platform meant
+    Linux under-predicted every one of fifteen instrumented forecasts.
+
+    So the two platforms now size the SAME grid for the same card and
+    the same suite, and what this test holds is that each still prices
+    its own envelope, names its own basis, and lands inside its own
+    budget with the grid it chose.
     """
     import gpuwm.core.preflight as pf
 
@@ -654,7 +663,7 @@ def test_the_wizard_budgets_with_the_platform_envelope_factor(
 
     windows_cells = windows_exp.root.run.nx * windows_exp.root.run.ny
     linux_cells = linux_exp.root.run.nx * linux_exp.root.run.ny
-    assert linux_cells > windows_cells
+    assert linux_cells == windows_cells
 
     # Each still fits its own platform's budget, measured by the
     # estimator -- which now itemizes differently per platform too, so
@@ -694,7 +703,12 @@ def test_windows_12gib_sizes_under_the_measured_model(
 
     assert "peak envelope" in printed
     assert "envelope basis: windows;" in printed
-    assert "WDDM pool slack" in printed
+    # The pool-slack term appears when the SUITE has the mechanism, not
+    # when the driver model does: it is the legacy-RRTMG engines'
+    # retained call-peak workspace (task 206).  The wizard's default
+    # suite is rte-rrtmgp, so this card is not charged for it -- and on
+    # Linux it now would be charged, identically, if it were.
+    assert "pool slack" not in printed
     assert "small-card threshold" not in printed
     assert "Please report your measured peak" not in printed
     assert "windows-small" not in printed
@@ -1716,6 +1730,58 @@ def test_the_era5_next_block_names_the_missing_cds_key_only_when_missing(
     assert "Copernicus CDS key" not in present
     # The fetch step itself is unchanged either way.
     assert "1. gpuwm fetch --source era5" in present
+
+
+def test_the_next_block_credential_line_is_derived_from_the_registry_row(
+        tmp_path, capsys, monkeypatch):
+    """THE arbitrary acceptance test for the wizard's credential line.
+
+    The line used to be an ``if source == "era5"`` arm, so a second
+    source that needed an account key would have needed a second arm.
+    It reads the row's CREDENTIAL column now: a credential declared on
+    any row -- here grafted onto a source that has never needed one --
+    produces the same pointer, gated the same way, with nothing edited
+    in the wizard.
+    """
+
+    import dataclasses
+
+    from gpuwm import source_adapters as registry
+    from gpuwm.source_credentials import CredentialLocation, SourceCredential
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(registry.Path, "home", staticmethod(lambda: home))
+    credential = SourceCredential(
+        credential_id="probe-arbitrary-credential",
+        display_name="Probe Arbitrary key",
+        location_kind=CredentialLocation.HOME_FILE,
+        location=".probe-arbitrary-key",
+        needed_for="acquisition",
+        breakage="the download is rejected by the provider",
+        obtain_url="https://example.invalid/keys")
+    donor = registry.get_source_adapter("gfs")
+    grafted = dataclasses.replace(donor, credentials=(credential,))
+    monkeypatch.setattr(
+        registry, "_ADAPTERS",
+        tuple(grafted if adapter.source_id == "gfs" else adapter
+              for adapter in registry.source_adapters()))
+    monkeypatch.setitem(registry._ALIASES, "gfs", grafted)  # noqa: SLF001
+
+    rc, _ = _run_wizard(tmp_path / "no-key", ladder="12", source="gfs",
+                        cycle="2026-07-29T18")
+    absent = capsys.readouterr().out
+    assert rc == 0
+    assert "Probe Arbitrary key" in absent
+    assert str(home / ".probe-arbitrary-key") in absent
+    assert "https://example.invalid/keys" in absent
+
+    (home / ".probe-arbitrary-key").write_text("key: x\n")
+    rc, _ = _run_wizard(tmp_path / "with-key", ladder="12", source="gfs",
+                        cycle="2026-07-29T18")
+    present = capsys.readouterr().out
+    assert rc == 0
+    assert "Probe Arbitrary key" not in present
 
 
 def test_a_gfs_wizard_run_gets_no_era5_credential_line(tmp_path, capsys):
@@ -2756,7 +2822,8 @@ def test_the_reserve_the_loop_targets_is_the_one_the_verifier_uses(tmp_path):
     and then, four lines later, "EXCEEDS the 10.33 GiB budget by 0.64".
     One file, one invocation, two budgets.
     """
-    from gpuwm.core.preflight import ReservePolicy, card_local_memory_profile
+    from gpuwm.core.preflight import (EXTERNAL_MARGIN_BYTES, ReservePolicy,
+                                      card_local_memory_profile)
 
     rc, out = _run_wizard(tmp_path, card="16gb", ladder="12-3",
                           source="gfs", cycle="2026-07-28T00")
@@ -2766,14 +2833,24 @@ def test_the_reserve_the_loop_targets_is_the_one_the_verifier_uses(tmp_path):
     interval = 10800.0
     estimate = estimate_experiment(exp, forcing_interval_seconds=interval,
                                    vram_gib=16.0)
+    free_bytes = int(card_assumed_free_gib(16.0) * GIB)
+    fit_budget = sizing_budget_bytes(
+        exp, free_bytes=free_bytes, vram_gib=16.0,
+        forcing_interval_seconds=interval)
+    # 2026-08-20 (task 206): the fit budget is free VRAM minus what the
+    # ENVELOPE does not model, which is other processes.  It used to
+    # subtract the allocation reserve, and that reserve carries the CUDA
+    # context and the local-memory backing store the envelope already
+    # contains -- one process charged twice for its own bytes, which is
+    # what refused the smallest hrrr layout on a 10 GiB card.
+    assert fit_budget == free_bytes - EXTERNAL_MARGIN_BYTES
+    # The property that mattered is unchanged and now provable rather
+    # than pinned: what the wizard accepts, the verifier accepts.
     verifier = ReservePolicy.n0_alloc(
         exp, profile=card_local_memory_profile(16.0),
         estimate_bytes=estimate.alloc_estimate_bytes)
-    free_bytes = int(card_assumed_free_gib(16.0) * GIB)
-    assert sizing_budget_bytes(
-        exp, free_bytes=free_bytes, vram_gib=16.0,
-        forcing_interval_seconds=interval) == (
-            free_bytes - verifier.reserve_bytes)
+    assert estimate.peak_envelope_bytes <= fit_budget
+    assert estimate.alloc_estimate_bytes <= verifier.budget_bytes(free_bytes)
 
 
 def test_the_wizard_prints_the_bare_check_as_the_next_step(tmp_path, capsys):

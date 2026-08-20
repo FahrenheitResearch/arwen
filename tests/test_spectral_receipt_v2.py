@@ -157,6 +157,13 @@ def test_a_gate_failure_is_not_hidden(tmp_path: Path):
     registration["parameters"]["gates"][0]["maximum"] = 3.0
     registration["registration_sha256"] = spectral_receipt.canonical_hash(
         registration["parameters"])
+    # A registration carries two digests: the raw one over the resolved
+    # paths, and the portable policy one.  Re-registering by hand updates
+    # both, or the validator refuses -- which is the point of the second.
+    registration["registration_policy_sha256"] = (
+        spectral_receipt.canonical_hash(
+            spectral_receipt.policy_parameters(
+                registration["parameters"])))
     receipt = spectral_receipt.score_registration(registration)
     assert receipt["verdict"] == "fail"
     assert receipt["gates"]["failed"] == 1
@@ -175,6 +182,13 @@ def test_an_unresolved_gate_is_incomplete_not_pass(tmp_path: Path):
     gate["minimum_reference_power"] = 1e30
     registration["registration_sha256"] = spectral_receipt.canonical_hash(
         registration["parameters"])
+    # A registration carries two digests: the raw one over the resolved
+    # paths, and the portable policy one.  Re-registering by hand updates
+    # both, or the validator refuses -- which is the point of the second.
+    registration["registration_policy_sha256"] = (
+        spectral_receipt.canonical_hash(
+            spectral_receipt.policy_parameters(
+                registration["parameters"])))
     receipt = spectral_receipt.score_registration(registration)
     assert receipt["verdict"] == "incomplete"
     assert receipt["gates"]["incomplete"] == 1

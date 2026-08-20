@@ -487,6 +487,11 @@
       "kind": "generic_adapter",
       "why": "`mapped` is the generic declarative adapter, not a product: it names no publisher, no bucket and no file grammar, so there is nothing for a fetch to resolve. It is the door for bytes you already have.",
       "remedy_source_root": true
+    },
+    "era5-l137": {
+      "kind": "brokered_request",
+      "why": "ERA5 model-level data is served by the Copernicus Climate Data Store as a queued MARS request (dataset reanalysis-era5-complete, levtype=ml, levelist=1/to/137), not as files at a predictable URL: there is no cycle-and-lead path for a fetch to resolve, and the request runs under your own CDS account. The same is true of the pressure-level/single-level analysis this source borrows its land surface from, so both files arrive the same way.",
+      "remedy_source_root": true
     }
   }
 }

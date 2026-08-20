@@ -334,7 +334,10 @@ These are limits of the current build, not opinions about LES.
   Nothing above 128 has a run receipt yet: the level sweep, the perf
   numbers and the `nz=160` acceptance battery are registered but unrun
   (`docs/superpowers/specs/2026-08-04-p2-nz-tier-acceptance.md`), and
-  `cu_physics=1` is still refused above 128 by Kain-Fritsch's own bound.
+  `cu_physics=1` is still refused above 128 by Kain-Fritsch's own bound,
+  and so is every PBL scheme except MYNN: YSU, Shin-Hong, MYJ and SASE all
+  hold one column per thread at a compiled `KMAX = 128`. `gpuwm check`
+  refuses those combinations by name before a run starts.
   §2 prices what the vertical grid costs: at 128 the resolved fraction is
   0.921, and the nested child's shared 49-level grid gives up 4.8 points
   of it.

@@ -35,8 +35,10 @@ does for the HRRR chain's phases.
 **Every number is relayed from an artifact.**  Fetch bandwidth is read
 back out of ``fetch-manifest.json``; the forecast's internals are read
 back out of ``progress.jsonl``; time to first plot is read back out of
-the early render's receipt or, failing that, off the pictures' own
-mtimes.  Nothing here re-derives a number a stage already published.
+the early render's receipt while the pictures it names still carry that
+instant, and off the pictures' own mtimes otherwise.  Nothing here
+re-derives a number a stage already published, and nothing here quotes a
+number the published tree contradicts -- see :data:`TTFP_DEFINITION`.
 """
 
 from __future__ import annotations
@@ -61,6 +63,20 @@ BOOT_STAGE = "boot"
 #: How ``time_to_first_plot_source`` names where the number came from.
 TTFP_FROM_RECEIPT = "first-products receipt"
 TTFP_FROM_MTIME = "earliest rendered picture mtime"
+
+#: ONE definition behind both sources above, and the reason the receipt is
+#: corroborated against the tree before it is quoted.
+#:
+#: MEASURED on both 3080 walks: `go` printed "time to first plot 0m 46s
+#: (first-products receipt)" while the earliest PNG in the published run
+#: tree carried 2m 45s.  Both numbers were real -- the early render did
+#: publish at 46 s, and the finalize stage did rewrite those same paths at
+#: 2m 45s -- and nothing reconciled them, so the headline contradicted the
+#: only artifact a reader can check.
+TTFP_DEFINITION = (
+    "seconds from launch until the first picture still present in the "
+    "render tree became readable"
+)
 
 
 def _forecast_breakdown(run_dir: Path) -> dict[str, Any] | None:
@@ -288,34 +304,47 @@ class GoChainEvents:
         published = receipt.get("published_unix_ms")
         if not isinstance(published, int):
             return None
+        from gpuwm.first_products import published_pictures_are_original
+
         return {
             "receipt": receipt,
             "published_unix_ms": published,
             "seconds_from_launch": round(
                 (published - self._launch_unix_ms) / 1000.0, 6),
+            # Whether the pictures this receipt names still carry its
+            # instant, or were rewritten by a later render.  Recorded on
+            # the event so the stream never carries a number the tree
+            # contradicts without saying so.
+            "pictures_still_original": published_pictures_are_original(
+                receipt, Path(directory)),
         }
 
     def time_to_first_plot(self, *, render_dir=None) -> dict[str, Any] | None:
-        """Seconds from launch to the first readable picture, and how known.
+        """:data:`TTFP_DEFINITION`, and which measurement answered it.
 
-        Preferred source is the early render's own receipt, which is
-        stamped by the process that published the pictures.  Failing
-        that -- no early render, a run that drew nothing until finalize
-        -- the earliest picture's mtime, which is exactly the method the
-        audit used by hand and is coarser by a filesystem timestamp.
+        The early render's own receipt is preferred, because it is
+        stamped by the process that published the pictures rather than
+        read off a filesystem timestamp -- but only while the pictures it
+        names still carry that instant.  A later render that rewrote
+        those paths makes the receipt's number describe files that are no
+        longer there, and quoting it then is how a headline comes to
+        contradict the tree it is a headline about.  In that case, and
+        when there was no early render at all, the earliest picture's own
+        mtime answers, labelled as the coarser measurement it is.
         """
 
-        early = self.first_products_receipt(render_dir=render_dir)
-        if early is not None:
+        directory = self._render_dir if render_dir is None else render_dir
+        if directory is None:
+            return None
+        directory = Path(directory)
+        early = self.first_products_receipt(render_dir=directory)
+        if early is not None and early["pictures_still_original"]:
             return {
                 "seconds": early["seconds_from_launch"],
                 "source": TTFP_FROM_RECEIPT,
                 "published_unix_ms": early["published_unix_ms"],
             }
-        directory = self._render_dir if render_dir is None else Path(render_dir)
-        if directory is None:
-            return None
-        published = _earliest_picture_unix_ms(Path(directory))
+        published = _earliest_picture_unix_ms(directory)
         if published is None:
             return None
         return {
@@ -361,6 +390,9 @@ class GoChainEvents:
                                            else ttfp["seconds"]),
             "time_to_first_plot_source": (None if ttfp is None
                                           else ttfp["source"]),
+            # Stated, not implied.  Two quantities were both being called
+            # "time to first plot" and the printed line named neither.
+            "time_to_first_plot_definition": TTFP_DEFINITION,
             "launch_unix_ms": self._launch_unix_ms,
         }
         if ttfp is not None:
@@ -378,7 +410,8 @@ class GoChainEvents:
                     render_products=receipt.get("render_products"),
                     render_seconds=receipt.get("render_seconds"),
                     published_unix_ms=early["published_unix_ms"],
-                    seconds_from_launch=early["seconds_from_launch"])
+                    seconds_from_launch=early["seconds_from_launch"],
+                    pictures_still_original=early["pictures_still_original"])
         if status == "SUCCESS":
             self._emit("completed", **summary)
         else:

@@ -86,7 +86,8 @@ pub(crate) use query::{load_direct_sampled_fields_from_latest, required_direct_f
 #[cfg(test)]
 use rendering::{
     StreamlineSetting, barb_target_columns_rows, convert_filled_field, render_filled_field,
-    scale_for_filled_selector, scale_for_recipe, streamlines_enabled_for_grid,
+    scale_for_filled_selector, scale_for_recipe, static_streamline_setting,
+    streamlines_enabled_for_grid,
 };
 use rendering::{
     apply_source_raster_policy, build_render_request, sanitize_output_suffix,

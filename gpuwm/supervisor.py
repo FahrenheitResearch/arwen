@@ -282,8 +282,15 @@ class Heartbeat:
     def __post_init__(self) -> None:
         if self.schema != HEARTBEAT_SCHEMA:
             raise ValueError(f"unsupported heartbeat schema {self.schema!r}")
+        # ``finalizing:<phase>`` is the stretch after the last model step
+        # -- drain, device synchronize, trajectory digest, receipts, and
+        # a SHA-256 pass over every emitted frame.  It has no model step
+        # to beat on, so before it was published a large run went silent
+        # there for minutes and the stale-integration watchdog killed a
+        # worker that was finishing normally.
         if (self.status not in {"integrating", "complete", "failed"}
-                and not self.status.startswith("preparing:")):
+                and not self.status.startswith("preparing:")
+                and not self.status.startswith("finalizing:")):
             raise ValueError(f"invalid heartbeat status {self.status!r}")
         if self.pid <= 0 or self.outer_step < 0:
             raise ValueError("heartbeat pid must be positive and step nonnegative")
@@ -1297,6 +1304,19 @@ class RuntimeHeartbeat:
         """Backward-compatible spelling for the immediate worker heartbeat."""
         self.preparing("worker-start")
 
+    def finalizing(self, phase: str) -> None:
+        """Publish one named beat from the post-integration stretch.
+
+        Same normalization and same shape as :meth:`preparing`; the
+        different prefix is what lets the monitor tell "still working, no
+        model steps left" from "stopped answering mid-integration".
+        """
+        normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", phase).strip("-")
+        if not normalized:
+            raise ValueError("finalization phase must not be empty")
+        self.last_phase = f"finalizing:{normalized}"
+        self._write(self.last_phase)
+
     def complete(self, model_elapsed_seconds: float) -> None:
         self.model_elapsed_seconds = float(model_elapsed_seconds)
         self.last_phase = "complete"
@@ -1313,6 +1333,16 @@ class SupervisorResult:
     heartbeat: Heartbeat
     stdout_logs: tuple[Path, ...]
     stderr_logs: tuple[Path, ...]
+
+
+#: Worker phases whose answer cannot change between attempts: the
+#: checkpoint bytes, the config digest and the reader are all identical,
+#: so a refusal raised in one of them is not a transient fault.
+RESTORE_PHASES = frozenset({
+    "preparing:validate-checkpoint",
+    "preparing:restore-checkpoint",
+    "preparing:restore-tree-checkpoint",
+})
 
 
 def _terminate_fresh_worker(process: subprocess.Popen, *, timeout: float = 10.0
@@ -1493,6 +1523,15 @@ def _heartbeat_regression(previous: Heartbeat, current: Heartbeat) -> str | None
     if (previous.status == "integrating"
             and current.status.startswith("preparing:")):
         return f"status moved backward from integrating to {current.status}"
+    # Finalization is one-way.  Integration is over by the time it is
+    # published, so a worker that goes back to integrating or to
+    # preparation has either restarted inside its own process or is not
+    # the worker this attempt launched.
+    if (previous.status.startswith("finalizing:")
+            and (current.status == "integrating"
+                 or current.status.startswith("preparing:"))):
+        return (f"status moved backward from {previous.status} to "
+                f"{current.status}")
     return None
 
 
@@ -1616,6 +1655,7 @@ def supervise_experiment(
             if input_authorities is not None:
                 env[INPUT_AUTHORITIES_ENV] = json.dumps(
                     input_authorities, sort_keys=True, separators=(",", ":"))
+            launched_checkpoint = checkpoint
             command = _worker_command(
                 config_path, config_payload, outdir, restart=checkpoint,
                 health_debug=health_debug)
@@ -1704,7 +1744,17 @@ def supervise_experiment(
                         f"{silent_seconds:.1f} s without a heartbeat")
                     _terminate_fresh_worker(process)
                     break
-                if (integrating_seen
+                # A published terminal record retires the watchdog.  The
+                # worker has said the run is over; what remains is
+                # process teardown (CUDA context release, interpreter
+                # shutdown), which has no heartbeat and is not
+                # integration, so counting its silence as a stalled step
+                # killed a finished worker and replayed the completed run
+                # as a restart loop.  The exit status still decides
+                # success below -- this only stops the SIGTERM.
+                finished = (last_heartbeat is not None
+                            and last_heartbeat.status == "complete")
+                if (integrating_seen and not finished
                         and silent_seconds > history.stale_threshold_seconds):
                     monitor_failure_kind = "stale-integration"
                     monitor_failure = (
@@ -1793,11 +1843,48 @@ def supervise_experiment(
                 raise SupervisorError(
                     f"{message}; no durable manifest-valid checkpoint is "
                     f"available (failure capsule: {capsule_path})")
+            # A restore the worker REFUSED is deterministic: same config
+            # digest, same file, same reader, same answer.  Relaunching it
+            # burns fresh processes rediscovering one refusal AND each
+            # attempt's failure capsule overwrites the one before it, so
+            # the evidence for what killed the first worker is destroyed
+            # by the recovery.  A crash anywhere else may well clear on a
+            # fresh CUDA context, and still gets its attempts.
+            if (worker_capsule is not None
+                    and str(worker_capsule.get("last_phase", ""))
+                    in RESTORE_PHASES
+                    and launched_checkpoint is not None
+                    and Path(proposed) == Path(launched_checkpoint)):
+                raise SupervisorError(
+                    f"{message}; the next attempt would restore from the "
+                    "same checkpoint this one refused, so it would refuse "
+                    "identically -- refusing a deterministic relaunch loop "
+                    "and keeping this attempt's evidence (failure capsule: "
+                    f"{capsule_path})")
             checkpoint = validate_manifest_checkpoint(proposed)
             if attempts > max_restarts:
                 raise SupervisorError(
                     f"{message}; exhausted {max_restarts} fresh-process "
                     f"restart(s) (failure capsule: {capsule_path})")
+
+
+def _success_output(summary) -> dict[str, Any]:
+    """The success capsule's ``output`` block, hashing nothing twice.
+
+    ``runtime.run_experiment`` already reads and digests every emitted
+    frame for the front-door capsule and hands the records on.  Hashing
+    them a second time here doubled the finalization cost of every run
+    over the same hundreds of GiB, for an identical answer.  An empty
+    record set still hashes: the capsule must never silently ship a run
+    with no frames in it.
+    """
+    from gpuwm import runtime
+
+    frames = list(getattr(summary, "frame_records", ()) or ())
+    if not frames:
+        frames = runtime._frame_records(summary.wrfout_paths)
+    return {"frames": frames,
+            "trajectory_digest": summary.trajectory_digest}
 
 
 def _worker_main(args: argparse.Namespace) -> int:
@@ -1863,10 +1950,15 @@ def _worker_main(args: argparse.Namespace) -> int:
         summary = runtime.run_experiment(
             exp, data, outdir, restart=args.restart,
             progress_callback=progress, health_debug=args.health_debug)
-        progress.complete(summary.completed_seconds)
         # The durable success receipt DETERMINISM.md section 7 records as
         # missing: the failure path has carried the input hashes and the GPU
         # identity all along, and a run that succeeded left only a heartbeat.
+        #
+        # Published BEFORE the terminal record, so ``complete`` means the
+        # worker is done rather than nearly done.  It used to be the
+        # other way around, and the minutes this capsule spent re-hashing
+        # the output set were minutes the run advertised as finished.
+        progress.finalizing("success-capsule")
         emit_run_capsule(
             outdir, emission_site="supervisor:success",
             run_context=_success_run_context(
@@ -1878,11 +1970,11 @@ def _worker_main(args: argparse.Namespace) -> int:
             run_shape={"route": "supervisor:gpuwm run",
                        "domain_count": len(exp.domains),
                        "run_seconds": float(exp.run_seconds)},
-            output={"frames": runtime._frame_records(summary.wrfout_paths),
-                    "trajectory_digest": summary.trajectory_digest},
+            output=_success_output(summary),
             receipts={"run_progress": {
                 "path": str((outdir / HEARTBEAT_NAME).resolve())}},
         )
+        progress.complete(summary.completed_seconds)
         return 0
     except BaseException as exc:
         try:

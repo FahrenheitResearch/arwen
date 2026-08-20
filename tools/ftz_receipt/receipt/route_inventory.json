@@ -9,11 +9,11 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 65,
+  "site_count": 66,
   "site_count_by_kind": {
     "cupy.ElementwiseKernel": 3,
     "cupy.RawKernel": 1,
-    "cupy.RawModule": 46,
+    "cupy.RawModule": 47,
     "cupy.ReductionKernel": 5,
     "cupy.cuda.compiler.compile_using_nvrtc": 10
   },
@@ -34,7 +34,7 @@
       "cupy.cuda.compiler.compile_using_nvrtc": 3
     },
     "tools": {
-      "cupy.RawModule": 5,
+      "cupy.RawModule": 6,
       "cupy.ReductionKernel": 2,
       "cupy.cuda.compiler.compile_using_nvrtc": 3
     }
@@ -1274,6 +1274,26 @@
       "options_element_expressions": null,
       "options_are_literal": false,
       "text": "ptx, _ = cc.compile_using_nvrtc(code, tuple(opts), None, \"rrtmg_sw.cu\")"
+    },
+    {
+      "file": "tools/vram_reserve_probe.py",
+      "line": 175,
+      "column": 17,
+      "surface": "tools",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "mode_law",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++17\",)",
+      "options": [
+        "-std=c++17"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++17\""
+      ],
+      "options_are_literal": true,
+      "text": "module = cp.RawModule(code=src, options=(\"-std=c++17\",))"
     }
   ]
 }

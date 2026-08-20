@@ -1033,13 +1033,16 @@ def _render_stage(plan: dict, *, explain: bool,
     answer and not two that can disagree.  `none` is not a product name
     in the render catalog, so it cannot collide with one.
 
-    A run whose observer armed an early render (see
-    :mod:`gpuwm.first_products`) has already published its first frame
-    while the forecast was still going.  That render is collected here,
-    before anything is drawn, and the frame it claims is dropped from
-    this stage's list -- but only after its receipt has been checked,
-    digest by digest, against what is actually on disk.  An unproven
-    claim is simply not used, and the frame is rendered again.
+    A run with an early render (see :mod:`gpuwm.first_products`) has
+    already published its first frame while the forecast was still
+    going.  That render is collected here, before anything is drawn, and
+    the frame it claims is dropped from this stage's list -- but only
+    after its receipt has been checked, digest by digest, against what is
+    actually on disk.  An unproven claim is simply not used, and the
+    frame is rendered again.
+
+    The receipt is read off disk whether or not THIS process armed the
+    render that wrote it, because on `gpuwm go` it never does.
     """
 
     if str(plan.get("render_products") or "").strip().lower() == "none":
@@ -1067,20 +1070,36 @@ def _render_stage(plan: dict, *, explain: bool,
         print("  -- render skipped: the forecast stage published no "
               f"wrfout frame under {plan['run'] / 'wrfout'}.")
         return False
+    from gpuwm.first_products import published_frames
+
     already: list[Path] = []
     trigger = getattr(observer, "first_products", None)
     if trigger is not None:
-        from gpuwm.first_products import published_frames
-
         # Collected first.  The early render writes into this stage's
         # own output directory, so drawing before it has finished would
         # be two writers on one directory for no reason -- and its
         # receipt, which is what licenses the skip below, is the last
         # thing it publishes.
         trigger.wait()
-        frames, already, note = published_frames(frames, plan)
-        if note is not None:
-            print(f"  -- render: {note}")
+    # The receipt is read off DISK, whether or not this process armed the
+    # render that wrote it.
+    #
+    # THE DEFECT THIS CLOSES, measured on both 3080 walks: `gpuwm go`
+    # does not host the early render -- it asks the runner subprocess for
+    # one on its command line (`forecast_command`) -- so there is no
+    # trigger object here, and the skip below never ran on the front door
+    # people use.  This stage then redrew the frame the early render had
+    # already published, overwriting those PNGs, and the published tree's
+    # earliest picture carried THIS stage's timestamp (2m 45s) while the
+    # receipt said 46s.  The receipt licenses nothing until
+    # `published_frames` has re-checked the frame and every picture it
+    # names against their recorded digests, so reading it off disk is
+    # exactly as safe as reading it off a trigger this process happens to
+    # own -- and it is what keeps the early picture, and its instant, in
+    # the tree.
+    frames, already, note = published_frames(frames, plan)
+    if note is not None:
+        print(f"  -- render: {note}")
     if not frames:
         # Every frame was published early.  Distinguished from the empty
         # case above because "nothing to do because it is done" and
@@ -1569,10 +1588,20 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
                 "refuse": False, "warn": False, "free_bytes": None,
                 "probe_reason": probe_reason, "phases": phases}
     free = int(probe["free_bytes"])
-    reserve = ReservePolicy.n0_alloc(
-        exp, profile=profile,
-        estimate_bytes=phases.forecast.alloc_estimate_bytes)
-    budget = reserve.budget_bytes(free)
+    # The budget the ENVELOPE is compared against, from the wizard's own
+    # seam so the two doors cannot disagree about one card.  It is free
+    # VRAM minus what this process's envelope does not model -- other
+    # processes -- and NOT the allocation reserve, which carries the CUDA
+    # context and the local-memory backing store that
+    # ``peak_envelope_bytes`` already contains.  Charging both warned
+    # about a card the run fits (task 206).
+    from gpuwm.domain_wizard import sizing_budget_bytes
+
+    budget = sizing_budget_bytes(
+        exp, free_bytes=free, vram_gib=vram_gib,
+        forcing_interval_seconds=(float(cadence_h) * 3600.0
+                                  if cadence_h else None),
+        profile=profile)
     peak = phases.peak_envelope_bytes
     verdict = phases.verdict(budget)
     refuse = peak > free
@@ -2094,6 +2123,21 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--geog-root", type=Path, default=None, metavar="DIR",
                         help="staged WPS_GEOG tree (default: the one "
                              "`gpuwm fetch-geog` stages into)")
+    # `plan_from_config` has always carried `render_products`, and
+    # `gpuwm run-plan` has always been able to set it; `go` -- the door
+    # a reader actually types -- had no spelling for it, so the only way
+    # to run this chain against a NAMED product set was to drive the
+    # stages by hand.  `gpuwm speedrun` needs exactly that (a course's
+    # product set is part of what makes two records comparable), and so
+    # does anyone who wants four charts instead of the whole catalog.
+    parser.add_argument("--products", default=None, dest="render_products",
+                        metavar="LIST",
+                        help="which products the render stage draws: a "
+                             "comma-separated list of catalog slugs, 'all' "
+                             "(the default -- the renderer's whole "
+                             "catalog), or 'none' to stop after the "
+                             "forecast.  The same spelling `gpuwm render "
+                             "--products` takes")
     parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                         help="print the six commands, filled in, and "
                              "exit without running any of them")

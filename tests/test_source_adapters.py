@@ -72,6 +72,7 @@ EXPECTED_SOURCE_IDS = (
     "rrfs-firewx",
     "wrf",
     "era5",
+    "era5-l137",
     "20crv3",
     "20crv3-cf",
     "mapped",
@@ -113,7 +114,7 @@ def test_forecast_start_hour_is_absent_globally_and_defaults_only_in_hrrr():
 def test_registry_covers_bound_inventory_and_external_source_routes():
     adapters = source_adapters()
     assert tuple(adapter.source_id for adapter in adapters) == EXPECTED_SOURCE_IDS
-    assert len({adapter.source_id for adapter in adapters}) == 31
+    assert len({adapter.source_id for adapter in adapters}) == 32
     assert [adapter.source_id for adapter in adapters if adapter.runnable] == [
         "hrrr",
         "hrrr-prs",
@@ -129,6 +130,7 @@ def test_registry_covers_bound_inventory_and_external_source_routes():
         "rap",
         "rrfs",
         "era5",
+        "era5-l137",
         "20crv3",
         "20crv3-cf",
         "mapped",
@@ -192,8 +194,8 @@ def test_manifest_binds_inventory_and_does_not_confuse_decode_with_readiness():
     assert manifest["runtime_forbidden"] == ["WPS", "real.exe"]
     assert manifest["rusty_weather_inventory"]["model_id_count"] == 23
     assert len(manifest["rusty_weather_inventory"]["head"]) == 40
-    assert manifest["source_count"] == 31
-    assert manifest["runnable_source_count"] == 17
+    assert manifest["source_count"] == 32
+    assert manifest["runnable_source_count"] == 18
     assert set(manifest["packaged_source_authorities"]) == set(
         packaged_profile_ids())
     for pins in manifest["packaged_source_authorities"].values():
@@ -434,7 +436,7 @@ def test_interval_time_semantics_are_explicit():
 def test_cli_lists_machine_readable_inventory(capsys):
     assert main(["--list-sources"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["source_count"] == 31
+    assert payload["source_count"] == 32
     assert (
         payload["canonical_source_frame"]["schema"] == "gpuwm-canonical-source-frame-v1"
     )

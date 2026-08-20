@@ -109,6 +109,45 @@ impl Mapping {
             .ok_or_else(|| mapping_invalid("mapping.coordinates.vertical must be an object"))
     }
 
+    /// `mapping.coordinates.vertical.kind`.
+    pub fn vertical_kind(&self) -> Result<&str> {
+        self.vertical()?
+            .get("kind")
+            .and_then(Node::as_str)
+            .ok_or_else(|| mapping_invalid("mapping.coordinates.vertical.kind must be a string"))
+    }
+
+    /// Inline `vertical.hybrid_a`/`hybrid_b` literal arrays — the
+    /// declared-data fallback coefficient channel.  `None` when neither
+    /// is declared; both-or-neither is the contract.
+    pub fn hybrid_literals(&self) -> Result<Option<(Vec<f64>, Vec<f64>)>> {
+        let vertical = self.vertical()?;
+        let read = |key: &str| -> Result<Option<Vec<f64>>> {
+            let Some(node) = vertical.field(key) else {
+                return Ok(None);
+            };
+            node.items()
+                .iter()
+                .map(|item| {
+                    item.as_f64().ok_or_else(|| {
+                        mapping_invalid(format!(
+                            "vertical.{key} must be a non-empty numeric list"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<f64>>>()
+                .map(Some)
+        };
+        match (read("hybrid_a")?, read("hybrid_b")?) {
+            (None, None) => Ok(None),
+            (Some(a), Some(b)) => Ok(Some((a, b))),
+            _ => Err(mapping_invalid(
+                "vertical.hybrid_a and vertical.hybrid_b must be declared \
+                 together; one half of a coefficient pair prices no pressure",
+            )),
+        }
+    }
+
     /// The declared vertical ladder, in the mapping's own order.  Empty
     /// means "take the levels the file offers" (`_assemble_grib`).
     pub fn declared_levels(&self) -> Result<Vec<f64>> {

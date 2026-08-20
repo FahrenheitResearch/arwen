@@ -1,0 +1,43 @@
+{
+ "schema": "gpuwm-cross-source-hybrid-provenance-v1",
+ "source": "ECMWF ERA5 reanalysis on its NATIVE 137 hybrid sigma-pressure model levels (GRIB2), hybridized with the SAME HOUR's ERA5 pressure-level/single-level analysis for the land-surface and surface state the model-level product does not publish",
+ "contributing_sources": {
+  "primary_atmosphere": {
+   "product": "ERA5 hourly data on model levels (ECMWF reanalysis v5), GRIB2, all 137 native levels",
+   "front_door": "Copernicus Climate Data Store, dataset reanalysis-era5-complete (MARS levtype=ml, levelist=1/to/137); the bytes are supplied to gpuwm by the caller, gpuwm does not broker the CDS request",
+   "authority": "ECMWF IFS L137 vertical discretisation; the A/B interface coefficients are carried IN BAND, as the GRIB2 Section-4 coordinate-values (pv) octets of every record -- 276 values, 138 A followed by 138 B",
+   "identity": {
+    "centre": 98,
+    "master_table_version": 5,
+    "local_table_version": 0,
+    "level_type": 105,
+    "note": "every primary selector pins centre 98 with level type 105 (hybrid level), which is what refuses a pressure-level ERA5 file handed to this mapping by mistake"
+   },
+   "supplies": "the complete native atmosphere on all 137 model levels -- air_temperature (0/0/0), specific_humidity (0/1/0), eastward_wind (0/2/2), northward_wind (0/2/3) -- from which air_pressure and geopotential_height are DERIVED rather than borrowed"
+  },
+  "physical_analysis_surface": {
+   "product": "ERA5 pressure-level and single-level analysis of the SAME valid hour as the primary, GRIB1 (ECMWF local table 128)",
+   "front_doors": "Copernicus Climate Data Store, datasets reanalysis-era5-pressure-levels and reanalysis-era5-single-levels; one combined GRIB file per window, full files, no idx subsetting",
+   "identity": {
+    "centre": 98,
+    "table_version": 128,
+    "same_grid": "the regular lat/lon grid the model-level request was made on -- exact_coordinate_subset alignment refuses any other geometry by name rather than interpolating"
+   },
+   "mapping": "ecmwf-era5-pressure-level-surface-donor-grib1-native (rw-wps-era5-plev-surface-donor.mapping.json), pinned by SHA-256 inside the composition; every borrowed field is DIRECTLY selected there, because a derived donor field is not decodable in a partitioned donor decode and refuses by name",
+   "supplies": "surface_pressure (134), terrain_height (129 at surface, scaled by 1/g), skin_temperature (235), air_temperature_2m (167), dewpoint_temperature_2m (168), eastward_wind_10m (165), northward_wind_10m (166), land_fraction (172), and the four-layer soil temperature (139/170/183/236) and volumetric moisture (39/40/41/42) column on level type 112",
+   "clock": "valid_time_exact: the donor record's valid time must BE the primary's, hour for hour; nothing is broadcast, because both products are analyses at the same cadence and a carried surface state would be an invention"
+  }
+ },
+ "why_hybrid": "ERA5's model-level product publishes the prognostic atmosphere and nothing else: no soil state, no land-sea mask, no orography, no skin temperature, no 2 m or 10 m diagnostics.  It publishes surface pressure only as lnsp (0/3/25 at level 1), and the mapping's unit transforms are affine (scale/offset) with no exp, so lnsp cannot be consumed as-declared.  Both gaps are answered the same way and in grammar: the same-hour pressure-level analysis is the donor, and surface_pressure is borrowed from it (parameter 134) rather than exponentiated.  This is a composition, not a code path -- the borrow list above is the whole of it.",
+ "derived_not_borrowed": {
+  "air_pressure": "p = A + B*ps on the 138 interfaces read from the primary's own pv octets, full levels taken as interface means, held strictly monotonic top-first; ps is the borrowed surface_pressure named by the mapping's vertical.surface_pressure_field.  Provenance stamp @coordinate.vertical.hybrid",
+  "geopotential_height": "hydrostatic integration up the half-level ladder from the borrowed terrain_height, using virtual temperature from the primary's own air_temperature and specific_humidity with the ECMWF constants (Rd 287.06, virtual-temperature coefficient 0.609133).  Provenance stamp @derived.hydrostatic.  ERA5's model-level product publishes z only at level 1, so a 3-D height borrow would be cross-ladder and is refused by name; integrating is the defined answer, not a workaround",
+  "specific_humidity_2m": "specific_humidity_from_dewpoint over the three borrowed surface fields (dewpoint_temperature_2m, air_temperature_2m, surface_pressure)"
+ },
+ "deliberate_exclusions": {
+  "lnsp": "0/3/25 at model level 1 is the product's own surface-pressure record, but consuming it needs an exponential unit transform that the mapping grammar does not have; surface_pressure is borrowed from the pressure-level analysis instead, which is exact rather than approximate.  Left unselected rather than decoded into an unused slot",
+  "level_1_geopotential": "the single-level z the model-level product carries is the surface field the donor already supplies as terrain_height; selecting it twice would give the frame two orographies"
+ },
+ "vertical_caveat": "the 137-level ladder tops near 0.01 hPa, far above any WRF model top a user will ask for; the target's explicit eta coordinate and p_top select the sub-column that is used, and a p_top above the source's own top refuses at the vertical contract rather than extrapolating",
+ "input_identity": "dynamic file paths and SHA-256 values are owned by the mapped-source input manifest, gpuwm-mapped-source-inputs-v1; the donor mapping document is pinned transitively (this composition pins its SHA-256, the manifest pins the composition)"
+}

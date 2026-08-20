@@ -888,6 +888,171 @@ def netcdf_names(keys) -> tuple[str, ...]:
     return tuple(SCHEME_OUTPUT_FIELDS[key].netcdf_name for key in keys)
 
 
+#: WRF Registry metadata ``name -> (description, units)`` for the
+#: variables gpuwm writes; unknown names get empty strings.
+#:
+#: This table lives HERE, in the data module, rather than beside the
+#: writer that reads it.  ``gpuwm.io.history_selection`` needs the NAMES
+#: at config-resolution time to build ``HISTORY_VOCABULARY``, and while
+#: the table sat in ``gpuwm.io.wrfout`` it got them by importing the
+#: writer -- which imports ``gpuwm.supervisor``, ``netCDF4`` and the
+#: runtime behind it.  MEASURED: that made ``import gpuwm.era5_direct``
+#: pull the whole forecast output side in through
+#: case_data -> experiment -> history_selection -> wrfout, and the
+#: RW-WPS preprocessing wheel's no-CuPy/no-executor import proof
+#: (tests/test_native_wrf_distribution.py) went red on it.  A metadata
+#: table is data; the module that carries it must not drag a writer
+#: behind it.
+REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
+    "U": ("x-wind component", "m s-1"),
+    "V": ("y-wind component", "m s-1"),
+    "W": ("z-wind component", "m s-1"),
+    "T": ("perturbation potential temperature theta-t0", "K"),
+    "P": ("perturbation pressure", "Pa"),
+    "PB": ("BASE STATE PRESSURE", "Pa"),
+    "PH": ("perturbation geopotential", "m2 s-2"),
+    "PHB": ("base-state geopotential", "m2 s-2"),
+    "MU": ("perturbation dry air mass in column", "Pa"),
+    "MUB": ("base state dry air mass in column", "Pa"),
+    "QVAPOR": ("Water vapor mixing ratio", "kg kg-1"),
+    "QCLOUD": ("Cloud water mixing ratio", "kg kg-1"),
+    "QRAIN": ("Rain water mixing ratio", "kg kg-1"),
+    "QICE": ("Ice mixing ratio", "kg kg-1"),
+    "QSNOW": ("Snow mixing ratio", "kg kg-1"),
+    "QGRAUP": ("Graupel mixing ratio", "kg kg-1"),
+    "QHAIL": ("Hail mixing ratio", "kg kg-1"),
+    "QNDROP": ("Droplet number mixing ratio", "# kg-1"),
+    "QNCLOUD": ("cloud water Number concentration", "  kg(-1)"),
+    "QNRAIN": ("Rain Number concentration", "  kg(-1)"),
+    "QNICE": ("Ice Number concentration", "  kg-1"),
+    "QNSNOW": ("Snow Number concentration", "  kg(-1)"),
+    "QNGRAUPEL": ("Graupel Number concentration", "  kg(-1)"),
+    "QNHAIL": ("Hail Number concentration", "# kg(-1)"),
+    "QNCCN": ("CCN Number concentration", "# kg(-1)"),
+    # QNWFA/QNIFA/QNWFA2D/QNIFA2D (mp_physics=28) are deliberately NOT here.
+    # They have transcribed rows -- with NetCDF type, FieldType and the
+    # stagger the writer cross-checks -- in
+    # gpuwm.io.wrf_output_schema.THOMPSON_AEROSOL_OUTPUT_FIELDS, which
+    # _create_variable consults BEFORE this fallback table.  Same reason the
+    # precipitation accumulators moved out below: two tables describing one
+    # field is how two tables come to disagree about one field.
+    "QVGRAUPEL": ("Graupel Particle Volume", "m(3) kg(-1)"),
+    "QVHAIL": ("Hail Particle Volume", "m(3) kg(-1)"),
+    # P3 one-category (mp_physics=50).  Transcribed verbatim from
+    # Registry.EM_COMMON:555-558, whose IO string ``i0rhusdf`` carries the
+    # ``h`` that puts both in WRF's history stream.  They are what makes an
+    # mp=50 wrfout more than a one-moment ice field: without the rime pair a
+    # reader cannot recover rime fraction qir/qi or rime density qir/qib,
+    # which are the two indices P3's whole ice inventory is built on.
+    "QIR": ("Rime ice mass-1 mixing ratio", "kg kg(-1)"),
+    "QIB": ("Rime ice volume-1 mixing ratio", "m(3) kg(-1)"),
+    # Registry.EM_COMMON:1596 (verified against the reference wrfout's
+    # REFL_10CM attributes).  Opt-in: cases merge the field into their
+    # frame dict (gpuwm.core.refl.compute_refl_10cm supplies the values).
+    "REFL_10CM": ("Radar reflectivity (lamda = 10 cm)", "dBZ"),
+    # Registry.EM_COMMON:2083 (nwp_output package, IO "rh02").  Present
+    # exactly when the run carries the accumulator (nwp_diagnostics = 1;
+    # gpuwm.core.uh_diag owns the per-step update and the post-write reset).
+    "UP_HELI_MAX": ("MAX UPDRAFT HELICITY", "m2 s-2"),
+    "HGT": ("Terrain Height", "m"),
+    "PSFC": ("SFC PRESSURE", "Pa"),
+    # RAINC/RAINSH/RAINNC/SNOWNC/GRAUPELNC/HAILNC used to live here.  They
+    # are now in gpuwm.io.wrf_output_schema.PRECIPITATION_OUTPUT_FIELDS,
+    # because they are no longer merely *described* by this table -- they are
+    # emitted unconditionally, and the thing that decides that has to be the
+    # same thing that carries their Registry metadata.  Two tables describing
+    # one field is how two tables come to disagree about one field.
+    "SNOW": ("SNOW WATER EQUIVALENT", "kg m-2"),
+    "SNOWH": ("PHYSICAL SNOW DEPTH", "m"),
+    "SNOWC": ("FLAG INDICATING SNOW COVERAGE (1 FOR SNOW COVER)", ""),
+    "TSLB": ("SOIL TEMPERATURE", "K"),
+    "SMOIS": ("SOIL MOISTURE", "m3 m-3"),
+    "SH2O": ("SOIL LIQUID WATER", "m3 m-3"),
+    "SWDOWN": ("DOWNWARD SHORT WAVE FLUX AT GROUND SURFACE", "W m-2"),
+    "GLW": ("DOWNWARD LONG WAVE FLUX AT GROUND SURFACE", "W m-2"),
+    # Registry.EM_COMMON:1839, transcribed verbatim beside its two
+    # surface-flux neighbours.  ``ij`` mass grid, no stagger, real -- so
+    # the dimension table and the FieldType default already describe it
+    # correctly and it needs no row of its own.
+    "OLR": ("TOA OUTGOING LONG WAVE", "W m-2"),
+    "TSK": ("SURFACE SKIN TEMPERATURE", "K"),
+    "T2": ("TEMP at 2 M", "K"),
+    "TH2": ("POT TEMP at 2 M", "K"),
+    "Q2": ("QV at 2 M", "kg kg-1"),
+    "U10": ("U at 10 M", "m s-1"),
+    "V10": ("V at 10 M", "m s-1"),
+    "UST": ("U* IN SIMILARITY THEORY", "m s-1"),
+    "HFX": ("UPWARD HEAT FLUX AT THE SURFACE", "W m-2"),
+    "QFX": ("UPWARD MOISTURE FLUX AT THE SURFACE", "kg m-2 s-1"),
+    "LH": ("LATENT HEAT FLUX AT THE SURFACE", "W m-2"),
+    "TKE_SASE": ("SASE prognostic subgrid turbulence kinetic energy",
+                 "m2 s-2"),
+    "TKE_SHINHONG": ("Shin-Hong published subgrid turbulence kinetic "
+                     "energy diagnostic", "m2 s-2"),
+    # The SPLIT SUBGRID-FLUX DIAGNOSTIC (RunConfig sase_flux_diag, off by
+    # default; per domain).  Four z-FACE fields on the mass column --
+    # (nz+1, ny, nx), stagger "Z", registered exactly like W -- carrying
+    # the closure's own vertical subgrid fluxes with the conditional-
+    # venting channel separated from the K_v implicit vertical diffusion
+    # channel.  BOTH CHANNELS ARE POSITIVE UPWARD and both divide by the
+    # SAME lowest-level moist density the venting deposit divides by, so
+    # VENT + DIFF is the closure's total subgrid flux and its
+    # convergence is the model's own scalar increment.  Face 0 is +0.0
+    # by the interface contract: the surface flux is owned by HFX/QFX
+    # and is not double-counted here.
+    "SASE_FQV_VENT": ("SASE vent subgrid water vapor flux, positive up",
+                      "kg m-2 s-1"),
+    "SASE_FQV_DIFF": ("SASE Kv subgrid water vapor flux, positive up",
+                      "kg m-2 s-1"),
+    "SASE_FTH_VENT": ("SASE vent subgrid heat flux, positive up",
+                      "W m-2"),
+    "SASE_FTH_DIFF": ("SASE Kv subgrid heat flux, positive up",
+                      "W m-2"),
+    # The HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (RunConfig hmix_k_diag,
+    # off by default; per domain).  Two (nz, ny, nx) mass-grid fields
+    # carrying the horizontal mixing coefficients the run's own producer
+    # used, under that producer's name: XKMH/XKHH are WRF's Registry
+    # names for the km_opt = 4 2-D Smagorinsky viscosities, SASE_KMH/
+    # SASE_KHH the SASE closure's governed horizontal diffusivity and
+    # the K_h = KMH/Pr_t(f) its scalar channel rides.  Same units, same
+    # grid, same meaning, so the two are directly comparable -- which is
+    # the point: SASE's claim to replace the km_opt operator is a claim
+    # about this number.  A run with NO horizontal mixing producer (the
+    # acknowledged km_opt = 0 control) publishes NEITHER pair, so an
+    # absent variable says "no operator ran" and can never be misread as
+    # a measured zero.  Instantaneous: the value the last completed
+    # model step used, not a history-interval mean.
+    "XKMH": ("HORIZONTAL MOMENTUM EDDY VISCOSITY", "m2 s-1"),
+    "XKHH": ("HORIZONTAL HEAT EDDY VISCOSITY", "m2 s-1"),
+    "SASE_KMH": ("SASE governed horizontal momentum diffusivity",
+                 "m2 s-1"),
+    "SASE_KHH": ("SASE governed horizontal scalar diffusivity, KMH/Pr_t",
+                 "m2 s-1"),
+    "PBLH": ("PBL HEIGHT", "m"),
+    "GRDFLX": ("GROUND HEAT FLUX", "W m-2"),
+    "PSIM": ("SIMILARITY STABILITY FUNCTION FOR MOMENTUM", ""),
+    "PSIH": ("SIMILARITY STABILITY FUNCTION FOR HEAT", ""),
+    "XLAT": ("LATITUDE, SOUTH IS NEGATIVE", "degree_north"),
+    "XLONG": ("LONGITUDE, WEST IS NEGATIVE", "degree_east"),
+    "XLAT_U": ("LATITUDE, SOUTH IS NEGATIVE", "degree_north"),
+    "XLONG_U": ("LONGITUDE, WEST IS NEGATIVE", "degree_east"),
+    "XLAT_V": ("LATITUDE, SOUTH IS NEGATIVE", "degree_north"),
+    "XLONG_V": ("LONGITUDE, WEST IS NEGATIVE", "degree_east"),
+    "MAPFAC_M": ("Map scale factor on mass grid", ""),
+    "MAPFAC_U": ("Map scale factor on u-grid", ""),
+    "MAPFAC_V": ("Map scale factor on v-grid", ""),
+    "F": ("Coriolis sine latitude term", "s-1"),
+    "E": ("Coriolis cosine latitude term", "s-1"),
+    "LU_INDEX": ("LAND USE CATEGORY", ""),
+    "LANDMASK": ("LAND MASK (1 FOR LAND, 0 FOR WATER)", ""),
+    "SINALPHA": ("Local sine of map rotation", ""),
+    "COSALPHA": ("Local cosine of map rotation", ""),
+    "P_TOP": ("PRESSURE TOP OF THE MODEL", "Pa"),
+    "ZNU": ("eta values on half (mass) levels", ""),
+    "ZNW": ("eta values on full (w) levels", ""),
+}
+
+
 __all__ = [
     "HISTORY_FIELDS_BY_NETCDF_NAME",
     "MYNN_PBL_OUTPUT_FIELDS",
@@ -896,6 +1061,7 @@ __all__ = [
     "OUTPUT_FIELDS_BY_NETCDF_NAME",
     "PHYSICS_SELECTOR_GLOBALS",
     "PRECIPITATION_OUTPUT_FIELDS",
+    "REGISTRY_VAR_META",
     "RUC_OUTPUT_FIELDS",
     "SCHEME_OUTPUT_FIELDS",
     "SURFACE_IDENTITY_OUTPUT_FIELDS",

@@ -23,6 +23,8 @@ from gpuwm.source_authorities import (packaged_authority_sha256,
                                       packaged_profile_ids)
 from gpuwm.source_coverage import (COVERAGE_WINDOW_TYPES, CoverageWindow,
                                    LambertGridWindow, RegularLatLonWindow)
+from gpuwm.source_credentials import (CredentialLocation, SourceCredential,
+                                      credential_declaration)
 
 
 RUSTY_WEATHER_HEAD = "d3264700c125449a50ac0080be42796177691e1d"
@@ -129,9 +131,35 @@ class SourceAdapter:
     #: nothing: a window nobody measured would be a number invented to fill
     #: a field.
     coverage_window: CoverageWindow | None = None
+    #: What a PERSON calls this source.  A column, because every consumer
+    #: that wanted a human name had to keep its own id-to-name lookup --
+    #: a per-model table, and adding a model then meant editing a front
+    #: end as well as this file.  ``None`` reads back as the id through
+    #: :attr:`display_title`, so a row that omits it still renders.
+    display_name: str | None = None
+    #: What must be CONFIGURED before this source's bytes can be
+    #: acquired, as declared :class:`~gpuwm.source_credentials.
+    #: SourceCredential` rows.  Empty means the row declares no
+    #: prerequisite -- which is a statement about this table, not a
+    #: promise that a provider asks for nothing.  The same seam as every
+    #: other column: a source that needs an account key is one row, and
+    #: no front end carries an exception for it.
+    credentials: tuple[SourceCredential, ...] = ()
     notes: str = ""
 
+    @property
+    def display_title(self) -> str:
+        """The declared display name, or the id when none is declared."""
+
+        return (self.display_name or "").strip() or self.source_id
+
     def __post_init__(self) -> None:
+        for credential in self.credentials:
+            if not isinstance(credential, SourceCredential):
+                raise TypeError(
+                    f"{self.source_id}: credentials must be declared "
+                    "SourceCredential rows, so a consumer can read where "
+                    "the credential lives instead of parsing prose")
         if self.coverage_window is not None and not isinstance(
                 self.coverage_window, COVERAGE_WINDOW_TYPES):
             raise TypeError(
@@ -147,6 +175,14 @@ class SourceAdapter:
         value = asdict(self)
         value["source_kind"] = self.source_kind.value
         value["status"] = self.status.value
+        # The name a consumer shows, resolved: a row that declares none
+        # still answers, and nobody has to reimplement the fallback.
+        value["display_name"] = self.display_title
+        # DECLARATION only.  The manifest is provenance -- two boxes
+        # compare theirs -- so it must not carry a verdict about which
+        # keys happen to sit on the box that generated it.
+        value["credentials"] = [credential_declaration(credential)
+                                for credential in self.credentials]
         value["coverage_envelope"] = (
             None if self.coverage_window is None
             else list(self.coverage_window.envelope()))
@@ -156,6 +192,8 @@ class SourceAdapter:
 def _adapter(
     source_id: str,
     *,
+    name: str | None = None,
+    credentials: Iterable[SourceCredential] = (),
     aliases: Iterable[str] = (),
     upstream_model_id: str | None = "__same_as_source__",
     kind: SourceKind = SourceKind.DETERMINISTIC_STATE,
@@ -208,6 +246,8 @@ def _adapter(
         member_set=member_set,
         forcing_interval_seconds=forcing_interval_seconds,
         coverage_window=coverage,
+        display_name=name,
+        credentials=tuple(credentials),
         notes=notes,
     )
 
@@ -243,6 +283,31 @@ _ICON_EU_WINDOW = RegularLatLonWindow(
     south=29.5, west=-23.5, north=70.5, east=62.5, nx=1377, ny=657)
 
 
+#: The personal Copernicus CDS API key, declared as the row fact it is.
+#:
+#: The leaf filename repeats :data:`gpuwm.fetch.CDSAPIRC_NAME` rather
+#: than importing it, because :mod:`gpuwm.fetch` reaches this registry
+#: and the acquisition layer must not become an import prerequisite of
+#: the table that describes it.  The same rule the cadence columns
+#: follow: a repeat guarded by a test is not a second definition, and
+#: ``tests/test_source_registry_columns.py`` fails the moment the
+#: declared location stops naming the file the fetch route stats.
+_COPERNICUS_CDS_KEY = SourceCredential(
+    credential_id="copernicus-cds-api-key",
+    display_name="Copernicus CDS key",
+    location_kind=CredentialLocation.HOME_FILE,
+    location=".cdsapirc",
+    needed_for="acquisition",
+    breakage=(
+        "the retrieval cannot be requested at all -- this source is not "
+        "downloaded by gpuwm but by the provider's own client, which "
+        "reads a personal account key from that file and fails several "
+        "commands later with its own exception if it is absent"
+    ),
+    obtain_url="https://cds.climate.copernicus.eu",
+)
+
+
 # The order is canonical: the 23 rusty-weather ModelId values, the ERA5 GRIB1
 # source already decoded by gpuwm's native ingest path, the packaged 20CRv3
 # member profile, its complementary metadata-driven NetCDF-CF primitives, then
@@ -250,6 +315,7 @@ _ICON_EU_WINDOW = RegularLatLonWindow(
 _ADAPTERS = (
     _adapter(
         "hrrr",
+        name="HRRR (native hybrid levels)",
         default_product="sfc",
         required_products=("sfc", "nat"),
         max_hour=48,
@@ -277,6 +343,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "hrrr-prs",
+        name="HRRR (pressure levels)",
         aliases=("hrrr-pressure", "hrrr-wrfprs"),
         upstream_model_id="hrrr",
         file_family="GRIB2",
@@ -314,6 +381,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "gem-gdps",
+        name="GEM GDPS (Canadian global)",
         # `gem` is an ALIAS, not only the upstream model id.  The 2026-08-17
         # model battery measured `--source gem` refusing by name on every
         # door while every document called the model GEM, so the one word a
@@ -359,6 +427,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "icon-eu",
+        name="ICON-EU (DWD regional)",
         aliases=("dwd-icon-eu", "icon-eu-regular"),
         upstream_model_id="icon-eu",
         file_family="GRIB2",
@@ -400,12 +469,14 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
-        "hrrr-ak", aliases=("hrrrak", "hrrr-alaska"),
+        "hrrr-ak",
+        name="HRRR Alaska", aliases=("hrrrak", "hrrr-alaska"),
         default_product="sfc", required_products=("sfc", "nat"), max_hour=48,
         notes="Alaska grid/projection and field contract are not yet mapped.",
     ),
     _adapter(
-        "gfs", aliases=("gfs-0p25", "gfs-0.25"),
+        "gfs",
+        name="GFS (global, 0.25 degree)", aliases=("gfs-0p25", "gfs-0.25"),
         default_product="pgrb2.0p25", max_hour=384,
         upstream_ingest="full",
         status=AdapterStatus.CERTIFIED,
@@ -434,7 +505,8 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
-        "gdas", aliases=("gdas-0p25", "gdas-0.25"),
+        "gdas",
+        name="GDAS analysis (0.25 degree)", aliases=("gdas-0p25", "gdas-0.25"),
         file_family="GRIB2",
         decoder=(
             "packaged GDAS pgrb2 0.25-degree profile + "
@@ -475,7 +547,8 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
-        "gefs", aliases=("gefs-ensemble",),
+        "gefs",
+        name="GEFS (global ensemble member)", aliases=("gefs-ensemble",),
         kind=SourceKind.ENSEMBLE_MEMBERS,
         file_family="GRIB2",
         decoder=(
@@ -525,7 +598,8 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
-        "aigfs", aliases=("ai-gfs",),
+        "aigfs",
+        name="AIGFS (NOAA AI global forecast)", aliases=("ai-gfs",),
         decoder=(
             "packaged AIGFS operational profile + "
             "vendored rusty-weather GRIB2 bridges"
@@ -579,7 +653,8 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
-        "aigefs", aliases=("ai-gefs",),
+        "aigefs",
+        name="AIGEFS (NOAA AI global ensemble member)", aliases=("ai-gefs",),
         kind=SourceKind.ENSEMBLE_MEMBERS,
         file_family="GRIB2",
         decoder=(
@@ -631,7 +706,8 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
-        "hgefs", aliases=("hybrid-gefs",),
+        "hgefs",
+        name="Hybrid GEFS", aliases=("hybrid-gefs",),
         kind=SourceKind.ENSEMBLE_MEMBERS,
         default_product="sfc/avg", max_hour=240,
         required_products=("sfc/member", "pres/member"),
@@ -639,7 +715,8 @@ _ADAPTERS = (
         composition="Select a member and combine pressure/surface products; averages are not member states.",
     ),
     _adapter(
-        "ecmwf-open-data", aliases=("ecmwf", "ifs"),
+        "ecmwf-open-data",
+        name="ECMWF IFS (open data, 0.25 degree)", aliases=("ecmwf", "ifs"),
         file_family="GRIB2",
         decoder=(
             "packaged ECMWF open-data oper profile + "
@@ -678,6 +755,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "aifs",
+        name="ECMWF AIFS single (open data)",
         aliases=("aifs-v2", "aifs-single"),
         file_family="GRIB2",
         decoder=(
@@ -722,6 +800,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "rap",
+        name="RAP (32 km North America)",
         aliases=("rap-awip32",),
         file_family="GRIB2",
         decoder=(
@@ -760,41 +839,54 @@ _ADAPTERS = (
             "grid families.  Not yet accepted by unchanged stock WRF."
         ),
     ),
-    _adapter("nam", default_product="awip12", max_hour=84),
     _adapter(
-        "hiresw", aliases=("hires",),
+        "nam",
+        name="NAM (12 km North America)",
+        default_product="awip12", max_hour=84),
+    _adapter(
+        "hiresw",
+        name="HiResW (high-resolution window)", aliases=("hires",),
         kind=SourceKind.ENSEMBLE_MEMBERS,
         default_product="arw_2p5km/conus", max_hour=48,
         status=AdapterStatus.MEMBER_SELECTION_REQUIRED,
         composition="Select the concrete ARW/FV3 member before initialization.",
     ),
     _adapter(
-        "href", aliases=("href-conus",),
+        "href",
+        name="HREF (high-resolution ensemble products)",
+        aliases=("href-conus",),
         kind=SourceKind.ENSEMBLE_STATISTIC,
         default_product="ensprod/conus/sprd", max_hour=48,
         status=AdapterStatus.COMPOSITION_REQUIRED,
         composition="Use a constituent deterministic member; spread/probability products cannot initialize WRF.",
     ),
     _adapter(
-        "sref", kind=SourceKind.ENSEMBLE_STATISTIC,
+        "sref",
+        name="SREF (short-range ensemble products)",
+        kind=SourceKind.ENSEMBLE_STATISTIC,
         default_product="ensprod/pgrb212/mean_3hrly", max_hour=87,
         status=AdapterStatus.COMPOSITION_REQUIRED,
         composition="Use a constituent member; the ensemble mean is not a dynamically balanced member state.",
     ),
     _adapter(
-        "rtma", kind=SourceKind.SURFACE_ANALYSIS,
+        "rtma",
+        name="RTMA (real-time mesoscale analysis)",
+        kind=SourceKind.SURFACE_ANALYSIS,
         default_product="2dvaranl_ndfd", max_hour=0,
         status=AdapterStatus.COMPOSITION_REQUIRED,
         composition="Provide a complete 3-D atmosphere source; RTMA may replace declared surface fields only.",
     ),
     _adapter(
-        "urma", kind=SourceKind.SURFACE_ANALYSIS,
+        "urma",
+        name="URMA (unrestricted mesoscale analysis)",
+        kind=SourceKind.SURFACE_ANALYSIS,
         default_product="2dvaranl_ndfd", max_hour=0,
         status=AdapterStatus.COMPOSITION_REQUIRED,
         composition="Provide a complete 3-D atmosphere source; URMA may replace declared surface fields only.",
     ),
     _adapter(
-        "nbm", aliases=("blend",),
+        "nbm",
+        name="NBM (National Blend of Models)", aliases=("blend",),
         kind=SourceKind.POSTPROCESSED_GUIDANCE,
         default_product="core/co", max_hour=264,
         status=AdapterStatus.COMPOSITION_REQUIRED,
@@ -802,6 +894,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "rrfs",
+        name="RRFS (operational 3 km CONUS)",
         aliases=("rrfs-ops",),
         file_family="GRIB2",
         decoder=(
@@ -849,7 +942,8 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
-        "rrfs-a", aliases=("rrfsa",),
+        "rrfs-a",
+        name="RRFS-A (frozen prototype feed)", aliases=("rrfsa",),
         default_product="prs-conus", max_hour=60,
         upstream_ingest="full",
         notes="Frozen prototype feed (noaa-rrfs-pds, halted 2026-08-12 by "
@@ -857,23 +951,29 @@ _ADAPTERS = (
               "rusty-weather ingest is mature; WRF state/soil mapping "
               "remains gated.",
     ),
-    _adapter("rrfs-public", default_product="prs-conus", max_hour=60),
     _adapter(
-        "refs", aliases=("rrfs-ensemble",),
+        "rrfs-public",
+        name="RRFS public prototype",
+        default_product="prs-conus", max_hour=60),
+    _adapter(
+        "refs",
+        name="REFS (RRFS ensemble products)", aliases=("rrfs-ensemble",),
         kind=SourceKind.ENSEMBLE_STATISTIC,
         default_product="mean-conus", max_hour=60,
         status=AdapterStatus.COMPOSITION_REQUIRED,
         composition="Use a constituent RRFS member; mean/PMMN/spread products cannot initialize a member.",
     ),
     _adapter(
-        "rrfs-firewx", aliases=("firewx",),
+        "rrfs-firewx",
+        name="RRFS fire-weather nest", aliases=("firewx",),
         default_product="2dfld-firewx", max_hour=36,
         required_products=("2dfld-firewx", "prs-firewx"),
         status=AdapterStatus.COMPOSITION_REQUIRED,
         composition="Combine the 2-D fire-weather product with a complete pressure/native atmosphere and soil state.",
     ),
     _adapter(
-        "wrf", aliases=("wrf-gdex", "wrf-arw"),
+        "wrf",
+        name="WRF archive (ARW history)", aliases=("wrf-gdex", "wrf-arw"),
         kind=SourceKind.WRF_ARCHIVE,
         file_family="NetCDF",
         default_product="surface",
@@ -883,6 +983,8 @@ _ADAPTERS = (
     ),
     _adapter(
         "era5",
+        name="ERA5 reanalysis (ECMWF)",
+        credentials=(_COPERNICUS_CDS_KEY,),
         upstream_model_id=None,
         file_family="GRIB1",
         default_product="pressure-level+single-level",
@@ -916,7 +1018,67 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
+        "era5-l137",
+        name="ERA5 reanalysis (native 137 model levels)",
+        aliases=("era5-model-level", "era5-ml"),
+        credentials=(_COPERNICUS_CDS_KEY,),
+        upstream_model_id=None,
+        file_family="GRIB2",
+        decoder=(
+            "packaged ERA5 model-level profile + "
+            "vendored rusty-weather GRIB2/GRIB1 bridges"
+        ),
+        default_product="model-level+pressure-level-surface",
+        required_products=(
+            "model-level atmosphere (all 137 levels)",
+            "same-hour pressure-level/single-level analysis",
+        ),
+        # A reanalysis: every valid time is an analysis, never a lead.
+        max_hour=0,
+        upstream_ingest="declarative_mapping_v1_over_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-era5-model-level-l137-grib2-v1",
+        level_mapping="137-hybrid-sigma-pressure-model-level-to-explicit-wrf-eta-v1",
+        cadence_mapping="uniform-hourly-analysis-series-v1",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="era5-model-level-l137-grib2-v1",
+        forcing_interval_seconds=3600.0,
+        composition=(
+            "ERA5's model-level product publishes the prognostic "
+            "atmosphere only; the land-surface and near-surface state -- "
+            "surface pressure, orography, land fraction, skin "
+            "temperature, the 2 m and 10 m diagnostics and the four-layer "
+            "soil column -- is borrowed from the SAME HOUR's ERA5 "
+            "pressure-level/single-level analysis, so a preparation takes "
+            "two files and refuses by name if the donor hour disagrees."
+        ),
+        notes=(
+            "The native vertical state, as pure table data: 137 hybrid "
+            "sigma-pressure model levels whose A/B interface coefficients "
+            "ride IN BAND in the GRIB2 Section-4 coordinate-values (pv) "
+            "octets -- 276 values, read from the producer's own record "
+            "rather than from a per-model coefficient table.  Pressure is "
+            "materialized as p = A + B*ps against the borrowed surface "
+            "pressure and geopotential height is integrated "
+            "hydrostatically from the borrowed terrain, because the "
+            "model-level product publishes z only at level 1 and a 3-D "
+            "height borrow would be cross-ladder.  lnsp is NOT consumed: "
+            "unit transforms are affine, there is no exp, and surface "
+            "pressure is borrowed exactly instead of approximated.  "
+            "Measured on real Copernicus CDS bytes: the Rust engine and "
+            "the Python reference produce byte-identical air_pressure and "
+            "geopotential_height (max ULP 0) and the preparation reaches "
+            "rc 0 with wrfinput/wrfbdy written.  Not yet accepted by "
+            "unchanged stock WRF, and this row does not certify ERA5 "
+            "model-level requests on other grids or level subsets: the "
+            "mapping's ladder is the full 1..137 set."
+        ),
+    ),
+    _adapter(
         "20crv3",
+        name="20CRv3 reanalysis (member, GRIB2)",
         aliases=("20cr", "twentycrv3", "20crv3-member"),
         upstream_model_id=None,
         kind=SourceKind.ENSEMBLE_MEMBERS,
@@ -952,6 +1114,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "20crv3-cf",
+        name="20CRv3 reanalysis (ensemble mean, NetCDF)",
         aliases=("20crv3-netcdf", "20cr-netcdf", "20cr-cf"),
         upstream_model_id=None,
         # TRUTHFUL, and it is the one thing a reader must not miss: NOAA
@@ -1010,6 +1173,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "mapped",
+        name="Generic mapped source (rw-wps mapping v1)",
         aliases=("generic-mapped", "mapping-v1"),
         upstream_model_id=None,
         file_family="GRIB1/GRIB2/NetCDF",

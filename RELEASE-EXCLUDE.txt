@@ -204,3 +204,12 @@ configs/superoutbreak_20110427_d01_3km.namelist.wps
 configs/superoutbreak_20110427_d01_960.namelist.wps
 configs/superoutbreak_20110427_probe480.namelist.wps
 configs/superoutbreak_20110427_smoke.namelist.wps
+
+# A campaign config that reached the release line by a `git add configs/`
+# sweeping an untracked working file.  Same shape as the superoutbreak
+# entries above: its forcing bundle and cache roots are absolute paths into
+# one machine's disk, so it is a record of a run rather than something a
+# reader can execute, and it would have shipped inside the wheel because
+# pyproject packages configs/ recursively.  It is also case-named, which
+# nothing in configs/ should be.
+configs/real74_morrison_d03_pressure_fix_1h.toml

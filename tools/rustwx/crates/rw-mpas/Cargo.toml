@@ -1,0 +1,24 @@
+[package]
+name = "rw-mpas"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+netcrust = { path = "../../vendor/netcrust" }
+rayon.workspace = true
+rw-store = { path = "../rw-store" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+
+[[bin]]
+name = "rw_mpas_convert"
+path = "src/bin/rw_mpas_convert.rs"
+
+[[bin]]
+name = "rw_mpas_init"
+path = "src/bin/rw_mpas_init.rs"

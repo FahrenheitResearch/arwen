@@ -195,7 +195,16 @@ def test_driver_disposition_repairs_passengers_and_keeps_tendencies_fatal(
         _shinhong_passenger_advisory=False,
         pbl_tendencies=FakeTendencies(),
         last_ysu=None,
+        gf_rthblten=None,
+        gf_rqvblten=None,
     )
+    # THE REAL SEAM, BOUND TO THE FAKE: a due call ends at
+    # PhysicsDriver._couple_pbl_slot, which couples the raw rates AND
+    # retains RTHBLTEN/RQVBLTEN for the cumulus scheme.  Stubbing it
+    # would let this disposition suite pass over a driver that no longer
+    # feeds Grell-Freitas anything.
+    driver._couple_pbl_slot = types.MethodType(
+        ph.PhysicsDriver._couple_pbl_slot, driver)
     cfg = types.SimpleNamespace(dx=12000.0, dy=12000.0)
     atmosphere = {name: np.full(shape, 0.25, F)
                   for name in ("u", "v", "theta", "qv", "qc", "qi",
@@ -230,6 +239,13 @@ def test_driver_disposition_repairs_passengers_and_keeps_tendencies_fatal(
     assert np.isfinite(driver.state.e_sgs).all()
     assert driver.state.e_sgs[0, 0, 0] == F(SHINHONG_TKE_FLOOR)
     assert driver._shinhong_passenger_advisory is True
+    # A repaired passenger does not cost the cumulus scheme its forcing:
+    # the run continued, so the retention seam ran and the lanes carry
+    # the finite rates this step computed.
+    assert driver.gf_rthblten is not None
+    assert np.isfinite(driver.gf_rthblten).all()
+    assert driver.gf_rqvblten is not None
+    assert np.isfinite(driver.gf_rqvblten).all()
 
     # A tendency failure stays fatal with the historical message shape,
     # even when a passenger is also bad.

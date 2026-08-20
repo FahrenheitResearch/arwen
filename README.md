@@ -599,6 +599,7 @@ What it does detect, what it does not, and the pin set that defines
 - [Physics options and maturity](docs/public/PHYSICS.md)
 - [Overnight dewpoints far below the airmass](docs/public/NOCTURNAL-DEWPOINTS.md)
 - [Configuration knobs (WRF namelist parity)](docs/public/CONFIGURATION.md)
+- [Choosing which variables the wrfout files carry](docs/public/OUTPUT-VARIABLES.md)
 - [Getting data](docs/public/DATA.md)
 - [Sources at the domain wizard](docs/public/SOURCES.md)
 - [Hardware and VRAM sizing](docs/public/HARDWARE.md)

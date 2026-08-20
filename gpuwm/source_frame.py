@@ -9,12 +9,20 @@ descriptors without importing NumPy or CuPy.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 
 SCHEMA = "gpuwm-canonical-source-frame-v1"
+
+#: The declared normalization that turns a frame header into an identity of
+#: the DECODE rather than of the box that ran it.  Versioned because a
+#: recorded portable digest is only comparable against the same rule.
+PORTABLE_HEADER_RULE = "gpuwm-portable-frame-header-v1"
 
 
 @dataclass(frozen=True)
@@ -126,6 +134,118 @@ _SUPPORTED_VERTICAL = {"pressure", "hybrid", "model_level", "soil_depth", "heigh
 _SUPPORTED_WIND_BASIS = {"earth_relative", "grid_relative_with_rotation"}
 
 
+def _mask_input_paths(value: object, inputs: Sequence[tuple[str, str]]) -> object:
+    """Reduce every input's path to its file name, anywhere in a document."""
+
+    if isinstance(value, str):
+        for spelling, name in inputs:
+            value = value.replace(spelling, name)
+        return value
+    if isinstance(value, (list, tuple)):
+        # Tuples as well as lists: ``SourceFrameHeader.to_dict`` returns the
+        # field descriptors as a TUPLE, and a list-only walk slides straight
+        # past them and returns the document unmasked -- a mask that
+        # silently does nothing is worse than no mask, because the digest
+        # still looks reproducible.  ``json.dumps`` writes both as arrays,
+        # so returning a list here does not change a byte of the digest.
+        return [_mask_input_paths(item, inputs) for item in value]
+    if isinstance(value, Mapping):
+        return {key: _mask_input_paths(item, inputs) for key, item in value.items()}
+    return value
+
+
+def portable_frame_header(
+    header: Mapping[str, object] | object,
+    *,
+    inputs: Iterable[object],
+    libm_dependent: Iterable[str],
+) -> dict[str, object]:
+    """Return a frame header in its machine-INDEPENDENT form.
+
+    A canonical frame header is an exact identity of a decode, which is
+    what makes it worth digesting -- and two members of it are identities
+    of the BOX instead:
+
+    * every field descriptor quotes the absolute paths its arrays were
+      read from, so the digest moves with a checkout, a staging tree or a
+      drive letter;
+    * a field produced through a TRANSCENDENTAL takes its last bits from
+      the box's libm.  Measured 2026-08-20, same bytes on the Windows
+      desktop (UCRT) and weather-node-1 (glibc): the two ``exp``-based
+      humidity derivations differ by at most 3 ULP (4.1e-16 relative) on
+      the netCDF case, and the ``sin``/``cos`` grid-relative wind
+      rotation moves all four wind components on the Lambert case.
+      Every other array -- integer unpack plus IEEE add, multiply and
+      divide -- is identical to the byte.
+
+    ``libm_dependent`` is that field set, and callers compute it from the
+    mapping's own declarations (:func:`gpuwm.mapped_source
+    .libm_dependent_fields`), so nothing here is per-source and a new
+    model stays table work.
+
+    This applies exactly two normalizations, both declared:
+
+    1. each input path is reduced to its file name;
+    2. each libm-dependent field's ``data_reference`` -- an array digest
+       -- becomes ``libm:<canonical_name>``.
+
+    What survives is the whole gate: grid, vertical coordinates, times,
+    policies, units, shapes, dtypes, the field roster BY NAME, and the
+    exact array digest of every other field.  The elided arrays are not
+    left uncompared; they are compared by value under a declared
+    tolerance instead of by digest (see the crate goldens).
+    """
+
+    document = header.to_dict() if hasattr(header, "to_dict") else dict(header)
+    spellings: list[tuple[str, str]] = []
+    for source in inputs:
+        spelling = str(source)
+        name = os.path.basename(spelling.replace("\\", "/"))
+        if spelling and name and spelling != name:
+            spellings.append((spelling, name))
+    # Longest first: a directory that is a prefix of another input's path
+    # must not shadow the longer match.
+    spellings.sort(key=lambda entry: len(entry[0]), reverse=True)
+    masked = _mask_input_paths(document, spellings)
+    if not isinstance(masked, dict):  # pragma: no cover - a mapping in, a dict out
+        raise TypeError(
+            "a frame header must be a mapping to carry a portable identity; "
+            f"got {type(masked).__name__}"
+        )
+
+    elided = set(libm_dependent)
+    fields = masked.get("fields")
+    if isinstance(fields, list):
+        masked["fields"] = [
+            {
+                **descriptor,
+                "data_reference": f"libm:{descriptor['canonical_name']}",
+            }
+            if isinstance(descriptor, Mapping)
+            and descriptor.get("canonical_name") in elided
+            else descriptor
+            for descriptor in fields
+        ]
+    masked["portable_rule"] = PORTABLE_HEADER_RULE
+    return masked
+
+
+def portable_frame_header_sha256(
+    header: Mapping[str, object] | object,
+    *,
+    inputs: Iterable[object],
+    libm_dependent: Iterable[str],
+) -> str:
+    """The sha256 of :func:`portable_frame_header`, canonically encoded."""
+
+    return hashlib.sha256(
+        json.dumps(
+            portable_frame_header(header, inputs=inputs, libm_dependent=libm_dependent),
+            sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _parse_utc(text: str, label: str) -> datetime:
     normalized = text.replace("Z", "+00:00")
     try:
@@ -146,10 +266,21 @@ def _validate_vertical(name: str, value: VerticalDescriptor) -> None:
     if value.level_values and len(value.level_values) != value.level_count:
         raise ValueError(f"vertical coordinate {name!r} level_values length mismatch")
     if value.coordinate == "hybrid":
-        expected = value.level_count + 1
-        if len(value.a_coefficients) != expected or len(value.b_coefficients) != expected:
+        # N+1 states the half-level interfaces (the GRIB pv encoding);
+        # N states full-level coefficients directly.  Anything else --
+        # including the empty tuples both engines used to emit -- prices
+        # no pressure and refuses here by count.
+        interfaces = value.level_count + 1
+        accepted = (interfaces, value.level_count)
+        if len(value.a_coefficients) not in accepted \
+                or len(value.a_coefficients) != len(value.b_coefficients):
             raise ValueError(
-                f"hybrid coordinate {name!r} requires {expected} A and B interface coefficients"
+                f"hybrid coordinate {name!r} carries "
+                f"{len(value.a_coefficients)} A and "
+                f"{len(value.b_coefficients)} B coefficients; "
+                f"{value.level_count} levels require {interfaces} "
+                f"(half-level interfaces) or {value.level_count} "
+                "(full levels) of each"
             )
 
 

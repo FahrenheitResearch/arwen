@@ -599,6 +599,93 @@ def test_source_label_reaches_the_renderer_invocation(monkeypatch,
     assert command[command.index("--source-label") + 1] == "WRF-ARW 4.6.1"
 
 
+def _renderer_spy(monkeypatch, tmp_path):
+    """Capture the argv `gpuwm render --engine rust` hands the binary."""
+
+    import subprocess
+
+    seen: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def spy(command, **kwargs):
+        seen.append([str(part) for part in command])
+        return Result()
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    monkeypatch.setattr("gpuwm.rustwx.find_renderer",
+                        lambda: tmp_path / "rw_wrfbatch.exe")
+    monkeypatch.setattr("gpuwm.rustwx.probe_renderer",
+                        lambda path: (True, "stubbed"))
+    monkeypatch.setenv(rustwx.RENDERER_ENV,
+                       str((tmp_path / "rw_wrfbatch.exe").resolve()))
+    return seen
+
+
+def test_streamlines_have_a_front_door_flag(monkeypatch, tmp_path):
+    """Wind streamlines were reachable only through an environment
+    variable named in no help text -- which under the
+    ship-only-what-users-can-reach rule means they were not shipped.
+
+    Both spellings have to reach the engine, and saying neither has to
+    leave the invocation byte-identical to every earlier release, so a
+    render that never mentions the wind layer is unchanged.
+    """
+
+    from gpuwm import render as render_module
+
+    seen = _renderer_spy(monkeypatch, tmp_path)
+
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="wind10",
+        timeidx=0, outdir=tmp_path / "png", size=(800, 600))
+    assert "--streamlines" not in seen[-1]
+    assert "--barbs" not in seen[-1]
+
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="wind10",
+        timeidx=0, outdir=tmp_path / "png", size=(800, 600),
+        streamlines=True)
+    assert "--streamlines" in seen[-1]
+
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="wind10",
+        timeidx=0, outdir=tmp_path / "png", size=(800, 600),
+        streamlines=False)
+    assert "--barbs" in seen[-1]
+
+
+def test_the_streamlines_flag_is_on_the_render_parser(monkeypatch,
+                                                      tmp_path):
+    """The flag has to be typed by a user, not only passed by a caller:
+    `gpuwm render --streamlines` is the door, and `--barbs` is how a
+    user overrules an inherited `RUSTWX_WIND_STREAMLINES=1`."""
+
+    seen = _renderer_spy(monkeypatch, tmp_path)
+    wrfout = tmp_path / "wrfout_d02_2026-08-19_00_00_00"
+    wrfout.write_bytes(b"")
+
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        ["render", str(wrfout), "--engine", "rust", "--streamlines",
+         "--out", str(tmp_path / "png")])
+    assert args.streamlines is True
+
+    args = parser.parse_args(
+        ["render", str(wrfout), "--engine", "rust", "--barbs",
+         "--out", str(tmp_path / "png")])
+    assert args.streamlines is False
+
+    args = parser.parse_args(
+        ["render", str(wrfout), "--engine", "rust",
+         "--out", str(tmp_path / "png")])
+    assert args.streamlines is None
+    assert not seen
+
+
 def test_engine_outputs_are_rebranded_to_the_product_prefix(monkeypatch,
                                                             tmp_path,
                                                             capsys):
@@ -1010,17 +1097,21 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     # The complete catalog is enumerated, not just what renders.
-    # 168 = 152 + the standalone 10 m wind chart + this fixture's 15
+    # 176 = 152 + the standalone 10 m wind chart + this fixture's 23
     # generic ``var:`` rows (stored 2-D planes no named product claims;
     # the generic family is store-dependent, so the count is the
-    # FIXTURE's, not the build's).
-    assert "total=168" in out
+    # FIXTURE's, not the build's).  It was 168 with 15 generic rows
+    # until the science import started carrying EVERY stored
+    # ``(Time, south_north, west_east)`` plane -- the eight new rows are
+    # this fixture's own surface planes, which the two fixed catalogs
+    # did not name and which therefore used to be unrenderable.
+    assert "total=176" in out
     assert "renderable" in out and "excluded" in out
     # The generic rows are part of the catalog, not a side channel: every
     # stored plane without a named product renders as ``var:<name>``.
     generic_rows = [line for line in out.splitlines()
                     if " generic " in line and " var:" in line]
-    assert len(generic_rows) == 15, out
+    assert len(generic_rows) == 23, out
     assert all("renderable" in line for line in generic_rows), generic_rows
     # The fixture's fields prove out the reflectivity composite ...
     assert any("composite_reflectivity" in line and "renderable" in line

@@ -208,7 +208,7 @@ fn primary_keys(primary: &DecodedCollection) -> Vec<TimeKey> {
 
 /// `mapped_composition._compose_terrain`.
 pub fn compose_terrain(
-    primary: &DecodedCollection,
+    mut primary: DecodedCollection,
     terrain: &DecodedCollection,
     time_alignment: &str,
 ) -> Result<(DecodedCollection, Value)> {
@@ -278,7 +278,7 @@ pub fn compose_terrain(
             "terrain supplement changes across supplied valid times",
         ));
     }
-    let keys = primary_keys(primary);
+    let keys = primary_keys(&primary);
     let terrain_by_time: BTreeMap<TimeKey, &DirectValue> = terrain_items
         .iter()
         .map(|(time, member, value)| ((**time, (*member).clone()), *value))
@@ -311,7 +311,12 @@ pub fn compose_terrain(
         }
     }
     let carrier = terrain_items[0].2;
-    let mut direct = primary.direct.clone();
+    // TAKEN from the primary, not cloned out of it.  The caller hands
+    // its collection over and replaces it with the composed one, so the
+    // clone made a full second copy of every valid time's arrays live
+    // at once: 4.2 GiB per forcing time on a 3 km CONUS source, which is
+    // what a seven-time compose was carrying twice.
+    let mut direct = std::mem::take(&mut primary.direct);
     let mut subset_reference: Option<ArrayD<f64>> = None;
     for key in &keys {
         let supplied = terrain_by_time.get(key).copied().unwrap_or(carrier);
@@ -436,12 +441,18 @@ pub fn compose_terrain(
     receipt.insert("longitude_equivalence".into(), json!("modulo_360_exact"));
     Ok((
         DecodedCollection {
-            latitude: primary.latitude.clone(),
-            longitude: primary.longitude.clone(),
-            vertical_values: primary.vertical_values.clone(),
+            latitude: primary.latitude,
+            longitude: primary.longitude,
+            vertical_values: primary.vertical_values,
             direct,
-            source_cycles: primary.source_cycles.clone(),
-            grid_fingerprint: primary.grid_fingerprint.clone(),
+            source_cycles: primary.source_cycles,
+            grid_fingerprint: primary.grid_fingerprint,
+            // The composed frame keeps the PRIMARY's vertical identity,
+            // its hybrid coefficient ladder included.  TAKEN, not cloned:
+            // the current line hands the whole primary over rather than
+            // duplicating it, and the ladder follows that same rule.
+            hybrid_a: primary.hybrid_a,
+            hybrid_b: primary.hybrid_b,
         },
         Value::Object(receipt),
     ))
@@ -473,7 +484,7 @@ fn binding_subset_indices(
 
 /// `mapped_composition._compose_bound_fields`.
 pub fn compose_bound_fields(
-    primary: &DecodedCollection,
+    mut primary: DecodedCollection,
     donor: &DecodedCollection,
     binding: &Binding,
 ) -> Result<(DecodedCollection, Value)> {
@@ -543,8 +554,8 @@ pub fn compose_bound_fields(
              does not declare"
         )));
     }
-    let (latitude_indices, longitude_indices) = binding_subset_indices(primary, donor, binding_name)?;
-    let keys = primary_keys(primary);
+    let (latitude_indices, longitude_indices) = binding_subset_indices(&primary, donor, binding_name)?;
+    let keys = primary_keys(&primary);
     let primary_cycles: Vec<NaiveDateTime> = primary
         .source_cycles
         .values()
@@ -557,7 +568,10 @@ pub fn compose_bound_fields(
         by_field.entry(name.as_str()).or_default().insert(*time, value);
     }
 
-    let mut direct = primary.direct.clone();
+    // TAKEN from the primary for the same reason the terrain join takes
+    // it: the caller replaces its collection with the composed one, so a
+    // clone held every valid time's arrays twice.
+    let mut direct = std::mem::take(&mut primary.direct);
     let mut matched_times: BTreeSet<NaiveDateTime> = BTreeSet::new();
     let mut broadcast_times: BTreeSet<NaiveDateTime> = BTreeSet::new();
     let mut subset_hashes: BTreeMap<&str, String> = BTreeMap::new();
@@ -744,12 +758,18 @@ pub fn compose_bound_fields(
     });
     Ok((
         DecodedCollection {
-            latitude: primary.latitude.clone(),
-            longitude: primary.longitude.clone(),
-            vertical_values: primary.vertical_values.clone(),
+            latitude: primary.latitude,
+            longitude: primary.longitude,
+            vertical_values: primary.vertical_values,
             direct,
-            source_cycles: primary.source_cycles.clone(),
-            grid_fingerprint: primary.grid_fingerprint.clone(),
+            source_cycles: primary.source_cycles,
+            grid_fingerprint: primary.grid_fingerprint,
+            // The composed frame keeps the PRIMARY's vertical identity,
+            // its hybrid coefficient ladder included.  TAKEN, not cloned:
+            // the current line hands the whole primary over rather than
+            // duplicating it, and the ladder follows that same rule.
+            hybrid_a: primary.hybrid_a,
+            hybrid_b: primary.hybrid_b,
         },
         receipt,
     ))

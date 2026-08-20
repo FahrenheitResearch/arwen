@@ -384,7 +384,8 @@ def test_an_intent_without_a_place_is_refused(tmp_path):
 
 def test_an_intent_source_the_route_cannot_run_is_refused_with_the_reason(
         tmp_path):
-    """gfs/hrrr emissions carry no [case_data]; say so, not 'missing table'."""
+    """gfs emissions carry no [case_data]; say so, and name the route
+    that DOES drive them, so the remedy is one edited field."""
 
     with pytest.raises(PlanError) as refusal:
         build_plan({"schema": PLAN_SCHEMA, "name": "x", "route": "experiment",
@@ -392,8 +393,7 @@ def test_an_intent_source_the_route_cannot_run_is_refused_with_the_reason(
                    source="probe.json", base_dir=tmp_path, sha256="0" * 64)
     text = str(refusal.value)
     assert "case_data" in text
-    assert "era5" in text
-    assert "domain_wizard.py" in text  # the engine's own citation
+    assert 'route = "prepared"' in text
 
 
 def test_the_wizard_writes_the_config_and_resolution_carries_it_verbatim(
@@ -472,7 +472,15 @@ def test_a_shape_that_cannot_fit_refuses_with_the_engines_words_and_the_floor(
         resolve_plan(plan, require_inputs=False)
     text = str(refusal.value)
     assert "does not fit" in text
-    assert "minimum layout" in text        # the wizard's own sentence
+    # The wizard's own sentence, whichever of its two refusals fired.  On
+    # a 4 GiB card it is now the harder one: since task 206 the wizard
+    # asks whether the suite's GRID-INDEPENDENT envelope alone is the
+    # whole card, instead of inferring that from a budget that no longer
+    # contains it, and on this card it is -- so "minimum layout" would
+    # point the reader at a grid lever that cannot help.
+    assert ("minimum layout" in text
+            or "no budget for ladder" in text)
+    assert "grid-independent" in text
     assert "root_mass_points" in text      # the structured floor beside it
 
 
@@ -918,6 +926,197 @@ def test_a_source_the_prepared_route_cannot_drive_is_refused(tmp_path):
     assert "era5" in text and "experiment" in text
 
 
+# ---------------------------------------------------------------------------
+# The staged chain: packaged mapped sources on the prepared route
+# ---------------------------------------------------------------------------
+
+
+_STAGED_INTENT = {"point": "50.1,8.7", "source": "icon-eu",
+                  "cycle": "2026-08-18T06", "hours": 3, "vram_gib": 16}
+
+
+def _staged_plan(tmp_path, run_dir, **overrides):
+    intent = {**_STAGED_INTENT, **overrides.pop("intent", {})}
+    document = {
+        "schema": PLAN_SCHEMA, "name": "staged-plan", "route": "prepared",
+        "config": {"intent": intent}, "output_root": str(run_dir),
+        **overrides,
+    }
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def test_a_staged_source_intent_resolves_through_the_wizard(tmp_path):
+    """A packaged mapped source's intent reaches the real wizard."""
+
+    plan = load_plan(_staged_plan(tmp_path, tmp_path / "run"))
+    resolution, exp, data = resolve_plan(plan, require_inputs=False)
+
+    assert data is None
+    assert 'source = "icon-eu"' in resolution["generated_config"]
+    assert resolution["configuration"]["case_data"] is None
+
+
+def test_a_staged_source_intent_estimates(tmp_path, capsys):
+    from gpuwm.cli import build_parser
+
+    plan_path = _staged_plan(tmp_path, tmp_path / "run")
+    assert run_plan_main(build_parser().parse_args(
+        ["run-plan", "--estimate", str(plan_path)])) == 0
+    document = json.loads(capsys.readouterr().out)
+    assert document["vram"]["estimate_bytes"] > 0
+    assert document["disk"]["total_frames"] > 0
+
+
+def _executed_staged_chain(tmp_path, monkeypatch):
+    """Drive the staged chain end to end with every stage observed.
+
+    The stages themselves are the fetch route's, rw-wps's and the
+    runner's own programs, each covered by its own suite; what THIS
+    chain owns -- and what these mocks pin -- is the composition: the
+    fetch driven from the config's own hints, the preparation composed
+    from the fetch's published handoff plus exactly the four
+    caller-owned flags, and the forecast bound off the bundle.
+    """
+
+    import gpuwm.go_cli as go_cli
+    import gpuwm.runplan as runplan_module
+    import gpuwm.stage_cli as stage_cli
+
+    staged = []
+    handoff_argv = ["--source", "icon-eu",
+                    "--input-list", str(tmp_path / "inputs.txt"),
+                    "--supplement", f"surface={tmp_path / 'invariant.grib2'}",
+                    "--author-input-manifest", str(tmp_path / "inputs.json")]
+
+    def fake_fetch(arguments, run_dir):
+        out = Path(arguments[arguments.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        from gpuwm import fetch_routes
+        (out / fetch_routes.PREP_ARGUMENTS_NAME).write_text(json.dumps({
+            "schema": fetch_routes.PREP_ARGUMENTS_SCHEMA,
+            "source": "icon-eu", "prep_source": "icon-eu",
+            "argv": handoff_argv, "unbound_supplement_roles": [],
+            "member": None, "member_set": None,
+        }), encoding="utf-8")
+        staged.append(("fetch", list(arguments)))
+        return {}
+
+    def fake_prep(arguments):
+        staged.append(("prepare", [str(a) for a in arguments]))
+        prep_root = Path(arguments[arguments.index("--output-root") + 1])
+        prep_root.mkdir(parents=True, exist_ok=True)
+        (prep_root / "proof.json").write_text("{}", encoding="utf-8")
+
+    def fake_resolve_bundle(prepared_root):
+        return {"document": Path(prepared_root) / "proof.json",
+                "schema": "probe", "source": "icon-eu",
+                "layout": "single", "domains": 1, "payload": {}}
+
+    def fake_sim_command(bundle, **kw):
+        staged.append(("sim_command", dict(kw)))
+        return ["python", "-m", "runner", "--source", bundle["source"],
+                "--outdir", str(kw["outdir"])]
+
+    def fake_forecast(argv, *, layout, observer):
+        staged.append(("forecast", list(argv), layout))
+
+    monkeypatch.setattr(runplan_module, "_run_fetch", fake_fetch)
+    monkeypatch.setattr(runplan_module, "_run_prep", fake_prep)
+    monkeypatch.setattr(runplan_module, "_staged_forecast", fake_forecast)
+    monkeypatch.setattr(stage_cli, "resolve_bundle", fake_resolve_bundle)
+    monkeypatch.setattr(stage_cli, "sim_command", fake_sim_command)
+    monkeypatch.setattr(
+        go_cli, "_render_stage",
+        lambda plan, **kw: staged.append(("render", dict(plan))))
+
+    geog = tmp_path / "GEOG"
+    geog.mkdir(exist_ok=True)
+    plan = load_plan(_staged_plan(
+        tmp_path, tmp_path / "run",
+        run_options={"geog_root": str(geog)}))
+    plan.run_dir.mkdir(parents=True, exist_ok=True)
+    with EventStream(plan.run_dir / EVENTS_FILENAME, mirror=None) as events:
+        execute_plan(plan, events=events)
+    return (staged, handoff_argv,
+            read_events(plan.run_dir / EVENTS_FILENAME), plan)
+
+
+def test_the_staged_chain_composes_prep_from_the_fetch_handoff(
+        tmp_path, monkeypatch):
+    """The preparation argv IS the fetch route's published binding, plus
+    exactly the four flags the handoff declares are the caller's."""
+
+    staged, handoff_argv, _events, plan = _executed_staged_chain(
+        tmp_path, monkeypatch)
+
+    fetch = next(cmd for label, *cmd in staged if label == "fetch")[0]
+    assert "--source" in fetch and "icon-eu" in fetch
+    assert "--cycle" in fetch and "2026-08-18T06" in fetch
+
+    prepare = next(cmd for label, *cmd in staged if label == "prepare")[0]
+    assert prepare[:len(handoff_argv)] == handoff_argv
+    appended = prepare[len(handoff_argv):]
+    assert appended[::2] == ["--wps-namelist", "--experiment-config",
+                             "--geog-root", "--output-root"]
+    namelist = Path(appended[1])
+    assert namelist.name.endswith(".namelist.wps") and namelist.is_file()
+    config = Path(appended[3])
+    assert config.name == "intent-config.toml" and config.is_file()
+    assert appended[5] == str(tmp_path / "GEOG")
+    assert Path(appended[7]) == plan.run_dir / "chain" / "prep"
+
+
+def test_the_staged_chain_binds_the_forecast_off_the_bundle(
+        tmp_path, monkeypatch):
+    staged, _argv, events, plan = _executed_staged_chain(
+        tmp_path, monkeypatch)
+
+    sim = next(cmd for label, *cmd in staged if label == "sim_command")[0]
+    assert Path(str(sim["experiment_config"])).name == "intent-config.toml"
+    assert Path(str(sim["wps_namelist"])).name.endswith(".namelist.wps")
+    assert Path(str(sim["outdir"])) == plan.run_dir / "chain" / "run"
+
+    forecast = next(entry for entry in staged if entry[0] == "forecast")
+    assert forecast[2] == "single"
+    # The runner argv is the composed command minus the interpreter
+    # prefix, exactly as `gpuwm sim` itself strips it.
+    assert forecast[1][0] == "--source"
+
+    stages = [record["stage"] for record in events
+              if record["event"] == "stage_started"]
+    assert stages == ["fetch", "prepare", "forecast", "finalize"]
+    render = next(entry for entry in staged if entry[0] == "render")
+    assert Path(str(render[1]["render"])) == plan.run_dir / "chain" / "png"
+
+
+def test_the_staged_chain_refuses_a_fetch_with_no_handoff(
+        tmp_path, monkeypatch):
+    """A legacy-shaped fetch directory cannot feed the staged prep."""
+
+    import gpuwm.runplan as runplan_module
+
+    def bare_fetch(arguments, run_dir):
+        out = Path(arguments[arguments.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        return {}
+
+    monkeypatch.setattr(runplan_module, "_run_fetch", bare_fetch)
+    geog = tmp_path / "GEOG"
+    geog.mkdir(exist_ok=True)
+    plan = load_plan(_staged_plan(
+        tmp_path, tmp_path / "run",
+        run_options={"geog_root": str(geog)}))
+    plan.run_dir.mkdir(parents=True, exist_ok=True)
+    with EventStream(plan.run_dir / EVENTS_FILENAME, mirror=None) as events:
+        assert execute_plan(plan, events=events) == 1
+    failed = next(record for record
+                  in read_events(plan.run_dir / EVENTS_FILENAME)
+                  if record["event"] == "failed")
+    assert "prep-arguments.json" in failed["message"]
+
+
 def _staged_hrrr_chain(tmp_path, monkeypatch, **plan_overrides):
     """Assemble the HRRR chain without executing any stage."""
 
@@ -1225,6 +1424,533 @@ def test_a_box_with_no_renderer_answers_with_the_refusal(monkeypatch):
     # The refusal reaches the JSON as ONE readable block, not with the
     # `[[explain]]` sentinel a terminal layer is supposed to strip.
     assert "[[explain]]" not in document["error"]
+
+
+def _sources_document(capsys):
+    """Run the real front door and return its one printed document."""
+
+    from gpuwm.cli import build_parser
+
+    assert run_plan_main(
+        build_parser().parse_args(["run-plan", "--sources"])) == 0
+    captured = capsys.readouterr().out
+    # stdout is the machine channel and carries the document alone: the
+    # registry imports print, and the redirect is what keeps their
+    # chatter off the channel a consumer calls json.loads on.
+    return json.loads(captured), captured
+
+
+def test_the_sources_query_answers_with_the_registry_schema(capsys):
+    from gpuwm.runplan import SOURCES_SCHEMA
+
+    document, raw = _sources_document(capsys)
+    assert document["schema"] == SOURCES_SCHEMA
+    assert raw.lstrip().startswith("{")
+    assert raw.count("\n{\n") == 0
+    assert document["registry_schema"] == "gpuwm-native-source-adapters-v1"
+    assert document["gpuwm_version"]
+    assert document["readiness_rule"] and document["certification_rule"]
+    assert set(document["routes"]) == {"experiment", "prepared"}
+
+
+def test_the_sources_query_emits_every_registered_row_in_registry_order(capsys):
+    """THE arbitrary-test gate.
+
+    The list and its order are the registry's own.  This cell fails the
+    moment the reply is built from anything but ``_ADAPTERS`` -- a
+    per-model dict, a curated trio, a sort someone thought looked
+    tidier.
+    """
+
+    from gpuwm.source_adapters import source_adapters
+
+    document, _raw = _sources_document(capsys)
+    registered = [adapter.source_id for adapter in source_adapters()]
+    assert document["source_count"] == len(registered)
+    assert [row["source_id"] for row in document["sources"]] == registered
+    assert document["runnable_source_count"] == sum(
+        adapter.runnable for adapter in source_adapters())
+
+
+def test_a_new_registry_row_appears_with_no_code_change(capsys, monkeypatch):
+    """Adding a model is table work: a row appears, nothing is edited.
+
+    The proof the arbitrary acceptance test asks for.  A row grafted
+    onto the registry -- and onto nothing else -- must reach the reply
+    with its declared facts intact, in its registry position, and with
+    a truthful "no fetch route / no intent route" verdict rather than a
+    traceback.
+    """
+
+    import dataclasses
+
+    from gpuwm import source_adapters as registry
+
+    grafted = dataclasses.replace(
+        registry.source_adapters()[0], source_id="probe-arbitrary-model",
+        aliases=("probe-arbitrary-alias",), display_name=None)
+    monkeypatch.setattr(
+        registry, "_ADAPTERS", (*registry.source_adapters(), grafted))
+
+    document, _raw = _sources_document(capsys)
+    ids = [row["source_id"] for row in document["sources"]]
+    assert ids[-1] == "probe-arbitrary-model"
+    assert document["source_count"] == len(ids)
+    row = document["sources"][-1]
+    # A row that fills no display-name column reads back as its id --
+    # the fallback, never `null` and never a traceback.
+    assert row["title"] == "probe-arbitrary-model"
+    assert row["display_name"] == "probe-arbitrary-model"
+    assert row["aliases"] == ["probe-arbitrary-alias"]
+    assert row["source_kind"] == grafted.source_kind.value
+    assert row["maturity"]["status"] == grafted.status.value
+    assert row["fetch"]["kind"] == "none"
+    assert row["fetch"]["route_id"] is None
+    assert row["fetch"]["refusal"]
+    # The grafted row copies a drivable row's runner but registers no
+    # acquisition route under its own id, so the DERIVED verdict is a
+    # truthful "no fetch route" -- not silence, not "unknown source".
+    assert row["run_plan"]["intent_routes"] == []
+    assert row["run_plan"]["intent_supported"] is False
+    assert "no acquisition route" in row["run_plan"]["intent_refusal"]
+
+
+def test_every_sources_row_declares_its_fetch_kind_from_the_route_tables(
+        capsys):
+    """The census is the three tables', computed here, never a literal."""
+
+    from gpuwm import fetch_routes
+
+    document, _raw = _sources_document(capsys)
+    table = set(fetch_routes.route_ids())
+    legacy = set(fetch_routes.LEGACY_ROUTE_SOURCES)
+    refused = set(fetch_routes.refusal_ids())
+
+    census = {"table_route": 0, "legacy_transport": 0, "refused": 0, "none": 0}
+    for row in document["sources"]:
+        source_id = row["source_id"]
+        if source_id in table:
+            expected = "table_route"
+        elif source_id in legacy:
+            expected = "legacy_transport"
+        elif source_id in refused:
+            expected = "refused"
+        else:
+            expected = "none"
+        assert row["fetch"]["kind"] == expected, source_id
+        census[expected] += 1
+        if expected == "table_route":
+            assert row["fetch"]["route_id"] == source_id
+            assert row["fetch"]["refusal"] is None
+        else:
+            assert row["fetch"]["route_id"] is None
+        if expected == "legacy_transport":
+            # `route_for` raises "has its own transport" here.  That is
+            # not a refusal, and reporting it as one would send a reader
+            # hunting for a fetch route that exists.
+            assert row["fetch"]["refusal"] is None
+        if expected in {"refused", "none"}:
+            assert row["fetch"]["refusal"]
+            assert "[[explain]]" not in row["fetch"]["refusal"]
+    assert sum(census.values()) == document["source_count"]
+    assert census["table_route"] == len(table & set(
+        row["source_id"] for row in document["sources"]))
+
+
+def test_every_sources_row_carries_the_registry_display_name(capsys):
+    """The reply names a source the way a person would say it.
+
+    ``title`` used to repeat ``source_id``, so every consumer showed
+    ``gem-gdps`` and ``aigefs`` and the only way to a human name was a
+    per-model lookup in a front end.  The name is a registry COLUMN now
+    and this cell fails the moment the reply stops copying it.
+    """
+
+    from gpuwm.source_adapters import source_adapters
+
+    document, _raw = _sources_document(capsys)
+    rows = {row["source_id"]: row for row in document["sources"]}
+    for adapter in source_adapters():
+        row = rows[adapter.source_id]
+        assert row["display_name"] == adapter.display_title, adapter.source_id
+        # `title` stays in the reply for consumers already reading it,
+        # and now carries the name rather than the id.
+        assert row["title"] == adapter.display_title
+        assert row["display_name"] != row["source_id"]
+
+
+def test_every_sources_row_carries_its_credential_facts(capsys):
+    """What a row needs configured, from the row -- not a GUI's table.
+
+    A front end used to hardcode "this one source needs a key".  Every
+    row answers now: the ones that need nothing say the table declares
+    nothing, and the ones that need something name it, name where it is
+    configured, and name what breaks without it.
+    """
+
+    from gpuwm.source_adapters import source_adapters
+    from gpuwm.source_credentials import credential_facts
+
+    document, _raw = _sources_document(capsys)
+    rows = {row["source_id"]: row for row in document["sources"]}
+    required = []
+    for adapter in source_adapters():
+        block = rows[adapter.source_id]["credentials"]
+        assert block["summary"], adapter.source_id
+        assert block["required"] is bool(adapter.credentials)
+        assert len(block["items"]) == len(adapter.credentials)
+        for item, credential in zip(block["items"], adapter.credentials):
+            assert item == credential_facts(credential)
+            assert item["breakage"] in item["absent_message"]
+            assert item["status_message"] in (
+                item["present_message"], item["absent_message"])
+        if block["required"]:
+            required.append(adapter.source_id)
+    # The registry's own census, not a literal: whichever rows declare a
+    # credential are the rows that report one.
+    assert required == [adapter.source_id for adapter in source_adapters()
+                        if adapter.credentials]
+
+
+def test_a_new_registry_row_reaches_the_reply_with_its_name_and_credential(
+        capsys, monkeypatch):
+    """THE arbitrary acceptance test for both new columns.
+
+    A source registered tomorrow -- one row, no code edited anywhere --
+    comes out of the real ``--sources`` door with its human name and its
+    credential facts, and the presence verdict follows the declared
+    location rather than anything that knows the source's name.
+    """
+
+    import dataclasses
+
+    from gpuwm import source_adapters as registry
+    from gpuwm.source_credentials import CredentialLocation, SourceCredential
+
+    credential = SourceCredential(
+        credential_id="probe-arbitrary-credential",
+        display_name="Probe Arbitrary API key",
+        location_kind=CredentialLocation.ENV_VAR,
+        location="GPUWM_PROBE_ARBITRARY_KEY",
+        needed_for="acquisition",
+        breakage=("the acquisition step cannot authenticate and the "
+                  "download is rejected by the provider"),
+        obtain_url="https://example.invalid/keys")
+    grafted = dataclasses.replace(
+        registry.source_adapters()[0], source_id="probe-arbitrary-model",
+        display_name="Probe Arbitrary Model 9000", aliases=(),
+        credentials=(credential,))
+    monkeypatch.setattr(
+        registry, "_ADAPTERS", (*registry.source_adapters(), grafted))
+    monkeypatch.delenv(credential.location, raising=False)
+
+    document, _raw = _sources_document(capsys)
+    row = document["sources"][-1]
+    assert row["source_id"] == "probe-arbitrary-model"
+    assert row["display_name"] == "Probe Arbitrary Model 9000"
+    assert row["title"] == "Probe Arbitrary Model 9000"
+    block = row["credentials"]
+    assert block["required"] is True
+    item, = block["items"]
+    assert item["display_name"] == "Probe Arbitrary API key"
+    assert item["present"] is False
+    assert item["breakage"] in item["status_message"]
+    assert "https://example.invalid/keys" in item["status_message"]
+
+    monkeypatch.setenv(credential.location, "probe-secret")
+    document, raw = _sources_document(capsys)
+    item, = document["sources"][-1]["credentials"]["items"]
+    assert item["present"] is True
+    # Existence, never the value: a key must not reach a JSON front door.
+    assert "probe-secret" not in raw
+
+
+def test_sources_coverage_repeats_the_registry_window_or_says_global(capsys):
+    from gpuwm.source_adapters import source_adapters
+
+    document, _raw = _sources_document(capsys)
+    rows = {row["source_id"]: row for row in document["sources"]}
+    for adapter in source_adapters():
+        coverage = rows[adapter.source_id]["coverage"]
+        window = adapter.coverage_window
+        if window is None:
+            assert coverage is None, adapter.source_id
+            continue
+        assert coverage["kind"] == type(window).__name__
+        south, west, north, east = window.envelope()
+        assert (coverage["south"], coverage["west"], coverage["north"],
+                coverage["east"]) == (south, west, north, east)
+        assert (coverage["centre_lat"], coverage["centre_lon"]) == tuple(
+            window.centre())
+        assert coverage["describe"] == window.describe()
+        assert coverage["grid"]
+
+
+def test_sources_names_the_run_plan_intent_reach_honestly(capsys):
+    """Registered rows and intent-drivable ones are separate truths.
+
+    The picker's honesty depends on this field: the registry decodes
+    more than the run-plan INTENT door can drive, and a picker that hid
+    the difference would offer launches that refuse.  The field is the
+    DERIVED verdict -- registry facts through
+    :func:`gpuwm.runplan.intent_drivability` -- never a hand-kept list,
+    and an undrivable row carries the derived refusal naming its
+    missing fact.
+    """
+
+    from gpuwm.runplan import intent_drivability
+
+    document, _raw = _sources_document(capsys)
+    drivability = intent_drivability()
+    for row in document["sources"]:
+        verdict = drivability[row["source_id"]]
+        assert row["run_plan"]["intent_routes"] == sorted(
+            verdict["routes"]), row["source_id"]
+        assert row["run_plan"]["intent_supported"] is bool(
+            verdict["routes"])
+        assert row["run_plan"]["intent_chain"] == verdict["chain"]
+        if row["run_plan"]["intent_supported"]:
+            assert row["run_plan"]["intent_refusal"] is None
+        else:
+            assert row["run_plan"]["intent_refusal"], row["source_id"]
+            assert "unknown source" not in row["run_plan"]["intent_refusal"]
+    supported = {row["source_id"] for row in document["sources"]
+                 if row["run_plan"]["intent_supported"]}
+    # The widening's floor: the old trio, plus the receipt-proven staged
+    # source, are all drivable.  The exact set is the derivation's.
+    assert {"gfs", "hrrr", "era5", "icon-eu", "rap"} <= supported
+
+
+def test_intent_drivability_is_derived_from_registry_facts():
+    """Each class of row lands where its declared facts put it.
+
+    Not a mirror of the implementation: every assertion here is a fact
+    Drew's registry declares (a member set, a missing acquisition
+    route, no cadence, a non-runnable status) paired with the verdict
+    that fact must produce.
+    """
+
+    from gpuwm import fetch_routes
+    from gpuwm.runplan import intent_drivability
+    from gpuwm.source_adapters import source_adapters
+
+    drivability = intent_drivability()
+    adapters = {a.source_id: a for a in source_adapters()}
+    table = set(fetch_routes.route_ids())
+    legacy = set(fetch_routes.LEGACY_ROUTE_SOURCES)
+
+    for source, verdict in drivability.items():
+        adapter = adapters[source]
+        if not adapter.runnable:
+            assert verdict["routes"] == []
+            assert adapter.status.value in verdict["refusal"]
+            continue
+        if verdict["routes"]:
+            # Every drivable source is wizard-planable and (except the
+            # declared-input experiment route) fetchable.
+            assert adapter.forcing_interval_seconds is not None
+            assert adapter.member_set is None
+            if verdict["chain"] != "experiment":
+                assert source in table | legacy
+        if adapter.member_set is not None:
+            assert verdict["routes"] == []
+            assert "gpuwm-member-prep" in verdict["refusal"]
+            assert adapter.member_set in verdict["refusal"]
+        if (adapter.runnable
+                and adapter.forcing_interval_seconds is not None
+                and adapter.member_set is None
+                and source not in table | legacy):
+            assert verdict["routes"] == []
+            assert "no acquisition route" in verdict["refusal"]
+
+    # The chain fork is the registry row's, not a name list's.
+    assert drivability["gfs"]["chain"] == "prepared:go"
+    assert drivability["hrrr"]["chain"] == "prepared:hrrr"
+    assert drivability["era5"]["chain"] == "experiment"
+    staged = {source for source, verdict in drivability.items()
+              if verdict["chain"] == "prepared:staged"}
+    for source in staged:
+        assert adapters[source].runner == "mapped_composition_v1"
+        assert adapters[source].packaged_profile is not None
+        assert source in table
+    assert "icon-eu" in staged and "rap" in staged
+
+
+def test_a_new_registry_row_becomes_intent_drivable_with_zero_code_change(
+        monkeypatch, capsys):
+    """THE arbitrary acceptance test for the widened door.
+
+    A row grafted onto the registry with the declared facts of a
+    packaged staged source -- runnable, a forcing cadence, a composed
+    packaged profile, a table acquisition route, no member set -- must
+    come out intent-drivable, with no edit anywhere in run-plan.  The
+    profile and fetch route reuse a real staged source's table entries,
+    because that is exactly what adding a model is: table work.
+    """
+
+    import dataclasses
+
+    from gpuwm import fetch_routes
+    from gpuwm import source_adapters as registry
+    from gpuwm.runplan import intent_drivability
+
+    donor = next(
+        adapter for adapter in registry.source_adapters()
+        if adapter.runner == "mapped_composition_v1"
+        and adapter.packaged_profile is not None
+        and adapter.member_set is None
+        and adapter.source_id in set(fetch_routes.route_ids()))
+    grafted = dataclasses.replace(
+        donor, source_id="probe-arbitrary-model", aliases=())
+    monkeypatch.setattr(
+        registry, "_ADAPTERS", (*registry.source_adapters(), grafted))
+    # A real row addition rebuilds the alias index at import; the graft
+    # mirrors that, exactly as adding the row to the source file would.
+    monkeypatch.setattr(
+        registry, "_ALIASES",
+        {**registry._ALIASES,  # noqa: SLF001 - the graft IS the test
+         "probe-arbitrary-model": grafted})
+    monkeypatch.setattr(
+        fetch_routes, "_ROUTES",
+        {**fetch_routes._ROUTES,  # noqa: SLF001 - the graft IS the test
+         "probe-arbitrary-model":
+             fetch_routes._ROUTES[donor.source_id]})  # noqa: SLF001
+
+    verdict = intent_drivability()["probe-arbitrary-model"]
+    assert verdict == {"routes": ["prepared"], "chain": "prepared:staged",
+                       "refusal": None}
+
+    # And the shape gate accepts an intent naming it, on the route the
+    # derivation names -- no hardcoded list left to bounce off.
+    from gpuwm.runplan import _build_intent
+
+    accepted = _build_intent(
+        {"point": "50.1,8.7", "cycle": "2026-08-18T06",
+         "source": "probe-arbitrary-model"}, route="prepared")
+    assert accepted["source"] == "probe-arbitrary-model"
+
+    # The picker document says the same thing through the front door.
+    document, _raw = _sources_document(capsys)
+    row = next(row for row in document["sources"]
+               if row["source_id"] == "probe-arbitrary-model")
+    assert row["run_plan"]["intent_supported"] is True
+    assert row["run_plan"]["intent_routes"] == ["prepared"]
+
+
+def test_an_undrivable_intent_source_refusal_names_the_missing_fact(
+        tmp_path):
+    """Never "unknown source": the refusal is the registry's own fact."""
+
+    cases = {
+        # A member source: the missing axis is member selection.
+        "gefs": ("gpuwm-member-prep", "member set"),
+        # A source with no acquisition route registered.
+        "20crv3": ("no acquisition route", "gpuwm fetch"),
+        # A row with no runnable implementation route.
+        "nam": ("no runnable implementation route", "status"),
+        # The generic mapped adapter declares no per-source cadence.
+        "mapped": ("forcing_interval_seconds", "gpuwm domain"),
+    }
+    for source, needles in cases.items():
+        with pytest.raises(PlanError) as refusal:
+            build_plan(
+                {"schema": PLAN_SCHEMA, "name": "x", "route": "prepared",
+                 "config": {"intent": {"point": "39,-98",
+                                       "cycle": "2026-08-18T06",
+                                       "source": source}}},
+                source="probe.json", base_dir=tmp_path, sha256="0" * 64)
+        text = str(refusal.value)
+        assert "unknown source" not in text.lower(), source
+        for needle in needles:
+            assert needle in text, (source, needle, text)
+
+
+def test_a_source_the_registry_does_not_hold_points_at_the_sources_door(
+        tmp_path):
+    with pytest.raises(PlanError) as refusal:
+        build_plan(
+            {"schema": PLAN_SCHEMA, "name": "x", "route": "prepared",
+             "config": {"intent": {"point": "39,-98",
+                                   "cycle": "2026-08-18T06",
+                                   "source": "not-a-model"}}},
+            source="probe.json", base_dir=tmp_path, sha256="0" * 64)
+    text = str(refusal.value)
+    assert "not in the source registry" in text
+    assert "run-plan --sources" in text
+
+
+def test_a_staged_source_intent_is_accepted_on_the_prepared_route(tmp_path):
+    """The gap this task closes: a packaged source the wizard already
+    plans, accepted by the door that used to bounce it off a trio."""
+
+    plan = load_plan(_prepared_plan(
+        tmp_path, tmp_path / "run",
+        **{"point": "50.1,8.7", "source": "icon-eu",
+           "cycle": "2026-08-18T06", "hours": 3, "vram_gib": 16}))
+    assert plan.config_intent["source"] == "icon-eu"
+
+
+def test_a_staged_source_intent_on_the_experiment_route_names_prepared(
+        tmp_path):
+    with pytest.raises(PlanError) as refusal:
+        build_plan(
+            {"schema": PLAN_SCHEMA, "name": "x", "route": "experiment",
+             "config": {"intent": {"point": "50.1,8.7",
+                                   "cycle": "2026-08-18T06",
+                                   "source": "icon-eu"}}},
+            source="probe.json", base_dir=tmp_path, sha256="0" * 64)
+    text = str(refusal.value)
+    assert "prepared" in text and "[case_data]" in text
+
+
+def test_the_sources_query_needs_no_plan_and_writes_nothing(tmp_path):
+    from gpuwm.runplan import source_inventory
+
+    document = source_inventory()
+    assert document["sources"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_no_plan_refusal_names_the_sources_door():
+    """A typo must not get a refusal that hides a door it could use."""
+
+    from gpuwm.cli import build_parser
+
+    with pytest.raises(PlanError) as refusal:
+        run_plan_main(build_parser().parse_args(["run-plan"]))
+    assert "--sources" in str(refusal.value)
+
+
+def test_the_probe_schema_inventory_advertises_the_sources_document():
+    from gpuwm.runplan import SOURCES_SCHEMA, probe_environment
+
+    document = probe_environment(readiness=False)
+    assert document["schemas"]["sources"] == SOURCES_SCHEMA
+
+
+def test_an_unknown_run_plan_flag_is_still_refused_by_argparse():
+    from gpuwm.cli import build_parser
+
+    with pytest.raises(SystemExit) as exit_code:
+        build_parser().parse_args(["run-plan", "--sourcez"])
+    assert exit_code.value.code == 2
+
+
+def test_the_sources_reply_survives_a_registry_that_raises(monkeypatch):
+    """A query mode reports; it never raises into a caller's parser."""
+
+    from gpuwm import source_adapters as registry
+    from gpuwm.runplan import SOURCES_SCHEMA, source_inventory
+
+    def _broken() -> dict:
+        raise RuntimeError("registry manifest unavailable")
+
+    monkeypatch.setattr(registry, "source_capability_manifest", _broken)
+    document = source_inventory()
+    assert document["schema"] == SOURCES_SCHEMA
+    assert document["source_count"] is None
+    assert "registry manifest unavailable" in document["error"]
+    assert document["sources"]
 
 
 # ---------------------------------------------------------------------------

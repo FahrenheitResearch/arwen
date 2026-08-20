@@ -153,7 +153,18 @@ def _seam_stubbed_driver(monkeypatch, e_sgs):
         _shinhong_entry_advisory=False,
         pbl_tendencies=FakeTendencies(),
         last_ysu=None,
+        gf_rthblten=None,
+        gf_rqvblten=None,
     )
+    # THE REAL SEAM, BOUND TO THE FAKE.  _run_shinhong ends its due call
+    # at PhysicsDriver._couple_pbl_slot, which mass-couples the raw rates
+    # AND retains RTHBLTEN/RQVBLTEN for the cumulus scheme -- one call,
+    # so that a PBL scheme cannot be wired up correctly and still starve
+    # Grell-Freitas.  A stub here would let this suite go green while the
+    # seam it stands in for was gone, which is exactly what a
+    # SimpleNamespace predating the method already did once.
+    driver._couple_pbl_slot = types.MethodType(
+        ph.PhysicsDriver._couple_pbl_slot, driver)
     cfg = types.SimpleNamespace(dx=12000.0, dy=12000.0)
     atmosphere = {name: np.full(shape, 0.25, F)
                   for name in ("u", "v", "theta", "qv", "qc", "qi",
@@ -168,7 +179,9 @@ def _seam_stubbed_driver(monkeypatch, e_sgs):
         # only observable through a copy taken here.
         captured["tke"] = args[10]
         captured["tke_values"] = np.array(args[10], copy=True)
-        return fake_out()
+        out = fake_out()
+        captured["out"] = out
+        return out
 
     monkeypatch.setattr(ph, "launch_shinhong", fake_launch)
     monkeypatch.setattr(ph, "invalid_shinhong_outputs",
@@ -211,6 +224,11 @@ def test_driver_heals_degenerate_entry_before_launch(monkeypatch, capsys):
     # every healthy value is bit-untouched
     assert (sent == F(0.25)).sum() == sent.size - 4
     assert driver._shinhong_entry_advisory is True
+    # The due call really went through the coupling/retention seam: the
+    # PRE-coupling theta and qv rates are what a Grell-Freitas call at
+    # the top of the next step reads.
+    assert driver.gf_rthblten is captured["out"]["dtheta"]
+    assert driver.gf_rqvblten is captured["out"]["dqv"]
     err = capsys.readouterr().err
     assert "entry" in err and "4" in err and "shinhonginit" in err
 

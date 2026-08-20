@@ -129,6 +129,34 @@ pub fn initial_condition_disclosure() -> Option<String> {
         .and_then(|slot| slot.clone())
 }
 
+/// A command line's answer on wind streamlines, when it gave one.
+///
+/// `None` means "nobody asked", which leaves `RUSTWX_WIND_STREAMLINES`
+/// and then the automatic per-grid choice in charge. Process-wide for the
+/// same reason the disclosure above is: one invocation renders one run,
+/// and the wind layer is drawn from several product lanes that must all
+/// answer the request identically.
+///
+/// The concrete breakage this closes: streamlines had NO front door at
+/// all. Drawing them was reachable only by setting an environment
+/// variable whose name appears in no help text and no document, which
+/// under the ship-only-what-users-can-reach rule means the capability was
+/// not shipped.
+static WIND_STREAMLINE_REQUEST: std::sync::RwLock<Option<bool>> = std::sync::RwLock::new(None);
+
+/// Ask for wind streamlines (`Some(true)`), ask for barbs instead
+/// (`Some(false)`), or leave the choice automatic (`None`).
+pub fn set_wind_streamline_request(request: Option<bool>) {
+    if let Ok(mut slot) = WIND_STREAMLINE_REQUEST.write() {
+        *slot = request;
+    }
+}
+
+/// The streamline request in force, if a caller made one.
+pub fn wind_streamline_request() -> Option<bool> {
+    WIND_STREAMLINE_REQUEST.read().ok().and_then(|slot| *slot)
+}
+
 pub fn model_time_subtitle(
     model: ModelId,
     date_yyyymmdd: &str,

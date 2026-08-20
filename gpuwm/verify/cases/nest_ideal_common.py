@@ -935,8 +935,21 @@ REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
 
 
 def consume_history_reflectivity(node, ticks: int) -> None:
-    """Complete production's one-frame REFL handoff without writing a file."""
-    if ticks == 0 or node.cfg.run.mp_physics not in REFL_10CM_MICROPHYSICS:
+    """Complete production's one-frame REFL handoff without writing a file.
+
+    The due tick is THE DOMAIN'S, read off its own clock, exactly as
+    ``gpuwm.runtime._submit_tree_history_frame`` reads it: a nest that
+    activates later has its analysis frame due at the activation epoch,
+    not at the experiment's 0, and consuming there takes a stash no step
+    of that domain has produced (#205).  A node with no clock -- every
+    hand-built CPU fixture -- starts with its experiment, which is the
+    0 this defaults to.
+    """
+    from gpuwm.core.refl import domain_start_ticks_of, refl_10cm_stash_is_due
+
+    if (not refl_10cm_stash_is_due(
+                ticks, domain_start_ticks=domain_start_ticks_of(node))
+            or node.cfg.run.mp_physics not in REFL_10CM_MICROPHYSICS):
         return
     if getattr(node.state, "physics", None) is None:
         raise RuntimeError(

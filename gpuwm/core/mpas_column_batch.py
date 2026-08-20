@@ -411,7 +411,7 @@ class MpasColumnBatchPhysics:
                  cumulus_seconds=None, cumulus_scheme=None,
                  start_time, latitude_deg, longitude_deg,
                  terrain_height_m, z_interface_nominal_m,
-                 p_top_pa, dx_m,
+                 p_top_pa, dx_m, gf_ishallow=None, dx_column_m=None,
                  landmask=1.0, xland=None, ivgtyp=10, isltyp=6,
                  vegfra=50.0, tsk=300.0, tmn=285.0, xice=0.0, snow=0.0,
                  snow_depth=0.0, soil_temperature=285.0,
@@ -443,6 +443,18 @@ class MpasColumnBatchPhysics:
             raise ValueError(
                 "xice_threshold must be a finite fraction in [0, 1] "
                 f"(WRF Registry default 0.5), got {xice_threshold!r}")
+        # GF shallow convection.  Native MPAS v8.4.1 HARDWIRES ishallow=1
+        # (mpas_atmphys_vars.F:340), so the parity default for this seam is
+        # shallow ON -- "fixed means default".  gf_ishallow=0 is the
+        # pre-parity behaviour, kept reachable for A/B arms only.
+        if gf_ishallow is None:
+            gf_ishallow = 1 if cumulus_scheme == "gf" else 0
+        if gf_ishallow not in (0, 1):
+            raise ValueError(
+                f"gf_ishallow must be 0 or 1, got {gf_ishallow!r}")
+        if gf_ishallow and cumulus_scheme != "gf":
+            raise ValueError(
+                "gf_ishallow=1 requires cumulus_scheme='gf'")
         nz, ncol = int(n_levels), int(n_columns)
         fnm, fnp = _interface_weights(z_interface_nominal_m)
         if fnm.shape[0] != nz:
@@ -461,6 +473,18 @@ class MpasColumnBatchPhysics:
             raise ValueError(
                 f"terrain_height_m must have shape ({ncol},), got "
                 f"{terrain.shape}")
+        dx_column = None
+        if dx_column_m is not None:
+            dx_column = np.asarray(dx_column_m,
+                                   dtype=np.float32).reshape(-1)
+            if dx_column.shape != (ncol,):
+                raise ValueError(
+                    f"dx_column_m must have one value per column "
+                    f"({ncol},), got {dx_column.shape}")
+            if not np.all(np.isfinite(dx_column)) or np.any(
+                    dx_column <= 0.0):
+                raise ValueError(
+                    "dx_column_m must be finite and positive")
         top_nominal = float(np.asarray(
             z_interface_nominal_m, dtype=np.float64)[-1])
 
@@ -475,6 +499,7 @@ class MpasColumnBatchPhysics:
             sf_sfclay_physics=1, sf_surface_physics=4,
             bl_pbl_physics=1,
             cu_physics=cadences["cu_physics"],
+            ishallow=int(gf_ishallow),
             radt=cadences["radt_minutes"],
             radt_minutes=cadences["radt_minutes"],
             bldt=cadences["bldt_minutes"],
@@ -492,6 +517,9 @@ class MpasColumnBatchPhysics:
             "cumulus_scheme": cumulus_scheme,
             "start_time": start_time.isoformat(),
             "p_top_pa": p_top, "dx_m": dx,
+            "gf_ishallow": int(gf_ishallow),
+            "gf_dx_column": ("per-column" if dx_column is not None
+                             else "scalar"),
             "wsm6_hail_opt": int(wsm6_hail_opt),
             # The surface classification identity: the threshold that
             # partitions sea ice from land, and whether XLAND came from
@@ -549,6 +577,18 @@ class MpasColumnBatchPhysics:
         # Persistent input/atmosphere buffers ((nz[+1], 1, ncol)).
         shape3 = (nz, 1, ncol)
         iface3 = (nz + 1, 1, ncol)
+        # GF dynamics forcing lanes: persistent seam-owned buffers the
+        # driver's GF adapter reads permanently.  Zero until a caller
+        # supplies rates through run_phase1 -- which is also native
+        # MPAS's t=0 tend_physics state.  The PBL lanes are retained by
+        # the driver's own _run_ysu; per-column dx is a sealed static.
+        self._gf_rthdynten = cp.zeros(shape3, dtype=cp.float32)
+        self._gf_rqvdynten = cp.zeros(shape3, dtype=cp.float32)
+        self._driver.gf_rthdynten = self._gf_rthdynten
+        self._driver.gf_rqvdynten = self._gf_rqvdynten
+        if dx_column is not None:
+            self._driver.gf_dx_column = cp.asarray(
+                dx_column.reshape(1, ncol))
         self._in = {name: cp.zeros(shape3, dtype=cp.float32)
                     for name in ("u", "v", "theta", "temperature",
                                  "pressure", "exner", "dz", "rho")}
@@ -605,12 +645,20 @@ class MpasColumnBatchPhysics:
     # ------------------------------------------------------------------
     def run_phase1(self, *, dt, u, v, theta, pressure, pressure_interface,
                    z_interface, w, rho_dry, qv, qc, qr, qi, qs, qg,
-                   exner=None) -> MpasColumnPhysicsTendencies:
+                   exner=None, rthdynten=None,
+                   rqvdynten=None) -> MpasColumnPhysicsTendencies:
         """Run the due phase-1 chain; return the held raw tendency set.
 
         Read-only guarantee: every input array is byte-identical after
         this call (negative qv included -- the clamp happens in seam
         scratch).  ``dt`` must equal the constructor model step.
+
+        ``rthdynten``/``rqvdynten`` ([nz, ncol] float32, K/s dry theta
+        and kg/kg/s) are the caller's dynamics forcing for GF's
+        RTHFTEN/RQVFTEN lanes -- native MPAS v8.4.1's rthdynten/rqvdynten
+        construction, computed at the END of the caller's PREVIOUS
+        dynamics step exactly as native consumes them.  ``None`` zeroes
+        the lane (native's own tend_physics start state).
         """
         if self._pending_phase != _PHASE1:
             raise RuntimeError(
@@ -634,6 +682,10 @@ class MpasColumnBatchPhysics:
             self._require_input(name, value, iface)
         if exner is not None:
             self._require_input("exner", exner, level)
+        for name, value in (("rthdynten", rthdynten),
+                            ("rqvdynten", rqvdynten)):
+            if value is not None:
+                self._require_input(name, value, level)
 
         state, buf = self._state, self._in
         self._rebind_species_buffers()
@@ -669,6 +721,17 @@ class MpasColumnBatchPhysics:
                     out=buf["dz"])
         cp.multiply(cp.float32(1.0) + state.qv, v3(rho_dry),
                     out=buf["rho"])
+        # GF dynamics forcing lanes: refresh the seam-owned persistent
+        # buffers the driver's GF adapter reads.  A None lane zeroes --
+        # both the pre-upgrade behaviour and native's t=0 state.
+        if rthdynten is None:
+            self._gf_rthdynten[...] = cp.float32(0.0)
+        else:
+            self._gf_rthdynten[...] = v3(rthdynten)
+        if rqvdynten is None:
+            self._gf_rqvdynten[...] = cp.float32(0.0)
+        else:
+            self._gf_rqvdynten[...] = v3(rqvdynten)
 
         self._atmosphere = {
             "theta": buf["theta"], "temperature": buf["temperature"],
