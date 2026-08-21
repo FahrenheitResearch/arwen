@@ -127,7 +127,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 78,
+      "line": 84,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -147,7 +147,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 109,
+      "line": 115,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",

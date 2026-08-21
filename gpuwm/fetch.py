@@ -354,6 +354,11 @@ ERA5_PRESSURE_LEVELS_HPA = (
 )
 
 ERA5_REQUEST_NAME = "era5-cds-request.json"
+#: The runnable retrieval written beside the request.  A printed snippet
+#: has to be retyped, and every retype is a chance to lose the paths the
+#: request just bound; a file is copied by running it.
+ERA5_RETRIEVE_NAME = "era5-cds-retrieve.py"
+ERA5_COMBINED_NAME = "era5-combined.grib"
 
 # ERA5 GRIB1 parameter expectations, grounded in what ingest consumes
 # (gpuwm/ingest/grib.py _CANONICAL_SPECS; gpuwm/ingest/real.py requires
@@ -3469,8 +3474,15 @@ def _era5_times(cycle: datetime, hours: int,
 
 
 def era5_request_template(*, cycle: datetime, hours: int, area: Area,
-                          cadence: int = 6) -> dict:
-    """The exact two-part cdsapi request gpuwm's ERA5 ingest expects."""
+                          cadence: int = 6, out: Path | None = None) -> dict:
+    """The exact two-part cdsapi request gpuwm's ERA5 ingest expects.
+
+    ``out`` binds the retrieval's targets to the directory the fetch was
+    asked for.  Without it the targets are bare leaf names, and cdsapi
+    resolves those against ITS working directory -- so the two GRIB
+    files land wherever the retrieval happened to be run from, not where
+    the config that consumes them looks.
+    """
 
     times = _era5_times(cycle, hours, cadence)
     dates = sorted({when.strftime("%Y-%m-%d") for when in times})
@@ -3501,19 +3513,28 @@ def era5_request_template(*, cycle: datetime, hours: int, area: Area,
         "volumetric_soil_water_layer_1", "volumetric_soil_water_layer_2",
         "volumetric_soil_water_layer_3", "volumetric_soil_water_layer_4",
     ]
+    def target(name: str) -> str:
+        return name if out is None else str((out / name).resolve())
+
+    combined = target(ERA5_COMBINED_NAME)
     return {
         "schema": "gpuwm-era5-cds-request-v1",
         "requires": "CDS account + ~/.cdsapirc key; pip install cdsapi",
         "requests": [
             {"dataset": "reanalysis-era5-pressure-levels",
-             "target": "era5-pressure.grib", "request": pressure},
+             "target": target("era5-pressure.grib"), "request": pressure},
             {"dataset": "reanalysis-era5-single-levels",
-             "target": "era5-single.grib", "request": single},
+             "target": target("era5-single.grib"), "request": single},
         ],
         "combine": ("concatenate the two GRIB1 targets into one file "
                     "(byte concatenation preserves every message): "
-                    "era5-combined.grib"),
-        "validate": "gpuwm fetch --source era5 --validate era5-combined.grib",
+                    f"{combined}"),
+        "combine_target": combined,
+        "area_requested": area.as_cds(),
+        "validate": ("gpuwm fetch --source era5 --validate "
+                     f"{combined} --area "
+                     f"{area.lat_south:g},{_wrap_lon(area.lon_west):g},"
+                     f"{area.lat_north:g},{_wrap_lon_east(area.lon_east):g}"),
     }
 
 
@@ -3551,26 +3572,105 @@ def cds_credentials_present() -> bool:
         return False
 
 
+def wsl_path(path: Path) -> str:
+    """``C:\\dir\\file`` as the ``/mnt/c/dir/file`` WSL can open.
+
+    A Windows path handed to an interpreter running inside WSL names
+    nothing: the retrieval silently writes a file called ``C:\\...`` in
+    whatever directory it started in, or fails to open the request at
+    all.  Paths that are already POSIX come back unchanged.
+    """
+
+    text = str(path).replace("\\", "/")
+    if len(text) > 1 and text[1] == ":" and text[0].isalpha():
+        return f"/mnt/{text[0].lower()}{text[2:]}"
+    return text
+
+
+#: The retrieval, as a file rather than a snippet.  It resolves every
+#: path from its OWN location, so it produces the same files whether it
+#: is run by this box's Python, by a Linux Python, or by a WSL Python
+#: that sees the same directory under a different name.
+ERA5_RETRIEVE_SCRIPT = '''\
+"""Retrieve the ERA5 request `gpuwm fetch --source era5` wrote beside me.
+
+Run with any Python that has cdsapi installed and a CDS key in ITS home
+directory (on Windows the retrieval is commonly run inside WSL, whose
+home is not the Windows one).  Every file lands in this script's own
+directory, so the working directory does not matter.
+"""
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SPEC = os.path.join(HERE, {request_name!r})
+COMBINED = os.path.join(HERE, {combined_name!r})
+
+
+def _beside_me(target):
+    """The declared target's leaf, in this script's directory.
+
+    The request records absolute targets so a hand-run retrieval cannot
+    scatter them; taking the leaf here keeps the script correct when the
+    same directory is reached under another name.
+    """
+    return os.path.join(HERE, target.replace("\\\\", "/").rsplit("/", 1)[-1])
+
+
+def main():
+    import cdsapi
+
+    with open(SPEC, encoding="utf-8") as stream:
+        spec = json.load(stream)
+    client = cdsapi.Client()
+    parts = []
+    for item in spec["requests"]:
+        target = _beside_me(item["target"])
+        print("retrieve", item["dataset"], "->", target, flush=True)
+        client.retrieve(item["dataset"], item["request"], target)
+        parts.append(target)
+    # GRIB is a concatenation of self-delimiting messages, so joining the
+    # two retrievals byte for byte preserves every one of them.
+    with open(COMBINED, "wb") as combined:
+        for part in parts:
+            with open(part, "rb") as stream:
+                combined.write(stream.read())
+    print("wrote", COMBINED, flush=True)
+    print("now run:", spec["validate"], flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
 ERA5_INSTRUCTIONS = """\
 ERA5 acquisition is manual: the Copernicus CDS API requires a personal
 account and key, which gpuwm will not embed.
 
 1. Create an account at https://cds.climate.copernicus.eu and write your
-   key to ~/.cdsapirc as documented there.
-2. pip install cdsapi
-3. Run each request in {request_file}:
-       import cdsapi, json
-       spec = json.load(open({request_file_repr}))
-       client = cdsapi.Client()
-       for item in spec["requests"]:
-           client.retrieve(item["dataset"], item["request"], item["target"])
-4. Concatenate the two GRIB files into one (plain byte concatenation):
-       python -c "open('era5-combined.grib','wb').write(
-           open('era5-pressure.grib','rb').read()
-           + open('era5-single.grib','rb').read())"
-5. Validate the result against what gpuwm ingest expects:
-       gpuwm fetch --source era5 --validate era5-combined.grib
+   key to ~/.cdsapirc as documented there.  "~" is the home directory of
+   the interpreter that runs step 3, which on Windows is usually a WSL
+   python3 -- then the key belongs in the WSL home, not this box's.
+2. pip install cdsapi   (for that same interpreter)
+3. Retrieve and combine, in one command:
+       {retrieve_command}
+{wsl_note}\
+4. Validate the result -- including that it covers the box you asked for:
+       {validate_command}
 """
+
+
+def era5_retrieve_commands(script: Path) -> tuple[str, str | None]:
+    """The command that runs the retrieval, plus the WSL form on Windows."""
+
+    native = f"python {script}"
+    if os.name != "nt":
+        return native, None
+    posix = wsl_path(script)
+    return native, f'wsl sh -c "python3 -u {posix}"'
 
 
 def write_era5_request(*, cycle: datetime, hours: int, area: Area,
@@ -3578,14 +3678,98 @@ def write_era5_request(*, cycle: datetime, hours: int, area: Area,
                        progress=print) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     template = era5_request_template(
-        cycle=cycle, hours=hours, area=area, cadence=cadence)
+        cycle=cycle, hours=hours, area=area, cadence=cadence, out=out)
     path = out / ERA5_REQUEST_NAME
     _atomic_write_text(
         path, json.dumps(template, indent=2, sort_keys=True) + "\n")
+    script = out / ERA5_RETRIEVE_NAME
+    _atomic_write_text(script, ERA5_RETRIEVE_SCRIPT.format(
+        request_name=ERA5_REQUEST_NAME, combined_name=ERA5_COMBINED_NAME))
+    native, under_wsl = era5_retrieve_commands(script)
     progress(f"fetch era5: wrote {path}")
+    progress(f"fetch era5: wrote {script} (runs the retrieval)")
     progress(ERA5_INSTRUCTIONS.format(
-        request_file=path, request_file_repr=repr(str(path))))
+        retrieve_command=native,
+        wsl_note=("" if under_wsl is None else
+                  "   or, if cdsapi and your key live in WSL:\n"
+                  f"       {under_wsl}\n"),
+        validate_command=template["validate"]))
     return path
+
+
+@dataclass(frozen=True)
+class Grib1Grid:
+    """The geographic identity of one regular lat/lon GRIB1 grid.
+
+    Read from the Grid Definition Section, which is where the answer to
+    "is this file over my domain?" lives.  Only data representation type
+    0 (equidistant cylindrical) is produced here; that is what the CDS
+    serves for ERA5, and a grid of any other type is reported as absent
+    rather than guessed at.
+    """
+
+    ni: int
+    nj: int
+    lat_first: float
+    lon_first: float
+    lat_last: float
+    lon_last: float
+    #: Declared increments in degrees, or ``None`` when the GDS says
+    #: they are not given (octet 17 bit 1 clear, or 0xFFFF).
+    di_deg: float | None
+    dj_deg: float | None
+
+    @property
+    def lat_south(self) -> float:
+        return min(self.lat_first, self.lat_last)
+
+    @property
+    def lat_north(self) -> float:
+        return max(self.lat_first, self.lat_last)
+
+    @property
+    def lon_west(self) -> float:
+        """West edge in the signed convention, as the GDS scans it."""
+
+        return _wrap_lon(self.lon_first)
+
+    @property
+    def longitude_span_degrees(self) -> float:
+        """Eastward width from the first to the last meridian."""
+
+        span = (self.lon_last - self.lon_first) % 360.0
+        if span == 0.0 and self.ni > 1:
+            return 360.0
+        return span
+
+    @property
+    def lon_east(self) -> float:
+        return _wrap_lon_east(self.lon_west + self.longitude_span_degrees)
+
+    @property
+    def lon_step(self) -> float:
+        """Longitude increment, declared or derived from the corners."""
+
+        if self.di_deg:
+            return self.di_deg
+        if self.ni > 1:
+            return self.longitude_span_degrees / (self.ni - 1)
+        return 0.0
+
+    @property
+    def lat_step(self) -> float:
+        if self.dj_deg:
+            return self.dj_deg
+        if self.nj > 1:
+            return abs(self.lat_north - self.lat_south) / (self.nj - 1)
+        return 0.0
+
+    def describe(self) -> str:
+        step = (f", {self.lon_step:g} x {self.lat_step:g} deg"
+                if self.lon_step and self.lat_step else "")
+        return (f"grid {self.ni}x{self.nj}{step}, "
+                f"lat [{self.lat_south:.2f}, {self.lat_north:.2f}] "
+                f"lon [{self.lon_west:.2f}, {self.lon_east:.2f}]")
 
 
 @dataclass(frozen=True)
@@ -3596,6 +3780,10 @@ class Grib1Record:
     level_type: int
     level: int
     valid_time: datetime
+    #: The message's own grid, when it carries a GDS this reader
+    #: understands.  ``None`` means the geography was not stated in a
+    #: form that can be read, never that the message is ungridded.
+    grid: Grib1Grid | None = None
 
 
 _GRIB1_TIME_UNITS = {
@@ -3605,12 +3793,52 @@ _GRIB1_TIME_UNITS = {
 }
 
 
+def _grib1_signed_millideg(raw: bytes) -> float:
+    """GRIB1 sign-magnitude millidegrees, as degrees."""
+
+    value = int.from_bytes(raw, "big")
+    if value & 0x800000:
+        return -float(value & 0x7FFFFF) / 1000.0
+    return float(value) / 1000.0
+
+
+def read_grib1_grid(gds: bytes) -> Grib1Grid | None:
+    """The geographic identity in a GRIB1 Grid Definition Section.
+
+    ``None`` for anything that is not a regular lat/lon grid, or for a
+    section too short to read: a guessed extent is worse than no extent,
+    because a reader would act on it.
+    """
+
+    if len(gds) < 32 or gds[5] != 0:      # octet 6: data representation
+        return None
+    ni = int.from_bytes(gds[6:8], "big")
+    nj = int.from_bytes(gds[8:10], "big")
+    if ni in (0, 0xFFFF) or nj in (0, 0xFFFF):
+        return None
+
+    def increment(raw: bytes) -> float | None:
+        value = int.from_bytes(raw, "big")
+        if value in (0, 0xFFFF) or not gds[16] & 0x80:
+            return None
+        return value / 1000.0
+
+    return Grib1Grid(
+        ni=ni, nj=nj,
+        lat_first=_grib1_signed_millideg(gds[10:13]),
+        lon_first=_grib1_signed_millideg(gds[13:16]),
+        lat_last=_grib1_signed_millideg(gds[17:20]),
+        lon_last=_grib1_signed_millideg(gds[20:23]),
+        di_deg=increment(gds[23:25]), dj_deg=increment(gds[25:27]))
+
+
 def read_grib1_records(path: Path) -> tuple[Grib1Record, ...]:
     """Envelope-validate ``path`` and read each message's PDS identity.
 
     Reuses :func:`gpuwm.ingest.grib.inspect_grib1_envelopes` for the
     strict transport walk, then reads only Product Definition Section
-    header bytes -- parameter, level, and reference/valid time.  No
+    header bytes -- parameter, level, and reference/valid time -- plus
+    the Grid Definition Section's corners when the PDS declares one.  No
     scientific payload is decoded.
     """
 
@@ -3648,8 +3876,18 @@ def read_grib1_records(path: Path) -> tuple[Grib1Record, ...]:
                     f"in {path} message {envelope.index}; ERA5 analyses "
                     "are instantaneous")
             valid_time = reference + lead * _GRIB1_TIME_UNITS[unit]
+            grid = None
+            if pds[7] & 0x80:      # octet 8 bit 1: a GDS follows the PDS
+                pds_length = int.from_bytes(pds[0:3], "big")
+                stream.seek(envelope.offset + 8 + pds_length)
+                header = stream.read(3)
+                if len(header) == 3:
+                    gds_length = int.from_bytes(header, "big")
+                    if 32 <= gds_length <= envelope.length:
+                        grid = read_grib1_grid(
+                            header + stream.read(gds_length - 3))
             records.append(
-                Grib1Record(parameter, level_type, level, valid_time))
+                Grib1Record(parameter, level_type, level, valid_time, grid))
     return tuple(records)
 
 
@@ -3672,9 +3910,54 @@ class Era5ValidationReport:
         return "\n".join(lines)
 
 
+def _grid_coverage_failures(
+        grid: Grib1Grid, expected: Area) -> list[str]:
+    """Edges where the delivered grid falls short of the requested box.
+
+    The tolerance is ONE grid cell per edge, and it is the provider's
+    rounding, not slack: the CDS snaps a requested area onto its native
+    grid, which can move an edge inward by up to one increment.  A
+    shortfall larger than that is a different box -- the mistake this
+    check exists to catch, because such a file validates, prepares, and
+    only refuses at ``gpuwm check`` or mid-run.
+    """
+
+    failures: list[str] = []
+    lat_tolerance = grid.lat_step or 0.0
+    lon_tolerance = grid.lon_step or 0.0
+    for edge, shortfall, tolerance, got, want in (
+            ("south", grid.lat_south - expected.lat_south, lat_tolerance,
+             grid.lat_south, expected.lat_south),
+            ("north", expected.lat_north - grid.lat_north, lat_tolerance,
+             grid.lat_north, expected.lat_north)):
+        if shortfall > tolerance + 1e-9:
+            failures.append(
+                f"the delivered grid stops {shortfall:.2f} deg short of the "
+                f"requested {edge} edge (grid {got:.2f}, requested "
+                f"{want:.2f}); more than the {tolerance:g} deg the "
+                "provider's grid snap can account for")
+    grid_span = grid.longitude_span_degrees + (grid.lon_step or 0.0)
+    if grid_span < 360.0 - 1e-9:
+        west_gap = ((grid.lon_west - expected.lon_west) + 180.0) % 360.0 - 180.0
+        east_gap = ((_wrap_lon_east(expected.lon_east) - grid.lon_east)
+                    + 180.0) % 360.0 - 180.0
+        for edge, shortfall, got, want in (
+                ("west", west_gap, grid.lon_west, _wrap_lon(expected.lon_west)),
+                ("east", east_gap, grid.lon_east,
+                 _wrap_lon_east(expected.lon_east))):
+            if shortfall > lon_tolerance + 1e-9:
+                failures.append(
+                    f"the delivered grid stops {shortfall:.2f} deg short of "
+                    f"the requested {edge} edge (grid {got:.2f}, requested "
+                    f"{want:.2f}); more than the {lon_tolerance:g} deg the "
+                    "provider's grid snap can account for")
+    return failures
+
+
 def validate_era5_files(
         paths: tuple[Path, ...], *,
         expected_times: tuple[datetime, ...] | None = None,
+        expected_area: Area | None = None,
 ) -> Era5ValidationReport:
     """Validate a user-supplied ERA5 GRIB1 file set for gpuwm ingest.
 
@@ -3682,10 +3965,12 @@ def validate_era5_files(
     ``7777`` terminators, exact EOF coverage), the required
     pressure-level and surface parameter inventory at every valid time,
     identical pressure-level ladders across variables and times, soil
-    encodings at level type 112 or 1, invariant orography presence, and
-    (when the caller supplies ``expected_times``) valid-time coverage.
-    It does not decode data values -- the Rust GRIB1 bridge re-validates
-    and decodes at ingest time.
+    encodings at level type 112 or 1, invariant orography presence, the
+    delivered geographic extent (one grid for the whole set, and -- when
+    the caller supplies ``expected_area`` -- that it covers the box that
+    was asked for), and (when the caller supplies ``expected_times``)
+    valid-time coverage.  It does not decode data values -- the Rust
+    GRIB1 bridge re-validates and decodes at ingest time.
     """
 
     failures: list[str] = []
@@ -3713,6 +3998,44 @@ def validate_era5_files(
     checks.append(
         f"{len(times)} valid times {times[0].isoformat()} .. "
         f"{times[-1].isoformat()}")
+
+    # Geographic extent.  A census that never says WHERE the bytes are
+    # cannot catch the most likely retrieval mistake -- a file cropped to
+    # a different box than the domain needs -- and that mistake survives
+    # preparation and costs a whole run.
+    grids = {record.grid for record in records if record.grid is not None}
+    if not grids:
+        checks.append(
+            "geographic extent: not stated by these messages (no readable "
+            "lat/lon grid definition), so the box was NOT checked")
+    elif len(grids) > 1:
+        described = sorted(grid.describe() for grid in grids)
+        failures.append(
+            f"the supplied messages carry {len(grids)} different grids "
+            f"({'; '.join(described)}); ERA5 for one domain is retrieved "
+            "with ONE area, so two grids means the two CDS requests were "
+            "not made with the same one and the fields cannot be composed "
+            "onto a single domain")
+    else:
+        grid = next(iter(grids))
+        checks.append(grid.describe())
+        if expected_area is None:
+            checks.append(
+                "note: the extent above was not checked against any "
+                "requested box -- pass --area (the same one `gpuwm domain` "
+                "printed) to have this check it")
+        else:
+            shortfalls = _grid_coverage_failures(grid, expected_area)
+            if shortfalls:
+                failures.extend(shortfalls)
+            else:
+                checks.append(
+                    "the delivered grid covers the requested box "
+                    f"lat [{expected_area.lat_south:.2f}, "
+                    f"{expected_area.lat_north:.2f}] "
+                    f"lon [{_wrap_lon(expected_area.lon_west):.2f}, "
+                    f"{_wrap_lon_east(expected_area.lon_east):.2f}]")
+
     if expected_times is not None:
         missing = sorted(set(expected_times) - set(times))
         if missing:
@@ -4087,7 +4410,8 @@ def fetch_main(args) -> int:
             cadence = args.cadence if args.cadence is not None else 6
             expected = _era5_times(cycle, args.hours, cadence)
         report = validate_era5_files(
-            tuple(args.validate), expected_times=expected)
+            tuple(args.validate), expected_times=expected,
+            expected_area=area)
         print(report.format())
         return 0 if report.ok else 1
 
@@ -4869,5 +5193,6 @@ __all__ = [
     "require_published_cycle",
     "resolve_latest_cycle",
     "sha256_file", "validate_era5_files", "write_era5_request",
+    "read_grib1_grid", "wsl_path", "era5_retrieve_commands", "Grib1Grid",
     "write_fetch_manifest",
 ]

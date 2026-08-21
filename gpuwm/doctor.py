@@ -4148,6 +4148,118 @@ def _distribution_manifest_check() -> Check:
 # The paths a RUN resolves: provenance, importability, per-source decoders
 # ---------------------------------------------------------------------------
 
+#: The console script every printed command in this product begins with.
+#: Its launcher is what a shell has to be able to find.
+_FRONT_DOOR_SCRIPT = "gpuwm"
+
+
+def _console_script_dirs() -> tuple[Path, ...]:
+    """Directories this interpreter's installs put console scripts in.
+
+    Both are asked for, because the two answers differ exactly where the
+    defect lives: a ``pip install --user`` (which pip picks by itself on
+    a system Python it cannot write to) lands scripts in the USER
+    scheme's directory, while ``sysconfig``'s default names the
+    interpreter's own.
+    """
+
+    import sysconfig
+
+    found: list[Path] = []
+    for scheme in (sysconfig.get_default_scheme(),
+                   "nt_user" if os.name == "nt" else "posix_user"):
+        try:
+            raw = sysconfig.get_path("scripts", scheme)
+        except (KeyError, ValueError):
+            continue
+        if not raw:
+            continue
+        path = Path(raw)
+        if path not in found:
+            found.append(path)
+    return tuple(found)
+
+
+def _console_scripts_check() -> Check:
+    """Can a shell RUN ``gpuwm``, not merely import it?
+
+    Every command this product prints -- the wizard's fetch line, the
+    forecast line, this report's own remedies -- begins with a console
+    script.  Walked on Windows: an editable install wrote the launchers
+    into the user scheme's Scripts directory while PATH carried the
+    interpreter's own, which held none of them, so every one of those
+    printed commands answered "is not recognized" and a working install
+    read as a broken one.  Importing the package proves nothing about
+    that: the failure is PATH resolution, so PATH is what is asked.
+    """
+
+    name = "console scripts on PATH (every printed command starts with one)"
+    directories = _console_script_dirs()
+    holders = [
+        directory for directory in directories
+        if any((directory / candidate).exists()
+               for candidate in ((f"{_FRONT_DOOR_SCRIPT}.exe",
+                                  f"{_FRONT_DOOR_SCRIPT}-script.py")
+                                 if os.name == "nt"
+                                 else (_FRONT_DOOR_SCRIPT,)))]
+    if not holders:
+        return Check(
+            name, "untested",
+            "not tested: no "
+            f"{_FRONT_DOOR_SCRIPT} launcher was found in this "
+            f"interpreter's script directories ({len(directories)} looked "
+            "at), so there is nothing to resolve yet",
+            "# install the package so its console scripts exist:\n"
+            "pip install -e .",
+            action="pip install -e .",
+            brief="no launcher installed yet")
+    on_path = [Path(entry) for entry in
+               os.environ.get("PATH", "").split(os.pathsep) if entry]
+    reachable = [directory for directory in holders
+                 if any(_same_dir(directory, entry) for entry in on_path)]
+    if reachable:
+        return Check(name, "verified",
+                     f"{_FRONT_DOOR_SCRIPT} resolves from {reachable[0]}",
+                     brief=_short(str(reachable[0])))
+    directory = holders[0]
+    # The SHELL decides the remedy's syntax, and it is declared once for
+    # the whole report -- `os.name` above answers a different question
+    # (what the launcher file on disk is called).
+    if bridges.WINDOWS_SHELL:
+        remedy = (
+            "# this PowerShell session:\n"
+            f'$env:Path = "{directory};" + $env:Path\n'
+            "# permanently: add that directory to your account's Path under\n"
+            "# Settings, Environment Variables")
+        action = f'$env:Path = "{directory};" + $env:Path'
+    else:
+        remedy = ("# this shell session:\n"
+                  f'export PATH="{directory}:$PATH"\n'
+                  "# permanently: add that line to your shell profile")
+        action = f'export PATH="{directory}:$PATH"'
+    return Check(
+        name, "missing",
+        f"{_FRONT_DOOR_SCRIPT} is installed in {directory}, which is not on "
+        "PATH: every command this product prints will answer that "
+        f"{_FRONT_DOOR_SCRIPT} is not recognized",
+        remedy, action=action, brief=f"{directory} not on PATH")
+
+
+def _same_dir(left: Path, right: Path) -> bool:
+    """Do two path spellings name one directory?  Never raises."""
+
+    try:
+        if left.samefile(right):
+            return True
+    except OSError:
+        pass
+    try:
+        return os.path.normcase(str(left.resolve())) == os.path.normcase(
+            str(right.resolve()))
+    except OSError:
+        return False
+
+
 def _install_identity_check() -> Check:
     """Can this install name itself?  Every run's receipt asks it.
 
@@ -4668,6 +4780,7 @@ def collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_distribution_manifest_check())
     checks.append(_provenance_check())
     checks.append(_install_identity_check())
+    checks.append(_console_scripts_check())
     checks.append(_non_git_import_check())
     # Resolved ONCE for every registry route below.  Twenty-eight of
     # the routes decode on the same mapped engine, and asking that

@@ -320,13 +320,13 @@ def test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one():
     measurement redone before either constant moves.
 
     THE BAND PINS BELOW ARE THE 2.5.1 LINE'S, re-derived 2026-08-20 on
-    the Windows cut box (the envelope's platform form).  They moved for
-    the second time in three days, and both moves are the same shape:
-    preflight's envelope fell, so it refuses from a LARGER n, so every
-    band's LOW edge rose while every HIGH edge stayed exactly where it
-    was.  That asymmetry is the evidence the move is preflight's alone --
-    the high edge is autoplan's "resident stops fitting" crossing, and
-    autoplan has not been touched.
+    the Windows cut box (the envelope's platform form).  They have moved
+    three times in three days, and every move is the same shape:
+    preflight's envelope fell, so it refuses from a LARGER n, so a band's
+    LOW edge rose while its HIGH edge stayed exactly where it was.  That
+    asymmetry is the evidence the move is preflight's alone -- the high
+    edge is autoplan's "resident stops fitting" crossing, and autoplan
+    has not been touched.
 
     * 2026-08-18, the memgate-3080 landing: the x1.75-with-pool-constants
       Windows envelope became the RTX 3080-measured WDDM form and the
@@ -341,6 +341,22 @@ def test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one():
       estimate (was 6.39), 11.13 GiB at 416^2 (was 12.39), 14.75 GiB at
       512^2 (was 16.72), with the size-independent non-pool term at 2.74
       GiB.  Lows rose to 448/704/832.
+    * 2026-08-20, the RRTMGP optimisation: the LW solver derives the
+      Planck sources in registers instead of materializing lay/lev/sfc,
+      the fused solvers make the finalized optics cubes disappear, and
+      each RTE phase lays its outputs over the slots that are dead by
+      then.  The chunk workspace fell 758,887,500 -> 347,287,500 B at the
+      3125-column chunk, and that is a SIZE-INDEPENDENT 0.4408 GiB off the
+      envelope at EVERY n (the 411,600,000 B saving times the 1.15
+      allocator headroom).  A constant drop can only move an edge whose
+      preceding rung sat within it ABOVE free, and exactly one did: the
+      5070 at n=448, envelope 12.256 -> 11.815 GiB against 11.900 free,
+      an excess of 0.356 GiB that is less than the 0.441 drop -- so its
+      low rose 448 -> 464.  The 4090 at n=688 (23.316 -> 22.875 against
+      23.500) and the 5090 at n=816 (31.120 -> 30.680 against 31.400)
+      were already BELOW their free bytes before the change, so 704 and
+      832 are unmoved and this is the first move to touch one card only.
+      Lows are now 464/704/832.
 
     The disagreement is therefore NARROWER again on this line, but it is
     not reconciled, and the defect stands.
@@ -356,7 +372,7 @@ def test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one():
         assert lo is not None, (
             f"no disagreement band on the {name} -- if the models were "
             "reconciled, delete this test; if the ladder changed, re-derive")
-    assert bands["5070"] == (448, 512), bands
+    assert bands["5070"] == (464, 512), bands
     assert bands["4090"] == (704, 816), bands
     assert bands["5090"] == (832, 976), bands
     return "; ".join(f"{k}: n in [{v[0]}, {v[1]}]" for k, v in bands.items())

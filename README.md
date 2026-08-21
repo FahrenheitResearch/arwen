@@ -9,6 +9,10 @@ the Python package is currently named `gpuwm`.
 > substitute for official forecasts and warnings from your national
 > meteorological service. Do not use it to make safety decisions.
 
+Forecasts run about 1.9x faster than 2.5.1 and need roughly 1.5 GB
+less VRAM, with byte-identical output on both cards it was measured
+on. Radiation optimisation contributed by Roch.
+
 Regional numerical weather prediction at convective scale has mostly
 required institutional clusters, which means most of the world runs on
 global-model guidance at 10-25 km. ArWen's aim is to put a verified,

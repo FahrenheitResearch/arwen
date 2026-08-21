@@ -43,6 +43,12 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "thompson_aerosol_cold": ("thompson_aerosol_common.cuh",),
     "thompson_aerosol_warm": ("thompson_aerosol_common.cuh",),
     "thompson_aerosol_sed": ("thompson_aerosol_common.cuh",),
+    # The LW solver derives the Planck sources itself instead of loading
+    # what rrtmgp_planck_sources wrote; the helpers it needs live in a
+    # header whose every FP op is pinned (HOWTO 13.6j).  rrtmgp_gas is
+    # deliberately NOT listed -- it keeps its own helpers verbatim so its
+    # assembled source and PTX stay byte-identical.
+    "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
 }
 
 #: Read-only view for tests and freeze receipts.

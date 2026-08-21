@@ -39,6 +39,18 @@ _ALLOWED_AEROSOL_MODULES = frozenset({
     "thompson_aerosol_sed",
 })
 
+#: The whole allow-list, module -> its exact header tuple.  Closed and
+#: literal, which is the property these tests hold: NOTHING receives a
+#: device header without being named here, in a second place.
+#: rrtmgp_rte joined when the LW solver started deriving its own Planck
+#: sources; rrtmgp_gas is deliberately absent (it keeps its own copies so
+#: its assembled source and PTX stay byte-identical).
+_EXPECTED_HEADERS = {
+    **{name: ("thompson_aerosol_common.cuh",)
+       for name in _ALLOWED_AEROSOL_MODULES},
+    "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
+}
+
 
 def _module_names() -> list[str]:
     names = sorted(path.stem for path in _KDIR.glob("*.cu"))
@@ -101,12 +113,11 @@ def test_thompson_cu_source_is_byte_identical():
 
 def test_allow_list_is_a_closed_literal_mapping():
     extra = kernel_loader.EXTRA_HEADERS
-    assert set(extra) <= _ALLOWED_AEROSOL_MODULES, (
-        "only the six mp=28 translation units may receive an extra header")
+    assert dict(extra) == _EXPECTED_HEADERS, (
+        "the extra-header allow-list is a closed literal mapping; a module "
+        "may receive a device header only by being named here too")
     for name, headers in extra.items():
         assert isinstance(headers, tuple)
-        assert headers == ("thompson_aerosol_common.cuh",), (
-            f"{name} declares an unexpected header set {headers!r}")
 
 
 def test_allow_listed_headers_exist_and_are_not_translation_units():
@@ -145,8 +156,8 @@ def test_allow_listed_module_actually_receives_the_header():
 def test_launch_module_names_agree_with_the_allow_list():
     from gpuwm.core import thompson_aerosol_launch as launch
 
-    assert set(launch.AEROSOL_KERNEL_MODULES) == set(
-        kernel_loader.EXTRA_HEADERS)
+    assert set(launch.AEROSOL_KERNEL_MODULES) == (
+        set(kernel_loader.EXTRA_HEADERS) & _ALLOWED_AEROSOL_MODULES)
     assert launch.CLASSIC_MODULE not in kernel_loader.EXTRA_HEADERS
     assert launch.AEROSOL_COMMON_HEADER == "thompson_aerosol_common.cuh"
 

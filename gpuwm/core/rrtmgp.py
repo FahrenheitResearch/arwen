@@ -17,8 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import lru_cache
+import os
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, NamedTuple
 
 import numpy as np
 from netCDF4 import Dataset, chartostring
@@ -348,6 +349,28 @@ def _solar_source_device(sw_tables):
     return held[1]
 
 
+#: Per-device trace-gas ``(slots, values)`` pairs, keyed the same way as
+#: :data:`_LW_CLIMATOLOGY`.  Two arrays of one or two elements, otherwise
+#: rebuilt per chunk -- two allocations and two host-to-device copies each,
+#: 2364 times an hour, for a value that changes once per forecast.
+_TRACE_VMR_DEVICE: dict = {}
+
+
+def _trace_vmr_device(trace, *, xp):
+    """Device ``(slot_indices, values)`` for the well-mixed trace gases."""
+    key = (_cache_device_key(xp), trace)
+    cached = _TRACE_VMR_DEVICE.get(key)
+    if cached is None:
+        cached = (
+            xp.asarray(np.asarray([slot for slot, _ in trace],
+                                  dtype=np.int32)),
+            xp.asarray(np.asarray([value for _, value in trace],
+                                  dtype=np.float32)),
+        )
+        _TRACE_VMR_DEVICE[key] = cached
+    return cached
+
+
 def _lw_climatology(xp):
     key = _cache_device_key(xp)
     cached = _LW_CLIMATOLOGY.get(key)
@@ -393,11 +416,86 @@ def rrtmgp_above_model_layer_counts(
     return max(0, lw), sw
 
 
+def _validate_model_top_interface(plev, p_top: float, *, xp=None) -> None:
+    """Check the model-top interface against the declared ``p_top``.
+
+    This reduces on device and reads the result back, so it SYNCHRONIZES.
+    That is why the chunk loop hoists it: ``plev`` is the same array for
+    every chunk of a firing, so checking each chunk over again bought
+    nothing and cost a synchronization per chunk per domain per band.
+    """
+    if xp is None:
+        import cupy as xp
+    if not bool(xp.allclose(
+            plev[:, -1], DTYPE(p_top), rtol=DTYPE(0.0),
+            atol=DTYPE(max(1.0e-3, abs(float(p_top)) * 2.0e-7)))):
+        raise ValueError(
+            "radiation workspace top pressure does not match the model-top "
+            f"interface ({p_top:g} Pa)")
+
+
+#: Per-device above-model rows that depend on the model TOP alone, keyed
+#: like :data:`_LW_CLIMATOLOGY`.  The synthetic cap above the model is built
+#: from `plev[:, -1]`, and WRF's mass coordinate makes that one number for
+#: the whole grid -- `physics.py` fills the top interface with a scalar
+#: (`p_interface[nz] = state.p_top`).  So the pressure ladder and the
+#: climatology lookups on it are the SAME for every column and every chunk,
+#: and rebuilding them per chunk cost two `interp` calls and a dozen small
+#: kernels 1182 times an hour.
+_ABOVE_MODEL_ROWS: dict = {}
+
+
+def _above_model_rows(kind, upper_nlay, p_top, pressure_floor, *, xp):
+    """``(plev_row, play_row, climo_top, climo_row)`` for a uniform cap.
+
+    Shaped (1, upper_nlay) so the caller broadcasts against its own
+    (ncol, 1) top temperature.  Every value is what the per-column
+    construction produced when every column carried the same top pressure,
+    element for element -- these are the same expressions on a single row.
+    """
+    key = (_cache_device_key(xp), kind, int(upper_nlay),
+           float(p_top), float(pressure_floor))
+    cached = _ABOVE_MODEL_ROWS.get(key)
+    if cached is not None:
+        return cached
+    top_pressure = xp.full((1, 1), DTYPE(p_top), dtype=DTYPE)
+    if kind == "sw":
+        plev_row = xp.full((1, 1), DTYPE(pressure_floor), dtype=DTYPE)
+        play_row = DTYPE(0.5) * top_pressure
+        climo_top = climo_row = None
+    else:
+        offsets = (WRF_LW_UPPER_DELTA_P_PA
+                   * xp.arange(1, upper_nlay + 1, dtype=DTYPE))[None, :]
+        plev_row = top_pressure - offsets
+        plev_row[:, -1] = DTYPE(pressure_floor)
+        interfaces = xp.concatenate((top_pressure, plev_row), axis=1)
+        play_row = DTYPE(0.5) * (interfaces[:, :-1] + interfaces[:, 1:])
+        pprof, tprof = _lw_climatology(xp)
+        climo_top = xp.interp(
+            top_pressure.ravel() * DTYPE(0.01), pprof, tprof).reshape(1, 1)
+        climo_row = xp.interp(
+            plev_row.ravel() * DTYPE(0.01), pprof, tprof).reshape(
+                1, upper_nlay)
+    cached = (plev_row, play_row, climo_top, climo_row)
+    _ABOVE_MODEL_ROWS[key] = cached
+    return cached
+
+
 def _extend_above_model_profile(
         play, plev, tlay, tlev, qv, *, p_top: float, kind: str,
         pressure_floor: float = RRTMGP_TOA_PRESSURE_PA, xp=None,
-        validate_top: bool = True) -> _RadiationColumnProfile:
+        validate_top: bool = True,
+        uniform_top: bool = False) -> _RadiationColumnProfile:
     """Append WRF's clear upper atmosphere in bottom-to-top layout.
+
+    ``uniform_top`` asserts that every column's ``plev[:, -1]`` holds the
+    same value, which lets the pressure ladder above the model and the two
+    climatology lookups on it come from :func:`_above_model_rows` as single
+    cached rows instead of being rebuilt per column per chunk.  It is
+    OFF by default and the caller owns the claim: `RRTMGPRadiation.__call__`
+    checks it on device once per firing.  The values are identical either
+    way -- the fast path runs the same expressions on one row and lets
+    broadcasting do what the wide arrays were doing by hand.
 
     The LW pressure/temperature construction transcribes
     ``module_ra_rrtmg_lw.F:12322-12393``: 400-Pa interfaces, a final TOA
@@ -439,12 +537,8 @@ def _extend_above_model_profile(
             "RRTMGP CUDA RTE supports at most "
             f"{MAX_RADIATION_LAYERS} layers including the above-model "
             f"column; got {model_nlay + upper_nlay}")
-    if validate_top and not bool(xp.allclose(
-            plev[:, -1], DTYPE(p_top), rtol=DTYPE(0.0),
-            atol=DTYPE(max(1.0e-3, abs(float(p_top)) * 2.0e-7)))):
-        raise ValueError(
-            "radiation workspace top pressure does not match the model-top "
-            f"interface ({p_top:g} Pa)")
+    if validate_top:
+        _validate_model_top_interface(plev, p_top, xp=xp)
     if upper_nlay == 0:
         return _RadiationColumnProfile(
             play, plev, tlay, tlev, qv, model_nlay, 0)
@@ -452,28 +546,44 @@ def _extend_above_model_profile(
     top_pressure = plev[:, -1:]
     top_temperature = tlev[:, -1:]
     top_qv = qv[:, -1:]
+    rows = (_above_model_rows(kind, upper_nlay, p_top, pressure_floor, xp=xp)
+            if uniform_top else None)
     if kind == "sw":
-        upper_plev = xp.full(
-            (ncol, 1), DTYPE(pressure_floor), dtype=DTYPE)
-        upper_play = DTYPE(0.5) * top_pressure
+        if rows is not None:
+            plev_row, play_row, _, _ = rows
+            upper_plev = xp.broadcast_to(plev_row, (ncol, 1))
+            upper_play = xp.broadcast_to(play_row, (ncol, 1))
+        else:
+            upper_plev = xp.full(
+                (ncol, 1), DTYPE(pressure_floor), dtype=DTYPE)
+            upper_play = DTYPE(0.5) * top_pressure
         upper_tlev = top_temperature.copy()
         upper_tlay = top_temperature.copy()
     else:
-        offsets = (WRF_LW_UPPER_DELTA_P_PA
-                   * xp.arange(1, upper_nlay + 1, dtype=DTYPE))[None, :]
-        upper_plev = top_pressure - offsets
-        upper_plev[:, -1] = DTYPE(pressure_floor)
-        all_upper_interfaces = xp.concatenate(
-            (top_pressure, upper_plev), axis=1)
-        upper_play = DTYPE(0.5) * (
-            all_upper_interfaces[:, :-1] + all_upper_interfaces[:, 1:])
+        if rows is not None:
+            plev_row, play_row, climo_top, climo_upper = rows
+            upper_plev = xp.broadcast_to(plev_row, (ncol, upper_nlay))
+            upper_play = xp.broadcast_to(play_row, (ncol, upper_nlay))
+        else:
+            offsets = (WRF_LW_UPPER_DELTA_P_PA
+                       * xp.arange(1, upper_nlay + 1, dtype=DTYPE))[None, :]
+            upper_plev = top_pressure - offsets
+            upper_plev[:, -1] = DTYPE(pressure_floor)
+            all_upper_interfaces = xp.concatenate(
+                (top_pressure, upper_plev), axis=1)
+            upper_play = DTYPE(0.5) * (
+                all_upper_interfaces[:, :-1] + all_upper_interfaces[:, 1:])
 
-        pprof, tprof = _lw_climatology(xp)
-        climo_top = xp.interp(
-            top_pressure.ravel() * DTYPE(0.01), pprof, tprof).reshape(ncol, 1)
-        climo_upper = xp.interp(
-            upper_plev.ravel() * DTYPE(0.01), pprof, tprof).reshape(
-                ncol, upper_nlay)
+            pprof, tprof = _lw_climatology(xp)
+            climo_top = xp.interp(
+                top_pressure.ravel() * DTYPE(0.01), pprof, tprof).reshape(
+                    ncol, 1)
+            climo_upper = xp.interp(
+                upper_plev.ravel() * DTYPE(0.01), pprof, tprof).reshape(
+                    ncol, upper_nlay)
+        # Broadcast, not tile: (1, upper) against the chunk's own (ncol, 1)
+        # top temperature is the same subtraction and the same addition the
+        # wide arrays performed, element for element.
         upper_tlev = climo_upper + (top_temperature - climo_top)
         all_upper_tlev = xp.concatenate(
             (top_temperature, upper_tlev), axis=1)
@@ -499,8 +609,46 @@ def _model_flux_interfaces(flux, model_nlay: int, *, xp=None):
     return flux[:, :int(model_nlay) + 1]
 
 
-def _append_clear_upper_layers(value, upper_nlay: int, *, xp=None):
-    """Append zero-valued cloud/path layers to a model-layer field."""
+#: Named per-chunk scratch buffers.  `_prepare_above_model_chunk` runs 2364
+#: times an hour and allocated ~15 fresh arrays each time; the profile puts
+#: it at 2.78 s of HOST against 0.98 s of device, the worst ratio in
+#: radiation.  Each entry is keyed by a call-site NAME as well as shape and
+#: dtype, which is what makes reuse safe: two temporaries that are live at
+#: the same moment ask under different names and can never be handed the
+#: same bytes.  Bounded by construction -- fifteen names times the handful
+#: of chunk widths a domain tree produces (full width plus one ragged tail
+#: per domain), a few MiB in total, and it REPLACES pool allocations rather
+#: than adding to them.
+_CHUNK_SCRATCH: dict = {}
+
+
+def _chunk_scratch(name: str, shape, *, xp, dtype=DTYPE):
+    """``(buffer, first_use)`` for one named per-chunk temporary.
+
+    ``first_use`` lets a caller skip re-establishing bytes that its own
+    previous call already wrote and nothing else can have touched -- see
+    the clear-layer tail in :func:`_append_clear_upper_layers`.
+    """
+    shape = tuple(int(extent) for extent in shape)
+    key = (_cache_device_key(xp), name, shape, np.dtype(dtype).str)
+    buffer = _CHUNK_SCRATCH.get(key)
+    if buffer is None:
+        buffer = xp.empty(shape, dtype=dtype)
+        _CHUNK_SCRATCH[key] = buffer
+        return buffer, True
+    return buffer, False
+
+
+def _append_clear_upper_layers(value, upper_nlay: int, *, xp=None,
+                               scratch: str | None = None):
+    """Append zero-valued cloud/path layers to a model-layer field.
+
+    ``scratch`` names a reused buffer (:func:`_chunk_scratch`).  The clear
+    tail is then written ONCE: this call site is the only writer of that
+    name, so on every later call the zeros it wrote the first time are
+    still there.  Same bytes, one fewer fill kernel and one fewer
+    allocation per call, five times per chunk per band.
+    """
     if xp is None:
         import cupy as xp
     value = xp.ascontiguousarray(xp.asarray(value, dtype=DTYPE))
@@ -511,8 +659,19 @@ def _append_clear_upper_layers(value, upper_nlay: int, *, xp=None):
         raise ValueError("upper_nlay must be nonnegative")
     if upper_nlay == 0:
         return value
-    clear = xp.zeros((value.shape[0], upper_nlay), dtype=DTYPE)
-    return xp.ascontiguousarray(xp.concatenate((value, clear), axis=1))
+    # One allocation and one copy: `zeros` + `concatenate` allocated the
+    # clear block only to copy it straight into a second array, and this
+    # runs five times per chunk per band.
+    model_nlay = value.shape[1]
+    shape = (value.shape[0], model_nlay + upper_nlay)
+    if scratch is None:
+        out, clear_tail = xp.empty(shape, dtype=DTYPE), True
+    else:
+        out, clear_tail = _chunk_scratch(scratch, shape, xp=xp)
+    out[:, :model_nlay] = value
+    if clear_tail:
+        out[:, model_nlay:] = DTYPE(0.0)
+    return out
 
 
 def _array(value, dtype):
@@ -669,6 +828,7 @@ def _prepare_above_model_chunk(
         p_top: float, kind: str,
         pressure_floor: float = RRTMGP_TOA_PRESSURE_PA, xp=None,
         validate_top: bool = True, validate: bool = True,
+        uniform_top: bool = False, scratch: bool = False,
 ) -> _RadiationColumnChunk:
     """Build every above-model temporary for exactly ``columns``.
 
@@ -677,6 +837,15 @@ def _prepare_above_model_chunk(
     coordinates are deliberately materialized only for the active solver
     chunk.  In particular, an irregular final slice retains its true column
     count rather than allocating or exposing a padded ``column_chunk`` tail.
+
+    ``scratch`` RETURNS VIEWS OF REUSED BUFFERS, and that puts the caller
+    under a contract: finish with the returned chunk before the next call
+    of the same ``kind`` and shape, because that call overwrites it.  The
+    driver's chunk loop satisfies this by construction -- it consumes each
+    chunk and drops it inside one iteration -- and it is the only caller
+    that opts in.  OFF BY DEFAULT, so a caller that collects chunks and
+    compares them afterwards still gets independent arrays; the test that
+    does exactly that is what established the contract needed stating.
     """
     if xp is None:
         import cupy as xp
@@ -684,15 +853,23 @@ def _prepare_above_model_chunk(
     profile = _extend_above_model_profile(
         play[columns], plev[columns], tlay[columns], tlev[columns],
         qv[columns], p_top=p_top, kind=kind,
-        pressure_floor=pressure_floor, xp=xp, validate_top=validate_top)
+        pressure_floor=pressure_floor, xp=xp, validate_top=validate_top,
+        uniform_top=uniform_top)
+    # Distinct names: all five are live at once, so they must never share
+    # a buffer.  `kind` keeps the LW and SW passes apart even where their
+    # shapes coincide.
     chunk_paths = HydrometeorPaths(*(
         _append_clear_upper_layers(
-            value[columns], profile.upper_nlay, xp=xp)
-        for value in (paths.clwp, paths.ciwp, paths.reliq, paths.dgice)))
+            value[columns], profile.upper_nlay, xp=xp,
+            scratch=(f"clear.{kind}.{name}" if scratch else None))
+        for name, value in (("clwp", paths.clwp), ("ciwp", paths.ciwp),
+                            ("reliq", paths.reliq), ("dgice", paths.dgice))))
     chunk_cldfra = _append_clear_upper_layers(
-        cldfra[columns], profile.upper_nlay, xp=xp)
+        cldfra[columns], profile.upper_nlay, xp=xp,
+        scratch=(f"clear.{kind}.cldfra" if scratch else None))
     metadata = _interpolation_metadata(
-        tables, profile.play, profile.tlay, validate=validate)
+        tables, profile.play, profile.tlay, validate=validate,
+        scratch=(f"meta.{kind}" if scratch else None))
     return _RadiationColumnChunk(
         profile=profile, paths=chunk_paths, cldfra=chunk_cldfra,
         metadata=metadata)
@@ -706,7 +883,6 @@ def _prepare_above_model_chunk(
 RRTMGP_WORKSPACE_LIFETIME_AUDIT = {
     "lw_optics": {
         "gas_tau": "rrtmgp_gas_optics kernel",
-        "optics_tau": "rrtmgp_finalize_cloud_lw kernel",
         "vmr": "full zero fill plus complete active-gas assignment",
         "cld_tau": "rrtmgp_cloud_optics kernel",
         "cld_ssa": "rrtmgp_cloud_optics kernel",
@@ -715,16 +891,18 @@ RRTMGP_WORKSPACE_LIFETIME_AUDIT = {
         "mcica_mask": "rrtmgp_mcica_maxran kernel",
     },
     "lw_rte": {
+        # Only what the phase READS BACK.  With the finalize fused into the
+        # solver, the carried set is what the solver combines in registers:
+        # gas_tau, the two band cloud cubes it reads, and the McICA mask.
+        # cld_asy and col_dry are dead here; the RTE outputs lie over them.
         "gas_tau": "same-chunk lw_optics producer at identical offset",
-        "optics_tau": "same-chunk lw_optics producer at identical offset",
         "vmr": "same-chunk lw_optics producer at identical offset",
         "cld_tau": "same-chunk lw_optics producer at identical offset",
         "cld_ssa": "same-chunk lw_optics producer at identical offset",
-        "cld_asy": "same-chunk lw_optics producer at identical offset",
-        "col_dry": "same-chunk lw_optics producer at identical offset",
-        "lay_source": "rrtmgp_planck_sources kernel",
-        "lev_source": "rrtmgp_planck_sources kernel",
-        "sfc_source": "rrtmgp_planck_sources kernel",
+        "mcica_mask": "same-chunk lw_optics producer at identical offset",
+        # lay_source/lev_source/sfc_source are GONE: the solver derives
+        # them from play/tlay/tlev/tsfc/vmr + metadata, which are the
+        # carried slots and the caller's own arrays.
         "emiss_gpt": "complete band-expansion assignment",
         "incident": "full zero fill",
         "flux_up": "rrtmgp_lw_noscat kernel",
@@ -733,9 +911,6 @@ RRTMGP_WORKSPACE_LIFETIME_AUDIT = {
     "sw_optics": {
         "gas_tau": "rrtmgp_gas_optics kernel",
         "gas_ssa": "rrtmgp_gas_optics kernel",
-        "optics_tau": "rrtmgp_finalize_cloud_sw kernel",
-        "optics_ssa": "rrtmgp_finalize_cloud_sw kernel",
-        "optics_g": "rrtmgp_finalize_cloud_sw kernel",
         "vmr": "full zero fill plus complete active-gas assignment",
         "cld_tau": "rrtmgp_cloud_optics kernel",
         "cld_ssa": "rrtmgp_cloud_optics kernel",
@@ -744,16 +919,15 @@ RRTMGP_WORKSPACE_LIFETIME_AUDIT = {
         "mcica_mask": "rrtmgp_mcica_maxran kernel",
     },
     "sw_rte": {
+        # As in lw_rte, the carried set is what the fused solver reads:
+        # both gas cubes, all three band cloud cubes, and the mask.  vmr
+        # and col_dry are dead here -- SW builds no Planck source.
         "gas_tau": "same-chunk sw_optics producer at identical offset",
         "gas_ssa": "same-chunk sw_optics producer at identical offset",
-        "optics_tau": "same-chunk sw_optics producer at identical offset",
-        "optics_ssa": "same-chunk sw_optics producer at identical offset",
-        "optics_g": "same-chunk sw_optics producer at identical offset",
-        "vmr": "same-chunk sw_optics producer at identical offset",
         "cld_tau": "same-chunk sw_optics producer at identical offset",
         "cld_ssa": "same-chunk sw_optics producer at identical offset",
         "cld_asy": "same-chunk sw_optics producer at identical offset",
-        "col_dry": "same-chunk sw_optics producer at identical offset",
+        "mcica_mask": "same-chunk sw_optics producer at identical offset",
         "albedo_gpt": "complete surface broadcast assignment",
         "inc_gpt": "complete solar broadcast assignment",
         "mu0": "complete cosine broadcast assignment",
@@ -877,6 +1051,40 @@ def trace_gases(valid_date: date | datetime,
     return selected
 
 
+def _minor_gpoint_csr(limits: np.ndarray, ngpt: int
+                      ) -> tuple[np.ndarray, np.ndarray]:
+    """Invert ``minor_limits_gpt`` into a per-g-point entry list.
+
+    ``limits`` gives each minor entry an INCLUSIVE g-point range; the kernel
+    wants the transpose -- given a g-point, which entries apply.  Returned as
+    CSR: ``start[g]:start[g + 1]`` slices ``index``, and the entries inside a
+    slice are ascending in ``m``, which is the order the scanning loop
+    visited them in.  That ordering is the bit-exactness argument: the same
+    additions accumulate into ``tau_abs`` in the same sequence.
+    """
+    limits = np.asarray(limits, dtype=np.int32)
+    if limits.ndim != 2 or limits.shape[1] != 2:
+        raise ValueError("minor g-point limits must have shape (nminor,2)")
+    ngpt = int(ngpt)
+    counts = np.zeros(ngpt + 1, dtype=np.int64)
+    for lower, upper in limits:
+        if not (0 <= lower <= upper < ngpt):
+            raise ValueError(
+                f"minor g-point range ({lower},{upper}) outside 0..{ngpt - 1}")
+        counts[lower + 1:upper + 2] += 1
+    start = np.cumsum(counts).astype(np.int32)
+    index = np.empty(int(start[-1]), dtype=np.int32)
+    cursor = start[:-1].copy()
+    for m, (lower, upper) in enumerate(limits):
+        for gpt in range(int(lower), int(upper) + 1):
+            index[cursor[gpt]] = m
+            cursor[gpt] += 1
+    # An empty list would still need a valid pointer to launch with.
+    if index.size == 0:
+        index = np.zeros(1, dtype=np.int32)
+    return np.ascontiguousarray(start), np.ascontiguousarray(index)
+
+
 @dataclass
 class GasTables:
     kind: str
@@ -910,6 +1118,16 @@ class GasTables:
     idx_minor_scaling_upper: np.ndarray
     kminor_start_lower: np.ndarray
     kminor_start_upper: np.ndarray
+    #: Derived in __post_init__, never read from the netCDF: for each
+    #: atmosphere half, the minor entries that cover each g-point, as CSR
+    #: (``start[ngpt + 1]`` offsets into ``list``).  See the kernel's minor
+    #: loop -- these are the 6% of (g-point, entry) pairs that are not a
+    #: skipped iteration.  Declared as fields so ``to_device`` uploads them
+    #: and ``packed_arrays`` counts them like every other table.
+    minor_gpt_start_lower: np.ndarray = None
+    minor_gpt_list_lower: np.ndarray = None
+    minor_gpt_start_upper: np.ndarray = None
+    minor_gpt_list_upper: np.ndarray = None
     rayleigh: np.ndarray | None = None
     planck_fraction: np.ndarray | None = None
     temperature_planck: np.ndarray | None = None
@@ -932,6 +1150,14 @@ class GasTables:
     #: therefore a per-device figure that must be multiplied by the number of
     #: cards a run actually uses.
     _device: dict = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        for half in ("lower", "upper"):
+            if getattr(self, f"minor_gpt_start_{half}") is None:
+                start, index = _minor_gpoint_csr(
+                    getattr(self, f"minor_limits_gpt_{half}"), self.ngpt)
+                object.__setattr__(self, f"minor_gpt_start_{half}", start)
+                object.__setattr__(self, f"minor_gpt_list_{half}", index)
 
     @property
     def ngas(self) -> int:
@@ -1422,6 +1648,103 @@ MCICA_PERMUTESEED_SW = 1
 MCICA_PERMUTESEED_LW = 150
 
 
+_MCICA_MWC = ((18000, 1179647999), (30903, 2025259007))
+
+
+def _mcica_xorshift_step_matrix() -> list[int]:
+    """The 32 basis images of one ``s2`` xorshift, as a GF(2) matrix."""
+    cols = []
+    for bit in range(32):
+        v = 1 << bit
+        v ^= (v << 13) & 0xFFFFFFFF
+        v ^= v >> 17
+        v ^= (v << 5) & 0xFFFFFFFF
+        cols.append(v)
+    return cols
+
+
+def _mcica_gf2_apply(mat, v: int) -> int:
+    out = 0
+    while v:
+        out ^= mat[(v & -v).bit_length() - 1]
+        v &= v - 1
+    return out
+
+
+@lru_cache(maxsize=8)
+def _mcica_jump_tables(nlay: int, ngpt: int):
+    """One composed advance operator per subcolumn ``g``.
+
+    Subcolumn ``g`` begins at stream position ``permuteseed + g*nlay``.  The
+    level operators advance ``nlay * 2**j`` steps, and a thread used to walk
+    the set bits of its own ``g`` applying up to ``bit_length(ngpt-1)`` of
+    them -- with two 64-bit modulos and a 32-XOR matrix apply per level.
+    They are all powers of one map, so they commute AND compose exactly, in
+    each of the four algebras: affine mod 2**32, GF(2) matrix product, and
+    modular multiplication for the two MWC residues.  Folding them here
+    leaves the kernel one operator to apply, and lands it on the same state
+    the level-by-level walk landed on.
+
+    The fold costs one composition per ``g``, not one per set bit: ``g``'s
+    operator is the operator of ``g`` with its lowest set bit cleared,
+    composed with that bit's level.
+    """
+    import cupy as cp
+
+    ngpt = int(ngpt)
+    njump = max(1, int(ngpt - 1).bit_length())
+    # s1: affine x -> A*x + C (mod 2**32); compose f then g = (Ag*Af, Ag*Cf+Cg).
+    a, c = 69069, 1327217885
+    A, C = 1, 0
+    for _ in range(nlay):
+        A, C = (a * A) & 0xFFFFFFFF, (a * C + c) & 0xFFFFFFFF
+    lvl1 = []
+    for _ in range(njump):
+        lvl1.append((A, C))
+        A, C = (A * A) & 0xFFFFFFFF, (A * C + C) & 0xFFFFFFFF
+    # s2: GF(2) matrix power.
+    step = _mcica_xorshift_step_matrix()
+    M = [1 << i for i in range(32)]
+    for _ in range(nlay):
+        M = [_mcica_gf2_apply(step, col) for col in M]
+    lvl2 = []
+    for _ in range(njump):
+        lvl2.append(M)
+        M = [_mcica_gf2_apply(M, col) for col in M]
+    # s3/s4: MWC state advances by multiplication by b**-1 modulo a*b-1.
+    lvl_mwc = []
+    for base, modulus in _MCICA_MWC:
+        m = pow(pow(65536, -1, modulus), nlay, modulus)
+        level = []
+        for _ in range(njump):
+            level.append(m)
+            m = (m * m) % modulus
+        lvl_mwc.append(level)
+
+    # Fold, ascending-j exactly as the level walk applied them: g's operator
+    # is `rest` (g without its lowest set bit, all of whose levels are
+    # higher) applied AFTER that bit's level.
+    s1 = np.zeros((ngpt, 2), dtype=np.uint32)
+    s1[0] = (1, 0)
+    s2 = np.zeros((ngpt, 32), dtype=np.uint32)
+    s2[0] = [1 << i for i in range(32)]
+    s3 = np.ones(ngpt, dtype=np.uint32)
+    s4 = np.ones(ngpt, dtype=np.uint32)
+    for g in range(1, ngpt):
+        low = g & -g
+        j = low.bit_length() - 1
+        rest = g ^ low
+        a_j, c_j = lvl1[j]
+        a_r, c_r = int(s1[rest, 0]), int(s1[rest, 1])
+        s1[g] = ((a_r * a_j) & 0xFFFFFFFF, (a_r * c_j + c_r) & 0xFFFFFFFF)
+        rest_mat = [int(v) for v in s2[rest]]
+        s2[g] = [_mcica_gf2_apply(rest_mat, col) for col in lvl2[j]]
+        s3[g] = (int(s3[rest]) * lvl_mwc[0][j]) % _MCICA_MWC[0][1]
+        s4[g] = (int(s4[rest]) * lvl_mwc[1][j]) % _MCICA_MWC[1][1]
+    u32 = lambda a: cp.asarray(np.ascontiguousarray(a, dtype=np.uint32))
+    return njump, u32(s1.ravel()), u32(s2.ravel()), u32(s3), u32(s4)
+
+
 def mcica_cloud_masks(play, cldfra, ngpt, permuteseed, *, validate=True):
     return _mcica_cloud_masks(
         play, cldfra, ngpt, permuteseed, validate=validate, out=None)
@@ -1454,11 +1777,19 @@ def _mcica_cloud_masks(play, cldfra, ngpt, permuteseed, *, validate, out):
     ncol, nlay = play.shape
     mask = _workspace_output(
         out, (ncol, nlay, int(ngpt)), "mcica_mask", dtype=cp.bool_)
-    threads = 64
+    _, j1, j2, j3, j4 = _mcica_jump_tables(int(nlay), int(ngpt))
+    # One block per column: the block shares `1 - cldfra` across its ngpt
+    # subcolumns instead of every thread rebuilding it in FP64.  ngpt is 256
+    # (LW) or 224 (SW), both legal block sizes and both whole warps; the
+    # kernel strides `g` anyway, so a clamped block stays correct.
+    threads = min(int(ngpt), 1024)
+    shared = int(nlay) * 8
     get_kernel("rrtmgp_mcica", "rrtmgp_mcica_maxran")(
-        ((ncol + threads - 1) // threads,), (threads,),
-        (play, cldfra, mask, np.int32(ncol), np.int32(nlay),
-         np.int32(ngpt), np.int32(permuteseed)))
+        (int(ncol),), (threads,),
+        (play, cldfra, mask, j1, j2, j3, j4,
+         np.int32(ncol), np.int32(nlay),
+         np.int32(ngpt), np.int32(permuteseed)),
+        shared_mem=shared)
     return mask
 
 
@@ -1950,30 +2281,107 @@ class RRTMGPRadiation:
         return fallback
 
     def _gas_vmr(self, tables, play, qv, *, validate=True, out=None):
+        """Build the (ncol, nlay, ngas + 1) volume-mixing-ratio cube.
+
+        ONE kernel writes the whole cube.  It used to be five-plus CuPy
+        expressions -- a zero fill, a scaled h2o write, an ozone write and
+        one write per well-mixed trace gas -- each a strided store into the
+        last axis, each its own launch.  This runs once per chunk per band,
+        2364 times in a profiled hour, for 1.94 s of HOST time against
+        0.94 s of device: the stores were never the cost, the submissions
+        were.  Radiation is submission bound (HOWTO 13.5b) with 1.97 s of
+        GPU idle in it, so that host time is wall time.
+
+        ``cupy.interp`` is deliberately left alone and its output handed to
+        the kernel.  The ozone lookup is the one piece here whose last bit
+        depends on somebody else's implementation, and reproducing it in
+        CUDA would be betting bit-exactness on matching it.
+        """
         import cupy as cp
+        from gpuwm.core.kernels import get_kernel
+
+        if not hasattr(cp, "RawModule"):
+            # The CPU stand-in: tests substitute numpy for cupy to keep this
+            # path runnable without a card.  No kernels there, so it takes
+            # the expression sequence the fused kernel replaced -- which is
+            # also the reference the fused path is gated against, bitwise,
+            # over both tables and every trace-gas set (test_rrtmgp).
+            return self._gas_vmr_expressions(
+                cp, tables, play, qv, validate=validate, out=out)
 
         shape = (*play.shape, tables.ngas + 1)
+        # Every slot is written by the kernel below -- the zero fill is part
+        # of it -- so a fresh allocation need not be zeroed, and a reused
+        # workspace slot is still completely overwritten before its first
+        # read, exactly as RRTMGP_WORKSPACE_LIFETIME_AUDIT records.
+        vmr = (cp.empty(shape, dtype=DTYPE) if out is None
+               else _workspace_output(out, shape, "vmr"))
+        # qv is kg water / kg dry air; RRTMGP consumes mole / mole dry air.
+        if validate:
+            _require_finite_nonnegative(qv=qv)
+        qv = cp.ascontiguousarray(cp.asarray(qv, dtype=DTYPE))
+        if qv.shape != play.shape:
+            raise ValueError(
+                f"gas VMR qv must have shape {play.shape}, got {qv.shape}")
+        # float64 out of cupy.interp even from float32 tables; the kernel
+        # narrows on the store, which is the store the CuPy path did.
+        ozone = cp.interp(
+            cp.log(play).ravel(), self._ozone_logp, self._ozone_vmr)
+        if ozone.dtype != cp.float64:
+            raise TypeError(
+                "gas VMR ozone interpolation must be float64 for the fused "
+                f"fill kernel, got {ozone.dtype}")
+        # Later writes win, which is the precedence the sequence of CuPy
+        # assignments had: h2o, then ozone, then trace gases in trace_vmr
+        # order.
+        trace = tuple(
+            (int(tables.gas_index[gas]), float(value))
+            for gas, value in self.trace_vmr.items()
+            if tables.gas_index.get(gas) is not None)
+        trace_index, trace_value = _trace_vmr_device(trace, xp=cp)
+        ncells = int(play.shape[0]) * int(play.shape[1])
+        threads = 256
+        get_kernel("rrtmgp_gas", "rrtmgp_gas_vmr_fill")(
+            ((ncells + threads - 1) // threads,), (threads,), (
+                qv, ozone, trace_index, trace_value, vmr,
+                DTYPE(0.028964 / 0.018016),
+                np.int32(tables.gas_index["h2o"]),
+                np.int32(tables.gas_index["o3"]),
+                np.int32(len(trace)), np.int32(ncells),
+                np.int32(tables.ngas + 1)))
+        return vmr
+
+    def _gas_vmr_expressions(self, xp, tables, play, qv, *, validate, out):
+        """The pre-fusion VMR build, kept as the reference implementation.
+
+        Reached on the NumPy stand-in, and it is what the fused kernel is
+        gated against: the A/B runs both over both gas tables, three
+        trace-gas sets, four shapes and a deliberately dirty workspace
+        buffer, and requires bitwise equality.  An edit to one of these
+        two belongs in the other.
+        """
+        shape = (*play.shape, tables.ngas + 1)
         if out is None:
-            vmr = cp.zeros(shape, dtype=DTYPE)
+            vmr = xp.zeros(shape, dtype=DTYPE)
         else:
             vmr = _workspace_output(out, shape, "vmr")
             # Slot zero and absent trace gases are real inputs to the gas
             # kernel.  The full fill is the write-before-read producer for
-            # every reused byte, exactly matching cp.zeros numerically.
+            # every reused byte, exactly matching zeros numerically.
             vmr.fill(DTYPE(0.0))
         # qv is kg water / kg dry air; RRTMGP consumes mole / mole dry air.
         if validate:
             _require_finite_nonnegative(qv=qv)
-        vmr[:, :, tables.gas_index["h2o"]] = qv \
-            * DTYPE(0.028964 / 0.018016)
-        vmr[:, :, tables.gas_index["o3"]] = cp.interp(
-            cp.log(play).ravel(), self._ozone_logp, self._ozone_vmr).reshape(
-                play.shape)
+        vmr[:, :, tables.gas_index["h2o"]] = (
+            qv * DTYPE(0.028964 / 0.018016))
+        vmr[:, :, tables.gas_index["o3"]] = xp.interp(
+            xp.log(play).ravel(), self._ozone_logp,
+            self._ozone_vmr).reshape(play.shape)
         for gas, value in self.trace_vmr.items():
             index = tables.gas_index.get(gas)
             if index is not None:
                 vmr[:, :, index] = DTYPE(value)
-        return cp.ascontiguousarray(vmr)
+        return xp.ascontiguousarray(vmr)
 
     @staticmethod
     def _solar_constant(valid_time) -> float:
@@ -2175,6 +2583,19 @@ class RRTMGPRadiation:
                        if active_bl else 1),
         )
         ncol = play.shape[0]
+        # ONE reduction per firing buys the whole above-model fast path.
+        # WRF's mass coordinate fills the top interface from a scalar
+        # (physics.py `p_interface[nz] = state.p_top`), so this is true by
+        # construction -- but the chunk loop below is bit-exact only while
+        # it holds, so it is checked rather than assumed.  Exact equality,
+        # not the tolerance `_validate_model_top_interface` uses: a
+        # one-ULP spread would be invisible to that and would still change
+        # the synthetic cap.
+        uniform_top = bool(cp.all(plev[:, -1] == plev[0, -1]))
+        if declared_p_top is None:
+            # Once per firing, not once per chunk: it synchronizes, and
+            # `plev` does not vary across the chunks that follow.
+            _validate_model_top_interface(plev, profile_p_top, xp=cp)
         if full_validation:
             # Validate the caller-supplied model column before constructing
             # WRF's synthetic above-model atmosphere.  Otherwise full mode
@@ -2241,8 +2662,9 @@ class RRTMGPRadiation:
                 tlev=tlev, qv=qv, paths=paths, cldfra=cldfra, columns=sl,
                 p_top=profile_p_top, kind="lw",
                 pressure_floor=RRTMGP_TOA_PRESSURE_PA, xp=cp,
-                validate_top=declared_p_top is None,
-                validate=full_validation)
+                validate_top=False,
+                validate=full_validation, uniform_top=uniform_top,
+                scratch=workspace is not None)
             lw_profile = lw_chunk.profile
             lw_paths = lw_chunk.paths
             lw_cldfra = lw_chunk.cldfra
@@ -2265,6 +2687,7 @@ class RRTMGPRadiation:
                 optics_lw = _finalize_cloud_optics(
                     self.lw_tables, gas_lw, cld_lw, cloud_mask=mask_lw)
                 del mask_lw
+                # (workspace-less path: finalize kept, nothing to carry)
                 sources = _planck_sources(
                     self.lw_tables, lw_profile.play, lw_profile.plev,
                     lw_profile.tlay, lw_profile.tlev, tsfc[sl],
@@ -2275,6 +2698,7 @@ class RRTMGPRadiation:
                 flux = lw_rte(
                     optics_lw.tau, sources.lay_source, sources.lev_source,
                     sources.sfc_source, emiss, top_at_1=False)
+                del optics_lw
             else:
                 # SCRATCH_SLOT_LIFETIME_AUDIT analogue: every optics slot is
                 # a kernel output or full fill before its first read in this
@@ -2299,31 +2723,32 @@ class RRTMGPRadiation:
                     lw_profile.play, lw_cldfra, self.lw_tables.ngpt,
                     MCICA_PERMUTESEED_LW, validate=full_validation,
                     out=work["mcica_mask"])
-                optics_lw = _finalize_cloud_optics(
-                    self.lw_tables, gas_lw, cld_lw, cloud_mask=mask_lw,
-                    out=(work["optics_tau"],))
-                del mask_lw
+                # No finalize: the solver combines gas, cloud and mask in
+                # registers (FusedCloudOptics).  gas_tau, both band cloud
+                # cubes and the mask are CARRIED slots of the rte phase,
+                # so the views below stay valid across the phase() call.
                 work = workspace.phase("lw_rte", chunk_ncol)
-                sources = _planck_sources(
-                    self.lw_tables, lw_profile.play, lw_profile.plev,
-                    lw_profile.tlay, lw_profile.tlev, tsfc[sl],
-                    vmr_lw, metadata=chunk_metadata,
-                    validate=full_validation,
-                    out=(work["lay_source"], work["lev_source"],
-                         work["sfc_source"]))
+                # No Planck kernel: the solver derives lay/lev/sfc itself.
+                planck_in = PlanckInputs(
+                    tables=self.lw_tables, play=lw_profile.play,
+                    tlay=lw_profile.tlay, tlev=lw_profile.tlev,
+                    tsfc=tsfc[sl], vmr=vmr_lw, metadata=chunk_metadata)
                 emiss = _expand_band_to_gpoint(
                     emiss_bands[sl], self.lw_tables, "surface emissivity",
                     out=work["emiss_gpt"])
                 flux = _lw_rte(
-                    optics_lw.tau, sources.lay_source, sources.lev_source,
-                    sources.sfc_source, emiss, top_at_1=False,
+                    gas_lw.tau, None, None, None, emiss, top_at_1=False,
                     out=(work["flux_up"], work["flux_dn"]),
-                    incident_out=work["incident"])
+                    incident_out=work["incident"],
+                    fused_cloud=FusedCloudOptics(
+                        tables=self.lw_tables, cloud=cld_lw, mask=mask_lw),
+                    planck=planck_in)
+                del mask_lw, planck_in
             lw_up[sl] = _model_flux_interfaces(
                 flux.flux_up, nz, xp=cp)
             lw_dn[sl] = _model_flux_interfaces(
                 flux.flux_dn, nz, xp=cp)
-            del vmr_lw, gas_lw, cld_lw, optics_lw, sources, emiss, flux
+            del vmr_lw, gas_lw, cld_lw, emiss, flux
             del chunk_metadata, lw_profile, lw_paths, lw_cldfra, lw_chunk
             # ``work`` is the phase view mapping and every value in it is a
             # view of the workspace backing, so the name keeps the whole
@@ -2369,8 +2794,9 @@ class RRTMGPRadiation:
                 tlev=tlev, qv=qv, paths=paths, cldfra=cldfra, columns=sl,
                 p_top=profile_p_top, kind="sw",
                 pressure_floor=RRTMGP_TOA_PRESSURE_PA, xp=cp,
-                validate_top=declared_p_top is None,
-                validate=full_validation)
+                validate_top=False,
+                validate=full_validation, uniform_top=uniform_top,
+                scratch=workspace is not None)
             sw_profile = sw_chunk.profile
             sw_paths = sw_chunk.paths
             sw_cldfra = sw_chunk.cldfra
@@ -2393,6 +2819,7 @@ class RRTMGPRadiation:
                 optics_sw = _finalize_cloud_optics(
                     self.sw_tables, gas_sw, cld_sw, cloud_mask=mask_sw)
                 del mask_sw
+                # (workspace-less path: finalize kept)
                 albedo = cp.ascontiguousarray(cp.broadcast_to(
                     albedo_surface[sl, None],
                     (chunk_ncol, self.sw_tables.ngpt)))
@@ -2402,6 +2829,7 @@ class RRTMGPRadiation:
                 flux = sw_rte(
                     optics_sw.tau, optics_sw.ssa, optics_sw.g, mu[sl],
                     albedo, albedo, inc, top_at_1=False)
+                del optics_sw
             else:
                 work = workspace.phase("sw_optics", chunk_ncol)
                 vmr_sw = self._gas_vmr(
@@ -2423,11 +2851,7 @@ class RRTMGPRadiation:
                     sw_profile.play, sw_cldfra, self.sw_tables.ngpt,
                     MCICA_PERMUTESEED_SW, validate=full_validation,
                     out=work["mcica_mask"])
-                optics_sw = _finalize_cloud_optics(
-                    self.sw_tables, gas_sw, cld_sw, cloud_mask=mask_sw,
-                    out=(work["optics_tau"], work["optics_ssa"],
-                         work["optics_g"]))
-                del mask_sw
+                # No finalize; see the LW branch.
                 work = workspace.phase("sw_rte", chunk_ncol)
                 albedo = work["albedo_gpt"]
                 albedo[...] = albedo_surface[sl, None]
@@ -2436,10 +2860,13 @@ class RRTMGPRadiation:
                 mu_chunk = work["mu0"]
                 mu_chunk[...] = mu[sl, None]
                 flux = _sw_rte(
-                    optics_sw.tau, optics_sw.ssa, optics_sw.g, mu_chunk,
+                    gas_sw.tau, gas_sw.ssa, None, mu_chunk,
                     albedo, albedo, inc, top_at_1=False,
                     out=(work["flux_up"], work["flux_dn"],
-                         work["flux_dir"]))
+                         work["flux_dir"]),
+                    fused_cloud=FusedCloudOptics(
+                        tables=self.sw_tables, cloud=cld_sw, mask=mask_sw))
+                del mask_sw
             mask = daylight.reshape(-1)[sl, None]
             sw_up[sl] = cp.where(
                 mask, _model_flux_interfaces(flux.flux_up, nz, xp=cp),
@@ -2447,7 +2874,7 @@ class RRTMGPRadiation:
             sw_dn[sl] = cp.where(
                 mask, _model_flux_interfaces(flux.flux_dn, nz, xp=cp),
                 DTYPE(0.0))
-            del vmr_sw, gas_sw, cld_sw, optics_sw
+            del vmr_sw, gas_sw, cld_sw
             del albedo, inc, flux, mask, chunk_metadata
             del sw_profile, sw_paths, sw_cldfra, sw_chunk
             # As in the LW loop: ``work`` and the materialized mu0 broadcast
@@ -2634,7 +3061,9 @@ def _fluxes_to_radiation(lw_up, lw_dn, sw_up, sw_dn, plev, exner, *,
 
 
 def _interpolation_metadata(tables: GasTables, play, tlay, *,
-                            validate=True) -> _InterpolationMetadata:
+                            validate=True,
+                            scratch: str | None = None,
+                            ) -> _InterpolationMetadata:
     """Compute driver-owned reference interpolation coordinates once.
 
     The CUDA prepass transcribes the expressions formerly evaluated inside
@@ -2655,8 +3084,19 @@ def _interpolation_metadata(tables: GasTables, play, tlay, *,
         _validate_host_range("tlay", tlay, float(np.min(tables.temp_ref)),
                              float(np.max(tables.temp_ref)), "K")
     d = tables.to_device()
-    integer = tuple(cp.empty(play.shape, dtype=cp.int32) for _ in range(3))
-    fraction = tuple(cp.empty(play.shape, dtype=DTYPE) for _ in range(2))
+    if scratch is None:
+        integer = tuple(cp.empty(play.shape, dtype=cp.int32) for _ in range(3))
+        fraction = tuple(cp.empty(play.shape, dtype=DTYPE) for _ in range(2))
+    else:
+        # The prepass writes every element of all five, so a reused buffer
+        # needs nothing established first.
+        integer = tuple(
+            _chunk_scratch(f"{scratch}.{name}", play.shape, xp=cp,
+                           dtype=cp.int32)[0]
+            for name in ("iatm", "jt", "jp"))
+        fraction = tuple(
+            _chunk_scratch(f"{scratch}.{name}", play.shape, xp=cp)[0]
+            for name in ("ftemp", "fpress"))
     n = play.size
     threads = 256
     get_kernel("rrtmgp_gas", "rrtmgp_interpolation_prepass")(
@@ -2693,8 +3133,8 @@ def gas_optics(tables: GasTables, play, plev, tlay, vmr) -> GasOpticsResult:
 
     ``vmr`` has shape ``(ncol,nlay,ngas+1)``; slot zero is reserved for dry
     air and ignored on input.  The CUDA transcription uses one thread per
-    column and retains the reference pressure/temperature/eta interpolation,
-    all available minor gases, and SW Rayleigh scattering.
+    (column, layer) cell and retains the reference pressure/temperature/eta
+    interpolation, all available minor gases, and SW Rayleigh scattering.
     """
     return _gas_optics(
         tables, play, plev, tlay, vmr, metadata=None, validate=True,
@@ -2740,8 +3180,14 @@ def _gas_optics(tables: GasTables, play, plev, tlay, vmr, *, metadata,
     rayleigh = (d.rayleigh if tables.rayleigh is not None
                 else (tau if out is not None
                       else cp.empty((1,), dtype=DTYPE)))
-    threads = 64
-    blocks = (ncol + threads - 1) // threads
+    # One block per cell (see the kernel).  64 threads was swept
+    # against 32/96/128 at both band widths and won at both; the
+    # kernel strides the g-point axis, so any block size is
+    # correct and only the sweep decides this one.
+    threads = min(64, int(tables.ngpt))
+    blocks = int(ncol) * int(nlay)
+    shared = 4 * max(int(tables.minor_limits_gpt_lower.shape[0]),
+                     int(tables.minor_limits_gpt_upper.shape[0]))
     kernel = get_kernel("rrtmgp_gas", "rrtmgp_gas_optics")
     kernel((blocks,), (threads,), (
         play, plev, tlay, vmr, metadata.iatm, metadata.jt, metadata.jp,
@@ -2752,17 +3198,21 @@ def _gas_optics(tables: GasTables, play, plev, tlay, vmr, *, metadata,
         d.minor_scales_with_density_upper, d.scale_by_complement_lower,
         d.scale_by_complement_upper, d.idx_minor_lower, d.idx_minor_upper,
         d.idx_minor_scaling_lower, d.idx_minor_scaling_upper,
-        d.kminor_start_lower, d.kminor_start_upper, rayleigh, tau, ssa,
+        d.kminor_start_lower, d.kminor_start_upper,
+        d.minor_gpt_start_lower, d.minor_gpt_list_lower,
+        d.minor_gpt_start_upper, d.minor_gpt_list_upper,
+        rayleigh, tau, ssa,
         np.int32(ncol), np.int32(nlay), np.int32(tables.ngas),
         np.int32(tables.nflav), np.int32(tables.ngpt),
         np.int32(tables.ntemp), np.int32(tables.npres),
         np.int32(tables.neta),
-        np.int32(tables.minor_limits_gpt_lower.shape[0]),
-        np.int32(tables.minor_limits_gpt_upper.shape[0]),
         np.int32(tables.kminor_lower.shape[2]),
         np.int32(tables.kminor_upper.shape[2]),
         np.int32(tables.gas_index["h2o"]),
-        np.int32(tables.kind == "sw")))
+        np.int32(tables.kind == "sw"),
+        np.int32(tables.minor_limits_gpt_lower.shape[0]),
+        np.int32(tables.minor_limits_gpt_upper.shape[0])),
+        shared_mem=shared)
     h2o = vmr[:, :, tables.gas_index["h2o"]]
     fact = DTYPE(1.0) / (DTYPE(1.0) + h2o)
     m_air = (DTYPE(0.028964) + DTYPE(0.018016) * h2o) * fact
@@ -2800,6 +3250,115 @@ def delta_scale(tau, ssa, g):
     return out
 
 
+
+class FusedCloudOptics(NamedTuple):
+    """Band cloud optics + McICA mask, combined INSIDE the RTE solvers.
+
+    Two fusions failed here for named reasons: gas+finalize forced a
+    pipeline reorder (13.5f), and Planck->solver dragged scattered gathers
+    into a deliberately low-occupancy kernel (13.6f).  This one has
+    neither: nothing reorders, and the solver's added reads are coalesced
+    streams of the same element index it already walks -- band arrays 16x
+    smaller than the cube, the mask a byte plane.  The finalize kernels
+    and their g-point cube round trip then do not exist on this path.
+    """
+
+    tables: "GasTables"
+    cloud: "CloudOpticsResult"
+    mask: object  # bool (ncol,nlay,ngpt) McICA mask, or None
+
+
+def _fused_cloud_args(fused, tau, ncol, nlay, ngpt):
+    """Resolve FusedCloudOptics into the solver's trailing fz arguments.
+
+    Validation mirrors _finalize_cloud_optics.  When ``fused`` is None the
+    fz pointers are the tau array itself -- the same valid-dummy-pointer
+    convention that launcher already uses for an absent mask -- and
+    ``fz_on`` is 0, so the kernel never dereferences them.
+    """
+    import cupy as cp
+
+    if fused is None:
+        z = np.int32(0)
+        return (tau, tau, tau, tau, tau, z, z, z)
+    tables, cloud = fused.tables, fused.cloud
+    if ngpt != tables.ngpt:
+        raise ValueError("fused cloud optics do not match the gas table")
+    band_shape = (ncol, nlay, tables.nband)
+    cld_tau = _device_profile(cloud.tau, band_shape, "cloud.tau")
+    cld_ssa = _device_profile(cloud.ssa, band_shape, "cloud.ssa")
+    cld_asy = _device_profile(cloud.g, band_shape, "cloud.g")
+    if fused.mask is None:
+        mask, have_mask = tau, 0
+    else:
+        mask = cp.ascontiguousarray(cp.asarray(fused.mask, dtype=cp.bool_))
+        if mask.shape != (ncol, nlay, ngpt):
+            raise ValueError(
+                f"fused cloud mask must have shape {(ncol, nlay, ngpt)}, "
+                f"got {mask.shape}")
+        have_mask = 1
+    bands = tables.to_device().gpoint_bands
+    return (cld_tau, cld_ssa, cld_asy, bands, mask,
+            np.int32(tables.nband), np.int32(have_mask), np.int32(1))
+
+
+
+class PlanckInputs(NamedTuple):
+    """What the LW solver needs to derive its own Planck sources.
+
+    Passing this instead of `lay_source`/`lev_source`/`sfc_source` deletes
+    all three from the workspace -- 455 MiB of the binding phase at the
+    default chunk -- and the round trip an ablation priced at 38% of the
+    solver.  See `rrtmgp_planck_common.cuh` for why it costs no array:
+    `pfrac` does not chain.
+    """
+
+    tables: "GasTables"
+    play: object
+    tlay: object
+    tlev: object
+    tsfc: object
+    vmr: object
+    metadata: object
+
+
+def _planck_solver_args(planck, tau, ncol, nlay, ngpt):
+    """Resolve PlanckInputs into the solver's trailing pk arguments.
+
+    ``None`` yields the valid-dummy-pointer convention the fz arguments
+    already use: the pointers are the tau array and ``pk_on`` is 0, so the
+    kernel never dereferences them and reads lay/lev/sfc_source instead.
+    """
+    import cupy as cp
+
+    if planck is None:
+        z = np.int32(0)
+        # 17 pointer parameters then 7 integers; the last is pk_on = 0.
+        return (tau,) * 17 + (z,) * 7
+    t = planck.tables
+    if t.kind != "lw":
+        raise ValueError("in-solver Planck requires LW gas tables")
+    if ngpt != t.ngpt:
+        raise ValueError("Planck inputs do not match the gas table")
+    d = t.to_device()
+    play = _device_profile(planck.play, (ncol, nlay), "planck.play")
+    tlay = _device_profile(planck.tlay, (ncol, nlay), "planck.tlay")
+    tlev = _device_profile(planck.tlev, (ncol, nlay + 1), "planck.tlev")
+    tsfc = _device_profile(planck.tsfc, (ncol,), "planck.tsfc")
+    vmr = cp.ascontiguousarray(cp.asarray(planck.vmr, dtype=DTYPE))
+    if vmr.shape != (ncol, nlay, t.ngas + 1):
+        raise ValueError(
+            f"planck.vmr must have shape {(ncol, nlay, t.ngas + 1)}, "
+            f"got {vmr.shape}")
+    m = planck.metadata
+    return (play, tlay, tlev, tsfc, vmr, m.iatm, m.jt, m.jp, m.ftemp,
+            m.fpress, d.temp_ref, d.vmr_ref, d.flavor, d.gpoint_flavor,
+            d.gpoint_bands, d.planck_fraction, d.totplnk,
+            np.int32(t.ngas), np.int32(t.ntemp), np.int32(t.npres),
+            np.int32(t.neta), np.int32(t.nband),
+            np.int32(t.totplnk.shape[0]), np.int32(1))
+
+
 def lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
            incident_flux=None, *, top_at_1: bool) -> FluxResult:
     """Run the FP32 one-angle LW no-scattering solver on device."""
@@ -2809,9 +3368,114 @@ def lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
         out=None, incident_out=None)
 
 
+def _rte_kernel(func: str, nlay: int):
+    """One RTE kernel, compiled for this run's layer count.
+
+    The column arrays are declared ``[RRTMGP_MAX_LAYERS]``; leaving that at
+    the 128-layer ceiling would spend 40% of the frame on layers a 74-layer
+    column never touches, and the frame is exactly what
+    :func:`_rte_gpt_tile` divides the L2 budget by.  So the waste costs
+    g-point parallelism, not merely bytes.
+    """
+    from gpuwm.core.kernels import get_kernel_int_defines
+    return get_kernel_int_defines(
+        "rrtmgp_rte", func, (("RRTMGP_MAX_LAYERS", int(nlay)),))
+
+
+@lru_cache(maxsize=1)
+def _rte_sm_count() -> int:
+    import cupy as cp
+    return int(cp.cuda.Device().attributes["MultiProcessorCount"])
+
+
+#: Threads per SM to aim for in the RTE stage kernels -- one 256-thread block.
+_RTE_BLOCK = 256
+
+#: A fold group is one block, so it cannot exceed the maximum block width.
+_RTE_MAX_FOLD_BLOCK = 1024
+
+
+def _rte_gpt_tile(kernel, ncol: int, ngpt: int, *,
+                  fold: bool = False) -> int:
+    """How many g-points per column to hold in flight in the RTE solvers.
+
+    Each thread integrates one g-point of one column and carries the whole
+    column in local memory, so these kernels want SM COVERAGE and nothing
+    beyond it: past about one block per SM the extra threads only multiply
+    the live local working set and the solver slows down again.  More
+    parallelism is emphatically not monotonically better here.
+
+    Measured on this 70-SM card, sweeping the tile at fixed ncol:
+
+        ncol  256   tile   4     8    16    32    64   128   256
+        lw ms       4.27  2.50  1.39  0.82  0.56  0.76  0.90
+        ncol 1024   tile   4     8    16    32    64   128   256
+        lw ms       5.18  3.01  2.06  3.03  3.76  5.64  6.39
+        sw ms       6.41  3.76  3.91  4.84  5.69
+
+    Both LW optima land on 16,384 threads and SW's on 8,192 -- that is
+    64 and 32 blocks against 70 SMs.  The optimum is a THREAD COUNT: it does
+    not move when the per-thread frame changes, which is what rules this out
+    as a cache-footprint effect (the same sweep run against a 42% smaller
+    frame peaks at the same tile, not a proportionally larger one).
+    """
+    # SM coverage scaled by how big a column frame the kernel carries.  The
+    # single-coverage rule was measured when BOTH solvers spilled ~1.2-2.7 kB
+    # per thread; halving the LW frame to 592 B (and trimming SW to 2088)
+    # moved LW's optimum and left SW's where it was.  Re-swept at ncol 1024:
+    #
+    #     tile      8      16      24      32      48      64
+    #     LW ms  2.369   1.417   1.414   1.267   1.635   1.579
+    #     SW ms  3.345   2.575   3.020   3.259   3.862   3.864
+    #
+    # LW wants two blocks per SM now, SW still wants one.  Reading the frame
+    # off the compiled kernel keeps this honest if either changes again.
+    frame = 0
+    if kernel is not None:
+        try:
+            frame = int(kernel.attributes["local_size_bytes"])
+        except Exception:                                # pragma: no cover
+            frame = 0
+    coverage = 2 if 0 < frame <= 1024 else 1
+    # Measurement override, so the two settings can be INTERLEAVED in one
+    # session (13.5 trap 3).  Comparing a block of runs against a block taken
+    # later cost me a wrong answer here: the control moved 7.7% between the
+    # groups and the normaliser does not survive a regime change (13.5e).
+    forced = os.environ.get("GPUWM_RTE_TILE_COVERAGE", "").strip()
+    if forced:
+        coverage = max(1, int(forced))
+    # A FOLDING kernel writes no partial fluxes, so the tile the
+    # partial-writing kernel wanted is not the tile this one wants -- the
+    # third time in this file that a constant went stale when the thing it
+    # was tuned against changed shape.  Re-swept, LW, nlay 99:
+    #
+    #     ncol      tile 32   tile 64  tile 128
+    #     1024       1.249     0.971     1.166
+    #      912       1.195     0.912     1.091
+    #
+    # and the optimum is a THREAD COUNT, not a tile: it held at 65536
+    # across ncol 256, 512 and 1024.  That is 1024 threads per SM here, so
+    # it scales with the card the way the coverage rule below does.
+    target = (_rte_sm_count() * 1024 if fold
+              else _rte_sm_count() * _RTE_BLOCK * coverage)
+    tile, cap = 1, min(max(1, target // max(1, int(ncol))), int(ngpt))
+    while tile * 2 <= cap:
+        tile *= 2
+    if fold:
+        # The fold group is a block and every pass must be full, because the
+        # kernel's `gpt >= ngpt` guard is NOT block-uniform and a short last
+        # pass would strand threads at a barrier.  So the tile has to DIVIDE
+        # the band as well as fit in it -- ngpt 224 admits no power of two
+        # above 32, which is the ceiling on the SW fold.
+        while tile > 1 and int(ngpt) % tile:
+            tile //= 2
+    return max(1, min(tile, int(ngpt)))
+
+
 def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
             incident_flux=None, *, top_at_1: bool, out,
-            incident_out) -> FluxResult:
+            incident_out, fused_cloud=None,
+            planck=None) -> FluxResult:
     import cupy as cp
     from gpuwm.core.kernels import get_kernel
 
@@ -2821,10 +3485,15 @@ def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
     ncol, nlay, ngpt = tau.shape
     if nlay > 128:
         raise ValueError("RRTMGP CUDA RTE supports at most 128 layers")
-    lay_source = _device_profile(lay_source, tau.shape, "lay_source")
-    lev_source = _device_profile(
-        lev_source, (ncol, nlay + 1, ngpt), "lev_source")
-    sfc_source = _device_profile(sfc_source, (ncol, ngpt), "sfc_source")
+    if planck is None:
+        lay_source = _device_profile(lay_source, tau.shape, "lay_source")
+        lev_source = _device_profile(
+            lev_source, (ncol, nlay + 1, ngpt), "lev_source")
+        sfc_source = _device_profile(sfc_source, (ncol, ngpt), "sfc_source")
+    else:
+        # Derived in the kernel; these are valid dummy pointers it never
+        # dereferences, the same convention the fz arguments use.
+        lay_source = lev_source = sfc_source = tau
     sfc_emis = _device_profile(sfc_emis, (ncol, ngpt), "sfc_emis")
     if incident_flux is None:
         if incident_out is None:
@@ -2843,12 +3512,45 @@ def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
     else:
         up = _workspace_output(out[0], flux_shape, "flux_up")
         down = _workspace_output(out[1], flux_shape, "flux_dn")
-    threads = 64
-    get_kernel("rrtmgp_rte", "rrtmgp_lw_noscat")(
-        ((ncol + threads - 1) // threads,), (threads,),
-        (tau, lay_source, lev_source, sfc_source, sfc_emis, incident,
-         up, down, np.int32(ncol), np.int32(nlay), np.int32(ngpt),
-         np.int32(top_at_1)))
+    fz = _fused_cloud_args(fused_cloud, tau, ncol, nlay, ngpt)
+    pk = _planck_solver_args(planck, tau, ncol, nlay, ngpt)
+    stage = _rte_kernel("rrtmgp_lw_noscat", nlay)
+    fold = _rte_kernel("rrtmgp_lw_flux_reduce", nlay)
+    nlev = nlay + 1
+    tile = _rte_gpt_tile(stage, ncol, ngpt, fold=True)
+    # The folding path gives each COLUMN its own block, so the block is
+    # the fold group and no partial block can strand a thread at a
+    # barrier: grid is exactly ncol and blockDim is exactly the tile.
+    # `ngpt % tile` keeps the last pass full, so the kernel's `gpt >= ngpt`
+    # guard -- which is NOT block-uniform -- can never fire on this path.
+    # Folding is worth it from tile 32 up; below that the fold costs more
+    # than the scatter it removes (measured: at tile 16 it LOSES).
+    warp_fold = 1 if (tile >= 32 and ngpt % tile == 0
+                      and tile <= _RTE_MAX_FOLD_BLOCK) else 0
+    if warp_fold:
+        part_up, part_dn = up, down
+        threads, stage_blocks, shared = tile, ncol, tile * 4
+    else:
+        part_up = cp.empty((tile, nlev, ncol), dtype=DTYPE)
+        part_dn = cp.empty_like(part_up)
+        threads = _RTE_BLOCK
+        stage_blocks = (ncol * tile + threads - 1) // threads
+        shared = 0
+    fold_blocks = (ncol * nlev + _RTE_BLOCK - 1) // _RTE_BLOCK
+    # Tiles are walked in ascending g-point order and each fold appends to the
+    # running flux, so the FP32 addition sequence is the one the single-thread
+    # column loop produced -- see rrtmgp_rte.cu.
+    for gpt0 in range(0, ngpt, tile):
+        stage((stage_blocks,), (threads,), (
+            tau, lay_source, lev_source, sfc_source, sfc_emis, incident,
+            part_up, part_dn, np.int32(ncol), np.int32(nlay),
+            np.int32(ngpt), np.int32(gpt0), np.int32(tile),
+            np.int32(top_at_1), np.int32(warp_fold)) + fz + pk,
+            shared_mem=shared)
+        if not warp_fold:
+            fold((fold_blocks,), (_RTE_BLOCK,), (
+                part_up, part_dn, up, down, np.int32(ncol), np.int32(nlev),
+                np.int32(gpt0), np.int32(min(tile, ngpt - gpt0))))
     return FluxResult(up, down)
 
 
@@ -2861,7 +3563,7 @@ def sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
 
 
 def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
-            *, top_at_1: bool, out) -> FluxResult:
+            *, top_at_1: bool, out, fused_cloud=None) -> FluxResult:
     import cupy as cp
     from gpuwm.core.kernels import get_kernel
 
@@ -2872,7 +3574,10 @@ def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
     if nlay > 128:
         raise ValueError("RRTMGP CUDA RTE supports at most 128 layers")
     ssa = _device_profile(ssa, tau.shape, "ssa")
-    g = _device_profile(g, tau.shape, "g")
+    # On the fused path the asym cube does not exist; the ssa array is the
+    # valid-dummy pointer for the never-read parameter.
+    g = (ssa if (fused_cloud is not None and g is None)
+         else _device_profile(g, tau.shape, "g"))
     mu0 = cp.asarray(mu0, dtype=DTYPE)
     if mu0.shape == (ncol,):
         mu0 = cp.broadcast_to(mu0[:, None], (ncol, nlay))
@@ -2890,12 +3595,42 @@ def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
             _workspace_output(value, flux_shape, name)
             for value, name in zip(
                 out, ("flux_up", "flux_dn", "flux_dir")))
-    threads = 64
-    get_kernel("rrtmgp_rte", "rrtmgp_sw_2stream")(
-        ((ncol + threads - 1) // threads,), (threads,),
-        (tau, ssa, g, mu0, alb_dir, alb_dif, inc, up, down, direct,
-         np.int32(ncol), np.int32(nlay), np.int32(ngpt),
-         np.int32(top_at_1), np.int32(0)))
+    fz = _fused_cloud_args(fused_cloud, tau, ncol, nlay, ngpt)
+    stage = _rte_kernel("rrtmgp_sw_2stream", nlay)
+    fold = _rte_kernel("rrtmgp_sw_flux_reduce", nlay)
+    nlev = nlay + 1
+    tile = _rte_gpt_tile(stage, ncol, ngpt, fold=True)
+    # Same block fold as the LW solver, and rejected once for the same
+    # reason it now pays: the earlier SW measurement (+0.078 s) was taken
+    # at tile 16, which is below the tile where folding starts to earn its
+    # barriers at all.  SW has THREE partial arrays, so it has more scatter
+    # to delete -- but ngpt 224 admits no power of two above 32, so 32 is
+    # the widest fold SW can have.  Measured there: 2.992 -> 1.968 ms.
+    warp_fold = 1 if (tile >= 32 and ngpt % tile == 0
+                      and tile <= _RTE_MAX_FOLD_BLOCK) else 0
+    if warp_fold:
+        part_up, part_dn, part_dir = up, down, direct
+        threads, stage_blocks, shared = tile, ncol, tile * 4
+    else:
+        part_up = cp.empty((tile, nlev, ncol), dtype=DTYPE)
+        part_dn = cp.empty_like(part_up)
+        part_dir = cp.empty_like(part_up)
+        threads = _RTE_BLOCK
+        stage_blocks = (ncol * tile + threads - 1) // threads
+        shared = 0
+    fold_blocks = (ncol * nlev + _RTE_BLOCK - 1) // _RTE_BLOCK
+    for gpt0 in range(0, ngpt, tile):
+        stage((stage_blocks,), (threads,), (
+            tau, ssa, g, mu0, alb_dir, alb_dif, inc,
+            part_up, part_dn, part_dir,
+            np.int32(ncol), np.int32(nlay), np.int32(ngpt),
+            np.int32(gpt0), np.int32(tile), np.int32(top_at_1),
+            np.int32(0), np.int32(warp_fold)) + fz, shared_mem=shared)
+        if not warp_fold:
+            fold((fold_blocks,), (_RTE_BLOCK,), (
+                part_up, part_dn, part_dir, up, down, direct,
+                np.int32(ncol), np.int32(nlev),
+                np.int32(gpt0), np.int32(min(tile, ngpt - gpt0))))
     return FluxResult(up, down, direct)
 
 
@@ -2951,9 +3686,12 @@ def _planck_sources(tables: GasTables, play, plev, tlay, tlev, tsfc,
             _workspace_output(value, shape, name)
             for value, shape, name in zip(
                 out, shapes, ("lay_source", "lev_source", "sfc_source")))
-    threads = 64
+    # One thread per (column, g-point); see the kernel for why the g-point
+    # loop it replaces was independent.
+    threads = 128
+    cells = int(ncol) * int(tables.ngpt)
     get_kernel("rrtmgp_gas", "rrtmgp_planck_sources")(
-        ((ncol + threads - 1) // threads,), (threads,),
+        ((cells + threads - 1) // threads,), (threads,),
         (play, tlay, tlev, tsfc, vmr, metadata.iatm, metadata.jt,
          metadata.jp, metadata.ftemp, metadata.fpress, d.temp_ref,
          d.vmr_ref, d.flavor,

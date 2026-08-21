@@ -26,11 +26,18 @@ Measured the same NVRTC-plus-driver way on three compile platforms
   rrtmgp_cloud                  0          40           0
   shinhong                 14,040      17,160      14,040
   noahmp_leaves               272         208         208
+  rrtmgp_rte                5,152       5,152       3,600
   ======================  ==========  ==========  ==========
 
 Four rows move with the ARCHITECTURE at a fixed compiler, four move with
 the COMPILER BUILD at a fixed architecture, and ``noahmp_leaves`` moves
-with both.  So the identity of a recording is the pair
+with both.  ``rrtmgp_rte`` is the one row that moves with neither: the
+sm_86 reading is post-RRTMGP-optimisation (2026-08-20) and the two sm_120
+readings are of the source as it stood before it, on boxes that are no
+longer reachable to re-read.  The ceiling therefore over-prices sm_120
+here until one of them is measured again, which is the safe direction and
+costs nothing -- the module is nowhere near the widest frame on any
+platform.  So the identity of a recording is the pair
 ``(device_compute_capability, nvrtc_build)`` -- exactly two of the keys
 :func:`gpuwm.certify.compile_platform.compile_platform_fingerprint`
 already measures -- and neither the card's SM count nor its model name
@@ -338,7 +345,18 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         'rrtmgp_cloud': 0,
         'rrtmgp_gas': 512,
         'rrtmgp_mcica': 0,
-        'rrtmgp_rte': 5152,
+        # RE-MEASURED 2026-08-20 off this box's driver after the RRTMGP
+        # optimisation landed: 5,152 -> 3,600.  ``rrtmgp_sw_2stream`` is the
+        # widest kernel in the module and it lost three per-thread column
+        # arrays -- denom[128], dif_dn[129], dif_up[129], 1,544 B together
+        # and 1,552 after padding -- which the rewritten two-stream sweeps
+        # now compute inline.  Nothing here is priced: the module sits far
+        # below this platform's ceiling frames (kf 24,064, gf 23,984), so
+        # the reservation is unchanged.  The two sm_120 recordings still
+        # carry 5,152 for a source that no longer exists; neither box is
+        # reachable to re-read, and an over-priced frame is the safe
+        # direction for a rail gate.
+        'rrtmgp_rte': 3600,
         'rrtmgp_validation': 0,
         'ruc': 144,
         'sase': 6272,

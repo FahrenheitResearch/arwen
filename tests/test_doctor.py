@@ -2778,3 +2778,36 @@ def test_no_local_gpu_keeps_doctor_off_the_device(monkeypatch):
     assert check.status == "present"
     assert not check.blocking
     assert "not judged" in check.detail
+
+
+def test_console_scripts_check_names_the_dir_that_is_not_on_path(
+        monkeypatch, tmp_path):
+    """`gpuwm` installs but does not run: a named, fixable estate gap.
+
+    Walked on Windows: an editable install put gpuwm.exe in the USER
+    scripts directory while PATH carried the interpreter's own, empty
+    one -- so every printed `gpuwm ...` command in the product answered
+    "is not recognized" and the install read as broken.
+    """
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    launcher = scripts / ("gpuwm.exe" if os.name == "nt" else "gpuwm")
+    launcher.write_bytes(b"launcher")
+    monkeypatch.setattr(doctor, "_console_script_dirs", lambda: (scripts,))
+    monkeypatch.setenv("PATH", str(tmp_path / "elsewhere"))
+    check = doctor._console_scripts_check()
+    assert check.status == "missing"
+    assert str(scripts) in check.detail
+    assert str(scripts) in (check.remedy or "")
+    # And it passes once that directory is reachable.
+    monkeypatch.setenv("PATH", os.pathsep.join(
+        [str(tmp_path / "elsewhere"), str(scripts)]))
+    assert doctor._console_scripts_check().status == "verified"
+
+
+def test_console_scripts_check_says_untested_when_it_cannot_find_them(
+        monkeypatch):
+    monkeypatch.setattr(doctor, "_console_script_dirs", lambda: ())
+    check = doctor._console_scripts_check()
+    assert check.status == "untested"
+    assert check.detail.startswith("not tested")

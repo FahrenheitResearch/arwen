@@ -979,13 +979,26 @@ class _DomainSampler:
         }
 
     def cell_coords(self, ds: GeogDataset, win: GeogWindow):
-        """Extended-grid mass points in window source coordinates."""
+        """Extended-grid mass points in DATASET source coordinates.
+
+        Dataset coordinates, never window coordinates.  A wrapping
+        source used to have every point shifted into the window's frame
+        here (``xi + nx_global`` below the window origin) and shifted
+        straight back by :meth:`_interp_tile_sequence`; in floating
+        point that round trip is LOSSY, so a cell sampled through a
+        seam-crossing window read the source at slightly different
+        coordinates than the same cell sampled through a window that
+        did not cross the seam -- two builds of the same ground, two
+        answers.  That is what refused every relocation of the
+        2026-08-20 prepared moving-nest run (HGT_M differing in 11581
+        of 39204 shared cells by up to 2.8e-11 m, because the statics
+        corridor reaches west of the terrain tree's longitude-zero seam
+        and the child footprint does not).  The one consumer that
+        indexes the window raster (:meth:`categorical`'s empty-cell
+        fallback) re-frames in INTEGER index space, which is exact.
+        """
         if self.grid.dx >= 1000.0:
-            xi, yi = ds.latlon_to_xy(self.lat_e, self.lon_e)
-            if ds.wraps_x:
-                xi = np.where(xi < win.x0 - 0.5,
-                              xi + ds.nx_global, xi)
-            return xi, yi
+            return ds.latlon_to_xy(self.lat_e, self.lon_e)
 
         # WPS regular_ll map state and operands are default REAL.  Preserve
         # its operation ordering: subtract, divide, add, then one wrap check.
@@ -1023,8 +1036,6 @@ class _DomainSampler:
             xi = np.where(xi < f(0.5), xi + f(ds.nx_global), xi)
             xi = np.where(xi >= f(ds.nx_global) + f(0.5),
                           xi - f(ds.nx_global), xi)
-        if ds.wraps_x:
-            xi = np.where(xi < win.x0 - 0.5, xi + ds.nx_global, xi)
         return xi, yi
 
     def _interp_tile_sequence(self, ds, z, xi, yi, seq):
@@ -1193,6 +1204,13 @@ class _DomainSampler:
             ii = (np.floor(xi[empty] + 0.5).astype(np.int64) - win.x0)
             jj = (np.floor(yi[empty] + 0.5).astype(np.int64) - win.y0)
             nyw, nxw = win.raw.shape[1:]
+            if ds.wraps_x:
+                # cell_coords speaks DATASET coordinates; a window that
+                # crossed the wrap seam runs past nx_global, so re-frame
+                # in integer index space.  Doing it to the float
+                # coordinate instead is the lossy round trip that made
+                # two builds of the same ground disagree.
+                ii = np.where(ii < 0, ii + ds.nx_global, ii)
             inside = (ii >= 0) & (ii < nxw) & (jj >= 0) & (jj < nyw)
             cat = np.full(ii.shape, -1, dtype=np.int64)
             cat[inside] = win.raw[0][jj[inside], ii[inside]].astype(np.int64)

@@ -756,6 +756,55 @@ def test_a_bigger_box_runs_a_bigger_domain():
 # the model itself, against the card
 # --------------------------------------------------------------------------
 
+try:                          # so pytest reports a SKIP rather than a failure
+    import pytest as _pytest
+    _UNUSABLE_BASE = _pytest.skip.Exception
+except Exception:                    # pragma: no cover -- plain script use
+    _UNUSABLE_BASE = Exception
+
+
+class InstrumentUnusable(_UNUSABLE_BASE):
+    """This card cannot measure its own allocation, so nothing was proven.
+
+    Raised INSTEAD of an assertion, because an assertion here reads as "the
+    sizing model is wrong" and that is a different claim entirely.
+    """
+
+
+#: Bytes the device-wide counter may legitimately move beyond what cupy's own
+#: pool took over one state build.  Not zero: module loads and driver
+#: bookkeeping are real device memory that never passes through the pool.
+#:
+#: MEASURED, 640^2 x49 dry, and the pool deltas agree to the byte across the
+#: two boxes (2.9583 GiB at 1 buffer, 5.5975 GiB at 2), so the residual is the
+#: whole of the difference between them:
+#:
+#:   node-1, idle RTX 5070 Ti (2 MiB of 16303 in use):  +66.7 MiB at 1 buffer,
+#:                                                     +122.1 MiB at 2 buffers
+#:   local RTX 3080, WDDM, desktop in use:              +66.7 MiB at 1 buffer,
+#:                                                    +2069.0 MiB at 2 buffers
+#:
+#: The clean residual is identical to the byte at 1 buffer on two different
+#: driver models; the loaded desktop's 2 GiB at 2 buffers is another process's
+#: memory being counted as ours.  512 MiB sits 4x above the largest clean
+#: reading and 4x below the smallest contaminated one.
+FOREIGN_BYTES_CEILING = 512 * MIB
+
+
+def _unusable(detail: str) -> InstrumentUnusable:
+    return InstrumentUnusable(
+        f"the VRAM instrument is not measuring this process on this card, so "
+        f"nothing here is evidence about the sizing model: {detail}.  The "
+        f"instrument differences the driver's used-memory, which counts the "
+        f"WHOLE DEVICE, so any other process's residency moving during the "
+        f"window lands in this reading.  On a loaded WDDM desktop that is "
+        f"the normal case and not an accident: the driver EVICTS other "
+        f"processes' resident allocations to satisfy a large request, so the "
+        f"reading falls as we allocate and their bytes come back into it "
+        f"afterwards.  The difference is then not our allocation in either "
+        f"direction.  Run this check on an idle or headless card.")
+
+
 def test_vram_model_against_a_real_allocation(rung: str = "dry",
                                               n: int = 640) -> None:
     """THE control that could actually falsify this module.
@@ -767,22 +816,38 @@ def test_vram_model_against_a_real_allocation(rung: str = "dry",
     vacuous one -- a model that returned the whole card would pass an
     upper-bound test and is useless, so the prediction is also required to be
     within 35% of the truth.
+
+    THE INSTRUMENT IS VALIDATED BEFORE THE MODEL IS.  ``memGetInfo`` reports
+    the whole device, not this process, and differencing it only measures our
+    allocation while nobody else's residency moves -- which on a Windows
+    desktop is false.  MEASURED on the local RTX 3080 with the desktop in
+    use: one run read a NEGATIVE 2.206 GiB allocation (the driver evicted
+    ~2.6 GiB of background applications to make room for us), and another,
+    minutes later, read 2.02 GiB MORE than we allocated and failed at
+    ``0.838x`` as "the model UNDER-predicted".  Neither number is a fact
+    about the model.  So each reading is checked against cupy's own pool --
+    which counts this process only -- over the same window, and a reading
+    that the pool does not account for is refused BY NAME instead of being
+    charged to the planner.  The check needs an idle or headless card; that
+    is a property of the instrument, not a tolerance to widen.
     """
     import cupy as cp
 
     from tilestream import physics_inventory as physinv
 
+    pool = cp.get_default_memory_pool()
     warm = cp.zeros(1024, dtype=cp.float64)
     warm += 1.0
     cp.cuda.runtime.deviceSynchronize()
     del warm
-    cp.get_default_memory_pool().free_all_blocks()
+    pool.free_all_blocks()
 
     def used() -> int:
         free, total = cp.cuda.runtime.memGetInfo()
         return total - free
 
     base = used()
+    base_pool = pool.total_bytes()
     fp = A.FOOTPRINTS[rung]
     cells = n * n * 49
     cfg = A._config_for_rung(n, n, 49, rung)
@@ -792,12 +857,32 @@ def test_vram_model_against_a_real_allocation(rung: str = "dry",
         H.run_steps(state, cfg, 1)
         cp.cuda.runtime.deviceSynchronize()
         keep.append(state)
-        measured = used() - base + A.CUDA_CONTEXT_BYTES
+        device_delta = used() - base
+        ours = pool.total_bytes() - base_pool
+        measured = device_delta + A.CUDA_CONTEXT_BYTES
         predicted = fp.vram_bytes(cells, k)
-        ratio = predicted / measured
+        ratio = predicted / measured if measured else float("inf")
         print(f"     {rung} {n}^2 x49, {k} buffer(s): "
               f"measured {measured / GIB:.3f} GiB, "
-              f"model {predicted / GIB:.3f} GiB, {ratio:.3f}x")
+              f"model {predicted / GIB:.3f} GiB, {ratio:.3f}x "
+              f"(pool {ours / GIB:.3f} GiB)")
+
+        # The instrument, before the model.
+        if device_delta <= 0:
+            raise _unusable(
+                f"the device reports {device_delta / GIB:.3f} GiB allocated "
+                f"at {k} buffer(s) while cupy's pool holds "
+                f"{ours / GIB:.3f} GiB of ours; a negative allocation is not "
+                f"a measurement of one")
+        foreign = device_delta - ours
+        if abs(foreign) > FOREIGN_BYTES_CEILING:
+            raise _unusable(
+                f"at {k} buffer(s) the device counter moved "
+                f"{device_delta / GIB:.3f} GiB while cupy's pool took "
+                f"{ours / GIB:.3f} GiB of it, leaving {foreign / MIB:+.0f} "
+                f"MiB that is not this process against a ceiling of "
+                f"{FOREIGN_BYTES_CEILING / MIB:.0f} MiB")
+
         assert ratio >= 1.0, (
             f"the model UNDER-predicted at {k} buffers ({ratio:.3f}x); a "
             "plan built on it would hand out a tile that does not fit")
@@ -805,7 +890,7 @@ def test_vram_model_against_a_real_allocation(rung: str = "dry",
             f"the model over-predicted by {ratio:.3f}x at {k} buffers, which "
             "would refuse domains that run")
     del keep
-    cp.get_default_memory_pool().free_all_blocks()
+    pool.free_all_blocks()
 
 
 def test_planned_run_is_bit_exact(n: int = 192, machine=None) -> None:
@@ -1008,6 +1093,13 @@ def run_controls(gpu: bool = False) -> int:
             for name in names:
                 try:
                     globals()[name]()
+                # BEFORE ``Exception``, and never counted as a catch: a
+                # control that could not measure has not noticed anything,
+                # and reporting it as "caught it" is the false green this
+                # whole instrument check exists to stop.
+                except InstrumentUnusable as exc:
+                    print(f"skip {label}  -> {name} could not measure "
+                          f"here: {exc}")
                 except Exception:
                     print(f"ok   {label}  -> {name} caught it")
                 else:
@@ -1024,16 +1116,20 @@ def _run_all(gpu: bool = False) -> int:
     names = [n for n, o in sorted(globals().items())
              if n.startswith("test_") and callable(o)
              and (gpu or n not in GPU_TESTS)]
-    failed = 0
+    failed = skipped = 0
     for name in names:
         try:
             globals()[name]()
+        except InstrumentUnusable as exc:                 # pragma: no cover
+            skipped += 1
+            print(f"skip {name}: {exc}")
         except Exception as exc:                          # pragma: no cover
             failed += 1
             print(f"FAIL {name}: {type(exc).__name__}: {exc}")
         else:
             print(f"ok   {name}")
-    print(f"\n{len(names) - failed} passed, {failed} failed"
+    print(f"\n{len(names) - failed - skipped} passed, {failed} failed"
+          + (f", {skipped} unmeasurable here" if skipped else "")
           + ("" if gpu else f"  ({len(GPU_TESTS)} GPU tests skipped; --gpu)"))
     return 1 if failed else 0
 

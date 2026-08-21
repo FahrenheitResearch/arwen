@@ -900,6 +900,233 @@ def read_child_surface_state(
         identity=MappingProxyType(identity), receipt=receipt)
 
 
+#: Child-grid surface fields whose value IS a category or a mask, so they
+#: are copied from the donor parent cell rather than interpolated: a
+#: bilinear land-use index is not a land-use index, and
+#: :func:`read_child_surface_state` refuses a non-integer category for
+#: exactly that reason.  ``LANDMASK`` rides with them so the child's mask
+#: and its land-use come from the SAME parent cell and cannot disagree.
+_SURFACE_DONOR_COPY_FIELDS = frozenset(
+    {"LU_INDEX", "ISLTYP", "LANDMASK", "SNOWC"})
+
+#: Fields the Registry masks against ``ISICE`` rather than ``ISWATER``
+#: (``Registry.EM_COMMON:1417``: ``XICE ... interp_mask_field:lu_index,isice``).
+_SURFACE_SEAICE_FIELDS = frozenset({"SEAICE", "XICE"})
+
+#: Not derived from the parent: the child's own latitude/longitude are
+#: projection geometry, and the runner already has them exactly -- it
+#: SINTs the parent's XLAT/XLONG whenever the surface source carries
+#: none (``offline_child_run._initialize_child_physics``).  Interpolating
+#: them here would substitute a coarser answer for one already in hand.
+_SURFACE_NOT_DERIVED_FIELDS = frozenset({"XLAT", "XLONG"})
+
+#: What the derived child surface IS, in one sentence, for the receipt and
+#: for the warning the front door prints.  It is WRF's own answer for a
+#: nest that has no ``wrfinput`` of its own (``input_from_file = .false.``,
+#: ``med_nest_initial``'s unconditional ``med_interp_domain``,
+#: share/mediation_integrate.F:670), run through the Registry-named masked
+#: interpolator for the surface/soil family.
+DERIVED_CHILD_SURFACE_POLICY = (
+    "parent-history-interpolated child surface: land identity and soil "
+    "warm start come from the parent's own history frame through WRF's "
+    "nest-birth operators -- categories and the landmask by donor-cell "
+    "copy, the continuous surface/soil family by interp_mask_field "
+    "(Registry.EM_COMMON's masked land interpolator, lu_index/iswater), "
+    "which is what WRF does for a nest with input_from_file = .false.  "
+    "The child's land identity is therefore its PARENT's, resolved at "
+    "the parent's spacing")
+
+#: The fidelity sentence, printed once at the front door.  Named as a
+#: cost rather than buried: a child whose coastline is its parent's
+#: coastline is a real difference from one built by geogrid at the
+#: child's own dx, and a reader of the child's charts must know which
+#: they are looking at.
+DERIVED_CHILD_SURFACE_CAVEAT = (
+    "the child's land-use, soil category and landmask are the PARENT's, "
+    "carried down from the parent cell each child column sits in -- "
+    "coastlines, lakes and islands the child's spacing could resolve are "
+    "not resolved.  Pass --child-surface-from with a child-grid "
+    "wrfinput/history file to give the child its own geography instead")
+
+
+def _donor_copy(field, *, ci, cj):
+    """Nearest-donor copy on WRF's masked-interpolator donor cell.
+
+    ``cfld`` is ``(..., ny_parent, nx_parent)``; the result takes the
+    value of the coarse cell the child column falls in, so a category or
+    a 0/1 mask survives the mapping exactly.
+    """
+    return np.asarray(field)[..., cj[:, None], ci[None, :]]
+
+
+def derive_child_surface_from_parent(
+        path, *, placement, num_soil_layers: int) -> ChildSurfaceState:
+    """Build the child-grid surface state out of the parent's own history.
+
+    THE CLOSED LOOP THIS OPENS (defect #275).  A full-physics child needs
+    child-grid land identity and soil state.  Until now the only way to
+    supply it was ``--child-surface-from`` pointing at a file on the
+    exact child grid, and for a config-driven parent -- the route the
+    product steers ERA5 users onto -- no command in the product produced
+    one: ``gpuwm run`` writes no ``wrf-native-input/``, ``gpuwm go``
+    refuses ``[case_data]`` configs by name, and the prepared-tree route
+    needs a front-door manifest the fetch door would only author for one
+    source.  So the refusal demanded a file the product could not make,
+    and said so only after the parent forecast had been paid for.
+
+    The data was never missing.  The parent's history carries all nine of
+    :data:`_SURFACE_REQUIRED_FIELDS` and the landuse identity attributes
+    (:data:`gpuwm.io.wrf_output_schema.SURFACE_IDENTITY_OUTPUT_FIELDS`,
+    plus the LSM-gated soil family) whenever a land-surface scheme is
+    routed -- which a full-physics parent by definition has.  Only the
+    GRID was wrong, and putting a parent's surface state on a child grid
+    is WRF's own operator, not new science: ``input_from_file = .false.``
+    interpolates every field the nest needs from the coarse domain
+    (Users' Guide chapter 5; ``med_nest_initial``'s unconditional
+    ``med_interp_domain``, share/mediation_integrate.F:670), with the
+    surface/soil family going through the Registry's landmask-aware
+    ``interp_mask_field`` rather than a plain interpolator.
+
+    WHAT IT COSTS, and why it is a default anyway.  The child inherits
+    the parent's land identity at the parent's spacing, which is strictly
+    less than a geogrid-built child-grid ``wrfinput`` gives.  It is also
+    exactly what a live WRF nest with no input file of its own gets, and
+    the product already takes this route for trigger-spawned nests
+    (:func:`gpuwm.ingest.nest_spawn_init.spawn_land_state_from_parent`).
+    A refusal that names no reachable remedy is not a safeguard; this is
+    the reachable remedy, ``--child-surface-from`` stays the
+    higher-fidelity one, and the difference is warned about at the front
+    door and receipted in the child's report.
+    """
+
+    from gpuwm.core.nest_interp import interp_mask_field, mask_donor_index
+
+    path = Path(path)
+    child_ny = int(placement.child_ny)
+    child_nx = int(placement.child_nx)
+    ratio = int(placement.parent_grid_ratio)
+    with netcdf_bridge.open_dataset(path) as dataset:
+        for name, expected in (("south_north", int(placement.parent_ny)),
+                               ("west_east", int(placement.parent_nx))):
+            actual = len(dataset.dimensions[name]) \
+                if name in dataset.dimensions else None
+            if actual != expected:
+                raise OfflineChildContractError(
+                    f"{path} {name}={actual} is not the parent grid "
+                    f"{name}={expected} this placement was built against")
+        missing_attrs = [name for name in _SURFACE_IDENTITY_ATTRS
+                         if name not in dataset.ncattrs()]
+        if missing_attrs:
+            raise OfflineChildContractError(
+                f"{path} lacks landuse identity attributes "
+                f"{missing_attrs}, so the child's category semantics "
+                "cannot be read off it; " + CHILD_SURFACE_SOURCE_REMEDY)
+        identity = {
+            "MMINLU": str(dataset.getncattr("MMINLU")).strip(),
+            "ISWATER": int(dataset.getncattr("ISWATER")),
+            "ISLAKE": int(dataset.getncattr("ISLAKE")),
+            "ISICE": int(dataset.getncattr("ISICE")),
+            "ISOILWATER": int(dataset.getncattr("ISOILWATER"))
+            if "ISOILWATER" in dataset.ncattrs() else 14,
+        }
+        missing = [name for name in _SURFACE_REQUIRED_FIELDS
+                   if name not in dataset.variables]
+        if missing:
+            # NAMES THE BREAKAGE: without these the child has no land
+            # identity or soil state at all, and the remedy is either a
+            # parent history that publishes them (the default inventory
+            # of any run with a land-surface scheme) or an explicit
+            # child-grid file.
+            raise OfflineChildContractError(
+                f"{path} does not carry the child surface fields "
+                f"{missing}, so a child-grid surface state cannot be "
+                "derived from it; re-run the parent with a history "
+                "selection that keeps the land-surface inventory, or "
+                + CHILD_SURFACE_SOURCE_REMEDY)
+        if int(num_soil_layers) > 0:
+            soil_dim = ("soil_layers_stag" in dataset.dimensions
+                        and len(dataset.dimensions["soil_layers_stag"]))
+            if soil_dim != int(num_soil_layers):
+                raise OfflineChildContractError(
+                    f"{path} soil_layers_stag={soil_dim} does not match "
+                    f"the child LSM's {num_soil_layers} soil layers")
+        parent_fields: dict[str, np.ndarray] = {}
+        for name in (_SURFACE_REQUIRED_FIELDS + _SURFACE_OPTIONAL_FIELDS):
+            if name in _SURFACE_NOT_DERIVED_FIELDS:
+                continue
+            if name not in dataset.variables:
+                continue
+            value = np.asarray(dataset.variables[name][:])
+            if value.ndim and value.shape[0] == 1 and (
+                    dataset.variables[name].dimensions[:1] == ("Time",)):
+                value = value[0]
+            value = np.ascontiguousarray(value, dtype=np.float32)
+            if not np.isfinite(value).all():
+                raise OfflineChildContractError(
+                    f"{path}/{name} contains NaN or infinity")
+            parent_fields[name] = value
+
+    ci, _ = mask_donor_index(child_nx, ratio, int(placement.i_parent_start))
+    cj, _ = mask_donor_index(child_ny, ratio, int(placement.j_parent_start))
+    parent_lu = parent_fields["LU_INDEX"]
+    child_lu = _donor_copy(parent_lu, ci=ci, cj=cj)
+
+    fields: dict[str, np.ndarray] = {}
+    branch_counts: dict[str, dict[str, int]] = {}
+    for name, value in parent_fields.items():
+        if name in _SURFACE_DONOR_COPY_FIELDS:
+            result = _donor_copy(value, ci=ci, cj=cj)
+        else:
+            flag = (identity["ISICE"] if name in _SURFACE_SEAICE_FIELDS
+                    else identity["ISWATER"])
+            result, counts = interp_mask_field(
+                value, nri=ratio, nrj=ratio,
+                i_parent_start=int(placement.i_parent_start),
+                j_parent_start=int(placement.j_parent_start),
+                child_landuse=child_lu, parent_landuse=parent_lu,
+                flag_category=flag)
+            branch_counts[name] = dict(counts)
+        result = np.ascontiguousarray(result, dtype=np.float32)
+        expected_shape = ((int(num_soil_layers), child_ny, child_nx)
+                          if name in _SURFACE_SOIL_FIELDS
+                          else (child_ny, child_nx))
+        if tuple(result.shape) != expected_shape:
+            raise OfflineChildContractError(
+                f"{path}/{name} derived shape {tuple(result.shape)} != "
+                f"{expected_shape}")
+        if name in _SURFACE_CATEGORY_FIELDS and not np.array_equal(
+                result, np.rint(result)):
+            raise OfflineChildContractError(
+                f"{path}/{name} derived non-integer categories; a "
+                "smoothed category field is not a valid surface identity")
+        if not np.isfinite(result).all():
+            raise OfflineChildContractError(
+                f"{path}/{name} derived a non-finite child value")
+        fields[name] = result
+
+    receipt = MappingProxyType({
+        "path": str(path.resolve()),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "source": "parent-history-interpolated",
+        "identity": dict(identity),
+        "carried_fields": tuple(sorted(fields)),
+        "donor_copied_fields": tuple(
+            sorted(set(fields) & _SURFACE_DONOR_COPY_FIELDS)),
+        "placement": {
+            "parent_grid_ratio": ratio,
+            "i_parent_start": int(placement.i_parent_start),
+            "j_parent_start": int(placement.j_parent_start),
+        },
+        "mask_interpolation_branches": {
+            name: counts for name, counts in sorted(branch_counts.items())},
+        "policy": DERIVED_CHILD_SURFACE_POLICY,
+        "caveat": DERIVED_CHILD_SURFACE_CAVEAT,
+    })
+    return ChildSurfaceState(
+        path=path.resolve(), fields=MappingProxyType(fields),
+        identity=MappingProxyType(identity), receipt=receipt)
+
+
 @dataclass(frozen=True)
 class OfflineChildPlacement:
     """Fixed child placement inside one archived parent grid.
@@ -1577,6 +1804,8 @@ __all__ = [
     "InterpolatedBoundarySnapshot", "InterpolatedInitialState",
     "OfflineBoundaryResult",
     "OfflineChildPlacement",
+    "DERIVED_CHILD_SURFACE_CAVEAT", "DERIVED_CHILD_SURFACE_POLICY",
+    "derive_child_surface_from_parent",
     "read_child_surface_state",
     "MomentDiagnosisRequired", "OfflineChildContractError",
     "ParentHistoryContract", "ParentHistoryFrame", "ParentPhysicsBinding",

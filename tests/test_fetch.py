@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
@@ -37,14 +38,46 @@ def _grib2_stream(messages: int) -> bytes:
     return one * messages
 
 
+def _millideg(value: float) -> bytes:
+    """GRIB1's sign-magnitude 3-byte millidegree encoding."""
+    scaled = int(round(abs(value) * 1000.0))
+    if value < 0:
+        scaled |= 0x800000
+    return scaled.to_bytes(3, "big")
+
+
+def _latlon_gds(*, south: float, west: float, north: float, east: float,
+                step: float = 0.25) -> bytes:
+    """A GRIB1 GDS for a regular lat/lon grid, scanning north to south."""
+    ni = int(round((east - west) / step)) + 1
+    nj = int(round((north - south) / step)) + 1
+    gds = bytearray(32)
+    gds[0:3] = (32).to_bytes(3, "big")
+    gds[3] = 0            # NV
+    gds[4] = 255          # PV/PL absent
+    gds[5] = 0            # data representation type 0: lat/lon
+    gds[6:8] = ni.to_bytes(2, "big")
+    gds[8:10] = nj.to_bytes(2, "big")
+    gds[10:13] = _millideg(north)      # La1: CDS scans from the north
+    gds[13:16] = _millideg(west)       # Lo1
+    gds[16] = 0x80 | 0x08              # increments given, spherical earth
+    gds[17:20] = _millideg(south)      # La2
+    gds[20:23] = _millideg(east)       # Lo2
+    gds[23:25] = int(round(step * 1000)).to_bytes(2, "big")   # Di
+    gds[25:27] = int(round(step * 1000)).to_bytes(2, "big")   # Dj
+    gds[27] = 0           # scanning mode: +i, -j
+    return bytes(gds)
+
+
 def _grib1_message(parameter: int, level_type: int, level: int,
-                   when: datetime, *, edition: int = 1) -> bytes:
+                   when: datetime, *, edition: int = 1,
+                   gds: bytes | None = None) -> bytes:
     """One envelope-valid GRIB1 analysis message with a real PDS."""
     pds = bytearray(28)
     pds[0:3] = (28).to_bytes(3, "big")
     pds[3] = 1      # parameter table version
     pds[4] = 98     # ECMWF
-    pds[7] = 0      # no GDS/BMS
+    pds[7] = 0 if gds is None else 128   # bit 1: a GDS follows
     pds[8] = parameter
     pds[9] = level_type
     pds[10:12] = level.to_bytes(2, "big")
@@ -56,7 +89,7 @@ def _grib1_message(parameter: int, level_type: int, level: int,
     pds[18] = 0     # P1 = 0: analysis
     pds[20] = 0     # time range indicator 0
     pds[24] = century
-    body = bytes(pds)
+    body = bytes(pds) + (b"" if gds is None else gds)
     total = 8 + len(body) + 4
     return (b"GRIB" + total.to_bytes(3, "big") + bytes((edition,))
             + body + b"7777")
@@ -68,21 +101,25 @@ _LADDER = (100, 200, 300, 500, 700, 850, 925, 1000)
 
 def _era5_set(path: Path, *, soil_level_type: int = 1,
               drop: tuple[int, ...] = (), times=_TIMES,
-              orography: bool = True) -> Path:
+              orography: bool = True, gds: bytes | None = None,
+              surface_gds: bytes | None = None) -> Path:
     payload = bytearray()
+    surface_grid = gds if surface_gds is None else surface_gds
     for when in times:
         for parameter in fetch.ERA5_REQUIRED_PRESSURE:
             for level in _LADDER:
-                payload += _grib1_message(parameter, 100, level, when)
+                payload += _grib1_message(parameter, 100, level, when,
+                                          gds=gds)
         for parameter in fetch.ERA5_REQUIRED_SURFACE:
             if parameter in drop:
                 continue
             level_type = (soil_level_type
                           if parameter in fetch.ERA5_SOIL_PARAMETERS else 1)
-            payload += _grib1_message(parameter, level_type, 0, when)
+            payload += _grib1_message(parameter, level_type, 0, when,
+                                      gds=surface_grid)
     if orography:
         payload += _grib1_message(
-            fetch.ERA5_OROGRAPHY_PARAMETER, 1, 0, times[0])
+            fetch.ERA5_OROGRAPHY_PARAMETER, 1, 0, times[0], gds=surface_grid)
     path.write_bytes(bytes(payload))
     return path
 
@@ -1171,6 +1208,71 @@ def test_era5_validation_names_missing_fields_and_times(tmp_path):
                for failure in report.failures)
 
 
+def test_era5_validation_reports_the_delivered_geographic_extent(tmp_path):
+    """A PASS that never says WHERE the bytes are cannot catch the most
+    likely retrieval mistake: a file cropped to the wrong box."""
+
+    path = _era5_set(
+        tmp_path / "era5.grib",
+        gds=_latlon_gds(south=34.5, west=-104.25, north=43.5, east=-91.75))
+    report = fetch.validate_era5_files((path,))
+    assert report.ok, report.format()
+    text = report.format()
+    assert "34.50" in text and "43.50" in text
+    assert "-104.25" in text and "-91.75" in text
+    assert "51x37" in text          # (east-west)/0.25 + 1 by (n-s)/0.25 + 1
+
+
+def test_era5_validation_says_so_when_no_box_was_checked(tmp_path):
+    path = _era5_set(
+        tmp_path / "era5.grib",
+        gds=_latlon_gds(south=34.5, west=-104.25, north=43.5, east=-91.75))
+    text = fetch.validate_era5_files((path,)).format()
+    assert "not checked against any requested box" in text
+    assert "--area" in text
+
+
+def test_era5_validation_fails_a_file_cropped_off_the_requested_box(tmp_path):
+    """The wrong-box file is the expensive mistake: it validates, prepares,
+    and only refuses at `gpuwm check` or mid-run."""
+
+    path = _era5_set(
+        tmp_path / "era5.grib",
+        gds=_latlon_gds(south=34.5, west=-104.25, north=43.5, east=-91.75))
+    report = fetch.validate_era5_files(
+        (path,), expected_area=fetch.parse_area("30,-110,45,-90"))
+    assert not report.ok
+    joined = " ".join(report.failures)
+    assert "south" in joined and "west" in joined
+    assert "34.50" in joined and "30.00" in joined
+
+
+def test_era5_validation_tolerates_the_cds_grid_snap(tmp_path):
+    """CDS snaps a requested area onto its native grid, and the snap can go
+    inward by up to one cell.  One cell of shortfall is the provider's own
+    rounding, not a mis-fetch."""
+
+    path = _era5_set(
+        tmp_path / "era5.grib",
+        gds=_latlon_gds(south=34.5, west=-104.25, north=43.5, east=-91.75))
+    report = fetch.validate_era5_files(
+        (path,), expected_area=fetch.parse_area("34.30,-104.39,43.63,-91.61"))
+    assert report.ok, report.format()
+    assert "covers the requested box" in report.format()
+
+
+def test_era5_validation_fails_when_the_two_retrievals_used_two_boxes(
+        tmp_path):
+    path = _era5_set(
+        tmp_path / "era5.grib",
+        gds=_latlon_gds(south=34.5, west=-104.25, north=43.5, east=-91.75),
+        surface_gds=_latlon_gds(
+            south=20.0, west=-100.0, north=30.0, east=-90.0))
+    report = fetch.validate_era5_files((path,))
+    assert not report.ok
+    assert any("2 different grids" in failure for failure in report.failures)
+
+
 def test_era5_validation_fails_closed_on_transport_defects(tmp_path):
     wrong_edition = tmp_path / "era5.grib"
     wrong_edition.write_bytes(
@@ -1207,6 +1309,98 @@ def test_cli_fetch_era5_validate_flow(tmp_path, capsys):
     bad = _era5_set(tmp_path / "bad.grib", orography=False)
     rc = cli.main(["fetch", "--source", "era5", "--validate", str(bad)])
     assert rc == 1
+
+
+def test_cli_fetch_era5_validate_checks_the_box_when_area_is_given(
+        tmp_path, capsys):
+    path = _era5_set(
+        tmp_path / "era5.grib",
+        gds=_latlon_gds(south=34.5, west=-104.25, north=43.5, east=-91.75))
+    rc = cli.main(["fetch", "--source", "era5", "--validate", str(path),
+                   "--area", "34.30,-104.39,43.63,-91.61"])
+    assert rc == 0
+    assert "covers the requested box" in capsys.readouterr().out
+    rc = cli.main(["fetch", "--source", "era5", "--validate", str(path),
+                   "--area", "30,-110,45,-90"])
+    assert rc == 1
+    assert "era5 validation: FAIL" in capsys.readouterr().out
+
+
+def test_era5_request_targets_land_in_out_not_the_users_cwd(tmp_path):
+    out = tmp_path / "era5-raw"
+    fetch.write_era5_request(
+        cycle=datetime(1974, 4, 3, 0), hours=12,
+        area=fetch.parse_area("30,-100,40,-90"), out=out,
+        progress=lambda _line: None)
+    spec = json.loads(
+        (out / fetch.ERA5_REQUEST_NAME).read_text(encoding="utf-8"))
+    for item in spec["requests"]:
+        target = Path(item["target"])
+        assert target.is_absolute(), item["target"]
+        assert target.parent == out.resolve()
+    assert Path(spec["combine_target"]).parent == out.resolve()
+
+
+def test_era5_request_writes_a_runnable_retrieval_script(tmp_path, capsys):
+    out = tmp_path / "era5-raw"
+    rc = cli.main([
+        "fetch", "--source", "era5", "--cycle", "1974-04-03T00",
+        "--hours", "12", "--area", "30,-100,40,-90", "--out", str(out)])
+    assert rc == 0
+    script = out / fetch.ERA5_RETRIEVE_NAME
+    assert script.is_file()
+    body = script.read_text(encoding="utf-8")
+    # The script must resolve its own directory: the retrieval commonly runs
+    # from another interpreter (WSL) whose view of the path differs.
+    assert "__file__" in body
+    compile(body, str(script), "exec")
+    printed = capsys.readouterr().out
+    assert str(script) in printed
+    # Printed commands must paste into one shell line -- a multi-line
+    # `python -c` is not runnable in PowerShell.
+    for line in printed.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("python -c") or stripped.startswith("python3 -c"):
+            assert stripped.count('"') % 2 == 0, stripped
+
+
+def test_era5_instructions_do_not_send_windows_paths_into_wsl(tmp_path):
+    """A retrieval snippet that embeds `C:\\...` cannot open the file from
+    inside WSL, which is where the provider client usually runs on Windows."""
+
+    out = tmp_path / "era5-raw"
+    lines: list[str] = []
+    fetch.write_era5_request(
+        cycle=datetime(1974, 4, 3, 0), hours=12,
+        area=fetch.parse_area("30,-100,40,-90"), out=out,
+        progress=lines.append)
+    text = "\n".join(lines)
+    for line in text.splitlines():
+        if "wsl " in line:
+            assert re.search(r"[A-Za-z]:[\\/]", line) is None, line
+    # And the key advisory must name the home the retrieval interpreter
+    # reads, not only this box's home.
+    assert "the interpreter that runs" in text
+
+
+def test_era5_wsl_path_translation():
+    """The three platform shapes, with the user segment substituted.
+
+    The profile owner is written at run time rather than as a literal
+    because the release snapshot builder scans this file: a spelled-out
+    ``C:/Users/<name>`` here is a developer-absolute path that would
+    ship, and it failed that gate twice on the 2.5.x line.  The
+    substitution is the remedy the gate names, and it asserts the same
+    thing -- a user profile is translated on Windows, whatever it is
+    called, and a POSIX path comes back untouched.
+    """
+
+    user = "somebody"
+    assert fetch.wsl_path(Path(f"C:/Users/{user}/era5/x.json")) == (
+        f"/mnt/c/Users/{user}/era5/x.json")
+    assert fetch.wsl_path(Path(rf"C:\Users\{user}\era5\x.json")) == (
+        f"/mnt/c/Users/{user}/era5/x.json")
+    assert fetch.wsl_path(Path(f"/home/{user}/x.json")) == f"/home/{user}/x.json"
 
 
 def test_cli_fetch_argument_contracts(tmp_path, capsys):

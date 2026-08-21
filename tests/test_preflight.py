@@ -1859,7 +1859,16 @@ def test_gas_table_meta_and_default_chunk():
     default = {f.name: f.default
                for f in dataclasses.fields(RRTMGPRadiation)}["column_chunk"]
     assert pf.DEFAULT_COLUMN_CHUNK == default == 3125
-    assert pf._workspace_total_bytes(49, default) == 1025700000
+    # 359 825 000 B = 343.16 MiB.  The history of this number IS the
+    # history of the layout: 1 025 700 000 (978.18 MiB) originally;
+    # 774 375 000 (738.50) when the RTE phases stopped carrying slots
+    # they never read; 832 375 000 (793.83) when the finalize fused into
+    # the solvers and the finalized cubes stopped existing; and
+    # 359 825 000 now that the LW solver derives its own Planck sources
+    # and lay_source/lev_source/sfc_source stopped existing too.  All
+    # four phases sit within 3% of each other -- there is no dominant
+    # phase left to shrink.
+    assert pf._workspace_total_bytes(49, default) == 359825000
 
 
 def test_estimate_uses_experiment_column_chunk(exp4):
@@ -1906,20 +1915,34 @@ def test_rrtmgp_chunk_loops_and_mcica_seed_are_column_local():
 
     kernel = (ROOT / "gpuwm" / "core" / "kernels" /
               "rrtmgp_mcica.cu").read_text(encoding="utf-8")
-    seed_start = kernel.index("unsigned int s1, s2, s3, s4;")
-    seed_end = kernel.index("for (int g = 0; g < ngpt; ++g)")
+    # The seed derivation lives in its own device function since the
+    # g-point loop became one thread per g-point with a jump-ahead, so
+    # the old slice -- from the state declaration to `for (int g ...)` --
+    # no longer brackets it and stopped bracketing anything at all.  The
+    # PROPERTY is unchanged, and a named function is a better anchor than
+    # two statements that happened to sit either side of it.
+    seed_start = kernel.index("__device__ __forceinline__ void mcica_seed(")
+    seed_end = kernel.index("\n}", seed_start)
     seed = kernel[seed_start:seed_end]
     assert "play[col * nlay + n]" in seed
     assert "frac * 1.0e9" in seed
     assert "permuteseed" in seed
     assert "blockIdx" not in seed and "chunk" not in seed
+    # ...and the caller hands it the ABSOLUTE column index, which is the
+    # half of column-locality that lives at the call site: it is what
+    # makes a chunked run reproduce an unchunked one bit for bit.
+    assert ("mcica_seed(play, col, nlay, permuteseed, s1, s2, s3, s4);"
+            in kernel)
 
 
 def test_workspace_is_the_phase_maximum_simultaneous_set():
     """Shadow F2 fix: the workspace bound is the max over the four solver
-    phases' EXACT live sets (col_dry included; post-mask-delete arrays
-    not substituted into the mask phase).  WRF's 100-hPa cap adds 25 LW
-    and one SW layer; LW RTE is therefore the new phase maximum."""
+    phases' EXACT live sets (col_dry included).  WRF's 100-hPa cap adds 25
+    LW and one SW layer.  The maximum is now LW OPTICS, by under 3%: with
+    the finalize fused into the solvers and the LW solver deriving its own
+    Planck sources, the finalized optics cubes and all three Planck source
+    arrays exist in no phase, and the four phases are within 3% of one
+    another -- the layout has no dominant phase left."""
     phases = pf.rrtmgp_workspace_phases(49, 12500)
 
     def total(items):
@@ -1927,35 +1950,66 @@ def test_workspace_is_the_phase_maximum_simultaneous_set():
                    for shape, size in items.values())
 
     assert {name: total(items) for name, items in phases.items()} == {
-        "lw_optics": 2386500000,
-        "lw_rte": 4102800000,
-        "sw_optics": 3097500000,
-        "sw_rte": 2990050000,
+        "lw_optics": 1439300000,
+        "lw_rte": 1409500000,
+        "sw_optics": 1417500000,
+        "sw_rte": 1397550000,
     }
-    # Every phase carries col_dry (rrtmgp.py:1615, retained by both the
-    # gas and finalized optics results -- one shared array).
+    # A carried slot is only carried if it lands on the SAME BYTES the
+    # optics phase produced it in, and `phase()` walks the layout in order
+    # -- so this is the property the tightening actually rests on.
+    def offsets(items):
+        walked, offset = {}, 0
+        for name, (shape, size) in items.items():
+            walked[name] = offset
+            offset += math.prod(shape) * size
+        return walked
+
+    for optics, rte in (("lw_optics", "lw_rte"), ("sw_optics", "sw_rte")):
+        produced, consumed = offsets(phases[optics]), offsets(phases[rte])
+        carried = set(phases[optics]) & set(phases[rte])
+        assert carried
+        for name in carried:
+            assert produced[name] == consumed[name], (rte, name)
+    # An OPTICS phase carries col_dry (rrtmgp.py:1615, retained by the gas
+    # optics result).  An RTE phase does not: nothing in it reads col_dry,
+    # so its bytes hold RTE output.  With the finalize fused into the
+    # solvers, what an RTE phase DOES carry is exactly what the fused
+    # solver reads -- the gas cube(s), the band cloud cubes it consumes and
+    # the McICA mask -- and the finalized optics cubes exist in no phase.
     assert phases["lw_optics"]["col_dry"] == ((12500, 74), 4)
-    assert phases["lw_rte"]["col_dry"] == ((12500, 74), 4)
     assert phases["sw_optics"]["col_dry"] == ((12500, 50), 4)
-    assert phases["sw_rte"]["col_dry"] == ((12500, 50), 4)
+    for dead in ("cld_asy", "col_dry", "optics_tau"):
+        assert dead not in phases["lw_rte"]
+    for dead in ("vmr", "col_dry", "optics_tau", "optics_ssa", "optics_g"):
+        assert dead not in phases["sw_rte"]
+    for phase in phases.values():
+        assert not any(name.startswith("optics_") for name in phase)
+    # LW Planck reads the VMR back; SW builds no Planck source and does not.
+    assert phases["lw_rte"]["vmr"] == ((12500, 74, 20), 4)
     # The later sw_rte phase enumerates mu0 + the three flux arrays.
     assert phases["sw_rte"]["mu0"] == ((12500, 50), 4)
     assert phases["sw_rte"]["flux_dir"] == ((12500, 51), 4)
-    # The albedo/incidence arrays exist only after the mask is deleted.
+    # The albedo/incidence arrays exist only in the RTE phase; the mask is
+    # a CARRIED slot now -- the fused solver reads it during the RTE phase.
     assert "albedo_gpt" not in phases["sw_optics"]
-    assert "mcica_mask" not in phases["sw_rte"]
+    assert phases["sw_rte"]["mcica_mask"] == ((12500, 50, 224), 1)
 
     full = pf._workspace_total_bytes(49, 12500)
-    assert full == 4102800000
+    assert full == 1439300000
     assert pf._workspace_total_bytes(49, 6250) * 2 == full
     assert pf._workspace_total_bytes(49, 3125) * 4 == full
     shapes = pf.rrtmgp_workspace_shapes(49, 12500)
-    assert all(name.startswith("lw_rte/") for name in shapes)
-    assert shapes["lw_rte/gas_tau"] == ((12500, 74, 256), 4)
-    assert shapes["lw_rte/lev_source"] == ((12500, 75, 256), 4)
+    assert all(name.startswith("lw_optics/") for name in shapes)
+    assert shapes["lw_optics/gas_tau"] == ((12500, 74, 256), 4)
+    assert shapes["lw_optics/mcica_mask"] == ((12500, 74, 256), 1)
+    # The Planck source arrays exist in no phase: the LW solver derives
+    # them in registers (rrtmgp_planck_common.cuh).
+    for gone in ("lay_source", "lev_source", "sfc_source"):
+        assert all(gone not in items for items in phases.values())
     toa_column = pf.rrtmgp_workspace_phases(49, 2, p_top=0.0)
-    assert toa_column["lw_rte"]["gas_tau"] == ((2, 49, 256), 4)
-    assert toa_column["sw_rte"]["gas_tau"] == ((2, 49, 224), 4)
+    assert toa_column["lw_optics"]["gas_tau"] == ((2, 49, 256), 4)
+    assert toa_column["sw_optics"]["gas_tau"] == ((2, 49, 224), 4)
 
 
 def test_shared_rrtmgp_workspace_is_one_real_allocation_with_full_audit():
@@ -2063,7 +2117,12 @@ def test_estimate_domain_itemization_pins(exp1):
 def test_estimate_experiment_shared_counting(est4, exp4):
     # k-distribution tables counted ONCE (lru_cache-shared,
     # rrtmgp.py:324/:436), while audited scratch is one per-slot maximum.
-    assert est4.k_tables_bytes == pf.k_distribution_bytes() == 23763712
+    # +13,584 B over the pre-RRTMGP-optimisation pin: GasTables.__post_init__
+    # now derives the minor-absorber g-point CSR
+    # (minor_gpt_start_/minor_gpt_list_, lower and upper) and declares it as
+    # FIELDS, so to_device uploads it and this count picks it up.  LW
+    # 1,028 + 3,840 + 1,028 + 2,176; SW 900 + 2,176 + 900 + 1,536, all int32.
+    assert est4.k_tables_bytes == pf.k_distribution_bytes() == 23777296
     assert est4.uses_shared_scratch_arena
     assert est4.scratch_arena_request_bytes == sum(
         d.arena_scratch_bytes for d in est4.domains)
@@ -2128,16 +2187,29 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # Ring snapshot slots are resident (arena-excluded): the ports-branch
     # residency plus the exact 23,815,680-B ring total, plus the
     # 3,444,004-B four-domain OLR publication total.
-    assert est4.resident_bytes == 14436554968
+    # +13,584 B over the pre-RRTMGP-optimisation pin: the minor-absorber
+    # g-point CSR the gas tables now upload (see
+    # test_estimate_experiment_shared_counting).  Nothing else in residency
+    # moved -- the optimisation is a workspace and kernel change.
+    assert est4.resident_bytes == 14436568552
     # The case configures column_chunk = 6250 (byte-identical to 3125,
     # 33% faster per radiation call); the 3125 numbers stay pinned in the
     # ladder below, so the trade this bought is on the record both ways.
-    assert est4.workspace_bytes == 2051400000
+    #
+    # 2,051,400,000 -> 719,650,000 B.  The maximum phase used to be lw_rte
+    # at 328,224 B/column; the LW solver now derives the Planck sources in
+    # registers, so lay_source/lev_source/sfc_source (76,800 B/column
+    # together) exist in no phase, the finalize is fused into the solvers so
+    # the finalized optics cubes are gone too, and lw_OPTICS at 115,144
+    # B/column is what the workspace is now sized to.
+    assert est4.workspace_bytes == 719650000
     assert est4.transient_peak_bytes == 3182840000
     # +3,444,004 B: the four-domain OLR publication total.
-    assert est4.subtotal_bytes == 19670794968
+    # -1,331,736,416 B against the pre-optimisation pin: the 1,331,750,000 B
+    # of workspace the phase change removed, less the 13,584 B of CSR.
+    assert est4.subtotal_bytes == 18339058552
     assert est4.alloc_estimate_bytes == math.ceil(
-        1.15 * est4.subtotal_bytes) == 22621414214
+        1.15 * est4.subtotal_bytes) == 21089917335
     # Chunk ladder after arena sharing and physics-persistent reclamation.
     # The 1024-descriptor health-slot registration adds 49,168 B/domain to
     # the audited scratch; the pins below are computed on the merged tree.
@@ -2147,8 +2219,11 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # Every rung carries the ring lane's ceil(1.15 x 23,815,680) =
     # 27,388,032 B on top of the ports-branch ladder.
     # Every rung also carries ceil(1.15 x 3,444,004) of OLR.
-    assert ladder == {6250: 22621414214, 3125: 21425874214,
-                      1562: 20827912927, 256: 20328272850}
+    # The ladder FLATTENED with the workspace: the whole rung-to-rung spread
+    # is 1.15 x the workspace difference, and the workspace is now 2.85x
+    # smaller, so 6250 -> 256 buys 824 MB where it used to buy 2,293 MB.
+    assert ladder == {6250: 21089917335, 3125: 20660133585,
+                      1562: 20445172945, 256: 20265557720}
 
 
 def test_d01_calibration_bounds_measured_fixture(exp1):
@@ -2238,11 +2313,12 @@ def test_reserve_policy_split_proposals():
         pf.PROBE_FREE_BYTES - 2 * GIB)
 
     # The run-churn residual: fixture held minus the d01 alloc-estimate
-    # basis (measured used + phase-max workspace, with headroom),
-    # clamped at zero -- calibration algebra, pinned.
+    # basis (measured used + the workspace THAT FIXTURE RAN, with
+    # headroom), clamped at zero -- calibration algebra, pinned.  The
+    # workspace term is the pinned constant and not today's layout: see
+    # CAL_D01_WORKSPACE_BYTES for why recomputing it punishes saving memory.
     basis = math.ceil(pf.ALLOCATOR_HEADROOM * (
-        pf.CAL_D01_POOL_USED_PEAK_BYTES
-        + pf._workspace_total_bytes(49, pf.DEFAULT_COLUMN_CHUNK)))
+        pf.CAL_D01_POOL_USED_PEAK_BYTES + pf.CAL_D01_WORKSPACE_BYTES))
     assert pf.pool_retention_residual_bytes() == max(
         0, pf.CAL_D01_POOL_HELD_BYTES - basis) == 2932339314
 
@@ -2260,18 +2336,31 @@ def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
     which consumed that margin: composed with the ports-branch growth
     (health descriptors, nested-force slots) and the OLR publication
     buffers (x1.15 headroom = 3,960,605 B of estimate) the stale
-    projection now sits 5,277,330 B BELOW the estimate and the
-    measured-bound leg reads True.  The
-    algebra stays pinned exactly; the operational consequence is that the
-    retained pre-alias receipt can no longer flag its own staleness
-    through this leg -- the next N0 certification MUST take a fresh probe
-    receipt (PROBE_POOL_USED_PEAK_BYTES) rather than trust this
-    projection.
+    projection sat 5,277,330 B BELOW the estimate and the measured-bound
+    leg read True.
+
+    The RRTMGP optimisation put it back ABOVE, by 94,588,299 B, so the
+    leg reads False again.  Nothing about the receipt changed: the
+    default-chunk workspace fell 1,025,700,000 -> 359,825,000 B when the
+    Planck sources left the ledger, and the two sides of this comparison
+    do not fall together.  The projection is raw measured bytes, so it
+    drops by that 665,875,000 B exactly; the estimate is the 1.15
+    allocator-headroom multiple, so it drops by 765,740,629 B.  The
+    difference is the 0.15 that was headroom on bytes nobody allocates
+    any more -- 99,881,250 B, less 1.15 x the 13,584 B of new gas-table
+    CSR, i.e. 99,865,629 B on top of the old -5,277,330.
+
+    The algebra stays pinned exactly.  A False measured-bound leg here is
+    the pre-alias regime restored: the leg exposes the retained receipt's
+    staleness instead of concealing it.  The next N0 certification still
+    MUST take a fresh probe receipt (PROBE_POOL_USED_PEAK_BYTES) rather
+    than trust this projection -- an estimate whose workspace term shrank
+    by two thirds is not a bound the old receipt was measured against.
     """
     # ``PROBE_POOL_USED_PEAK_BYTES`` is a receipt taken at the LIBRARY default
     # chunk, so it must be projected against the default-chunk estimate.
     # Comparing it to the case's configured 6250 estimate would flip
-    # ``alloc_measured_le_estimate`` to True on 1.03 GB of workspace the probe
+    # ``alloc_measured_le_estimate`` to True on 0.36 GB of workspace the probe
     # never allocated -- concealing exactly the staleness this test exposes.
     est = pf.estimate_experiment(exp4, column_chunk=pf.DEFAULT_COLUMN_CHUNK)
     diff6_alias_saved = 141_237_600
@@ -2279,14 +2368,19 @@ def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
                       - est.dycore_state_saved_bytes
                       - (3035550000 - est.workspace_bytes)
                       - diff6_alias_saved - 141_120_000)
-    assert projected_used - est.alloc_estimate_bytes == -5_277_330
+    assert projected_used - est.alloc_estimate_bytes == 94_588_299
     legs = pf.evaluate_alloc_gates(
         measured_used_bytes=projected_used,
         estimate_bytes=est.alloc_estimate_bytes,
         measured_free_bytes=pf.PROBE_FREE_BYTES,
         reserve=pf.ReservePolicy.flat(2 * GIB))
+    # The measured-bound leg reads False BY DESIGN here: the projection of a
+    # pre-optimisation receipt now exceeds the post-optimisation estimate,
+    # which is this test's whole subject.  It is not a gate a live run trips
+    # -- PROBE_POOL_USED_PEAK_BYTES is a retained calibration record, read
+    # nowhere in preflight outside this file.
     assert legs == {"alloc_fits_wddm_budget": True,
-                    "alloc_measured_le_estimate": True,
+                    "alloc_measured_le_estimate": False,
                     "alloc_estimate_le_wddm_budget": True}
 
 
@@ -2372,7 +2466,10 @@ def test_check_cli_estimator_json(capsys):
     # (arena-excluded) scratch across the four domains; x1.15 headroom
     # lands 27,388,032 B above the ports-branch CLI pin; the OLR
     # publication buffers add a further 3,960,605 B of estimate.
-    assert payload["alloc_estimate_bytes"] == 22621414214
+    # -1,531,496,879 B on the RRTMGP optimisation: 1.15 x the
+    # 1,331,750,000 B of chunk workspace the phase change removed at this
+    # case's 6250 chunk, less 1.15 x the 13,584 B of gas-table CSR it added.
+    assert payload["alloc_estimate_bytes"] == 21089917335
     # All requested moist-CQ slots are represented; the shared arena aliases
     # their lifetimes without changing the exact physical backing.
     assert payload["scratch_arena_saved_bytes"] == 6156502304
@@ -2405,7 +2502,12 @@ def test_check_cli_estimator_json(capsys):
     # constant was one 2026-07-26 reading and it UNDER-charged this very
     # card by 215 MiB once it ran under Linux; an absent card is priced
     # above every card that has been measured, on purpose.
-    assert payload["reserve_bytes"] == 4161733371
+    # -45,944,906 B, entirely the retention_residual leg: it is 3% of the
+    # alloc estimate, which the RRTMGP workspace change took down by
+    # 1,531,496,879 B.  The other two legs are card properties and do not
+    # move.  ``run_time_reserve_bytes`` below does NOT move either -- its
+    # residual is the pinned CAL_D01_WORKSPACE_BYTES fixture basis.
+    assert payload["reserve_bytes"] == 4115788465
     reference = pf.card_local_memory_profile(None)
     assert payload["reserve_components"]["device_overhead_bytes"] == (
         reference.cuda_context_bytes + 2143272960)
@@ -2425,7 +2527,12 @@ def test_check_cli_over_budget_fails_and_names_the_lever(capsys):
     assert rc == 1
     assert "alloc_estimate_le_wddm_budget: FAIL" in out
     assert "OVER BUDGET" in out
-    assert "--column-chunk 1562" in out
+    # ONE halving now closes a 19.5 GiB budget where two used to be needed.
+    # The lever is the largest halving of the case's 6250 whose estimate
+    # fits: 6250 is 21,089,917,335 against a 20,937,965,568 B budget, and
+    # 3125 is 20,660,133,585.  Before the RRTMGP workspace change 3125 still
+    # came to 21,425,874,214 and the search had to go one rung further.
+    assert "--column-chunk 3125" in out
 
 
 def test_check_over_budget_envelope_exits_nonzero(capsys, monkeypatch):

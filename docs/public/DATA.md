@@ -530,11 +530,15 @@ nothing is downloaded for you:
 gpuwm fetch --source era5 --cycle 1999-05-03T00 --hours 24 \
   --area 30,-105,42,-90 --out data/era5-request
 
-# 2. Retrieve with your own cdsapi key (instructions are printed),
-#    concatenate the two GRIB parts, then:
+# 2. Retrieve with your own cdsapi key -- the command is printed, and
+#    the script it names retrieves both parts and concatenates them
+#    into --out, whatever directory you run it from
+python data/era5-request/era5-cds-retrieve.py
 
-# 3. Validate before anything expensive
-gpuwm fetch --source era5 --validate era5-combined.grib
+# 3. Validate before anything expensive -- pass the SAME --area, and
+#    the delivered grid is checked against it, not just reported
+gpuwm fetch --source era5 \
+  --validate data/era5-request/era5-combined.grib --area 30,-105,42,-90
 ```
 
 The emitted `era5-cds-request.json` is the precise two-part `cdsapi`

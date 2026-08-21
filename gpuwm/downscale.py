@@ -37,11 +37,13 @@ from gpuwm import netcdf_bridge
 
 from gpuwm.explain import warn
 from gpuwm.offline_child import (
+    DERIVED_CHILD_SURFACE_CAVEAT,
     OfflineChildContractError,
     OfflineChildPlacement,
     bind_parent_physics_from_gpuwm_restart,
     bind_parent_physics_from_wrf_namelist,
     child_surface_requirement,
+    derive_child_surface_from_parent,
     read_child_surface_state,
     validate_parent_history,
 )
@@ -184,6 +186,19 @@ def _parent_geometry(path: Path) -> dict[str, object]:
     return result
 
 
+def _parent_mass_dims(path: Path) -> tuple[int, int]:
+    """``(ny, nx)`` of the parent mass grid, dimensions only.
+
+    Separate from :func:`_parent_geometry` on purpose: that one pulls
+    XLAT/XLONG FIELDS out of the tape for ``--point`` placement, and the
+    surface derivation below needs only the shape the placement is
+    validated against.
+    """
+    with netCDF4.Dataset(path) as dataset:
+        return (len(dataset.dimensions["south_north"]),
+                len(dataset.dimensions["west_east"]))
+
+
 def _nearest_parent_index(lat_field, lon_field, lat: float,
                           lon: float) -> tuple[int, int]:
     """Nearest parent mass point, projection-agnostic (0-based j, i)."""
@@ -239,6 +254,27 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
     })
     validate_run_config(RunConfig(**merged))
     return merged
+
+
+#: What a derived child config is called inside the run directory it
+#: describes.
+DERIVED_CHILD_CONFIG_NAME = "child.toml"
+
+
+def derived_child_config_path(outdir: Path, *, dry_run: bool) -> Path:
+    """Where ``--point`` derivation writes the child config it just built.
+
+    A real run gets it INSIDE ``--out``, beside the frames and the
+    report, which is where a reader goes looking for the config a run
+    used.  A dry run cannot: the runner reserves ``--out`` with
+    ``exist_ok=False`` so that no run ever adopts another's contents,
+    and creating it during a plan would make the run that follows
+    refuse.  The dry run therefore writes beside ``--out`` and says so.
+    """
+
+    if dry_run:
+        return outdir.parent / (outdir.name + ".child.toml")
+    return outdir / DERIVED_CHILD_CONFIG_NAME
 
 
 def _render_child_toml(config: dict, *, tiles_mode: str | None = None) -> str:
@@ -430,6 +466,7 @@ def downscale_main(args) -> int:
     window_seconds = (
         contract.end_time - contract.start_time).total_seconds()
 
+    outdir_reserved = False
     if args.child_config is not None:
         if args.point is not None:
             raise OfflineChildContractError(
@@ -492,8 +529,16 @@ def downscale_main(args) -> int:
             child_nx=child_nx, child_ny=child_ny,
             run_seconds=run_seconds, output_interval_s=output_interval_s)
         outdir = Path(args.out)
-        child_config = outdir.parent / (outdir.name + ".child.toml")
-        child_config.parent.mkdir(parents=True, exist_ok=True)
+        child_config = derived_child_config_path(
+            outdir, dry_run=bool(args.dry_run))
+        if child_config.parent == outdir:
+            # The run's own output root, reserved HERE and by the same
+            # never-adopt rule the runner applies, so the config that
+            # describes the run lands INSIDE it instead of beside it.
+            outdir.mkdir(parents=True, exist_ok=False)
+            outdir_reserved = True
+        else:
+            child_config.parent.mkdir(parents=True, exist_ok=True)
         child_config.write_text(
             _render_child_toml(merged, tiles_mode=args.tiles),
             encoding="utf-8", newline="\n")
@@ -502,6 +547,11 @@ def downscale_main(args) -> int:
               f"dx={merged['dx']:g} m (ratio {ratio}) centered on "
               f"({lat:g}, {lon:g}); parent start ({i_start}, {j_start}); "
               f"wrote {child_config}")
+        if child_config.parent != outdir:
+            print("gpuwm downscale: --dry-run does not reserve "
+                  f"{outdir} (a run refuses if it already exists), so the "
+                  "derived config is beside it; the real run writes it "
+                  f"to {outdir / DERIVED_CHILD_CONFIG_NAME}")
     else:
         raise OfflineChildContractError(
             "pass --child-config TOML or --point LAT,LON")
@@ -509,27 +559,67 @@ def downscale_main(args) -> int:
     from gpuwm.config import load_config, soil_layer_count
     cfg = load_config(child_config)
     surface_requirement = child_surface_requirement(cfg)
+    surface_source = None
     if args.child_surface_from is not None:
         surface = read_child_surface_state(
             args.child_surface_from, child_ny=cfg.ny, child_nx=cfg.nx,
             num_soil_layers=soil_layer_count(cfg))
+        surface_source = "child-grid-file"
         print(f"gpuwm downscale: child surface source "
               f"{surface.path} ({len(surface.fields)} fields, "
               f"{surface.identity['MMINLU']})")
     elif surface_requirement is not None:
-        # The requirement is knowable HERE, from the config alone.  The
-        # walked failure mode (2.4.1): --dry-run printed a green plan
-        # with "child_surface_from": null and the real run refused for
-        # exactly that null, after the user had walked away.  The real
-        # run now refuses at the front door; the dry run keeps printing
-        # the plan -- deriving the geometry is how a user learns which
-        # child grid to build a surface file FOR -- and warns instead.
-        if not args.dry_run:
-            raise OfflineChildContractError(surface_requirement)
-        warn(surface_requirement,
-             why="--dry-run continues so the derived plan below can be "
-                 "read; the run itself will refuse until a child-grid "
-                 "surface source is supplied.")
+        # THE CLOSED LOOP, OPENED (defect #275).  This used to refuse
+        # outright -- and the file it demanded could not be produced for
+        # a config-driven (ERA5) parent by any command in the product,
+        # so the whole route dead-ended after the parent forecast had
+        # been paid for.  The parent's own history carries the nine
+        # surface fields and the landuse identity; the child grid is an
+        # exact refinement of a parent window, so WRF's own nest-birth
+        # operators put them where the child needs them.  Derived HERE,
+        # at the front door, before the run: a parent that cannot seed a
+        # child still refuses at plan time, naming the missing fields.
+        parent_ny, parent_nx = _parent_mass_dims(frames[0])
+        try:
+            surface = derive_child_surface_from_parent(
+                frames[0], placement=OfflineChildPlacement(
+                    parent_nx=parent_nx, parent_ny=parent_ny,
+                    child_nx=int(cfg.nx), child_ny=int(cfg.ny),
+                    parent_grid_ratio=int(ratio),
+                    i_parent_start=int(i_start),
+                    j_parent_start=int(j_start)),
+                num_soil_layers=soil_layer_count(cfg))
+        except OfflineChildContractError as error:
+            # A parent that cannot seed a child is refused HERE, before
+            # any preprocessing, carrying BOTH sentences: the config's
+            # requirement (with its remedy) and the reason this parent
+            # archive cannot meet it.  --dry-run still prints the plan --
+            # deriving the geometry is how a reader learns which child
+            # grid to build a surface file FOR -- and warns instead.
+            unmet = (f"{surface_requirement}\n"
+                     f"  and this parent archive cannot supply one "
+                     f"either: {error}")
+            if not args.dry_run:
+                raise OfflineChildContractError(unmet) from error
+            warn(unmet,
+                 why="--dry-run continues so the derived plan below can "
+                     "be read; the run itself will refuse until the "
+                     "child surface state can be resolved.")
+        else:
+            surface_source = "parent-history-interpolated"
+            print(f"gpuwm downscale: child surface derived from "
+                  f"{surface.path} ({len(surface.fields)} fields, "
+                  f"{surface.identity['MMINLU']})")
+            # The caveat is the ACTION half, not the mechanism half: a
+            # reader who never types --explain still has to be told that
+            # this child's coastline is its parent's.
+            warn("child surface state interpolated from the parent's own "
+                 "history rather than built on the child grid -- "
+                 + DERIVED_CHILD_SURFACE_CAVEAT,
+                 why="This is WRF's input_from_file = .false. route for a "
+                     "nest with no wrfinput of its own "
+                     "(med_nest_initial's med_interp_domain), run through "
+                     "the Registry's masked land interpolator.")
 
     lineage = parent_initial_condition(frames[0])
     if int(lineage.get("GPUWM_INITIAL_FORECAST_LEAD_HOURS", 0)):
@@ -560,6 +650,11 @@ def downscale_main(args) -> int:
         "child_surface_from": (None if args.child_surface_from is None
                                else str(args.child_surface_from)),
         "child_surface_required": surface_requirement is not None,
+        # WHICH surface the child will actually start from, resolved
+        # before the run rather than discovered inside it: the walked
+        # 2.4.1 plan said only "child_surface_from": null and left the
+        # reader to find out at integration time what that meant.
+        "child_surface_source": surface_source,
         "outdir": str(args.out),
     }
     if args.dry_run:
@@ -584,7 +679,10 @@ def downscale_main(args) -> int:
                             else Path(args.child_surface_from)),
         preprocess_backend=args.preprocess_backend,
         health_interval_seconds=float(args.health_interval_seconds),
-        outdir=Path(args.out))
+        outdir=Path(args.out),
+        # This process created --out moments ago to hold the config it
+        # derived; the never-adopt reservation already happened there.
+        outdir_reserved=outdir_reserved)
     report = offline_child_run.run(namespace)
     return 0 if report["result"] == "PASS" else 1
 

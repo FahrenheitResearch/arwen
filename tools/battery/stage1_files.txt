@@ -14,11 +14,21 @@
 #     $stage1 = @(Get-Content (Join-Path $CUT 'tools/battery/stage1_files.txt') |
 #         ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
 #
-#   See scratchpad q_TEMPLATE_stage1.ps1 for the full leg.  Before this
-#   file existed the list lived ONLY in those scratchpad scripts and was
-#   propagated by copy from one assembly to the next; a lost scratchpad
-#   silently lost every amendment ever made to it.  That is the failure
-#   this file closes (task #122).
+#   This header used to point at scratchpad q_TEMPLATE_stage1.ps1 for the
+#   full leg.  That file is gone from every machine -- the same failure
+#   this list closes (task #122), one level up.  Before this file existed
+#   the list lived ONLY in those scratchpad scripts and was propagated by
+#   copy from one assembly to the next; a lost scratchpad silently lost
+#   every amendment ever made to it.
+#
+#   BEFORE RUNNING THE LEG
+#   The battery runs in a throwaway worktree, which carries no build
+#   output, so the rust binaries every real-artifact suite drives are
+#   absent -- and those suites SKIP honestly rather than fail, so the leg
+#   goes green with the rust half of the product untested.  Stage the
+#   binaries first, and let the script prove they took:
+#
+#     pwsh -File tools/battery/provision_stage1.ps1
 #
 # FORMAT
 #   One repository-relative path per line, forward slashes.  Blank lines

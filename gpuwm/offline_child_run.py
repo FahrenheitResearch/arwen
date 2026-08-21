@@ -30,7 +30,9 @@ from gpuwm.config import (
 )
 from gpuwm.io.history_selection import HISTORY_VOCABULARY
 from gpuwm.io.wrfout import INITIAL_CONDITION_GLOBAL_ATTRS
+from gpuwm.explain import warn
 from gpuwm.offline_child import (
+    DERIVED_CHILD_SURFACE_CAVEAT,
     OfflineChildContractError,
     OfflineChildPlacement,
     bind_parent_physics_from_gpuwm_restart,
@@ -38,6 +40,7 @@ from gpuwm.offline_child import (
     build_offline_child_domain_state,
     build_offline_lateral_boundaries,
     child_surface_requirement,
+    derive_child_surface_from_parent,
     interpolate_parent_initial_state,
     read_child_surface_state,
     validate_parent_history,
@@ -79,10 +82,13 @@ _CAPABILITIES = {
     # post-increment dtbc recurrence exactly like the production tree
     # root (gpuwm/ingest/lateral_bc.py bind_lateral_boundary_clock).
     "boundary_clock_semantics": "wrf-dtbc-bound",
-    # Full-physics children (LSM/surface-layer/PBL) require a child-grid
-    # surface source (ndown-equivalent contract); mp-only children run
-    # without one.
-    "full_physics_surface_source": "child-grid-file-required",
+    # Full-physics children (LSM/surface-layer/PBL) take a child-grid
+    # surface source when one is given (--child-surface-from, the
+    # ndown-equivalent contract, higher fidelity) and otherwise derive
+    # one from the parent's own history through WRF's nest-birth
+    # operators; mp-only children run without either.
+    "full_physics_surface_source":
+        "child-grid-file-or-parent-history-interpolated",
     # ``[tiles]`` in the child config: this route wires a streamed-domain
     # builder, so it HONORS the block rather than refusing it.  A child
     # refined out of an archived parent is the domain most likely to outgrow
@@ -458,7 +464,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     from gpuwm.io.wrfout import wrfout_filename
 
     started = time.perf_counter()
-    outdir = _create_output_root(args.outdir)
+    # ``outdir_reserved`` means the caller already applied the same
+    # never-adopt reservation in this process (``gpuwm downscale`` does,
+    # so the config it derives can live inside the run it describes).
+    # Absent, this is the reservation.
+    outdir = (Path(args.outdir).resolve()
+              if getattr(args, "outdir_reserved", False)
+              else _create_output_root(args.outdir))
     cfg = load_config(args.child_config)
     # Read at ADMISSION, beside the config it belongs to, and before any
     # parent frame is opened: mode = 'on' streams unconditionally and needs
@@ -522,6 +534,32 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         surface = read_child_surface_state(
             surface_from, child_ny=int(cfg.ny), child_nx=int(cfg.nx),
             num_soil_layers=soil_layer_count(cfg))
+    elif child_surface_requirement(cfg) is not None:
+        # RESOLVED HERE, before interpolate_parent_initial_state and
+        # build_offline_lateral_boundaries spend minutes on the parent
+        # archive.  The guard in _initialize_child_physics used to be the
+        # only one on this route, and it fires AFTER that work -- so a
+        # child that could never start still paid for the preprocessing
+        # first.  Defect #275: derive the child surface from the
+        # parent's own history (WRF's input_from_file = .false. route)
+        # rather than refusing for a file no command in the product
+        # could produce for a config-driven parent.
+        try:
+            surface = derive_child_surface_from_parent(
+                contract.frames[0].path, placement=placement,
+                num_soil_layers=soil_layer_count(cfg))
+        except OfflineChildContractError as error:
+            raise OfflineChildContractError(
+                f"{child_surface_requirement(cfg)}\n"
+                f"  and this parent archive cannot supply one either: "
+                f"{error}") from error
+        warn("child surface state interpolated from the parent's own "
+             "history rather than built on the child grid -- "
+             + DERIVED_CHILD_SURFACE_CAVEAT,
+             why="This is WRF's input_from_file = .false. route for a "
+                 "nest with no wrfinput of its own (med_nest_initial's "
+                 "med_interp_domain), run through the Registry's masked "
+                 "land interpolator.")
     surface_file_receipts = (
         [] if surface is None else [_file_receipt(surface.path)])
     _log("contract_pass", frames=len(contract.frames),

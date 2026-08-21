@@ -1,5 +1,76 @@
 # Changelog
 
+## 2.5.2 (2026-08-21)
+
+New:
+- Radiation is about 1.9x faster at the shipped default column chunk
+  and the allocation estimate drops roughly 1.5 GB, with output that is
+  byte-identical to 2.5.1. Measured on an RTX 5070 Ti at chunk 3125:
+  187.96 and 187.77 s before, 96.69 and 96.50 s after, first run after a
+  kernel-source change discarded. The gain depends on the chunk, from
+  1.66x at 8192 to 5.00x at 512, because the optimised path is flat
+  across that range where the previous one was not. Byte identity was
+  confirmed on two cards, with perturbed-kernel and perturbed-input
+  controls both differing. Contributed by Roch.
+- The first over-budget lever moves with the radiation workspace, which
+  falls from 2,051,400,000 to 719,650,000 B at `column_chunk = 6250`.
+  `gpuwm check` against a 19.5 GiB budget now names `--column-chunk 3125`,
+  one halving of the configured 6250, where the same case had to be walked
+  back two halvings to 1562 before. The whole chunk ladder flattened with
+  it: 6250 down to 256 buys 824 MB where it used to buy 2,293 MB.
+- `gpuwm fetch --source era5` writes `era5-cds-retrieve.py` beside the
+  request document and prints the one command that runs it. The script
+  retrieves both CDS parts and byte-concatenates them into
+  `era5-combined.grib`, resolving every path from its own location, so it
+  produces the same files from any working directory and under any
+  interpreter -- including a WSL python3 reached from Windows, whose
+  command is printed with the path already translated. The request's two
+  targets are absolute paths under `--out` instead of bare leaf names.
+- `gpuwm fetch --source era5 --validate` reports the delivered
+  geographic extent -- grid shape, spacing and corners -- and, when
+  `--area` is given, FAILS a file whose grid falls more than one grid
+  cell short of the requested box on any edge, naming the edge and the
+  shortfall. One cell is the provider's own inward snap onto its native
+  grid. Without `--area` the extent is printed followed by a line saying
+  it was checked against nothing. Two different grids in one file set
+  fail: the two requests were not made with the same area.
+- `gpuwm doctor` checks that the directory holding the `gpuwm` console
+  script is on PATH, and prints the exact line that fixes it. An
+  editable or `--user` install writes the launchers where PATH does not
+  look, and every command this product prints then answers that `gpuwm`
+  is not recognized.
+
+Fixed:
+- `gpuwm downscale` runs a full-physics child without `--child-surface-from`.
+  The child's land identity and soil warm start are taken from the parent's
+  own history frame and put on the child grid by WRF's nest-birth operators:
+  categories and the landmask by donor-cell copy, the surface/soil family by
+  the Registry's masked land interpolator. Previously the flag was mandatory
+  and pointed at a file no command could produce for a config-driven parent,
+  so a full-physics child of a `[case_data]` run was unreachable; measured on
+  a 12 km ERA5 parent, the same invocation refused before and finishes now.
+  The flag stays as the higher-fidelity route -- a derived child inherits its
+  parent's coastlines and lakes, which the run warns about once and records
+  in `report.json`. The surface is resolved before the parent archive is
+  decoded, so a parent that cannot seed a child refuses at plan time instead
+  of after the preprocessing.
+- `gpuwm downscale --point` writes the derived child config to
+  `<out>/child.toml`, inside the run it describes, instead of
+  `<out>.child.toml` beside it. `--dry-run` still writes beside `--out`,
+  because reserving that directory during a plan would make the run that
+  follows refuse, and it now says so.
+- Static fields no longer depend on which source window a build happened to
+  read. On a geography source that wraps in x, points below the window
+  origin were shifted by the global width and shifted straight back by the
+  tile interpolator, a lossy round trip in floating point, so two builds
+  covering the same ground sampled the source at coordinates differing in
+  their last bits. A moving nest whose parent-extent statics corridor
+  crossed the source's wrap seam therefore refused every relocation
+  (HGT_M differing in 11581 of 39204 shared cells by up to 2.8e-11 m) and
+  wrote no frames after the first move. Measured on the same tree after
+  the fix: 3519936 cells compared per move, zero mismatches, two moves
+  completed, 26 frames.
+
 ## 2.5.1 (2026-08-20)
 
 New:

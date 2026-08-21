@@ -369,9 +369,13 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         '_gas_vmr': 1,
         '_interface_temperatures': 1,
         '_interpolation_metadata': 2,
-        '_lw_rte': 3,
+        # The block-fold refactor left each solver TWO allocation paths:
+        # flux outputs when `out` is None, plus the partial-flux arrays on
+        # the non-folding branch (which production never takes -- its
+        # allocations exist textually, not at runtime).
+        '_lw_rte': 5,
         '_planck_sources': 3,
-        '_sw_rte': 3,
+        '_sw_rte': 6,
         '_validation_flags_device': 1,
         '_workspace_output': 1,
         'delta_scale': 1,

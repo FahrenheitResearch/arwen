@@ -490,7 +490,8 @@ def test_above_model_cap_and_metadata_are_exact_chunk_local_with_tail(
         clear_rows.append((upper_nlay, value.shape[0]))
         return original_append(value, upper_nlay, **kwargs)
 
-    def metadata_spy(tables, play_chunk, tlay_chunk, *, validate):
+    def metadata_spy(tables, play_chunk, tlay_chunk, *, validate,
+                     scratch=None):
         assert not validate
         assert play_chunk.shape == tlay_chunk.shape
         metadata_shapes.append((tables.kind, play_chunk.shape))
@@ -542,6 +543,228 @@ def test_above_model_cap_and_metadata_are_exact_chunk_local_with_tail(
         1, 1, 1, 1, 1,
         3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
         1, 1, 1, 1, 1]
+
+
+def test_uniform_top_above_model_fast_path_is_bitwise_identical():
+    """The cap above the model is built from `plev[:, -1]`, and WRF's mass
+    coordinate makes that ONE number for the whole grid.  `uniform_top`
+    exploits that: the pressure ladder and the two climatology lookups on
+    it become cached (1, upper) rows instead of (ncol, upper) arrays
+    rebuilt per chunk.
+
+    The claim is checked on device once per firing by the driver, so what
+    has to hold here is that granting it changes nothing -- every field of
+    the extended profile, bit for bit, across model tops that give
+    different upper-layer counts.
+    """
+    cp = pytest.importorskip("cupy")
+    from gpuwm.core.rrtmgp import (DTYPE, _extend_above_model_profile,
+                                   rrtmgp_above_model_layer_counts)
+
+    rng = np.random.default_rng(11)
+    seen = set()
+    for p_top in (10000.0, 5000.0, 1000.0, 20000.0):
+        seen.add(rrtmgp_above_model_layer_counts(p_top)[0])
+        for kind in ("lw", "sw"):
+            for ncol, nlay in ((1024, 49), (377, 49), (1, 49)):
+                edge = np.linspace(101325.0, p_top, nlay + 1)
+                plev = cp.asarray(np.tile(edge, (ncol, 1)), dtype=DTYPE)
+                plev[:, -1] = DTYPE(p_top)
+                play = cp.asarray(
+                    np.tile(0.5 * (edge[:-1] + edge[1:]), (ncol, 1)),
+                    dtype=DTYPE)
+                tlay = cp.asarray(rng.uniform(190, 310, (ncol, nlay)),
+                                  dtype=DTYPE)
+                tlev = cp.asarray(rng.uniform(190, 310, (ncol, nlay + 1)),
+                                  dtype=DTYPE)
+                qv = cp.asarray(rng.uniform(1e-7, 3e-2, (ncol, nlay)),
+                                dtype=DTYPE)
+                kwargs = dict(p_top=p_top, kind=kind, xp=cp,
+                              validate_top=False)
+                slow = _extend_above_model_profile(
+                    play, plev, tlay, tlev, qv, uniform_top=False, **kwargs)
+                fast = _extend_above_model_profile(
+                    play, plev, tlay, tlev, qv, uniform_top=True, **kwargs)
+                assert slow.upper_nlay == fast.upper_nlay
+                for field in ("play", "plev", "tlay", "tlev", "qv"):
+                    a = getattr(slow, field)
+                    b = getattr(fast, field)
+                    assert a.shape == b.shape, (kind, field, p_top)
+                    assert bool(cp.all(a.view(cp.uint32)
+                                       == b.view(cp.uint32))), (
+                        f"{kind} {field} p_top={p_top} {ncol}x{nlay}")
+    # The tops chosen actually exercise different ladder lengths, so this is
+    # not four repeats of one shape.
+    assert len(seen) == 4
+
+
+def test_the_driver_checks_the_uniform_top_claim_it_passes_down():
+    """`uniform_top` is a promise about the data, and the chunk loop is
+    bit-exact only while it holds -- so the driver must MEASURE it, not
+    assume it.  Exact equality, because the tolerance in
+    `_validate_model_top_interface` would wave through a one-ULP spread
+    that still changes the synthetic cap."""
+    import inspect
+    from gpuwm.core.rrtmgp import RRTMGPRadiation
+
+    source = inspect.getsource(RRTMGPRadiation.__call__)
+    assert "uniform_top = bool(cp.all(plev[:, -1] == plev[0, -1]))" in source
+    assert source.count("uniform_top=uniform_top") == 2
+
+
+def test_rte_tile_scales_with_the_kernel_frame_not_a_fixed_thread_count():
+    """The g-point tile trades parallelism against the per-thread column
+    frame the solver spills to local memory.  It was tuned when BOTH
+    solvers carried 1.2-2.7 kB; halving LW to 592 B moved its optimum to
+    twice the SM coverage while SW, still at 2088 B, stayed put.
+
+    Asserting the split rather than the numbers: LW must get a bigger tile
+    than SW at the same column count, and the fallback for a caller with no
+    kernel in hand must be the conservative one.
+    """
+    cp = pytest.importorskip("cupy")
+    del cp
+    from gpuwm.core.rrtmgp import _rte_gpt_tile, _rte_kernel
+
+    lw = _rte_kernel("rrtmgp_lw_noscat", 74)
+    sw = _rte_kernel("rrtmgp_sw_2stream", 74)
+    assert lw.attributes["local_size_bytes"] <= 1024
+    assert sw.attributes["local_size_bytes"] > 1024
+
+    lw_tile = _rte_gpt_tile(lw, 1024, 256)
+    sw_tile = _rte_gpt_tile(sw, 1024, 224)
+    assert lw_tile == 2 * sw_tile, (lw_tile, sw_tile)
+    # No kernel to inspect -> the frame is unknown -> take the small tile.
+    assert _rte_gpt_tile(None, 1024, 256) == sw_tile
+    # Still bounded by the g-point count and never zero.
+    assert _rte_gpt_tile(lw, 1024, 8) <= 8
+    assert _rte_gpt_tile(lw, 10 ** 9, 256) >= 1
+
+
+def test_rte_tile_coverage_override_is_measurement_only(monkeypatch):
+    """The override exists so the two settings can be INTERLEAVED in one
+    session.  Comparing a block of runs against a block taken later gave a
+    wrong answer here: the control moved 7.7% between the groups and the
+    normaliser does not survive a regime change (HOWTO 13.5e)."""
+    pytest.importorskip("cupy")
+    from gpuwm.core.rrtmgp import _rte_gpt_tile, _rte_kernel
+
+    lw = _rte_kernel("rrtmgp_lw_noscat", 74)
+    default = _rte_gpt_tile(lw, 1024, 256)
+    monkeypatch.setenv("GPUWM_RTE_TILE_COVERAGE", "1")
+    assert _rte_gpt_tile(lw, 1024, 256) == default // 2
+    monkeypatch.delenv("GPUWM_RTE_TILE_COVERAGE")
+    assert _rte_gpt_tile(lw, 1024, 256) == default
+
+
+def test_chunk_prep_scratch_reuses_buffers_only_when_asked():
+    """`_prepare_above_model_chunk` allocated ~15 fresh arrays per call,
+    2364 times an hour, and profiles at 2.78 s of HOST against 0.98 s of
+    device.  `scratch=True` hands back views of reused buffers instead.
+
+    That is a CONTRACT, not just an optimisation: the caller must finish
+    with a chunk before asking for the next of the same kind and shape.
+    Only the driver's chunk loop opts in.  Both halves are asserted here --
+    reuse when asked, independence when not -- because a caller that
+    collects chunks and compares them afterwards is exactly what this
+    would silently corrupt, and one already exists in this file.
+    """
+    cp = pytest.importorskip("cupy")
+    from gpuwm.core.rrtmgp import (DTYPE, HydrometeorPaths,
+                                   _prepare_above_model_chunk,
+                                   load_gas_tables)
+
+    ncol, nz = 64, 20
+    edge = np.linspace(101325.0, 10000.0, nz + 1)
+    kw = dict(
+        tables=load_gas_tables("lw"),
+        play=cp.asarray(np.tile(0.5 * (edge[:-1] + edge[1:]), (ncol, 1)),
+                        dtype=DTYPE),
+        plev=cp.asarray(np.tile(edge, (ncol, 1)), dtype=DTYPE),
+        tlay=cp.asarray(np.full((ncol, nz), 250.0), dtype=DTYPE),
+        tlev=cp.asarray(np.full((ncol, nz + 1), 250.0), dtype=DTYPE),
+        qv=cp.asarray(np.full((ncol, nz), 1.0e-3), dtype=DTYPE),
+        cldfra=cp.asarray(np.full((ncol, nz), 0.25), dtype=DTYPE),
+        paths=HydrometeorPaths(*(cp.full((ncol, nz), DTYPE(1.0e-3),
+                                         dtype=DTYPE) for _ in range(4))),
+        p_top=10000.0, kind="lw", xp=cp, validate_top=False, validate=False)
+
+    lo, hi = slice(0, 32), slice(32, 64)
+    a = _prepare_above_model_chunk(columns=lo, scratch=True, **kw)
+    b = _prepare_above_model_chunk(columns=hi, scratch=True, **kw)
+    assert a.cldfra.data.ptr == b.cldfra.data.ptr
+    assert a.paths.clwp.data.ptr == b.paths.clwp.data.ptr
+    assert a.metadata.jt.data.ptr == b.metadata.jt.data.ptr
+    # Five live-at-once clear-layer buffers must never share bytes.
+    ptrs = {v.data.ptr for v in (b.paths.clwp, b.paths.ciwp, b.paths.reliq,
+                                 b.paths.dgice, b.cldfra)}
+    assert len(ptrs) == 5
+
+    c = _prepare_above_model_chunk(columns=lo, scratch=False, **kw)
+    d = _prepare_above_model_chunk(columns=hi, scratch=False, **kw)
+    assert c.cldfra.data.ptr != d.cldfra.data.ptr
+    assert c.metadata.jt.data.ptr != d.metadata.jt.data.ptr
+
+    # Reuse must not change a single bit, and the clear tail the first call
+    # zeroed must still be zero after the buffer has been recycled.
+    for field in ("play", "plev", "tlay", "tlev", "qv"):
+        assert bool(cp.all(getattr(b.profile, field).view(cp.uint32)
+                           == getattr(d.profile, field).view(cp.uint32)))
+    assert bool(cp.all(b.cldfra.view(cp.uint32) == d.cldfra.view(cp.uint32)))
+    assert bool(cp.all(b.cldfra[:, nz:] == DTYPE(0.0)))
+    assert bool(cp.all(b.paths.clwp[:, nz:] == DTYPE(0.0)))
+
+
+def test_gas_vmr_fused_kernel_matches_the_expression_reference():
+    """`_gas_vmr` builds the whole VMR cube in one kernel; the expression
+    sequence it replaced survives as `_gas_vmr_expressions`, and the two
+    must agree BITWISE -- this feeds the gas optics, so a last-bit drift is
+    a physics change.
+
+    The ozone slot is the reason this test exists.  `cupy.interp` returns
+    float64 even from float32 tables, and the CuPy path narrowed it on the
+    store; the kernel therefore takes a double and narrows on its own
+    store.  Read as float32 instead, every cell of that one slot is
+    garbage and nothing else moves -- which is exactly what this caught.
+    """
+    cp = pytest.importorskip("cupy")
+    from gpuwm.core.rrtmgp import RRTMGPRadiation, load_gas_tables
+
+    adapter = object.__new__(RRTMGPRadiation)
+    pressure = np.array([0.5, 1.0, 5.0, 20.0, 1.0e2, 3.0e2, 7.0e2, 1013.0])
+    pressure = pressure * 100.0
+    ozone = np.array([2e-6, 4e-6, 8e-6, 6e-6, 1e-6, 8e-8, 5e-8, 3e-8])
+    order = np.argsort(pressure)
+    adapter._ozone_logp = cp.asarray(np.log(pressure[order]), dtype=np.float32)
+    adapter._ozone_vmr = cp.asarray(ozone[order], dtype=np.float32)
+
+    rng = np.random.default_rng(7)
+    checked = 0
+    for kind in ("lw", "sw"):
+        tables = load_gas_tables(kind)
+        for trace in ({"co2": 4.2e-4},
+                      {"co2": 4.2e-4, "ch4": 1.9e-6, "n2o": 3.3e-7},
+                      {}):
+            adapter.trace_vmr = trace
+            for ncol, nlay in ((1024, 74), (377, 50), (1, 4)):
+                play = cp.asarray(
+                    np.exp(rng.uniform(np.log(2.0), np.log(1.0e5),
+                                       (ncol, nlay))), dtype=np.float32)
+                qv = cp.asarray(rng.uniform(0.0, 3.0e-2, (ncol, nlay)),
+                                dtype=np.float32)
+                want = adapter._gas_vmr_expressions(
+                    cp, tables, play, qv, validate=False, out=None)
+                # A DIRTY workspace buffer, so a slot the kernel forgets to
+                # write shows up instead of reading back a helpful zero.
+                dirty = cp.full((ncol, nlay, tables.ngas + 1),
+                                np.float32(-7.5), dtype=np.float32)
+                got = adapter._gas_vmr(tables, play, qv, validate=False,
+                                       out=dirty)
+                assert bool(cp.all(want.view(cp.uint32)
+                                   == got.view(cp.uint32))), (
+                    f"{kind} trace={len(trace)} {ncol}x{nlay} differs")
+                checked += 1
+    assert checked == 18
 
 
 def test_above_model_gas_and_ozone_fill_every_appended_layer(monkeypatch):
@@ -1432,6 +1655,88 @@ def test_rrtmgp_sw_two_stream_conservative_column_energy(top_at_1):
         # to better than 0.02% while avoiding catastrophic cancellation.
         rtol=2e-4, atol=1e-5)
     assert np.all(got.flux_up >= 0.0) and np.all(got.flux_dn >= 0.0)
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_rte_warp_fold_matches_the_reduce_pass_it_replaces():
+    """Folding a tile in a block gives the flux the reduce kernel gave.
+
+    When the tile is wide enough to be worth it and divides the band, the
+    solvers take one block per column, sum the tile through shared memory
+    and write the flux themselves; the partial-flux arrays and
+    ``rrtmgp_*_flux_reduce`` are then not used at all.  The tile only
+    decides how the ascending g-point sum is BROKEN UP -- every pass
+    continues from the running flux -- so a tile of 16, too narrow to be
+    worth folding, is an exact reference for one that folds.  Both go
+    through the shipped launchers, so this covers the dispatch as well as
+    the arithmetic.
+
+    Each band is checked at the tile its own launcher would pick.  SW's is
+    32 rather than 64 because ngpt 224 admits no power of two above it.
+    """
+    import cupy as cp
+    import gpuwm.core.rrtmgp as rrtmgp
+
+    original = rrtmgp._rte_gpt_tile
+
+    def with_tile(forced, run):
+        rrtmgp._rte_gpt_tile = (
+            lambda kernel, ncol, ngpt, _t=forced, **kw: min(_t, int(ngpt)))
+        try:
+            return run()
+        finally:
+            rrtmgp._rte_gpt_tile = original
+
+    for ncol, nlay in ((176, 40), (37, 12), (1, 8)):
+        rng = np.random.default_rng(ncol * 7 + nlay)
+        nlev = nlay + 1
+        for kind, ngpt, fold_tile in (("lw", 256, 64),
+                                      ("sw", 224, 32)):
+            tau = cp.asarray(rng.uniform(0, 4, (ncol, nlay, ngpt)), np.float32)
+            if kind == "lw":
+                lay_s = cp.asarray(
+                    rng.uniform(0, 20, (ncol, nlay, ngpt)), np.float32)
+                lev_s = cp.asarray(
+                    rng.uniform(0, 20, (ncol, nlev, ngpt)), np.float32)
+                sfc_s = cp.asarray(
+                    rng.uniform(0, 20, (ncol, ngpt)), np.float32)
+                emis = cp.asarray(
+                    rng.uniform(0.7, 1.0, (ncol, ngpt)), np.float32)
+
+                def run(top):
+                    return rrtmgp._lw_rte(
+                        tau, lay_s, lev_s, sfc_s, emis, top_at_1=top,
+                        out=None, incident_out=None)
+
+                fields = ("flux_up", "flux_dn")
+            else:
+                ssa = cp.asarray(
+                    rng.uniform(0, 1, (ncol, nlay, ngpt)), np.float32)
+                asym = cp.asarray(
+                    rng.uniform(0, 0.9, (ncol, nlay, ngpt)), np.float32)
+                mu0 = cp.asarray(
+                    rng.uniform(0.05, 1.0, (ncol, nlay)), np.float32)
+                alb = cp.asarray(rng.uniform(0, 1, (ncol, ngpt)), np.float32)
+                inc = cp.asarray(rng.uniform(1, 100, (ncol, ngpt)), np.float32)
+
+                def run(top):
+                    return rrtmgp._sw_rte(
+                        tau, ssa, asym, mu0, alb, alb, inc, top_at_1=top,
+                        out=None)
+
+                fields = ("flux_up", "flux_dn", "flux_dir")
+            for top_at_1 in (False, True):
+                reduced = with_tile(16, lambda: run(top_at_1))
+                folded = with_tile(fold_tile, lambda: run(top_at_1))
+                for name in fields:
+                    want = getattr(reduced, name)
+                    got = getattr(folded, name)
+                    np.testing.assert_array_equal(
+                        cp.asnumpy(want).view(np.uint32),
+                        cp.asnumpy(got).view(np.uint32),
+                        err_msg=(f"{kind} {name} ncol={ncol} nlay={nlay} "
+                                 f"top_at_1={top_at_1} is not bit-identical"))
 
 
 @pytest.mark.gpu
@@ -2547,6 +2852,83 @@ def test_mcica_maxran_masks_match_float64_mirror_and_overlap():
     assert (other[2, 9] != got[2, 9]).any()
 
 
+def test_mcica_jump_operators_fold_the_levels_exactly():
+    """One folded operator per subcolumn == walking that subcolumn's levels.
+
+    The kernel used to apply up to ``bit_length(ngpt-1)`` level operators,
+    one per set bit of ``g``.  It now applies a single operator the host
+    folded, which is only legal because every level is a power of one map
+    and each of the four algebras composes exactly: affine mod 2**32, GF(2)
+    matrix product, and modular multiplication of the two MWC residues.
+    This is that claim, checked against the walk it replaced -- on the host,
+    so it holds without a GPU and fails loudly if either side drifts.
+    """
+    from gpuwm.core.rrtmgp import (
+        _MCICA_MWC, _mcica_gf2_apply, _mcica_jump_tables,
+        _mcica_xorshift_step_matrix)
+
+    def level_operators(nlay, njump):
+        a, c = 69069, 1327217885
+        A, C = 1, 0
+        for _ in range(nlay):
+            A, C = (a * A) & 0xFFFFFFFF, (a * C + c) & 0xFFFFFFFF
+        affine = []
+        for _ in range(njump):
+            affine.append((A, C))
+            A, C = (A * A) & 0xFFFFFFFF, (A * C + C) & 0xFFFFFFFF
+        step = _mcica_xorshift_step_matrix()
+        M = [1 << i for i in range(32)]
+        for _ in range(nlay):
+            M = [_mcica_gf2_apply(step, col) for col in M]
+        matrices = []
+        for _ in range(njump):
+            matrices.append(M)
+            M = [_mcica_gf2_apply(M, col) for col in M]
+        mwc = []
+        for _, modulus in _MCICA_MWC:
+            m = pow(pow(65536, -1, modulus), nlay, modulus)
+            level = []
+            for _ in range(njump):
+                level.append(m)
+                m = (m * m) % modulus
+            mwc.append(level)
+        return affine, matrices, mwc
+
+    p3, p4 = _MCICA_MWC[0][1], _MCICA_MWC[1][1]
+    rng = np.random.default_rng(20260819)
+    for nlay, ngpt in ((99, 256), (75, 224), (5, 16)):
+        njump = max(1, int(ngpt - 1).bit_length())
+        affine, matrices, mwc = level_operators(nlay, njump)
+        _, f1, f2, f3, f4 = _mcica_jump_tables(nlay, ngpt)
+        f1 = np.asarray(getattr(f1, "get", lambda: f1)()).reshape(ngpt, 2)
+        f2 = np.asarray(getattr(f2, "get", lambda: f2)()).reshape(ngpt, 32)
+        f3 = np.asarray(getattr(f3, "get", lambda: f3)())
+        f4 = np.asarray(getattr(f4, "get", lambda: f4)())
+        for g in range(ngpt):
+            s1, s2 = (int(x) for x in rng.integers(1, 2 ** 32 - 1, 2))
+            s3 = int(rng.integers(2, p3))
+            s4 = int(rng.integers(2, p4))
+            walk1, walk2, walk3, walk4 = s1, s2, s3 % p3, s4 % p4
+            rest, j = g, 0
+            while rest:
+                if rest & 1:
+                    A, C = affine[j]
+                    walk1 = (A * walk1 + C) & 0xFFFFFFFF
+                    walk2 = _mcica_gf2_apply(matrices[j], walk2)
+                    walk3 = (walk3 * mwc[0][j]) % p3
+                    walk4 = (walk4 * mwc[1][j]) % p4
+                rest >>= 1
+                j += 1
+            folded = (
+                (int(f1[g, 0]) * s1 + int(f1[g, 1])) & 0xFFFFFFFF,
+                _mcica_gf2_apply([int(v) for v in f2[g]], s2),
+                (s3 % p3) * int(f3[g]) % p3,
+                (s4 % p4) * int(f4[g]) % p4,
+            )
+            assert folded == (walk1, walk2, walk3, walk4), (
+                f"subcolumn {g} of {ngpt} (nlay={nlay}) lands elsewhere")
+
+
 @pytest.mark.gpu
 @requires_gpu
 def test_mcica_fraction_weighting_produces_intermediate_fluxes():
@@ -3497,3 +3879,137 @@ def test_preflight_prices_radius_columns_for_exactly_the_schemes_that_use_them()
             f"mp_physics={mp_physics}: preflight prices effc/effi/effs "
             f"columns={priced}, but changing effi from 5 to 40 um moved "
             f"the radiation answer={consumes}")
+
+
+def test_fused_finalize_matches_the_kernel_it_replaces():
+    """The solver's in-register finalize equals finalize-kernel-then-solver.
+
+    The workspace driver no longer launches rrtmgp_finalize_cloud_lw/_sw:
+    the solvers combine gas optics, band cloud optics and the McICA mask in
+    registers (``FusedCloudOptics``), replicating that kernel's per-op
+    rounding exactly.  Flux-level bitwise equality over both bands, with
+    and without a mask, is the claim -- any single-ulp difference in the
+    combined tau propagates through expf and shows up across millions of
+    elements.
+    """
+    import cupy as cp
+
+    import gpuwm.core.rrtmgp as rrtmgp
+
+    if not hasattr(cp, "RawModule"):
+        pytest.skip("device-only path")
+    rng = np.random.default_rng(21)
+    D = rrtmgp.DTYPE
+    for kind, nlay in (("lw", 30), ("sw", 22)):
+        tables = rrtmgp.load_gas_tables(kind)
+        ngpt, nband = tables.ngpt, tables.nband
+        ncol = 96
+        shp = (ncol, nlay, ngpt)
+        gas_tau = cp.asarray(rng.uniform(0, 4, shp), dtype=D)
+        gas_ssa = cp.asarray(rng.uniform(0, 1, shp), dtype=D)
+        bshp = (ncol, nlay, nband)
+        cld = rrtmgp.CloudOpticsResult(
+            tau=cp.asarray(rng.uniform(0, 5, bshp), dtype=D),
+            ssa=cp.asarray(rng.uniform(0, 1, bshp), dtype=D),
+            g=cp.asarray(rng.uniform(0, 0.9, bshp), dtype=D))
+        for mask in (cp.asarray(rng.integers(0, 2, shp), dtype=cp.bool_),
+                     None):
+            fused = rrtmgp.FusedCloudOptics(
+                tables=tables, cloud=cld, mask=mask)
+            if kind == "lw":
+                gas = rrtmgp.GasOpticsResult(tau=gas_tau, col_dry=None)
+                opt = rrtmgp._finalize_cloud_optics(
+                    tables, gas, cld, cloud_mask=mask)
+                lay = cp.asarray(rng.uniform(0, 20, shp), dtype=D)
+                lev = cp.asarray(
+                    rng.uniform(0, 20, (ncol, nlay + 1, ngpt)), dtype=D)
+                sfc = cp.asarray(rng.uniform(0, 20, (ncol, ngpt)), dtype=D)
+                emis = cp.asarray(
+                    rng.uniform(0.7, 1, (ncol, ngpt)), dtype=D)
+                a = rrtmgp._lw_rte(opt.tau, lay, lev, sfc, emis,
+                                   top_at_1=False, out=None,
+                                   incident_out=None)
+                b = rrtmgp._lw_rte(gas_tau, lay, lev, sfc, emis,
+                                   top_at_1=False, out=None,
+                                   incident_out=None, fused_cloud=fused)
+                pairs = ((a.flux_up, b.flux_up), (a.flux_dn, b.flux_dn))
+            else:
+                gas = rrtmgp.GasOpticsResult(
+                    tau=gas_tau, ssa=gas_ssa, col_dry=None)
+                opt = rrtmgp._finalize_cloud_optics(
+                    tables, gas, cld, cloud_mask=mask)
+                mu0 = cp.asarray(rng.uniform(0.05, 1, (ncol,)), dtype=D)
+                alb = cp.asarray(rng.uniform(0, 1, (ncol, ngpt)), dtype=D)
+                inc = cp.asarray(
+                    rng.uniform(1, 100, (ncol, ngpt)), dtype=D)
+                a = rrtmgp._sw_rte(opt.tau, opt.ssa, opt.g, mu0, alb, alb,
+                                   inc, top_at_1=False, out=None)
+                b = rrtmgp._sw_rte(gas_tau, gas_ssa, None, mu0, alb, alb,
+                                   inc, top_at_1=False, out=None,
+                                   fused_cloud=fused)
+                pairs = ((a.flux_up, b.flux_up), (a.flux_dn, b.flux_dn),
+                         (a.flux_dir, b.flux_dir))
+            for x, y in pairs:
+                assert bool(cp.all(x.view(cp.uint32) == y.view(cp.uint32))), (
+                    kind, mask is not None)
+
+
+def test_in_solver_planck_matches_the_kernel():
+    """The LW solver's derived Planck sources equal the standalone kernel's.
+
+    The workspace driver passes ``PlanckInputs`` and the solver evaluates
+    lay/lev/sfc_source in registers, with every FP operation pinned to the
+    standalone kernel's SASS (rrtmgp_planck_common.cuh).  This test holds
+    the two implementations together bitwise at the flux level -- and
+    because that header is a COPY of arithmetic living in rrtmgp_gas.cu,
+    it is also the tripwire for the two ever drifting apart.
+    """
+    import cupy as cp
+
+    import gpuwm.core.rrtmgp as rrtmgp
+
+    if not hasattr(cp, "RawModule"):
+        pytest.skip("device-only path")
+    D = rrtmgp.DTYPE
+    tables = rrtmgp.load_gas_tables("lw")
+    ngpt = tables.ngpt
+    rng = np.random.default_rng(23)
+    for ncol, nlay in ((96, 30), (7, 12)):
+        nlev = nlay + 1
+        edge = np.linspace(101325.0, 2.0, nlev)
+        play = cp.asarray(np.tile(0.5 * (edge[:-1] + edge[1:]), (ncol, 1)),
+                          dtype=D)
+        plev = cp.asarray(np.tile(edge, (ncol, 1)), dtype=D)
+        tlay = cp.asarray(rng.uniform(190, 320, (ncol, nlay)), dtype=D)
+        tlev = cp.asarray(rng.uniform(190, 320, (ncol, nlev)), dtype=D)
+        tsfc = cp.asarray(rng.uniform(250, 320, (ncol,)), dtype=D)
+        qv = cp.asarray(rng.uniform(1e-6, 2e-2, (ncol, nlay)), dtype=D)
+        adapter = object.__new__(rrtmgp.RRTMGPRadiation)
+        pressure = np.array([0.5, 1, 5, 20, 100, 300, 700, 1013.0]) * 100.0
+        ozone = np.array([2e-6, 4e-6, 8e-6, 6e-6, 1e-6, 8e-8, 5e-8, 3e-8])
+        order = np.argsort(pressure)
+        adapter._ozone_logp = cp.asarray(np.log(pressure[order]), dtype=D)
+        adapter._ozone_vmr = cp.asarray(ozone[order], dtype=D)
+        adapter.trace_vmr = {"co2": 4.2e-4}
+        vmr = adapter._gas_vmr(tables, play, qv, validate=False)
+        meta = rrtmgp._interpolation_metadata(tables, play, tlay,
+                                              validate=False)
+        tau = cp.asarray(rng.uniform(0, 4, (ncol, nlay, ngpt)), dtype=D)
+        emis = cp.asarray(rng.uniform(0.7, 1.0, (ncol, ngpt)), dtype=D)
+        src = rrtmgp._planck_sources(tables, play, plev, tlay, tlev, tsfc,
+                                     vmr, metadata=meta, validate=False,
+                                     out=None)
+        planck = rrtmgp.PlanckInputs(
+            tables=tables, play=play, tlay=tlay, tlev=tlev, tsfc=tsfc,
+            vmr=vmr, metadata=meta)
+        for top_at_1 in (False, True):
+            a = rrtmgp._lw_rte(tau, src.lay_source, src.lev_source,
+                               src.sfc_source, emis, top_at_1=top_at_1,
+                               out=None, incident_out=None)
+            b = rrtmgp._lw_rte(tau, None, None, None, emis,
+                               top_at_1=top_at_1, out=None,
+                               incident_out=None, planck=planck)
+            for n in ("flux_up", "flux_dn"):
+                x, y = getattr(a, n), getattr(b, n)
+                assert bool(cp.all(x.view(cp.uint32) == y.view(cp.uint32))), (
+                    ncol, nlay, top_at_1, n)

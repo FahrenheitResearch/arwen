@@ -1,4 +1,4 @@
-// RRTMGP gas optical depths, one CUDA thread per atmospheric column.
+// RRTMGP gas optical depths, one CUDA thread per (column, layer, g-point).
 //
 // Transcribed from earth-system-radiation/rte-rrtmgp fa107a1:
 // rrtmgp/kernels/mo_gas_optics_rrtmgp_kernels.F90
@@ -90,14 +90,37 @@ extern "C" __global__ void rrtmgp_gas_optics(
     const int* idx_minor_lower, const int* idx_minor_upper,
     const int* idx_scaling_lower, const int* idx_scaling_upper,
     const int* kminor_start_lower, const int* kminor_start_upper,
+    const int* minor_gpt_start_lower, const int* minor_gpt_list_lower,
+    const int* minor_gpt_start_upper, const int* minor_gpt_list_upper,
     const float* rayleigh,
     float* tau, float* ssa,
     int ncol, int nlay, int ngas, int nflav, int ngpt,
     int ntemp, int npres, int neta,
-    int nminor_lower, int nminor_upper,
-    int nk_lower, int nk_upper, int idx_h2o, int is_sw) {
-  const int col = blockDim.x * blockIdx.x + threadIdx.x;
-  if (col >= ncol) return;
+    int nk_lower, int nk_upper, int idx_h2o, int is_sw,
+    int nminor_lower, int nminor_upper) {
+  // One thread per (column, layer, g-point).  Neither loop this replaces
+  // carried anything across iterations -- every output element is a pure
+  // function of its own (cell, gpt) -- so the transcribed body is unchanged
+  // and the answers are bit-identical to the one-thread-per-column launch.
+  // The bare scopes keep that body byte-for-byte auditable against the
+  // Fortran ranges cited above.
+  //
+  // ONE BLOCK PER CELL, threads striding the g-point axis.  The flat
+  // one-thread-per-(cell, g-point) launch it replaces made every one of a
+  // cell's ngpt threads rebuild the per-cell preamble; at 64 threads a
+  // thread now covers four g-points and pays for it once, and the whole
+  // per-cell working set stays in registers across them.  Ablated by
+  // removal: the geometry alone is worth 41% of the kernel and the shared
+  // scaling below another 8%, and registers fall 56 -> 40.  Bit-identical
+  // either way -- every output element is still a pure function of its own
+  // (cell, g-point), evaluated by the same expressions in the same order.
+  const int cell_id = blockIdx.x;
+  // The WHOLE block leaves together, so the __syncthreads below is reached
+  // by every thread that reaches the block at all.
+  if (cell_id >= ncol * nlay) return;
+  const int col = cell_id / nlay;
+  const int lay = cell_id - col * nlay;
+  extern __shared__ float s_scaling[];
 
   const int npressk = npres + 1;
   const float avogad = 6.02214076e23f;
@@ -105,7 +128,7 @@ extern "C" __global__ void rrtmgp_gas_optics(
   const float m_h2o = 0.018016f;
   const float grav = 9.80665f;
 
-  for (int lay = 0; lay < nlay; ++lay) {
+  {
     const int cell = col * nlay + lay;
     const float p = play[cell];
     const float t = tlay[cell];
@@ -122,7 +145,49 @@ extern "C" __global__ void rrtmgp_gas_optics(
     const float ftemp = ftemp_meta[cell];
     const float fpress = fpress_meta[cell];
 
-    for (int gpt = 0; gpt < ngpt; ++gpt) {
+    const int nk = iatm == 0 ? nk_lower : nk_upper;
+    const float* kminor = iatm == 0 ? kminor_lower : kminor_upper;
+    const int* limits = iatm == 0 ? minor_limits_lower : minor_limits_upper;
+    const unsigned char* density = iatm == 0 ? density_lower : density_upper;
+    const unsigned char* complement = iatm == 0
+        ? complement_lower : complement_upper;
+    const int* idx_minor = iatm == 0 ? idx_minor_lower : idx_minor_upper;
+    const int* idx_scaling = iatm == 0
+        ? idx_scaling_lower : idx_scaling_upper;
+    const int* starts = iatm == 0 ? kminor_start_lower : kminor_start_upper;
+    // Only the minor entries whose g-point range covers a given thread, in
+    // ascending `m`.  Scanning all of them and skipping was 94% waste: a
+    // g-point matches 3.8 of the 60 LW lower entries on average.  The CSR
+    // list preserves the visit order exactly, so `tau_abs` takes the same
+    // additions in the same sequence -- bit-identical, not close.
+    const int* mstart = iatm == 0
+        ? minor_gpt_start_lower : minor_gpt_start_upper;
+    const int* mlist = iatm == 0
+        ? minor_gpt_list_lower : minor_gpt_list_upper;
+    // `scaling` is a function of the CELL and the minor entry, never of the
+    // g-point -- but each entry covers a band, so every entry's scaling was
+    // being evaluated once per g-point in that band: ~16 evaluations of one
+    // expression, two divisions each.  The block computes each exactly once.
+    // Same expression, same operand order, same bits.
+    const int nminor = iatm == 0 ? nminor_lower : nminor_upper;
+    for (int mm = threadIdx.x; mm < nminor; mm += blockDim.x) {
+      const int im = idx_minor[mm];
+      float scaling = (im == 0 ? col_dry
+          : vmr[cell * (ngas + 1) + im] * col_dry);
+      if (density[mm]) {
+        scaling *= 0.01f * p / t;
+        const int iscale = idx_scaling[mm];
+        if (iscale > 0) {
+          const float special = vmr[cell * (ngas + 1) + iscale]
+                                / (1.0f + h2o_vmr);
+          scaling *= complement[mm] ? 1.0f - special : special;
+        }
+      }
+      s_scaling[mm] = scaling;
+    }
+    __syncthreads();
+
+    for (int gpt = threadIdx.x; gpt < ngpt; gpt += blockDim.x) {
       const int iflav = gpoint_flavor[iatm * ngpt + gpt];
       const int gas1 = flavor[iflav * 2];
       const int gas2 = flavor[iflav * 2 + 1];
@@ -166,33 +231,11 @@ extern "C" __global__ void rrtmgp_gas_optics(
                                   neta, npressk, ngpt)]);
       }
 
-      const int nminor = iatm == 0 ? nminor_lower : nminor_upper;
-      const int nk = iatm == 0 ? nk_lower : nk_upper;
-      const float* kminor = iatm == 0 ? kminor_lower : kminor_upper;
-      const int* limits = iatm == 0 ? minor_limits_lower : minor_limits_upper;
-      const unsigned char* density = iatm == 0 ? density_lower : density_upper;
-      const unsigned char* complement = iatm == 0
-          ? complement_lower : complement_upper;
-      const int* idx_minor = iatm == 0 ? idx_minor_lower : idx_minor_upper;
-      const int* idx_scaling = iatm == 0
-          ? idx_scaling_lower : idx_scaling_upper;
-      const int* starts = iatm == 0 ? kminor_start_lower : kminor_start_upper;
-      for (int m = 0; m < nminor; ++m) {
+      const int q_end = mstart[gpt + 1];
+      for (int q = mstart[gpt]; q < q_end; ++q) {
+        const int m = mlist[q];
         const int gs = limits[m * 2];
-        const int ge = limits[m * 2 + 1];
-        if (gpt < gs || gpt > ge) continue;
-        const int im = idx_minor[m];
-        float scaling = (im == 0 ? col_dry
-            : vmr[cell * (ngas + 1) + im] * col_dry);
-        if (density[m]) {
-          scaling *= 0.01f * p / t;
-          const int iscale = idx_scaling[m];
-          if (iscale > 0) {
-            const float special = vmr[cell * (ngas + 1) + iscale]
-                                  / (1.0f + h2o_vmr);
-            scaling *= complement[m] ? 1.0f - special : special;
-          }
-        }
+        const float scaling = s_scaling[m];
         const int kk = starts[m] + (gpt - gs);
         const float kval =
             fm[0][0] * kminor[k2_index(jt,     je[0],     kk, neta, nk)]
@@ -243,8 +286,17 @@ extern "C" __global__ void rrtmgp_planck_sources(
     const float* totplnk, float* lay_source, float* lev_source,
     float* sfc_source, int ncol, int nlay, int ngas, int ngpt,
     int ntemp, int npres, int neta, int nband, int nplanck) {
-  const int col = blockDim.x * blockIdx.x + threadIdx.x;
-  if (col >= ncol || nlay > 128) return;
+  // One thread per (column, g-point).  The g-point loop this replaces was
+  // fully independent: `pfrac` is rebuilt from scratch inside every iteration
+  // and no output slot is written by two g-points.  Keeping `pfrac` in the
+  // thread (rather than staging it globally) is what makes this free -- the
+  // level sources still read their adjacent layers out of local memory, and
+  // consecutive threads now write consecutive g-points of every output.
+  const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  if (nlay > 128) return;
+  const int col = tid / ngpt;
+  const int gpt = tid - col * ngpt;
+  if (col >= ncol) return;
   const int nlev = nlay + 1;
   const int npressk = npres + 1;
   const float dplanck = (temp_ref[ntemp - 1] - temp_ref[0])
@@ -253,7 +305,7 @@ extern "C" __global__ void rrtmgp_planck_sources(
       ? nlay - 1 : 0;
   float pfrac[128];
 
-  for (int gpt = 0; gpt < ngpt; ++gpt) {
+  {
     const int band = gpoint_bands[gpt];
     for (int lay = 0; lay < nlay; ++lay) {
       const int cell = col * nlay + lay;
@@ -314,4 +366,42 @@ extern "C" __global__ void rrtmgp_planck_sources(
         * planck_interp(tlev[col * nlev + nlay], band, totplnk,
                         nplanck, nband, temp_ref[0], dplanck);
   }
+}
+
+// One thread per (column, layer) fills that cell's whole gas-VMR row.
+//
+// The row is otherwise built by five separate CuPy expressions -- a full
+// zero fill, a scaled h2o write, an ozone write, and one write per
+// well-mixed trace gas -- each a strided store into the last axis of a
+// (ncol, nlay, ngas+1) cube, and each its own launch.  The stores are
+// cheap; the LAUNCHES are not.  `_gas_vmr` runs once per chunk per band
+// (2364 times an hour) and radiation is submission bound (HOWTO 13.5b),
+// so collapsing five launches into one is the point of this kernel, not
+// the arithmetic.
+//
+// BIT-EXACTNESS.  Every value written here is the value the CuPy path
+// wrote: `h2o_scale` is the caller's float32 cast of 0.028964/0.018016 and
+// the multiply is single precision, `o3` is `cupy.interp`'s own output
+// passed straight through (deliberately NOT recomputed -- matching its
+// last bit is not worth owning), and each trace value is the caller's
+// float32 cast.  Slots no gas claims are zero, as the fill left them.
+extern "C" __global__ void rrtmgp_gas_vmr_fill(
+    const float* __restrict__ qv,        // (ncol, nlay)
+    const double* __restrict__ o3,       // (ncol * nlay,) interp output
+    const int* __restrict__ trace_index, // (ntrace,) slots, may be empty
+    const float* __restrict__ trace_value,
+    float* __restrict__ vmr,             // (ncol, nlay, ngas + 1)
+    float h2o_scale, int h2o_index, int o3_index,
+    int ntrace, int ncells, int nslot) {
+  const int cell = blockDim.x * blockIdx.x + threadIdx.x;
+  if (cell >= ncells) return;
+
+  float* row = vmr + (long long)cell * nslot;
+  for (int s = 0; s < nslot; ++s) row[s] = 0.0f;
+  if (h2o_index >= 0) row[h2o_index] = qv[cell] * h2o_scale;
+  // DOUBLE in, float out: cupy.interp promotes to float64 even for float32
+  // tables, and the CuPy path narrowed it on the store into the float32
+  // cube.  Narrowing here is that same store, not an extra rounding.
+  if (o3_index >= 0) row[o3_index] = (float)o3[cell];
+  for (int t = 0; t < ntrace; ++t) row[trace_index[t]] = trace_value[t];
 }

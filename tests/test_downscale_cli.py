@@ -17,6 +17,7 @@ import pytest
 from gpuwm.cli import main as cli_main
 from gpuwm.config import load_config
 from gpuwm.downscale import (
+    DERIVED_CHILD_CONFIG_NAME,
     _centered_placement,
     _derive_child_run_config,
     _discover_parent_series,
@@ -24,6 +25,7 @@ from gpuwm.downscale import (
     _nearest_parent_index,
     _parse_point,
     _render_child_toml,
+    derived_child_config_path,
 )
 from gpuwm.offline_child import (
     OfflineChildContractError,
@@ -419,6 +421,32 @@ def _surface_child_args(tmp_path):
         "--out", str(tmp_path / "child-run")]
 
 
+def test_derived_child_config_lands_inside_the_run_it_describes(tmp_path):
+    """A run's own config belongs in the run directory, not beside it.
+
+    The walked defect: `--point` derivation wrote `<out>.child.toml`, a
+    SIBLING of `--out`, so a reader who opened the run directory looking
+    for the config it used found no config at all.
+    """
+    outdir = tmp_path / "child-run"
+    assert derived_child_config_path(outdir, dry_run=False) == (
+        outdir / DERIVED_CHILD_CONFIG_NAME)
+    # A dry run must NOT create --out: the run that follows reserves it
+    # with exist_ok=False and would refuse.  It writes beside it instead.
+    planned = derived_child_config_path(outdir, dry_run=True)
+    assert planned.parent == tmp_path and planned != outdir
+
+
+def test_run_accepts_the_output_root_its_caller_reserved(tmp_path):
+    """The never-adopt reservation happens exactly once, not zero times."""
+    from gpuwm.offline_child_run import _create_output_root
+
+    outdir = tmp_path / "child-run"
+    _create_output_root(outdir)
+    with pytest.raises(FileExistsError):
+        _create_output_root(outdir)
+
+
 def test_fit_refusal_names_the_real_error_not_the_budget():
     """A config-invalid derivation must not read as a VRAM verdict.
 
@@ -501,3 +529,137 @@ def test_surface_satisfied_plan_records_no_requirement(tmp_path, capsys):
     plan = json_module.loads(captured.out[captured.out.index("{"):])
     assert plan["child_surface_required"] is False
     assert "child-grid surface source" not in captured.err
+
+
+def _add_parent_surface(path, *, ny, nx, soil=4, lu_water_column=None,
+                        omit=()):
+    """Give an existing parent history frame its land-surface inventory.
+
+    gpuwm's own writer publishes all nine of
+    ``offline_child._SURFACE_REQUIRED_FIELDS`` whenever a land-surface
+    scheme is routed (``io.wrf_output_schema.SURFACE_IDENTITY_OUTPUT_FIELDS``
+    plus the LSM-gated soil family), and stamps the landuse identity
+    attributes.  The ``_history`` fixture predates that inventory, so the
+    surface half is appended here rather than widening a fixture eleven
+    other tests share.
+    """
+    with netCDF4.Dataset(path, "a") as dataset:
+        dataset.MMINLU = "MODIFIED_IGBP_MODIS_NOAH"
+        dataset.ISWATER = 17
+        dataset.ISLAKE = 21
+        dataset.ISICE = 15
+        dataset.ISOILWATER = 14
+        if "soil_layers_stag" not in dataset.dimensions:
+            dataset.createDimension("soil_layers_stag", soil)
+        mass2 = ("Time", "south_north", "west_east")
+        soil3 = ("Time", "soil_layers_stag", "south_north", "west_east")
+        lu = np.full((ny, nx), 7.0, dtype=np.float32)
+        landmask = np.ones((ny, nx), dtype=np.float32)
+        if lu_water_column is not None:
+            lu[:, lu_water_column] = 17.0
+            landmask[:, lu_water_column] = 0.0
+        for name, value in (
+                ("LU_INDEX", lu), ("LANDMASK", landmask),
+                ("ISLTYP", np.full((ny, nx), 6.0, dtype=np.float32)),
+                ("TSK", np.full((ny, nx), 288.0, dtype=np.float32)),
+                ("TMN", np.full((ny, nx), 285.0, dtype=np.float32)),
+                ("VEGFRA", np.full((ny, nx), 50.0, dtype=np.float32)),
+                ("SNOW", np.zeros((ny, nx), dtype=np.float32)),
+                ("SNOWH", np.zeros((ny, nx), dtype=np.float32)),
+                ("T2", np.full((ny, nx), 287.0, dtype=np.float32)),
+                ("Q2", np.full((ny, nx), 0.008, dtype=np.float32))):
+            if name in omit or name in dataset.variables:
+                continue
+            variable = dataset.createVariable(name, "f4", mass2)
+            variable[:] = value[None, ...]
+        for name, value in (("TSLB", 285.0), ("SMOIS", 0.3), ("SH2O", 0.3)):
+            if name in omit:
+                continue
+            variable = dataset.createVariable(name, "f4", soil3)
+            variable[:] = np.full((1, soil, ny, nx), value, dtype=np.float32)
+
+
+def test_child_surface_derived_from_parent_history(tmp_path):
+    """The parent's own history seeds a full-physics child, no extra file.
+
+    Defect #275: an ERA5 parent reached through `gpuwm run` produced no
+    child-grid file anywhere, and every route the product offered for
+    making one was closed, so full-physics downscaling of an ERA5 parent
+    was unreachable.  The parent history already carries all nine
+    required surface fields and the landuse identity attributes; putting
+    them on the child grid is WRF's own nest-birth operator
+    (``interp_mask_field``), not new science.
+    """
+    from gpuwm.offline_child import (
+        OfflineChildPlacement,
+        derive_child_surface_from_parent,
+    )
+
+    frame = tmp_path / "wrfout_d01_1974-04-03_12_00_00"
+    _history(frame, datetime(1974, 4, 3, 12), ny=18, nx=20)
+    _add_parent_surface(frame, ny=18, nx=20, lu_water_column=8)
+    placement = OfflineChildPlacement(
+        parent_nx=20, parent_ny=18, child_nx=12, child_ny=9,
+        parent_grid_ratio=3, i_parent_start=6, j_parent_start=6)
+    surface = derive_child_surface_from_parent(
+        frame, placement=placement, num_soil_layers=4)
+    assert surface.fields["TSLB"].shape == (4, 9, 12)
+    assert surface.fields["LU_INDEX"].shape == (9, 12)
+    # Categories stay exact integers -- a smoothed category field is not
+    # a valid land identity, and read_child_surface_state refuses one.
+    for name in ("LU_INDEX", "ISLTYP"):
+        value = surface.fields[name]
+        assert np.array_equal(value, np.rint(value))
+    assert set(np.unique(surface.fields["LU_INDEX"]).tolist()) <= {7.0, 17.0}
+    # The child resolves the parent's water column at child spacing.
+    assert 17.0 in np.unique(surface.fields["LU_INDEX"]).tolist()
+    assert surface.identity["MMINLU"] == "MODIFIED_IGBP_MODIS_NOAH"
+    assert surface.identity["ISWATER"] == 17
+    assert surface.receipt["source"] == "parent-history-interpolated"
+    assert "interp_mask_field" in surface.receipt["policy"]
+
+
+def test_derivation_refuses_a_parent_without_the_surface_inventory(tmp_path):
+    """Naming the missing fields, not just "pass --child-surface-from"."""
+    from gpuwm.offline_child import (
+        OfflineChildPlacement,
+        derive_child_surface_from_parent,
+    )
+
+    frame = tmp_path / "wrfout_d01_1974-04-03_12_00_00"
+    _history(frame, datetime(1974, 4, 3, 12), ny=18, nx=20)
+    _add_parent_surface(frame, ny=18, nx=20, omit=("TMN", "VEGFRA"))
+    placement = OfflineChildPlacement(
+        parent_nx=20, parent_ny=18, child_nx=12, child_ny=9,
+        parent_grid_ratio=3, i_parent_start=6, j_parent_start=6)
+    with pytest.raises(OfflineChildContractError) as caught:
+        derive_child_surface_from_parent(
+            frame, placement=placement, num_soil_layers=4)
+    message = str(caught.value)
+    assert "TMN" in message and "VEGFRA" in message
+    assert "--child-surface-from" in message
+
+
+def test_full_physics_child_needs_no_surface_flag(tmp_path, capsys):
+    """FIXED MEANS DEFAULT: the bare invocation stops refusing.
+
+    The same arguments that produced the walked "child config enables
+    surface physics ... but no child-grid surface source was given"
+    refusal now plan, with the derivation named in the plan and its
+    fidelity cost warned about.
+    """
+    import json as json_module
+
+    args = _surface_child_args(tmp_path)
+    for index in range(3):
+        _add_parent_surface(
+            tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
+            ny=18, nx=20, lu_water_column=8)
+    assert cli_main(args + ["--dry-run"]) == 0
+    captured = capsys.readouterr()
+    plan = json_module.loads(captured.out[captured.out.index("{"):])
+    assert plan["child_surface_required"] is True
+    assert plan["child_surface_source"] == "parent-history-interpolated"
+    # The flag is still reported as the higher-fidelity route.
+    assert "--child-surface-from" in captured.err
+    assert "parent" in captured.err

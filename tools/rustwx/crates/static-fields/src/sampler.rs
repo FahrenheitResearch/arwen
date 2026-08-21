@@ -702,14 +702,30 @@ impl<'g> DomainSampler<'g> {
         }
     }
 
-    /// Extended-grid mass points in window source coordinates
+    /// Extended-grid mass points in DATASET source coordinates
     /// (`cell_coords`): plain f64 for >= 1 km grids, WPS default-REAL
     /// f32 with the compiler-band reconciliations below 1 km.
+    ///
+    /// Dataset coordinates, never window coordinates.  A wrapping
+    /// source used to have every point shifted into the window's frame
+    /// here (`xi + nx_global` below the window origin) and shifted
+    /// straight back by `interp_tile_sequence`; in floating point that
+    /// round trip is LOSSY, so a cell sampled through a seam-crossing
+    /// window read the source at slightly different coordinates than
+    /// the same cell sampled through a window that did not cross the
+    /// seam -- two builds of the same ground, two answers.  That is
+    /// what refused every relocation of the 2026-08-20 prepared
+    /// moving-nest run.  The one consumer that indexes the window
+    /// raster (the categorical empty-cell fallback) re-frames in
+    /// INTEGER index space, which is exact.  `win` stays in the
+    /// signature for parity with the Python transcription and is
+    /// deliberately not consulted.
     pub fn cell_coords(
         &self,
         ds: &GeogDataset,
         win: &GeogWindow,
     ) -> CoordArray {
+        let _ = win;
         let n = self.nxe * self.nye;
         if self.dx >= 1000.0 {
             let mut xi = Vec::with_capacity(n);
@@ -720,10 +736,7 @@ impl<'g> DomainSampler<'g> {
                     LonE::F64(v) => v[k],
                     LonE::F32(v) => v[k] as f64,
                 };
-                let (mut x, y) = ds.latlon_to_xy(lat, lon);
-                if ds.wraps_x && x < win.x0 as f64 - 0.5 {
-                    x += ds.nx_global as f64;
-                }
+                let (x, y) = ds.latlon_to_xy(lat, lon);
                 xi.push(x);
                 yi.push(y);
             }
@@ -784,11 +797,6 @@ impl<'g> DomainSampler<'g> {
                 }
                 if x >= ds.nx_global as f32 + 0.5f32 {
                     x -= ds.nx_global as f32;
-                }
-                // The second wrap check compares against the window
-                // origin as a weak Python float (converted to f32).
-                if x < ((win.x0 as f64) - 0.5) as f32 {
-                    x += ds.nx_global as f32;
                 }
             }
             xi.push(x);
@@ -1071,7 +1079,7 @@ impl<'g> DomainSampler<'g> {
                 if !empty[cell] {
                     continue;
                 }
-                let (ii, jj) = match &coords {
+                let (mut ii, jj) = match &coords {
                     CoordArray::F32 { xi, yi } => (
                         ((xi[cell] + 0.5f32).floor() as i64) - win.x0,
                         ((yi[cell] + 0.5f32).floor() as i64) - win.y0,
@@ -1081,6 +1089,15 @@ impl<'g> DomainSampler<'g> {
                         ((yi[cell] + 0.5).floor() as i64) - win.y0,
                     ),
                 };
+                if ds.wraps_x && ii < 0 {
+                    // cell_coords speaks DATASET coordinates; a window
+                    // that crossed the wrap seam runs past nx_global,
+                    // so re-frame in integer index space.  Doing it to
+                    // the float coordinate instead is the lossy round
+                    // trip that made two builds of the same ground
+                    // disagree.
+                    ii += ds.nx_global;
+                }
                 let inside = ii >= 0
                     && (ii as usize) < win.nx
                     && jj >= 0

@@ -128,6 +128,18 @@ CAL_D01_DEVICE_FOOTPRINT_BYTES = int(11.24 * GIB)
 #: Plan-mandated allocator-headroom factor over the itemized subtotal.
 ALLOCATOR_HEADROOM = 1.15
 
+#: The default-chunk RRTMGP workspace AS THE d01 FIXTURE ABOVE RAN IT.
+#: Pinned, not recomputed.  :func:`pool_retention_residual_bytes` subtracts
+#: an enumerated basis from that fixture's measured held bytes, and both
+#: sides have to describe the same run: recomputing the workspace term from
+#: today's layout means any change that shrinks the workspace shrinks the
+#: basis, inflates the "unexplained" residual by exactly what it saved, and
+#: hands the run gate a LARGER reserve as its reward for using less memory.
+#: The tightening of the RTE phase layouts (978.18 -> 738.50 MiB at this
+#: chunk) is the change that surfaced it.  Re-measure the fixture and this
+#: constant moves with it; until then it records what was measured.
+CAL_D01_WORKSPACE_BYTES = 1025700000
+
 #: Fixture memGetInfo gap = footprint - pool held = 5.72 GiB.  RETIRED as
 #: an overhead model by the N0 probe (a fresh allocation-only process
 #: measures 1.39 GiB): the difference is attributed to other-process/WDDM
@@ -1359,6 +1371,11 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "rrtmgp_cloud": 40,
     "rrtmgp_gas": 512,
     "rrtmgp_mcica": 0,
+    # The RRTMGP optimisation took this to 3,600 where it has been
+    # re-measured (sm_86, NVRTC 13.0.48): rrtmgp_sw_2stream dropped
+    # denom/dif_dn/dif_up.  The ceiling stays at the two sm_120 readings,
+    # which predate that source change and cannot be re-taken -- over-priced
+    # is the safe direction, and this module is far from the widest frame.
     "rrtmgp_rte": 5152,
     "rrtmgp_validation": 0,
     "ruc": 144,
@@ -4340,15 +4357,19 @@ def rrtmgp_workspace_phases(nz: int, column_chunk: int, p_top: float = 10000.0
       together with the McICA bool mask, per-chunk VMR, band cloud
       optics, and col_dry (:1615, retained by BOTH the gas and finalized
       optics results -- one shared array, counted once).
-    * ``lw_rte`` (:1307-1317): mask deleted; Planck lay/lev/sfc sources
-      (:1747-1749) + emissivity/incident g-point arrays join while both
-      tau cubes and the two chunk flux outputs stay live through :1313-1316.
+    * ``lw_rte`` (:1307-1317): only what it READS BACK -- the finalized tau
+      and the VMR Planck consumes -- plus its own Planck lay/lev/sfc sources
+      (:1747-1749), emissivity/incident g-point arrays and two flux outputs.
+      gas_tau, the three band cloud cubes and col_dry are dead the moment
+      the finalized optics exist, so this phase lies its outputs over them
+      rather than appending after them.
     * ``sw_optics`` (:1353-1368): gas tau/ssa + finalized tau/ssa/g (five
       g-point cubes) + mask + VMR + band cloud optics + col_dry.
-    * ``sw_rte`` (:1369-1381): mask deleted; albedo/incidence g-point
-      arrays, the materialized (chunk,nz) mu0 broadcast (:1690-1691) and
-      three (chunk,nz+1) flux arrays join while all five cubes stay live
-      until the ``del`` at :1380.
+    * ``sw_rte`` (:1369-1381): the three finalized cubes it reads, plus
+      albedo/incidence g-point arrays, the materialized (chunk,nz) mu0
+      broadcast (:1690-1691) and three (chunk,nz+1) flux arrays over the
+      dead gas/cloud/VMR tail.  SW builds no Planck source, so unlike LW it
+      does not carry vmr either.
     """
     from gpuwm.core.rrtmgp import rrtmgp_above_model_layer_counts
 
@@ -4361,41 +4382,61 @@ def rrtmgp_workspace_phases(nz: int, column_chunk: int, p_top: float = 10000.0
         raise ValueError(
             "RRTMGP workspace cannot exceed the 128-layer CUDA solver limit")
 
-    lw_common = {
+    # CARRIED FIRST.  An RTE phase reads back only a few of its optics
+    # phase's slots, and `phase()` assigns offsets by walking the layout in
+    # order -- so a carried slot keeps its address only if everything ahead
+    # of it does too.  Listing the carried ones first makes the rest ONE
+    # contiguous tail that the RTE phase lays its own outputs over and then
+    # stops, with no padding anywhere.  Reordering inside an optics phase is
+    # free: every slot there is written before it is read in that same phase
+    # (RRTMGP_WORKSPACE_LIFETIME_AUDIT).
+    #
+    # Dropping the dead slots WITHOUT the reorder recovers much less --
+    # the holes are scattered, each has to be padded to hold the next slot
+    # in place, and lev_source misses gas_tau's hole by a few percent.
+    # The finalize is fused into the solvers, so the finalized optics
+    # cubes DO NOT EXIST.  The carried set is what the fused solver reads:
+    # the gas cube(s), the band cloud cubes it consumes, and the McICA
+    # mask.  The mask is 1-byte and sits LAST among the carried slots; its
+    # byte count is c*nz*ngpt with ngpt a multiple of 32, so every 4-byte
+    # slot after it stays aligned, and `phase()` refuses an unaligned one
+    # anyway.
+    lw_carried = {
         "gas_tau": ((c, lw_nz, lw_g), 4),
-        "optics_tau": ((c, lw_nz, lw_g), 4),
         "vmr": ((c, lw_nz, meta["ngas_lw"] + 1), 4),
         "cld_tau": ((c, lw_nz, meta["nband_lw"]), 4),
         "cld_ssa": ((c, lw_nz, meta["nband_lw"]), 4),
+        "mcica_mask": ((c, lw_nz, lw_g), 1),
+    }
+    lw_dead_in_rte = {
         "cld_asy": ((c, lw_nz, meta["nband_lw"]), 4),
         "col_dry": ((c, lw_nz), 4),
     }
-    sw_common = {
+    sw_carried = {
         "gas_tau": ((c, sw_nz, sw_g), 4),
         "gas_ssa": ((c, sw_nz, sw_g), 4),
-        "optics_tau": ((c, sw_nz, sw_g), 4),
-        "optics_ssa": ((c, sw_nz, sw_g), 4),
-        "optics_g": ((c, sw_nz, sw_g), 4),
-        "vmr": ((c, sw_nz, meta["ngas_sw"] + 1), 4),
         "cld_tau": ((c, sw_nz, meta["nband_sw"]), 4),
         "cld_ssa": ((c, sw_nz, meta["nband_sw"]), 4),
         "cld_asy": ((c, sw_nz, meta["nband_sw"]), 4),
+        "mcica_mask": ((c, sw_nz, sw_g), 1),
+    }
+    sw_dead_in_rte = {
+        "vmr": ((c, sw_nz, meta["ngas_sw"] + 1), 4),
         "col_dry": ((c, sw_nz), 4),
     }
     return {
-        "lw_optics": {**lw_common,
-                       "mcica_mask": ((c, lw_nz, lw_g), 1)},
-        "lw_rte": {**lw_common,
-                   "lay_source": ((c, lw_nz, lw_g), 4),
-                   "lev_source": ((c, lw_nz + 1, lw_g), 4),
-                   "sfc_source": ((c, lw_g), 4),
+        "lw_optics": {**lw_carried, **lw_dead_in_rte},
+        # lay_source/lev_source/sfc_source do not exist: the LW solver
+        # derives the Planck sources in registers.  That is 455 MiB of this
+        # phase at the default chunk, and it is why lw_rte stopped being
+        # the maximum.
+        "lw_rte": {**lw_carried,
                    "emiss_gpt": ((c, lw_g), 4),
                    "incident": ((c, lw_g), 4),
                    "flux_up": ((c, lw_nz + 1), 4),
                    "flux_dn": ((c, lw_nz + 1), 4)},
-        "sw_optics": {**sw_common,
-                       "mcica_mask": ((c, sw_nz, sw_g), 1)},
-        "sw_rte": {**sw_common,
+        "sw_optics": {**sw_carried, **sw_dead_in_rte},
+        "sw_rte": {**sw_carried,
                    "albedo_gpt": ((c, sw_g), 4),
                    "inc_gpt": ((c, sw_g), 4),
                    "mu0": ((c, sw_nz), 4),
@@ -5503,8 +5544,7 @@ def pool_retention_residual_bytes() -> int:
     (:meth:`ReservePolicy.run_time` vs :meth:`ReservePolicy.n0_alloc` --
     split pending controller ratification)."""
     meta_free_basis = math.ceil(ALLOCATOR_HEADROOM * (
-        CAL_D01_POOL_USED_PEAK_BYTES
-        + _workspace_total_bytes(49, DEFAULT_COLUMN_CHUNK)))
+        CAL_D01_POOL_USED_PEAK_BYTES + CAL_D01_WORKSPACE_BYTES))
     return max(0, CAL_D01_POOL_HELD_BYTES - meta_free_basis)
 
 
@@ -6924,7 +6964,15 @@ def check_main(args) -> int:
             "pool_reserved_over_estimate_fraction":
                 POOL_RESERVED_OVER_ESTIMATE_FRACTION,
             "cuda_context_bytes": CUDA_CONTEXT_BYTES,
-            "kernel_local_memory_bytes": kernel_local_memory_bytes(exp),
+            # PRICED AGAINST THE DEVICE THIS REPORT IS ABOUT.  Without
+            # the profile this defaulted to the 170-SM reference while
+            # the sibling "local_memory_profile" field named the real
+            # card, so the two disagreed: a 70-SM RTX 5070 Ti reported
+            # 5.20 GiB where its own profile gives 2.14, and the
+            # difference propagated into the envelope as a spurious
+            # over-budget warning.
+            "kernel_local_memory_bytes": kernel_local_memory_bytes(
+                exp, profile=profile),
             "kernel_modules": sorted(physics_kernel_modules(exp)),
             "measured_free_bytes": free,
             "free_bytes_source": free_source,
@@ -7025,7 +7073,11 @@ def check_main(args) -> int:
               f"{_format_bytes(estimate.held_projection_bytes)}"
               f"   TIER 3 device-footprint projection: "
               f"{_format_bytes(estimate.footprint_projection_bytes)}")
-        widest = kernel_local_memory_bytes(exp)
+        # Same profile the estimate used (see the JSON field above):
+        # this feeds both the printed backing-store figure and the
+        # re-measured footprint projection, so pricing it against a
+        # card that is not in the machine inflates the envelope.
+        widest = kernel_local_memory_bytes(exp, profile=profile)
         # Kept out of the f-string: a line break inside an f-string
         # expression is PEP 701 (Python 3.12+) syntax, and the supported
         # floor is 3.11 -- the 1.2.0 release workflow failed on exactly
@@ -7351,6 +7403,7 @@ __all__ = [
     "WSM6_TIER_FRAME",
     "domain_kernel_modules", "kernel_local_frame_bytes",
     "ALLOCATOR_HEADROOM", "AllocReport", "CAL_D01_DEVICE_FOOTPRINT_BYTES",
+    "CAL_D01_WORKSPACE_BYTES",
     "CAL_D01_POOL_HELD_BYTES", "CAL_D01_POOL_RETENTION_BYTES",
     "CAL_D01_POOL_USED_PEAK_BYTES", "CAL_WDDM_FREE_BYTES",
     "CAL_WDDM_TOTAL_BYTES", "DEFAULT_COLUMN_CHUNK",
