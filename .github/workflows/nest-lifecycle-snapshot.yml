@@ -1,0 +1,33 @@
+name: Nest lifecycle source snapshot
+
+on:
+  push:
+    branches:
+      - feature/nest-lifecycle-v1
+    paths:
+      - .github/workflows/nest-lifecycle-snapshot.yml
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Pack source and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --exclude='__pycache__' --exclude='*.pyc' -czf arwen-2.5.2-source.tar.gz \
+            gpuwm tests pyproject.toml setup.py setup.cfg MANIFEST.in 2>/dev/null || \
+          tar --exclude='__pycache__' --exclude='*.pyc' -czf arwen-2.5.2-source.tar.gz \
+            gpuwm tests pyproject.toml MANIFEST.in
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arwen-2.5.2-source
+          path: arwen-2.5.2-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
