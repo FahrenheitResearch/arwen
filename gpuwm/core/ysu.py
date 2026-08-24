@@ -20,62 +20,22 @@ import numpy as np
 import cupy as cp
 
 from gpuwm.core.kernels import get_kernel
+# The workspace constants and the pricing function live in the
+# runtime-free inventory so the VRAM estimator can read them without
+# cupy resolving; this module is their launcher-side re-export.  The
+# measured history behind them -- the 9,232 B local frame that took
+# 844.0 MiB of per-context backing store at first launch -- is recorded
+# beside the constants there.
+from gpuwm.core.physics_inventory import (YSUWS_SLOTS, YSU_BLOCK,
+                                          YSU_TILE_BLOCKS_PER_SM,
+                                          ysu_workspace_floats)
 from gpuwm.core.state import DTYPE
 from gpuwm.physics_vertical_contract import (
     outside_vertical_bounds, refuse_vertical_levels)
 
-_TPB = 32
+_TPB = YSU_BLOCK
 _VALIDATE_TPB = 256
 _KMAX = 128
-
-# ---------------------------------------------------------------------------
-# The per-thread column workspace
-# ---------------------------------------------------------------------------
-# ysu.cu used to keep the scheme's column arrays in the per-thread local
-# frame, and CUDA prices a local frame at the card's RESIDENT-THREAD
-# CAPACITY -- one per-context backing store of
-# ``(frame - 1024) * SMs * maxThreadsPerSM``, taken at the first LAUNCH of
-# the kernel and never returned.  MEASURED on node-1 (weather-node-1, RTX
-# 5070 Ti, 70 SMs x 1,536, sm_120, CuPy 14.0.1) through this launcher at
-# nz=49: the 9,232 B frame took 844.0 MiB while the kernel only ever had a
-# fraction of that many threads in flight.  ``bl_pbl_physics = 1`` is the
-# shipped default, so every default run paid it.
-#
-# The arrays now live in a global workspace this launcher allocates, sized
-# to the threads ACTUALLY in flight, and the columns are launched in tiles
-# of that size.
-#
-# These must match ysu.cu's YSUWS_SLOTS / YSUWS_LANES;
-# tests/test_ysu_workspace.py re-derives them from the .cu source and fails
-# if either side moves alone.
-YSUWS_SLOTS = 18
-
-#: Launch block, and the tile's granularity.  ysu.cu indexes the workspace
-#: by the thread's lane within its block, so a tile is always a whole
-#: number of blocks.  This is the same number as :data:`_TPB`; both are
-#: pinned against the kernel's ``YSUWS_LANES``.
-YSU_BLOCK = _TPB
-
-#: Blocks per SM the tile is sized for.  MEASURED, not assumed -- see
-#: docs/kernel_local_memory_bounds.md for the sweep this came from.  The
-#: query in :func:`ysu_tile_columns` only ever lowers it.
-YSU_TILE_BLOCKS_PER_SM = 16
-
-
-def ysu_workspace_floats(nz: int, columns: int) -> int:
-    """Workspace floats for ``columns`` columns in flight at this ``nz``.
-
-    Rounded up to whole blocks: ysu.cu interleaves the workspace by LANE
-    within a block, the way CUDA lays local memory out across a warp, so
-    the unit of allocation is one block's region, not one column's.
-
-    The per-slot extent is ``nz + 1`` rather than ``_KMAX``: ``zq`` is the
-    one array indexed at ``nz``, and unlike the compile-time frame this is
-    allocated when ``nz`` is known.  A 49-level run therefore holds 50
-    levels of arrays where the frame had to hold 128.
-    """
-    blocks = (int(columns) + YSU_BLOCK - 1) // YSU_BLOCK
-    return blocks * YSUWS_SLOTS * (int(nz) + 1) * YSU_BLOCK
 
 
 def ysu_tile_columns(fn, ncol: int) -> int:

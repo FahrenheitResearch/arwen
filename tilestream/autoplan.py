@@ -509,7 +509,10 @@ def rung_of(cfg) -> str:
     plans every dry domain as though it carried 3.2 GiB of radiation.
     """
     from gpuwm.config import radiation_enabled
-    from gpuwm.core.physics import physics_enabled
+    # physics_inventory, not physics: that module's body imports cupy and
+    # this classification runs on the estimator path (`gpuwm check` and
+    # the wizard price pace through it on installs with no GPU runtime).
+    from gpuwm.core.physics_inventory import physics_enabled
 
     pbl = int(getattr(cfg, "bl_pbl_physics", 0) or 0)
     surface = int(getattr(cfg, "sf_surface_physics", 0) or 0)

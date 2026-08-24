@@ -312,12 +312,59 @@ def spec_zone_ring_save_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     return slots
 
 
+# ---------------------------------------------------------------------------
+# The YSU per-thread column workspace, priced without a runtime
+# ---------------------------------------------------------------------------
+# These live HERE and not in :mod:`gpuwm.core.ysu` for the reason this
+# module exists: ysu.py imports cupy at module scope, and the VRAM
+# estimator prices the YSU workspace on installs with no GPU runtime
+# (``gpuwm domain --card`` on a CuPy-less box reached ``import cupy``
+# through exactly this pricing and refused, caught by the publish test
+# job's replay before the 2.5.3 tag).  ysu.py re-exports them, so the
+# launcher and the kernel-pin test keep their one authority.
+#
+# YSUWS_SLOTS must match ysu.cu's YSUWS_SLOTS / YSUWS_LANES;
+# tests/test_ysu_workspace.py re-derives them from the .cu source and
+# fails if either side moves alone.
+YSUWS_SLOTS = 18
+
+#: Launch block, and the tile's granularity.  ysu.cu indexes the
+#: workspace by the thread's lane within its block, so a tile is always a
+#: whole number of blocks.  Pinned against the kernel's ``YSUWS_LANES``.
+YSU_BLOCK = 32
+
+#: Blocks per SM the tile is sized for.  MEASURED, not assumed -- see
+#: docs/kernel_local_memory_bounds.md for the sweep this came from.  The
+#: device query in :func:`gpuwm.core.ysu.ysu_tile_columns` only ever
+#: lowers it.
+YSU_TILE_BLOCKS_PER_SM = 16
+
+
+def ysu_workspace_floats(nz: int, columns: int) -> int:
+    """Workspace floats for ``columns`` columns in flight at this ``nz``.
+
+    Rounded up to whole blocks: ysu.cu interleaves the workspace by LANE
+    within a block, the way CUDA lays local memory out across a warp, so
+    the unit of allocation is one block's region, not one column's.
+
+    The per-slot extent is ``nz + 1`` rather than the kernel's compile-time
+    ``KMAX``: ``zq`` is the one array indexed at ``nz``, and unlike the
+    compile-time frame this is allocated when ``nz`` is known.  A 49-level
+    run therefore holds 50 levels of arrays where the frame had to hold
+    128.
+    """
+    blocks = (int(columns) + YSU_BLOCK - 1) // YSU_BLOCK
+    return blocks * YSUWS_SLOTS * (int(nz) + 1) * YSU_BLOCK
+
+
 __all__ = [
     "spec_zone_ring_save_slots",
     "MYNN_PBL_DIAGNOSTICS_2D", "MYNN_PBL_DIAGNOSTICS_INT_2D",
     "MYNN_PBL_STATE_3D", "MYNN_SURFACE_OUTPUTS",
-    "PBL_RQI_MICROPHYSICS", "SFCLAY_OUTPUTS", "hmix_k_diag_names",
+    "PBL_RQI_MICROPHYSICS", "SFCLAY_OUTPUTS",
+    "YSUWS_SLOTS", "YSU_BLOCK", "YSU_TILE_BLOCKS_PER_SM",
+    "hmix_k_diag_names",
     "microphysics_scratch_slots", "physics_driver_required",
     "physics_enabled", "physics_retains_ysu_output",
-    "physics_reuses_pbl_composition",
+    "physics_reuses_pbl_composition", "ysu_workspace_floats",
 ]

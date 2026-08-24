@@ -2451,7 +2451,10 @@ def ysu_column_workspace_bytes(
     Zero for every configuration that does not select
     ``bl_pbl_physics = 1``.
     """
-    from gpuwm.core.ysu import (
+    # physics_inventory, not ysu: the launcher imports cupy at module
+    # scope and this pricing must be readable on installs with no GPU
+    # runtime (the wizard's estimator runs here).
+    from gpuwm.core.physics_inventory import (
         YSU_BLOCK, YSU_TILE_BLOCKS_PER_SM, ysu_workspace_floats)
 
     profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
