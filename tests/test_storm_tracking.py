@@ -282,6 +282,69 @@ def test_without_the_notify_hook_proposals_still_burn_the_cooldown():
     assert tracker.receipts[-1]["cooldown_anchor"] == "proposal"
 
 
+def test_cooldown_suppression_survives_a_state_round_trip():
+    """A tracker that just moved must not re-propose at the first cadence
+    boundary of a resumed run: position is an argument every call, but the
+    two cooldown anchors are the tracker's own and nothing else holds them.
+    """
+    import json
+
+    fp = _footprint()
+    cj, ci = _center(fp)
+    state = _state(uh_at=(cj, ci + 5.0))
+
+    tracker = StormTracker(_follow(cooldown_seconds=1800.0))
+    assert tracker.desired_shift(state, fp, t=0.0) == (5, 0)
+    tracker.notify_move_executed(0.0, (5, 0))
+    block = json.loads(json.dumps(tracker.state_json(), allow_nan=False))
+    assert block == {"last_proposal_t": 0.0, "last_move_t": 0.0}
+
+    resumed = StormTracker(_follow(cooldown_seconds=1800.0))
+    resumed.restore_state(block)
+    assert resumed.state_json() == block
+    assert resumed.desired_shift(state, fp, t=600.0) is None
+    assert resumed.receipts[-1]["decision"] == "suppressed:cooldown"
+    assert resumed.receipts[-1]["cooldown_anchor"] == "executed-move"
+    assert resumed.receipts[-1]["cooldown_remaining_s"] == 1200.0
+    # It releases at the same instant an unbroken tracker would.
+    assert resumed.desired_shift(state, fp, t=1800.0) == (5, 0)
+
+    # The control that makes the assertion non-vacuous: a tracker that
+    # forgot the anchors moves the nest 1200 s early.
+    cold = StormTracker(_follow(cooldown_seconds=1800.0))
+    assert cold.desired_shift(state, fp, t=600.0) == (5, 0)
+
+
+def test_the_two_cooldown_anchors_round_trip_apart():
+    """The proposal anchor and the executed-move anchor mean different
+    things; collapsing them on restore re-anchors the whole hysteresis."""
+    fp = _footprint()
+    cj, ci = _center(fp)
+    state = _state(uh_at=(cj, ci + 5.0))
+
+    tracker = StormTracker(_follow(cooldown_seconds=1800.0))
+    assert tracker.desired_shift(state, fp, t=0.0) == (5, 0)  # not executed
+    block = tracker.state_json()
+    assert block == {"last_proposal_t": 0.0, "last_move_t": None}
+
+    resumed = StormTracker(_follow(cooldown_seconds=1800.0))
+    resumed.restore_state(block)
+    assert resumed.desired_shift(state, fp, t=600.0) is None
+    assert resumed.receipts[-1]["cooldown_anchor"] == "proposal"
+
+
+def test_tracker_state_refuses_what_it_cannot_read():
+    tracker = StormTracker(_follow())
+    with pytest.raises(TrackerRefusal, match="last_move_at"):
+        tracker.restore_state({"last_proposal_t": None,
+                               "last_move_at": None})
+    with pytest.raises(TrackerRefusal, match="last_proposal_t"):
+        tracker.restore_state({"last_move_t": None})
+    with pytest.raises(TrackerRefusal, match="last_move_t"):
+        tracker.restore_state({"last_proposal_t": None,
+                               "last_move_t": float("inf")})
+
+
 def test_suppressed_receipts_still_carry_the_centroid_evidence():
     tracker = StormTracker(_follow(cooldown_seconds=3600.0))
     fp = _footprint()

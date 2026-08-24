@@ -77,11 +77,19 @@ def test_the_packaged_route_table_matches_its_pin():
             == fetch_routes.ROUTE_TABLE_SHA256)
 
 
-def test_every_route_declares_one_default_host_and_known_tokens():
+def test_every_route_declares_an_endpoint_ladder_and_known_tokens():
+    """A route's hosts are an ORDERED ladder, and every rung says why.
+
+    The `default: true` marker used to pick one host out of a set.  It
+    now marks the ladder's HEAD, which the loader binds to position 0,
+    so the table cannot declare a default it would never ask first.
+    """
+
     for source_id in fetch_routes.route_ids():
         route = fetch_routes.route_for(source_id)
-        defaults = [host for host in route.hosts if host.default]
-        assert len(defaults) == 1, source_id
+        assert route.hosts, source_id
+        assert all(host.why.strip() for host in route.hosts), source_id
+        assert route.host(None) is route.hosts[0], source_id
         for row in route.files:
             unknown = fetch_routes.unknown_tokens(row.path)
             assert unknown == (), (source_id, row.role, unknown)

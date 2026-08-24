@@ -26,7 +26,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from gpuwm.render_layout import fs_path, iter_rendered
+from gpuwm.render_layout import (UNDATED, engine_name, fs_path,
+                                 iter_rendered, valid_day)
 
 #: The rust renderer's forecast-hour marker.  Everything before it is the
 #: run's identity (model, init date, cycle), which two compared runs are
@@ -45,10 +46,47 @@ LEAD_MARKER = re.compile(r"^(?:arwen|rustwx)_.+?_f\d{3}_")
 _DOMAIN_TOKEN = re.compile(r"^d\d{2}-[^_]+_")
 
 
-def product_name(path: Path) -> str:
-    """Pairing key for one rendered PNG."""
+def _layout_tokens(path: Path) -> tuple[str, str] | None:
+    """``(domain, product)`` from the folders above ``path``, or None.
 
+    The nested layout puts a frame at ``<domain>/<product>/<valid-day>/``
+    and nowhere else, so the leaf folder being a readable valid day (or
+    the honest ``undated`` bucket) is what identifies the tree.  A flat
+    directory, or any other tree, answers ``None`` and the key is read
+    from the filename alone, exactly as it always was.
+    """
+
+    day = path.parent
+    product = day.parent
+    domain = product.parent
+    if day.name != UNDATED and valid_day(day.name) is None:
+        return None
+    if not product.name or not domain.name:
+        return None
+    return domain.name, product.name
+
+
+def product_name(path: Path) -> str:
+    """Pairing key for one rendered PNG.
+
+    The key is the ENGINE's spelling of the name, which is the same
+    string it has always been.  Under the nested layout a delivered file
+    no longer carries the domain and product tokens -- its two folders
+    spell them, and repeating them cost real deliveries the Windows path
+    ceiling -- so they are put back from the folders before keying.
+
+    Without that step every frame in one directory keys to its own run
+    identity (``arwen_wrf_20260820_0z_f000``), which two compared runs
+    differ in by construction: ``--pair`` would match nothing and refuse
+    with "no matching product PNGs" on every nested render.
+    """
+
+    path = Path(path)
     name = path.stem
+    tokens = _layout_tokens(path)
+    if tokens is not None:
+        name = Path(engine_name(path.name, domain=tokens[0],
+                                product=tokens[1])).stem
     match = LEAD_MARKER.match(name)
     return name[match.end():] if match else name
 

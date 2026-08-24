@@ -433,7 +433,14 @@ def spawn_child_from_parent(child_dc, parent_node, *,
             state=initialized.state, grid=initialized.grid,
             coord=initialized.coord, real=None,
             static_fields=fields, horizontal=None, soil=None,
-            domain=child_dc)
+            domain=child_dc,
+            # Carried, not dropped.  The terrain adoption rewrites thp
+            # and mup and touches no number concentration, so the
+            # positive-definite account taken at interpolation time is
+            # still the true one -- and a rebuild that silently lost it
+            # made the birth certificate report an empty fix-up on a
+            # birth that had needed one.
+            positive_definite_clamp=initialized.positive_definite_clamp)
     else:
         adoption = {"static_source": "parent-sint",
                     "note": "no static catalog at spawn; the child keeps "
@@ -474,6 +481,13 @@ def spawn_child_from_parent(child_dc, parent_node, *,
                      "the storm its trigger saw, not inside a stale "
                      "analysis"),
             "parent_state_sha256": parent_sha_before,
+            # What the interpolation had to be fixed up for, by field and
+            # by cell count, with the tolerance each field was judged
+            # against.  An empty table means it landed clean; a birth
+            # that needed no fix-up says so with a number rather than by
+            # omitting the subject.
+            "positive_definite_clamp": dict(
+                getattr(initialized, "positive_definite_clamp", None) or {}),
         },
         "rk_seeds_refreshed": list(seeded),
         "parent_state_sha256_before": parent_sha_before,

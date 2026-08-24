@@ -44,14 +44,21 @@ the fact behind it cannot be read: an unidentifiable domain is
 valid time is :data:`UNDATED`, an unparseable engine filename is
 :data:`UNCLASSIFIED`.  A picture is always somewhere nameable, never
 dropped and never left loose at the root.  Path LENGTH is part of that
-promise on Windows, which is why :func:`fs_path` exists: three folders
-plus a product filename is around a hundred characters, so a case root
-of any depth pushes the deepest product past ``MAX_PATH`` and the move
-into the tree fails -- the picture is then left flat at the root and
-the ruling is inverted for exactly the products whose names are
-longest.  Measured, on the first-products path: ``composite_reflectivity``
-escaped the tree at 261 characters while ``2m_temperature`` beside it
-filed correctly at 244.
+promise on Windows, and it is answered TWICE.
+
+:func:`delivered_name` answers the half that is ours: a frame filed
+under ``<domain>/<product>/`` used to carry those same two tokens inside
+its own filename, and a delivery measured on disk reached 310 characters
+because of it.  The pair comes off at the organisation step -- the same
+layout is then 226 characters under a typical case root -- and
+:func:`engine_name` puts it back, so nothing is lost and no two frames
+in a folder collapse onto one name.
+
+:func:`fs_path` answers the half that is the caller's: a case root deep
+enough still passes ``MAX_PATH``, the move into the tree fails, and the
+picture is left flat at the root -- the ruling inverted for exactly the
+products whose names are longest, while their shorter neighbours file
+correctly and the directory looks almost right.
 
 **One walker reads it.**  :func:`iter_rendered` is what every in-tree
 consumer of a render directory uses, so a reader cannot be written that
@@ -112,15 +119,13 @@ NATIVE_GRID = "native_grid"
 #: date, which is the only part this module needs.
 _DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[T_ ]|$)")
 
-#: The rust engine's output filename, as
-#: ``rustwx-products``/``derived.rs`` formats it and
-#: ``gpuwm.render._rebrand_engine_output`` rebrands it::
+#: The HEAD of the rust engine's output filename: everything through the
+#: forecast-hour marker.  It is the frame's own identity -- model, cycle
+#: date, cycle hour, whole-hour lead -- and nothing in it is repeated by
+#: any folder the layout builds, so it is exactly the part that survives
+#: :func:`delivered_name`.
 #:
-#:     arwen_<model>_<YYYYMMDD>_<H>z_f<NNN>_<domain-slug>_<product-slug>.png
-#:
-#: ``model`` is non-greedy so the first eight-digit run is the date; the
-#: tail is split into domain and product separately, because both halves
-#: contain underscores and only their grammar tells them apart.
+#: ``model`` is non-greedy so the first eight-digit run is the date.
 #:
 #: The cycle hour is ONE OR TWO digits, and the one-digit form is not a
 #: tolerance: it is what the engine writes.  ``store_render.rs`` formats
@@ -129,9 +134,25 @@ _DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[T_ ]|$)")
 #: parser that demanded two digits returned None for all of them, and
 #: every frame of those runs was left flat under a front door printing
 #: ``layout nested``.
-_ENGINE_NAME = re.compile(
-    r"^(?:arwen|rustwx)_(?P<model>.+?)_(?P<date>\d{8})_(?P<cycle>\d{1,2})z"
-    r"_f(?P<lead>\d{3})_(?P<tail>.+)$")
+_HEAD = (r"(?:arwen|rustwx)_(?P<model>.+?)_(?P<date>\d{8})"
+         r"_(?P<cycle>\d{1,2})z_f(?P<lead>\d{3})")
+
+#: The rust engine's output filename, as
+#: ``rustwx-products``/``derived.rs`` formats it and
+#: ``gpuwm.render._rebrand_engine_output`` rebrands it::
+#:
+#:     arwen_<model>_<YYYYMMDD>_<H>z_f<NNN>_<domain-slug>_<product-slug>.png
+#:
+#: The tail is split into domain and product separately, because both
+#: halves contain underscores and only their grammar tells them apart.
+_ENGINE_NAME = re.compile(rf"^{_HEAD}_(?P<tail>.+)$")
+
+#: The same grammar with the tail made OPTIONAL, which is what a
+#: delivered name has: :func:`delivered_name` takes the tail off, so the
+#: only thing left after ``f{NNN}`` is the exact-time suffix, or nothing
+#: at all.  Spelled from the same ``_HEAD`` fragment as ``_ENGINE_NAME``
+#: so the two cannot drift into disagreeing about what a frame is.
+_DELIVERED_NAME = re.compile(rf"^{_HEAD}(?P<rest>.*)$")
 
 #: A domain slug at the head of that tail: ``d02-3km``, ``d05-111m``, a
 #: bare ``d02``, or the anonymous ``native_grid``.  The same three
@@ -267,6 +288,98 @@ def place(root, *, domain: str | None, product: str | None,
                               day=day) / filename
 
 
+def _folder_tokens(name: str, *, domain: str | None,
+                   product: str | None) -> tuple[str, str, str] | None:
+    """``(head, repeated, rest)`` for one frame, or None if it does not fit.
+
+    ``repeated`` is the exact ``<domain>_<product>`` string the two
+    folders above the frame spell.  ``None`` means this name and these
+    folders do not line up -- an engine name the grammar cannot read, or
+    the honest fallback where neither the caller's token nor the slug
+    grammar could split the tail -- and every caller then leaves the
+    name exactly as it found it rather than cutting a guess out of it.
+    """
+
+    if not domain or not product:
+        return None
+    stem = Path(name).stem
+    match = _DELIVERED_NAME.match(stem)
+    if match is None:
+        return None
+    return stem[:match.start("rest")], f"{domain}_{product}", match.group(
+        "rest")
+
+
+def delivered_name(name: str, *, domain: str | None,
+                   product: str | None) -> str:
+    """``name`` with the tokens its own folders already carry removed.
+
+    The engine writes ``arwen_<model>_<date>_<cycle>z_f<NNN>_<domain>_
+    <product>[_<exact-time>].png`` into one flat directory, where every
+    token has to be there because nothing else tells two files apart.
+    Filed into the layout, two of those tokens become the names of the
+    folders the frame is sitting in, and the picture then carries them
+    twice::
+
+        .../d01-12km/var_geopotential_height_700hpa_38d0bbbc4b4b7e87/
+            2026-08-20/arwen_wrf_20260820_0z_f000_d01-12km_var_
+            geopotential_height_700hpa_38d0bbbc4b4b7e87_valid_...png
+
+    That is not untidiness, it is a delivery defect.  A real one measured
+    310 characters, and while :func:`fs_path` lets ArWen write and read
+    past MAX_PATH, it does nothing for the tools the delivery is OPENED
+    with: Explorer, ``tar``, and the readers a recipient's own script
+    imports all refuse the path.  The picture is filed correctly and
+    cannot be opened, which is the same lost picture by a third route.
+
+    So the repeated pair comes off HERE, at the Python organisation step,
+    and not in the engine: the vendored crate stays byte-identical to its
+    campaign builds, and ``--layout flat`` -- where the folders spell
+    nothing and every token is load-bearing -- keeps the v2.4.1 name
+    byte for byte.
+
+    What survives is the frame's own identity (model, cycle date, cycle
+    hour, lead) and the engine's exact-time suffix, which no folder
+    carries.  Names therefore stay collision-free: :func:`engine_name`
+    rebuilds the engine's name from the delivered one and its two
+    folders exactly, so two frames that differed before differ after.
+
+    A name the grammar cannot read, or one whose folders do not spell
+    what it carries, comes back unchanged.
+    """
+
+    tokens = _folder_tokens(name, domain=domain, product=product)
+    if tokens is None:
+        return Path(name).name
+    head, repeated, rest = tokens
+    if not rest.startswith(f"_{repeated}"):
+        return Path(name).name
+    return head + rest[len(repeated) + 1:] + Path(name).suffix
+
+
+def engine_name(name: str, *, domain: str | None,
+                product: str | None) -> str:
+    """The engine's own filename, rebuilt from a delivered one.
+
+    The exact inverse of :func:`delivered_name` given the same two
+    folders, and the reason the shortening is safe to do at all: it is
+    information-preserving, so a reader that wants the v2.4.1 spelling
+    -- ``--pair``'s matching key is the one in this tree -- computes it
+    instead of being handed a name it can no longer recognise.
+
+    A name that already carries the pair is already the engine's, and
+    comes back unchanged; so does one the grammar cannot read.
+    """
+
+    tokens = _folder_tokens(name, domain=domain, product=product)
+    if tokens is None:
+        return Path(name).name
+    head, repeated, rest = tokens
+    if rest.startswith(f"_{repeated}"):
+        return Path(name).name
+    return f"{head}_{repeated}{rest}{Path(name).suffix}"
+
+
 def parse_engine_output(name: str, *, domain: str | None = None
                         ) -> tuple[str, str, str] | None:
     """``(domain, product, valid_day)`` for one rust-engine filename.
@@ -398,6 +511,7 @@ def describe(root: str = "<--out>", *, sep: str | None = None) -> str:
 
 __all__ = [
     "DEFAULT_LAYOUT", "FLAT", "LAYOUTS", "NATIVE_GRID", "NESTED",
-    "UNCLASSIFIED", "UNDATED", "describe", "fs_path", "iter_rendered",
-    "parse_engine_output", "place", "product_dir", "valid_day",
+    "UNCLASSIFIED", "UNDATED", "delivered_name", "describe",
+    "engine_name", "fs_path", "iter_rendered", "parse_engine_output",
+    "place", "product_dir", "valid_day",
 ]

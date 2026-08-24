@@ -402,10 +402,11 @@ def _plane_from_state(state, field: str, *,
     a rhythm this caller does not control, which is the whole defect the
     consumer-owned windows fixed.
     """
-    if uh_slot not in uh_diag.TRACKER_WINDOW_SLOTS:
+    if not uh_diag.is_tracker_window_slot(uh_slot):
         raise ValueError(
             f"uh_slot={uh_slot!r} is not a consumer-owned tracking "
-            f"window; choose one of {uh_diag.TRACKER_WINDOW_SLOTS}. The "
+            "window; use a fixed consumer slot or a slot returned by "
+            "uh_diag.follow_window_slot(grid_id). The "
             "WRF UP_HELI_MAX diagnostic is reset by the history writer, "
             "so reading it would make this decision depend on the output "
             "cadence.")
@@ -493,6 +494,24 @@ def _round_cells(value: float) -> int:
 # The tracker (the plan provider)
 # ---------------------------------------------------------------------------
 
+#: The two cooldown anchors, as a checkpoint's follower entry names them.
+TRACKER_STATE_KEYS = ("last_proposal_t", "last_move_t")
+
+
+def _timer(value, what: str) -> float | None:
+    """A cooldown anchor that survives the header's ``allow_nan=False``."""
+    if value is None:
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        raise TrackerRefusal(
+            f"the tracker's {what} is {value!r}; a non-finite cooldown "
+            "anchor compares false against every model time, so the "
+            "hysteresis would never suppress and the nest would move at "
+            "every cadence boundary")
+    return number
+
+
 class StormTracker:
     """Feature tracking plus hysteresis; implements the plan-provider seam.
 
@@ -502,10 +521,13 @@ class StormTracker:
     a tracker never disagrees with the runner about where the nest is.
     """
 
-    def __init__(self, config: FollowConfig) -> None:
+    def __init__(self, config: FollowConfig, *, uh_slot: str = UH_SLOT) -> None:
         if not isinstance(config, FollowConfig):
             raise TypeError("config must be a FollowConfig")
         self.config = config
+        if not uh_diag.is_tracker_window_slot(uh_slot):
+            raise ValueError(f"invalid tracker UH slot {uh_slot!r}")
+        self.uh_slot = str(uh_slot)
         self._last_proposal_t: float | None = None
         self._last_move_t: float | None = None
         self.receipts: list[dict] = []
@@ -525,6 +547,49 @@ class StormTracker:
         out, self.receipts = self.receipts, []
         return out
 
+    # -- the restart state -------------------------------------------------
+
+    def state_json(self) -> dict:
+        """The tracker's half of a checkpoint's per-follower entry.
+
+        Two numbers, and nothing else, because position is an argument on
+        every call: only the cooldown anchors survive a boundary, and
+        nothing but this object holds them.  Pure state -- no I/O, no
+        checkpoint vocabulary.
+        """
+        return {"last_proposal_t": _timer(self._last_proposal_t,
+                                          "last_proposal_t"),
+                "last_move_t": _timer(self._last_move_t, "last_move_t")}
+
+    def restore_state(self, block) -> None:
+        """Seed the cooldown anchors from a checkpoint's follower entry.
+
+        Restored rather than recomputed because there is nothing to
+        recompute from: a tracker that just moved its nest and forgets it
+        proposes again at the resumed run's FIRST cadence boundary, moving
+        the nest a full cooldown early and spinning up the strip it just
+        paid for.  The two anchors are restored separately because they
+        mean different things -- an executed move and a proposal the runner
+        declined -- and collapsing them re-anchors the whole hysteresis.
+        """
+        if not isinstance(block, dict):
+            raise TrackerRefusal(
+                "a tracker restart block must be a mapping, got "
+                f"{type(block).__name__}")
+        unknown = sorted(set(block) - set(TRACKER_STATE_KEYS))
+        missing = sorted(set(TRACKER_STATE_KEYS) - set(block))
+        if unknown or missing:
+            raise TrackerRefusal(
+                f"a tracker restart block has key(s) {unknown} this build "
+                f"does not know and is missing {missing}; the cooldown is "
+                "honored in full or refused, because an anchor restored by "
+                "omission lets the nest move at the first boundary of the "
+                "resumed run")
+        proposal = _timer(block["last_proposal_t"], "last_proposal_t")
+        move = _timer(block["last_move_t"], "last_move_t")
+        self._last_proposal_t = proposal
+        self._last_move_t = move
+
     # -- the contract ------------------------------------------------------
 
     def desired_shift(self, parent_state, nest_footprint,
@@ -537,7 +602,7 @@ class StormTracker:
         """
         fp = NestFootprint.coerce(nest_footprint)
         cfg = self.config
-        plane = _plane_from_state(parent_state, cfg.field)
+        plane = _plane_from_state(parent_state, cfg.field, uh_slot=self.uh_slot)
         box = fp.search_box(plane.shape, cfg.search_margin_cells)
         field_used = cfg.field
         threshold_used = float(cfg.threshold)
@@ -689,6 +754,7 @@ def make_plan_provider(experiment) -> StormTracker | None:
 __all__ = [
     "FOLLOW_CONTRACT", "FOLLOW_KEYS", "FollowConfig", "NestFootprint",
     "PARENT_EDGE_KEEPOUT_CELLS", "REFLECTIVITY_SLOT", "StormTracker",
-    "TRACKED_FIELDS", "TrackerRefusal", "UH_SLOT", "build_follow_config",
+    "TRACKED_FIELDS", "TRACKER_STATE_KEYS", "TrackerRefusal", "UH_SLOT",
+    "build_follow_config",
     "make_plan_provider", "signal_plane", "weighted_centroid",
 ]

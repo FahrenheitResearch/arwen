@@ -20,6 +20,15 @@ usage: rw_mpas_convert --history FILE... --mesh FILE --out-dir DIR
 
 const ABI: &str = "gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED";
 
+/// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
+/// binary was built from, embedded so the gpuwm release cut can prove a
+/// staged bridge matches the commit being released by reading bytes alone
+/// (`tools/build_bridge_bundle.py pin --source-rev`).  `build.rs` injects
+/// the value; `main` references the constant so the linker cannot discard
+/// it.
+pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
+    concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
+
 struct Args {
     history: Vec<PathBuf>,
     mesh: Option<PathBuf>,
@@ -231,6 +240,7 @@ fn run() -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.iter().any(|a| a == "--help" || a == "-h") {
         println!("{USAGE}");

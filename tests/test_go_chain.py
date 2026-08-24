@@ -1560,3 +1560,71 @@ def test_the_real_run_folder_line_agrees_with_the_dry_run(
     # Same shape up to the stamp (the two invocations claim different
     # stamped names on a shared case root).
     assert dry[0].split("run-", 1)[0] == real[0].split("run-", 1)[0]
+
+
+# ---------------------------------------------------------------------------
+# The run-folder line's "cached at" clause named `<case_root>/data`
+# unconditionally, so `--data-dir` announced a directory no stage ever
+# writes to while the fetch, manifest and prepare stages all used the
+# directory the reader named.  The wizard's own "next" block ends with a
+# `gpuwm go ... --data-dir <path>` line, so this was the first thing a
+# reader following the printed route saw, and it sent them looking for
+# their download in an empty path.
+# ---------------------------------------------------------------------------
+
+def _announced_cache(printed: str) -> str:
+    """The download directory the run-folder line ANNOUNCES."""
+
+    lines = [line for line in printed.splitlines()
+             if line.startswith("go: run folder")]
+    assert len(lines) == 1, f"expected one run-folder line, got {lines!r}"
+    marker = "the download is cached at "
+    assert marker in lines[0], lines[0]
+    return lines[0].split(marker, 1)[1].strip()
+
+
+def _fetch_stage_out(printed: str) -> str:
+    """The download directory the fetch stage WRITES, off the same run.
+
+    Read from the composed command the dry run prints rather than from a
+    second plan: the two must agree within ONE invocation, which is the
+    whole claim.
+    """
+
+    for line in printed.splitlines():
+        stripped = line.strip()
+        if "gpuwm.cli fetch" in stripped and "--cycle" in stripped:
+            tokens = shlex.split(stripped, posix=False)
+            return tokens[tokens.index("--out") + 1].strip("'\"")
+    raise AssertionError(f"no composed fetch stage in:\n{printed}")
+
+
+@pytest.mark.parametrize("named_cache", [True, False])
+def test_the_announced_download_cache_is_the_one_the_stages_use(
+        gfs_config, tmp_path, capsys, monkeypatch, named_cache):
+    """One directory, said once and used once.
+
+    Parameterized over both cases on purpose: the default -- the
+    download under the case root, cached across runs of one config --
+    is what the line was written for and must not move, and
+    ``--data-dir`` is the case it got wrong.
+    """
+
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: tmp_path / "bridge")
+    argv = ["go", str(gfs_config), "--dry-run",
+            "--outdir", str(tmp_path / "out")]
+    if named_cache:
+        argv += ["--data-dir", str(tmp_path / "mycache")]
+    assert cli_main(argv) == 0
+    printed = capsys.readouterr().out
+
+    announced = Path(_announced_cache(printed))
+    used = Path(_fetch_stage_out(printed))
+    assert announced == used, (
+        f"go announces the download cache at {announced} but the fetch "
+        f"stage writes to {used}")
+    # And it is the directory the reader NAMED, not one derived from the
+    # run root: equality above would also hold if both had drifted.
+    expected = (tmp_path / "mycache" if named_cache
+                else tmp_path / "out" / "data")
+    assert announced == expected

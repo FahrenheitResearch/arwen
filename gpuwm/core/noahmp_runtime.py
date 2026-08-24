@@ -852,15 +852,49 @@ class NoahmpRuntimeParameters:
     def table(self, group: str, name: str):
         return self.bundle.mptable[group].scalar(name)
 
+    @property
+    def n_vegetation_classes(self) -> int:
+        """How many land-use classes the ACTIVE table covers.
+
+        Read from the loaded table, never hardcoded: MODIFIED_IGBP_MODIS_NOAH
+        declares 20 and USGS declares 24, and a guard written for one of them
+        is wrong for the other.
+        """
+        return int(self._categories.scalar("NVEG"))
+
     def veg_value(self, name: str, vegtyp: int) -> float:
         """``<NAME>_TABLE(VEGTYP)`` out of the active vegetation dataset.
 
         Only the cold start needs this: ``TRANSFER_MP_PARAMETERS`` already
         indexes every parameter the column solver reads, but ``NOAHMP_INIT``
         reads ``SLA_TABLE`` directly (:2187) before any transfer has happened.
+
+        A class the table does not cover is refused BY NAME. This used to be
+        a bare ``entry[vegtyp - 1]``, and both of its failure modes were
+        reached by one real run: a 15 km MPAS mesh over the Great Lakes,
+        built from ``modis_landuse_20class_30s_with_lakes`` whose lake class
+        is 21, put ``ivgtyp = 21`` into 115 cells and the cold start died on
+        ``IndexError: tuple index out of range``. And a ``vegtyp`` of 0 does
+        not raise at all -- Python reads ``entry[-1]``, the LAST class -- so
+        the run completes with a lake given the parameters of whatever class
+        happens to sit at the end of the table. The silent one is worse.
         """
+        index = int(vegtyp)
+        limit = self.n_vegetation_classes
+        if index < 1 or index > limit:
+            raise ValueError(
+                f"land-use class {index} is outside the {limit} classes "
+                f"{self.dataset_identifier} covers, so {name.upper()}_TABLE "
+                f"has no row for it. Reading one anyway gives this column "
+                f"another class's vegetation parameters without saying so. "
+                f"Land-use classes must be 1..{limit}; a static built from an "
+                f"archive with more classes than the table declares (a "
+                f"20-class MODIS table against a with-lakes archive whose "
+                f"lake class is 21, for instance) has to be recoded before "
+                f"the run, not silently indexed past the end."
+            )
         entry = self._veg.values[name.upper()]
-        return float(entry[int(vegtyp) - 1] if len(entry) > 1 else entry[0])
+        return float(entry[index - 1] if len(entry) > 1 else entry[0])
 
     def soil_value(self, name: str, soiltyp: int) -> float:
         """``<NAME>_TABLE(SOILTYP)`` out of the pinned SOILPARM section."""

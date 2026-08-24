@@ -295,6 +295,10 @@ _STAMP_SOURCES = {
     "gpuwm_preprocess_cpu": "src/lib.rs",
     "rw_fetch": "crates/rw-fetch/src/main.rs",
     "rw_wrfbatch": "crates/rw-wrfbatch/src/main.rs",
+    "rw_mpas_mesh": "crates/rw-mpas/src/bin/rw_mpas_mesh.rs",
+    "rw_mpas_static": "crates/rw-mpas/src/bin/rw_mpas_static.rs",
+    "rw_mpas_init": "crates/rw-mpas/src/bin/rw_mpas_init.rs",
+    "rw_mpas_convert": "crates/rw-mpas/src/bin/rw_mpas_convert.rs",
     "rw_nexrad": "crates/rw-nexrad/src/main.rs",
     "rw_odim": "crates/rw-odim/src/bin/rw_odim.rs",
     "rw_mrms": "crates/rw-obs/src/bin/mrms.rs",
@@ -314,6 +318,7 @@ _STAMP_BUILDS = {
     bridges.CRATE_RELATIVE: ("build.rs",),
     bridges.RUSTWX_CRATE_RELATIVE: ("crates/rw-fetch/build.rs",
                                     "crates/rw-wrfbatch/build.rs",
+                                    "crates/rw-mpas/build.rs",
                                     "crates/rw-nexrad/build.rs",
                                     "crates/rw-odim/build.rs",
                                     # rw-obs builds four bins from one

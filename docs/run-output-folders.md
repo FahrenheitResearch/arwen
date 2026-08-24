@@ -72,6 +72,13 @@ go: run folder run-20260817-041233Z_i202607291800Z under out/myarea -- authority
 render: layout nested -- out/myarea/run-20260817-041233Z_i202607291800Z/png/<domain>/<product>/<valid-day>/<file>.png
 ```
 
+The download directory is the one exception to "everything lands inside
+the run folder", and deliberately so: inputs are cached across runs of a
+config while artifacts are separated by run. It defaults to `data/` beside
+the run folders, and `--data-dir` moves it anywhere — the `cached at`
+clause names whichever one is in force, so it is always the directory the
+fetch stage actually writes to.
+
 `gpuwm render` typed on its own is its own run, so it claims one:
 
 ```

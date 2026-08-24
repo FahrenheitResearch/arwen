@@ -39,6 +39,7 @@ for _p in (_ROOT, _TOOLS):
         sys.path.insert(0, _p)
 
 from gpuwm.core.fp32_ulp import fp32_ulp_distance             # noqa: E402
+from gpuwm.core.gf import gf_workspace_floats                 # noqa: E402
 from gpuwm.core.kernels import load_module                    # noqa: E402
 from gpuwm.verify.gf_oracle import (                          # noqa: E402
     GF_NZ, load_gf_oracle, stage_rows_to_distrust,
@@ -86,8 +87,9 @@ def _launch(module, fixture, k22_wrf_faithful):
     d_sca = cp.zeros((n, len(DRV_SCA_FIELDS)), dtype=cp.float32)
     d_isc = cp.zeros((n, len(DRV_ISCA_FIELDS)), dtype=cp.int32)
     fn = module.get_function("gf_gfdrv_stage")
+    d_ws = cp.empty(gf_workspace_floats(NZ, n), dtype=cp.float32)
     fn(((n + 63) // 64,), (64,),
-       (d_lv, d_sc, d_ii, d_lev, d_sca, d_isc,
+       (d_lv, d_sc, d_ii, d_lev, d_sca, d_isc, d_ws,
         np.int32(k22_wrf_faithful), np.int32(n), np.int32(NZ)))
     cp.cuda.Stream.null.synchronize()
     return dict(lev=cp.asnumpy(d_lev), sca=cp.asnumpy(d_sca),

@@ -1298,9 +1298,19 @@ def _place_engine_output(png: Path, outdir: Path, domain: str,
               f"engine output: {png}", file=sys.stderr)
         return png
     filed_domain, product, day = parsed
+    # The delivered name drops the domain and product tokens, because
+    # the two folders it is about to sit in spell exactly those and a
+    # frame carrying them twice cost a measured delivery 310 characters
+    # -- past MAX_PATH for every tool the recipient opens it WITH, which
+    # `fs_path` does nothing about.  Done here, at the organisation
+    # step, rather than in the engine: the vendored crate stays
+    # byte-identical to its campaign builds, and `--layout flat` keeps
+    # the v2.4.1 name (this branch is nested-only; flat returned above).
     target = render_layout.place(
         outdir, domain=filed_domain, product=product, day=day,
-        filename=png.name, layout=layout)
+        filename=render_layout.delivered_name(
+            png.name, domain=filed_domain, product=product),
+        layout=layout)
     if target == png:
         return png
     try:

@@ -1261,14 +1261,27 @@ def profile_switches(profile: str | None) -> dict:
     return single_domain_runtime_switches(profile)
 
 
-def physics_summary(profile: str | None) -> str:
-    """One line naming what the emitted suite actually runs."""
+def physics_summary(profile: str | None, *,
+                    cu_physics: int | None = None) -> str:
+    """One line naming what the emitted suite actually runs.
+
+    ``cu_physics`` overrides the suite's cumulus switch with the one the
+    EMISSION carries.  The wizard retires the scheme on a
+    convection-permitting root (:func:`_domain_tables`), and a summary
+    line that reads "Kain-Fritsch cumulus" over a file whose root says
+    ``cu_physics = 0`` is the same class of misreading hazard that
+    :func:`_radiation_words` exists to remove -- worse here, because the
+    line and the table it describes sit in the same file.  Callers
+    describing a SUITE rather than an emission leave it None.
+    """
 
     switches = profile_switches(profile)
+    selected = (int(switches["cu_physics"]) if cu_physics is None
+                else int(cu_physics))
     cumulus = ({1: "Kain-Fritsch cumulus",
-                3: "Grell-Freitas cumulus"}.get(int(switches["cu_physics"]),
+                3: "Grell-Freitas cumulus"}.get(selected,
                                                 "parameterized cumulus")
-               if switches["cu_physics"]
+               if selected
                else "NO cumulus parameterization")
     label = profile if profile is not None else (
         "product default suite (supported, not yet WRF-verified; every "
@@ -2015,6 +2028,7 @@ def _domain_tables(dims: list[tuple[int, int]],
                    *, time_step: Fraction | int = ROOT_TIME_STEP_S,
                    root_dx_m: float = ROOT_DX_M,
                    profile: str | None = DEFAULT_PHYSICS_PROFILE,
+                   cumulus_requested: bool = False,
                    history_interval_s: float | None = None,
                    nest_history_interval_s: float | None = None
                    ) -> list[dict]:
@@ -2026,6 +2040,29 @@ def _domain_tables(dims: list[tuple[int, int]],
     certified ladder's depth-varying ``diff_6th_factor`` and their pinned
     ``cu_physics = 0``: those two really are grid-scale decisions, and
     the multi-domain runner has no profile whitelist to stop them.
+
+    ROOT ``cu_physics`` IS ONE OF THOSE GRID-SCALE DECISIONS TOO, below
+    the convection-permitting bound.  Until 2.5.0 the root took the
+    profile's cumulus switch at every spacing, so `--root-dx 3` emitted
+    Kain-Fritsch on a grid that resolves its own deep convection, printed
+    the sentence naming the heating and rainfall it therefore counts
+    twice, and wrote the file anyway -- a defect the product diagnosed
+    correctly and then shipped.  The default now follows the diagnosis:
+    below :data:`CUMULUS_CONVECTION_PERMITTING_DX_KM` the root's cumulus
+    scheme is OFF, and ``cudt_minutes`` goes to the registry's own
+    spelling for a domain with no scheme to pace (0.0, as every
+    ``cu_physics = 0`` template in :mod:`gpuwm.physics_compat` carries).
+    That bound is not a new number: it is the one
+    :func:`cumulus_gray_zone_advisory` already judged the emission
+    against, so the switch and its advisory read the same declaration.
+
+    ``cumulus_requested`` is the user having NAMED the suite.  Naming
+    ``--physics-profile`` asserts the config IS that shipped suite --
+    :func:`gpuwm.gfs_direct.front_door_physics_selection` enforces it
+    switch for switch on both routes -- so a named suite is emitted
+    verbatim at any spacing and keeps the advisory, which is the whole
+    point of the advisory being advisory.  Per-domain ``cu_physics``
+    stays overridable in the emitted TOML either way.
 
     ``radt`` is NOT one of them.  It is the root's, inherited by every
     nest (:func:`radt_ladder_minutes`) -- radiation varies on cloud
@@ -2058,9 +2095,16 @@ def _domain_tables(dims: list[tuple[int, int]],
     """
     root_physics = {key: profile_switches(profile)[key]
                     for key in _PER_DOMAIN_PHYSICS}
+    if (int(root_physics.get("cu_physics", 0))
+            and not cumulus_requested
+            and convection_permitting(float(root_dx_m) / 1000.0)):
+        root_physics["cu_physics"] = 0
+        root_physics["cudt_minutes"] = 0.0
     # The author reconciles its own two derivations (dt from --root-dx,
     # cadences from the profile) rather than emitting a file the loader
-    # refuses: see snap_cadences_to_clock (UX finding N14).
+    # refuses: see snap_cadences_to_clock (UX finding N14).  It runs
+    # AFTER the cumulus decision because cudt is paced only under an
+    # active Kain-Fritsch, and the decision above may have retired it.
     root_physics, _ = snap_cadences_to_clock(
         Fraction(time_step), root_physics)
     epssm = profile_switches(profile)["epssm"]
@@ -2393,6 +2437,57 @@ CUMULUS_CONVECTION_PERMITTING_DX_KM = 4.0
 CUMULUS_GRAY_ZONE_TOP_DX_KM = 10.0
 
 
+def convection_permitting(dx_km: float) -> bool:
+    """True where the dynamics resolve deep convection themselves.
+
+    ONE predicate off :data:`CUMULUS_CONVECTION_PERMITTING_DX_KM`, read
+    by both the switch the wizard EMITS (:func:`_domain_tables`) and the
+    sentence that judges it (:func:`cumulus_gray_zone_advisory`), so the
+    emission and its own advisory can never disagree about where the
+    bound is -- which is how the wizard came to print "counted twice"
+    about a file it had just written.
+    """
+
+    return float(dx_km) < CUMULUS_CONVECTION_PERMITTING_DX_KM
+
+
+def cumulus_retired_note(profile: str | None, root_dx_km: float, *,
+                         cumulus_requested: bool) -> list[str]:
+    """One sentence when the wizard turned the suite's cumulus OFF.
+
+    The emission changed a switch the named suite carries, so it says
+    so, in the file and on the screen, with the bound and the way back.
+    Silence here would be the mirror of the defect this replaced: a file
+    that does not run what its own PHYSICS line claims.
+    """
+
+    scheme = int(profile_switches(profile).get("cu_physics", 0))
+    if (not scheme or cumulus_requested
+            or not convection_permitting(root_dx_km)):
+        return []
+    return [
+        f"CUMULUS OFF AT {float(root_dx_km):g} KM: the derived suite "
+        f"carries cu_physics = {scheme} and this root sits below the "
+        f"{CUMULUS_CONVECTION_PERMITTING_DX_KM:g} km "
+        "convection-permitting bound, so the emitted root runs "
+        "cu_physics = 0 (cudt_minutes = 0.0) instead of convecting the "
+        "same air twice -- the dynamics resolve deep convection at this "
+        "spacing.  Every other switch is the suite's; name the suite "
+        "with --physics-profile to emit it verbatim, cumulus included, "
+        "or set cu_physics yourself in the emitted [[domain]] table."]
+
+
+def cumulus_retired_headline(profile: str | None, root_dx_km: float, *,
+                             cumulus_requested: bool) -> list[str]:
+    """The retirement's first clause -- same contract as
+    :func:`cumulus_gray_zone_headline`: derived from the same call, so a
+    headline that could disagree with the sentence cannot exist."""
+
+    return [line.split(", so ", 1)[0] + "."
+            for line in cumulus_retired_note(
+                profile, root_dx_km, cumulus_requested=cumulus_requested)]
+
+
 def cumulus_gray_zone_advisory(chain_km, cu_physics_by_domain
                                ) -> list[str]:
     """Honest sentences when an active cumulus scheme meets fine grids.
@@ -2431,8 +2526,7 @@ def cumulus_gray_zone_advisory(chain_km, cu_physics_by_domain
     active = [(dx, cu) for dx, cu in pairs if cu]
     lines: list[str] = []
     scale_aware_below = [(dx, cu) for dx, cu in active
-                         if cu == 3
-                         and dx < CUMULUS_CONVECTION_PERMITTING_DX_KM]
+                         if cu == 3 and convection_permitting(dx)]
     if scale_aware_below:
         finest = min(dx for dx, _ in scale_aware_below)
         lines.append(
@@ -2447,7 +2541,7 @@ def cumulus_gray_zone_advisory(chain_km, cu_physics_by_domain
             "(implemented-unverified), so verify convective placement "
             "against observations before trusting it there.")
     below = [(dx, cu) for dx, cu in active
-             if cu != 3 and dx < CUMULUS_CONVECTION_PERMITTING_DX_KM]
+             if cu != 3 and convection_permitting(dx)]
     if below:
         finest = min(dx for dx, _ in below)
         switch = "/".join(str(cu) for cu
@@ -2467,8 +2561,8 @@ def cumulus_gray_zone_advisory(chain_km, cu_physics_by_domain
             "emitted [[domain]] tables).")
     band = [(dx, cu) for dx, cu in active
             if cu != 3
-            and CUMULUS_CONVECTION_PERMITTING_DX_KM <= dx
-            <= CUMULUS_GRAY_ZONE_TOP_DX_KM]
+            and not convection_permitting(dx)
+            and dx <= CUMULUS_GRAY_ZONE_TOP_DX_KM]
     if band:
         finest = min(dx for dx, _ in band)
         switch = "/".join(str(cu) for cu
@@ -2488,18 +2582,28 @@ def cumulus_gray_zone_advisory(chain_km, cu_physics_by_domain
 
 
 def cumulus_by_domain(dims, ratios, *,
-                      profile: str | None) -> list[int]:
+                      profile: str | None,
+                      root_dx_m: float = ROOT_DX_M,
+                      cumulus_requested: bool = False) -> list[int]:
     """``cu_physics`` per emitted domain, outer to inner.
 
     Read from the same ``[[domain]]`` tables the emitted file carries
-    (:func:`_domain_tables`: root from the profile, nests pinned to 0),
-    never re-derived, so the advisory cannot disagree with the
-    emission.  ``time_step``/``root_dx_m`` are left at their defaults
-    because they cannot change which cumulus switch a domain carries.
+    (:func:`_domain_tables`: root from the profile unless the spacing
+    resolves its own convection, nests pinned to 0), never re-derived,
+    so the advisory cannot disagree with the emission.
+
+    ``root_dx_m`` used to be left at its default here, on the reasoning
+    that it "cannot change which cumulus switch a domain carries".  That
+    reasoning ended when the root's switch became convection-permitting
+    aware: pass the emission's own spacing, or this reports the 12 km
+    answer for a 3 km file.  ``time_step`` genuinely cannot change a
+    cumulus switch and is still left alone.
     """
 
     return [int(table["cu_physics"])
-            for table in _domain_tables(dims, ratios, profile=profile)]
+            for table in _domain_tables(
+                dims, ratios, profile=profile, root_dx_m=root_dx_m,
+                cumulus_requested=cumulus_requested)]
 
 
 def _root_grid(projection: dict, nx: int, ny: int,
@@ -2853,6 +2957,7 @@ def render_config(*, name: str, start_time: datetime, hours: int,
                   fetch_hints: dict, case_data: dict | None,
                   root_dx_m: float = ROOT_DX_M,
                   profile: str | None = DEFAULT_PHYSICS_PROFILE,
+                  cumulus_requested: bool = False,
                   interactive: bool = False,
                   level_buffers_km: tuple[float, ...] | None = None,
                   history_interval_s: float | None = None,
@@ -3025,6 +3130,22 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             "# intend to believe.\n")
     time_step = root_time_step_s(projection["ref_lat"], root_dx_m)
     chain_km = _ladder_dx_km(ratios, root_dx_m)
+    cu_by_domain = cumulus_by_domain(
+        dims, ratios, profile=profile, root_dx_m=root_dx_m,
+        cumulus_requested=cumulus_requested)
+    root_cu = cu_by_domain[0]
+    retired = cumulus_retired_note(
+        profile, root_dx_m / 1000.0, cumulus_requested=cumulus_requested)
+    # THE VERBATIM CLAIM IS TRUE OR IT IS NOT MADE.  Where the emission
+    # retired the suite's cumulus it names the switch it moved, instead
+    # of asserting a switch-for-switch identity this file does not have.
+    verbatim_claim = (
+        "Taken verbatim from gpuwm.physics_compat EXCEPT the root's "
+        "cumulus\n# switch (see CUMULUS OFF below), so this file passes "
+        "the prepared-"
+        if retired else
+        "Taken verbatim from gpuwm.physics_compat, so this file passes "
+        "the prepared-")
     if level_buffers_km is None:
         # This is the original point header byte-for-byte.  Polygon support
         # must not perturb existing point-authored artifacts.
@@ -3034,9 +3155,8 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             + " -- point "
             f"{projection['ref_lat']:g},{projection['ref_lon']:g}, ladder "
             f"{'-'.join(f'{v:g}' for v in chain_km)} km.\n"
-            f"# PHYSICS: {physics_summary(profile)}.\n"
-            "# Taken verbatim from gpuwm.physics_compat, so this file passes "
-            "the prepared-\n"
+            f"# PHYSICS: {physics_summary(profile, cu_physics=root_cu)}.\n"
+            f"# {verbatim_claim}\n"
             "# forecast runner's profile guard as emitted.  Child dx/dt "
             "derive exactly from\n"
             "# the parent chain and are never hand-typed "
@@ -3049,9 +3169,8 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             f"{'-'.join(f'{v:g}' for v in chain_km)} km.\n"
             f"# Polygon buffers by domain level (outer to inner): "
             f"{buffers} km.\n"
-            f"# PHYSICS: {physics_summary(profile)}.\n"
-            "# Taken verbatim from gpuwm.physics_compat, so this file passes "
-            "the prepared-\n"
+            f"# PHYSICS: {physics_summary(profile, cu_physics=root_cu)}.\n"
+            f"# {verbatim_claim}\n"
             "# forecast runner's profile guard as emitted.  Child dx/dt "
             "derive exactly from\n"
             "# the parent chain and are never hand-typed "
@@ -3074,10 +3193,11 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             "and cumulus are\n"
             "# called on wall-clock intervals, so extra dynamics steps "
             "are cheap).\n")
+    for line in retired:
+        header += f"# {line}\n"
     for line in gray_zone_advisory(chain_km, shared):
         header += f"# {line}\n"
-    for line in cumulus_gray_zone_advisory(
-            chain_km, cumulus_by_domain(dims, ratios, profile=profile)):
+    for line in cumulus_gray_zone_advisory(chain_km, cu_by_domain):
         header += f"# {line}\n"
     parts = [
         header,
@@ -3087,7 +3207,8 @@ def render_config(*, name: str, start_time: datetime, hours: int,
     ]
     for table in _domain_tables(
             dims, ratios, time_step=time_step, root_dx_m=root_dx_m,
-            profile=profile, history_interval_s=history_interval_s,
+            profile=profile, cumulus_requested=cumulus_requested,
+            history_interval_s=history_interval_s,
             nest_history_interval_s=nest_history_interval_s):
         parts.append(_render_table("domain", table, array_of_tables=True))
     if fetch_hints:
@@ -3226,6 +3347,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                name: str, ratios: tuple[int, ...] | None = None,
                root_dx_m: float = ROOT_DX_M,
                profile: str | None = DEFAULT_PHYSICS_PROFILE,
+               cumulus_requested: bool = False,
                vram_gib: float | None = None,
                device_profile=None,
                acknowledgements: tuple[str, ...] = (),
@@ -3275,6 +3397,11 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             # The candidate is the same file the user will get, so it
             # carries the same declaration -- otherwise the sizing loop
             # would refuse a layout the emission is allowed to write.
+            # The cumulus decision rides along for the same reason: a
+            # retired scheme is a kernel set the envelope no longer
+            # prices, and sizing against one the file will not carry
+            # would fit a smaller domain than the card can hold.
+            cumulus_requested=cumulus_requested,
             acknowledgements=acknowledgements)
         exp = experiment_from_text(text, source=f"<candidate {label}>")
         # Every PHASE, not just the forecast.  Sizing a domain against the
@@ -3443,6 +3570,9 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                     fetch_hints=_candidate_fetch_hints(source),
                     case_data=None, root_dx_m=root_dx_m,
                     profile=candidate_profile,
+                    # Pricing a suite the user would have to NAME to get,
+                    # so it is priced as a named suite: verbatim.
+                    cumulus_requested=True,
                     acknowledgements=acknowledgements)
                 candidate_exp = experiment_from_text(
                     candidate_text, source=f"<candidate {label} "
@@ -3698,6 +3828,7 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
                        name: str, ratios: tuple[int, ...],
                        root_dx_m: float = ROOT_DX_M,
                        profile: str | None = DEFAULT_PHYSICS_PROFILE,
+                       cumulus_requested: bool = False,
                        vram_gib: float | None = None,
                        acknowledgements: tuple[str, ...] = (),
                        ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
@@ -3734,6 +3865,7 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
         projection=projection, dims=dims, ratios=ratios,
         fetch_hints=_candidate_fetch_hints(source), case_data=None,
         root_dx_m=root_dx_m, profile=profile,
+        cumulus_requested=cumulus_requested,
         acknowledgements=acknowledgements)
     exp = experiment_from_text(text, source="<polygon candidate>")
     if source == "hrrr":
@@ -4360,6 +4492,24 @@ def domain_main(args) -> int:
 
     profile = resolved_physics_profile(
         args.source, getattr(args, "physics_profile", None))
+    # NAMING THE SUITE IS THE EXPLICIT CUMULUS REQUEST.  It is the only
+    # cumulus statement this door takes, and it is a strong one: naming
+    # --physics-profile asserts the config IS that shipped suite, which
+    # both prepared routes then enforce switch for switch
+    # (gpuwm.gfs_direct.front_door_physics_selection).  Emitting it with
+    # a switch retired would hand the user a file the runner they were
+    # steered to refuses.  Without the flag the suite is DERIVED, nobody
+    # asserted its cumulus scheme, and the grid decides
+    # (see _domain_tables).
+    #
+    # The interactive session composes --physics-profile with the same
+    # DERIVED default and prints the command for re-running, so on that
+    # door the flag is not a person's assertion.  It costs nothing
+    # today: that door pins --ladder 12, whose root is three times the
+    # convection-permitting bound, so neither branch can differ there.
+    # A future interactive --root-dx has to decide this deliberately
+    # rather than inherit it.
+    cumulus_requested = getattr(args, "physics_profile", None) is not None
 
     # THE NOCTURNAL DECLARATION IS THE USER'S TO MAKE, AND THIS IS WHERE
     # THEY MAKE IT (2026-08-09).
@@ -4449,7 +4599,8 @@ def domain_main(args) -> int:
                 ratios=ratios, root_dx_m=root_dx_m, free_bytes=free_bytes,
                 hours=args.hours, start_time=start_time,
                 projection=projection, source=args.source, name=name,
-                profile=profile, vram_gib=vram_gib,
+                profile=profile, cumulus_requested=cumulus_requested,
+                vram_gib=vram_gib,
                 device_profile=device_profile,
                 acknowledgements=acknowledgements)
         else:
@@ -4460,7 +4611,8 @@ def domain_main(args) -> int:
                 ratios=ratios, root_dx_m=root_dx_m, free_bytes=free_bytes,
                 hours=args.hours, start_time=start_time,
                 projection=projection, source=args.source, name=name,
-                profile=profile, vram_gib=vram_gib,
+                profile=profile, cumulus_requested=cumulus_requested,
+                vram_gib=vram_gib,
                 device_profile=device_profile,
                 acknowledgements=acknowledgements)
         ladder = "-".join(f"{v:g}" for v in _ladder_dx_km(ratios, root_dx_m))
@@ -4490,7 +4642,9 @@ def domain_main(args) -> int:
                         ladder=candidate_ladder, free_bytes=free_bytes,
                         hours=args.hours, start_time=start_time,
                         projection=projection, source=args.source, name=name,
-                        profile=profile, vram_gib=vram_gib,
+                        profile=profile,
+                        cumulus_requested=cumulus_requested,
+                        vram_gib=vram_gib,
                         device_profile=device_profile,
                         acknowledgements=acknowledgements)
                     candidate_buffers = None
@@ -4503,6 +4657,7 @@ def domain_main(args) -> int:
                         free_bytes=free_bytes, hours=args.hours,
                         start_time=start_time, projection=projection,
                         source=args.source, name=name, profile=profile,
+                        cumulus_requested=cumulus_requested,
                         vram_gib=vram_gib, device_profile=device_profile,
                         acknowledgements=acknowledgements)
             except DomainFitError as error:
@@ -4631,6 +4786,7 @@ def domain_main(args) -> int:
         projection=projection, dims=dims, ratios=ratios,
         fetch_hints=emitted_fetch_hints, case_data=case_data,
         root_dx_m=root_dx_m, profile=profile,
+        cumulus_requested=cumulus_requested,
         interactive=getattr(args, "interactive", False),
         level_buffers_km=level_buffers,
         history_interval_s=args.history_interval,
@@ -4848,14 +5004,25 @@ def domain_main(args) -> int:
     # user's next command went unfound under a 20-line wall), and
     # --explain gets the full one-line advisory with the mechanism and
     # the override path.
-    summary = physics_summary(profile)
+    chain_km = _ladder_dx_km(ratios, root_dx_m)
+    shared = shared_physics(profile)
+    cu_by_domain = cumulus_by_domain(
+        dims, ratios, profile=profile, root_dx_m=root_dx_m,
+        cumulus_requested=cumulus_requested)
+    # The line describes the FILE, not the catalogue entry: the root's
+    # emitted cumulus switch, which the grid may have retired.
+    summary = physics_summary(profile, cu_physics=cu_by_domain[0])
     if len(dims) > 1:
         summary += (f" -- one radiation cadence: all {len(dims)} domains "
                     "run the root's radt, nests inherit it")
     print(f"physics: {summary}")
-    chain_km = _ladder_dx_km(ratios, root_dx_m)
-    shared = shared_physics(profile)
-    cu_by_domain = cumulus_by_domain(dims, ratios, profile=profile)
+    # A changed switch is reported on the DEFAULT screen, not behind
+    # --explain: the user asked for a suite by not naming one, and the
+    # emission moved one of its switches.
+    speak = cumulus_retired_note if explain else cumulus_retired_headline
+    for note in speak(profile, root_dx_m / 1000.0,
+                      cumulus_requested=cumulus_requested):
+        print(f"advisory: {note}")
     if explain:
         for line in prepared_route_physics_notice(profile, args.source):
             print(line)
@@ -5194,8 +5361,10 @@ __all__ = [
     "DomainFitError", "GEOG_DATASETS", "GRAY_ZONE_DX_KM",
     "LADDER_RATIOS", "MAX_FETCH_ABS_LAT", "POLE_CLEARANCE_DEG",
     "ROOT_DX_M", "ROOT_TIME_STEP_S", "TROPICAL_ROOT_TIME_STEP_S",
+    "convection_permitting",
     "cumulus_by_domain", "cumulus_gray_zone_advisory",
-    "cumulus_gray_zone_headline", "declared_nocturnal_night",
+    "cumulus_gray_zone_headline", "cumulus_retired_headline",
+    "cumulus_retired_note", "declared_nocturnal_night",
     "domain_main", "experiment_from_text", "final_step_command",
     "fit_ladder", "fit_polygon_ladder", "gray_zone_advisory",
     "load_polygon_footprint", "max_fetch_abs_lat",

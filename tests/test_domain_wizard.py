@@ -39,7 +39,8 @@ from gpuwm.domain_wizard import (CARD_VRAM_GIB, DEFAULT_PHYSICS_PROFILE,
 from gpuwm.experiment import load_experiment
 from gpuwm.fetch import validate_fetch_hints
 from gpuwm.hrrr_route_inputs import HrrrRouteInputError, route_input_paths
-from gpuwm.physics_compat import MORRISON_PROFILE_ID
+from gpuwm.physics_compat import (MORRISON_PROFILE_ID,
+                                  single_domain_runtime_switches)
 from gpuwm.source_adapters import (source_coverage_window,
                                    wizard_planable_source_ids)
 from gpuwm.ingest.grib import parse_vtable
@@ -1426,18 +1427,95 @@ def test_the_cumulus_advisory_warns_at_convection_permitting_dx(
     # The remedy is pasteable: name the switch and its off value.
     assert "cu_physics = 0" in lines[0]
 
-    # End to end: --root-dx 3 with the default suite (Kain-Fritsch on
-    # the root) is an advisory, never a refusal -- rc 0, the finding on
-    # stdout, the full sentence in the emitted file's header.
+    # End to end: a suite the user NAMED keeps its cumulus scheme at
+    # --root-dx 3, and the pairing is an advisory, never a refusal --
+    # rc 0, the finding on stdout, the full sentence in the header.
     out = tmp_path / "cp.toml"
     rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
                    "--root-dx", "3", "--chain", "4", "--source", "gfs",
+                   "--physics-profile", MORRISON_PROFILE_ID,
                    "--cycle", "2026-07-29T18", "--hours", "6",
                    "--out", str(out)])
     printed = capsys.readouterr().out
     assert rc == 0
     assert "advisory: CUMULUS" in printed
     assert "CUMULUS" in out.read_text(encoding="utf-8")
+
+
+def test_the_wizard_defaults_cumulus_off_below_the_permitting_bound(
+        tmp_path, capsys):
+    """A bare 3 km run emits cu_physics = 0, and says nothing about
+    double counting, because there is nothing left to double count.
+
+    The wizard used to hand every unnamed suite the profile's
+    Kain-Fritsch on the root at ANY spacing, print the sentence naming
+    the heating and rainfall it counts twice, and write the file
+    anyway.  The bound is the one this module already declares --
+    CUMULUS_CONVECTION_PERMITTING_DX_KM -- not a second number.
+    """
+    from gpuwm.domain_wizard import (CUMULUS_CONVECTION_PERMITTING_DX_KM,
+                                     cumulus_by_domain)
+
+    out = tmp_path / "bare3km.toml"
+    rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
+                   "--root-dx", "3", "--chain", "4", "--source", "gfs",
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    text = out.read_text(encoding="utf-8")
+    exp = experiment_from_text(text, source=str(out))
+    assert [dc.run.cu_physics for dc in exp.domains] == [0, 0]
+    # cudt paces Kain-Fritsch and nothing else; with the scheme off the
+    # emitted cadence is the registry's own spelling for "no scheme".
+    assert exp.root.run.cudt_minutes == 0.0
+    # Nothing double-counts, so the double-counting sentence is gone
+    # from both surfaces.
+    assert "counted twice" not in printed
+    assert "counted twice" not in text
+    assert "CUMULUS GRAY ZONE" not in printed
+    # The moved switch is REPORTED, not silently applied: the emission
+    # changed a switch the derived suite carries, and it says which one
+    # and how to get it back.  The summary line describes the FILE.
+    assert "NO cumulus parameterization" in printed
+    assert "NO cumulus parameterization" in text
+    assert "advisory: CUMULUS OFF AT 3 KM" in printed
+    assert "CUMULUS OFF AT 3 KM" in text
+    assert "--physics-profile" in text
+    # And the header stops claiming a verbatim identity the file lacks.
+    assert "Taken verbatim from gpuwm.physics_compat EXCEPT" in text
+
+    # The threshold is the declared bound: AT it the profile's scheme
+    # survives (the gray zone is a softer finding, not this defect).
+    assert CUMULUS_CONVECTION_PERMITTING_DX_KM == 4.0
+    dims, ratios = [(120, 120)], ()
+    assert cumulus_by_domain(
+        dims, ratios, profile=MORRISON_PROFILE_ID,
+        root_dx_m=CUMULUS_CONVECTION_PERMITTING_DX_KM * 1000.0) == [1]
+    assert cumulus_by_domain(
+        dims, ratios, profile=MORRISON_PROFILE_ID,
+        root_dx_m=(CUMULUS_CONVECTION_PERMITTING_DX_KM - 0.5) * 1000.0
+    ) == [0]
+
+
+def test_an_explicitly_named_cumulus_suite_survives_at_three_km(
+        tmp_path, capsys):
+    """Naming --physics-profile asserts the config IS that suite, so the
+    wizard emits it verbatim and keeps the double-counting sentence."""
+    out = tmp_path / "named3km.toml"
+    rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
+                   "--root-dx", "3", "--chain", "4", "--source", "gfs",
+                   "--physics-profile", MORRISON_PROFILE_ID,
+                   "--cycle", "2026-07-29T18", "--hours", "6",
+                   "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    text = out.read_text(encoding="utf-8")
+    exp = experiment_from_text(text, source=str(out))
+    switches = single_domain_runtime_switches(MORRISON_PROFILE_ID)
+    assert exp.root.run.cu_physics == switches["cu_physics"] == 1
+    assert "advisory: CUMULUS" in printed
+    assert "counted twice" in text
 
 
 def test_the_convective_gray_zone_gets_a_softer_note():

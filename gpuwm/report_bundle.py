@@ -1576,6 +1576,16 @@ def _render_manifest(manifest: dict) -> str:
             f"{wheel.get('distribution_version')}, RECORD "
             f"{str(wheel.get('record_aggregate_sha256'))[:16]}... over "
             f"{wheel.get('record_file_count')} files")
+    editable = provenance.get("installed_editable") or {}
+    if editable:
+        git = editable.get("git") or {}
+        add(f"                  {editable.get('distribution_name')} "
+            f"{editable.get('distribution_version')}, editable source at "
+            f"{editable.get('source_root')}")
+        add(f"                  tree is "
+            f"{'DIRTY' if git.get('dirty') else 'clean'} "
+            f"({git.get('dirty_files')} tracked file(s) modified, "
+            f"{git.get('untracked_files')} untracked)")
     if provenance.get("git_commit"):
         add(f"                  commit {provenance['git_commit']}")
     if manifest["observed_exit_code"] is not None:

@@ -90,7 +90,7 @@ The kernel is bitwise; these are about what the engine can hand it today.
    `module_cumulus_driver.F:867` pre-folds `RTHRATEN + RTHBLTEN` into
    `RTHFTEN` for `G3SCHEME` and `NTIEDTKESCHEME` and **not** for
    `GFSCHEME`, which sums the three lanes itself
-   (`kernels/gf.cu:4146`). A pre-folded RTHFTEN here would make GF
+   (`kernels/gf.cu:4428`). A pre-folded RTHFTEN here would make GF
    integrate the boundary layer and the sky twice.
 
    **Restart consequence, stated plainly:** the pair is serialized
@@ -123,63 +123,97 @@ against obs skill, not against "more rain"; a user report of "GF is
 broken / makes no rain" on a weakly forced case is this measured shape,
 not an adapter defect.
 
-## 5. VRAM: GF costs +3.20 GiB of non-pool backing store
+## 5. VRAM: GF's backing store, and the cut that removed it
 
-This is the one number that changes what a host can run, and it is not in
-the CuPy pool where anyone would look for it.
+RETIRED 2026-08-21, and kept here because the mechanism is worth reading.
 
 One GF thread owns one whole GFDRV column, so the per-thread local frame
-is the deep+shallow local-array stack: **22,416 B measured** (registered
-at `gpuwm/core/preflight.py::KERNEL_MAX_LOCAL_SIZE_BYTES["gf"]`, nz=40
-tier). By the reservation law in `docs/kernel_local_memory_bounds.md`,
+USED TO BE the deep+shallow local-array stack: **22,416 B** at the nz=40
+tier, rising 456 B per level. By the reservation law in
+`docs/kernel_local_memory_bounds.md` the driver sizes the backing store to
+the device's whole resident-thread capacity on the kernel's first launch
+and holds it for the life of the process, so that frame cost
 
 ```
+(22,416 - 1,024) * 1,536 *  70  =  2.14 GiB          [RTX 5070 Ti]
 (22,416 - 1,024) * 1,536 * 170  =  5.20 GiB          [RTX 5090]
 ```
 
-the driver reserves that for the device's whole resident-thread capacity
-on the kernel's first launch and holds it for the life of the process.
+while the kernel only ever had 384 threads/SM in flight.
 
-The base stack's largest frame is KF's at nz=49 (9,216 B → 1.99 GiB), so
-selecting GF **replaces** that reservation rather than adding to it:
-net **+3.20 GiB**. `gpuwm check` prices it under `NON-POOL`.
+The column arrays now live in a global workspace `gpuwm/core/gf.py` sizes
+to the columns IN FLIGHT (`gpuwm/core/kernels/gf.cu`, section "Per-thread
+column workspace").  MEASURED on node-1: the frame is 72 B, the
+reservation is 4.0 MiB, and the workspace costs 422.1 MiB at the shipped
+tile.  `gpuwm check` prices the workspace under `NON-POOL` where it used
+to price the frame; section 7 of `docs/kernel_local_memory_bounds.md`
+carries the full before/after.
 
-## 6. WORK ITEM: the four-domain GF arm does not fit, and it is a code fix
+**Selecting GF is no longer what sets the local-memory term.** On a
+`cu_physics = 3` tree the widest frame is now some other module's -- the
+same one-thread-one-column shape in `ysu`, `shinhong`, `nssl2` and `refl`.
 
-`configs/real74_4dom_gf.toml` is the ratified target and **is not runnable
-on the Windows host**. Measured by `gpuwm check`:
+## 6. CLOSED: the frame that did not fit is gone
 
-| config | device-footprint projection | forecast peak envelope |
-|---|---|---|
-| `real74_4dom.toml` (KF base) | 24.12 GiB | — |
-| `real74_4dom_gf.toml` | **27.79 GiB** | 44.87 GiB |
-| `real74_2dom_gf.toml` (what runs) | 16.67 GiB | 25.98 GiB |
+`configs/real74_4dom_gf.toml` did not fit, and the route registered here
+was a code change. **It landed on 2026-08-21**, and by a better road than
+the one this section proposed.
 
-The card is 32,607 MiB with no ECC, the four-domain base stack has been
-measured peaking at 30,879–31,352 MiB machine-wide, and this project has
-documented 32.2 GB producing **corrupted d03/d04 output rather than a
-clean refusal**. There is no room for another 3.2 GiB and the failure mode
-is silent. `gpuwm check` also reports that the RRTMGP `column_chunk` lever
-cannot close the four-domain gap: the grid itself would have to come down.
+The proposal was to specialize `gf.cu`'s per-thread frame the way
+`KF_KMAX`/`REFL_KMAX` were specialized. That would have divided the
+reservation by the level ratio and left it proportional to `nz`. What
+landed instead moves the column arrays **out of the local frame entirely**,
+into a global workspace sized to the threads actually in flight
+(`docs/kernel_local_memory_bounds.md` sections 7 and 8). The difference
+matters: the reservation does not shrink, it **stops existing**, and it
+stops moving with `nz` at all.
 
-Disk is an independent limit: four domains at these cadences is ~244 GB of
-wrfout per arm, ~488 GB for a dual run, against 242 GB free on the largest
-volume. Not even one arm fits, and nothing may be deleted.
+Measured on weather-node-1 (RTX 5070 Ti, 70 SM x 1,536, sm_120):
 
-**The route is a code change, not a config one:** specialize the `gf.cu`
-per-thread local frame the way `KF_KMAX`/`REFL_KMAX` were specialized
-(`docs/kernel_local_memory_bounds.md`), so the reservation is sized by the
-arrays a column actually needs rather than by the compiled ceiling.
-Acceptance: `gpuwm check configs/real74_4dom_gf.toml` back under the
-four-domain base's footprint, GF parity suites still bitwise (the frame is
-allocation size, not a value any loop reads — the same argument that made
-the KF/REFL specialization safe).
+| kernel | frame before | frame after | reservation before | after |
+|---|---|---|---|---|
+| `gf_gfdrv_stage` | 22,416 B | 88 B (NVRTC 13.0) / 72 B (13.3) | 2,200.0 MiB | 4.0 MiB |
+| `ysu_column` | 9,232 B | 0 B (both builds) | 842.0 MiB | none |
 
-**This is registered here as its own work item and is NOT a blocker for
-folding the lane in.** The two-domain arm carries the GF evidence: GF is
-selected on d01 and d02 and nowhere else, `feedback = 0` makes the nesting
-one-way, so d01/d02 integrate the same trajectory they would inside the
-four-domain tree.
+YSU is in the table because it is what the GF cut uncovered: with GF out of
+the way, YSU held the widest frame a **bare default run** launched, and
+`bl_pbl_physics = 1` is the wizard's default.
+
+### What the four-domain arm costs now
+
+`gpuwm check`, re-measured 2026-08-21:
+
+| config | device-footprint projection |
+|---|---|
+| `real74_4dom.toml` (KF base) | 21.52 GiB |
+| `real74_4dom_gf.toml` | **22.17 GiB** |
+| `real74_2dom_gf.toml` | 11.05 GiB |
+
+The GF arm is now **0.65 GiB** over the KF base, where this section
+recorded 3.67 GiB (27.79 against 24.12). **Stated plainly: the acceptance
+criterion written here — GF back *under* the four-domain base's footprint —
+is NOT met.** It is 0.65 GiB over, because GF's column workspace (0.47 GiB
+at this configuration) is a real allocation that the local frame's
+reservation used to hide. The 3.2 GiB obstruction is gone; a smaller,
+honest one is in its place.
+
+These three rows are measured on the **current Windows host, an RTX 3080
+with 68 SMs**. The 32,607 MiB card the original table was measured on moved
+to weather-node-2 on 2026-08-16, so that box no longer exists and the two
+tables are not the same instrument. The *delta* between configs is the
+comparable quantity, not the absolute GiB.
+
+Disk remains an independent and unchanged limit: four domains at these
+cadences is ~244 GB of wrfout per arm, ~488 GB for a dual run, against
+242 GB free on the largest volume. Not even one arm fits, and nothing may
+be deleted. **Whether the four-domain GF arm is now runnable is therefore
+still NOT MEASURED** — the memory obstruction is closed, the disk one is
+not, and no four-domain GF run has been attempted.
+
+GF parity is unaffected by the cut: the frame was allocation size, not a
+value any loop reads, and the interleaved A/B in
+`docs/kernel_local_memory_bounds.md` section 7 records 141,480 graded
+words with 0 differing, both controls firing.
 
 ## 7. Restart: `cu_physics = 3` could not checkpoint until a4c06235
 

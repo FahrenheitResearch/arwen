@@ -372,6 +372,64 @@ def test_vram_refusal_when_the_process_fixed_cost_alone_is_too_big():
         raise AssertionError("a 2 GiB card planned a full-physics tile")
 
 
+def test_a_spent_allowance_refuses_with_every_term_named_and_no_negative():
+    """The -2.68 GiB refusal of 2026-08-24, pinned term by term.
+
+    A front end froze ``vram_budget_bytes = 65,011,712`` -- 62 MiB, captured
+    from a probe taken while the card was running another forecast -- and the
+    full rung's 2.74 GiB radiation reservation took the budget NEGATIVE.  The
+    tile search then ran against the negative number and the refusal printed
+    it raw: "no tile fits in -2.68 GiB of VRAM", no term named, no remedy.  A
+    negative byte count in a user-facing message is itself the defect: a
+    refusal names the concrete breakage, which here is an allowance already
+    smaller than the reservations that come off it before any tile is priced.
+    """
+    import re
+
+    cfg = A._config_for_rung(282, 155, 49, "full", specified=True)
+    machine = A.Machine(65_011_712, 64 * GIB,
+                        name="[tiles] vram_budget_bytes", vram_headroom=0.0)
+    try:
+        A.plan(cfg, machine)
+    except A.CannotPlan as exc:
+        msg = str(exc)
+        assert exc.resource == "vram", (exc.resource, msg)
+        assert re.search(r"-\d", msg) is None, (
+            f"a negative figure reached a user-facing refusal: {msg}")
+        assert "0.06 GiB" in msg, f"the allowance is not named: {msg}"
+        assert "2.74 GiB" in msg, f"the reservation is not sized: {msg}"
+        assert "radiation" in msg, f"the reservation is not named: {msg}"
+        assert "per-process fixed cost" in msg, (
+            f"the floor the allowance must clear is not named: {msg}")
+        assert "free VRAM" in msg, f"no remedy line: {msg}"
+        detail = exc.detail
+        assert detail["vram_allowance_bytes"] == 65_011_712
+        assert detail["radiation_transient_excess_bytes"] == \
+            A.RADIATION_TRANSIENT_BYTES["full"]
+        assert detail["vram_budget"] < 0, (
+            "the machine-readable detail must keep the signed arithmetic")
+    else:
+        raise AssertionError("a 62 MiB allowance planned a full-physics run")
+
+
+def test_the_same_cards_honest_free_figure_plans_the_same_domain():
+    """CONTROL for the spent-allowance refusal: the card had room.
+
+    The run behind the refusal above died on a 10 GiB card with 8.38 GiB
+    free (NVML) at the moment of the refusal -- only the FROZEN number was
+    tiny.  Handed the honest figure, the same domain must simply plan, and
+    the budget arithmetic must come out positive at every rung: a negative
+    budget from a card with headroom means a reservation was charged to a
+    base it exceeds, never a full card.
+    """
+    machine = A.Machine(int(8.38 * GIB), 64 * GIB, name="RTX 3080 (free)")
+    for rung in ("dry", "moist", "full", "full+mynn+noahmp"):
+        assert A.budget_for(machine, A.FOOTPRINTS[rung]) > 0, rung
+    cfg = A._config_for_rung(282, 155, 49, "full", specified=True)
+    p = A.plan(cfg, machine)
+    assert p.mode in ("resident", "tiled"), p.explain()
+
+
 def test_redundancy_limit_refuses_a_tile_that_is_almost_all_halo():
     """A run that would technically proceed while spending the card on halo."""
     # A card sized, from the model itself, to admit exactly a 56-cell window:

@@ -596,7 +596,7 @@ def capture_advective_theta_forcing(state: DomainState) -> None:
     it.  WRF's ``module_cumulus_driver.F:867`` pre-folds
     ``RTHRATEN + RTHBLTEN`` into ``RTHFTEN`` for G3SCHEME and
     NTIEDTKESCHEME and NOT for GFSCHEME, which sums the lanes itself
-    (``gpuwm/core/kernels/gf.cu:4146``), so an export taken one line later
+    (``gpuwm/core/kernels/gf.cu:4428``), so an export taken one line later
     makes the scheme integrate the boundary layer and the radiation twice.
     ``tests/test_dycore_advective_forcing_export.py`` is the gate.
 

@@ -42,7 +42,7 @@ are about what the engine can hand it today):
    ``module_cumulus_driver.F:867`` pre-folds ``RTHRATEN + RTHBLTEN`` into
    ``RTHFTEN`` for G3SCHEME and NTIEDTKESCHEME only; GFSCHEME is not in
    that list because the kernel sums the three lanes itself at
-   ``kernels/gf.cu:4146``.  Handing this adapter a pre-folded RTHFTEN
+   ``kernels/gf.cu:4428``.  Handing this adapter a pre-folded RTHFTEN
    would integrate the boundary layer and the sky twice.
 2. **Convective momentum tendencies.**  The kernel computes GF's
    dudt/dvdt; :class:`CumulusResult` carries no momentum slots, so they
@@ -97,6 +97,84 @@ def _gf_module(nz: int):
     from gpuwm.core.kernels import load_module_int_defines
 
     return load_module_int_defines("gf", (("GF_KMAX", int(nz)),))
+
+
+def gf_kernel_capacity(nz: int) -> int:
+    """The ``GF_KMAX`` the module is compiled at for this ``nz``."""
+    return _GF_KMAX_DEFAULT if nz <= _GF_KMAX_DEFAULT else int(nz)
+
+
+# ---------------------------------------------------------------------------
+# The per-thread column workspace
+# ---------------------------------------------------------------------------
+# gf.cu used to keep GFDRV's column arrays in the per-thread local frame, and
+# CUDA prices a local frame at the card's RESIDENT-THREAD CAPACITY -- one
+# per-context backing store of (frame - 1024) * SMs * maxThreadsPerSM, taken
+# at first launch and never returned.  MEASURED on node-1 (RTX 5070 Ti, 70
+# SMs x 1,536, sm_120, NVRTC 13.3): the 22,416 B frame took 2,196.0 MiB while
+# the kernel only ever had 384 threads/SM in flight.  The arrays now live in
+# a global workspace this adapter allocates, sized to the threads ACTUALLY in
+# flight, and the columns are launched in tiles of that size.
+#
+# These three must match gf.cu's GFWS_SLOT_COUNT_COL / GFWS_SLOT_COUNT_DRV /
+# GFWS_SLOTS; tests/test_gf_workspace.py re-derives them from the .cu source
+# and fails if either side moves alone.
+GFWS_SLOT_COUNT_COL = 90
+GFWS_SLOT_COUNT_DRV = 36
+GFWS_SLOTS = GFWS_SLOT_COUNT_COL + GFWS_SLOT_COUNT_DRV
+
+#: Launch block, and the tile's granularity.  gf.cu indexes the workspace by
+#: the global thread id within a tile, so a tile is always a whole number of
+#: blocks.
+GF_BLOCK = 64
+
+#: Blocks per SM the tile is sized for.  MEASURED, not assumed: at 100,000
+#: columns on node-1 (RTX 5070 Ti, 70 SMs) the kernel's wall is 31.07 ms at
+#: 2 blocks/SM, 24.18 at 4, 24.33 at 6, 25.14 at 8 and 26.63 at 12, against
+#: 19.33 ms for the pre-cut local-frame kernel.  4 is the plateau and the
+#: cheapest point on it: 422 MiB of workspace where 12 would cost 1,266 MiB
+#: and run slower.  The kernel's hardware occupancy at block=64 is 12
+#: blocks/SM, so this is a throughput choice, not a residency limit, and the
+#: query below only ever lowers it.
+GF_TILE_BLOCKS_PER_SM = 4
+
+
+def gf_workspace_floats(nz: int, columns: int) -> int:
+    """Workspace floats for ``columns`` columns in flight at this ``nz``.
+
+    Rounded up to whole blocks: gf.cu interleaves the workspace by LANE
+    within a block, the way CUDA lays local memory out across a warp, so the
+    unit of allocation is one block's region, not one column's.
+    """
+    blocks = (int(columns) + GF_BLOCK - 1) // GF_BLOCK
+    return blocks * GFWS_SLOTS * (gf_kernel_capacity(nz) + 9) * GF_BLOCK
+
+
+def gf_tile_columns(fn, ncol: int) -> int:
+    """Columns to keep in flight: enough to fill the card, and no more.
+
+    The whole point of the workspace is that it is charged per thread IN
+    FLIGHT where the local-memory backing store was charged per thread the
+    card could ever hold.  Over-sizing the tile hands that 4x back.
+    """
+    import cupy as cp
+
+    dev = cp.cuda.Device()
+    sms = dev.attributes["MultiProcessorCount"]
+    per_sm = GF_TILE_BLOCKS_PER_SM
+    try:
+        from cupy_backends.cuda.api import driver
+
+        resident = driver.occupancyMaxActiveBlocksPerMultiprocessor(
+            fn.kernel.ptr, GF_BLOCK, 0)
+        # Never launch more blocks than the card can hold resident: those
+        # columns would wait while their workspace slots stayed allocated.
+        per_sm = min(per_sm, int(resident))
+    except Exception:                              # noqa: BLE001
+        pass                                       # keep the measured value
+    per_sm = max(1, int(per_sm))
+    tile = sms * per_sm * GF_BLOCK
+    return int(min(int(ncol), tile))
 
 
 class GrellFreitas:
@@ -203,11 +281,23 @@ class GrellFreitas:
 
         module = _gf_module(nz)
         fn = module.get_function("gf_gfdrv_stage")
-        block = 64
-        fn(((ncol + block - 1) // block,), (block,),
-           (lvin, scin, iin, lev, sca, isc,
-            np.int32(0),          # SHIPPED default: corrected k22 indexing
-            np.int32(ncol), np.int32(nz)))
+        block = GF_BLOCK
+        # The column arrays live in a global workspace sized to the threads
+        # in flight, not in the per-thread local frame (which CUDA prices at
+        # the card's whole resident-thread capacity).  Columns therefore go
+        # in tiles of `tile`, each tile launched with the SAME one-thread-
+        # one-column mapping the kernel has always had -- the slices below
+        # are contiguous views, so the kernel indexes them exactly as before.
+        tile = gf_tile_columns(fn, ncol)
+        ws = cp.empty(gf_workspace_floats(nz, tile), dtype=DTYPE)
+        for lo in range(0, ncol, tile):
+            hi = min(lo + tile, ncol)
+            fn((((hi - lo) + block - 1) // block,), (block,),
+               (lvin[lo:hi], scin[lo:hi], iin[lo:hi],
+                lev[lo:hi], sca[lo:hi], isc[lo:hi], ws,
+                np.int32(0),      # SHIPPED default: corrected k22 indexing
+                np.int32(hi - lo), np.int32(nz)))
+        del ws
 
         def grid(j):
             # (ncol, nz) slice -> (nz, ny, nx)

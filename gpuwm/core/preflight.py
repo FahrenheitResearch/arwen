@@ -515,16 +515,27 @@ def anisotropic_w_mixing_advisories(exp) -> list[str]:
     return lines
 
 
-def streaming_advisory(exp) -> str | None:
-    """Say out loud that this report prices a RESIDENT allocation.
+#: "The caller did not price this" -- distinct from a caller that priced
+#: it and got ``None``, which is the answer "this config does not stream".
+_UNPRICED = object()
 
-    Every number this module produces -- ``alloc_estimate_bytes``, the peak
-    envelope, the reserve, the whole N0 chain -- itemizes a domain that
-    lives in VRAM.  There is no streamed term anywhere in it, and none of
-    the enumerations below has a concept of a tile buffer.  With
-    ``[tiles]`` configured that is a fact the reader has to be told,
-    because the report is otherwise indistinguishable from one describing
-    the run they actually asked for.
+
+def streaming_advisory(exp, *, machine=None,
+                       envelope=_UNPRICED) -> str | None:
+    """Say out loud WHICH allocation this report prices.
+
+    Every ENUMERATION in this module -- ``alloc_estimate_bytes``, the
+    itemized peak envelope, the reserve, the whole N0 chain -- prices a
+    domain resident in VRAM, and none of them has a concept of a tile
+    buffer.  With ``[tiles]`` configured that is a fact the reader has to
+    be told, because a report that shows only those figures is otherwise
+    indistinguishable from one describing the run they actually asked for.
+
+    What the report's BINDING figures now carry is the streamed envelope
+    (:func:`estimate_phases` replaces the forecast term with it, and
+    ``check_main`` compares the gate leg and the exit code against it), so
+    the sentence below is a statement about the run the config asks for
+    rather than a warning that the numbers are about a different one.
 
     REWRITTEN AT 2.2.0, TWICE OVER.  Both halves of what this used to say
     are now false, and a stale advisory is worse than none: it was the
@@ -548,6 +559,17 @@ def streaming_advisory(exp) -> str | None:
 
     Advisory, never a gate: it changes no exit code and blocks nothing,
     on the same posture as every other entry in :func:`check_advisories`.
+
+    ONE DECISION PER REPORT.  ``envelope`` is accepted so a caller that
+    has already priced the streamed forecast hands that envelope over
+    rather than having this function derive a second one.  Under
+    ``mode = "auto"`` the two derivations genuinely disagree: this one
+    reached ``Machine.detect`` and planned against the card under the
+    desk while the report's verdict planned against the card the reader
+    declared, and one ``gpuwm check --budget-gib 6`` printed "2 tile
+    buffer(s) of 220x174 = 5.80 GiB" at the top and "2 tile buffer(s) of
+    311x146 ... 6.17 GiB" in its binding-phase line.  ``machine`` is the
+    same escape for a caller that has a card but not yet an envelope.
     """
     options = getattr(exp, "tiles", None)
     mode = getattr(options, "mode", "off")
@@ -563,7 +585,8 @@ def streaming_advisory(exp) -> str | None:
             "-- and records each domain's road and claim in its decision "
             "receipt), so a refusal or a fit below describes the resident "
             "tree, not the mixed-road one the run will take.")
-    envelope = streamed_forecast_envelope(exp)
+    if envelope is _UNPRICED:
+        envelope = streamed_forecast_envelope(exp, machine=machine)
     if envelope is not None:
         return (f"[tiles] mode = '{mode}' streams this domain, so the memory "
                 "numbers in this report price the STREAMED allocation and "
@@ -585,22 +608,106 @@ def streaming_advisory(exp) -> str | None:
         "not have saved the run either." + nested_note)
 
 
-def check_advisories(exp, config_path=None) -> list[str]:
+from gpuwm.core.pace import UNPRICED as _PACE_UNPRICED
+
+
+def pace_machine_from_free_bytes(free_bytes: int | None):
+    """An ``autoplan.Machine`` for the card THIS REPORT measured.
+
+    The column bound has to be priced against the allowance the reader
+    actually has, and ``gpuwm check`` is the one surface that has already
+    measured it.  ``vram_headroom`` is zeroed because ``free_bytes`` is
+    already what the card will give this process now, and
+    ``autoplan.budget_for`` applies the rung's radiation reservation on
+    top -- letting the percentage headroom stand as well would withhold
+    the same bytes twice, which is the double count
+    :func:`tilestream.autoplan.budget_for` exists to avoid.
+
+    ``None`` when nothing measured the card, so the bound is omitted
+    rather than guessed.
+    """
+    if not free_bytes or int(free_bytes) <= 0:
+        return None
+    from tilestream import autoplan
+
+    host = _host_total_bytes_or_none()
+    return autoplan.Machine(
+        vram_bytes=int(free_bytes),
+        host_bytes=int(host or free_bytes), name="measured free VRAM",
+        vram_headroom=0.0, host_source="gpuwm check")
+
+
+def _host_total_bytes_or_none() -> int | None:
+    from gpuwm.core.streaming import _host_total_bytes
+
+    try:
+        return _host_total_bytes()
+    except Exception:
+        return None
+
+
+def pace_advisory(exp, *, streamed=_PACE_UNPRICED, machine=None) -> str | None:
+    """The pace sentence, re-exported so ``check_main`` reads one name.
+
+    The default is the PACE module's own sentinel, not ``None``.  Passing
+    ``None`` here would be the positive claim "this plan runs resident",
+    and a re-export that quietly made that claim reported the resident
+    road for a config whose [tiles] table streams.
+    """
+    from gpuwm.core.pace import pace_advisory as _pace_advisory
+
+    return _pace_advisory(exp, streamed=streamed, machine=machine)
+
+
+def pace_estimate_for_report(exp, *, streamed=None, free_bytes=None):
+    """The pace this report should publish, priced against its own card."""
+    from gpuwm.core.pace import estimate_pace
+
+    return estimate_pace(exp, streamed=streamed,
+                         machine=pace_machine_from_free_bytes(free_bytes))
+
+
+def check_advisories(exp, config_path=None, *, machine=None,
+                     streamed=_UNPRICED) -> list[str]:
     """Every route advisory this config earns, in report order.
 
     Same posture as ``feedback_advisory``: these change no exit code and
     block nothing.  They exist because a legal config that a later stage
     silently ignores is worse than one it refuses -- the user learns
     after paying for the run instead of before it.
+
+    ``machine`` and ``streamed`` are relayed to :func:`streaming_advisory`
+    so a report that has already resolved ``[tiles]`` describes the
+    tiling it is about to quote numbers for, and not a second one.
     """
 
     from gpuwm.checkpoint_routes import (
         checkpoint_route_advisory, config_has_case_data)
 
+    # ONE DECISION, resolved once and given to both sentences below.
+    # Deriving it twice is the defect ``streaming_advisory``'s docstring
+    # records: under ``mode = "auto"`` two derivations planned against
+    # two different cards and one report printed two tilings.
+    if streamed is _UNPRICED:
+        streamed = streamed_forecast_envelope(exp, machine=machine)
     advisories = [feedback_advisory(exp)]
     advisories.extend(spawn_reservation_advisories(exp))
     advisories.extend(anisotropic_w_mixing_advisories(exp))
-    advisories.append(streaming_advisory(exp))
+    advisories.append(streaming_advisory(exp, machine=machine,
+                                         envelope=streamed))
+    # THE PACE, immediately after the sentence that says which road this
+    # config takes -- the two belong together, because "this domain
+    # streams" is only actionable next to what streaming costs and what
+    # domain size would not.
+    # THE PACE IS NOT AN ADVISORY, and putting it here was wrong.  Every
+    # entry in this list is EARNED -- a config that turned something on
+    # gets told what that costs it -- and the negative control in
+    # tests/test_checkpoint_route_contract.py pins that a plain config
+    # earns none, so "a green check stays green for everybody else".  The
+    # pace is owed to every run, including the plainest, so it is printed
+    # on its own line by ``check_main`` and published as the
+    # ``expected_pace`` object in the JSON, not smuggled into a list
+    # whose contract is the opposite.
     if config_path is not None:
         advisories.append(checkpoint_route_advisory(
             domain_count=len(exp.domains),
@@ -1212,8 +1319,8 @@ def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
 #: equality only on a platform this tree has a recording for, and the
 #: never-below-a-measurement invariant on every other.
 #:
-#: Three modules do not launch at their unspecialized bound: ``kf``,
-#: ``refl`` and ``wdm6_refl`` compile their column arrays to the
+#: Two modules do not launch at their unspecialized bound: ``refl`` and
+#: ``wdm6_refl`` compile their column arrays to the
 #: configuration's own level count
 #: (:data:`LEVEL_SPECIALIZED_KERNEL_FRAMES`), so their rows here are the
 #: CEILING, not the price.  Three more are TIERED, and those are the only
@@ -1245,13 +1352,20 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # kernels directory, so the local-frame sweep sees it like any model
     # module; it holds no local frame.
     "ftz_probe": 0,
-    # Grell-Freitas: one thread owns one whole GFDRV column, so the frame
-    # is the deep+shallow local-array stack (measured on the driver probe,
-    # nz=40 tier).  sm_86 compiles it 1,568 B WIDER than sm_120 does
-    # (23,984 against 22,416), which on a 68-SM card is 0.15 GiB of
-    # backing store the sm_120 row did not charge for; the ceiling is the
-    # sm_86 reading.
-    "gf": 23984,
+    # Grell-Freitas.  One thread still owns one whole GFDRV column, but
+    # the column arrays no longer live in the per-thread local frame:
+    # gpuwm/core/kernels/gf.cu keeps them in a global workspace that
+    # gpuwm/core/gf.py sizes to the threads IN FLIGHT, because the driver
+    # sizes the local-memory backing store to the threads the card can
+    # ever hold.  MEASURED on node-1 (RTX 5070 Ti, sm_120): the frame went
+    # 22,416 -> 72 B on NVRTC 13.3 and 22,416 -> 88 B on NVRTC 13.0.48,
+    # and the launch-time reservation went 2,200.0 MiB -> 4.0 MiB.  Both
+    # readings are under the 1,024 B default stack, so the row reserves
+    # nothing on any card, and it no longer moves with nz -- the frame is
+    # 72 B at the 40, 49, 55 and 64 tiers alike, which retires the
+    # level-specialization gap this row used to carry.
+    # The workspace itself is priced by :func:`gf_column_workspace_bytes`.
+    "gf": 88,
     "health": 0,
     # The tile-streamed health reduction (gpuwm/core/streaming.py:1728).
     # It holds no local frame on either measured architecture.  The row
@@ -1267,7 +1381,24 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # kernel is written around shared memory instead of per-thread arrays.
     "jacobi_eigh": 0,
     "kessler": 5120,
-    "kf": 24064,
+    # Kain-Fritsch.  One thread still owns one whole column, but 52 of
+    # kf_column's 54 column arrays no longer live in the per-thread local
+    # frame: gpuwm/core/kernels/kf.cu keeps them in a global workspace that
+    # gpuwm/core/kf.py sizes to the threads IN FLIGHT, because the driver
+    # sizes the local-memory backing store to the threads the card can ever
+    # hold.  MEASURED on node-1 (RTX 5070 Ti, 70 SMs x 1,536, sm_120, NVRTC
+    # 13.0.48): the frame went 9,216 -> 512 B and the launch-time
+    # reservation went 840.0 MiB -> 0.0 MiB.
+    #
+    # 512 B, not 0: ``tv_env`` and ``positive_energy`` stay on the stack
+    # because they are the only two whose PLACEMENT moves an output bit
+    # (kf.cu says why), and at the unspecialized KF_KMAX = 128 the compiler
+    # materialises 512 B of them.  That is half the 1,024 B default stack,
+    # so the row reserves nothing on any card -- and it no longer moves
+    # with nz, which is what retired kf's LEVEL_SPECIALIZED_KERNEL_FRAMES
+    # entry and the per-nz recompile that entry priced.
+    # The workspace itself is priced by :func:`kf_column_workspace_bytes`.
+    "kf": 512,
     "kf_validation": 0,
     "lbc_flow": 0,
     "lbc_state": 0,
@@ -1454,7 +1585,27 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # two rungs -- and tests/test_kernel_local_bounds.py re-reads both off
     # the driver.
     "wsm6": 7216,
-    "ysu": 9232,
+    # YSU (bl_pbl_physics = 1, the SHIPPED DEFAULT).  One thread still owns
+    # one whole column, but the column arrays no longer live in the
+    # per-thread local frame: gpuwm/core/kernels/ysu.cu keeps them in a
+    # global workspace that gpuwm/core/ysu.py sizes to the threads IN
+    # FLIGHT, because the driver sizes the local-memory backing store to
+    # the threads the card can ever hold.
+    #
+    # MEASURED on node-1 (weather-node-1, RTX 5070 Ti, 70 SMs x 1,536,
+    # sm_120) through the real launcher at nz=49: the frame went 9,232 -> 0
+    # B on BOTH NVRTC 13.0 and 13.3, and the launch-time reservation went
+    # 842.0 MiB -> nothing.  A zero frame reserves nothing on any card, and
+    # it no longer moves with nz -- the workspace extent is a RUNTIME
+    # argument, so a 49-level run holds 50 levels of arrays where the frame
+    # had to hold 128.
+    #
+    # This row mattered more than any other: bl_pbl_physics = 1 is the
+    # wizard's default (gpuwm/domain_wizard.py:714), so this was the
+    # widest frame a BARE DEFAULT run launched, and every default run paid
+    # the 842.0 MiB.
+    # The workspace itself is priced by :func:`ysu_column_workspace_bytes`.
+    "ysu": 0,
     "ysu_validation": 0,
 }
 
@@ -1538,11 +1689,11 @@ def under_priced_kernel_frames(
 class LevelSpecializedFrame:
     """A kernel module whose per-thread local frame is compiled to ``nz``.
 
-    ``kf.cu`` and ``refl.cu`` declare their per-thread column arrays against
-    a ``#ifndef``-guarded compile-time bound, and their launchers specialize
+    ``refl.cu`` declares its per-thread column arrays against a
+    ``#ifndef``-guarded compile-time bound, and its launcher specializes
     that bound to the field's own level count through
     ``gpuwm.core.kernels.get_kernel_int_defines``.  The column arrays are the
-    only thing in either kernel that scales with the bound, so the frame the
+    only thing in the kernel that scales with the bound, so the frame the
     driver reports is ``bytes_per_level * levels`` rounded up to the local
     frame's 8-byte granularity.
 
@@ -1552,13 +1703,15 @@ class LevelSpecializedFrame:
       ==========  ============  ==========  ==========
       module      bound         frame       reserved
       ==========  ============  ==========  ==========
-      kf          128 (ceiling)  24,064 B   5,738 MiB
-      kf           49            9,216 B    2,040 MiB
-      kf           30            5,640 B    1,152 MiB
       refl        256 (ceiling)  18,432 B   4,334 MiB
       refl         49            3,528 B      626 MiB
       refl         30            2,160 B      286 MiB
       ==========  ============  ==========  ==========
+
+    ``kf`` used to be the widest row in this table (24,064 B at its 128
+    ceiling, 5,738 MiB reserved).  It is not here any more: its column
+    arrays live in a global workspace and its frame stopped following
+    ``nz``.
 
     ``tests/test_kernel_local_bounds.py`` re-measures every row against the
     driver, so a compiler or source change that breaks the linear form fails
@@ -1586,14 +1739,25 @@ class LevelSpecializedFrame:
         return raw if remainder == 0 else raw + self.alignment_bytes - remainder
 
 
-#: The three modules whose local frame follows the configuration's ``nz``
+#: The two modules whose local frame follows the configuration's ``nz``
 #: exactly.  (``acoustic`` and ``wdm6`` follow a TIER of ``nz`` instead and
 #: live in :class:`TieredKernelFrame` below.)  ``bytes_per_level`` is fixed
 #: by construction against the unspecialized row of
 #: :data:`KERNEL_MAX_LOCAL_SIZE_BYTES` (checked at import below), so the two
 #: tables cannot drift apart.
 LEVEL_SPECIALIZED_KERNEL_FRAMES: dict[str, LevelSpecializedFrame] = {
-    "kf": LevelSpecializedFrame("kf", "KF_KMAX", 128, 188),
+    # ``kf`` USED TO SIT HERE at 188 B/level, and it is gone rather than
+    # re-fitted.  52 of its 54 column arrays moved into a global workspace
+    # on 2026-08-21 (gpuwm/core/kernels/kf.cu), which left 188 B/level
+    # wrong by a factor of 47, and -- because the two that stayed are the
+    # only thing ``KF_KMAX`` still sizes, at 8 B/level -- made specializing
+    # the bound worth 312 B of frame that reserves nothing either way.  So
+    # gpuwm/core/kf.py stopped recompiling the module per level count, and
+    # the ONE binary that can now launch holds a frame that does not move
+    # with ``nz`` at all.  MEASURED on node-1 (RTX 5070 Ti, sm_120, NVRTC
+    # 13.0.48): 512 B at the shipped KF_KMAX = 128 -- half the 1,024 B
+    # default stack, so it reserves nothing on any card.  The flat row in
+    # KERNEL_MAX_LOCAL_SIZE_BYTES is the whole model.
     "refl": LevelSpecializedFrame("refl", "REFL_KMAX", 256, 72),
     # 16-byte granularity, not refl.cu's 8: measured against the driver at
     # ten bounds from 256 down to 10 (63*n rounded up to 16 reproduces every
@@ -1617,7 +1781,7 @@ del _spec
 class TieredKernelFrame:
     """A module whose local frame follows a compile-time TIER, not ``nz``.
 
-    ``kf`` and ``refl`` compile exactly to the configuration's level count;
+    ``refl`` compiles exactly to the configuration's level count;
     ``acoustic`` instead picks the smallest of a short ladder of
     ``WPHI_MAX_LEV`` values (``gpuwm.core.acoustic.WPHI_LEVEL_TIERS``), so
     its frame is a step function of ``nz`` and is constant within a tier.
@@ -2163,8 +2327,143 @@ def non_pool_device_bytes(
     5070 Ti and 215 MiB LOW on a Linux 5090 (task 206).
     """
     profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
-    return profile.cuda_context_bytes + kernel_local_memory_bytes(
-        exp, profile=profile)
+    return (profile.cuda_context_bytes
+            + kernel_local_memory_bytes(exp, profile=profile)
+            + column_workspace_bytes(exp, profile=profile))
+
+
+def kf_column_workspace_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """Device bytes the Kain-Fritsch column workspace holds, or zero.
+
+    This is the term that REPLACED KF's local-memory reservation.
+    ``gpuwm/core/kernels/kf.cu`` keeps 52 of ``kf_column``'s 54 column
+    arrays in a global workspace instead of the per-thread local frame,
+    and ``gpuwm/core/kf.py`` sizes that workspace to the columns it keeps
+    in flight -- ``SMs x KF_TILE_BLOCKS_PER_SM x _TPB`` -- rather than to
+    the resident-thread capacity the driver would have charged.  That
+    ratio is the whole saving: MEASURED on node-1 (RTX 5070 Ti, 70 SMs x
+    1,536) at nz = 49, 840.0 MiB of reservation became 174.2 MiB of
+    workspace.
+
+    Unlike GF's, this term follows ``nz`` LINEARLY and not a compiled
+    tier: the workspace extent is the runtime level count, which is a
+    saving the compile-time frame could never give.
+
+    Priced here, beside the context and the backing store, for the same
+    reason both of those are: it is a property of the DEVICE and of the
+    level count, not of the grid.  Bounded by the column count -- a
+    domain smaller than one tile never allocates a whole tile.
+
+    Zero for every configuration that does not select ``cu_physics = 1``.
+    """
+    from gpuwm.core.kf import (
+        KF_TILE_BLOCKS_PER_SM, _TPB, kf_workspace_floats)
+
+    profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
+    tile_cap = profile.multiprocessor_count * KF_TILE_BLOCKS_PER_SM * _TPB
+    worst = 0
+    for dc in exp.domains:
+        if int(dc.run.cu_physics) != 1:
+            continue
+        columns = min(int(dc.run.nx) * int(dc.run.ny), tile_cap)
+        worst = max(worst, kf_workspace_floats(int(dc.run.nz), columns) * 4)
+    return int(worst)
+
+
+def column_workspace_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """Device bytes held by the column workspaces, together.
+
+    A SUM and not a maximum, deliberately.  The three workspaces are
+    ordinary allocations owned by three different launchers, and a
+    configuration holds every one whose scheme it selects at the same
+    time -- unlike the local-memory backing store above, which is one
+    per-context allocation the driver sizes to the widest frame.  Each
+    term is already zero for a configuration that does not select its
+    scheme, so this costs nothing where only one is reachable.
+    """
+    return (gf_column_workspace_bytes(exp, profile=profile)
+            + kf_column_workspace_bytes(exp, profile=profile)
+            + ysu_column_workspace_bytes(exp, profile=profile))
+
+
+def gf_column_workspace_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """Device bytes the Grell-Freitas column workspace holds, or zero.
+
+    This is the term that REPLACED most of GF's local-memory reservation.
+    ``gpuwm/core/kernels/gf.cu`` keeps GFDRV's column arrays in a global
+    workspace instead of the per-thread local frame, and
+    ``gpuwm/core/gf.py`` sizes that workspace to the columns it keeps in
+    flight -- ``SMs x GF_TILE_BLOCKS_PER_SM x GF_BLOCK`` -- rather than to
+    the resident-thread capacity the driver would have charged.  That
+    ratio is the whole saving: MEASURED on node-1 (RTX 5070 Ti, 70 SMs x
+    1,536) at the nz<=40 tier, 2,200.0 MiB of reservation became 422.1
+    MiB of workspace.
+
+    It is priced here, beside the context and the backing store, for the
+    same reason both of those are: it is a property of the DEVICE and of
+    the level count, not of the grid.  It is bounded by the column count
+    -- a domain smaller than one tile never allocates a whole tile.
+
+    Zero for every configuration that does not select ``cu_physics = 3``.
+    """
+    from gpuwm.core.gf import (
+        GF_BLOCK, GF_TILE_BLOCKS_PER_SM, gf_workspace_floats)
+
+    profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
+    tile_cap = (profile.multiprocessor_count * GF_TILE_BLOCKS_PER_SM
+                * GF_BLOCK)
+    worst = 0
+    for dc in exp.domains:
+        if int(dc.run.cu_physics) != 3:
+            continue
+        columns = min(int(dc.run.nx) * int(dc.run.ny), tile_cap)
+        worst = max(worst, gf_workspace_floats(int(dc.run.nz), columns) * 4)
+    return int(worst)
+
+
+def ysu_column_workspace_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """Device bytes the YSU column workspace holds, or zero.
+
+    The term that REPLACED YSU's local-memory reservation, and the one a
+    BARE DEFAULT run pays, because ``bl_pbl_physics = 1`` is the wizard's
+    default.  ``gpuwm/core/kernels/ysu.cu`` keeps the scheme's column
+    arrays in a global workspace instead of the per-thread local frame,
+    and ``gpuwm/core/ysu.py`` sizes it to the columns it keeps in flight
+    -- ``SMs x YSU_TILE_BLOCKS_PER_SM x YSU_BLOCK`` -- rather than to the
+    resident-thread capacity the driver charged.
+
+    MEASURED on node-1 (weather-node-1, RTX 5070 Ti, 70 SMs x 1,536,
+    sm_120) at nz=49 and 102,400 columns: an 842.0 MiB reservation became
+    123.0 MiB of workspace, for +1.8% on the kernel's wall clock.
+
+    Unlike the frame it replaced, this term follows ``nz`` rather than the
+    kernel's 128-level bound: the extent is a runtime argument, so a
+    49-level run holds 50 levels of arrays where the frame held 128.
+
+    Zero for every configuration that does not select
+    ``bl_pbl_physics = 1``.
+    """
+    from gpuwm.core.ysu import (
+        YSU_BLOCK, YSU_TILE_BLOCKS_PER_SM, ysu_workspace_floats)
+
+    profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
+    tile_cap = (profile.multiprocessor_count * YSU_TILE_BLOCKS_PER_SM
+                * YSU_BLOCK)
+    worst = 0
+    for dc in exp.domains:
+        if int(dc.run.bl_pbl_physics) != 1:
+            continue
+        columns = min(int(dc.run.nx) * int(dc.run.ny), tile_cap)
+        worst = max(worst, ysu_workspace_floats(int(dc.run.nz), columns) * 4)
+    return int(worst)
 
 
 # ---------------------------------------------------------------------------
@@ -5004,7 +5303,8 @@ class ExperimentMemoryEstimate:
             f"pool slack" if self.uses_legacy_radiation else "")
         return (f"estimate {self.alloc_estimate_bytes / GIB:.2f} + "
                 f"non-pool {self.envelope_intercept_bytes / GIB:.2f} (CUDA "
-                f"context + local-memory backing store) + "
+                f"context + local-memory backing store + GF, KF and "
+                f"YSU column workspaces) + "
                 f"{ENVELOPE_UNMODELLED_BYTES / GIB:.2f} unmodelled"
                 f"{nest_term}{slack_term} = "
                 f"{self.peak_envelope_bytes / GIB:.2f} GiB")
@@ -5430,6 +5730,15 @@ class PhaseMemoryEstimate:
                      f"domain, against "
                      f"{self.resident_forecast_envelope_bytes / GIB:.2f} GiB "
                      "resident")
+        if env.radiation_transient_bytes:
+            # NAMED WHERE THE FIGURE IS READ.  A forecast term larger than
+            # the tile buffers it describes reads as an arithmetic error
+            # unless the reservation is stated beside it.
+            text += (f"; the tiles hold {env.vram_bytes / GIB:.2f} GiB and "
+                     f"the RRTMGP call adds a measured "
+                     f"{env.radiation_transient_bytes / GIB:.2f} GiB "
+                     f"transient on top of them, which is the peak the card "
+                     "has to hold")
         text += (f", with the forecast itself in "
                  f"{env.host_bytes / GIB:.2f} GiB of pinned host RAM")
         if budget_bytes is None:
@@ -5524,8 +5833,14 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
     streamed = streamed_forecast_envelope(exp, machine=machine)
     return PhaseMemoryEstimate(
         forecast=forecast, ingest=ingest,
+        # THE PEAK, NOT THE HOLD.  ``vram_bytes`` is what a streamed
+        # forecast holds between radiation calls; the RRTMGP call's
+        # measured per-process transient is on the card too at the instant
+        # it matters, and the first call is itimestep == 1.  Pricing the
+        # hold here let a card that fits 6.71 GiB admit a run that reaches
+        # 9.45 -- every surface below reads this field.
         forecast_envelope_bytes=(resident_forecast if streamed is None
-                                 else int(streamed.vram_bytes)),
+                                 else int(streamed.peak_vram_bytes)),
         ingest_envelope_bytes=(None if ingest is None
                                else ingest.peak_envelope_bytes),
         source=key, streamed=streamed,
@@ -6259,7 +6574,8 @@ def _load_experiment_any(path: Path) -> ExperimentConfig:
                                       datetime(1970, 1, 1))
 
 
-def config_forcing_source(path: Path) -> str | None:
+def config_forcing_source(path: Path, *,
+                          priced_only: bool = True) -> str | None:
     """The forcing product a config records, or None if it records none.
 
     The preprocessing phase is priced against the SOURCE's level count
@@ -6267,6 +6583,15 @@ def config_forcing_source(path: Path) -> str | None:
     loud rather than silently reported as "the forecast is the whole
     story" -- which is exactly how a domain sized to a 12 GB card came
     to die in preprocessing after the download.
+
+    ``priced_only`` (the default, and the contract every existing caller
+    was written against) folds "records a source this estimator cannot
+    price" into the same ``None`` as "records no source at all".  Those
+    are different facts and a REPORT must not conflate them: told only
+    ``None``, :func:`unpriced_ingest_note` says "this config records no
+    forcing product at all" to a reader looking at a ``[fetch]`` table
+    they typed themselves.  Pass ``priced_only=False`` to get the
+    recorded name back so the note can say which source it was.
     """
     import io
     import tomllib
@@ -6282,7 +6607,7 @@ def config_forcing_source(path: Path) -> str | None:
     table = raw.get("fetch")
     if isinstance(table, dict) and isinstance(table.get("source"), str):
         source = table["source"].strip().lower()
-        if source in SOURCE_ANALYSIS_LEVELS:
+        if source in SOURCE_ANALYSIS_LEVELS or not priced_only:
             return source
         return None
     # The config-driven front door decodes ERA5 GRIB1; a [case_data]
@@ -6864,18 +7189,49 @@ def check_main(args) -> int:
     # let a 12 GB-sized domain download 81 GFS files and then OOM in
     # ingest at 15.82 GB.  A config whose source this estimator cannot
     # price says so; it never silently reports the forecast as the peak.
-    ingest_source = config_forcing_source(args.config)
+    #: What the config RECORDS, priceable or not.  A report that is about
+    #: to tell the reader their ingest phase is unpriced has to name the
+    #: source it could not price; folding it into the same ``None`` as
+    #: "no [fetch] table at all" printed "this config records no forcing
+    #: product at all" at a reader looking at the one they wrote.
+    #: :func:`estimate_phases` keys off the same table either way, so an
+    #: unpriceable name still leaves the ingest term absent.
+    ingest_source = config_forcing_source(args.config, priced_only=False)
+    from gpuwm.core.streaming import planner_machine
+
     phases = estimate_phases(
         exp, source=ingest_source, column_chunk=chunk,
         forcing_interval_seconds=args.forcing_interval_s,
-        vram_gib=card_total_gib, profile=profile)
-    if not phases.ingest_priced:
-        phases = None
+        vram_gib=card_total_gib, profile=profile,
+        # THE CARD THIS REPORT IS ABOUT, and not the one printing it.
+        # ``mode = "auto"`` with no pinned tiling is the planner's
+        # decision, and asked with no Machine the planner reaches for
+        # ``Machine.detect`` -- which reads whatever card is under the
+        # desk, or fails outright with no CuPy and silently leaves the
+        # RESIDENT estimate standing.  ``free`` here is either measured
+        # off this card or derived from a ``--budget-gib`` naming a card
+        # that is not in this machine at all; both are the card the
+        # reader asked about, and neither costs this process a CUDA
+        # context.  ``gpuwm go``'s gate builds the same Machine from its
+        # out-of-process probe, through the same function.
+        machine=planner_machine(vram_bytes=free,
+                                name="gpuwm check budget"))
+    #: AN UNPRICED INGEST LANE COSTS THE INGEST SECTION, NOT THE PHASE
+    #: ESTIMATE.  This used to be ``phases = None``, which threw away the
+    #: streamed forecast term along with the ingest one -- and the streamed
+    #: term has nothing to do with the source.  Every ``[tiles]`` config
+    #: forced to a source outside :data:`SOURCE_ANALYSIS_LEVELS` was then
+    #: reported, and refused, on a resident envelope describing a run that
+    #: was not going to happen: measured on a 550x550x49 config with 200x200
+    #: tiles, 14.30 GiB reported where the run holds 6.71 GiB, exit 4 from
+    #: the envelope and exit 1 from the alloc gate.  The section's ABSENCE
+    #: is what gets reported now (:func:`unpriced_ingest_note`), which is
+    #: the gap that is real.
+    ingest_priced = phases.ingest_priced
     #: The envelope every verdict below compares: the largest phase, not
     #: whichever phase happens to be modelled.
-    envelope = (forecast_envelope if phases is None
-                else phases.peak_envelope_bytes)
-    binding_phase = "forecast" if phases is None else phases.binding_phase
+    envelope = phases.peak_envelope_bytes
+    binding_phase = phases.binding_phase
     #: What the ENVELOPE is compared against.  NOT ``budget``: that is
     #: the allocation gate's budget and it has already subtracted the
     #: CUDA context and the local-memory backing store, which
@@ -6896,6 +7252,56 @@ def check_main(args) -> int:
     #: carry it whether or not anybody reads the text.
     envelope_over_budget = (envelope_budget is not None
                             and envelope > envelope_budget)
+    #: THE ALLOC GATE PRICES THE RUN THE CONFIG ASKS FOR.
+    #:
+    #: Every leg above was fed ``estimate.alloc_estimate_bytes``, which
+    #: itemizes a domain RESIDENT in VRAM.  Under ``[tiles]`` that domain
+    #: is never allocated -- the card holds ``nbuffers`` tile buffers and
+    #: the domain lives in pinned host RAM -- so the leg was refusing, at
+    #: exit 1, the one configuration class streaming exists to enable.
+    #: Measured on the 550x550x49 / 200x200 fixture: 11.35 GiB of resident
+    #: pool request weighed against a budget the 6.71 GiB streamed run fits
+    #: with room to spare.
+    #:
+    #: COMPARED AS AN ENVELOPE, AGAINST THE ENVELOPE BUDGET, and that pair
+    #: is the decision rather than a convenience.
+    #: :attr:`StreamedEnvelope.vram_bytes` is envelope-shaped by
+    #: construction -- CUDA context, the rung's per-process fixed cost and
+    #: the tile buffers, with autoplan's safety factor -- and there is no
+    #: alloc-shaped figure to be had from it.  ``Footprint`` lumps the
+    #: pool-resident k-distribution tables in with the non-pool module
+    #: images inside one measured ``process_fixed_bytes``, so any
+    #: subtraction that made it alloc-shaped would be inventing a number.
+    #: Both candidate subtractions were priced on this fixture and both
+    #: are wrong in a way that matters: taking off the whole
+    #: ``process_overhead_bytes`` leaves 2.95 GiB against a run that really
+    #: holds 6.71, an UNDER-charge of 1.31 GiB that would have the gate
+    #: admit an OOM; taking off only the CUDA context leaves 6.29 GiB and
+    #: charges the 2.03 GiB local-memory backing store a second time, on
+    #: top of the reserve that already holds it -- the task-206 double
+    #: count this file spent a release removing.
+    #:
+    #: So the streamed figure is compared against ``envelope_budget``
+    #: (free VRAM less the other-process margin), which is the same pair
+    #: ``gpuwm go``'s memory gate admits on and the same pair the
+    #: over-budget WARNING below prints.  The leg's contract --
+    #: "the estimate fits the budget" -- is unchanged; what it prices is.
+    #:
+    #: ``--alloc`` is excluded on purpose: ``run_alloc_preflight``
+    #: constructs the RESIDENT domain on the real card, so its measured
+    #: legs describe a resident allocation, and swapping the estimate leg
+    #: underneath them would have ``alloc_measured_le_estimate`` compare a
+    #: resident measurement against a streamed estimate and fail for a
+    #: reason that is not about this configuration at all.
+    streamed_alloc_gate = (phases.streamed_forecast and not args.alloc
+                           and envelope_budget is not None)
+    if streamed_alloc_gate:
+        gates = dict(gates)
+        # THE RADIATION PEAK, not the steady hold: the leg admits a run,
+        # and a run admitted on the hold meets the RRTMGP transient at
+        # itimestep == 1.  See StreamedEnvelope.peak_vram_bytes.
+        gates["alloc_estimate_le_wddm_budget"] = (
+            int(phases.streamed.peak_vram_bytes) <= envelope_budget)
     if args.json:
         payload = {
             "config": str(args.config), "experiment": exp.name,
@@ -6989,7 +7395,43 @@ def check_main(args) -> int:
                 None if envelope_budget is None else envelope_over_budget),
             "gates": gates,
         }
-        if phases is None:
+        # WHICH FORECAST FIGURE THE READER GOT, said in a field rather
+        # than inferred from the size of the number.
+        payload["streamed_forecast"] = phases.streamed_forecast
+        if phases.streamed_forecast:
+            env = phases.streamed
+            payload["streamed"] = {
+                # THE HOLD, kept because it is the figure an NVML
+                # steady-state reading can be compared against...
+                "vram_bytes": int(env.vram_bytes),
+                # ...and the two terms that make the PEAK, which is what
+                # peak_envelope_bytes above carries and every gate weighs.
+                "radiation_transient_bytes":
+                    int(env.radiation_transient_bytes),
+                "peak_vram_bytes": int(env.peak_vram_bytes),
+                "resident_forecast_envelope_bytes":
+                    phases.resident_forecast_envelope_bytes,
+                "host_bytes": int(env.host_bytes),
+                "host_budget_bytes": env.host_budget_bytes,
+                "tile_nx": env.tile_nx, "tile_ny": env.tile_ny,
+                "window_nx": env.window_nx, "window_ny": env.window_ny,
+                "nbuffers": env.nbuffers, "halo": env.halo,
+                "rung": env.rung, "write_mode": env.write_mode,
+                # The pair the alloc leg above compared, named, so a
+                # script never has to guess which budget it was.
+                "alloc_gate_basis": (
+                    "the streamed envelope against envelope_budget_bytes"
+                    if streamed_alloc_gate else
+                    "resident (--alloc measures a resident allocation)"),
+            }
+        # The verdict compares ``envelope_budget``, not ``budget``: it is
+        # an ENVELOPE sentence, and the allocation budget has already
+        # subtracted the CUDA context and the local-memory backing store
+        # that the envelope carries as its intercept.  This field said
+        # otherwise while the printed line beside it said this, which is
+        # one report giving two answers about one card (task 206).
+        payload["phase_verdict"] = phases.verdict(envelope_budget)
+        if not ingest_priced:
             payload["ingest"] = None
             payload["ingest_not_priced_reason"] = unpriced_ingest_note(
                 args.config, ingest_source)
@@ -7020,8 +7462,15 @@ def check_main(args) -> int:
                 "context_bytes": ingest.context_bytes,
                 "peak_envelope_basis": INGEST_PEAK_ENVELOPE_BASIS,
             }
-            payload["phase_verdict"] = phases.verdict(budget)
-        advisories = check_advisories(exp, args.config)
+        # The same document ``run-plan --estimate`` publishes, on the
+        # surface that has actually measured the card: a machine-facing
+        # reader of `gpuwm check --json` gets the pace as fields rather
+        # than having to parse it back out of the advisory sentence.
+        pace = pace_estimate_for_report(exp, streamed=phases.streamed,
+                                        free_bytes=free)
+        payload["expected_pace"] = None if pace is None else pace.to_json()
+        advisories = check_advisories(exp, args.config,
+                                      streamed=phases.streamed)
         if advisories:
             payload["advisories"] = advisories
         if rail is not None:
@@ -7047,8 +7496,20 @@ def check_main(args) -> int:
         print(f"gpuwm check: memory preflight for {exp.name!r} "
               f"({len(exp.domains)} domain(s); column_chunk "
               f"{estimate.column_chunk})")
-        for advisory in check_advisories(exp, args.config):
+        for advisory in check_advisories(
+                exp, args.config, streamed=phases.streamed):
             print(f"  {advisory}")
+        # UNCONDITIONAL, unlike the advisories above.  This is the line
+        # whose absence let a streamed run at 399,119 columns look like a
+        # stall: the memory report was complete and said nothing about
+        # what a step costs.  Priced against the card THIS REPORT just
+        # measured, so the column bound is about the reader's own
+        # allowance and not a declared one.
+        pace_line = pace_advisory(
+            exp, streamed=phases.streamed,
+            machine=pace_machine_from_free_bytes(free))
+        if pace_line:
+            print(f"  {pace_line}")
         for d in estimate.domains:
             cats = ", ".join(
                 f"{c} {d.category_bytes(c) / GIB:.3f}"
@@ -7078,6 +7539,9 @@ def check_main(args) -> int:
         # re-measured footprint projection, so pricing it against a
         # card that is not in the machine inflates the envelope.
         widest = kernel_local_memory_bytes(exp, profile=profile)
+        gf_ws = gf_column_workspace_bytes(exp, profile=profile)
+        kf_ws = kf_column_workspace_bytes(exp, profile=profile)
+        ysu_ws = ysu_column_workspace_bytes(exp, profile=profile)
         # Kept out of the f-string: a line break inside an f-string
         # expression is PEP 701 (Python 3.12+) syntax, and the supported
         # floor is 3.11 -- the 1.2.0 release workflow failed on exactly
@@ -7088,12 +7552,21 @@ def check_main(args) -> int:
         # to the per-card term (task 206).
         context_bytes = profile.cuda_context_bytes
         remeasured_bytes = (estimate.alloc_estimate_bytes + widest
+                            + gf_ws + kf_ws + ysu_ws
                             + context_bytes
                             + reserve.retention_residual_bytes)
+        gf_ws_term = (f" + GF column workspace {_format_bytes(gf_ws)}"
+                      if gf_ws else "")
+        gf_ws_term += (f" + KF column workspace {_format_bytes(kf_ws)}"
+                       if kf_ws else "")
+        ysu_ws_term = (f" + YSU column workspace {_format_bytes(ysu_ws)}"
+                       if ysu_ws else "")
         print(f"  NON-POOL: CUDA context "
               f"{_format_bytes(context_bytes)} + local-memory backing "
               f"store {_format_bytes(widest)} "
               f"({len(physics_kernel_modules(exp))} kernel modules selected)"
+              f"{gf_ws_term}"
+              f"{ysu_ws_term}"
               f"; RE-MEASURED device-footprint projection "
               f"{_format_bytes(remeasured_bytes)}"
               " (the TIER 3 line above is the retired zero-step probe model)")
@@ -7118,10 +7591,21 @@ def check_main(args) -> int:
                 "measured).  The intercept is the non-pool line above, "
                 "which scales with the device and the kernel set, not "
                 "with the grid")
-        print(f"  FORECAST PEAK ENVELOPE ({estimate.peak_envelope_terms()}"
+        # THE ITEMIZATION IS RESIDENT, AND SAYS SO UNDER [tiles].  Every
+        # term above enumerates a domain living in VRAM; with streaming
+        # configured the streamed term below replaces this figure, and a
+        # reader who takes this line for the answer has the wrong number
+        # by the whole point of the feature.  The advisory at the top of
+        # this report promises its numbers price the STREAMED allocation:
+        # the label is what keeps that promise true of this line too.
+        forecast_label = ("RESIDENT FORECAST PEAK ENVELOPE (replaced by the "
+                          "streamed term below)"
+                          if phases.streamed_forecast
+                          else "FORECAST PEAK ENVELOPE")
+        print(f"  {forecast_label} ({estimate.peak_envelope_terms()}"
               f"; {estimate.envelope_basis}): "
               f"{_format_bytes(forecast_envelope)} -- {provenance}.")
-        if phases is None:
+        if not ingest_priced:
             print("  " + unpriced_ingest_note(args.config, ingest_source))
         else:
             ingest = phases.ingest
@@ -7148,22 +7632,45 @@ def check_main(args) -> int:
                   f"[streaming; holding all "
                   f"{ingest.n_forcing_times} times would resident "
                   f"{_format_bytes(ingest.unstreamed_resident_bytes)}]")
-            # ``envelope_budget``, NOT ``budget``.  This one printed line
-            # was the last place the task-206 double count survived: it
-            # compared the machine-peak ENVELOPE -- which carries the
-            # CUDA context and the local-memory backing store as its
-            # intercept -- against the ALLOCATION budget, from which the
-            # allocation reserve has already subtracted those same
-            # bytes.  Measured 2026-08-20 on the loaded RTX 3080, 5.75
-            # GiB free: it printed "5.40 GiB peak envelope; that EXCEEDS
-            # the 3.79 GiB budget by 1.61 GiB" while the exit code (read
-            # off ``envelope_over_budget``, which uses the line below)
-            # said 0.15 GiB, and `gpuwm go` on the same config seconds
-            # later admitted it and ran to rc 0 with output byte-
-            # identical to the roomy run.  A report whose sentence and
-            # whose exit code disagree by 1.46 GiB of budget teaches the
-            # reader to ignore one of them.
-            print(f"  BINDING PHASE: {phases.verdict(envelope_budget)}.")
+        # ``envelope_budget``, NOT ``budget``.  This one printed line
+        # was the last place the task-206 double count survived: it
+        # compared the machine-peak ENVELOPE -- which carries the
+        # CUDA context and the local-memory backing store as its
+        # intercept -- against the ALLOCATION budget, from which the
+        # allocation reserve has already subtracted those same
+        # bytes.  Measured 2026-08-20 on the loaded RTX 3080, 5.75
+        # GiB free: it printed "5.40 GiB peak envelope; that EXCEEDS
+        # the 3.79 GiB budget by 1.61 GiB" while the exit code (read
+        # off ``envelope_over_budget``, which uses the line below)
+        # said 0.15 GiB, and `gpuwm go` on the same config seconds
+        # later admitted it and ran to rc 0 with output byte-
+        # identical to the roomy run.  A report whose sentence and
+        # whose exit code disagree by 1.46 GiB of budget teaches the
+        # reader to ignore one of them.
+        #
+        # PRINTED WHETHER OR NOT THE INGEST LANE COULD BE PRICED.  It
+        # used to live inside the priced branch, so the one line that
+        # names the STREAMED forecast term -- and the tiling that
+        # produced it -- was withheld from exactly the configs whose
+        # envelope the streaming replaced.
+        print(f"  BINDING PHASE: {phases.verdict(envelope_budget)}.")
+        if streamed_alloc_gate:
+            # The gate leg below prices this run as it will actually be
+            # allocated, and it compares a different budget from the one
+            # on the reserve line: say so where the two are read, so
+            # neither number reads as contradicting the other.
+            print(f"  ALLOC GATE, STREAMED: the leg below weighs the "
+                  f"streamed envelope "
+                  f"{_format_bytes(int(phases.streamed.peak_vram_bytes))} "
+                  f"against "
+                  f"the envelope budget {_format_bytes(envelope_budget)} "
+                  f"(free VRAM less the "
+                  f"{_format_bytes(EXTERNAL_MARGIN_BYTES)} other-process "
+                  f"margin), not the itemized resident estimate against the "
+                  f"allocation budget: with [tiles] the resident domain is "
+                  f"never allocated, and the streamed figure already "
+                  f"carries the CUDA context and the per-process fixed "
+                  f"cost that the allocation reserve holds separately.")
         print(f"  reserve {reserve.reserve_bytes / GIB:.2f} GiB "
               f"(retention {reserve.retention_residual_bytes / GIB:.2f} + "
               f"overhead {reserve.device_overhead_bytes / GIB:.2f} + "
@@ -7261,19 +7768,65 @@ def check_main(args) -> int:
                              "gates passed, envelope did not")
             budget_word = ("WDDM budget" if envelope_platform(
                 vram_gib=card_total_gib) == "windows" else "budget")
+            # The tail sentence exists to explain a gate that PASSES
+            # beside an envelope that does not: the resident legs weigh
+            # the itemized pool request, which is a smaller thing than
+            # the envelope.  Under [tiles] the alloc leg weighs this very
+            # envelope against this very budget, so that explanation
+            # would be describing a disagreement that cannot happen.
+            if streamed_alloc_gate:
+                tail = (" The alloc leg above weighs the same streamed "
+                        "envelope against the same budget, so it does not "
+                        "disagree with this line -- trim the tiling or "
+                        "free VRAM.")
+            else:
+                tail = (" The gates above "
+                        "compare the itemized estimate; the envelope is "
+                        "what the machine is measured to reach, so this "
+                        "configuration may run out of budget even though "
+                        "the estimate gate passes -- trim the "
+                        "configuration or free VRAM before trusting the "
+                        "pass.")
             print(f"  WARNING: observed peak envelope "
                   f"{_format_bytes(envelope)} exceeds the {budget_word} "
                   f"{_format_bytes(envelope_budget)} -- free VRAM less the "
                   f"{_format_bytes(EXTERNAL_MARGIN_BYTES)} other-process "
                   f"margin, which is all the envelope does not already "
-                  f"model -- by {_format_bytes(envelope - envelope_budget)}. "
-                  f" The gates above "
-                  f"compare the itemized estimate; the envelope is what "
-                  f"the machine is measured to reach, so this "
-                  f"configuration may run out of budget even though the "
-                  f"estimate gate passes -- trim the configuration or "
-                  f"free VRAM before trusting the pass.  ({code_note}.)")
-        if budget is not None and estimate.alloc_estimate_bytes > budget:
+                  f"model -- by {_format_bytes(envelope - envelope_budget)}."
+                  f"{tail}  ({code_note}.)")
+        if streamed_alloc_gate:
+            # A STREAMED RUN'S LEVER IS THE TILE, not the RRTMGP column
+            # chunk.  The resident alloc estimate is above the budget for
+            # essentially every streamed config -- it describes a domain
+            # this run never allocates -- so the block below would print
+            # "OVER BUDGET; first lever --column-chunk N" beside a
+            # verdict that had just said the run fits, and the lever it
+            # named would move a number nothing compares.
+            if int(phases.streamed.peak_vram_bytes) > envelope_budget:
+                env = phases.streamed
+                # WHICH TERM IS OVER.  With the radiation transient in the
+                # figure, a reader told to trim the tile has to be able to
+                # see how much of the overshoot the tile can actually
+                # move: the transient is a property of the RUNG and no
+                # tile size reduces it by a byte.
+                transient = (
+                    "" if not env.radiation_transient_bytes else
+                    f" plus the measured "
+                    f"{_format_bytes(int(env.radiation_transient_bytes))} "
+                    f"RRTMGP transient, which no tile size reduces,")
+                print(f"  OVER BUDGET, STREAMED: {env.nbuffers} buffer(s) "
+                      f"of the {env.window_nx}x{env.window_ny} compute "
+                      f"window (tile {env.tile_nx}x{env.tile_ny} + halo "
+                      f"{env.halo}) hold "
+                      f"{_format_bytes(int(env.vram_bytes))}{transient} "
+                      f"and reach "
+                      f"{_format_bytes(int(env.peak_vram_bytes))} against "
+                      f"the {_format_bytes(envelope_budget)} envelope "
+                      f"budget.")
+                print("  remedy: a smaller [tiles] tile_nx/tile_ny, or "
+                      "nbuffers = 1 to trade overlap for room, or free "
+                      "VRAM and re-run")
+        elif budget is not None and estimate.alloc_estimate_bytes > budget:
             lever = recommend_column_chunk(exp, budget)
             if lever:
                 print("  OVER BUDGET; first lever (RRTMGP column_chunk): "
@@ -7396,6 +7949,8 @@ __all__ = [
     "UNMEASURED_KERNEL_MODULES", "local_memory_profile_from_device",
     "cap_free_to_physical", "device_physical_total_bytes",
     "device_rail_free_bytes", "device_wide_used_bytes",
+    "column_workspace_bytes", "gf_column_workspace_bytes",
+    "kf_column_workspace_bytes", "ysu_column_workspace_bytes",
     "kernel_local_memory_bytes", "non_pool_device_bytes",
     "physics_kernel_modules", "refl_diagnostic_reachable",
     "LEVEL_SPECIALIZED_KERNEL_FRAMES", "LevelSpecializedFrame",

@@ -175,6 +175,101 @@ def test_the_fit_boundary_sits_where_the_constants_put_it():
 
 
 # ---------------------------------------------------------------------------
+# what the STREAMED run costs BESIDE the resident state
+# ---------------------------------------------------------------------------
+#
+# The resident road does not end at the resident state.  A streamed forecast
+# that took it then allocates the tile buffers on top of it and meets the
+# radiation transient on top of THAT, and the peak of the three is what the
+# card has to hold.  Pricing only the first term against a FRACTION of free
+# VRAM made the margin scale the wrong way: 20% of a 16 GiB card is 3.2 GiB
+# and covers the tiles, 20% of a 10 GiB card is 1.9 GiB and does not come
+# close -- so the rule got safer exactly where the card had more room and
+# thinner exactly where it had less.
+
+#: A 10 GiB card as Windows/WDDM presents one: ~9.5 GiB free of 10.0.  WDDM
+#: does not refuse an over-commit, it PAGES -- so a rule that over-spends
+#: here produces no ``OutOfMemoryError`` at all, just a forecast that stops
+#: completing steps.  That is why this has to be caught in the pricing.
+CARD10_FREE_BYTES = int(9.5 * GIB)
+CARD10_TOTAL_BYTES = int(10.0 * GIB)
+
+
+def _real_cfg(n, nz=49):
+    """A real :class:`RunConfig`, because the streamed term reads a real one.
+
+    ``footprint_for`` asks ``gpuwm.config``/``gpuwm.core.physics`` whether
+    radiation is on, and those read a config rather than a namespace.  Still
+    no card: everything below is arithmetic over the measured footprints.
+    """
+    from gpuwm.config import RunConfig
+
+    return RunConfig(nx=n, ny=n, nz=nz, dx=3000.0, dy=3000.0, ztop=20000.0,
+                     dt=15.0, run_seconds=3600.0,
+                     ra_sw_physics=4, ra_lw_physics=4)
+
+
+def _pinned_decision(cfg, tile=128):
+    from gpuwm.core import streaming
+
+    return streaming.decide(
+        cfg, streaming.StreamingOptions(mode="on", tile_nx=tile, tile_ny=tile))
+
+
+def test_the_streamed_term_is_the_tiles_plus_the_radiation_transient():
+    """Both halves, each traceable to the constant it came from."""
+    from tilestream import autoplan
+    from gpuwm.core import streaming
+
+    cfg = _real_cfg(424)
+    decision = _pinned_decision(cfg)
+    priced = runner._streamed_peak_bytes(cfg, decision)
+    envelope = streaming.streamed_envelope(cfg, None, decision=decision)
+    rad = autoplan.footprint_for(cfg).radiation_transient_bytes
+    assert rad == autoplan.RADIATION_TRANSIENT_BYTES["full"]
+    assert priced == int(envelope.vram_bytes) + int(rad)
+    # The tiles alone are 5.13 GiB and radiation adds 2.74 on top.
+    assert priced / GIB == pytest.approx(7.87, abs=0.05)
+
+
+def test_a_run_that_does_not_stream_prices_no_streamed_term():
+    cfg = _real_cfg(424)
+
+    class _NoStream:
+        stream = False
+
+    assert runner._streamed_peak_bytes(cfg, _NoStream()) is None
+
+
+def test_a_decision_that_cannot_be_priced_is_none_not_a_guess():
+    """An unpriceable streamed term must not silently become zero.
+
+    Zero is the answer that reinstates the defect, so the failure has its own
+    value and the caller decides what to do with it.
+    """
+    assert runner._streamed_peak_bytes(None, _Decision(True)) is None
+    assert runner._streamed_peak_bytes(_real_cfg(424), _Decision(True)) is None
+
+
+def test_pricing_adds_the_streamed_term_to_the_peak():
+    priced = runner._stream_init_pricing(
+        0, CARD10_FREE_BYTES, CARD10_TOTAL_BYTES,
+        columns=424 * 424, nz=49, streamed_bytes=int(7.87 * GIB))
+    assert priced["streamed_peak_bytes"] == int(7.87 * GIB)
+    assert priced["resident_peak_bytes"] == (
+        priced["priced_resident_bytes"] + priced["streamed_peak_bytes"])
+    assert priced["fits"] is False
+
+
+def test_an_unpriced_streamed_term_is_reported_as_absent():
+    """``None`` is carried into the receipt rather than folded away as 0."""
+    priced = runner._stream_init_pricing(0, 16 * GIB, 16 * GIB,
+                                         columns=384 * 384, nz=49)
+    assert priced["streamed_peak_bytes"] is None
+    assert priced["resident_peak_bytes"] == priced["priced_resident_bytes"]
+
+
+# ---------------------------------------------------------------------------
 # the road ``auto`` chooses, and the two that force one
 # ---------------------------------------------------------------------------
 
@@ -239,6 +334,73 @@ def test_bare_auto_takes_the_store_road_on_the_case_that_used_to_crash():
     assert "does NOT fit" in receipt["why"]
     assert "slab by slab" in receipt["why"]
     assert "1048576 columns" in receipt["why"]
+
+
+def test_auto_refuses_the_resident_road_when_the_tiles_will_not_also_fit():
+    """THE 10 GiB CARD, and the reason it stalled instead of refusing.
+
+    424 x 424 x 49 prices its resident state at 2.64 GiB, which sits well
+    inside 80% of a 10 GiB card's free memory -- so ``auto`` took the resident
+    road.  The tiles then cost 5.13 GiB and the radiation transient 2.74 on
+    top, for a 10.51 GiB peak against 9.50 GiB free.  On Windows/WDDM that
+    over-commit does not raise: the driver pages the excess to system RAM and
+    the forecast simply stops completing steps, at step one and again at every
+    radiation call afterwards.
+
+    Every number here comes from a measured constant this repository already
+    carried; the pricing just never added the second and third to the first.
+    """
+    cfg = _real_cfg(424)
+    decision = _pinned_decision(cfg)
+    road, receipt = runner._choose_stream_init_road(
+        "auto", decision=decision, reader=_manifest(1 * GIB), cfg=cfg,
+        device_memory=(CARD10_FREE_BYTES, CARD10_TOTAL_BYTES))
+    assert road == "store"
+    assert receipt["fits"] is False
+    # The resident state ALONE would have fitted; that is the whole defect.
+    assert receipt["priced_resident_bytes"] < receipt["fit_allowance_bytes"]
+    assert receipt["resident_peak_bytes"] > receipt["fit_allowance_bytes"]
+    # And the sentence says which term broke it, in bytes.
+    assert "tile buffers" in receipt["why"]
+    assert "radiation" in receipt["why"]
+
+
+def test_the_parity_venue_keeps_the_resident_road_on_the_card_it_fits():
+    """384 x 384 on a 16 GiB card must not be pushed onto the store.
+
+    The streamed term is a real cost and adding it moves the crossover, but a
+    domain with genuine room for all three terms is still the resident road's
+    -- it is the faster one and the one every pre-existing receipt was written
+    by.  A fix that swept the parity venue onto the store would be a
+    regression dressed as a repair.
+    """
+    cfg = _real_cfg(384)
+    decision = _pinned_decision(cfg)
+    road, receipt = runner._choose_stream_init_road(
+        "auto", decision=decision, reader=_manifest(1 * GIB), cfg=cfg,
+        device_memory=(15 * GIB, 16 * GIB))
+    assert road == "resident"
+    assert receipt["fits"] is True
+    assert receipt["streamed_peak_bytes"] > 0
+
+
+def test_the_same_domain_flips_road_on_the_smaller_card():
+    """One domain, two cards, two roads -- the instrument in both directions.
+
+    The old rule priced the resident state against a FRACTION of free VRAM, so
+    it answered the same way on both cards up to a scale factor and could not
+    see that the tiles are an ABSOLUTE cost.  384 x 384 fits all three terms
+    on 16 GiB and cannot on 10 GiB, and the rule must now say so.
+    """
+    cfg = _real_cfg(384)
+    decision = _pinned_decision(cfg)
+    big, _ = runner._choose_stream_init_road(
+        "auto", decision=decision, reader=_manifest(1 * GIB), cfg=cfg,
+        device_memory=(15 * GIB, 16 * GIB))
+    small, _ = runner._choose_stream_init_road(
+        "auto", decision=decision, reader=_manifest(1 * GIB), cfg=cfg,
+        device_memory=(CARD10_FREE_BYTES, CARD10_TOTAL_BYTES))
+    assert (big, small) == ("resident", "store")
 
 
 def test_a_fitting_domain_still_takes_the_resident_road():

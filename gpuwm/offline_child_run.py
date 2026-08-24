@@ -43,6 +43,7 @@ from gpuwm.offline_child import (
     derive_child_surface_from_parent,
     interpolate_parent_initial_state,
     read_child_surface_state,
+    reserve_output_root,
     validate_parent_history,
 )
 
@@ -320,10 +321,8 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
 
 
 def _create_output_root(path: Path) -> Path:
-    """Reserve one output tree without ever adopting prior contents."""
-    resolved = path.resolve()
-    resolved.mkdir(parents=True, exist_ok=False)
-    return resolved
+    """Reserve one output tree without ever adopting a prior run's."""
+    return reserve_output_root(path, flag="--outdir")
 
 
 def _parent_grid_metadata(path: Path) -> tuple[float, float, dict[str, object]]:

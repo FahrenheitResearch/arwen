@@ -1,0 +1,108 @@
+{
+  "schema": "gpuwm-mpas-mesh-sizing-v1",
+  "capacity": {
+    "metric": "whole-process device footprint of a full-physics MPAS run, MiB",
+    "model": "footprint(cells) = fixed_mib + cells * bytes_per_cell / 1048576, where fixed_mib is DERIVED per card as local_memory_backing_store_mib + local_store_residue_mib",
+    "why_the_fixed_term_is_per_card": "It is dominated by ONE allocation: the CUDA per-context local-memory backing store. The driver sizes it for the widest LAUNCHED kernel frame at full residency -- (frame_bytes - 1024) * streaming_multiprocessors * max_threads_per_sm -- and never returns it while the context lives. Two of those three factors are properties of the PART, so identical code pays 7,032.4 MiB on a 170 SM card and 2,895.7 MiB on a 70 SM one. A fixed term quoted without naming the card is therefore meaningless. Borrowing one card's number for another mis-sizes the request by thousands of MiB in a direction nobody has measured: the mesh is then generated at a cell count that either dies at step 1 with an out-of-memory that blames the model, or wastes the card by about 1.6x.",
+    "local_memory_backing_store": {
+      "formula": "(widest_kernel_frame_bytes - frame_credit_bytes) * streaming_multiprocessors * max_threads_per_sm",
+      "widest_kernel": "gf_gfdrv_stage",
+      "widest_kernel_frame_bytes": 29264,
+      "frame_credit_bytes": 1024,
+      "frame_credit_is": "the CUDA default stack limit. A frame at or under it is already covered by the context and reserves nothing, which is what makes the 64 B rlw_cldprmc row and the zero-frame control both read 0.0 MiB.",
+      "measured_against_arwen_commit": "629ddb6f0",
+      "frame_cut_commit": "35d83fc8c",
+      "why_the_frame_is_a_build_property": "The frame belongs to the BUILD, not to the card, and the build it belongs to is the ArWen checkout the MPAS port is PINNED to -- 629ddb6f0 -- not the tree this table ships in. This tree has already cut that frame: commit 35d83fc8c moved gf's column arrays into a global workspace and took the frame from 22,416 B to 88 B (NVRTC 13.0.48) and 72 B (13.3.33), both under the default stack. 29,264 B is the same pre-cut source compiled at the nVertLevels=55 the port uses, where 22,416 B is the same source at the nVertLevels=40 the ArWen recordings use; neither is a correction of the other.",
+      "why_it_cannot_move_alone": "This frame and every card's local_store_residue_mib are ONE measurement set on ONE build: each residue was obtained by SUBTRACTING the store this frame derives from a measured whole-process fixed term. Moving either half alone re-prices every card silently, in both directions. Frame updated to a post-cut build but residues not: the derived 70 SM store falls 2,895.7 -> 841.6 MiB, and 841.6 + an unchanged 2,488.3 residue gives a 3,330 MiB fixed term against the pinned build's real 5,384 -- 2,054 MiB LOW, so the door over-sizes the mesh and the run dies at step 1 on an out-of-memory that blames the model. Pin advanced past 35d83fc8c but frame not: the store stays priced at 2,895.7 MiB when the real one is near zero, the fixed term comes out thousands of MiB HIGH, and the door under-sizes -- the card is wasted quietly. tests/test_mpas_mesh_door.py fails the build on either.",
+      "where_to_look_when_re_measuring": "On a post-cut build the widest LAUNCHED frame is whatever is widest once gf is out of the way; on the ArWen side that was ysu_column at 9,232 B until its own cut landed, then kf_column at 9,216 B. Read it from the recordings, do not assume it, and re-take every residue in the same session.",
+      "validation": "MEASURED by null launches, one kernel and one fresh process each, on two parts. 70 SM: gf_gfdrv_stage 29,264 B -> 2,896.0 MiB, gf_deep_stage 26,880 B -> 2,650.0 MiB, gf_shallow_stage 18,944 B -> 1,836.0 MiB, rlw_rtrn_march 2,048 B -> 104.0 MiB, rlw_cldprmc 64 B -> 0.0 MiB, and a zero-local negative control -> 0.0 MiB. 170 SM: 7,034.0 / 6,438.0 / 4,462.0 / 254.0 MiB, and 0.0 for the control. The formula reproduces every row to better than 0.15 %.",
+      "what_is_not_derived": "The remainder of the fixed term -- context, module images, driver scratch -- is MEASURED per card as local_store_residue_mib. It is not the same on the two parts that have been measured (2,765.6 MiB at 170 SM against 2,488.3 MiB at 70 SM) and it does not scale with the SM count, so it cannot be predicted for a part nobody has run. That is why an unmeasured card is refused rather than given the derived store plus a borrowed residue."
+    },
+    "cards": {
+      "rtx-3080": {
+        "display_name": "NVIDIA GeForce RTX 3080 (10 GiB)",
+        "device_total_mib": 10240,
+        "device_addressable_mib": null,
+        "streaming_multiprocessors": 68,
+        "max_threads_per_sm": 1536,
+        "compute_capability": "sm_86",
+        "measured": false,
+        "local_store_residue_mib": null,
+        "residue_measured_against_arwen_commit": null,
+        "bytes_per_cell": null,
+        "bytes_per_cell_provenance": "",
+        "measured_on": null,
+        "anchors": [],
+        "provenance": "NOT MEASURED. No full-physics footprint run has been made on this part.",
+        "notes": "A different architecture as well as a different SM count: sm_86 has half the sm_120 register file per SM and a different module image, so the residue is even less carryable here than it is between two sm_120 parts. Its derived local-memory backing store is known (68 SM x 1,536 resident threads); the residue is not."
+      },
+      "rtx-5070-ti": {
+        "display_name": "NVIDIA GeForce RTX 5070 Ti",
+        "device_total_mib": 16303,
+        "device_addressable_mib": 15880.6,
+        "streaming_multiprocessors": 70,
+        "max_threads_per_sm": 1536,
+        "compute_capability": "sm_120",
+        "measured": true,
+        "local_store_residue_mib": 2488.3,
+        "residue_measured_against_arwen_commit": "629ddb6f0",
+        "bytes_per_cell": 86630.0,
+        "bytes_per_cell_provenance": "MEASURED to be the SAME as rtx-5090's rather than assumed to be: at the identical step boundary CuPy's pool.total_bytes() reads 5,404.5 MiB on both parts, to the decimal. The per-cell half of the model is card-independent and only the fixed half moves, which is what lets ONE footprint anchor on this part fix its fixed term.",
+        "measured_on": "2026-08-21",
+        "anchors": [
+          {"mesh": "x1.40962", "cells": 40962, "process_mib": 8768.0, "tolerance_mib": 20.0}
+        ],
+        "provenance": "weather-node-1, sm_120, float32, nVertLevels=55, full physics, 6 steps, rc 0, status passed. The 8,768.0 MiB peak is the run under memory pressure: VRAM was held down in a separate process so the run saw 9,656.7 MiB free, and four separate runs across a 2.6 GiB band of held-down budgets all peaked at exactly 8,768.0 MiB. Unconstrained the same run peaks at 10,514.0 MiB, which is CuPy pool opportunism and NOT a requirement -- sizing against it costs 1,745.6 MiB of pessimism. A like-for-like subtraction against the 5090 gives 5,388 MiB fixed independently, 4 MiB from this one.",
+        "notes": "nvidia-smi says 16,303 MiB and CUDA's own memGetInfo says 15,880.6; the 422 MiB gap is not addressable and device_addressable_mib is what sizing uses. The 120 km global x1.40962 mesh runs inside a 10 GiB budget on this part, with about a GiB to spare."
+      },
+      "rtx-5090": {
+        "display_name": "NVIDIA GeForce RTX 5090",
+        "device_total_mib": 32607,
+        "device_addressable_mib": null,
+        "streaming_multiprocessors": 170,
+        "max_threads_per_sm": 1536,
+        "compute_capability": "sm_120",
+        "measured": true,
+        "local_store_residue_mib": 2765.6,
+        "residue_measured_against_arwen_commit": "629ddb6f0",
+        "bytes_per_cell": 86630.0,
+        "bytes_per_cell_provenance": "Separated on this part by subtraction between its own two mesh anchors, 40,962 and 163,842 cells, rather than assumed.",
+        "measured_on": "2026-08-20",
+        "anchors": [
+          {"mesh": "generated", "cells": 38857, "process_mib": 13165.0, "tolerance_mib": 200.0},
+          {"mesh": "x1.40962", "cells": 40962, "process_mib": 13182.0, "tolerance_mib": 20.0},
+          {"mesh": "x4.163842", "cells": 163842, "process_mib": 23334.0, "tolerance_mib": 20.0}
+        ],
+        "provenance": "mpas-port docs/device-memory-ledger.md, task #264: float32, nVertLevels=55, full physics, 6 steps, GFS 2026-08-12 06Z, both ledger runs rc 0. The two mesh sizes separate the fixed and per-cell terms by subtraction rather than by assumption. The 38,857-cell point is a real forecast on a generated mesh, its peak read off nvidia-smi at 13,679 MiB against a 514 MiB idle baseline, which is why its tolerance is wider.",
+        "notes": "Whole-process figures measured on an otherwise-idle card. device_addressable_mib is NOT MEASURED on this part -- no CUDA memGetInfo total was read -- so the nvidia-smi figure is the only one there is, and it is optimistic by whatever this part's equivalent of the 5070 Ti's 422 MiB gap turns out to be. Anything else resident on the device comes out of the same memory, so pass --vram-gib with the free budget when the card is shared."
+      }
+    }
+  },
+  "smoothness": {
+    "metric": "steepest requested spacing gradient, percent per cell",
+    "what_it_measures": "How much the requested cell spacing changes from one cell to the next across the steepest part of a refinement ramp. 1.53 %/cell means neighbouring cells differ in size by 1.53 %.",
+    "published_reference_percent_per_cell": 1.53,
+    "published_reference_mesh": "x4.163842",
+    "published_ramp_cells": 81.0,
+    "warn_above_percent_per_cell": 1.53,
+    "refuse_above_percent_per_cell": 3.06,
+    "status": "provisional",
+    "rule": "Twice the steepest gradient in the published NCAR family, which is the roughest mesh anything in this project has ever integrated. It admits meshes modestly rougher than the published ones and refuses the 4.88 %/cell case a 15 km regional patch inside a 10 GiB budget produces.",
+    "evidence": "NOT MEASURED. No dycore run has established where a rough mesh actually loses stability or accuracy; the only mesh with dycore evidence behind it is the 1.53 %/cell published reference, which runs. The 4.88 %/cell figure is a sizing measurement of what a 10 GiB budget forces, not a stability measurement.",
+    "moves_when": "A dycore run on a deliberately rough mesh sets the real bound. Edit refuse_above_percent_per_cell and warn_above_percent_per_cell here, record the run in provenance, and flip status to measured. No code changes.",
+    "breakage": "A mesh whose cell size jumps faster than the numerics were designed for degrades the C-grid gradient and divergence operators across the transition band: the errors show up as a standing wave parked on the refinement boundary, which looks like weather and is not."
+  },
+  "delivered_smoothness": {
+    "metric": "max_adjacent_spacing_ratio, the largest spacing ratio between any two neighbouring cells in the DELIVERED mesh",
+    "why_it_is_not_the_requested_gradient": "The requested gradient is the slope of a smooth sampled density field. This is a maximum over every edge in the mesh, so it is dominated by the SCVT's own hexagon/pentagon texture rather than by the refinement ramp. The two are on different scales and judging one by the other's bound refuses every mesh.",
+    "uniform_control_ratio": 1.1407,
+    "uniform_control_provenance": "MEASURED 2026-08-20 through `gpuwm mesh --background-km 240 --cells 12000`: a UNIFORM mesh, requested gradient 0.00 %/cell, no refinement region at all. It delivers max_adjacent_spacing_ratio 1.1407 (14.07 % on the requested-gradient scale). That is the floor the metric has with nothing to blame it on.",
+    "bound": null,
+    "evidence": "NOT MEASURED. No run has established what value of this metric costs anything, and one control point is not a bound. The door reports the reading beside the control and applies no verdict to it.",
+    "moves_when": "Measure the metric across a range of meshes that were then integrated. Fill in bound here and the door starts judging it; until then a number without a scale beside it is the wrong verdict waiting."
+  },
+  "defaults": {
+    "transition_cells": 81.0,
+    "transition_note": "The published variable-resolution mesh ramps from 90 % to 10 % of its density over 81 cells. Used when a --refine row gives no explicit transition width, because it is the ramp the published family is smooth at."
+  }
+}

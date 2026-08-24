@@ -142,6 +142,19 @@ UH_FOLLOW_WINDOW_SLOT = "uh_follow_window"
 UH_SPAWN_WINDOW_SLOT = "uh_spawn_window"
 #: Folded every step beside UP_HELI_MAX; reset only by their consumers.
 TRACKER_WINDOW_SLOTS = (UH_FOLLOW_WINDOW_SLOT, UH_SPAWN_WINDOW_SLOT)
+UH_FOLLOW_WINDOW_PREFIX = UH_FOLLOW_WINDOW_SLOT + ".d"
+
+
+def follow_window_slot(grid_id: int) -> str:
+    """Stable consumer-owned UH slot for one independently-cadenced child."""
+    gid = int(grid_id)
+    if gid < 2:
+        raise ValueError(f"a follow window belongs to a child grid, got {gid}")
+    return f"{UH_FOLLOW_WINDOW_PREFIX}{gid:02d}"
+
+
+def is_tracker_window_slot(slot: str) -> bool:
+    return slot in TRACKER_WINDOW_SLOTS or str(slot).startswith(UH_FOLLOW_WINDOW_PREFIX)
 
 _THREADS = 256
 
@@ -445,8 +458,12 @@ def _tracker_windows(state):
     existing_scratch = getattr(state, "existing_scratch", None)
     if existing_scratch is None:
         return ()
+    slots = list(TRACKER_WINDOW_SLOTS)
+    scratch = getattr(state, "_scratch", {})
+    slots.extend(sorted(name for name in scratch
+                        if str(name).startswith(UH_FOLLOW_WINDOW_PREFIX)))
     return tuple(window for window in
-                 (existing_scratch(slot) for slot in TRACKER_WINDOW_SLOTS)
+                 (existing_scratch(slot) for slot in slots)
                  if window is not None)
 
 
@@ -477,10 +494,11 @@ def reset_tracker_window(state, slot: str) -> None:
     is cadence dependence coming back in through the reset rule instead of
     through the history writer.
     """
-    if slot not in TRACKER_WINDOW_SLOTS:
+    if not is_tracker_window_slot(slot):
         raise ValueError(
-            f"{slot!r} is not a tracker window; the consumer windows are "
-            f"{TRACKER_WINDOW_SLOTS} and UP_HELI_MAX is reset by the "
+            f"{slot!r} is not a tracker window; the fixed consumer windows are "
+            f"{TRACKER_WINDOW_SLOTS}, per-follower windows start with "
+            f"{UH_FOLLOW_WINDOW_PREFIX!r}, and UP_HELI_MAX is reset by the "
             "history writer alone (reset_up_heli_max)")
     _zero_domain_slot(state, slot)
 

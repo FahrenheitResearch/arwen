@@ -41,8 +41,13 @@ def test_offline_child_output_root_is_create_only(tmp_path):
     assert _create_output_root(requested) == requested.resolve()
     marker = requested / "prior-evidence.txt"
     marker.write_text("preserve", encoding="utf-8")
-    with pytest.raises(FileExistsError):
+    # The refusal is a sentence, not a Windows error number: the reader
+    # who typed the same output directory twice is told what the
+    # directory holds and the two ways out, and their evidence survives.
+    with pytest.raises(OfflineChildContractError) as caught:
         _create_output_root(requested)
+    assert "prior-evidence.txt" in str(caught.value)
+    assert "--outdir" in str(caught.value)
     assert marker.read_text(encoding="utf-8") == "preserve"
 
 

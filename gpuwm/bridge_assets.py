@@ -15,7 +15,7 @@ surface, GOES and European-composite front doors, the NetCDF decoder,
 the mapped decode engine and the observation remap onto a wheel install
 was to clone the repository and run ``cargo build`` three times -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-twenty-one files.
+twenty-five files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -24,7 +24,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the twenty-one artifacts of
+One bundle per platform, holding the twenty-five artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges``) -- the last rung of the
 resolution ladder every consumer already searches, so nothing else in
@@ -82,7 +82,7 @@ new bytes passing all three checks first.
 Offline and mirrors
 -------------------
 ``--from DIR`` stages from a local directory under identical
-verification: either the bundle archive itself, or the twenty-one
+verification: either the bundle archive itself, or the twenty-five
 artifacts loose in that directory (what an air-gapped operator has
 after building them on a machine that does have a toolchain).
 ``GPUWM_BRIDGE_ASSET_URL_BASE`` overrides the download base URL; the
@@ -224,7 +224,7 @@ class BundledArtifact:
     vendored: bool = False
 
 
-#: The twenty-one artifacts a bundle carries, in build order: the five
+#: The twenty-five artifacts a bundle carries, in build order: the five
 #: GRIB decoders and the CPU preprocessing library from the decoder
 #: workspace, then the fetch backbone, the batch renderer, the two radar
 #: front doors, the five observation front doors, the NetCDF decoder,
@@ -440,6 +440,48 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "obs_regrid", "library", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_OBSREGRID_BRIDGE",
         "observation remap plans (the default battery remap engine)"),
+    # The four MPAS binaries, and `rw_mpas_convert` is the artifact this
+    # whole tuple's comment block keeps naming as the precedent: it was
+    # written, committed, resolved by name and carried by no bundle, so
+    # the refusals that named `gpuwm fetch-bridges` sent readers to a
+    # command that staged a complete bundle without it.  It stayed in
+    # that state one wave after the observation front doors were fixed
+    # for the identical reason, and `rw_mpas_mesh` -- the generator that
+    # reproduces the published NCAR meshes to 1e-11 -- joined it there
+    # the day it was built: no bundle row, no marker, no environment
+    # variable, no resolver and no Python that called it.
+    #
+    # All four build `--locked --offline` out of the same vendored
+    # closure on the same two platforms as their eleven `tools/rustwx`
+    # siblings, and the release workspace already BUILT them -- `cargo
+    # build --release --locked` at `tools/rustwx` builds every workspace
+    # member -- so the binaries were produced by the cut, probed by
+    # nothing, and thrown away at the end of the job.  Bundling them
+    # costs four entries here and the `build.rs` that stamps the crate.
+    #
+    # Environment variables spelled to match gpuwm.mpas_mesh.BRIDGES; a
+    # test binds each row to that module's own resolver.
+    BundledArtifact(
+        "rw_mpas_mesh", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_MPAS_MESH",
+        "MPAS mesh generation (gpuwm mesh)"),
+    # The other half of what `gpuwm mesh` delivers, and it is not
+    # optional: a grid file reaches no dycore on its own, because the
+    # mesh registry pins BOTH the grid and a matching static by byte
+    # count and sha256.  Shipping the generator without the static
+    # builder ships a command whose output nothing accepts.
+    BundledArtifact(
+        "rw_mpas_static", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_MPAS_STATIC",
+        "the matching MPAS static (gpuwm mesh)"),
+    BundledArtifact(
+        "rw_mpas_init", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_MPAS_INIT",
+        "MPAS initial conditions from a grid and a static file"),
+    BundledArtifact(
+        "rw_mpas_convert", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_MPAS_CONVERT",
+        "MPAS history onto the renderer's tape"),
 )
 
 
@@ -1131,7 +1173,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
     """Install the pinned artifacts sitting loose in ``source_dir``.
 
     What an air-gapped operator has after building on a machine that
-    does have a toolchain: twenty-one files, no archive.  Same three
+    does have a toolchain: twenty-five files, no archive.  Same three
     checks, same atomic install.
     """
 
@@ -1144,7 +1186,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
             f"{source_dir} carries neither {bundle.filename} nor the loose "
             f"artifacts; missing {', '.join(absent)}")
     if absent:
-        # The twenty-one artifacts are independent; an air-gapped operator
+        # The twenty-five artifacts are independent; an air-gapped operator
         # with the decoders but not the renderer gets the decoders,
         # verified, and doctor names what is still missing.
         warn(f"{source_dir} is missing {len(absent)} of "
@@ -1251,16 +1293,109 @@ def fetch_bundle(pins: BridgePins, bundle: BundlePin, dest: Path, *,
 # The command
 # ---------------------------------------------------------------------------
 
+#: What stays broken while the artifacts are absent.  Named once, in
+#: routes rather than in filenames, because "nine artifacts are missing"
+#: is not a consequence a reader can act on and "prep refuses" is.
+_MISSING_ARTIFACT_BREAKAGE = (
+    "gpuwm fetch-bridges: until the artifacts exist, the routes that run "
+    "them stay unresolved -- GRIB decode, NetCDF read/write and the "
+    "renderer -- so `gpuwm prep` refuses to decode source bytes and "
+    "`gpuwm render` has no renderer to call.")
+
+
+def _source_build_lines() -> list[str]:
+    """The build route as commands, never as a pointer at a command.
+
+    Two installs, two true answers, and the difference is on disk: a
+    checkout has the crates, so the one-liner runs as printed; a wheel
+    has none, so the answer is the whole bootstrap down to the clone.
+    Taken straight from :mod:`gpuwm.bridges` rather than through its
+    ``_bundle_first`` wrapper, so no branch of this refusal can grow a
+    ``gpuwm fetch-bridges`` line at its head -- that is the loop this
+    text exists to be out of.
+    """
+
+    if bridges.sources_present():
+        return [f"  {bridges.cargo_build_one_liner()}",
+                "  # builds every bridge this install's routes look for,"
+                " offline."]
+    return list(bridges.build_from_clone_hint())
+
+
 def _unsupported_platform_note(platform: str | None) -> str:
+    """Why no bundle can be staged here, and the commands that fix it.
+
+    Circularity is the defect this text exists to avoid.  Both branches
+    used to end "`gpuwm doctor` prints the exact steps for this
+    install", and doctor's own next command for a missing bridge is
+    ``gpuwm fetch-bridges`` -- so is ``gpuwm setup``, which runs it --
+    so a reader who did as they were told arrived back at this same
+    refusal having learned nothing and cost themselves two commands.  A
+    refusal that hands over another command of ours has not named a
+    remedy; the steps are printed here instead.
+
+    The no-pins branch also has a state to name that nothing on the
+    reader's disk shows.  The pins are computed from the published
+    bytes by ``tools/build_bridge_bundle.py`` and written into
+    :data:`PINS_RESOURCE` before the wheel is built, so a wheel
+    installed from PyPI is the only artifact that carries them: a
+    source checkout, and a wheel built out of one, both carry the empty
+    document this branch is reading, and always will.  Saying so is the
+    difference between "my install is broken" and "this install was
+    never going to have them", and only the second one tells the reader
+    which of the two routes below is theirs.
+
+    A checkout is never told to ``pip install`` over itself: its
+    sources are present, so the build is both shorter and true, and the
+    wheel appears there as the explanation rather than as the step.
+    """
+
     if platform is None:
-        return (f"gpuwm fetch-bridges: no bundle is published for "
-                f"{host_platform_description()} (bundles exist for "
-                f"{', '.join(SUPPORTED_PLATFORMS)}); build the artifacts "
-                "from a clone instead -- `gpuwm doctor` prints the exact "
-                "steps for this install")
-    return (f"gpuwm fetch-bridges: this install carries no bundle pins for "
-            f"{platform}; build the artifacts from a clone instead -- "
-            "`gpuwm doctor` prints the exact steps for this install")
+        return "\n".join([
+            f"gpuwm fetch-bridges: no bundle is published for "
+            f"{host_platform_description()} (bundles exist for "
+            f"{', '.join(SUPPORTED_PLATFORMS)}).",
+            "gpuwm fetch-bridges: bundles are built per OS and "
+            "architecture, so this is not something a newer install "
+            "carries: no released wheel has bytes for this box, and this "
+            "command has nothing it could stage here.",
+            _MISSING_ARTIFACT_BREAKAGE,
+            "gpuwm fetch-bridges: build the artifacts from a clone "
+            "instead -- the route that works on every platform:",
+            *_source_build_lines(),
+        ])
+
+    lines = [
+        f"gpuwm fetch-bridges: this install carries no bundle pins for "
+        f"{platform}.",
+        "gpuwm fetch-bridges: the pins are computed from the published "
+        f"bytes and written into {packaged_pins_path()} when the wheel is "
+        "built, so a wheel installed from PyPI is the install that carries "
+        "them; this one declares no platforms at all, which is what a "
+        "source checkout -- or a wheel built out of one -- looks like.  "
+        "This command stages only bytes it holds a SHA-256 for, so with no "
+        "pins there is nothing here for it to fetch.",
+        _MISSING_ARTIFACT_BREAKAGE,
+    ]
+    if bridges.sources_present():
+        lines.append(
+            "gpuwm fetch-bridges: this install has the Rust sources, so "
+            "build the artifacts here:")
+        lines += _source_build_lines()
+        return "\n".join(lines)
+    lines.append(
+        "gpuwm fetch-bridges: install the published wheel, which carries "
+        f"the pins for {platform} and the bundle they verify:")
+    lines += [
+        "  pip install --upgrade gpuwm",
+        "  gpuwm fetch-bridges",
+        "  # the second line stages the bundle; it refuses again only if",
+        "  # the first one did not replace this install.",
+        "gpuwm fetch-bridges: or build the artifacts from a clone "
+        "instead, which needs no published bundle at all:",
+    ]
+    lines += _source_build_lines()
+    return "\n".join(lines)
 
 
 def _override_warnings(bundle: BundlePin) -> list[str]:

@@ -1067,6 +1067,48 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
     # headroom, and it is the one that decides the tile on a 16 GiB card.
     vram_budget = budget_for(machine, fp)
     host_budget = machine.host_budget_bytes
+    # AN ALLOWANCE THE RESERVATIONS ALREADY EXCEED IS REFUSED HERE, before
+    # the tile search ever sees the number.  The search itself is total: it
+    # finds no window and its refusal prints the budget raw -- which on
+    # 2026-08-24 was "no tile fits in -2.68 GiB of VRAM" on a card sitting
+    # at 8.38 GiB free, because a front end had frozen a 62 MiB
+    # vram_budget_bytes from a probe taken while the card was running
+    # another forecast, and the full rung's 2.74 GiB radiation reservation
+    # took it negative.  A negative byte count in a user-facing message is
+    # itself the defect: the breakage is not "no tile fits", it is that the
+    # allowance is spent before any tile is priced, and the refusal has to
+    # itemize WHO spent it or the reader cannot tell a full card from a
+    # stale number.
+    if vram_budget <= 0:
+        headroom = int(machine.vram_bytes * machine.vram_headroom)
+        excess = max(0, fp.radiation_transient_bytes - headroom)
+        floor = fp.vram_bytes((2 * halo + 1) ** 2 * nz, 1)
+        raise CannotPlan(
+            f"the VRAM allowance is spent before any tile is priced: the "
+            f"planner was handed {machine.vram_bytes / GIB:.2f} GiB, the "
+            f"{machine.vram_headroom:.0%} first-use headroom withholds "
+            f"{headroom / GIB:.2f} GiB of it and the {fp.rung} rung's "
+            f"measured radiation transient reserves another "
+            f"{excess / GIB:.2f} GiB (allocated and freed inside each "
+            f"radiation call, so it is held back once per process rather "
+            f"than priced into any tile), leaving the tile search "
+            f"{max(0, -vram_budget) / GIB:.2f} GiB short of empty.  No tile "
+            f"size can help: the smallest window at halo {halo} would still "
+            f"add {floor / GIB:.2f} GiB on top "
+            f"({fp.process_fixed_bytes / GIB:.2f} GiB of that the "
+            f"per-process fixed cost of the {fp.rung} rung), so nothing "
+            f"plans below roughly "
+            f"{(fp.radiation_transient_bytes + floor) / GIB:.2f} GiB; free "
+            f"VRAM, raise the allowance past that, or -- if the allowance "
+            f"was captured from a probe while the card was busy -- "
+            f"re-derive it from the card as it is now.",
+            "vram", dict(vram_allowance_bytes=int(machine.vram_bytes),
+                         headroom_withheld_bytes=int(headroom),
+                         radiation_transient_bytes=int(
+                             fp.radiation_transient_bytes),
+                         radiation_transient_excess_bytes=int(excess),
+                         floor_bytes=float(floor),
+                         vram_budget=int(vram_budget)))
     notes: list[str] = []
     warnings: list[str] = []
     if fp.radiation_transient_bytes:

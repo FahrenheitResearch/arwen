@@ -57,6 +57,8 @@ from gpuwm.certify.capsule import emit_run_capsule
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RunConfig,
                           radiation_scheme_ids, soil_layer_count)
 from gpuwm.core.grid import make_vertical_coord
+from gpuwm.core.nest_lifecycle import (admit_restart_with_lifecycle,
+                                       output_episode)
 from gpuwm.core.noah import noah_initial_snow_albedo
 from gpuwm.experiment import ExperimentConfig, VerticalConfig
 from gpuwm.ingest.grib import cached_era5_forcing
@@ -1625,7 +1627,9 @@ class RealRelocationChildPreparer:
 
 
 def build_real_relocation_runner(exp: ExperimentConfig,
-                                 data: CaseDataConfig, model, outdir):
+                                 data: CaseDataConfig, model, outdir, *,
+                                 provider=None,
+                                 receipts_name="relocation_receipts.json"):
     """Wire the real-data route's RelocationRunner, or ``None``.
 
     ``None`` when the config names no follow source -- bounds-only
@@ -1663,11 +1667,76 @@ def build_real_relocation_runner(exp: ExperimentConfig,
         reference_i_parent_start=child_config.i_parent_start,
         reference_j_parent_start=child_config.j_parent_start)
     preparer = RealRelocationChildPreparer(exp=exp, data=data, model=model)
-    return RelocationRunner.from_experiment(
-        exp, schedule=model.schedule, on_child_built=preparer,
-        initializer=initializer,
+    if provider is None:
+        return RelocationRunner.from_experiment(
+            exp, schedule=model.schedule, on_child_built=preparer,
+            initializer=initializer,
+            static_provenance=REAL_DATA_FOOTPRINT_REBUILT_STATICS,
+            receipts_path=Path(outdir) / receipts_name)
+    return RelocationRunner(
+        config=relocation, schedule=model.schedule,
+        on_child_built=preparer, provider=provider, initializer=initializer,
         static_provenance=REAL_DATA_FOOTPRINT_REBUILT_STATICS,
-        receipts_path=Path(outdir) / "relocation_receipts.json")
+        receipts_path=Path(outdir) / receipts_name)
+
+
+def build_real_relocation_runners(exp: ExperimentConfig,
+                                  data: CaseDataConfig, model, outdir):
+    """Legacy tree follower plus every currently-live per-domain follower."""
+    from dataclasses import replace as _replace
+
+    from gpuwm.core import uh_diag
+    from gpuwm.core.relocation_runner import RelocationRunnerCollection
+    from gpuwm.core.storm_tracking import StormTracker
+
+    runners = []
+    legacy = build_real_relocation_runner(exp, data, model, outdir)
+    if legacy is not None:
+        runners.append(legacy)
+    legacy_gid = (None if legacy is None else int(legacy.config.grid_id))
+    for dc in exp.domains:
+        follow = getattr(dc, "follow", None)
+        gid = int(dc.grid_id)
+        if follow is None or gid not in model.nodes_by_grid_id:
+            continue
+        if legacy_gid == gid:
+            raise ValueError(
+                f"d{gid:02d} has both per-domain follow and legacy "
+                "tree-level [relocation]; two placement authorities for one "
+                "child are refused. Keep exactly one.")
+        node = model.node(gid)
+        parent = node.parent
+        if parent is None:
+            continue
+        stash = float(parent.cfg.history_interval_s)
+        cadence = float(follow.cadence_seconds)
+        multiple = cadence / stash
+        if abs(multiple - round(multiple)) > 1.0e-6 * max(1.0, abs(multiple)):
+            raise ValueError(
+                f"d{gid:02d} follow cadence_seconds={cadence:g} is not a "
+                f"whole multiple of parent d{int(parent.cfg.grid_id):02d} "
+                f"history_interval_s={stash:g}; the UH tracker can run at "
+                "its own cadence, but its reflectivity fallback is stashed "
+                "only on history boundaries and would otherwise be stale")
+        slot = uh_diag.follow_window_slot(gid)
+        parent.state.scratch(
+            (int(parent.cfg.run.ny), int(parent.cfg.run.nx)), slot)
+        provider = StormTracker(follow.tracker, uh_slot=slot)
+        relocation = _replace(
+            exp.relocation, enabled=True, grid_id=gid,
+            max_move_parent_cells=follow.max_move_parent_cells,
+            min_overlap_fraction=follow.min_overlap_fraction,
+            cadence_seconds=cadence, follow=follow.tracker, moves=())
+        view = _replace(exp, relocation=relocation)
+        runner = build_real_relocation_runner(
+            view, data, model, outdir, provider=provider,
+            receipts_name=f"relocation_receipts.d{gid:02d}.json")
+        if runner is not None:
+            runners.append(runner)
+    per_domain = any(getattr(dc, "follow", None) is not None for dc in exp.domains)
+    if not per_domain:
+        return legacy
+    return RelocationRunnerCollection(runners)
 
 
 class PreparedTreeRelocationChildPreparer(RealRelocationChildPreparer):
@@ -1939,6 +2008,29 @@ def _spawn_leg_seconds(exp: ExperimentConfig) -> float:
     return history if history > 0.0 else float(exp.run_seconds)
 
 
+def publish_lifecycle_runners(model, *, spawn_runner=None,
+                              relocation_runner=None,
+                              leg_seconds=None) -> None:
+    """Bind the live lifecycle runners to the tree the checkpoint sees.
+
+    ``restart_handler`` is handed a TREE and a tick count and nothing
+    else, while the runners are the route's own locals.  Without this
+    binding a checkpoint could say which domains existed and nothing
+    more: not which slots had fired, not how many episodes a slot had
+    served, not where a follower's segment chain stood -- which is the
+    whole of the state a later leg boundary reads and cannot recompute.
+
+    Published at EVERY rebind, not once at build: the leg walk replaces
+    the relocation runner as dormant follow targets come alive, and a
+    checkpoint written after that point holding the pre-spawn binding
+    would omit the newborn follower's history entirely.
+    """
+    model._spawn_runner = spawn_runner
+    model._relocation_runner = relocation_runner
+    if leg_seconds is not None:
+        model._spawn_leg_seconds = float(leg_seconds)
+
+
 def _retarget_tree_schedule(model, active_exp: ExperimentConfig,
                             end_seconds: float, lbc_interval_s) -> None:
     """Re-aim the live tree at ``end_seconds`` over ``active_exp``.
@@ -2029,11 +2121,295 @@ def _attach_spawned_children(model, active_exp, record, writers,
         prepared = preparer.prepared_by_grid_id[gid]
         model._prepared_by_grid_id[gid] = prepared
         if writers is not None:
+            episodes = record.get("episode_by_grid_id", {})
+            episode = int(episodes.get(str(gid), episodes.get(gid, 0)))
+            # GATED on the DECLARED tables, not on the firing count.  A
+            # one-shot spawn keeps the flat pathname it has always
+            # written; only a declared lifecycle gets episode-numbered
+            # directories.  active_exp carries the declaration through
+            # _dc_replace, so the fired tree is a legal source for it.
             writers.add_domain(gid, grid=node.grid,
-                               static_fields=prepared.static_fields)
+                               static_fields=prepared.static_fields,
+                               episode=output_episode(
+                                   active_exp.domain(gid), episode))
         attached.append(gid)
     model.nodes_by_grid_id = MappingProxyType(nodes)
     return attached
+
+
+def restore_nest_lifecycle(model, exp: ExperimentConfig, peek, *,
+                           spawn_runner, lbc_interval_s=None,
+                           coupler_factory=None) -> dict[int, int]:
+    """Rebuild the tree the checkpoint describes, BEFORE its state lands.
+
+    A tree checkpoint's member set is the tree that was live when it was
+    written, so a resume that restores into the PRE-SPAWN tree refuses on
+    a partial domain set -- and one that restores into a tree it guessed
+    at restores the wrong arrays into the wrong nests.  This puts the
+    tree back through the run's own seams and nothing else:
+
+    * the runner is seeded from the block, so ``active`` presents exactly
+      the domain set the checkpoint carries;
+    * each live episode is materialized at its FIRED placement, because
+      that is the placement ``validate_spawn_placement`` adjudicated when
+      the slot fired, and a nest that has since been MOVED is brought to
+      its current placement under the relocation rule instead (WP4c);
+    * the newborn joins through ``_attach_spawned_children``, the same
+      seam a leg boundary uses, one at a time and parent-first so a
+      nested episode finds its parent already in the tree;
+    * the schedule is re-aimed over the restored domain set, because the
+      tick denominator is the LCM of the LIVE set's timesteps: a
+      root-only schedule reads the checkpoint's tick pair as a mismatch.
+
+    Returns ``{grid_id: output episode}`` for the writer set, so a domain
+    resumed mid-episode-2 writes ``d0N/episode-002/`` from its first
+    frame rather than from its next birth.
+    """
+    from gpuwm.core.nest_lifecycle import output_episode
+    from gpuwm.ingest.nest_spawn_init import spawn_child_from_parent
+
+    block = getattr(peek, "block", None)
+    if block is None or spawn_runner is None or block.get("spawn") is None:
+        return {}
+    spawn_runner.restore_state(block["spawn"])
+    active = spawn_runner.active
+    episodes: dict[int, int] = {}
+    # Ascending grid id is parent-before-child (the experiment loader
+    # enforces that order), which is what lets a nested episode's parent
+    # already be in the tree when the child is materialized from it.
+    for gid in sorted(spawn_runner.spawned):
+        child_dc = active.domain(gid)
+        parent_node = model.node(int(child_dc.parent_id))
+        statics = (None if spawn_runner.statics_provider is None
+                   else spawn_runner.statics_provider(child_dc, parent_node))
+        receipt = spawn_child_from_parent(
+            child_dc, parent_node,
+            static_fields=statics,
+            blend_width=int(getattr(exp, "blend_width", 5)),
+            scratch_arena=getattr(model, "_scratch_arena", None),
+            dycore_state_workspace=getattr(
+                model, "_dycore_state_workspace", None),
+            array_module=spawn_runner.array_module,
+            on_child_built=spawn_runner.on_child_built)
+        # The live object the NEXT leg boundary adopts.  Without it the
+        # runner's ``refresh_from_model`` has nothing to carry forward
+        # and the resumed episode is invisible to its own retire watch.
+        spawn_runner._child_results[gid] = receipt["child_result"]
+        episode = int(spawn_runner.episodes.get(gid, 0))
+        _attach_spawned_children(
+            model, active,
+            {"child_results": {gid: receipt["child_result"]},
+             "episode_by_grid_id": {str(gid): episode}},
+            None, spawn_runner.on_child_built, lbc_interval_s,
+            coupler_factory)
+        episodes[gid] = output_episode(child_dc, episode)
+    if episodes:
+        _retarget_tree_schedule(
+            model, active, float(exp.run_seconds), lbc_interval_s)
+    return episodes
+
+
+def remark_relocation_fingerprint(model, peek) -> str:
+    """Reproduce the live fingerprint of the run that wrote this set.
+
+    A run that has relocated a nest chains each move's record digest into
+    ``model.experiment_fingerprint`` (``mark_fingerprint_across_move``),
+    so its later checkpoints are keyed to the move history and a FRESH
+    build refuses them by construction -- which is the whole point, and
+    also the reason a legitimate resume cannot get in without doing the
+    same arithmetic.  Folding the header's record chain over the fresh
+    build reproduces exactly that value: same base, same history, same
+    mark.  Nothing else can, because the digests are the moves' own.
+
+    The named components are re-marked the same way, for two reasons: a
+    mismatch must still be able to say WHICH component moved, and the
+    resumed run's OWN next move has to chain onto this history rather
+    than onto the base -- without which the third segment of a moving
+    run is addressed by a history that did not happen.
+    """
+    from gpuwm.core.nest_relocation import mark_fingerprint_across_move
+
+    records = tuple(getattr(peek, "relocation_records", ()) or ())
+    if not records:
+        return model.experiment_fingerprint
+    marked = model.experiment_fingerprint
+    for record_sha in records:
+        marked = mark_fingerprint_across_move(marked, record_sha)
+    model.experiment_fingerprint = marked
+    components = getattr(model, "_experiment_fingerprint_components", None)
+    if components is not None:
+        updated = dict(components)
+        updated["relocation"] = {"records": list(records)}
+        model._experiment_fingerprint_components = updated
+    return marked
+
+
+def _relocate_restored_child(model, node, runner, placement) -> None:
+    """Bring one restored episode to its post-move placement, in ONE hop.
+
+    The nest was materialized at its FIRED placement, because that is
+    what ``validate_spawn_placement`` adjudicated when the slot fired.
+    Every move it made afterwards is one hop from there under the
+    RELOCATION rule -- the follower's own admissible band and overlap
+    floor -- so the placement is re-admitted by the rule that produced it
+    rather than waved through.
+
+    One hop, not N: replaying each historical move would rebuild the
+    child N times for a state that is about to be overwritten wholesale,
+    and would leave the segment chain at a generation the checkpoint did
+    not record.  The persisted segment is restored over the hop's own
+    afterwards, which is what keeps the NEXT move chaining onto the real
+    predecessor.
+    """
+    from gpuwm.core.nest_relocation import base_segment, relocate_child
+
+    capture = getattr(runner.on_child_built, "capture_outgoing", None)
+    if callable(capture):
+        capture(node)
+    relocate_child(
+        node,
+        i_parent_start=int(placement[0]), j_parent_start=int(placement[1]),
+        segment=base_segment(node.cfg), bounds=runner.config,
+        initializer=runner.initializer,
+        static_provenance=runner.static_provenance,
+        on_child_built=runner.on_child_built,
+        scratch_arena=getattr(model, "_scratch_arena", None),
+        dycore_state_workspace=getattr(
+            model, "_dycore_state_workspace", None),
+        staging=runner.staging)
+    from gpuwm.core.state import refresh_model_time
+
+    refresh_model_time(node.state, node.clock)
+    after_move = getattr(runner.on_child_built, "after_move", None)
+    if callable(after_move):
+        after_move(node)
+
+
+def restore_nest_followers(model, peek, *, spawn_runner=None) -> list[int]:
+    """Seed every live follower from its own checkpoint entry.
+
+    The entry is taken WHOLE -- the runner's four keys and the writer's
+    three -- because the segment chain is the part nothing can recompute:
+    a follower that resumes at generation zero chains its next move's
+    record onto the base preparation instead of onto its real
+    predecessor, and every later checkpoint of the resumed run is then
+    addressed by a history that did not happen.
+
+    A follower this run builds that the block says nothing about is built
+    FRESH and not refused: its target was still dormant when the
+    checkpoint was taken, so nothing had been consulted and nothing had
+    moved, which is exactly what a never-consulted runner holds.  The
+    reverse -- an entry naming a follower this run does not build -- is
+    refused, because the placement history it carries would be silently
+    dropped and the nest would move again at the first cadence boundary.
+
+    A restored episode whose CURRENT placement differs from its FIRED one
+    is brought there in one hop first, and the persisted segment then
+    lands over the hop's own.  ``spawn_runner`` supplies that split: the
+    runner holds the fired placements and reports the current ones off
+    its own restore.
+    """
+    from gpuwm.io.restart import lifecycle_followers
+
+    entries = peek.followers
+    moved = {}
+    if spawn_runner is not None:
+        moved = {gid: place for gid, place
+                 in getattr(spawn_runner, "restored_current_placements",
+                            {}).items()
+                 if tuple(place) != tuple(spawn_runner.spawned.get(gid, place))}
+    if not entries:
+        if moved:
+            named = ", ".join(f"d{gid:02d}" for gid in sorted(moved))
+            raise RuntimeError(
+                f"this checkpoint says {named} sits away from the placement "
+                "it fired at, but carries no follower history for it: only "
+                "a follower moves a spawned nest, so a move with no "
+                "follower entry means the block's two halves disagree and "
+                "there is no admissible band to re-adjudicate the "
+                "placement under")
+        return []
+    runners = lifecycle_followers(model)
+    restored: list[int] = []
+    for raw in sorted(entries, key=int):
+        gid = int(raw)
+        runner = runners.get(gid)
+        if runner is None:
+            raise RuntimeError(
+                f"this checkpoint carries a follower history for "
+                f"d{gid:02d} ({entries[raw].get('kind')}), but this run "
+                "builds no follower for that domain: no per-domain "
+                "[follow] table and no tree-level [relocation] naming it.  "
+                "The segment chain, the executed-move count and the two "
+                "cooldown anchors would be dropped, so the nest would sit "
+                "at a placement the config cannot explain and would be "
+                "free to move again at the first cadence boundary")
+        node = model.nodes_by_grid_id.get(gid)
+        placement = moved.pop(gid, None)
+        if node is not None and placement is not None:
+            _relocate_restored_child(model, node, runner, placement)
+        # AFTER the hop: the hop's own segment counts one move off the
+        # base preparation, and what the next move must chain onto is the
+        # generation the checkpoint recorded.
+        runner.restore_state(entries[raw])
+        restored.append(gid)
+    if moved:
+        named = ", ".join(f"d{gid:02d}" for gid in sorted(moved))
+        raise RuntimeError(
+            f"this checkpoint says {named} moved off its fired placement "
+            "but names no follower for it; the nest cannot be re-admitted "
+            "at that placement under any band this run declares")
+    return restored
+
+
+def _detach_retired_children(model, grid_ids, writers, steppers) -> list[int]:
+    """Detach a retired subtree at a completed leg boundary, deepest first.
+
+    No schedule op is skipped: the schedule that referenced these nodes has
+    already completed.  The next loop iteration rebuilds its op table from
+    ``spawn_runner.active`` before integration resumes.
+    """
+    from types import MappingProxyType
+
+    requested = {int(g) for g in grid_ids}
+    if not requested:
+        return []
+    nodes = dict(model.nodes_by_grid_id)
+    # Include any live descendants even when the policy record named only the
+    # spawned root of a mixed static/spawn subtree.
+    changed = True
+    while changed:
+        changed = False
+        for gid, node in list(nodes.items()):
+            if node.parent is not None and int(node.parent.cfg.grid_id) in requested and gid not in requested:
+                requested.add(int(gid)); changed = True
+
+    def depth(gid):
+        d = 0; node = nodes.get(gid)
+        while node is not None and node.parent is not None:
+            d += 1; node = node.parent
+        return d
+
+    detached = []
+    for gid in sorted(requested, key=depth, reverse=True):
+        node = nodes.get(gid)
+        if node is None or node.parent is None:
+            continue
+        if writers is not None:
+            writers.remove_domain(gid)
+        if steppers is not None:
+            stepper = steppers.pop(gid, None)
+            close = getattr(stepper, "close", None)
+            if callable(close):
+                close()
+        node._started = False
+        node.parent.children[:] = [c for c in node.parent.children
+                                   if int(c.cfg.grid_id) != gid]
+        nodes.pop(gid, None)
+        model._prepared_by_grid_id.pop(gid, None)
+        detached.append(gid)
+    model.nodes_by_grid_id = MappingProxyType(nodes)
+    return detached
 
 
 def _exchange_consumer_planes(model, steppers, direction: str,
@@ -2154,6 +2530,135 @@ def _adjudicate_newborn_steppers(steppers, model, attached, factory):
     return out
 
 
+def _leg_boundary_pass(model, spawn_runner, *, elapsed, writers,
+                       lbc_interval_s, execute_kwargs, relocation_runner,
+                       relocation_runner_factory, coupler_factory,
+                       spawned_stepper_factory, leg):
+    """One complete leg boundary: publish, evaluate, adopt, detach, attach.
+
+    Hoisted out of the walk's loop so a RESUME can perform exactly this
+    and nothing else.  Checkpoints are written at PERIOD_BEGIN, which is
+    always BEFORE the boundary evaluation, so a checkpoint taken on the
+    leg lattice captures the state the straight run was in when it
+    reached this call -- and running it once at resume entry reproduces
+    that run's decisions from bit-identical inputs.  Returns the (possibly
+    rebound) relocation runner; ``execute_kwargs`` is mutated in place for
+    the stepper mapping, as the loop did.
+    """
+    # The boundary instant belongs to BOTH legs: the leg that just
+    # ended emitted its history there, and the next leg's pre-loop
+    # emit would publish the same instant again -- which for a
+    # microphysics domain also means consuming a one-frame REFL
+    # handoff that no longer exists.  This is the resume-boundary
+    # ownership problem the checkpoint path already solves, so it is
+    # solved the same way: mark exactly the domains whose frame is
+    # already durable, and the next leg suppresses them one domain at
+    # a time.
+    model._resumed = True
+    model._resume_committed_history_grid_ids = frozenset(
+        gid for gid, node in model.nodes_by_grid_id.items()
+        if node.clock.history_due())
+    # The trigger reads the parent's WHOLE-DOMAIN plane off
+    # ``node.state``; a streamed parent's arrays live in its store and
+    # its state stopped changing at attach.  Publishing here -- once per
+    # leg boundary, only the planes a consumer reads -- is what makes the
+    # watch see the running domain instead of the attach-time zeros.
+    planes = _spawn_consumer_planes()
+    _publish_consumer_planes(model, execute_kwargs.get("steppers"), planes)
+    record = spawn_runner.on_leg_boundary(model, t=elapsed)
+    # The runner zeroed each parent's window on the STATE (its
+    # "max since I last looked" reset).  The domain is the store, so the
+    # zeroing has to reach it or the next fold accumulates on top of a
+    # window the consumer already believes it spent.
+    _adopt_consumer_planes(model, execute_kwargs.get("steppers"), planes)
+    if record is not None:
+        retired_ids = record.get("retired_grid_ids", ())
+        if retired_ids:
+            _detach_retired_children(
+                model, retired_ids, writers, execute_kwargs.get("steppers"))
+            # The resume-boundary marker was taken across the WHOLE
+            # tree a moment ago, while the retiring subtree was still
+            # in it.  Its purpose is to tell the NEXT leg which
+            # domains already published this instant so it does not
+            # publish twice -- and a retired domain has no next leg
+            # to be told anything.  Left in, the marker names a
+            # grid_id the next schedule has never heard of and the
+            # executor refuses the leg by name ("committed initial
+            # history domains are not in the schedule"), which is a
+            # retirement that killed the run one boundary after the
+            # episode it ended.
+            model._resume_committed_history_grid_ids = frozenset(
+                gid for gid in model._resume_committed_history_grid_ids
+                if gid in model.nodes_by_grid_id)
+        attached = []
+        if record.get("child_results"):
+            attached = _attach_spawned_children(
+                model, record["experiment"], record,
+                writers, spawn_runner.on_child_built, lbc_interval_s,
+                coupler_factory)
+            execute_kwargs["steppers"] = _adjudicate_newborn_steppers(
+                execute_kwargs.get("steppers"), model, attached,
+                spawned_stepper_factory)
+        # A follow target that was dormant could not be wired at
+        # build time; now that it exists, it can follow its storm.
+        if relocation_runner_factory is not None:
+            candidate = relocation_runner_factory()
+            if relocation_runner is None:
+                relocation_runner = candidate
+            elif getattr(relocation_runner, "is_collection", False):
+                relocation_runner.merge_from(candidate)
+            elif candidate is not None and getattr(candidate, "is_collection", False):
+                candidate.merge_from(relocation_runner)
+                relocation_runner = candidate
+            if relocation_runner is not None and writers is not None:
+                attach_many = getattr(relocation_runner, "attach_writers", None)
+                if callable(attach_many):
+                    attach_many(writers)
+                else:
+                    attach = getattr(relocation_runner.on_child_built,
+                                     "attach_writers", None)
+                    if callable(attach):
+                        attach(writers)
+            # The binding the next leg's checkpoints must see.
+            publish_lifecycle_runners(
+                model, spawn_runner=spawn_runner,
+                relocation_runner=relocation_runner, leg_seconds=leg)
+    return relocation_runner
+
+
+def resume_boundary_due(model, spawn_runner, *, leg: float, total: float,
+                        tol: float = 1.0e-9) -> bool:
+    """Does this resume land ON a leg boundary the run has yet to evaluate?
+
+    Checkpoints are written at PERIOD_BEGIN, always BEFORE the boundary
+    evaluation.  A checkpoint taken exactly on the leg lattice therefore
+    captures the state the straight run held when it reached
+    :func:`_leg_boundary_pass` -- and a resume that skips straight into
+    the next leg skips that evaluation FOREVER: the nest that would have
+    been born there is never born, the episode that would have retired
+    never retires, and nothing anywhere says so.
+
+    Four conditions, each of which makes the replay wrong if dropped:
+    this must be a resume (a fresh run at t = 0 sits on the lattice too,
+    and the straight run does not evaluate there); the lattice must
+    actually be hit; there must be run left, because the last boundary of
+    a completed run was already taken; and the runner must still have
+    boundaries that can change the tree.
+    """
+    if not bool(getattr(model, "_resumed", False)):
+        return False
+    if not spawn_runner.needs_boundaries:
+        return False
+    elapsed = float(model.root.clock.elapsed_seconds)
+    if elapsed <= tol or elapsed + tol >= float(total):
+        return False
+    leg = float(leg)
+    if not math.isfinite(leg) or leg <= 0.0:
+        return False
+    offset = elapsed - round(elapsed / leg) * leg
+    return abs(offset) <= tol * max(1.0, abs(elapsed))
+
+
 def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
                     spawn_runner, writers, lbc_interval_s,
                     relocation_runner=None, relocation_runner_factory=None,
@@ -2187,9 +2692,27 @@ def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
     leg = _spawn_leg_seconds(exp)
     total = float(exp.run_seconds)
     tol = 1.0e-9
+    publish_lifecycle_runners(
+        model, spawn_runner=spawn_runner,
+        relocation_runner=relocation_runner, leg_seconds=leg)
+    # THE RESUME BOUNDARY.  A checkpoint taken on the leg lattice was
+    # taken before that boundary was evaluated, so the evaluation is
+    # still owed; performing it here, once, from the restored state
+    # reproduces the straight run's decisions from the same inputs.
+    if resume_boundary_due(model, spawn_runner, leg=leg, total=total,
+                           tol=tol):
+        relocation_runner = _leg_boundary_pass(
+            model, spawn_runner,
+            elapsed=float(model.root.clock.elapsed_seconds),
+            writers=writers, lbc_interval_s=lbc_interval_s,
+            execute_kwargs=execute_kwargs,
+            relocation_runner=relocation_runner,
+            relocation_runner_factory=relocation_runner_factory,
+            coupler_factory=coupler_factory,
+            spawned_stepper_factory=spawned_stepper_factory, leg=leg)
     while True:
         elapsed = float(model.root.clock.elapsed_seconds)
-        if spawn_runner.pending and elapsed + tol < total:
+        if spawn_runner.needs_boundaries and elapsed + tol < total:
             boundary = min(total, (math.floor(elapsed / leg) + 1) * leg)
         else:
             boundary = total
@@ -2199,7 +2722,11 @@ def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
         # still dormant it is not in the tree, and consulting it would
         # ask the model for a node that does not exist.
         runner = relocation_runner
-        if runner is not None:
+        if runner is not None and getattr(runner, "is_collection", False):
+            runner.drop_absent(model)
+            if not runner.target_grid_ids:
+                runner = None
+        elif runner is not None:
             target = getattr(runner.config, "grid_id", None)
             if target is not None and int(target) not in model.nodes_by_grid_id:
                 runner = None
@@ -2208,50 +2735,13 @@ def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
         elapsed = float(model.root.clock.elapsed_seconds)
         if elapsed + tol >= total:
             break
-        # The boundary instant belongs to BOTH legs: the leg that just
-        # ended emitted its history there, and the next leg's pre-loop
-        # emit would publish the same instant again -- which for a
-        # microphysics domain also means consuming a one-frame REFL
-        # handoff that no longer exists.  This is the resume-boundary
-        # ownership problem the checkpoint path already solves, so it is
-        # solved the same way: mark exactly the domains whose frame is
-        # already durable, and the next leg suppresses them one domain at
-        # a time.
-        model._resumed = True
-        model._resume_committed_history_grid_ids = frozenset(
-            gid for gid, node in model.nodes_by_grid_id.items()
-            if node.clock.history_due())
-        # The trigger reads the parent's WHOLE-DOMAIN plane off
-        # ``node.state``; a streamed parent's arrays live in its store and
-        # its state stopped changing at attach.  Publishing here -- once per
-        # leg boundary, only the planes a consumer reads -- is what makes the
-        # watch see the running domain instead of the attach-time zeros.
-        planes = _spawn_consumer_planes()
-        _publish_consumer_planes(model, execute_kwargs.get("steppers"), planes)
-        record = spawn_runner.on_leg_boundary(model, t=elapsed)
-        # The runner zeroed each parent's window on the STATE (its
-        # "max since I last looked" reset).  The domain is the store, so the
-        # zeroing has to reach it or the next fold accumulates on top of a
-        # window the consumer already believes it spent.
-        _adopt_consumer_planes(model, execute_kwargs.get("steppers"), planes)
-        if record is not None:
-            attached = _attach_spawned_children(
-                model, record["experiment"], record,
-                writers, spawn_runner.on_child_built, lbc_interval_s,
-                coupler_factory)
-            execute_kwargs["steppers"] = _adjudicate_newborn_steppers(
-                execute_kwargs.get("steppers"), model, attached,
-                spawned_stepper_factory)
-            # A follow target that was dormant could not be wired at
-            # build time; now that it exists, it can follow its storm.
-            if relocation_runner is None and (
-                    relocation_runner_factory is not None):
-                relocation_runner = relocation_runner_factory()
-                if relocation_runner is not None and writers is not None:
-                    attach = getattr(relocation_runner.on_child_built,
-                                     "attach_writers", None)
-                    if callable(attach):
-                        attach(writers)
+        relocation_runner = _leg_boundary_pass(
+            model, spawn_runner, elapsed=elapsed, writers=writers,
+            lbc_interval_s=lbc_interval_s, execute_kwargs=execute_kwargs,
+            relocation_runner=relocation_runner,
+            relocation_runner_factory=relocation_runner_factory,
+            coupler_factory=coupler_factory,
+            spawned_stepper_factory=spawned_stepper_factory, leg=leg)
     spawn_runner.close_receipt(model)
 
 
@@ -3403,7 +3893,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
 
     _preparation_progress(progress_callback, "build-domain-tree")
     from gpuwm.core.model import build_experiment, execute_experiment
-    from gpuwm.io.restart import (restore_tree_restart,
+    from gpuwm.io.restart import (read_tree_lifecycle_header,
+                                  restore_tree_restart,
                                   write_tree_restart)
     from gpuwm.io.wrfout import PerDomainWrfoutWriters
     from gpuwm.supervisor import validate_manifest_checkpoint
@@ -3414,19 +3905,66 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     # route holds the input catalog (and with it the static source), so
     # the real-data relocation initializer and physics preparer exist.
     # Routes without them still refuse inside execute_experiment.
-    relocation_runner = build_real_relocation_runner(
+    relocation_runner = build_real_relocation_runners(
         exp, data, model, outdir)
     # Same lift, same reason, one seam over: this route holds the input
     # catalog (own-grid statics at the fired footprint) and the case data
     # and forcing calendar (the newborn's physics driver), so it can
     # activate a dormant nest instead of refusing it.
     spawn_runner = build_real_spawn_runner(exp, data, model, outdir)
+    # The checkpoint writer reads the lifecycle state off the tree; this
+    # route's runners are locals, and restart_handler below is handed
+    # only the tree.  Published before the first checkpoint can fire.
+    publish_lifecycle_runners(
+        model, spawn_runner=spawn_runner,
+        relocation_runner=relocation_runner,
+        leg_seconds=_spawn_leg_seconds(exp))
+    # ADMITTED, and said out loud.  A resume that carries lifecycle policy
+    # state is not the same act as a resume that reloads arrays: it
+    # reinstates which slots have fired, which are spent, how long a
+    # signal has been quiet and where each follower last moved, and the
+    # user who asked for it should be able to see that from the log
+    # rather than infer it from a nest that did not come back.
+    if admit_restart_with_lifecycle(exp, restart):
+        print(f"nest lifecycle: resuming declared spawn/retire/rearm/follow "
+              f"policy state from {Path(restart).name}")
     _write_initial_perturbation_receipt(
         outdir, exp, getattr(model, "_initial_perturbation_receipts", ()))
     restart_info = None
+    lifecycle_episodes: dict[int, int] = {}
     if restart is not None:
+        # VALIDATION FIRST, then the peek, then reconstruction: the tree a
+        # lifecycle checkpoint restores into is the tree that checkpoint
+        # describes, and the description is one JSON member off its root.
         _preparation_progress(progress_callback, "validate-checkpoint")
         restart = validate_manifest_checkpoint(restart)
+        lifecycle = read_tree_lifecycle_header(restart, model)
+        restart = lifecycle.root_path
+        if lifecycle.block is not None:
+            _preparation_progress(progress_callback, "restore-nest-lifecycle")
+            lifecycle_episodes = restore_nest_lifecycle(
+                model, exp, lifecycle, spawn_runner=spawn_runner,
+                lbc_interval_s=_tree_forcing_cadence_seconds(
+                    model._input_catalog))
+            # Rebuilt over the RESTORED tree: a follow target that was
+            # dormant at build time now exists, and its per-follower
+            # window slot must be allocated here -- before the restore
+            # applies the plane the previous run folded into it.
+            relocation_runner = build_real_relocation_runners(
+                exp, data, model, outdir)
+            publish_lifecycle_runners(
+                model, spawn_runner=spawn_runner,
+                relocation_runner=relocation_runner,
+                leg_seconds=_spawn_leg_seconds(exp))
+            restore_nest_followers(model, lifecycle,
+                                   spawn_runner=spawn_runner)
+        # The live fingerprint of a run that has moved a nest is chained
+        # to its move history, so a fresh build refuses its checkpoints by
+        # construction.  A legitimate resume gets in by doing the same
+        # arithmetic over the header's own record chain -- and by carrying
+        # that chain forward, so this segment's own checkpoints stay
+        # addressable by the next one.
+        remark_relocation_fingerprint(model, lifecycle)
         _preparation_progress(progress_callback, "restore-tree-checkpoint")
         restart_info = restore_tree_restart(restart, model)
     # A restore whose point IS the stop tick is a finished run, not an
@@ -3441,10 +3979,18 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             # The tree-wide [output] history selection; each domain's own
             # `output = {...}` overrides it inside the writer set.
             history_selection=exp.output,
+            # A domain resumed mid-episode-2 writes d0N/episode-002/ from
+            # its FIRST frame; empty on every run that is not a lifecycle
+            # resume, which is the byte-inert default.
+            episodes_by_grid_id=lifecycle_episodes,
             progress_callback=progress_callback) as writers:
         model._io_manager = writers
         if relocation_runner is not None:
-            relocation_runner.on_child_built.attach_writers(writers)
+            attach_many = getattr(relocation_runner, "attach_writers", None)
+            if callable(attach_many):
+                attach_many(writers)
+            else:
+                relocation_runner.on_child_built.attach_writers(writers)
 
         def history_handler(tree, node, ticks):
             # A STREAMED domain's forecast is in its pinned host store and
@@ -3513,7 +4059,7 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                     model._input_catalog),
                 relocation_runner=relocation_runner,
                 relocation_runner_factory=(
-                    lambda: build_real_relocation_runner(
+                    lambda: build_real_relocation_runners(
                         exp, data, model, outdir)),
                 history_handler=history_handler,
                 restart_handler=restart_handler,

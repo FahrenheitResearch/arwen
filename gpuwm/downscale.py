@@ -45,6 +45,7 @@ from gpuwm.offline_child import (
     child_surface_requirement,
     derive_child_surface_from_parent,
     read_child_surface_state,
+    reserve_output_root,
     validate_parent_history,
 )
 
@@ -266,10 +267,11 @@ def derived_child_config_path(outdir: Path, *, dry_run: bool) -> Path:
 
     A real run gets it INSIDE ``--out``, beside the frames and the
     report, which is where a reader goes looking for the config a run
-    used.  A dry run cannot: the runner reserves ``--out`` with
-    ``exist_ok=False`` so that no run ever adopts another's contents,
-    and creating it during a plan would make the run that follows
-    refuse.  The dry run therefore writes beside ``--out`` and says so.
+    used.  A dry run cannot: the run claims ``--out`` for itself so that
+    no run ever adopts another's output, and a plan that filled it would
+    leave the run that follows facing a directory holding a config it
+    did not write.  The dry run therefore writes beside ``--out`` and
+    says so.
     """
 
     if dry_run:
@@ -419,7 +421,88 @@ def _parent_cadence_seconds(frames: list[Path]) -> float:
     return float(seconds)
 
 
+def _release_output_reservation(outdir: Path) -> None:
+    """Give back the ``--out`` this command reserved, when it then refuses.
+
+    THE POISONED RETRY: ``--out`` is created create-only before the
+    contracts downstream of it are checked -- ``--point`` needs it to
+    exist so the config it derives can live inside the run it describes.
+    Every refusal raised after that (the parent that cannot seed the
+    child's surface, a child-grid surface file that does not match, a
+    child config the loader rejects) used to leave the directory behind
+    holding ``child.toml``: a run directory describing a run that never
+    happened, and the thing the corrected command then collided with.
+    A refusal must leave the tree exactly as it found it.
+
+    Only this command's own reservation is released, and only while it
+    holds nothing but the config this command wrote into it.  Anything
+    else means the directory is not ours to remove, and it is named and
+    left alone rather than deleted.
+    """
+
+    import shutil
+
+    try:
+        held = sorted(child.name for child in outdir.iterdir())
+    except OSError:
+        return
+    unexpected = [name for name in held if name != DERIVED_CHILD_CONFIG_NAME]
+    if unexpected:
+        warn(f"leaving {outdir} in place: it holds {', '.join(unexpected)}, "
+             "which this refused command did not write",
+             why="A refused downscale releases only the empty output "
+                 "directory it reserved; anything else in there belongs "
+                 "to something this command cannot account for.")
+        return
+    shutil.rmtree(outdir, ignore_errors=True)
+
+
+class _OutputReservation:
+    """The ``--out`` this command created, until something else owns it.
+
+    Held open across the whole plan so that any refusal downstream of the
+    reservation hands the directory back.  A directory that ALREADY
+    existed (and was empty, so adopting it merges nothing) is never
+    recorded here: releasing it would delete something this command did
+    not create.
+    """
+
+    def __init__(self) -> None:
+        self.path: Path | None = None
+
+    def claim(self, outdir: Path) -> Path:
+        existed = outdir.exists()
+        resolved = reserve_output_root(outdir, flag="--out")
+        if not existed:
+            self.path = outdir
+        return resolved
+
+    def hand_off(self) -> None:
+        """The run owns the directory now; its partial output is evidence."""
+        self.path = None
+
+    def release(self) -> None:
+        if self.path is not None:
+            _release_output_reservation(self.path)
+            self.path = None
+
+
 def downscale_main(args) -> int:
+    """``gpuwm downscale``, with its output reservation held transactionally."""
+
+    reservation = _OutputReservation()
+    try:
+        return _downscale_main(args, reservation)
+    except BaseException:
+        # Every exit that is not this command's own success releases the
+        # directory it reserved -- refusals, Ctrl-C, and the failures the
+        # CLI boundary turns into tracebacks alike.  A retry must meet the
+        # tree the first attempt found.
+        reservation.release()
+        raise
+
+
+def _downscale_main(args, reservation: _OutputReservation) -> int:
     frames = _discover_parent_series(
         [Path(p) for p in args.parent], args.parent_domain)
     cadence = _parent_cadence_seconds(frames)
@@ -488,6 +571,13 @@ def downscale_main(args) -> int:
         child_config = Path(args.child_config)
         ratio = int(args.ratio)
         i_start, j_start = int(args.i_parent_start), int(args.j_parent_start)
+        if not args.dry_run:
+            # RESERVED AT THE FRONT DOOR, not inside the runner: this
+            # route used to discover an --out collision after the CUDA
+            # import and after the whole parent archive had been read,
+            # which is as late as the discovery could possibly be made.
+            reservation.claim(Path(args.out))
+            outdir_reserved = True
     elif args.point is not None:
         if args.parent_restart is None:
             raise OfflineChildContractError(
@@ -535,7 +625,7 @@ def downscale_main(args) -> int:
             # The run's own output root, reserved HERE and by the same
             # never-adopt rule the runner applies, so the config that
             # describes the run lands INSIDE it instead of beside it.
-            outdir.mkdir(parents=True, exist_ok=False)
+            reservation.claim(outdir)
             outdir_reserved = True
         else:
             child_config.parent.mkdir(parents=True, exist_ok=True)
@@ -683,6 +773,10 @@ def downscale_main(args) -> int:
         # This process created --out moments ago to hold the config it
         # derived; the never-adopt reservation already happened there.
         outdir_reserved=outdir_reserved)
+    # From here the directory belongs to the run: a forecast that dies
+    # mid-integration leaves frames a reader needs, and no report.json to
+    # claim it finished.  Deleting that would be destroying evidence.
+    reservation.hand_off()
     report = offline_child_run.run(namespace)
     return 0 if report["result"] == "PASS" else 1
 

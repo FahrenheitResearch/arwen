@@ -2849,6 +2849,41 @@ def test_the_budget_overrides_land_on_the_budget():
     assert seen["host"] == 60 * 2 ** 30
 
 
+def test_a_configured_budget_refusal_names_the_measured_free_figure():
+    """Run 3641453f001b81fe, 2026-08-24: the stale-freeze refusal.
+
+    A front end froze ``[tiles] vram_budget_bytes = 65,011,712`` (62 MiB,
+    probed while the card was running another forecast) into the config.  At
+    launch ``decide`` measured the card -- 8.38 GiB free -- then threw the
+    measurement away and refused from the frozen number's arithmetic, so the
+    operator was told the card was out of VRAM while it sat mostly idle.  A
+    refusal computed from a CONFIGURED budget must carry the measurement the
+    decision took beside it: that pairing is what tells the reader the card
+    is fine and the configured number is what went stale.
+    """
+    import re
+
+    from tilestream import autoplan
+
+    cfg = autoplan._config_for_rung(282, 155, 49, "full", specified=True)
+    machine = autoplan.Machine(int(8.38 * 2 ** 30), 64 * 2 ** 30,
+                               name="RTX 3080")
+    with pytest.raises(autoplan.CannotPlan) as info:
+        decide(cfg, StreamingOptions(mode="auto",
+                                     vram_budget_bytes=65_011_712,
+                                     host_budget_bytes=64 * 2 ** 30),
+               machine=machine)
+    msg = str(info.value)
+    assert "8.38 GiB" in msg, f"the measured free figure is missing: {msg}"
+    assert "vram_budget_bytes" in msg, (
+        f"the configured key is not named as the number refused on: {msg}")
+    assert re.search(r"-\d", msg) is None, (
+        f"a negative figure reached a user-facing refusal: {msg}")
+    assert info.value.resource == "vram"
+    assert info.value.detail["measured_free_bytes"] == int(8.38 * 2 ** 30)
+    assert info.value.detail["configured_vram_budget_bytes"] == 65_011_712
+
+
 def test_write_mode_reaches_the_transport_instead_of_being_ignored():
     """``attach`` used to hardcode ``write_mode="ring"``.
 

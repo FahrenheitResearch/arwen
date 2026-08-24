@@ -291,6 +291,158 @@ def test_a_stalled_first_step_announces_itself_and_a_fast_one_does_not(
     assert "model step 1 has been running" not in capsys.readouterr().out
 
 
+def test_a_stalled_step_on_a_warm_cache_names_the_road_not_a_compile(
+        tmp_path, capsys):
+    """LEDGER #324.  The timer alone is not evidence of a compile.
+
+    Captured from a live run: the stall notice claimed "the one-time
+    NVRTC compile of this run's GPU kernels" in the same breath as its
+    own census said the cache held 388 entries at launch, 388 of them
+    for this card -- and not one cubin was written while it stalled.
+    The run was transfer-bound on the streamed road.  A stall says a
+    reader is waiting; it does not say what for.
+    """
+
+    import types
+
+    from gpuwm.prepared_single_domain_forecast import _FirstStepStallWatch
+
+    class _Log:
+        def __init__(self):
+            self.announced = None
+
+        def announce_kernel_compile(self, **fields):
+            self.announced = fields
+
+    log = _Log()
+    watch = _FirstStepStallWatch(
+        progress_path=tmp_path / "progress.json",
+        inputs=types.SimpleNamespace(source="gfs"),
+        exp=types.SimpleNamespace(run_seconds=21600.0),
+        step_log=log, census=(388, 0, {"86": 388}), capability="86",
+        road="store", cache_census_now=lambda: (388, 0, {"86": 388}),
+        delay=0.05)
+    watch.arm()
+    time.sleep(0.4)
+    printed = capsys.readouterr().out
+
+    assert "first model step still running" in printed
+    assert "streamed transfers feed each step" in printed
+    assert "no model step has completed" in printed
+    # The claim that was wrong, in every spelling it had.
+    assert "NVRTC" not in printed
+    assert "compile" not in printed
+    # And the receipt does not claim one either.
+    assert log.announced is None
+    published = json.loads(
+        (tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert published["status"] != COMPILING_STATUS
+    assert published["status"] == "RUNNING"
+
+
+def test_a_stalled_step_on_a_warm_cache_off_the_store_road_claims_nothing(
+        tmp_path, capsys):
+    """No road to name is not licence to invent a cause."""
+
+    import types
+
+    from gpuwm.prepared_single_domain_forecast import _FirstStepStallWatch
+
+    watch = _FirstStepStallWatch(
+        progress_path=tmp_path / "progress.json",
+        inputs=types.SimpleNamespace(source="gfs"),
+        exp=types.SimpleNamespace(run_seconds=21600.0),
+        step_log=None, census=(388, 0, {"86": 388}), capability="86",
+        road="resident", cache_census_now=lambda: (388, 0, {"86": 388}),
+        delay=0.05)
+    watch.arm()
+    time.sleep(0.4)
+    printed = capsys.readouterr().out
+
+    assert "first model step still running" in printed
+    assert "no model step has completed" in printed
+    assert "compile" not in printed
+    assert "streamed transfers" not in printed
+
+
+def test_a_cold_census_still_says_the_compile_is_what_is_happening(
+        tmp_path, capsys):
+    """The notice this class exists for is not weakened, only evidenced."""
+
+    import types
+
+    from gpuwm.prepared_single_domain_forecast import _FirstStepStallWatch
+
+    class _Log:
+        def __init__(self):
+            self.announced = None
+
+        def announce_kernel_compile(self, **fields):
+            self.announced = fields
+
+    log = _Log()
+    watch = _FirstStepStallWatch(
+        progress_path=tmp_path / "progress.json",
+        inputs=types.SimpleNamespace(source="gfs"),
+        exp=types.SimpleNamespace(run_seconds=21600.0),
+        step_log=log, census=(0, 0, {}), capability="86",
+        road="store", cache_census_now=lambda: (0, 0, {}), delay=0.05)
+    watch.arm()
+    time.sleep(0.4)
+    printed = capsys.readouterr().out
+
+    assert "one-time NVRTC compile" in printed
+    assert log.announced is not None
+    assert log.announced["reason"] == COLD_CACHE
+    published = json.loads(
+        (tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert published["status"] == COMPILING_STATUS
+
+
+def test_a_cache_that_grew_during_the_stall_is_a_compile_on_any_census(
+        tmp_path, capsys):
+    """THE HOLE THE LAUNCH CENSUS ALONE LEAVES, kept closed.
+
+    A warm launch census is exactly the reading that used to be wrong in
+    the other direction: `gpuwm go`'s preprocessing stage warms the cache
+    before the forecast runner asks, so a cache full of this card's
+    entries can still be missing every kernel the FORECAST needs.  The
+    launch census cannot see that -- but cubins appearing WHILE the step
+    stalls can, and that is positive evidence rather than a timer.
+    """
+
+    import types
+
+    from gpuwm.prepared_single_domain_forecast import _FirstStepStallWatch
+
+    class _Log:
+        def __init__(self):
+            self.announced = None
+
+        def announce_kernel_compile(self, **fields):
+            self.announced = fields
+
+    log = _Log()
+    watch = _FirstStepStallWatch(
+        progress_path=tmp_path / "progress.json",
+        inputs=types.SimpleNamespace(source="gfs"),
+        exp=types.SimpleNamespace(run_seconds=21600.0),
+        step_log=log, census=(200, 0, {"86": 200}), capability="86",
+        road="store",
+        # 37 cubins that did not exist when the run started.
+        cache_census_now=lambda: (237, 0, {"86": 237}), delay=0.05)
+    watch.arm()
+    time.sleep(0.4)
+    printed = capsys.readouterr().out
+
+    assert "one-time NVRTC compile" in printed
+    assert "37" in printed          # the entries that appeared, named
+    assert log.announced is not None
+    published = json.loads(
+        (tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert published["status"] == COMPILING_STATUS
+
+
 def test_the_stall_watch_still_calls_the_observer_it_wraps():
     """It chains in front of the step log; it must not replace it."""
 

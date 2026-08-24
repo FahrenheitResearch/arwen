@@ -73,15 +73,49 @@ def staged_geog(tmp_path_factory):
 @pytest.fixture(autouse=True)
 def _a_card_whose_free_vram_this_file_decides(monkeypatch):
     """Pin free VRAM so the pre-fetch memory gate cannot decide this
-    file's verdicts (same reasoning as tests/test_go_chain.py)."""
+    file's verdicts (same reasoning as tests/test_go_chain.py).
 
-    try:
-        import cupy
-    except Exception:
-        return
+    THE SEAM IS ``device_memory_probe_subprocess``, and it has to be.
+    This pin used to sit on ``cupy.cuda.runtime.memGetInfo``, which the
+    gate stopped reading when it moved both device questions into a
+    short-lived subprocess (an in-process ``memGetInfo`` stands up a CUDA
+    primary context, and the `go` process outlives its gate as the
+    chain's stage runner -- 0.486 GiB held for the whole run, measured).
+    A pin on a seam nobody reads is not a pin: with a real card in the
+    box the gate went on measuring it, and this file's negative control
+    -- which brings no ``subprocess.Popen`` stand-in of its own -- died
+    on a genuine memory refusal instead of reaching the geography
+    refusal it exists to prove.  tests/test_go_chain.py's fixture, whose
+    reasoning this one cites, already moved; this is that move.
+
+    The two interrupt tests above never saw it because they replace
+    ``subprocess.Popen`` wholesale, which incidentally blinds the gate's
+    probe too.  Pinned here, all three read the same card on every box.
+    """
+
+    from gpuwm.core import preflight
+
     monkeypatch.setattr(
-        cupy.cuda.runtime, "memGetInfo",
-        lambda: (_PINNED_FREE_BYTES, 32 * 1024 ** 3), raising=False)
+        preflight, "device_memory_probe_subprocess",
+        lambda **_kwargs: {"free_bytes": _PINNED_FREE_BYTES,
+                           "total_bytes": 32 * 1024 ** 3,
+                           "profile": None})
+
+
+def test_the_pinned_card_is_what_the_gate_reads(gfs_config, tmp_path):
+    """Non-vacuity for the fixture above, and the guard against a repeat.
+
+    The fixture is what keeps every verdict in this file the file's own.
+    When its pin drifted off the seam the gate reads, nothing said so --
+    the two tests that patch ``subprocess.Popen`` stayed green and only
+    the negative control turned red, on boxes whose card is smaller than
+    this config's envelope.  This asserts the pin arrives.
+    """
+
+    plan = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "gate")
+    gate = go_cli.memory_gate(plan)
+    assert gate["free_bytes"] == _PINNED_FREE_BYTES
+    assert not gate["refuse"]
 
 
 # --------------------------------------------------------------------

@@ -103,6 +103,33 @@ class RelocationRefusal(ValueError):
 # Layer 2 of the three-layer identity: Placement
 # ---------------------------------------------------------------------------
 
+#: The keys of :meth:`Placement.to_json`, so the reader is total.
+PLACEMENT_JSON_KEYS = ("grid_id", "i_parent_start", "j_parent_start",
+                       "generation")
+
+
+def _exactly(payload, allowed, what: str) -> dict:
+    """Every key honored or refused, for anything read back by digest.
+
+    A key quietly dropped or silently accepted changes the SHA-256 the
+    chain addresses itself by, and a resumed run re-marks its restart
+    fingerprint by folding those digests in order -- so a lenient reader
+    produces a fingerprint that matches neither the checkpoint nor a fresh
+    build, and the mismatch surfaces as an unexplained refusal much later.
+    """
+    if not isinstance(payload, dict):
+        raise RelocationRefusal(
+            f"{what} must be a mapping, got {type(payload).__name__}")
+    extra = sorted(set(payload) - set(allowed))
+    missing = sorted(set(allowed) - set(payload))
+    if extra or missing:
+        raise RelocationRefusal(
+            f"{what} has key(s) {extra} this build does not know and is "
+            f"missing {missing}; it is read in full or refused, because "
+            "every key is part of the digest this chain is addressed by")
+    return payload
+
+
 @dataclass(frozen=True)
 class Placement:
     """Where a child sits in its parent, and which generation that is.
@@ -143,6 +170,15 @@ class Placement:
             "j_parent_start": int(self.j_parent_start),
             "generation": int(self.generation),
         }
+
+    @classmethod
+    def from_json(cls, payload) -> "Placement":
+        """Read back :meth:`to_json`, generation included."""
+        _exactly(payload, PLACEMENT_JSON_KEYS, "a placement")
+        return cls(grid_id=int(payload["grid_id"]),
+                   i_parent_start=int(payload["i_parent_start"]),
+                   j_parent_start=int(payload["j_parent_start"]),
+                   generation=int(payload["generation"]))
 
 
 def placement_of(domain_config, *, generation: int = 0) -> Placement:
@@ -188,6 +224,19 @@ def placement_independent_identity(domain_config) -> dict[str, object]:
 def _canonical(value) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       allow_nan=False).encode("utf-8")
+
+
+#: The keys of :meth:`RelocationRecord.to_json`, derived fields included.
+RECORD_JSON_KEYS = (
+    "contract", "placement_from", "placement_to", "parent_grid_ratio",
+    "shift_child_cells", "overlap_cells", "child_cells", "overlap_fraction",
+    "spin_up_cells", "null_move", "parent_state_sha256",
+    "child_state_sha256_before", "child_state_sha256_after",
+    "donor_alignment", "predecessor_sha256")
+
+#: The keys of :meth:`RelocationSegment.to_json`.
+SEGMENT_JSON_KEYS = ("contract", "base_identity_sha256", "segment_id",
+                     "generation", "records")
 
 
 @dataclass(frozen=True)
@@ -244,6 +293,50 @@ class RelocationRecord:
             "predecessor_sha256": self.predecessor_sha256,
         }
 
+    @classmethod
+    def from_json(cls, payload) -> "RelocationRecord":
+        """Read back :meth:`to_json` to the SAME :attr:`sha256`.
+
+        The round-trip is asserted rather than assumed: the reconstructed
+        record must re-serialize to the bytes it was read from, which is
+        what makes ``segment_id`` and the fingerprint chain reproducible.
+        """
+        _exactly(payload, RECORD_JSON_KEYS, "a relocation record")
+        contract = payload["contract"]
+        if contract != RELOCATION_CONTRACT:
+            raise RelocationRefusal(
+                f"a relocation record names contract {contract!r}, not "
+                f"{RELOCATION_CONTRACT!r}; a record's digest is taken over "
+                "its own JSON, so reading a foreign one produces a "
+                "segment_id and a restart fingerprint that address nothing "
+                "on either side of the resume")
+        shift = tuple(int(value) for value in payload["shift_child_cells"])
+        if len(shift) != 2:
+            raise RelocationRefusal(
+                "a relocation record's shift_child_cells must be "
+                f"[shift_i, shift_j], got {payload['shift_child_cells']!r}")
+        record = cls(
+            placement_from=Placement.from_json(payload["placement_from"]),
+            placement_to=Placement.from_json(payload["placement_to"]),
+            parent_grid_ratio=int(payload["parent_grid_ratio"]),
+            shift_i=shift[0], shift_j=shift[1],
+            overlap_cells=int(payload["overlap_cells"]),
+            child_cells=int(payload["child_cells"]),
+            null_move=bool(payload["null_move"]),
+            parent_state_sha256=payload["parent_state_sha256"],
+            child_state_sha256_before=payload["child_state_sha256_before"],
+            child_state_sha256_after=payload["child_state_sha256_after"],
+            donor_alignment=payload["donor_alignment"],
+            predecessor_sha256=payload["predecessor_sha256"])
+        if record.to_json() != dict(payload):
+            raise RelocationRefusal(
+                "a relocation record does not re-serialize to the bytes it "
+                "was read from, so its sha256 would move; the derived "
+                "fields (overlap_fraction, spin_up_cells) disagree with the "
+                "cell counts beside them, which means the payload was "
+                "edited rather than written by a run")
+        return record
+
     @property
     def sha256(self) -> str:
         return hashlib.sha256(_canonical(self.to_json())).hexdigest()
@@ -299,6 +392,53 @@ class RelocationSegment:
             "generation": self.generation,
             "records": [record.to_json() for record in self.records],
         }
+
+    @classmethod
+    def from_json(cls, payload) -> "RelocationSegment":
+        """Read back :meth:`to_json`, with the recorded digest as the check.
+
+        Restoring a chain is what lets a resumed follower's NEXT move
+        append to its real predecessor instead of to the base preparation,
+        so the chain has to come back exactly: the recomputed
+        ``segment_id`` is compared against the one the writer recorded, and
+        a chain that has lost, gained or edited a record refuses here
+        rather than producing a plausible-looking history addressed by a
+        digest nothing else agrees with.
+        """
+        _exactly(payload, SEGMENT_JSON_KEYS, "a relocation segment")
+        contract = payload["contract"]
+        if contract != RELOCATION_CONTRACT:
+            raise RelocationRefusal(
+                f"a relocation segment names contract {contract!r}, not "
+                f"{RELOCATION_CONTRACT!r}; this build cannot say what a "
+                "chain under another contract addresses")
+        records = payload["records"]
+        if not isinstance(records, (list, tuple)):
+            raise RelocationRefusal(
+                "a relocation segment's records must be an ordered list, "
+                f"got {type(records).__name__}; a chain read out of order "
+                "is a set, and a set has no predecessor")
+        segment = cls(
+            base_identity_sha256=str(payload["base_identity_sha256"]),
+            records=tuple(RelocationRecord.from_json(row)
+                          for row in records))
+        if segment.generation != int(payload["generation"]):
+            raise RelocationRefusal(
+                f"a relocation segment records generation "
+                f"{int(payload['generation'])} but carries "
+                f"{segment.generation} move(s); the counter and the chain "
+                "disagree about how far the nest has moved from its base "
+                "preparation")
+        if segment.segment_id != str(payload["segment_id"]):
+            raise RelocationRefusal(
+                "a relocation chain does not reproduce the segment_id it "
+                f"was written under ({payload['segment_id']}; recomputed "
+                f"{segment.segment_id}), so a record has been dropped, "
+                "added or edited. A resumed run re-marks its restart "
+                "fingerprint by folding these record digests in order, and "
+                "an unfaithful chain would admit a checkpoint that came out "
+                "of a different placement history")
+        return segment
 
 
 def base_segment(domain_config) -> RelocationSegment:

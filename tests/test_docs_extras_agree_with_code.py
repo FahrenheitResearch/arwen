@@ -604,6 +604,132 @@ def test_the_reference_page_is_not_stale():
         "`python -m tools.build_cli_options_doc`")
 
 
+def _positional_names(parser) -> set[str]:
+    """Every positional a parser defines, by the name it displays.
+
+    ``metavar`` when the door declares one, otherwise ``dest`` -- the
+    same two, in the same order, that argparse itself falls back
+    through when it prints a usage line.
+    """
+
+    import argparse as _argparse
+
+    out: set[str] = set()
+    for action in parser._actions:
+        if action.option_strings:
+            continue
+        if isinstance(action, _argparse._SubParsersAction):
+            continue  # the subcommand tree, not an argument of this door
+        out.add(action.metavar or action.dest)
+    return out
+
+
+def _documented_arguments() -> dict[str, set[str]]:
+    """door -> positional names the committed reference page lists.
+
+    Read out of the argument table specifically.  A door's section may
+    carry two tables and the option one is parsed by
+    :func:`_documented_options`; keeping them apart is what stops a flag
+    from being counted as an argument or the reverse.
+    """
+
+    text = (_repo_root() / _CLI_OPTIONS_DOC).read_text(encoding="utf-8")
+    out: dict[str, set[str]] = {}
+    current = None
+    in_arguments = False
+    for line in text.splitlines():
+        heading = re.match(r"^##\s+`([^`]+)`\s*$", line)
+        if heading:
+            current = heading.group(1)
+            out.setdefault(current, set())
+            in_arguments = False
+            continue
+        if line.startswith("| argument |"):
+            in_arguments = True
+            continue
+        if line.startswith("| option |"):
+            in_arguments = False
+            continue
+        if current and in_arguments and line.startswith("| `"):
+            cell = line.split("|")[1].strip().strip("`")
+            # `WRFOUT [WRFOUT ...]` and `[ENS_ROOT]` are one argument
+            # wearing its repetition; the NAME is what a reader matches
+            # against the usage line, so index by the bare tokens.
+            for token in re.findall(r"[A-Za-z][\w.-]*", cell):
+                out[current].add(token)
+    return out
+
+
+def test_every_positional_every_door_defines_is_on_the_reference_page():
+    """Rule 4, for the arguments that are not flags.
+
+    A positional is how a door is USED -- `gpuwm run CONFIG.toml` is the
+    config file, and the config file is the whole input to the run.  The
+    page listed only the flags, so its `gpuwm run` section named twenty
+    optional knobs and nothing at all about the one argument the command
+    cannot run without, and a reader who had only this page could not
+    tell that the door took a config path, let alone where in the line
+    it goes.
+    """
+
+    doors = _doors()
+    documented = _documented_arguments()
+    offenders: list[str] = []
+    for name, parser in sorted(doors.items()):
+        listed = documented.get(name)
+        if listed is None:
+            offenders.append(f"{name}: the page has no section for it")
+            continue
+        for argument in sorted(_positional_names(parser)):
+            if argument not in listed:
+                offenders.append(f"{name} {argument}")
+    assert not offenders, (
+        f"these doors take positional arguments that appear nowhere in "
+        f"{_CLI_OPTIONS_DOC}, so the page cannot show a reader how to "
+        f"invoke them.  Regenerate with "
+        f"`python -m tools.build_cli_options_doc`:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_the_reference_page_shows_how_to_pass_a_config():
+    """The named instance, pinned so the class cannot come back quietly.
+
+    Every config-driven door takes its config the same way, by position.
+    If the sweep above is ever narrowed, this still fails.
+    """
+
+    doors = _doors()
+    documented = _documented_arguments()
+    for door in ("gpuwm run", "gpuwm go", "gpuwm check"):
+        assert "CONFIG" in _positional_names(doors[door]), (
+            f"`{door}` no longer takes a CONFIG positional; the "
+            f"instrument is blind and this pin needs a new anchor")
+        assert "CONFIG" in documented.get(door, set()), (
+            f"{_CLI_OPTIONS_DOC} does not show that `{door}` takes a "
+            f"config file, which is the entire input to the command")
+
+
+def test_the_argument_table_reader_tells_arguments_from_options():
+    """The instrument, against a known answer, both directions."""
+
+    sample = ("## `x door`\n\n"
+              "| argument | what it does |\n"
+              "|---|---|\n"
+              "| `CONFIG` | the run configuration |\n"
+              "\n"
+              "| option | what it does |\n"
+              "|---|---|\n"
+              "| `--explain` | say more |\n")
+    doc = _repo_root() / _CLI_OPTIONS_DOC
+    original = doc.read_bytes()
+    try:
+        doc.write_text(sample, encoding="utf-8", newline="")
+        assert _documented_arguments() == {"x door": {"CONFIG"}}
+        assert _documented_options() == {"x door": {"--explain"}}
+    finally:
+        doc.write_bytes(original)
+
+
 def test_the_reference_page_names_no_developer_machine():
     """A help string that interpolates a path must not ship one."""
 

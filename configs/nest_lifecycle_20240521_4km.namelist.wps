@@ -1,0 +1,23 @@
+&share
+ wrf_core = 'ARW',
+ max_dom = 2,
+ interval_seconds = 3600,
+ io_form_geogrid = 2,
+/
+&geogrid
+ parent_id         = 1, 1,
+ parent_grid_ratio = 1, 3,
+ i_parent_start    = 1, 75,
+ j_parent_start    = 1, 55,
+ e_we              = 201, 151,
+ e_sn              = 161, 151,
+ geog_data_res     = 'default', 'default',
+ dx = 12000,
+ dy = 12000,
+ map_proj = 'lambert',
+ ref_lat   = 41.3,
+ ref_lon   = -94.45,
+ truelat1  = 31.3,
+ truelat2  = 51.3,
+ stand_lon = -94.45,
+/

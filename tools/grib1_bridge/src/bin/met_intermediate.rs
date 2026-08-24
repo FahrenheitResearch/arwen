@@ -450,6 +450,12 @@ fn xlvl_for_grib2_level(level_type: u16, level_value: f64) -> Option<f32> {
         // Ground/water surface, specific height above ground, depth
         // below land surface, max-wind level, tropopause.
         1 | 103 | 106 | 6 | 7 => Some(XLVL_SURFACE),
+        // Generalized vertical coordinate (type 151): ECMWF's open-data
+        // products address their soil column by ordinal on this surface
+        // (sot/vsw layers 1..4).  Each ordinal is its own Vtable row and
+        // its own named field, all at the surface sentinel, exactly like
+        // the depth-bounded type-106 layers.
+        151 => Some(XLVL_SURFACE),
         _ => None,
     }
 }
@@ -529,6 +535,88 @@ fn describe_latlon(
     }
     if nx < 2 || ny < 2 {
         return Err(format!("grid {nx}x{ny} is too small to carry an increment"));
+    }
+
+    // The intermediate format this tool writes declares iproj 0 -- a
+    // uniform cylindrical-equidistant grid -- and nothing else.  Before
+    // this gate, a projected product (Lambert HRRR/RAP/RRFS) or a full
+    // Gaussian grid sailed through and was stamped as uniform lat-lon
+    // with increments taken from its first two points: every point except
+    // the corner silently mis-georeferenced, in a file that opens and
+    // reads perfectly.  Measured on real HRRR wrfprs bytes, 2026-08-24:
+    // the 3 km Lambert CONUS grid was written as latlon
+    // deltalat=0.0249/deltalon=0.0267.  A grid is admitted only when
+    // every row is a parallel, every column is a meridian, and both
+    // increments are constant.
+    const UNIFORM_TOL_DEG: f64 = 1e-4;
+    let wrap = |d: f64| -> f64 {
+        let mut w = d;
+        while w > 180.0 {
+            w -= 360.0;
+        }
+        while w < -180.0 {
+            w += 360.0;
+        }
+        w
+    };
+    let row_delta = lats[nx] - lats[0];
+    let col_delta = wrap(lons[1] - lons[0]);
+    for r in 0..ny {
+        let row = &lats[r * nx..(r + 1) * nx];
+        for (i, lat) in row.iter().enumerate() {
+            if (lat - row[0]).abs() > UNIFORM_TOL_DEG {
+                return Err(format!(
+                    "grid is not uniform lat-lon: latitude varies by {:.6} deg \
+                     along row {r} (column {i}); a cylindrical-equidistant row \
+                     is a parallel.  Writing this projected grid as iproj 0 \
+                     would silently mis-georeference every point, so this tool \
+                     refuses.  Projected products (e.g. Lambert HRRR/RAP/RRFS) \
+                     are outside the WPS-intermediate chain; use the mapped \
+                     native route",
+                    (lat - row[0]).abs()
+                ));
+            }
+        }
+        if r + 1 < ny {
+            let step = lats[(r + 1) * nx] - lats[r * nx];
+            if (step - row_delta).abs() > UNIFORM_TOL_DEG {
+                return Err(format!(
+                    "grid is not uniform lat-lon: row spacing moves from \
+                     {row_delta:.6} to {step:.6} deg at row {r} (a full \
+                     Gaussian grid does this).  iproj 0 declares one constant \
+                     latitude increment, so writing this file would silently \
+                     mis-georeference rows away from the corner; this tool \
+                     refuses rather than guess"
+                ));
+            }
+        }
+    }
+    for r in 0..ny {
+        let row = &lons[r * nx..(r + 1) * nx];
+        for i in 0..nx {
+            if wrap(row[i] - lons[i]).abs() > UNIFORM_TOL_DEG {
+                return Err(format!(
+                    "grid is not uniform lat-lon: longitude of column {i} \
+                     moves by {:.6} deg between row 0 and row {r}; a \
+                     cylindrical-equidistant column is a meridian.  Writing \
+                     this projected grid as iproj 0 would silently \
+                     mis-georeference every point, so this tool refuses",
+                    wrap(row[i] - lons[i]).abs()
+                ));
+            }
+            if i + 1 < nx {
+                let step = wrap(row[i + 1] - row[i]);
+                if (step - col_delta).abs() > UNIFORM_TOL_DEG {
+                    return Err(format!(
+                        "grid is not uniform lat-lon: longitude spacing moves \
+                         from {col_delta:.6} to {step:.6} deg at row {r}, \
+                         column {i}; iproj 0 declares one constant longitude \
+                         increment, so this tool refuses rather than \
+                         mis-georeference"
+                    ));
+                }
+            }
+        }
     }
 
     let startlat = lats[0] as f32;
@@ -714,6 +802,19 @@ fn grib2_level_bounds_match(row: &VtableRow, level1: f64, level2: f64, level_typ
             // No height in the table: fall back to the set WPS admits,
             // rather than accepting an arbitrary height.
             None => ADMISSIBLE_HEIGHTS_M.iter().any(|h| (level1 - *h).abs() < 0.5),
+        };
+    }
+    // Generalized vertical coordinate: the level "value" is an ordinal
+    // pair, not a depth, so the Vtable's Level1/Level2 columns carry the
+    // ordinals verbatim.  A row without them would match all four soil
+    // layers and last-write-wins would keep exactly one, silently, so
+    // the ordinals are required for this surface type.
+    if level_type == 151 {
+        return match (row.g1_level1, row.g1_level2) {
+            (Some(want1), Some(want2)) => {
+                level1.round() as i64 == want1 && level2.round() as i64 == want2
+            }
+            _ => false,
         };
     }
     if level_type != 106 {

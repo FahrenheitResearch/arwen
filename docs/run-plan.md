@@ -629,8 +629,26 @@ rejected here, from the config alone, rather than after the fetch.
 
 **`--estimate PLAN.json`** → `gpuwm.run-plan.estimate.v1`. VRAM from
 `gpuwm.core.preflight`'s own itemization — the arithmetic `gpuwm check`
-reports, on the CPU, with no CUDA context. Output-frame counts per
-domain, which are exact. A `corridor` block sizing the statics corridor
+reports, on the CPU, with no CUDA context.
+
+`vram.envelope_basis` says which figure you got. It is `"resident"` for
+a plan with no `[tiles]`, and every number beside it is unchanged. It is
+`"streamed"` when the config's `[tiles]` table resolves to streaming, and
+then `peak_envelope_bytes` is what the card actually has to hold —
+`nbuffers` tile buffers of the compute window, priced off the same
+`tilestream.autoplan` footprint the run attaches with, **plus the
+measured RRTMGP per-call transient** — not the resident itemization,
+which describes a run that will not happen. A `vram.streamed` block
+carries the tiling, the resident figure it replaced, the two terms of the
+peak (`vram_bytes`, what the tiling holds between radiation calls, and
+`radiation_transient_bytes`, what an RRTMGP step allocates and frees on
+top of it from the first step onward — zero on the rungs that run no
+radiation), and `host_bytes`: on a streamed plan the domain lives in
+pinned host RAM, so that is a **requirement** of the plan and not a spare
+number. `peak_envelope_bytes` keeps its meaning across both — it is the
+figure to compare against a card — and only gains accuracy.
+
+Output-frame counts per domain, which are exact. A `corridor` block sizing the statics corridor
 a moving nest's preparation will seal (disk and host; zero VRAM), from
 the corridor module's own arithmetic rather than an estimate that
 merely agrees with it. Where this package has no measured number (bytes

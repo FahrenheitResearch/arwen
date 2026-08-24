@@ -145,6 +145,7 @@ STAGES = ("fetch", "prepare", "initialize", "forecast", "finalize")
 EVENT_TAGS = (
     "plan_accepted", "resolved_plan", "stage_started", "stage_finished",
     "model_progress", "output_committed", "first_products_ready",
+    "fetch_started", "fetch_progress", "fetch_completed",
     "warning", "completed", "failed",
 )
 
@@ -1609,6 +1610,10 @@ class RunObserver:
     def __init__(self, events: EventStream, *, heartbeat=None,
                  root_domain: int = 1, accepted_wall: float | None = None):
         self._events = events
+        #: This run's stream, for a stage that emits records of its own
+        #: rather than only opening and closing (the fetch stage relays
+        #: one record per file through it).
+        self.events = events
         self._heartbeat = heartbeat
         self._root_domain = int(root_domain)
         #: The monotonic reading taken when ``plan_accepted`` was
@@ -2528,6 +2533,83 @@ def _fetch_arguments_from_hints(hints: Mapping[str, Any],
     return arguments + ["--out", str(out)]
 
 
+def _prepare_stage(root: Path, *, arguments: Sequence[Any],
+                   stated: Mapping[str, Any],
+                   run) -> dict[str, Any]:
+    """Run a preparation, or reuse the one already at ``root``.
+
+    THE recovery seam.  A plan that failed at the forecast stage leaves
+    a fetched data directory and a finished prepared bundle behind it;
+    re-running the same plan into the same ``output_root`` used to die
+    at the preparer's own create-only refusal ("refusing existing
+    output root"), which is a correct refusal in the preparer's terms
+    and a dead end in the user's -- their only way back to a working
+    forecast was a fresh run directory and the gigabytes of download
+    that come with it.
+
+    So the decision is taken here, before the preparer is called, from
+    the artifacts the previous preparation published:
+    :func:`gpuwm.stage_reuse.decide` compares this run's arguments, its
+    stated input digests and this engine's own source identity against
+    what the bundle records.  A bundle that still describes this run is
+    reused; one that does not is moved aside -- never deleted -- and
+    rebuilt from the forcing already on disk, which costs the tens of
+    seconds a preparation costs rather than the minutes a re-fetch does.
+
+    The returned receipt is what the stage event carries, so which of
+    the two happened, and why, is on the record rather than inferred
+    from a timing.
+    """
+
+    from gpuwm import stage_reuse
+
+    decision = dict(stage_reuse.decide(
+        root, stated=stated, arguments=arguments))
+    if decision["decision"] == stage_reuse.REUSE:
+        return decision
+    if decision["decision"] == stage_reuse.REBUILD:
+        decision["superseded"] = stage_reuse.supersede(root)
+    run()
+    stage_reuse.write_binding(root, arguments=arguments, stated=stated)
+    return decision
+
+
+def _clear_forecast_output(forecast_dir: Path, *,
+                           observer: RunObserver) -> dict[str, Any] | None:
+    """Give the forecast stage a directory that holds no earlier run.
+
+    The prepared runners refuse an output directory that already holds
+    output, and they are right to: the receipt a run writes has to
+    describe one run.  On a retry that refusal would fire on the very
+    directory the previous attempt failed in, so the earlier attempt's
+    output is moved aside -- nothing is deleted, and its receipts stay
+    readable beside the new run's.
+    """
+
+    from gpuwm import stage_reuse
+
+    try:
+        held = any(Path(forecast_dir).iterdir())
+    except OSError:
+        return None
+    if not held:
+        return None
+    superseded = stage_reuse.supersede(forecast_dir)
+    if superseded is not None:
+        try:
+            observer.events.emit(
+                "warning", code="forecast_output_superseded",
+                message=(
+                    f"{forecast_dir} already held an earlier attempt's "
+                    f"output; it was moved to {superseded['path']} "
+                    "(nothing was deleted) so this run's receipts describe "
+                    "one run"),
+                path=superseded["path"], bytes=superseded["bytes"])
+        except Exception:            # noqa: BLE001 - telemetry never fails a run
+            pass
+    return superseded
+
+
 def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
                 observer: RunObserver, run_dir: Path) -> Mapping[str, Any]:
     """The documented HRRR chain: fetch, prepare, forecast.
@@ -2578,14 +2660,18 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
         geog_root = default_geog_root()
     # Not created here, and deliberately so: the preparer refuses an
     # --output-root that already exists ("refusing existing output
-    # root"), which is its own create-only guarantee.
+    # root"), which is its own create-only guarantee.  A re-run into the
+    # same output_root meets that refusal, so this chain decides BEFORE
+    # calling it whether the bundle already there is this run's -- see
+    # _prepare_stage.
     prep_root = run_dir / "chain" / "hrrr-root-prep"
     forecast_dir = run_dir / "chain" / "run"
 
     # -- fetch ---------------------------------------------------------
     observer.enter_stage("fetch", phase="fetch")
     fetch_report = _run_fetch(
-        _fetch_arguments_from_hints(hints, out=data_dir), run_dir)
+        _fetch_arguments_from_hints(hints, out=data_dir), run_dir,
+        events=getattr(observer, "events", None))
     manifest = data_dir / "SHA256SUMS"
     if not manifest.is_file():
         raise PlanError(
@@ -2636,9 +2722,13 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     lead = hints.get("forecast_start_hour")
     if lead:
         prepare += ["--forecast-start-hour", str(int(lead))]
-    run_stage("prepare", prepare, explain=False,
-              progress=prep_root / "progress.json",
-              observer=_GoObserver(observer))
+    prepared = _prepare_stage(
+        prep_root, arguments=prepare,
+        stated={"source_manifest_sha256": sha256_file(manifest),
+                "namelist_sha256": sha256_file(inputs["namelist_input"])},
+        run=lambda: run_stage("prepare", prepare, explain=False,
+                              progress=prep_root / "progress.json",
+                              observer=_GoObserver(observer)))
 
     # Armed before either forecast arm, with the very dict `_chain_render`
     # will hand the finalize stage below, so the frame rendered as it
@@ -2712,7 +2802,8 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
                 "the proof beside it disagree")
     observer.finish_stage(prepared_root=str(prepared_root),
                           bundle=str(prep_root /
-                                     "public-wrapper-result.json"))
+                                     "public-wrapper-result.json"),
+                          prepared=prepared)
 
     # -- forecast ------------------------------------------------------
     # In process, so the runner's per-step progress and its per-wrfout
@@ -2760,6 +2851,7 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     observer.enter_stage("forecast", phase="forecast")
     from gpuwm import prepared_single_domain_forecast as runner
 
+    _clear_forecast_output(forecast_dir, observer=observer)
     code = runner.main(argv, observer=observer)
     if code:
         raise RuntimeError(
@@ -2837,14 +2929,24 @@ def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
         command += ["--forecast-start-hour", str(int(lead))]
 
     observer.enter_stage("prepare", phase="hierarchy")
-    run_stage("hierarchy", command, explain=False,
-              progress=tree_root / "progress.json",
-              observer=_GoObserver(observer))
+    # Create-only, like every preparation stage, so a re-run decides
+    # here.  A hierarchy publishes ONE prepared-cache header per domain,
+    # and :func:`gpuwm.stage_reuse.decide` refuses to let a single
+    # identity comparison speak for all of them -- so this stage always
+    # rebuilds rather than claiming a reuse it cannot evidence.  It is
+    # the root preparation and the fetch above it that carry the cost,
+    # and both are reused; the children are rebuilt from them.
+    prepared = _prepare_stage(
+        tree_root, arguments=command,
+        stated={"source_manifest_sha256": sha256_file(manifest)},
+        run=lambda: run_stage("hierarchy", command, explain=False,
+                              progress=tree_root / "progress.json",
+                              observer=_GoObserver(observer)))
     if not tree_root.is_dir():
         raise PlanError(
             f"the HRRR hierarchy stage wrote no {tree_root}; its own "
             "output is above")
-    observer.finish_stage(hierarchy_root=str(tree_root))
+    observer.finish_stage(hierarchy_root=str(tree_root), prepared=prepared)
     return tree_root
 
 
@@ -2892,6 +2994,7 @@ def _hrrr_tree_forecast(*, tree_root: Path, config_path: Path,
     observer.enter_stage("forecast", phase="forecast")
     from gpuwm import prepared_domain_tree_forecast as runner
 
+    _clear_forecast_output(forecast_dir, observer=observer)
     code = runner.main(argv, observer=observer)
     if code:
         raise RuntimeError(
@@ -2997,7 +3100,8 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
     # -- fetch ---------------------------------------------------------
     observer.enter_stage("fetch", phase="fetch")
     fetch_report = _run_fetch(
-        _fetch_arguments_from_hints(hints, out=data_dir), run_dir)
+        _fetch_arguments_from_hints(hints, out=data_dir), run_dir,
+        events=getattr(observer, "events", None))
     handoff_path = data_dir / fetch_routes.PREP_ARGUMENTS_NAME
     handoff = _read_json_object(handoff_path)
     if handoff.get("schema") != fetch_routes.PREP_ARGUMENTS_SCHEMA:
@@ -3025,8 +3129,17 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
         "--geog-root", str(geog_root),
         "--output-root", str(prep_root),
     ]
-    _run_prep(arguments)
-    observer.finish_stage(prepared_root=str(prep_root))
+    # Same recovery seam as the HRRR chain, and the same function: this
+    # route's preparer is create-only too, so a re-run into the same
+    # output_root has to decide before calling it whether the bundle
+    # already there is this run's.  The route contributes only what it
+    # can state exactly -- the fetch handoff it composed the argv from
+    # -- because a member a chain cannot compute must not become a
+    # silent pass.
+    prepared = _prepare_stage(
+        prep_root, arguments=arguments,
+        stated={}, run=lambda: _run_prep(arguments))
+    observer.finish_stage(prepared_root=str(prep_root), prepared=prepared)
 
     # -- forecast ------------------------------------------------------
     # The bundle speaks for itself: `resolve_bundle` reads which source
@@ -3057,6 +3170,7 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
         _chain_render_plan(plan, forecast_dir=forecast_dir,
                            run_dir=run_dir))
     observer.enter_stage("forecast", phase="forecast")
+    _clear_forecast_output(forecast_dir, observer=observer)
     _staged_forecast(argv, layout=str(bundle["layout"]), observer=observer)
 
     # -- render --------------------------------------------------------
@@ -3460,7 +3574,8 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         if fetch_arguments is not None:
             stage = "fetch"
             observer.enter_stage("fetch")
-            observer.finish_stage(fetch=_run_fetch(fetch_arguments, run_dir))
+            observer.finish_stage(
+                fetch=_run_fetch(fetch_arguments, run_dir, events=events))
 
         # The gate the resolution above deferred.  Everything the config
         # declares must be on disk before the model starts; whatever was
@@ -3618,7 +3733,8 @@ def resolve_fetch_cycle(arguments: Sequence[str]
     return arguments, resolutions, warnings
 
 
-def _run_fetch(arguments: Sequence[str], run_dir: Path) -> dict[str, Any]:
+def _run_fetch(arguments: Sequence[str], run_dir: Path, *,
+               events: "EventStream | None" = None) -> dict[str, Any]:
     """Execute the plan's fetch through ``gpuwm fetch``'s own handler.
 
     Returns what the fetch actually did.  ``fetch_main`` answers only
@@ -3626,12 +3742,34 @@ def _run_fetch(arguments: Sequence[str], run_dir: Path) -> dict[str, Any]:
     the data naming the cycle, the hours and the files -- so the report
     comes from the receipt the fetch itself wrote, not from re-deriving
     anything here.
+
+    ``events`` is this run's stream.  The fetch runs IN-PROCESS, so
+    installing an ambient transfer sink around it (see
+    :func:`gpuwm.progress.event_sink`) is enough to put a
+    ``fetch_started``/``fetch_progress``/``fetch_completed`` record on
+    the stream per file -- without threading a stream handle down
+    through every route signature in the fetch family.  The stage used
+    to report only ``stage_started`` and, some minutes later,
+    ``stage_finished``, so a front end had nothing to draw in between.
     """
 
     from gpuwm.cli import build_parser
+    from gpuwm import progress as progress_mod
+
+    def relay(event: str, **fields: Any) -> None:
+        # Telemetry never fails a fetch: an emit that refuses (an
+        # unknown tag, a closed stream) is dropped for that record.
+        try:
+            events.emit(event, **fields)
+        except Exception:            # noqa: BLE001 - see above
+            pass
 
     args = build_parser().parse_args(["fetch", *arguments])
-    code = args.func(args)
+    if events is None:
+        code = args.func(args)
+    else:
+        with progress_mod.event_sink(relay):
+            code = args.func(args)
     if code:
         raise RuntimeError(
             f"`gpuwm fetch {' '.join(arguments)}` exited {code}")
@@ -3653,7 +3791,72 @@ def _run_fetch(arguments: Sequence[str], run_dir: Path) -> dict[str, Any]:
                             "payload_bytes"):
                     if key in payload:
                         report[key] = payload[key]
+                report["transfers"] = _fetch_transfer_split(payload)
     return report
+
+
+def _fetch_transfer_split(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """How much of this fetch came off the network, and how much did not.
+
+    THE question a retry has to answer.  ``gpuwm fetch`` verifies an
+    existing payload -- request identity, GRIB envelope, record count,
+    recorded digest -- and skips what passes, so re-running a plan into
+    a data directory it already filled moves no bytes at all.  The stage
+    used to report only the cycle and the total payload size, which is
+    the same line either way, so a user watching a retry had no way to
+    know the three gigabytes were not being pulled again.
+
+    Counted over the rows that SAY which they were.  Each transfer
+    records ``downloaded`` explicitly; the receipt files a fetch writes
+    beside the payload (its checksum list, its own manifest) do not, and
+    they are reported separately rather than being folded into either
+    number, because a receipt is not something a user waited for.
+    """
+
+    files = payload.get("files")
+    files = files if isinstance(files, list) else []
+    downloaded = verified = receipts = 0
+    downloaded_bytes = verified_bytes = 0
+    seconds = 0.0
+    timed = False
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        size = entry.get("bytes")
+        size = int(size) if isinstance(size, (int, float)) else 0
+        stated = entry.get("downloaded")
+        elapsed = entry.get("seconds")
+        if isinstance(elapsed, (int, float)):
+            seconds += float(elapsed)
+            timed = True
+        if stated is True:
+            downloaded += 1
+            downloaded_bytes += size
+        elif stated is False:
+            verified += 1
+            verified_bytes += size
+        else:
+            receipts += 1
+    if downloaded and verified:
+        summary = (f"{downloaded} file(s) downloaded, {verified} already on "
+                   f"disk and verified ({verified_bytes:,} B not "
+                   "re-downloaded)")
+    elif verified and not downloaded:
+        summary = (f"skipped {verified} file(s) already on disk and verified "
+                   f"({verified_bytes:,} B not re-downloaded)")
+    elif downloaded:
+        summary = f"downloaded {downloaded} file(s), {downloaded_bytes:,} B"
+    else:
+        summary = "this fetch recorded no per-file transfer state"
+    return {
+        "downloaded_files": downloaded,
+        "downloaded_bytes": downloaded_bytes,
+        "verified_files": verified,
+        "verified_bytes": verified_bytes,
+        "receipt_files": receipts,
+        "seconds": round(seconds, 6) if timed else None,
+        "summary": summary,
+    }
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -3724,21 +3927,170 @@ def _receipts(run_dir: Path) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _estimate_planner_machine(exp):
+    """A card for the tile planner, and ONLY when ``[tiles]`` needs one.
+
+    ``mode = "auto"`` with no pinned tiling is the planner's decision and
+    the planner needs a machine; every other configuration answers from
+    the config alone.  Probing unconditionally would put a subprocess
+    launch on the path of a resident plan's estimate -- which a front end
+    asks for on every keystroke of a live sizing strip -- to compute a
+    number no resident plan uses.
+
+    The probe is out-of-process for the reason
+    :func:`gpuwm.core.preflight.device_memory_probe_subprocess` gives:
+    this call promises to create no CUDA context, and an in-process
+    ``memGetInfo`` creates one that outlives the answer.
+    """
+    options = getattr(exp, "tiles", None)
+    if options is None or getattr(options, "mode", "off") == "off":
+        return None
+    if getattr(options, "tile_nx", None) is not None:
+        return None                  # pinned: the configuration IS the plan
+    from gpuwm.core.preflight import device_memory_probe_subprocess
+    from gpuwm.core.streaming import planner_machine
+
+    probe = device_memory_probe_subprocess()
+    return planner_machine(
+        vram_bytes=None if probe is None else int(probe["free_bytes"]),
+        name="run-plan estimate probe")
+
+
+#: The resident itemizer's basis, unchanged: the sentence a plan that
+#: does not stream has always been given for its VRAM figures.
+_RESIDENT_VRAM_BASIS = (
+    "gpuwm.core.preflight.estimate_phases, whose forecast term is "
+    "estimate_experiment -- it sums every domain and shares the scratch "
+    "arena across a tree; the envelope is its peak_envelope_bytes (the "
+    "estimator `gpuwm check` reports; no device context is created)")
+
+#: What a streamed plan is told instead, naming the mechanism rather than
+#: leaving a reader to wonder why the figure shrank.
+_STREAMED_VRAM_BASIS = (
+    "gpuwm.core.preflight.estimate_phases, whose forecast term is the "
+    "STREAMED envelope this config's [tiles] table resolves to: the card "
+    "holds nbuffers tile buffers of the compute window, not the whole "
+    "domain, so the resident itemization describes a run that will not "
+    "happen.  Priced from the same tilestream.autoplan Footprint the run "
+    "attaches with, and quoted at the RADIATION PEAK -- the tile buffers "
+    "in streamed.vram_bytes plus the measured RRTMGP per-call transient "
+    "in streamed.radiation_transient_bytes, which is on the card from the "
+    "first radiation step onward; the domain itself lives in host_bytes "
+    "of pinned host RAM, which is a REQUIREMENT of this plan and not a "
+    "spare figure")
+
+
+def _vram_estimate(estimate, streamed, exp) -> dict[str, Any]:
+    """The ``vram`` section, priced as the run will actually be allocated.
+
+    ``peak_envelope_bytes`` keeps its meaning across both branches -- it
+    is THE number to compare against a card -- and only gains accuracy;
+    ``envelope_basis`` is what lets a caller render WHICH figure it got.
+    """
+    if streamed is None:
+        return {
+            "domains": len(exp.domains),
+            "estimate_bytes": int(estimate.alloc_estimate_bytes),
+            "estimate_gib": round(
+                estimate.alloc_estimate_bytes / 1024 ** 3, 4),
+            # The figure a nested plan must be judged on.  alloc_estimate
+            # is the POOL REQUEST; the envelope is what the machine has
+            # to have free, and it is the tree-aware one --
+            # machine_peak_envelope_bytes adds a per-nest term
+            # (nests = domains - 1) and, on WDDM, takes the measured
+            # footprint floor.  A tree priced on alloc_estimate alone
+            # reads as fitting a card it does not fit.
+            "peak_envelope_bytes": int(estimate.peak_envelope_bytes),
+            "peak_envelope_gib": round(
+                estimate.peak_envelope_bytes / 1024 ** 3, 4),
+            "envelope_basis": "resident",
+            "basis": _RESIDENT_VRAM_BASIS,
+        }
+    # THE RADIATION PEAK.  ``vram_bytes`` is what the tiling holds between
+    # radiation calls; the RRTMGP call's measured per-process transient is
+    # on the card too, and a front end that draws "this run needs N GiB"
+    # off the hold sizes a card the run meets the transient on.
+    peak = int(streamed.peak_vram_bytes)
+    return {
+        "domains": len(exp.domains),
+        # ONE FIGURE, not two.  The streamed envelope is a whole-process
+        # number by construction -- CUDA context, the rung's per-process
+        # fixed cost and the tile buffers, with autoplan's safety factor
+        # -- and tilestream's Footprint offers no pool/non-pool split to
+        # derive a separate request from.  Reporting the resident pool
+        # request beside a streamed envelope would put two figures about
+        # two different runs in one section, and the ratio between them
+        # would mean nothing.
+        "estimate_bytes": peak,
+        "estimate_gib": round(peak / 1024 ** 3, 4),
+        "peak_envelope_bytes": peak,
+        "peak_envelope_gib": round(peak / 1024 ** 3, 4),
+        "envelope_basis": "streamed",
+        "basis": _STREAMED_VRAM_BASIS,
+        "streamed": {
+            "resident_envelope_bytes": int(estimate.peak_envelope_bytes),
+            # The two terms of the peak above, so a caller can render the
+            # steady hold beside it without re-deriving either.
+            "vram_bytes": int(streamed.vram_bytes),
+            "radiation_transient_bytes":
+                int(streamed.radiation_transient_bytes),
+            "host_bytes": int(streamed.host_bytes),
+            "host_budget_bytes": streamed.host_budget_bytes,
+            "tile_nx": streamed.tile_nx, "tile_ny": streamed.tile_ny,
+            "window_nx": streamed.window_nx,
+            "window_ny": streamed.window_ny,
+            "nbuffers": streamed.nbuffers, "halo": streamed.halo,
+            "rung": streamed.rung, "write_mode": streamed.write_mode,
+        },
+    }
+
+
 def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     """What this plan will cost, from measured machinery only.
 
     VRAM comes from :mod:`gpuwm.core.preflight`'s itemization -- the
     same arithmetic ``gpuwm check`` reports, on the CPU, with no CUDA
-    context created.  Output-frame COUNTS are exact.  Wall time is
+    context created IN THIS PROCESS (a ``[tiles] mode = "auto"`` config
+    has its planner card read by a short-lived subprocess, whose context
+    dies with it; see :func:`_estimate_planner_machine`).  Output-frame
+    COUNTS are exact.  Wall time is
     ``null``: this package has no measured rate for an arbitrary
     configuration, and a front end showing an invented duration would
     be showing gpuwm's name on a number gpuwm never measured.
+
+    ``[tiles]`` REPLACES THE FORECAST TERM, through
+    :func:`gpuwm.core.preflight.estimate_phases` rather than the resident
+    itemizer underneath it.  Every term ``estimate_experiment`` sums
+    itemizes a domain RESIDENT in VRAM, so a streamed plan was quoted a
+    figure for a run that was not going to happen -- and a front end that
+    renders this document verbatim then reports "exceeds free VRAM" for
+    exactly the small cards streaming exists to serve.  ``envelope_basis``
+    says which of the two figures the caller got.
+
+    The INGEST phase is deliberately not priced here (``source=None``):
+    this document has never carried a preprocessing term and quietly
+    growing one would move ``peak_envelope_bytes`` under callers who
+    compare it against a card.  ``gpuwm check`` is the surface that
+    prices both phases.
     """
 
-    from gpuwm.core.preflight import estimate_experiment
+    from gpuwm.core.pace import estimate_pace
+    from gpuwm.core.preflight import estimate_phases
 
     resolution, exp, _data = resolve_plan(plan, require_inputs=False)
-    estimate = estimate_experiment(exp)
+    machine = _estimate_planner_machine(exp)
+    phases = estimate_phases(exp, source=None, machine=machine)
+    estimate = phases.forecast
+    streamed = phases.streamed
+    # ONE DECISION PER DOCUMENT.  The envelope this document quotes is
+    # handed to the pace rather than re-derived, so the tiling the reader
+    # is priced for and the tiling the pace describes are the same one --
+    # under ``mode = "auto"`` a second derivation genuinely disagrees when
+    # the card's occupancy moves between the two calls.  No probe of our
+    # own: this function promises to create no CUDA context, so the pace
+    # takes the planner machine already in hand and falls back to the
+    # configured ``[tiles] vram_budget_bytes`` when there is none.
+    pace = estimate_pace(exp, streamed=streamed, machine=machine)
     # Taken from the resolution rather than re-derived, so the corridor
     # a caller was told about and the corridor it is quoted a price for
     # are one decision.  A chain that cannot feed a moving nest has
@@ -3758,27 +4110,7 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     return {
         "schema": ESTIMATE_SCHEMA,
         "plan": resolution["plan"],
-        "vram": {
-            "domains": len(exp.domains),
-            "estimate_bytes": int(estimate.alloc_estimate_bytes),
-            "estimate_gib": round(
-                estimate.alloc_estimate_bytes / 1024 ** 3, 4),
-            # The figure a nested plan must be judged on.  alloc_estimate
-            # is the POOL REQUEST; the envelope is what the machine has
-            # to have free, and it is the tree-aware one --
-            # machine_peak_envelope_bytes adds a per-nest term
-            # (nests = domains - 1) and, on WDDM, takes the measured
-            # footprint floor.  A tree priced on alloc_estimate alone
-            # reads as fitting a card it does not fit.
-            "peak_envelope_bytes": int(estimate.peak_envelope_bytes),
-            "peak_envelope_gib": round(
-                estimate.peak_envelope_bytes / 1024 ** 3, 4),
-            "basis": "gpuwm.core.preflight.estimate_experiment, which "
-                     "sums every domain and shares the scratch arena "
-                     "across a tree; the envelope is its "
-                     "peak_envelope_bytes (the estimator `gpuwm check` "
-                     "reports; no device context is created)",
-        },
+        "vram": _vram_estimate(estimate, streamed, exp),
         "disk": {
             "frames": frames,
             "total_frames": sum(entry["frames"] for entry in frames),
@@ -3799,11 +4131,25 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
                       "download size is known only to the source mirror "
                       "at fetch time; `gpuwm fetch` reports it there"),
         },
+        # THE PACE, which is the figure a user acts on and the one this
+        # document used to leave out.  A streamed plan on a small card is
+        # priced correctly, routed correctly, started -- and then looks
+        # exactly like a stall, because nothing said a step would cost
+        # seconds.  ``expected_pace`` says it before the run, on the road
+        # the run will actually take, and names the column count that
+        # would put this card back on the fast road.
+        "expected_pace": (None if pace is None else pace.to_json()),
         "wall_time": {
+            # STILL NULL, and deliberately.  ``expected_pace`` is a
+            # BRACKET off measured runs on other cards and other grids;
+            # an exact second count here would launder it into a
+            # measurement of THIS configuration, which nobody has made.
             "seconds": None,
-            "basis": "this package publishes no measured rate for an "
-                     "arbitrary configuration; the model_progress "
-                     "events carry the real one from the first step",
+            "basis": "this package publishes no exact rate for an "
+                     "arbitrary configuration; expected_pace carries the "
+                     "measured bracket and its provenance, and the "
+                     "model_progress events carry the real one from the "
+                     "first step",
         },
         "automatic_resolutions": resolution["automatic_resolutions"],
     }

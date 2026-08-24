@@ -71,6 +71,7 @@ for _p in (_ROOT, _TOOLS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from gpuwm.core.gf import gf_workspace_floats                 # noqa: E402
 from gpuwm.core.kernels import load_module, module_source     # noqa: E402
 from gpuwm.verify.gf_oracle import (                          # noqa: E402
     GF_NZ, GF_ORACLE_DIR, load_gf_oracle,
@@ -169,8 +170,9 @@ def stage(module, fixture):
     d_isc = cp.zeros((n, len(ISCA_FIELDS)), dtype=cp.int32)
 
     fn = module.get_function("gf_deep_stage")
+    d_ws = cp.empty(gf_workspace_floats(NZ, n), dtype=cp.float32)
     fn(((n + 63) // 64,), (64,),
-       (d_lv, d_sc, d_ii, d_lev, d_sca, d_isc,
+       (d_lv, d_sc, d_ii, d_lev, d_sca, d_isc, d_ws,
         np.int32(n), np.int32(NZ)))
     cp.cuda.Stream.null.synchronize()
     return dict(lev=cp.asnumpy(d_lev), sca=cp.asnumpy(d_sca),

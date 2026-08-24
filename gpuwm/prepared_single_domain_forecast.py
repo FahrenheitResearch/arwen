@@ -66,8 +66,8 @@ from gpuwm.explain import (  # noqa: E402
     warn,
 )
 from gpuwm.kernel_compile_notice import (  # noqa: E402
-    COMPILING_STATUS, current_compute_capability, kernel_cache_state,
-    scan_kernel_cache,
+    ARCHITECTURE_MISSING, COLD_CACHE, COMPILING_STATUS,
+    current_compute_capability, kernel_cache_state, scan_kernel_cache,
 )
 from gpuwm.ingest.prepared_cache import (  # noqa: E402
     CONDITIONAL_PREPARATION_RECEIPTS,
@@ -2785,6 +2785,7 @@ def _runtime_source_identity() -> dict[str, object]:
             "git_commit": None, "git_tree": None, "git_status_short": None,
             "identity_source": "runtime-module-sha256-only",
             "distribution_manifest_sha256": None, "installed_wheel": None,
+            "installed_editable": None,
         }
     return {**identity, "source_sha256": source_sha256}
 
@@ -5591,15 +5592,26 @@ _MEASURED_BYTES_PER_COLUMN_NZ = 49
 _PREPARED_RESIDENT_HEADROOM = (_MEASURED_PREPARED_BYTES_PER_COLUMN
                                / _MEASURED_BARE_STATE_BYTES_PER_COLUMN)
 
-#: How much of the card's FREE memory the priced resident state may claim
-#: before ``auto`` stops calling the fit comfortable.  A margin, not a
-#: fudge: the priced number is the state at REST, and the run puts the tile
-#: buffers, the NVRTC module images and the allocator's own fragmentation on
-#: the same card immediately afterwards.  A decision taken at 100% of free
-#: VRAM therefore fits and then dies at the first tile buffer, which is the
-#: out-of-memory death the mode exists to avoid, arrived at through the mode.
-#: 20% of a 16 GB card is 3.2 GiB, which covers the default buffer set with
-#: room to spare.
+#: How much of the card's FREE memory the streamed run's whole PEAK may claim
+#: before ``auto`` stops calling the fit comfortable.  A margin for what is
+#: left unpriced -- the NVRTC module images and the allocator's own
+#: fragmentation -- and no longer a stand-in for the tile buffers themselves.
+#:
+#: IT USED TO BE THAT STAND-IN, AND THAT WAS THE DEFECT.  The comment here
+#: read "20% of a 16 GB card is 3.2 GiB, which covers the default buffer set
+#: with room to spare", and on a 16 GB card it did.  But the tile buffers and
+#: the radiation transient are ABSOLUTE costs and a fraction is a RELATIVE
+#: one, so the margin shrank exactly where the card had least room to give:
+#: 20% of a 10 GiB card is 1.9 GiB against a default buffer set of 5.13 GiB
+#: and a 2.74 GiB radiation transient.  A 424 x 424 x 49 forecast therefore
+#: priced its 2.64 GiB resident state as a comfortable fit, took the resident
+#: road, and peaked at 10.51 GiB on 9.50 GiB of free memory.  Under WDDM that
+#: over-commit does not raise -- the driver pages it -- so the forecast did
+#: not refuse, it just stopped completing steps.
+#:
+#: Both of those costs are now priced explicitly (:func:`_streamed_peak_bytes`)
+#: and added to the resident state before this fraction is applied, so what is
+#: left for the fraction to cover is only the genuinely unpriced remainder.
 _AUTO_RESIDENT_FIT_FRACTION = 0.80
 
 #: ``--stream-init``'s values.  ``auto`` is the default and is the only one
@@ -5637,9 +5649,61 @@ def _prepared_state_manifest_bytes(reader) -> int:
                    if str(key).startswith("state/")))
 
 
+def _streamed_peak_bytes(cfg, decision) -> int | None:
+    """What the STREAMED half of this forecast puts on the card, at its peak.
+
+    The resident road does not end at the resident state.  A forecast that
+    takes it and then streams allocates the tile buffers ON TOP of that state
+    -- ``attach`` copies out of the state and nothing frees it
+    (``gpuwm.core.streaming.refresh_from_store``) -- and meets the radiation
+    transient on top of THAT.  The card has to hold all three at once, and
+    this is the second and third terms.
+
+    Two numbers, each already measured and already carried by this project;
+    neither was being read by the road decision:
+
+    * ``streamed_envelope(...).vram_bytes`` -- ``tilestream.autoplan``'s
+      footprint for the tiling this decision actually selected: the CUDA
+      context, the per-process fixed cost and ``nbuffers`` compute windows.
+    * ``footprint_for(cfg).radiation_transient_bytes`` -- the RRTMGP call's
+      per-process working set, MEASURED at +2.74 GiB over steady state and
+      zero on the rungs that run no radiation.  It is allocated and freed
+      inside one radiation step, so it never appears in a steady-state
+      reading; it is nevertheless on the card at the instant it matters, and
+      the first radiation call is ``itimestep == 1``.
+
+    ``None``, never zero, when this cannot be priced -- a run that does not
+    stream, or a decision this function was handed without a tiling on it.
+    Zero is the answer that reinstates the defect, so the caller is told the
+    term is missing and decides for itself rather than being handed a
+    confident nought.
+    """
+
+    if cfg is None or decision is None or not getattr(decision, "stream", False):
+        return None
+    try:
+        from gpuwm.core import streaming
+
+        envelope = streaming.streamed_envelope(cfg, None, decision=decision)
+        if envelope is None:
+            return None
+        # The envelope carries BOTH terms since the estimate surfaces
+        # learned the reservation, so this reads its peak rather than
+        # re-adding the transient beside it -- one place the sum lives.
+        return int(envelope.peak_vram_bytes)
+    except Exception:
+        # The road decision must still be TAKEN.  An unpriceable streamed term
+        # leaves the pre-existing resident-only rule standing, which is the
+        # behaviour this route had before the term existed, rather than
+        # refusing a forecast because an estimate could not be formed.
+        return None
+
+
 def _stream_init_pricing(state_bytes: int, free_bytes: int, total_bytes: int,
                          *, columns: int | None = None,
-                         nz: int | None = None) -> dict[str, object]:
+                         nz: int | None = None,
+                         streamed_bytes: int | None = None,
+                         ) -> dict[str, object]:
     """Price the resident road against the card, with no device work at all.
 
     Separated from the device query so the RULE is testable on a machine with
@@ -5683,6 +5747,12 @@ def _stream_init_pricing(state_bytes: int, free_bytes: int, total_bytes: int,
     priced = (manifest_priced if measured_priced is None
               else max(manifest_priced, measured_priced))
     allowance = int(float(free_bytes) * _AUTO_RESIDENT_FIT_FRACTION)
+    # THE PEAK, not the state.  ``max`` was right for the two resident terms
+    # because they price the same bytes two ways; this is a SUM because the
+    # tiles and the radiation transient are different bytes on the same card
+    # at the same instant as the state.  ``None`` leaves the pre-existing
+    # resident-only rule exactly as it was.
+    peak = priced if streamed_bytes is None else priced + int(streamed_bytes)
     return {
         "state_manifest_bytes": int(state_bytes),
         "physics_headroom_factor": round(_PREPARED_RESIDENT_HEADROOM, 4),
@@ -5694,11 +5764,14 @@ def _stream_init_pricing(state_bytes: int, free_bytes: int, total_bytes: int,
         "columns": None if not columns else int(columns),
         "nz": None if not nz else int(nz),
         "priced_resident_bytes": priced,
+        "streamed_peak_bytes": (None if streamed_bytes is None
+                                else int(streamed_bytes)),
+        "resident_peak_bytes": int(peak),
         "device_free_bytes": int(free_bytes),
         "device_total_bytes": int(total_bytes),
         "fit_fraction": _AUTO_RESIDENT_FIT_FRACTION,
         "fit_allowance_bytes": allowance,
-        "fits": bool(priced <= allowance),
+        "fits": bool(peak <= allowance),
     }
 
 
@@ -5758,7 +5831,12 @@ def _choose_stream_init_road(mode: str, *, decision, reader, cfg=None,
         *(device_memory if device_memory is not None
           else _free_device_bytes()),
         columns=(None if cfg is None else int(cfg.nx) * int(cfg.ny)),
-        nz=(None if cfg is None else int(cfg.nz)))
+        nz=(None if cfg is None else int(cfg.nz)),
+        # WHAT THE RESIDENT STATE WILL HAVE TO SHARE THE CARD WITH.  Priced
+        # here rather than left to the fit fraction: see
+        # ``_AUTO_RESIDENT_FIT_FRACTION`` for the 10 GiB card this omission
+        # paged into the ground.
+        streamed_bytes=_streamed_peak_bytes(cfg, decision))
     priced = pricing["priced_resident_bytes"] / _GIB
     free = pricing["device_free_bytes"] / _GIB
     total = pricing["device_total_bytes"] / _GIB
@@ -5786,6 +5864,17 @@ def _choose_stream_init_road(mode: str, *, decision, reader, cfg=None,
             f"over this route's measured "
             f"{_MEASURED_PREPARED_BYTES_PER_COLUMN:.0f} B/column) against "
             f"{free:.2f} GiB free of {total:.2f} GiB on the card")
+    # THE OTHER TWO TERMS, said out loud whenever they were priced.  A receipt
+    # that printed only the resident number would leave a reader unable to see
+    # why a state that plainly fits was still sent to the store.
+    if pricing["streamed_peak_bytes"] is not None:
+        streamed = pricing["streamed_peak_bytes"] / _GIB
+        peak = pricing["resident_peak_bytes"] / _GIB
+        priced_as += (
+            f", and the streamed run puts {streamed:.2f} GiB more beside it "
+            f"(the tile buffers this decision selected plus the measured "
+            f"radiation transient, both on the card while the resident state "
+            f"is), for a {peak:.2f} GiB peak")
     if mode == "resident":
         road = "resident"
         why = (f"--stream-init resident was asked for, so the resident state "
@@ -6029,13 +6118,19 @@ class _FirstStepStallWatch:
     """
 
     def __init__(self, *, progress_path: Path, inputs, exp, step_log,
-                 census, delay: float = FIRST_STEP_STALL_SECONDS):
+                 census, road: str = "unknown",
+                 delay: float = FIRST_STEP_STALL_SECONDS,
+                 capability: str | None = None, cache_census_now=None):
         self._progress_path = progress_path
         self._inputs = inputs
         self._exp = exp
         self._step_log = step_log
         self._census = census
+        self._road = str(road or "unknown")
         self._delay = float(delay)
+        self._capability = capability
+        self._cache_census_now = (scan_kernel_cache if cache_census_now is None
+                                  else cache_census_now)
         self._timer = None
         self._fired = False
 
@@ -6068,39 +6163,87 @@ class _FirstStepStallWatch:
 
         return observed
 
+    def _grown_entries(self) -> int:
+        """Cubins that appeared since launch, or 0 if that is unaskable.
+
+        The corroboration the launch census cannot give.  A cache that
+        reads warm at launch can still be missing every kernel the
+        FORECAST needs -- that is the measured hole in the class
+        docstring -- but a compile that is genuinely running WRITES, and
+        entries appearing while step 1 stalls are positive evidence no
+        timer can supply.
+        """
+
+        try:
+            entries, _undecodable, _architectures = self._cache_census_now()
+        except Exception:            # noqa: BLE001 - telemetry never fails
+            return 0
+        launched = 0
+        if self._census is not None:
+            launched = int(self._census[0])
+        return max(0, int(entries) - launched)
+
     def _say(self) -> None:
         if self._fired:
             return
         self._fired = True
-        state = kernel_cache_state(
-            compute_capability=current_compute_capability(),
-            census=self._census)
-        # The census is EVIDENCE here, not the trigger.  The trigger is
-        # the stall, which has already happened; the census says what
-        # the cache looked like when this run started, which is the
-        # only thing that can distinguish "first run on this machine"
-        # from "this card is not the one this cache was built for".
+        capability = (current_compute_capability() if self._capability is None
+                      else self._capability)
+        state = kernel_cache_state(compute_capability=capability,
+                                   census=self._census)
+        # THE STALL IS THE TRIGGER, NEVER THE EVIDENCE -- ledger #324.
+        # Captured live: this printed "the one-time NVRTC compile of this
+        # run's GPU kernels" while the very same line reported 388 cached
+        # entries, 388 of them for this card, and not one cubin was
+        # written while it stalled.  The run was transfer-bound on the
+        # streamed road.  A timer knows that a reader is waiting; it
+        # knows nothing whatever about what they are waiting for, so the
+        # cause is claimed only where something was actually measured.
         detail = (f"the kernel cache held {state.entries} entry(s) at "
                   f"launch, {state.entries_for_capability} of them for "
                   f"sm_{state.compute_capability or '?'}")
-        print(f"forecast: model step 1 has been running for "
-              f"{self._delay:.0f} s -- this is the one-time NVRTC compile "
-              f"of this run's GPU kernels for the local card ({detail}); "
-              "typically 1-3 minutes, and the result is cached so later "
-              "runs skip it", flush=True)
+        grown = self._grown_entries()
+        head = (f"forecast: model step 1 has been running for "
+                f"{self._delay:.0f} s -- ")
+        if state.reason in (COLD_CACHE, ARCHITECTURE_MISSING) or grown:
+            reason = state.reason or "cache_grew_during_first_step"
+            if grown:
+                detail += f", and {grown} more have been written since"
+            print(f"{head}this is the one-time NVRTC compile of this run's "
+                  f"GPU kernels for the local card ({detail}); typically "
+                  "1-3 minutes, and the result is cached so later runs "
+                  "skip it", flush=True)
+            status = COMPILING_STATUS
+        else:
+            # No cause is named that was not measured.  The road IS
+            # measured -- the run chose it and wrote the receipt -- so
+            # the store road may say what feeds each step.  Anything
+            # else says only what is known: nothing has finished yet.
+            if self._road == "store":
+                print(f"{head}first model step still running; streamed "
+                      "transfers feed each step on this card, and no model "
+                      f"step has completed ({detail})", flush=True)
+            else:
+                print(f"{head}first model step still running; no model step "
+                      f"has completed ({detail})", flush=True)
+            reason = None
+            status = "RUNNING"
         try:
             _atomic_json(self._progress_path, {
                 "schema": PROGRESS_SCHEMA,
-                "status": COMPILING_STATUS,
+                "status": status,
                 "source": self._inputs.source,
                 "model_elapsed_seconds": 0.0,
                 "requested_run_seconds": float(self._exp.run_seconds),
             }, heartbeat=True)
         except OSError:
             pass
-        if self._step_log is not None:
+        # A receipt that claimed a compile on a timer was the same defect
+        # written down, so it is announced on the same evidence as the
+        # line -- and not at all without it.
+        if self._step_log is not None and reason is not None:
             self._step_log.announce_kernel_compile(
-                reason=state.reason or "stalled_first_step",
+                reason=reason,
                 compute_capability=state.compute_capability,
                 cached_entries=state.entries,
                 cached_entries_for_this_card=state.entries_for_capability,
@@ -6726,7 +6869,7 @@ def run_prepared_forecast(
     # that anything is happening at all.
     stall_watch = _FirstStepStallWatch(
         progress_path=progress_path, inputs=inputs, exp=exp,
-        step_log=step_log, census=kernel_cache_census)
+        step_log=step_log, census=kernel_cache_census, road=init_road)
     try:
         memory_watch.start()
         stall_watch.arm()

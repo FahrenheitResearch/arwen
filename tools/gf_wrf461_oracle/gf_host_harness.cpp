@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cmath>
+#include <vector>
 
 // ---- CUDA language shims -------------------------------------------------
 #define __device__
@@ -57,16 +58,58 @@ static inline float __double2float_rn(double d) { return (float)d; }
 #include "common.cuh"
 #include "gf.cu"
 
+// ---- the column workspace, on the host -----------------------------------
+// The three stage kernels take their GF_KP column arrays from a caller-
+// provided global workspace (gf.cu's "Per-thread column workspace" block),
+// laid out one contiguous region per LAUNCH BLOCK and interleaved across
+// GFWS_LANES lanes: element k of slot s for lane t lives at
+//
+//     blockIdx.x * GFWS_BLOCK_FLOATS + (s * GF_KP + k) * GFWS_LANES + t
+//
+// The kernels read their column as blockIdx.x * blockDim.x + threadIdx.x, so
+// the harness has a choice about which of the two shims carries the column
+// number.  It carries it in threadIdx.x, with blockDim.x == 1 and blockIdx.x
+// pinned at 0: the DATA index is the same `col` it always was (lvin + col *
+// ..., lev + col * ..., every fixture graded the same word), while the
+// workspace stays inside ONE block's region instead of demanding
+// n * GFWS_BLOCK_FLOATS floats -- 1.5 MiB per column, 341 MiB over the
+// oracle's 216 columns, three times over.
+//
+// Bound.  The highest word any lane touches is
+//
+//     (GFWS_SLOTS * GF_KP - 1) * GFWS_LANES + threadIdx.x
+//   = GFWS_BLOCK_FLOATS - GFWS_LANES + (n - 1)
+//
+// so GFWS_BLOCK_FLOATS + n floats covers every column for ANY n, including
+// the n > GFWS_LANES case where a column's lane wraps past lane 63 into the
+// words of a lower slot.  That wrap is sound here and only here: the host
+// runs the columns strictly one at a time, so no two columns are ever live
+// at once, and the device -- where they ARE concurrent -- allocates a full
+// GFWS_BLOCK_FLOATS per block and never wraps.  Reuse across columns is the
+// same reuse the device performs across tiles, which
+// tests/test_gf_workspace.py::test_the_workspace_is_free_of_residue proves
+// no column array depends on.
+static std::vector<float> gf_ws_storage;
+
+static float *gf_host_workspace(int n)
+{
+    size_t need = (size_t)GFWS_BLOCK_FLOATS + (size_t)(n > 0 ? n : 1);
+    if (gf_ws_storage.size() < need) gf_ws_storage.assign(need, 0.0f);
+    return gf_ws_storage.data();
+}
+
 // ---- launchers -----------------------------------------------------------
 extern "C" void host_gf_deep_stage(const float *lvin, const float *scin,
                                    const int *iin, float *lev, float *sca,
                                    int *isca, int n, int nz)
 {
-    blockDim.x = 1; threadIdx.x = 0;
+    float *ws = gf_host_workspace(n);
+    blockDim.x = 1; blockIdx.x = 0;
     for (int col = 0; col < n; col++) {
-        blockIdx.x = (unsigned)col;
-        gf_deep_stage(lvin, scin, iin, lev, sca, isca, n, nz);
+        threadIdx.x = (unsigned)col;
+        gf_deep_stage(lvin, scin, iin, lev, sca, isca, ws, n, nz);
     }
+    threadIdx.x = 0;
 }
 
 extern "C" void host_gf_libm_unary(const float *x, float *out, int n)
@@ -111,12 +154,14 @@ extern "C" void host_gf_shallow_stage(const float *lvin, const float *scin,
                                       int *isca, int k22_wrf_faithful,
                                       int n, int nz)
 {
-    blockDim.x = 1; threadIdx.x = 0;
+    float *ws = gf_host_workspace(n);
+    blockDim.x = 1; blockIdx.x = 0;
     for (int col = 0; col < n; col++) {
-        blockIdx.x = (unsigned)col;
-        gf_shallow_stage(lvin, scin, iin, lev, sca, isca, k22_wrf_faithful,
-                         n, nz);
+        threadIdx.x = (unsigned)col;
+        gf_shallow_stage(lvin, scin, iin, lev, sca, isca, ws,
+                         k22_wrf_faithful, n, nz);
     }
+    threadIdx.x = 0;
 }
 
 extern "C" void host_gf_gfdrv_stage(const float *lvin, const float *scin,
@@ -124,10 +169,12 @@ extern "C" void host_gf_gfdrv_stage(const float *lvin, const float *scin,
                                     int *isca, int k22_wrf_faithful,
                                     int n, int nz)
 {
-    blockDim.x = 1; threadIdx.x = 0;
+    float *ws = gf_host_workspace(n);
+    blockDim.x = 1; blockIdx.x = 0;
     for (int col = 0; col < n; col++) {
-        blockIdx.x = (unsigned)col;
-        gf_gfdrv_stage(lvin, scin, iin, lev, sca, isca, k22_wrf_faithful,
-                       n, nz);
+        threadIdx.x = (unsigned)col;
+        gf_gfdrv_stage(lvin, scin, iin, lev, sca, isca, ws,
+                       k22_wrf_faithful, n, nz);
     }
+    threadIdx.x = 0;
 }

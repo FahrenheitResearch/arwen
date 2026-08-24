@@ -301,6 +301,87 @@ def test_reordering_two_moves_produces_a_different_segment():
     assert forward.segment_id != backward.segment_id
 
 
+# ---------------------------------------------------------------------------
+# The chain reads back: from_json beside to_json
+# ---------------------------------------------------------------------------
+#
+# A resumed run re-marks its fingerprint by folding the header's
+# record_sha256 list in order, so a chain that reads back as an EQUAL
+# object but a DIFFERENT digest admits nothing.  Every assertion below is
+# on the digests, not on field equality.
+
+def test_a_segment_reads_back_to_the_same_digests():
+    import json
+
+    two = (RelocationSegment(base_identity_sha256="a" * 64)
+           .append(_record(1)).append(_record(2)))
+    payload = json.loads(json.dumps(two.to_json(), allow_nan=False))
+    back = RelocationSegment.from_json(payload)
+
+    assert back == two
+    assert back.segment_id == two.segment_id
+    assert back.generation == 2
+    assert [r.sha256 for r in back.records] == [r.sha256 for r in two.records]
+    assert back.to_json() == two.to_json()
+    # And the chain keeps growing off the restored tail, not off the base.
+    assert back.append(_record(3)).segment_id == (
+        two.append(_record(3)).segment_id)
+
+
+def test_a_zero_move_segment_reads_back():
+    base = RelocationSegment(base_identity_sha256="a" * 64)
+    back = RelocationSegment.from_json(base.to_json())
+    assert back == base and back.generation == 0
+
+
+def test_a_placement_reads_back_with_its_generation():
+    here = _placement(10, 12, generation=3)
+    assert Placement.from_json(here.to_json()) == here
+
+
+def test_a_truncated_chain_refuses_by_name():
+    """A dropped record is a move the resumed follower would not know it
+    made, so the generation and the chain stop agreeing."""
+    two = (RelocationSegment(base_identity_sha256="a" * 64)
+           .append(_record(1)).append(_record(2)))
+    payload = two.to_json()
+    payload["records"] = payload["records"][:1]
+    with pytest.raises(RelocationRefusal, match="generation"):
+        RelocationSegment.from_json(payload)
+
+
+def test_a_reordered_chain_refuses_on_the_recorded_digest():
+    """The count still matches, so the segment_id is the gate that catches
+    it -- and that digest is what the resume's fingerprint is folded from."""
+    two = (RelocationSegment(base_identity_sha256="a" * 64)
+           .append(_record(1)).append(_record(2)))
+    payload = two.to_json()
+    payload["records"] = list(reversed(payload["records"]))
+    with pytest.raises(RelocationRefusal, match="segment_id"):
+        RelocationSegment.from_json(payload)
+
+
+def test_a_foreign_contract_refuses_by_name():
+    two = RelocationSegment(base_identity_sha256="a" * 64).append(_record(1))
+    payload = dict(two.to_json(), contract="gpuwm-nest-relocation.v9")
+    with pytest.raises(RelocationRefusal, match="v9"):
+        RelocationSegment.from_json(payload)
+    record = dict(two.records[0].to_json(), contract="somebody-elses.v1")
+    with pytest.raises(RelocationRefusal, match="somebody-elses"):
+        RelocationSegment.from_json(dict(payload, records=[record],
+                                         contract=two.to_json()["contract"]))
+
+
+def test_an_unknown_record_key_refuses_rather_than_being_dropped():
+    """A dropped key changes the record's sha256, and the fingerprint the
+    resume folds is built from those digests."""
+    one = RelocationSegment(base_identity_sha256="a" * 64).append(_record(1))
+    payload = one.to_json()
+    payload["records"][0]["donor_alignment_v2"] = {}
+    with pytest.raises(RelocationRefusal, match="donor_alignment_v2"):
+        RelocationSegment.from_json(payload)
+
+
 def test_record_reports_the_spin_up_strip():
     record = _record(2)
     assert record.overlap_cells == (NX - 6) * NY

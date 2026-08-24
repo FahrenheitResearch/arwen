@@ -116,6 +116,73 @@ def portable(text: str) -> str:
     return text
 
 
+def _positional_spelling(action: argparse.Action) -> str:
+    """How a positional is written on the command line.
+
+    ``metavar`` when the door declares one, otherwise ``dest`` -- the
+    same two argparse falls through for its own usage line, so the page
+    and ``--help`` name the argument identically.  ``nargs`` then
+    decorates it exactly as a usage line does, because "one config path"
+    and "any number of wrfout files" are different instructions and the
+    bare name says neither.
+
+    The decoration is spelled here rather than borrowed from argparse's
+    formatter: the private formatter's rendering of ``nargs='*'``
+    changed between interpreter versions, and this page is committed and
+    compared byte for byte, so a borrowed spelling would make the same
+    tree generate two different documents on two Python versions.
+    """
+
+    name = action.metavar or action.dest
+    nargs = action.nargs
+    if nargs is None:
+        return name
+    if nargs == argparse.OPTIONAL:
+        return f"[{name}]"
+    if nargs == argparse.ZERO_OR_MORE:
+        return f"[{name} ...]"
+    if nargs == argparse.ONE_OR_MORE:
+        return f"{name} [{name} ...]"
+    if nargs in (argparse.REMAINDER, argparse.PARSER):
+        return f"{name} ..."
+    if isinstance(nargs, int):
+        return " ".join([name] * nargs)
+    return name
+
+
+def _arguments(parser: argparse.ArgumentParser) -> list[tuple[str, str]]:
+    """``(spelling, help)`` for every positional, in command-line order.
+
+    Positionals were omitted from this page for its whole life, and the
+    omission hid the most basic fact about the config-driven doors:
+    `gpuwm run` was listed with every optional knob it has and nothing
+    about the config path it cannot run without, so the page named no
+    way to pass a config at all.  A flag nobody can find and an argument
+    nobody can find are the same defect.
+
+    Declaration order is kept rather than sorted -- for a positional the
+    order IS the calling convention, and `gpuwm import-namelist WPS
+    INPUT` sorted alphabetically would instruct a reader wrongly.
+
+    ``choices`` are deliberately not expanded the way an option's are,
+    which is the one place this page reads differently from a usage
+    line.  A positional's choice list here is a discovered registry
+    rather than a fixed vocabulary, so printing it would rewrite this
+    committed page whenever the tree gained an unrelated entry; the
+    door's own ``--help`` prints the live list, and the page says so.
+    """
+
+    rows: list[tuple[str, str]] = []
+    for action in parser._actions:
+        if action.option_strings:
+            continue
+        if isinstance(action, argparse._SubParsersAction):
+            continue  # the subcommand tree; each branch is its own door
+        text = portable(" ".join((action.help or "").split()))
+        rows.append((_positional_spelling(action), text or NO_HELP))
+    return rows
+
+
 def _options(parser: argparse.ArgumentParser) -> list[tuple[str, str]]:
     """``(spelling, help)`` for every option except ``--help``."""
 
@@ -231,13 +298,19 @@ def render() -> str:
         "Regenerate it with `python -m tools.build_cli_options_doc` "
         "after changing any option.",
         "",
-        "Options are listed with the help text the tool itself prints.  "
-        "Positional arguments and `--help` are omitted; run any door "
-        "with `--help` for its usage line.",
+        "Everything is listed with the help text the tool itself "
+        "prints.  A door's positional arguments come first, in the "
+        "order they are written on the command line and under the "
+        "names its `--help` usage line gives them: `[NAME]` is "
+        "optional, `NAME [NAME ...]` repeats.  Where an argument is "
+        "restricted to a fixed set of values, run that door with "
+        "`--help` for the list -- it is read from the tree at run time "
+        "rather than pinned here.  `--help` itself is omitted.",
         "",
     ]
     built = doors()
     for name in sorted(built):
+        arguments = _arguments(built[name])
         rows = _options(built[name])
         lines.append(f"## `{name}`")
         lines.append("")
@@ -247,6 +320,13 @@ def render() -> str:
             lines.append("")
         if name in ALIASES:
             lines.append(f"Same program as `{ALIASES[name]}`.")
+            lines.append("")
+        if arguments:
+            lines.append("| argument | what it does |")
+            lines.append("|---|---|")
+            for spelling, text in arguments:
+                safe = text.replace("|", "\\|")
+                lines.append(f"| `{spelling}` | {safe} |")
             lines.append("")
         if not rows:
             lines.append("Takes no options of its own.")

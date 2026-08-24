@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -39,11 +40,61 @@ from gpuwm.core.uh_diag import (UH_SPAWN_WINDOW_SLOT,
 
 SPAWN_RUNNER_CONTRACT = "gpuwm.spawn-runner.v1"
 
+#: The keys of the checkpoint header's ``nest_lifecycle.spawn`` block, in
+#: the order ``docs/nest-lifecycle.md`` states them.  This is the whole
+#: surface :meth:`SpawnRunner.state_json` writes and
+#: :meth:`SpawnRunner.restore_state` reads: every one of them decides the
+#: NEXT leg boundary, so the block is honored in full or refused, never
+#: partially defaulted.
+SPAWN_STATE_KEYS = ("watches", "spawned", "retired", "episodes",
+                    "quiet_since", "spawns_executed")
+
+#: What each field prevents, quoted back in the refusal so a truncated or
+#: hand-edited block says which decision it would have silently changed.
+_SPAWN_STATE_BREAKAGE = {
+    "watches": "a fired slot re-fires and a closed window reopens",
+    "spawned": "a live episode loses its fired placement and its birth time",
+    "retired": "the re-arm cooldown restarts from the resume instant",
+    "episodes": "max_firings miscounts and a one-shot slot fires again",
+    "quiet_since": "a sustained-decay timer holds instead of retiring",
+    "spawns_executed": "the run's own account of what it did is wrong",
+}
+
 _LOG = logging.getLogger(__name__)
 
 
 class SpawnRunnerRefusal(RuntimeError):
     """A spawn runner was asked for something it must not invent."""
+
+
+def _finite(value, what: str) -> float:
+    """A lifecycle timer that survives the header's ``allow_nan=False``.
+
+    Refused HERE, where the message can name the timer, rather than inside
+    ``json.dumps`` at the end of ``write_tree_restart`` -- there it aborts
+    the whole checkpoint write mid-run and names only the encoder.
+    """
+    number = float(value)
+    if not math.isfinite(number):
+        raise SpawnRunnerRefusal(
+            f"{what} is {value!r}; the checkpoint header is written with "
+            "allow_nan=False, so a non-finite lifecycle timer would abort "
+            "the whole checkpoint write and name only the JSON encoder")
+    return number
+
+
+def _placement(value, what: str) -> tuple[int, int]:
+    try:
+        pair = tuple(int(item) for item in value)
+    except (TypeError, ValueError):
+        raise SpawnRunnerRefusal(
+            f"{what} must be a two-element parent-cell placement, got "
+            f"{value!r}") from None
+    if len(pair) != 2:
+        raise SpawnRunnerRefusal(
+            f"{what} must be a two-element parent-cell placement, got "
+            f"{value!r}")
+    return pair
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -105,6 +156,20 @@ class SpawnRunner:
         self._child_results: dict[int, object] = {}
         self.receipts: list[dict] = []
         self.spawns_executed = 0
+        # Episode lifecycle.  The declared experiment remains immutable; these
+        # maps are the deterministic live view used to build successive legs.
+        from gpuwm.core.nest_lifecycle import RetirementWatch
+        self.retired: set[int] = set()
+        self.episodes: dict[int, int] = {int(g): 0 for g in controller.watches}
+        self.birth_times: dict[int, float] = {}
+        self.retired_times: dict[int, float] = {}
+        self._retirement = {
+            int(dc.grid_id): RetirementWatch(dc.retire)
+            for dc in experiment.domains if getattr(dc, "retire", None) is not None}
+        #: grid_id -> the CURRENT (post-move) placement a restored block
+        #: reported, for the caller's one-hop relocation rebuild.  Empty
+        #: on a runner that was not restored.
+        self.restored_current_placements: dict[int, tuple[int, int]] = {}
 
     @classmethod
     def from_experiment(cls, exp, *, on_child_built, statics_provider=None,
@@ -132,11 +197,283 @@ class SpawnRunner:
         """
         from gpuwm.experiment import active_experiment
 
-        return active_experiment(self.experiment, dict(self.spawned))
+        return active_experiment(
+            self.experiment, dict(self.spawned), retired=self.retired,
+            birth_times=dict(self.birth_times))
 
     @property
     def pending(self) -> tuple[int, ...]:
         return self.controller.pending
+
+    @property
+    def needs_boundaries(self) -> bool:
+        """Whether later leg boundaries can still change the active tree."""
+        active_retire = any(gid in self.spawned for gid in self._retirement)
+        can_rearm = any(
+            getattr(self.experiment.domain(gid), "rearm", None) is not None
+            and self.episodes.get(gid, 0) < int(self.experiment.domain(gid).rearm.max_firings)
+            for gid in self.retired)
+        return bool(self.controller.pending or active_retire or can_rearm)
+
+    def _descendants(self, grid_id: int) -> set[int]:
+        out = {int(grid_id)}
+        changed = True
+        while changed:
+            changed = False
+            for dc in self.experiment.domains:
+                if int(dc.parent_id) in out and int(dc.grid_id) not in out:
+                    out.add(int(dc.grid_id)); changed = True
+        return out
+
+    def _rearm_ready(self, t: float) -> list[int]:
+        ready = []
+        for gid in sorted(self.retired):
+            dc = self.experiment.domain(gid)
+            cfg = getattr(dc, "rearm", None)
+            if cfg is None or self.episodes.get(gid, 0) >= int(cfg.max_firings):
+                continue
+            retired_t = self.retired_times.get(gid)
+            if retired_t is None or float(t) - retired_t < float(cfg.cooldown_s):
+                continue
+            # A nested slot cannot re-arm while its parent episode is absent.
+            if int(dc.parent_id) != int(self.experiment.root.grid_id) and int(dc.parent_id) not in self.spawned:
+                continue
+            ready.append(gid)
+        return ready
+
+    # -- the restart state ------------------------------------------------
+    #
+    # PURE STATE, both directions: no I/O, no model mutation, no
+    # checkpoint vocabulary.  ``gpuwm.io.restart`` owns where this block
+    # lives in the header; the runner owns only what is in it, which is
+    # every piece of policy state a later leg boundary reads and cannot
+    # recompute from the fields.
+
+    def state_json(self, model=None) -> dict:
+        """The ``spawn`` block of the lifecycle restart header.
+
+        ``model`` is optional and supplies exactly one thing: the CURRENT
+        placement of each live spawned child.  ``self.spawned`` keeps the
+        FIRED placement, because that is what
+        :func:`gpuwm.experiment.validate_spawn_placement` must adjudicate
+        again on the way back in, while a follower's post-move position
+        lives on ``node.cfg`` and nowhere else (``relocate_child`` mutates
+        it in place).  Without a model the two are equal, which is exactly
+        true for a run with no follower.
+        """
+        current = {gid: (int(pos[0]), int(pos[1]))
+                   for gid, pos in self.spawned.items()}
+        if model is not None:
+            for gid in list(current):
+                try:
+                    node = model.node(int(gid))
+                except Exception:
+                    continue
+                cfg = getattr(node, "cfg", None)
+                if cfg is None:
+                    continue
+                current[gid] = (int(cfg.i_parent_start),
+                                int(cfg.j_parent_start))
+
+        spawned: dict[str, dict] = {}
+        for gid in sorted(self.spawned):
+            fired = _placement(self.spawned[gid], f"d{gid:02d} fired placement")
+            if gid not in self.birth_times:
+                raise SpawnRunnerRefusal(
+                    f"d{gid:02d} is spawned but carries no birth time; a "
+                    "retirement policy measures episode age from it, so "
+                    "writing the block without one would checkpoint a nest "
+                    "that can never reach its min_lifetime_s")
+            spawned[str(gid)] = {
+                "fired": [fired[0], fired[1]],
+                "current": [current[gid][0], current[gid][1]],
+                "episode": int(self.episodes.get(gid, 0)),
+                "born_t": _finite(self.birth_times[gid],
+                                  f"d{gid:02d} born_t"),
+            }
+
+        retired: dict[str, dict] = {}
+        for gid in sorted(self.retired):
+            if gid not in self.retired_times:
+                raise SpawnRunnerRefusal(
+                    f"d{gid:02d} is retired but carries no retirement time; "
+                    "the re-arm cooldown is measured from it, so the slot "
+                    "could never re-arm after a resume")
+            retired[str(gid)] = {
+                "retired_t": _finite(self.retired_times[gid],
+                                     f"d{gid:02d} retired_t"),
+                "episode": int(self.episodes.get(gid, 0)),
+            }
+
+        return {
+            "watches": {
+                str(gid): {"fired": bool(watch.fired),
+                           "closed": bool(watch.closed)}
+                for gid, watch in sorted(self.controller.watches.items())},
+            "spawned": spawned,
+            "retired": retired,
+            # Every declared slot, including the never-fired ones at 0, so
+            # a restored runner cannot read "absent" as "never fired".
+            "episodes": {str(gid): int(self.episodes.get(gid, 0))
+                         for gid in sorted(self.controller.watches)},
+            "quiet_since": {
+                str(gid): (None if watch.quiet_since is None
+                           else _finite(watch.quiet_since,
+                                        f"d{gid:02d} quiet_since"))
+                for gid, watch in sorted(self._retirement.items())},
+            "spawns_executed": int(self.spawns_executed),
+        }
+
+    def restore_state(self, block) -> dict[int, tuple[int, int]]:
+        """Seed this runner from a checkpoint's ``spawn`` block.
+
+        Returns ``grid_id -> CURRENT placement`` for every restored
+        episode -- the input to the caller's one-hop relocation rebuild.
+        The runner itself is left holding the FIRED placements, which is
+        what the next ``active`` view must present.
+
+        The whole block is validated before ANY of it is applied, the same
+        candidate posture :meth:`on_leg_boundary` keeps: a refusal must not
+        leave a half-seeded runner that then integrates.
+        """
+        if not isinstance(block, dict):
+            raise SpawnRunnerRefusal(
+                "the checkpoint's spawn block must be a mapping, got "
+                f"{type(block).__name__}")
+        unknown = sorted(set(block) - set(SPAWN_STATE_KEYS))
+        if unknown:
+            raise SpawnRunnerRefusal(
+                f"the checkpoint's spawn block carries key(s) {unknown} "
+                "this build does not know; seeding the runner from a policy "
+                "state it can only read in part is how a resumed run "
+                "silently re-fires or holds a slot, so this refuses")
+        missing = sorted(set(SPAWN_STATE_KEYS) - set(block))
+        if missing:
+            named = "; ".join(f"{key}: {_SPAWN_STATE_BREAKAGE[key]}"
+                              for key in missing)
+            raise SpawnRunnerRefusal(
+                f"the checkpoint's spawn block is missing {missing}. Each "
+                f"decides the next leg boundary -- {named} -- so a partial "
+                "block is refused rather than defaulted")
+
+        declared = set(self.controller.watches)
+
+        def slot(raw, where: str) -> int:
+            gid = int(raw)
+            if gid not in declared:
+                raise SpawnRunnerRefusal(
+                    f"the checkpoint's spawn {where} names d{gid:02d}, "
+                    "which this experiment does not declare as a dormant "
+                    f"spawn slot (declared: {sorted(declared)}); the "
+                    "checkpoint and the config describe different trees")
+            return gid
+
+        def only(row, allowed, where: str) -> dict:
+            if not isinstance(row, dict):
+                raise SpawnRunnerRefusal(
+                    f"the checkpoint's spawn {where} must be a mapping, got "
+                    f"{type(row).__name__}")
+            extra = sorted(set(row) - set(allowed))
+            short = sorted(set(allowed) - set(row))
+            if extra or short:
+                raise SpawnRunnerRefusal(
+                    f"the checkpoint's spawn {where} has key(s) {extra} this "
+                    f"build does not know and is missing {short}; the entry "
+                    "is honored in full or refused")
+            return row
+
+        watches: dict[int, tuple[bool, bool]] = {}
+        for raw, row in dict(block["watches"]).items():
+            gid = slot(raw, "watches")
+            only(row, ("fired", "closed"), f"watches d{gid:02d}")
+            watches[gid] = (bool(row["fired"]), bool(row["closed"]))
+        absent = sorted(declared - set(watches))
+        if absent:
+            raise SpawnRunnerRefusal(
+                f"the checkpoint's spawn watches say nothing about "
+                f"{['d%02d' % gid for gid in absent]}; a slot restored by "
+                "omission defaults to un-fired and re-fires at the next "
+                "boundary, so every declared slot must appear")
+
+        episodes = {gid: 0 for gid in declared}
+        for raw, value in dict(block["episodes"]).items():
+            episodes[slot(raw, "episodes")] = int(value)
+        for gid, count in episodes.items():
+            if count < 0:
+                raise SpawnRunnerRefusal(
+                    f"d{gid:02d} reports {count} episodes; the count bounds "
+                    "rearm max_firings and cannot be negative")
+
+        spawned: dict[int, tuple[int, int]] = {}
+        current: dict[int, tuple[int, int]] = {}
+        born: dict[int, float] = {}
+        for raw, row in dict(block["spawned"]).items():
+            gid = slot(raw, "spawned")
+            only(row, ("fired", "current", "episode", "born_t"),
+                 f"spawned d{gid:02d}")
+            if int(row["episode"]) != episodes[gid]:
+                raise SpawnRunnerRefusal(
+                    f"the checkpoint says d{gid:02d} is in episode "
+                    f"{int(row['episode'])} but its episode count is "
+                    f"{episodes[gid]}; the two disagree, and the count is "
+                    "what bounds rearm max_firings, so this refuses rather "
+                    "than picking one")
+            spawned[gid] = _placement(row["fired"],
+                                      f"d{gid:02d} fired placement")
+            current[gid] = _placement(row["current"],
+                                      f"d{gid:02d} current placement")
+            born[gid] = _finite(row["born_t"], f"d{gid:02d} born_t")
+
+        retired: dict[int, float] = {}
+        for raw, row in dict(block["retired"]).items():
+            gid = slot(raw, "retired")
+            only(row, ("retired_t", "episode"), f"retired d{gid:02d}")
+            if gid in spawned:
+                raise SpawnRunnerRefusal(
+                    f"the checkpoint lists d{gid:02d} as both live and "
+                    "retired; one slot serves one episode at a time, and "
+                    "restoring both would put a retired nest in the next "
+                    "leg's active tree")
+            if int(row["episode"]) != episodes[gid]:
+                raise SpawnRunnerRefusal(
+                    f"the checkpoint says d{gid:02d} retired out of episode "
+                    f"{int(row['episode'])} but its episode count is "
+                    f"{episodes[gid]}; a miscounted episode re-arms a slot "
+                    "past its declared max_firings")
+            retired[gid] = _finite(row["retired_t"], f"d{gid:02d} retired_t")
+
+        quiet: dict[int, float | None] = {}
+        for raw, value in dict(block["quiet_since"]).items():
+            gid = int(raw)
+            if gid not in self._retirement:
+                raise SpawnRunnerRefusal(
+                    f"the checkpoint's spawn quiet_since names d{gid:02d}, "
+                    "which declares no retire table in this experiment; the "
+                    "checkpoint and the config describe different policy")
+            quiet[gid] = (None if value is None
+                          else _finite(value, f"d{gid:02d} quiet_since"))
+
+        executed = int(block["spawns_executed"])
+        if executed < 0:
+            raise SpawnRunnerRefusal(
+                f"spawns_executed is {executed}; the run cannot have "
+                "un-spawned a nest")
+
+        # Validated in full; commit.
+        for gid, (fired, closed) in watches.items():
+            watch = self.controller.watches[gid]
+            watch.fired = fired
+            watch.closed = closed
+        self.spawned = dict(spawned)
+        self.episodes = dict(episodes)
+        self.birth_times = dict(born)
+        self.retired = set(retired)
+        self.retired_times = dict(retired)
+        for gid, watch in self._retirement.items():
+            watch.quiet_since = quiet.get(gid)
+        self.spawns_executed = executed
+        self.restored_current_placements = dict(current)
+        return dict(current)
 
     # -- receipts ---------------------------------------------------------
 
@@ -188,23 +525,66 @@ class SpawnRunner:
         from gpuwm.ingest.nest_spawn_init import spawn_child_from_parent
 
         self.refresh_from_model(model)
-        if not self.controller.pending:
-            return None
-
         if t is None:
             t = float(model.root.clock.elapsed_seconds)
         t = float(t)
 
+        # Re-arm only slots retired on an EARLIER boundary.  Even with a zero
+        # cooldown, retire+spawn at the same instant would let stale signal
+        # create two episodes with no inactive interval.
+        rearmed = []
+        for gid in self._rearm_ready(t):
+            self.retired.remove(gid)
+            self.controller.watches[gid].rearm(
+                t=t, episode=self.episodes.get(gid, 0) + 1)
+            self._retirement.get(gid) and self._retirement[gid].reset()
+            rearmed.append(gid)
+
         started = [node for node in model.walk_parent_first()
                    if bool(getattr(node, "_started", True))]
+        # Retirement decisions are made from the SAME pre-reset leg window as
+        # spawning.  They affect only the next leg; no op from the schedule
+        # that just completed is skipped.
+        retired_roots: list[int] = []
+        lifecycle_rows: list[dict] = []
+        for gid in sorted(self._retirement):
+            if gid not in self.spawned or gid not in model.nodes_by_grid_id:
+                continue
+            node = model.node(gid)
+            if node.parent is None:
+                continue
+            row = self._retirement[gid].evaluate(
+                node.parent.state, node.cfg, t=t,
+                born_t=self.birth_times.get(gid, t))
+            lifecycle_rows.append(row)
+            if row.get("retire"):
+                retired_roots.append(gid)
+
+        retired_grid_ids: set[int] = set()
+        for gid in retired_roots:
+            retired_grid_ids.update(self._descendants(gid))
+        # Only declared spawn slots participate in the active-experiment map;
+        # runtime detachment below also receives static descendants.
+        for gid in sorted(retired_grid_ids):
+            if gid in self.spawned:
+                self.spawned.pop(gid, None)
+                self.retired.add(gid)
+                self.retired_times[gid] = t
+                watch = self._retirement.get(gid)
+                if watch is not None:
+                    watch.reset()
+
         parent_states = {int(node.cfg.grid_id): node.state
-                         for node in started}
+                         for node in started
+                         if int(node.cfg.grid_id) not in retired_grid_ids}
+
         # A watch must not read signal that already lives under another
         # nest, so every LIVE child's footprint is excluded; evaluate_all
         # chains the ones fired at this same boundary into the set too.
         active_footprints = tuple(
             NestFootprint.coerce(node.cfg) for node in started
-            if node.parent is not None)
+            if node.parent is not None
+            and int(node.cfg.grid_id) not in retired_grid_ids)
 
         events = self.controller.evaluate_all(
             parent_states, t, active_footprints=active_footprints)
@@ -217,8 +597,17 @@ class SpawnRunner:
         for parent_state in parent_states.values():
             reset_tracker_window(parent_state, UH_SPAWN_WINDOW_SLOT)
         if not events:
-            self._record({"event": "held", "elapsed_seconds": t,
-                          "pending": list(self.controller.pending)})
+            recorded = self._record({
+                "event": "lifecycle" if (retired_grid_ids or rearmed) else "held",
+                "elapsed_seconds": t, "pending": list(self.controller.pending),
+                "retired_grid_ids": sorted(retired_grid_ids),
+                "retired_roots": sorted(retired_roots),
+                "rearmed_grid_ids": sorted(rearmed),
+                "lifecycle_receipts": lifecycle_rows})
+            if retired_grid_ids or rearmed:
+                record = dict(recorded)
+                record["experiment"] = self.active
+                return record
             return None
 
         # active_experiment FIRST: it is what carries the fired placement
@@ -237,7 +626,15 @@ class SpawnRunner:
                 int(event.i_parent_start), int(event.j_parent_start))
         from gpuwm.experiment import active_experiment
 
-        active = active_experiment(self.experiment, candidate)
+        # The births of THIS boundary join the epoch map before the view
+        # is built: the newborn's own clock is minted off this object, so
+        # an epoch recorded only after the fire would leave the first
+        # child clock -- the one it is born holding -- reading t = 0.
+        candidate_births = dict(self.birth_times)
+        for event in events:
+            candidate_births[int(event.grid_id)] = float(t)
+        active = active_experiment(self.experiment, candidate,
+                                   birth_times=candidate_births)
 
         born = []
         for event in events:
@@ -258,8 +655,13 @@ class SpawnRunner:
                 trigger_receipt=event.receipt)
             self._child_results[gid] = receipt["child_result"]
             self.spawned[gid] = candidate[gid]
+            self.retired.discard(gid)
+            self.retired_times.pop(gid, None)
+            self.episodes[gid] = self.episodes.get(gid, 0) + 1
+            self.birth_times[gid] = t
             self.spawns_executed += 1
             born.append({
+                "episode": int(self.episodes[gid]),
                 "grid_id": gid,
                 "placement": [int(event.i_parent_start),
                               int(event.j_parent_start)],
@@ -275,6 +677,12 @@ class SpawnRunner:
             "born": born,
             "active_grid_ids": [int(dc.grid_id) for dc in active.domains],
             "pending_after": list(self.controller.pending),
+            "retired_grid_ids": sorted(retired_grid_ids),
+            "retired_roots": sorted(retired_roots),
+            "rearmed_grid_ids": sorted(rearmed),
+            "lifecycle_receipts": lifecycle_rows,
+            "episode_by_grid_id": {str(g): int(self.episodes[g])
+                                   for g in sorted(self.episodes)},
         })
         # The RETURNED record carries live objects for the driver; the
         # RECORDED one must stay JSON-safe, because self.receipts is what
@@ -350,6 +758,8 @@ class SpawnRunner:
             "spawned": {str(gid): list(pos)
                         for gid, pos in sorted(self.spawned.items())},
             "never_fired": unfired,
+            "episodes": {str(g): int(v) for g, v in sorted(self.episodes.items())},
+            "retired": sorted(self.retired),
         })
         if model is not None and getattr(
                 model, "_spawn_receipts", None) is not self.receipts:
@@ -357,4 +767,5 @@ class SpawnRunner:
         return entry
 
 
-__all__ = ["SPAWN_RUNNER_CONTRACT", "SpawnRunner", "SpawnRunnerRefusal"]
+__all__ = ["SPAWN_RUNNER_CONTRACT", "SPAWN_STATE_KEYS", "SpawnRunner",
+           "SpawnRunnerRefusal"]

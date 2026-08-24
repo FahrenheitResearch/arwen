@@ -224,9 +224,10 @@ def _source_identity() -> dict[str, object]:
     manifest_sha256 = identity.pop("distribution_manifest_sha256", None)
     if manifest_sha256 is not None:
         source_sha256["distribution/manifest.json"] = manifest_sha256
-    installed_wheel = identity.pop("installed_wheel", None)
-    if installed_wheel is not None:
-        identity["installed_wheel"] = installed_wheel
+    for key in ("installed_wheel", "installed_editable"):
+        bound = identity.pop(key, None)
+        if bound is not None:
+            identity[key] = bound
     return {**identity, "source_sha256": source_sha256}
 
 

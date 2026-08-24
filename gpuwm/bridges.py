@@ -161,6 +161,48 @@ BRIDGE_ABI_MARKERS = {
     # -- whose tie-breaking is traversal order -- while reporting the
     # Rust engine as present.
     "obs_regrid": b"gpuwm_obsregrid_build_plan",
+    # The MPAS mesh generator behind `gpuwm mesh`.  The marker is its
+    # ARGUMENT VECTOR, spelled out, because that is the literal which
+    # changes exactly when the request contract changes: a binary built
+    # before `--cells` meant a cell count still launches, still prints a
+    # usage line, and would then size a mesh from a flag it reads
+    # differently -- the 1.1.0 GFS series-file failure with a mesh on the
+    # other end, and more expensive, because a mesh is minutes of
+    # relaxation before anything looks wrong.  `--card` is in the vector
+    # for the same reason and a sharper one: a build predating it accepts
+    # `--vram-gib 16` alone and answers 79,717 cells from ONE card's baked
+    # fixed term, which is the wrong number on any other part -- 133,144
+    # on the 70 SM card, sized against a measured fixed term instead of a
+    # borrowed one.  Spelled to match gpuwm.mpas_mesh.MESH_ABI_MARKER; a
+    # test binds the two.
+    "rw_mpas_mesh": (
+        b"rw_mpas_mesh --out GRID.nc [--spec SPEC.json | --background-km KM "
+        b"| --from-centres GRID.nc] [--cells N | --card KEY [--vram-gib X]] "
+        b"[--fit-spacing yes|no] [--sweeps N] [--tolerance X] [--omega X] "
+        b"[--receipt JSON] [--clobber] [--dry-run] [--list-cards]"),
+    # The MPAS static builder, the other half of what `gpuwm mesh`
+    # delivers.  The literal is the argument vector for the same reason
+    # the generator's is: a build predating the `--compare` grading route
+    # or the `--nominal-dx-m` declaration still launches and still
+    # answers `--version`, and would then write a static whose
+    # nominalMinDc the mesh registry rejects -- after the geography pass,
+    # which is the whole cost of the run.  Spelled to match
+    # gpuwm.rustwx_static.STATIC_ABI_MARKER; a test binds the two.
+    "rw_mpas_static": b"rw_mpas_static --grid GRID.nc --out STATIC.nc",
+    # The initial-condition builder, the mesh generator's sibling out of
+    # the same crate.  Its own argument vector, truncated at the head
+    # rather than carried whole: the crate's literal embeds a `\n` in the
+    # middle of the vector, and a marker that has to reproduce an
+    # embedded newline exactly is a marker that breaks on a reflow that
+    # changed nothing.  The head names the four arguments whose meaning
+    # a stale build would get wrong.
+    "rw_mpas_init": (
+        b"rw_mpas_init --met MET --static STATIC.nc --capsule CAPSULE.nc"),
+    # The history converter.  Its marker is the OUTPUT SCHEMA name and
+    # the progress tokens, like the mapped engine's, because that is the
+    # literal which changes exactly when the tape contract changes.
+    "rw_mpas_convert": (
+        b"gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED"),
 }
 
 #: True when the shell a remedy will be pasted into is Windows

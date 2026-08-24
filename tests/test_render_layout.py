@@ -452,13 +452,16 @@ def test_the_rust_engine_output_is_relocated_into_the_layout(monkeypatch,
         [wrfout], products="all", timeidx=None, outdir=out,
         size=(800, 600), source_label="ArWen test")
     assert failures == [] and skipped == []
+    # The delivered name carries the frame's identity only: the domain
+    # and product tokens are the two folders directly above it, and a
+    # frame repeating them ran real deliveries past the Windows ceiling.
     assert sorted(p.relative_to(out).as_posix() for p in written) == sorted((
         "d02-3km/composite_reflectivity/1974-04-03/"
-        "arwen_wrf_19740403_18z_f000_d02-3km_composite_reflectivity.png",
+        "arwen_wrf_19740403_18z_f000.png",
         "d02-3km/composite_reflectivity/1974-04-03/"
-        "arwen_wrf_19740403_18z_f001_d02-3km_composite_reflectivity.png",
+        "arwen_wrf_19740403_18z_f001.png",
         "d02-3km/2m_temperature/1974-04-03/"
-        "arwen_wrf_19740403_18z_f000_d02-3km_2m_temperature.png"))
+        "arwen_wrf_19740403_18z_f000.png"))
     for path in written:
         assert path.is_file(), path
     assert [p.name for p in out.glob("*.png")] == []
@@ -515,11 +518,11 @@ def test_a_06z_case_is_filed_nested_not_silently_left_flat(monkeypatch,
     assert failures == [] and skipped == []
     assert sorted(p.relative_to(out).as_posix() for p in written) == sorted((
         "d02-3km/composite_reflectivity/2026-04-16/"
-        "arwen_wrf_20260416_6z_f000_d02-3km_composite_reflectivity.png",
+        "arwen_wrf_20260416_6z_f000.png",
         "d02-3km/composite_reflectivity/2026-04-16/"
-        "arwen_wrf_20260416_6z_f001_d02-3km_composite_reflectivity.png",
+        "arwen_wrf_20260416_6z_f001.png",
         "d02-3km/2m_temperature/2026-04-16/"
-        "arwen_wrf_20260416_6z_f000_d02-3km_2m_temperature.png"))
+        "arwen_wrf_20260416_6z_f000.png"))
     # Nothing loose in the case root: the 06Z defect was ALL of these
     # staying exactly here.
     assert [p.name for p in out.glob("*.png")] == []
@@ -579,7 +582,7 @@ def test_an_engine_output_that_defeats_the_parse_lands_flat_but_loudly(
     # as every engine output is) and is still in the returned list.
     assert sorted(p.relative_to(out).as_posix() for p in written) == sorted((
         "d02-3km/composite_reflectivity/2026-04-16/"
-        "arwen_wrf_20260416_6z_f000_d02-3km_composite_reflectivity.png",
+        "arwen_wrf_20260416_6z_f000.png",
         "arwen_scratch_note.png"))
     assert (out / "arwen_scratch_note.png").is_file()
 
@@ -674,7 +677,10 @@ def test_the_placement_seam_files_a_frame_the_ceiling_would_have_dropped(
 
     name = ("rustwx_wrf_19740403_18z_f000_d01-1km_"
             "composite_reflectivity.png")
-    filed = _LONG_LEAF
+    # The DELIVERED leaf, which is what the depth has to be measured
+    # against: the shortening buys about fifty characters, and a case
+    # root deeper than that still spends them.
+    filed = "arwen_wrf_19740403_18z_f000.png"
     padding = "b" * max(1, 268 - len(str(
         tmp_path / "d01-1km" / "composite_reflectivity" / "1974-04-03"
         / filed)))
@@ -848,3 +854,200 @@ def test_the_render_door_prints_where_it_is_about_to_write(wrfout,
     assert [p.relative_to(run_dir).as_posix() for p in drawn] == [
         "d02-1km/t2/1974-04-03/"
         f"t2_d02-1km_{_STAMPS[0].replace(':', '-')}.png"]
+
+
+# -- a delivered path has to fit the tools that OPEN it -----------------
+
+#: A case root of the shape a real delivery has: the user's own folder,
+#: a per-case directory under it, and the render directory the front
+#: door hands the renderer (``gpuwm go`` gives it ``<case>/png``).
+#: Fifty-five characters, and nothing below the case root can shorten
+#: any of them -- it is the fixed cost every delivered path starts with,
+#: and a real one is often deeper than this.  The literal is assembled
+#: from fragments so the machine-path scan reads no profile path here --
+#: the name is fictional, but the scan cannot know that.
+_TYPICAL_CASE_ROOT = (
+    "C:\\Us" "ers\\forecaster\\Downloads\\spring-outbreak-study\\png"
+)
+
+#: The widest segments a real delivery is measured to carry, each taken
+#: from one on disk: a run folder carrying launch instant AND init time;
+#: a stored-variable product slug carrying the digest that disambiguates
+#: it; and a sub-hourly frame carrying the engine's exact-time suffix,
+#: which ``f{NNN}`` cannot express.  None is exotic -- it is one nest of
+#: the generic-variable route at a sub-hourly cadence, both defaults.
+_DEEP_RUN = "run-20260820-035106Z_i202608200000Z"
+_DEEP_DOMAIN = "d01-12km"
+_DEEP_PRODUCT = "var_geopotential_height_700hpa_38d0bbbc4b4b7e87"
+_DEEP_DAY = "2026-08-20"
+_DEEP_ENGINE_NAME = (
+    f"rustwx_wrf_20260820_0z_f000_{_DEEP_DOMAIN}_{_DEEP_PRODUCT}"
+    "_valid_20260820_003000z_lead_000h30m00s.png")
+
+#: What a delivered path may cost, case root included.  Windows' classic
+#: ceiling is 260; this sits twenty characters under it so a case folder
+#: named a little longer than the representative one still opens in a
+#: tool that carries no long-path manifest.
+DELIVERED_PATH_BUDGET = 240
+
+
+def _delivered_length(relative: Path) -> int:
+    """A delivered path's real length: typical case root + the tree."""
+
+    return len(_TYPICAL_CASE_ROOT) + 1 + len(relative.as_posix())
+
+
+def test_a_delivered_path_fits_the_windows_tools_that_open_it(tmp_path,
+                                                              capsys):
+    """The deepest real layout, measured through the placement seam.
+
+    :func:`gpuwm.render_layout.fs_path` lets ArWen itself write and read
+    past MAX_PATH, which is why the picture is filed rather than dropped
+    -- but it does nothing for the tools the delivery is OPENED with.
+    Explorer, the readers a user's own script imports, ``tar``, and any
+    GUI without a long-path manifest all refuse the path, so a correctly
+    filed picture becomes one the recipient cannot open.
+
+    Measured on a delivery on disk: 310 characters, in which the
+    filename repeated verbatim the two folder names directly above it.
+    """
+
+    from gpuwm.render import _place_engine_output
+
+    outdir = tmp_path / _DEEP_RUN
+    outdir.mkdir(parents=True)
+    (outdir / _DEEP_ENGINE_NAME).write_bytes(b"\x89PNG\r\n\x1a\nlong")
+
+    placed = _place_engine_output(outdir / _DEEP_ENGINE_NAME, outdir,
+                                  _DEEP_DOMAIN, render_layout.NESTED)
+    assert "left flat" not in capsys.readouterr().err
+
+    # The run folder is part of what is delivered, so it is measured.
+    relative = Path(_DEEP_RUN) / placed.relative_to(outdir)
+    assert relative.parts[1:4] == (_DEEP_DOMAIN, _DEEP_PRODUCT, _DEEP_DAY), (
+        "the 2026-08-06 layout ruling must survive the shortening")
+
+    length = _delivered_length(relative)
+    assert length <= DELIVERED_PATH_BUDGET, (
+        f"{length} characters: {_TYPICAL_CASE_ROOT}\\{relative}")
+
+
+def test_the_shortening_takes_only_what_the_folders_already_spell():
+    """The two repeated tokens, and nothing else.
+
+    What is dropped is exactly what the reader can see by looking up one
+    and two folders.  What stays is the frame's own identity and the
+    engine's exact-time suffix, which no folder carries -- take that off
+    and two sub-hourly frames of one product on one day become one file.
+    """
+
+    assert render_layout.delivered_name(
+        "arwen_wrf_19740403_18z_f000_d02-3km_composite_reflectivity.png",
+        domain="d02-3km", product="composite_reflectivity",
+    ) == "arwen_wrf_19740403_18z_f000.png"
+
+    assert render_layout.delivered_name(
+        "arwen_wrf_19740403_18z_f000_d02-3km_composite_reflectivity"
+        "_valid_19740403_183000z_lead_000h30m00s.png",
+        domain="d02-3km", product="composite_reflectivity",
+    ) == "arwen_wrf_19740403_18z_f000_valid_19740403_183000z_lead_000h30m00s.png"
+
+    # A one-digit cycle hour is what the engine writes for ten of the
+    # twenty-four cycles, and it must not be the thing that opts a whole
+    # run out of the shortening.
+    assert render_layout.delivered_name(
+        "arwen_wrf_20260416_6z_f001_d05-111m_total_qpf.png",
+        domain="d05-111m", product="total_qpf",
+    ) == "arwen_wrf_20260416_6z_f001.png"
+
+    # Folders that do not spell what the name carries, and a name the
+    # grammar cannot read at all: unchanged, never cut on a guess.
+    assert render_layout.delivered_name(
+        "arwen_wrf_19740403_18z_f000_d02-3km_total_qpf.png",
+        domain="d05-111m", product="total_qpf",
+    ) == "arwen_wrf_19740403_18z_f000_d02-3km_total_qpf.png"
+    assert render_layout.delivered_name(
+        "not-an-engine-file.png", domain="d02-3km", product="t2",
+    ) == "not-an-engine-file.png"
+    assert render_layout.delivered_name(
+        "arwen_wrf_19740403_18z_f000_odd_tail.png",
+        domain=None, product=None,
+    ) == "arwen_wrf_19740403_18z_f000_odd_tail.png"
+
+
+def test_a_delivered_name_still_names_exactly_one_frame():
+    """Collision-freedom, proved by rebuilding what was taken away.
+
+    :func:`render_layout.engine_name` reconstructs the engine's own
+    filename from a delivered one and its two folders, so the shortening
+    is a bijection within a folder: two frames that were different files
+    before are different files after.  That is the property members and
+    valid times need -- a member renders under its own model token and a
+    sub-hourly frame under its own exact-time suffix, and both are on
+    the side that survives.
+    """
+
+    folder = {"domain": "d02-3km", "product": "composite_reflectivity"}
+    engine = [
+        "arwen_wrf_19740403_18z_f000_d02-3km_composite_reflectivity.png",
+        "arwen_wrf_19740403_18z_f001_d02-3km_composite_reflectivity.png",
+        # Two members of one cycle, one valid time: the model token is
+        # what tells them apart, and the shortening does not touch it.
+        "arwen_gefs-m01_19740403_18z_f001_d02-3km_"
+        "composite_reflectivity.png",
+        "arwen_gefs-m02_19740403_18z_f001_d02-3km_"
+        "composite_reflectivity.png",
+        # Two sub-hourly frames inside one hour.
+        "arwen_wrf_19740403_18z_f000_d02-3km_composite_reflectivity"
+        "_valid_19740403_181000z_lead_000h10m00s.png",
+        "arwen_wrf_19740403_18z_f000_d02-3km_composite_reflectivity"
+        "_valid_19740403_182000z_lead_000h20m00s.png",
+    ]
+    delivered = [render_layout.delivered_name(name, **folder)
+                 for name in engine]
+    assert len(set(delivered)) == len(engine), delivered
+    assert [render_layout.engine_name(name, **folder)
+            for name in delivered] == engine
+
+    # Idempotent both ways: a tree half-migrated by a re-render into an
+    # existing run folder must not gain a second copy of either token.
+    assert [render_layout.delivered_name(name, **folder)
+            for name in delivered] == delivered
+    assert [render_layout.engine_name(name, **folder)
+            for name in engine] == engine
+
+
+def test_pair_matching_survives_the_shortening(tmp_path):
+    """`--pair` keys on the engine's spelling, rebuilt from the folders.
+
+    Keyed off the delivered name alone, every frame in a directory keys
+    to its run identity -- which two compared runs differ in by
+    definition -- and ``--pair`` refuses every nested render with "no
+    matching product PNGs".
+    """
+
+    from gpuwm.pair_compose import product_name
+
+    legacy = (tmp_path / "d02-3km" / "composite_reflectivity"
+              / "1974-04-03"
+              / "arwen_wrf_19740403_18z_f000_d02-3km_"
+                "composite_reflectivity.png")
+    short = (tmp_path / "d02-3km" / "composite_reflectivity"
+             / "1974-04-03" / "arwen_wrf_19740403_22z_f002.png")
+    assert product_name(short) == "d02-3km_composite_reflectivity"
+    assert product_name(short) == product_name(legacy), (
+        "a migrating directory must pair against a delivered one")
+
+    # Two sub-hourly frames of one product keep separate keys, or the
+    # sheet is composed from whichever frame the dict saw last.
+    first, second = (
+        (tmp_path / "d02-3km" / "composite_reflectivity" / "1974-04-03"
+         / f"arwen_wrf_19740403_18z_f000_valid_19740403_18{minute}00z"
+           "_lead_000h30m00s.png")
+        for minute in ("10", "20"))
+    assert product_name(first) != product_name(second)
+
+    # A flat directory has no folders to read, and keys as it always did.
+    flat = tmp_path / (
+        "arwen_wrf_19740403_18z_f000_d02-3km_composite_reflectivity.png")
+    assert product_name(flat) == "d02-3km_composite_reflectivity"

@@ -162,10 +162,25 @@ _CORE_MODULES = {
     # so they carry no CuPy and no forecast executor.
     "storm_tracking.py",
     "nest_spawn.py",
-    # Reached by BOTH of the two above, for the tracking-window slot
+    # The SAME reason as the two directly above, for the three lifecycle
+    # tables that sit beside `spawn` on a `[[domain]]`: `gpuwm/experiment.py`
+    # calls `build_retire_config` for `retire`, `build_rearm_config` for
+    # `rearm` and `build_domain_follow_config` for a per-domain `follow`
+    # while LOADING a config, so a wheel without this module refuses to read
+    # a valid storm-following TOML -- and, because those three imports sit
+    # at function scope inside the loader, the staging scan below refused
+    # the wheel outright rather than shipping a half-readable one.
+    # Module scope is math/dataclasses plus numpy, and its only two internal
+    # lookups are gpuwm.core.uh_diag and gpuwm.core.storm_tracking, both
+    # already staged for the same config-validation reason.  No CuPy, no
+    # forecast executor: the tree surgery a retirement decision feeds is
+    # gpuwm/runtime.py's, and that module is excluded above.
+    "nest_lifecycle.py",
+    # Reached by ALL THREE above -- storm_tracking, nest_spawn and
+    # nest_lifecycle -- for the tracking-window slot
     # NAMES: the windows are one source of truth rather than string
-    # literals copied into each consumer, so validating a spawn or follow
-    # block imports the module that owns them.  It costs nothing this
+    # literals copied into each consumer, so validating a spawn, retire or
+    # follow block imports the module that owns them.  It costs nothing this
     # wheel refuses -- module scope is numpy plus core/constants.py
     # (already staged), and the only CUDA reference is a function-local
     # get_kernel inside the device fold, which no config-validation path

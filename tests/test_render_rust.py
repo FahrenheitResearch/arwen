@@ -307,6 +307,33 @@ def _png_size(path) -> tuple[int, int]:
     return width, height
 
 
+def _delivered(out: Path) -> list[str]:
+    """Every delivered PNG under ``out``, as a relative posix path.
+
+    The PATH, not the bare name.  The delivered filename no longer
+    carries the domain and product tokens -- the two folders above it
+    spell exactly those, and a frame repeating them ran real deliveries
+    past Windows' 260-character ceiling -- so a test asking "is this a
+    d03-333m reflectivity frame?" reads one and two folders up.  Folder
+    plus name carries what the v2.4.1 filename carried, so what these
+    tests pin is unchanged.
+    """
+
+    return sorted(p.relative_to(out).as_posix()
+                  for p in out.rglob("*.png"))
+
+
+def _domain_of(delivered: str) -> str:
+    """The domain token of one delivered path from :func:`_delivered`.
+
+    Third from the end: ``<domain>/<product>/<valid-day>/<file>.png``.
+    Counted from the RIGHT because what is above the domain is the
+    caller's -- the run-stamped folder, and whatever ``--out`` was.
+    """
+
+    return Path(delivered).parts[-4]
+
+
 @needs_renderer
 def test_rust_engine_renders_every_frame_including_half_hourly(
         wrfout, tmp_path, capsys):
@@ -315,7 +342,7 @@ def test_rust_engine_renders_every_frame_including_half_hourly(
                    "--out", str(out)])
     assert rc == 0
     assert "render: engine rust" in capsys.readouterr().out
-    produced = sorted(p.name for p in out.rglob("*.png"))
+    produced = _delivered(out)
     assert produced, "the rust engine wrote no PNGs"
     # Both frames rendered -- the :30 frame is the sub-hourly lead the
     # source renderer refused (exact-time ordinal axis).
@@ -340,7 +367,7 @@ def test_rust_engine_timeidx_selects_the_half_hourly_frame(
                    "--products", "refl", "--timeidx", "1",
                    "--out", str(out)])
     assert rc == 0
-    produced = [p.name for p in out.rglob("*.png")]
+    produced = _delivered(out)
     assert len(produced) == 1, produced
     assert "composite_reflectivity" in produced[0]
     assert _LEADS[1] in produced[0], produced
@@ -354,7 +381,7 @@ def test_rust_engine_maps_shared_product_names(wrfout, tmp_path):
                    "--products", "refl,t2", "--timeidx", "0",
                    "--size", "800x600", "--out", str(out)])
     assert rc == 0
-    produced = sorted(p.name for p in out.rglob("*.png"))
+    produced = _delivered(out)
     assert len(produced) == 2, produced
     assert any("composite_reflectivity" in name for name in produced)
     assert any("2m_temperature" in name for name in produced)
@@ -386,7 +413,7 @@ def test_wind10_renders_the_wind_not_a_pressure_chart(wrfout, tmp_path):
                    "--products", "wind10", "--timeidx", "0",
                    "--size", "800x600", "--out", str(out)])
     assert rc == 0
-    produced = sorted(p.name for p in out.rglob("*.png"))
+    produced = _delivered(out)
     assert len(produced) == 1, produced
     assert "10m_wind_speed_and_direction" in produced[0], produced
     assert "mslp" not in produced[0], (
@@ -440,11 +467,15 @@ def test_two_domains_at_one_lead_do_not_overwrite_each_other(
                    "--engine", "rust", "--products", "refl",
                    "--timeidx", "0", "--out", str(out)])
     assert rc == 0
-    produced = sorted(p.name for p in out.rglob("*.png"))
+    produced = _delivered(out)
     assert len(produced) == 2, (
         "two domains at one lead collapsed to one file", produced)
-    assert any("_d02-1km_" in name for name in produced), produced
-    assert any("_d03-333m_" in name for name in produced), produced
+    # The distinguishing token is the domain FOLDER now.  It has to stay
+    # distinguishing: the two frames share model, cycle and lead, so
+    # without it they are one path and one forecast silently replaces
+    # the other, which is the data loss this test exists for.
+    assert any(_domain_of(name) == "d02-1km" for name in produced), produced
+    assert any(_domain_of(name) == "d03-333m" for name in produced), produced
     # Both survive as real images, not one truncated overwrite.
     for png in out.rglob("*.png"):
         assert png.stat().st_size > 5_000, png.name
@@ -459,10 +490,10 @@ def test_domain_and_resolution_token_on_the_exact_time_axis(
     rc = cli.main(["render", str(wrfout), "--engine", "rust",
                    "--products", "refl", "--out", str(out)])
     assert rc == 0
-    produced = sorted(p.name for p in out.rglob("*.png"))
+    produced = _delivered(out)
     assert len(produced) == 2, produced
     for name in produced:
-        assert "_d02-1km_" in name, name
+        assert _domain_of(name) == "d02-1km", name
         assert "native_grid" not in name, name
 
 
@@ -489,10 +520,10 @@ def test_unknown_domain_identity_keeps_the_native_grid_token(
     rc = cli.main(["render", str(path), "--engine", "rust",
                    "--products", "refl", "--out", str(out)])
     assert rc == 0
-    produced = [p.name for p in out.rglob("*.png")]
+    produced = _delivered(out)
     assert produced, "the anonymous-domain file rendered nothing"
     for name in produced:
-        assert "native_grid" in name, name
+        assert _domain_of(name) == "native_grid", name
 
 
 def test_the_engines_skip_line_is_read_and_is_not_a_failure(monkeypatch,
@@ -743,9 +774,10 @@ def test_engine_outputs_are_rebranded_to_the_product_prefix(monkeypatch,
     written, failures, _skipped = render_module.render_wrfouts_rust(
         [tmp_path / "wrfout_d02_x.nc"], products="sbcape", timeidx=0,
         outdir=outdir, size=(800, 600))
+    delivered = "arwen_wrf_19740403_12z_f003.png"
     assert failures == []
     assert sorted(p.name for p in written) == [
-        "arwen_wrf_19740403_12z_f003_d02-3km_sbcape.png",
+        delivered,
         ghost,
         "unbranded_extra.png",
     ]
@@ -753,14 +785,17 @@ def test_engine_outputs_are_rebranded_to_the_product_prefix(monkeypatch,
     # 2.5.0 it moves TWICE -- rebranded, then filed under the render
     # layout (gpuwm.render_layout) -- and a name the engine's grammar
     # does not produce is left exactly where the engine put it, because
-    # nothing here knows its product or its valid time.
+    # nothing here knows its product or its valid time.  The filed name
+    # drops the domain and product tokens, which are the two folders it
+    # lands in; carrying them twice is what ran delivered paths past the
+    # Windows ceiling.
     assert (outdir / "d02-3km" / "sbcape" / "1974-04-03"
-            / "arwen_wrf_19740403_12z_f003_d02-3km_sbcape.png").is_file()
+            / delivered).is_file()
     assert not (outdir / branded).exists()
     assert (outdir / "unbranded_extra.png").is_file()
     # The per-file console lines name what is actually on disk.
     transcript = capsys.readouterr().out
-    assert "arwen_wrf_19740403_12z_f003_d02-3km_sbcape.png" in transcript
+    assert delivered in transcript
     assert branded not in transcript
 
 
@@ -1203,7 +1238,7 @@ def test_windowed_products_render_on_whole_hour_stores(
     rc = cli.main(["render", str(wrfout_hourly), "--engine", "rust",
                    "--products", "qpf_total", "--out", str(out)])
     assert rc == 0
-    produced = [p.name for p in out.rglob("*.png")]
+    produced = _delivered(out)
     assert any("qpf_total" in name for name in produced), produced
 
 

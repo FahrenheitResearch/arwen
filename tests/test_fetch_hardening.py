@@ -88,7 +88,14 @@ def test_interrupted_force_leaves_no_receipt_claiming_replaced_bytes(
     _gfs(out, (0, 3, 6))
     original = _manifest(out)
     claimed = {item["name"]: item["sha256"] for item in original["files"]}
-    assert len(claimed) == 4
+    # Three payloads, the series, and the three front-door receipts the
+    # route writes beside them: the manifest claims every canonical file
+    # in the directory, so every one of them has to survive a force.
+    assert set(claimed) == {
+        "gfs.t06z.pgrb2.0p25.f000.subset.grib2",
+        "gfs.t06z.pgrb2.0p25.f003.subset.grib2",
+        "gfs.t06z.pgrb2.0p25.f006.subset.grib2",
+        "gfs-series.tsv", "SHA256SUMS", "inputs.txt", "prep-command.txt"}
 
     def fail_partway(url, destination, **kwargs):
         if f"f{fail_on_hour:03d}" in url:
@@ -147,10 +154,17 @@ def test_force_sweeps_receipts_before_any_payload(tmp_path, monkeypatch):
     monkeypatch.setattr(fetch_guard, "quarantine", record)
     _gfs(out, (0, 3), force=True)
 
+    # The manifest first -- while it is canonical the directory still
+    # presents itself as a completed fetch -- then the rest of the front
+    # door, every file of which names payloads, then the series, and
+    # only then a payload.
+    receipts = len(fetch.FETCH_RECEIPT_NAMES)
     assert order[0] == fetch.FETCH_MANIFEST_NAME
-    assert order[1] == "gfs-series.tsv"
-    assert set(order[2:]) == {"gfs.t06z.pgrb2.0p25.f000.subset.grib2",
-                              "gfs.t06z.pgrb2.0p25.f003.subset.grib2"}
+    assert set(order[:receipts]) == set(fetch.FETCH_RECEIPT_NAMES)
+    assert order[receipts] == "gfs-series.tsv"
+    assert set(order[receipts + 1:]) == {
+        "gfs.t06z.pgrb2.0p25.f000.subset.grib2",
+        "gfs.t06z.pgrb2.0p25.f003.subset.grib2"}
 
 
 # ---------------------------------------------------------------------------

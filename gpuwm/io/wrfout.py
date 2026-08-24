@@ -1989,7 +1989,8 @@ class PerDomainWrfoutWriters:
 
     def __init__(self, model, output_dir, *, start_time, title,
                  initial_condition=None, source=None,
-                 progress_callback=None, history_selection=None):
+                 progress_callback=None, history_selection=None,
+                 episodes_by_grid_id=None):
         """``initial_condition`` is the preparation receipt's provenance
         block, stamped onto every domain's frames so the durable artifact
         states what its initial state was and not only when it began.
@@ -2004,6 +2005,18 @@ class PerDomainWrfoutWriters:
         A caller whose progress object does not exist yet at
         construction time uses :meth:`attach_progress_callback` instead;
         both spellings run the same one implementation.
+
+        ``episodes_by_grid_id`` is the RESUME seed: a domain restored in
+        the middle of its second lifecycle episode must write
+        ``d0N/episode-002/`` from its FIRST frame, not from the next
+        spawn boundary, or one episode's history lands in two places.
+        The default -- empty -- gives every domain episode 0, which is
+        the flat historical pathname, so a run that is not a lifecycle
+        resume is byte-inert under this parameter.  Values come from
+        :func:`gpuwm.core.nest_lifecycle.output_episode`, the same
+        function ``add_domain``'s caller uses at a live spawn boundary,
+        so a resumed episode and a freshly born one are numbered by one
+        rule.
         """
         from gpuwm.runtime import _global_wrf_attrs, _metadata_frame
 
@@ -2020,7 +2033,14 @@ class PerDomainWrfoutWriters:
         prepared = model._prepared_by_grid_id
         self._writers = {}
         self._metadata_by_grid_id = {}
+        self._episode_by_grid_id = {}
+        self._archived_paths = []
+        #: Every final pathname THIS writer set has published, which is
+        #: what the duplicate-valid-time guard in submit() is scoped to.
+        self._published_paths = set()
         self._abort_event = threading.Event()
+        resumed_episodes = {int(gid): int(episode) for gid, episode
+                            in dict(episodes_by_grid_id or {}).items()}
         for node in model.walk_parent_first():
             case = prepared[node.cfg.grid_id]
             configured_start = getattr(node.cfg, "start_time", None)
@@ -2029,6 +2049,8 @@ class PerDomainWrfoutWriters:
                 else configured_start)
             self._metadata_by_grid_id[node.cfg.grid_id] = _metadata_frame(
                 node.grid, case.static_fields)
+            self._episode_by_grid_id[node.cfg.grid_id] = resumed_episodes.get(
+                int(node.cfg.grid_id), 0)
             self._writers[node.cfg.grid_id] = AsyncDomainWrfoutWriter(
                 nx=node.cfg.run.nx, ny=node.cfg.run.ny, nz=node.cfg.run.nz,
                 dx=node.cfg.run.dx, dy=node.cfg.run.dy, title=title,
@@ -2093,12 +2115,12 @@ class PerDomainWrfoutWriters:
 
     @property
     def paths(self) -> tuple[Path, ...]:
-        ret = []
+        ret = list(self._archived_paths)
         for gid in sorted(self._writers):
             ret.extend(self._writers[gid].paths)
         return tuple(ret)
 
-    def add_domain(self, grid_id: int, *, grid, static_fields) -> None:
+    def add_domain(self, grid_id: int, *, grid, static_fields, episode: int = 0) -> None:
         """Mint a writer for a domain that appeared AFTER construction.
 
         A spawn-triggered nest does not exist when the writer set is
@@ -2124,6 +2146,7 @@ class PerDomainWrfoutWriters:
                              else configured_start)
         self._metadata_by_grid_id[grid_id] = _metadata_frame(
             grid, static_fields)
+        self._episode_by_grid_id[grid_id] = int(episode)
         self._writers[grid_id] = AsyncDomainWrfoutWriter(
             nx=node.cfg.run.nx, ny=node.cfg.run.ny, nz=node.cfg.run.nz,
             dx=node.cfg.run.dx, dy=node.cfg.run.dy, title=self.title,
@@ -2137,6 +2160,20 @@ class PerDomainWrfoutWriters:
                 source=self._source),
             abort_event=self._abort_event,
             history_selection=self._selection_for(node.cfg))
+
+    def remove_domain(self, grid_id: int) -> None:
+        """Drain and close one retired episode without losing its paths."""
+        grid_id = int(grid_id)
+        writer = self._writers.pop(grid_id, None)
+        if writer is None:
+            return
+        writer.drain()
+        writer.close()
+        self._archived_paths.extend(writer.paths)
+        if writer.paths:
+            self.last_durable_wrfout = writer.paths[-1]
+        self._metadata_by_grid_id.pop(grid_id, None)
+        self._episode_by_grid_id.pop(grid_id, None)
 
     def refresh_domain(self, grid_id: int, *, grid, static_fields) -> None:
         """Re-derive one domain's frame metadata after a relocation.
@@ -2185,8 +2222,29 @@ class PerDomainWrfoutWriters:
         """
         seconds = ticks / node.clock.tick_den
         valid_time = self.start_time + timedelta(seconds=seconds)
-        path = self.output_dir / wrfout_filename(
-            valid_time, node.cfg.grid_id)
+        episode = int(self._episode_by_grid_id.get(node.cfg.grid_id, 0))
+        base_dir = self.output_dir
+        if episode > 0:
+            base_dir = (self.output_dir / f"d{int(node.cfg.grid_id):02d}"
+                        / f"episode-{episode:03d}")
+            base_dir.mkdir(parents=True, exist_ok=True)
+        path = base_dir / wrfout_filename(valid_time, node.cfg.grid_id)
+        # SAME-RUN duplicates only.  The breakage this names is a lifecycle
+        # or restart boundary publishing one valid time twice inside a
+        # single run: the second frame's atomic replace destroys the first,
+        # and neither the run nor the reader can tell.  A file left by a
+        # PREVIOUS run is not that -- re-running into an existing output
+        # directory has always overwritten, and refusing it here would
+        # strand every repeat run instead of preventing a defect.
+        if path in self._published_paths:
+            raise RuntimeError(
+                f"refusing to replace history frame {path}, which THIS run "
+                f"already published for d{int(node.cfg.grid_id):02d}: a "
+                "lifecycle/restart boundary produced a duplicate valid time, "
+                "and the atomic replace would silently destroy the earlier "
+                "frame. (A frame left by a PREVIOUS run at this path is "
+                "replaced as it always has been.)")
+        self._published_paths.add(path)
         writer = self._writers[node.cfg.grid_id]
         # CARRIER PROVENANCE, snapshotted per frame.  Each valid time is
         # its own file, and the snapshot rides the ticket rather than the

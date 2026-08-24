@@ -1,11 +1,35 @@
 """``gpuwm fetch-geog``: download and stage the WPS_GEOG static tree.
 
-The static builder opens nine fixed WPS_GEOG dataset directories
+The WRF static builder opens nine fixed WPS_GEOG dataset directories
 (:data:`gpuwm.domain_wizard.GEOG_DATASETS`); until this command existed,
-staging them was entirely manual.  ``fetch-geog`` downloads the nine
-dataset tarballs, verifies every byte, extracts them into the standard
-layout, and validates each dataset the same way ``gpuwm doctor`` does
-(the ``index`` file must exist -- here it must also parse).
+staging them was entirely manual.  ``fetch-geog`` downloads the dataset
+tarballs, verifies every byte, extracts them into the standard layout,
+and validates each dataset the same way ``gpuwm doctor`` does (the
+``index`` file must exist -- here it must also parse).
+
+The pin table is wider than those nine: the MPAS static builder
+(``rw_mpas_static``) also reads the Noah-MP soil products, which arrive
+as one ``soilgrids`` archive holding seven dataset directories under a
+common parent.  A pin declares such children in ``index_subdirs`` so
+validation looks for the index where it actually is, which keeps a
+multi-dataset product table work rather than a second code path.
+
+WHICH DOOR needs a pin is a column of that table too
+(:data:`GEOG_CONSUMERS`, and each pin's ``required_by``), not a branch
+in the code that reads it.  ``wrf`` is the WRF static builder's nine;
+``mesh`` is what ``gpuwm mesh`` must open to write the static half of
+its pair, which is seven of those nine plus the soil archive.  Every
+reader -- the default fetch set, ``--datasets wrf``, and each of
+``gpuwm doctor``'s two completeness verdicts -- is that column read at
+a different scope, so adding a dataset for a future door is a row and a
+consumer name rather than a new code path.
+
+The soil archive is a REQUIRED download for the mesh door and no part
+of a WRF-only install.  It is large (864 MB compressed, ~13 GB
+unpacked) and the default fetch stages it anyway, because a tree the
+installer called complete and ``gpuwm mesh`` then refuses is worse than
+a long download nobody was surprised by.  ``--datasets wrf`` is the
+spelling for an operator who knows the mesh door is not theirs.
 
 Two download sources serve byte-identical archives:
 
@@ -74,6 +98,16 @@ GEOG_URL_BASE_ENV = "GPUWM_GEOG_URL_BASE"
 
 GEOG_SOURCES = ("hf", "ncar")
 
+#: The doors a pin can be required by.  A door a user can type, never a
+#: builder's internal name: ``wrf`` is the WRF static path (``gpuwm
+#: prepare``/``gpuwm go``, via ``rw-wps``) and ``mesh`` is ``gpuwm
+#: mesh``'s static half (``rw_mpas_static``).  A consumer name is also
+#: accepted by ``--datasets``, so the scoping is selectable and not just
+#: declarative.
+GEOG_CONSUMER_WRF = "wrf"
+GEOG_CONSUMER_MESH = "mesh"
+GEOG_CONSUMERS = (GEOG_CONSUMER_WRF, GEOG_CONSUMER_MESH)
+
 #: Subdirectory of the geog root that holds in-flight and verified
 #: archives (kept only under --keep-archives after extraction).
 ARCHIVE_SUBDIR = ".fetch-geog"
@@ -100,6 +134,30 @@ class GeogArchive:
     the same bytes, so one pin covers both sources.
     ``extracted_bytes`` is the measured sum of member sizes -- sizing
     information for humans, not a verification bar.
+
+    ``index_subdirs`` names the child directories that carry the WPS
+    ``index`` when one archive ships several datasets under a common
+    top-level directory.  Most archives are a single dataset and leave it
+    empty, which keeps the index at ``<dataset>/index``.  Declaring the
+    children here rather than special-casing an archive name is what lets
+    a future multi-dataset product be table work instead of a new code
+    path.
+
+    ``in_mandatory_bundle`` records whether NCAR's single mandatory-fields
+    bundle carries this dataset.  That is a measured fact about that one
+    archive, so a pin whose presence in it nobody has verified says False
+    and ``--bundle`` refuses the dataset up front instead of extracting
+    nothing and calling it done.
+
+    ``required_by`` names the doors that cannot open without this pin,
+    from :data:`GEOG_CONSUMERS`.  It replaced a single ``optional`` flag,
+    which could only say "somebody needs this" and "nobody does" -- and
+    the archive nine-tenths of installs never open is the one the mesh
+    door hard-requires, so that flag made ``gpuwm doctor`` choose between
+    demanding 13 GB of a WRF-only box and calling a tree complete that
+    ``gpuwm mesh`` refuses.  Scoped by consumer, each verdict reads its
+    own column and both are right.  Every pin is required by at least one
+    door; a pin no door names would be a download with no reader.
     """
 
     dataset: str
@@ -107,49 +165,83 @@ class GeogArchive:
     archive_bytes: int
     archive_sha256: str
     extracted_bytes: int
+    index_subdirs: tuple[str, ...] = ()
+    in_mandatory_bundle: bool = True
+    required_by: tuple[str, ...] = (GEOG_CONSUMER_WRF,)
 
 
-#: The nine archives, one per static-builder dataset, in
-#: GEOG_DATASETS order.  A test binds the dataset names to
-#: gpuwm.domain_wizard.GEOG_DATASETS.
+#: Both doors need this pin; only the WRF static builder does; only the
+#: mesh one does.  Spelled out here so each row's scoping reads as a
+#: column of the table rather than as an argument list.
+_WRF_AND_MESH = (GEOG_CONSUMER_WRF, GEOG_CONSUMER_MESH)
+_WRF_ONLY = (GEOG_CONSUMER_WRF,)
+_MESH_ONLY = (GEOG_CONSUMER_MESH,)
+
+#: The ten archives, in GEOG_DATASETS order with the mesh-only soil
+#: container last.  A test binds the ``wrf``-scoped names to
+#: gpuwm.domain_wizard.GEOG_DATASETS and the ``mesh``-scoped ones to
+#: gpuwm.rustwx_static.REQUIRED_GEOG_DATASETS through the child
+#: declarations, so neither column can drift from the builder it speaks
+#: for.
 GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
     GeogArchive(
         "topo_gmted2010_30s", "topo_gmted2010_30s.tar.bz2", 182721518,
         "20e02ef61b16c8d66753db8f1ede0edc0ac74e6e1b87961cdbdc483040ff22d7",
-        1884949355),
+        1884949355, required_by=_WRF_AND_MESH),
     GeogArchive(
         "modis_landuse_20class_30s_with_lakes",
         "modis_landuse_20class_30s_with_lakes.tar.bz2", 32532921,
         "fe052cc1000638c32ac7191c779ad070efae458ff0751bc4aa2a716e38bec578",
-        933120358),
+        933120358, required_by=_WRF_AND_MESH),
     GeogArchive(
         "soiltype_top_30s", "soiltype_top_30s.tar.bz2", 1639561,
         "6d45d93cc0d14ac4019f1a2857e56fb1fbc860f135e12d89fc0a569278242315",
-        933120270),
+        933120270, required_by=_WRF_AND_MESH),
     GeogArchive(
         "soiltype_bot_30s", "soiltype_bot_30s.tar.bz2", 1919818,
         "818febf2d141a46152f0990877e3ca15fd23a61961d978f71f5fdd0ea80bb335",
-        933120273),
+        933120273, required_by=_WRF_ONLY),
     GeogArchive(
         "greenfrac_fpar_modis", "greenfrac_fpar_modis.tar.bz2", 990624380,
         "a31d44c7b0c3dfcbaf933b3c30b4c6e52762a3451cf4e1951d7b49f3751b4d03",
-        11197440257),
+        11197440257, required_by=_WRF_AND_MESH),
     GeogArchive(
         "lai_modis_10m", "lai_modis_10m.tar.bz2", 2604794,
         "7dfe8e2a7c48c085c8d180ffda993ce878b3c054ed7e5c185414c1993b913ebf",
-        30863207),
+        30863207, required_by=_WRF_ONLY),
     GeogArchive(
         "albedo_modis", "albedo_modis.tar.bz2", 77919797,
         "cf0d3df8e6b07a2dc7222a0cbc023205a991859395292dc6161597faf02f8e6f",
-        628316651),
+        628316651, required_by=_WRF_AND_MESH),
     GeogArchive(
         "maxsnowalb_modis", "maxsnowalb_modis.tar.bz2", 4446019,
         "eca29b1707e184c942eb8f1bfdbafbb4e6650cb97c15784c293fda39e24c1371",
-        52359972),
+        52359972, required_by=_WRF_AND_MESH),
     GeogArchive(
         "soiltemp_1deg", "soiltemp_1deg.tar.bz2", 31057,
         "c407c0b1d9d864ff49708fa3b6ba2f17078535ccfc05a944024ad052e5f914d4",
-        138645),
+        138645, required_by=_WRF_AND_MESH),
+    # The Noah-MP soil products.  One upstream archive carries seven
+    # dataset directories, each with its own WPS index, so the pin
+    # declares the children rather than assuming an index at the top.
+    # rw_mpas_static reads soilcomp for --soilcomp and texture_layer1..4
+    # for --soilcl1..4; texture_top and texture_bot are the surface and
+    # bottom composites that ship alongside them.  The WRF static builder
+    # opens none of these, which is why GEOG_DATASETS stays at nine and
+    # why this row is scoped to the mesh door alone: a WRF-only install
+    # is not short of anything without it.  For the mesh door it is
+    # REQUIRED, not optional -- the one static writer emits the five
+    # soil-composition variables and cannot invent them.
+    # Pinned from a TLS download from UCAR on 2026-08-23, the same way
+    # and from the same host as the nine above.
+    GeogArchive(
+        "soilgrids", "soilgrids.tar.bz2", 864090244,
+        "3d42737a68a52a2be10281f0505c6cb6c05c03707e9382b3a823495afc7937bb",
+        13138518107,
+        ("soilcomp", "texture_top", "texture_bot",
+         "texture_layer1", "texture_layer2",
+         "texture_layer3", "texture_layer4"),
+        in_mandatory_bundle=False, required_by=_MESH_ONLY),
 )
 
 #: NCAR's "highest resolution mandatory fields" bundle: the fallback
@@ -164,7 +256,8 @@ MANDATORY_BUNDLE_SHA256 = \
 #: strips).  A requested dataset outside this set cannot be served by
 #: --bundle and refuses up front.
 MANDATORY_BUNDLE_DATASETS: frozenset[str] = frozenset(
-    archive.dataset for archive in GEOG_ARCHIVES)
+    archive.dataset for archive in GEOG_ARCHIVES
+    if archive.in_mandatory_bundle)
 
 
 class GeogFetchError(RuntimeError):
@@ -172,8 +265,48 @@ class GeogFetchError(RuntimeError):
 
 
 def geog_datasets() -> tuple[str, ...]:
-    """The canonical dataset order (mirrors GEOG_DATASETS)."""
+    """Every dataset ``fetch-geog`` can stage, in canonical order."""
     return tuple(archive.dataset for archive in GEOG_ARCHIVES)
+
+
+def datasets_required_by(consumer: str) -> tuple[str, ...]:
+    """The pins ``consumer``'s door cannot open without, in table order.
+
+    The scoped answer replaced a single "required set" that had to be
+    true for every door at once.  There is no such set: the WRF static
+    builder never opens the soil container and the mesh static builder
+    hard-requires it, so one list could only overstate one door's needs
+    or understate the other's.  ``gpuwm doctor`` asks per consumer and
+    reports two verdicts that do not contradict each other.
+    """
+
+    if consumer not in GEOG_CONSUMERS:
+        raise ValueError(f"unknown geography consumer {consumer!r}; "
+                         f"expected one of {', '.join(GEOG_CONSUMERS)}")
+    return tuple(archive.dataset for archive in GEOG_ARCHIVES
+                 if consumer in archive.required_by)
+
+
+def size_phrase(datasets: tuple[str, ...] | None = None) -> str:
+    """``'~2.2 GB compressed, ~30 GB unpacked'`` for a set of pins.
+
+    ``None`` means the default fetch set, which is every pin.  Decimal
+    GB, matching every other published size in this product.
+
+    Published because three surfaces quote these numbers before the
+    first byte moves -- ``gpuwm setup --with-geog``, the notice printed
+    when setup skips the tree, and ``gpuwm doctor``'s remedy -- and all
+    three carried the figure as a literal.  Adding a pin left every one
+    of them understating the download by most of its size, in the exact
+    place a reader is deciding whether to start it.
+    """
+
+    chosen = (GEOG_ARCHIVES if datasets is None
+              else tuple(archive_for(name) for name in datasets))
+    compressed = sum(archive.archive_bytes for archive in chosen) / 1e9
+    unpacked = sum(archive.extracted_bytes for archive in chosen) / 1e9
+    return (f"~{compressed:.1f} GB compressed, "
+            f"~{unpacked:.0f} GB unpacked")
 
 
 def archive_for(dataset: str) -> GeogArchive:
@@ -184,21 +317,43 @@ def archive_for(dataset: str) -> GeogArchive:
 
 
 def parse_datasets(raw: str) -> tuple[str, ...]:
-    """Parse ``--datasets`` (``all`` or a comma list) in canonical order."""
+    """Parse ``--datasets`` into dataset names, in canonical order.
+
+    Three spellings, all read off the same table: ``all`` (the default,
+    every pin -- the soil container included, which is the ruling that
+    made it a sanctioned default download), a consumer name from
+    :data:`GEOG_CONSUMERS` standing for that door's whole set, and an
+    explicit comma list.  They mix, and duplicates collapse.
+
+    ``--datasets wrf`` is the subset spelling for an operator who knows
+    the mesh door is not theirs and does not want its ~13 GB.  It is a
+    selector over the scoping column rather than a ``--skip`` flag,
+    because a flag would have to be re-argued for every future door and
+    this stays a row in the table.
+    """
 
     known = geog_datasets()
     if raw.strip().lower() == "all":
         return known
     requested = [part.strip() for part in raw.split(",") if part.strip()]
     if not requested:
-        raise ValueError("--datasets must be 'all' or a comma-separated "
-                         "list of dataset names")
-    unknown = sorted(set(requested) - set(known))
+        raise ValueError("--datasets must be 'all', a consumer name "
+                         f"({', '.join(GEOG_CONSUMERS)}), or a "
+                         "comma-separated list of dataset names")
+    picked: set[str] = set()
+    unknown: list[str] = []
+    for name in requested:
+        if name in GEOG_CONSUMERS:
+            picked.update(datasets_required_by(name))
+        elif name in known:
+            picked.add(name)
+        else:
+            unknown.append(name)
     if unknown:
         raise ValueError(
-            f"unknown dataset(s) {', '.join(unknown)}; the static builder "
-            f"reads exactly: {', '.join(known)}")
-    picked = set(requested)
+            f"unknown dataset(s) {', '.join(sorted(set(unknown)))}; expected "
+            f"'all', a consumer name ({', '.join(GEOG_CONSUMERS)}), or names "
+            f"from: {', '.join(known)}")
     return tuple(name for name in known if name in picked)
 
 
@@ -326,24 +481,33 @@ def validate_dataset_dir(root: Path, dataset: str, *,
     directory = root / dataset
     if not directory.is_dir():
         return False, f"{directory} does not exist"
-    index = directory / "index"
-    if not index.is_file():
-        return False, f"{directory} lacks its WPS `index` file"
     try:
-        from gpuwm.static.geog import parse_index
-        parsed = parse_index(index)
-        # parse_index defaults absent keys to None; a truncated or
-        # foreign file "parses" vacuously, so require the fields no real
-        # WPS index omits, and a decodable word size.
-        absent = [key for key in ("dx", "dy", "known_lat", "known_lon",
-                                  "wordsize", "tile_x", "tile_y")
-                  if getattr(parsed, key) is None]
-        if absent:
-            return False, (f"{index} lacks required WPS index key(s): "
-                           + ", ".join(absent))
-        parsed.dtype  # noqa: B018 -- raises on an undecodable wordsize
-    except Exception as error:  # any parse failure is the finding
-        return False, f"{index} does not parse as a WPS index: {error}"
+        subdirs = archive_for(dataset).index_subdirs
+    except ValueError:
+        subdirs = ()
+    # A single-dataset archive carries one index at the top; a container
+    # archive carries one per declared child.  Every index named here has
+    # to pass, so a container missing one child is a finding, not a pass
+    # earned by its siblings.
+    for index in ([directory / "index"] if not subdirs
+                  else [directory / name / "index" for name in subdirs]):
+        if not index.is_file():
+            return False, f"{index.parent} lacks its WPS `index` file"
+        try:
+            from gpuwm.static.geog import parse_index
+            parsed = parse_index(index)
+            # parse_index defaults absent keys to None; a truncated or
+            # foreign file "parses" vacuously, so require the fields no
+            # real WPS index omits, and a decodable word size.
+            absent = [key for key in ("dx", "dy", "known_lat", "known_lon",
+                                      "wordsize", "tile_x", "tile_y")
+                      if getattr(parsed, key) is None]
+            if absent:
+                return False, (f"{index} lacks required WPS index key(s): "
+                               + ", ".join(absent))
+            parsed.dtype  # noqa: B018 -- raises on an undecodable wordsize
+        except Exception as error:  # any parse failure is the finding
+            return False, f"{index} does not parse as a WPS index: {error}"
     if not check_receipt:
         return True, f"{directory} present, index parses"
     receipt = installed_receipt(root, dataset)
@@ -974,22 +1138,38 @@ def fetch_geog_main(args) -> int:
 
 
 def register_cli(subparsers) -> None:
+    # Both totals are read off the table.  The unpacked figure used to be
+    # the literal "~16 GiB", which stopped being true the moment a pin was
+    # added and left the command understating its own download by most of
+    # its size.
     total_gib = sum(a.archive_bytes for a in GEOG_ARCHIVES) / (1024 ** 3)
+    unpacked_gib = sum(a.extracted_bytes for a in GEOG_ARCHIVES) / (1024 ** 3)
     parser = subparsers.add_parser(
         "fetch-geog",
-        help="download and stage the nine WPS_GEOG static datasets "
-             f"(~{total_gib:.1f} GiB download, ~16 GiB unpacked), "
-             "SHA-256-verified against the packaged pins, resumable, "
-             "idempotent when everything is already staged")
+        help=f"download and stage the {len(GEOG_ARCHIVES)} WPS_GEOG static "
+             f"datasets (~{total_gib:.1f} GiB download, "
+             f"~{unpacked_gib:.0f} GiB unpacked), SHA-256-verified against "
+             "the packaged pins, resumable, idempotent when everything is "
+             "already staged")
     parser.add_argument(
         "--root", type=Path, default=None, metavar="DIR",
         help="geog root to stage into (default: "
              "$GPUWM_CASE_DATA_ROOT/WPS_GEOG, exactly what gpuwm doctor "
              "checks and wizard configs reference)")
+    wrf_count = len(datasets_required_by(GEOG_CONSUMER_WRF))
+    mesh_gib = sum(archive_for(name).extracted_bytes
+                   for name in datasets_required_by(GEOG_CONSUMER_MESH)
+                   if GEOG_CONSUMER_WRF not in archive_for(name).required_by)
     parser.add_argument(
-        "--datasets", default="all", metavar="all|NAME,NAME",
-        help="which datasets to stage (default all nine the static "
-             "builder opens)")
+        "--datasets", default="all", metavar="all|CONSUMER|NAME,NAME",
+        help=f"which datasets to stage (default 'all', every pin -- the "
+             f"{len(GEOG_ARCHIVES)} above).  A consumer name stands for one "
+             f"door's whole set: '{GEOG_CONSUMER_WRF}' is the {wrf_count} "
+             f"the WRF static builder opens, '{GEOG_CONSUMER_MESH}' is what "
+             "gpuwm mesh needs for the static half of its pair.  Use "
+             f"'--datasets {GEOG_CONSUMER_WRF}' to skip the "
+             f"~{mesh_gib / (1024 ** 3):.0f} GiB Noah-MP soil archive that "
+             "only gpuwm mesh reads")
     parser.add_argument(
         "--source", default=None, choices=GEOG_SOURCES,
         help="download host: 'hf' (default) is the ArWen mirror on "
@@ -1022,13 +1202,14 @@ def register_cli(subparsers) -> None:
 
 __all__ = [
     "ARCHIVE_SUBDIR", "DRIFT_SIZE_BAND", "GEOG_ARCHIVES",
+    "GEOG_CONSUMERS", "GEOG_CONSUMER_MESH", "GEOG_CONSUMER_WRF",
     "GEOG_FETCH_MANIFEST_NAME", "GEOG_FETCH_MANIFEST_SCHEMA",
     "GEOG_SOURCES", "GEOG_URL_BASE_ENV", "GeogArchive", "GeogFetchError",
     "HF_MIRROR_BASE_URL", "HF_MIRROR_REPO", "MANDATORY_BUNDLE_BYTES",
     "MANDATORY_BUNDLE_DATASETS", "MANDATORY_BUNDLE_FILENAME",
     "MANDATORY_BUNDLE_SHA256", "NCAR_BASE_URL", "archive_for",
-    "archive_url", "default_geog_root", "download_archive",
-    "extract_datasets", "fetch_geog", "fetch_geog_main", "geog_datasets",
-    "parse_datasets", "register_cli", "resolve_source",
-    "sha256_file", "validate_dataset_dir",
+    "archive_url", "datasets_required_by", "default_geog_root",
+    "download_archive", "extract_datasets", "fetch_geog", "fetch_geog_main",
+    "geog_datasets", "parse_datasets", "register_cli", "resolve_source",
+    "sha256_file", "size_phrase", "validate_dataset_dir",
 ]

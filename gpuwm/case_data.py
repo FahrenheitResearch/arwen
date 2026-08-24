@@ -151,6 +151,185 @@ _OPTIONAL_KEYS = (
 _KNOWN_KEYS = frozenset(_REQUIRED_KEYS) | frozenset(_OPTIONAL_KEYS)
 _DOMAIN_SOURCE_KEY = re.compile(r"d([0-9]{2})")
 
+#: The registry ``runner`` id of the decode family the config-driven
+#: route hosts.  ``gpuwm domain`` writes a ``[case_data]`` table for
+#: exactly that family and for no other, which is what lets the refusals
+#: below DERIVE their remedy from the registry rather than naming a
+#: source here: a row registered tomorrow with this runner is offered by
+#: name with no edit, and a config emitted for any other row is told the
+#: truth -- that it is not missing a table, it is on the prepared route.
+CASE_DATA_RUNNER = "era5_combined_grib1_v1"
+
+#: Per required key: a pasteable assignment, and what the declaration
+#: feeds.  A refusal that lists key NAMES has told the reader which words
+#: to go look up; these are the lines themselves, taken from the shape
+#: ``gpuwm domain`` emits, so a paste of them is a table that loads.
+_REQUIRED_KEY_HELP: dict[str, tuple[str, str]] = {
+    "forcing": (
+        'forcing = ["data/<cycle>/combined.grib"]',
+        "the forcing files this case is initialized and driven from "
+        "(paths or globs, resolved against this TOML's directory)"),
+    "vtable": (
+        'vtable = "Vtable.ERA5_CDO"',
+        "the WPS Vtable naming which records the decode reads"),
+    "wps_namelist": (
+        'wps_namelist = "<config-stem>.namelist.wps"',
+        "the WPS namelist the geography build reads"),
+    "geog_root": (
+        'geog_root = "${GPUWM_CASE_DATA_ROOT}/WPS_GEOG"',
+        "the static geography tree every domain's terrain, land use and "
+        "soil categories come from"),
+    "sfcp_to_sfcp": (
+        "sfcp_to_sfcp = true",
+        "the surface-pressure policy, which changes the initial state "
+        "and so is declared rather than assumed"),
+    "output_title": (
+        'output_title = "<a title for this case>"',
+        "the TITLE attribute stamped into every history file written"),
+}
+
+
+def _config_shape(raw: Mapping) -> tuple[tuple[str, ...], str | None]:
+    """``(tables present, the source [fetch] declares)`` for one config.
+
+    Read BEFORE any loader splits its companion tables off, because both
+    facts are what the refusals below use to tell a reader what was
+    searched and which route their file is on -- and a dict that has
+    already had ``[fetch]`` popped out of it can answer neither.
+    """
+
+    tables: list[str] = []
+    for key, value in raw.items():
+        if isinstance(value, list):
+            tables.append(f"[[{key}]]")
+        elif isinstance(value, dict):
+            tables.append(f"[{key}]")
+    fetch = raw.get("fetch")
+    declared = fetch.get("source") if isinstance(fetch, dict) else None
+    return tuple(sorted(tables)), (declared if isinstance(declared, str)
+                                   else None)
+
+
+def _case_data_source_ids() -> tuple[str, ...]:
+    """Registry source ids whose emission carries a ``[case_data]``.
+
+    Empty when the registry cannot be read, which is not a failure to
+    report: this runs only while a refusal is being composed, and a
+    refusal that raised its own exception would replace a message the
+    reader needs with one about our registry.
+    """
+
+    try:
+        from gpuwm.source_adapters import source_adapters
+
+        return tuple(sorted(
+            str(adapter.source_id) for adapter in source_adapters()
+            if getattr(adapter, "runner", None) == CASE_DATA_RUNNER))
+    except Exception:  # noqa: BLE001 - a refusal never fails on its own prose
+        return ()
+
+
+def _emitting_command(source: str) -> str:
+    """The ``gpuwm domain`` line that writes a ``[case_data]`` config."""
+
+    ids = _case_data_source_ids()
+    flag = f" --source {ids[0]}" if len(ids) == 1 else (
+        f" --source <{'|'.join(ids)}>" if ids else "")
+    return (f"gpuwm domain{flag} --point LAT,LON "
+            f"--cycle YYYY-MM-DDTHH --out {source}")
+
+
+def _case_data_skeleton() -> str:
+    """The table that would satisfy the load, with each line's purpose."""
+
+    width = max(len(line) for line, _why in _REQUIRED_KEY_HELP.values())
+    body = "\n".join(
+        f"    {line:<{width}}  # {purpose}"
+        for line, purpose in _REQUIRED_KEY_HELP.values())
+    return "    [case_data]\n" + body
+
+
+def _missing_case_data_table_refusal(source: str, raw: Mapping) -> str:
+    """No ``[case_data]`` at all: what to write, or which route this is.
+
+    Two different readers reach this, and one remedy is wrong for each
+    of them.  A config-driven config that lost its table needs the table
+    back.  A wizard emission for a source the config-driven route cannot
+    decode was written WITHOUT one on purpose -- telling that reader to
+    hand-author input declarations sends them to build a table for a
+    decoder that will never open it, so it is told which route its file
+    is on instead.  The discriminator is the ``[fetch]`` table sitting in
+    the same dict this loader just searched, checked against the registry
+    rather than against a source name written here.
+    """
+
+    tables, declared_source = _config_shape(raw)
+    inventory = (", ".join(tables) if tables
+                 else "no tables at all -- the file parsed empty")
+    ids = _case_data_source_ids()
+    if declared_source is not None and ids and declared_source not in ids:
+        # The route-aware branch.  `gpuwm go` is named because it is the
+        # orchestrator door: it either runs this config or refuses by
+        # naming the chain that does, so it is never a dead end.
+        return layered(
+            f"experiment config {source} carries no [case_data] table, and "
+            f"its [fetch] table declares source {declared_source!r}, which "
+            "the config-driven route does not decode -- this config is not "
+            "missing a table, it is on the prepared route.\n"
+            f"  remedy: run it with `gpuwm go {source}`, which drives that "
+            "route's chain (or names the runner for it); `gpuwm run`, "
+            "`gpuwm static` and `gpuwm ingest` execute the config-driven "
+            "route only.",
+            f"Looked for a top-level [case_data] table in {source} and "
+            f"found: {inventory}.\n"
+            f"`gpuwm domain` writes [case_data] for the sources whose "
+            f"registry runner is {CASE_DATA_RUNNER} "
+            f"({', '.join(ids)}) and emits no such table for any other, "
+            f"because [case_data] declares the inputs of that one decode "
+            f"family.  An emission for {declared_source!r} therefore "
+            "carries [experiment]/[[domain]]/[projection] -- which the "
+            "prepared route's own front door consumes -- plus the [fetch] "
+            "hints above, and nothing here is missing.")
+    return layered(
+        f"experiment config {source} carries no [case_data] table, so this "
+        "route has no forcing, no Vtable, no WPS namelist and no geography "
+        "root to open.\n"
+        f"  remedy: re-emit the config with `{_emitting_command(source)}`, "
+        "which writes the table complete; or add a [case_data] table "
+        "declaring " + ", ".join(_REQUIRED_KEYS) + ".",
+        f"Looked for a top-level [case_data] table in {source} and found: "
+        f"{inventory}.\n"
+        "What satisfies the load is this table, whose every line is a "
+        "declaration the run reads rather than a default it assumes:\n\n"
+        + _case_data_skeleton() + "\n\n"
+        "Also accepted, and defaulted when omitted: "
+        + ", ".join(_OPTIONAL_KEYS) + ".")
+
+
+def _missing_case_data_keys_refusal(source: str, raw: Mapping,
+                                    missing: list[str]) -> str:
+    """A ``[case_data]`` that is present and short of required keys."""
+
+    present = [key for key in _REQUIRED_KEYS if key in raw]
+    lines = "\n".join(f"    {_REQUIRED_KEY_HELP[key][0]}" for key in missing
+                      if key in _REQUIRED_KEY_HELP)
+    return layered(
+        f"[case_data] of {source} is missing required key(s) {missing}: "
+        "every input path and policy is declared, never implicit.\n"
+        "  remedy: add these lines to the [case_data] table, filling in "
+        f"the values for this case --\n{lines}\n"
+        f"  or re-emit the whole config with `{_emitting_command(source)}`, "
+        "which writes every required key.",
+        "Each missing declaration feeds something the run cannot guess:\n"
+        + "\n".join(
+            f"  {key}: {_REQUIRED_KEY_HELP[key][1]}"
+            for key in missing if key in _REQUIRED_KEY_HELP)
+        + ("\nAlready declared in this table: "
+           + ", ".join(present) + "." if present else "")
+        + "\nThe required keys are " + ", ".join(_REQUIRED_KEYS)
+        + "; the optional ones, defaulted when omitted, are "
+        + ", ".join(_OPTIONAL_KEYS) + ".")
+
 
 @dataclass(frozen=True)
 class SourceOrography:
@@ -542,9 +721,7 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
     missing = [key for key in _REQUIRED_KEYS if key not in raw]
     if missing:
         raise ValueError(
-            f"[case_data] of {source} is missing required key(s) "
-            f"{missing}: every input path and policy is declared, never "
-            "implicit.")
+            _missing_case_data_keys_refusal(source, raw, missing))
 
     forcing = _resolve_forcing(base_dir, raw["forcing"], source,
                                require_match=require_met_inputs)
@@ -735,9 +912,7 @@ def load_case_data(path: str | Path) -> CaseDataConfig:
     table = raw.get("case_data")
     if table is None:
         raise ValueError(
-            f"experiment config {path} carries no [case_data] table; the "
-            "experiment runtime requires declared inputs (forcing, vtable, "
-            "wps_namelist, geog_root, and policies).")
+            _missing_case_data_table_refusal(str(path), raw))
     data = build_case_data(table, source=str(path), base_dir=path.parent)
     from gpuwm.static.highres_production import parse_static_table
     highres = parse_static_table(
@@ -761,6 +936,11 @@ def load_experiment_case_bytes(
         raise TypeError("experiment config payload must be bytes")
     base = Path(base_dir)
     raw = tomllib.load(io.BytesIO(payload))
+    # The whole shape, read before the companion tables are split off:
+    # the missing-table refusal reports which tables the file DID carry
+    # and which route its [fetch] hints put it on, and neither survives
+    # the pops below.
+    shape = dict(raw)
     table = raw.pop("case_data", None)
     # An advisory [fetch] hints table (emitted by `gpuwm domain`) splits
     # off the same way; its schema is owned by gpuwm.fetch and validated,
@@ -782,10 +962,7 @@ def load_experiment_case_bytes(
     # own error even when [case_data] is also missing.
     experiment = build_experiment(raw, source=source)
     if table is None:
-        raise ValueError(
-            f"experiment config {source} carries no [case_data] table; the "
-            "experiment runtime requires declared inputs (forcing, vtable, "
-            "wps_namelist, geog_root, and policies).")
+        raise ValueError(_missing_case_data_table_refusal(source, shape))
     data = build_case_data(table, source=source, base_dir=base,
                            require_inputs=require_inputs,
                            require_met_inputs=require_met_inputs)

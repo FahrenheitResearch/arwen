@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from importlib.metadata import PathDistribution
 from pathlib import Path
@@ -569,3 +570,227 @@ def test_it_imports_without_numpy_or_cupy_in_a_pinned_child():
         / "provenance.py", "the child imported a different tree; void"
     assert payload["heavy"] == []
     assert payload["banner"].startswith("gpuwm")
+
+
+# ---------------------------------------------------------------------------
+# git that cannot be LAUNCHED, which is not the same as no repository
+# ---------------------------------------------------------------------------
+# The live failure: `tools/prepare_hrrr_wrf.py` composes an environment
+# for the stage it launches, the stage resolves
+# `runtime_manifest.provenance` before it reads a byte of the user's
+# data, and on a source checkout that resolution is a `git` subprocess.
+# The child could not start git, so EVERY rung of the ladder that asks
+# git a question returned None at once and the run died with
+# `IdentityError` on a tree the parent had just identified perfectly.
+# The tree was never the problem; reaching git was.
+
+@pytest.fixture
+def no_git_binary(monkeypatch):
+    """git is installed nowhere this process can reach."""
+
+    monkeypatch.setattr(provenance, "_GIT_EXE_CACHE", None)
+    monkeypatch.setattr(provenance, "git_executable", lambda **_: None)
+    return monkeypatch
+
+
+def test_git_is_found_at_its_install_location_when_path_hides_it(monkeypatch):
+    """A curated PATH must not be able to hide an installed git."""
+
+    import shutil
+
+    monkeypatch.setattr(provenance, "_GIT_EXE_CACHE", None)
+    monkeypatch.delenv(provenance.GIT_EXE_ENV, raising=False)
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+    resolved = provenance.git_executable(refresh=True)
+    if resolved is None:
+        pytest.skip("git is not at a default install location on this box")
+    assert Path(resolved).is_file()
+
+
+def test_a_parent_can_hand_its_resolved_git_to_a_child(monkeypatch):
+    """GPUWM_GIT_EXE outranks the search, so a child pays for nothing."""
+
+    import shutil
+
+    real = provenance.git_executable(refresh=True)
+    if real is None:
+        pytest.skip("no usable git on this machine")
+    monkeypatch.setenv(provenance.GIT_EXE_ENV, real)
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+    monkeypatch.setattr(provenance, "_WINDOWS_GIT_LOCATIONS", ())
+    monkeypatch.setattr(provenance, "_POSIX_GIT_LOCATIONS", ())
+    assert provenance.git_executable(refresh=True) == real
+
+
+def test_a_checkout_binds_by_direct_read_when_git_cannot_run(
+        tmp_path, no_git_binary):
+    """The commit is in .git whether or not git is installed."""
+
+    _git_init(tmp_path)
+    expected = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        capture_output=True, text=True).stdout.strip()
+    identity = provenance.git_identity(tmp_path)
+    assert identity is not None, "a readable .git must still bind a commit"
+    assert identity["commit_full"] == expected
+    assert identity["branch"] in ("main", "master")
+    # Never `False`: nobody looked at the working tree.
+    assert identity["dirty"] is None
+    assert identity["dirty_unknown_reason"]
+    assert not provenance.worktree_is_clean(identity)
+
+
+def test_a_linked_worktree_binds_by_direct_read_too(tmp_path, no_git_binary):
+    """`.git` is a FILE in a linked worktree, and its refs live elsewhere."""
+
+    main = tmp_path / "main"
+    main.mkdir()
+    _git_init(main)
+    linked = tmp_path / "linked"
+    added = subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "-q", str(linked),
+         "-b", "side"], capture_output=True, text=True)
+    if added.returncode != 0:
+        pytest.skip(f"git worktree add unavailable: {added.stderr}")
+    assert (linked / ".git").is_file(), "fixture is not a linked worktree"
+    identity = provenance.git_identity(linked)
+    assert identity is not None
+    assert identity["branch"] == "side"
+    assert identity["dirty"] is None
+
+
+def test_a_detached_head_binds_by_direct_read(tmp_path, no_git_binary):
+    _git_init(tmp_path)
+    head = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        capture_output=True, text=True).stdout.strip()
+    (tmp_path / ".git" / "HEAD").write_text(head + "\n", encoding="utf-8")
+    identity = provenance.git_identity(tmp_path)
+    assert identity is not None
+    assert identity["commit_full"] == head
+    assert identity["branch"] is None
+
+
+def test_git_present_still_reports_the_verified_working_tree(tmp_path):
+    """The regression guard: nothing about the normal path moved."""
+
+    if provenance.git_executable() is None:
+        pytest.skip("no usable git on this machine")
+    _git_init(tmp_path)
+    clean = provenance.git_identity(tmp_path)
+    assert clean is not None
+    assert clean["dirty"] is False
+    assert "dirty_unknown_reason" not in clean
+    assert provenance.worktree_is_clean(clean)
+    (tmp_path / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    dirty = provenance.git_identity(tmp_path)
+    assert dirty is not None and dirty["dirty"] is True
+    assert not provenance.worktree_is_clean(dirty)
+
+
+def test_no_git_and_no_dot_git_is_still_an_honest_absence(
+        tmp_path, no_git_binary):
+    """The genuinely unbindable case keeps refusing."""
+
+    assert provenance.git_dir_identity(tmp_path) is None
+    assert provenance.git_identity(tmp_path) is None
+
+
+def test_a_nested_directory_binds_no_strangers_commit(
+        tmp_path, no_git_binary):
+    """A venv inside somebody else's repository is not that repository."""
+
+    _git_init(tmp_path)
+    nested = tmp_path / "venv" / "Lib" / "site-packages"
+    nested.mkdir(parents=True)
+    assert provenance.git_dir_identity(nested) is None
+
+
+def test_an_unverified_tree_never_reads_as_clean_in_the_banner(
+        tmp_path, no_git_binary):
+    _git_init(tmp_path)
+    identity = provenance.git_identity(tmp_path)
+    line = Provenance(
+        package_path=str(tmp_path / "gpuwm"), source_root=str(tmp_path),
+        install_kind="editable", git=identity).banner()
+    assert "clean" not in line, line
+    assert "unverified" in line, line
+
+
+def test_the_run_manifest_binds_this_tree_without_git(no_git_binary):
+    """End to end, on the REAL tree this suite is running from.
+
+    This is the captured failure, replayed: with git unreachable the
+    ladder used to fall all the way through to
+    ``wheel_record_identity`` and raise, killing a prepare stage before
+    a byte of the user's data was read.  It must now bind the commit
+    and say plainly that the working tree was not inspected.
+    """
+
+    from gpuwm import runtime_manifest
+
+    if not (WORKTREE / ".git").exists():
+        pytest.skip("this suite is not running from a checkout")
+    identity = runtime_manifest.provenance(WORKTREE)
+    assert identity["git_commit"], identity
+    assert len(str(identity["git_commit"])) in (40, 64)
+    assert identity["git_status_short"] is None
+    assert identity["git_status_unknown_reason"], (
+        "an unverified working tree must SAY so, not leave an absence")
+
+
+def test_the_refusal_names_every_way_the_tree_was_tried(monkeypatch):
+    """A refusal stands only if it names what was actually attempted."""
+
+    from gpuwm import runtime_manifest
+
+    monkeypatch.setattr(runtime_manifest, "installed_distribution",
+                        lambda *a, **k: None)
+    with pytest.raises(runtime_manifest.IdentityError) as raised:
+        runtime_manifest.wheel_record_identity()
+    message = str(raised.value)
+    assert "git on PATH" in message
+    assert "default install location" in message
+    assert ".git" in message
+
+
+def test_the_prepare_stage_hands_git_to_the_child():
+    """The curated environment carries the handle, or the child dies."""
+
+    from gpuwm.go_cli import _stage_env
+
+    if provenance.git_executable() is None:
+        pytest.skip("no usable git on this machine")
+    environment = _stage_env()
+    assert provenance.GIT_EXE_ENV in environment, (
+        "a stage subprocess must be able to resolve identity")
+    assert Path(environment[provenance.GIT_EXE_ENV]).is_file()
+
+
+def test_a_child_with_only_the_curated_environment_resolves_identity():
+    """Run the real interpreter with git stripped from PATH."""
+
+    resolved = provenance.git_executable()
+    if resolved is None:
+        pytest.skip("no usable git on this machine")
+    if not (WORKTREE / ".git").exists():
+        pytest.skip("this suite is not running from a checkout")
+    program = (
+        "import json, shutil;"
+        "from gpuwm import runtime_manifest as rm;"
+        "i = rm.provenance(r'" + str(WORKTREE) + "');"
+        "print(json.dumps({'which': shutil.which('git'),"
+        " 'commit': i['git_commit']}))"
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(WORKTREE)
+    # The shape that broke: a composed environment whose PATH carries no
+    # git.  The handle the parent resolved is what rescues it.
+    environment["PATH"] = str(Path(sys.executable).parent)
+    environment[provenance.GIT_EXE_ENV] = resolved
+    completed = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True,
+        cwd=str(WORKTREE), env=environment, timeout=120)
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["commit"], payload

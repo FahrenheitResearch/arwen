@@ -8,33 +8,53 @@ published file is envelope-verified, sha256-summed, and recorded in a
 
 Per-source transport:
 
+Every NCEP source here is asked for along an ENDPOINT LADDER declared
+in ``authorities/rw-wps-fetch-routes.v1.json`` and resolved by
+:mod:`gpuwm.fetch_endpoints`: the operational server
+(``nomads.ncep.noaa.gov``) while it still holds the cycle, the AWS Open
+Data archive behind it.  The two publish the same relative key with the
+same bytes and differ in three ways only -- the operational server has
+a latest cycle hours before any mirror does, it keeps a bounded window,
+and it paces bulk transfers where the archive does not.
+
+Retention decides which rungs are ASKED; throughput decides which one
+SERVES.  Inside the retention window each requested object is HEADed on
+the archive first, and the archive takes any object it has already
+mirrored, because the operational server's head start is spent the
+moment both hosts have the same bytes.  An object the archive has not
+caught up with comes from the operational server, which is what that
+host is for.  Promotion reorders the ladder and never shortens it, so
+fall-through is unchanged.  ``--transport`` pins one rung, disables
+fall-through and skips the probe.
+
 * ``gfs`` -- two first-class byte transports.  The default is the NOMADS
   ``filter_gfs_0p25.pl`` subsetter (spatial subregion + the exact
   variable/level selection): rate-governed, bandwidth-frugal, re-encoded
   by NOMADS to south-to-north simple packing.  ``--mode full-file``
-  takes the whole ``pgrb2.0p25`` objects from the AWS Open Data S3
-  archive ``noaa-gfs-bdp-pds`` instead -- whole-globe north-to-south
-  (scan 0x00) complex-packed (DRT 5.3) grids, both certified in
-  ``gfs_grib2_bridge`` by committed matched pairs (the scan-order flip
-  and the SOILW missing-value proof; see
+  takes the whole ``pgrb2.0p25`` objects along the ladder instead --
+  whole-globe north-to-south (scan 0x00) complex-packed (DRT 5.3)
+  grids, both certified in ``gfs_grib2_bridge`` by committed matched
+  pairs (the scan-order flip and the SOILW missing-value proof; see
   ``tests/fixtures/gfs-scan-order/README.md``) -- through either the
   Rust backbone's parallel range GETs or the stdlib transport.  ``.idx``
   byte-range subsetting of the raw objects is NOT a certified GFS route.
-  S3 is also used for anonymous ``--cycle latest`` resolution (HEAD
-  probes, no HTML scraping).
+  ``--cycle latest`` walks the same ladder with anonymous HEAD probes
+  (no HTML scraping), so it resolves the newest cycle that EXISTS
+  rather than the newest one the archive has caught up with.
 * ``hrrr`` -- NOAA ``.idx`` byte-range subsetting, reusing the proven
   record inventory and range transport in
   :mod:`tools.download_hrrr_native_subset` (native hybrid ``wrfnat``
   atmosphere plus the soil records of ``wrfprs``, the inputs
   ``hrrr_grib2_bridge`` requires), over either of two hosts serving the
-  identical production files and indexes: the NOMADS mirror
+  identical production files and indexes: the NOMADS operational server
   (``nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod``, roughly the
   newest 48 h, where each hour publishes first) and the AWS Open Data
   S3 archive ``noaa-hrrr-bdp-pds``.  ``--transport auto`` (default)
-  probes S3 for the requested window and uses NOMADS only when S3
-  cannot serve it yet: S3 is several times faster for the whole-file
-  default, and NOMADS's head start matters only to ``--wait-for``,
-  which keeps its own NOMADS-first polling.  NOMADS
+  asks the archive for the requested window first and takes it when it
+  already serves it, falling back to the operational server for a
+  window the archive has not caught up with, and skipping the doomed
+  probe entirely for a cycle older than the operational window.
+  NOMADS
   has no grib-filter route for these products -- its HRRR filter
   scripts cover the 2-D ``wrfsfc`` file only -- so subsetting stays
   ``.idx`` byte ranges on both hosts and the exact 561/18 record
@@ -75,14 +95,34 @@ from urllib.request import Request, urlopen
 
 import functools
 
-from gpuwm import (explain, fetch_bars, fetch_guard, fetch_pool,
-                   fetch_routes, source_adapters)
+from gpuwm import (explain, fetch_bars, fetch_endpoints, fetch_guard,
+                   fetch_pool, fetch_routes, source_adapters)
+# ALIASED.  `progress` is the name of the per-route reporting callable on
+# most signatures in this module, so importing the module under its own
+# name would be shadowed by the parameter inside every one of them.
+from gpuwm import progress as progress_mod
 from gpuwm.explain import layered
 from gpuwm.nomads_governor import paced_urlopen
 
 
 FETCH_MANIFEST_SCHEMA = "gpuwm-fetch-manifest-v1"
 FETCH_MANIFEST_NAME = "fetch-manifest.json"
+
+#: Every receipt a fetched directory publishes, manifest first.
+#:
+#: All four NAME PAYLOADS: the manifest carries a digest per file, the
+#: checksum list is what the prep door consumes verbatim, ``inputs.txt``
+#: is a list of resolved payload paths, and ``prep-command.txt`` binds
+#: the series.  So all four can outlive the bytes they describe, which
+#: is the one directory state the fetch state machine refuses to leave
+#: behind, and the force sweep has to move all four aside before it
+#: touches a payload rather than only the two it used to know about.
+#: Manifest first inside that class because it is the file the front
+#: door reads and refuses on: while it is canonical the directory still
+#: presents itself as a completed fetch.
+FETCH_RECEIPT_NAMES = (FETCH_MANIFEST_NAME, fetch_routes.SHA256SUMS_NAME,
+                       fetch_routes.INPUT_LIST_NAME,
+                       fetch_routes.PREP_COMMAND_NAME)
 
 #: The GFS front door (``rw-wps --source gfs``) verifies its inputs
 #: against this manifest schema (gpuwm/gfs_direct.py
@@ -121,15 +161,25 @@ def gfs_suggested_fetch_margin_deg() -> float:
     return max(GFS_DONOR_HALO_CELLS * GFS_SOURCE_RESOLUTION_DEG,
                GFS_LAKE_DONOR_MARGIN_DEG)
 
-GFS_S3_BASE = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
-HRRR_S3_BASE = "https://noaa-hrrr-bdp-pds.s3.amazonaws.com"
-#: The NCEP production mirror.  It serves byte-identical HRRR files and
-#: ``.idx`` indexes (HEAD Content-Length, ``Accept-Ranges: bytes``, and
-#: HTTP 206 range responses verified 2026-07-29), publishes each hour
-#: before the cloud mirrors, and keeps only about the newest two days.
-HRRR_NOMADS_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod"
+#: The three sources whose transport predates the route table still
+#: read their endpoints FROM it (``legacy_ladders``), so "which host,
+#: and in what order" is one table fact for every NCEP source rather
+#: than a constant here and a row there.  The names below are kept
+#: because callers and receipts have always spelled them this way.
+#:
+#: Both HRRR hosts serve byte-identical files and ``.idx`` indexes
+#: (HEAD Content-Length, ``Accept-Ranges: bytes`` and HTTP 206 range
+#: responses verified 2026-07-29; the equal-Content-Length pairing
+#: re-verified across the whole NCEP family 2026-08-24).  The
+#: operational server publishes each hour first and keeps a bounded
+#: window; the archive lags and keeps everything.
+GFS_S3_BASE = fetch_endpoints.endpoint_named("gfs", "s3").base
+GFS_NOMADS_BASE = fetch_endpoints.endpoint_named("gfs", "nomads").base
+HRRR_S3_BASE = fetch_endpoints.endpoint_named("hrrr", "s3").base
+HRRR_NOMADS_BASE = fetch_endpoints.endpoint_named("hrrr", "nomads").base
 #: Approximate NOMADS retention (hours).  Older cycles live on S3 only.
-HRRR_NOMADS_RETENTION_HOURS = 48
+HRRR_NOMADS_RETENTION_HOURS = int(
+    fetch_endpoints.endpoint_named("hrrr", "nomads").retention_hours)
 HRRR_TRANSPORTS = ("auto", "nomads", "s3")
 
 #: Every host name ``--transport`` accepts across all routes: HRRR's
@@ -871,24 +921,100 @@ def hrrr_forecast_hours(hours: int, cycle: datetime,
 def _head_ok(url: str) -> bool:
     """Availability probe, governed when it is aimed at NOMADS.
 
-    ``--wait-for`` polls this every 30 s per product per host and
-    ``--transport auto`` probes a whole window with it, so it is a real
+    ``--wait-for`` polls this every 30 s per product per host,
+    ``--transport auto`` probes a whole window with it, and the
+    throughput selection asks it once per object, so it is a real
     request stream and belongs under the same node-wide pacer as the
     payload transfers -- not beside them.  Probes at S3 pass straight
     through, unpaced.
+
+    ONE implementation, in :mod:`gpuwm.fetch_endpoints`, because the
+    table routes ask the same question of the same hosts: two HEADs
+    with two timeouts and two error vocabularies would eventually
+    disagree about whether a host has an object, and the two halves of
+    this package would then choose different hosts for the same file.
     """
 
-    request = Request(url, method="HEAD",
-                      headers={"User-Agent": _USER_AGENT})
-    try:
-        with paced_urlopen(request, timeout=60) as response:
-            return 200 <= response.status < 300
-    except (HTTPError, URLError, OSError):
-        return False
+    return fetch_endpoints.object_available(url)
 
 
-def gfs_object_url(cycle: datetime, hour: int, source: str = "gfs") -> str:
-    """The raw S3 object URL for one ``pgrb2.0p25`` forecast hour.
+def _probe_object_ladders(ladder, *, keys, source: str,
+                          pinned: str | None, workers: int | None,
+                          progress, probe=None
+                          ) -> dict[str, tuple]:
+    """Per key, the endpoint order its transfer will actually walk.
+
+    Retention decides which hosts are ASKED; throughput decides which
+    of them should serve, and the archive earns that only for an object
+    it provably already holds.  The measured cost of not asking: at
+    peak hours the operational server paced whole-file transfers at
+    about 3 MB/s per file, so a 3.4 GB request took ~20 min where the
+    archive had served the same volume in ~3.
+
+    The probes run AHEAD of the transfers, through the same pool and
+    under the same per-host caps, so none of them ever waits behind a
+    download.  Promotion is a reorder: every rung stays behind the
+    chosen one, so fall-through and the whole-ladder refusal are
+    untouched, and a probe that 404s or throttles costs the transfer
+    nothing.
+
+    Returns only the keys whose order CHANGED; everything absent keeps
+    the ladder unchanged.
+    """
+
+    if pinned is not None or not keys:
+        return {}
+    if not fetch_endpoints.transfer_probes(ladder):
+        return {}
+    if probe is None:
+        probe = _head_ok
+    preferred = fetch_endpoints.transfer_probes(ladder)[0]
+
+    def ask(key: str) -> dict:
+        return {"key": key, "ladder": fetch_endpoints.transfer_ladder(
+            ladder, (key,), probe=probe)}
+
+    entries, _receipt = fetch_pool.run_transfers(
+        [fetch_pool.TransferJob(name=key, url=preferred.url(key),
+                                action=functools.partial(ask, key))
+         for key in keys],
+        workers=fetch_pool.resolve_file_workers(workers))
+    promoted = {entry["key"]: entry["ladder"] for entry in entries
+                if entry["ladder"][0] is not ladder[0]}
+    if promoted:
+        progress(
+            f"fetch {source}: mirrored: taking the archive for throughput "
+            f"-- {len(promoted)} of {len(keys)} object"
+            f"{'' if len(keys) == 1 else 's'} "
+            f"{'is' if len(promoted) == 1 else 'are'} already on "
+            f"{preferred.name} ({preferred.host})"
+            + (f"; the rest from {ladder[0].name}, which publishes before "
+               "the mirrors" if len(promoted) < len(keys) else ""))
+    else:
+        progress(
+            f"fetch {source}: {preferred.name} has not caught up with this "
+            f"cycle -- using {ladder[0].name}, which publishes before the "
+            "mirrors")
+    return promoted
+
+
+def gfs_object_key(cycle: datetime, hour: int, source: str = "gfs") -> str:
+    """The host-independent key of one ``pgrb2.0p25`` forecast hour.
+
+    The same relative key on either endpoint: the operational server
+    and the archive answer it with the same ``Content-Length`` (HEAD
+    verified 2026-08-24 for both GFS and GDAS), which is what makes the
+    endpoint ladder an append rather than a re-plan.
+    """
+
+    prefix = GFS_CONTAINER_PREFIX[source]
+    return (f"{prefix}.{cycle:%Y%m%d}/{cycle:%H}/atmos/"
+            f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}")
+
+
+def gfs_object_url(cycle: datetime, hour: int, source: str = "gfs",
+                   transport: str = "s3") -> str:
+    """One ``pgrb2.0p25`` forecast hour on one endpoint.
 
     Availability probes, the live index behind the record-count bar,
     and -- since the raw complex-packed north-to-south form earned its
@@ -896,9 +1022,8 @@ def gfs_object_url(cycle: datetime, hour: int, source: str = "gfs") -> str:
     the payload of ``--mode full-file`` itself.
     """
 
-    prefix = GFS_CONTAINER_PREFIX[source]
-    return (f"{GFS_S3_BASE}/{prefix}.{cycle:%Y%m%d}/{cycle:%H}/atmos/"
-            f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}")
+    endpoint = fetch_endpoints.endpoint_named(source, transport)
+    return endpoint.url(gfs_object_key(cycle, hour, source))
 
 
 def _hrrr_transport_base(transport: str) -> str:
@@ -918,15 +1043,29 @@ def hrrr_object_url(cycle: datetime, hour: int, product: str,
             f"hrrr.t{cycle:%H}z.{product}f{hour:02d}.grib2")
 
 
-def cycle_probe_urls(source: str, cycle: datetime,
-                     last_hour: int) -> tuple[str, ...]:
-    """The objects whose existence proves one cycle covers ``last_hour``."""
+def cycle_probe_urls(source: str, cycle: datetime, last_hour: int,
+                     transport: str | None = None) -> tuple[str, ...]:
+    """The objects whose existence proves one cycle covers ``last_hour``.
 
+    ``transport`` names the endpoint to ask.  It defaults to the head of
+    the source's ladder for that cycle's age, which for a recent cycle
+    is the operational server -- and that is the whole point of the
+    default: the archive lags by minutes to hours, so probing it first
+    resolves ``--cycle latest`` to a cycle that is already stale by the
+    time the fetch starts.
+    """
+
+    if transport is None:
+        transport = fetch_endpoints.serving_ladder(
+            source, cycle=cycle)[0].name
     if source in GFS_CONTAINER_SOURCES:
-        return (gfs_object_url(cycle, last_hour, source),)
+        return (gfs_object_url(cycle, last_hour, source,
+                               transport=transport),)
     if source == "hrrr":
-        return (hrrr_object_url(cycle, last_hour, "wrfnat"),
-                hrrr_object_url(cycle, last_hour, "wrfprs"))
+        return (hrrr_object_url(cycle, last_hour, "wrfnat",
+                                transport=transport),
+                hrrr_object_url(cycle, last_hour, "wrfprs",
+                                transport=transport))
     raise ValueError(
         "cycle completeness probes are only meaningful for gfs/gdas/hrrr")
 
@@ -962,7 +1101,7 @@ def require_published_cycle(source: str, cycle: datetime, last_hour: int, *,
 def resolve_latest_cycle(source: str, last_hour: int, *,
                          now: datetime | None = None,
                          probe=_head_ok) -> datetime:
-    """Newest cycle whose final requested objects exist on AWS S3.
+    """Newest cycle whose final requested objects are actually published.
 
     A cycle qualifies only when every probed object for forecast hour
     ``last_hour`` is already published, so a partially uploaded cycle
@@ -971,6 +1110,14 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
     ``wrfprs`` (soil-record source) objects: fetching needs both per
     hour, and during a live publication ``wrfnat`` can appear before its
     ``wrfprs`` sibling, which must not make the cycle win.
+
+    The endpoints are asked in ladder order, and the operational server
+    heads it.  That IS the answer to "latest": the archive lags the
+    operational server by minutes to hours, so resolving against the
+    archive returned an older cycle than the one already published --
+    a run initialized an hour behind the best available state, with
+    nothing in the receipt to say why.  The archive is still asked when
+    the operational server yields no complete cycle at all.
     """
 
     if now is None:
@@ -981,13 +1128,9 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
             minute=0, second=0, microsecond=0,
             hour=max(h for h in GFS_CYCLE_HOURS if h <= now.hour))
         candidates = tuple(candidate - i * step for i in range(9))
-        urls = {cycle: cycle_probe_urls(source, cycle, last_hour)
-                for cycle in candidates}
     elif source == "hrrr":
         candidate = now.replace(minute=0, second=0, microsecond=0)
         candidates = tuple(candidate - timedelta(hours=i) for i in range(13))
-        urls = {cycle: cycle_probe_urls(source, cycle, last_hour)
-                for cycle in candidates}
     else:
         raise ValueError(
             "--cycle latest is only meaningful for gfs/gdas/hrrr; ERA5 is "
@@ -996,13 +1139,19 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
         from gpuwm.hrrr_forecast import hrrr_cycle_horizon
         candidates = tuple(cycle for cycle in candidates
                            if last_hour <= hrrr_cycle_horizon(cycle))
-    for cycle in candidates:
-        if all(probe(url) for url in urls[cycle]):
-            return cycle
+    ladder = fetch_endpoints.serving_ladder(
+        source, cycle=candidates[0], now=now) if candidates else ()
+    for endpoint in ladder:
+        for cycle in candidates:
+            urls = cycle_probe_urls(source, cycle, last_hour,
+                                    transport=endpoint.name)
+            if all(probe(url) for url in urls):
+                return cycle
     span = "48 h" if source in GFS_CONTAINER_SOURCES else "12 h"
+    tried = " or ".join(endpoint.name for endpoint in ladder)
     raise RuntimeError(
         f"no complete {source.upper()} cycle covering f{last_hour:03d} was "
-        f"found on AWS S3 within the last {span}; pass an explicit --cycle")
+        f"found on {tried} within the last {span}; pass an explicit --cycle")
 
 
 def resolve_hrrr_transport(cycle: datetime, requested: str, *,
@@ -1012,34 +1161,37 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
 
     Both hosts serve byte-identical HRRR files and ``.idx`` indexes, so
     the choice is never about the data.  It is about two things the
-    hosts do NOT share: NOMADS publishes each forecast hour before the
-    cloud mirrors do and keeps only about the newest
-    :data:`HRRR_NOMADS_RETENTION_HOURS`; S3 is the full archive and is
-    far faster for whole-file transfers.
+    hosts do NOT share, and both are declared in the packaged endpoint
+    ladder (``legacy_ladders.hrrr``): the operational server publishes
+    each forecast hour before the cloud mirrors do and keeps only about
+    :data:`HRRR_NOMADS_RETENTION_HOURS`; the S3 archive lags and keeps
+    everything.
 
-    ``auto`` therefore probes **S3** for the requested window's final
-    hour pair (both the ``wrfnat`` and ``wrfprs`` objects, mirroring the
-    latest-cycle completeness rule) and uses NOMADS only when S3 cannot
-    serve that window yet.  It used to be the other way round, and the
-    pairing was wrong for the default byte mode: this product's default
-    is ``--mode full-file``, and NOMADS paces large transfers hard.
-    Measured on one box, one cycle, the same four objects through the
-    same backbone: 348/209/418/255 s from NOMADS against 69/34/45/44 s
-    from S3, and a three-hour window that took 54 minutes over NOMADS
-    took about three over S3.  Nobody chose that; it fell out of
-    preferring the freshest host to a caller who was not asking for
-    freshness.
+    ``auto`` asks the THROUGHPUT rung first and takes it when it
+    already serves the requested window: the operational server's whole
+    advantage is having the cycle first, and once the archive has the
+    same object that advantage is spent.  What is left is throughput,
+    and the archive wins it -- measured on one box, one cycle, the same
+    four objects through the same backbone: 348/209/418/255 s from the
+    operational server against 69/34/45/44 s from S3, and measured
+    again at peak hours as ~3 MB/s per file against the archive serving
+    the same 3.4 GB in roughly a sixth of the wall clock.
 
-    ``--wait-for`` IS asking for freshness, and it does not come through
-    here at all -- the live-cycle path keeps ``auto`` unresolved and
-    tries NOMADS first on every polling round, which is exactly what
-    downloading hours as they publish requires
-    (:func:`_fetch_hrrr_locked`).
+    When the archive has NOT caught up -- publication lag, which is the
+    one thing the operational server exists for -- the operational
+    server is probed and taken, and it says so.  A cycle past its
+    retention window skips the doomed probe entirely.
+
+    The window's FINAL hour is what is probed, on either host, for the
+    same reason ``resolve_latest_cycle`` probes it: publication within
+    a cycle runs forward, so a host serving the last hour serves every
+    earlier one.
 
     One decision per invocation, so a fetch never silently mixes hosts;
     the manifest records every file's actual URL and transport either
-    way.  An explicit ``nomads`` that NOMADS cannot serve refuses with
-    the retention story rather than failing file by file mid-download.
+    way.  An explicit ``nomads`` that the operational server cannot
+    serve refuses with the retention story rather than failing file by
+    file mid-download.
     """
 
     if requested == "s3":
@@ -1052,7 +1204,7 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
         probe = _head_ok
     if now is None:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-    age_hours = (now - cycle).total_seconds() / 3600.0
+    age_hours = fetch_endpoints.cycle_age_hours(cycle, now)
     if requested == "nomads":
         urls = (hrrr_object_url(cycle, last_hour, "wrfnat",
                                 transport="nomads"),
@@ -1070,24 +1222,48 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
             f"--transport nomads: NOMADS is not serving cycle "
             f"{cycle:%Y-%m-%dT%H}Z through f{last_hour:02d}{detail}; use "
             "--transport s3 (the full archive) or auto")
-    if age_hours > HRRR_NOMADS_RETENTION_HOURS:
-        # Past NOMADS retention there is no second host to probe.
+    ladder = fetch_endpoints.serving_ladder("hrrr", cycle=cycle, now=now)
+
+    def window_urls(name: str) -> tuple[str, ...]:
+        return (hrrr_object_url(cycle, last_hour, "wrfnat", transport=name),
+                hrrr_object_url(cycle, last_hour, "wrfprs", transport=name))
+
+    # The throughput rung first: an hour the archive already mirrors has
+    # nothing left to gain from the slower host.  Both final-hour
+    # objects must answer, because a fetch needs the pair.
+    for endpoint in fetch_endpoints.transfer_probes(ladder):
+        if all(probe(url) for url in window_urls(endpoint.name)):
+            progress(
+                f"fetch hrrr: mirrored: taking the archive for throughput "
+                f"-- {endpoint.name} already serves cycle "
+                f"{cycle:%Y-%m-%dT%H}Z through f{last_hour:02d}")
+            return endpoint.name
+
+    for position, endpoint in enumerate(ladder):
+        if position == len(ladder) - 1:
+            # The last rung is the fallback; probing it would only
+            # duplicate the refusal the transfer itself would give --
+            # and as the throughput rung it has already been asked
+            # above.
+            break
+        if all(probe(url) for url in window_urls(endpoint.name)):
+            # EARNED, not assumed: this prints only after the archive
+            # was asked and did not have the window, which is exactly
+            # the publication lag the sentence claims.
+            progress(
+                f"fetch hrrr: using {endpoint.name} -- {endpoint.why}")
+            return endpoint.name
+        progress(
+            f"fetch hrrr: {endpoint.name} does not serve cycle "
+            f"{cycle:%Y-%m-%dT%H}Z through f{last_hour:02d} yet -- "
+            f"asking {ladder[position + 1].name}")
+    last = ladder[-1]
+    if len(ladder) == 1 and age_hours > HRRR_NOMADS_RETENTION_HOURS:
         progress(
             f"fetch hrrr: cycle {cycle:%Y-%m-%dT%H}Z is {age_hours:.0f} h "
             f"old, beyond the ~{HRRR_NOMADS_RETENTION_HOURS} h NOMADS "
             "retention -- using the AWS S3 archive")
-        return "s3"
-    s3_urls = (hrrr_object_url(cycle, last_hour, "wrfnat", transport="s3"),
-               hrrr_object_url(cycle, last_hour, "wrfprs", transport="s3"))
-    if all(probe(url) for url in s3_urls):
-        progress("fetch hrrr: using the AWS S3 archive (identical files "
-                 "and .idx indexes, and far faster for whole-file "
-                 "transfers; NOMADS remains the fallback while a cycle "
-                 "is still reaching S3)")
-        return "s3"
-    progress("fetch hrrr: S3 does not serve the full requested window yet "
-             "-- using NOMADS, which publishes ahead of the mirrors")
-    return "nomads"
+    return last.name
 
 
 # ---------------------------------------------------------------------------
@@ -1631,6 +1807,8 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
             "bytes": series.stat().st_size, "sha256": sha256_file(series),
             "url": None,
         }]
+        entries += _write_gfs_front_door_files(
+            out, source=source, cycle=cycle, files=files, series=series)
         recorded_hours = tuple(
             int(item["forecast_hour"]) for item in files)
         payload = _manifest_payload(
@@ -1665,10 +1843,7 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
         payload["pressure_levels_hpa"] = [
             float(format(float(level), "g")) for level in levels]
         payload["source_top_pressure_pa"] = source_top_pa
-        manifest_path = write_fetch_manifest(out, payload)
-        _write_gfs_front_door_files(
-            out, source=source, cycle=cycle, files=files, series=series)
-        return manifest_path
+        return write_fetch_manifest(out, payload)
 
     def resume_command() -> str:
         cadence = hours[1] - hours[0] if len(hours) > 1 else 3
@@ -1767,13 +1942,14 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
         files.append(entry)
         return publish_manifest()
 
+    monitor = progress_mod.TransferMonitor(f"fetch {source}")
     try:
         _entries, receipt = fetch_pool.run_transfers(
             [fetch_pool.TransferJob(
-                name=name, url=url,
+                name=name, url=url, token=f"f{hour:03d}", path=out / name,
                 action=functools.partial(transfer, hour, name, url))
              for hour, name, url in planned],
-            workers=file_workers, on_admitted=admit)
+            workers=file_workers, on_admitted=admit, monitor=monitor)
         pool_summary.update(receipt)
         publish_manifest()
     except KeyboardInterrupt:
@@ -1826,6 +2002,8 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
             f"Unverified partial/incomplete GRIB files on disk (not "
             f"recorded): {unverified}.\n"
             f"  resume exactly with: {resume_command()}") from None
+    finally:
+        monitor.close()
     return out / FETCH_MANIFEST_NAME
 
 
@@ -1856,19 +2034,23 @@ def _gfs_index_record_count(index_url: str, *, progress, label: str
 
 def _rw_fetch_gfs_fullfile(*, binary: Path, cycle: datetime, hour: int,
                            source: str, out: Path,
-                           cache_dir: Path | None, progress) -> dict:
+                           cache_dir: Path | None, progress,
+                           transport: str = "s3") -> dict:
     """One whole ``pgrb2.0p25`` object through the Rust backbone.
 
     No selectors: ``--mode full-file`` takes the object in parallel
     range GETs, and the backbone names it after the URL, which is
-    already the name the series records.
+    already the name the series records.  ``transport`` is the ladder
+    rung being asked, in this front door's vocabulary; the backbone has
+    its own name for the same host.
     """
 
     from gpuwm import rustwx_fetch
 
     record = rustwx_fetch.run_fetch(
         binary, model=source, date=f"{cycle:%Y%m%d}", cycle=cycle.hour,
-        hours=(hour,), product=RW_FETCH_GFS_PRODUCT, source="aws",
+        hours=(hour,), product=RW_FETCH_GFS_PRODUCT,
+        source=RW_FETCH_SOURCES[transport],
         mode="full-file", out=out, cache_dir=cache_dir)
     if len(record["files"]) != 1:
         raise RuntimeError(
@@ -1891,8 +2073,9 @@ def fetch_gfs_fullfile(*, cycle: datetime, hours: tuple[int, ...],
                        top_pressure_pa: float | None = None,
                        all_levels: bool = False,
                        file_workers: int | None = None,
+                       transport: str | None = None,
                        available_levels=gfs_available_levels) -> Path:
-    """Download whole ``pgrb2.0p25`` objects from the AWS S3 archive.
+    """Download whole ``pgrb2.0p25`` objects along the endpoint ladder.
 
     The full-file transport for the GFS container sources, holding the
     same output-root lock discipline as :func:`fetch_gfs`.  The raw
@@ -1913,7 +2096,7 @@ def fetch_gfs_fullfile(*, cycle: datetime, hours: tuple[int, ...],
             engine_selection=engine_selection,
             cache_dir=cache_dir, top_pressure_pa=top_pressure_pa,
             all_levels=all_levels, file_workers=file_workers,
-            available_levels=available_levels)
+            pinned_host=transport, available_levels=available_levels)
 
 
 def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
@@ -1925,6 +2108,7 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
                                top_pressure_pa: float | None,
                                all_levels: bool,
                                file_workers: int | None = None,
+                               pinned_host: str | None = None,
                                available_levels=gfs_available_levels
                                ) -> Path:
     """The whole-object transfer, with the output-root lock held.
@@ -1998,20 +2182,49 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
             "bytes": series.stat().st_size, "sha256": sha256_file(series),
             "url": None,
         }]
+        entries += _write_gfs_front_door_files(
+            out, source=source, cycle=cycle, files=files, series=series)
         payload = _manifest_payload(
             source=source, cycle=cycle,
             hours=tuple(int(item["forecast_hour"]) for item in files),
             area=area, files=entries)
         payload["notes"] = (
-            "whole pgrb2.0p25 objects from the AWS S3 archive "
-            "(north-to-south DRT 5.3 grids, certified in "
-            "gfs_grib2_bridge with its scan-order flip and the SOILW "
-            "missing-value matched pair); no area crop is involved")
+            "whole pgrb2.0p25 objects (north-to-south DRT 5.3 grids, "
+            "certified in gfs_grib2_bridge with its scan-order flip and "
+            "the SOILW missing-value matched pair); no area crop is "
+            "involved.  Both endpoints publish the same key with the "
+            "same bytes, so per-file endpoints may differ across a "
+            "fall-through without weakening any digest bar")
         payload["engine"] = engine
         payload["engine_selection"] = _engine_selection(
             engine, engine_selection)
         payload["mode"] = "full-file"
-        payload["transport"] = "s3"
+        # WHERE THE BYTES CAME FROM, per file and in summary.  This was
+        # the constant "s3" and is now what actually served: a receipt
+        # that names one host while the ladder fell through to another
+        # is a claim about intent, not provenance.
+        payload["endpoints"] = {
+            "considered": [endpoint.name for endpoint in ladder],
+            # The throughput order the table declares, beside the
+            # retention order above: they answer different questions,
+            # and a receipt that showed only one could not explain why
+            # a fresh cycle came off the archive.
+            "transfer_preference": [
+                endpoint.name
+                for endpoint in fetch_endpoints.transfer_order(ladder)],
+            "served": sorted({
+                str(item["endpoint"]) for item in files
+                if item.get("endpoint")}),
+            "ladder": [
+                {"name": endpoint.name, "base": endpoint.base,
+                 "host": endpoint.host,
+                 "retention_hours": endpoint.retention_hours,
+                 "transfer_rank": endpoint.transfer_rank,
+                 "why": endpoint.why}
+                for endpoint in ladder],
+        }
+        payload["transport"] = (payload["endpoints"]["served"] or
+                                [ladder[0].name])[0]
         # The decode ladder this request declares; the front-door
         # manifest passes it to the bridge, and the vertical contract
         # needs the source top to decide whether the case's p_top is
@@ -2023,10 +2236,7 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
             # The completed run's concurrency receipt; absent from
             # interrupted manifests, which measured no complete run.
             payload["concurrency"] = dict(pool_summary)
-        manifest_path = write_fetch_manifest(out, payload)
-        _write_gfs_front_door_files(
-            out, source=source, cycle=cycle, files=files, series=series)
-        return manifest_path
+        return write_fetch_manifest(out, payload)
 
     def resume_command() -> str:
         cadence = hours[1] - hours[0] if len(hours) > 1 else 3
@@ -2046,13 +2256,35 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
             command.extend(("--forecast-start-hour", str(hours[0])))
         return shlex.join(command)
 
+    # The endpoints this CYCLE will be asked for, in order.  Resolved
+    # once for the request, from the cycle's age: an initialization
+    # inside the operational window is taken from the server that
+    # published it first, and one older than that window goes straight
+    # to the archive without paying for an attempt that was certain to
+    # 404.  Both hosts answer the same relative key with the same
+    # Content-Length, so falling through is appending one key to
+    # another base.
+    ladder = fetch_endpoints.serving_ladder(source, cycle=cycle,
+                                            pinned=pinned_host)
     planned = [
         (hour, f"{prefix}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}",
-         gfs_object_url(cycle, hour, source))
+         gfs_object_key(cycle, hour, source))
         for hour in hours]
+    # WHICH rung moves each object, decided before any of them move.
+    # Retention says who is ASKED; throughput says who should serve,
+    # and the archive only earns that when it provably has the object
+    # -- one HEAD per hour, run ahead of the transfers through the same
+    # pool.  See gpuwm.fetch_endpoints.transfer_ladder.
+    object_ladders = _probe_object_ladders(
+        ladder, keys=[key for _hour, _name, key in planned],
+        source=source, pinned=pinned_host, workers=file_workers,
+        progress=progress)
 
-    def transfer(hour: int, name: str, url: str) -> dict:
+    def transfer(hour: int, name: str, key: str) -> dict:
         path = out / name
+        rungs = object_ladders.get(key, ladder)
+        url = rungs[0].url(key)
+        endpoint_name = rungs[0].name
         # The whole hour, index probe included: see the subset
         # route's note.  A manifest that recorded only the download's
         # seconds would under-report the wall a caller waited.
@@ -2081,27 +2313,41 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
                      f"{path.stat().st_size:,} B verified -- skipped")
         else:
             started = time.perf_counter()
-            if engine == "rust":
-                entry = _rw_fetch_gfs_fullfile(
-                    binary=engine_bin, cycle=cycle, hour=hour,
-                    source=source, out=out, cache_dir=cache_dir,
-                    progress=progress)
-                landed = out / entry["name"]
-                if landed != path:
-                    raise RuntimeError(
-                        f"rw_fetch landed {entry['name']}, expected "
-                        f"{name}")
-            else:
+            attempts: list[tuple[fetch_endpoints.Endpoint, str]] = []
+            for position, endpoint in enumerate(rungs):
+                endpoint_name = endpoint.name
+                url = endpoint.url(key)
                 try:
-                    transport._download(url, path)
-                except HTTPError as error:
-                    raise RuntimeError(
-                        f"the S3 archive did not serve {url} "
-                        f"({error.code} {error.reason}); "
-                        "`gpuwm fetch --cycle latest` probes the same "
-                        "archive, and a permanent 404 here usually "
-                        "names a lead this cycle never published"
-                    ) from None
+                    if engine == "rust":
+                        entry = _rw_fetch_gfs_fullfile(
+                            binary=engine_bin, cycle=cycle, hour=hour,
+                            source=source, out=out, cache_dir=cache_dir,
+                            transport=endpoint.name, progress=progress)
+                        landed = out / entry["name"]
+                        if landed != path:
+                            raise RuntimeError(
+                                f"rw_fetch landed {entry['name']}, expected "
+                                f"{name}")
+                    else:
+                        transport._download(url, path)
+                except BaseException as error:   # noqa: BLE001 - classified
+                    reason = fetch_endpoints.fault_reason(error)
+                    remaining = rungs[position + 1:]
+                    if reason is None:
+                        raise
+                    attempts.append((endpoint, reason))
+                    if not remaining:
+                        raise RuntimeError(fetch_endpoints.ladder_refusal(
+                            f"fetch {source} f{hour:03d}: {name}",
+                            attempts)) from None
+                    path.with_name(path.name + ".part").unlink(
+                        missing_ok=True)
+                    progress(
+                        f"fetch {source} f{hour:03d}: {endpoint.name} did "
+                        f"not serve {name} ({reason}); asking "
+                        f"{remaining[0].name}")
+                    continue
+                break
             observed = count_grib2_messages(path)
             if idx_records is not None and observed != idx_records:
                 _quarantine_rejected(path, progress,
@@ -2116,13 +2362,13 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
                 progress(f"fetch {source} f{hour:03d}: {name} "
                          f"{path.stat().st_size:,} B in "
                          f"{time.perf_counter() - started:.1f} s "
-                         "(s3, full-file)")
+                         f"({endpoint_name}, full-file)")
         return {
             "name": name, "role": f"{source}-full-file",
             "forecast_hour": hour, "bytes": path.stat().st_size,
             "seconds": round(time.perf_counter() - file_started, 6),
             "downloaded": downloaded,
-            "sha256": digest, "url": url,
+            "sha256": digest, "url": url, "endpoint": endpoint_name,
             "grib2_messages": observed, "idx_records": idx_records,
         }
 
@@ -2130,13 +2376,20 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
         files.append(entry)
         return publish_manifest()
 
+    monitor = progress_mod.TransferMonitor(f"fetch {source}")
     try:
         _entries, receipt = fetch_pool.run_transfers(
             [fetch_pool.TransferJob(
-                name=name, url=url,
-                action=functools.partial(transfer, hour, name, url))
-             for hour, name, url in planned],
-            workers=file_workers, on_admitted=admit)
+                name=name,
+                # The host this object will ACTUALLY be asked first:
+                # counting a mirrored transfer against the operational
+                # server's cap of 2 would throttle the fetch to the
+                # pace of the host it just avoided.
+                url=object_ladders.get(key, ladder)[0].url(key),
+                token=f"f{hour:03d}", path=out / name,
+                action=functools.partial(transfer, hour, name, key))
+             for hour, name, key in planned],
+            workers=file_workers, on_admitted=admit, monitor=monitor)
         pool_summary.update(receipt)
         publish_manifest()
     except KeyboardInterrupt:
@@ -2145,7 +2398,7 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
         # beyond the admitted prefix; extend it in order and stop at
         # the first file that is absent or fails a bar.  A partial file
         # never reaches the manifest.
-        for hour, name, url in planned[len(files):]:
+        for hour, name, key in planned[len(files):]:
             path = out / name
             if not path.is_file():
                 break
@@ -2161,7 +2414,11 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
                 "name": name, "role": f"{source}-full-file",
                 "forecast_hour": hour,
                 "bytes": path.stat().st_size,
-                "sha256": digest, "url": url,
+                "sha256": digest,
+                "url": object_ladders.get(key, ladder)[0].url(key),
+                # The interrupt path never saw which endpoint served
+                # this file, and guessing the head would be a claim.
+                "endpoint": None,
                 "grib2_messages": observed,
                 "idx_records": None,
             })
@@ -2193,16 +2450,29 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
 
 
 def _write_gfs_front_door_files(out: Path, *, source: str, cycle: datetime,
-                                files: list[dict], series: Path) -> None:
+                                files: list[dict], series: Path
+                                ) -> list[dict]:
     """The four-file front door, on the GFS container routes too.
 
     DATA.md promises every fetched directory ``inputs.txt`` +
     ``prep-command.txt`` + ``SHA256SUMS`` + ``fetch-manifest.json``, and
     the table routes keep that promise; the GFS route left three grib2
     files, a tsv and a manifest -- a pile, not a front door (UX finding
-    N11).  Written beside every manifest publication, so an interrupted
-    fetch's files describe exactly the verified prefix the manifest
-    records.
+    N11).  Written BEFORE each manifest publication and returned as
+    manifest rows, so an interrupted fetch's files describe exactly the
+    verified prefix the manifest records, and the manifest claims every
+    canonical file the fetch put in the directory.
+
+    The order and the binding are the contract, not decoration.  These
+    three landed after the manifest and unlisted, which left the audited
+    receipt under-claiming its own directory -- three canonical,
+    undigested files a reader had to take on trust -- and left a window
+    between the manifest rename and theirs where a kill published a
+    complete-looking receipt beside the PREVIOUS run's checksum list and
+    input list.  Publishing them first and hashing them into ``files``
+    makes the manifest the publication barrier the rest of this module
+    already treats it as, and matches the HRRR route, which has always
+    written ``SHA256SUMS`` first and carried it as a ``checksums`` row.
 
     ``prep-command.txt`` carries the BOUND half only, like every table
     route's: the namelist, config, geography and output root are the
@@ -2213,8 +2483,11 @@ def _write_gfs_front_door_files(out: Path, *, source: str, cycle: datetime,
 
     lines = [f"{item['sha256']}  {item['name']}" for item in files]
     lines.append(f"{sha256_file(series)}  {series.name}")
-    _atomic_write_text(out / "SHA256SUMS", "\n".join(lines) + "\n")
-    _atomic_write_text(out / "inputs.txt", "".join(
+    sums = out / fetch_routes.SHA256SUMS_NAME
+    inputs = out / fetch_routes.INPUT_LIST_NAME
+    command_path = out / fetch_routes.PREP_COMMAND_NAME
+    _atomic_write_text(sums, "\n".join(lines) + "\n")
+    _atomic_write_text(inputs, "".join(
         f"{(out / item['name']).resolve()}\n" for item in files))
     header = [
         f"# {source} 0.25-degree isobaric container fetch",
@@ -2247,9 +2520,15 @@ def _write_gfs_front_door_files(out: Path, *, source: str, cycle: datetime,
             "# same thing in machine form.",
         ))
         body = []
-    _atomic_write_text(out / "prep-command.txt",
+    _atomic_write_text(command_path,
                        "\n".join(header + ([""] if body else []) + body)
                        + "\n")
+    return [{"name": path.name, "role": role, "forecast_hour": None,
+             "bytes": path.stat().st_size, "sha256": sha256_file(path),
+             "url": None}
+            for role, path in (("checksums", sums),
+                               ("input-list", inputs),
+                               ("prep-command", command_path))]
 
 
 def author_gfs_front_door_manifest(
@@ -2691,10 +2970,15 @@ def _force_quarantine_output(out: Path, progress, label: str) -> list[str]:
     the previous ``fetch-manifest.json`` stayed canonical -- so a kill
     (or a network failure) part-way through left a readable manifest
     claiming a digest for bytes that had just been renamed away.  That
-    directory lies until something re-reads it.  Quarantining the
-    manifest and the checksum/series receipts *before* touching a single
-    payload means an interrupted force leaves a directory with payloads
-    and no receipt, which the front door already refuses honestly.
+    directory lies until something re-reads it.  Quarantining every
+    receipt in :data:`FETCH_RECEIPT_NAMES` -- and the series -- *before*
+    touching a single payload means an interrupted force leaves a
+    directory with payloads and no receipt, which the front door already
+    refuses honestly.  The receipt class is the whole front door, not
+    just the manifest and the checksum list: ``inputs.txt`` is a list of
+    resolved payload paths and ``prep-command.txt`` binds the series, so
+    sweeping either of them at payload rank could leave a readable file
+    naming bytes that had already been renamed aside.
 
     *Every file, as advertised.*  The CLI has always said force moves
     every existing file in ``--out`` aside; it actually moved only the
@@ -2712,13 +2996,17 @@ def _force_quarantine_output(out: Path, progress, label: str) -> list[str]:
 
     if not out.is_dir():
         return []
-    receipts = (FETCH_MANIFEST_NAME, "SHA256SUMS")
-    def order(path: Path) -> tuple[int, str]:
-        if path.name in receipts:
-            return 0, path.name
+    def order(path: Path) -> tuple[int, int, str]:
+        if path.name in FETCH_RECEIPT_NAMES:
+            # Manifest first, then the rest of the front door, in the
+            # order the constant declares rather than alphabetically:
+            # `SHA256SUMS` sorts before `fetch-manifest.json`, so a
+            # by-name sort left the one receipt the front door reads
+            # canonical for longer than the ones it does not.
+            return 0, FETCH_RECEIPT_NAMES.index(path.name), path.name
         if path.name.endswith("-series.tsv"):
-            return 1, path.name
-        return 2, path.name
+            return 1, 0, path.name
+        return 2, 0, path.name
 
     candidates = sorted(
         (path for path in out.iterdir()
@@ -3078,21 +3366,35 @@ def _wait_for_hrrr_product(*, cycle: datetime, hour: int, product: str,
     """Block until a transport serves the object AND its ``.idx``.
 
     Returns the transport name, or None when the deadline expires.
-    Candidates are tried in order each round (NOMADS first under
-    ``auto``, because the production mirror publishes first); rounds
-    are separated by at most :data:`HRRR_WAIT_POLL_SECONDS`.  Both the
-    object and its index must answer: the ``.idx`` can lag its GRIB by
-    a moment, and the range transport needs both.
+    Rounds are separated by at most :data:`HRRR_WAIT_POLL_SECONDS`.
+    Both the object and its index must answer: the ``.idx`` can lag its
+    GRIB by a moment, and the range transport needs both.
+
+    Every candidate is polled each round, in ladder order, so the
+    operational server keeps its head start -- watching it is the whole
+    point of ``--wait-for``, and it is the host that will see the hour
+    first.  What the poll DECIDES, though, is throughput: among the
+    candidates that answered this round, the quickest one takes the
+    transfer.  A file the archive has already mirrored has nothing left
+    to gain from the paced host.
     """
 
+    ranked = {endpoint.name: endpoint.transfer_rank
+              for endpoint in fetch_endpoints.ladder("hrrr")}
     announced = False
     while True:
+        published = []
         for name in candidates:
             url = hrrr_object_url(cycle, hour, product, transport=name)
             if probe(url) and probe(url + ".idx"):
-                if announced:
-                    progress(f"fetch hrrr {label}: published on {name}")
-                return name
+                published.append(name)
+        if published:
+            chosen = min(published,
+                         key=lambda name: (ranked.get(name, 0),
+                                           candidates.index(name)))
+            if announced:
+                progress(f"fetch hrrr {label}: published on {chosen}")
+            return chosen
         remaining = deadline - clock()
         if remaining <= 0:
             return None
@@ -3319,12 +3621,23 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         # predates that key.
         expected = prior_records.get(dest_name, expected_counts[kind])
         label = f"f{hour:02d} {kind}"
+        # The stopwatch starts on the WHOLE product, not on the download
+        # alone: a verify-skip re-hashes the file on disk and walks its
+        # GRIB envelope, and that is real wall clock a reader of the
+        # manifest is entitled to see.
+        file_started = time.perf_counter()
         digest = None
         if dest.exists() and not force:
             digest = _existing_hrrr_digest(
                 dest, expected_count=expected,
                 prior_digest=prior_digests.get(dest_name),
                 progress=progress, label=label)
+        # Decided HERE, while `digest` still means "the existing file
+        # passed every bar", and not inferred later from the seconds:
+        # dividing bytes by seconds means bandwidth for a download and
+        # sha256 throughput for a verify-skip, and a receipt that cannot
+        # tell them apart reports the second as the first.
+        downloaded = digest is None
         if digest is not None:
             chosen = candidates[0]
             url = hrrr_object_url(cycle, hour, product,
@@ -3409,6 +3722,13 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
             "bytes": dest.stat().st_size, "sha256": digest,
             "url": url, "transport": chosen,
             "records": count_grib2_messages(dest),
+            "seconds": round(time.perf_counter() - file_started, 6),
+            # Said, not inferred.  Without it `fetch_throughput` read
+            # every HRRR fetch as zero downloads -- so a re-run that
+            # verified 3 GiB in seconds and a first run that pulled 3
+            # GiB over the network published the same receipt, and a
+            # caller could not tell a user which one had happened.
+            "downloaded": downloaded,
         }
 
     products = []
@@ -3445,16 +3765,26 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
             hour_checkpoint(index, transfer_product(
                 hour, kind, source_name, dest_name, product))
     else:
-        _entries, receipt = fetch_pool.run_transfers(
-            [fetch_pool.TransferJob(
-                name=dest_name,
-                url=hrrr_object_url(cycle, hour, product,
-                                    transport=candidates[0]),
-                action=functools.partial(
-                    transfer_product, hour, kind, source_name,
-                    dest_name, product))
-             for hour, kind, source_name, dest_name, product in products],
-            workers=file_workers, on_admitted=hour_checkpoint)
+        # The Rust fetch bridge owns the copy on this route and reports
+        # nothing until it exits, so `path` is what makes the in-flight
+        # byte count real: the monitor stats the growing file, which
+        # needs no protocol between here and there.
+        monitor = progress_mod.TransferMonitor("fetch hrrr")
+        try:
+            _entries, receipt = fetch_pool.run_transfers(
+                [fetch_pool.TransferJob(
+                    name=dest_name,
+                    url=hrrr_object_url(cycle, hour, product,
+                                        transport=candidates[0]),
+                    token=f"f{hour:02d} {kind}", path=out / dest_name,
+                    action=functools.partial(
+                        transfer_product, hour, kind, source_name,
+                        dest_name, product))
+                 for hour, kind, source_name, dest_name, product in products],
+                workers=file_workers, on_admitted=hour_checkpoint,
+                monitor=monitor)
+        finally:
+            monitor.close()
         pool_summary.update(receipt)
     return publish_manifest(hours)
 
@@ -4266,15 +4596,20 @@ def fetch_main(args) -> int:
     if source != "hrrr":
         hrrr_only = sorted(
             flag for flag, value in (
-                ("--transport", args.transport),
                 ("--wait-for", args.wait_for or None),
                 ("--wait-timeout-minutes", args.wait_timeout_minutes),
             ) if value is not None)
         if hrrr_only:
             raise ValueError(
-                f"{', '.join(hrrr_only)}: --source hrrr only (the GFS "
-                "container sources have one full-file host, the S3 "
-                "archive; ERA5 is a manual CDS retrieval)")
+                f"{', '.join(hrrr_only)}: --source hrrr only (live-cycle "
+                "publication polling; the GFS container sources resolve a "
+                "complete cycle up front, and ERA5 is a manual CDS "
+                "retrieval)")
+    if args.transport is not None and not fetch_endpoints.has_ladder(source):
+        raise ValueError(
+            f"--transport: --source {source} has no host to choose "
+            "between (ERA5 is a manual CDS retrieval; the template is "
+            "written locally)")
     if source not in ("hrrr",) + GFS_CONTAINER_SOURCES:
         transported = sorted(
             flag for flag, value in (
@@ -4312,6 +4647,7 @@ def fetch_main(args) -> int:
                 flag for flag, value in (
                     ("--engine", args.engine),
                     ("--cache-dir", args.cache_dir),
+                    ("--transport", args.transport),
                 ) if value is not None)
             if cgi_extras:
                 raise ValueError(
@@ -4511,8 +4847,12 @@ def fetch_main(args) -> int:
                          else "")
                       + (" [inherited, not chosen]" if choice.degraded
                          else "")
-                      + ", mode full-file (whole pgrb2.0p25 objects from "
-                        "the S3 archive)")
+                      + ", mode full-file (whole pgrb2.0p25 objects, "
+                      + " then ".join(
+                          endpoint.name for endpoint in
+                          fetch_endpoints.serving_ladder(
+                              source, cycle=cycle, pinned=args.transport))
+                      + ")")
                 manifest = fetch_gfs_fullfile(
                     cycle=cycle, hours=hours, area=area, out=args.out,
                     force=args.force_refetch, source=source,
@@ -4521,6 +4861,7 @@ def fetch_main(args) -> int:
                     cache_dir=args.cache_dir,
                     top_pressure_pa=args.p_top_pa,
                     all_levels=args.all_levels,
+                    transport=args.transport,
                     file_workers=args.fetch_workers)
             else:
                 manifest = fetch_gfs(
@@ -4635,18 +4976,20 @@ def fetch_main(args) -> int:
                 # Said BEFORE the first byte moves, and only when the
                 # host was RESOLVED rather than named: an operator who
                 # typed `--transport nomads` made a decision, and a
-                # decision does not get advice.  Under the S3-first rule
-                # above, `auto` reaches NOMADS only when S3 cannot serve
-                # the window yet, so this line now explains a real trade
-                # instead of apologising for a default.  Measured on one
+                # decision does not get advice.  Reaching here means the
+                # archive was ALREADY asked and did not have this window
+                # -- so this is not a nudge towards --transport s3,
+                # which would only 404; it is the cost of the freshness
+                # that was the only thing on offer.  Measured on one
                 # box, one cycle, the same four objects through the same
-                # backbone: 348/209/418/255 s from NOMADS against
-                # 69/34/45/44 s from S3.
-                print("fetch hrrr: NOMADS paces whole-file transfers -- "
-                      "expect several times the wall clock of the S3 "
-                      "archive for --mode full-file.  S3 carries this "
-                      "cycle once it finishes propagating; --transport "
-                      "s3 takes it from there.")
+                # backbone: 348/209/418/255 s from the operational
+                # server against 69/34/45/44 s from S3.
+                print("fetch hrrr: the operational server paces whole-file "
+                      "transfers -- expect several times the wall clock of "
+                      "the S3 archive for --mode full-file.  It is serving "
+                      "this fetch because it is the only host that has "
+                      "this window yet; once the archive catches up, a "
+                      "re-run takes it from there without being asked.")
             manifest = fetch_hrrr(
                 cycle=cycle, hours=hours, area=area, out=args.out,
                 force=args.force_refetch, transport=transport,
@@ -5009,16 +5352,27 @@ def register_cli(subparsers) -> None:
              "what gpuwm ingest expects instead of fetching")
     parser.add_argument(
         "--transport", default=None, choices=FETCH_TRANSPORTS,
-        help="download host.  hrrr: both hosts serve byte-identical files "
-             "and .idx indexes; 'nomads' (nomads.ncep.noaa.gov, roughly "
-             "the newest 48 h) publishes each hour first, 's3' is the "
-             "full AWS archive, and 'auto' (default) probes NOMADS for "
-             "the requested window and falls back to S3.  Table routes: "
-             "the host names their row declares (aws, nomads, ecmwf, dwd, "
-             "msc), defaulting to the one the row marks -- a host the row "
-             "does not carry refuses and lists the ones it does, because "
-             "for some products the second copy is a DIFFERENT product "
-             "(see `gpuwm fetch --source aigfs`)")
+        help="pin one rung of the source's endpoint ladder.  Every NCEP "
+             "source declares an ORDERED ladder -- the operational "
+             "server (nomads.ncep.noaa.gov) while it still holds the "
+             "cycle, the AWS archive behind it -- and the default walks "
+             "it.  Retention decides which rungs are asked: a cycle "
+             "older than the operational window goes straight to the "
+             "archive.  Throughput decides which one serves: each "
+             "requested object is HEADed on the archive first and taken "
+             "there when the archive already has it, because the "
+             "operational server's head start is spent once both hosts "
+             "have the same bytes; an object the archive has not caught "
+             "up with comes from the operational server.  A refusal, a "
+             "403/503 or a Retry-After moves to the next rung either "
+             "way.  Both hosts serve byte-identical objects under "
+             "identical keys, so the choice never changes the data.  "
+             "Naming a host here is a decision: it skips the probe, "
+             "disables fall-through, and refuses in that host's own "
+             "words.  A host a source does not carry refuses and lists "
+             "the ones it does, because for some products the second "
+             "copy is a DIFFERENT product (see `gpuwm fetch --source "
+             "aigfs`)")
     parser.add_argument(
         "--wait-for", action="store_true",
         help="hrrr only: live-cycle mode -- download each forecast hour "

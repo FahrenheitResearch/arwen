@@ -100,6 +100,10 @@ from gpuwm.config import (MIX_ISOTROPIC_RESTART_BREAK_NOTICE,
 from gpuwm.supervisor import fsync_file
 from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
                                   RRTMG_VARIANT_RTE_RRTMGP, rrtmg_variant)
+from gpuwm.core.uh_diag import (
+    TRACKER_WINDOW_SLOTS as _TRACKER_WINDOW_SLOTS,
+    UH_FOLLOW_WINDOW_PREFIX as _UH_FOLLOW_WINDOW_PREFIX,
+    is_tracker_window_slot as _is_tracker_window_slot)
 from gpuwm.core.nssl2_contract import (
     CONTRACT_ID as NSSL2_CONTRACT_ID,
     DEFAULT_RESTART_FIELDS as NSSL2_DEFAULT_RESTART_FIELDS,
@@ -539,6 +543,15 @@ STATE_INFRA_ATTRS = frozenset({
     "_host_setup_state",
     "physics", "lateral_boundaries", "_lateral_boundary_device",
     "elapsed_seconds", "_nest_restart_classification",
+    # The domain's ACTIVATION EPOCH in seconds, published beside
+    # ``elapsed_seconds`` by gpuwm.core.state.refresh_model_time and from
+    # the same tick authority.  Same category, and for the same reason:
+    # it is clock-derived, not integrated.  Every restore path rebuilds
+    # the clocks and refreshes the model time before any consumer reads
+    # it, so serializing it would store a second copy of a number the
+    # clock spec already carries -- and a second copy is a second thing
+    # that can disagree.
+    "domain_start_offset",
     # mp_physics=50 (P3).  WRF's itimestep, which the adapter maintains
     # lazily on the state (gpuwm/core/p3.py, the ``it`` block).  It is a
     # plain int, not an array, and it is CLOCK-DERIVED rather than dropped:
@@ -623,17 +636,50 @@ SERIALIZED_SCRATCH_SLOTS = frozenset({
 #: control reproduces the old inventory and must differ.
 #:
 #: The storm-following consumer windows (gpuwm/core/uh_diag.py:
-#: TRACKER_WINDOW_SLOTS) are the whole membership.  Not serialized: a window
-#: means "max since that consumer last looked", and a checkpoint has no way to
-#: know when the consumer will next look, so carrying the number across a
-#: restart would restore a window measured against a boundary that no longer
-#: exists.  They restart EMPTY; the first post-restart evaluation therefore
-#: sees a short window and may under-read, which is the same
-#: tolerated-experiment posture already ruled for a restart across a move and
-#: across a spawn -- the tracker promises nothing across a restart.
+#: TRACKER_WINDOW_SLOTS) are the whole membership.  ``carry`` is their class
+#: for every consumer of this table: an ORDINARY checkpoint does not write
+#: one, so a run with no lifecycle to restore keeps the member set it has
+#: always had, byte for byte.
+#:
+#: A NEST-LIFECYCLE run opts its own windows in per member instead
+#: (:func:`write_tree_restart` -> :func:`_opted_in_scratch_manifest`), and
+#: that is a writer decision, not a reclassification.  The old posture here
+#: was that a window "restarts empty" because a checkpoint cannot know when
+#: the consumer will next look; the restart-first ruling overrules it, and
+#: the arithmetic says it can: the content is a max-fold since the
+#: consumer's last reset, max is associative, commutative and rounding-free
+#: on float32, so folding the persisted window and then the rest is bitwise
+#: the unbroken fold.  An empty window at resume under-reads the next
+#: spawn/retire/follow decision, which is a different trajectory, not a
+#: shorter window.
 CARRIED_SCRATCH_SLOTS = frozenset({
     "uh_follow_window", "uh_spawn_window",
 })
+
+#: The same class, for the window family whose names are GENERATED.
+#:
+#: A per-domain ``[follow]`` gives each independently-cadenced child its own
+#: window on the parent (``uh_diag.follow_window_slot`` ->
+#: ``uh_follow_window.dNN``, allocated in gpuwm/runtime.py), because two
+#: children evaluating on different cadences must not blind each other by
+#: sharing one plane.  Those names cannot be enumerated above: the set
+#: depends on which children the experiment declares.
+#:
+#: MEASURED CONSEQUENCE of their having matched no class: ``classify_scratch
+#: _slot`` is TOTAL by construction -- it raises on anything it does not
+#: recognise, deliberately, so a new slot cannot be silently dropped from
+#: every checkpoint -- and ``_scratch_manifest`` walks the LIVE pool through
+#: it.  A run with a per-domain follow and ``restart_interval_s > 0``
+#: therefore died at its first checkpoint instant, hours into the forecast,
+#: having written no checkpoint at all.  ``carried_scratch_manifest`` walks
+#: the same pool, so the streamed carrier set broke identically.
+#:
+#: Kept as a prefix tuple beside the exact-name set rather than folded into
+#: it, on the REBUILT_SCRATCH_PREFIXES pattern, and taken FROM
+#: ``uh_diag.UH_FOLLOW_WINDOW_PREFIX`` rather than restated: ``uh_diag
+#: .is_tracker_window_slot`` already answers this question for the rest of
+#: the model, and the two answering differently is what made this partial.
+CARRIED_SCRATCH_PREFIXES = (_UH_FOLLOW_WINDOW_PREFIX,)
 
 #: Driver-manifest members a CHECKPOINT carries and a SWEEP must not.
 #:
@@ -1388,17 +1434,26 @@ def classify_scratch_slot(slot: str) -> str:
     :class:`RestartManifestError` for unknown slots.
 
     ``"carry"`` is cross-step state that is deliberately not checkpointed
-    (:data:`CARRIED_SCRATCH_SLOTS`).  Every restart path in this module tests
+    (:data:`CARRIED_SCRATCH_SLOTS` and :data:`CARRIED_SCRATCH_PREFIXES`).
+    Every restart path in this module tests
     ``== "serialize"`` or ``!= "serialize"``, so a ``carry`` slot is treated
     exactly like a ``rebuild`` one HERE and the restart stream is unchanged
     byte for byte.  The distinction exists for the consumers that ask this
     function a different question -- above all the streaming carrier set,
     which must move a ``carry`` slot between the store and every tile buffer
     and used to drop it.
+
+    TOTALITY IS THE CONTRACT, not a convenience: the final ``raise`` is what
+    stops a new slot being silently dropped from every checkpoint, so every
+    slot a run can actually allocate has to reach a branch above it.  The
+    per-follower window family is generated per declared child and so is
+    matched by prefix; see :data:`CARRIED_SCRATCH_PREFIXES`.
     """
     if slot in SERIALIZED_SCRATCH_SLOTS:
         return "serialize"
     if slot in CARRIED_SCRATCH_SLOTS:
+        return "carry"
+    if any(slot.startswith(prefix) for prefix in CARRIED_SCRATCH_PREFIXES):
         return "carry"
     if slot in REBUILT_SCRATCH_SLOTS:
         return "rebuild"
@@ -1409,6 +1464,27 @@ def classify_scratch_slot(slot: str) -> str:
         "(gpuwm/io/restart.py): declare it serialized (persistent "
         "accumulator/held state), carried (cross-step but not checkpointed) "
         "or rebuilt (per-call work buffer)")
+
+
+def _restorable_scratch_slot(slot: str) -> bool:
+    """May a stored ``scratch/<slot>`` member be applied to a live state?
+
+    ``serialize`` always: that class IS "this belongs in a checkpoint".
+
+    A TRACKER WINDOW conditionally, and this is the whole reason the
+    question is asked separately from the classification.  A window is
+    ``carry`` -- cross-step state that no ORDINARY checkpoint writes --
+    and reclassifying it would put it in every checkpoint of every run,
+    including the runs with no consumer to read it.  A nest-lifecycle run
+    opts its own windows in per member instead
+    (:func:`write_tree_restart`), so the reader has to accept a member the
+    classification alone says is not written.  Nothing else: a ``rebuild``
+    slot is a per-call work buffer whose value between calls means
+    nothing, and an unknown slot still raises out of
+    :func:`classify_scratch_slot`.
+    """
+    return (classify_scratch_slot(slot) == "serialize"
+            or _is_tracker_window_slot(slot))
 
 
 def setup_fingerprint(state) -> str:
@@ -2392,6 +2468,38 @@ def _scratch_manifest(state) -> dict[str, object]:
     return manifest
 
 
+def _opted_in_scratch_manifest(state, slots) -> dict[str, object]:
+    """``{scratch/<slot>: array}`` for slots the WRITER asked to serialize.
+
+    The classification is NOT changed and must not be: a tracker window is
+    ``carry`` for every other consumer of :func:`classify_scratch_slot`,
+    above all ``tilestream.physics_inventory.carrier_manifest``, and
+    promoting it to ``serialize`` would put a window in every checkpoint of
+    every run -- including runs with no consumer to read one, whose
+    checkpoints would then differ from every checkpoint they have on disk.
+    A nest-lifecycle run opts its own windows in, per member, here.
+    """
+    pool = getattr(state, "_scratch", {})
+    manifest: dict[str, object] = {}
+    for slot in sorted(set(slots)):
+        if classify_scratch_slot(slot) != "carry":
+            raise RestartManifestError(
+                f"the checkpoint writer opted scratch slot {slot!r} in, but "
+                f"it classifies as {classify_scratch_slot(slot)!r}: a "
+                "serialized slot is already in every manifest and a rebuilt "
+                "one is a per-call work buffer whose value between calls is "
+                "not state, so writing it would checkpoint a number nothing "
+                "may read back")
+        array = pool.get(slot)
+        if array is None:
+            raise RestartManifestError(
+                f"the checkpoint writer opted scratch slot {slot!r} in, but "
+                "this domain never allocated it; a member written from "
+                "nothing would restore a plane the run does not have")
+        manifest[f"scratch/{slot}"] = array
+    return manifest
+
+
 def carried_scratch_manifest(state) -> dict[str, object]:
     """``{scratch/<slot>: array}`` for the CARRY class -- never for a file.
 
@@ -2555,6 +2663,7 @@ def root_external_lbc_clock_identity(state, cfg) -> str | None:
 
 def write_restart(path, state, cfg, *, run_trackers=None,
                   tree_header: dict | None = None,
+                  extra_scratch_slots=(),
                   sealed_forcing_extension: bool = False) -> Path:
     """Serialize the complete cross-step model state to ``path``.
 
@@ -2562,16 +2671,24 @@ def write_restart(path, state, cfg, *, run_trackers=None,
     run-summary bookkeeping (w-max trackers, SWDOWN peak, nan flag) so a
     resumed run reports the same summary as an uninterrupted one — model
     evolution itself never reads them.
+
+    ``extra_scratch_slots`` names CARRIED slots this caller wants in the
+    file beside the serialized set (:func:`_opted_in_scratch_manifest`).
+    Empty — the default — writes exactly the member set this function has
+    always written, which is what keeps every lifecycle-free checkpoint
+    byte-identical.
     """
     with perf_timing.stage("io.restart.write_restart"):
         return _write_restart(
             path, state, cfg, run_trackers=run_trackers,
             tree_header=tree_header,
+            extra_scratch_slots=extra_scratch_slots,
             sealed_forcing_extension=sealed_forcing_extension)
 
 
 def _write_restart(path, state, cfg, *, run_trackers=None,
                    tree_header: dict | None = None,
+                   extra_scratch_slots=(),
                    sealed_forcing_extension: bool = False) -> Path:
     path = Path(path)
     _validate_nssl2_live_restart_state(state, cfg)
@@ -2584,6 +2701,8 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
     manifest: dict[str, object] = {}
     manifest.update(state_manifest(state))
     manifest.update(_scratch_manifest(state))
+    if extra_scratch_slots:
+        manifest.update(_opted_in_scratch_manifest(state, extra_scratch_slots))
     driver = getattr(state, "physics", None)
     driver_header = None
     if driver is not None:
@@ -2861,8 +2980,16 @@ def _validate_nssl2_stored_restart_state(
         if classify_scratch_slot(slot) == "serialize"
     }
     stored_scratch = {key for key in stored if key.startswith("scratch/")}
+    # A tracker window is OPTIONAL in both directions: present when the
+    # writing run declared a nest lifecycle, absent otherwise, and neither
+    # is an inventory defect (:func:`_restorable_scratch_slot`).  Read off
+    # the FILE rather than the live pool, so a checkpoint written under
+    # nwp_diagnostics = 1 and resumed under 0 reaches the generic
+    # drop-with-a-note instead of refusing here on an inventory count.
+    optional_scratch = {key for key in stored_scratch
+                        if _is_tracker_window_slot(key[len("scratch/"):])}
     missing_scratch = sorted(expected_scratch - stored_scratch)
-    extra_scratch = sorted(stored_scratch - expected_scratch)
+    extra_scratch = sorted(stored_scratch - expected_scratch - optional_scratch)
     if missing_scratch or extra_scratch:
         raise RestartMismatchError(
             f"restart file {path} MP18 scratch inventory mismatch "
@@ -3092,6 +3219,484 @@ def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
     return reason
 
 
+#: Where the nest-lifecycle state lives in a tree checkpoint: the ROOT
+#: member's ``tree_header``, beside the fingerprint and the domain set.
+#: The root is the set's commit marker, so it is the one member a
+#: whole-tree fact can live on without being written N times and without
+#: a child member ever disagreeing with its parent.
+NEST_LIFECYCLE_HEADER_KEY = "nest_lifecycle"
+
+#: The block's version. A reader that does not know this string refuses by
+#: name rather than reading a field it recognises out of a shape it does
+#: not: a lifecycle block half-understood is a slot that silently re-fires
+#: or a follower that resumes on a history that did not happen.
+NEST_LIFECYCLE_CONTRACT = "gpuwm-nest-lifecycle-restart.v1"
+
+
+def lifecycle_window_slots(state) -> tuple[str, ...]:
+    """The consumer tracking windows one domain actually allocated.
+
+    Sorted, so a checkpoint's audit and its member set are in the same
+    order on every run.  Taken from the LIVE pool rather than a name list
+    because the per-follower family (``uh_follow_window.dNN``) is
+    generated per declared child; ``nwp_diagnostics = 0`` allocates none
+    of them and gets an empty tuple.
+    """
+    pool = getattr(state, "_scratch", {})
+    return tuple(sorted(slot for slot in pool
+                        if _is_tracker_window_slot(slot)))
+
+
+def lifecycle_followers(model) -> dict[int, object]:
+    """``{grid_id: runner}`` for every follower this run drives.
+
+    ``RelocationRunnerCollection`` keys its own runners by grid id; a bare
+    legacy runner arrives unwrapped and is keyed by its config's target.
+    """
+    runner = getattr(model, "_relocation_runner", None)
+    if runner is None:
+        return {}
+    if getattr(runner, "is_collection", False):
+        return {int(gid): value for gid, value in runner.runners.items()}
+    return {int(runner.config.grid_id): runner}
+
+
+#: The writer's spelling, as one object: the resume seeds exactly the
+#: runners the checkpoint's follower entries were taken from.
+_lifecycle_followers = lifecycle_followers
+
+
+def declares_nest_lifecycle(model) -> bool:
+    """Does this run have a nest lifecycle to persist at all?
+
+    The compatibility predicate, stated once: a run that constructs no
+    ``SpawnRunner`` and no follow provider writes exactly the checkpoint
+    this module has always written, and nothing on the lifecycle path --
+    not the block, not the window members, not the streamed publish --
+    may touch it.
+    """
+    return (getattr(model, "_spawn_runner", None) is not None
+            or bool(_lifecycle_followers(model)))
+
+
+#: The WRITER's spelling of the predicate, kept as one object rather than
+#: one behaviour written twice.  Two spellings of "does this run have a
+#: lifecycle" drift, and the drift is a checkpoint one side writes and the
+#: other refuses to read.
+_declares_nest_lifecycle = declares_nest_lifecycle
+
+
+def _declared_domain(model, grid_id: int):
+    """The ``[[domain]]`` the EXPERIMENT declares for one grid, or None."""
+    context = getattr(model, "_activation_context", None) or {}
+    exp = context.get("experiment")
+    if exp is None:
+        return None
+    for domain in getattr(exp, "domains", ()):
+        if int(getattr(domain, "grid_id", -1)) == int(grid_id):
+            return domain
+    return None
+
+
+def _follower_entry(model, nodes_by_gid, grid_id: int, runner) -> dict:
+    """One follower's checkpoint entry: the runner's four keys plus three.
+
+    The runner owns ``segment``/``moves_executed`` and the two cooldown
+    anchors -- its own history, which nothing else can state.  The other
+    three describe the TREE and the runner cannot invent them: which
+    surface declared this follower, where the child sits NOW (only
+    ``node.cfg`` knows, because ``relocate_child`` mutates it in place),
+    and where the experiment declared it.  Merged here so the entry is
+    written whole and ``RelocationRunner.restore_state`` takes it whole.
+    """
+    entry = dict(runner.state_json())
+    declared = _declared_domain(model, grid_id)
+    if declared is None:
+        raise RestartManifestError(
+            f"this run follows d{grid_id:02d} but the tree carries no "
+            "declared experiment to say where that domain was configured; "
+            "the checkpoint would record a placement without saying whether "
+            "it is the declared one or one the follower moved to, and a "
+            "resume cannot then tell a moved nest from a reconfigured one")
+    node = nodes_by_gid[int(grid_id)]
+    entry.update({
+        "kind": ("per-domain" if getattr(declared, "follow", None) is not None
+                 else "legacy"),
+        "current_placement": [int(node.cfg.i_parent_start),
+                              int(node.cfg.j_parent_start)],
+        "declared_placement": [int(declared.i_parent_start),
+                               int(declared.j_parent_start)],
+    })
+    return entry
+
+
+def _publish_streamed_lifecycle_windows(nodes) -> None:
+    """Project a STREAMED domain's tracker windows onto its state first.
+
+    A streamed domain's arrays live in its pinned store and its
+    ``DomainState`` stops changing at attach, so serializing the state's
+    copy at a mid-leg checkpoint instant writes the ATTACH-TIME zeros
+    under the name of a live window -- and a resume then under-reads the
+    next spawn/retire/follow decision with nothing anywhere saying so.
+    The leg walk publishes the same planes at every leg boundary
+    (``gpuwm/runtime.py``); a checkpoint does not land on one.
+
+    Recognised through the ``_streamed_domain`` marker
+    :class:`gpuwm.core.streaming.StreamedDomain` leaves on the state it
+    took over, which is the door every reader that holds a NODE rather
+    than a stepper already uses (``gpuwm/io/wrfout.py``); the checkpoint
+    writer holds nodes.
+
+    Only the two FIXED windows can be projected: they are in the
+    streaming carrier manifest and the generated per-follower family is
+    not.  A per-follower window on a streamed parent is refused here
+    rather than written stale -- the run configuration that produces one
+    is already refused at its cadence boundary
+    (``gpuwm/core/model.py``), so this closes the same door on the
+    checkpoint path.
+    """
+    from gpuwm.core import streaming as _streaming
+
+    names = tuple(f"scratch/{slot}" for slot in _TRACKER_WINDOW_SLOTS)
+    for node in nodes:
+        streamed = getattr(node.state, "_streamed_domain", None)
+        if streamed is None:
+            continue
+        generated = [slot for slot in lifecycle_window_slots(node.state)
+                     if slot not in _TRACKER_WINDOW_SLOTS]
+        if generated:
+            raise RestartManifestError(
+                f"d{int(node.cfg.grid_id):02d} is STREAMED and owns the "
+                f"per-follower window(s) {generated}; those names are "
+                "generated per declared child and are not in the fixed "
+                "streaming carrier manifest, so there is no way to project "
+                "one out of the store and the checkpoint would serialize "
+                "the attach-time zeros as a live window. Keep that parent "
+                "resident or use legacy [relocation]")
+        present = _streaming.allocated_planes(node.state, names)
+        if present:
+            streamed.publish(present)
+
+
+def _nest_lifecycle_header(model, nodes) -> dict | None:
+    """The ``nest_lifecycle`` block, or ``None`` for a lifecycle-free run.
+
+    ``None`` is the compatibility contract and it is the reason the whole
+    block is assembled here rather than unconditionally: a run that
+    constructs no ``SpawnRunner`` and no follow provider writes exactly
+    the checkpoint this module has always written, byte for byte, and
+    every checkpoint already on disk keeps restoring.
+    """
+    if not _declares_nest_lifecycle(model):
+        return None
+    spawn_runner = getattr(model, "_spawn_runner", None)
+    followers = _lifecycle_followers(model)
+    nodes_by_gid = {int(node.cfg.grid_id): node for node in nodes}
+    follower_entries: dict[str, dict] = {}
+    for gid, runner in sorted(followers.items()):
+        if gid in nodes_by_gid:
+            follower_entries[str(gid)] = _follower_entry(
+                model, nodes_by_gid, gid, runner)
+            continue
+        # A follow target that is still DORMANT has a runner and no
+        # domain.  Nothing has been consulted and nothing has moved, so
+        # the accurate statement is no entry at all -- a resume builds
+        # that follower fresh, which is what a never-consulted runner is.
+        # A runner that HAS moved and has no domain is a different thing
+        # entirely and is refused: its segment chain addresses a nest the
+        # checkpoint cannot place.
+        moved = (int(getattr(runner, "moves_executed", 0) or 0)
+                 or runner.state_json().get("segment") is not None)
+        if moved:
+            raise RestartManifestError(
+                f"this run's follower for d{gid:02d} reports a move "
+                "history, but that domain is not in this checkpoint's "
+                "member set; the follower's CURRENT placement lives on the "
+                "live node and nowhere else, so the block would carry a "
+                "segment chain with no placement to chain it onto")
+    leg = getattr(model, "_spawn_leg_seconds", None)
+    if leg is not None:
+        leg = float(leg)
+        if not math.isfinite(leg) or leg <= 0.0:
+            raise RestartManifestError(
+                f"the leg cadence this run stops at is {leg!r}; the "
+                "checkpoint cross-checks it against the resuming config's "
+                "own cadence, and a non-finite one would make every resume "
+                "either refuse or compare against nothing")
+    return {
+        "contract": NEST_LIFECYCLE_CONTRACT,
+        # Cross-checked at resume against the resuming config's cadence: a
+        # leg boundary is where every lifecycle decision is taken, so two
+        # runs on different lattices take them at different instants.
+        # ``None`` says this run had no leg walk to state a cadence for.
+        "leg_seconds": leg,
+        # ``None``, not ``{}``: an empty mapping reads as "a spawn runner
+        # that knows nothing", which is what a slot silently re-firing
+        # looks like from the reader's side.
+        "spawn": (None if spawn_runner is None
+                  else spawn_runner.state_json(model=model)),
+        "followers": follower_entries,
+        # The audit half of the window opt-in: which planes this
+        # checkpoint carries, per domain, so a reader can tell "no window
+        # was written" from "the window was written and it is empty".
+        "window_slots": {
+            str(int(node.cfg.grid_id)): list(slots)
+            for node in nodes
+            for slots in (lifecycle_window_slots(node.state),) if slots},
+    }
+
+
+#: The block's key set, stated once.  A block with a key this build does
+#: not know is refused rather than read past: an unread field is a slot
+#: that silently re-fires or a follower resuming on a history that did not
+#: happen, and neither says anything in the log.
+NEST_LIFECYCLE_BLOCK_KEYS = ("contract", "followers", "leg_seconds",
+                             "spawn", "window_slots")
+
+
+@dataclasses.dataclass(frozen=True)
+class TreeLifecycleHeader:
+    """What a resume needs off a checkpoint BEFORE it rebuilds anything.
+
+    One JSON member read, from the ROOT of the set: which slots fired,
+    where they fired, which followers exist and what their move history
+    was.  The tree is then rebuilt from this and only then is the state
+    applied, because the member set a restore validates against is the
+    set the reconstructed tree produces.
+    """
+
+    #: The ROOT member the block was read from, which is also the member
+    #: :func:`restore_tree_restart` must be handed.
+    root_path: Path
+    #: The domain set this checkpoint carries, from the root's header.
+    domain_ids: tuple[int, ...]
+    #: The validated ``nest_lifecycle`` block, or ``None`` for a
+    #: lifecycle-free checkpoint restored into a lifecycle-free run.
+    block: dict | None
+    #: The ``relocation`` posture block, when this set was written after
+    #: at least one executed move.
+    relocation: dict | None
+
+    @property
+    def spawn(self) -> dict | None:
+        """The ``spawn`` sub-block, or ``None`` for a follower-only run."""
+        return None if self.block is None else self.block["spawn"]
+
+    @property
+    def followers(self) -> dict:
+        return {} if self.block is None else dict(self.block["followers"])
+
+    @property
+    def window_slots(self) -> dict:
+        return {} if self.block is None else dict(self.block["window_slots"])
+
+    @property
+    def leg_seconds(self):
+        return None if self.block is None else self.block["leg_seconds"]
+
+    @property
+    def relocation_records(self) -> tuple[str, ...]:
+        """The move record digests, in the order the run chained them.
+
+        The live fingerprint of the run that wrote this set is the fresh
+        build's fingerprint folded over exactly this list
+        (``mark_fingerprint_across_move``), so a legitimate resume
+        reproduces it and nothing else can.
+        """
+        if self.relocation is None:
+            return ()
+        return tuple(str(sha)
+                     for sha in self.relocation.get("record_sha256") or ())
+
+
+def _tree_restart_root_member(path: Path) -> Path:
+    """The ROOT member of the set ``path`` belongs to.
+
+    The lifecycle block is a whole-tree fact and rides the root alone, so
+    a caller handed any member (a supervisor scanning a directory finds
+    whichever it finds first) still reaches it.  The root is the member
+    whose declared parent is 0 -- the experiment's own root convention --
+    not the lowest grid id, which is a coincidence of the shipped configs.
+    """
+    match = _TREE_RESTART_NAME.fullmatch(path.name)
+    if match is None:
+        raise RestartMismatchError(
+            f"tree restart path {path} is not gpuwmrst_d0X_<instant>.npz, "
+            "so the sibling members of its checkpoint set cannot be found "
+            "and the whole-tree lifecycle block cannot be located")
+    instant = match.group("instant")
+    roots = []
+    for candidate in sorted(path.parent.glob(f"gpuwmrst_d*_{instant}")):
+        if _TREE_RESTART_NAME.fullmatch(candidate.name) is None:
+            continue
+        if int(read_restart_header(candidate).get("parent_id", -1)) == 0:
+            roots.append(candidate)
+    if len(roots) != 1:
+        raise RestartMismatchError(
+            f"the checkpoint set at instant {instant} carries "
+            f"{len(roots)} root member(s) (parent_id = 0); the root is the "
+            "set's commit marker and the one member the nest-lifecycle "
+            "block rides, so a set without exactly one cannot say which "
+            "slots fired")
+    return roots[0]
+
+
+def _refuse_lifecycle_grid(gid: int, reason: str) -> None:
+    raise RestartMismatchError(
+        f"this checkpoint's nest-lifecycle block names d{gid:02d}, {reason}")
+
+
+def read_tree_lifecycle_header(path, model=None) -> TreeLifecycleHeader:
+    """Peek at a tree checkpoint's lifecycle state, before reconstruction.
+
+    Cheap on purpose: npz members are lazy, so this reads ONE JSON member
+    off the root and nothing else -- which is what lets a resume decide
+    what tree to build before it has built one.
+
+    ``model`` is the run about to be resumed, and supplies the two facts
+    the file cannot: whether this experiment declares a lifecycle at all
+    (the same predicate the writer used, :func:`declares_nest_lifecycle`,
+    as the same object) and the leg cadence it will stop on.  Omit it for
+    a bare inspection: without an experiment there is nothing to compare
+    against and this must not invent one.
+
+    Every refusal below names the run it prevents, because each is a run
+    that would otherwise integrate from policy state it half understands.
+    """
+    path = Path(path)
+    header = read_restart_header(path)
+    if int(header.get("parent_id", -1)) != 0:
+        path = _tree_restart_root_member(path)
+        header = read_restart_header(path)
+    domain_ids = tuple(int(gid) for gid in header.get("domain_ids") or ())
+    relocation = header.get("relocation")
+    if not isinstance(relocation, Mapping):
+        relocation = None
+    else:
+        relocation = dict(relocation)
+    declares = None if model is None else declares_nest_lifecycle(model)
+    block = header.get(NEST_LIFECYCLE_HEADER_KEY)
+
+    if block is None:
+        if declares:
+            raise RestartMismatchError(
+                f"{path.name} carries no nest-lifecycle block: this "
+                "checkpoint predates lifecycle persistence; it cannot say "
+                "which slots fired -- restart from t=0.  This experiment "
+                "declares a dormant nest or a follower, so a resume would "
+                "restore the tree and then re-fire every slot at the first "
+                "leg boundary, from a policy state that is not the one the "
+                "checkpoint was taken in")
+        return TreeLifecycleHeader(
+            root_path=path, domain_ids=domain_ids, block=None,
+            relocation=relocation)
+
+    if not isinstance(block, Mapping):
+        raise RestartMismatchError(
+            f"{path.name}'s nest-lifecycle block is a "
+            f"{type(block).__name__}, not a mapping; nothing in it can be "
+            "read, so the slots it was meant to describe would resume "
+            "un-fired")
+    block = dict(block)
+    if declares is False:
+        raise RestartMismatchError(
+            f"{path.name} carries a nest-lifecycle block, but this "
+            "experiment declares no dormant nest and no follower, so the "
+            "run being resumed constructs neither a SpawnRunner nor a "
+            "follow provider.  Every fired slot, episode count and move "
+            "history in the block would be dropped on the floor and the "
+            "restored tree would integrate as a plain static nest set.  "
+            "Resume the experiment that wrote this checkpoint, or start "
+            "from t=0")
+
+    contract = block.get("contract")
+    if contract != NEST_LIFECYCLE_CONTRACT:
+        raise RestartMismatchError(
+            f"{path.name}'s nest-lifecycle block states contract "
+            f"{contract!r}; this build reads "
+            f"{NEST_LIFECYCLE_CONTRACT!r}.  A block half-understood is a "
+            "slot that silently re-fires or a follower that resumes on a "
+            "history that did not happen, so an unknown version is refused "
+            "rather than read for the fields whose names happen to match")
+    unknown = sorted(set(block) - set(NEST_LIFECYCLE_BLOCK_KEYS))
+    missing = sorted(set(NEST_LIFECYCLE_BLOCK_KEYS) - set(block))
+    if unknown or missing:
+        raise RestartMismatchError(
+            f"{path.name}'s nest-lifecycle block carries key(s) {unknown} "
+            f"this build does not know and is missing {missing}, while "
+            f"stating contract {NEST_LIFECYCLE_CONTRACT!r}.  The block is "
+            "honored whole or refused: a field read past is policy state "
+            "the resumed run silently does not have")
+
+    members = set(domain_ids)
+    spawn = block["spawn"]
+    if spawn is not None:
+        if not isinstance(spawn, Mapping):
+            raise RestartMismatchError(
+                f"{path.name}'s nest-lifecycle spawn block is a "
+                f"{type(spawn).__name__}, not a mapping or null")
+        for raw in sorted(dict(spawn.get("spawned") or {})):
+            gid = int(raw)
+            if gid not in members:
+                _refuse_lifecycle_grid(
+                    gid, "as a LIVE episode, but that domain is not in this "
+                    f"checkpoint's member set {sorted(members)}; its arrays "
+                    "exist in no member, so the rebuilt nest would carry "
+                    "the parent interpolation for the rest of the run with "
+                    "nothing saying so")
+        for raw in sorted(dict(spawn.get("retired") or {})):
+            gid = int(raw)
+            if gid in members:
+                _refuse_lifecycle_grid(
+                    gid, "as RETIRED, but that domain still owns a member "
+                    "of this checkpoint.  Retirement detaches the subtree "
+                    "at the leg boundary, before any later checkpoint, so "
+                    "the two halves of this set describe different trees "
+                    "and a restore would put a retired nest back in the "
+                    "next leg's active set")
+    for raw in sorted(dict(block["followers"]), key=int):
+        gid = int(raw)
+        if gid not in members:
+            _refuse_lifecycle_grid(
+                gid, "as a follower with a move history, but that domain "
+                f"is not in this checkpoint's member set {sorted(members)}; "
+                "the follower's CURRENT placement lives on the live node "
+                "and nowhere else, so its segment chain addresses a nest "
+                "this checkpoint cannot place")
+    for raw in sorted(dict(block["window_slots"]), key=int):
+        gid = int(raw)
+        if gid not in members:
+            _refuse_lifecycle_grid(
+                gid, "as the owner of consumer tracking windows, but that "
+                f"domain is not in this checkpoint's member set "
+                f"{sorted(members)}; the audit and the members it audits "
+                "disagree, so "
+                "\"the window was written and it is empty\" cannot be told "
+                "from \"no window was written\"")
+
+    stored_leg = block["leg_seconds"]
+    live_leg = None if model is None else getattr(
+        model, "_spawn_leg_seconds", None)
+    if stored_leg is not None and live_leg is not None:
+        stored_leg = float(stored_leg)
+        live_leg = float(live_leg)
+        if abs(stored_leg - live_leg) > 1.0e-9 * max(1.0, abs(stored_leg)):
+            raise RestartMismatchError(
+                f"{path.name} was written by a run that stops every "
+                f"{stored_leg:g} s to take its lifecycle decisions; this "
+                f"run stops every {live_leg:g} s.  Every spawn, retire and "
+                "re-arm decision is taken at a leg boundary, so the two "
+                "runs evaluate the same policy at different instants and "
+                "the resumed trajectory is no continuation of the one on "
+                "disk.  Restore under the cadence that wrote it "
+                "([relocation] cadence_seconds, else the root's "
+                "history_interval_s), or start from t=0")
+
+    return TreeLifecycleHeader(
+        root_path=path, domain_ids=domain_ids, block=block,
+        relocation=relocation)
+
+
 def write_tree_restart(directory, model, valid_time: datetime, *,
                        run_trackers_by_grid_id=None,
                        sealed_forcing_extension: bool = False) -> Path:
@@ -3102,6 +3707,15 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
     cannot be advertised as a durable d01 checkpoint, and a failed rewrite at
     the same valid time cannot replace members of the prior committed set.  A
     restore still validates the complete sibling set before mutating state.
+
+    A run with a NEST LIFECYCLE -- a ``SpawnRunner`` or any follow
+    provider, published on the model by
+    ``gpuwm.runtime.publish_lifecycle_runners`` -- additionally writes
+    :data:`NEST_LIFECYCLE_HEADER_KEY` on the root member and the consumer
+    tracking windows on each domain's own member.  A run without one
+    writes exactly the member set and header keys this function has
+    always written, byte for byte, because every checkpoint already on
+    disk was written by such a run.
     """
     from gpuwm.core.model import PERIOD_BEGIN
 
@@ -3121,18 +3735,48 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
     executed_moves = [
         entry for entry in getattr(model, "_relocation_receipts", ())
         if isinstance(entry, dict) and entry.get("event") == "relocated"]
+    # THE CHAIN IS THE RUN'S, NOT THE SEGMENT'S.  A resumed run's live
+    # fingerprint is the fresh build folded over EVERY move the whole run
+    # has made, including the ones an earlier segment made; a checkpoint
+    # that listed only this segment's moves could not be resumed from at
+    # all, because folding a short chain reproduces a different value.
+    # ``_restart_crossed_relocation`` is what ``restore_tree_restart``
+    # left behind for exactly this.
+    inherited = getattr(model, "_restart_crossed_relocation", None)
+    if not isinstance(inherited, Mapping):
+        inherited = None
+    prior = ([] if inherited is None
+             else [str(sha) for sha in inherited.get("record_sha256") or ()])
+    records = prior + [str(entry["record_sha256"])
+                       for entry in executed_moves]
     relocation_header = None
-    if executed_moves:
+    if records:
         from gpuwm.core.nest_relocation import RESTART_ACROSS_MOVE_POSTURE
 
+        last = executed_moves[-1] if executed_moves else inherited
         relocation_header = {
-            "moves": len(executed_moves),
-            "record_sha256": [entry["record_sha256"]
-                              for entry in executed_moves],
-            "segment_id": executed_moves[-1]["segment_id"],
-            "grid_id": int(executed_moves[-1]["grid_id"]),
+            "moves": len(records),
+            "record_sha256": records,
+            "segment_id": last["segment_id"],
+            "grid_id": int(last["grid_id"]),
             "posture": RESTART_ACROSS_MOVE_POSTURE,
         }
+    # The nest-lifecycle state, and the window planes that go with it.
+    # Assembled BEFORE the UUID is assigned and before a single member is
+    # written, on the same posture the sealed prefix check below takes: a
+    # runner that refuses to state its block must not leave an orphan
+    # member behind that looks like part of a publish attempt.  Behind
+    # the compatibility predicate in full, including the publish, which
+    # WRITES to a streamed domain's state: a lifecycle-free run must not
+    # even be touched by this path.
+    nest_lifecycle = None
+    window_slots_by_gid: dict[int, tuple[str, ...]] = {}
+    if _declares_nest_lifecycle(model):
+        _publish_streamed_lifecycle_windows(nodes)
+        nest_lifecycle = _nest_lifecycle_header(model, nodes)
+        window_slots_by_gid = {
+            int(node.cfg.grid_id): lifecycle_window_slots(node.state)
+            for node in nodes}
     if sealed_forcing_extension:
         # Validate the whole generation before assigning its UUID or writing
         # even a child member.  A malformed root prefix must never leave an
@@ -3183,6 +3827,20 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                     else "NOT_STARTED"),
                 "dtbc_fp32_bits": bits,
             }
+            # D3, closed: the posture block was computed and never
+            # attached, so the crossed-move warning in
+            # ``restore_tree_restart`` and the posture branch of
+            # ``tree_fingerprint_mismatch_reason`` could never fire from
+            # this writer -- a restart across a move refused as an
+            # unexplained hash.  On EVERY member, because the mismatch
+            # message is produced per member.
+            if relocation_header is not None:
+                tree_header["relocation"] = dict(relocation_header)
+            # The lifecycle block is a WHOLE-TREE fact and rides the root,
+            # which is the set's commit marker; children carry nothing, so
+            # a child member can never disagree with its parent.
+            if nest_lifecycle is not None and node.parent is None:
+                tree_header[NEST_LIFECYCLE_HEADER_KEY] = nest_lifecycle
             base = Path(restart_filename(valid_time, f"d{gid:02d}"))
             member = base.with_name(
                 f"{base.stem}__{checkpoint_set_id}{base.suffix}")
@@ -3190,6 +3848,7 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
             paths[gid] = write_restart(
                 path, node.state, node.cfg.run,
                 run_trackers=trackers.get(gid), tree_header=tree_header,
+                extra_scratch_slots=window_slots_by_gid.get(gid, ()),
                 sealed_forcing_extension=sealed_forcing_extension)
             published.append(paths[gid])
     except BaseException:
@@ -3905,7 +4564,7 @@ def _validate_restart(path, state, cfg, *,
         if not key.startswith("scratch/"):
             continue
         slot = key[len("scratch/"):]
-        if classify_scratch_slot(slot) != "serialize":
+        if not _restorable_scratch_slot(slot):
             raise RestartMismatchError(
                 f"restart carries non-serializable scratch slot {slot!r}")
         _validate_scratch_target(state, slot, host, key)
@@ -3959,13 +4618,15 @@ def _apply_validated_restart(validated: _ValidatedRestart,
         if key.startswith("scratch/"):
             slot = key[len("scratch/"):]
             stored_scratch.add(slot)
-            if slot == "up_heli_max" \
+            if (slot == "up_heli_max" or _is_tracker_window_slot(slot)) \
                     and state.existing_scratch(slot) is None:
-                # The eagerly allocated diagnostic accumulator: a state
-                # prepared with nwp_diagnostics=0 does not carry the slot,
-                # and restoring it anyway would emit a stale, never-again-
-                # updated UP_HELI_MAX into every frame.  Dropping a
-                # diagnostic is a note, never a refusal.
+                # The eagerly allocated diagnostic accumulator and the
+                # consumer tracking windows beside it: a state prepared
+                # with nwp_diagnostics=0 carries none of them, and
+                # restoring one anyway would allocate a plane nothing
+                # folds -- a stale, never-again-updated UP_HELI_MAX in
+                # every frame, or a window whose consumer does not exist.
+                # Dropping a diagnostic is a note, never a refusal.
                 print(f"note: checkpoint {validated.path.name} carries "
                       f"{slot!r} but this run has nwp_diagnostics=0; the "
                       "diagnostic accumulator is dropped")
@@ -4200,7 +4861,8 @@ __all__ = [
     "ROOT_EXTERNAL_LBC_CLOCK_LEGACY", "RestartInfo", "TreeRestartInfo",
     "SEALED_FORCING_EXTENSION_MODE",
     "RestartManifestError", "RestartMismatchError",
-    "CARRIED_SCRATCH_SLOTS", "carried_scratch_manifest",
+    "CARRIED_SCRATCH_SLOTS", "CARRIED_SCRATCH_PREFIXES",
+    "carried_scratch_manifest",
     "RESTART_ONLY_DRIVER_SLOTS",
     "SERIALIZED_SCRATCH_SLOTS", "STATE_REBUILT_ATTRS",
     "STATE_SERIALIZED_ATTRS", "STATE_SETUP_ARRAYS", "STATE_SETUP_SCALARS",
@@ -4209,6 +4871,11 @@ __all__ = [
     "TENDENCY_COMPONENTS", "classify_scratch_slot", "classify_state_attr",
     "physics_setup_fingerprint", "physics_setup_identity",
     "root_external_lbc_clock_identity",
+    "NEST_LIFECYCLE_BLOCK_KEYS", "NEST_LIFECYCLE_CONTRACT",
+    "NEST_LIFECYCLE_HEADER_KEY", "TreeLifecycleHeader",
+    "declares_nest_lifecycle", "lifecycle_followers",
+    "lifecycle_window_slots",
+    "read_tree_lifecycle_header",
     "read_restart_header", "require_tree_checkpoint_legal",
     "restart_filename", "restore_restart", "restore_tree_restart",
     "lateral_boundary_prefix_identity", "setup_core_fingerprint",

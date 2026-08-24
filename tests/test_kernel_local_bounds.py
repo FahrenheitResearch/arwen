@@ -10,6 +10,15 @@ sized by the per-thread frame and held for the process lifetime, so
 CuPy pool never saw (the law in ``gpuwm/core/preflight.py``; the
 measurements in ``docs/kernel_local_memory_bounds.md``).
 
+``kf`` is HALF out of this file since 2026-08-21.  52 of ``kf_column``'s 54
+column arrays moved into a global workspace (tests/test_kf_workspace.py),
+which left ``KF_KMAX`` sizing 8 B per level instead of 188 and took the
+frame to a flat 512 B -- under the default stack, reserving nothing.  So
+its frame row left ``LEVEL_SPECIALIZED_KERNEL_FRAMES`` and its launcher
+stopped specializing, and what remains here is the no-bit-moves half: the
+bound is still an allocation size, and compiling at 128 or at ``nz`` still
+has to produce identical bytes.
+
 Two things have to hold, and both are checked against the device here:
 
 * **No bit moves.**  The bound is an allocation size; no expression in
@@ -68,8 +77,12 @@ def test_the_specialized_frames_are_what_preflight_prices():
     """Every row of the pricing model, read back off the driver."""
     from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 
+    # ``kf`` is absent, and that is the change of 2026-08-21: 52 of
+    # ``kf_column``'s 54 column arrays moved into a global workspace, so
+    # ``KF_KMAX`` sizes only the two that stayed, the frame stopped
+    # following ``nz``, and the row left LEVEL_SPECIALIZED_KERNEL_FRAMES.
+    # tests/test_kf_workspace.py carries the claim that replaced this one.
     cases = (
-        ("kf", "kf_column", "KF_KMAX", (128, 49, 30)),
         ("refl", "refl10cm_morrison_column", "REFL_KMAX", (256, 49, 30)),
     )
     for module, symbol, define, bounds in cases:
@@ -179,8 +192,13 @@ def test_the_unspecialized_source_still_compiles_to_the_recorded_ceiling():
     would silently be describing a different binary."""
     from gpuwm.core.kernels import get_kernel
 
+    # 512, not 24,064: ``kf``'s row is no longer a ceiling over a family of
+    # bounds, it is the ONE frame the one compiled binary holds, because
+    # the launcher stopped specializing when the column arrays left the
+    # stack.  The assertion is the same claim -- the recorded row is what
+    # this source compiles to -- against a source that changed.
     assert int(get_kernel("kf", "kf_column").attributes["local_size_bytes"]
-               ) == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["kf"] == 24064
+               ) == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["kf"] == 512
     assert int(get_kernel("refl", "refl10cm_morrison_column")
                .attributes["local_size_bytes"]
                ) == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["refl"] == 18432
@@ -222,7 +240,11 @@ def _launch_kf_with(kernel, host, phase):
         cloud_top=cp.full((ny, nx), -1, dtype=cp.int32),
     )
     table = load_kf_table()
-    blocks = (ny * nx + _TPB - 1) // _TPB
+    from gpuwm.core.kf import kf_workspace_floats
+
+    ncol = ny * nx
+    blocks = (ncol + _TPB - 1) // _TPB
+    ws = cp.zeros(kf_workspace_floats(nz, ncol), dtype=DTYPE)
     kernel((blocks,), (_TPB,), (
         device["u"], device["v"], device["temperature"], device["qv"],
         device["qc"], device["pressure"], device["exner"], device["dz"],
@@ -233,11 +255,11 @@ def _launch_kf_with(kernel, host, phase):
         out["cape_before"], out["cape_after"], out["timec"],
         out["nca_seconds"], out["shallow"],
         out["cloud_base"], out["cloud_top"], out["updraft_mass_flux"],
-        out["downdraft_mass_flux"],
+        out["downdraft_mass_flux"], ws,
         DTYPE(table.pressure_top), DTYPE(table.pressure_reciprocal),
         DTYPE(table.thetae_reciprocal), DTYPE(12000.0), DTYPE(60.0),
         DTYPE(300.0), np.int32(phase),
-        np.int32(nz), np.int32(ny), np.int32(nx)))
+        np.int32(nz), np.int32(ny), np.int32(nx), np.int32(0)))
     return out
 
 
@@ -245,9 +267,17 @@ def test_kf_is_bitwise_identical_at_the_specialized_bound():
     """Every KF output, every phase mode, both bounds, byte for byte.
 
     An index the kernel formed past ``nz`` would be harmless at
-    ``KF_KMAX = 128`` -- it lands in the same array's slack -- and would
-    corrupt a neighbouring column array at ``KF_KMAX = nz``, so this
-    comparison is also the out-of-bounds check.
+    ``KF_KMAX = 128`` -- it lands in the same array's slack, or in the
+    workspace slot of a lane that has not run yet -- and would corrupt a
+    neighbouring array at ``KF_KMAX = nz``, so this comparison is also the
+    out-of-bounds check.
+
+    It survives the column workspace with its meaning INTACT but narrower.
+    ``KF_KMAX`` now sizes only ``tv_env`` and ``positive_energy``, the two
+    arrays that stayed on the stack, so the frames it compares are 512 B
+    and 200 B rather than 24,064 B and 9,216 B.  The 52 in the workspace
+    are sized by the runtime ``nz`` in BOTH arms, and their out-of-bounds
+    check is tests/test_kf_workspace.py's residue gate instead.
     """
     from gpuwm.core import kf as kfmod
     from gpuwm.core.kf import KFPhaseMode
@@ -351,9 +381,14 @@ def test_refl_is_bitwise_identical_at_the_specialized_bound():
 # ---------------------------------------------------------------------------
 
 def test_the_production_launchers_compile_to_the_field_not_the_ceiling():
-    """The regression this file exists to prevent: a call site that quietly
-    goes back to ``get_kernel`` costs 3,699 MiB of device memory with no
-    other symptom."""
+    """The regression this file exists to prevent: a ``refl`` call site that
+    quietly goes back to ``get_kernel`` costs 3,708 MiB of device memory
+    with no other symptom.
+
+    ``kf`` is here for the MIRROR of that regression -- it must NOT take the
+    specialized path any more -- and the two halves are asserted separately
+    below so neither can be satisfied by the other.
+    """
     import cupy as cp
 
     import gpuwm.core.kernels as kernels
@@ -391,12 +426,20 @@ def test_the_production_launchers_compile_to_the_field_not_the_ceiling():
         kernels.get_kernel_int_defines = real_specialized
         kernels.get_kernel = real_plain
 
-    assert ("specialized", "kf", "kf_column",
-            (("KF_KMAX", nz),)) in requested
     assert ("specialized", "refl", "refl10cm_morrison_column",
             (("REFL_KMAX", nz),)) in requested
     assert not [row for row in requested
-                if row[0] == "plain" and row[1] in ("kf", "refl")]
+                if row[0] == "plain" and row[1] == "refl"]
+    # KF asks for the PLAIN kernel now, and that is the point: with its
+    # column arrays in a global workspace, ``KF_KMAX`` sizes 8 B per level
+    # instead of 188, the frame is 512 B either way and reserves nothing
+    # either way, so a compile per distinct level count buys nothing.  The
+    # regression this half guards is the opposite of the other half's: a
+    # kf launcher that started specializing again would recompile the
+    # module once per nz for no bytes.
+    assert ("plain", "kf", "kf_column") in requested
+    assert not [row for row in requested
+                if row[0] == "specialized" and row[1] == "kf"]
 
 
 def test_the_ceiling_is_still_refused_above_the_compiled_bound():

@@ -311,6 +311,14 @@ def refresh_model_time(state, clock, *, kernel_launch: bool = False,
         ticks = clock.ticks + (clock.spec.step_ticks if after_step else 0)
         value = ticks / clock.tick_den
     state.elapsed_seconds = value
+    # The domain's own ACTIVATION EPOCH, from the same tick authority.
+    # A physics driver counts WRF's ITIMESTEP, and ITIMESTEP is 1 on a
+    # domain's first step -- not on the experiment's.  Deriving it from
+    # absolute model time alone is right only for a domain that started
+    # with the run; for one that activates later it names some arbitrary
+    # step in the middle of a cadence, which is how a newborn nest
+    # skipped the radiation call its land surface then needed.
+    state.domain_start_offset = clock.spec.start_ticks / clock.tick_den
 
 
 def _height_half_from_phb(phb: np.ndarray) -> np.ndarray:
@@ -817,10 +825,13 @@ class DomainState:
             self.scratch((ny, nx), "up_heli_max")
             # The two consumer-owned tracking windows, allocated on the
             # same gate and for the same reason: deterministic manifests
-            # from the first step.  They are NOT serialized (a restart
-            # starts them empty, gpuwm/io/restart.py:REBUILT_SCRATCH_SLOTS)
-            # and never reach a wrfout frame; gpuwm/core/uh_diag.py folds
-            # them beside UP_HELI_MAX and their consumers reset them.
+            # from the first step.  They never reach a wrfout frame;
+            # gpuwm/core/uh_diag.py folds them beside UP_HELI_MAX and
+            # their consumers reset them.  Their restart class is CARRIED
+            # (gpuwm/io/restart.py:CARRIED_SCRATCH_SLOTS): an ordinary
+            # checkpoint writes neither, and a nest-lifecycle run opts
+            # its own in per member so a resumed leg boundary reads the
+            # window the run actually folded.
             self.scratch((ny, nx), "uh_follow_window")
             self.scratch((ny, nx), "uh_spawn_window")
 

@@ -10,6 +10,7 @@ consumer and died at the third.  Every test here is one of those.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import subprocess
 import sys
 
@@ -261,16 +262,22 @@ def test_provenance_reports_a_checkout_as_a_checkout(monkeypatch):
 
 
 def test_identity_refuses_when_nothing_can_answer(tmp_path, monkeypatch):
-    """The negative control: no manifest, no checkout, no distribution.
+    """The negative control: no manifest, no checkout, no distribution,
+    and no source tree either.
 
-    Watched firing -- without the patch below the call succeeds through
-    the installed distribution, which is precisely why the assertion
-    needs the distribution taken away.
+    Watched firing -- with any ONE of the patches below removed the call
+    succeeds, which is precisely why every path has to be taken away.
+    ``git_identity`` is among them because a checkout serving an
+    editable install answers for itself, and on a developer's box this
+    test runs inside exactly such a tree.
     """
 
     monkeypatch.delenv(MANIFEST_ENV, raising=False)
     monkeypatch.setattr(
         "gpuwm.runtime_manifest.installed_distribution", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "gpuwm.provenance.providing_distribution", lambda *_a, **_k: None)
+    monkeypatch.setattr("gpuwm.provenance.git_identity", lambda *_a, **_k: None)
     with pytest.raises(IdentityError, match="no provenance to bind"):
         provenance(tmp_path)
 
@@ -295,4 +302,177 @@ def test_the_hrrr_route_binds_an_identity_from_a_non_git_directory(
                  __import__("pathlib").Path(__file__).resolve().parent.parent)})
     assert probe.returncode == 0, probe.stderr
     assert json.loads(probe.stdout.strip()) in (
-        "git", "installed-wheel-record")
+        "git", "installed-wheel-record", "installed-editable-source")
+
+
+# ---------------------------------------------------------------------------
+# The editable install: a RECORD without hashes is not a broken install
+# ---------------------------------------------------------------------------
+
+class _UnhashedRecordEntry(str):
+    """One RECORD row pip wrote with no digest at all."""
+
+    def __new__(cls, name):
+        item = super().__new__(cls, name)
+        item.hash = None
+        return item
+
+
+class _EditableDistribution:
+    """An install pip wired to a source tree, with an unhashed RECORD.
+
+    The shape a ``pip install -e .`` actually leaves behind: RECORD rows
+    with an empty digest field, because what pip wrote is a redirect,
+    not the code.  ``importlib.metadata`` reports those rows with
+    ``hash is None``, which is exactly what made the wheel identity
+    declare this install unbindable.
+    """
+
+    version = "9.9.9"
+    metadata = {"Name": "gpuwm"}
+
+    def __init__(self, source_root, *, editable_marker=True):
+        self.files = [_UnhashedRecordEntry("gpuwm/__init__.py"),
+                      _UnhashedRecordEntry("gpuwm/doctor.py")]
+        self._source_root = Path(source_root)
+        self._editable_marker = editable_marker
+
+    def read_text(self, name):
+        if name != "direct_url.json" or not self._editable_marker:
+            return None
+        return json.dumps({"dir_info": {"editable": True},
+                           "url": self._source_root.resolve().as_uri()})
+
+    def locate_file(self, name):
+        return f"/nowhere/{name}"
+
+
+def _committed_checkout(tmp_path):
+    """A real git checkout with one commit, or skip."""
+
+    root = tmp_path / "source"
+    root.mkdir()
+    try:
+        subprocess.run(["git", "init", "--quiet", str(root)],
+                       check=True, capture_output=True)
+        for key, value in (("user.email", "t@example.invalid"),
+                           ("user.name", "t")):
+            subprocess.run(["git", "-C", str(root), "config", key, value],
+                           check=True, capture_output=True)
+        (root / "tracked.txt").write_text("one\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "tracked.txt"],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(root), "commit", "--quiet",
+                        "-m", "one"], check=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("git is not available here")
+    return root
+
+
+def test_an_editable_install_binds_its_source_tree_instead_of_refusing(
+        tmp_path, monkeypatch):
+    """The field refusal, exactly: prepare died on an editable install.
+
+    ``IdentityError: installed distribution gpuwm has no hashed RECORD
+    entries`` fired before a byte of the user's data was read.  An
+    editable install's RECORD legitimately carries no digests; the
+    identity it CAN prove is the source tree pip pointed at, which is
+    what the run-plan receipt has bound all along.
+    """
+
+    monkeypatch.delenv(MANIFEST_ENV, raising=False)
+    source = _committed_checkout(tmp_path)
+    monkeypatch.setattr("gpuwm.runtime_manifest.installed_distribution",
+                        lambda *_a, **_k: _EditableDistribution(source))
+    identity = provenance(tmp_path / "not-a-repo-here")
+
+    assert identity["identity_source"] == "installed-editable-source"
+    assert identity["installed_wheel"] is None
+    editable = identity["installed_editable"]
+    assert editable["install_kind"] == "editable"
+    assert Path(editable["source_root"]) == source.resolve()
+    assert editable["distribution_name"] == "gpuwm"
+    assert editable["distribution_version"] == "9.9.9"
+    git = editable["git"]
+    assert len(git["commit_full"]) == 40
+    assert git["branch"]
+    assert git["dirty"] is False
+    assert git["dirty_files"] == 0
+    # The shape every existing receipt consumer reads, answered for real.
+    assert identity["git_commit"] == git["commit_full"]
+    assert len(identity["git_tree"]) == 40
+    assert identity["git_status_short"] == []
+
+
+def test_a_dirty_editable_tree_is_allowed_and_says_so(tmp_path, monkeypatch):
+    """A run's receipts must never claim a clean identity from a dirty tree."""
+
+    monkeypatch.delenv(MANIFEST_ENV, raising=False)
+    source = _committed_checkout(tmp_path)
+    (source / "tracked.txt").write_text("two\n", encoding="utf-8")
+    monkeypatch.setattr("gpuwm.runtime_manifest.installed_distribution",
+                        lambda *_a, **_k: _EditableDistribution(source))
+    identity = provenance(tmp_path / "elsewhere")
+    git = identity["installed_editable"]["git"]
+    assert git["dirty"] is True
+    assert git["dirty_files"] == 1
+    assert identity["git_status_short"]
+
+
+def test_a_pep660_editable_that_locate_file_cannot_answer_still_binds(
+        tmp_path, monkeypatch):
+    """The other editable shape: no package in site-packages at all.
+
+    ``installed_distribution()`` returns None for every PEP 660
+    editable, so that install hit the FIRST refusal -- "no installed
+    distribution provides this gpuwm package" -- while the source tree
+    was named in ``direct_url.json`` the whole time.
+    """
+
+    monkeypatch.delenv(MANIFEST_ENV, raising=False)
+    source = _committed_checkout(tmp_path)
+    monkeypatch.setattr("gpuwm.runtime_manifest.installed_distribution",
+                        lambda *_a, **_k: None)
+    monkeypatch.setattr("gpuwm.provenance.providing_distribution",
+                        lambda *_a, **_k: _EditableDistribution(source))
+    identity = provenance(tmp_path / "elsewhere")
+    assert identity["identity_source"] == "installed-editable-source"
+    assert Path(identity["installed_editable"]["source_root"]) \
+        == source.resolve()
+
+
+def test_an_editable_install_with_no_readable_git_is_still_refused(
+        tmp_path, monkeypatch):
+    """The genuinely unbindable case keeps its refusal, plus the remedy.
+
+    No hashed RECORD and no source identity either: there is nothing to
+    bind, and inventing one would be worse than stopping.
+    """
+
+    monkeypatch.delenv(MANIFEST_ENV, raising=False)
+    bare = tmp_path / "copied-source"
+    bare.mkdir()
+    monkeypatch.setattr("gpuwm.runtime_manifest.installed_distribution",
+                        lambda *_a, **_k: _EditableDistribution(bare))
+    monkeypatch.setattr("gpuwm.provenance.git_identity", lambda *_a, **_k: None)
+    with pytest.raises(IdentityError, match="no hashed RECORD") as raised:
+        provenance(tmp_path / "elsewhere")
+    assert "editable" in str(raised.value)
+
+
+def test_a_wheel_still_binds_its_record_and_pays_for_no_git_subprocess(
+        tmp_path, monkeypatch):
+    """The wheel path is unchanged, and does not grow a git probe."""
+
+    monkeypatch.delenv(MANIFEST_ENV, raising=False)
+    stub = _StubDistribution((("gpuwm/__init__.py", "AAAA"),))
+    monkeypatch.setattr("gpuwm.runtime_manifest.installed_distribution",
+                        lambda *_a, **_k: stub)
+
+    def _refuse(*_a, **_k):
+        raise AssertionError("a wheel identity must not probe git")
+
+    monkeypatch.setattr("gpuwm.provenance.git_identity", _refuse)
+    identity = provenance(tmp_path)
+    assert identity["identity_source"] == "installed-wheel-record"
+    assert identity["installed_editable"] is None

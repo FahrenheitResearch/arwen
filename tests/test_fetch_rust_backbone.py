@@ -833,24 +833,28 @@ def test_choosing_the_python_engine_is_not_second_guessed(
     assert "Python transport" not in capsys.readouterr().err
 
 
-def test_an_auto_resolved_nomads_whole_file_names_the_faster_flag(
+def test_an_auto_resolved_nomads_whole_file_names_what_it_costs(
         tmp_path, monkeypatch, capsys):
     """The throughput split between the two hosts, said once.
 
     Measured on one box against one cycle, four objects, the same
     backbone and the same default mode: 348/209/418/255 s from NOMADS
     and 69/34/45/44 s from S3.  ``auto`` prefers S3 for exactly that
-    reason and reaches NOMADS only when S3 cannot serve the window yet,
-    so this line now explains a real trade -- the freshest host, at the
-    slower rate -- rather than apologising for a default.
+    reason and reaches NOMADS only when S3 cannot serve the window yet.
+
+    So this line names the COST and not a remedy: pointing a reader at
+    `--transport s3` here would send them at a host that has just been
+    asked and answered no, and a printed next step that 404s is worse
+    than no next step.
     """
 
     _hrrr_fetch_plan(monkeypatch, _hrrr_argv(tmp_path),
                      backbone=tmp_path / "rw_fetch",
                      resolved_transport="nomads")
     printed = capsys.readouterr().out
-    assert "--transport s3" in printed
     assert "paces whole-file transfers" in printed
+    assert "the only host that has this window yet" in printed
+    assert "--transport s3" not in printed
 
 
 def test_a_pinned_transport_is_not_second_guessed(tmp_path, monkeypatch,
@@ -866,4 +870,4 @@ def test_a_pinned_transport_is_not_second_guessed(tmp_path, monkeypatch,
                      _hrrr_argv(tmp_path, "--transport", "nomads"),
                      backbone=tmp_path / "rw_fetch",
                      resolved_transport="nomads")
-    assert "--transport s3" not in capsys.readouterr().out
+    assert "paces whole-file transfers" not in capsys.readouterr().out

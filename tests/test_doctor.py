@@ -306,6 +306,82 @@ def test_geog_check_requires_each_dataset_index_file(monkeypatch, tmp_path):
     assert "index" in by_name["WPS_GEOG"].detail
 
 
+def _stage_wrf_geog(root):
+    from gpuwm.domain_wizard import GEOG_DATASETS
+
+    for name in GEOG_DATASETS:
+        (root / name).mkdir(parents=True, exist_ok=True)
+        (root / name / "index").write_text("type = continuous\n",
+                                           encoding="ascii")
+    return root
+
+
+def test_the_wrf_verdict_ignores_the_soil_archive_the_wrf_builder_never_opens(
+        tmp_path, monkeypatch):
+    """A WRF-only install stays green without the mesh-scoped archive.
+
+    The row for it exists -- doctor may not call a tree complete that
+    `gpuwm mesh` refuses -- but it may not fail a box whose only door is
+    the WRF one either, or every WRF installer inherits a 13 GB demand
+    for a builder that opens none of it.
+    """
+
+    from gpuwm import rustwx_static
+
+    geog = _stage_wrf_geog(tmp_path / "WPS_GEOG")
+    monkeypatch.setattr(rustwx_static, "find_static_bin", lambda: None)
+    checks = doctor._geog_tree_checks(geog)
+    by_name = {check.name: check for check in checks}
+    assert by_name["WPS_GEOG"].status == "verified"
+    # the WRF-scoped consumer, asked on its own, sees no gap at all
+    assert doctor.geography_gaps(geog) == []
+    mesh_row = by_name["WPS_GEOG (MPAS static)"]
+    assert not mesh_row.blocking
+    assert doctor.blocking_gaps(checks) == []
+    assert "soilgrids" in mesh_row.remedy
+
+
+def test_the_mesh_verdict_blocks_when_that_door_is_installed(
+        tmp_path, monkeypatch):
+    """With the mesh builder ON the box, its geography gap fails doctor.
+
+    The concrete breakage: `gpuwm mesh` writes the grid and refuses the
+    static half, and the mesh registry admits neither on its own -- so a
+    box that has the builder and not its geography cannot open a door it
+    advertises.  Reported `info`/non-blocking, that box read green.
+    """
+
+    from gpuwm import rustwx_static
+
+    geog = _stage_wrf_geog(tmp_path / "WPS_GEOG")
+    monkeypatch.setattr(rustwx_static, "find_static_bin",
+                        lambda: tmp_path / "rw_mpas_static")
+    checks = doctor._geog_tree_checks(geog)
+    mesh_row = {check.name: check for check in checks}[
+        "WPS_GEOG (MPAS static)"]
+    assert mesh_row.status == "missing"
+    assert mesh_row.blocking
+    assert mesh_row.severity == doctor.SEVERITY_UNREACHABLE
+    assert doctor.blocking_gaps(checks) == [mesh_row]
+    # and the WRF path is still not dragged into it
+    assert doctor.geography_gaps(geog) == []
+
+
+def test_the_mesh_row_goes_quiet_once_the_soil_archive_is_staged(
+        tmp_path, monkeypatch):
+    from gpuwm import rustwx_static
+
+    geog = _stage_wrf_geog(tmp_path / "WPS_GEOG")
+    for child in rustwx_static.REQUIRED_GEOG_DATASETS:
+        (geog / child).mkdir(parents=True, exist_ok=True)
+        (geog / child / "index").write_text("type = continuous\n",
+                                            encoding="ascii")
+    monkeypatch.setattr(rustwx_static, "find_static_bin",
+                        lambda: tmp_path / "rw_mpas_static")
+    names = {check.name for check in doctor._geog_tree_checks(geog)}
+    assert "WPS_GEOG (MPAS static)" not in names
+
+
 def test_distribution_manifest_revalidates_declared_artifact_hashes(
         monkeypatch, tmp_path):
     import hashlib
@@ -595,8 +671,19 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
     # battery's default plan build (a build predating the plan builder
     # loads cleanly and silently sends every score back to scipy, whose
     # exact-tie answers are cKDTree traversal order).
+    # The four MPAS binaries are here for the mapped engine's reason,
+    # exactly: they build in `tools/rustwx`, and BRIDGE_ENV's consumers
+    # resolve through `crate_dir()`, which is the grib1_bridge crate.  An
+    # entry there would make `find_bridge` skip a checkout build of the
+    # renderer workspace and answer from a staged copy instead -- a
+    # stale-binary answer wearing a fresh-checkout face.  Their ladder is
+    # `gpuwm.mpas_mesh.MpasBridge.candidates`; their markers belong here
+    # so `gpuwm fetch-bridges` and the release cut can tell an old build
+    # of the generator from this one.
     assert extra == {"region_global_dealias", "netcdf_writer",
-                     "gpuwm_mapped_engine", "static_fields", "obs_regrid"}
+                     "gpuwm_mapped_engine", "static_fields", "obs_regrid",
+                     "rw_mpas_mesh", "rw_mpas_static", "rw_mpas_init",
+                     "rw_mpas_convert"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(

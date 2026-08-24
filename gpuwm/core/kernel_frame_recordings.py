@@ -18,16 +18,60 @@ Measured the same NVRTC-plus-driver way on three compile platforms
   module                  sm_120      sm_120      sm_86
                           13.0.48     13.3.33     13.0.48
   ======================  ==========  ==========  ==========
-  gf                       22,416      22,416      23,984
+  gf                           88          72          88
+  kf                          512         512         512
   noah                        176         176         224
   thompson_aerosol_warm         0           0         112
-  ysu                       9,232       9,232       7,184
+  ysu                           0           0           0
   nssl2_fused_gs              112         216         112
   rrtmgp_cloud                  0          40           0
   shinhong                 14,040      17,160      14,040
   noahmp_leaves               272         208         208
   rrtmgp_rte                5,152       5,152       3,600
   ======================  ==========  ==========  ==========
+
+``gf``, ``ysu`` and ``kf`` are the three rows that went to ZERO-ish on
+every platform, and they are the reason this file exists in its present
+shape.  All three kernels kept a whole column in the per-thread local
+frame; on 2026-08-21 all three moved those arrays into a global
+workspace (``gpuwm/core/kernels/gf.cu``, ``ysu.cu``, ``kf.cu``).  ``gf``
+went 22,416 -> 88 B, ``ysu`` 9,232 -> 0 B, ``kf`` 24,064 -> 512 B.
+
+``kf``'s 512 B is not a failed zero: ``tv_env`` and ``positive_energy``
+stay on its stack on purpose, because they are the only two of its 54
+column arrays whose placement moves an output bit.  512 B is half the
+default stack, so the row still reserves nothing.
+
+``ysu`` is the one that mattered to users: ``bl_pbl_physics = 1`` is the
+wizard's default, so YSU's frame was the widest a BARE DEFAULT run
+LAUNCHED, and MEASURED on weather-node-1 (RTX 5070 Ti, sm_120) it was
+holding an 842.0 MiB launch-time reservation on every default run.
+
+The sm_86 rows were briefly DROPPED on the theory that the RTX 3080 was
+off limits and could not be re-read.  That turned out to be wrong -- the
+card is in the machine and the GPU test suite already runs on it -- so on
+2026-08-21 all three were RE-READ there at the post-workspace source
+rather than left as holes or back-filled from another platform.  They
+agree with sm_120: 88 B, 0 B and 512 B.  This recording is COMPLETE
+again.
+
+The platform-independent claims still live in tests, because a box with no
+row here at all is the case those protect:
+``tests/test_gf_workspace.py``, ``tests/test_ysu_workspace.py`` and
+``tests/test_kf_workspace.py`` each assert the frame stays under the
+1,024 B default stack on ANY card.
+
+A NOTE ON WHAT THESE ROWS ARE, because it is easy to over-read them: the
+driver takes the reservation at LAUNCH, not at module load.  MEASURED on
+node-1 2026-08-21 with a two-kernel module -- compiling a module holding
+a 16,384 B kernel reserved 0.0 MiB, and the 1,574.0 MiB appeared only
+when that kernel was actually launched.  So a row here is a CEILING over
+what a module could cost, and a module whose widest kernel a given
+configuration never launches costs less than its row.  ``thompson`` is
+the standing example: its 11,264 B is the ``KMAX=256`` template, and a
+run with nz <= 64 launches only the ``_64`` variants (2,816 B measured).
+Pricing the row is the safe direction and is what preflight does; it is
+not what the driver charges.
 
 Four rows move with the ARCHITECTURE at a fixed compiler, four move with
 the COMPILER BUILD at a fixed architecture, and ``noahmp_leaves`` moves
@@ -112,11 +156,11 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
         'diffusion': 0,
         'dycore': 0,
         'ftz_probe': 0,
-        'gf': 22416,
+        'gf': 88,
         'health': 0,
         'jacobi_eigh': 0,
         'kessler': 5120,
-        'kf': 24064,
+        'kf': 512,
         'kf_validation': 0,
         'lbc_flow': 0,
         'lbc_state': 0,
@@ -177,7 +221,7 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
         'wdm6': 9776,
         'wdm6_refl': 16128,
         'wsm6': 7216,
-        'ysu': 9232,
+        'ysu': 0,
         'ysu_validation': 0,
     }),
 )
@@ -205,12 +249,12 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
         'diffusion': 0,
         'dycore': 0,
         'ftz_probe': 0,
-        'gf': 22416,
+        'gf': 72,
         'health': 0,
         'health_tile': 0,
         'jacobi_eigh': 0,
         'kessler': 5120,
-        'kf': 24064,
+        'kf': 512,
         'kf_validation': 0,
         'lbc_flow': 0,
         'lbc_state': 0,
@@ -271,7 +315,7 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
         'wdm6': 9776,
         'wdm6_refl': 16128,
         'wsm6': 7216,
-        'ysu': 9232,
+        'ysu': 0,
         'ysu_validation': 0,
     }),
 )
@@ -290,7 +334,17 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
     compute_capability='86',
     nvrtc_build='13.0.48',
     platform_family='windows',
+    # The bulk of this table was read 2026-08-20; ``gf`` and ``ysu``
+    # alone were re-read on the same card 2026-08-21, after the
+    # column workspaces.  The field stays the bulk reading's date
+    # because that is what the other 70 rows are.
     measured='2026-08-20',
+    # COMPLETE again as of 2026-08-21.  Every hole is filled with a real
+    # reading rather than a back-filled value: the RTX 3080 turned out to
+    # be IN the machine and the GPU test suite already runs on it, so the
+    # earlier "off limits, nobody can replace it" note was describing a
+    # constraint that no longer holds.  ``gf``, ``ysu`` and ``kf`` were all
+    # re-read on that card at the post-workspace source, same NVRTC.
     complete=True,
     frames=MappingProxyType({
         'acoustic': 544,
@@ -302,12 +356,28 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         'diffusion': 0,
         'dycore': 0,
         'ftz_probe': 0,
-        'gf': 23984,
+        # RE-READ 2026-08-21 on this card at the post-workspace
+        # source: 88 B, the same value sm_120 compiles it to.  The
+        # 23,984 B this row used to carry described gf.cu BEFORE the
+        # column workspace and is gone with that source.
+        'gf': 88,
         'health': 0,
         'health_tile': 0,
         'jacobi_eigh': 0,
         'kessler': 5120,
-        'kf': 24064,
+        # RE-MEASURED 2026-08-21 on this very box, not back-filled and
+        # not dropped: 24,064 -> 512 B, the same 512 the two sm_120
+        # rows read, and the launch-time reservation went 816.0 MiB (the
+        # law exactly, at 68 SMs x 1,536) -> 0.0 MiB.  The `gf` row
+        # above is absent because gf.cu's workspace landed without an
+        # sm_86 reading; kf's did not have to, because the RTX 3080 is
+        # in the machine this lane ran from and a frame is a compile
+        # attribute -- no device memory, no exclusivity.  The bitwise
+        # A/B was re-run here too: 6,569,984 graded words, 0 differ,
+        # both controls firing.  That matters more than the frame,
+        # because sm_86 is a different architecture and ptxas makes its
+        # own FP-contraction choices.
+        'kf': 512,
         'kf_validation': 0,
         'lbc_flow': 0,
         'lbc_state': 0,
@@ -379,7 +449,12 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         'wdm6': 9776,
         'wdm6_refl': 16128,
         'wsm6': 7216,
-        'ysu': 7184,
+        # RE-READ 2026-08-21 on this card at the post-workspace
+        # source: 0 B, as on both sm_120 builds.  The 7,184 B this row
+        # used to carry described ysu.cu BEFORE the column workspace.
+        # tests/test_ysu_workspace.py holds the platform-independent
+        # claim on any box that has no row here at all.
+        'ysu': 0,
         'ysu_validation': 0,
     }),
 )

@@ -184,7 +184,28 @@ def _stage_env() -> dict:
     forgotten by the seventh.
     """
 
-    return {**os.environ, "PYTHONSAFEPATH": "1"}
+    return _with_git_handle({**os.environ, "PYTHONSAFEPATH": "1"})
+
+
+def _with_git_handle(environment: dict) -> dict:
+    """Add ``GPUWM_GIT_EXE`` so a stage can bind its own identity.
+
+    Every stage resolves ``gpuwm.runtime_manifest.provenance`` before it
+    reads a byte of the user's data, and on a source checkout that
+    resolution is a ``git`` subprocess.  A child that cannot start git
+    binds no identity and refuses the run -- which is what happened,
+    with the parent's own identity resolving perfectly one process up.
+    Handing over the path the parent ALREADY resolved removes the
+    child's search entirely, and does it without widening ``PATH``:
+    this adds one key naming one executable, not a directory of them.
+    """
+
+    from gpuwm.provenance import GIT_EXE_ENV, git_executable
+
+    resolved = git_executable()
+    if resolved is not None:
+        environment[GIT_EXE_ENV] = resolved
+    return environment
 
 
 def _quote(value) -> str:
@@ -559,6 +580,13 @@ def _run_folder_note(plan: dict) -> str:
     """
 
     root, case_root = Path(plan["root"]), Path(plan["case_root"])
+    # The EFFECTIVE download directory, which is `<case root>/data` only
+    # when the reader named none.  Deriving it here instead re-computed
+    # the default and announced a path `--data-dir` had already moved:
+    # every stage that touches the download -- fetch, manifest, prepare
+    # -- composes `plan["data"]`, so this is the one value that can be
+    # said out loud without the line drifting from the run it describes.
+    data = Path(plan["data"])
     if root == case_root:
         return (f"go: run folder {root} (--run-stamp off: this run "
                 "writes straight into the output directory, so a second "
@@ -567,7 +595,7 @@ def _run_folder_note(plan: dict) -> str:
         return f"go: run folder {root}"
     note = (f"go: run folder {root.name} under {case_root} -- "
             f"authority/, prepared/, run/ and png/ all land inside it, "
-            f"and the download is cached at {case_root / 'data'}")
+            f"and the download is cached at {data}")
     return note
 
 
@@ -1635,27 +1663,18 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None) -> dict:
 
 
 def _planner_machine(probe):
-    """A :class:`tilestream.autoplan.Machine` from an out-of-process probe.
+    """A :class:`tilestream.autoplan.Machine` from this gate's own probe.
 
-    ``Machine.detect`` reads the card with CuPy and the host with
-    ``/proc/meminfo``; neither is available on the terms this gate runs
-    under -- the card must not be touched in this process, and the front
-    door also runs on Windows.  Both numbers are already to hand, so the
-    Machine is built rather than detected.  ``None`` when there is no card
-    to plan against, which leaves ``mode = "auto"`` unpriced and the
-    resident estimate standing, exactly as before.
+    The arithmetic lives in :func:`gpuwm.core.streaming.planner_machine`,
+    beside the envelope it feeds, because ``gpuwm check`` needs the same
+    Machine built from a DECLARED budget rather than a probe and two
+    copies of this would be two answers about one card.
     """
-    if probe is None:
-        return None
-    from gpuwm.core.streaming import _host_total_bytes
-    from tilestream import autoplan
+    from gpuwm.core.streaming import planner_machine
 
-    host = _host_total_bytes()
-    if host is None:
-        return None
-    return autoplan.Machine(vram_bytes=int(probe["free_bytes"]),
-                            host_bytes=int(host), name="gpuwm go probe",
-                            host_source="probe")
+    return planner_machine(
+        vram_bytes=None if probe is None else int(probe["free_bytes"]),
+        name="gpuwm go probe")
 
 
 def geography_refusal(geog_root: Path) -> str | None:

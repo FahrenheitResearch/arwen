@@ -159,7 +159,7 @@ def _drive(tmp_path, monkeypatch, *, tiles="", nested=False):
                     "status": "PASS"}, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8")
 
-    def fake_fetch(arguments, run_dir):
+    def fake_fetch(arguments, run_dir, *, events=None):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
         (out / "SHA256SUMS").write_text("x", encoding="utf-8")
@@ -639,3 +639,69 @@ def test_the_prepared_chains_are_not_refused_for_having_a_nest_under_auto(
         tmp_path, tiles='[tiles]\nmode = "auto"\n', nested=True))
     for chain in ("prepared:go", "prepared:hrrr"):
         assert streaming_decision(exp, chain=chain)["refusal"] is None
+
+
+# ---------------------------------------------------------------------------
+# `run-plan --estimate`: the figure a front end renders
+# ---------------------------------------------------------------------------
+#
+# ``estimate_plan`` called ``estimate_experiment`` directly, and that
+# itemizer has no streamed term at all, so a streamed plan was quoted its
+# RESIDENT envelope.  A front end that subprocesses this command and draws
+# the answer verbatim then reports "exceeds free VRAM" on exactly the small
+# cards streaming exists to serve.
+
+
+def _estimate(tmp_path, config):
+    """``run-plan --estimate``'s answer document, from the one call the
+    CLI branch makes -- ``estimate_plan(plan)`` and a ``json.dumps``."""
+
+    document = runplan_module.estimate_plan(_plan(tmp_path, config))
+    # Round-tripped, because the caller this exists for reads it as JSON
+    # out of a subprocess and a non-serialisable field would only show up
+    # there.
+    return json.loads(json.dumps(document))
+
+
+def test_the_estimate_of_a_streamed_plan_is_the_streamed_envelope(
+        tmp_path):
+    """THE REGRESSION: the number a front end draws is the run's own."""
+
+    from gpuwm.core.preflight import streamed_forecast_envelope
+
+    config = _config(tmp_path, tiles=_ON)
+    estimate = _estimate(tmp_path, config)
+    streamed = streamed_forecast_envelope(load_experiment(config))
+
+    assert streamed is not None, "fixture no longer streams"
+    # THE DRY-RUNG FENCE.  This fixture runs no radiation, so its
+    # measured RRTMGP transient is zero and the peak the document quotes
+    # IS what the tiling holds -- byte-identical to what it was before the
+    # estimate surfaces learned that reservation.
+    assert streamed.radiation_transient_bytes == 0
+    assert estimate["vram"]["envelope_basis"] == "streamed"
+    assert estimate["vram"]["peak_envelope_bytes"] == int(streamed.vram_bytes)
+    assert estimate["vram"]["peak_envelope_gib"] == round(
+        streamed.vram_bytes / 1024 ** 3, 4)
+    # The basis names the estimator that produced it, so a reader who gets
+    # a figure they did not expect can find out why.
+    assert "estimate_phases" in estimate["vram"]["basis"]
+    assert "[tiles]" in estimate["vram"]["basis"]
+
+
+def test_the_estimate_of_a_resident_plan_is_unchanged(tmp_path):
+    """THE REGRESSION FENCE.  No ``[tiles]``, no new arithmetic."""
+
+    from gpuwm.core.preflight import estimate_experiment
+
+    config = _config(tmp_path)
+    estimate = _estimate(tmp_path, config)
+    resident = estimate_experiment(load_experiment(config))
+
+    assert estimate["vram"]["envelope_basis"] == "resident"
+    assert (estimate["vram"]["peak_envelope_bytes"]
+            == resident.peak_envelope_bytes)
+    assert (estimate["vram"]["estimate_bytes"]
+            == resident.alloc_estimate_bytes)
+    assert estimate["vram"]["estimate_gib"] == round(
+        resident.alloc_estimate_bytes / 1024 ** 3, 4)

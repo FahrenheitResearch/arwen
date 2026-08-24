@@ -990,7 +990,7 @@ def _executed_staged_chain(tmp_path, monkeypatch):
                     "--supplement", f"surface={tmp_path / 'invariant.grib2'}",
                     "--author-input-manifest", str(tmp_path / "inputs.json")]
 
-    def fake_fetch(arguments, run_dir):
+    def fake_fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
         from gpuwm import fetch_routes
@@ -1097,7 +1097,7 @@ def test_the_staged_chain_refuses_a_fetch_with_no_handoff(
 
     import gpuwm.runplan as runplan_module
 
-    def bare_fetch(arguments, run_dir):
+    def bare_fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
         return {}
@@ -1128,7 +1128,7 @@ def _staged_hrrr_chain(tmp_path, monkeypatch, **plan_overrides):
         go_cli, "run_stage",
         lambda label, command, **kw: staged.append((label, list(command))))
 
-    def fake_fetch(arguments, run_dir):
+    def fake_fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
         (out / "SHA256SUMS").write_text("x", encoding="utf-8")

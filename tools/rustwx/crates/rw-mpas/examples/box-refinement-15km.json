@@ -1,0 +1,11 @@
+{
+  "name": "15 km over a box, coarse everywhere else",
+  "background_km": 120.0,
+  "regions": [
+    {
+      "shape": { "kind": "lat_lon_box", "lat_deg": [30.0, 45.0], "lon_deg": [-105.0, -90.0] },
+      "spacing_km": 15.0,
+      "transition_cells": 30
+    }
+  ]
+}

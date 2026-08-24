@@ -28,6 +28,84 @@ _TPB = 32
 _VALIDATE_TPB = 256
 _KMAX = 128
 
+# ---------------------------------------------------------------------------
+# The per-thread column workspace
+# ---------------------------------------------------------------------------
+# ysu.cu used to keep the scheme's column arrays in the per-thread local
+# frame, and CUDA prices a local frame at the card's RESIDENT-THREAD
+# CAPACITY -- one per-context backing store of
+# ``(frame - 1024) * SMs * maxThreadsPerSM``, taken at the first LAUNCH of
+# the kernel and never returned.  MEASURED on node-1 (weather-node-1, RTX
+# 5070 Ti, 70 SMs x 1,536, sm_120, CuPy 14.0.1) through this launcher at
+# nz=49: the 9,232 B frame took 844.0 MiB while the kernel only ever had a
+# fraction of that many threads in flight.  ``bl_pbl_physics = 1`` is the
+# shipped default, so every default run paid it.
+#
+# The arrays now live in a global workspace this launcher allocates, sized
+# to the threads ACTUALLY in flight, and the columns are launched in tiles
+# of that size.
+#
+# These must match ysu.cu's YSUWS_SLOTS / YSUWS_LANES;
+# tests/test_ysu_workspace.py re-derives them from the .cu source and fails
+# if either side moves alone.
+YSUWS_SLOTS = 18
+
+#: Launch block, and the tile's granularity.  ysu.cu indexes the workspace
+#: by the thread's lane within its block, so a tile is always a whole
+#: number of blocks.  This is the same number as :data:`_TPB`; both are
+#: pinned against the kernel's ``YSUWS_LANES``.
+YSU_BLOCK = _TPB
+
+#: Blocks per SM the tile is sized for.  MEASURED, not assumed -- see
+#: docs/kernel_local_memory_bounds.md for the sweep this came from.  The
+#: query in :func:`ysu_tile_columns` only ever lowers it.
+YSU_TILE_BLOCKS_PER_SM = 16
+
+
+def ysu_workspace_floats(nz: int, columns: int) -> int:
+    """Workspace floats for ``columns`` columns in flight at this ``nz``.
+
+    Rounded up to whole blocks: ysu.cu interleaves the workspace by LANE
+    within a block, the way CUDA lays local memory out across a warp, so
+    the unit of allocation is one block's region, not one column's.
+
+    The per-slot extent is ``nz + 1`` rather than ``_KMAX``: ``zq`` is the
+    one array indexed at ``nz``, and unlike the compile-time frame this is
+    allocated when ``nz`` is known.  A 49-level run therefore holds 50
+    levels of arrays where the frame had to hold 128.
+    """
+    blocks = (int(columns) + YSU_BLOCK - 1) // YSU_BLOCK
+    return blocks * YSUWS_SLOTS * (int(nz) + 1) * YSU_BLOCK
+
+
+def ysu_tile_columns(fn, ncol: int) -> int:
+    """Columns to keep in flight: enough to fill the card, and no more.
+
+    The whole point of the workspace is that it is charged per thread IN
+    FLIGHT where the local-memory backing store was charged per thread the
+    card could ever hold.  Over-sizing the tile hands that ratio back.
+    """
+    import cupy as cp
+
+    dev = cp.cuda.Device()
+    sms = dev.attributes["MultiProcessorCount"]
+    per_sm = YSU_TILE_BLOCKS_PER_SM
+    try:
+        from cupy_backends.cuda.api import driver
+
+        resident = driver.occupancyMaxActiveBlocksPerMultiprocessor(
+            fn.kernel.ptr, YSU_BLOCK, 0)
+        # Never launch more blocks than the card can hold resident: those
+        # columns would wait while their workspace slots stayed allocated.
+        per_sm = min(per_sm, int(resident))
+    except Exception:                              # noqa: BLE001
+        pass                                       # keep the measured value
+    per_sm = max(1, int(per_sm))
+    # Floored at one block.  The tile is the STEP of the launcher's loop, so
+    # a zero here would be a zero-step ``range`` -- a ValueError instead of
+    # the empty launch a zero-column domain should produce.
+    return int(max(YSU_BLOCK, min(int(ncol), sms * per_sm * YSU_BLOCK)))
+
 #: The launcher's first-call vertical bound, restated for front doors by
 #: ``gpuwm.physics_vertical_contract.YSU_VERTICAL_LEVEL_BOUNDS`` and bound to
 #: it by ``tests/test_pbl_vertical_bounds.py``.
@@ -110,17 +188,37 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                wstar3_2=cp.empty((ny, nx), dtype=DTYPE),
                cloudflg=cp.empty((ny, nx), dtype=cp.int32))
     ncol = ny * nx
-    blocks = (ncol + _TPB - 1) // _TPB
     kernel = get_kernel("ysu", "ysu_column")
-    kernel((blocks,), (_TPB,),
-           (u, v, theta, qv, qc, qi, p, p_interface, exner, dz, rthraten,
-            psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland, u10, v10,
-            out["du"], out["dv"], out["dtheta"], out["dqv"], out["dqc"],
-            out["dqi"], out["hpbl"], out["kpbl"], out["exch_h"],
-            out["exch_m"], out["wstar"], out["delta"], DTYPE(dt),
-            out["topdown_radsum"], out["wstar3_2"], out["cloudflg"],
-            np.int32(int(ysu_topdown_pblmix)),
-            np.int32(nz), np.int32(ny), np.int32(nx)))
+    # The column arrays live in a global workspace sized to the threads in
+    # flight, not in the per-thread local frame (which CUDA prices at the
+    # card's whole resident-thread capacity).  Columns therefore go in
+    # tiles of `tile`, each launched with the SAME one-thread-one-column
+    # mapping the kernel has always had -- the tile is passed as a column
+    # OFFSET rather than as a slice, because the (nz, ny, nx) fields make a
+    # column tile non-contiguous, so the kernel indexes them exactly as
+    # before.
+    tile = ysu_tile_columns(kernel, ncol)
+    wskp = nz + 1
+    ws = cp.empty(ysu_workspace_floats(nz, tile), dtype=DTYPE)
+    try:
+        for lo in range(0, ncol, tile):
+            count = min(tile, ncol - lo)
+            blocks = (count + YSU_BLOCK - 1) // YSU_BLOCK
+            kernel((blocks,), (YSU_BLOCK,),
+                   (u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
+                    rthraten, psfc, znt, ust, hfx, qfx, wspd, br, psim,
+                    psih, xland, u10, v10,
+                    out["du"], out["dv"], out["dtheta"], out["dqv"],
+                    out["dqc"], out["dqi"], out["hpbl"], out["kpbl"],
+                    out["exch_h"], out["exch_m"], out["wstar"],
+                    out["delta"], DTYPE(dt),
+                    out["topdown_radsum"], out["wstar3_2"],
+                    out["cloudflg"],
+                    np.int32(int(ysu_topdown_pblmix)),
+                    np.int32(nz), np.int32(ny), np.int32(nx),
+                    ws, np.int32(wskp), np.int32(lo)))
+    finally:
+        del ws
     return out
 
 

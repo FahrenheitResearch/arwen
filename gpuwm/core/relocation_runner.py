@@ -59,7 +59,8 @@ import warnings
 from fractions import Fraction
 from pathlib import Path
 
-from gpuwm.core.nest_relocation import (RelocationRefusal, base_segment,
+from gpuwm.core.nest_relocation import (RelocationRefusal, RelocationSegment,
+                                        base_segment,
                                         mark_fingerprint_across_move,
                                         relocate_child)
 
@@ -68,6 +69,16 @@ from gpuwm.core.uh_diag import (UH_FOLLOW_WINDOW_SLOT,
                                reset_tracker_window)
 
 RELOCATION_RUNNER_CONTRACT = "gpuwm-nest-relocation-runner.v1"
+
+#: The keys of a checkpoint's per-follower entry that the RUNNER owns.
+RUNNER_STATE_KEYS = ("segment", "moves_executed", "last_proposal_t",
+                     "last_move_t")
+
+#: The rest of the same entry, filled by the checkpoint writer because it
+#: describes the TREE rather than this runner's history.  Tolerated on the
+#: way back in so a resume hands the entry over whole instead of stripping
+#: it first, and never read here.
+RUNNER_WRITER_KEYS = ("kind", "current_placement", "declared_placement")
 
 #: What fills the strip a move exposes.  Stated on every move receipt so
 #: the fill provenance is a recorded fact, not an assumption: the child
@@ -244,6 +255,97 @@ class RelocationRunner:
                    initializer=initializer,
                    static_provenance=static_provenance)
 
+    # -- the restart state -------------------------------------------------
+    #
+    # PURE STATE, both directions: no I/O, no checkpoint vocabulary, no
+    # model.  ``gpuwm.io.restart`` owns where a follower entry lives in the
+    # header and fills the three keys that describe the TREE
+    # (``kind``, ``current_placement``, ``declared_placement``); the runner
+    # owns the four that describe its own history, and tolerates the
+    # writer's three so a resume can hand the entry over whole.
+
+    def state_json(self) -> dict:
+        """This follower's half of a checkpoint's per-follower entry."""
+        provider_state = getattr(self.provider, "state_json", None)
+        timers = {} if provider_state is None else dict(provider_state())
+        return {
+            "segment": (None if self._segment is None
+                        else self._segment.to_json()),
+            "moves_executed": int(self.moves_executed),
+            "last_proposal_t": timers.get("last_proposal_t"),
+            "last_move_t": timers.get("last_move_t"),
+        }
+
+    def restore_state(self, entry) -> None:
+        """Seed this follower from a checkpoint's per-follower entry.
+
+        The segment is the part that cannot be recomputed: it counts moves
+        off ONE base preparation, and a follower that resumes at generation
+        zero chains its next move's record onto the base instead of onto
+        its real predecessor -- so the digest the checkpoint's restart
+        fingerprint was folded from can never be reproduced, and every
+        later checkpoint of the resumed run is addressed by a history that
+        did not happen.
+
+        Validated in full before anything is applied, so a refusal leaves
+        the runner exactly as it was.
+        """
+        if not isinstance(entry, dict):
+            raise RelocationRefusal(
+                "a follower restart entry must be a mapping, got "
+                f"{type(entry).__name__}")
+        unknown = sorted(set(entry) - set(RUNNER_STATE_KEYS)
+                         - set(RUNNER_WRITER_KEYS))
+        if unknown:
+            raise RelocationRefusal(
+                f"a follower restart entry carries key(s) {unknown} this "
+                "build does not know; a follower seeded from policy state "
+                "it can only read in part moves the nest from a history "
+                "that is not its own, so this refuses")
+        missing = sorted(set(RUNNER_STATE_KEYS) - set(entry))
+        if missing:
+            raise RelocationRefusal(
+                f"a follower restart entry is missing {missing}; the "
+                "segment fixes which move the next record chains onto, the "
+                "counter is the run's account of what it did, and the two "
+                "cooldown anchors are what stop the nest moving again at "
+                "the first boundary after the resume")
+
+        raw_segment = entry["segment"]
+        segment = (None if raw_segment is None
+                   else RelocationSegment.from_json(raw_segment))
+        moves = int(entry["moves_executed"])
+        if moves < 0:
+            raise RelocationRefusal(
+                f"a follower reports {moves} executed moves; the run cannot "
+                "have un-moved a nest")
+        recorded = 0 if segment is None else int(segment.generation)
+        if recorded != moves:
+            raise RelocationRefusal(
+                f"a follower reports {moves} executed move(s) but its "
+                f"chain carries {recorded}; the counter and the placement "
+                "history disagree, and restoring either one would leave the "
+                "next move chaining onto the wrong predecessor")
+
+        timers = {"last_proposal_t": entry["last_proposal_t"],
+                  "last_move_t": entry["last_move_t"]}
+        provider_restore = getattr(self.provider, "restore_state", None)
+        if provider_restore is None:
+            held = sorted(key for key, value in timers.items()
+                          if value is not None)
+            if held:
+                raise RelocationRefusal(
+                    f"this follower's source ({type(self.provider).__name__}) "
+                    f"holds no cooldown, but the checkpoint carries {held}. "
+                    "Dropping a tracker's hysteresis lets the resumed nest "
+                    "move at its first cadence boundary, so the mismatched "
+                    "source refuses instead of silently discarding it")
+        else:
+            provider_restore(timers)
+
+        self._segment = segment
+        self.moves_executed = moves
+
     # -- receipts ---------------------------------------------------------
 
     def _record(self, model, entry: dict, *, unique: bool = False) -> dict:
@@ -383,7 +485,8 @@ class RelocationRunner:
         # more time passed: cadence dependence coming back in through the
         # reset rule.  Tolerant of a provider that reads no UH at all (a
         # scripted move list) and of a state with no window allocated.
-        reset_tracker_window(node.parent.state, UH_FOLLOW_WINDOW_SLOT)
+        follow_slot = getattr(self.provider, "uh_slot", UH_FOLLOW_WINDOW_SLOT)
+        reset_tracker_window(node.parent.state, follow_slot)
         if desired is None:
             return self._record(model, {
                 "event": "held", "elapsed_seconds": elapsed,
@@ -527,7 +630,75 @@ class RelocationRunner:
         return self._record(model, summary, unique=True)
 
 
+class RelocationRunnerCollection:
+    """Independent relocation runners behind the executor's scalar seam.
+
+    Each child owns a runner/provider/segment/cooldown state.  The collection
+    merely orders them by grid id; it never shares tracker state.
+    """
+
+    is_collection = True
+
+    def __init__(self, runners=()):
+        self.runners = {int(r.config.grid_id): r for r in runners}
+
+    @property
+    def target_grid_ids(self):
+        return tuple(sorted(self.runners))
+
+    @property
+    def config(self):
+        # Compatibility for code that only asks whether a named target exists.
+        from types import SimpleNamespace
+        gid = self.target_grid_ids[0] if self.runners else None
+        return SimpleNamespace(grid_id=gid)
+
+    def is_due(self, model, clocks) -> bool:
+        return any(r.is_due(model, clocks) for r in self.runners.values()
+                   if int(r.config.grid_id) in model.nodes_by_grid_id)
+
+    def on_period_begin(self, model, clocks, *, period=None, before_rebuild=None):
+        outcomes = []
+        for gid in self.target_grid_ids:
+            if gid not in model.nodes_by_grid_id:
+                continue
+            runner = self.runners[gid]
+            row = runner.on_period_begin(
+                model, clocks, period=period, before_rebuild=before_rebuild)
+            if row is not None:
+                outcomes.append(row)
+        return None if not outcomes else {"event": "batch", "outcomes": outcomes}
+
+    def close_receipt(self, model):
+        return [self.runners[gid].close_receipt(model) for gid in self.target_grid_ids]
+
+    def merge_from(self, other):
+        """Add newly-live targets without resetting existing hysteresis."""
+        if other is None:
+            return self
+        incoming = (other.runners if isinstance(other, RelocationRunnerCollection)
+                    else {int(other.config.grid_id): other})
+        for gid, runner in incoming.items():
+            self.runners.setdefault(int(gid), runner)
+        return self
+
+    def drop_absent(self, model):
+        # Retired runners are discarded; a later re-arm gets a fresh tracker
+        # and therefore a fresh episode-local cooldown/window.
+        for gid in list(self.runners):
+            if gid not in model.nodes_by_grid_id:
+                self.runners.pop(gid, None)
+
+    def attach_writers(self, writers):
+        for runner in self.runners.values():
+            attach = getattr(runner.on_child_built, "attach_writers", None)
+            if callable(attach):
+                attach(writers)
+
+
 __all__ = [
-    "ManualMoveProvider", "RELOCATION_RUNNER_CONTRACT", "RelocationRunner",
+    "ManualMoveProvider", "RELOCATION_RUNNER_CONTRACT",
+    "RUNNER_STATE_KEYS", "RUNNER_WRITER_KEYS", "RelocationRunner",
+    "RelocationRunnerCollection",
     "STRIP_FILL_SOURCE",
 ]

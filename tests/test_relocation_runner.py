@@ -285,8 +285,12 @@ def test_manual_provider_reports_unfired_rows():
 # ---------------------------------------------------------------------------
 
 def _clock(ticks):
+    # ``spec`` mirrors the real clock surface the activation-epoch publish
+    # reads (start_ticks/step_ticks); these fixtures model domains active
+    # from t=0 on a 60 s step, matching the schedule stand-ins below.
     return SimpleNamespace(ticks=int(ticks), tick_den=1,
-                           elapsed_seconds=float(ticks))
+                           elapsed_seconds=float(ticks),
+                           spec=SimpleNamespace(start_ticks=0, step_ticks=60))
 
 
 def _model(parent, child):
@@ -687,6 +691,145 @@ def test_moved_receipts_supply_the_checkpoint_header_block():
              if row.get("event") == "relocated"]
     assert len(moved) == 1
     assert set(moved[0]) >= {"record_sha256", "segment_id", "grid_id"}
+
+
+# ---------------------------------------------------------------------------
+# The follower's restart state: the segment, the counter and the timers
+# ---------------------------------------------------------------------------
+
+def _two_moves(parent_plane, parent, child, model, **kwargs):
+    runner = _runner(parent_plane, _manual_config((
+        ScheduledRelocationMove(60.0, 1, 0),
+        ScheduledRelocationMove(120.0, 0, 1))), **kwargs)
+    for ticks in (60, 120):
+        _advance(model, parent, child, ticks)
+        runner.on_period_begin(model, {1: parent.clock})
+    return runner
+
+
+def test_the_follower_block_carries_the_segment_and_the_counter():
+    import json
+
+    parent_plane, parent, child = _cpu_tree()
+    model = _model(parent, child)
+    runner = _two_moves(parent_plane, parent, child, model)
+
+    block = json.loads(json.dumps(runner.state_json(), allow_nan=False))
+    assert sorted(block) == ["last_move_t", "last_proposal_t",
+                             "moves_executed", "segment"]
+    assert block["moves_executed"] == 2
+    assert block["segment"]["generation"] == 2
+    assert block["segment"]["segment_id"] == runner._segment.segment_id
+    # A manual itinerary is not a tracker and holds no hysteresis.
+    assert block["last_proposal_t"] is None
+    assert block["last_move_t"] is None
+
+
+def test_a_restored_generation_continues_rather_than_resetting():
+    """The generation counts moves off ONE base preparation.  A follower
+    that resumes at generation 0 writes a receipt claiming a nest that has
+    moved twice is where it was prepared, and the next move's record chains
+    off the base instead of off its predecessor -- so the digest the
+    checkpoint's fingerprint was folded from can never be reproduced."""
+    parent_plane, parent, child = _cpu_tree()
+    model = _model(parent, child)
+    runner = _two_moves(parent_plane, parent, child, model)
+    block = runner.state_json()
+    straight_through = runner._segment
+
+    resumed_plane, resumed_parent, resumed_child = _cpu_tree()
+    resumed_model = _model(resumed_parent, resumed_child)
+    resumed = _runner(resumed_plane, _manual_config(
+        (ScheduledRelocationMove(180.0, 1, 0),)))
+    resumed.restore_state(block)
+    assert resumed.moves_executed == 2
+    assert resumed._segment.generation == 2
+    assert resumed._segment.segment_id == straight_through.segment_id
+
+    # The third move continues the chain: generation 3, and its record
+    # names the SECOND move's digest as its predecessor.
+    _advance(resumed_model, resumed_parent, resumed_child, 180)
+    outcome = resumed.on_period_begin(resumed_model,
+                                      {1: resumed_parent.clock})
+    assert outcome["event"] == "relocated"
+    assert resumed._segment.generation == 3
+    assert resumed.moves_executed == 3
+    assert (resumed._segment.records[-1].predecessor_sha256
+            == straight_through.records[-1].sha256)
+
+    # The control: a follower that forgot the segment restarts at 1.
+    cold_plane, cold_parent, cold_child = _cpu_tree()
+    cold_model = _model(cold_parent, cold_child)
+    cold = _runner(cold_plane, _manual_config(
+        (ScheduledRelocationMove(180.0, 1, 0),)))
+    _advance(cold_model, cold_parent, cold_child, 180)
+    cold.on_period_begin(cold_model, {1: cold_parent.clock})
+    assert cold._segment.generation == 1
+    assert cold.moves_executed == 1
+
+
+def _tracker_config():
+    return RelocationConfig(
+        enabled=True, grid_id=2, max_move_parent_cells=4,
+        min_overlap_fraction=0.25, cadence_seconds=None, moves=())
+
+
+def test_a_tracker_follower_round_trips_its_cooldown_through_the_runner():
+    """The follower entry carries the tracker's hysteresis, so the runner
+    is the one seam a resume has to reach to restore both."""
+    from gpuwm.core.storm_tracking import FollowConfig, StormTracker
+
+    parent_plane, _parent, _child = _cpu_tree()
+    follow = FollowConfig(
+        field="uh", threshold=50.0, fallback_threshold=40.0,
+        search_margin_cells=10, min_shift_cells=1, max_shift_cells=4,
+        cooldown_seconds=1800.0)
+    tracker = StormTracker(follow)
+    tracker._last_proposal_t = 60.0
+    tracker._last_move_t = 60.0
+    runner = _runner(parent_plane, _tracker_config(), provider=tracker)
+
+    block = runner.state_json()
+    assert block["last_proposal_t"] == 60.0 and block["last_move_t"] == 60.0
+
+    resumed_tracker = StormTracker(follow)
+    resumed = _runner(parent_plane, _tracker_config(),
+                      provider=resumed_tracker)
+    resumed.restore_state(block)
+    assert resumed_tracker.state_json() == {"last_proposal_t": 60.0,
+                                            "last_move_t": 60.0}
+    assert resumed.state_json() == block
+
+
+def test_a_follower_block_with_hysteresis_a_manual_provider_cannot_hold():
+    """Refused rather than dropped: a tracker's cooldown silently thrown
+    away lets the resumed nest move at the first cadence boundary."""
+    parent_plane, _parent, _child = _cpu_tree()
+    runner = _runner(parent_plane, _manual_config(
+        (ScheduledRelocationMove(60.0, 1, 0),)))
+    with pytest.raises(RelocationRefusal, match="cooldown"):
+        runner.restore_state({"segment": None, "moves_executed": 0,
+                              "last_proposal_t": 60.0, "last_move_t": None})
+
+
+def test_the_follower_block_tolerates_the_writers_own_keys():
+    """kind/current_placement/declared_placement are the checkpoint
+    writer's half of the same entry; the runner reads none of them, and an
+    entry carrying them must not have to be stripped first."""
+    parent_plane, parent, child = _cpu_tree()
+    model = _model(parent, child)
+    runner = _two_moves(parent_plane, parent, child, model)
+    entry = dict(runner.state_json(), kind="legacy",
+                 current_placement=[9, 9], declared_placement=[7, 7])
+
+    resumed_plane, _p, _c = _cpu_tree()
+    resumed = _runner(resumed_plane, _manual_config(
+        (ScheduledRelocationMove(180.0, 1, 0),)))
+    resumed.restore_state(entry)
+    assert resumed._segment.segment_id == runner._segment.segment_id
+
+    with pytest.raises(RelocationRefusal, match="lineage"):
+        resumed.restore_state(dict(entry, lineage={}))
 
 
 def test_prepared_tree_route_wires_the_corridor_runner(tmp_path):

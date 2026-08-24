@@ -66,6 +66,7 @@ KNOWN_BACKENDS = ("cpu", "cuda")
 IDENTITY_SOURCES = (
     "gpuwm-native-distribution-manifest",
     "git",
+    "installed-editable-source",
     "installed-wheel-record",
 )
 
@@ -76,6 +77,18 @@ IDENTITY_SOURCES = (
 _CANDIDATE_DISTRIBUTIONS = (DISTRIBUTION_NAME, "rw-wps")
 
 _GIT_TIMEOUT_S = 30
+
+#: Appended to every unbindable-identity refusal.  An editable install
+#: legitimately has no wheel identity, so "reinstall it with pip" is the
+#: wrong advice on its own: what such an install needs is a readable
+#: checkout to bind instead.
+_EDITABLE_REMEDY = (
+    ".  If this is an editable install (pip install -e), its identity "
+    "binds to the source tree instead -- and every way of reading that "
+    "tree has been tried here: git on PATH, git at its default install "
+    "location, and a direct read of the tree's own .git files.  What is "
+    "missing is a source tree with a readable .git beside the gpuwm "
+    "package")
 
 
 class ManifestError(ValueError):
@@ -239,9 +252,12 @@ def git_checkout_root(root: Path) -> Path | None:
     """
 
     root = Path(root)
+    executable = _git_exe()
+    if executable is None:
+        return None
     try:
         completed = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            [executable, "-C", str(root), "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, timeout=_GIT_TIMEOUT_S,
             check=False)
     except (OSError, subprocess.SubprocessError):
@@ -255,9 +271,30 @@ def git_checkout_root(root: Path) -> Path | None:
         return None
 
 
+def _git_exe() -> str | None:
+    """The git this process can launch, resolved in ONE place.
+
+    Every git question in this module and in ``gpuwm.provenance`` goes
+    through :func:`gpuwm.provenance.git_executable`, so a box where git
+    is installed but absent from a composed ``PATH`` answers the same
+    here as it does there.  Two resolutions would be two answers to one
+    question, which is the shape of the defect this replaced.
+    """
+
+    try:
+        from gpuwm.provenance import git_executable
+
+        return git_executable()
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
 def _git(root: Path, *arguments: str) -> str:
+    executable = _git_exe()
+    if executable is None:
+        raise OSError("git cannot be executed in this process")
     return subprocess.check_output(
-        ["git", "-C", str(root), *arguments], text=True,
+        [executable, "-C", str(root), *arguments], text=True,
         stderr=subprocess.DEVNULL, timeout=_GIT_TIMEOUT_S).strip()
 
 
@@ -310,7 +347,7 @@ def wheel_record_identity(*, verify: bool = False) -> dict[str, object]:
             "no installed distribution provides this gpuwm package "
             f"(looked for {', '.join(_CANDIDATE_DISTRIBUTIONS)}), and it is "
             "not a git checkout either, so this run has no provenance to "
-            "bind")
+            "bind" + _EDITABLE_REMEDY)
     recorded: list[tuple[str, str]] = []
     unhashed = 0
     verified = 0
@@ -354,7 +391,7 @@ def wheel_record_identity(*, verify: bool = False) -> dict[str, object]:
         raise IdentityError(
             f"installed distribution {dist.metadata['Name']} has no hashed "
             "RECORD entries, so its identity cannot be bound; reinstall it "
-            "with pip")
+            "with pip" + _EDITABLE_REMEDY)
     aggregate = hashlib.sha256()
     for name, value in sorted(recorded):
         aggregate.update(name.encode("utf-8") + b"\0" + value.encode("ascii")
@@ -377,6 +414,145 @@ def _urlsafe_b64_nopad(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
+# ---------------------------------------------------------------------------
+# The editable install: the identity is the SOURCE TREE, not a RECORD
+# ---------------------------------------------------------------------------
+
+def _is_editable_install(dist) -> bool:
+    """Does PEP 610 say pip wired this distribution to a source tree?"""
+
+    if dist is None:
+        return False
+    try:
+        from gpuwm.provenance import editable_root
+
+        return editable_root(dist) is not None
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
+def source_tree_identity(*, distribution=None) -> dict[str, object] | None:
+    """This install's identity when pip wired it to a source tree.
+
+    An editable install has no wheel identity to bind and never will.
+    ``pip install -e`` writes a RECORD whose rows describe a *redirect*
+    -- a ``.pth`` and a finder module, or nothing hashed at all -- so
+    :func:`wheel_record_identity` either refuses it outright ("no hashed
+    RECORD entries") or, worse, succeeds and binds the digest of two
+    shim files that say nothing whatsoever about the code that is about
+    to run.  Both outcomes were reached in the field; the first killed a
+    prepare stage before a byte of the user's data was read.
+
+    What an editable install CAN prove is the source tree it points at,
+    which is precisely the identity
+    :func:`gpuwm.provenance.describe_provenance` already binds into the
+    run-plan receipt.  This resolves it through that module's own
+    helpers -- :func:`gpuwm.provenance.editable_root` for the tree and
+    :func:`gpuwm.provenance.git_identity` for its commit, branch and
+    dirt -- so the run manifest and the run-plan receipt state ONE
+    identity in two documents rather than two answers that can drift.
+
+    Returns ``None`` -- never raises -- when no source tree can be
+    resolved or git cannot read it.  That is the genuinely unbindable
+    case, and :func:`provenance` keeps refusing it.
+    """
+
+    from gpuwm.provenance import (editable_root, git_identity,
+                                  providing_distribution)
+
+    package = Path(__file__).resolve().parent
+    dist = distribution if distribution is not None else installed_distribution()
+    if dist is None:
+        # ``locate_file`` cannot answer for a PEP 660 editable and
+        # answers confidently wrong, so `installed_distribution()`
+        # returns None for every one of them -- including the one
+        # serving this very import.  `providing_distribution` matches
+        # the way an editable install is actually wired.
+        try:
+            dist = providing_distribution(package)
+        except Exception:                               # noqa: BLE001
+            dist = None
+    declared = None
+    if dist is not None:
+        try:
+            declared = editable_root(dist)
+        except Exception:                               # noqa: BLE001
+            declared = None
+
+    roots: list[Path] = []
+    # The declared root first, deliberately.  Every caller of
+    # :func:`provenance` hands it the directory the running package
+    # sits in, and reaching the editable branch means
+    # :func:`git_checkout_root` has ALREADY refused that directory --
+    # so `direct_url.json` is the one thing the caller did not already
+    # have.  The running directory stays as the fallback for the
+    # editable shapes that leave no `direct_url.json` at all (a legacy
+    # `develop` install, or an `.egg-info` beside the source).
+    if declared is not None:
+        roots.append(declared)
+    # `git_identity` refuses any directory that is not the top level of
+    # its OWN repository, so neither candidate can bind a stranger's
+    # commit from a venv nested in someone else's checkout.
+    if package.parent not in roots:
+        roots.append(package.parent)
+
+    for candidate in roots:
+        try:
+            git = git_identity(candidate)
+        except Exception:                               # noqa: BLE001
+            git = None
+        if git is None:
+            continue
+        return {
+            "distribution_name": (
+                dist.metadata["Name"] if dist is not None else None),
+            "distribution_version": (
+                dist.version if dist is not None else None),
+            "install_kind": "editable" if dist is not None else "source-tree",
+            "source_root": str(candidate),
+            "git": dict(git),
+        }
+    return None
+
+
+def _git_or_none(root: Path, *arguments: str) -> str | None:
+    try:
+        return _git(root, *arguments)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _editable_provenance(identity: dict[str, object]) -> dict[str, object]:
+    """The receipt shape every consumer reads, from a source identity."""
+
+    root = Path(str(identity["source_root"]))
+    git = identity["git"]
+    status = _git_or_none(root, "status", "--short")
+    document = {
+        "identity_source": "installed-editable-source",
+        "git_commit": git["commit_full"],               # type: ignore[index]
+        "git_tree": _git_or_none(root, "rev-parse", "HEAD^{tree}"),
+        # An editable tree is ALLOWED to be dirty -- a developer's is,
+        # by definition -- but a receipt must never claim a clean
+        # identity from one, so the lines are reported here and the
+        # count under ``installed_editable.git.dirty_files``.
+        "git_status_short": None if status is None else status.splitlines(),
+        "distribution_manifest_sha256": None,
+        "installed_wheel": None,
+        "installed_editable": identity,
+    }
+    # A ``git_status_short`` of None reads as "no lines" to a careless
+    # consumer, which is the same mistake as claiming clean.  When the
+    # commit was read straight out of ``.git`` because git could not be
+    # launched, the receipt says so in as many words rather than
+    # leaving the absence to be interpreted.
+    unknown = (git.get("dirty_unknown_reason")
+               if isinstance(git, dict) else None)
+    if unknown:
+        document["git_status_unknown_reason"] = unknown
+    return document
+
+
 def provenance(root: Path, *,
                gpuwm_version: str | None = None) -> dict[str, object]:
     """What this install is, by the first of three paths that applies.
@@ -386,9 +562,18 @@ def provenance(root: Path, *,
     returned mapping always carries ``identity_source``, ``git_commit``,
     ``git_tree`` and ``git_status_short`` -- the shape every existing
     receipt consumer reads -- plus whichever of
-    ``distribution_manifest_sha256`` / ``installed_wheel`` the resolved
-    path earned.  It raises only when NO path can answer, which is a
-    broken install rather than an unusual one.
+    ``distribution_manifest_sha256`` / ``installed_wheel`` /
+    ``installed_editable`` the resolved path earned.  It raises only
+    when NO path can answer, which is a broken install rather than an
+    unusual one.
+
+    The paths, in order: a sealed manifest, a genuine checkout of THIS
+    tree, an editable install's source tree, then the installed wheel's
+    RECORD.  The editable path comes before the wheel because an
+    editable install's RECORD describes the redirect pip wrote, not the
+    code -- binding it would be a receipt naming two shim files.  A
+    plain wheel install never reaches that branch and so pays for no
+    extra git subprocess.
     """
 
     bound = manifest_from_environment(gpuwm_version=gpuwm_version)
@@ -403,6 +588,7 @@ def provenance(root: Path, *,
             "distribution_manifest_sha256": hashlib.sha256(
                 manifest_path.read_bytes()).hexdigest(),
             "installed_wheel": None,
+            "installed_editable": None,
         }
     root = Path(root)
     if git_checkout_root(root) is not None:
@@ -415,19 +601,37 @@ def provenance(root: Path, *,
                     root, "status", "--short").splitlines(),
                 "distribution_manifest_sha256": None,
                 "installed_wheel": None,
+                "installed_editable": None,
             }
         except (OSError, subprocess.SubprocessError):
             # A checkout with no commits yet, or a git that died between
             # the two calls.  Fall through to the wheel rather than
             # failing a run over a provenance nicety.
             pass
+    if _is_editable_install(installed_distribution()):
+        source = source_tree_identity()
+        if source is not None:
+            return _editable_provenance(source)
+    try:
+        wheel = wheel_record_identity()
+    except IdentityError:
+        # No wheel identity.  Before refusing, ask the question the
+        # wheel path cannot: is this an install pip wired to a source
+        # tree?  Every editable shape lands here -- the PEP 660 one that
+        # `installed_distribution()` cannot see at all, and the legacy
+        # one whose RECORD carries no digests.
+        source = source_tree_identity()
+        if source is None:
+            raise
+        return _editable_provenance(source)
     return {
         "identity_source": "installed-wheel-record",
         "git_commit": None,
         "git_tree": None,
         "git_status_short": None,
         "distribution_manifest_sha256": None,
-        "installed_wheel": wheel_record_identity(),
+        "installed_wheel": wheel,
+        "installed_editable": None,
     }
 
 
@@ -435,6 +639,6 @@ __all__ = [
     "IDENTITY_SOURCES", "IdentityError", "KNOWN_BACKENDS", "MANIFEST_ENV",
     "ManifestError", "RUNTIME_SCHEMA", "git_checkout_root",
     "installed_distribution", "load_manifest", "manifest_defects",
-    "manifest_from_environment", "provenance", "validate_manifest",
-    "wheel_record_identity",
+    "manifest_from_environment", "provenance", "source_tree_identity",
+    "validate_manifest", "wheel_record_identity",
 ]

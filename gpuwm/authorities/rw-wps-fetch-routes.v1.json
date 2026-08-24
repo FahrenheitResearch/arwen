@@ -1,13 +1,36 @@
 {
   "schema": "gpuwm-fetch-routes-v1",
   "note": "Acquisition routes: where a registered source's public bytes live, what the cycle and lead grammars are, and how the fetched objects compose into the primary/supplement/donor roles the packaged decode profile binds. This document is DATA. Adding a model's front door is a row here, not a code path; gpuwm/fetch_routes.py is the one engine that reads every row. Every host, path template and ladder below was measured against the live service on the date in `measured`.",
+  "endpoint_note": "Every source's hosts are an ORDERED LADDER, not a set. The router resolves the concrete cycle first, then takes the entries whose `retention_hours` covers that cycle's age -- so a cycle older than the operational window goes straight to the archive instead of paying for a doomed attempt. `retention_hours: null` is an archive: effectively unbounded. When NO entry covers the age the whole ladder is still tried, because retention is an optimisation and not a bar. Failure -- a refused connection, 403/503, a Retry-After the host's own retry discipline could not wait out, or a payload that does not verify -- moves to the next entry; when every entry fails the refusal names each one and why. Each retention figure below was measured by counting the day directories the live tree served on the date named in its `why`.",
+  "transfer_note": "`transfer_rank` is a SECOND order over the same rungs, and it decides which host moves the bytes rather than which hosts are asked. Lower is quicker; absent means the ladder position, so a source that declares no rank transfers in table order and nothing about it changes. The two orders differ for exactly one reason: the operational server's advantage is having a cycle FIRST, and that advantage is spent the moment the archive has the same object -- after which what is left is throughput, which the archive wins. Measured at peak hours, the operational server paced whole-file transfers at about 3 MB/s per file, so a 3.4 GB request took about 20 minutes where the archive served the same volume in about 3. So for each requested object inside the retention window the engine asks the throughput rung whether it HAS that object (one HEAD, milliseconds against a multi-hundred-megabyte transfer) and promotes it when it does. Promotion REORDERS the ladder and never shortens it: every rung stays behind the chosen one, fall-through and the whole-ladder refusal are unchanged, and a probe that 404s or errors costs the transfer nothing.",
+  "host_policy": {
+    "nomads.ncep.noaa.gov": {
+      "concurrent": 2,
+      "why": "NCEP's operational server is one shared public service behind Akamai and it answers an aggressive client with an over-rate-limit page and then an IP block. Two is deliberate rather than small-for-safety's-sake: the node-wide governor already spaces request STARTS 2.5 s apart, and the service answers in about 3.1 s, so a second in-flight request is exactly enough to keep the pipeline full. A third would only queue on the governor while holding another connection open against a service that throttles."
+    }
+  },
+  "legacy_ladders": {
+    "note": "The three sources whose transport predates this table (gfs, gdas, hrrr) still declare their endpoints HERE, in the same row shape as a route's `hosts`, so preferring the operational server is one table fact for every NCEP source rather than two mechanisms. Their host vocabulary is their own -- `s3` where the table routes say `aws` -- because that is the name their --transport has accepted since before the table existed.",
+    "gfs": [
+      {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod", "default": true, "retention_hours": 240, "transfer_rank": 1, "why": "the operational server publishes each pgrb2.0p25 object first; 10 day directories present, measured 2026-08-24"},
+      {"name": "s3", "base": "https://noaa-gfs-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data archive noaa-gfs-bdp-pds is unbounded, holds every cycle the operational window has dropped, and serves bulk objects several times quicker at peak hours -- so it takes any object it has already mirrored"}
+    ],
+    "gdas": [
+      {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod", "default": true, "retention_hours": 240, "transfer_rank": 1, "why": "GDAS publishes into the same operational tree as GFS; 10 day directories present, measured 2026-08-24"},
+      {"name": "s3", "base": "https://noaa-gfs-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data archive noaa-gfs-bdp-pds is unbounded, holds every cycle the operational window has dropped, and serves bulk objects several times quicker at peak hours -- so it takes any object it has already mirrored"}
+    ],
+    "hrrr": [
+      {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod", "default": true, "retention_hours": 48, "transfer_rank": 1, "why": "the operational server publishes each forecast hour before the mirrors, which is the whole reason --wait-for polls it; 2 day directories present, measured 2026-08-24"},
+      {"name": "s3", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data archive noaa-hrrr-bdp-pds serves byte-identical files and .idx indexes without a retention bound, and serves them quicker at peak hours -- so it takes any object it has already mirrored"}
+    ]
+  },
   "routes": {
     "hrrr-prs": {
       "label": "HRRR pressure-level (wrfprs), CONUS",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "aws", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "default": true},
-        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod"}
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod", "default": true, "retention_hours": 48, "transfer_rank": 1, "why": "the operational server publishes each forecast hour first; 2 day directories present, measured 2026-08-24"},
+        {"name": "aws", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
       "ladders": [
@@ -40,8 +63,8 @@
       "label": "RAP awip32 (AWIPS grid 221, 32 km Lambert)",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "aws", "base": "https://noaa-rap-pds.s3.amazonaws.com", "default": true},
-        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod"}
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod", "default": true, "retention_hours": 48, "transfer_rank": 1, "why": "the operational server publishes each forecast hour first; 2 day directories present, measured 2026-08-24"},
+        {"name": "aws", "base": "https://noaa-rap-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
       "ladders": [
@@ -74,8 +97,8 @@
       "label": "RRFS prslev + 2dfld, 3 km CONUS",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "aws", "base": "https://noaa-rrfs-ops-pds.s3.amazonaws.com", "default": true},
-        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rrfs/v1.0"}
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rrfs/v1.0", "default": true, "retention_hours": 48, "transfer_rank": 1, "why": "the operational server publishes each forecast hour first; 2 day directories present, measured 2026-08-24"},
+        {"name": "aws", "base": "https://noaa-rrfs-ops-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data operational bucket is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "host_note": "noaa-rrfs-pds is the RETIRED prototype feed: it stopped mid-day on 2026-08-12 by design and nothing newer will ever appear there. The operational bucket is noaa-rrfs-ops-pds, and NOMADS serves the same product set under rrfs/v1.0 (rrfs/prod is 403 until the 2026-10-06 implementation).",
       "cycle_note": "RRFS runs hourly, but only the 00/06/12/18Z cycles publish the hourly prslev/2dfld pair this profile initialises from. MEASURED 2026-08-16: a synoptic cycle holds 1,846 objects with prslev f000..f084; an off-synoptic cycle holds 144, all of them sub-hourly 2dfld, with no prslev at any lead. Offering the off-synoptic cycles here would resolve keys that are 404s.",
@@ -116,8 +139,8 @@
       "label": "GEFS v12 pgrb2a+pgrb2b 0.50 deg ensemble member",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "aws", "base": "https://noaa-gefs-pds.s3.amazonaws.com", "default": true},
-        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gens/prod"}
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gens/prod", "default": true, "retention_hours": 96, "transfer_rank": 1, "why": "the operational server publishes each member first; 4 day directories present, measured 2026-08-24"},
+        {"name": "aws", "base": "https://noaa-gefs-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "cycle_hours": [0, 6, 12, 18],
       "ladders": [
@@ -174,7 +197,7 @@
       "label": "AIGFS v1.1 pres+sfc, 0.25 deg (NOMADS operational)",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod", "default": true}
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod", "default": true, "retention_hours": 240, "why": "the operational server is the only door this route has; 10 day directories present, measured 2026-08-24"}
       ],
       "host_note": "NOMADS ONLY, and the refusal to mirror is deliberate. noaa-nws-graphcastgfs-pds publishes objects under byte-identical key names that are a DIFFERENT product -- the experimental EAGLE stream, subCentre 2 against the operational subCentre 0, 65 pres messages against 78, and 500 hPa geopotential height differing by 8.7 gpm. Every packaged selector pins subcenter=0, so the S3 copies refuse at decode by identity octet. Nothing in the filename distinguishes them. SCN 25-89: 'Data for these models will be on the NCEP NOMADS server only'. NOMADS keeps a 10-day rolling window; there is no archive behind this door.",
       "cycle_hours": [0, 6, 12, 18],
@@ -221,8 +244,8 @@
       "label": "AIGEFS v1.0 pres+sfc ensemble member, 0.25 deg",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/prod", "default": true},
-        {"name": "aws", "base": "https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com/EAGLE_ensemble"}
+        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/prod", "default": true, "retention_hours": 48, "transfer_rank": 1, "why": "the operational door; 2 day directories present, measured 2026-08-24"},
+        {"name": "aws", "base": "https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com/EAGLE_ensemble", "retention_hours": null, "transfer_rank": 0, "why": "the experimental line's own bucket, about three hours behind, kept without a declared bound; it takes any object it has caught up with, for the same throughput reason as the other mirrors"}
       ],
       "host_note": "the S3 mirror lags NOMADS by about three hours and is the EAGLE experimental line's own bucket; NOMADS is the operational door.",
       "cycle_hours": [0, 6, 12, 18],
@@ -278,8 +301,8 @@
       "label": "ECMWF open-data IFS 0.25 deg oper",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "ecmwf", "base": "https://data.ecmwf.int/forecasts", "default": true},
-        {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com"}
+        {"name": "ecmwf", "base": "https://data.ecmwf.int/forecasts", "default": true, "retention_hours": null, "why": "the publisher's own door; this route is outside the NCEP ladder and keeps the single endpoint it always had"},
+        {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "retention_hours": null, "why": "the mirror, reachable with --transport aws"}
       ],
       "host_note": "only the 0.25 deg open set is CC-BY-4.0; the 9 km HRES fields are licensed and are not behind this door. IFS publishes LATER than AIFS -- a cycle whose aifs-single tree is complete may hold only a BUFR track file here.",
       "cycle_hours": [0, 6, 12, 18],
@@ -313,8 +336,8 @@
       "label": "ECMWF AIFS single 0.25 deg oper",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "ecmwf", "base": "https://data.ecmwf.int/forecasts", "default": true},
-        {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com"}
+        {"name": "ecmwf", "base": "https://data.ecmwf.int/forecasts", "default": true, "retention_hours": null, "why": "the publisher's own door; this route is outside the NCEP ladder and keeps the single endpoint it always had"},
+        {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "retention_hours": null, "why": "the mirror, reachable with --transport aws"}
       ],
       "cycle_hours": [0, 6, 12, 18],
       "ladders": [{"cycle_hours": null, "steps": [[360, 6]]}],
@@ -344,7 +367,7 @@
       "label": "DWD ICON-EU regular lat-lon, bz2 objects",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "dwd", "base": "https://opendata.dwd.de/weather/nwp/icon-eu/grib", "default": true}
+        {"name": "dwd", "base": "https://opendata.dwd.de/weather/nwp/icon-eu/grib", "default": true, "retention_hours": null, "why": "the publisher's own door; this route is outside the NCEP ladder and keeps the single endpoint it always had"}
       ],
       "host_note": "opendata.dwd.de keeps roughly a rolling day; there is no archive behind this door. Every object is bz2-wrapped and stays that way -- the acquisition codec stages them for the decoder.",
       "coverage_note": "ICON-EU spans 23.5 W to 62.5 E, 29.5 to 70.5 N. A domain outside that window is refused at prep by the horizontal mapper, which names the offending corner and the window the source covers.",
@@ -407,7 +430,7 @@
       "label": "ECCC GDPS (GEM global) 15 km regular lat-lon",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "msc", "base": "https://dd.weather.gc.ca", "default": true}
+        {"name": "msc", "base": "https://dd.weather.gc.ca", "default": true, "retention_hours": null, "why": "the publisher's own door; this route is outside the NCEP ladder and keeps the single endpoint it always had"}
       ],
       "host_note": "MSC Datamart publishes one single-message JPEG2000 file per variable-level. The lead directories run hourly to 240 h, but the full model state exists only every three hours -- the intermediate directories carry surface-only files.",
       "cycle_hours": [0, 12],

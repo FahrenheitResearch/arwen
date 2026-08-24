@@ -16,6 +16,15 @@ use rw_mpas::init::soil::DeepMoisture;
 use rw_mpas::init::vinterp::Extrap;
 use rw_mpas::init::{build_init, InitConfig};
 
+/// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
+/// binary was built from, embedded so the gpuwm release cut can prove a
+/// staged bridge matches the commit being released by reading bytes alone
+/// (`tools/build_bridge_bundle.py pin --source-rev`).  `build.rs` injects
+/// the value; `main` references the constant so the linker cannot discard
+/// it.
+pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
+    concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
+
 /// The literal the Python bridge contract handshakes on.  It spells the
 /// argument vector out, so a stale binary on a user's disk fails the static
 /// check before it can accept input it will mis-parse.
@@ -151,6 +160,7 @@ fn run() -> Result<String, String> {
 }
 
 fn main() -> ExitCode {
+    let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     match run() {
         Ok(json) => {
             println!("{json}");

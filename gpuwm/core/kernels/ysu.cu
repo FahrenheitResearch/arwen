@@ -10,6 +10,83 @@
 
 #define YSU_KMAX 128
 
+// ==========================================================================
+// Per-thread column workspace
+// ==========================================================================
+// One thread owns one whole column, so the scheme's column arrays are
+// naturally function-scope locals.  CUDA prices those in a way that made
+// this kernel the single largest device-memory term a BARE DEFAULT run
+// pays: the driver sizes ONE per-context local-memory backing store to the
+// widest kernel frame it LAUNCHES times the card's RESIDENT-THREAD
+// CAPACITY (multiProcessorCount * maxThreadsPerMultiProcessor), never to
+// the occupancy the kernel achieves, and never returns it while the
+// context lives.
+//
+// MEASURED on node-1 (weather-node-1, RTX 5070 Ti, 70 SMs x 1,536,
+// sm_120, NVRTC 13.0.48, CuPy 14.0.1) through the real launcher at nz=49:
+// the 9,232 B frame reserved 844.0 MiB.  `bl_pbl_physics = 1` is the
+// shipped default (gpuwm/domain_wizard.py:714), so every default run paid
+// it.
+//
+// The same measurement established that the reservation is taken at
+// LAUNCH, not at module load: a module holding a 16,384 B kernel reserved
+// 0.0 MiB until that kernel was actually launched.  That is why the
+// ceiling is set by the kernels a configuration RUNS, not by the widest
+// one its modules contain.
+//
+// So the column arrays live in a caller-provided GLOBAL workspace instead,
+// sized to the threads actually in flight.  gpuwm/core/ysu.py sizes the
+// tile from the kernel's measured occupancy and launches the columns in
+// tiles of that size; the arrays keep their extents and their access
+// order, so this is a PLACEMENT change and nothing else.
+//
+// The per-slot extent is a RUNTIME argument (`wskp`), not YSU_KMAX.  The
+// frame had to be sized for the deepest column the kernel would ever
+// accept -- 128 levels -- so a 49-level run carried 128 levels of arrays.
+// The workspace is allocated when the extent is known, so a 49-level run
+// holds 50, which is a 2.6x cut this kernel could not previously express.
+#define YSUWS_SLOTS 18
+
+// LANE INTERLEAVING, and why it is not optional.  CUDA lays local memory
+// out interleaved across the threads of a warp, so a per-thread array
+// access is coalesced by construction.  A workspace that gave each thread
+// a contiguous slab would hand that back -- MEASURED on the Grell-Freitas
+// cut that this follows, the contiguous form ran 42.1 ms against 19.3 ms
+// and got WORSE as the tile grew, the signature of 32-way scatter.  So the
+// workspace is laid out exactly the way local memory is: one contiguous
+// region per BLOCK, element k of slot s for lane t at
+//   block_base + (s * wskp + k) * YSUWS_LANES + t
+// and a warp reading arr[k] touches 32 consecutive floats.
+//
+// YSUWS_LANES is the launch block, fixed: gpuwm/core/ysu.py's _TPB and
+// tests/test_ysu_workspace.py both pin it, and a launch at any other block
+// width would alias lanes.
+#define YSUWS_LANES 32
+
+//: A column array living in the workspace.  Indexes like the
+//: `real[YSU_KMAX]` it replaced; the stride is what makes it coalesce.
+struct YsuCol {
+    real *p;
+    __device__ __forceinline__ real &operator[](int k) const {
+        return p[(size_t)k * (size_t)YSUWS_LANES];
+    }
+};
+//: The read-only view, so a `const real *` parameter stays const.
+struct YsuColC {
+    const real *p;
+    __device__ __forceinline__ YsuColC(const YsuCol &a) : p(a.p) {}
+    __device__ __forceinline__ real operator[](int k) const {
+        return p[(size_t)k * (size_t)YSUWS_LANES];
+    }
+};
+
+#define YSUWS_AT(base, idx, kp) \
+    (YsuCol{(base) + (size_t)(idx) * (size_t)(kp) * (size_t)YSUWS_LANES})
+//: This thread's lane inside its block's workspace region.
+#define YSUWS_LANE_BASE(ws, kp) \
+    ((ws) + (size_t)blockIdx.x * (size_t)YSUWS_SLOTS * (size_t)(kp) \
+     * (size_t)YSUWS_LANES + (size_t)threadIdx.x)
+
 // NaN-propagating on purpose.  Fortran's amin1/amax1 spelled as `a < b ?`
 // silently launders a NaN first argument into the bound: ysu_min(NaN,
 // xkzmax) used to return xkzmax, so a poisoned diffusivity became a
@@ -26,8 +103,8 @@ __device__ __forceinline__ real ysu_clip(real x, real lo, real hi) {
     return ysu_min(ysu_max(x, lo), hi);
 }
 
-__device__ void ysu_thomas(const real *lower, const real *diag,
-                           const real *upper, real *rhs, real *gamma, int nz) {
+__device__ void ysu_thomas(YsuColC lower, YsuColC diag,
+                           YsuColC upper, YsuCol rhs, YsuCol gamma, int nz) {
     real inv = 1.0f / diag[0];
     gamma[0] = upper[0] * inv;
     rhs[0] *= inv;
@@ -42,8 +119,8 @@ __device__ void ysu_thomas(const real *lower, const real *diag,
         rhs[k] -= gamma[k] * rhs[k + 1];
 }
 
-__device__ void ysu_diagnose(const real *u, const real *v, const real *thv,
-                             const real *za, real thermal, real br0,
+__device__ void ysu_diagnose(const real *u, const real *v, YsuColC thv,
+                             YsuColC za, real thermal, real br0,
                              real brcrit, int nz, int st, int col,
                              real *hpbl, int *kpbl,
                              real *brdn_out, real *brup_out) {
@@ -86,19 +163,41 @@ void ysu_column(const real *u, const real *v, const real *theta,
                 real *wstar_out, real *delta_out,
                 real dt, real *topdown_radsum_out,
                 real *wstar3_2_out, int *cloudflg_out,
-                int ysu_topdown_pblmix, int nz, int ny, int nx) {
-    int col = blockDim.x * blockIdx.x + threadIdx.x;
+                int ysu_topdown_pblmix, int nz, int ny, int nx,
+                real *ws, int wskp, int col0) {
+    // `col0` is the first column of this TILE.  The workspace is sized to
+    // one tile, so its indexing uses the TILE-LOCAL blockIdx.x while every
+    // field index keeps using the global column -- the arrays are
+    // (nz, ny, nx) and a column tile is not a contiguous slice of them, so
+    // the tile is expressed as an offset rather than as a view.
+    //
+    // A tile is always a whole number of blocks (gpuwm/core/ysu.py sizes it
+    // as SMs x blocks/SM x YSUWS_LANES), so only the FINAL tile launches
+    // threads past its end, and those are caught by `col >= st` exactly as
+    // the trailing threads of the old single launch were.
+    int col = blockDim.x * blockIdx.x + threadIdx.x + col0;
     int st = ny * nx;
     if (col >= st || nz > YSU_KMAX) return;
 
-    real thv[YSU_KMAX], thli[YSU_KMAX];
-    real zq[YSU_KMAX + 1], za[YSU_KMAX];
-    real dza[YSU_KMAX], delp[YSU_KMAX];
-    real xkzm[YSU_KMAX], xkzh[YSU_KMAX], xkzq[YSU_KMAX];
-    real xkzml[YSU_KMAX], xkzhl[YSU_KMAX];
-    real zfacent[YSU_KMAX], entfac[YSU_KMAX];
-    real lower[YSU_KMAX], diag[YSU_KMAX], upper[YSU_KMAX];
-    real rhs[YSU_KMAX], gamma[YSU_KMAX];
+    real *wsb = YSUWS_LANE_BASE(ws, wskp);
+    YsuCol thv     = YSUWS_AT(wsb,  0, wskp);
+    YsuCol thli    = YSUWS_AT(wsb,  1, wskp);
+    YsuCol zq      = YSUWS_AT(wsb,  2, wskp);
+    YsuCol za      = YSUWS_AT(wsb,  3, wskp);
+    YsuCol dza     = YSUWS_AT(wsb,  4, wskp);
+    YsuCol delp    = YSUWS_AT(wsb,  5, wskp);
+    YsuCol xkzm    = YSUWS_AT(wsb,  6, wskp);
+    YsuCol xkzh    = YSUWS_AT(wsb,  7, wskp);
+    YsuCol xkzq    = YSUWS_AT(wsb,  8, wskp);
+    YsuCol xkzml   = YSUWS_AT(wsb,  9, wskp);
+    YsuCol xkzhl   = YSUWS_AT(wsb, 10, wskp);
+    YsuCol zfacent = YSUWS_AT(wsb, 11, wskp);
+    YsuCol entfac  = YSUWS_AT(wsb, 12, wskp);
+    YsuCol lower   = YSUWS_AT(wsb, 13, wskp);
+    YsuCol diag    = YSUWS_AT(wsb, 14, wskp);
+    YsuCol upper   = YSUWS_AT(wsb, 15, wskp);
+    YsuCol rhs     = YSUWS_AT(wsb, 16, wskp);
+    YsuCol gamma   = YSUWS_AT(wsb, 17, wskp);
 
     real us = ust[col], hf = hfx[col], qf = qfx[col];
     if (us == 0.0f && hf == 0.0f && qf == 0.0f) {

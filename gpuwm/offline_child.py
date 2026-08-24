@@ -180,6 +180,55 @@ class MomentDiagnosisRequired(OfflineChildContractError):
     """A target number moment needs the official target-scheme initializer."""
 
 
+def reserve_output_root(path, *, flag: str = "--out") -> Path:
+    """Claim one child-run output directory, in words when it cannot.
+
+    A downscale never merges into a directory that already holds a run:
+    the ``report.json`` it publishes has to describe ONE run, and the
+    frame series beside it has to be that run's.  ``mkdir(exist_ok=
+    False)`` enforces that, but its ``FileExistsError`` reached the
+    reader as a traceback whose last line was a Windows error number --
+    at exit 1, from a command that had already printed a refusal moments
+    earlier.  The person re-running with the same output directory gets
+    one sentence naming the directory, what it holds, and the two ways
+    out instead.
+
+    An EMPTY directory is adopted, not refused: it carries no frames to
+    merge with and no receipt to overwrite, so refusing it prevents
+    nothing.  ``flag`` is the flag the caller actually typed -- the two
+    doors onto this route spell it ``--out`` and ``--outdir``.
+    """
+
+    path = Path(path)
+    try:
+        path.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as error:
+        try:
+            held = sorted(child.name for child in path.iterdir())
+        except OSError as probe_error:
+            # Not the empty-directory case at all: the entry exists and
+            # cannot be read as a directory (a plain file under that
+            # name, a symlink with no destination).  This function's
+            # whole subject is turning an OS-level exception into a
+            # sentence, so the probe must not become the one that
+            # escapes.
+            detail = (getattr(probe_error, "strerror", None)
+                      or str(probe_error))
+            raise OfflineChildContractError(
+                f"{flag} {path} exists but is not a directory this run can "
+                f"claim: {detail}.  Pass a {flag} that names a directory "
+                f"path, or remove {path} first.") from probe_error
+        if held:
+            raise OfflineChildContractError(
+                f"{flag} {path} already holds a child run's output "
+                f"({', '.join(held)[:120]}), and a downscale never writes "
+                f"into a directory it did not create -- the report.json it "
+                f"publishes has to describe one run, and the frames beside "
+                f"it have to be that run's.  Pass a new {flag}, or remove "
+                f"{path} first.") from error
+    return path.resolve()
+
+
 @dataclass(frozen=True)
 class ParentPhysicsBinding:
     """Authoritative parent-scheme identity from a companion setup record."""
@@ -1814,5 +1863,6 @@ __all__ = [
     "build_offline_child_domain_state", "build_offline_lateral_boundaries",
     "inspect_parent_history_frame", "interpolate_parent_boundary_snapshot",
     "interpolate_parent_initial_state", "map_microphysics_to_nssl18",
-    "read_parent_microphysics", "validate_parent_history",
+    "read_parent_microphysics", "reserve_output_root",
+    "validate_parent_history",
 ]

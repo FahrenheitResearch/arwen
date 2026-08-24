@@ -83,11 +83,14 @@ gpuwm fetch --source gfs --cycle 2026-07-29T18 --hours 24 \
   plus exactly the 124 records per forecast hour the `gfs_grib2_bridge`
   requires (21 pressure levels x 5 variables, 11 surface, 8 soil).
   Every file passes a 124-message envelope walk before it counts.
-- **`--mode full-file` takes the whole `pgrb2.0p25` objects from the
-  AWS S3 archive** (`noaa-gfs-bdp-pds`) instead -- through the Rust
-  backbone's parallel range GETs when it is built (`--engine auto`
-  finds it; `gpuwm doctor --source gfs` says which engine you get) or
-  the stdlib transport otherwise. About 500 MB per forecast hour
+- **`--mode full-file` takes the whole `pgrb2.0p25` objects along the
+  endpoint ladder** instead -- the AWS S3 archive (`noaa-gfs-bdp-pds`)
+  for every object it has already mirrored, NOMADS for one it has not
+  caught up with, the other rung behind either as fall-through --
+  through the Rust backbone's parallel range GETs when it is built
+  (`--engine auto` finds it; `gpuwm doctor --source gfs` says which
+  engine you get) or the stdlib transport otherwise. About 500 MB per
+  forecast hour
   against single-digit MB for a regional crop, so the crop stays the
   default; what the whole file buys is *no NOMADS rate governor, no
   re-encode, and the archive's reach* (years, against NOMADS' ~10
@@ -139,7 +142,9 @@ gpuwm fetch --source gfs --cycle 2026-07-29T18 --hours 24 \
   front door every table route leaves: `inputs.txt`, `prep-command.txt`
   (the bound half -- `--wps-namelist`, `--experiment-config`,
   `--geog-root` and `--output-root` are yours), `SHA256SUMS`, and
-  `fetch-manifest.json` with per-file SHA-256.
+  `fetch-manifest.json` with per-file SHA-256.  The first three are
+  written before the manifest and digest-bound INTO it, so the manifest
+  lands last and claims every file in the directory.
 - **Disk:** about 3.3 KB per square degree per forecast hour. Measured:
   ~83 KB/h at 5x5 degrees, ~3 MB/h at 30x30, ~16 MB/h at 60x80.
 - **Reach:** NOMADS retention is about 10 days; the S3 archive keeps
@@ -309,19 +314,39 @@ gpuwm fetch --source hrrr --cycle 2026-07-28T00 --hours 18 \
   `hrrr_grib2_bridge` inventory. Existing files must pass the same
   record-count and manifest-digest bar as fresh downloads; failures
   are quarantined aside, never deleted.
-- Two hosts serve byte-identical GRIB **files**: the NOMADS production
-  mirror (roughly the newest 48 h, where each hour publishes first) and
-  the full `noaa-hrrr-bdp-pds` S3 archive. `--transport auto` (default)
-  probes S3 for the requested window and uses NOMADS only when S3
-  cannot serve it yet: the hosts differ in throughput, not in bytes,
-  and S3 is several times faster for the whole-file default (measured
-  on one box against one cycle: 348/209/418/255 s from NOMADS,
-  69/34/45/44 s from S3). NOMADS' head start is what `--wait-for`
-  needs, and that path polls NOMADS first, unchanged. `nomads`/`s3`
-  force a host. The manifest records each file's
-  transport, and a directory fetched over one host resumes over the
-  other. (NOMADS' grib-filter scripts cover only the 2-D `wrfsfc` file,
-  so subsetting stays `.idx` byte ranges on both hosts.)
+- Two hosts serve byte-identical GRIB **files**: the NOMADS operational
+  server (roughly the newest 48 h, where each hour publishes first) and
+  the full `noaa-hrrr-bdp-pds` S3 archive. They are an ordered
+  **endpoint ladder**, not a set, and the ladder answers two different
+  questions with two different orders.
+  **Which hosts are asked** is retention: a cycle older than the
+  operational window goes straight to the archive and never pays for a
+  doomed attempt.
+  **Which host moves the bytes** is throughput. `--transport auto`
+  (default) asks the S3 archive whether it already serves the requested
+  window, and takes it when it does; the operational server's whole
+  advantage is having a cycle *first*, and once the archive has the
+  same object that advantage is spent. When the archive has **not**
+  caught up -- publication lag, the one thing the operational server is
+  for -- the fetch comes from NOMADS and says so. Each run prints which
+  of the two happened, in one line.
+  What that is worth: the operational server paces bulk transfers, and
+  at peak hours it served whole files at about 3 MB/s each, so a 3.4 GB
+  request took ~20 min where the archive had served the same volume in
+  ~3. Earlier measurements of the same contrast: 348/209/418/255 s from
+  NOMADS against 69/34/45/44 s from S3 for four objects. Off peak the
+  gap narrows or reverses (2026-08-24, one 412 MB `wrfprs`, both
+  orderings: NOMADS 26.9 and 16.6 MB/s against S3's 10.5 and 14.3),
+  which is why the archive is preferred only for objects it provably
+  already has, never as a blanket pin.
+  Probing **reorders** the ladder and never shortens it: every rung
+  stays behind the chosen one, so fall-through is unchanged and a probe
+  that 404s or throttles costs the transfer nothing. `nomads`/`s3` pin
+  a rung, disable fall-through and skip the probe. The manifest records
+  each file's serving endpoint, and a directory fetched over one host
+  resumes over the other. (NOMADS' grib-filter scripts cover only the
+  2-D `wrfsfc` file, so subsetting stays `.idx` byte ranges on both
+  hosts.)
 - **Their `.idx` indexes are not byte-identical, and the difference is
   in the field names.** NOMADS spells hybrid cloud water `CLWMR`; S3
   spells the same record `CLMR`, and has since at least 2025. gpuwm
@@ -604,10 +629,20 @@ from its receipt afterwards. Nothing is refused: the Python transport
 is correct, and a run that wants it can still ask for it with `--engine
 python`, which is recorded as the request it is.
 
-**Which host** -- `--transport auto|nomads|s3` (HRRR). See the HRRR
-section: both serve byte-identical GRIB files, `auto` prefers S3 (the
-faster host for whole files) and falls back to NOMADS while a cycle is
-still reaching the archive.
+**Which host** -- `--transport` (every NCEP source). See the HRRR
+section: the hosts serve byte-identical objects under identical keys,
+so the default walks the source's endpoint ladder. Retention decides
+which rungs are asked at all; throughput decides which one serves. Each
+requested object gets one HEAD against the archive first -- milliseconds
+against a multi-hundred-megabyte transfer -- and the archive takes any
+object it has already mirrored, while an object it has not caught up
+with comes from the operational server that published it. A refused
+connection, a 403/503 or a Retry-After moves to the next rung, in either
+order. `--wait-for` keeps polling the operational server, because seeing
+an hour appear first is the point of polling it, but the transfer itself
+takes the archive once the archive has the file. Naming a host pins it,
+disables fall-through, and skips the probe -- a typed `--transport` is a
+decision, and a decision does not get second-guessed.
 
 **How much of the object** -- `--mode auto|full-file|idx-subset`
 (HRRR, `--engine rust`). This is the byte transport, not the host.
@@ -755,9 +790,10 @@ Details: [PHYSICS.md](PHYSICS.md#which-suites-each-data-route-can-actually-prepa
 
 Terrain, land use, soil texture, vegetation fraction, LAI, albedo,
 snow albedo, and deep-soil temperature come from the standard NCAR WPS
-geographical dataset -- nine dataset directories the static builder
-opens (global coverage, so any domain works). One command downloads
-and stages all of it:
+geographical dataset -- nine dataset directories the WRF static builder
+opens (global coverage, so any domain works), plus the Noah-MP soil
+archive `gpuwm mesh` needs for the static half of its pair. One command
+downloads and stages all of it:
 
 ```bash
 gpuwm fetch-geog
@@ -769,9 +805,13 @@ gpuwm fetch-geog
   `~/Downloads` on Windows and to the XDG data directory
   (`$XDG_DATA_HOME/gpuwm`, usually `~/.local/share/gpuwm`) everywhere
   else.
-- **Size:** ~1.3 GB download, ~16 GB unpacked. `--list` previews the
-  per-dataset table (and what is already staged) without touching the
-  network; `--datasets NAME,NAME` stages a subset.
+- **Size:** ~2.2 GB download, ~30 GB unpacked for the default set.
+  `--datasets wrf` stages the nine the WRF static builder opens
+  (~1.3 GB download, ~17 GB unpacked) and skips the Noah-MP soil
+  archive only `gpuwm mesh` reads; `--datasets mesh` narrows the other
+  way. `--list` previews the per-dataset table (and what is already
+  staged) without touching the network; `--datasets NAME,NAME` stages
+  an explicit subset.
 - **Resumable and idempotent:** an interrupted download resumes from
   its byte offset; a staged, valid dataset is never re-downloaded;
   re-running the command is always safe.
@@ -824,8 +864,26 @@ tarballs under `https://www2.mmm.ucar.edu/wrf/src/wps_files/`:
 | `albedo_modis` | `albedo_modis.tar.bz2` | 74 MiB |
 | `maxsnowalb_modis` | `maxsnowalb_modis.tar.bz2` | 4.2 MiB |
 | `soiltemp_1deg` | `soiltemp_1deg.tar.bz2` | 30 KiB |
+| `soilgrids` (`gpuwm mesh` only) | `soilgrids.tar.bz2` | 824 MiB |
 
-Untar each into one root so the nine directories sit side by side
+`soilgrids` is the Noah-MP soil archive. Unlike the nine it holds
+seven dataset directories under one parent -- `soilcomp`,
+`texture_top`, `texture_bot` and `texture_layer1` through
+`texture_layer4` -- each with its own WPS `index`. The MPAS static
+builder reads `soilcomp` and the four texture layers and cannot write
+its 82-variable static without them, so it is **required for the
+`gpuwm mesh` door** and part of the default `fetch-geog` set (~13 GB
+unpacked). The WRF static builder opens none of them: a WRF-only
+install can skip it with `gpuwm fetch-geog --datasets wrf`, and
+`gpuwm doctor`'s WRF verdict does not call such a tree incomplete.
+Doctor reports a second, mesh-scoped verdict over the same tree, which
+fails the exit code only on a box where `rw_mpas_static` is installed
+and its geography is not. Its pin was computed the same way as the
+others, from a TLS download from UCAR on 2026-08-23. NCAR's
+mandatory-fields bundle does not carry it, so `--bundle` refuses it
+and the per-dataset route is the only one.
+
+Untar each into one root so the directories sit side by side
 (each tarball already contains its directory), then point
 `--geog-root` at that root or set `GPUWM_CASE_DATA_ROOT` so it
 resolves as `${GPUWM_CASE_DATA_ROOT}/WPS_GEOG`. Each dataset
@@ -865,7 +923,7 @@ itself:
 
 ```
 $GPUWM_CASE_DATA_ROOT/
-  WPS_GEOG/            <- the nine geog dataset directories
+  WPS_GEOG/            <- the geog dataset directories
   my-case-data/        <- whatever your config's [case_data] names
 ```
 
@@ -875,7 +933,7 @@ $GPUWM_CASE_DATA_ROOT/
 
 | item | size | when |
 |---|---|---|
-| WPS_GEOG static tree (`gpuwm fetch-geog`) | ~1.3 GB download, ~16 GB unpacked (full NCAR `--bundle`: ~29 GB unpacked) | once |
+| WPS_GEOG static tree (`gpuwm fetch-geog`) | ~2.2 GB download, ~30 GB unpacked; `--datasets wrf` skips the mesh-only soil archive for ~1.3 GB download, ~17 GB unpacked | once |
 | GFS subsets | ~3.3 KB/deg2/h (e.g. ~3 MB/h at 30x30 deg) | per case |
 | HRRR, default whole files | ~1.1 GB/h (~21 GB for f00..f18) -- `wrfnat` 704 MB + `wrfprs` 427 MB, measured | per case |
 | HRRR, `--mode idx-subset` | ~0.44 GB/h (~8.4 GB for f00..f18), measured; saves bandwidth, costs wall clock | per case |

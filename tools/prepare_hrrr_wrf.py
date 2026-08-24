@@ -364,6 +364,40 @@ def _run(command: list[str], env: dict[str, str],
                    env=env)
 
 
+def _stage_environment() -> dict[str, str]:
+    """The environment every stage this preparation launches receives.
+
+    Two keys are composed rather than inherited, and both are here
+    because a child that differs from its parent in either one dies
+    before it reads any of the user's data:
+
+      * ``PYTHONPATH`` puts THIS tree ahead of whatever is installed,
+        so the stage runs the code this preparation is made of;
+      * ``GPUWM_GIT_EXE`` names the git the parent has already found.
+        Every stage binds ``runtime_manifest.provenance`` at start-up,
+        that binding is a ``git`` subprocess on a source checkout, and
+        a child whose environment does not carry git on ``PATH``
+        cannot start one.  Measured: the parent resolved its identity,
+        the benchmark it launched raised ``IdentityError`` on the same
+        tree one process later.  Passing the resolved path fixes it
+        without loosening ``PATH`` -- one key, one executable.
+    """
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
+    try:
+        from gpuwm.provenance import GIT_EXE_ENV, git_executable
+
+        resolved = git_executable()
+        if resolved is not None:
+            env[GIT_EXE_ENV] = resolved
+    except Exception:                                   # noqa: BLE001
+        # A preparation must not die because git could not be located
+        # for its children; the child has its own ladder to fall down.
+        pass
+    return env
+
+
 #: The vendored decoder workspace.  Its ``.cargo/config.toml`` is what
 #: replaces crates.io with ``vendor/crates-io``, and cargo discovers that
 #: file by walking UP from the working directory -- never from
@@ -1435,8 +1469,7 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
     output = args.output_root.resolve()
     if output.exists():
         raise FileExistsError(f"refusing existing output root: {output}")
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
+    env = _stage_environment()
     decoder = _decoder(env)
     started = time.perf_counter()
     if args.sealed_prepared_cache:

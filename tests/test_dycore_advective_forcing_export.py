@@ -15,7 +15,7 @@ THE BREAKAGE THIS FILE PREVENTS, in three parts.
 2.  **The double-count trap.**  ``module_cumulus_driver.F:867`` pre-folds
     ``RTHRATEN + RTHBLTEN`` into ``RTHFTEN`` for ``G3SCHEME`` and
     ``NTIEDTKESCHEME`` and deliberately NOT for ``GFSCHEME``; GF sums the
-    three lanes itself (``gf.cu:4146``).  An export taken one line later in
+    three lanes itself (``gf.cu:4428``).  An export taken one line later in
     ``dycore.step`` -- after ``physics_tendencies.add_to_slow`` or after
     ``add_h_diabatic_tendency`` -- would hand GF the radiative, boundary-
     layer and latent heating a second time.  The zero-wind cell below is

@@ -418,6 +418,29 @@ def restart_identity_payload(exp) -> dict:
         # declaration is what keeps that a refusal rather than a shrug.
         if domain.get("spawn") is None:
             domain.pop("spawn", None)
+        # The three per-domain lifecycle tables take the SAME convention as
+        # the spawn declaration beside them, and for the same two reasons in
+        # both directions.
+        #
+        # Absent stays absent because these fields landed on DomainConfig
+        # defaulting to None, and the payload is built by
+        # ``dataclasses.asdict``: an unpopped None serializes as
+        # ``retire: null, rearm: null, follow: null`` on EVERY domain of
+        # EVERY experiment, including every experiment written before the
+        # fields existed.  That is pure identity churn -- it moves each of
+        # those fingerprints without changing one number any of them
+        # integrates, and a moved fingerprint is a checkpoint that refuses
+        # to restore.  It cost the pre-lifecycle anchor
+        # (tests/test_water_overlay.py) exactly the way the NSSL row above
+        # did, which is what that anchor is for.
+        #
+        # A DECLARED table binds, value for value, because each of the three
+        # decides trajectory: [retire] says when a child stops integrating,
+        # [rearm] how many episodes the slot may serve, [follow] where the
+        # child sits.  A resume across a change to any of them must refuse.
+        for name in ("retire", "rearm", "follow"):
+            if domain.get(name) is None:
+                domain.pop(name, None)
         # The per-domain [tiles] road leaves the identity UNCONDITIONALLY,
         # declared or not -- the one place this file's absent-stays-absent
         # convention is not enough.  A declared spawn binds because a
@@ -920,7 +943,21 @@ def execute_experiment(
         from gpuwm.core.streaming import TRACKER_PLANE_CARRIERS
 
         parent_stream = None
-        if relocation_runner.is_due(model, clocks):
+        collection = bool(getattr(relocation_runner, "is_collection", False))
+        if collection and relocation_runner.is_due(model, clocks):
+            for target_gid in relocation_runner.target_grid_ids:
+                if target_gid not in model.nodes_by_grid_id:
+                    continue
+                target_node = model.node(target_gid)
+                if target_node.parent is not None and _streamed(target_node.parent.cfg.grid_id) is not None:
+                    raise RuntimeError(
+                        f"per-domain [follow] target d{target_gid:02d} has a "
+                        "STREAMED parent. Independent follower windows are "
+                        "resident scratch slots and are not in the fixed "
+                        "streaming manifest; reading them from node.state "
+                        "would steer the nest on an attach-time plane. Keep "
+                        "that parent resident or use legacy [relocation].")
+        if (not collection) and relocation_runner.is_due(model, clocks):
             target = model.node(int(relocation_runner.config.grid_id))
             if _streamed(target.cfg.grid_id) is not None:
                 raise RuntimeError(
@@ -945,8 +982,13 @@ def execute_experiment(
             before_rebuild=lambda gid: validators.pop(gid, None))
         if parent_stream is not None:
             parent_stream.sync_from_state(TRACKER_PLANE_CARRIERS)
-        if outcome is not None and outcome.get("event") == "relocated":
-            gid = int(outcome["grid_id"])
+        rows = [] if outcome is None else (
+            outcome.get("outcomes", []) if outcome.get("event") == "batch"
+            else [outcome])
+        for row in rows:
+            if row.get("event") != "relocated":
+                continue
+            gid = int(row["grid_id"])
             if validate_state:
                 from gpuwm.core.health import StateHealthValidator
                 validators[gid] = StateHealthValidator(model.node(gid).state)

@@ -177,7 +177,7 @@ _BYTE_PRESERVED_PREFIXES = (
 #: documents, vendored at an exact working-tree state.
 _AUTHORED_RUSTWX_CRATES = (
     "rw-fetch", "rw-wrfbatch", "rw-nexrad", "rw-odim", "rw-obs",
-    "rw-goes", "rw-netcdf",
+    "rw-goes", "rw-netcdf", "rw-mpas",
 )
 
 #: The 62 files that already carried CR when this gate was widened,

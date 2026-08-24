@@ -443,7 +443,24 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
     # ``pinned_fraction`` still 0.47 turned a requested 60 GiB into a
     # 28.2 GiB budget, which looks like a plan that simply chose smaller
     # tiles.
+    # The card's own figure is KEPT before the configured budget replaces
+    # it, because a refusal computed from the configured number needs the
+    # measurement beside it to be readable at all.  Run 3641453f001b81fe
+    # (2026-08-24): a front end froze vram_budget_bytes = 62 MiB from a
+    # probe taken while the card was running another forecast; at launch
+    # this function measured 8.38 GiB free, threw the measurement away as
+    # designed -- the configured number IS the budget -- and the refusal
+    # that came back described a card that did not exist.  The declared
+    # budget still binds (silently overriding it would hand a multi-tenant
+    # card two answers); what changes is that the refusal now carries both
+    # numbers, which is what tells the operator the card is fine and the
+    # CONFIGURED number is what went stale.  On WDDM the memGetInfo figure
+    # this carries runs rosier than NVML (it cannot see the desktop's
+    # allocations -- see preflight.device_wide_used_bytes), which only
+    # strengthens the sentence: the card had AT MOST this much free.
+    measured_free_bytes = None
     if options.vram_budget_bytes is not None:
+        measured_free_bytes = int(machine.vram_bytes)
         machine = dataclasses.replace(
             machine, vram_bytes=int(options.vram_budget_bytes),
             vram_headroom=0.0)
@@ -452,9 +469,28 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
             machine, host_bytes=int(options.host_budget_bytes),
             pinned_fraction=1.0, host_source="explicit")
 
-    plan = autoplan.plan(cfg, machine,
-                         prefer_resident=(options.mode == "auto"),
-                         write_mode=options.write_mode)
+    try:
+        plan = autoplan.plan(cfg, machine,
+                             prefer_resident=(options.mode == "auto"),
+                             write_mode=options.write_mode)
+    except autoplan.CannotPlan as exc:
+        if exc.resource == "vram" and measured_free_bytes is not None:
+            raise autoplan.CannotPlan(
+                f"{exc}  The card itself measured "
+                f"{measured_free_bytes / (1024 ** 3):.2f} GiB free when "
+                f"this decision was taken; the arithmetic above is computed "
+                f"from [tiles] vram_budget_bytes = "
+                f"{int(options.vram_budget_bytes) / (1024 ** 3):.2f} GiB, "
+                f"not from the card.  A budget captured from a probe while "
+                f"the card was busy stays wrong after the card empties: "
+                f"re-derive it, or delete the key so the planner measures "
+                f"the card at decision time.",
+                "vram",
+                dict(exc.detail,
+                     measured_free_bytes=int(measured_free_bytes),
+                     configured_vram_budget_bytes=int(
+                         options.vram_budget_bytes))) from exc
+        raise
     if plan.mode == "resident":
         return StreamingDecision(
             False,
@@ -505,6 +541,20 @@ class StreamedEnvelope:
     COMPUTE WINDOW (tile plus halo on both axes), with autoplan's safety
     factor already applied.  ``host_bytes`` is the pinned store plus the
     ring arena, which is where the domain actually lives.
+
+    TWO VRAM FIGURES, BECAUSE THE CARD MEETS TWO.  ``vram_bytes`` is what
+    the process HOLDS between radiation calls, which is the figure an NVML
+    steady-state reading can be compared against.
+    ``radiation_transient_bytes`` is the RRTMGP call's per-process working
+    set -- MEASURED at +2.74 GiB over steady state, allocated, used and
+    freed inside one call, recurring every radiation period and lasting
+    60-75 s of it (:data:`tilestream.autoplan.RADIATION_TRANSIENT_BYTES`
+    carries the measurement and its provenance; the rungs that run no
+    radiation carry zero).  :attr:`peak_vram_bytes` is their sum, and it is
+    the figure every ADMISSION question has to be asked of: a card that
+    holds the first and not the second admits the run, downloads the
+    forcing, prepares the domain and meets the transient at the first
+    radiation call, which is ``itimestep == 1``.
     """
 
     vram_bytes: int
@@ -520,6 +570,21 @@ class StreamedEnvelope:
     window_ny: int
     rung: str
     write_mode: str = "ring"
+    #: Defaulted so a caller that builds an envelope by hand still gets a
+    #: peak equal to the hold, which is the pre-existing meaning.
+    radiation_transient_bytes: int = 0
+
+    @property
+    def peak_vram_bytes(self) -> int:
+        """What the card has to hold at the instant radiation fires.
+
+        The number an estimate surface compares against a card.  The
+        planner reserves the same bytes before it chooses a tile
+        (:func:`tilestream.autoplan.budget_for`) and the streamed-init
+        road adds them before it chooses a road, so this is the third
+        reader of one measurement rather than a fourth model of it.
+        """
+        return int(self.vram_bytes) + int(self.radiation_transient_bytes)
 
     def summary(self) -> str:
         """One sentence, in the vocabulary of the table that configured it."""
@@ -528,11 +593,20 @@ class StreamedEnvelope:
                 if self.host_budget_bytes is None else
                 f"{self.host_bytes / gib:.2f} GiB of pinned host RAM against "
                 f"a {self.host_budget_bytes / gib:.2f} GiB budget")
+        # The PEAK is the headline number, because it is the one a reader
+        # sizes a card with; the hold follows it so the two are never
+        # confused for one another.
+        transient = (
+            "" if not self.radiation_transient_bytes else
+            f" plus {self.radiation_transient_bytes / gib:.2f} GiB while "
+            f"RRTMGP runs = {self.peak_vram_bytes / gib:.2f} GiB at the "
+            f"radiation peak")
         return (f"[tiles] streams this domain, so the card holds "
                 f"{self.nbuffers} tile buffer(s) of "
                 f"{self.window_nx}x{self.window_ny} (tile "
                 f"{self.tile_nx}x{self.tile_ny} + halo {self.halo}) at the "
-                f"{self.rung} rung = {self.vram_bytes / gib:.2f} GiB, not the "
+                f"{self.rung} rung = {self.vram_bytes / gib:.2f} GiB"
+                f"{transient}, not the "
                 f"whole domain; the forecast itself lives in {host}")
 
 
@@ -590,7 +664,12 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
                            else int(host_total * autoplan.PINNED_FRACTION)),
         tile_nx=tile_nx, tile_ny=tile_ny, nbuffers=nbuffers, halo=halo,
         window_nx=window_nx, window_ny=window_ny, rung=fp.rung,
-        write_mode=decision.write_mode)
+        write_mode=decision.write_mode,
+        # READ OFF THE RUNG, for both roads.  A planner-driven decision
+        # already had these bytes reserved out of the budget it chose a
+        # tile against; a PINNED tiling consults no planner and no card,
+        # so nothing on its path had the number at all until here.
+        radiation_transient_bytes=int(fp.radiation_transient_bytes))
 
 
 def _host_total_bytes() -> int | None:
@@ -615,6 +694,38 @@ def _host_total_bytes() -> int | None:
     if limit is not None and total is not None:
         return min(limit, total)
     return limit if total is None else total
+
+
+def planner_machine(*, vram_bytes: int | None, name: str):
+    """A :class:`tilestream.autoplan.Machine` from numbers ALREADY READ.
+
+    ``mode = "auto"`` with no pinned tiling is the planner's decision, and
+    the planner needs a card.  :meth:`autoplan.Machine.detect` is the wrong
+    way for any long-lived query surface to get one: it reads the card with
+    CuPy -- standing a CUDA primary context up inside the very process that
+    promised not to touch the device -- and it reads the host with
+    ``/proc/meminfo``, which on Windows cannot answer at all.
+
+    Every caller here already holds a free-VRAM figure that came from
+    somewhere safe: an out-of-process probe (``gpuwm go``), or a declared
+    ``--budget-gib`` naming a card that is not in this machine at all
+    (``gpuwm check``).  Building the Machine from THAT figure is also what
+    keeps the answer about the right card: a report sizing a 6 GiB target
+    must print the tiling of the 6 GiB target, not of the box printing it.
+
+    ``None`` -- meaning "leave ``auto`` unpriced and the resident estimate
+    standing" -- when there is no card to plan against, or when the host
+    RAM the pinned store has to fit in cannot be read.
+    """
+    if vram_bytes is None:
+        return None
+    from tilestream import autoplan
+
+    host = _host_total_bytes()
+    if host is None:
+        return None
+    return autoplan.Machine(vram_bytes=int(vram_bytes), host_bytes=int(host),
+                            name=name, host_source="probe")
 
 
 class StreamedDomain:

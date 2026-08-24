@@ -104,7 +104,7 @@ def _drive(tmp_path, monkeypatch, follow=False, **intent):
                     "status": "PASS"}, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8")
 
-    def fake_fetch(arguments, run_dir):
+    def fake_fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
         (out / "SHA256SUMS").write_text("x", encoding="utf-8")
@@ -367,7 +367,7 @@ def test_a_single_domain_hrrr_plan_still_takes_the_direct_bundle(
         go_cli, "run_stage",
         lambda label, command, **kwargs: staged.append(label))
 
-    def fake_fetch(arguments, run_dir):
+    def fake_fetch(arguments, run_dir, **_kwargs):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
         (out / "SHA256SUMS").write_text("x", encoding="utf-8")

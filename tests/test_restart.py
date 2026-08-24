@@ -308,6 +308,86 @@ def test_unclassified_scratch_slot_fails_the_write(monkeypatch, tmp_path):
         restart.write_restart(tmp_path / "rst.npz", state, cfg)
 
 
+def test_a_per_follower_window_slot_does_not_fail_the_write(
+        monkeypatch, tmp_path):
+    """The classifier must stay TOTAL over the slots a run allocates.
+
+    ``CARRIED_SCRATCH_SLOTS`` holds exact names, but a per-domain [follow]
+    allocates one window PER independently-cadenced child --
+    ``uh_follow_window.dNN`` (gpuwm/runtime.py, via
+    ``uh_diag.follow_window_slot``).  Those names match no carried name and
+    no rebuilt prefix, so ``_scratch_manifest``'s walk over the live pool
+    raised at the FIRST checkpoint any such run tried to write: a run with a
+    per-domain follow and ``restart_interval_s > 0`` died at its first
+    checkpoint instant, hours in, having produced no checkpoint at all.
+    The write path is not covered by the resume-time lifecycle refusal.
+    """
+    from gpuwm.core import uh_diag
+
+    cfg = _cfg(moist=True, mp_physics=1)
+    state = _shim_state(cfg, monkeypatch)
+    slot = uh_diag.follow_window_slot(4)
+    assert slot == "uh_follow_window.d04"
+    state.scratch((2, 2), slot)
+    path = restart.write_restart(tmp_path / "rst.npz", state, cfg)
+    with np.load(path) as archive:
+        # Carried, not serialized: the window is "max since that consumer
+        # last looked" and this file cannot say when that was, so it stays
+        # out of the stream exactly as its two exact-named siblings do.
+        assert f"scratch/{slot}" not in set(archive.files)
+
+
+def test_per_follower_window_slots_classify_with_the_tracker_windows(
+        monkeypatch):
+    """One classification for all three, keyed off uh_diag's own predicate.
+
+    ``is_tracker_window_slot`` (gpuwm/core/uh_diag.py) already answers this
+    question for the rest of the model by testing the two exact names plus
+    the per-follower PREFIX.  The restart classifier answering differently
+    for the third form is what made it partial.
+    """
+    from gpuwm.core import uh_diag
+
+    for gid in (2, 4, 12):
+        slot = uh_diag.follow_window_slot(gid)
+        assert uh_diag.is_tracker_window_slot(slot)
+        assert restart.classify_scratch_slot(slot) == "carry"
+    for slot in uh_diag.TRACKER_WINDOW_SLOTS:
+        assert restart.classify_scratch_slot(slot) == "carry"
+    # Both directions: the prefix admits the generated family and nothing
+    # else.  A near-miss under the same stem must still fail closed rather
+    # than be silently dropped from every checkpoint that holds it.
+    for near_miss in ("uh_follow_window.zz", "uh_follow_window_extra",
+                      "uh_follow_windows.d04"):
+        assert not uh_diag.is_tracker_window_slot(near_miss)
+        with pytest.raises(restart.RestartManifestError):
+            restart.classify_scratch_slot(near_miss)
+
+
+def test_a_per_follower_window_slot_is_a_streaming_carrier(
+        monkeypatch, tmp_path):
+    """The CARRY class is read by the streaming inventory, so prove it there.
+
+    ``carried_scratch_manifest`` is what
+    ``tilestream.physics_inventory.carrier_manifest`` takes, and it walks the
+    live pool through the same classifier -- so the partial classifier broke
+    the streamed carrier set in the same way it broke the checkpoint write.
+    A window that is not a carrier is accumulated separately inside each tile
+    buffer, over whatever tiles that buffer served, and the domain then has
+    no window anywhere.
+    """
+    from gpuwm.core import uh_diag
+
+    cfg = _cfg(moist=True, mp_physics=1)
+    state = _shim_state(cfg, monkeypatch)
+    slot = uh_diag.follow_window_slot(4)
+    state.scratch((2, 2), slot)
+    state.scratch((2, 2), uh_diag.UH_SPAWN_WINDOW_SLOT)
+    carried = restart.carried_scratch_manifest(state)
+    assert f"scratch/{slot}" in carried
+    assert f"scratch/{uh_diag.UH_SPAWN_WINDOW_SLOT}" in carried
+
+
 def test_physicsdriver_attribute_classification_matches_source():
     """Every ``self.*`` assigned anywhere in PhysicsDriver is classified,
     and every classified name exists in the source (no stale entries)."""
@@ -2202,15 +2282,18 @@ def test_sealed_extension_header_tamper_and_rebuilt_child_contract(
 
 
 def _sealed_tree_fixture(monkeypatch, *, forcing_count: int,
-                         run_seconds: float, payload_seed: int):
+                         run_seconds: float, payload_seed: int,
+                         nwp_diagnostics: int = 0):
     from gpuwm.core.model import ModelRuntimeStatus
 
     root_cfg = _cfg(
         grid_id=1, moist=True, mp_physics=1,
         run_seconds=run_seconds, restart_interval_s=3600.0,
+        nwp_diagnostics=nwp_diagnostics,
         specified=True, spec_bdy_width=3, spec_zone=1, relax_zone=2)
     child_cfg = _cfg(
         grid_id=2, nested=True, moist=True, mp_physics=1,
+        nwp_diagnostics=nwp_diagnostics,
         run_seconds=run_seconds, restart_interval_s=3600.0)
     root_state = _extension_state(
         root_cfg, monkeypatch, count=forcing_count)
@@ -2238,7 +2321,8 @@ def _sealed_tree_fixture(monkeypatch, *, forcing_count: int,
         rolling=False, clock=root_clock)
     root = SimpleNamespace(
         cfg=SimpleNamespace(
-            grid_id=1, parent_id=0, run=root_cfg, start_time=None),
+            grid_id=1, parent_id=0, run=root_cfg, start_time=None,
+            i_parent_start=1, j_parent_start=1),
         state=root_state, clock=root_clock, parent=None, children=[],
         coupler=None, _started=True)
 
@@ -2250,10 +2334,12 @@ def _sealed_tree_fixture(monkeypatch, *, forcing_count: int,
 
     child = SimpleNamespace(
         cfg=SimpleNamespace(
-            grid_id=2, parent_id=1, run=child_cfg, start_time=None),
+            grid_id=2, parent_id=1, run=child_cfg, start_time=None,
+            i_parent_start=20, j_parent_start=18),
         state=child_state, clock=clock(2), parent=root, children=[],
         coupler=Coupler(), _started=True)
     root.children.append(child)
+    nodes = {1: root, 2: child}
     model = SimpleNamespace(
         root=root,
         experiment_fingerprint="sealed-tree-fixture-v1",
@@ -2262,6 +2348,8 @@ def _sealed_tree_fixture(monkeypatch, *, forcing_count: int,
             clock=SimpleNamespace(
                 tick_den=1, run_ticks=int(run_seconds), start_time=start)),
         walk_parent_first=lambda: iter((root, child)),
+        nodes_by_grid_id=nodes,
+        node=lambda gid: nodes[int(gid)],
         _runtime_status=ModelRuntimeStatus(),
         _io_manager=None,
         _last_checkpoint=None,
@@ -2354,6 +2442,972 @@ def test_tree_restart_past_the_stop_tick_refuses_and_names_the_remedy(
     message = str(caught.value)
     assert "3600" in message and "1800" in message
     assert "run_seconds" in message
+
+
+# ---------------------------------------------------------------------------
+# The nest-lifecycle block on a tree checkpoint (the write side)
+# ---------------------------------------------------------------------------
+#
+# Compatibility is the load-bearing half here.  A run that declares no
+# dormant nest and no follower must keep writing the checkpoint it always
+# wrote, byte for byte, because every checkpoint on disk was written by
+# such a run and a moved header key is a checkpoint that refuses to
+# restore.  The digest below is that claim, made as a number.
+
+#: Header fields a SECOND write of the same state legitimately moves:
+#: a wall-clock stamp, the installed release, and the publish UUID.
+_VOLATILE_CHECKPOINT_HEADER = ("created", "producer", "checkpoint_set_id")
+
+
+def _canonical_member_digest(path) -> str:
+    """One checkpoint member's bytes, minus the volatile header fields."""
+    digest = hashlib.sha256()
+    with np.load(path, allow_pickle=False) as data:
+        header = json.loads(bytes(bytearray(
+            data[restart._HEADER_KEY])).decode("utf-8"))
+        for name in _VOLATILE_CHECKPOINT_HEADER:
+            header.pop(name, None)
+        digest.update(json.dumps(header, sort_keys=True).encode("utf-8"))
+        for name in sorted(data.files):
+            if name == restart._HEADER_KEY:
+                continue
+            host = data[name]
+            digest.update(name.encode("utf-8"))
+            digest.update(str(host.dtype).encode("utf-8"))
+            digest.update(str(host.shape).encode("utf-8"))
+            digest.update(host.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def _member_names(path) -> list[str]:
+    with np.load(path, allow_pickle=False) as data:
+        return sorted(name for name in data.files
+                      if name != restart._HEADER_KEY)
+
+
+#: The lifecycle-free two-domain checkpoint, as one number.  It moves only
+#: when the checkpoint FORMAT moves; a nest-lifecycle feature that touches
+#: it has broken every checkpoint written before it.
+_LIFECYCLE_FREE_ROOT_DIGEST = \
+    "40bab09427d448b597c63f407f1bc04574c995d63a49293ecda34d9ce328c483"
+_LIFECYCLE_FREE_CHILD_DIGEST = \
+    "629c31f868d90bf4fbea5238615c3ee429d6c7cec1961e49e3049bc248bba5fe"
+
+
+def test_a_lifecycle_free_tree_checkpoint_is_byte_identical(
+        monkeypatch, tmp_path):
+    """Ran green BEFORE the lifecycle block existed and green after."""
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
+
+    assert _canonical_member_digest(root_path) == _LIFECYCLE_FREE_ROOT_DIGEST
+    assert _canonical_member_digest(child_path) == \
+        _LIFECYCLE_FREE_CHILD_DIGEST
+
+
+def test_a_lifecycle_free_tree_checkpoint_names_no_lifecycle_key(
+        monkeypatch, tmp_path):
+    """The digest above says the bytes are the same; this says WHICH keys,
+    so a failure names the addition instead of reporting a hash."""
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+    header = restart.read_restart_header(root_path)
+
+    # Literal names, so this runs on a build that predates the constants.
+    assert "nest_lifecycle" not in header
+    assert "relocation" not in header
+    assert sorted(header) == [
+        "array_manifest", "case", "checkpoint_set_id", "config", "created",
+        "domain_ids", "domain_lifecycle", "domain_start_ticks",
+        "domain_start_time", "driver", "dtbc_fp32_bits", "elapsed_seconds",
+        "elapsed_ticks", "experiment_fingerprint", "format_version",
+        "grid_id", "nest_tables", "parent_id", "phase", "physics_setup",
+        "physics_setup_fingerprint", "producer", "root_external_lbc_clock",
+        "run_trackers", "setup_fingerprint", "tick_den",
+    ]
+    assert not any(name.startswith("scratch/uh_")
+                   for name in _member_names(root_path))
+
+
+def _lifecycle_experiment(*, follow: bool):
+    """The DECLARED experiment behind the lifecycle fixture.
+
+    d02 is dormant on a time trigger, placed at (20, 18) by the config.
+    A per-domain ``[follow]`` table is the one fact that separates a
+    ``per-domain`` follower entry from a ``legacy`` one, and no runner
+    can see it -- which is why the writer fills that key.
+    """
+    from dataclasses import replace as _replace
+
+    from gpuwm.core.nest_lifecycle import DomainFollowConfig
+    from gpuwm.core.nest_spawn import SpawnConfig
+    from gpuwm.core.storm_tracking import FollowConfig
+    from test_nest_spawn_init import _experiment
+
+    exp = _experiment()
+    child = _replace(exp.domains[1],
+                     spawn=SpawnConfig(trigger="time", at_s=120.0))
+    if follow:
+        child = _replace(child, follow=DomainFollowConfig(
+            tracker=FollowConfig(
+                field="uh", threshold=60.0, search_margin_cells=4,
+                min_shift_cells=1, max_shift_cells=4,
+                cooldown_seconds=600.0, fallback_threshold=35.0),
+            cadence_seconds=360.0, max_move_parent_cells=4,
+            min_overlap_fraction=0.25))
+    return _replace(exp, domains=(exp.domains[0], child))
+
+
+#: The spawn state the fixture's runner is seeded with: d02 fired at its
+#: declared (20, 18) in episode 1 and has since been carried to (24, 21)
+#: by its follower, which is exactly the fired-vs-current split the block
+#: has to keep separate.
+_FIXTURE_SPAWN_BLOCK = {
+    "watches": {"2": {"fired": True, "closed": False}},
+    "spawned": {"2": {"fired": [20, 18], "current": [24, 21],
+                      "episode": 1, "born_t": 120.0}},
+    "retired": {},
+    "episodes": {"2": 1},
+    "quiet_since": {},
+    "spawns_executed": 1,
+}
+
+
+def _lifecycle_tree_fixture(monkeypatch, *, follow: bool = True,
+                            payload_seed: int = 31, spawn: bool = True):
+    """A two-domain CPU tree carrying LIVE lifecycle runners.
+
+    The runners are the real ones (``SpawnRunner``, ``RelocationRunner``),
+    seeded through their own restore seams, because the whole point of the
+    write side is that it calls their ``state_json`` rather than
+    reconstructing the same facts a second way.
+    """
+    from dataclasses import replace as _replace
+
+    from gpuwm.core import uh_diag
+    from gpuwm.core.relocation_runner import (RelocationRunner,
+                                              RelocationRunnerCollection)
+    from gpuwm.core.spawn_runner import SpawnRunner
+    from gpuwm.core.storm_tracking import StormTracker
+    from gpuwm.experiment import RelocationConfig
+
+    model, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0,
+        payload_seed=payload_seed, nwp_diagnostics=1)
+    exp = _lifecycle_experiment(follow=follow)
+    model._activation_context = {"experiment": exp}
+    model._spawn_leg_seconds = 360.0
+    root, child = tuple(model.walk_parent_first())
+    # The follower has carried d02 off its declared footprint; only
+    # node.cfg knows that, which is why the writer fills the key.
+    child.cfg.i_parent_start = 24
+    child.cfg.j_parent_start = 21
+
+    if spawn:
+        runner = SpawnRunner.from_experiment(
+            exp, on_child_built=lambda *_a: None, array_module=np)
+        runner.restore_state(_FIXTURE_SPAWN_BLOCK)
+        model._spawn_runner = runner
+    else:
+        model._spawn_runner = None
+
+    shape = (int(root.cfg.run.ny), int(root.cfg.run.nx))
+    if follow:
+        # Exactly the view build_real_relocation_runners assembles for a
+        # per-domain [follow]: its own window slot on the parent, its own
+        # tracker, and a tree-level config narrowed to this child.
+        tracker = exp.domains[1].follow.tracker
+        slot = uh_diag.follow_window_slot(2)
+        root.state.scratch(shape, slot)
+        provider = StormTracker(tracker, uh_slot=slot)
+    else:
+        tracker = _legacy_follow_config()
+        provider = StormTracker(tracker)
+    config = RelocationConfig(
+        enabled=True, grid_id=2, max_move_parent_cells=4,
+        min_overlap_fraction=0.25, cadence_seconds=360.0, follow=tracker)
+    follower = RelocationRunner(
+        config=config, provider=provider,
+        schedule=SimpleNamespace(
+            period_ticks=60, clock=SimpleNamespace(tick_den=1)),
+        on_child_built=lambda *_a: None, staging="host")
+    # A tracker that has proposed once but not moved: the two cooldown
+    # anchors are the follower state a resume most easily loses.
+    provider._last_proposal_t = 60.0
+    provider._last_move_t = None
+    model._relocation_runner = (RelocationRunnerCollection((follower,))
+                                if follow else follower)
+    return model, start
+
+
+def _legacy_follow_config():
+    """The tree-level ``[relocation.follow]`` tracker block."""
+    from gpuwm.core.storm_tracking import FollowConfig
+
+    return FollowConfig(
+        field="uh", threshold=60.0, search_margin_cells=4,
+        min_shift_cells=1, max_shift_cells=4, cooldown_seconds=600.0,
+        fallback_threshold=35.0)
+
+
+def test_a_lifecycle_run_writes_the_block_on_the_root_alone(
+        monkeypatch, tmp_path):
+    """The root member is the set's commit marker, so it is the one place
+    a whole-tree fact can live without being written twice."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
+
+    block = restart.read_restart_header(root_path)[
+        restart.NEST_LIFECYCLE_HEADER_KEY]
+    assert block["contract"] == restart.NEST_LIFECYCLE_CONTRACT
+    assert sorted(block) == ["contract", "followers", "leg_seconds",
+                             "spawn", "window_slots"]
+    assert block["leg_seconds"] == 360.0
+    assert restart.NEST_LIFECYCLE_HEADER_KEY not in \
+        restart.read_restart_header(child_path)
+
+
+def test_the_written_spawn_block_is_the_runners_own(monkeypatch, tmp_path):
+    """Assembled by calling ``SpawnRunner.state_json(model=...)``, not by
+    a second transcription of the same maps: the model argument is what
+    separates the FIRED placement from the one the follower moved to."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    spawn = restart.read_restart_header(root_path)[
+        restart.NEST_LIFECYCLE_HEADER_KEY]["spawn"]
+
+    assert spawn == model._spawn_runner.state_json(model=model)
+    assert spawn["spawned"]["2"]["fired"] == [20, 18]
+    assert spawn["spawned"]["2"]["current"] == [24, 21]
+    assert spawn["spawns_executed"] == 1
+
+
+def test_a_follower_entry_merges_the_writers_three_keys_with_the_runners_four(
+        monkeypatch, tmp_path):
+    """``kind``/``current_placement``/``declared_placement`` describe the
+    TREE and the runner cannot invent them; the other four are its own
+    history.  The entry is written whole and the runner takes it whole."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    followers = restart.read_restart_header(root_path)[
+        restart.NEST_LIFECYCLE_HEADER_KEY]["followers"]
+
+    from gpuwm.core.relocation_runner import (RUNNER_STATE_KEYS,
+                                              RUNNER_WRITER_KEYS)
+    entry = followers["2"]
+    assert sorted(entry) == sorted(RUNNER_STATE_KEYS + RUNNER_WRITER_KEYS)
+    assert entry["kind"] == "per-domain"
+    assert entry["declared_placement"] == [20, 18]
+    assert entry["current_placement"] == [24, 21]
+    assert entry["last_proposal_t"] == 60.0
+    assert entry["last_move_t"] is None
+    assert entry["moves_executed"] == 0 and entry["segment"] is None
+    # The runner takes its own entry back WHOLE, writer keys included.
+    model._relocation_runner.runners[2].restore_state(entry)
+
+
+def test_a_legacy_follower_says_so(monkeypatch, tmp_path):
+    """Tree-level ``[relocation]`` and a per-domain ``[follow]`` produce
+    different rebuild paths on the way back in, so the entry says which."""
+    model, start = _lifecycle_tree_fixture(monkeypatch, follow=False)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    followers = restart.read_restart_header(root_path)[
+        restart.NEST_LIFECYCLE_HEADER_KEY]["followers"]
+    assert followers["2"]["kind"] == "legacy"
+
+
+def test_the_window_planes_are_written_as_members_of_their_owner(
+        monkeypatch, tmp_path):
+    """The consumer windows are a max-fold since that consumer last
+    looked.  Restarting them empty under-reads the next spawn/retire/
+    follow decision, so a lifecycle run serializes them per domain."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
+
+    assert {name for name in _member_names(root_path)
+            if name.startswith("scratch/uh_")} == {
+        "scratch/uh_follow_window", "scratch/uh_follow_window.d02",
+        "scratch/uh_spawn_window"}
+    audit = restart.read_restart_header(root_path)[
+        restart.NEST_LIFECYCLE_HEADER_KEY]["window_slots"]
+    assert audit["1"] == ["uh_follow_window", "uh_follow_window.d02",
+                          "uh_spawn_window"]
+    assert audit["2"] == ["uh_follow_window", "uh_spawn_window"]
+    assert {name for name in _member_names(child_path)
+            if name.startswith("scratch/uh_")} == {
+        "scratch/uh_follow_window", "scratch/uh_spawn_window"}
+
+
+def test_a_lifecycle_run_that_declares_no_window_writes_none(
+        monkeypatch, tmp_path):
+    """``nwp_diagnostics = 0`` allocates no window at all; the opt-in is
+    over the slots a domain HAS, never a fixed name list."""
+    model, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+    model._activation_context = {
+        "experiment": _lifecycle_experiment(follow=False)}
+    model._spawn_leg_seconds = 360.0
+    from gpuwm.core.spawn_runner import SpawnRunner
+
+    runner = SpawnRunner.from_experiment(
+        _lifecycle_experiment(follow=False),
+        on_child_built=lambda *_a: None, array_module=np)
+    runner.restore_state(_FIXTURE_SPAWN_BLOCK)
+    model._spawn_runner = runner
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    header = restart.read_restart_header(root_path)
+    assert header[restart.NEST_LIFECYCLE_HEADER_KEY]["window_slots"] == {}
+    assert not any(name.startswith("scratch/uh_")
+                   for name in _member_names(root_path))
+
+
+class _FakeStreamedDomain:
+    """The store half of a streamed domain, for the publish hook alone.
+
+    ``StreamedDomain`` leaves itself on the state it took over
+    (``state._streamed_domain``); that marker is the door every reader
+    that holds a NODE rather than a stepper already uses
+    (gpuwm/io/wrfout.py), and the checkpoint writer holds nodes.
+    """
+
+    def __init__(self, store):
+        self.store = dict(store)
+        self.published: list[tuple[str, ...]] = []
+
+    def attach_to(self, state):
+        state._streamed_domain = self
+        self._state = state
+        return self
+
+    def publish(self, names):
+        names = tuple(names)
+        self.published.append(names)
+        for name in names:
+            slot = name[len("scratch/"):]
+            self._state.existing_scratch(slot)[...] = self.store[name]
+        return names
+
+
+def test_a_streamed_parents_window_is_published_before_it_is_serialized(
+        monkeypatch, tmp_path):
+    """A streamed domain's arrays live in its store and its DomainState
+    stopped changing at attach.  Serializing the state's copy would
+    checkpoint the attach-time zeros under the name of a live window."""
+    model, start = _lifecycle_tree_fixture(monkeypatch, follow=False)
+    root = model.root
+    shape = (int(root.cfg.run.ny), int(root.cfg.run.nx))
+    live = np.arange(shape[0] * shape[1],
+                     dtype=np.float32).reshape(shape) * np.float32(3.5)
+    stream = _FakeStreamedDomain({
+        "scratch/uh_spawn_window": live,
+        "scratch/uh_follow_window": live * np.float32(2.0),
+    }).attach_to(root.state)
+    assert not root.state.existing_scratch("uh_spawn_window").any()
+
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    assert stream.published == [("scratch/uh_follow_window",
+                                "scratch/uh_spawn_window")]
+    with np.load(root_path, allow_pickle=False) as data:
+        assert np.array_equal(data["scratch/uh_spawn_window"], live)
+
+
+def test_a_lifecycle_free_streamed_run_is_not_touched_by_the_publish(
+        monkeypatch, tmp_path):
+    """The publish WRITES to a streamed domain's state, so it sits behind
+    the compatibility predicate with the block and the window members.  A
+    run with no lifecycle gets no store projection and no refusal, even
+    with a per-follower window sitting on a streamed parent."""
+    from gpuwm.core import uh_diag
+
+    model, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        nwp_diagnostics=1)
+    root = model.root
+    shape = (int(root.cfg.run.ny), int(root.cfg.run.nx))
+    root.state.scratch(shape, uh_diag.follow_window_slot(2))
+    stream = _FakeStreamedDomain({
+        "scratch/uh_spawn_window": np.ones(shape, dtype=np.float32),
+        "scratch/uh_follow_window": np.ones(shape, dtype=np.float32),
+    }).attach_to(root.state)
+
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    assert stream.published == []
+    assert not root.state.existing_scratch("uh_spawn_window").any()
+    assert not any(name.startswith("scratch/uh_follow")
+                   for name in _member_names(root_path))
+
+
+def test_a_streamed_parent_with_a_per_follower_window_refuses(
+        monkeypatch, tmp_path):
+    """The generated per-follower windows are not in the fixed streaming
+    manifest, so there is no way to project one out of a store.  Writing
+    the state's copy would checkpoint attach-time zeros as a live window,
+    which is the defect the publish above exists to prevent."""
+    model, start = _lifecycle_tree_fixture(monkeypatch, follow=True)
+    root = model.root
+    shape = (int(root.cfg.run.ny), int(root.cfg.run.nx))
+    _FakeStreamedDomain({
+        "scratch/uh_spawn_window": np.zeros(shape, dtype=np.float32),
+        "scratch/uh_follow_window": np.zeros(shape, dtype=np.float32),
+    }).attach_to(root.state)
+
+    with pytest.raises(restart.RestartManifestError,
+                       match="uh_follow_window.d02"):
+        restart.write_tree_restart(
+            tmp_path, model, start + timedelta(seconds=3600))
+
+
+def test_the_written_block_satisfies_the_restore_side_invariants(
+        monkeypatch, tmp_path):
+    """The two invariants the runners enforce on the way back in hold by
+    construction on the way out -- asserted anyway, because "by
+    construction" is what every silent divergence was called first."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    block = restart.read_restart_header(root_path)[
+        restart.NEST_LIFECYCLE_HEADER_KEY]
+
+    spawn = block["spawn"]
+    for gid, row in spawn["spawned"].items():
+        assert row["episode"] == spawn["episodes"][gid]
+    for gid, row in spawn["retired"].items():
+        assert row["episode"] == spawn["episodes"][gid]
+    for entry in block["followers"].values():
+        recorded = (0 if entry["segment"] is None
+                    else entry["segment"]["generation"])
+        assert recorded == entry["moves_executed"]
+
+    # The runners accept their own halves back, which is the invariant
+    # check that actually runs the refusals.
+    from gpuwm.core.spawn_runner import SpawnRunner
+
+    fresh = SpawnRunner.from_experiment(
+        _lifecycle_experiment(follow=True),
+        on_child_built=lambda *_a: None, array_module=np)
+    assert fresh.restore_state(spawn) == {2: (24, 21)}
+
+
+def test_a_checkpoint_written_after_a_move_attaches_the_posture_block(
+        monkeypatch, tmp_path):
+    """D3: the posture block was COMPUTED and never attached, so the
+    crossed-move warning and the posture branch of
+    ``tree_fingerprint_mismatch_reason`` could never fire from this
+    writer -- a restart across a move refused as an unexplained hash."""
+    from gpuwm.core.nest_relocation import RESTART_ACROSS_MOVE_POSTURE
+
+    model, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+    model._relocation_receipts = [
+        {"event": "relocated", "record_sha256": "a" * 64,
+         "segment_id": "seg-1", "grid_id": 2},
+    ]
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
+
+    for path in (root_path, child_path):
+        moved = restart.read_restart_header(path)["relocation"]
+        assert moved["moves"] == 1
+        assert moved["record_sha256"] == ["a" * 64]
+        assert moved["segment_id"] == "seg-1"
+        assert moved["posture"] == RESTART_ACROSS_MOVE_POSTURE
+    reason = restart.tree_fingerprint_mismatch_reason(
+        2, restart.read_restart_header(root_path), model)
+    assert "1 nest relocation(s)" in reason and "seg-1" in reason
+
+
+# ---------------------------------------------------------------------------
+# Window bit-identity: fold half, checkpoint, restore, fold the rest
+# ---------------------------------------------------------------------------
+#
+# The claim that lets a window be persisted at all: its content is a
+# max-fold since the consumer's last reset, and max is associative,
+# commutative and rounding-free on float32, so folding the persisted
+# window and then the remaining steps is BITWISE the unbroken fold.  A
+# window that came back merely close would move the next spawn/retire/
+# follow decision, which is a different forecast, not a rounding note.
+
+
+def _uh_fold_steps(shape, seed: int, count: int):
+    """Deterministic ``(uh, use)`` pairs, one per model step.
+
+    Signed zero and a denormal in every plane, because the claim under
+    test is about BITS and float32 has values that survive arithmetic and
+    not serialization if anything in the path is careless.
+    """
+    rng = np.random.default_rng(seed)
+    steps = []
+    for _ in range(count):
+        uh = rng.standard_normal(shape).astype(np.float32) * np.float32(140.0)
+        flat = uh.reshape(-1)
+        flat[0] = np.float32(-0.0)
+        flat[-1] = np.float32(1.0e-42)
+        steps.append((uh, rng.random(shape) > 0.2))
+    return steps
+
+
+def _fold_window(window, steps) -> None:
+    """The model's own fold: one 9-point smooth into a running max."""
+    from gpuwm.core import uh_diag
+
+    for uh, use in steps:
+        uh_diag.apply_uh_smoother_max_np(uh, use, window)
+
+
+def _window_shape(node):
+    return (int(node.cfg.run.ny), int(node.cfg.run.nx))
+
+
+def test_a_split_window_fold_is_bitwise_the_unbroken_fold(
+        monkeypatch, tmp_path):
+    """Every window a lifecycle checkpoint carries, both families."""
+    model, start = _lifecycle_tree_fixture(monkeypatch, payload_seed=31)
+    root = model.root
+    shape = _window_shape(root)
+    slots = restart.lifecycle_window_slots(root.state)
+    assert slots == ("uh_follow_window", "uh_follow_window.d02",
+                     "uh_spawn_window")
+
+    # A different fold per slot, so a test that crossed two planes would
+    # notice rather than compare a window against its own twin.
+    steps = {slot: _uh_fold_steps(shape, 4703 + index, 8)
+             for index, slot in enumerate(slots)}
+    unbroken = {}
+    for slot in slots:
+        plane = np.zeros(shape, dtype=np.float32)
+        _fold_window(plane, steps[slot])
+        unbroken[slot] = plane
+        assert plane.any(), "an all-zero fold proves nothing"
+
+    for slot in slots:
+        _fold_window(root.state.existing_scratch(slot), steps[slot][:4])
+    half = {slot: root.state.existing_scratch(slot).copy() for slot in slots}
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    resumed, _ = _lifecycle_tree_fixture(monkeypatch, payload_seed=91)
+    for slot in slots:
+        assert not resumed.root.state.existing_scratch(slot).any(), \
+            "preparation must leave the window empty, or the restore is " \
+            "not what carried the number across"
+    restart.restore_tree_restart(root_path, resumed)
+
+    for slot in slots:
+        plane = resumed.root.state.existing_scratch(slot)
+        assert plane.tobytes() == half[slot].tobytes(), \
+            f"{slot} did not round-trip through the checkpoint bit for bit"
+        _fold_window(plane, steps[slot][4:])
+        assert plane.tobytes() == unbroken[slot].tobytes(), \
+            f"{slot}: half + half is not the unbroken fold"
+
+
+def test_a_child_domains_windows_round_trip_on_their_own_member(
+        monkeypatch, tmp_path):
+    """Each domain's windows ride ITS member, so two domains folding
+    different weather cannot be restored into each other."""
+    model, start = _lifecycle_tree_fixture(monkeypatch, payload_seed=31)
+    root, child = tuple(model.walk_parent_first())
+    shape = _window_shape(child)
+    steps = _uh_fold_steps(shape, 8821, 6)
+    _fold_window(child.state.existing_scratch("uh_spawn_window"), steps[:3])
+    _fold_window(root.state.existing_scratch("uh_spawn_window"),
+                 _uh_fold_steps(shape, 9932, 6)[:3])
+    unbroken = np.zeros(shape, dtype=np.float32)
+    _fold_window(unbroken, steps)
+
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    resumed, _ = _lifecycle_tree_fixture(monkeypatch, payload_seed=91)
+    restart.restore_tree_restart(root_path, resumed)
+
+    _, resumed_child = tuple(resumed.walk_parent_first())
+    plane = resumed_child.state.existing_scratch("uh_spawn_window")
+    _fold_window(plane, steps[3:])
+    assert plane.tobytes() == unbroken.tobytes()
+
+
+def test_a_streamed_parents_published_window_is_the_one_that_round_trips(
+        monkeypatch, tmp_path):
+    """The whole point of the publish hook: the plane that reaches the
+    file is the STORE's, so the fold a streamed run actually performed is
+    the fold the resumed run continues."""
+    model, start = _lifecycle_tree_fixture(
+        monkeypatch, follow=False, payload_seed=31)
+    root = model.root
+    shape = _window_shape(root)
+    steps = _uh_fold_steps(shape, 5150, 8)
+    unbroken = np.zeros(shape, dtype=np.float32)
+    _fold_window(unbroken, steps)
+
+    # The sweep folded into the STORE; the DomainState stopped changing
+    # at attach and still holds preparation's zeros.
+    store_plane = np.zeros(shape, dtype=np.float32)
+    _fold_window(store_plane, steps[:4])
+    _FakeStreamedDomain({
+        "scratch/uh_spawn_window": store_plane,
+        "scratch/uh_follow_window": np.zeros(shape, dtype=np.float32),
+    }).attach_to(root.state)
+    assert not root.state.existing_scratch("uh_spawn_window").any()
+
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    resumed, _ = _lifecycle_tree_fixture(
+        monkeypatch, follow=False, payload_seed=91)
+    restart.restore_tree_restart(root_path, resumed)
+    plane = resumed.root.state.existing_scratch("uh_spawn_window")
+    assert plane.tobytes() == store_plane.tobytes()
+    _fold_window(plane, steps[4:])
+    assert plane.tobytes() == unbroken.tobytes()
+
+
+def test_a_window_folded_in_three_pieces_is_still_the_unbroken_fold(
+        monkeypatch, tmp_path):
+    """N segments, not two: the associativity claim has to hold for the
+    restart cadence a real run uses, where a window spans many files."""
+    steps = None
+    unbroken = None
+    carried = None
+    for index, (lo, hi) in enumerate(((0, 3), (3, 7), (7, 12))):
+        model, start = _lifecycle_tree_fixture(
+            monkeypatch, follow=False, payload_seed=31 + index)
+        plane = model.root.state.existing_scratch("uh_spawn_window")
+        if steps is None:
+            steps = _uh_fold_steps(_window_shape(model.root), 6161, 12)
+            unbroken = np.zeros(_window_shape(model.root), dtype=np.float32)
+            _fold_window(unbroken, steps)
+        if carried is not None:
+            restart.restore_tree_restart(carried, model)
+        _fold_window(plane, steps[lo:hi])
+        carried = restart.write_tree_restart(
+            tmp_path / f"segment-{index}", model,
+            start + timedelta(seconds=3600))
+
+    assert plane.tobytes() == unbroken.tobytes()
+
+
+# ---------------------------------------------------------------------------
+# The nest-lifecycle block on a tree checkpoint (the read side: the peek)
+# ---------------------------------------------------------------------------
+#
+# The peek is what a resume does BEFORE it rebuilds a single domain: one
+# JSON member off the root, validated against the experiment that is about
+# to be built.  Every refusal here names the concrete breakage, because
+# each one is a run that would otherwise integrate from a policy state it
+# only half understands.
+
+
+def _lifecycle_free_model(monkeypatch):
+    """A tree with no spawn runner and no follower: the compat baseline."""
+    model, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+    return model, start
+
+
+def _retune_lifecycle_block(root_path, out_dir, mutate):
+    """Rewrite the root member's lifecycle block, keeping its filename."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def edit(payload, header):
+        del payload
+        mutate(header[restart.NEST_LIFECYCLE_HEADER_KEY])
+
+    return _rewrite_restart_archive(
+        root_path, out_dir / root_path.name, edit)
+
+
+def test_the_peek_reads_the_block_off_the_root_member(monkeypatch, tmp_path):
+    """One member, one JSON key: the reader states what the writer wrote."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    peek = restart.read_tree_lifecycle_header(root_path, model)
+    assert peek.root_path == root_path
+    assert peek.domain_ids == (1, 2)
+    assert peek.block == restart.read_restart_header(root_path)[
+        restart.NEST_LIFECYCLE_HEADER_KEY]
+    assert peek.spawn["spawned"]["2"]["fired"] == [20, 18]
+    assert peek.spawn["spawned"]["2"]["current"] == [24, 21]
+    assert sorted(peek.followers) == ["2"]
+
+
+def test_the_peek_walks_to_the_root_when_handed_a_child_member(
+        monkeypatch, tmp_path):
+    """A supervisor hands whichever member it found.  The block is a
+    whole-tree fact and rides the root alone, so the reader walks."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
+
+    peek = restart.read_tree_lifecycle_header(child_path, model)
+    assert peek.root_path == root_path
+    assert peek.spawn["spawns_executed"] == 1
+
+
+def test_a_checkpoint_without_the_block_refuses_a_lifecycle_run(
+        monkeypatch, tmp_path):
+    """The named conversion of today's SILENT divergence: a spawn-only
+    checkpoint written before this block existed cannot say which slots
+    fired, so restoring it re-fires them at the next boundary."""
+    free, start = _lifecycle_free_model(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, free, start + timedelta(seconds=3600))
+    live, _ = _lifecycle_tree_fixture(monkeypatch)
+
+    with pytest.raises(restart.RestartMismatchError) as caught:
+        restart.read_tree_lifecycle_header(root_path, live)
+    message = str(caught.value)
+    assert "predates lifecycle persistence" in message
+    assert "which slots fired" in message
+    assert "t=0" in message
+
+
+def test_a_lifecycle_checkpoint_refuses_a_lifecycle_free_run(
+        monkeypatch, tmp_path):
+    """The other direction is just as wrong: the checkpoint carries policy
+    state this run has nowhere to put, so the slots it names would never
+    be consulted again."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    free, _ = _lifecycle_free_model(monkeypatch)
+
+    with pytest.raises(restart.RestartMismatchError) as caught:
+        restart.read_tree_lifecycle_header(root_path, free)
+    assert "declares no dormant nest and no follower" in str(caught.value)
+
+
+def test_a_lifecycle_free_checkpoint_into_a_lifecycle_free_run_peeks_none(
+        monkeypatch, tmp_path):
+    """The compatibility contract, from the reader's side."""
+    free, start = _lifecycle_free_model(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, free, start + timedelta(seconds=3600))
+
+    peek = restart.read_tree_lifecycle_header(root_path, free)
+    assert peek.block is None
+    assert peek.spawn is None and peek.followers == {}
+    assert peek.relocation_records == ()
+
+
+def test_the_reader_and_the_writer_share_one_compatibility_predicate():
+    """Two spellings of "does this run have a lifecycle" drift, and the
+    drift is a checkpoint one side writes and the other refuses."""
+    assert restart._declares_nest_lifecycle is restart.declares_nest_lifecycle
+
+
+def test_an_unknown_contract_refuses_by_name(monkeypatch, tmp_path):
+    """A block half-understood is a slot that silently re-fires."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    def bump(block):
+        block["contract"] = "gpuwm-nest-lifecycle-restart.v99"
+
+    tampered = _retune_lifecycle_block(root_path, tmp_path / "v99", bump)
+    with pytest.raises(restart.RestartMismatchError) as caught:
+        restart.read_tree_lifecycle_header(tampered, model)
+    message = str(caught.value)
+    assert "v99" in message and restart.NEST_LIFECYCLE_CONTRACT in message
+
+
+def test_a_block_with_an_unknown_key_refuses(monkeypatch, tmp_path):
+    """Read in part is not read: the entry is honored whole or refused."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    tampered = _retune_lifecycle_block(
+        root_path, tmp_path / "extra",
+        lambda block: block.update({"hysteresis": {}}))
+    with pytest.raises(restart.RestartMismatchError) as caught:
+        restart.read_tree_lifecycle_header(tampered, model)
+    assert "hysteresis" in str(caught.value)
+
+
+def test_a_live_episode_with_no_member_refuses(monkeypatch, tmp_path):
+    """The block says d03 is a live episode; the checkpoint carries no
+    d03 member, so its arrays exist nowhere and the rebuilt nest would
+    integrate from the parent interpolation for the rest of the run."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    def rename(block):
+        block["spawn"]["spawned"]["3"] = block["spawn"]["spawned"].pop("2")
+
+    tampered = _retune_lifecycle_block(root_path, tmp_path / "ghost", rename)
+    with pytest.raises(restart.RestartMismatchError) as caught:
+        restart.read_tree_lifecycle_header(tampered, model)
+    message = str(caught.value)
+    assert "d03" in message and "member set" in message
+
+
+def test_a_retired_slot_that_is_still_in_the_member_set_refuses(
+        monkeypatch, tmp_path):
+    """Retirement is leg-boundary schedule surgery: a retired subtree is
+    detached before any later checkpoint, so a retired slot that still
+    owns a member means the two halves describe different trees."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    def retire_the_live_one(block):
+        block["spawn"]["spawned"].pop("2")
+        block["spawn"]["retired"]["2"] = {"retired_t": 900.0, "episode": 1}
+
+    tampered = _retune_lifecycle_block(
+        root_path, tmp_path / "retired", retire_the_live_one)
+    with pytest.raises(restart.RestartMismatchError) as caught:
+        restart.read_tree_lifecycle_header(tampered, model)
+    message = str(caught.value)
+    assert "d02" in message and "retired" in message
+
+
+def test_a_window_audit_naming_an_absent_domain_refuses(
+        monkeypatch, tmp_path):
+    """The audit half of the window opt-in has to address the member set
+    it was written beside, or "the window was written and it is empty" is
+    indistinguishable from "no window was written"."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    tampered = _retune_lifecycle_block(
+        root_path, tmp_path / "audit",
+        lambda block: block["window_slots"].update({"7": ["uh_spawn_window"]}))
+    with pytest.raises(restart.RestartMismatchError) as caught:
+        restart.read_tree_lifecycle_header(tampered, model)
+    assert "d07" in str(caught.value)
+
+
+def test_a_leg_cadence_mismatch_refuses_and_names_both(
+        monkeypatch, tmp_path):
+    """Every lifecycle decision is taken at a leg boundary, so two runs on
+    different lattices take them at different instants -- and the resumed
+    run's trajectory is then no continuation of the one on disk."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    live, _ = _lifecycle_tree_fixture(monkeypatch)
+    live._spawn_leg_seconds = 900.0
+
+    with pytest.raises(restart.RestartMismatchError) as caught:
+        restart.read_tree_lifecycle_header(root_path, live)
+    message = str(caught.value)
+    assert "360" in message and "900" in message
+
+
+def test_a_leg_cadence_absent_on_either_side_is_tolerated(
+        monkeypatch, tmp_path):
+    """``None`` says a route ran no leg walk and therefore states no
+    lattice.  There is nothing to compare, so nothing is refused; the
+    writer already refused a non-finite or zero cadence."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    model._spawn_leg_seconds = None
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+    live, _ = _lifecycle_tree_fixture(monkeypatch)
+
+    assert restart.read_tree_lifecycle_header(
+        root_path, live).block["leg_seconds"] is None
+    live._spawn_leg_seconds = None
+    assert restart.read_tree_lifecycle_header(root_path, live) is not None
+
+
+def test_the_peek_carries_the_relocation_record_chain(monkeypatch, tmp_path):
+    """The fingerprint a moved run's checkpoint is keyed to is the chain
+    folded over these digests; the resume needs them before it builds."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    model._relocation_receipts = (
+        {"event": "relocated", "record_sha256": "a" * 64,
+         "segment_id": "seg-1", "grid_id": 2},
+        {"event": "relocated", "record_sha256": "b" * 64,
+         "segment_id": "seg-1", "grid_id": 2},
+    )
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    peek = restart.read_tree_lifecycle_header(root_path, model)
+    assert peek.relocation_records == ("a" * 64, "b" * 64)
+    assert peek.relocation["moves"] == 2
+
+
+def test_a_resumed_runs_checkpoint_carries_the_WHOLE_move_chain(
+        monkeypatch, tmp_path):
+    """The chain is the RUN's, not the segment's.
+
+    A resumed run's live fingerprint is the fresh build folded over every
+    move the whole run has made.  A checkpoint that listed only this
+    segment's moves could not be resumed from at all: folding a short
+    chain reproduces a different value, so the third segment of a moving
+    run would refuse its own predecessor."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    # What restore_tree_restart left behind for this run's own writer.
+    model._restart_crossed_relocation = {
+        "moves": 2, "record_sha256": ["a" * 64, "b" * 64],
+        "segment_id": "seg-1", "grid_id": 2, "posture": "..."}
+    model._relocation_receipts = (
+        {"event": "relocated", "record_sha256": "c" * 64,
+         "segment_id": "seg-2", "grid_id": 2},)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    peek = restart.read_tree_lifecycle_header(root_path, model)
+    assert peek.relocation_records == ("a" * 64, "b" * 64, "c" * 64)
+    assert peek.relocation["moves"] == 3
+    # The newest executed move names the segment, not the inherited one.
+    assert peek.relocation["segment_id"] == "seg-2"
+
+
+def test_a_resumed_run_that_has_not_moved_still_states_its_inheritance(
+        monkeypatch, tmp_path):
+    """A segment that executes no move of its own still carries the chain
+    its fingerprint is folded over, or its own checkpoints are keyed to a
+    history the next segment cannot reproduce."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    model._restart_crossed_relocation = {
+        "moves": 1, "record_sha256": ["a" * 64], "segment_id": "seg-1",
+        "grid_id": 2, "posture": "..."}
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    peek = restart.read_tree_lifecycle_header(root_path, model)
+    assert peek.relocation_records == ("a" * 64,)
+    assert peek.relocation["segment_id"] == "seg-1"
+
+
+def test_the_peek_without_a_model_states_the_block_and_refuses_nothing(
+        monkeypatch, tmp_path):
+    """The compatibility half needs an experiment to compare against; a
+    bare inspection of a file has none, and must not invent one."""
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    peek = restart.read_tree_lifecycle_header(root_path)
+    assert peek.block["contract"] == restart.NEST_LIFECYCLE_CONTRACT
 
 
 def _grell_freitas_tree(monkeypatch, *, seed=61):

@@ -11,19 +11,100 @@
  *   3009-3039  KF_LUTAB bilinear interpolation
  */
 
-/* Compile-time bound on kf_column's ~47 per-thread column arrays.  The
- * launcher (gpuwm/core/kf.py) specializes it to the configuration's own nz
- * through get_kernel_int_defines; 128 is the unspecialized ceiling this
- * source keeps when nothing overrides it, and the value gpuwm/core/kf.py
- * validates nz against.  The bound is a pure array extent -- no expression
- * in this kernel reads it -- so specializing it moves no arithmetic; the
- * frame it costs per thread is 188 B per level, and on this card the driver
- * reserves (frame - 1024) * 1536 * 170 bytes at the kernel's first launch,
- * i.e. 5,738 MiB at 128 against 2,039 MiB at 49.
+/* KF_KMAX is now the REFUSAL CEILING and nothing else.  It used to be the
+ * compile-time extent of kf_column's column arrays, and gpuwm/core/kf.py
+ * recompiled the module once per distinct nz to shrink it; those arrays
+ * moved off the per-thread stack into a global workspace on 2026-08-21
+ * (see below), the workspace extent is the RUNTIME nz, and no array in this
+ * file is sized by KF_KMAX any more.  What survives is the contract: nz
+ * outside [8, KF_KMAX] is refused, here and in gpuwm/core/kf.py's
+ * VERTICAL_LEVEL_BOUNDS, rather than silently truncated.
  */
 #ifndef KF_KMAX
 #define KF_KMAX 128
 #endif
+
+/* ==========================================================================
+ * The per-thread column workspace
+ * ==========================================================================
+ * One thread owns one whole column, so the scheme's nz-sized column arrays
+ * are naturally function-scope locals.  CUDA prices those in a way that
+ * makes them one of the largest device-memory terms in the product: the
+ * driver sizes ONE per-context local-memory backing store to the widest
+ * kernel frame in the context times the card's RESIDENT-THREAD CAPACITY
+ * (multiProcessorCount * maxThreadsPerMultiProcessor), never to the
+ * occupancy the kernel actually achieves, and never returns it while the
+ * context lives.  MEASURED on node-1 (RTX 5070 Ti, 70 SMs x 1,536, sm_120,
+ * NVRTC 13.3): the 9,216 B frame at nz = 49 reserved 842.0 MiB at first
+ * launch -- and that was already the SPECIALIZED frame; the unspecialized
+ * 24,064 B one reserved 5,738 MiB.
+ *
+ * So the column arrays live in a caller-provided GLOBAL workspace instead,
+ * sized to the threads actually in flight.  gpuwm/core/kf.py sizes the tile
+ * from the kernel's measured occupancy and launches the columns in tiles of
+ * that size; the arrays keep their extents and their access order, so this
+ * is a placement change and nothing else.
+ *
+ * THE EXTENT IS THE RUNTIME nz, not KF_KMAX.  A compile-time frame could
+ * only ever be sized by a compile-time bound; a runtime allocation is sized
+ * by the level count the launch actually has, which is what the loops in
+ * this kernel run to.  Every loop here runs to the runtime nz and the
+ * highest index any of them forms is nz - 1 (the downdraft recursions read
+ * nd + 1 from nd <= lfs - 1 <= nz - 2), which is the same reading that let
+ * the launcher compile KF_KMAX = nz before this cut.
+ *
+ * Slot ids are literal because NVRTC has no __COUNTER__.  KFWS_SLOTS is the
+ * cap; tests/test_kf_workspace.py reads the ids straight out of this source
+ * and fails on a duplicate or an id past the cap, either of which would
+ * make two column arrays alias.
+ */
+#define KFWS_SLOTS 52
+
+/* LANE INTERLEAVING, and why it is not optional.  CUDA lays local memory
+ * out interleaved across the threads of a warp, so a per-thread array
+ * access is coalesced by construction.  A workspace that gave each thread a
+ * contiguous slab would hand that back -- the Grell-Freitas cut measured
+ * 42.1 ms against 19.3 ms for exactly that layout, getting WORSE as the tile
+ * grew, which is the signature of 32-way scatter and not of arithmetic.  So
+ * the workspace is laid out exactly the way local memory is: one contiguous
+ * region per BLOCK, element k of slot s for lane t at
+ *   block_base + (s * nz + k) * KFWS_LANES + t
+ * and a warp reading arr[k] touches 32 consecutive floats.
+ *
+ * KFWS_LANES is the launch block, fixed: gpuwm/core/kf.py's _TPB and
+ * tests/test_kf_workspace.py both pin it, and a launch at any other block
+ * width would alias lanes.
+ */
+#define KFWS_LANES 32
+
+/* A column array living in the workspace.  Indexes like the float[nz] it
+ * replaced -- including &arr[k], which the tpmix2/dtfrznew/condload helpers
+ * take -- and the stride is what makes the access coalesce. */
+struct KfCol {
+    float* p;
+    __device__ __forceinline__ float& operator[](int k) const {
+        return p[(size_t)k * (size_t)KFWS_LANES];
+    }
+};
+struct KfColI {
+    int* p;
+    __device__ __forceinline__ int& operator[](int k) const {
+        return p[(size_t)k * (size_t)KFWS_LANES];
+    }
+};
+
+/* Slot `idx` of the region based at `base`, at a per-slot extent of `kp`
+ * levels.  `kp` is the runtime nz. */
+#define KFWS_AT(base, idx, kp) \
+    (KfCol{(base) + (size_t)(idx) * (size_t)(kp) * (size_t)KFWS_LANES})
+#define KFWS_AT_I(base, idx, kp) \
+    (KfColI{(int*)((base) + (size_t)(idx) * (size_t)(kp) \
+                   * (size_t)KFWS_LANES)})
+/* This thread's lane inside its block's workspace region. */
+#define KFWS_LANE_BASE(ws, kp) \
+    ((ws) + (size_t)blockIdx.x * (size_t)KFWS_SLOTS * (size_t)(kp) \
+            * (size_t)KFWS_LANES + (size_t)threadIdx.x)
+
 #define KF_PHASE_WARM_RAIN 0
 #define KF_PHASE_NO_SEPARATE_SNOW 1
 #define KF_PHASE_SEPARATE_SNOW 2
@@ -269,37 +350,92 @@ void kf_column(
         int* __restrict__ cloud_top_out,
         float* __restrict__ updraft_out,
         float* __restrict__ downdraft_out,
+        float* __restrict__ ws,          // (blocks, KFWS_SLOTS, nz, LANES)
         float pressure_top, float pressure_reciprocal,
         float thetae_reciprocal, float dx, float dt, float cudt,
         int phase_mode,
-        int nz, int ny, int nx) {
-    int column = blockDim.x * blockIdx.x + threadIdx.x;
+        int nz, int ny, int nx, int col0) {
+    // col0 offsets the COLUMN, not the array: the state arrays are
+    // (nz, ny, nx), so a tile of columns is a stride-ncol scatter and not a
+    // contiguous slice the launcher could have handed us pre-offset.  The
+    // workspace, by contrast, is indexed by the TILE-LOCAL thread id, so
+    // each tile reuses the same allocation.
+    int column = col0 + blockDim.x * blockIdx.x + threadIdx.x;
     int ncol = ny * nx;
     if (column >= ncol) return;
     if (nz < 8 || nz > KF_KMAX) return;
 
-    float z[KF_KMAX], dp[KF_KMAX], qsat_env[KF_KMAX];
-    float qenv[KF_KMAX], tv_env[KF_KMAX];
-    float parcel_t[KF_KMAX], parcel_q[KF_KMAX];
-    float thetaeu[KF_KMAX], qliq[KF_KMAX], qice[KF_KMAX];
-    float qlqout[KF_KMAX], qicout[KF_KMAX], pptliq[KF_KMAX];
-    float pptice[KF_KMAX], detlq[KF_KMAX], detice[KF_KMAX];
-    float uer[KF_KMAX], udr[KF_KMAX], eqfrc[KF_KMAX];
-    float dilfrc[KF_KMAX], qdt[KF_KMAX];
-    float der[KF_KMAX], ddr[KF_KMAX], thetaed[KF_KMAX];
-    float theta_ad[KF_KMAX], downdraft_q[KF_KMAX];
-    float downdraft_t[KF_KMAX], qsd[KF_KMAX];
-    float positive_energy[KF_KMAX], updraft[KF_KMAX], downdraft[KF_KMAX];
-    float theta_env[KF_KMAX], theta_up[KF_KMAX], cell_mass[KF_KMAX];
-    float unit_updraft[KF_KMAX], unit_downdraft[KF_KMAX];
-    float unit_detlq[KF_KMAX], unit_detice[KF_KMAX];
-    float unit_udr[KF_KMAX], unit_uer[KF_KMAX];
-    float unit_der[KF_KMAX], unit_ddr[KF_KMAX];
-    float tg[KF_KMAX], qg[KF_KMAX], theta_pa[KF_KMAX], qpa[KF_KMAX];
-    float resolved_precip[KF_KMAX];
-    float omega[KF_KMAX], fxm[KF_KMAX];
-    float thfxin[KF_KMAX], thfxout[KF_KMAX];
-    float qfxin[KF_KMAX], qfxout[KF_KMAX];
+    float* kfws = KFWS_LANE_BASE(ws, nz);
+    KfCol z = KFWS_AT(kfws, 0, nz);
+    KfCol dp = KFWS_AT(kfws, 1, nz);
+    KfCol qsat_env = KFWS_AT(kfws, 2, nz);
+    KfCol qenv = KFWS_AT(kfws, 3, nz);
+    KfCol parcel_t = KFWS_AT(kfws, 4, nz);
+    KfCol parcel_q = KFWS_AT(kfws, 5, nz);
+    KfCol thetaeu = KFWS_AT(kfws, 6, nz);
+    KfCol qliq = KFWS_AT(kfws, 7, nz);
+    KfCol qice = KFWS_AT(kfws, 8, nz);
+    KfCol qlqout = KFWS_AT(kfws, 9, nz);
+    KfCol qicout = KFWS_AT(kfws, 10, nz);
+    KfCol pptliq = KFWS_AT(kfws, 11, nz);
+    KfCol pptice = KFWS_AT(kfws, 12, nz);
+    KfCol detlq = KFWS_AT(kfws, 13, nz);
+    KfCol detice = KFWS_AT(kfws, 14, nz);
+    KfCol uer = KFWS_AT(kfws, 15, nz);
+    KfCol udr = KFWS_AT(kfws, 16, nz);
+    KfCol eqfrc = KFWS_AT(kfws, 17, nz);
+    KfCol dilfrc = KFWS_AT(kfws, 18, nz);
+    KfCol qdt = KFWS_AT(kfws, 19, nz);
+    KfCol der = KFWS_AT(kfws, 20, nz);
+    KfCol ddr = KFWS_AT(kfws, 21, nz);
+    KfCol thetaed = KFWS_AT(kfws, 22, nz);
+    KfCol theta_ad = KFWS_AT(kfws, 23, nz);
+    KfCol downdraft_q = KFWS_AT(kfws, 24, nz);
+    KfCol downdraft_t = KFWS_AT(kfws, 25, nz);
+    KfCol qsd = KFWS_AT(kfws, 26, nz);
+    KfCol updraft = KFWS_AT(kfws, 27, nz);
+    KfCol downdraft = KFWS_AT(kfws, 28, nz);
+    KfCol theta_env = KFWS_AT(kfws, 29, nz);
+    KfCol theta_up = KFWS_AT(kfws, 30, nz);
+    KfCol cell_mass = KFWS_AT(kfws, 31, nz);
+    KfCol unit_updraft = KFWS_AT(kfws, 32, nz);
+    KfCol unit_downdraft = KFWS_AT(kfws, 33, nz);
+    KfCol unit_detlq = KFWS_AT(kfws, 34, nz);
+    KfCol unit_detice = KFWS_AT(kfws, 35, nz);
+    KfCol unit_udr = KFWS_AT(kfws, 36, nz);
+    KfCol unit_uer = KFWS_AT(kfws, 37, nz);
+    KfCol unit_der = KFWS_AT(kfws, 38, nz);
+    KfCol unit_ddr = KFWS_AT(kfws, 39, nz);
+    KfCol tg = KFWS_AT(kfws, 40, nz);
+    KfCol qg = KFWS_AT(kfws, 41, nz);
+    KfCol theta_pa = KFWS_AT(kfws, 42, nz);
+    KfCol qpa = KFWS_AT(kfws, 43, nz);
+    KfCol resolved_precip = KFWS_AT(kfws, 44, nz);
+    KfCol omega = KFWS_AT(kfws, 45, nz);
+    KfCol fxm = KFWS_AT(kfws, 46, nz);
+    KfCol thfxin = KFWS_AT(kfws, 47, nz);
+    KfCol thfxout = KFWS_AT(kfws, 48, nz);
+    KfCol qfxin = KFWS_AT(kfws, 49, nz);
+    KfCol qfxout = KFWS_AT(kfws, 50, nz);
+    // tv_env and positive_energy STAY on the stack, and they are the one
+    // thing in this cut that is not a pure placement change.  MEASURED on
+    // node-1 (RTX 5070 Ti, sm_120, NVRTC 13.0.48) by moving each of the 54
+    // arrays into the workspace ALONE with the other 53 left local: these
+    // two are the only ones whose placement moves an output bit, and they
+    // move a lot of them (55,360 and 34,560 words of a 410,624-word grade).
+    // The reason is that they are the two the compiler ELIMINATES -- neither
+    // occupies a byte of local frame while the other 53 do, because tv_env
+    // is rematerialised from temperature and qenv at its use sites and
+    // positive_energy is written and read inside one loop iteration.
+    // Eliminated, their defining expressions FUSE into the expressions that
+    // consume them (cape += positive_energy[nk1] becomes one fma with
+    // dilbe*9.81f); forced into memory, the store breaks the fusion and the
+    // CAPE closure amplifies the difference.  Leaving them declared is what
+    // keeps ptxas making the same choice, and it costs nothing worth
+    // counting: 512 B of frame at KF_KMAX = 128, half the 1,024 B default
+    // stack, so the driver still reserves exactly zero.
+    float tv_env[KF_KMAX];
+    float positive_energy[KF_KMAX];
     float z_interface = 0.0f;
     for (int k = 0; k < nz; ++k) {
         int index = k * ncol + column;
@@ -345,7 +481,8 @@ void kf_column(
     float upold = 0.0f, upnew = 0.0f, cape = 0.0f, trppt = 0.0f;
     float cloud_depth = 0.0f, cloud_minimum = 0.0f;
     float surface_pressure = pressure[column];
-    int candidates[KF_KMAX], ncandidates = 1;
+    KfColI candidates = KFWS_AT_I(kfws, 51, nz);
+    int ncandidates = 1;
     candidates[0] = 0;
     float threshold = surface_pressure - 1500.0f;
     for (int candidate = 1; candidate < nz; ++candidate) {

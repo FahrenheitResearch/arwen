@@ -16,10 +16,11 @@ refusals, same exit codes -- and this module adds only sequencing, one
 line of status per step, and a closing doctor summary.  Nothing new
 downloads anything, so there is no second implementation to drift.
 
-**Static geography is opt in.**  ``gpuwm fetch-geog`` unpacks about
-16 GB, which is not a thing to start on someone's behalf because they
-typed a command called ``setup``.  ``--with-geog`` asks for it, and
-prints the size before the first byte moves.
+**Static geography is opt in.**  ``gpuwm fetch-geog`` unpacks tens of
+gigabytes, which is not a thing to start on someone's behalf because
+they typed a command called ``setup``.  ``--with-geog`` asks for it, and
+prints the size -- read off the pin table, never a literal -- before the
+first byte moves.
 
 **Re-run safe**, because every step is: staged artifacts that match
 their pins are verified and skipped, so a second ``gpuwm setup`` is a
@@ -102,25 +103,54 @@ def _replay(text: str) -> None:
         print(f"    {line}" if line.strip() else "")
 
 
-#: Printed before ``--with-geog`` starts, because 16 GB is a decision.
-#: The numbers are the ones :data:`gpuwm.doctor.GEOG_HINT` already
-#: publishes, so a reader cannot be told two different sizes.
-GEOG_SIZE_NOTICE = (
-    "setup: --with-geog will download the nine WPS_GEOG datasets: "
-    "~1.3 GB compressed, ~16 GB unpacked.  Resumable and re-run safe; "
-    "omit --with-geog to skip it and run `gpuwm fetch-geog` later.")
+def _geog_size_phrase() -> str:
+    """The default fetch set's sizes, from the pin table."""
 
-#: Printed when ``setup`` finishes WITHOUT ``--with-geog``.  Excluding
-#: the tree is deliberate -- 16 GB is a decision, not a default -- but
-#: staying silent about it moved the surprise to prep time, several
-#: commands downstream of the one that would have closed the gap.  So
-#: the door that skipped it says so, with the size that makes it a
-#: decision and the command that ends it.
-GEOG_SKIPPED_NOTICE = (
-    "setup: not staged -- WPS_GEOG static geography (~1.3 GB "
-    "compressed, ~16 GB unpacked), which preprocessing reads.  Run "
-    "`gpuwm fetch-geog` when you want it, or re-run setup with "
-    "--with-geog.")
+    from gpuwm.geog_assets import size_phrase
+
+    return size_phrase()
+
+
+def _geog_size_notice() -> str:
+    """Printed before ``--with-geog`` starts, because 30 GB is a decision.
+
+    The sizes come from the pin table
+    (:func:`gpuwm.geog_assets.size_phrase`), which is also where
+    :data:`gpuwm.doctor.GEOG_HINT` reads them, so a reader cannot be
+    told two different sizes -- and neither text can go stale when a
+    dataset is added, which is exactly what a pair of literals did.
+    """
+
+    from gpuwm.geog_assets import GEOG_ARCHIVES, size_phrase
+
+    return (f"setup: --with-geog will download all {len(GEOG_ARCHIVES)} "
+            f"WPS_GEOG datasets: {size_phrase()}.  That includes the "
+            "Noah-MP soil archive only `gpuwm mesh` reads; `gpuwm "
+            "fetch-geog --datasets wrf` stages the WRF set alone.  "
+            "Resumable and re-run safe; omit --with-geog to skip it and "
+            "run `gpuwm fetch-geog` later.")
+
+
+def _geog_skipped_notice() -> str:
+    """Printed when ``setup`` finishes WITHOUT ``--with-geog``.
+
+    Excluding the tree is deliberate -- the download is a decision, not
+    a default -- but staying silent about it moved the surprise to prep
+    time, several commands downstream of the one that would have closed
+    the gap.  So the door that skipped it says so, with the size that
+    makes it a decision and the command that ends it.
+    """
+
+    from gpuwm.geog_assets import size_phrase
+
+    return (f"setup: not staged -- WPS_GEOG static geography "
+            f"({size_phrase()}), which preprocessing reads.  Run `gpuwm "
+            "fetch-geog` when you want it, or re-run setup with "
+            "--with-geog.")
+
+
+GEOG_SIZE_NOTICE = _geog_size_notice()
+GEOG_SKIPPED_NOTICE = _geog_skipped_notice()
 
 
 def setup_main(args) -> int:
@@ -211,8 +241,8 @@ def register_cli(subparsers) -> None:
              "--with-geog")
     parser.add_argument(
         "--with-geog", action="store_true", dest="with_geog",
-        help="also stage the WPS_GEOG static geography (~1.3 GB "
-             "compressed, ~16 GB unpacked); the size is printed before "
+        help="also stage the WPS_GEOG static geography ("
+             + _geog_size_phrase() + "); the size is printed before "
              "anything downloads")
     parser.add_argument(
         "--from", dest="from_dir", metavar="DIR", default=None,

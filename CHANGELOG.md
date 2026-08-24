@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.5.3 (2026-08-24)
+
+Small cards and living nests.
+
+New:
+- Living nests. Nests spawn on storm triggers, follow their storm, retire,
+  and rearm during a run, on the GPU, with rendered products per episode.
+- Restart. Runs checkpoint and restore with bit-identical continuation,
+  proven across multi-segment splits.
+- Expected pace before you commit. run-plan and check state the expected
+  seconds per step and wall clock for your domain on your card, from
+  measured rates, and name the domain size that would run resident.
+- Latest-cycle fetches ask NOMADS first and route around lagging mirrors
+  automatically. Receipts name the host that served every file.
+- WPS intermediates from ECMWF open data and AIFS. Ordinal soil layers
+  decode through the standard tables, so both sources are table work.
+- Per-file download progress with real byte counts.
+
+Fixed:
+- VRAM sizing now prices the whole run, including the radiation working
+  set that fires after the first minutes. A card that passes the check
+  finishes the run.
+- Streamed initialization no longer keeps a resident copy of the domain,
+  which paged 10 GB cards into unusability.
+- check accepts every streamed domain that go can run. The alloc gate is
+  tile-aware.
+- A stale or spent VRAM budget refuses up front with every term named,
+  instead of failing after the download and preparation.
+- First-step status reports what the engine is actually doing.
+- Fetch receipts claim every file they write, and an interrupted forced
+  refetch can no longer leave a stale receipt beside rejected data.
+- A run that failed past the fetch comes back without re-downloading. The
+  fetch verifies and skips what is already on disk and the receipt says
+  which files it skipped, preparation is reused when nothing feeding it
+  moved, and superseded forecast output is moved aside rather than deleted.
+- The standalone RW-WPS wheel ships the nest lifecycle module.
+- The ERA5 model-level route is documented alongside every other source.
+- A projected or Gaussian grid refuses by name instead of minting a
+  mis-georeferenced lat-lon intermediate. Uniform lat-lon output is
+  unchanged.
+
 ## 2.5.2 (2026-08-21)
 
 New:

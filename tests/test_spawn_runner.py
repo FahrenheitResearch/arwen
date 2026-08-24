@@ -16,6 +16,7 @@ the spawn lane's own end-to-end states.
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -73,8 +74,19 @@ def _leg(exp, seconds=LEG):
 
 
 def _walk(exp, root_state, *, grids=None, child_initializer=None,
-          coupler_factory=_CountingCoupler):
-    """Assemble and integrate one leg; return the model and its report."""
+          coupler_factory=_CountingCoupler, resume_seconds=0.0):
+    """Assemble and integrate one leg; return the model and its report.
+
+    ``resume_seconds`` carries the assembled clocks to the tick the tree
+    is actually at before integrating, which is what
+    ``gpuwm.runtime._retarget_tree_schedule`` does at every leg boundary.
+    A leg is a WINDOW of one run's absolute clock, not a fresh run: the
+    experiment view spans t = 0 to the leg's end and the executor derives
+    its resume period from the root clock.  Modelling leg B as its own
+    0-based run only ever worked because a spawned nest recorded no
+    activation epoch; once it records one, an epoch of 120 s in a leg
+    replayed from 0 would say the newborn starts at the END of it.
+    """
     from gpuwm.core.model import execute_experiment
     from gpuwm.verify.cases.nest_ideal_common import assemble_idealized_tree
 
@@ -86,6 +98,13 @@ def _walk(exp, root_state, *, grids=None, child_initializer=None,
         grids=(grids_from_projection_config(exp) if grids is None else grids),
         coupler_factory=coupler_factory,
         domain_preparer=lambda *_a, **_k: None, **kwargs)
+    if resume_seconds:
+        for node in model.walk_parent_first():
+            clock = node.clock
+            ticks = int(round(float(resume_seconds) * clock.tick_den))
+            clock.ticks = ticks
+            clock.step_count = max(
+                0, (ticks - clock.spec.start_ticks) // clock.spec.step_ticks)
     return model, execute_experiment(model, validate_state=False)
 
 
@@ -146,8 +165,9 @@ def test_spawn_fires_inside_a_real_two_leg_walk(case, monkeypatch):
     assert [dc.grid_id for dc in act.domains] == [1, 2]
     stepped.clear()
     model_b, report_b = _walk(
-        _leg(act), model_a.root.state,
-        child_initializer=record["child_initializer"])
+        _leg(act, 2 * LEG), model_a.root.state,
+        child_initializer=record["child_initializer"],
+        resume_seconds=LEG)
 
     child = model_b.node(2)
     assert child.parent is model_b.root
@@ -173,8 +193,9 @@ def test_a_second_boundary_after_the_fire_is_a_no_op(case, monkeypatch):
     assert runner.on_leg_boundary(model_a) is not None
 
     act = runner.active
-    model_b, _ = _walk(_leg(act), model_a.root.state,
-                       child_initializer=runner.child_initializer())
+    model_b, _ = _walk(_leg(act, 2 * LEG), model_a.root.state,
+                       child_initializer=runner.child_initializer(),
+                       resume_seconds=LEG)
     assert runner.pending == ()
     assert runner.on_leg_boundary(model_b) is None
     assert runner.spawns_executed == 1
@@ -251,6 +272,9 @@ class _Model:
     def __init__(self, nodes):
         self._nodes = {int(n.cfg.grid_id): n for n in nodes}
         self.root = nodes[0]
+        #: The retirement pass reads membership off this map, exactly as
+        #: gpuwm.core.model.Model publishes it.
+        self.nodes_by_grid_id = self._nodes
 
     def walk_parent_first(self):
         return [self._nodes[gid] for gid in sorted(self._nodes)]
@@ -508,3 +532,360 @@ def test_the_recorded_receipts_stay_json_serialisable(case, monkeypatch,
         assert "child_initializer" not in row
         assert "child_results" not in row
     json.dumps(runner.receipts)      # raises if anything live leaked in
+
+
+# ---------------------------------------------------------------------------
+# The spawn block of the lifecycle restart header
+# ---------------------------------------------------------------------------
+#
+# Every field below is asserted the same way: restore the block FAITHFULLY
+# and restore it with that one field carrying the value a build which never
+# persisted it would have, then take the SAME next boundary on the SAME
+# model and show the two decisions differ.  A round-trip test that only
+# checks the JSON comes back equal passes just as happily when nothing in
+# the runner reads it, which is the instrument trap this lane exists inside.
+
+def _dormant(exp, **over):
+    """Re-declare d02 with the lifecycle tables one test needs."""
+    from dataclasses import replace as _replace
+
+    return _replace(exp, domains=(exp.domains[0],
+                                  _replace(exp.domains[1], **over)))
+
+
+def _stub_materializer(monkeypatch):
+    """Keep the boundary DECISION real and the materialization out of it.
+
+    The decision under test is the controller's plus the runner's
+    lifecycle arithmetic; building a real newborn on every restore
+    permutation would multiply the cost without touching what is asserted.
+    """
+    import gpuwm.ingest.nest_spawn_init as init_mod
+
+    monkeypatch.setattr(
+        init_mod, "spawn_child_from_parent",
+        lambda child_dc, parent_node, **kwargs: {
+            "child_result": SimpleNamespace(
+                state=None, grid=None, coord=None, domain=child_dc),
+            "trigger": {"decision": "fired"}})
+
+
+def _fresh(exp):
+    return SpawnRunner.from_experiment(
+        exp, on_child_built=lambda *_a: None, array_module=np)
+
+
+def _restored(exp, block):
+    runner = _fresh(exp)
+    runner.restore_state(block)
+    runner.controller.drain_receipts()      # the construction rows
+    return runner
+
+
+def _edit(block, path, value):
+    """The block a build that did not persist ``path`` would have written."""
+    import copy
+
+    out = copy.deepcopy(block)
+    cursor = out
+    for key in path[:-1]:
+        cursor = cursor[key]
+    cursor[path[-1]] = value
+    return out
+
+
+def _fired_runner(case, monkeypatch, **over):
+    """Fire d02 at t = 120 s; return (runner, model, exp, root_node)."""
+    _stub_materializer(monkeypatch)
+    exp = _dormant(case["exp"], **over)
+    runner = _fresh(exp)
+    root = _Node(exp.domains[0], case["parent"].state)
+    model = _Model([root])
+    assert runner.on_leg_boundary(model, t=120.0)["grid_ids"] == [2]
+    return runner, model, exp, root
+
+
+def _with_live_child(runner, model, root):
+    """Attach the fired child to the fake model, as the leg rebuild does."""
+    child = _Node(runner.active.domain(2), object(), parent=root)
+    model._nodes[2] = child
+    return child
+
+
+def _quiet_window(parent_state):
+    """The spawn consumer's own UH window, allocated and quiet."""
+    from gpuwm.core.uh_diag import UH_SPAWN_WINDOW_SLOT
+
+    return parent_state.scratch(np.asarray(parent_state.mup).shape,
+                                UH_SPAWN_WINDOW_SLOT)
+
+
+def test_the_spawn_block_is_exactly_the_headers_six_keys(case, monkeypatch):
+    """The shape is the checkpoint schema's, so the writer can slot it in
+    unchanged; a seventh key here is a header this build cannot read back."""
+    import json
+
+    runner, _model, exp, _root = _fired_runner(case, monkeypatch)
+    block = runner.state_json()
+    assert sorted(block) == ["episodes", "quiet_since", "retired",
+                             "spawned", "spawns_executed", "watches"]
+    assert sorted(block["spawned"]["2"]) == [
+        "born_t", "current", "episode", "fired"]
+    assert sorted(block["watches"]["2"]) == ["closed", "fired"]
+    assert block["episodes"] == {"2": 1}
+    assert block["retired"] == {}
+    assert block["spawns_executed"] == 1
+    # allow_nan=False is the header writer's posture, not a suggestion.
+    json.dumps(block, allow_nan=False, sort_keys=True)
+
+
+def test_spawn_block_floats_round_trip_bit_for_bit(case, monkeypatch):
+    import json
+
+    runner, _model, exp, _root = _fired_runner(case, monkeypatch)
+    exact = 1234.5678901234567
+    runner.birth_times[2] = exact
+    block = runner.state_json()
+    reloaded = json.loads(json.dumps(block, allow_nan=False))
+    assert reloaded["spawned"]["2"]["born_t"] == exact
+    assert reloaded == block
+    assert _restored(exp, reloaded).state_json() == block
+
+
+def test_a_nonfinite_lifecycle_timer_refuses_at_the_block(case, monkeypatch):
+    """Refused here, where the message names the timer, rather than inside
+    json.dumps(allow_nan=False), which aborts the whole checkpoint write."""
+    runner, _model, _exp, _root = _fired_runner(case, monkeypatch)
+    runner.birth_times[2] = float("nan")
+    with pytest.raises(SpawnRunnerRefusal, match="born_t"):
+        runner.state_json()
+
+
+def test_the_block_separates_the_fired_placement_from_the_current_one(
+        case, monkeypatch):
+    """validate_spawn_placement must see the FIRED placement on the way
+    back in; a follower's post-move position lives only on node.cfg."""
+    from dataclasses import replace as _replace
+
+    runner, model, exp, root = _fired_runner(case, monkeypatch)
+    child = _with_live_child(runner, model, root)
+    child.cfg = _replace(child.cfg, i_parent_start=24, j_parent_start=21)
+
+    block = runner.state_json(model)
+    assert block["spawned"]["2"]["fired"] == [20, 18]
+    assert block["spawned"]["2"]["current"] == [24, 21]
+
+    restored = _fresh(exp)
+    current = restored.restore_state(block)
+    assert current == {2: (24, 21)}
+    assert restored.spawned == {2: (20, 18)}
+
+
+def test_restored_fired_flag_stops_a_second_episode(case, monkeypatch):
+    """fired -> re-fire: a watch restored as un-fired spawns the slot
+    again at the very next boundary, silently creating episode 2."""
+    runner, model, exp, _root = _fired_runner(case, monkeypatch)
+    block = runner.state_json()
+    assert block["watches"]["2"]["fired"] is True
+
+    faithful = _restored(exp, block)
+    assert faithful.pending == ()
+    assert faithful.on_leg_boundary(model, t=240.0) is None
+    assert faithful.spawns_executed == 1 and faithful.episodes[2] == 1
+
+    naive = _restored(exp, _edit(block, ("watches", "2", "fired"), False))
+    assert naive.pending == (2,)
+    record = naive.on_leg_boundary(model, t=240.0)
+    assert record is not None and record["grid_ids"] == [2]
+    assert naive.spawns_executed == 2 and naive.episodes[2] == 2
+
+
+def test_restored_closed_window_does_not_reopen(case, monkeypatch):
+    """closed -> window reopen: a watch restored as open re-enters
+    ``pending``, so ``needs_boundaries`` keeps the walk performing leg
+    surgery for a slot that can never fire, and the run closes the same
+    window twice."""
+    exp = _dormant(case["exp"], spawn=SpawnConfig(
+        trigger="uh", threshold=100.0, earliest_s=0.0, latest_s=100.0))
+    runner = _fresh(exp)
+    model = _Model([_Node(exp.domains[0], case["parent"].state)])
+    assert runner.on_leg_boundary(model, t=200.0) is None
+    block = runner.state_json()
+    assert block["watches"]["2"]["closed"] is True
+    assert runner.pending == () and runner.needs_boundaries is False
+
+    faithful = _restored(exp, block)
+    assert faithful.pending == () and faithful.needs_boundaries is False
+    assert faithful.on_leg_boundary(model, t=320.0) is None
+    assert faithful.receipts[-1]["pending"] == []
+    assert not [row for row in faithful.receipts[-1].get("watch_receipts", ())
+                if row["decision"] == "window-closed"]
+
+    naive = _restored(exp, _edit(block, ("watches", "2", "closed"), False))
+    assert naive.pending == (2,) and naive.needs_boundaries is True
+    assert naive.on_leg_boundary(model, t=320.0) is None
+    # The reopened watch was consulted again and shut the SAME window a
+    # second time, 220 s after latest_s had already passed.
+    assert [row for row in naive.receipts[-1].get("watch_receipts", ())
+            if row["decision"] == "window-closed"]
+
+
+def test_restored_quiet_timer_retires_at_the_instant_it_would_have(
+        case, monkeypatch):
+    """quiet_since -> hold instead of retire: the sustained-decay timer is
+    episode-local and unrecoverable from the field, so a dropped one
+    restarts the whole ``sustained_s`` window at the resume instant."""
+    from gpuwm.core.nest_lifecycle import RetireConfig
+
+    runner, model, exp, root = _fired_runner(case, monkeypatch, retire=(
+        RetireConfig(trigger="uh", threshold=60.0, sustained_s=900.0,
+                     min_lifetime_s=0.0)))
+    _with_live_child(runner, model, root)
+    _quiet_window(case["parent"].state)
+
+    assert runner.on_leg_boundary(model, t=240.0) is None   # quiet starts
+    block = runner.state_json(model)
+    assert block["quiet_since"] == {"2": 240.0}
+
+    faithful = _restored(exp, block)
+    record = faithful.on_leg_boundary(model, t=1140.0)
+    assert record is not None and record["retired_grid_ids"] == [2]
+
+    naive = _restored(exp, _edit(block, ("quiet_since", "2"), None))
+    assert naive.on_leg_boundary(model, t=1140.0) is None
+    assert naive.retired == set()
+
+
+def test_restored_birth_time_keeps_the_episode_age(case, monkeypatch):
+    """born_t -> a time-triggered retirement measures episode age, so a
+    birth time re-stamped at resume postpones the retirement forever."""
+    from gpuwm.core.nest_lifecycle import RetireConfig
+
+    runner, model, exp, root = _fired_runner(
+        case, monkeypatch, retire=RetireConfig(trigger="time", at_s=600.0))
+    _with_live_child(runner, model, root)
+    block = runner.state_json(model)
+    assert block["spawned"]["2"]["born_t"] == 120.0
+
+    faithful = _restored(exp, block)
+    record = faithful.on_leg_boundary(model, t=720.0)
+    assert record is not None and record["retired_grid_ids"] == [2]
+
+    naive = _restored(exp, _edit(block, ("spawned", "2", "born_t"), 600.0))
+    assert naive.on_leg_boundary(model, t=720.0) is None
+
+
+def test_restored_retirement_time_does_not_restart_the_cooldown(
+        case, monkeypatch):
+    """retired_t -> cooldown restart: re-stamping it at resume holds the
+    slot dormant for a second full cooldown it already served."""
+    from gpuwm.core.nest_lifecycle import RearmConfig, RetireConfig
+
+    runner, model, exp, root = _fired_runner(
+        case, monkeypatch, retire=RetireConfig(trigger="time", at_s=0.0),
+        rearm=RearmConfig(max_firings=2, cooldown_s=1800.0))
+    _with_live_child(runner, model, root)
+    assert runner.on_leg_boundary(model, t=240.0)["retired_grid_ids"] == [2]
+
+    block = runner.state_json(model)
+    assert block["retired"] == {"2": {"retired_t": 240.0, "episode": 1}}
+    assert block["spawned"] == {}
+
+    faithful = _restored(exp, block)
+    record = faithful.on_leg_boundary(model, t=2040.0)
+    assert record is not None and record["rearmed_grid_ids"] == [2]
+    assert faithful.episodes[2] == 2
+
+    naive = _restored(
+        exp, _edit(block, ("retired", "2", "retired_t"), 2040.0))
+    record = naive.on_leg_boundary(model, t=2040.0)
+    assert record is None or record["rearmed_grid_ids"] == []
+    assert naive.episodes[2] == 1
+
+
+def test_restored_episode_count_bounds_the_re_arm(case, monkeypatch):
+    """episode -> max_firings miscount: a slot declared for ONE firing
+    fires a second time when the count restarts at zero."""
+    from gpuwm.core.nest_lifecycle import RearmConfig, RetireConfig
+
+    runner, model, exp, root = _fired_runner(
+        case, monkeypatch, retire=RetireConfig(trigger="time", at_s=0.0),
+        rearm=RearmConfig(max_firings=1, cooldown_s=0.0))
+    _with_live_child(runner, model, root)
+    assert runner.on_leg_boundary(model, t=240.0)["retired_grid_ids"] == [2]
+    block = runner.state_json(model)
+    assert block["episodes"] == {"2": 1}
+
+    faithful = _restored(exp, block)
+    record = faithful.on_leg_boundary(model, t=360.0)
+    assert record is None or record["rearmed_grid_ids"] == []
+    assert faithful.episodes[2] == 1
+
+    # The count lives in two places on purpose, so a lone edit is caught
+    # by the block's own consistency gate; a build that never persisted
+    # it writes zero in both.
+    zeroed = _edit(_edit(block, ("episodes", "2"), 0),
+                   ("retired", "2", "episode"), 0)
+    naive = _restored(exp, zeroed)
+    record = naive.on_leg_boundary(model, t=360.0)
+    assert record is not None and record["rearmed_grid_ids"] == [2]
+    assert naive.episodes[2] == 1     # the re-armed slot fired again
+
+
+def test_never_fired_slots_carry_a_zero_episode(case, monkeypatch):
+    """The map covers every declared slot, so a restored runner cannot
+    tell "never fired" from "absent from the block"."""
+    exp = _dormant(case["exp"])
+    block = _fresh(exp).state_json()
+    assert block["episodes"] == {"2": 0}
+    assert block["watches"] == {"2": {"fired": False, "closed": False}}
+    assert block["spawned"] == {} and block["retired"] == {}
+    assert _restored(exp, block).pending == (2,)
+
+
+# -- the block's own refusals ----------------------------------------------
+
+def test_a_partial_spawn_block_refuses_by_name(case, monkeypatch):
+    runner, _model, exp, _root = _fired_runner(case, monkeypatch)
+    block = runner.state_json()
+    for key in sorted(block):
+        partial = {name: value for name, value in block.items()
+                   if name != key}
+        with pytest.raises(SpawnRunnerRefusal, match=key):
+            _fresh(exp).restore_state(partial)
+
+
+def test_an_unknown_spawn_block_key_refuses(case, monkeypatch):
+    runner, _model, exp, _root = _fired_runner(case, monkeypatch)
+    block = dict(runner.state_json(), lineage={})
+    with pytest.raises(SpawnRunnerRefusal, match="lineage"):
+        _fresh(exp).restore_state(block)
+
+
+def test_a_slot_this_experiment_does_not_declare_refuses(case, monkeypatch):
+    runner, _model, exp, _root = _fired_runner(case, monkeypatch)
+    block = runner.state_json()
+    block["watches"]["7"] = {"fired": False, "closed": False}
+    with pytest.raises(SpawnRunnerRefusal, match="d07"):
+        _fresh(exp).restore_state(block)
+
+
+def test_an_episode_count_that_disagrees_with_itself_refuses(
+        case, monkeypatch):
+    runner, _model, exp, _root = _fired_runner(case, monkeypatch)
+    block = _edit(runner.state_json(), ("spawned", "2", "episode"), 4)
+    with pytest.raises(SpawnRunnerRefusal, match="episode"):
+        _fresh(exp).restore_state(block)
+
+
+def test_a_refused_block_leaves_the_runner_untouched(case, monkeypatch):
+    """The candidate posture on_leg_boundary already keeps: a refusal
+    mid-restore must not leave a half-seeded runner integrating."""
+    runner, _model, exp, _root = _fired_runner(case, monkeypatch)
+    block = runner.state_json()
+    block["watches"]["7"] = {"fired": False, "closed": False}
+    target = _fresh(exp)
+    before = target.state_json()
+    with pytest.raises(SpawnRunnerRefusal):
+        target.restore_state(block)
+    assert target.state_json() == before

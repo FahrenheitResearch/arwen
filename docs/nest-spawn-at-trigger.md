@@ -200,12 +200,15 @@ Routes that neither reserve nor watch still refuse by name.
 
 ## Restart, retire
 
-A restart across a spawn **promises nothing** — the moving-nest
-2026-08-06 posture, inherited whole.  Absent `spawn` is byte-inert on
-every pre-feature fingerprint and prepared-cache identity
+A restart across a spawn is an exact contract, not a posture. The
+checkpoint persists the spawn watches, the fired placements, the episode
+counts and the retirement timers, and a run split at any checkpoint
+resumes bit-identical to the unbroken run — see `docs/nest-lifecycle.md`
+and `tests/test_lifecycle_restart_identity.py`. Absent `spawn` is still
+byte-inert on every pre-feature fingerprint and prepared-cache identity
 (absent-stays-absent in `restart_identity_payload`;
 `DEFAULT_TOLERANT_IDENTITY_FIELDS` tolerance); a declared spawn binds.
 
-Retire/despawn (deactivate a spawned nest, keep its reservation) did
-not fall out naturally — deactivation needs the same runner surgery as
-activation — and is the one named follow-up for the leg-2 integration.
+Retire/despawn shipped with the lifecycle tables: `retire` deactivates a
+spawned nest at a completed leg boundary and `rearm` brings the slot back
+for a later episode.

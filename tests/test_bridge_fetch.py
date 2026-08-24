@@ -721,6 +721,91 @@ def test_a_tree_with_no_pins_refuses_instead_of_inventing_one(
     assert not bridge_assets.staging_available()
 
 
+#: The pointer the no-pins refusal used to end on.  ``gpuwm doctor``'s
+#: own next command for a missing bridge is ``gpuwm fetch-bridges``
+#: (and so is ``gpuwm setup``, which runs it), so a reader who did as
+#: they were told arrived back at this refusal having learned nothing.
+#: Pinned as a literal so the loop cannot be reintroduced by wording.
+_CIRCULAR_POINTER = "prints the exact steps for this install"
+
+
+def _no_pins(monkeypatch, *, platform: str, sources: bool) -> None:
+    """A pins document declaring no platforms, on a chosen install shape."""
+
+    monkeypatch.setattr(bridge_assets, "load_pins",
+                        lambda path=None: bridge_assets.BridgePins(
+                            release=None, platforms={}))
+    monkeypatch.setattr(bridge_assets, "host_platform", lambda: platform)
+    monkeypatch.setattr(bridge_assets.bridges, "sources_present",
+                        lambda *args, **kwargs: sources)
+
+
+def test_the_no_pins_refusal_names_the_wheel_as_what_carries_them(
+        monkeypatch, capsys, tmp_path):
+    """A wheel install with no pins is told where pins come from.
+
+    The pins are computed from the published bytes at release time, so a
+    wheel installed from PyPI is the only artifact that carries them.
+    Without that sentence the reader has a command that refuses for a
+    reason nothing on their disk shows, and no way to tell "my install
+    is broken" from "this install was never going to have them".
+    """
+
+    _no_pins(monkeypatch, platform="linux-x86_64", sources=False)
+    assert bridge_assets.fetch_bridges_main(_args(dest=str(tmp_path))) == 2
+    out = capsys.readouterr().out
+    assert "carries no bundle pins for linux-x86_64" in out
+    assert "PyPI" in out
+    assert "pip install --upgrade gpuwm" in out
+
+
+def test_the_no_pins_refusal_names_the_breakage_and_stops_pointing_at_gpuwm(
+        monkeypatch, capsys, tmp_path):
+    _no_pins(monkeypatch, platform="linux-x86_64", sources=False)
+    assert bridge_assets.fetch_bridges_main(_args(dest=str(tmp_path))) == 2
+    out = capsys.readouterr().out
+    assert _CIRCULAR_POINTER not in out
+    # The breakage, named: what stays broken while the artifacts are
+    # absent, rather than "run this other command".
+    assert "gpuwm prep" in out and "gpuwm render" in out
+    # A remedy is commands the reader can run, not a command that
+    # prints commands.
+    assert "git clone" in out
+
+
+def test_the_no_pins_refusal_in_a_checkout_leads_with_the_build(
+        monkeypatch, capsys, tmp_path):
+    """A checkout must not be told to pip-install over itself.
+
+    Its sources are right there, so the build is the shorter true
+    answer; the wheel is named as the reason the pins are absent, not
+    offered as the step to take.
+    """
+
+    _no_pins(monkeypatch, platform="linux-x86_64", sources=True)
+    assert bridge_assets.fetch_bridges_main(_args(dest=str(tmp_path))) == 2
+    out = capsys.readouterr().out
+    assert bridges.cargo_build_one_liner() in out
+    assert "pip install --upgrade gpuwm" not in out
+    assert _CIRCULAR_POINTER not in out
+
+
+def test_the_unsupported_platform_refusal_prints_the_steps_it_used_to_defer(
+        monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(bridge_assets.sys, "platform", "darwin")
+    monkeypatch.setattr(bridge_assets.platform_module, "machine",
+                        lambda: "arm64")
+    monkeypatch.setattr(bridge_assets.bridges, "sources_present",
+                        lambda *args, **kwargs: False)
+    assert bridge_assets.fetch_bridges_main(_args(dest=str(tmp_path))) == 2
+    out = capsys.readouterr().out
+    assert _CIRCULAR_POINTER not in out
+    assert "cargo build --release --locked --offline" in out
+    # No published wheel helps here, and the text must not imply one
+    # would: the bundles are per OS/architecture.
+    assert "pip install --upgrade gpuwm" not in out
+
+
 def test_a_corrupt_bundle_makes_the_command_exit_two(tmp_path, capsys,
                                                      monkeypatch):
     archive, bundle = _synthetic_bundle(tmp_path, corrupt="beta.bin")

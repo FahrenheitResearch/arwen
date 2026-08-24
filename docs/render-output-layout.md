@@ -20,9 +20,9 @@ examples in this page are written relative to the run folder.
 out/myarea/png/
   d02-3km/
     composite_reflectivity/
-      1974-04-03/  arwen_wrf_19740403_22z_f000_d02-3km_composite_reflectivity.png
-                   arwen_wrf_19740403_22z_f001_d02-3km_composite_reflectivity.png
-      1974-04-04/  arwen_wrf_19740403_22z_f002_d02-3km_composite_reflectivity.png
+      1974-04-03/  arwen_wrf_19740403_22z_f000.png
+                   arwen_wrf_19740403_22z_f001.png
+      1974-04-04/  arwen_wrf_19740403_22z_f002.png
     2m_temperature/
       1974-04-03/  ...
   d04-100m/
@@ -48,12 +48,32 @@ Two details worth knowing before you write a path by hand:
   initialised. A 22Z cycle at f+02 files under the next morning. This is
   why the example above has a `1974-04-04` folder under a run that
   started on the 3rd.
-* The `<domain>` folder is spelled exactly as the domain token inside
-  the filenames it contains, so the folder and the files always agree.
+## The filename carries what the folders do not
 
-Filenames are unchanged from v2.4.1. Only the directories beneath
-`--out` are new, so a script that already recognised a filename still
-recognises it.
+A delivered filename is
+
+```
+arwen_<model>_<YYYYMMDD>_<H>z_f<NNN>[_valid_<...>_lead_<...>].png
+```
+
+— the frame's own identity: model, cycle date, cycle hour, forecast
+hour, and, for a sub-hourly frame, the exact valid time and lead that
+`f<NNN>` cannot express. The domain and the product are **not** in it,
+because the two folders directly above it are exactly those, and a name
+that repeated them cost real deliveries the Windows path ceiling: a
+measured tree reached 310 characters, at which point Explorer, `tar`,
+and the readers a recipient's own script imports all refuse to open a
+picture that is otherwise filed correctly.
+
+Nothing is lost. Folder plus filename together carry the same facts the
+v2.4.1 name did, so frames stay distinct across members, valid times and
+sub-hourly cadences; `gpuwm.render_layout.engine_name(name, domain=...,
+product=...)` rebuilds the v2.4.1 filename exactly if a consumer of
+yours wants it. `--layout flat` — where there are no folders to carry
+anything — writes the v2.4.1 name byte for byte.
+
+* The `<domain>` folder is spelled exactly as the domain token the
+  frames in it were rendered for, so the folder and the files agree.
 
 ## Predicting a path from a script
 
@@ -101,11 +121,10 @@ what every in-tree reader uses.
 
 ### On Windows: read long paths
 
-Three folders plus a product filename is about a hundred characters, so
-a deep case root — or a sub-hourly product, whose name carries the
-frame's exact valid time — passes the classic 260-character ceiling.
-ArWen writes those frames into the layout anyway rather than dropping
-them flat at the root, using the extended-length spelling
+Three folders plus a filename is around seventy characters, so a deep
+enough case root still passes the classic 260-character ceiling. ArWen
+writes those frames into the layout anyway rather than dropping them
+flat at the root, using the extended-length spelling
 (`gpuwm.render_layout.fs_path`); `iter_rendered` reads them back.
 
 A reader of your own needs the same. In Python, open

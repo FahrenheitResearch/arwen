@@ -15,36 +15,96 @@ from pathlib import Path
 import numpy as np
 
 
+#: Launch block, and the tile's granularity.  ``kernels/kf.cu`` indexes the
+#: column workspace by the thread's LANE within its block, so this must equal
+#: the kernel's ``KFWS_LANES`` and a launch at any other block width would
+#: alias lanes.  ``tests/test_kf_workspace.py`` pins the two together.
 _TPB = 32
 _VALIDATION_TPB = 256
-#: Unspecialized ``KF_KMAX`` in ``kernels/kf.cu`` and the ceiling on nz.
+#: ``KF_KMAX`` in ``kernels/kf.cu`` and the ceiling on nz.  It is a REFUSAL
+#: ceiling and nothing else since the column workspace landed: no array in
+#: that file is sized by it.
 _KMAX = 128
 VERTICAL_LEVEL_BOUNDS = (8, _KMAX)
 DTYPE = np.float32
 
 
-def kernel_local_frame_bytes(nz: int) -> int:
-    """Per-thread local frame ``kf_column`` compiles to at ``KF_KMAX = nz``.
+# ---------------------------------------------------------------------------
+# The per-thread column workspace
+# ---------------------------------------------------------------------------
+# kf.cu used to keep kf_column's 54 column arrays in the per-thread local
+# frame, and CUDA prices a local frame at the card's RESIDENT-THREAD
+# CAPACITY -- one per-context backing store of
+# ``(frame - 1024) * SMs * maxThreadsPerSM``, taken at first launch and never
+# returned.  MEASURED on node-1 (RTX 5070 Ti, 70 SMs x 1,536, sm_120, NVRTC
+# 13.0.48): the 9,216 B frame at nz = 49 took 840.0 MiB -- exactly the law --
+# while the kernel only ever had a fraction of that capacity in flight.
+# 52 of the 54 arrays now live in a global workspace this module allocates,
+# sized to the threads ACTUALLY in flight, and the columns are launched in
+# tiles of that size.  (The other two stay on the stack; kf.cu says why, and
+# they leave a 512 B frame that reserves nothing.)
+#
+# This must match kf.cu's KFWS_SLOTS; tests/test_kf_workspace.py re-derives
+# it from the .cu source and fails if either side moves alone.
+KFWS_SLOTS = 52
 
-    ``kf_column`` declares 47 float/int column arrays of ``KF_KMAX`` entries
-    and nothing else that scales with the bound, so the frame the driver
-    reports is exactly ``47 * 4 * KF_KMAX`` bytes.  Measured on the RTX 5090
-    (driver 610.74, NVRTC 13.x, ``-std=c++17``): 24,064 B at 128 and 9,212 B
-    at 49, both exactly 188 B per level.  ``gpuwm.core.preflight`` prices the
-    launch-time local-memory reservation from this, and
-    ``tests/test_kernel_local_bounds.py`` re-measures it against the driver.
+#: Blocks per SM the tile is sized for.  MEASURED, not assumed -- see the
+#: sweep recorded in docs/kernel_local_memory_bounds.md.  The workspace is
+#: real device memory, so an over-sized tile hands back exactly the
+#: over-reservation the cut removed.
+KF_TILE_BLOCKS_PER_SM = 8
+
+
+def kf_workspace_floats(nz: int, columns: int) -> int:
+    """Workspace floats for ``columns`` columns in flight at this ``nz``.
+
+    Rounded up to whole blocks: kf.cu interleaves the workspace by LANE
+    within a block, the way CUDA lays local memory out across a warp, so the
+    unit of allocation is one block's region, not one column's.
+
+    The per-slot extent is the RUNTIME ``nz``, not ``KF_KMAX``: every loop in
+    ``kf_column`` runs to ``nz`` and the highest index any of them forms is
+    ``nz - 1``.
     """
-    return 188 * int(nz)
+    blocks = (int(columns) + _TPB - 1) // _TPB
+    return blocks * KFWS_SLOTS * int(nz) * _TPB
+
+
+def kf_tile_columns(fn, ncol: int) -> int:
+    """Columns to keep in flight: enough to fill the card, and no more.
+
+    The whole point of the workspace is that it is charged per thread IN
+    FLIGHT where the local-memory backing store was charged per thread the
+    card could ever hold.  Over-sizing the tile hands that back.
+    """
+    import cupy as cp
+
+    dev = cp.cuda.Device()
+    sms = dev.attributes["MultiProcessorCount"]
+    per_sm = KF_TILE_BLOCKS_PER_SM
+    try:
+        from cupy_backends.cuda.api import driver
+
+        resident = driver.occupancyMaxActiveBlocksPerMultiprocessor(
+            fn.kernel.ptr, _TPB, 0)
+        # Never launch more blocks than the card can hold resident: those
+        # columns would wait while their workspace slots stayed allocated.
+        per_sm = min(per_sm, int(resident))
+    except Exception:                              # noqa: BLE001
+        pass                                       # keep the measured value
+    per_sm = max(1, int(per_sm))
+    return int(min(int(ncol), sms * per_sm * _TPB))
 
 
 def kernel_capacity(nz: int) -> int:
-    """The ``KF_KMAX`` this ``nz`` compiles against.
+    """Validate ``nz`` against ``KF_KMAX`` and return it.
 
-    Exactly ``nz``: every loop in ``kf_column`` runs to the runtime ``nz``
-    and the highest index any of them forms is ``nz - 1``, so the bound is a
-    pure allocation size.  Specializing it is worth 3,699 MiB of driver
-    local-memory reservation on a 49-level case (see the module comment in
-    ``kernels/kf.cu``), which is why this is exact and not tiered.
+    Nothing in ``kernels/kf.cu`` is sized by ``KF_KMAX`` any more -- the
+    column arrays live in a runtime-sized global workspace -- so the module
+    is compiled ONCE, at the source's own ceiling, instead of once per
+    distinct level count.  What this still owns is the contract the ceiling
+    names: ``nz`` past it is refused rather than silently truncated, which is
+    also the guard ``kf_column`` carries.
     """
     nz = int(nz)
     minimum, maximum = VERTICAL_LEVEL_BOUNDS
@@ -260,34 +320,40 @@ def launch_kf(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
         cloud_base=cp.full((ny, nx), -1, dtype=cp.int32),
         cloud_top=cp.full((ny, nx), -1, dtype=cp.int32),
     )
-    from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
+    from gpuwm.core.kernels import get_kernel
 
     table = load_kf_table()
     device_table = _device_table()
-    # Compile the column arrays to this configuration's own level count.  At
-    # the unspecialized 128 the frame is 24,064 B/thread and the driver
-    # reserves 5,738 MiB of local-memory backing store for the process at
-    # first launch; at nz = 49 it is 9,212 B and 2,039 MiB.
-    capacity = kernel_capacity(nz)
-    kernel = (get_kernel("kf", "kf_column") if capacity == _KMAX else
-              get_kernel_int_defines("kf", "kf_column",
-                                     (("KF_KMAX", capacity),)))
+    kernel_capacity(nz)          # the refusal, on the same path as the launch
+    kernel = get_kernel("kf", "kf_column")
     ncol = ny * nx
-    blocks = (ncol + _TPB - 1) // _TPB
-    kernel((blocks,), (_TPB,), (
-        u, v, temperature, qv, qc, pressure, exner, dz, w,
-        *device_table,
-        out["rthcuten"], out["rqvcuten"], out["rqccuten"],
-        out["rqicuten"], out["rqrcuten"], out["rqscuten"],
-        out["rainc"], out["triggered"],
-        out["cape_before"], out["cape_after"], out["timec"],
-        out["nca_seconds"], out["shallow"],
-        out["cloud_base"], out["cloud_top"], out["updraft_mass_flux"],
-        out["downdraft_mass_flux"],
-        DTYPE(table.pressure_top), DTYPE(table.pressure_reciprocal),
-        DTYPE(table.thetae_reciprocal), DTYPE(dx), DTYPE(dt), DTYPE(cudt),
-        np.int32(phase_mode),
-        np.int32(nz), np.int32(ny), np.int32(nx)))
+    # The column arrays live in a global workspace sized to the threads in
+    # flight, not in the per-thread local frame (which CUDA prices at the
+    # card's whole resident-thread capacity).  Columns therefore go in tiles
+    # of `tile`, each launched with the SAME one-thread-one-column mapping
+    # the kernel has always had -- shifted by `col0`, because the state
+    # arrays are (nz, ny, nx) and a tile of columns is not a contiguous
+    # slice of them.
+    tile = kf_tile_columns(kernel, ncol)
+    ws = cp.empty(kf_workspace_floats(nz, tile), dtype=DTYPE)
+    for col0 in range(0, ncol, tile):
+        span = min(tile, ncol - col0)
+        blocks = (span + _TPB - 1) // _TPB
+        kernel((blocks,), (_TPB,), (
+            u, v, temperature, qv, qc, pressure, exner, dz, w,
+            *device_table,
+            out["rthcuten"], out["rqvcuten"], out["rqccuten"],
+            out["rqicuten"], out["rqrcuten"], out["rqscuten"],
+            out["rainc"], out["triggered"],
+            out["cape_before"], out["cape_after"], out["timec"],
+            out["nca_seconds"], out["shallow"],
+            out["cloud_base"], out["cloud_top"], out["updraft_mass_flux"],
+            out["downdraft_mass_flux"], ws,
+            DTYPE(table.pressure_top), DTYPE(table.pressure_reciprocal),
+            DTYPE(table.thetae_reciprocal), DTYPE(dx), DTYPE(dt),
+            DTYPE(cudt), np.int32(phase_mode),
+            np.int32(nz), np.int32(ny), np.int32(nx), np.int32(col0)))
+    del ws
     return out
 
 
@@ -489,6 +555,8 @@ class KainFritsch:
             rainc=result["rainc"], nca_seconds=nca, pratec=pratec)
 
 
-__all__ = ["KFPhaseMode", "KFTable", "KainFritsch",
-           "kf_phase_mode_for_microphysics", "launch_kf", "load_kf_table",
+__all__ = ["KFPhaseMode", "KFTable", "KainFritsch", "KFWS_SLOTS",
+           "KF_TILE_BLOCKS_PER_SM", "kernel_capacity",
+           "kf_phase_mode_for_microphysics", "kf_tile_columns",
+           "kf_workspace_floats", "launch_kf", "load_kf_table",
            "validate_kf_outputs"]

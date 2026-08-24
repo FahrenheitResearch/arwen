@@ -1749,6 +1749,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "static-fields",
  "thiserror",
 ]
 

@@ -321,6 +321,13 @@ class SpawnWatch:
         out, self.receipts = self.receipts, []
         return out
 
+    def rearm(self, *, t: float, episode: int) -> None:
+        """Return a one-shot watch to its declared dormant state."""
+        self.fired = False
+        self.closed = False
+        self._receipt({"decision": "rearmed", "grid_id": int(self.declared.grid_id),
+                       "t": float(t), "episode": int(episode)})
+
     # -- geometry ----------------------------------------------------------
 
     def _search_box(self, plane_shape) -> tuple[tuple[slice, slice], str]:
@@ -547,10 +554,12 @@ class SpawnController:
             spawn = getattr(dc, "spawn", None)
             if spawn is None:
                 continue
+            domain_follow = getattr(dc, "follow", None)
             watches[int(dc.grid_id)] = SpawnWatch(
                 spawn, NestFootprint.coerce(dc), keepout_cells=keepout,
-                follow=(follow if getattr(relocation, "grid_id", None)
-                        in (None, dc.grid_id) else None))
+                follow=(domain_follow.tracker if domain_follow is not None
+                        else (follow if getattr(relocation, "grid_id", None)
+                              in (None, dc.grid_id) else None)))
             parent_of[int(dc.grid_id)] = int(dc.parent_id)
         if not watches:
             return None
@@ -589,9 +598,18 @@ class SpawnController:
         for gid in self.pending:
             parent_id = self.parent_of[gid]
             if parent_id not in parent_states:
-                raise SpawnRefusal(
-                    f"no parent state supplied for d{gid:02d}'s parent "
-                    f"d{parent_id:02d}; supplied: {sorted(parent_states)}")
+                # Escalation ladders legitimately declare a dormant child of
+                # another dormant/retired SLOT.  Preserve the historical
+                # refusal for every other missing parent: only a declared
+                # watch proves that absence is intentional lifecycle state.
+                if parent_id not in self.watches:
+                    raise SpawnRefusal(
+                        f"no parent state supplied for d{gid:02d}'s parent "
+                        f"d{parent_id:02d}; supplied: {sorted(parent_states)}")
+                self.watches[gid]._receipt({
+                    "decision": "held:parent-not-live", "t": float(t),
+                    "grid_id": int(gid), "parent_id": int(parent_id)})
+                continue
             event = self.watches[gid].evaluate(
                 parent_states[parent_id], t,
                 exclude_footprints=tuple(exclusions))

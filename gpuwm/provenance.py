@@ -87,6 +87,36 @@ CANDIDATE_DISTRIBUTIONS = ("gpuwm", "rw-wps")
 #: or pointed at something that is not a repository.
 GIT_TIMEOUT_S = 5.0
 
+#: A parent process that has ALREADY resolved git names it here for its
+#: children.  Every stage this project spawns inherits an environment
+#: the parent composed, and a composed environment is exactly where a
+#: ``PATH`` entry goes missing without anybody deciding it should: the
+#: prepare stage launches its benchmark with a rebuilt ``env`` and the
+#: child then cannot start ``git`` at all.  Passing the resolved path
+#: costs one string and removes the search from the child entirely.
+GIT_EXE_ENV = "GPUWM_GIT_EXE"
+
+#: Where git actually installs when nobody has put it on ``PATH``.
+#: Consulted only after :func:`shutil.which` has failed, and only as
+#: whole absolute paths -- this is a fallback for a hidden ``PATH``, not
+#: a second search algorithm.
+_WINDOWS_GIT_LOCATIONS = (
+    r"C:\Program Files\Git\cmd\git.exe",
+    r"C:\Program Files (x86)\Git\cmd\git.exe",
+    r"C:\Program Files\Git\bin\git.exe",
+)
+_POSIX_GIT_LOCATIONS = (
+    "/usr/bin/git",
+    "/usr/local/bin/git",
+    "/opt/homebrew/bin/git",
+)
+
+#: Recorded in place of a cleanliness answer when git could not be run.
+#: The identity must never claim a clean worktree it did not check.
+GIT_UNAVAILABLE_REASON = (
+    "git could not be executed in this process, so the working tree was "
+    "never inspected; the commit below was read directly from .git")
+
 
 # ---------------------------------------------------------------------------
 # The answer
@@ -162,7 +192,10 @@ class Provenance:
         git = self.git or {}
         if git.get("commit"):
             branch = git.get("branch")
-            state = "dirty" if git.get("dirty") else "clean"
+            if git.get("dirty") is None:
+                state = "worktree unverified"
+            else:
+                state = "dirty" if git.get("dirty") else "clean"
             parts.append(
                 f"git {git['commit']} on "
                 f"{branch if branch else 'a detached HEAD'} ({state})")
@@ -210,8 +243,15 @@ def direct_url(distribution) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _editable_root(distribution) -> Path | None:
-    """The source directory an editable install points at, or None."""
+def editable_root(distribution) -> Path | None:
+    """The source directory an editable install points at, or None.
+
+    Public because it is the first half of an editable install's
+    identity and two modules need it:
+    :func:`gpuwm.runtime_manifest.source_tree_identity` binds the same
+    answer into the run manifest that :func:`describe_provenance` puts
+    in the run-plan receipt.  One resolution, two consumers.
+    """
 
     info = direct_url(distribution)
     if not info.get("dir_info", {}).get("editable", False):
@@ -281,7 +321,7 @@ def providing_distribution(package_path: Path):
                 return dist
         except Exception:                               # noqa: BLE001
             pass
-        root = _editable_root(dist)
+        root = editable_root(dist)
         if root is not None:
             try:
                 if package_path == root or package_path.is_relative_to(root):
@@ -289,6 +329,221 @@ def providing_distribution(package_path: Path):
             except Exception:                           # noqa: BLE001
                 continue
     return None
+
+
+# ---------------------------------------------------------------------------
+# Finding git at all
+# ---------------------------------------------------------------------------
+
+_GIT_EXE_CACHE: tuple[str | None] | None = None
+
+
+def git_executable(*, refresh: bool = False) -> str | None:
+    """The git this process can actually launch, or None.
+
+    ``subprocess.run(["git", ...])`` resolves ``git`` through the
+    CHILD's ``PATH``, and this project composes child environments in
+    several places.  When one of them drops the entry that carries git,
+    every rung of the identity ladder that asks git a question fails at
+    once -- ``git_checkout_root`` returns None because the executable
+    could not start, ``git_identity`` returns None for the same reason,
+    and :func:`gpuwm.runtime_manifest.provenance` refuses a checkout it
+    is standing inside of.  That killed a prepare stage in the field:
+    the parent resolved its identity fine, the benchmark it launched
+    could not, and the difference was one environment key.
+
+    Three sources, in order of authority:
+
+      1. ``GPUWM_GIT_EXE``, so a parent that has already paid for this
+         resolution can hand the answer to its children rather than
+         hoping their environment carries it;
+      2. ``shutil.which("git")`` against the live environment, which is
+         the normal answer on every healthy box;
+      3. the platform's DEFAULT install locations, which is what makes
+         a curated environment survivable without un-curating it.
+
+    Cached, because the answer cannot change under a running process
+    and every identity resolution would otherwise re-search.
+    """
+
+    global _GIT_EXE_CACHE
+    if _GIT_EXE_CACHE is not None and not refresh:
+        return _GIT_EXE_CACHE[0]
+    import os
+    import shutil
+
+    resolved: str | None = None
+    declared = os.environ.get(GIT_EXE_ENV)
+    if declared:
+        candidate = Path(declared)
+        if candidate.is_file():
+            resolved = str(candidate)
+    if resolved is None:
+        resolved = shutil.which("git")
+    if resolved is None:
+        import sys
+
+        locations = (_WINDOWS_GIT_LOCATIONS if sys.platform == "win32"
+                     else _POSIX_GIT_LOCATIONS)
+        for location in locations:
+            if Path(location).is_file():
+                resolved = location
+                break
+    _GIT_EXE_CACHE = (resolved,)
+    return resolved
+
+
+# ---------------------------------------------------------------------------
+# The identity .git carries even when git cannot run
+# ---------------------------------------------------------------------------
+
+def _resolve_git_dir(root: Path) -> tuple[Path, Path] | None:
+    """``(git_dir, common_dir)`` for ``root``, or None if it is not a top.
+
+    ``.git`` must sit DIRECTLY in ``root``.  Nothing walks upward, which
+    is the direct-read equivalent of
+    :func:`gpuwm.runtime_manifest.git_checkout_root`'s refusal: a venv
+    unpacked inside somebody else's repository has no ``.git`` of its
+    own and therefore binds no stranger's commit here either.
+
+    A linked worktree spells ``.git`` as a FILE holding ``gitdir: PATH``
+    and keeps its branch refs in the main checkout, which ``commondir``
+    names.  Both are read, because this project's agents work almost
+    exclusively in linked worktrees and an identity that only handled
+    the ordinary layout would be unavailable exactly where it is used.
+    """
+
+    marker = Path(root) / ".git"
+    try:
+        if marker.is_dir():
+            git_dir = marker
+        elif marker.is_file():
+            text = marker.read_text(encoding="utf-8", errors="replace").strip()
+            if not text.startswith("gitdir:"):
+                return None
+            pointed = Path(text[len("gitdir:"):].strip())
+            git_dir = (pointed if pointed.is_absolute()
+                       else (Path(root) / pointed)).resolve()
+            if not git_dir.is_dir():
+                return None
+        else:
+            return None
+        common = git_dir
+        commondir = git_dir / "commondir"
+        if commondir.is_file():
+            pointed = Path(commondir.read_text(encoding="utf-8").strip())
+            common = (pointed if pointed.is_absolute()
+                      else (git_dir / pointed)).resolve()
+    except OSError:
+        return None
+    return git_dir, common
+
+
+def _commit_for_ref(ref: str, git_dir: Path, common: Path) -> str | None:
+    """The object id ``ref`` names, loose file first then ``packed-refs``."""
+
+    for base in (git_dir, common):
+        path = base / ref
+        try:
+            if path.is_file():
+                value = path.read_text(encoding="utf-8").strip()
+                if value.startswith("ref: "):
+                    # A symbolic ref pointing at another ref.  One hop is
+                    # all git itself writes here; a chain would be a
+                    # repository nobody has.
+                    return _commit_for_ref(value[len("ref: "):].strip(),
+                                           git_dir, common)
+                return value
+        except OSError:
+            continue
+    for base in (common, git_dir):
+        packed = base / "packed-refs"
+        try:
+            if not packed.is_file():
+                continue
+            for line in packed.read_text(encoding="utf-8").splitlines():
+                if not line or line[0] in "#^":
+                    continue
+                parts = line.split(" ", 1)
+                if len(parts) == 2 and parts[1].strip() == ref:
+                    return parts[0].strip()
+        except OSError:
+            continue
+    return None
+
+
+def _is_object_id(value: str | None) -> bool:
+    return (isinstance(value, str) and len(value) in (40, 64)
+            and all(character in "0123456789abcdef" for character in value))
+
+
+def git_dir_identity(root: Path,
+                     *, reason: str = GIT_UNAVAILABLE_REASON) -> dict | None:
+    """``{branch, commit, dirty: None, ...}`` read from ``.git`` bytes.
+
+    The last rung before a refusal.  When git cannot be launched at all
+    the commit and the branch are still written down, in files with a
+    format git has not changed in its lifetime: ``HEAD`` holds either a
+    raw object id (detached) or ``ref: refs/heads/NAME``, and that ref
+    is a loose file or a ``packed-refs`` row.  Reading them binds the
+    identity that matters -- WHICH COMMIT is executing -- without a
+    subprocess.
+
+    What it cannot do is inspect the working tree, and it says so
+    rather than guessing.  ``dirty`` is ``None``, not ``False``:
+    "nobody checked" and "checked and found clean" are different
+    statements, and a receipt that collapses them would let an
+    uncommitted change ship under a clean commit id.  Consumers use
+    :func:`worktree_is_clean`, which treats the unknown as not-clean.
+    """
+
+    resolved = _resolve_git_dir(Path(root))
+    if resolved is None:
+        return None
+    git_dir, common = resolved
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    branch: str | None = None
+    if head.startswith("ref: "):
+        ref = head[len("ref: "):].strip()
+        if ref.startswith("refs/heads/"):
+            branch = ref[len("refs/heads/"):]
+        commit_full = _commit_for_ref(ref, git_dir, common)
+    else:
+        commit_full = head
+    if not _is_object_id(commit_full):
+        # An unborn branch (``ref: refs/heads/main`` with no such ref
+        # yet) or a HEAD nobody can parse.  It is a checkout, but there
+        # is no identity to report and inventing one would be worse.
+        return None
+    assert commit_full is not None
+    return {
+        "commit": commit_full[:12],
+        "commit_full": commit_full,
+        "branch": branch,
+        "dirty": None,
+        "dirty_files": None,
+        "untracked_files": None,
+        "dirty_unknown_reason": reason,
+    }
+
+
+def worktree_is_clean(git: dict | None) -> bool:
+    """True only when a working tree was CHECKED and found clean.
+
+    Fail-closed on purpose.  ``dirty is None`` means the check never
+    happened, and every gate that refuses a dirty tree exists to stop
+    uncommitted code from shipping under a committed identity -- a gate
+    that waved through "unknown" would fail at exactly the job it was
+    added for.  An absent git dict is not clean either: there is no
+    tree to have been clean.
+    """
+
+    if not git:
+        return False
+    return git.get("dirty") is False
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +574,14 @@ def git_identity(root: Path) -> dict | None:
     """
 
     root = Path(root)
+    executable = git_executable()
+    if executable is None:
+        # git is not merely refusing to answer -- it cannot be started.
+        # The bytes in ``.git`` still name the commit, and binding that
+        # with an UNVERIFIED working tree is strictly better than the
+        # alternative reached in the field, which was refusing to bind
+        # a checkout the process was standing inside of.
+        return git_dir_identity(root)
     try:
         from gpuwm.runtime_manifest import git_checkout_root
 
@@ -328,7 +591,8 @@ def git_identity(root: Path) -> dict | None:
         return None
     try:
         completed = subprocess.run(
-            ["git", "-C", str(root), "status", "--porcelain=v2", "--branch"],
+            [executable, "-C", str(root), "status", "--porcelain=v2",
+             "--branch"],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
             check=False)
     except (OSError, subprocess.SubprocessError):
@@ -438,7 +702,7 @@ def describe_provenance(package_path, distribution, *,
     notes: list[str] = []
 
     # -- kind ------------------------------------------------------------
-    editable_root = None
+    editable_source = None
     if distribution is None:
         install_kind = "source-tree"
         distribution_name = None
@@ -446,7 +710,7 @@ def describe_provenance(package_path, distribution, *,
     else:
         distribution_name = str(distribution.metadata["Name"])
         metadata_version = str(distribution.metadata["Version"])
-        editable_root = _editable_root(distribution)
+        editable_source = editable_root(distribution)
         outside = False
         try:
             site_dir = Path(distribution.locate_file("")).resolve()
@@ -458,7 +722,7 @@ def describe_provenance(package_path, distribution, *,
         # inside the directory its own metadata lives in" covers
         # setup.py develop, a hand-written .pth, and anything else that
         # resolves an import outside site-packages.
-        install_kind = "editable" if (editable_root or outside) else "wheel"
+        install_kind = "editable" if (editable_source or outside) else "wheel"
 
     # -- git -------------------------------------------------------------
     # The EXECUTING tree first: the checkout that owns the imported
@@ -474,10 +738,10 @@ def describe_provenance(package_path, distribution, *,
         git = probe_git(source_root)
     except Exception:                                   # noqa: BLE001
         git = None
-    if git is None and editable_root is not None \
-            and editable_root != source_root:
+    if git is None and editable_source is not None \
+            and editable_source != source_root:
         try:
-            git = probe_git(editable_root)
+            git = probe_git(editable_source)
         except Exception:                               # noqa: BLE001
             git = None
 
@@ -498,7 +762,7 @@ def describe_provenance(package_path, distribution, *,
                      "pip wrote its code and metadata together")
     else:
         candidates: list[Path] = []
-        for candidate in (source_root, editable_root):
+        for candidate in (source_root, editable_source):
             # An editable install of a flat-layout tree makes these two
             # the same directory; reading it twice would report the same
             # defect twice in `notes`.
@@ -556,7 +820,7 @@ def describe_provenance(package_path, distribution, *,
 
     return Provenance(
         package_path=str(package_path),
-        source_root=str(editable_root if editable_root is not None
+        source_root=str(editable_source if editable_source is not None
                         else source_root),
         install_kind=install_kind,
         distribution_name=distribution_name,
@@ -625,8 +889,10 @@ def banner() -> str:
 
 
 __all__ = [
-    "CANDIDATE_DISTRIBUTIONS", "GIT_TIMEOUT_S", "INSTALL_KINDS",
-    "PROVENANCE_SCHEMA", "Provenance", "UNKNOWN_VERSION", "banner",
-    "describe_provenance", "direct_url", "git_identity",
-    "providing_distribution", "pyproject_version", "resolve",
+    "CANDIDATE_DISTRIBUTIONS", "GIT_EXE_ENV", "GIT_TIMEOUT_S",
+    "GIT_UNAVAILABLE_REASON", "INSTALL_KINDS", "PROVENANCE_SCHEMA",
+    "Provenance", "UNKNOWN_VERSION", "banner", "describe_provenance",
+    "direct_url", "editable_root", "git_dir_identity", "git_executable",
+    "git_identity", "providing_distribution", "pyproject_version", "resolve",
+    "worktree_is_clean",
 ]

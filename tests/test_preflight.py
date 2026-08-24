@@ -824,6 +824,32 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
         # unregistered slot cannot enter this loop without first failing
         # the restart manifest classification.
         ("gpuwm/core/physics_continuation.py", "restore_continuation"),
+        # A per-domain [follow] gives each independently-cadenced child its
+        # own UH window on the parent, and the slot is NAMED BY GRID ID --
+        # uh_diag.follow_window_slot(gid) -> "uh_follow_window.dNN" -- so
+        # the expression is a variable by construction: which names exist
+        # depends on which children the experiment declares, and no literal
+        # can stand in for a family whose membership the config decides.
+        # (Two children must not share one plane; whichever consumer read
+        # first would blind the other.)
+        #
+        # The completeness guarantee is preserved by the PREFIX rule rather
+        # than by a literal slot name, and the concrete breakage it prevents
+        # is the one this family already caused: gpuwm/io/restart.py's
+        # classify_scratch_slot is total by construction -- it raises on any
+        # name it does not recognise, so a new slot cannot be silently
+        # dropped from every checkpoint -- and _scratch_manifest walks the
+        # LIVE scratch pool through it.  While these names matched no class,
+        # a run with a per-domain follow and restart_interval_s > 0 died at
+        # its first checkpoint instant with no checkpoint written, and
+        # carried_scratch_manifest broke the streamed carrier set the same
+        # way.  CARRIED_SCRATCH_PREFIXES now classifies the whole family
+        # carry, off uh_diag.UH_FOLLOW_WINDOW_PREFIX itself, which is the
+        # same prefix uh_diag.is_tracker_window_slot recognises -- so the
+        # allocator here and the classifier cannot drift apart, and a
+        # near-miss under the same stem still fails closed on both sides.
+        # tests/test_restart.py pins that in both directions.
+        ("gpuwm/runtime.py", "build_real_relocation_runners"),
     }
     # The one sanctioned getattr(state, "scratch") lookup: lateral_bc's
     # duck-type guard, whose resulting Name call the scanner classifies.
@@ -2507,16 +2533,30 @@ def test_check_cli_estimator_json(capsys):
     # 1,531,496,879 B.  The other two legs are card properties and do not
     # move.  ``run_time_reserve_bytes`` below does NOT move either -- its
     # residual is the pinned CAL_D01_WORKSPACE_BYTES fixture basis.
-    assert payload["reserve_bytes"] == 4115788465
+    # 2026-08-21, the two column workspaces together: -308,469,760 B, and
+    # the arithmetic is worth writing out because the two legs pull
+    # opposite ways.  `kf` went 9,216 -> 512 B and `ysu` 9,232 -> 0, and
+    # `ysu` was the widest frame this configuration LAUNCHED, so the
+    # backing store fell from 2,143,272,960 B to `rrtmgp_rte`'s
+    # 1,077,903,360 B -- a 1,065,369,600 B saving that neither cut could
+    # have made alone, because whichever was left would have set the same
+    # ceiling.  Against that, the two workspaces are charged for the
+    # columns actually in flight: 443,555,840 B for KF (170 SMs x 8 blocks
+    # x 32 lanes x 52 slots x 49 levels x 4 B) and 313,344,000 B for YSU.
+    assert payload["reserve_bytes"] == 3807318705
     reference = pf.card_local_memory_profile(None)
+    exp_4dom = load_experiment_case(CONFIG_4DOM)[0]
     assert payload["reserve_components"]["device_overhead_bytes"] == (
-        reference.cuda_context_bytes + 2143272960)
-    assert payload["kernel_local_memory_bytes"] == 2143272960
+        reference.cuda_context_bytes + 1077903360
+        + 443555840 + 313344000)
+    assert payload["kernel_local_memory_bytes"] == 1077903360
     assert "kf" in payload["kernel_modules"]
-    assert pf.kernel_local_frame_bytes(
-        load_experiment_case(CONFIG_4DOM)[0])["kf"] == 9216
-    # Same +349,962,240 B context shift as ``reserve_bytes`` above.
-    assert payload["run_time_reserve_bytes"] == 6415430258
+    assert pf.kernel_local_frame_bytes(exp_4dom)["kf"] == 512
+    assert pf.kf_column_workspace_bytes(
+        exp_4dom, profile=reference) == 443555840
+    # Same +349,962,240 B context shift as ``reserve_bytes`` above, and the
+    # same -308,469,760 B net from the two workspaces.
+    assert payload["run_time_reserve_bytes"] == 6106960498
     assert payload["reserve_components"]["retention_residual_bytes"] == (
         math.ceil(0.03 * payload["alloc_estimate_bytes"]))
 
@@ -2818,7 +2858,7 @@ def test_the_projection_constants_are_platform_conditional_too():
             name="pilot", multiprocessor_count=sms,
             max_threads_per_multiprocessor=1536)
         non_pool = pf.CUDA_CONTEXT_BYTES + profile.reservation_bytes(
-            pf.LEVEL_SPECIALIZED_KERNEL_FRAMES["kf"].frame_bytes(49))
+            KF_AS_BUILT_FRAME.frame_bytes(49))
         envelope = pf.machine_peak_envelope_bytes(
             alloc_estimate_bytes=int(alloc_gib * GIB),
             non_pool_bytes=non_pool, family="linux")
@@ -3243,6 +3283,21 @@ CONFIG_4DOM_MYNN_KF = ROOT / "configs" / "real74_4dom_mynn_norad.toml"
 CONFIG_4DOM_MYNN_NOCU = (
     ROOT / "configs" / "real74_4dom_mynn_norad_nocu.toml")
 
+#: The per-thread frame ``kf_column`` compiled to BEFORE its column
+#: workspace landed (2026-08-21): 188 B per level, rounded up to the local
+#: frame's 8-byte granularity, at whatever ``KF_KMAX`` the launcher chose.
+#:
+#: It lives here and not in ``preflight`` because ``preflight`` describes
+#: the binary that runs NOW, and this one no longer exists: 52 of
+#: ``kf_column``'s 54 column arrays moved off the stack, the frame stopped
+#: following ``nz``, and the row is a flat 512 B.  Every historical
+#: measurement in this file -- the two 2026-07-26 four-domain runs, the
+#: 2026-07-30 pilots, the RTX 4080 fleet table -- was taken by a binary
+#: whose widest frame was this, so it is what they are priced against.
+#: Pricing them at 512 B would claim the old runs carried a reservation
+#: they demonstrably did not.
+KF_AS_BUILT_FRAME = pf.LevelSpecializedFrame("kf", "KF_KMAX", 128, 188)
+
 
 def test_the_local_memory_law_reproduces_every_measurement():
     """One allocation, sized by the widest launched frame, over the whole
@@ -3257,9 +3312,15 @@ def test_the_local_memory_law_reproduces_every_measurement():
             4.0, 0.01 * measured_mib), (
                 f"{local_bytes} B/thread: model {predicted_mib:.1f} MiB "
                 f"vs measured {measured_mib} MiB")
+    # MEASURED_KF_RESERVATION_MIB was read off `kf_column`'s first launch
+    # at KF_KMAX = 128, so the law is checked against THAT frame and not
+    # against today's row -- today's row is 512 B and reserves nothing,
+    # which is the point of the workspace, not a counter-example to the law.
     kf_predicted = profile.reservation_bytes(
-        pf.KERNEL_MAX_LOCAL_SIZE_BYTES["kf"]) / 1024 ** 2
+        KF_AS_BUILT_FRAME.frame_bytes(128)) / 1024 ** 2
     assert abs(kf_predicted - MEASURED_KF_RESERVATION_MIB) <= 1.0
+    assert pf.KERNEL_MAX_LOCAL_SIZE_BYTES["kf"] == 512
+    assert profile.reservation_bytes(512) == 0
 
 
 def test_a_frame_inside_the_default_stack_reserves_nothing():
@@ -3276,48 +3337,72 @@ def test_the_reservation_does_not_grow_with_domain_count():
     """The fingerprint that identified this term: it is a maximum over
     launched kernels, so three domains and four reserve the same bytes.
 
-    The VALUE moved on 2026-07-26 when `kf.cu`'s KF_KMAX started compiling
-    to the configuration's nz: 24,064 B/thread at the unspecialized 128,
-    9,216 B at this case's 49 (both driver-measured).  The invariant this
-    test exists for -- independence from domain count -- is unchanged.
+    The VALUE moved twice.  On 2026-07-26 `kf.cu`'s KF_KMAX started
+    compiling to the configuration's nz: 24,064 B/thread at the
+    unspecialized 128, 9,216 B at this case's 49.  On 2026-08-21 the column
+    workspace took `kf` out of the running entirely (512 B, under the
+    default stack), and `morrison`'s 5,120 B became the widest frame this
+    configuration launches.  The invariant this test exists for --
+    independence from domain count -- is unchanged through both.
     """
     exp4 = load_experiment_case(CONFIG_4DOM_MYNN_KF)[0]
     exp3 = dataclasses.replace(exp4, domains=exp4.domains[:3])
     assert {dc.run.nz for dc in exp4.domains} == {49}
     assert (pf.kernel_local_memory_bytes(exp3)
             == pf.kernel_local_memory_bytes(exp4)
-            == pf.MEASURED_LOCAL_MEMORY_PROFILE.reservation_bytes(9216))
-    # ... and it is still `kf` that sets it, now at the specialized width.
-    assert pf.kernel_local_frame_bytes(exp4)["kf"] == 9216
+            == pf.MEASURED_LOCAL_MEMORY_PROFILE.reservation_bytes(5120))
+    # ... and it is no longer `kf` that sets it.
+    assert pf.kernel_local_frame_bytes(exp4)["kf"] == 512
 
 
-def test_the_reservation_does_grow_with_the_level_count():
-    """The term the specialization introduces, and the reason preflight now
-    prices `kf`/`refl` per domain instead of from one module constant."""
+def test_the_kf_reservation_stopped_growing_with_the_level_count():
+    """`kf` left the level-specialized table, and this is what that means.
+
+    Its frame used to be 188 B per level -- 9,216 B at 49, 18,424 B at 98 --
+    which is why preflight priced it per domain.  The column workspace
+    (2026-08-21) took 52 of its 54 column arrays off the stack, so the frame
+    is now a flat 512 B at every level count and the module is compiled ONCE
+    instead of once per nz.  A level-linear model would now UNDER-price
+    nothing and OVER-price everything, so it is retired rather than refitted;
+    `refl` still carries one and still moves.
+    """
     exp = load_experiment_case(CONFIG_4DOM_MYNN_KF)[0]
     deeper = dataclasses.replace(exp, domains=tuple(
         dataclasses.replace(dc, run=dataclasses.replace(dc.run, nz=98))
         for dc in exp.domains))
-    # 188 B/level, rounded up to the frame's 8-byte granularity: 9,216 B at
-    # 49 (9,212 padded) and 18,424 B at 98 (already aligned).
-    assert pf.kernel_local_frame_bytes(exp)["kf"] == 9216
-    assert pf.kernel_local_frame_bytes(deeper)["kf"] == 18424
-    assert (pf.kernel_local_memory_bytes(deeper)
-            > pf.kernel_local_memory_bytes(exp))
-    # The unspecialized ceiling is still the ceiling: nothing may be priced
-    # past the bound the source compiles to when nothing overrides it.
-    over = dataclasses.replace(exp, domains=tuple(
-        dataclasses.replace(dc, run=dataclasses.replace(dc.run, nz=129))
-        for dc in exp.domains))
-    with pytest.raises(ValueError, match="exceeds the KF_KMAX ceiling"):
-        pf.kernel_local_memory_bytes(over)
+    assert "kf" not in pf.LEVEL_SPECIALIZED_KERNEL_FRAMES
+    assert pf.kernel_local_frame_bytes(exp)["kf"] == 512
+    assert pf.kernel_local_frame_bytes(deeper)["kf"] == 512
+    # The model that IS still level-specialized still grows with nz.
+    refl = pf.LEVEL_SPECIALIZED_KERNEL_FRAMES["refl"]
+    assert refl.frame_bytes(98) > refl.frame_bytes(49)
+    # The ceiling is still a REFUSAL and not a silent truncation.  It moved
+    # out of the frame model with the row, to the vertical contract that
+    # every door already runs -- and that is where it names KF by name.
+    from gpuwm.physics_compat import (
+        PhysicsVerticalPreflightError,
+        validate_resolved_physics_vertical_levels)
+
+    over = dataclasses.replace(exp.domains[0].run, nz=129)
+    with pytest.raises(PhysicsVerticalPreflightError,
+                       match=r"Kain-Fritsch cumulus requires 8 <= nz <= 128"):
+        validate_resolved_physics_vertical_levels(over)
 
 
 def test_the_level_specialized_frame_model_agrees_with_every_measurement():
-    """Six driver measurements on the RTX 5090 (2026-07-26), two bounds and
-    three level counts per module.  Each is `align8(bytes_per_level * n)`."""
+    """Driver measurements on the RTX 5090 (2026-07-26), three level counts
+    per module.  Each is `align8(bytes_per_level * n)`.
+
+    `kf`'s three rows -- 24,064 / 9,216 / 5,640 -- used to sit here and are
+    gone with the table entry: its column arrays moved into a global
+    workspace on 2026-08-21 and its frame stopped following `nz`.  They
+    survive as :data:`KF_AS_BUILT_FRAME`, which is what the historical
+    measurements in this file are priced against.
+    """
+    assert KF_AS_BUILT_FRAME.frame_bytes(128) == 24064
+    assert KF_AS_BUILT_FRAME.frame_bytes(49) == 9216
+    assert KF_AS_BUILT_FRAME.frame_bytes(30) == 5640
     measured = {
-        ("kf", 128): 24064, ("kf", 49): 9216, ("kf", 30): 5640,
         ("refl", 256): 18432, ("refl", 49): 3528, ("refl", 30): 2160,
     }
     for (module, levels), frame in measured.items():
@@ -3515,12 +3600,15 @@ def test_the_six_tornado_les_configs_are_the_ones_this_moves():
     """Reachability, named: which shipped configs the tier actually changes.
 
     All six are nz = 72 four-domain WSM6 trees, so all six were priced at
-    the 64 rung.  Their local TOTAL does not move, and that is worth
-    saying out loud rather than leaving as a silent pass: ``ysu`` holds
-    9,232 B on these compositions, 224 B wider than WSM6's 80-tier frame,
-    and the reservation is a MAX over the selected modules.  The
-    under-pricing is real and is exposed the moment WSM6 is the widest
-    module a run selects -- which the second half measures.
+    the 64 rung.  Their local TOTAL used not to move, because ``ysu`` held
+    9,232 B on these compositions -- 224 B wider than WSM6's 80-tier frame
+    -- and the reservation is a MAX over the selected modules, so WSM6's
+    under-pricing hid behind YSU's frame.
+
+    It does not hide any more.  The YSU column workspace (2026-08-21) took
+    that frame to 0, so WSM6's 9,008 B is what these six configurations
+    now reserve against, and the tier ladder is what stands between them
+    and a mispriced rail.  That is the reachability this test names.
     """
     from gpuwm.experiment import load_experiment
 
@@ -3531,7 +3619,7 @@ def test_the_six_tornado_les_configs_are_the_ones_this_moves():
         assert {int(d.run.nz) for d in exp.domains} == {72}, path.name
         frames.append((path.name, f["wsm6"], max(f.values())))
     assert len(frames) == 6, [name for name, _, _ in frames]
-    assert all(wsm6 == 9008 and widest == 9232
+    assert all(wsm6 == 9008 and widest == 9008
                for _, wsm6, widest in frames), frames
 
     # WSM6 widest: the total moves by the frame's whole reservation delta.
@@ -3550,18 +3638,28 @@ def test_the_six_tornado_les_configs_are_the_ones_this_moves():
     assert totals[72] - totals[64] == 467927040     # +446.2 MiB
 
 
-def test_the_widest_frame_is_one_cumulus_kernel_not_anything_mynn_owns():
+def test_the_widest_frame_is_no_longer_the_cumulus_kernel():
+    """The cumulus kernel used to set this configuration's whole
+    local-memory reservation, and now it sets none of it.
+
+    History in one place: `kf_column` held 24,064 B at the unspecialized
+    KF_KMAX = 128, then 9,216 B once the bound compiled to nz = 49
+    (2026-07-26), and now 512 B with its column arrays in a global
+    workspace (2026-08-21).  Under the 1,024 B default stack it reserves
+    NOTHING, so the widest launched frame here is `morrison`'s 5,120 B --
+    the runner-up that never moved.  Nothing MYNN owns has ever been in
+    this contest; that is the other half of the claim and it still holds.
+    """
     exp = load_experiment_case(CONFIG_4DOM_MYNN_KF)[0]
     frames = pf.kernel_local_frame_bytes(exp)
     widest = max(frames, key=lambda m: frames[m])
-    assert widest == "kf"
-    without_cumulus = {m: f for m, f in frames.items() if m != "kf"}
-    assert max(without_cumulus.values()) == 5120  # morrison
-    # It is still the widest AS LAUNCHED, at a quarter of the frame it used
-    # to carry: 9,216 B specialized to nz = 49 against 24,064 B at KF_KMAX
-    # 128, and the runner-up unchanged.
-    assert frames["kf"] == 9216
-    assert pf.KERNEL_MAX_LOCAL_SIZE_BYTES["kf"] == 24064
+    assert widest == "morrison"
+    assert frames["morrison"] == 5120
+    assert frames["kf"] == 512
+    assert pf.KERNEL_MAX_LOCAL_SIZE_BYTES["kf"] == 512
+    assert pf.MEASURED_LOCAL_MEMORY_PROFILE.reservation_bytes(
+        frames["kf"]) == 0
+    assert max(f for m, f in frames.items() if m.startswith("mynn")) == 0
 
 
 def test_physics_kernel_modules_fails_closed_on_an_unpriced_selector():
@@ -3678,10 +3776,21 @@ def _as_built_overhead(config):
     plus the reservation of the widest module frame at its UNSPECIALIZED
     bound, which is how ``kf``/``refl`` compiled before the bounds were
     specialized.  Keeps the historical measurements priced against the code
-    that produced them."""
+    that produced them.
+
+    ``kf`` is substituted explicitly because its LIVE row no longer
+    describes any binary that ever ran these configurations: it is 512 B
+    since the column workspace, and reading it here would price a
+    2026-07-26 run as if it had carried no cumulus reservation at all --
+    which is the one thing those runs are evidence AGAINST.  No workspace
+    term is added for the same reason: the binary that ran had none."""
     exp = load_experiment_case(config)[0]
-    widest = max(pf.KERNEL_MAX_LOCAL_SIZE_BYTES[m]
-                 for m in pf.physics_kernel_modules(exp))
+    modules = pf.physics_kernel_modules(exp)
+    as_built = dict.fromkeys(modules, 0)
+    as_built.update({m: pf.KERNEL_MAX_LOCAL_SIZE_BYTES[m] for m in modules})
+    if "kf" in as_built:
+        as_built["kf"] = KF_AS_BUILT_FRAME.frame_bytes(128)
+    widest = max(as_built.values())
     return (pf.CUDA_CONTEXT_BYTES
             + pf.MEASURED_LOCAL_MEMORY_PROFILE.reservation_bytes(widest))
 
@@ -3694,16 +3803,17 @@ def test_the_measured_overhead_refuses_the_run_that_breached_the_rail():
     assert legs["alloc_estimate_le_wddm_budget"] is False
 
 
-def test_specializing_the_bound_is_what_lets_the_cumulus_config_through():
+def test_taking_kf_off_the_stack_is_what_lets_the_cumulus_config_through():
     """The same configuration, the same rail, the same desktop occupancy --
-    the only thing that changed is that `kf.cu` compiles its column arrays
-    to nz = 49 instead of 128.
+    what changed is where `kf.cu` keeps its column arrays.
 
     Measured, not projected.  `configs/real74_4dom_mynn_norad.toml` was RUN
-    unchanged on 2026-07-26 after the specialization: 27,216 MiB device-wide
-    peak (NVML, 1 Hz, 112 samples), status complete, 2,284 MiB under the
-    29,500 MiB rail, against 31,130 MiB for the same file before.  See
-    docs/kernel_local_memory_bounds.md.
+    unchanged on 2026-07-26 after the bound was specialized to nz = 49:
+    27,216 MiB device-wide peak (NVML, 1 Hz, 112 samples), status complete,
+    2,284 MiB under the 29,500 MiB rail, against 31,130 MiB for the same
+    file before.  See docs/kernel_local_memory_bounds.md.  The 2026-08-21
+    workspace goes further in the same direction and adds a cost of its own,
+    and both legs are priced separately below rather than netted silently.
     """
     legs = _rail_gate(CONFIG_4DOM_MYNN_KF, rail_mib=29500, other_mib=3381)
     assert legs["alloc_estimate_le_wddm_budget"] is True
@@ -3715,12 +3825,20 @@ def test_specializing_the_bound_is_what_lets_the_cumulus_config_through():
     # compile-time-array saving into a saving mixed with an accounting
     # change.  Prices both against the same reference profile.
     reference = pf.card_local_memory_profile(None)
+    exp = load_experiment_case(CONFIG_4DOM_MYNN_KF)[0]
     saved = (_as_built_overhead(CONFIG_4DOM_MYNN_KF)
              - pf.CUDA_CONTEXT_BYTES
-             - (pf.ReservePolicy.n0_alloc(
-                 load_experiment_case(CONFIG_4DOM_MYNN_KF)[0]
-             ).device_overhead_bytes - reference.cuda_context_bytes))
-    assert round(saved / 1024 ** 2) == 3698
+             - (pf.ReservePolicy.n0_alloc(exp).device_overhead_bytes
+                - reference.cuda_context_bytes))
+    # Two legs, named.  The RESERVATION leg: 5,738 MiB at KF_KMAX = 128
+    # against 1,020 MiB now, because `kf` is under the default stack and
+    # `morrison`'s 5,120 B sets the reservation instead -- 4,718 MiB.  The
+    # WORKSPACE leg costs 423 MiB back, which is what the tile of columns
+    # actually in flight holds on this 170-SM reference card.  Net 4,294.
+    workspace = pf.kf_column_workspace_bytes(exp, profile=reference)
+    assert round(workspace / 1024 ** 2) == 423
+    assert round((saved + workspace) / 1024 ** 2) == 4718
+    assert round(saved / 1024 ** 2) == 4294
 
 
 def test_the_rail_gate_passes_the_four_domain_run_that_measured_under_it():
@@ -4218,7 +4336,9 @@ def _fleet_4080_non_pool_bytes(nz: int = 49) -> int:
     profile = pf.DeviceLocalMemoryProfile(
         name="RTX 4080", multiprocessor_count=FLEET_4080_MULTIPROCESSORS,
         max_threads_per_multiprocessor=1536)
-    widest = pf.LEVEL_SPECIALIZED_KERNEL_FRAMES["kf"].frame_bytes(nz)
+    # AS BUILT, not as it compiles today: every row in the table above was
+    # measured on a binary whose widest frame was kf_column's 188 B/level.
+    widest = KF_AS_BUILT_FRAME.frame_bytes(nz)
     return pf.CUDA_CONTEXT_BYTES + profile.reservation_bytes(widest)
 
 

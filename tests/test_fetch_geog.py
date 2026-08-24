@@ -172,7 +172,81 @@ def _refusing_transport():
 # ---------------------------------------------------------------------------
 
 def test_pin_table_binds_the_static_builders_dataset_list():
-    assert geog_assets.geog_datasets() == GEOG_DATASETS
+    # The WRF static builder's datasets must every one be fetchable.  The
+    # pin table is allowed to be wider than that list -- the MPAS static
+    # builder reads Noah-MP soil products the WRF one never opens -- so the
+    # bar is containment, not equality.  Equality would make adding a
+    # dataset for one builder look like a defect in the other.
+    fetchable = geog_assets.geog_datasets()
+    missing = [name for name in GEOG_DATASETS if name not in fetchable]
+    assert not missing, f"unfetchable static-builder dataset(s): {missing}"
+    assert len(set(fetchable)) == len(fetchable), "duplicate pin"
+    # Which door needs a pin is a COLUMN of the table, not a branch in the
+    # code that reads it.  The WRF-scoped column is exactly the nine the
+    # WRF static builder opens: doctor's WRF-side completeness verdict is
+    # read straight off it, and a pin drifting into that column would have
+    # doctor demand a dataset that builder never opens.
+    assert (geog_assets.datasets_required_by(geog_assets.GEOG_CONSUMER_WRF)
+            == GEOG_DATASETS)
+    for archive in geog_assets.GEOG_ARCHIVES:
+        assert archive.required_by, f"{archive.dataset} serves no door"
+        unknown = set(archive.required_by) - set(geog_assets.GEOG_CONSUMERS)
+        assert not unknown, f"{archive.dataset}: unknown consumer {unknown}"
+
+
+def test_the_mesh_column_carries_every_dataset_the_mesh_door_opens():
+    # rw_mpas_static's required list is dataset DIRECTORIES; the pin table
+    # is ARCHIVES, and one archive carries seven directories.  The two are
+    # bound through the pin table's own child declarations, so a dataset
+    # added to the engine's list without a mesh-scoped pin behind it is a
+    # tree doctor calls complete and the door then refuses.
+    from gpuwm.rustwx_static import REQUIRED_GEOG_DATASETS, fetchable_for
+
+    mesh_pins = set(geog_assets.datasets_required_by(
+        geog_assets.GEOG_CONSUMER_MESH))
+    assert set(fetchable_for(REQUIRED_GEOG_DATASETS)) == mesh_pins
+    assert "soilgrids" in mesh_pins
+
+
+def test_the_soil_archive_is_required_by_the_mesh_door_only():
+    # The ruling: 13 GB unpacked is a sanctioned requirement for the mesh
+    # path, and invisible to a WRF-only install.
+    archive = geog_assets.archive_for("soilgrids")
+    assert archive.required_by == (geog_assets.GEOG_CONSUMER_MESH,)
+    assert "soilgrids" not in geog_assets.datasets_required_by(
+        geog_assets.GEOG_CONSUMER_WRF)
+
+
+def test_the_noahmp_soil_container_is_pinned_and_declares_its_children():
+    # rw_mpas_static requires soilcomp and four soil texture layers.  They
+    # arrive in one upstream archive as child directories, each with its
+    # own WPS index, so the pin has to name the children or a staged tree
+    # cannot be validated.
+    archive = geog_assets.archive_for("soilgrids")
+    assert archive.filename == "soilgrids.tar.bz2"
+    assert set(archive.index_subdirs) == {
+        "soilcomp", "texture_top", "texture_bot",
+        "texture_layer1", "texture_layer2",
+        "texture_layer3", "texture_layer4",
+    }
+    # The five rw_mpas_static reads must each be a declared child.
+    for child in ("soilcomp", "texture_layer1", "texture_layer2",
+                  "texture_layer3", "texture_layer4"):
+        assert child in archive.index_subdirs
+
+
+def test_the_mandatory_bundle_claims_only_what_was_walked():
+    # --bundle serves the nine the 2026-07-29 walk found.  A pin added
+    # later must not silently widen that claim, or --bundle extracts
+    # nothing for it and reports success.
+    assert geog_assets.MANDATORY_BUNDLE_DATASETS == frozenset(GEOG_DATASETS)
+    assert "soilgrids" not in geog_assets.MANDATORY_BUNDLE_DATASETS
+
+
+def test_single_dataset_pins_declare_no_children():
+    for archive in geog_assets.GEOG_ARCHIVES:
+        if archive.dataset in GEOG_DATASETS:
+            assert archive.index_subdirs == (), archive.dataset
 
 
 def test_pins_are_real_digests_and_positive_sizes():
@@ -187,7 +261,7 @@ def test_pins_are_real_digests_and_positive_sizes():
 
 
 def test_parse_datasets_all_and_subset_and_unknown():
-    assert parse_datasets("all") == GEOG_DATASETS
+    assert parse_datasets("all") == geog_assets.geog_datasets()
     # canonical order regardless of request order, duplicates collapsed
     picked = parse_datasets("soiltemp_1deg,topo_gmted2010_30s,soiltemp_1deg")
     assert picked == ("topo_gmted2010_30s", "soiltemp_1deg")
@@ -195,6 +269,31 @@ def test_parse_datasets_all_and_subset_and_unknown():
         parse_datasets("topo_gmted2010_30s,not_a_dataset")
     with pytest.raises(ValueError, match="comma-separated"):
         parse_datasets(" , ")
+
+
+def test_the_default_fetch_stages_the_soil_archive_too():
+    # The ruling made the ~13 GB soil archive a sanctioned default
+    # download for the mesh path.  A bare `gpuwm fetch-geog` -- whose
+    # --datasets default is what this parses -- must therefore include it,
+    # or `gpuwm mesh` refuses a tree the installer just called done.
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="cmd")
+    geog_assets.register_cli(sub)
+    args = parser.parse_args(["fetch-geog"])
+    assert parse_datasets(args.datasets) == geog_assets.geog_datasets()
+    assert "soilgrids" in parse_datasets(args.datasets)
+
+
+def test_a_consumer_name_selects_that_doors_datasets():
+    # The subset spelling for an operator who knows they only want WRF:
+    # a consumer name off the table's own scoping column, not a per-door
+    # flag.  `--datasets wrf` is the WRF-only escape from the 13 GB.
+    assert parse_datasets("wrf") == GEOG_DATASETS
+    assert "soilgrids" not in parse_datasets("wrf")
+    assert parse_datasets("mesh") == geog_assets.datasets_required_by(
+        geog_assets.GEOG_CONSUMER_MESH)
+    # and it composes with explicit names, in canonical order
+    assert parse_datasets("wrf,soilgrids") == geog_assets.geog_datasets()
 
 
 def test_resolve_source_defaults_and_bundle_rules():
@@ -249,6 +348,36 @@ def test_validate_dataset_dir_bars(tmp_path):
     (good / "index").write_text(_INDEX_TEXT)
     ok, detail = validate_dataset_dir(tmp_path, "good_ds")
     assert ok, detail
+
+
+def test_validate_dataset_dir_checks_every_declared_child(tmp_path, monkeypatch):
+    # A container archive's index lives one level down, once per child.
+    # Every declared child has to pass: a tree missing one is a finding,
+    # not a pass earned by its siblings.
+    monkeypatch.setattr(
+        geog_assets, "GEOG_ARCHIVES",
+        (GeogArchive("box_ds", "box_ds.tar.bz2", 10, "0" * 64, 20,
+                     ("first", "second")),))
+
+    box = tmp_path / "box_ds"
+    (box / "first").mkdir(parents=True)
+    ok, detail = validate_dataset_dir(tmp_path, "box_ds", check_receipt=False)
+    assert not ok and "lacks its WPS `index` file" in detail
+
+    (box / "first" / "index").write_text(_INDEX_TEXT)
+    (box / "second").mkdir()
+    ok, detail = validate_dataset_dir(tmp_path, "box_ds", check_receipt=False)
+    assert not ok and "second" in detail, detail
+
+    (box / "second" / "index").write_text(_INDEX_TEXT)
+    ok, detail = validate_dataset_dir(tmp_path, "box_ds", check_receipt=False)
+    assert ok, detail
+
+    # A top-level index does not substitute for the children's.
+    (box / "second" / "index").unlink()
+    (box / "index").write_text(_INDEX_TEXT)
+    ok, detail = validate_dataset_dir(tmp_path, "box_ds", check_receipt=False)
+    assert not ok and "second" in detail, detail
 
 
 # ---------------------------------------------------------------------------

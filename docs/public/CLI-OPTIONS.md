@@ -4,7 +4,7 @@ The complete command-line surface, read off the parsers themselves.  It exists b
 
 `tests/test_docs_extras_agree_with_code.py` holds this page against the parsers in both directions, so it cannot fall behind the code and cannot name a flag that was removed.  Regenerate it with `python -m tools.build_cli_options_doc` after changing any option.
 
-Options are listed with the help text the tool itself prints.  Positional arguments and `--help` are omitted; run any door with `--help` for its usage line.
+Everything is listed with the help text the tool itself prints.  A door's positional arguments come first, in the order they are written on the command line and under the names its `--help` usage line gives them: `[NAME]` is optional, `NAME [NAME ...]` repeats.  Where an argument is restricted to a fixed set of values, run that door with `--help` for the list -- it is read from the tree at run time rather than pinned here.  `--help` itself is omitted.
 
 ## `gpuwm adapt`
 
@@ -38,6 +38,10 @@ Options are listed with the help text the tool itself prints.  Positional argume
 | `--wrf-reference-manifest MANIFEST` | WRF reference manifest naming the executable, build recipe, namelists and reference wrfout bytes the comparison was made against |
 
 ## `gpuwm check`
+
+| argument | what it does |
+|---|---|
+| `CONFIG` | experiment TOML (or legacy RunConfig TOML, wrapped as a one-domain experiment) |
 
 | option | what it does |
 |---|---|
@@ -92,6 +96,10 @@ Options are listed with the help text the tool itself prints.  Positional argume
 
 `--parent-namelist` (with `--parent-namelist-domain`) is the entire stock-WRF-parent route this command's own summary advertises: without it, only a gpuwm parent run can be downscaled.  `--tiles {on,auto}` and `--child-size` are the only way to stream a `--point`-derived child, because this command authors the child TOML itself and a `[tiles]` table you wrote by hand would be overwritten.
 
+| argument | what it does |
+|---|---|
+| `parent [parent ...]` | parent wrfout directory or explicit history files |
+
 | option | what it does |
 |---|---|
 | `--accept-parent-cadence` | accept the archive's own cadence as the ceiling (prints the 15-min guidance when coarser); mutually exclusive with --max-boundary-interval-seconds |
@@ -128,6 +136,10 @@ Options are listed with the help text the tool itself prints.  Positional argume
 | `--out-report REPORT` | write the comparison document here |
 
 ## `gpuwm enprod`
+
+| argument | what it does |
+|---|---|
+| `[ENS_ROOT]` | ensemble root holding member_NNN/ run directories and ensemble-manifest.json (schema gpuwm-ensemble-manifest.v1) |
 
 | option | what it does |
 |---|---|
@@ -177,7 +189,7 @@ Options are listed with the help text the tool itself prints.  Positional argume
 | `--source MODEL` | public data source: aifs, aigefs, aigfs, ecmwf-open-data, era5, gdas, gefs, gem-gdps, gfs, hrrr, hrrr-prs, icon-eu, rap, rrfs. Registry aliases work too (gdps, ifs, hrrr-wrfprs). A registered source with no public bytes -- the 20CRv3 every-member archive, the generic 'mapped' adapter -- refuses by name and points at `gpuwm prep --source-root` |
 | `--static-input NPZ` | optional prebuilt static cache (with --static-receipt); omit when the front door builds statics from --geog-root |
 | `--static-receipt JSON` | receipt for --static-input |
-| `--transport {auto,aws,dwd,ecmwf,msc,nomads,s3}` | download host. hrrr: both hosts serve byte-identical files and .idx indexes; 'nomads' (nomads.ncep.noaa.gov, roughly the newest 48 h) publishes each hour first, 's3' is the full AWS archive, and 'auto' (default) probes NOMADS for the requested window and falls back to S3. Table routes: the host names their row declares (aws, nomads, ecmwf, dwd, msc), defaulting to the one the row marks -- a host the row does not carry refuses and lists the ones it does, because for some products the second copy is a DIFFERENT product (see `gpuwm fetch --source aigfs`) |
+| `--transport {auto,aws,dwd,ecmwf,msc,nomads,s3}` | pin one rung of the source's endpoint ladder. Every NCEP source declares an ORDERED ladder -- the operational server (nomads.ncep.noaa.gov) while it still holds the cycle, the AWS archive behind it -- and the default walks it. Retention decides which rungs are asked: a cycle older than the operational window goes straight to the archive. Throughput decides which one serves: each requested object is HEADed on the archive first and taken there when the archive already has it, because the operational server's head start is spent once both hosts have the same bytes; an object the archive has not caught up with comes from the operational server. A refusal, a 403/503 or a Retry-After moves to the next rung either way. Both hosts serve byte-identical objects under identical keys, so the choice never changes the data. Naming a host here is a decision: it skips the probe, disables fall-through, and refuses in that host's own words. A host a source does not carry refuses and lists the ones it does, because for some products the second copy is a DIFFERENT product (see `gpuwm fetch --source aigfs`) |
 | `--validate GRIB` | era5 only: validate user-supplied GRIB1 file(s) against what gpuwm ingest expects instead of fetching |
 | `--wait-for` | hrrr only: live-cycle mode -- download each forecast hour as it publishes (polling at most every 30 s), so preparation can start before the cycle finishes publishing; on timeout the manifest still records the complete fetched prefix and a re-run resumes |
 | `--wait-timeout-minutes MIN` | hrrr --wait-for only: give up after this long (default 90 min), reporting exactly which hours were fetched |
@@ -199,7 +211,7 @@ Options are listed with the help text the tool itself prints.  Positional argume
 |---|---|
 | `--allow-upstream-drift` | accept an NCAR archive whose bytes no longer match the packaged pin (recorded as unpinned; refused outside a sanity size band); never applies to the mirror |
 | `--bundle` | fetch NCAR's single geog_high_res_mandatory.tar.gz (2.6 GiB) instead of the per-dataset tarballs and extract the requested datasets from it (fallback; NCAR only) |
-| `--datasets all|NAME,NAME` | which datasets to stage (default all nine the static builder opens) |
+| `--datasets all|CONSUMER|NAME,NAME` | which datasets to stage (default 'all', every pin -- the 10 above). A consumer name stands for one door's whole set: 'wrf' is the 9 the WRF static builder opens, 'mesh' is what gpuwm mesh needs for the static half of its pair. Use '--datasets wrf' to skip the ~12 GiB Noah-MP soil archive that only gpuwm mesh reads |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--keep-archives` | keep the verified tarballs under <root>/.fetch-geog after extraction (default: remove each one after its datasets validate) |
 | `--list` | print the dataset/size/source table and per-dataset staged state, then exit without touching the network |
@@ -217,6 +229,10 @@ Options are listed with the help text the tool itself prints.  Positional argume
 
 `--no-memory-gate` is the only escape from the pre-fetch memory gate.  The gate runs before the chain downloads anything, and on a box whose card it cannot see it declines to refuse rather than blocking a run that would have worked.
 
+| argument | what it does |
+|---|---|
+| `CONFIG` | a single-domain GFS experiment TOML emitted by `gpuwm domain --source gfs` -- the wizard's default emission is exactly this shape (--physics-profile optional: an unbound config's own suite runs as written) |
+
 | option | what it does |
 |---|---|
 | `--data-dir DIR` | reuse an existing `gpuwm fetch` download instead of fetching into <outdir>/data |
@@ -230,6 +246,11 @@ Options are listed with the help text the tool itself prints.  Positional argume
 
 ## `gpuwm import-namelist`
 
+| argument | what it does |
+|---|---|
+| `WPS` | WPS namelist.wps (projection + nest layout) |
+| `INPUT` | WRF namelist.input (domains/physics/dynamics/bdy_control) |
+
 | option | what it does |
 |---|---|
 | `--ack ID` | declared-experiment acknowledgement id to write into [experiment].acknowledgements of the resolved TOML (repeatable). WRF namelists cannot spell gpuwm governance declarations, so an import that needs one -- e.g. shortwave-on/longwave-off physics across a window that includes local night -- names the id it wants in its refusal |
@@ -240,14 +261,48 @@ Options are listed with the help text the tool itself prints.  Positional argume
 
 ## `gpuwm ingest`
 
+| argument | what it does |
+|---|---|
+| `CONFIG` | experiment TOML ([experiment]/[[domain]] tables, as emitted by `gpuwm domain` or `gpuwm import-namelist`; config-driven runs declare their inputs in [case_data]). A legacy [run]-table RunConfig naming a registered case is also accepted. |
+
 | option | what it does |
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--output NPZ` | initialized-state NPZ output |
 
+## `gpuwm mesh`
+
+| option | what it does |
+|---|---|
+| `--allow-rough-mesh` | WORKAROUND: emit a mesh rougher than the stated smoothness bound. Reported as a workaround in the receipt, never as a setting |
+| `--background-km KM` | cell spacing far from every refinement region; with no --refine this is a uniform mesh at that spacing |
+| `--card NAME` | size the mesh to this card's measured device footprint; --list-cards prints the ones that have been measured |
+| `--cells N` | exact cell count, skipping the device model entirely |
+| `--clobber` | replace an existing --out |
+| `--dry-run` | size and cost the request, apply both gates, write nothing |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--geog DIR` | WPS_GEOG archive the static's terrain, land use, soil, green-ness and albedo come from. Defaults to $GPUWM_WPS_GEOG, then ~/.local/share/gpuwm/WPS_GEOG |
+| `--list-cards` | print the cards in the sizing table and the largest mesh each measured one holds, then exit |
+| `--name TEXT` | label carried into the grid file's provenance attributes |
+| `--no-static` | WORKAROUND: write only the grid. The result is NOT runnable -- the mesh registry pins grid AND static, so a lone grid file is refused before any dycore sees it |
+| `--nominal-dx-m M` | the nominal spacing the static DECLARES, in metres. Defaults to the grid's own implied value. This scalar is compared FP32-bit-exactly by the mesh registry, so a declaration the grid disagrees with is refused |
+| `--out GRID.nc` | grid file to write (not needed with --dry-run or --list-cards) |
+| `--receipt JSON` | write the measured receipt here as well as to stdout |
+| `--refine LAT,LON,KM,KM` | refine a circle: LAT,LON,RADIUS_KM,SPACING_KM and optionally a fifth TRANSITION_KM. Repeatable -- each row is one region and adding one is data, not a code path |
+| `--refine-box LAT0,LAT1,LON0,LON1,KM` | refine a latitude/longitude box: LAT0,LAT1,LON0,LON1,SPACING_KM and optionally a sixth TRANSITION_KM. Repeatable |
+| `--spec SPEC.json` | read the whole resolution spec from a JSON document instead of building it from --background-km/--refine |
+| `--static-out STATIC.nc` | where the matching static goes. Defaults to --out with a .static.nc suffix beside the grid, because the mesh registry admits the two as a pair |
+| `--sweeps N` | relaxation budget passed to the generator |
+| `--tolerance X` | relaxation convergence tolerance passed to the generator |
+| `--vram-gib X` | device budget in GiB, instead of the named card's total memory (for a card that is shared with something else); needs --card, because the fixed term is per card |
+
 ## `gpuwm multi-run`
 
 `--preflight {estimate,alloc,off}` is the only override of the plan's own preflight mode.
+
+| argument | what it does |
+|---|---|
+| `PLAN.toml` | versioned plan with one or more [[run]] entries |
 
 | option | what it does |
 |---|---|
@@ -263,21 +318,41 @@ Options are listed with the help text the tool itself prints.  Positional argume
 
 ## `gpuwm obs asos`
 
+| argument | what it does |
+|---|---|
+| `ARGS ...` | arguments passed to the instrument's binary unchanged; gpuwm's own flags must come before the instrument name |
+
 Takes no options of its own.
 
 ## `gpuwm obs goes`
+
+| argument | what it does |
+|---|---|
+| `ARGS ...` | arguments passed to the instrument's binary unchanged; gpuwm's own flags must come before the instrument name |
 
 Takes no options of its own.
 
 ## `gpuwm obs mrms`
 
+| argument | what it does |
+|---|---|
+| `ARGS ...` | arguments passed to the instrument's binary unchanged; gpuwm's own flags must come before the instrument name |
+
 Takes no options of its own.
 
 ## `gpuwm obs odim`
 
+| argument | what it does |
+|---|---|
+| `ARGS ...` | arguments passed to the instrument's binary unchanged; gpuwm's own flags must come before the instrument name |
+
 Takes no options of its own.
 
 ## `gpuwm obs opera`
+
+| argument | what it does |
+|---|---|
+| `ARGS ...` | arguments passed to the instrument's binary unchanged; gpuwm's own flags must come before the instrument name |
 
 Takes no options of its own.
 
@@ -336,6 +411,10 @@ Takes no options of its own.
 | `--dir DIR` | directory of ODIM .h5 files, not searched recursively |
 
 ## `gpuwm obs stage4`
+
+| argument | what it does |
+|---|---|
+| `ARGS ...` | arguments passed to the instrument's binary unchanged; gpuwm's own flags must come before the instrument name |
 
 Takes no options of its own.
 
@@ -415,6 +494,10 @@ Takes no options of its own.
 
 `--pair-labels`, `--pair-subtitle` and `--pair-title` title and label the paired CPU-vs-GPU figure `--pair` composes.
 
+| argument | what it does |
+|---|---|
+| `[WRFOUT ...]` | wrfout NetCDF file(s) written by gpuwm run |
+
 | option | what it does |
 |---|---|
 | `--annotate FILE.json` | rust engine: override the panel title and the three subtitle slots (title, title_suffix, subtitle_left, subtitle_center, subtitle_right). A short badge belongs in the centre slot; anything sentence-length belongs on the left, which owns the row's width |
@@ -440,6 +523,10 @@ Takes no options of its own.
 
 ## `gpuwm report`
 
+| argument | what it does |
+|---|---|
+| `[RUNDIR]` | the run directory to collect from (default: the current directory, so `gpuwm report` with no arguments inside a run works; when the current directory holds no receipt but out/run below it does, that one is read and the manifest says so) |
+
 | option | what it does |
 |---|---|
 | `--dry-run, --list` | print the manifest -- everything that would be included, redacted and reported missing -- and write nothing |
@@ -449,6 +536,10 @@ Takes no options of its own.
 | `--output PATH` | where to write the zip: a file path, or a directory to name it in (default: the current directory, falling back to the system temporary directory and then your home directory if a write is refused) |
 
 ## `gpuwm resume`
+
+| argument | what it does |
+|---|---|
+| `CONFIG` | the SAME config the interrupted run used; the restart identity check refuses any other |
 
 | option | what it does |
 |---|---|
@@ -467,6 +558,10 @@ Takes no options of its own.
 
 `--allow-shared-gpu`, `--gpu-uuid`, `--prep-timeout` and `--supervisor-max-restarts` are the command-line spellings of settings STREAMING.md documents only as run-plan keys.
 
+| argument | what it does |
+|---|---|
+| `CONFIG` | experiment TOML ([experiment]/[[domain]] tables, as emitted by `gpuwm domain` or `gpuwm import-namelist`; config-driven runs declare their inputs in [case_data]). A legacy [run]-table RunConfig naming a registered case is also accepted. |
+
 | option | what it does |
 |---|---|
 | `--allow-shared-gpu` | UNSUPPORTED: permit another substantial CUDA compute context; device verification and the GPUWM UUID lock remain enforced |
@@ -481,6 +576,10 @@ Takes no options of its own.
 | `--supervisor-max-restarts N` | fresh-process recovery attempts (default 3) |
 
 ## `gpuwm run-plan`
+
+| argument | what it does |
+|---|---|
+| `[PLAN.json]` | a gpuwm.run-plan.v1 document: which route to execute, which config to execute it with, and where the outputs land |
 
 | option | what it does |
 |---|---|
@@ -499,9 +598,13 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--from DIR` | stage the bridge and table artifacts from a local directory instead of downloading (offline installs); verification is identical. Does not apply to --with-geog, which has its own --source |
-| `--with-geog` | also stage the WPS_GEOG static geography (~1.3 GB compressed, ~16 GB unpacked); the size is printed before anything downloads |
+| `--with-geog` | also stage the WPS_GEOG static geography (~2.2 GB compressed, ~30 GB unpacked); the size is printed before anything downloads |
 
 ## `gpuwm sim`
+
+| argument | what it does |
+|---|---|
+| `PREPARED_ROOT` | a prepared tree written by `gpuwm prep --output-root`, by the rw-wps console script, or by `gpuwm go`'s preparation stage |
 
 | option | what it does |
 |---|---|
@@ -518,6 +621,10 @@ Takes no options of its own.
 
 ## `gpuwm sources`
 
+| argument | what it does |
+|---|---|
+| `[ID]` | print ONE row in full, named by its registry id or any alias it declares (omit for the listing) |
+
 | option | what it does |
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
@@ -531,11 +638,20 @@ Takes no options of its own.
 
 ## `gpuwm spectral check`
 
+| argument | what it does |
+|---|---|
+| `RECEIPT.json` | _(the parser declares no help text for this option)_ |
+
 | option | what it does |
 |---|---|
 | `--rehash-inputs` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm spectral cross-box`
+
+| argument | what it does |
+|---|---|
+| `RECEIPT.json` | _(the parser declares no help text for this option)_ |
+| `OTHER-RECEIPT.json` | _(the parser declares no help text for this option)_ |
 
 | option | what it does |
 |---|---|
@@ -547,17 +663,29 @@ Takes no options of its own.
 
 ## `gpuwm spectral plot`
 
+| argument | what it does |
+|---|---|
+| `RECEIPT.json` | _(the parser declares no help text for this option)_ |
+
 | option | what it does |
 |---|---|
 | `--output-dir DIR` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm spectral register`
 
+| argument | what it does |
+|---|---|
+| `SPEC.toml` | _(the parser declares no help text for this option)_ |
+
 | option | what it does |
 |---|---|
 | `--output REGISTRATION.json` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm spectral run`
+
+| argument | what it does |
+|---|---|
+| `SPEC.toml` | _(the parser declares no help text for this option)_ |
 
 | option | what it does |
 |---|---|
@@ -567,12 +695,20 @@ Takes no options of its own.
 
 ## `gpuwm spectral score`
 
+| argument | what it does |
+|---|---|
+| `REGISTRATION.json` | _(the parser declares no help text for this option)_ |
+
 | option | what it does |
 |---|---|
 | `--output RECEIPT.json` | _(the parser declares no help text for this option)_ |
 | `--plot-dir DIR` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm speedrun`
+
+| argument | what it does |
+|---|---|
+| `[COURSE]` | the course id to run (`--list` shows them). A course is a row in the shipped course table plus its two asset files; adding one is table work |
 
 | option | what it does |
 |---|---|
@@ -591,12 +727,20 @@ Takes no options of its own.
 
 ## `gpuwm static`
 
+| argument | what it does |
+|---|---|
+| `CONFIG` | experiment TOML ([experiment]/[[domain]] tables, as emitted by `gpuwm domain` or `gpuwm import-namelist`; config-driven runs declare their inputs in [case_data]). A legacy [run]-table RunConfig naming a registered case is also accepted. |
+
 | option | what it does |
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--output NPZ` | static-field NPZ output |
 
 ## `gpuwm stream`
+
+| argument | what it does |
+|---|---|
+| `PLAN.toml` | strict gpuwm-stream-plan-v1 orchestration plan |
 
 | option | what it does |
 |---|---|
@@ -609,6 +753,10 @@ Takes no options of its own.
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 
 ## `gpuwm verify`
+
+| argument | what it does |
+|---|---|
+| `case` | verification case to run |
 
 | option | what it does |
 |---|---|

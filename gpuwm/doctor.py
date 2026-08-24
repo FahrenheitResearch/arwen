@@ -132,11 +132,32 @@ GEOG_STACK_HINT = (
     "  # `static builder` row).  Install these only to run\n"
     "  # GPUWM_STATIC_PYTHON=1.  To add just the two libraries:\n"
     "  #   pip install --upgrade rasterio pyproj")
-GEOG_HINT = (
-    "gpuwm fetch-geog\n"
-    "  # downloads the nine required WPS_GEOG datasets (~1.3 GB\n"
-    "  # compressed, ~16 GB unpacked) into $GPUWM_CASE_DATA_ROOT/WPS_GEOG,\n"
-    "  # or --root DIR.  Resumable, SHA-256-verified, re-run safe.")
+
+
+def _geog_hint() -> str:
+    """The fetch-geog remedy, with sizes read off the pin table.
+
+    A literal here was wrong the day a pin was added: the text kept
+    saying 16 GB while the default set had grown past 29, in the one
+    place a reader decides whether to start the download.
+    """
+
+    from gpuwm.geog_assets import (
+        GEOG_CONSUMER_WRF, datasets_required_by, size_phrase)
+
+    wrf = datasets_required_by(GEOG_CONSUMER_WRF)
+    return ("gpuwm fetch-geog\n"
+            "  # downloads every pinned WPS_GEOG dataset\n"
+            f"  # ({size_phrase()}) into\n"
+            "  # $GPUWM_CASE_DATA_ROOT/WPS_GEOG, or --root DIR.\n"
+            "  # Resumable, SHA-256-verified, re-run safe.\n"
+            f"  # `--datasets wrf` stages the {len(wrf)} the WRF static\n"
+            f"  # builder opens ({size_phrase(wrf)}) and\n"
+            "  # skips the Noah-MP soil archive only `gpuwm mesh` reads.")
+
+
+GEOG_HINT = _geog_hint()
+
 REINSTALL_HINT = (
     "pip install -e .\n"
     "  # the installed package is incomplete; reinstall from a clone\n"
@@ -2472,6 +2493,8 @@ _CHECKED_ARTIFACTS = {
     "gpuwm_preprocess_cpu": "the `cpu preprocess library` line",
     "rw_fetch": "the `fetch backbone` line",
     "rw_wrfbatch": "the `renderer` line",
+    "rw_mpas_mesh": "the `mesh generator` line",
+    "rw_mpas_static": "the `mesh static builder` line",
     "rw_nexrad": "the `radar front door` line",
     "region_global_dealias": "the `region-global dealiasing engine` line",
     "rw_odim": "the `obs front door` lines",
@@ -2485,6 +2508,9 @@ _CHECKED_ARTIFACTS = {
     "gpuwm_mapped_engine": "the `mapped decode engine` line",
     "static_fields": "the `static builder` line",
     "obs_regrid": "the `observation remap` line",
+    "rw_mpas_mesh": "the `MPAS binary` lines",
+    "rw_mpas_init": "the `MPAS binary` lines",
+    "rw_mpas_convert": "the `MPAS binary` lines",
 }
 
 
@@ -2969,6 +2995,126 @@ def _fetch_backbone_check() -> Check:
             brief=_short(evidence), group=_GROUP_ENGINES)
     return Check(name, "verified", f"{found} -- {evidence}",
                  brief=_short(evidence), group=_GROUP_ENGINES)
+
+
+#: The door each MPAS binary unlocks, by artifact name.  What a reader
+#: can type after ``pip install gpuwm``, never a crate path.
+_MPAS_DOORS = {
+    "rw_mpas_mesh": "gpuwm mesh (MPAS mesh generation)",
+    "rw_mpas_static": "gpuwm mesh (the matching MPAS static)",
+    "rw_mpas_init": "MPAS initial conditions from a grid and a static file",
+    "rw_mpas_convert": "MPAS history onto the renderer's tape",
+}
+
+#: One action for all four: they share a clone, a cargo build and a
+#: reason, so the terse report folds them into a single line.
+_MPAS_ACTION = ("build the MPAS binaries from a clone "
+                f"({bridges.RUSTWX_CRATE_RELATIVE})")
+
+
+def _mpas_bridge_checks() -> list[Check]:
+    """The four MPAS binaries, reported by name.
+
+    ``rw_mpas_convert`` is the artifact this module's other comments
+    keep naming as the precedent: written, committed, resolved by name,
+    carried by no bundle, reported by no check.  ``rw_mpas_mesh`` --
+    the generator that reproduces the published NCAR meshes to 1e-11 --
+    joined it in that state the day it was built, with no bundle row,
+    no contract marker, no environment variable, no resolver and no
+    Python that called it.  A capability with no front door is not a
+    feature, and an estate that calls itself green over four absent
+    binaries is the reason this file has a bundle-coverage check.
+
+    Non-blocking.  These are a capability a bare install does not
+    otherwise have, not a default path that silently degrades: nothing
+    else in gpuwm makes a mesh, so their absence closes ``gpuwm mesh``
+    and touches nothing else.  Staleness is judged as well as presence,
+    statically, out of the bytes -- the same check
+    ``gpuwm fetch-bridges`` applies before it installs one.
+    """
+
+    try:
+        from gpuwm import mpas_mesh
+    except ImportError as error:                 # pragma: no cover - partial
+        return [Check(
+            "MPAS binaries (mesh, static, init, convert)", "missing",
+            f"gpuwm.mpas_mesh is not importable ({error}) -- closes "
+            "`gpuwm mesh` and means this install is incomplete",
+            "# reinstall so the mesh door imports:\n" + REINSTALL_HINT,
+            action="reinstall gpuwm", brief="mesh door not importable",
+            group=_GROUP_ENGINES, severity=SEVERITY_BROKEN)]
+
+    unnamed = sorted(set(mpas_mesh.BRIDGES) - set(_MPAS_DOORS))
+    assert not unnamed, (
+        f"gpuwm.mpas_mesh gained {unnamed} and gpuwm.doctor does not name "
+        "the door(s) they unlock")
+
+    checks: list[Check] = []
+    for name, door in sorted(_MPAS_DOORS.items()):
+        bridge = mpas_mesh.BRIDGES[name]
+        label = f"MPAS binary {name} ({bridge.subject})"
+        try:
+            found = bridge.find()
+        except FileNotFoundError as error:
+            checks.append(Check(
+                label, "missing", f"{error} -- {door} cannot run",
+                f"# {bridge.env_var} names a missing executable: point it "
+                "at a real build, or unset it --\n"
+                + bridges.install_aware_build_hint(
+                    mpas_mesh.CARGO_BUILD_HINT,
+                    bridges.RUSTWX_CRATE_RELATIVE, name),
+                action=f"unset {bridge.env_var}, or point it at a build",
+                brief=f"{bridge.env_var} names a missing file",
+                group=_GROUP_ENGINES, blocking=False,
+                severity=SEVERITY_UNREACHABLE))
+            continue
+        if found is None:
+            checks.append(Check(
+                label, "missing",
+                f"not built and not staged -- {door} cannot run",
+                bridge.remedy(), action=_MPAS_ACTION,
+                brief=f"not staged; {door} cannot run",
+                group=_GROUP_ENGINES, blocking=False,
+                severity=SEVERITY_UNREACHABLE))
+            continue
+        ok, evidence = bridges.bridge_abi_matches(name, found)
+        if not ok:
+            checks.append(Check(
+                label, "missing", f"{found} -- {evidence}; {door} would "
+                "mis-parse the request it is given",
+                "# this one is STALE, so re-point does not help; rebuild "
+                "it:\n" + bridges.install_aware_build_hint(
+                    mpas_mesh.CARGO_BUILD_HINT,
+                    bridges.RUSTWX_CRATE_RELATIVE, name),
+                action=_MPAS_ACTION, brief="stale build; rebuild it",
+                group=_GROUP_ENGINES, severity=SEVERITY_BROKEN))
+            continue
+        checks.append(Check(label, "verified", f"{found} -- {evidence}"))
+
+    # The sizing table is package data the mesh door reads on every
+    # invocation: it holds the per-card footprint model every refusal is
+    # built on and the smoothness bound. A wheel that lost it turns
+    # `gpuwm mesh --card` into a traceback rather than a refusal.
+    try:
+        sizing = mpas_mesh.load_sizing()
+        measured = ", ".join(c.key for c in sizing.measured_cards())
+        checks.append(Check(
+            "MPAS mesh sizing table", "verified",
+            f"{sizing.source} -- {len(sizing.cards)} card row(s), "
+            f"measured: {measured or 'none'}; smoothness bound "
+            f"{sizing.smoothness.refuse_above_percent_per_cell:.2f} %/cell "
+            f"({sizing.smoothness.status})"))
+    except Exception as error:                   # noqa: BLE001 - reported
+        checks.append(Check(
+            "MPAS mesh sizing table", "missing",
+            f"unreadable ({error}) -- `gpuwm mesh` cannot size a request "
+            "against any card and cannot apply the smoothness bound",
+            "# it is package data; a reinstall replaces it:\n"
+            + REINSTALL_HINT,
+            action="reinstall gpuwm", brief="mesh sizing table unreadable",
+            group=_GROUP_ENGINES, blocking=False,
+            severity=SEVERITY_UNREACHABLE))
+    return checks
 
 
 def _nexrad_front_door_check() -> Check:
@@ -3937,13 +4083,23 @@ def geography_gaps(geog: Path) -> list[Check]:
     ``--geog-root`` through unexamined and let ``rw-wps`` fail on a
     missing ``index`` file, after the fetch stage had downloaded the
     forcing.  One check, two readers.
+
+    Scoped to the WRF consumer, because ``go`` runs the WRF static path
+    and nothing else.  The same tree also carries a mesh-scoped verdict
+    -- ``gpuwm mesh`` opens a Noah-MP soil archive the WRF builder never
+    touches -- and folding that in here would refuse a WRF run over a
+    download its own preprocessing has no reader for.
     """
 
-    return [check for check in _geog_tree_checks(geog)
+    from gpuwm.geog_assets import GEOG_CONSUMER_WRF
+
+    return [check for check in
+            _geog_tree_checks(geog, consumers=(GEOG_CONSUMER_WRF,))
             if check.status == "missing"]
 
 
-def _geog_tree_checks(geog: Path) -> list[Check]:
+def _geog_tree_checks(geog: Path, *,
+                      consumers: tuple[str, ...] | None = None) -> list[Check]:
     """Check one staged WPS_GEOG tree, wherever it was resolved from.
 
     The dataset list comes from :mod:`gpuwm.geog_assets` -- the module
@@ -3961,15 +4117,22 @@ def _geog_tree_checks(geog: Path) -> list[Check]:
     its package-boundary scan said so.
     """
 
-    from gpuwm.geog_assets import geog_datasets
+    from gpuwm.geog_assets import (
+        GEOG_CONSUMER_MESH, GEOG_CONSUMER_WRF, GEOG_CONSUMERS,
+        datasets_required_by)
 
-    GEOG_DATASETS = geog_datasets()
+    wanted = GEOG_CONSUMERS if consumers is None else consumers
+
+    # The WRF door's own column, not the whole fetchable inventory: this
+    # tree also carries datasets that builder never opens, and reporting
+    # them here would call a working WRF install broken.
+    GEOG_DATASETS = datasets_required_by(GEOG_CONSUMER_WRF)
 
     checks: list[Check] = []
     if not geog.is_dir():
         # A tree nobody has fetched yet is the documented state of a
-        # fresh install (the ~16 GB download is an explicit opt-in), so
-        # it reports but does not fail the exit code.  A *partial* tree
+        # fresh install (the download is an explicit opt-in), so it
+        # reports but does not fail the exit code.  A *partial* tree
         # below stays blocking -- that one is a corrupted download.
         return [Check(
             "WPS_GEOG", "missing",
@@ -3977,32 +4140,109 @@ def _geog_tree_checks(geog: Path) -> list[Check]:
             "that builds static fields can run without it",
             GEOG_HINT, action="gpuwm fetch-geog",
             brief=f"{geog} does not exist", blocking=False)]
-    absent = sorted(name for name in GEOG_DATASETS
-                    if not (geog / name).is_dir())
-    unindexed = sorted(
-        name for name in GEOG_DATASETS
-        if (geog / name).is_dir() and not (geog / name / "index").is_file())
-    if absent or unindexed:
-        problems = []
-        if absent:
-            problems.append(f"missing dataset directorie(s): "
-                            f"{', '.join(absent)}")
-        if unindexed:
-            problems.append(
-                "dataset(s) without their WPS `index` file (empty or "
-                f"partial download): {', '.join(unindexed)}")
-        checks.append(Check(
-            "WPS_GEOG", "missing", f"{geog}: " + "; ".join(problems),
-            GEOG_HINT, action="gpuwm fetch-geog",
-            brief=f"{len(absent) + len(unindexed)} of "
-                  f"{len(GEOG_DATASETS)} dataset(s) absent or unindexed"))
-    else:
-        checks.append(Check(
-            "WPS_GEOG", "verified",
-            f"{geog} carries all {len(GEOG_DATASETS)} required datasets, "
-            "each with its WPS index file",
-            brief=f"all {len(GEOG_DATASETS)} datasets indexed"))
+    if GEOG_CONSUMER_WRF in wanted:
+        absent = sorted(name for name in GEOG_DATASETS
+                        if not (geog / name).is_dir())
+        unindexed = sorted(
+            name for name in GEOG_DATASETS
+            if (geog / name).is_dir()
+            and not (geog / name / "index").is_file())
+        if absent or unindexed:
+            problems = []
+            if absent:
+                problems.append(f"missing dataset directorie(s): "
+                                f"{', '.join(absent)}")
+            if unindexed:
+                problems.append(
+                    "dataset(s) without their WPS `index` file (empty or "
+                    f"partial download): {', '.join(unindexed)}")
+            checks.append(Check(
+                "WPS_GEOG", "missing", f"{geog}: " + "; ".join(problems),
+                GEOG_HINT, action="gpuwm fetch-geog",
+                brief=f"{len(absent) + len(unindexed)} of "
+                      f"{len(GEOG_DATASETS)} dataset(s) absent or unindexed"))
+        else:
+            checks.append(Check(
+                "WPS_GEOG", "verified",
+                f"{geog} carries all {len(GEOG_DATASETS)} datasets the WRF "
+                "static builder opens, each with its WPS index file",
+                brief=f"all {len(GEOG_DATASETS)} WRF datasets indexed"))
+
+    if GEOG_CONSUMER_MESH in wanted:
+        checks.extend(_mesh_geog_checks(geog))
     return checks
+
+
+def _mesh_geog_checks(geog: Path) -> list[Check]:
+    """The mesh door's own completeness verdict over the same tree.
+
+    `gpuwm mesh` builds a static of 82 variables and five of them are the
+    Noah-MP soil group, which the WRF static builder never opens.  The
+    two doors therefore need different datasets out of one tree, and this
+    report used to have one verdict for both: without this row doctor
+    called the tree complete and `gpuwm mesh` then refused it, which is
+    the report being wrong rather than the tree.
+
+    It BLOCKS when the mesh builder is on this box.  The soil archive was
+    an opt-in while the door's own binary was optional too, and the row
+    was ``info`` to match.  It is a required download for that door now,
+    so an install carrying `rw_mpas_static` and not its geography has a
+    door it advertises and cannot open -- ``unreachable``, exactly the
+    severity `blocking_gaps` defines for it, and green over that box is
+    the thing the exit code exists to prevent.  With no mesh builder
+    resolvable the row stays ``info``: the geography is not what stops
+    that door, `_mpas_bridge_checks` already reports the binary, and a
+    WRF-only install may not be failed over a door it does not have.
+    """
+
+    from gpuwm import rustwx_static
+
+    absent = rustwx_static.missing_geog_datasets(geog)
+    if not absent:
+        return []
+    try:
+        installed = rustwx_static.find_static_bin() is not None
+    except FileNotFoundError:
+        # GPUWM_RW_MPAS_STATIC names a missing file.  The operator asked
+        # for this door by hand, so it is installed as far as intent
+        # goes; the binary check reports the broken override itself.
+        installed = True
+    # The bare command, not the dataset flag.  The archive these come
+    # from is part of the default fetch set now, so naming the flag would
+    # teach a narrower command than the one that works; it is named in
+    # the comment because 13 GB deserves to be identified before it
+    # starts.  Read off the pin table, never spelled here.
+    carriers = ", ".join(rustwx_static.fetchable_for(absent))
+    remedy = ("gpuwm fetch-geog\n"
+              f"  # the default set stages {carriers}, the archive these\n"
+              "  # come from (~13 GB unpacked); `--datasets mesh` narrows\n"
+              "  # the download to what gpuwm mesh reads\n"
+              "  # or `gpuwm mesh --no-static` to write the grid alone")
+    if installed:
+        return [Check(
+            "WPS_GEOG (MPAS static)", "missing",
+            f"{geog} cannot build an MPAS static: "
+            f"{', '.join(absent)} are absent, and "
+            f"{rustwx_static.STATIC_NAME} is installed on this box. `gpuwm "
+            "mesh` writes the grid and refuses the static half of the pair, "
+            "and the mesh registry admits neither on its own, so the door "
+            "cannot be opened. Nothing on the WRF side reads these, so a "
+            "WRF-only run is unaffected",
+            remedy, action="gpuwm fetch-geog",
+            brief=f"{len(absent)} dataset(s) short of an MPAS static",
+            blocking=True, severity=SEVERITY_UNREACHABLE)]
+    return [Check(
+        "WPS_GEOG (MPAS static)", "info",
+        f"{geog} cannot build an MPAS static: "
+        f"{', '.join(absent)} are absent. `gpuwm mesh` needs them for the "
+        "static half of the pair, and the mesh registry admits neither the "
+        f"grid nor the static on its own. {rustwx_static.STATIC_NAME} is not "
+        "installed here either, so this is not what stops that door; nothing "
+        "on the WRF side reads these, so a WRF-only install is not broken "
+        "by it",
+        remedy,
+        brief=f"{len(absent)} dataset(s) short of an MPAS static",
+        blocking=False)]
 
 
 def _case_data_root_check() -> list[Check]:
@@ -4299,6 +4539,25 @@ def _install_identity_check() -> Check:
     elif source == "gpuwm-native-distribution-manifest":
         evidence = ("sealed runtime manifest "
                     f"{str(identity['git_commit'])[:12]}")
+    elif source == "installed-editable-source":
+        editable = identity["installed_editable"] or {}
+        git = editable.get("git") or {}
+        # A dirty editable tree is a normal developer install, not a
+        # defect -- but the check must SAY so, because the whole point
+        # of binding the source tree is that the receipt stops claiming
+        # a clean identity the tree does not have.
+        # ``dirty is None`` means git could not be launched and the tree
+        # was never inspected.  Reporting that as "clean" would be the
+        # one claim this whole binding exists to stop.
+        if git.get("dirty") is None:
+            state = "worktree unverified"
+        else:
+            state = "dirty" if git.get("dirty") else "clean"
+        evidence = (f"editable install of {editable.get('distribution_name')} "
+                    f"{editable.get('distribution_version')} at "
+                    f"{editable.get('source_root')} "
+                    f"(git {str(git.get('commit_full'))[:12]} on "
+                    f"{git.get('branch') or 'a detached HEAD'}, {state})")
     else:
         wheel = identity["installed_wheel"] or {}
         evidence = (f"installed wheel {wheel.get('distribution_name')} "
@@ -4750,6 +5009,8 @@ def collect_checks(sources: tuple[str, ...] | None = None,
     # through 2.3.3, which is how a box with every radar-adjacent
     # observation route dead could print a fully green estate.
     checks.extend(_obs_front_door_checks())
+    # The four MPAS binaries no bundle carried and no check reported.
+    checks.extend(_mpas_bridge_checks())
     checks.append(_netcdf_decoder_check())
     checks.append(_mapped_engine_check())
     checks.append(_ncwrite_check())

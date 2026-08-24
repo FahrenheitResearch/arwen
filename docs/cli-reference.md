@@ -85,6 +85,7 @@ can run for each trusted row.
 | `hrrr` | f00..f12 native/surface pairs, SHA manifest, valid time | Named certified CONUS slice; hierarchy reuses a sealed root preparation |
 | `gfs` | ordered `pgrb2.0p25` series, cycle, SHA manifest | One- or three-hour uniform series; 1000..100 hPa and four Noah slabs |
 | `era5` | combined GRIB1, Vtable, orography, SHA manifest | Uniform series beginning at experiment start |
+| `era5-l137` | per valid time, the model-level GRIB2 file (all 137 levels) AND the same hour's ERA5 pressure-level/single-level analysis; SHA manifest | ERA5 on its native 137 hybrid sigma-pressure levels through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- the A/B interface coefficients ride IN BAND in the GRIB2 coordinate octets, so no per-model coefficient table is involved, and the land surface (surface pressure, orography, land fraction, skin temperature, the 2 m/10 m diagnostics, the four soil layers) is borrowed from the donor hour, which is why two files go in per valid time.  Hourly analyses, no forecast leads; not stock-WRF certified |
 | `20crv3` | exact filename-member manifest; paired pressure/surface GRIB2 | Packaged immutable authorities; Lambert `max_dom=4`; not stock-WRF certified |
 | `20crv3-cf` | ordered NOAA PSL NetCDF files plus the recovered invariant supplement | The publicly downloadable 20CRv3.  Packaged profile supplies mapping/composition/provenance; ENSEMBLE MEAN, not a member; not stock-WRF certified |
 | `hrrr-prs` | ordered hourly `wrfprs` GRIB2 files | HRRR's public pressure-level product through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- the Lambert grid, grid-relative wind rotation and nine-node RUC soil are table data; in-band terrain; not stock-WRF certified |
@@ -207,6 +208,7 @@ test refuses any drift between the two.
 | `rrfs-firewx` | `firewx` |
 | `wrf` | `wrf-gdex`, `wrf-arw` |
 | `era5` | -- |
+| `era5-l137` | `era5-model-level`, `era5-ml` |
 | `20crv3` | `20cr`, `twentycrv3`, `20crv3-member` |
 | `20crv3-cf` | `20crv3-netcdf`, `20cr-netcdf`, `20cr-cf` |
 | `mapped` | `generic-mapped`, `mapping-v1` |
@@ -305,6 +307,63 @@ namelist/geography/experiment/output arguments.  It does NOT take
 packaged profile decides those and byte-checks them, and passing one is
 refused rather than honoured, because a packaged source's name has to mean
 one thing.
+
+## The ERA5 model-level route
+
+`gpuwm prep --source era5-l137` (also spelled `era5-model-level` or
+`era5-ml`) reads ERA5 on its NATIVE vertical coordinate -- all 137
+hybrid sigma-pressure model levels -- instead of the interpolated
+pressure ladder `--source era5` takes.  Every valid time on this row is
+an analysis and the cadence is hourly; there are no forecast leads to
+ask for.
+
+Two files go in per valid time, and that is the route's defining fact.
+ERA5's model-level product publishes the prognostic atmosphere only, so
+the land-surface and near-surface state -- surface pressure, orography,
+land fraction, skin temperature, the 2 m and 10 m diagnostics and the
+four-layer soil column -- is borrowed from the SAME HOUR's ERA5
+pressure-level/single-level analysis.  A donor hour that disagrees with
+the model-level hour refuses by name rather than composing across times.
+
+The vertical coordinate is table data read from the producer, not a
+coefficient table shipped beside the code: the 137 A/B interface
+coefficients ride IN BAND in the GRIB2 Section-4 coordinate values (276
+numbers, out of the same record).  Pressure is materialized as
+`p = A + B*ps` against the borrowed surface pressure, and geopotential
+height is integrated hydrostatically from the borrowed terrain, because
+the model-level product publishes `z` at level 1 only and a 3-D height
+borrow would cross ladders.  `lnsp` is not consumed anywhere: surface
+pressure is borrowed exactly rather than approximated.
+
+Like every packaged-profile source it does NOT take `--mapping`,
+`--composition`, `--provenance`, `--descriptor` or
+`--contributing-mapping`.  The packaged profile decides all five, and
+passing one is refused rather than honoured, because a packaged
+source's name has to mean one thing.
+
+`gpuwm fetch` has no download route for the model-level half: it is a
+queued Copernicus CDS MARS request (dataset `reanalysis-era5-complete`,
+`levtype=ml`) run under your own account, not files at a predictable
+URL, and `docs/public/SOURCES.md` states that refusal with its remedy.
+Stage the pair yourself and hand the directory to the door with
+`--source-root`, digest-bound by `--source-manifest` plus
+`--source-manifest-sha256`.  The surface donor half IS a front-door
+fetch (`gpuwm fetch --source era5`).  Two shipped configurations carry
+the whole procedure in their headers -- the exact MARS request, the
+donor fetch, the prep line, and the measured VRAM and wall-clock
+envelope: `configs/era5_l137_demo.toml` (one 12 km Lambert domain, two
+forecast hours) and `configs/era5_l137_regional_demo.toml` (178x144 at
+12 km, three hours), each beside its `.namelist.wps` companion.  One
+MARS request for this dataset at a time; the datastore rejects extra
+queued requests for it rather than queueing them.
+
+Measured on real Copernicus CDS bytes, the Rust engine and the Python
+reference produce byte-identical `air_pressure` and
+`geopotential_height` (max ULP 0), and the preparation reaches rc 0 with
+`wrfinput`/`wrfbdy` written.  The route is not yet accepted by unchanged
+stock WRF, and this row does not cover ERA5 model-level requests on
+other grids or level subsets: the mapping's ladder is the full 1..137
+set.
 
 ## The GDPS route
 

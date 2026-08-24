@@ -81,6 +81,7 @@ from gpuwm.geog_assets import register_cli as geog_register_cli
 from gpuwm.go_cli import register_cli as go_register_cli
 from gpuwm.speedrun_cli import register_cli as speedrun_register_cli
 from gpuwm.ingest.preflight import register_cli as ingest_register_cli
+from gpuwm.mpas_mesh import register_cli as mesh_register_cli
 from gpuwm.multi_run import register_cli as multi_run_register_cli
 from gpuwm.obs.cli import register_cli as obs_register_cli
 from gpuwm.render import register_cli as render_register_cli
@@ -353,6 +354,10 @@ def build_parser() -> argparse.ArgumentParser:
     # seconds.
     speedrun_register_cli(sub)
     adapt_register_cli(sub)
+    # The MPAS mesh generator's front door.  `rw_mpas_mesh` reproduced the
+    # published NCAR meshes to 1e-11 and had no command anyone could type,
+    # which by this project's rule means it was not shipped.
+    mesh_register_cli(sub)
     certify_register_cli(sub)
     multi_run_register_cli(sub)
     report_register_cli(sub)

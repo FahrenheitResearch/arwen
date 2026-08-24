@@ -286,8 +286,15 @@ gpuwm downscale demo-run --parent-domain 1 \
 
 1.4 s, rc 0. It prints the placement and writes the derived TOML. A REAL
 run writes it to `child-run/child.toml`, inside the run it describes. A
-`--dry-run` cannot: the run reserves `--out` and refuses if it already
-exists, so a dry run writes `child-run.child.toml` beside it and says so.
+`--dry-run` cannot: the run claims `--out` for itself, so a dry run
+writes `child-run.child.toml` beside it and says so.
+
+**Re-running with the same `--out` is safe.** A run that refuses hands
+the directory it claimed back, so the corrected command meets the tree
+the first attempt found. An `--out` that already holds a run's output is
+refused by name, saying what it holds and that you may pass a new `--out`
+or remove the old directory; nothing in it is ever overwritten or merged
+into, because the `report.json` a run publishes has to describe one run.
 
 **Pass `--vram-gib` or `--card` here too.** `gpuwm downscale --card`
 defaults to `24gb` while `gpuwm domain` measures the local card, so a

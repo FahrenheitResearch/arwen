@@ -224,18 +224,39 @@ def test_forecast_hour_ladders():
 # ---------------------------------------------------------------------------
 
 def test_latest_gfs_probes_synoptic_cycles_newest_first():
+    """Newest candidate first, and the operational server is asked first.
+
+    The archive lags the operational server by minutes to hours, so
+    resolving `latest` against the archive returned an older cycle than
+    the one already published -- a run initialized an hour behind the
+    best available state.
+    """
+
     probed = []
+    published = fetch.gfs_object_url(
+        datetime(2026, 7, 27, 18), 6, transport="nomads")
 
     def probe(url: str) -> bool:
         probed.append(url)
-        return url == fetch.gfs_object_url(datetime(2026, 7, 27, 18), 6)
+        return url == published
 
     cycle = fetch.resolve_latest_cycle(
         "gfs", 6, now=datetime(2026, 7, 28, 5, 30), probe=probe)
     assert cycle == datetime(2026, 7, 27, 18)
-    # Newest candidate first (2026-07-28 00Z), then strictly older.
-    assert probed[0] == fetch.gfs_object_url(datetime(2026, 7, 28, 0), 6)
+    assert probed[0] == fetch.gfs_object_url(
+        datetime(2026, 7, 28, 0), 6, transport="nomads")
     assert probed[-1].endswith("f006")
+
+
+def test_latest_gfs_falls_through_to_the_archive():
+    """The archive still answers when the operational server does not."""
+
+    published = fetch.gfs_object_url(
+        datetime(2026, 7, 27, 18), 6, transport="s3")
+    cycle = fetch.resolve_latest_cycle(
+        "gfs", 6, now=datetime(2026, 7, 28, 5, 30),
+        probe=lambda url: url == published)
+    assert cycle == datetime(2026, 7, 27, 18)
 
 
 def test_latest_hrrr_skips_cycles_whose_horizon_is_too_short():
@@ -260,17 +281,20 @@ def test_latest_hrrr_requires_both_wrfnat_and_wrfprs():
     def probe(url: str) -> bool:
         probed.append(url)
         # Newest cycle: wrfnat published, wrfprs not yet.
-        if url == fetch.hrrr_object_url(newest, 2, "wrfprs"):
+        if url == fetch.hrrr_object_url(newest, 2, "wrfprs",
+                                        transport="nomads"):
             return False
         return True
 
     cycle = fetch.resolve_latest_cycle(
         "hrrr", 2, now=datetime(2026, 7, 28, 5, 30), probe=probe)
     assert cycle == datetime(2026, 7, 28, 4)
-    assert fetch.hrrr_object_url(newest, 2, "wrfnat") in probed
-    assert fetch.hrrr_object_url(newest, 2, "wrfprs") in probed
+    for product in ("wrfnat", "wrfprs"):
+        assert fetch.hrrr_object_url(
+            newest, 2, product, transport="nomads") in probed
     # The winning cycle's soil object was probed too, not assumed.
-    assert fetch.hrrr_object_url(cycle, 2, "wrfprs") in probed
+    assert fetch.hrrr_object_url(
+        cycle, 2, "wrfprs", transport="nomads") in probed
 
 
 def test_latest_fails_closed_when_no_cycle_is_complete():
@@ -328,7 +352,11 @@ def test_fetch_gfs_writes_series_and_manifest(tmp_path, monkeypatch):
     assert manifest["forecast_hours"] == [0, 3, 6]
     assert manifest["area"]["lon_west"] == -100.0
     roles = [item["role"] for item in manifest["files"]]
-    assert roles == ["gfs-subset"] * 3 + ["series"]
+    # The payloads, the series, and the front-door receipts written
+    # beside them: the manifest claims every canonical file in the
+    # directory, exactly as the HRRR route's does.
+    assert roles == ["gfs-subset"] * 3 + [
+        "series", "checksums", "input-list", "prep-command"]
     for item in manifest["files"]:
         path = out / item["name"]
         assert item["bytes"] == path.stat().st_size
@@ -481,7 +509,7 @@ def test_fetch_gfs_concurrent_failure_names_the_hour_and_keeps_prefix(
     manifest = json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())
     assert manifest["forecast_hours"] == [0]
     assert [item["role"] for item in manifest["files"]] == [
-        "gfs-subset", "series"]
+        "gfs-subset", "series", "checksums", "input-list", "prep-command"]
 
 
 def test_fetch_gfs_discloses_prime_meridian_full_band_amplification(
@@ -596,7 +624,8 @@ def test_fetch_gfs_fullfile_takes_whole_objects_and_records_the_route(
     assert manifest["area"] is None
     assert manifest["forecast_hours"] == [0, 3]
     roles = [item["role"] for item in manifest["files"]]
-    assert roles == ["gfs-full-file"] * 2 + ["series"]
+    assert roles == ["gfs-full-file"] * 2 + [
+        "series", "checksums", "input-list", "prep-command"]
     # The decode ladder is a request property the manifest must carry,
     # or the front door would let the bridge derive the mesosphere from
     # the whole-globe object.
@@ -825,7 +854,8 @@ def test_fetch_gfs_first_hour_interrupt_records_empty_request(
 
     manifest = json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())
     assert manifest["forecast_hours"] == []
-    assert [item["role"] for item in manifest["files"]] == ["series"]
+    assert [item["role"] for item in manifest["files"]] == [
+        "series", "checksums", "input-list", "prep-command"]
     assert "f000.subset.grib2.part" in str(caught.value)
     # The empty prefix still records request identity, so the next run is
     # allowed to replace the .part instead of refusing a manifestless dir.
@@ -1625,7 +1655,8 @@ def test_gfs_interrupt_manifests_verified_prefix_and_resumes(
     manifest = json.loads((out / fetch.FETCH_MANIFEST_NAME).read_text())
     assert manifest["forecast_hours"] == [0]
     assert [item["name"] for item in manifest["files"]] == [
-        first, "gfs-series.tsv"]
+        first, "gfs-series.tsv", "SHA256SUMS", "inputs.txt",
+        "prep-command.txt"]
     assert (out / "gfs-series.tsv").read_text().splitlines() == [
         f"0\t{first}\t81"]
     assert hashlib.sha256((out / first).read_bytes()).hexdigest() == (
@@ -1928,15 +1959,15 @@ def test_hrrr_object_url_speaks_both_transports():
         fetch.hrrr_object_url(cycle, 2, "wrfnat", transport="ftp")
 
 
-def test_resolve_hrrr_transport_auto_prefers_s3_when_it_serves():
-    """The pairing fix: auto is paired with the whole-file default.
+def test_resolve_hrrr_transport_auto_takes_the_mirror_once_it_has_the_window():
+    """Caught-up mirror, mirrored transfer.
 
-    Both hosts serve identical bytes.  S3 is several times faster for
-    whole-file transfers (measured: a three-hour window, 54 minutes over
-    NOMADS against about three over S3); NOMADS's head start only
-    matters to --wait-for, which never reaches this function.  Preferring
-    the freshest host to a caller who was not asking for freshness cost
-    the wall clock for nothing.
+    Both hosts serve identical bytes.  The operational server's whole
+    advantage is having the cycle FIRST; once the archive has it too,
+    that advantage is spent and what is left is throughput, which the
+    archive wins -- measured at peak hours, ~3 MB/s per file against
+    the archive serving the same 3.4 GB in about a sixth of the wall
+    clock.
     """
     cycle = datetime(2026, 7, 28, 5)
     now = datetime(2026, 7, 28, 8)
@@ -1946,22 +1977,46 @@ def test_resolve_hrrr_transport_auto_prefers_s3_when_it_serves():
         probed.append(url)
         return True
 
+    lines = []
     got = fetch.resolve_hrrr_transport(
         cycle, "auto", last_hour=6, now=now, probe=probe,
-        progress=lambda line: None)
+        progress=lines.append)
     assert got == "s3"
-    # Completeness mirrors resolve_latest_cycle: BOTH final-hour objects.
-    assert probed == [
+    # The throughput rung is asked FIRST, and completeness mirrors
+    # resolve_latest_cycle: BOTH final-hour objects.
+    assert probed[:2] == [
         fetch.hrrr_object_url(cycle, 6, "wrfnat", transport="s3"),
         fetch.hrrr_object_url(cycle, 6, "wrfprs", transport="s3")]
+    assert any("mirrored" in line and "throughput" in line
+               for line in lines), lines
+    assert not any("publishes" in line for line in lines), lines
 
 
-def test_resolve_hrrr_transport_auto_falls_back_to_nomads():
-    """Watched firing: a cycle S3 has not got yet still fetches.
+def test_resolve_hrrr_transport_auto_stays_on_nomads_while_the_mirror_lags():
+    """Publication lag is the one thing the operational server is for.
 
-    NOMADS publishes ahead of the mirrors, so it remains the answer
-    while a live cycle is still propagating -- the preference above is
-    a preference, not a pin.
+    The freshness sentence is now EARNED: it prints only when the
+    mirror was asked and did not have the window.
+    """
+    cycle = datetime(2026, 7, 28, 5)
+    now = datetime(2026, 7, 28, 8)
+    lines = []
+    got = fetch.resolve_hrrr_transport(
+        cycle, "auto", last_hour=6, now=now,
+        probe=lambda url: url.startswith(fetch.HRRR_NOMADS_BASE),
+        progress=lines.append)
+    assert got == "nomads"
+    assert any("using nomads" in line and "before the mirrors" in line
+               for line in lines), lines
+    assert not any("mirrored" in line for line in lines), lines
+
+
+def test_resolve_hrrr_transport_auto_falls_through_to_the_archive():
+    """A window the operational server has not finished still fetches.
+
+    The ladder is an order, not a pin: the last rung is the archive and
+    it is reached without a probe, because probing it would only
+    duplicate the refusal the transfer itself would give.
     """
     cycle = datetime(2026, 7, 28, 5)
     now = datetime(2026, 7, 28, 8)
@@ -1969,8 +2024,9 @@ def test_resolve_hrrr_transport_auto_falls_back_to_nomads():
     got = fetch.resolve_hrrr_transport(
         cycle, "auto", last_hour=6, now=now, probe=lambda url: False,
         progress=lines.append)
-    assert got == "nomads"
-    assert any("S3 does not serve" in line for line in lines)
+    assert got == "s3"
+    assert any("does not serve" in line and "asking s3" in line
+               for line in lines)
 
 
 def test_resolve_hrrr_transport_skips_the_probe_for_archived_cycles():
@@ -2080,6 +2136,7 @@ class _LivePublication:
         self.schedule = schedule
         self.now = 0.0
         self.sleeps: list[float] = []
+        self.probed: list[str] = []
 
     def clock(self) -> float:
         return self.now
@@ -2093,6 +2150,7 @@ class _LivePublication:
     def probe(self, url: str) -> bool:
         import re
 
+        self.probed.append(url)
         name = url[:-4] if url.endswith(".idx") else url
         transport = ("nomads" if name.startswith(fetch.HRRR_NOMADS_BASE)
                      else "s3")
@@ -2161,6 +2219,43 @@ def test_fetch_hrrr_wait_auto_falls_back_per_product(tmp_path,
     assert by_name["hrrr.t05z.soilf01.grib2"] == "s3"
 
 
+def test_fetch_hrrr_wait_polls_nomads_and_transfers_from_the_mirror(
+        tmp_path, monkeypatch):
+    """The poll watches the operational server; the bytes come mirrored.
+
+    Its head start is the point of polling it, so it keeps being asked
+    every round.  But once the archive has the object too, the reason
+    to transfer from the slower host is gone -- and at peak hours that
+    reason cost ~20 min on a 3.4 GB request.
+    """
+    live = _LivePublication({
+        ("wrfnat", 0, "nomads"): 0.0, ("wrfprs", 0, "nomads"): 0.0,
+        ("wrfnat", 0, "s3"): 0.0, ("wrfprs", 0, "s3"): 0.0,
+        # f01 reaches NOMADS first and the mirror catches up later.
+        ("wrfnat", 1, "nomads"): 30.0, ("wrfprs", 1, "nomads"): 30.0,
+        ("wrfnat", 1, "s3"): 60.0, ("wrfprs", 1, "s3"): 60.0,
+    })
+    monkeypatch.setattr(
+        hrrr_transport, "_download_product", _fake_hrrr_product)
+    out = tmp_path / "hrrr"
+    manifest_path = fetch.fetch_hrrr(
+        cycle=datetime(2026, 7, 28, 5), hours=(0, 1), area=None, out=out,
+        transport="auto", wait=True, wait_timeout_s=3600.0,
+        probe=live.probe, sleeper=live.sleep, clock=live.clock,
+        progress=lambda line: None)
+
+    # The operational server was polled -- that is its head start.
+    assert any(url.startswith(fetch.HRRR_NOMADS_BASE)
+               for url in live.probed)
+    manifest = json.loads(manifest_path.read_text())
+    by_name = {item["name"]: item.get("transport")
+               for item in manifest["files"]}
+    # f00 is on both, so it is mirrored; f01 is on NOMADS alone when it
+    # first appears, so freshness wins that one.
+    assert by_name["hrrr.t05z.wrfnatf00.grib2"] == "s3"
+    assert by_name["hrrr.t05z.wrfnatf01.grib2"] == "nomads"
+
+
 def test_fetch_hrrr_wait_times_out_honestly_and_resumes(tmp_path,
                                                         monkeypatch):
     """The honest timeout: the complete f00 prefix is manifested (so a
@@ -2221,7 +2316,11 @@ def test_cli_fetch_hrrr_transport_and_wait_contracts(tmp_path, capsys):
         err = capsys.readouterr().err
         assert needle in err and "Traceback" not in err
 
-    refused("--source hrrr only",
+    # --transport names a rung of the endpoint ladder, and the GFS
+    # container sources have one -- but only their whole-object
+    # transport walks it.  The grib-filter crop is a CGI service on one
+    # host, so there is no rung to name.
+    refused("--mode full-file",
             ["fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
              "--hours", "6", "--area", "30,-100,40,-90",
              "--out", str(tmp_path), "--transport", "s3"])

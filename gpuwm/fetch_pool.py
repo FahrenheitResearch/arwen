@@ -54,24 +54,28 @@ import time
 from typing import Callable
 from urllib.parse import urlsplit
 
+from gpuwm import fetch_endpoints
+
 #: The engine default: how many file transfers are in flight at once.
 #: Chosen against the measured fetch shape -- per-file service latency
 #: dominates, so a handful of overlapped requests recovers most of the
 #: idle pipe without presenting as a burst to any provider.
 DEFAULT_FILE_WORKERS = 6
 
-#: Same-host politeness cap for NOMADS, applied on top of the node-wide
-#: request-spacing governor.  Two is deliberate: the governor spaces
-#: request *starts* 2.5 s apart node-wide, and the grib-filter service
-#: answers in ~3.1 s, so a second in-flight request is enough to keep
-#: the pipeline full -- more would only queue on the governor while
-#: holding connections open against a fragile public service.
-NOMADS_FILE_WORKER_CAP = 2
+#: Hosts with a politeness cap tighter than the pool size, and the cap
+#: each one gets.  TABLE DATA, read from ``host_policy`` in the packaged
+#: acquisition authority: a provider that starts throttling is a row
+#: there, not an edit here, and the same table already says which hosts
+#: a source is asked for.  The cap on the operational NCEP server rides
+#: on top of the node-wide request-spacing governor
+#: (:mod:`gpuwm.nomads_governor`), which this pool never bypasses --
+#: concurrency there only overlaps in-flight service time, it never
+#: raises the request rate.
+HOST_FILE_WORKER_CAPS = dict(fetch_endpoints.host_caps())
 
-#: Hosts with a politeness cap tighter than the pool size.
-HOST_FILE_WORKER_CAPS = {
-    "nomads.ncep.noaa.gov": NOMADS_FILE_WORKER_CAP,
-}
+#: The operational NCEP server's cap, named for the callers that print
+#: it in help text.  Its reasoning lives with the row, in the table.
+NOMADS_FILE_WORKER_CAP = HOST_FILE_WORKER_CAPS["nomads.ncep.noaa.gov"]
 
 #: Schema of the receipt :func:`run_transfers` returns.
 POOL_RECEIPT_SCHEMA = "gpuwm-fetch-pool-receipt-v1"
@@ -86,11 +90,23 @@ class TransferJob:
     already knows where its bytes come from.  ``action`` returns the
     route's manifest entry for the file and raises the route's own
     refusal on any failure -- the pool adds no bars and removes none.
+
+    The last three are what a :class:`gpuwm.progress.TransferMonitor`
+    needs to SAY something about this file while it is moving, and they
+    are all optional because none of them is a transport property:
+    ``token`` is what to call this file to a person (``f01 atmosphere``),
+    ``expected_bytes`` is its size where a route already knows one, and
+    ``path`` is where it lands -- which lets the in-flight byte count be
+    read off the growing file when the action's transport reports
+    nothing back.
     """
 
     name: str
     url: str | None
     action: Callable[[], dict]
+    token: str | None = None
+    expected_bytes: int | None = None
+    path: object | None = None
 
 
 def host_key(url: str | None) -> str:
@@ -104,7 +120,7 @@ def host_key(url: str | None) -> str:
 def host_worker_cap(host: str, workers: int) -> int:
     """How many of ``workers`` may target ``host`` at once."""
 
-    cap = HOST_FILE_WORKER_CAPS.get(host)
+    cap = HOST_FILE_WORKER_CAPS.get(host.lower())
     if cap is None:
         return workers
     return min(cap, workers)
@@ -150,15 +166,59 @@ def _receipt(*, entries: list[dict], workers_requested: int,
     }
 
 
+def _watch(monitor, job: TransferJob):
+    """Wrap ``job.action`` so the monitor hears when it starts and ends.
+
+    AROUND the action, never inside it: what a route's transport does is
+    the route's business, and the pool's promise that it "adds no bars
+    and removes none" has to survive this.  The wrapper reports two
+    facts the pool already owns -- this file began, this file ended --
+    and re-raises whatever the action raised, unchanged.
+    """
+
+    if monitor is None:
+        return job.action
+
+    def watched() -> dict:
+        monitor.start(job.name, token=job.token,
+                      host=host_key(job.url) or None,
+                      expected_bytes=job.expected_bytes, path=job.path)
+        started = time.perf_counter()
+        try:
+            entry = job.action()
+        except BaseException:
+            # A FAILED file is finished too.  Left open, it would be
+            # counted as in flight for the rest of the request and the
+            # consolidated line would claim work that stopped.
+            monitor.finish(job.name, seconds=time.perf_counter() - started,
+                           failed=True)
+            raise
+        size = entry.get("bytes") if isinstance(entry, dict) else None
+        monitor.finish(job.name,
+                       size=size if isinstance(size, int)
+                       and not isinstance(size, bool) else None,
+                       seconds=time.perf_counter() - started)
+        return entry
+
+    return watched
+
+
 def run_transfers(jobs, *, workers: int,
-                  on_admitted: Callable[[int, dict], None] | None = None
-                  ) -> tuple[list[dict], dict]:
+                  on_admitted: Callable[[int, dict], None] | None = None,
+                  monitor=None) -> tuple[list[dict], dict]:
     """Run every job; return ``(entries, receipt)`` in submission order.
 
     ``on_admitted(index, entry)`` fires on the caller's thread, in
     submission order, as each verified file joins the contiguous
     admitted prefix -- publish receipts there exactly as the serial
     loop did after each file.
+
+    ``monitor`` is a :class:`gpuwm.progress.TransferMonitor` that hears
+    the start and the end of every job, so a request with six files in
+    flight says which ones as it goes instead of only when each one
+    lands.  The transfer call sites always pass one; the ladder PROBE
+    pass deliberately does not, because a HEAD is not a download and
+    announcing eight of them would bury the eight lines that matter.
 
     Failure semantics: the earliest submitted job that failed re-raises
     its original exception after the verified prefix before it has been
@@ -179,6 +239,12 @@ def run_transfers(jobs, *, workers: int,
         if host and host_worker_cap(host, workers) < workers_effective}
     entries: list[dict] = []
     serial_seconds = 0.0
+    if monitor is not None and jobs:
+        # Before any worker exists.  See TransferMonitor.begin: paying
+        # the ticker's thread creation inside the first worker makes that
+        # worker late relative to its siblings, which reorders the
+        # transfers.
+        monitor.begin()
     started = time.perf_counter()
 
     def admit(index: int, entry: dict) -> None:
@@ -191,7 +257,7 @@ def run_transfers(jobs, *, workers: int,
         # thread machinery at all -- byte-for-byte the old loop.
         for index, job in enumerate(jobs):
             job_started = time.perf_counter()
-            entry = job.action()
+            entry = _watch(monitor, job)()
             serial_seconds += time.perf_counter() - job_started
             admit(index, entry)
         return entries, _receipt(
@@ -212,7 +278,7 @@ def run_transfers(jobs, *, workers: int,
             gate.acquire()
         try:
             job_started = time.perf_counter()
-            entry = job.action()
+            entry = _watch(monitor, job)()
             elapsed = time.perf_counter() - job_started
         finally:
             if gate is not None:

@@ -4085,7 +4085,17 @@ class PhysicsDriver:
         if cfg.cu_physics and self._cu_expiry_pending:
             self.finish_step()
         now = float(state.elapsed_seconds)
-        itimestep = int(np.floor(now / cfg.dt + 0.5)) + 1
+        # ITIMESTEP counts from THIS DOMAIN's activation, not from the
+        # experiment's start.  They differ only for a domain that
+        # activates late, and for one of those the difference decides
+        # whether its FIRST step runs radiation: WRF's mandatory
+        # itimestep == 1 call is what seeds GLW/SWDOWN/GSW before the
+        # land surface consumes them.  Read from the state because that
+        # is where the tick authority publishes it
+        # (gpuwm.core.state.refresh_model_time); absent, the domain
+        # started with the run and the two readings are identical.
+        epoch = float(getattr(state, "domain_start_offset", 0.0) or 0.0)
+        itimestep = int(np.floor((now - epoch) / cfg.dt + 0.5)) + 1
         atmosphere = None
 
         # WRF solve_em ordering: radiation precedes surface/PBL physics.

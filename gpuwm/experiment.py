@@ -258,7 +258,7 @@ _DOMAIN_KEYS = frozenset({
     # The dormant-nest declaration (gpuwm/core/nest_spawn.py): a child
     # carrying `spawn = {...}` is declared, reserved in the memory plan,
     # and integrates nothing until its trigger fires mid-run.
-    "spawn",
+    "spawn", "retire", "rearm", "follow",
     # The per-domain [tiles] override (gpuwm/core/streaming.py): a domain
     # carrying `tiles = {...}` chooses its OWN road, and the tree-wide
     # [tiles] table is the default for every domain that does not.  This
@@ -658,6 +658,13 @@ class DomainConfig:
     #: plan's and the manual time-trigger's), and the fired placement is
     #: chosen at trigger time (:func:`active_experiment`).
     spawn: "object | None" = None
+    #: Optional episode retirement policy for a spawned child.
+    retire: "object | None" = None
+    #: Optional slot re-arm policy; absent means the historical one-shot spawn.
+    rearm: "object | None" = None
+    #: Optional per-domain storm-follow policy.  Tree-level [relocation] remains
+    #: the backwards-compatible single-follower surface.
+    follow: "object | None" = None
     #: This domain's own ``[tiles]`` road (:class:`gpuwm.core.streaming
     #: .StreamingOptions`), or ``None`` to take the tree-wide table.
     #: ``None`` is the inherit contract and drops out of the restart
@@ -1711,6 +1718,21 @@ def validate_boundary_timing(
                 f"boundary: d{dc.parent_id:02d} dt = {parent_dt} s "
                 f"exactly, (child-parent start offset)/dt = "
                 f"{parent_steps}.")
+        if getattr(dc, "spawn", None) is not None:
+            # A SPAWNED nest's epoch is its trigger's instant, and a
+            # trigger fires on the weather rather than on the forcing
+            # calendar.  The seam rule below exists because a domain
+            # whose late start is DECLARED is initialized from the
+            # forcing at that instant and so must land on a snapshot; a
+            # spawned nest reads no snapshot at its birth -- it is SINT
+            # from its LIVE parent (that is the whole point of spawning
+            # it inside the storm the trigger saw), and its lateral
+            # boundaries come from that parent afterwards.  Requiring a
+            # forcing seam here would confine every spawn to the LBC
+            # cadence, which for a six-hourly analysis is four instants a
+            # day.  The parent-step alignment above is NOT relaxed: it is
+            # the rule the spawn instant is already validated against.
+            continue
         forcing_seams = offset / interval
         if forcing_seams.denominator != 1:
             raise ValueError(
@@ -2289,6 +2311,37 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             spawn_cfg = build_spawn_config(
                 dict(dom["spawn"]), source, grid_id=grid_id)
 
+        # --- retire/rearm/follow: per-domain lifecycle -------------------
+        retire_cfg = rearm_cfg = follow_cfg = None
+        if "retire" in dom:
+            if spawn_cfg is None:
+                raise ValueError(
+                    f"retire on [[domain]] grid_id = {grid_id} of {source} "
+                    "requires spawn: retirement is episode policy for a "
+                    "trigger-spawned slot, not an alternate end_time")
+            if not isinstance(dom["retire"], dict):
+                raise ValueError(f"retire on d{grid_id:02d} must be an inline TABLE")
+            from gpuwm.core.nest_lifecycle import build_retire_config
+            retire_cfg = build_retire_config(dict(dom["retire"]), source, grid_id=grid_id)
+        if "rearm" in dom:
+            if spawn_cfg is None or retire_cfg is None:
+                raise ValueError(
+                    f"rearm on [[domain]] grid_id = {grid_id} of {source} "
+                    "requires both spawn and retire; without retirement "
+                    "there is no legal boundary at which to re-arm")
+            if not isinstance(dom["rearm"], dict):
+                raise ValueError(f"rearm on d{grid_id:02d} must be an inline TABLE")
+            from gpuwm.core.nest_lifecycle import build_rearm_config
+            rearm_cfg = build_rearm_config(dict(dom["rearm"]), source, grid_id=grid_id)
+        if "follow" in dom:
+            if is_root:
+                raise ValueError(f"follow on root d{grid_id:02d} is refused: only a child has a placement inside a parent")
+            if not isinstance(dom["follow"], dict):
+                raise ValueError(f"follow on d{grid_id:02d} must be an inline TABLE")
+            from gpuwm.core.nest_lifecycle import build_domain_follow_config
+            follow_cfg = build_domain_follow_config(
+                dict(dom["follow"]), source, grid_id=grid_id)
+
         # --- tiles: this domain's own road -------------------------------
         # Validated by the SAME parser the tree-wide table uses, so one
         # vocabulary of keys, one set of value refusals, one place a new
@@ -2693,8 +2746,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             history_interval_s=history_interval_s, run=run,
             time_step=time_step, time_step_fract_num=fract_num,
             time_step_fract_den=fract_den, start_time=domain_start,
-            spawn=spawn_cfg, tiles=domain_tiles,
-            output=domain_output)
+            spawn=spawn_cfg, retire=retire_cfg, rearm=rearm_cfg,
+            follow=follow_cfg, tiles=domain_tiles, output=domain_output)
         domains.append(dc)
         by_id[grid_id] = dc
         dt_by_id[grid_id] = dt_ex
@@ -3247,7 +3300,8 @@ def validate_spawn_placement(exp: ExperimentConfig, grid_id: int,
 
 
 def active_experiment(exp: ExperimentConfig,
-                      spawned: dict | None = None) -> ExperimentConfig:
+                      spawned: dict | None = None, *,
+                      retired=(), birth_times=None) -> ExperimentConfig:
     """The tree the executor integrates: dormant nests out, spawned in.
 
     ``spawned`` maps grid_id -> ``(i_parent_start, j_parent_start)`` for
@@ -3262,9 +3316,44 @@ def active_experiment(exp: ExperimentConfig,
     This is the schedule-surgery seam the leg runner consumes: legs
     before a trigger integrate ``active_experiment(exp)``, and the leg
     after a fire integrates ``active_experiment(exp, {gid: (i, j)})``.
+
+    ``birth_times`` maps grid_id -> seconds since the experiment start at
+    which that slot's CURRENT episode began, and it is what gives the
+    newborn an ACTIVATION EPOCH.  A late-activating nest is not a new
+    shape -- a domain may declare ``start_time`` and join the run hours
+    in -- and every consumer of that epoch reads it off the resolved
+    clock's ``start_ticks``: the history alarm, the REFL_10CM handoff,
+    the schedule's activation bookkeeping, and the step counter that
+    decides whether a domain's first step runs radiation.  A spawn used
+    to record none of it, so the newborn resolved ``start_ticks = 0``
+    and claimed to have been running since t = 0.  Two failures came
+    straight out of that: its first frame consumed a REFL_10CM stash no
+    step of that domain had produced, and its first step was numbered as
+    though it were mid-run, so radiation was not due and the land
+    surface then consumed a GLW buffer nothing had written.  Recording
+    the epoch here rather than at the clock-minting sites is deliberate:
+    every leg re-mints its clocks from THIS view, so an epoch stored
+    anywhere else would be correct for one leg and lost at the next.
     """
     spawned = {} if spawned is None else dict(spawned)
+    birth_times = {} if birth_times is None else {
+        int(gid): float(t) for gid, t in birth_times.items()}
+    retired = {int(gid) for gid in retired}
     dormant = set(dormant_domain_ids(exp))
+    bad_retired = sorted(retired - dormant)
+    if bad_retired:
+        raise ValueError(
+            f"retired grid_id(s) {bad_retired} are not declared dormant "
+            "spawn slots; lifecycle retirement only applies to spawned episodes")
+    # A retired parent cannot leave an integrated orphan.  Expand the seeds
+    # over the DECLARED tree before selecting the next leg's domain set.
+    blocked = set(retired)
+    changed = True
+    while changed:
+        changed = False
+        for dc in exp.domains:
+            if int(dc.parent_id) in blocked and int(dc.grid_id) not in blocked:
+                blocked.add(int(dc.grid_id)); changed = True
     unknown = sorted(set(spawned) - dormant)
     if unknown:
         raise ValueError(
@@ -3278,11 +3367,20 @@ def active_experiment(exp: ExperimentConfig,
         validate_spawn_placement(exp, grid_id, i_start, j_start)
     domains = []
     for dc in exp.domains:
+        if dc.grid_id in blocked:
+            continue
         if dc.grid_id in spawned:
             i_start, j_start = spawned[dc.grid_id]
-            domains.append(_dc_replace(
-                dc, i_parent_start=int(i_start),
-                j_parent_start=int(j_start)))
+            fields = {"i_parent_start": int(i_start),
+                      "j_parent_start": int(j_start)}
+            birth = birth_times.get(int(dc.grid_id))
+            if birth is not None:
+                # Whole microseconds: the spawn instant is already
+                # validated as a whole number of PARENT steps, and the
+                # datetime lattice this lands on is microseconds.
+                fields["start_time"] = exp.start_time + timedelta(
+                    microseconds=int(round(birth * 1_000_000)))
+            domains.append(_dc_replace(dc, **fields))
         elif dc.grid_id in dormant:
             continue
         else:

@@ -102,6 +102,11 @@ class ChildInitResult:
     preprocess_receipt: Mapping[str, object] | None = None
     input_preparation_seconds: float | None = None
     domain: DomainConfig | None = None
+    #: Per-field account of the parent-SINT positive-definite fix-up
+    #: (:func:`clamp_parent_sint_undershoot`).  Empty when the
+    #: interpolation landed clean, which is the ordinary case; ``None``
+    #: for the branches that run no SINT at all.
+    positive_definite_clamp: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -1263,6 +1268,90 @@ def _parent_only_base(parent, reg, terrain: bool) -> BaseState:
         terrain_z=_host(sint(parent.ht, reg)))
 
 
+#: The parent-SINT fields this module fixes up after interpolation: the
+#: microphysics NUMBER concentrations.  Every one of them is bounded at
+#: zero from below by :func:`gpuwm.core.health.rule_for_field` (asserted
+#: in the tests, so the clamp and the gate cannot drift apart about
+#: membership), and every one carries magnitudes of 1e3..1e9 per
+#: kilogram -- large enough that a float32 weighted sum can round across
+#: zero.  Moisture mixing ratios share the same lower bound but are
+#: O(1e-3), so their absolute rounding error is smaller by six decades
+#: and has never been observed to cross; they are deliberately NOT
+#: clamped here, because a fix-up with no evidence behind it is a
+#: trajectory change nobody asked for.
+POSITIVE_DEFINITE_MOMENTS = (
+    "nc", "nr", "ni", "ns", "ng", "qndrop", "qnr", "qni", "qns",
+    "qng", "qnh", "qnn", "nwfa", "nifa",
+)
+
+#: Rounding budget for one SINT, in units in the last place of the
+#: field's own peak.  The interpolation is a weighted sum of float32
+#: donors with negative lobes, so the error it can introduce tracks the
+#: LARGEST magnitude it summed rather than the value it happens to land
+#: on.  Eight ulps is generous for the stencil and still leaves any
+#: physically meaningful concentration far outside the clamp.
+_SINT_ROUNDING_ULPS = 8.0
+
+#: Absolute floor, for a field whose peak carries no scale at all.  The
+#: undershoot measured on the card was -2**-31 = -4.66e-10 per kilogram
+#: in a field that was zero everywhere, where the relative term above is
+#: itself zero.  1e-6 clears that by four decades while staying six
+#: decades BELOW one particle per kilogram -- a quantity no microphysics
+#: scheme can tell apart from none -- so the floor cannot erase anything
+#: countable.
+_SINT_ABSOLUTE_FLOOR = 1.0e-6
+
+
+def positive_definite_clamp_tolerance(peak: float) -> float:
+    """How far below zero a SINT of a field peaking at ``peak`` may land.
+
+    Anything inside this is float32 arithmetic; anything beyond it is an
+    interpolation that is actually wrong, and is left for the health gate
+    to refuse.  A clamp with no ceiling would absorb exactly the failure
+    the gate exists to catch.
+    """
+    eps = float(np.finfo(np.float32).eps)
+    return max(_SINT_ABSOLUTE_FLOOR,
+               _SINT_ROUNDING_ULPS * eps * abs(float(peak)))
+
+
+def clamp_parent_sint_undershoot(child, *, names=POSITIVE_DEFINITE_MOMENTS):
+    """Set rounding-scale negatives to zero on a freshly SINT-ed child.
+
+    Returns a per-field account of what was changed -- cells, the
+    tolerance applied, the field's peak and the most negative value seen
+    -- so a birth certificate can carry the numbers rather than the
+    assurance.  A field with nothing to clamp contributes NO entry, so a
+    silent receipt means the interpolation landed clean.
+
+    Values more negative than the field's tolerance are left exactly
+    where they are.  This is the whole design: the fix-up removes a
+    float32 artefact and refuses to hide a broken interpolation.
+    """
+    report: dict[str, dict[str, float | int]] = {}
+    for name in names:
+        target = getattr(child, name, None)
+        if target is None or getattr(target, "size", 0) == 0:
+            continue
+        minimum = float(target.min())
+        if minimum >= 0.0:
+            continue
+        peak = float(abs(target).max())
+        tolerance = positive_definite_clamp_tolerance(peak)
+        mask = (target < 0.0) & (target >= -tolerance)
+        cells = int(mask.sum())
+        if not cells:
+            continue
+        target[mask] = 0.0
+        report[name] = {
+            "cells": cells,
+            "tolerance": tolerance,
+            "peak": peak,
+            "most_negative": minimum,
+        }
+    return report
+
+
 def parent_only_init(child_dc: DomainConfig,
                      parent_node: DomainNode, *,
                      scratch_arena=None,
@@ -1411,12 +1500,19 @@ def parent_only_init(child_dc: DomainConfig,
     if transition.mixed:
         child._microphysics_transition_init_count = 1
 
+    # Positive-definite fix-up BEFORE the RK time-level copies: the
+    # seeded copies are what the first step reads, so a negative left
+    # here would be duplicated into them and then refused by the
+    # full-state gate at the newborn's first leg.
+    clamped = clamp_parent_sint_undershoot(child)
+
     seed_rk_time_t_copies(child)
     _set_map_fields(child, grid)
     update_diagnostics(child, cfg.hypsometric_opt)
     return ChildInitResult(
         state=child, grid=grid, coord=coord, real=None,
-        static_fields=None, horizontal=None, soil=None, domain=child_dc)
+        static_fields=None, horizontal=None, soil=None, domain=child_dc,
+        positive_definite_clamp=clamped)
 
 
 def blend_zone_mask(shape: tuple[int, int], *, spec_bdy_width: int = 5,

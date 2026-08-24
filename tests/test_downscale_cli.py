@@ -438,12 +438,21 @@ def test_derived_child_config_lands_inside_the_run_it_describes(tmp_path):
 
 
 def test_run_accepts_the_output_root_its_caller_reserved(tmp_path):
-    """The never-adopt reservation happens exactly once, not zero times."""
+    """The never-adopt reservation happens exactly once, not zero times.
+
+    "Never adopt" is about a directory that HOLDS an earlier run: its
+    frames would be merged with this run's and the report.json beside
+    them would then describe two.  An empty directory holds neither, so
+    the reservation takes it -- see
+    ``test_the_runner_door_refuses_a_used_outdir_in_words`` for the half
+    that refuses, in words rather than as a Windows error number.
+    """
     from gpuwm.offline_child_run import _create_output_root
 
     outdir = tmp_path / "child-run"
-    _create_output_root(outdir)
-    with pytest.raises(FileExistsError):
+    assert _create_output_root(outdir) == outdir.resolve()
+    (outdir / "gpuwmrst_d02_final.npz").write_bytes(b"x")
+    with pytest.raises(OfflineChildContractError):
         _create_output_root(outdir)
 
 
@@ -663,3 +672,196 @@ def test_full_physics_child_needs_no_surface_flag(tmp_path, capsys):
     # The flag is still reported as the higher-fidelity route.
     assert "--child-surface-from" in captured.err
     assert "parent" in captured.err
+
+
+# ---------------------------------------------------------------------
+# The --out reservation: a refusal must not poison the directory it
+# reserved, and a directory that already holds a run is a sentence.
+# ---------------------------------------------------------------------
+
+def _restart_evidence(path, config):
+    """One gpuwm restart header, written as the reader expects to find it.
+
+    ``--point`` derivation inherits the child's physics from the parent's
+    restart evidence, so a CPU-side walk of that route needs a restart
+    file.  Only the header is read on this route
+    (``read_restart_header``), so the archive carries the header and no
+    arrays.
+    """
+    import hashlib
+    import json as json_module
+
+    def canonical(value):
+        return hashlib.sha256(json_module.dumps(
+            value, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False).encode("utf-8")).hexdigest()
+
+    setup = {"microphysics": {"scheme_id": int(config["mp_physics"]),
+                              "name": "parent-fixture"}}
+    header = {
+        "format_version": 6,
+        "grid_id": int(config.get("grid_id", 1)),
+        "config": dict(config),
+        "physics_setup": setup,
+        "physics_setup_fingerprint": canonical(setup),
+        "setup_fingerprint": canonical(dict(config)),
+        "array_manifest": {},
+        "elapsed_seconds": 0.0,
+    }
+    payload = np.frombuffer(
+        json_module.dumps(header).encode("utf-8"), dtype=np.uint8)
+    np.savez(path, **{"__gpuwm_restart_header__": payload})
+    return path if path.suffix == ".npz" else path.with_suffix(".npz")
+
+
+def _give_the_parent_a_real_projection(path, *, ny, nx):
+    """Vary XLAT/XLONG so ``--point`` resolves to an interior parent cell."""
+    lat = np.linspace(38.0, 41.0, ny)[:, None] * np.ones((1, nx))
+    lon = np.ones((ny, 1)) * np.linspace(-86.0, -82.0, nx)[None, :]
+    with netCDF4.Dataset(path, "a") as dataset:
+        dataset.variables["XLAT"][0] = lat.astype(np.float32)
+        dataset.variables["XLONG"][0] = lon.astype(np.float32)
+
+
+def _point_args(tmp_path, *, ny=18, nx=20):
+    """A ``--point`` invocation whose child inherits surface physics.
+
+    The parent frames carry no land-surface inventory, so the run refuses
+    -- AFTER ``--point`` derivation has reserved ``--out`` to hold the
+    config it just wrote.  That ordering is the whole subject below.
+    """
+    start = datetime(1974, 4, 3, 12)
+    for index in range(3):
+        frame = tmp_path / f"wrfout_d01_1974-04-03_{12 + index:02d}_00_00"
+        _history(frame, start + timedelta(hours=index), ny=ny, nx=nx)
+        _give_the_parent_a_real_projection(frame, ny=ny, nx=nx)
+    restart = _restart_evidence(
+        tmp_path / "gpuwmrst_d01_final.npz",
+        dict(_SURFACE_PARENT_CONFIG, nx=nx, ny=ny, grid_id=1,
+             dt=3.0, run_seconds=7200.0, nested=False, specified=False))
+    return [
+        "downscale", str(tmp_path),
+        "--parent-restart", str(restart),
+        "--point", "39.5,-84.0",
+        "--ratio", "1", "--child-size", "12,10",
+        "--hours", "0.25", "--output-interval-seconds", "900",
+        "--out", str(tmp_path / "child-run")]
+
+
+def test_a_refused_downscale_releases_the_out_it_reserved(tmp_path, capsys):
+    """A refusal must not leave the directory it created behind.
+
+    ``--point`` creates ``--out`` create-only so the config it derives can
+    live inside the run it describes.  Every refusal raised after that --
+    a parent that cannot seed the child's surface is the walked one --
+    used to leave ``--out`` holding ``child.toml``, which is a run
+    directory describing a run that never happened AND the thing the
+    corrected retry then collides with.
+    """
+    rc = cli_main(_point_args(tmp_path))
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "child-grid surface source" in captured.err
+    assert not (tmp_path / "child-run").exists()
+
+
+def test_the_corrected_retry_runs_instead_of_colliding(
+        tmp_path, capsys, monkeypatch):
+    """The whole defect, end to end: refuse, correct, retry, run.
+
+    The retry used to die with an uncaught ``FileExistsError`` from the
+    reservation ``mkdir`` -- a Windows error number as the last line, at
+    exit 1, for a command that was now correct.
+    """
+    import gpuwm.offline_child_run as offline_child_run
+
+    args = _point_args(tmp_path)
+    assert cli_main(args) == 2
+    capsys.readouterr()
+
+    # THE CORRECTION: the parent gains the land-surface inventory the
+    # refusal named, so the child can be seeded from the parent's own
+    # history.  Nothing else about the command changes.
+    for index in range(3):
+        _add_parent_surface(
+            tmp_path / f"wrfout_d01_1974-04-03_{12 + index:02d}_00_00",
+            ny=18, nx=20, lu_water_column=8)
+    monkeypatch.setattr(offline_child_run, "run",
+                        lambda namespace: {"result": "PASS"})
+    assert cli_main(args) == 0
+    capsys.readouterr()
+    assert (tmp_path / "child-run" / DERIVED_CHILD_CONFIG_NAME).is_file()
+
+
+def test_an_out_holding_an_earlier_run_is_a_sentence_not_a_traceback(
+        tmp_path, capsys):
+    """The collision names the directory, what it holds, and the way out."""
+    outdir = tmp_path / "child-run"
+    outdir.mkdir(parents=True)
+    (outdir / "report.json").write_text("{}", encoding="utf-8")
+
+    rc = cli_main(_point_args(tmp_path))
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "report.json" in captured.err
+    assert str(outdir) in captured.err
+    assert "--out" in captured.err
+
+
+def test_child_config_route_refuses_a_used_out_at_the_front_door(
+        tmp_path, capsys):
+    """The other child mode reaches the same sentence, and reaches it early.
+
+    ``--child-config`` reserved ``--out`` inside the runner, after the
+    CUDA import and after the whole parent archive had been validated, so
+    a collision was discovered as late as it possibly could be.
+    """
+    args = _surface_child_args(tmp_path)
+    for index in range(3):
+        _add_parent_surface(
+            tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
+            ny=18, nx=20, lu_water_column=8)
+    outdir = tmp_path / "child-run"
+    outdir.mkdir(parents=True)
+    (outdir / "wrfout_d02_1974-04-03_12_00_00").write_bytes(b"x")
+
+    rc = cli_main(args)
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "wrfout_d02_1974-04-03_12_00_00" in captured.err
+    assert "--out" in captured.err
+
+
+def test_an_empty_out_is_adopted_because_refusing_it_prevents_nothing(
+        tmp_path, capsys, monkeypatch):
+    """An empty directory holds no run to merge with and no receipt to lose.
+
+    Refusing one names no breakage, and it is the state a partially
+    cleaned retry can legitimately arrive in.
+    """
+    import gpuwm.offline_child_run as offline_child_run
+
+    args = _point_args(tmp_path)
+    for index in range(3):
+        _add_parent_surface(
+            tmp_path / f"wrfout_d01_1974-04-03_{12 + index:02d}_00_00",
+            ny=18, nx=20, lu_water_column=8)
+    (tmp_path / "child-run").mkdir(parents=True)
+    monkeypatch.setattr(offline_child_run, "run",
+                        lambda namespace: {"result": "PASS"})
+    assert cli_main(args) == 0
+    capsys.readouterr()
+    assert (tmp_path / "child-run" / DERIVED_CHILD_CONFIG_NAME).is_file()
+
+
+def test_the_runner_door_refuses_a_used_outdir_in_words(tmp_path):
+    """``python -m gpuwm.offline_child_run`` gets the same sentence."""
+    from gpuwm.offline_child_run import _create_output_root
+
+    outdir = tmp_path / "child-run"
+    _create_output_root(outdir)
+    (outdir / "report.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(OfflineChildContractError) as caught:
+        _create_output_root(outdir)
+    message = str(caught.value)
+    assert "report.json" in message and "--outdir" in message

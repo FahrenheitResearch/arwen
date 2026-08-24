@@ -380,12 +380,16 @@ def test_setup_runs_the_steps_in_order_and_prints_one_line_each(
 
 def test_a_bare_setup_says_what_it_did_not_stage(monkeypatch, capsys):
     """N19: WPS_GEOG is excluded from ``setup`` by design, and a bare
-    run never said so -- the ~16 GB tree surfaced as a refusal at prep
-    time, several commands after the one that would have staged it.
+    run never said so -- the tree surfaced as a refusal at prep time,
+    several commands after the one that would have staged it.
 
     The size is the surprise, so the size is in the line, next to the
-    command that closes the gap.
+    command that closes the gap -- and it is the pin table's own figure,
+    because a literal here understated the download by most of its size
+    the day a dataset was added.
     """
+
+    from gpuwm.geog_assets import size_phrase
 
     monkeypatch.setattr(
         setup_cli, "_run_step", lambda module_name, overrides: (0, ""))
@@ -395,7 +399,7 @@ def test_a_bare_setup_says_what_it_did_not_stage(monkeypatch, capsys):
         with_geog=False, from_dir=None, explain=False))
     printed = capsys.readouterr().out
     assert "WPS_GEOG" in printed
-    assert "16 GB" in printed
+    assert size_phrase() in printed
     assert "gpuwm fetch-geog" in printed
     assert "--with-geog" in printed
 
@@ -500,7 +504,9 @@ def test_a_step_that_raises_keeps_what_it_had_already_printed(
 
 def test_setup_does_not_fetch_geog_unless_asked_and_prints_the_size(
         monkeypatch, capsys):
-    """16 GB is a decision, not a side effect of typing ``setup``."""
+    """Tens of GB is a decision, not a side effect of typing ``setup``."""
+
+    from gpuwm.geog_assets import size_phrase
 
     seen = []
 
@@ -527,9 +533,9 @@ def test_setup_does_not_fetch_geog_unless_asked_and_prints_the_size(
         with_geog=True, from_dir=None, explain=False))
     printed = capsys.readouterr().out
     assert "gpuwm.geog_assets" in seen
-    assert "16 GB" in printed
+    assert size_phrase() in printed
     # The size is announced BEFORE the first byte moves.
-    assert printed.index("16 GB") < printed.index("  ok      bridges")
+    assert printed.index(size_phrase()) < printed.index("  ok      bridges")
 
 
 def test_setup_is_registered_and_dispatches_through_the_real_cli(capsys):
