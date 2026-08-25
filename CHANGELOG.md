@@ -2,89 +2,48 @@
 
 ## 2.5.4 (2026-08-24)
 
-Two-way nests, nest slots that open and close on the storm, and a
-tracker that reads it.
+Two-way nests and nest slots that open and close on the storm.
 
 New:
-- Two-way nest feedback, stamped experimental and off by default.
-  feedback = 1 runs WRF's own feedback transaction on both runners, the
-  native one (gpuwm run) and the prepared domain tree: restriction,
-  WRF's parent smoothers at WRF's point in the sequence and over WRF's
-  window, then a windowed re-diagnosis, pinned bitwise to the Fortran's
-  rounding order. One deliberate departure: positive-definite species
-  are clamped at zero over the smoothed window after the anti-diffusive
-  pass. A stock WRF namelist imports unedited, and gpuwm check names the
-  three tree shapes the coupler cannot feed back, before the build
-  instead of after it. feedback = 0 runs are byte-identical to 2.5.3.
-- Pressure spawn and retire triggers for nest slots. trigger =
-  "pressure" opens a dormant nest when a low deepens and retires it when
-  the low fills, read off the same surface the follow tracker steers on:
-  under level_hpa the threshold is metres of geopotential height above
-  the search box's own minimum, and level_hpa = 0 selects the sea-level
-  form where the threshold is an absolute hPa ceiling.
-  configs/cyclone_nest_slots_12km.toml ships three such slots with
-  rearm.
-- Storm-following upgrades. The follow tracker centres on the 850 hPa
-  height minimum instead of a sea-level pressure reduction extrapolated
-  below terrain, bounds its centroid to a 50 km disc, and refines
-  through a finer nest when one is present. A containment nest slides
-  the mover's parent in whole cells when the mover drifts past a dead
-  band, with the mover held earth-fixed under the slide.
+- Two-way nest feedback. feedback = 1 runs WRF's feedback transaction
+  with WRF's parent smoothers, pinned bitwise to the Fortran, on both
+  the native and prepared-tree runners. Off by default; feedback = 0
+  runs are byte-identical to 2.5.3.
+- Pressure spawn and retire triggers. A dormant nest slot opens when a
+  low deepens and retires when it fills.
+  configs/cyclone_nest_slots_12km.toml ships three slots with rearm.
+- Storm-following upgrades. The tracker centres on the 850 hPa height
+  minimum inside a 50 km disc and refines through a finer nest; a
+  containment nest slides the mover's parent while the mover stays
+  earth-fixed.
 - Statics corridors. --statics-corridor seals child-resolution statics
-  over the parent extent at preparation time, so a prepared,
-  digest-bound bundle can host a moving nest: a relocation crops its new
-  footprint out of the corridor, bitwise identical to building that
-  footprint directly, with no runtime geography and no loosening of the
-  digest relay.
-- A track file. [relocation.track] writes one CSV of the vortex track
-  from the same fix that steers the nest, so the file and the nest
-  cannot disagree. output_level decides what the file reports without
-  touching what steers: a surface named there and not in level_hpa is
-  report-only and casts no vote in the centre, the surface block always
-  leads the columns with the isobaric blocks after it in the order
-  asked for, and the cap of eight surfaces is gone from both lists.
-- Two tracker defaults move with the follow upgrade: level_hpa defaults
-  to 850 and radius_km to 50. A config that meant sea-level tracking
-  spells it level_hpa = 0; the two threshold bands are disjoint, so a
-  config that means one and would be read as the other refuses at load.
-- --cycle latest resolves for every registered source, from what its own
-  registry row declares: the UTC hours it initializes on, how long after
-  each one its bytes land, and how far back to walk. A reanalysis has a
-  latest like anything else, and ERA5 resolves to its newest published
-  analysis without spending a probe on a keyed job API. A source that
-  declares neither refuses by naming what is missing, instead of being
-  assumed to run on forecast hours.
+  at preparation time, so a prepared bundle hosts a moving nest with no
+  runtime geography.
+- A track file. [relocation.track] writes the vortex track from the
+  same fix that steers the nest. output_level picks the reported
+  surfaces without touching what steers, and the eight-surface cap is
+  gone.
+- Tracker defaults: level_hpa 850, radius_km 50. Sea-level tracking is
+  level_hpa = 0; the threshold bands are disjoint, so a config that
+  means one and reads as the other refuses at load.
+- --cycle latest resolves for every registered source from its own
+  registry row. A reanalysis has a latest like anything else.
 - A prepared-tree run with a live follower checkpoints and resumes,
-  including across a move, byte-identical. The route publishes the
-  declared experiment its checkpoint needs, so the writer can record
-  where the follower has carried a nest beside where the config put it;
-  the resume seeds each follower from its own entry, with the segment
-  chain, the executed-move count and both cooldown anchors, so the next
-  move links onto its real predecessor.
+  including across a move, byte-identical.
 
 Fixed:
-- A moved nest keeps its surface-radiation carriers. GLW, SWDOWN, GSW
-  and COSZEN move with the nest by the scheme that consumes them, and
-  the strip the move exposes is donor filled from the same plan the land
-  fields ride rather than left at zero. Before this, a relocation
-  cadence shorter than the radiation interval refused at the first move
-  under the wizard's shipped defaults.
-- Spawn receipts append one line per leg boundary instead of rewriting
-  the ledger, so the per-boundary cost stops growing with the forecast,
-  and a receipts stream reopened after a close appends rather than
-  truncating what it already wrote.
-- run-plan --estimate on a config path that is not there refuses by name
-  and exits 2 instead of raising a traceback. --resolve and the
-  execution road read the same file and answer the same way.
-- A resumed run publishes real outgoing longwave instead of zeros. OLR
-  rides the checkpoint in its own namespace, absent-tolerant on restore,
-  so no checkpoint already on disk is rejected and a run that never
-  resumes is unchanged.
-- A forecast whose nest moved can be resumed. The checkpoint records
-  where each domain actually was and that it crossed a relocation, and
-  the move chain replays on restore instead of being bypassed.
-- Sizing and pace estimates read on an install with no GPU runtime, and
-  the estimate prices the YSU column workspace.
+- A moved nest keeps its surface-radiation carriers; the shipped
+  radiation defaults no longer refuse at the first move.
+- Spawn receipts append per boundary instead of rewriting the ledger.
+- run-plan --estimate on a missing config path refuses by name instead
+  of a traceback.
+- A resumed run publishes real outgoing longwave instead of zeros.
+- A forecast whose nest moved can be resumed; the move chain replays on
+  restore.
+- Sizing and pace estimates work on an install with no GPU runtime.
+
+Two-way feedback, the storm-following upgrades, the track file and the
+OLR restart carry were contributed by Roch.
 
 ## 2.5.3 (2026-08-24)
 
