@@ -129,36 +129,189 @@ def config_declares_follow_source(exp) -> bool:
 # Geometry: where the corridor sits on the child lattice
 # ---------------------------------------------------------------------------
 
-def corridor_geometry(child_dc, parent_run) -> dict[str, object]:
+def ancestor_chain(domains_by_id, grid_id: int, frame_id: int) -> list:
+    """``[target, ..., direct child of frame]`` -- target-first."""
+    chain = []
+    gid = int(grid_id)
+    seen = set()
+    while gid != int(frame_id):
+        if gid in seen or gid not in domains_by_id:
+            raise ValueError(
+                f"grid {grid_id} does not descend from frame {frame_id}")
+        seen.add(gid)
+        dc = domains_by_id[gid]
+        chain.append(dc)
+        gid = int(dc.parent_id)
+    return chain
+
+
+def origin_in_frame_cells(domains_by_id, grid_id: int, frame_id: int
+                          ) -> tuple[int, int]:
+    """The child's origin in ITS OWN cells, counted from frame cell 1.
+
+    THE WHOLE REASON A MID-TREE MOVE IS EXPRESSIBLE.  A placement is a
+    whole number of PARENT cells, which is why the parent-anchored
+    corridor could index itself as ``(ip-1)*ratio``.  Two levels down
+    that breaks: d03 under a 27/9/3 km tree sits 1005 cells of 3 km from
+    d01's cell 1, which is 111.67 cells of d01 -- not an integer, so no
+    parent-cell index can name it and a corridor addressed that way is
+    off by up to a whole parent cell of terrain.
+
+    Counted in the CHILD's own cells it is exactly 1005.  Each ancestor
+    contributes ``(i_parent_start - 1)`` of its parent's cells, converted
+    to child cells by the product of the ratios from that ancestor down
+    to the child -- every factor an integer, so the sum is exact.  This
+    is the same arithmetic WRF's moving nests rely on when they index a
+    pre-staged high-resolution static field covering the roam area.
+    """
+    oi = oj = 0
+    prod = 1
+    for dc in ancestor_chain(domains_by_id, grid_id, frame_id):
+        prod *= int(dc.parent_grid_ratio)
+        oi += (int(dc.i_parent_start) - 1) * prod
+        oj += (int(dc.j_parent_start) - 1) * prod
+    return oi, oj
+
+
+def corridor_geometry(child_dc, parent_run, *, frame_run=None,
+                      ratio_to_frame: int | None = None,
+                      frame_grid_id: int | None = None,
+                      reference_origin: tuple[int, int] | None = None
+                      ) -> dict[str, object]:
     """The corridor's placement-independent geometry for one child.
 
-    The corridor covers the parent's full mass extent at child
-    resolution: corridor cell 1 is the first child subcell of parent
-    cell 1, so a footprint at ``i_parent_start = ip`` occupies corridor
-    cells ``(ip-1)*ratio + 1 .. (ip-1)*ratio + nx`` -- a pure index
-    crop for every admissible placement.
+    The corridor covers a FRAME domain's full mass extent at child
+    resolution, and is addressed in CHILD cells from frame cell 1.
+
+    Frame = the child's own parent (the default, and every corridor
+    before mid-tree moves existed): the frame is stationary, so the
+    footprint at ``i_parent_start = ip`` sits at child cell
+    ``(ip-1)*ratio`` and the bundle is byte-for-byte what it was.
+
+    Frame = the ROOT: required when an ANCESTOR of this child moves.
+    The child's parent is then not a fixed frame at all -- its cells
+    describe different ground after every move -- so a corridor anchored
+    to it would hand back the wrong terrain.  Anchoring to the root, the
+    one domain that never moves, keeps every crop exact; see
+    :func:`origin_in_frame_cells` for why the addressing stays integral.
     """
     ratio = int(child_dc.parent_grid_ratio)
     if ratio < 1:
         raise ValueError(f"parent_grid_ratio must be >= 1, got {ratio}")
+    frame_run = parent_run if frame_run is None else frame_run
+    ratio_to_frame = ratio if ratio_to_frame is None else int(ratio_to_frame)
+    frame_grid_id = (int(child_dc.parent_id) if frame_grid_id is None
+                     else int(frame_grid_id))
     ref_i = int(child_dc.i_parent_start)
     ref_j = int(child_dc.j_parent_start)
+    if reference_origin is None:
+        reference_origin = ((ref_i - 1) * ratio, (ref_j - 1) * ratio)
+    origin_i, origin_j = (int(reference_origin[0]), int(reference_origin[1]))
     return {
         "grid_id": int(child_dc.grid_id),
         "parent_id": int(child_dc.parent_id),
         "parent_grid_ratio": ratio,
+        "frame_grid_id": frame_grid_id,
+        "ratio_to_frame": ratio_to_frame,
         "reference_i_parent_start": ref_i,
         "reference_j_parent_start": ref_j,
+        "reference_origin_child_cells": [origin_i, origin_j],
         "child_nx": int(child_dc.run.nx),
         "child_ny": int(child_dc.run.ny),
-        "parent_nx": int(parent_run.nx),
-        "parent_ny": int(parent_run.ny),
-        "corridor_nx": int(parent_run.nx) * ratio,
-        "corridor_ny": int(parent_run.ny) * ratio,
+        "parent_nx": int(frame_run.nx),
+        "parent_ny": int(frame_run.ny),
+        "corridor_nx": int(frame_run.nx) * ratio_to_frame,
+        "corridor_ny": int(frame_run.ny) * ratio_to_frame,
         # The exact whole-cell translation from the child's reference
-        # grid to the corridor origin (parent cell 1).
-        "origin_translation_child_cells": [
-            (1 - ref_i) * ratio, (1 - ref_j) * ratio],
+        # grid to the corridor origin (frame cell 1).
+        "origin_translation_child_cells": [-origin_i, -origin_j],
+    }
+
+
+def moving_grid_ids(exp) -> frozenset[int]:
+    """Grid ids a ``[relocation]`` block authorises to move.
+
+    The tracked mover, plus the ``[relocation.containment]`` ancestor
+    when one is configured -- the ancestor slides in whole cells of ITS
+    parent, so everything downstream of this answer (corridor coverage,
+    root-anchored frames for children of a mover) must count it as a
+    mover in its own right.
+    """
+    relocation = getattr(exp, "relocation", None)
+    if relocation is None or not getattr(relocation, "enabled", False):
+        return frozenset()
+    grid_id = getattr(relocation, "grid_id", None)
+    if grid_id is None:
+        return frozenset()
+    movers = {int(grid_id)}
+    containment = getattr(relocation, "containment", None)
+    if containment is not None:
+        movers.add(int(containment.grid_id))
+    return frozenset(movers)
+
+
+def relocating_subtree_grid_ids(exp) -> tuple[int, ...]:
+    """Every grid whose GROUND changes when this experiment moves.
+
+    The mover plus all of its descendants, ascending.  A mid-tree move
+    re-grounds the whole subtree -- each member rebuilds its statics for
+    new ground -- so each member needs its own corridor, and this is the
+    one place that says which.  For a leaf mover it is the single grid id
+    it has always been, so nothing about a leaf bundle changes.
+    """
+    movers = moving_grid_ids(exp)
+    if not movers:
+        return ()
+    by_parent: dict[int, list[int]] = {}
+    for d in exp.domains:
+        by_parent.setdefault(int(d.parent_id), []).append(int(d.grid_id))
+    out, stack = set(), list(movers)
+    while stack:
+        gid = stack.pop()
+        if gid in out:
+            continue
+        out.add(gid)
+        stack.extend(by_parent.get(gid, ()))
+    return tuple(sorted(out))
+
+
+def corridor_frame_kwargs(exp, child_dc) -> dict[str, object]:
+    """Which frame this child's corridor is anchored to.
+
+    ONE function, called by the emission and by the acceptance, because
+    they must agree exactly: the loader re-derives the geometry and
+    compares it key by key, so a frame chosen two ways is a refusal on
+    every run that should have worked.
+
+    The rule: anchor to the child's own parent unless a STRICT ANCESTOR
+    of the child moves, in which case anchor to the root.  A parent that
+    moves is not a frame -- its cell 1 describes different ground after
+    every relocation -- so a corridor addressed against it hands back
+    terrain from wherever the parent used to be.  When nothing above the
+    child moves this returns ``{}`` and the geometry, the receipt and
+    the sealed bytes are exactly what they were before mid-tree moves
+    existed.
+    """
+    domains_by_id = {int(d.grid_id): d for d in exp.domains}
+    movers = moving_grid_ids(exp)
+    root_id = next(int(d.grid_id) for d in exp.domains
+                   if int(d.parent_id) in (0, int(d.grid_id)))
+    ancestors = []
+    gid = int(child_dc.parent_id)
+    while gid in domains_by_id and gid != root_id:
+        ancestors.append(gid)
+        gid = int(domains_by_id[gid].parent_id)
+    if not (movers & set(ancestors)):
+        return {}
+    ratio_to_frame = 1
+    for dc in ancestor_chain(domains_by_id, int(child_dc.grid_id), root_id):
+        ratio_to_frame *= int(dc.parent_grid_ratio)
+    return {
+        "frame_run": domains_by_id[root_id].run,
+        "frame_grid_id": root_id,
+        "ratio_to_frame": ratio_to_frame,
+        "reference_origin": origin_in_frame_cells(
+            domains_by_id, int(child_dc.grid_id), root_id),
     }
 
 
@@ -191,7 +344,7 @@ CORRIDOR_BYTES_PER_CELL = (CORRIDOR_PLANES_PER_CELL
                            * int(np.dtype(np.float64).itemsize))
 
 
-def corridor_cost(child_dc, parent_run) -> dict[str, int]:
+def corridor_cost(child_dc, parent_run, frame_kwargs=None) -> dict[str, int]:
     """What one child's corridor will cost, WITHOUT building it.
 
     Pure arithmetic on the geometry and the field inventory: no GEOG
@@ -317,12 +470,13 @@ class CorridorBuild:
 
 
 def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
-                                 static_catalog) -> CorridorBuild:
-    """Build one child's parent-extent statics corridor from the GEOG
+                                 static_catalog,
+                                 frame_kwargs=None) -> CorridorBuild:
+    """Build one child's frame-extent statics corridor from the GEOG
     source, through the same builder the domain statics come from."""
     from gpuwm.static.build import build_static, geog_selection_from_catalog
 
-    geometry = corridor_geometry(child_dc, parent_run)
+    geometry = corridor_geometry(child_dc, parent_run, **(frame_kwargs or {}))
     grid = corridor_grid(reference_grid, geometry)
     selection = geog_selection_from_catalog(
         static_catalog, int(child_dc.grid_id))
@@ -441,7 +595,8 @@ def emit_statics_corridor_set(*, exp, grids, static_catalog, directory,
         builds.append(build_child_statics_corridor(
             child_dc=child, parent_run=parent_run,
             reference_grid=grids[index_by_id[grid_id]],
-            static_catalog=static_catalog))
+            static_catalog=static_catalog,
+            frame_kwargs=corridor_frame_kwargs(exp, child)))
     return write_statics_corridor_set(Path(directory), builds)
 
 
@@ -559,23 +714,37 @@ class ChildStaticsCorridor:
         refuse -- they name a footprint outside the parent, which the
         move admissibility walk should never produce.
         """
+        ratio = int(self.geometry["parent_grid_ratio"])
+        # A sub-1 placement lands at a negative origin, which crop_at
+        # refuses by the same bounds test as an over-run: one refusal for
+        # "not inside the corridor", whichever edge it left.
+        return self.crop_at((int(i_parent_start) - 1) * ratio,
+                            (int(j_parent_start) - 1) * ratio)
+
+    def crop_at(self, x0: int, y0: int) -> dict[str, np.ndarray]:
+        """The footprint statics at a CHILD-CELL origin in the corridor.
+
+        The general address, and the only one a domain under a moving
+        ancestor can use: its origin is a whole number of its OWN cells
+        from the frame, never a whole number of its parent's (see
+        :func:`origin_in_frame_cells`).  :meth:`crop` is this with the
+        parent-cell address converted for it.
+        """
         geometry = self.geometry
-        ratio = int(geometry["parent_grid_ratio"])
         nx = int(geometry["child_nx"])
         ny = int(geometry["child_ny"])
-        ip = int(i_parent_start)
-        jp = int(j_parent_start)
-        x0 = (ip - 1) * ratio
-        y0 = (jp - 1) * ratio
-        if (ip < 1 or jp < 1
+        x0, y0 = int(x0), int(y0)
+        if (x0 < 0 or y0 < 0
                 or x0 + nx > int(geometry["corridor_nx"])
                 or y0 + ny > int(geometry["corridor_ny"])):
             raise CorridorRefusal(
-                f"placement (i_parent_start={ip}, j_parent_start={jp}) "
+                f"footprint origin ({x0}, {y0}) + {nx}x{ny} child cells "
                 f"lies outside the statics corridor "
                 f"({geometry['corridor_nx']}x{geometry['corridor_ny']} "
-                f"child cells over the whole parent); an admissible move "
-                "cannot reach here, so this is a wiring defect")
+                f"child cells over grid "
+                f"d{int(geometry.get('frame_grid_id', -1)):02d}); an "
+                "admissible move cannot reach here, so this is a wiring "
+                "defect or a corridor prepared for a narrower frame")
         result: dict[str, np.ndarray] = {}
         for name, value in self.fields.items():
             cropped = np.ascontiguousarray(
@@ -593,7 +762,7 @@ def _require(condition: bool, message: str) -> None:
 def load_child_statics_corridor(
         directory: Path, *, expected_set_receipt: Mapping[str, object],
         grid_id: int, child_dc, parent_run,
-        reference_grid) -> ChildStaticsCorridor:
+        reference_grid, frame_kwargs=None) -> ChildStaticsCorridor:
     """Verify one child's corridor against the preparation document and
     load it.
 
@@ -633,7 +802,7 @@ def load_child_statics_corridor(
              f"{label} statics corridor entry is not a READY "
              f"{STATICS_CORRIDOR_SCHEMA} document")
 
-    geometry = corridor_geometry(child_dc, parent_run)
+    geometry = corridor_geometry(child_dc, parent_run, **(frame_kwargs or {}))
     for key, value in geometry.items():
         _require(entry.get(key) == value,
                  f"{label} statics corridor {key} = {entry.get(key)!r} "
@@ -711,7 +880,10 @@ __all__ = [
     "STATICS_CORRIDOR_RECEIPT", "STATICS_CORRIDOR_SCHEMA",
     "STATICS_CORRIDOR_SET_SCHEMA", "build_child_statics_corridor",
     "config_declares_follow_source", "corridor_cost",
+    "ancestor_chain", "corridor_frame_kwargs",
     "corridor_footprint_statics_builder", "corridor_geometry",
+    "moving_grid_ids", "origin_in_frame_cells",
+    "relocating_subtree_grid_ids",
     "corridor_grid", "emit_statics_corridor_set", "grid_identity_probes",
     "load_child_statics_corridor", "validated_corridor_selection",
     "write_statics_corridor_set",

@@ -674,8 +674,9 @@ def test_checkpoint_relocation_block_refuses_with_the_posture():
         2, header, SimpleNamespace())
     assert "2 nest relocation(s)" in reason
     assert "seg123" in reason
-    assert "promises nothing" in reason
-    assert "TOLERATED_EXPERIMENT" in reason
+    # The header still SAYS what it is on any mismatch -- what changed is
+    # that the saying is a description, not a refusal to try.
+    assert "resumes only into the run that wrote it" in reason
 
 
 def test_moved_receipts_supply_the_checkpoint_header_block():
@@ -937,3 +938,320 @@ def test_receipts_write_survives_a_transient_windows_reader(monkeypatch,
     assert json.loads(target.read_text()) == {"ok": 1}
     assert json.loads(
         (tmp_path / "relocation_receipts.json.tmp").read_text()) == {"ok": 2}
+
+
+# ---------------------------------------------------------------------------
+# [relocation.containment]: the mover's parent slides, the mover holds still
+# ---------------------------------------------------------------------------
+
+def _domains3(history_interval_s=900.0):
+    """The three-level stand-in: d03 tracked, d02 its parent."""
+    return [
+        SimpleNamespace(grid_id=1, parent_id=None, time_step=60,
+                        time_step_fract_num=0, time_step_fract_den=1,
+                        history_interval_s=history_interval_s),
+        SimpleNamespace(grid_id=2, parent_id=1, time_step=None,
+                        history_interval_s=history_interval_s),
+        SimpleNamespace(grid_id=3, parent_id=2, time_step=None,
+                        history_interval_s=history_interval_s),
+    ]
+
+
+def _build3(raw, run_seconds=3600.0):
+    from gpuwm.experiment import _build_relocation
+
+    return _build_relocation(raw, "test.toml", _domains3(), run_seconds)
+
+
+_PRESSURE_FOLLOW = dict(field="pressure", threshold=30.0,
+                        level_hpa=850.0, search_margin_cells=10,
+                        min_shift_cells=1, max_shift_cells=4,
+                        cooldown_seconds=0.0)
+
+
+def test_containment_parses_and_echoes():
+    cfg = _build3({"relocation": {
+        "enabled": True, "grid_id": 3, "max_move_parent_cells": 4,
+        "cadence_seconds": 600.0, "follow": dict(_PRESSURE_FOLLOW),
+        "containment": {"grid_id": 2, "deadband_cells": 8,
+                        "max_move_parent_cells": 1,
+                        "cadence_seconds": 1200.0}}})
+    assert cfg.containment.grid_id == 2
+    assert cfg.containment.deadband_cells == 8
+    assert cfg.receipt()["containment"] == {
+        "grid_id": 2, "deadband_cells": 8, "max_move_parent_cells": 1,
+        "cadence_seconds": 1200.0}
+
+
+def test_containment_must_name_the_movers_parent():
+    # d02 tracked, containment naming d03 (a child, not the parent).
+    with pytest.raises(ValueError, match="not the tracked mover's parent"):
+        _build3({"relocation": {
+            "enabled": True, "grid_id": 2,
+            "follow": dict(_PRESSURE_FOLLOW),
+            "containment": {"grid_id": 3}}})
+    # The root can never slide, named before ancestry is even asked.
+    with pytest.raises(ValueError, match="root or an invalid id"):
+        _build3({"relocation": {
+            "enabled": True, "grid_id": 3,
+            "follow": dict(_PRESSURE_FOLLOW),
+            "containment": {"grid_id": 1}}})
+
+
+def test_containment_without_a_follow_source_refuses():
+    with pytest.raises(ValueError, match="tracks nothing"):
+        _build3({"relocation": {
+            "enabled": True, "grid_id": 3,
+            "containment": {"grid_id": 2}}})
+
+
+def test_containment_cadence_must_land_on_root_steps():
+    with pytest.raises(ValueError, match="containment.*whole number"):
+        _build3({"relocation": {
+            "enabled": True, "grid_id": 3,
+            "follow": dict(_PRESSURE_FOLLOW),
+            "containment": {"grid_id": 2, "cadence_seconds": 90.0}}})
+
+
+def test_containment_unknown_key_refuses_by_name():
+    with pytest.raises(ValueError, match="deadband_cell"):
+        _build3({"relocation": {
+            "enabled": True, "grid_id": 3,
+            "follow": dict(_PRESSURE_FOLLOW),
+            "containment": {"grid_id": 2, "deadband_cell": 8}}})
+
+
+def _tree3():
+    """d01 -> d02 (real CPU state) -> d03 (stub, earth-fixed under slides)."""
+    from dataclasses import replace
+
+    parent_plane, parent, child = _cpu_tree()
+    d03_run = replace(child.cfg.run, nx=30, ny=30,
+                      dx=child.cfg.run.dx / 3, dy=child.cfg.run.dy / 3,
+                      dt=child.cfg.run.dt / 3)
+    d03_cfg = replace(child.cfg, grid_id=3, parent_id=2,
+                      i_parent_start=70, j_parent_start=56,
+                      parent_grid_ratio=3, run=d03_run)
+    d03 = SimpleNamespace(
+        cfg=d03_cfg, state=SimpleNamespace(), grid="d03-grid",
+        parent=child,
+        coupler=SimpleNamespace(relocate=lambda: {
+            "rolling_tables": "INVALID"}),
+        clock=SimpleNamespace(ticks=0), children=[], _started=True)
+    child.children = [d03]
+    return parent_plane, parent, child, d03
+
+
+def test_earth_fixed_descendant_holds_still_while_its_parent_slides():
+    """relocate_child with earth_fixed_descendants: the descendant's
+    placement compensates exactly, its state is CARRIED (the object), and
+    no reground handler is demanded for it."""
+    from gpuwm.core.nest_relocation import relocate_child
+
+    parent_plane, _parent, child, d03 = _tree3()
+    d03_state = d03.state
+    receipt = relocate_child(
+        child,
+        i_parent_start=int(child.cfg.i_parent_start) + 2,
+        j_parent_start=int(child.cfg.j_parent_start),
+        initializer=_initializer(parent_plane),
+        static_provenance="footprint-parametric synthetic statics (test)",
+        state_digest=lambda _s: "digest",
+        staging="device",
+        earth_fixed_descendants=frozenset({3}))
+    assert d03.cfg.i_parent_start == 70 - 2 * 3
+    assert d03.cfg.j_parent_start == 56
+    assert d03.state is d03_state
+    row = receipt["descendants"][0]
+    assert row["earth_fixed"] is True
+    assert row["state_carried_bitwise"] is True
+    assert row["placement_from"] == [70, 56]
+    assert row["placement_to"] == [64, 56]
+    assert row["coupler"] == {"rolling_tables": "INVALID"}
+
+
+def _containment_runner(parent, child, d03, parent_plane, *,
+                        deadband=8, receipts_path=None):
+    cfg = _build3({"relocation": {
+        "enabled": True, "grid_id": 3, "max_move_parent_cells": 4,
+        "cadence_seconds": 600.0, "follow": dict(_PRESSURE_FOLLOW),
+        "containment": {"grid_id": 2, "deadband_cells": deadband,
+                        "max_move_parent_cells": 2}}})
+    schedule = SimpleNamespace(
+        clock=SimpleNamespace(tick_den=1), period_ticks=60)
+    runner = RelocationRunner(
+        config=cfg, schedule=schedule,
+        on_child_built=lambda *a, **k: None,
+        provider=lambda parent_state, nest, t, **_kw: None,
+        staging="device", receipts_path=receipts_path)
+    runner.wire_containment(
+        initializer=_initializer(parent_plane),
+        on_child_built=lambda *a, **k: None,
+        static_provenance="footprint-parametric synthetic statics (test)")
+    parent.clock = _clock(600)
+    child.clock = _clock(600)
+    d03.clock = _clock(600)
+    nodes = {1: parent, 2: child, 3: d03}
+    model = SimpleNamespace(
+        root=parent, node=lambda gid: nodes[int(gid)],
+        nodes_by_grid_id=nodes,
+        schedule=schedule,
+        experiment_fingerprint="base-fingerprint",
+        walk_parent_first=lambda: [parent, child, d03],
+        _scratch_arena=None, _dycore_state_workspace=None)
+    clocks = {1: _clock(600)}
+    return runner, model, clocks
+
+
+def test_containment_slides_the_parent_and_compensates_the_mover():
+    parent_plane, parent, child, d03 = _tree3()
+    d03_state = d03.state
+    runner, model, clocks = _containment_runner(
+        parent, child, d03, parent_plane)
+    runner.on_period_begin(model, clocks)
+    # The mover leg held (provider returns None); the containment row is
+    # in the receipts before it.
+    events = [r["event"] for r in runner.receipts]
+    assert events == ["contained", "held"]
+    contained = runner.receipts[0]
+    # d03 span 10 in d02 cells; centered start (120-10)//2+1 = 56, so a
+    # placement of 70 deviates +14; want = round(14/3) = 5, clamped to 2.
+    assert contained["mover_deviation_cells"] == [14, 0]
+    assert contained["requested_shift_parent_cells"] == [2, 0]
+    assert contained["executed_shift_parent_cells"] == [2, 0]
+    assert child.cfg.i_parent_start == 85 + 2
+    assert d03.cfg.i_parent_start == 70 - 6
+    assert d03.state is d03_state
+    assert contained["descendants"][0]["earth_fixed"] is True
+    assert runner.containment_moves_executed == 1
+    assert model.experiment_fingerprint != "base-fingerprint"
+
+
+def test_containment_inside_the_deadband_is_silent():
+    parent_plane, parent, child, d03 = _tree3()
+    from dataclasses import replace
+
+    d03.cfg = replace(d03.cfg, i_parent_start=58)   # dev +2 < 8
+    runner, model, clocks = _containment_runner(
+        parent, child, d03, parent_plane)
+    runner.on_period_begin(model, clocks)
+    events = [r["event"] for r in runner.receipts]
+    assert events == ["held"]
+    assert child.cfg.i_parent_start == 85
+    assert runner.containment_moves_executed == 0
+
+
+def test_containment_without_route_wiring_refuses_on_the_ledger():
+    parent_plane, parent, child, d03 = _tree3()
+    runner, model, clocks = _containment_runner(
+        parent, child, d03, parent_plane)
+    runner.containment_initializer = None
+    runner.containment_preparer = None
+    runner.on_period_begin(model, clocks)
+    events = [r["event"] for r in runner.receipts]
+    assert events == ["containment_refused", "held"]
+    assert child.cfg.i_parent_start == 85
+
+
+def test_root_frame_shift_composes_the_slide_into_the_mover_translation():
+    """The exact live failure, as arithmetic: after d02 slid (-1, -2) and
+    d03 proposed (94, 92), the mover's true translation from its t0
+    reference is (-21, -56) of its OWN cells -- the placement-difference
+    formula said (0, -14) and the drift gate refused by exactly the
+    missing (21, 42) cells (0.25 deg).  origin_in_frame_cells is the
+    arithmetic the fix stands on."""
+    from gpuwm.static.corridor import origin_in_frame_cells
+
+    def cfgs(d02_place, d03_place):
+        return {
+            1: SimpleNamespace(grid_id=1, parent_id=0,
+                               i_parent_start=1, j_parent_start=1,
+                               parent_grid_ratio=1),
+            2: SimpleNamespace(grid_id=2, parent_id=1,
+                               i_parent_start=d02_place[0],
+                               j_parent_start=d02_place[1],
+                               parent_grid_ratio=3),
+            3: SimpleNamespace(grid_id=3, parent_id=2,
+                               i_parent_start=d03_place[0],
+                               j_parent_start=d03_place[1],
+                               parent_grid_ratio=7),
+        }
+
+    ref = origin_in_frame_cells(cfgs((74, 46), (94, 94)), 3, 1)
+    live = origin_in_frame_cells(cfgs((73, 44), (94, 92)), 3, 1)
+    shift = (live[0] - ref[0], live[1] - ref[1])
+    assert shift == (-21, -56)
+    legacy = ((94 - 94) * 7, (92 - 94) * 7)
+    assert legacy == (0, -14)
+    missing = (shift[0] - legacy[0], shift[1] - legacy[1])
+    # ... which is exactly the d02 slide expressed in d03 cells.
+    assert missing == (-1 * 21, -2 * 21)
+
+
+def test_the_tracker_is_consulted_in_the_ALREADY_SLID_frame():
+    """The ordering claim of 6802bb4d, asserted substantively.
+
+    At a shared boundary the slide runs FIRST, so one opportunity
+    re-centres AND follows instead of following and immediately
+    un-centring what it just did.  The existing test above notices a
+    swap through the receipt ORDER; this one notices it through the
+    thing that actually matters -- what the tracker was handed.
+
+    If the two legs were swapped, the provider would be given d03's
+    PRE-slide placement (70) and its parent's pre-slide state, and would
+    compute a shift relative to a frame that is about to move under it:
+    a correct answer applied at the wrong place, which is precisely the
+    class of defect commits 1f46814c and a9a05cc5 were.
+    """
+    parent_plane, parent, child, d03 = _tree3()
+    seen = []
+
+    runner, model, clocks = _containment_runner(
+        parent, child, d03, parent_plane)
+    parent_state_before = child.state
+
+    def spy(parent_state, nest_footprint, t, **_kw):
+        seen.append({
+            "i_parent_start": int(nest_footprint.i_parent_start),
+            "j_parent_start": int(nest_footprint.j_parent_start),
+            "parent_state": parent_state,
+        })
+        return None
+
+    runner.provider = spy
+    runner.on_period_begin(model, clocks)
+
+    assert len(seen) == 1
+    # The slide was +2 d01 cells, so the earth-fixed compensation moved
+    # d03 by -2 x 3 = -6.  The tracker must see 64, never 70.
+    assert seen[0]["i_parent_start"] == 70 - 6
+    assert seen[0]["i_parent_start"] == int(d03.cfg.i_parent_start)
+    # ... and the parent state it reduces is the one the slide rebuilt.
+    assert seen[0]["parent_state"] is child.state
+    assert seen[0]["parent_state"] is not parent_state_before
+
+
+def test_swapping_the_two_legs_would_be_caught():
+    """The guard above is only a guard if the wrong order fails it.
+
+    Rather than trust that, run the legs in the WRONG order explicitly
+    and assert the tracker then sees the stale placement -- so the test
+    above is pinned to a real difference and not to an invariant that
+    holds either way.
+    """
+    parent_plane, parent, child, d03 = _tree3()
+    runner, model, clocks = _containment_runner(
+        parent, child, d03, parent_plane)
+    seen = []
+    runner.provider = lambda ps, fp, t, **_kw: (
+        seen.append(int(fp.i_parent_start)) or None)
+
+    # The mover leg first, by hand ...
+    elapsed = 600.0
+    node = model.node(3)
+    runner.provider(node.parent.state, node.cfg, elapsed)
+    # ... then the slide.
+    runner._containment_opportunity(model, clocks, elapsed, None, None)
+
+    assert seen == [70]                       # the STALE placement
+    assert int(d03.cfg.i_parent_start) == 64  # slid afterwards

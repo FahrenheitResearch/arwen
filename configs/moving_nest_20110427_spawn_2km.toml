@@ -27,9 +27,12 @@
 # six-hourly is already fetched (see tools/moving_nest_demo_20110427.ps1,
 # which stages ${GPUWM_DEMO_20110427_ROOT}).
 #
-# restart_interval_s stays 0: a restart across a move promises nothing
-# (Drew, 2026-08-06), and a restart across a SPAWN inherits that posture
-# whole -- so this arm does not checkpoint either.
+# restart_interval_s is LIVE, hourly.  A checkpoint carries the nest
+# lifecycle whole: which spawn slots fired and in which episode, each
+# follower's placement, segment chain and cooldown anchors, and the
+# acoustic Omega.  A resume off one reproduces the unbroken run frame for
+# frame, across a spawn and across an executed move alike, and none of it
+# depends on where the forcing came from.
 
 [experiment]
 name = "moving_nest_20110427_spawn_2km"
@@ -39,7 +42,7 @@ feedback = 0
 smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
-restart_interval_s = 0.0
+restart_interval_s = 3600.0
 
 [projection]
 map_proj = "lambert"

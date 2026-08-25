@@ -1043,6 +1043,77 @@ def hrrr_object_url(cycle: datetime, hour: int, product: str,
             f"hrrr.t{cycle:%H}z.{product}f{hour:02d}.grib2")
 
 
+def require_cycle_grid(source: str):
+    """This source's declared initialization grid, or a refusal saying why.
+
+    THE REFUSAL IS DERIVED.  ``--cycle latest`` used to be answered by a
+    branch on three model names, so a reader asking for RAP or ICON-EU
+    was told "latest is only meaningful for gfs/gdas/hrrr" and then told
+    about ERA5's latency, which they had not asked about -- and ERA5
+    itself, whose publication delay is a KNOWN NUMBER, was refused for
+    having one.  A list of names cannot say anything true about a
+    registry of thirty-two sources.
+
+    What is said instead names the missing declaration, so the sentence
+    stays true as the row grows and stops being said the moment it does.
+    """
+
+    from gpuwm.source_cycles import cycle_grid_for
+
+    grid = cycle_grid_for(source)
+    if grid is not None:
+        return grid
+    raise ValueError(layered(
+        f"--cycle latest cannot be resolved for {source!r}: nothing in "
+        "this build declares when that source initializes.",
+        "`latest` means the newest init a source can serve, which needs "
+        "the UTC hours the producer runs on and how long after each one "
+        "its bytes land.  A source with a fetch route declares both in "
+        "the route table (`gpuwm sources` lists what is registered); a "
+        "source without one declares them on its registry row.  This "
+        "source has neither, so name the cycle you want as "
+        "YYYY-MM-DDTHH (UTC)."))
+
+
+def cycle_is_probeable(source: str) -> bool:
+    """Can this source's publication be settled by asking a server?
+
+    Two shapes answer yes and one answers no, and the no is not a
+    restriction: the CDS is a keyed JOB API, so there is no object to
+    HEAD for ERA5 and no probe to run.  A source that answers no
+    resolves ``--cycle latest`` from its declared publication delay
+    instead, and the fetch's own completeness contract reports anything
+    the delay was optimistic about.
+    """
+
+    if source in GFS_CONTAINER_SOURCES or source == "hrrr":
+        return True
+    try:
+        fetch_routes.route_for(source)
+    except (ValueError, KeyError):
+        return False
+    return True
+
+
+def _route_probe_urls(source: str, cycle: datetime, last_hour: int,
+                      transport: str | None) -> tuple[str, ...]:
+    """Probe URLs for a TABLE-ROUTE source, derived from its own row.
+
+    Nothing here knows a model name.  ``resolve_request`` is the same
+    offline planner ``gpuwm fetch`` runs, so the objects probed are the
+    objects that would be downloaded -- which is the property that makes
+    the probe mean what it says, and the reason adding a producer is a
+    route row rather than a branch in this function.
+    """
+
+    plan = fetch_routes.resolve_request(
+        source, cycle=cycle, hours=last_hour, host=transport)
+    final = plan.leads[-1]
+    return tuple(
+        url for obj in plan.objects if obj.lead == final
+        for url in obj.urls(plan.ladder))
+
+
 def cycle_probe_urls(source: str, cycle: datetime, last_hour: int,
                      transport: str | None = None) -> tuple[str, ...]:
     """The objects whose existence proves one cycle covers ``last_hour``.
@@ -1053,21 +1124,39 @@ def cycle_probe_urls(source: str, cycle: datetime, last_hour: int,
     default: the archive lags by minutes to hours, so probing it first
     resolves ``--cycle latest`` to a cycle that is already stale by the
     time the fetch starts.
+
+    The legacy transports build their own URLs because they have no
+    route row to derive from; everything else is derived from the route
+    table.  A source that can be probed at all is
+    :func:`cycle_is_probeable`, and asking one that cannot is refused by
+    naming what its row lacks -- never by not being on a list.
     """
 
-    if transport is None:
-        transport = fetch_endpoints.serving_ladder(
-            source, cycle=cycle)[0].name
     if source in GFS_CONTAINER_SOURCES:
+        if transport is None:
+            transport = fetch_endpoints.serving_ladder(
+                source, cycle=cycle)[0].name
         return (gfs_object_url(cycle, last_hour, source,
                                transport=transport),)
     if source == "hrrr":
+        if transport is None:
+            transport = fetch_endpoints.serving_ladder(
+                source, cycle=cycle)[0].name
         return (hrrr_object_url(cycle, last_hour, "wrfnat",
                                 transport=transport),
                 hrrr_object_url(cycle, last_hour, "wrfprs",
                                 transport=transport))
-    raise ValueError(
-        "cycle completeness probes are only meaningful for gfs/gdas/hrrr")
+    if cycle_is_probeable(source):
+        return _route_probe_urls(source, cycle, last_hour, transport)
+    raise ValueError(layered(
+        f"{source!r} publishes no object a completeness probe can ask "
+        "for, so this cycle's publication cannot be settled by probing.",
+        "A probe needs a file server: a URL that answers HEAD once the "
+        "bytes are there.  This source is acquired over a transport that "
+        "has none -- a keyed job API, or a route this build does not "
+        "carry -- so `--cycle latest` resolves from the publication "
+        "delay its registry row declares and the fetch reports what it "
+        "could not serve."))
 
 
 def require_published_cycle(source: str, cycle: datetime, last_hour: int, *,
@@ -1083,6 +1172,14 @@ def require_published_cycle(source: str, cycle: datetime, last_hour: int, *,
     downloading, and saying which cycle IS complete.
     """
 
+    if not cycle_is_probeable(source):
+        # Nothing to ask.  The gate this function is exists to close --
+        # a named cycle the mirrors have not finished publishing -- can
+        # only be closed by a server that answers HEAD, and a source
+        # acquired over a job API has none.  Returning is not a silent
+        # pass: the acquisition itself refuses what it cannot serve, and
+        # inventing a refusal here would refuse cycles that are fine.
+        return
     urls = cycle_probe_urls(source, cycle, last_hour)
     if all(probe(url) for url in urls):
         return
@@ -1122,36 +1219,42 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
 
     if now is None:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-    if source in GFS_CONTAINER_SOURCES:
-        step = timedelta(hours=6)
-        candidate = now.replace(
-            minute=0, second=0, microsecond=0,
-            hour=max(h for h in GFS_CYCLE_HOURS if h <= now.hour))
-        candidates = tuple(candidate - i * step for i in range(9))
-    elif source == "hrrr":
-        candidate = now.replace(minute=0, second=0, microsecond=0)
-        candidates = tuple(candidate - timedelta(hours=i) for i in range(13))
-    else:
-        raise ValueError(
-            "--cycle latest is only meaningful for gfs/gdas/hrrr; ERA5 is "
-            "a reanalysis published with a delay of several days")
-    if source == "hrrr":
-        from gpuwm.hrrr_forecast import hrrr_cycle_horizon
-        candidates = tuple(cycle for cycle in candidates
-                           if last_hour <= hrrr_cycle_horizon(cycle))
+    grid = require_cycle_grid(source)
+    # A cycle that does not reach the end of the window is not a
+    # candidate at all -- it is a cycle that cannot serve the request.
+    # The rule is the row's or the route's; nothing here knows which
+    # producer runs a short off-synoptic cycle.
+    candidates = tuple(
+        cycle for cycle in grid.candidates(now)
+        if grid.horizon(cycle) is None or last_hour <= grid.horizon(cycle))
+    if not candidates:
+        raise RuntimeError(layered(
+            f"no {source} cycle in the last {grid.search_hours} h "
+            f"forecasts as far as f{last_hour:03d}.",
+            f"The declared horizons are {list(grid.horizons)} "
+            f"(cycle hours, through-hour), and this window needs "
+            f"f{last_hour:03d}.  Shorten --hours, or name a cycle whose "
+            "own ladder reaches it."))
+    if not cycle_is_probeable(source):
+        # No file server to ask, so the declared publication delay IS
+        # the answer.  Reported as resolved rather than refused: the
+        # newest published analysis of a reanalysis is a well-defined
+        # time, and the fetch's own completeness contract is what
+        # reports a delay that turned out optimistic.
+        return candidates[0]
     ladder = fetch_endpoints.serving_ladder(
-        source, cycle=candidates[0], now=now) if candidates else ()
+        source, cycle=candidates[0], now=now)
     for endpoint in ladder:
         for cycle in candidates:
             urls = cycle_probe_urls(source, cycle, last_hour,
                                     transport=endpoint.name)
             if all(probe(url) for url in urls):
                 return cycle
-    span = "48 h" if source in GFS_CONTAINER_SOURCES else "12 h"
     tried = " or ".join(endpoint.name for endpoint in ladder)
     raise RuntimeError(
         f"no complete {source.upper()} cycle covering f{last_hour:03d} was "
-        f"found on {tried} within the last {span}; pass an explicit --cycle")
+        f"found on {tried} within the last {grid.search_hours} h; pass an "
+        "explicit --cycle")
 
 
 def resolve_hrrr_transport(cycle: datetime, requested: str, *,
@@ -5304,11 +5407,14 @@ def register_cli(subparsers) -> None:
              "reads the directory as published")
     parser.add_argument(
         "--cycle", default=None, metavar="YYYY-MM-DDTHH|latest",
-        help="model cycle (UTC); 'latest' resolves the newest complete "
-             "cycle from the AWS Open Data listing (gfs/hrrr only -- the "
-             "table routes read a packaged cycle grammar rather than a "
-             "live listing, and publication lag differs by hours between "
-             "those producers, so they want an explicit cycle)")
+        help="model cycle (UTC); 'latest' resolves the newest cycle this "
+             "source can serve, from the initialization grid and "
+             "publication lag its registry row or route declares -- "
+             "probed against the mirrors where the source publishes "
+             "objects to probe, and taken from the declared lag where it "
+             "does not (a reanalysis published on a delay has a latest, "
+             "and it is that delay).  A source that declares neither is "
+             "refused by name")
     parser.add_argument(
         "--hours", type=int, default=None, metavar="N",
         help="forecast window length: hours 0..N are fetched.  gdas is "

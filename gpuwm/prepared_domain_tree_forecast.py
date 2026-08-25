@@ -645,13 +645,22 @@ def _plan_restart_identity(plan) -> dict[str, object]:
 
 
 def resolve_execution_plan(exp) -> Mapping[str, object]:
-    """Resolve every edge through the engine's actual transition authority."""
+    """Resolve every edge through the engine's actual transition authority.
 
-    if int(exp.feedback) != 0:
-        raise ValueError(
-            "the prepared domain-tree forecast product carries a static "
-            "one-way execution plan and refuses feedback=1; use the native "
-            "experiment runner for experimental two-way feedback")
+    THE FEEDBACK REFUSAL THAT STOOD HERE IS LIFTED.  It said this product
+    "carries a static one-way execution plan", and that was true of the
+    ARTIFACTS -- initial states, statics and boundary series are authored
+    identically at feedback = 0 and 1, because feedback is a runtime
+    coupling behaviour, not an ingest one -- but not of the EXECUTOR,
+    which builds the same ConcreteNestCoupler the native route does and
+    runs the same clock table whose feedback positions were always
+    present (gpuwm/core/clock.py, WRF mediation_integrate.F:443/:523).
+    With the coupler's transaction implemented end to end (restriction,
+    the interp_fcn.F smoothers, windowed re-diagnosis), the honest answer
+    is the run.  The coupler still refuses the configurations feedback
+    cannot serve (mixed microphysics, unequal nz, mismatched inventories)
+    by name at construction.
+    """
     by_id = {domain.grid_id: domain for domain in exp.domains}
     transitions = []
     for domain in exp.domains:
@@ -972,15 +981,26 @@ def preflight_prepared_tree(
                 "[relocation.follow]/[[relocation.move]] from this "
                 "config.")
         corridor_domains = corridor_set.get("domains")
-        if (not isinstance(corridor_domains, Mapping)
-                or corridor_label not in corridor_domains):
+        # EVERY relocating grid needs its corridor, not just the tracked
+        # mover: a [relocation.containment] parent slides too, and every
+        # descendant of a mover re-grounds -- the regrounder indexes its
+        # corridor by grid id at move time, so a gap here would surface
+        # as a KeyError mid-run instead of a named refusal at the door.
+        from gpuwm.static.corridor import relocating_subtree_grid_ids
+        needed = [f"d{gid:02d}"
+                  for gid in relocating_subtree_grid_ids(exp)] or [
+                      corridor_label]
+        missing = [label for label in needed
+                   if not isinstance(corridor_domains, Mapping)
+                   or label not in corridor_domains]
+        if missing:
             covered = (sorted(corridor_domains)
                        if isinstance(corridor_domains, Mapping) else [])
             raise ValueError(
-                f"[relocation] names {corridor_label}, but this bundle's "
-                f"statics corridor covers only {covered}; re-prepare "
-                f"with --statics-corridor covering {corridor_label} "
-                "(bare --statics-corridor covers every child domain).")
+                f"[relocation] needs corridors for {needed}, but this "
+                f"bundle's statics corridor covers only {covered} "
+                f"(missing {missing}); re-prepare with --statics-corridor "
+                "(the bare flag covers every child domain).")
     # The physics this config selects has to be RUNNABLE before the
     # hierarchy is verified, not after: this is the preflight, and a
     # missing lookup table is exactly the class of thing a preflight
@@ -1227,21 +1247,31 @@ def preflight_prepared_tree(
         # arithmetic.  A corridor that fails ANY of these refuses loudly
         # -- it never degrades to a silently static nest.
         from gpuwm.static.corridor import (STATICS_CORRIDOR_DIRNAME,
-                                           load_child_statics_corridor)
-        grid_id = int(exp.relocation.grid_id)
+                                           corridor_frame_kwargs,
+                                           load_child_statics_corridor,
+                                           relocating_subtree_grid_ids)
         by_id = {int(domain.grid_id): index
                  for index, domain in enumerate(exp.domains)}
-        child = exp.domains[by_id[grid_id]]
-        parent_run = exp.domains[by_id[int(child.parent_id)]].run
         corridor_directory = hierarchy_root / STATICS_CORRIDOR_DIRNAME
-        statics_corridor = load_child_statics_corridor(
-            corridor_directory,
-            expected_set_receipt=preparation["statics_corridor"],
-            grid_id=grid_id, child_dc=child, parent_run=parent_run,
-            reference_grid=grids[by_id[grid_id]])
-        statics_corridor_cache_path = corridor_directory / (
-            preparation["statics_corridor"]["domains"]
-            [f"d{grid_id:02d}"]["cache"]["path"])
+        # The mover AND every descendant of it: a mid-tree move changes
+        # the ground under the whole subtree, so each member rebuilds its
+        # own statics and each therefore needs its own corridor.  On a
+        # leaf mover this is the single grid it always was.
+        statics_corridor = {}
+        for grid_id in relocating_subtree_grid_ids(exp):
+            child = exp.domains[by_id[grid_id]]
+            parent_run = exp.domains[by_id[int(child.parent_id)]].run
+            statics_corridor[grid_id] = load_child_statics_corridor(
+                corridor_directory,
+                expected_set_receipt=preparation["statics_corridor"],
+                grid_id=grid_id, child_dc=child, parent_run=parent_run,
+                reference_grid=grids[by_id[grid_id]],
+                frame_kwargs=corridor_frame_kwargs(exp, child))
+        statics_corridor_cache_path = [
+            corridor_directory / (
+                preparation["statics_corridor"]["domains"]
+                [f"d{grid_id:02d}"]["cache"]["path"])
+            for grid_id in sorted(statics_corridor)]
     interval_hours = forcing_hours[1] - forcing_hours[0]
     if exp.run_seconds > forcing_hours[-1] * 3600.0:
         # The gate that keeps a longer run_seconds honest.  A restart may
@@ -1297,10 +1327,14 @@ def _verify_inputs_unchanged(inputs: PreparedTreeInputs) -> None:
     if current != dict(inputs.authority_sha256):
         raise RuntimeError("prepared tree authorities changed during execution")
     if inputs.statics_corridor_cache_path is not None:
-        observed = _sha256(inputs.statics_corridor_cache_path)
-        if observed != inputs.statics_corridor.cache_sha256:
-            raise RuntimeError(
-                "prepared statics corridor changed during execution")
+        # One per subtree member; each is re-hashed against the corridor
+        # object that was actually cropped from during the run.
+        for path, grid_id in zip(inputs.statics_corridor_cache_path,
+                                 sorted(inputs.statics_corridor)):
+            if _sha256(path) != inputs.statics_corridor[grid_id].cache_sha256:
+                raise RuntimeError(
+                    f"prepared statics corridor d{grid_id:02d} changed "
+                    "during execution")
     for bundle in inputs.domains:
         observed = {
             "cache_header": _sha256(bundle.cache / "header.json"),
@@ -1416,6 +1450,47 @@ def _rebind_rebuilt_state(state, workspace) -> None:
             setattr(state, name, workspace.view(name, value.shape, value.dtype))
 
 
+def _corridor_host_bytes(corridors):
+    """Total host bytes across the corridors in play, or None.
+
+    Same shape rule as :func:`_corridor_echo`: a mapping keyed by
+    grid_id is the normal case once a moving subtree needs one corridor
+    per member, and a bare corridor is still accepted.
+    """
+    if corridors is None:
+        return None
+    entries = (corridors.values() if hasattr(corridors, "values")
+               else [corridors])
+    return int(sum(c.host_bytes for c in entries))
+
+
+def _corridor_echo(corridors):
+    """Receipt echo for the statics corridors in play, one row each.
+
+    Accepts the mapping the loader builds (grid_id -> corridor) and, for
+    any caller still holding one, a bare corridor.  Returns None when
+    there are none, so a bounds-only [relocation] echo is unchanged.
+    """
+    if corridors is None:
+        return None
+    entries = (corridors.values() if hasattr(corridors, "values")
+               else [corridors])
+
+    def row(corridor):
+        geometry = corridor.geometry
+        return {
+            "grid_id": int(geometry["grid_id"]),
+            "corridor_nx": int(geometry["corridor_nx"]),
+            "corridor_ny": int(geometry["corridor_ny"]),
+            "frame_grid_id": int(geometry.get("frame_grid_id", -1)),
+            "cache_sha256": corridor.cache_sha256,
+            "host_bytes": corridor.host_bytes,
+        }
+
+    rows = sorted((row(c) for c in entries), key=lambda r: r["grid_id"])
+    return rows or None
+
+
 def _completed_execution_report(model):
     """The honest zero-work report for a restore that landed on the stop.
 
@@ -1482,6 +1557,7 @@ def run_prepared_tree(
         ModelRuntimeStatus,
         SharedRRTMGPChunkWorkspace,
         execute_experiment,
+        publish_declared_experiment,
         uses_modern_rrtmgp_workspace,
     )
     from gpuwm.core.nest import NestCoupler
@@ -1494,7 +1570,11 @@ def run_prepared_tree(
     from gpuwm.runtime import declared_constant_glw
     from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
     from gpuwm.ingest.prepared_cache import restore_prepared_cache
-    from gpuwm.io.restart import restore_tree_restart, write_tree_restart
+    from gpuwm.io.restart import (checkpoint_placements,
+                                  read_restart_header,
+                                  read_tree_lifecycle_header,
+                                  restore_tree_restart,
+                                  write_tree_restart)
     from gpuwm.io.wrfout import PerDomainWrfoutWriters
     from gpuwm.state_digest import canonical_state_digest
     from gpuwm.supervisor import validate_manifest_checkpoint
@@ -1676,8 +1756,28 @@ def run_prepared_tree(
             coupler=None,
         )
         if parent is not None:
-            node.coupler = NestCoupler(node)
+            node.coupler = NestCoupler(
+                node, feedback=exp.feedback,
+                smooth_option=exp.smooth_option)
             parent.children.append(node)
+            if exp.feedback == 1:
+                # WRF initialization is part of the two-way activation
+                # contract, not an optional sweep: med_nest_initial runs
+                # med_nest_feedback on each nest as it is built
+                # (share/mediation_integrate.F:774-777), input-file
+                # nests included, and the parent is re-diagnosed after.
+                # The prepared artifacts are authored one-way, so this
+                # per-child transaction at restore time is exactly what
+                # makes the restored tree equal to a WRF tree whose
+                # nests were initialized from input files.  Parent-first
+                # restore order makes each parent live before its child
+                # feeds back, matching build_experiment's ordering.
+                from gpuwm.core.model import FeedbackScratch
+
+                initial = FeedbackScratch()
+                node.coupler.feedback_prepare(node, initial)
+                node.coupler.feedback_commit(node)
+                node.coupler.feedback_finalize(node)
         nodes[domain.grid_id] = node
         prepared[domain.grid_id] = SimpleNamespace(
             static_fields=bundle.static_fields,
@@ -1732,6 +1832,12 @@ def run_prepared_tree(
         memory_ledger=ledger,
         experiment_fingerprint=fingerprint,
     )
+    # The tree is published with the experiment it was configured from,
+    # exactly as every other route publishes it.  A checkpoint that
+    # persists a live follower records where each domain was DECLARED
+    # beside where it now sits, and the declaration is a fact about this
+    # config -- not about which ingest produced the tree.
+    publish_declared_experiment(model, exp)
     model._scratch_arena = arena
     model._dycore_state_workspace = rebuilt
     # Published beside the digest so a checkpoint written here can be
@@ -1756,10 +1862,143 @@ def run_prepared_tree(
             exp, statics_corridor=inputs.statics_corridor, model=model,
             outdir=outdir, radiation_workspace=radiation_workspace)
         if inputs.statics_corridor is not None else None)
+    # BOUND BEFORE THE FIRST CHECKPOINT, not at the runner's first
+    # receipt.  The checkpoint writer is handed a tree and a tick count
+    # and asks the tree what followers it drives; a runner that attaches
+    # itself only when it first records something leaves every
+    # checkpoint taken before the opening cadence boundary silently
+    # follower-free, and a resume then rebuilds the follower cold.
+    runtime.publish_lifecycle_runners(
+        model, relocation_runner=relocation_runner)
 
     restart_info = None
     if restart is not None:
         checkpoint = validate_manifest_checkpoint(Path(restart))
+        # The lifecycle peek, before anything is reconstructed: one JSON
+        # member off the root says which followers the checkpointed run
+        # drove and what each one's history was.  Validated against THIS
+        # run the same way the case-data route validates it.
+        lifecycle = read_tree_lifecycle_header(checkpoint, model)
+        checkpoint = lifecycle.root_path
+        # PUT THE NEST BACK WHERE IT WAS, before restoring into it.  The
+        # tree above was built from the config, so a nest that moved
+        # during the checkpointed run is sitting on its ORIGINAL ground
+        # -- different terrain, map factors and base state than the
+        # bytes about to be restored.  setup_fingerprint refuses that,
+        # correctly, and it is the whole reason a moving-nest run could
+        # not resume.  The checkpoint records each placement; adopt it.
+        #
+        # Needs the relocation runner, because moving a nest to a
+        # placement means cropping its statics out of the sealed
+        # corridor, and the runner is what holds that wiring.  A
+        # checkpoint from a run whose nest never moved needs none of
+        # this and takes the fast path in adopt_placement.
+        placements = checkpoint_placements(checkpoint, set(nodes))
+        moved_grid_ids = {
+            int(gid) for gid in
+            ((read_restart_header(checkpoint).get("relocation") or {})
+             .get("moved_grid_ids") or ())}
+        # A grid is put back if its placement differs OR if the
+        # checkpointed run relocated it at all.  The second half is not
+        # redundant: a nest that wandered away and returned sits at its
+        # original i/j carrying setup arrays that came from a relocation
+        # rebuild rather than the prepared cache, and those differ --
+        # phb by 2**-6, which the setup fingerprint refuses.  Deciding on
+        # the placement number alone made a resume work from one
+        # checkpoint of a run and fail from an earlier one.
+        wanted = {gid: pl for gid, pl in placements.items()
+                  if gid in nodes
+                  and (gid in moved_grid_ids
+                       or (int(pl["i_parent_start"]),
+                           int(pl["j_parent_start"]))
+                       != (int(nodes[gid].cfg.i_parent_start),
+                           int(nodes[gid].cfg.j_parent_start)))}
+        if wanted and relocation_runner is None:
+            raise RuntimeError(
+                "this checkpoint was written by a run whose nest had "
+                f"moved (d{sorted(wanted)[0]:02d} is at "
+                f"{tuple(sorted(wanted.values())[0].values())[:2]}, the "
+                "config starts it elsewhere), and this run has no "
+                "relocation runner to put it back -- a [relocation] "
+                "block with a verified statics corridor is what supplies "
+                "the terrain for a placement the config never names")
+        # The as-built fingerprint, captured BEFORE any placement is
+        # adopted: adopting one goes through relocate_child, which marks
+        # the fingerprint itself, and the chain below has to replay from
+        # the value this build started with -- not from a value that has
+        # already been marked by the putting-back.
+        fingerprint_as_built = model.experiment_fingerprint
+        # Parent-first: a containment ancestor must be where it belongs
+        # before its descendant's placement is read against it.
+        for gid in sorted(wanted):
+            relocation_runner.adopt_placement(
+                model, nodes[gid],
+                i_parent_start=int(wanted[gid]["i_parent_start"]),
+                j_parent_start=int(wanted[gid]["j_parent_start"]),
+                force=gid in moved_grid_ids)
+        # Put the tracker's hysteresis and the audit's counters back, so
+        # the resumed run's first consultation is suppressed exactly as
+        # long as the unbroken run's would have been, and its ledger
+        # continues the count instead of restarting it.
+        _rel_header = read_restart_header(checkpoint).get("relocation") or {}
+        if lifecycle.block is not None:
+            # The follower's OWN entry, taken whole through the seam the
+            # writer took it from: the segment chain (so this run's next
+            # move chains onto its real predecessor instead of onto the
+            # base preparation), the executed-move count, and BOTH
+            # cooldown anchors.  The `continuity` fallback below carries
+            # two of those four and is what a checkpoint written before
+            # the lifecycle block existed has instead.
+            seeded = runtime.restore_nest_followers(model, lifecycle)
+            if relocation_runner is not None and seeded:
+                relocation_runner.receipts.append({
+                    "event": "follower-state-restored",
+                    "from_checkpoint": Path(checkpoint).name,
+                    "grid_ids": [int(gid) for gid in seeded],
+                    "prior_moves": _rel_header.get("moves"),
+                    "segment_id": _rel_header.get("segment_id"),
+                })
+        else:
+            _continuity = _rel_header.get("continuity")
+            if _continuity and relocation_runner is not None:
+                applied = relocation_runner.restore_continuity(_continuity)
+                relocation_runner.receipts.append({
+                    "event": "continuity-restored",
+                    "from_checkpoint": Path(checkpoint).name,
+                    "prior_moves": _rel_header.get("moves"),
+                    "segment_id": _rel_header.get("segment_id"),
+                    "applied": applied,
+                })
+        # RECONSTRUCT THE IDENTITY, do not bypass the gate.  Every
+        # executed move chains its record into the live fingerprint
+        # (mark_fingerprint_across_move), one-way, so no fresh build ever
+        # computes a moved tree's value -- which is exactly what made a
+        # moved checkpoint refuse to resume BY CONSTRUCTION rather than by
+        # anyone deciding it should.
+        #
+        # Replaying the SAME record hashes, in the same order, from this
+        # build's own fingerprint reproduces that value if and only if
+        # this is the run that wrote the checkpoint.  A different config
+        # still mismatches, because the base of the chain differs.  So the
+        # gate keeps its full meaning and simply stops being unpassable.
+        #
+        # Unconditional since the resume became exact.  It was behind
+        # --allow-restart-across-move while a restart across a move
+        # promised nothing; it now reproduces the unbroken run bit for
+        # bit, so an opt-in would only be a way to be refused.  The three
+        # things that made it inexact are all carried now: the placement
+        # and the tracker's hysteresis (above), the acoustic Omega
+        # (CHECKPOINT_ONLY_STATE), and the tracker's consultation window
+        # (restart.CARRIED_SCRATCH_SLOTS).
+        from gpuwm.core.nest_relocation import mark_fingerprint_across_move
+
+        header = read_restart_header(checkpoint)
+        chain = (header.get("relocation") or {}).get("record_sha256")
+        if chain:
+            marked = fingerprint_as_built
+            for record_sha256 in chain:
+                marked = mark_fingerprint_across_move(marked, record_sha256)
+            model.experiment_fingerprint = marked
         restart_info = restore_tree_restart(
             checkpoint, model,
             sealed_forcing_extension=sealed_forcing_extension)
@@ -1817,6 +2056,7 @@ def run_prepared_tree(
     )
     model._io_manager = writers
     forecast_started = time.perf_counter()
+
 
     def history_handler(_tree, node, ticks):
         # ASKED OF THE STEPPER, per grid.  ``steppers`` is bound below and
@@ -1892,6 +2132,19 @@ def run_prepared_tree(
         # Same seam as the case-data route: a moved domain's later
         # frames must describe the footprint that produced them.
         relocation_runner.on_child_built.attach_writers(writers)
+        # ...and to the descendant preparers of a MID-TREE move, which
+        # are separate instances and would otherwise refresh nothing.
+        _fan = getattr(relocation_runner.reground_descendant,
+                       "attach_writers", None)
+        if callable(_fan):
+            _fan(writers)
+        # ...and to the containment leg's preparer, a third separate
+        # instance (the sliding parent's own frames must re-georeference
+        # after each slide exactly as a moved leaf's do).
+        _cont = getattr(relocation_runner, "containment_preparer", None)
+        _fan = getattr(_cont, "attach_writers", None)
+        if callable(_fan):
+            _fan(writers)
 
     # [tiles].  Absent -- the default -- this is an empty mapping and the
     # executor binds gpuwm.core.dycore.step for every grid, which is the
@@ -1947,7 +2200,7 @@ def run_prepared_tree(
                     progress_callback=progress_callback,
                     validate_state=True,
                     health_debug=health_debug,
-                    skip_feedback_path=True,
+                    skip_feedback_path=(int(exp.feedback) == 0),
                     pool_trim_per_period=True,
                     relocation_runner=relocation_runner,
                     steppers=steppers,
@@ -1965,7 +2218,7 @@ def run_prepared_tree(
                         progress_callback=progress_callback,
                         validate_state=True,
                         health_debug=health_debug,
-                        skip_feedback_path=True,
+                        skip_feedback_path=(int(exp.feedback) == 0),
                         pool_trim_per_period=True,
                         relocation_runner=relocation_runner,
                         steppers=steppers,
@@ -2086,18 +2339,16 @@ def run_prepared_tree(
         "relocation": (
             None if not exp.relocation.enabled else {
                 "config": exp.relocation.receipt(),
-                "statics_corridor": (
-                    None if inputs.statics_corridor is None else {
-                        "grid_id": int(
-                            inputs.statics_corridor.geometry["grid_id"]),
-                        "corridor_nx": int(
-                            inputs.statics_corridor.geometry["corridor_nx"]),
-                        "corridor_ny": int(
-                            inputs.statics_corridor.geometry["corridor_ny"]),
-                        "cache_sha256":
-                            inputs.statics_corridor.cache_sha256,
-                        "host_bytes": inputs.statics_corridor.host_bytes,
-                    }),
+                # A SET, not one corridor.  `statics_corridor` has been a
+                # dict keyed by grid_id since the moving subtree needed a
+                # corridor per member (the mover's, plus a root-framed one
+                # for every descendant carried along); this echo still
+                # read it as a single object and died on
+                # `'dict' object has no attribute 'geometry'` -- at the
+                # very END of the run, while writing the receipt, with
+                # every wrfout already on disk.  A 3 h A/B found it; a
+                # 114 h forecast would have found it the expensive way.
+                "statics_corridor": _corridor_echo(inputs.statics_corridor),
                 "receipts": _strict_json(list(
                     getattr(model, "_relocation_receipts", ()) or ())),
             }),
@@ -2134,9 +2385,8 @@ def run_prepared_tree(
             # Host-side, not VRAM: the corridor is cropped on the CPU
             # and the rebuilt child re-occupies the same device
             # footprint, so the GPU preflight estimate is unchanged.
-            "statics_corridor_host_bytes": (
-                None if inputs.statics_corridor is None
-                else inputs.statics_corridor.host_bytes),
+            "statics_corridor_host_bytes": _corridor_host_bytes(
+                inputs.statics_corridor),
             # WHICH EXECUTION MODE the two numbers above describe.  The
             # estimate prices a whole resident tree; a streamed domain's
             # observed peak is a few tile buffers.  Absent this field the

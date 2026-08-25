@@ -42,11 +42,12 @@ history_interval_s = 60.0
 spawn = { trigger = "uh", threshold = 60.0, earliest_s = 900.0, latest_s = 7200.0 }
 ```
 
-- `trigger = "uh" | "reflectivity" | "time"` — the tracker's signal
-  vocabulary (the spawn watch's own updraft-helicity window /
-  composite `refl_10cm`, read through the
-  same `gpuwm.core.storm_tracking.signal_plane` with the same
-  missing-slot refusals), plus the manual deterministic form.
+- `trigger = "uh" | "reflectivity" | "pressure" | "time"` — the
+  tracker's signal vocabulary (the spawn watch's own updraft-helicity
+  window / composite `refl_10cm` / the pressure field reduced from the
+  live prognostic column, read through the same
+  `gpuwm.core.storm_tracking.signal_plane` with the same missing-slot
+  refusals), plus the manual deterministic form.
 - Field triggers require `threshold` (field units), `earliest_s`,
   `latest_s` (model-time window; after `latest_s` the watch closes and
   the nest never spawns — the reservation stays held).  Optional
@@ -54,6 +55,33 @@ spawn = { trigger = "uh", threshold = 60.0, earliest_s = 900.0, latest_s = 7200.
   cells); absent, the box is the declared footprint plus the
   `[relocation.follow]` margin when a follow block exists, else the
   whole parent.
+- `trigger = "pressure"` is the one INVERTED trigger: a cyclone is a
+  minimum, not a maximum. It takes the same two optional knobs
+  `[relocation.follow]` carries, with the same meanings and the same
+  refusals, through the same validator:
+  - `level_hpa` — which surface the vortex is looked for ON. Absent is
+    `850` (the low-level circulation centre), where `threshold` is
+    **metres** of geopotential height above the search box's own
+    minimum. `level_hpa = 0` is the sea-level form, and is the only one
+    whose `threshold` is an absolute **hPa** ceiling. The two threshold
+    bands are disjoint (1–500 m against 800–1100 hPa), so a config that
+    means one and would be read as the other refuses at load.
+  - `radius_km` — how far from the extremum the centroid may draw
+    (default 50 km; a tropical cyclone's core is 20–100 km).
+
+  One surface only: the extremum cell is what claims a storm under the
+  exclusion rule below, and a deep-layer mean of per-level centres has
+  no extremum cell to claim one with. `[relocation.follow]` is where a
+  deep-layer mean steers a nest that already exists.
+
+  Under `level_hpa` the threshold is relative, so *some* cell always
+  qualifies — the watch therefore fires only when the search box's own
+  signal **span** reaches `threshold`. A flat box is a no-signal, not a
+  spawn at the box's own centre.
+- `trigger = "pressure"` reads no scratch stash. It is reduced from the
+  live prognostic column, which is valid at every cycle boundary, so a
+  pressure spawn has no cadence contract with the output knobs (the
+  line `gpuwm.core.storm_tracking.STASH_BACKED_FIELDS` already draws).
 - `trigger = "time"` requires `at_s` alone (whole parent steps —
   spawning is a cycle-boundary operation) and spawns at the DECLARED
   placement: the testable, bit-deterministic form.
@@ -67,11 +95,17 @@ spawn = { trigger = "uh", threshold = 60.0, earliest_s = 900.0, latest_s = 7200.
 
 ## Position choice (decision 2)
 
-At trigger time the watch reads the parent plane, takes the loudest
-qualifying cell in its search box, and computes the storm-core weighted
-centroid (`weighted_centroid`, the tracker's own arithmetic) over a
-footprint-sized window around it — so with two storms in one box the
-placement lands on the *stronger storm*, never between them.  The
+At trigger time the watch reads the parent plane, takes the strongest
+qualifying cell in its search box (the loudest under `uh` and
+`reflectivity`; the **deepest** under `pressure`), and computes the
+storm-core weighted centroid over a footprint-sized window around it —
+so with two storms in one box the placement lands on the *stronger
+storm*, never between them.  That centroid comes from
+`gpuwm.core.storm_tracking.locate_signal`, the tracker's own arithmetic,
+which owns the minimum inversion in one place: negating both the plane
+and the ceiling turns "deepest low" into the same problem as "loudest
+cell", so the weight becomes the pressure deficit below the ceiling and
+there is no second centre-finder to drift.  The
 footprint is centered on that centroid, whole-parent-cell aligned per
 leg 1's relocation convention, clamped so every side keeps
 `spec_bdy_width + blend_width` parent rows clear of the parent edge
@@ -79,7 +113,9 @@ leg 1's relocation convention, clamped so every side keeps
 `gpuwm.experiment.validate_spawn_placement`).
 
 Two nests, two storms: a watch **ignores signal inside another active
-nest's footprint** (the exclusion rule), and
+nest's footprint** (the exclusion rule — the masked cells are filled
+with an infinity of the losing sign, so they lose the extremum search on
+either convention), and
 `SpawnController.evaluate_all` feeds each event fired at a boundary
 into the exclusion set of the watches evaluated after it, so two
 triggers crossing threshold at one boundary cannot claim one storm.

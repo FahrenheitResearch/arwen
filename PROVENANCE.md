@@ -197,7 +197,7 @@ bytes are outside the numerical oracle.
     (_cc.compile_using_nvrtc), and 2 other site(s)
   - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:84` (cp.RawModule), and
     2 other site(s)
-  - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:259`
+  - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:260`
     (cp.RawModule)
   `R5` and `R1` are kernels inside ONE compiled object -- same device, same
   flags, one compile -- and they did not measure alike, so on this device

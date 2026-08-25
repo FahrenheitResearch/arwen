@@ -50,11 +50,21 @@
 # parent-SINT positive-definite fix-up exercised on the card instead of
 # only in a unit test; the birth certificate reports what it clamped.
 #
-# restart_interval_s stays 0.  Restart with per-domain lifecycle tables is
-# refused before restore (gpuwm.core.nest_lifecycle.refuse_restart_with_
-# lifecycle): the checkpoint does not persist episode number, fired
-# placement or retirement timers.  Checkpointing here would write files
-# that cannot legally be read back.
+# restart_interval_s stays 0, and that is now a choice about THIS PROOF
+# rather than a limit of the feature.  Restart with per-domain lifecycle
+# tables is admitted (docs/nest-lifecycle.md, "Restart"): the checkpoint
+# persists the policy state as well as the arrays -- which slots have
+# fired and which are spent, each live episode's number, fired placement
+# and birth time, each retired slot's retirement time, the quiet timers
+# and every follower's hysteresis -- and the resume rebuilds the tree the
+# block describes before a single array lands.
+#
+# It stays 0 here because this file's whole job is to be checkable
+# against a timetable written before the run: one unbroken run, two
+# episodes, disjoint frame series.  A checkpoint would add a second
+# question (does the split reproduce the unbroken run?) to a config that
+# exists to answer the first, and that question has its own proof in
+# tests/test_lifecycle_restart_identity.py.
 
 [experiment]
 name = "nest_lifecycle_20240521_4km"

@@ -115,6 +115,7 @@ from gpuwm.core.nssl2_contract import (
 )
 from gpuwm.state_serialization_contract import (
     ADVECTIVE_FORCING_STATE,
+    CHECKPOINT_ONLY_STATE,
     LATERAL_BOUNDARY_PREFIX_SCHEMA,
     STATE_SERIALIZED_ATTRS,
     STATE_SETUP_ARRAYS,
@@ -876,6 +877,50 @@ DRIVER_SERIALIZED_ATTRS = frozenset({
 #: frame (PROVENANCE.md D2).  The WSM6 SR roundoff limit, ULP count, and
 #: minor-loop count are deterministic functions of the resolved
 #: ``mp_physics`` and ``dt`` configuration and are rebuilt with the driver.
+#: Driver members a CHECKPOINT carries and the resumed run does not
+#: rebuild -- the driver's counterpart to
+#: :data:`gpuwm.state_serialization_contract.CHECKPOINT_ONLY_STATE`, in
+#: its own ``diag/`` key namespace so no existing key set moves.
+#:
+#: ``olr`` is the whole membership.  It is WRF's top-of-atmosphere upward
+#: longwave flux, published into every history frame, and it is written
+#: by the LONGWAVE scheme on radiation's own cadence -- which is coarser
+#: than the history cadence, so a frame between radiation calls publishes
+#: the last computed field.  A resumed run rebuilt the driver's buffer as
+#: ZEROS, so every frame it wrote before its first post-restart radiation
+#: call published 0 W m-2 where the unbroken run published ~300.
+#:
+#: It was classified ``rebuild`` deliberately, on the grounds that adding
+#: it to the archive "changes the v5 key layout and would reject every
+#: checkpoint already on disk, which is not a price a diagnostic nothing
+#: consumes gets to charge".  Two halves of that stopped being true:
+#:
+#: * The PRICE is not the price.  ``acoustic/``
+#:   (CHECKPOINT_ONLY_STATE) established that a carrier can have its own
+#:   namespace, absent-tolerant on restore -- so nothing already on disk
+#:   is rejected and no ``driver/``/``fields/``/``cumulus/`` key set
+#:   moves.  This follows it exactly.
+#: * NOTHING CONSUMES IT is not the case.  WRF flags its own row ``rh``
+#:   (Registry.EM_COMMON:1839) -- restart AND history -- so upstream
+#:   carries it, and it lands in every wrfout frame here, which means a
+#:   reader consumes it.  A frame reporting 0 W m-2 of outgoing longwave
+#:   is not a missing value, it is a wrong one, and a reader has no way
+#:   to tell: the same argument this tree already makes to refuse
+#:   ``vmax`` under ``sf_sfclay_physics = 0``.
+#:
+#: MEASURED, and this is the whole reason the class exists: OLR was the
+#: ONLY variable that differed across a restart on the melissa_lowres
+#: tree -- static, moving-nest, every configuration -- out of 77 in every
+#: frame.  Carrying it takes a resumed run from 17-of-18 frames
+#: byte-identical to 18 of 18.
+#:
+#: ZERO IS STILL RIGHT BEFORE THE FIRST CALL OF A RUN, which is why this
+#: is a carry and not a fill value: a cold-started run's t=0 frame
+#: publishes zeros because WRF's does (``misc``, zero-initialised, and
+#: the time-0 write precedes the first radiation call).  A restart is not
+#: the first call of a run; it is the middle of one.
+DRIVER_CHECKPOINT_ONLY_ATTRS = frozenset({"olr"})
+
 DRIVER_REBUILT_ATTRS = frozenset({
     # SASE: the active flag and the kernel-module tuple are re-derived
     # from the resumed RunConfig at driver init; the ledger is a
@@ -891,17 +936,9 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # output).  A resumed run's first frame therefore carries the
     # post-resume step's viscosity, which is the value that step used.
     "hmix_k_diag",
-    # OLR (TOA outgoing longwave) on the SAME terms: output-only, never
-    # read back by the physics, and refilled by the next due radiation
-    # call after the resume.  WRF's own row is restart-carried
-    # (Registry.EM_COMMON:1839 flags it ``rh``) and gpuwm's is not, which
-    # is a deliberate scope choice rather than an oversight: adding it to
-    # the archive changes the v5 key layout and would reject every
-    # checkpoint already on disk, which is not a price a diagnostic
-    # nothing consumes gets to charge.  The visible consequence is that a
-    # resumed run publishes zeros for OLR until its next radiation call,
-    # exactly as a cold-started run does before its first one.
-    "olr",
+    # (OLR is NOT here.  It used to be, on the same output-only
+    # grounds; see DRIVER_CHECKPOINT_ONLY_ATTRS for why the argument did
+    # not survive the measurement.)
     "state", "sfclay_result", "mynn_sfclay_result",
     "mynn_sfclay_sea_result", "noah_params",
     # Selector-value -> runner-method receipt, re-resolved from the resumed
@@ -1408,12 +1445,17 @@ def _restore_carriers(driver, driver_header) -> None:
 def classify_state_attr(name: str) -> str:
     """Classify one ``DomainState`` attribute name.
 
-    Returns ``"serialize"``, ``"rebuild"``, ``"setup"``, or ``"infra"``;
+    Returns ``"serialize"``, ``"checkpoint_only"``, ``"rebuild"``,
+    ``"setup"``, or ``"infra"``;
     raises :class:`RestartManifestError` for anything unclassified so new
     state cannot silently skip the restart stream.
     """
     if name in STATE_SERIALIZED_ATTRS:
         return "serialize"
+    if name in CHECKPOINT_ONLY_STATE:
+        # Carried by a checkpoint, absent from the state identity.  See
+        # CHECKPOINT_ONLY_STATE for why the two are different questions.
+        return "checkpoint_only"
     if name in STATE_REBUILT_ATTRS:
         return "rebuild"
     if name in STATE_SETUP_ARRAYS or name in STATE_SETUP_SCALARS:
@@ -2456,6 +2498,10 @@ def state_manifest(state) -> dict[str, object]:
         value = getattr(state, name)
         if kind == "serialize" and value is not None:
             manifest[f"state/{name}"] = value
+        elif kind == "checkpoint_only" and value is not None:
+            # Its own namespace, so the `state/` key-set comparison on
+            # restore neither expects nor rejects it.
+            manifest[f"acoustic/{name}"] = value
     return manifest
 
 
@@ -2553,11 +2599,12 @@ def _driver_manifest(driver) -> dict[str, object]:
     """Serialized driver arrays; enforces driver attribute coverage."""
     for name in sorted(vars(driver)):
         if (name not in DRIVER_SERIALIZED_ATTRS
-                and name not in DRIVER_REBUILT_ATTRS):
+                and name not in DRIVER_REBUILT_ATTRS
+                and name not in DRIVER_CHECKPOINT_ONLY_ATTRS):
             raise RestartManifestError(
                 f"PhysicsDriver attribute {name!r} is not classified in "
                 "the restart manifest (gpuwm/io/restart.py): declare it "
-                "serialized or rebuilt")
+                "serialized, rebuilt, or checkpoint-only")
     # Normal compute() finalizes the transient KF expiry mask immediately
     # after composing this step's RK target and before Morrison.  A surviving
     # mask therefore denotes an incomplete synthetic/direct-driver transition;
@@ -2575,6 +2622,16 @@ def _driver_manifest(driver) -> dict[str, object]:
         "driver/rthratensw": driver.rthratensw,
         "driver/pending_rainbl": driver._pending_rainbl,
     }
+    # The checkpoint-only carriers, in their own namespace so the
+    # driver/fields/cumulus key sets are untouched and a checkpoint
+    # written before this existed stays restorable.  ``None`` is a real
+    # answer -- the buffer exists only when the attached longwave scheme
+    # declares a TOA flux -- and an absent key restores as the zeros that
+    # build would have had anyway.
+    for name in sorted(DRIVER_CHECKPOINT_ONLY_ATTRS):
+        value = getattr(driver, name, None)
+        if value is not None:
+            manifest[f"diag/{name}"] = value
     for tend_name in DRIVER_TENDENCY_ATTRS:
         tend = getattr(driver, tend_name)
         _require_dataclass_components(
@@ -3287,9 +3344,16 @@ _declares_nest_lifecycle = declares_nest_lifecycle
 
 
 def _declared_domain(model, grid_id: int):
-    """The ``[[domain]]`` the EXPERIMENT declares for one grid, or None."""
-    context = getattr(model, "_activation_context", None) or {}
-    exp = context.get("experiment")
+    """The ``[[domain]]`` the EXPERIMENT declares for one grid, or None.
+
+    Read off the tree's published declaration
+    (:func:`gpuwm.core.model.publish_declared_experiment`) and nowhere
+    else.  This used to reach into one route's build-time ingest bundle,
+    which made checkpointing a run with a live follower work only for
+    trees that route had built -- a capability restriction shaped like a
+    route rather than like anything a checkpoint needs.
+    """
+    exp = getattr(model, "_declared_experiment", None)
     if exp is None:
         return None
     for domain in getattr(exp, "domains", ()):
@@ -3317,7 +3381,9 @@ def _follower_entry(model, nodes_by_gid, grid_id: int, runner) -> dict:
             "declared experiment to say where that domain was configured; "
             "the checkpoint would record a placement without saying whether "
             "it is the declared one or one the follower moved to, and a "
-            "resume cannot then tell a moved nest from a reconfigured one")
+            "resume cannot then tell a moved nest from a reconfigured "
+            "one.  Whichever route builds the tree publishes it "
+            "(gpuwm.core.model.publish_declared_experiment)")
     node = nodes_by_gid[int(grid_id)]
     entry.update({
         "kind": ("per-domain" if getattr(declared, "follow", None) is not None
@@ -3697,6 +3763,27 @@ def read_tree_lifecycle_header(path, model=None) -> TreeLifecycleHeader:
         relocation=relocation)
 
 
+def _node_placement(node):
+    """``{i_parent_start, j_parent_start, parent_grid_ratio}`` or None.
+
+    The root has no placement of its own, and a hand-assembled tree (the
+    idealized cases, and every test that builds a node out of a
+    ``SimpleNamespace``) may carry a config that has none either.  Both
+    read as None: a header field must never be the reason a checkpoint
+    cannot be written.
+    """
+    if getattr(node, "parent", None) is None:
+        return None
+    cfg = node.cfg
+    fields = ("i_parent_start", "j_parent_start", "parent_grid_ratio")
+    if any(getattr(cfg, name, None) is None for name in fields):
+        return None
+    try:
+        return {name: int(getattr(cfg, name)) for name in fields}
+    except (TypeError, ValueError):
+        return None
+
+
 def write_tree_restart(directory, model, valid_time: datetime, *,
                        run_trackers_by_grid_id=None,
                        sealed_forcing_extension: bool = False) -> Path:
@@ -3726,12 +3813,15 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
     ids = sorted(int(node.cfg.grid_id) for node in nodes)
     trackers = dict(run_trackers_by_grid_id or {})
     paths: dict[int, Path] = {}
-    # A checkpoint written after a nest relocation says so ON ITSELF, with
-    # the ruled posture: a restart across a move promises nothing (Drew,
-    # 2026-08-06).  The live fingerprint is already chained to the move
-    # history, so a fresh build refuses this set by construction; the
-    # block below is what lets that refusal (and any reader of the
-    # member) state the posture by name.
+    # A checkpoint written after a nest relocation says so ON ITSELF, and
+    # states the posture it actually has -- which is no longer "a restart
+    # across a move promises nothing".  ``RESTART_ACROSS_MOVE_POSTURE``
+    # below is the current wording and this comment used to contradict
+    # it: the set resumes into the run that wrote it and reproduces that
+    # run bit for bit.  The live fingerprint is chained to the move
+    # history, so a fresh build still refuses this set by construction;
+    # the block below is what lets a legitimate resume replay that chain
+    # and what lets any reader of the member state the posture by name.
     executed_moves = [
         entry for entry in getattr(model, "_relocation_receipts", ())
         if isinstance(entry, dict) and entry.get("event") == "relocated"]
@@ -3749,6 +3839,13 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
              else [str(sha) for sha in inherited.get("record_sha256") or ()])
     records = prior + [str(entry["record_sha256"])
                        for entry in executed_moves]
+    runner = getattr(model, "_relocation_runner", None)
+    _continuity = None
+    if runner is not None and hasattr(runner, "continuity_state"):
+        try:
+            _continuity = runner.continuity_state()
+        except Exception:            # never fail a checkpoint over a diagnostic
+            _continuity = None
     relocation_header = None
     if records:
         from gpuwm.core.nest_relocation import RESTART_ACROSS_MOVE_POSTURE
@@ -3759,6 +3856,28 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
             "record_sha256": records,
             "segment_id": last["segment_id"],
             "grid_id": int(last["grid_id"]),
+            # EVERY grid that was rebuilt, not just the last one to move.
+            # A resume has to put each of them back through the same
+            # rebuild, and it cannot decide that from the placement
+            # NUMBER: a nest that wandered away and came back sits at its
+            # original i/j with a base state that is not the original
+            # bytes.  Measured: phb differs by 2**-6 between the
+            # prepared-cache build and a relocation rebuild at the same
+            # placement, and phb is in STATE_SETUP_ARRAYS, so the setup
+            # fingerprint refuses.  The history is what decides.  Folded
+            # over the WHOLE run, matching the chain above: an earlier
+            # segment's rebuilt grids stay rebuilt.
+            "moved_grid_ids": sorted(
+                set([] if inherited is None else
+                    [int(g) for g in inherited.get("moved_grid_ids") or ()])
+                | {int(entry["grid_id"]) for entry in executed_moves}),
+            # The tracker's hysteresis and the audit's running count.
+            # Geometry alone is not continuity: a resume whose cooldown
+            # anchor starts cold may move on a beat the unbroken run was
+            # still suppressing, which is a different forecast produced
+            # by a bookkeeping scalar.  Absent when the route built no
+            # runner, and the reader treats absence as "nothing to set".
+            **({} if _continuity is None else {"continuity": _continuity}),
             "posture": RESTART_ACROSS_MOVE_POSTURE,
         }
     # The nest-lifecycle state, and the window planes that go with it.
@@ -3826,6 +3945,23 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                     "REBUILT" if started or node.parent is None
                     else "NOT_STARTED"),
                 "dtbc_fp32_bits": bits,
+                # WHERE THIS DOMAIN ACTUALLY WAS.  A nest that has moved
+                # is not where its config says it is, and every setup
+                # array -- terrain, map factors, base state -- belongs to
+                # the placement it was at, not the one it started from.
+                # Without this a restore rebuilds the tree from the
+                # config, lands the nest on its ORIGINAL ground, and the
+                # setup fingerprint refuses (correctly) with a base-state
+                # mismatch.  The root has no placement of its own and
+                # writes nulls.
+                "placement": _node_placement(node),
+                # The ruled posture, on the member that carries it.  This
+                # block was computed here and then dropped on the floor,
+                # so every checkpoint written after a move claimed
+                # `relocation: null` and the restore-side warning that
+                # reads it could never fire.
+                **({} if relocation_header is None
+                   else {"relocation": relocation_header}),
             }
             # D3, closed: the posture block was computed and never
             # attached, so the crossed-move warning in
@@ -3891,6 +4027,34 @@ def _tree_restart_paths(path: Path, expected_ids: set[int]
             f"expected {sorted(expected_ids)}, found {sorted(found)} for "
             f"instant {instant}")
     return found
+
+
+def checkpoint_placements(path, expected_ids) -> dict:
+    """Where each domain ACTUALLY WAS when this checkpoint was written.
+
+    Returned as ``{grid_id: {"i_parent_start": .., "j_parent_start": ..,
+    "parent_grid_ratio": ..}}``, with the root and any member written
+    before placements were recorded omitted.
+
+    A caller uses this BEFORE :func:`restore_tree_restart`: a nest that
+    moved is not where its config puts it, and every setup array it owns
+    -- terrain, map factors, base state -- belongs to the placement it
+    was at.  Restoring onto a tree built from the config alone lands the
+    nest on its original ground, and :func:`setup_fingerprint` refuses
+    that (correctly) as a base-state mismatch.  Reading the placement out
+    first is what lets the caller rebuild the tree where the checkpoint
+    says it was.
+
+    Header-only: no arrays are loaded, so this is cheap enough to run
+    before deciding anything.
+    """
+    members = _tree_restart_paths(Path(path), set(expected_ids))
+    out = {}
+    for gid, member in members.items():
+        placement = read_restart_header(member).get("placement")
+        if isinstance(placement, Mapping):
+            out[int(gid)] = dict(placement)
+    return out
 
 
 def restore_tree_restart(path, model, *,
@@ -4613,6 +4777,18 @@ def _apply_validated_restart(validated: _ValidatedRestart,
                     if key.startswith("state/")}
     for name, host in stored_state.items():
         getattr(state, name)[...] = asarray(host)
+    # The checkpoint-only carriers.  A checkpoint written before this
+    # namespace existed simply has none, and the freshly allocated zeros
+    # are what that build resumed with anyway -- so absence is a note's
+    # worth of information, not a refusal, and every checkpoint already
+    # on disk keeps working.
+    for name in CHECKPOINT_ONLY_STATE:
+        target = getattr(state, name, None)
+        host = stored.get(f"acoustic/{name}")
+        if target is None or host is None:
+            continue
+        _check_array(host, target, f"acoustic/{name}")
+        target[...] = asarray(host)
     stored_scratch = set()
     for key, host in stored.items():
         if key.startswith("scratch/"):
@@ -4709,6 +4885,20 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
         raise RestartMismatchError(f"restart is missing {key}")
     _check_array(stored[key], driver._pending_rainbl, key)
     driver._pending_rainbl[...] = asarray(stored[key])
+
+    # The checkpoint-only carriers.  Tolerant in BOTH directions, and
+    # each direction is a real configuration rather than a defensive
+    # shrug: a checkpoint written before this namespace existed carries
+    # no key (and its build resumed with zeros anyway), and a resumed
+    # configuration whose longwave scheme publishes no TOA flux has no
+    # buffer to fill.
+    for name in sorted(DRIVER_CHECKPOINT_ONLY_ATTRS):
+        target = getattr(driver, name, None)
+        host = stored.get(f"diag/{name}")
+        if target is None or host is None:
+            continue
+        _check_array(host, target, f"diag/{name}")
+        target[...] = asarray(host)
 
     # Held tendencies: rebind with the stored COUPLED arrays (no
     # recoupling — see the manifest argument).  compute() recomposes the
@@ -4844,6 +5034,7 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
 __all__ = [
     "ADVECTIVE_FORCING_STATE",
     "CONFIG_RUN_LENGTH_FIELDS", "DRIVER_REBUILT_ATTRS",
+    "DRIVER_CHECKPOINT_ONLY_ATTRS",
     "DRIVER_SERIALIZED_ATTRS", "DRIVER_TENDENCY_ATTRS",
     "CUMULUS_ALGORITHM_IDENTITIES", "LAND_SURFACE_ALGORITHM_IDENTITIES",
     "LAND_SURFACE_PARAMETER_SOURCES",
@@ -4880,5 +5071,6 @@ __all__ = [
     "restart_filename", "restore_restart", "restore_tree_restart",
     "lateral_boundary_prefix_identity", "setup_core_fingerprint",
     "setup_fingerprint", "state_manifest", "write_restart",
+    "checkpoint_placements",
     "write_tree_restart",
 ]

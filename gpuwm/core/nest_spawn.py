@@ -53,16 +53,46 @@ on two different storms.  Two rules provide that:
   claim the same centroid.
 
 CONFIG.  ``spawn = { ... }`` inline table on the dormant ``[[domain]]``:
-``trigger`` (``"uh"`` | ``"reflectivity"`` | ``"time"``).  Field
-triggers require ``threshold`` (m2 s-2 for uh, dBZ for reflectivity),
-``earliest_s`` and ``latest_s`` (the model-time window; after
-``latest_s`` the watch closes and the nest never spawns), and admit an
-optional ``search_box = [i_lo, j_lo, i_hi, j_hi]`` (1-based inclusive
-parent cells).  ``trigger = "time"`` is the manual, deterministic form
-for testability: it requires ``at_s`` alone and spawns at the DECLARED
-placement at the first cadence at or after ``at_s``.  Every key is
-honored or refused, never ignored, and the constructed config echoes
-its values (:meth:`SpawnConfig.to_json`).
+``trigger`` (``"uh"`` | ``"reflectivity"`` | ``"pressure"`` |
+``"time"``).  Field triggers require ``threshold`` (m2 s-2 for uh, dBZ
+for reflectivity; see below for pressure), ``earliest_s`` and
+``latest_s`` (the model-time window; after ``latest_s`` the watch closes
+and the nest never spawns), and admit an optional ``search_box = [i_lo,
+j_lo, i_hi, j_hi]`` (1-based inclusive parent cells).  ``trigger =
+"time"`` is the manual, deterministic form for testability: it requires
+``at_s`` alone and spawns at the DECLARED placement at the first cadence
+at or after ``at_s``.  Every key is honored or refused, never ignored,
+and the constructed config echoes its values
+(:meth:`SpawnConfig.to_json`).
+
+THE INVERTED TRIGGER.  ``trigger = "pressure"`` is the birth side a
+tropical cyclone was missing: ``[relocation.follow]`` could ride a
+vortex all day, and nothing could decide to OPEN the nest, because both
+of the other signals are maxima and a cyclone is a minimum.  It carries
+the follow block's own two optional knobs, validated by the same
+function (:func:`gpuwm.core.storm_tracking.normalise_pressure_surface`)
+so the two tables cannot draw the units differently:
+
+``level_hpa``
+    which surface the vortex is looked for ON.  Absent is
+    :data:`~gpuwm.core.storm_tracking.DEFAULT_LEVEL_HPA` (850 hPa),
+    where ``threshold`` is METRES of geopotential height above the
+    search box's own minimum; ``level_hpa = 0`` is the sea-level
+    reduction, the one form whose ``threshold`` is an absolute hPa
+    ceiling.  The two bands are disjoint, so a config that means one and
+    would be read as the other refuses at load rather than spawning on
+    the wrong field.  ONE surface: the extremum cell is what claims a
+    storm under the exclusion rule above, and a deep-layer mean of
+    per-level centres has none.
+``radius_km``
+    how far from the extremum the centroid may draw (default 50 km).
+    Refused under ``uh``/``reflectivity``, whose centroid is already
+    bounded by the footprint-sized window around the loudest cell.
+
+Under ``level_hpa`` the threshold is RELATIVE, so some cell always
+qualifies; the watch therefore fires only when the search box's own
+signal SPAN reaches ``threshold``.  A flat box is a no-signal, not a
+spawn at the box's own centre.
 """
 
 from __future__ import annotations
@@ -74,19 +104,34 @@ from dataclasses import dataclass
 import numpy as np
 
 from gpuwm.core.uh_diag import UH_SPAWN_WINDOW_SLOT
-from gpuwm.core.storm_tracking import (NestFootprint, signal_plane,
-                                       weighted_centroid)
+from gpuwm.core.storm_tracking import (DEFAULT_CENTROID_RADIUS_KM,
+                                       RADIUS_KM_MAX, RADIUS_KM_MIN,
+                                       NestFootprint, is_minimum_signal,
+                                       locate_signal,
+                                       normalise_pressure_surface,
+                                       pressure_surface_json,
+                                       radius_in_cells, signal_extremum,
+                                       signal_plane, signal_span)
 
 #: Versioned label carried by every receipt this module emits.
 SPAWN_CONTRACT = "gpuwm-nest-spawn.v1"
 
-#: The trigger vocabulary: the tracker's two field signals, plus the
+#: The trigger vocabulary: the tracker's three field signals, plus the
 #: manual deterministic time trigger.
-SPAWN_TRIGGERS = ("uh", "reflectivity", "time")
+#:
+#: ``"pressure"`` is the one INVERTED trigger -- a cyclone is a minimum,
+#: not a maximum -- and it is what gives a tropical cyclone a birth side
+#: to match the follow side it already had.  Before it, a dormant nest
+#: could ride a vortex all day and nothing could decide to open it.
+SPAWN_TRIGGERS = ("uh", "reflectivity", "pressure", "time")
 
 #: Keys of the ``spawn`` inline table.  Unknown keys refuse.
 SPAWN_KEYS = frozenset({
     "trigger", "threshold", "search_box", "earliest_s", "latest_s", "at_s",
+    # PRESSURE ONLY, and the same two knobs [relocation.follow] carries:
+    # which surface the vortex is looked for on, and how far from its
+    # extremum the centroid may draw.
+    "level_hpa", "radius_km",
 })
 
 _LOG = logging.getLogger("gpuwm.nest_spawn")
@@ -117,6 +162,20 @@ class SpawnConfig:
     earliest_s: float | None = None
     latest_s: float | None = None
     at_s: float | None = None
+    #: The surface the vortex is looked for ON, under ``trigger =
+    #: "pressure"``.  ``None`` on the way IN means "not configured" and
+    #: becomes ``(DEFAULT_LEVEL_HPA,)``; ``None`` on the way OUT means
+    #: SEA LEVEL, asked for as ``level_hpa = 0``.  The two never overlap:
+    #: after ``__post_init__`` there is no such thing as "not
+    #: configured".  Exactly :class:`~gpuwm.core.storm_tracking
+    #: .FollowConfig`'s convention, through the same validator.
+    level_hpa: "float | tuple[float, ...] | None" = None
+    #: How far from the extremum the centroid may draw, in kilometres.
+    #: ``None`` on the way IN under a pressure trigger becomes
+    #: :data:`~gpuwm.core.storm_tracking.DEFAULT_CENTROID_RADIUS_KM`;
+    #: it stays ``None`` for the maximum triggers, which take their
+    #: centroid from a footprint-sized window and are bounded that way.
+    radius_km: float | None = None
 
     def __post_init__(self) -> None:
         if self.trigger not in SPAWN_TRIGGERS:
@@ -131,7 +190,8 @@ class SpawnConfig:
                     "non-negative model time in seconds, got "
                     f"{self.at_s!r}")
             stray = [name for name in
-                     ("threshold", "search_box", "earliest_s", "latest_s")
+                     ("threshold", "search_box", "earliest_s", "latest_s",
+                      "level_hpa", "radius_km")
                      if getattr(self, name) is not None]
             if stray:
                 raise ValueError(
@@ -176,6 +236,39 @@ class SpawnConfig:
                     f"spawn search_box {box} is not an ordered 1-based "
                     "box: require 1 <= i_lo <= i_hi and 1 <= j_lo <= j_hi")
             object.__setattr__(self, "search_box", box)
+        # -- which surface, and how wide the core is -----------------------
+        # ONE surface, not a deep-layer mean: the extremum cell is what
+        # claims a storm here (see the exclusion rule in the module
+        # docstring), and a mean of per-level centres has no extremum
+        # cell to claim one with.
+        levels, defaulted = normalise_pressure_surface(
+            self.level_hpa, field=self.trigger, threshold=self.threshold,
+            label="spawn", selector="trigger", allow_multiple=False)
+        object.__setattr__(self, "_level_defaulted", defaulted)
+        object.__setattr__(self, "level_hpa", levels)
+        if self.trigger != "pressure":
+            if self.radius_km is not None:
+                raise ValueError(
+                    f"spawn trigger = {self.trigger!r} refuses radius_km: "
+                    "a rotation or echo trigger takes its centroid from a "
+                    "footprint-sized window around the loudest cell, which "
+                    "is already the bound radius_km exists to impose. "
+                    "Setting one here would move the chosen placement of "
+                    "every config that has ever run this trigger, and buy "
+                    "nothing -- the unbounded region radius_km was added "
+                    "to close cannot arise inside a window that size.")
+        else:
+            radius = (DEFAULT_CENTROID_RADIUS_KM if self.radius_km is None
+                      else float(self.radius_km))
+            if not (RADIUS_KM_MIN <= radius <= RADIUS_KM_MAX):
+                raise ValueError(
+                    f"spawn radius_km = {self.radius_km!r} is outside "
+                    f"{RADIUS_KM_MIN}-{RADIUS_KM_MAX} km. It is how far "
+                    "from the signal's extremum the centroid may draw -- "
+                    "the size of the vortex, not of the parent. A tropical "
+                    "cyclone's core is 20-100 km; the default is "
+                    f"{DEFAULT_CENTROID_RADIUS_KM:g}.")
+            object.__setattr__(self, "radius_km", radius)
 
     def to_json(self) -> dict[str, object]:
         """Echo every configured value (the receipts' config record)."""
@@ -191,6 +284,11 @@ class SpawnConfig:
         out["latest_s"] = float(self.latest_s)
         if self.search_box is not None:
             out["search_box"] = [int(v) for v in self.search_box]
+        if self.trigger == "pressure":
+            out.update(pressure_surface_json(
+                self.level_hpa,
+                defaulted=bool(getattr(self, "_level_defaulted", False))))
+            out["radius_km"] = float(self.radius_km)
         return out
 
 
@@ -231,9 +329,22 @@ def build_spawn_config(table: dict, source: str, *,
             f"trigger in {label} of {source} must be a string, got "
             f"{trigger!r}")
     kwargs: dict[str, object] = {"trigger": trigger}
-    for key in ("threshold", "earliest_s", "latest_s", "at_s"):
+    for key in ("threshold", "earliest_s", "latest_s", "at_s", "radius_km"):
         if key in table:
             kwargs[key] = float(_require_number(table, key, source, label))
+    if "level_hpa" in table:
+        raw = table["level_hpa"]
+        seq = raw if isinstance(raw, (list, tuple)) else [raw]
+        for index, item in enumerate(seq):
+            if isinstance(item, bool) or not isinstance(item, (int, float)):
+                where = (f"level_hpa[{index}]"
+                         if isinstance(raw, (list, tuple)) else "level_hpa")
+                raise ValueError(
+                    f"{where} in {label} of {source} must be a number in "
+                    f"hPa, got {item!r}")
+        kwargs["level_hpa"] = (tuple(float(v) for v in raw)
+                               if isinstance(raw, (list, tuple))
+                               else float(raw))
     if "search_box" in table:
         box = table["search_box"]
         if (not isinstance(box, (list, tuple)) or len(box) != 4
@@ -386,13 +497,23 @@ class SpawnWatch:
                 clamped_i != i_start or clamped_j != j_start)
 
     @staticmethod
-    def _mask_active_footprints(plane: np.ndarray,
-                                footprints) -> tuple[np.ndarray, list]:
-        """Zero out signal a live nest already owns (the exclusion rule)."""
+    def _mask_active_footprints(plane: np.ndarray, footprints,
+                                *, minimum: bool = False
+                                ) -> tuple[np.ndarray, list]:
+        """Erase signal a live nest already owns (the exclusion rule).
+
+        The fill is an INFINITY of the losing sign -- ``-inf`` where the
+        feature is a maximum, ``+inf`` where it is a minimum -- so the
+        masked cells lose every extremum search on either convention,
+        and :func:`~gpuwm.core.storm_tracking.weighted_centroid`'s
+        finiteness mask drops them from the centroid on both.  A zero
+        fill would be the deepest low on the grid.
+        """
         masked: list[dict] = []
         if not footprints:
             return plane, masked
         out = np.array(plane, copy=True)
+        fill = np.inf if minimum else -np.inf
         ny, nx = out.shape[-2], out.shape[-1]
         for value in footprints:
             fp = NestFootprint.coerce(value)
@@ -401,7 +522,7 @@ class SpawnWatch:
             i1 = min(nx, int(math.ceil(i0 + fp.span_parent_i)) + 1)
             j1 = min(ny, int(math.ceil(j0 + fp.span_parent_j)) + 1)
             if i0 < i1 and j0 < j1:
-                out[..., j0:j1, i0:i1] = -np.inf
+                out[..., j0:j1, i0:i1] = fill
                 masked.append({"grid_id": int(fp.grid_id),
                                "cells": [[j0, j1], [i0, i1]]})
         return out, masked
@@ -454,11 +575,17 @@ class SpawnWatch:
         # the history-reset diagnostic: a spawn watch evaluates on LEG
         # boundaries, a different rhythm from the relocation cadence,
         # so it owns and resets its own max-since-I-last-looked.
+        minimum = is_minimum_signal(cfg.trigger)
+        # THE SURFACE IS PART OF THE SIGNAL under a pressure trigger:
+        # levels_of() is empty for the sea-level form, which is the one
+        # the plane builder spells as level_hpa = None.
+        level = (cfg.level_hpa or (None,))[0] if minimum else None
         plane = signal_plane(parent_state, cfg.trigger,
-                             uh_slot=UH_SPAWN_WINDOW_SLOT)
+                             uh_slot=UH_SPAWN_WINDOW_SLOT,
+                             level_hpa=level)
         box, box_source = self._search_box(plane.shape)
         plane_masked, masked = self._mask_active_footprints(
-            plane, exclude_footprints)
+            plane, exclude_footprints, minimum=minimum)
         evidence: dict[str, object] = {
             "grid_id": gid, "t": float(t),
             "field": cfg.trigger, "threshold": float(cfg.threshold),
@@ -467,22 +594,69 @@ class SpawnWatch:
             "search_box_source": box_source,
             "excluded_active_footprints": masked,
         }
+        if minimum:
+            evidence["level_hpa"] = None if level is None else float(level)
+        # RELATIVE OR ABSOLUTE, decided by the surface.  On an isobaric
+        # surface the threshold is metres of geopotential height above
+        # the search box's OWN minimum -- self-calibrating, because a
+        # 850 hPa height is ~1500 m in the deep tropics and ~1350 m in a
+        # cold airmass, and an absolute number would have to be re-tuned
+        # per case.  That self-calibration has one cost, and it is the
+        # same one gpuwm.core.storm_tracking.centre_over_levels names:
+        # when the box is FLAT every cell clears `box minimum +
+        # threshold`, and the centroid of every cell in a box is the
+        # box's own centre -- which here would spawn a nest at its own
+        # declared placement on no storm at all.  The span test is the
+        # exact criterion for that ("span < threshold" IS "every cell
+        # qualifies"), so it decides whether there is a vortex before
+        # the centroid is asked where it is.
+        relative = minimum and level is not None
+        window = plane_masked[box[0], box[1]]
+        if relative:
+            span = signal_span(plane_masked, box)
+            evidence["signal_span"] = (None if span is None
+                                       else round(float(span), 4))
+            if span is None or span < float(cfg.threshold):
+                self._receipt({
+                    "decision": "no-signal", **evidence,
+                    "note": (
+                        "the search box spans "
+                        f"{0.0 if span is None else span:.3f} m against a "
+                        f"threshold of {float(cfg.threshold):g} m, so every "
+                        "cell in it would qualify and the centroid would be "
+                        "the box's own centre; there is no vortex in the "
+                        "box to be born on")})
+                return None
         # TWO STORMS, ONE BOX: a box-wide weighted centroid of two
         # exceedance regions lands BETWEEN them -- a birth position on
-        # neither storm.  So the loudest cell claims the nest first
-        # (argmax within the box), and the centroid is then computed
-        # over a footprint-sized window around it: the position is the
-        # weighted center of THAT storm alone, which is also what makes
-        # the exclusion rule compose -- once a fired sibling masks storm
-        # one, the next watch's argmax is storm two.
-        window = plane_masked[box[0], box[1]]
+        # neither storm.  So the strongest cell claims the nest first
+        # (the extremum within the box), and the centroid is then
+        # computed over a footprint-sized window around it: the position
+        # is the weighted center of THAT storm alone, which is also what
+        # makes the exclusion rule compose -- once a fired sibling masks
+        # storm one, the next watch's extremum is storm two.
         with np.errstate(invalid="ignore"):
-            qualifying = np.isfinite(window) & (
-                window >= float(cfg.threshold))
+            if not minimum:
+                qualifying = np.isfinite(window) & (
+                    window >= float(cfg.threshold))
+            else:
+                # ceiling: metres above the box minimum, or the absolute
+                # hPa ceiling of the sea-level form.  Cells at or BELOW
+                # it are the vortex.
+                finite = window[np.isfinite(window)]
+                if finite.size == 0:
+                    self._receipt({"decision": "no-signal", **evidence})
+                    return None
+                ceiling = (float(finite.min()) + float(cfg.threshold)
+                           if relative else float(cfg.threshold))
+                evidence["ceiling"] = round(ceiling, 4)
+                qualifying = np.isfinite(window) & (window <= ceiling)
         if not bool(qualifying.any()):
             self._receipt({"decision": "no-signal", **evidence})
             return None
-        peak_flat = int(np.argmax(np.where(qualifying, window, -np.inf)))
+        losing = np.inf if minimum else -np.inf
+        chosen = np.where(qualifying, window, losing)
+        peak_flat = int(np.argmin(chosen) if minimum else np.argmax(chosen))
         peak_j, peak_i = np.unravel_index(peak_flat, window.shape)
         peak_j = int(peak_j) + int(box[0].start)
         peak_i = int(peak_i) + int(box[1].start)
@@ -496,7 +670,23 @@ class SpawnWatch:
         evidence["local_window"] = [
             [int(local[0].start), int(local[0].stop)],
             [int(local[1].start), int(local[1].stop)]]
-        found = weighted_centroid(plane_masked, float(cfg.threshold), local)
+        # ONE centre-finder for the whole tree.  locate_signal owns the
+        # minimum inversion (negate the plane AND the threshold, so the
+        # weight becomes the pressure DEFICIT below the ceiling) and the
+        # relative-to-minimum ceiling; the maximum triggers fall straight
+        # through to the same weighted_centroid call they always made,
+        # with radius_cells None, so their answers do not move.
+        #
+        # The local window CONTAINS the box's extremum by construction,
+        # so its own minimum is the box's minimum and the relative
+        # ceiling computed inside is the one computed above.
+        radius_cells = (radius_in_cells(cfg.radius_km,
+                                        self.declared.parent_dx_m)
+                        if minimum else None)
+        found = locate_signal(plane_masked, cfg.trigger,
+                              float(cfg.threshold), local,
+                              relative_to_minimum=relative,
+                              radius_cells=radius_cells)
         if found is None:
             # Cannot happen while the peak qualifies; kept as a loud
             # guard rather than an assumption.
@@ -508,8 +698,16 @@ class SpawnWatch:
         receipt = self._receipt({
             "decision": "fired",
             "trigger": cfg.trigger,
+            # "cells_above_threshold" reads literally for every maximum
+            # trigger and means "cells past the threshold" for pressure,
+            # where past is BELOW.  The key is kept rather than split so
+            # one receipt shape covers every trigger; "extremum_kind"
+            # says which side of the threshold qualified.
             "cells_above_threshold": int(found["cells"]),
-            "max_value": round(float(found["max_value"]), 3),
+            "max_value": round(signal_extremum(found, cfg.trigger), 3),
+            "extremum_kind": "minimum" if minimum else "maximum",
+            "extremum_units": ("m" if relative
+                               else ("hPa" if minimum else "field")),
             "centroid_parent_ij": [round(float(found["ci"]), 3),
                                    round(float(found["cj"]), 3)],
             "placement": [int(i_start), int(j_start)],

@@ -23,6 +23,7 @@ from gpuwm.source_authorities import (packaged_authority_sha256,
                                       packaged_profile_ids)
 from gpuwm.source_coverage import (COVERAGE_WINDOW_TYPES, CoverageWindow,
                                    LambertGridWindow, RegularLatLonWindow)
+from gpuwm.source_cycles import CycleGrid
 from gpuwm.source_credentials import (CredentialLocation, SourceCredential,
                                       credential_declaration)
 
@@ -131,6 +132,22 @@ class SourceAdapter:
     #: nothing: a window nobody measured would be a number invented to fill
     #: a field.
     coverage_window: CoverageWindow | None = None
+    #: WHEN this source initializes, and when its bytes land -- the
+    #: declaration ``--cycle latest`` resolves against (see
+    #: :mod:`gpuwm.source_cycles`).  The resolver used to branch on
+    #: gfs/gdas/hrrr by name and refuse every other source with a
+    #: sentence about ERA5's latency, so `--cycle latest --source rap`
+    #: was told about a reanalysis it had not asked for and a reanalysis
+    #: with a KNOWN delay was told it had no latest at all.
+    #:
+    #: ``None`` is the common case and not a gap: a source whose fetch
+    #: route declares ``cycle_hours`` has its grid DERIVED from that
+    #: measured table, which is what makes a new model's ``latest`` a
+    #: route row rather than a code change.  This column carries the
+    #: schedules no route table can state -- the legacy transports, and
+    #: a keyed job API like the CDS, which publishes no object to probe
+    #: and so has to write its publication delay down.
+    cycle_grid: CycleGrid | None = None
     #: What a PERSON calls this source.  A column, because every consumer
     #: that wanted a human name had to keep its own id-to-name lookup --
     #: a per-model table, and adding a model then meant editing a front
@@ -186,6 +203,11 @@ class SourceAdapter:
         value["coverage_envelope"] = (
             None if self.coverage_window is None
             else list(self.coverage_window.envelope()))
+        # asdict() recurses into the grid and leaves a datetime in
+        # record_end, which no JSON writer takes.  DECLARED form only:
+        # what the row says, never what `latest` resolves to today.
+        value["cycle_grid"] = (None if self.cycle_grid is None
+                               else self.cycle_grid.declaration())
         return value
 
 
@@ -215,6 +237,7 @@ def _adapter(
     member_set: str | None = None,
     forcing_interval_seconds: float | None = None,
     coverage: CoverageWindow | None = None,
+    cycles: CycleGrid | None = None,
     notes: str = "",
 ) -> SourceAdapter:
     return SourceAdapter(
@@ -246,6 +269,7 @@ def _adapter(
         member_set=member_set,
         forcing_interval_seconds=forcing_interval_seconds,
         coverage_window=coverage,
+        cycle_grid=cycles,
         display_name=name,
         credentials=tuple(credentials),
         notes=notes,
@@ -330,6 +354,21 @@ _ADAPTERS = (
         runnable=True,
         runner="hrrr_f00_f12_v1",
         forcing_interval_seconds=3600.0,
+        # Hourly, and the walk-back is short on purpose: the
+        # operational directories turn over quickly, and a cycle half
+        # a day old is not an initialization anyone wants for a
+        # convection-permitting run.
+        cycles=CycleGrid(
+            hours=tuple(range(24)), search_hours=12,
+            # The synoptic cycles run out to f048 and the rest stop at
+            # f018, so a window longer than 18 h cannot be served by an
+            # off-synoptic cycle at all.  Same shape the fetch route
+            # table states a horizon in; held in step with
+            # gpuwm.hrrr_forecast's constants by a test.
+            horizons=(((0, 6, 12, 18), 48), (None, 18)),
+            basis="HRRR initializes every hour; publication is "
+                  "decided by the per-object completeness probe, "
+                  "not by a declared delay"),
         coverage=_CONUS_3KM_LAMBERT,
         notes=(
             "Certified slice: one CONUS Lambert specified domain, WSM6, YSU, "
@@ -489,6 +528,14 @@ _ADAPTERS = (
         runnable=True,
         runner="gfs_pgrb2_0p25_v1",
         forcing_interval_seconds=10800.0,
+        # No delay is declared because the completeness probe decides
+        # publication object by object; a delay could only start the
+        # walk after a cycle the probe would have accepted.
+        cycles=CycleGrid(
+            hours=(0, 6, 12, 18), search_hours=48,
+            basis="NCEP runs the global system at 00/06/12/18 UTC; "
+                  "publication is decided by the per-object "
+                  "completeness probe"),
         notes=(
             "Certified slice: one specified Lambert domain, GFS pgrb2.0p25 "
             "with complete 1000..100-hPa state and exact four Noah soil "
@@ -523,6 +570,11 @@ _ADAPTERS = (
         runner="mapped_composition_v1",
         packaged_profile="gdas-pgrb2-0p25-grib2-v1",
         forcing_interval_seconds=3600.0,
+        cycles=CycleGrid(
+            hours=(0, 6, 12, 18), search_hours=48,
+            basis="the analysis cycle runs on the global system's "
+                  "00/06/12/18 UTC grid; publication is decided by "
+                  "the per-object completeness probe"),
         notes=(
             "NCEP's analysis cycle through the GENERIC mapped route as a "
             "packaged profile: one pgrb2.0p25 file per hourly valid time "
@@ -1001,6 +1053,20 @@ _ADAPTERS = (
         runnable=True,
         runner="era5_combined_grib1_v1",
         forcing_interval_seconds=21600.0,
+        # THE ROW THAT MADE THE COLUMN.  `--cycle latest` used to be
+        # refused here with the sentence "a reanalysis published with
+        # a delay of several days" -- which describes a DELAY, and a
+        # delay is a number, and a number resolves.  ERA5T (the
+        # preliminary stream the CDS serves for recent dates) runs
+        # about five days behind real time.  No probe: the CDS is a
+        # keyed job API, not a file server, so there is no object to
+        # HEAD and this delay IS the answer.
+        cycles=CycleGrid(
+            hours=(0, 6, 12, 18), delay_hours=120.0,
+            search_hours=168,
+            basis="ERA5T preliminary is published about five days "
+                  "behind real time, on the 6-hourly analysis grid "
+                  "this row's forcing_interval_seconds declares"),
         notes=(
             "Certified slice: one specified Lambert domain, WSM6, YSU, "
             "classic MM5 surface layer (option 91), Noah, an explicit "
@@ -1045,6 +1111,13 @@ _ADAPTERS = (
         runner="mapped_composition_v1",
         packaged_profile="era5-model-level-l137-grib2-v1",
         forcing_interval_seconds=3600.0,
+        # The same reanalysis on the same release schedule as the
+        # pressure-level row, on the hourly grid this variant reads.
+        cycles=CycleGrid(
+            hours=tuple(range(24)), delay_hours=120.0,
+            search_hours=168,
+            basis="the ERA5T release schedule, on the hourly grid "
+                  "this row's forcing_interval_seconds declares"),
         composition=(
             "ERA5's model-level product publishes the prognostic "
             "atmosphere only; the land-surface and near-surface state -- "

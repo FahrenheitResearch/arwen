@@ -14,10 +14,23 @@ deliberately not links. Read them with
 This is the first leg of the moving-nest program: **the mechanism**, built
 and proven.
 
-**Status: closed.** The one open question — what a restart across a move
-guarantees — was ruled by Drew on 2026-08-06: *nothing*. See §3. The
-answer removed work rather than adding it: no identity site had to change,
-and Stage 6 turns out not to be blocked by Stage 2 after all.
+**Status: closed, and one answer has since moved.** The one open question
+— what a restart across a move guarantees — was ruled by Drew on
+2026-08-06: *nothing*. See §3. That answer removed work rather than
+adding it: no identity site had to change, and Stage 6 turned out not to
+be blocked by Stage 2 after all.
+
+**Superseded in 2.5.4 for the guarantee only.** A restart across a move
+now reproduces the run that wrote the checkpoint bit for bit, because the
+three things a resume needs are carried across one: the placement and the
+tracker's hysteresis in the relocation header, the acoustic Omega in
+`CHECKPOINT_ONLY_STATE`, and the consultation window in
+`restart.CARRIED_SCRATCH_SLOTS`. The identity findings in this document
+are unchanged and are what made that possible — the fingerprint still
+binds the placement, a move still invalidates it against a FRESH build,
+and the resume is permitted by replaying the move chain rather than by
+relaxing the gate. `gpuwm.core.nest_relocation.RESTART_ACROSS_MOVE_POSTURE`
+is the current wording.
 
 ---
 

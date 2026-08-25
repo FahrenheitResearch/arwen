@@ -284,11 +284,105 @@ def test_unknown_staging_refuses():
         _relocate(child, parent_plane, staging="pinned", di=1)
 
 
-def test_relocating_a_child_with_children_refuses():
+def test_relocating_a_child_with_children_refuses_without_a_handler():
+    """A mid-tree move needs the route's statics, so it needs the seam.
+
+    The refusal is no longer "leaf domains only" -- the mechanism exists
+    -- it is "you did not tell me how to re-ground the descendants".
+    """
     parent_plane, _parent, child = _cpu_tree()
     child.children = [SimpleNamespace()]
-    with pytest.raises(RelocationRefusal, match="LEAF"):
+    with pytest.raises(RelocationRefusal, match="reground_descendant"):
         _relocate(child, parent_plane, staging="host", di=1)
+
+
+def _grandchild(child, *, ratio, nx, ny, ips=2, jps=2):
+    """A leaf hanging off ``child``, with a coupler and a live state."""
+    dc = replace(child.cfg, grid_id=int(child.cfg.grid_id) + 1,
+                 parent_id=int(child.cfg.grid_id), parent_grid_ratio=ratio,
+                 i_parent_start=ips, j_parent_start=jps,
+                 run=replace(child.cfg.run, nx=nx, ny=ny))
+    node = SimpleNamespace(
+        cfg=dc, state=_ramp_state(nx, ny), grid="old-grandchild-grid",
+        parent=child,
+        coupler=SimpleNamespace(relocate=lambda: {"rolling_tables": "INVALID"}),
+        clock=SimpleNamespace(ticks=0), children=[])
+    child.children = [node]
+    return node
+
+
+def test_mid_tree_move_regrounds_every_descendant_by_the_exact_ratio():
+    """The whole claim of a moving mid-tree domain, on the CPU tree.
+
+    A move of ``di`` cells of the MOVER'S parent is ``di * r_mover`` of
+    the mover's own cells and ``di * r_mover * r_grandchild`` of the
+    grandchild's -- every factor an integer, so the grandchild's ground
+    displacement is a whole number of ITS cells and the transplant stays
+    a pure index-space copy.  If that arithmetic is wrong the shift below
+    is wrong, and a wrong shift is exactly what silently corrupts a
+    forecast, so it is asserted rather than assumed.
+    """
+    parent_plane, _parent, child = _cpu_tree()
+    ratio_child = int(child.cfg.parent_grid_ratio)
+    grand = _grandchild(child, ratio=3, nx=60, ny=60)
+
+    seen = []
+
+    def reground(*, node, plan, delta_parent_cells):
+        seen.append((int(node.cfg.grid_id), plan.shift_i, plan.shift_j,
+                     delta_parent_cells))
+        return {"statics": "rebuilt (test)"}
+
+    di = 2
+    receipt = relocate_child(
+        child,
+        i_parent_start=int(child.cfg.i_parent_start) + di,
+        j_parent_start=int(child.cfg.j_parent_start),
+        initializer=_initializer(parent_plane),
+        static_provenance="footprint-parametric synthetic statics (test)",
+        state_digest=lambda _s: "digest", staging="host",
+        reground_descendant=reground)
+
+    # The mover moved by di parent cells = di * ratio of its own cells.
+    assert receipt["plan"]["shift_child_cells"] == [di * ratio_child, 0]
+    # The grandchild's ground moved the same DISTANCE, which is that many
+    # of ITS cells: di * r_child * r_grandchild.
+    assert seen == [(int(grand.cfg.grid_id), di * ratio_child * 3, 0,
+                     (di * ratio_child, 0))]
+    # Its placement inside its parent is untouched -- it rode along.
+    assert int(grand.cfg.i_parent_start) == 2
+    # And the receipt carries the descendant, parent-first.
+    assert [d["grid_id"] for d in receipt["descendants"]] == [
+        int(grand.cfg.grid_id)]
+    assert receipt["descendants"][0]["reground"] == {
+        "statics": "rebuilt (test)"}
+
+
+def test_leaf_move_receipt_carries_no_descendants_key():
+    """A leaf receipt is byte-identical to the pre-mid-tree shape."""
+    parent_plane, _parent, child = _cpu_tree()
+    receipt = _relocate(child, parent_plane, staging="host", di=1)
+    assert "descendants" not in receipt
+
+
+def test_mid_tree_move_refuses_when_it_would_strand_a_descendant():
+    """The mover keeps overlap; a much finer descendant may not.
+
+    The same physical step is a larger fraction of a finer domain, so the
+    disjoint test has to be applied per descendant and not inherited from
+    the mover's own plan.
+    """
+    parent_plane, _parent, child = _cpu_tree()
+    _grandchild(child, ratio=3, nx=6, ny=6)
+    with pytest.raises(RelocationRefusal, match="off its own old ground"):
+        relocate_child(
+            child,
+            i_parent_start=int(child.cfg.i_parent_start) + 4,
+            j_parent_start=int(child.cfg.j_parent_start),
+            initializer=_initializer(parent_plane),
+            static_provenance="footprint-parametric synthetic statics (test)",
+            state_digest=lambda _s: "digest", staging="host",
+            reground_descendant=lambda **_k: {})
 
 
 # ---------------------------------------------------------------------------
@@ -484,3 +578,59 @@ def test_gpu_scheduled_move_executes_inside_a_run(tmp_path):
     assert moved["staging"]["mode"] == "host"
     assert moved["donor_alignment_pass"] is True
     assert moved["parent_bitwise_unchanged"] is True
+
+
+def test_descendant_statics_window_tracks_its_corridor_crop_origin():
+    """THE WINDOW AND THE CROP MUST MOVE TOGETHER, or the check is blind.
+
+    A descendant's statics are cropped from a ROOT-ANCHORED corridor at
+    ``origin_in_frame_cells``, which folds in every ancestor's placement;
+    when the mover slides, that origin slides by the mover's displacement
+    times the ratio product.  The equality assertion that compares the
+    outgoing crop against the rebuilt one has to look through a window
+    offset by exactly that much.
+
+    Deriving the window from the descendant's own placement pair instead
+    yields ZERO -- a descendant keeps its offset inside a parent that
+    moved -- and the assertion then differences two crops of different
+    ground with no offset at all.  Over uniform ocean that passes, which
+    is why it survived seven relocations before the first Hawaiian
+    coastal cell entered d03's footprint and it refused with
+    ``{'HGT_M': 22, 'LANDMASK': 4, 'LU_INDEX': 4, ...}``.
+
+    So this pins the relationship rather than the symptom: same tree, and
+    the plan's shift must equal the crop origin's travel.
+    """
+    from gpuwm.core.nest_relocation import plan_descendant_reground
+    from gpuwm.static.corridor import origin_in_frame_cells
+
+    root = SimpleNamespace(grid_id=1, parent_id=0, parent_grid_ratio=1,
+                           i_parent_start=1, j_parent_start=1)
+    mover = SimpleNamespace(grid_id=2, parent_id=1, parent_grid_ratio=3,
+                            i_parent_start=191, j_parent_start=71)
+    grand_run = SimpleNamespace(nx=300, ny=300)
+    grand = SimpleNamespace(grid_id=3, parent_id=2, parent_grid_ratio=3,
+                            i_parent_start=70, j_parent_start=70,
+                            run=grand_run)
+    before = origin_in_frame_cells({1: root, 2: mover, 3: grand}, 3, 1)
+    assert before == (1917, 837)
+
+    # The mover slides one d01 cell west and one north; the descendant's
+    # own placement does not change, and that is the whole trap.
+    moved = replace_ns(mover, i_parent_start=190, j_parent_start=72)
+    after = origin_in_frame_cells({1: root, 2: moved, 3: grand}, 3, 1)
+    assert after == (1908, 846)
+
+    # delta is carried down in the DESCENDANT'S PARENT'S cells.
+    plan = plan_descendant_reground(grand, -1 * 3, 1 * 3)
+    assert (plan.shift_i, plan.shift_j) == (after[0] - before[0],
+                                            after[1] - before[1])
+
+    # And the placement-derived spelling -- what the preparer computed
+    # before the override -- is the zero that hid the mismatch.
+    naive = plan_descendant_reground(grand, 0, 0)
+    assert (naive.shift_i, naive.shift_j) == (0, 0)
+
+
+def replace_ns(obj, **kw):
+    return SimpleNamespace(**{**vars(obj), **kw})

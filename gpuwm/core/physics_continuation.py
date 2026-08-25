@@ -1,5 +1,13 @@
 """Move driver-held physics continuation state across a nest relocation.
 
+TWO INVENTORIES LIVE HERE, and they are separate because their fill
+rules differ.  The per-column CONTINUATION slots below cold-start on
+fresh ground.  The surface-radiation CARRIERS at the end of this module
+cannot: a carrier is consumed on every surface step but produced only on
+the radiation cadence, so fresh ground has to arrive already carrying a
+flux, and it takes the same nearest-same-landmask-class donor fill the
+land-surface continuation fields take.
+
 WHY THIS EXISTS (user report, 2026-08-16, moving nests with Kain-
 Fritsch: "really weird artifacts").  A discrete relocation carries the
 restart layer's serialised STATE (:func:`gpuwm.core.nest_relocation.
@@ -195,8 +203,184 @@ def restore_continuation(state, driver,
     }
 
 
+# ---------------------------------------------------------------------------
+# The surface-radiation carriers
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS (node-2 GPU campaign, 2026-08-24).  A relocation
+# rebuilds the moved child's physics driver from cold
+# (`gpuwm.runtime.rebuild_child_driver_from_land_state` ->
+# `initialize_physics`), which allocates a fresh buffer for every
+# radiative carrier and seeds a fresh CarrierContract in which glw and
+# swdown are `unwritten`.  Neither the buffers nor the ledger were in
+# any carry set, so after every accepted move the moved domain's
+# radiation provenance read "nothing has ever written this buffer" and
+# the first surface call before the next due radiation call refused:
+#
+#   CarrierContractError: GLW (downward longwave at the surface, W m-2)
+#   has no producer, and Noah (sf_surface_physics=2) is about to consume
+#   it at model second 360.
+#
+# MEASURED, one forecast hour per arm on a real GFS case: relocation off
+# with radt = 12 min passed; relocation on with radt = 12 min refused at
+# the first move; relocation on with radt = 6 min -- aligned so a
+# radiation call fell due on the very step the 360 s move landed on --
+# passed with five executed moves.  Under the wizard's shipped defaults
+# ANY relocation cadence shorter than the radiation interval refused at
+# the first move.  The producer guard is correct; the transplant was
+# short by exactly this inventory.
+#
+# THE RULE, so this inventory cannot rot either: the carried set is
+# DERIVED from `radiation_carriers.CONSUMER_CARRIERS`, the same matrix
+# the refusal reads to decide what a land-surface scheme eats.  A
+# carrier added to that matrix tomorrow moves across relocations the day
+# it is added.
+#
+# WHAT MOVES, in two halves that must both move or neither is worth
+# anything.  The BUFFERS shift in index space through the same plan
+# window as the serialised state, and the freshly exposed strip takes
+# the nearest same-landmask-class donor inside the overlap -- the
+# identical `DonorFillPlan` the land-surface continuation fields take,
+# because a carrier is exactly that kind of field: consumed every
+# surface step, produced only on the radiation cadence.  A zero strip
+# would be a fabricated flux and a cold-start strip would be the
+# allocation fill the contract exists to refuse.  The LEDGER moves
+# VERBATIM -- source and last-write model time both -- because the
+# second half of the same guard is a staleness test against
+# (radiation cadence + one step), and re-stamping the move time would
+# blind it: the transplanted flux really is as old as the outgoing
+# child's, and saying so is what keeps "a producer that stopped"
+# detectable across a move.
+
+
+def relocatable_carriers() -> tuple[str, ...]:
+    """The surface-radiation carriers a relocation carries.
+
+    The consumer matrix, and nothing hand-listed beside it: whatever a
+    land-surface scheme is checked for before it consumes is exactly
+    what a relocation has to keep, which is the same single-list
+    principle :func:`continuation_slots` and
+    :func:`gpuwm.core.nest_relocation.relocatable_attrs` apply.
+    """
+    from gpuwm.core.radiation_carriers import CONSUMER_CARRIERS
+
+    names: set[str] = set()
+    for carriers in CONSUMER_CARRIERS.values():
+        names.update(carriers)
+    return tuple(sorted(names))
+
+
+def capture_carriers(driver) -> dict[str, object]:
+    """Host copies of the outgoing child's carriers, plus its ledger.
+
+    Called from the preparer's ``capture_outgoing`` seam while the
+    outgoing child is still whole.  A carrier the configuration never
+    allocated is simply not captured -- a Noah run has no GSW to move --
+    and a driver assembled without a contract yields ``None``, which the
+    restore side reports rather than papers over.
+    """
+    fields: dict[str, np.ndarray] = {}
+    contract = None
+    if driver is not None:
+        driver_fields = getattr(driver, "fields", None) or {}
+        for name in relocatable_carriers():
+            value = driver_fields.get(name)
+            if value is not None:
+                fields[name] = _host(value)
+        carriers = getattr(driver, "carriers", None)
+        if carriers is not None:
+            contract = carriers.state()
+    return {"fields": fields, "contract": contract}
+
+
+def shift_carriers(captured: dict[str, np.ndarray], plan,
+                   fill) -> dict[str, np.ndarray]:
+    """Index-space shift of every captured carrier, strip donor-filled.
+
+    ``fill`` is the move's own :class:`~gpuwm.ingest.relocation_init.
+    DonorFillPlan` -- the one the land-surface continuation fields
+    already ride -- so a carrier and the skin temperature it drives
+    arrive on the fresh strip from the SAME donor column.  It is a
+    required argument, not an optional one: there is no admissible
+    degraded fill for a flux, and a strip left at zero is the fabricated
+    measurement the carrier contract exists to refuse.
+    """
+    if fill is None:
+        raise ValueError(
+            "shift_carriers requires the move's donor fill plan; a "
+            "radiation carrier consumed on the freshly exposed strip has "
+            "no cold value -- zero is a fabricated flux and the "
+            "allocation fill is what the carrier contract refuses -- so "
+            "the strip must come from a real donor column")
+    shifted: dict[str, np.ndarray] = {}
+    for name, value in captured.items():
+        staged = np.zeros_like(value)
+        window = plan.window(value.shape)
+        if window is None:
+            continue
+        (dst_j, src_j), (dst_i, src_i) = window
+        staged[..., dst_j, dst_i] = value[..., src_j, src_i]
+        shifted[name] = fill.apply(staged)
+    return shifted
+
+
+def restore_carriers(driver, shifted: dict[str, np.ndarray],
+                     contract) -> dict[str, object]:
+    """Write the shifted carriers and their provenance onto the rebuilt child.
+
+    The buffers land in the driver's own ``fields`` mapping, which is
+    the same storage the radiation seam writes and the consumption check
+    reads, so there is no second copy to disagree with.  The ledger is
+    re-established through :meth:`~gpuwm.core.radiation_carriers.
+    CarrierContract.restore`, the restart layer's own entry point, with
+    the outgoing child's model times intact.
+    """
+    moved: list[str] = []
+    absent: list[str] = []
+    fields = getattr(driver, "fields", None)
+    fields = {} if fields is None else fields
+    for name in relocatable_carriers():
+        staged = shifted.get(name)
+        if staged is None:
+            continue
+        target = fields.get(name)
+        if target is None:
+            absent.append(name)
+            continue
+        if tuple(target.shape) != tuple(staged.shape):
+            from gpuwm.core.nest_relocation import RelocationRefusal
+
+            raise RelocationRefusal(
+                f"carrier {name!r} is {tuple(staged.shape)} on the "
+                f"outgoing child and {tuple(target.shape)} on the "
+                "incoming one; a relocation changes position, never "
+                "extent")
+        if hasattr(target, "__cuda_array_interface__"):
+            import cupy as cp
+
+            target[...] = cp.asarray(staged, dtype=target.dtype)
+        else:
+            target[...] = staged.astype(target.dtype, copy=False)
+        moved.append(name)
+    carriers = getattr(driver, "carriers", None)
+    restored = False
+    if carriers is not None and contract is not None:
+        carriers.restore(contract)
+        restored = True
+    return {
+        "matrix": "gpuwm.core.radiation_carriers.CONSUMER_CARRIERS",
+        "restored": True,
+        "carriers_moved": moved,
+        "carriers_absent": absent,
+        "ledger_restored": restored,
+        "ledger": {} if contract is None else {
+            name: dict(row) for name, row in sorted(contract.items())},
+    }
+
+
 __all__ = [
     "PHYSICS_CONTINUATION_COLD_VALUES", "W0AVG_KEY",
-    "capture_continuation", "continuation_slots", "restore_continuation",
-    "shift_continuation",
+    "capture_carriers", "capture_continuation", "continuation_slots",
+    "relocatable_carriers", "restore_carriers", "restore_continuation",
+    "shift_carriers", "shift_continuation",
 ]

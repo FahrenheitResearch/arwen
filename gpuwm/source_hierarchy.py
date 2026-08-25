@@ -126,21 +126,24 @@ def _validated_static_one_way_topology(exp, grids) -> dict[str, object]:
         raise ValueError(
             "regular-grid hierarchy ids must be contiguous d01..dNN in "
             f"parent-before-child order, got {ids}")
-    if int(getattr(exp, "feedback", -1)) != 0:
-        # The gate is right and unchanged.  What it never said is where
-        # feedback=1 IS supported, so a node-7 validation run authored a
-        # two-way config, passed `gpuwm check` clean, and learned only
-        # after a 26 s hierarchy build that this route cannot do two-way
-        # nesting at all.  A refusal that names the route that can is
-        # the difference between a dead end and a redirection.
+    # THE FEEDBACK REFUSAL THAT STOOD HERE IS LIFTED.  It said the
+    # hierarchy's artifacts "are written one-way and read one-way", and
+    # the first half was always vacuous: an initial state, sealed statics
+    # and a boundary series are byte-identical however the tree couples
+    # at run time, because feedback is a runtime coupling behaviour with
+    # no ingest footprint.  The second half was true only while the
+    # prepared executor passed skip_feedback_path unconditionally; it now
+    # activates the coupler's feedback transaction (restriction, the
+    # interp_fcn.F smoothers, windowed re-diagnosis) when the experiment
+    # asks, so the topology below stamps the EXPERIMENT'S OWN setting
+    # rather than refusing everything but 0.  The coupler still refuses
+    # by name the configurations feedback cannot serve (mixed
+    # microphysics, unequal nz, mismatched field inventories).
+    feedback = int(getattr(exp, "feedback", 0))
+    if feedback not in (0, 1):
         raise ValueError(
-            "regular-grid hierarchy export supports static one-way nests "
-            "only (feedback=0).  Experimental two-way feedback "
-            "(feedback=1) runs on the native experiment-runner route -- "
-            "`gpuwm run`, which builds its domain tree in-process from "
-            "the same experiment TOML -- and is stamped experimental "
-            "there; it is not available through a prepared hierarchy, "
-            "whose artifacts are written one-way and read one-way.")
+            f"regular-grid hierarchy: feedback must be 0 or 1, got "
+            f"{feedback!r}")
 
     seen: set[int] = set()
     rows = []
@@ -187,7 +190,7 @@ def _validated_static_one_way_topology(exp, grids) -> dict[str, object]:
         "schema": "gpuwm-regular-source-static-one-way-topology-v1",
         "status": "PASS",
         "max_dom": len(rows),
-        "feedback": 0,
+        "feedback": feedback,
         "domains": rows,
     }
 

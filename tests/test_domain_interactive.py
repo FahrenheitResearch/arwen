@@ -252,26 +252,43 @@ def test_bad_forecast_hours_re_prompt(monkeypatch, capsys, bad, complaint):
     assert argv[argv.index("--hours") + 1] == "12"
 
 
-def test_era5_has_no_latest_and_the_prompt_refuses_it_there(monkeypatch,
-                                                            capsys):
-    """The one rule that differs by source, caught while still typing.
+def test_a_reanalysis_is_offered_latest_and_the_prompt_accepts_it(
+        monkeypatch):
+    """ERA5's `latest` is a time, so this door offers it like any other.
 
-    ``--cycle latest`` resolves for GFS and HRRR and is refused for
-    ERA5.  Accepting it here and failing after two more questions would
-    throw away answers the reader had already given.
+    It used to be refused here by name -- "a reanalysis with weeks of
+    latency" -- while the flags door carried a second copy of the same
+    rule and a third rule about sources with no fetch route.  Three
+    hand-written gates for one question the resolver answers.
     """
 
-    _answers(monkeypatch,
-             ["35.3,-97.5", "era5", "latest", "2026-07-29T18", "", ""])
+    _answers(monkeypatch, ["35.3,-97.5", "era5", "latest", "", ""])
     monkeypatch.setattr("gpuwm.fetch.cds_credentials_present", lambda: True)
     _no_gpu(monkeypatch)
     argv = interactive.collect(printer=lambda *a, **k: None)
-    printed = capsys.readouterr().out
-    assert "no 'latest' to probe" in printed
-    assert argv[argv.index("--cycle") + 1] == "2026-07-29T18"
-    # gfs keeps its default, so the rule is scoped, not global.
-    _answers(monkeypatch, BASE_REPLIES)
-    assert "latest" not in interactive.collect(printer=lambda *a, **k: None)
+
+    assert argv[argv.index("--cycle") + 1] == "latest"
+    assert interactive.default_cycle_answer("era5") == "latest"
+
+
+def test_the_cycle_prompt_never_offers_a_latest_that_cannot_resolve(
+        monkeypatch):
+    """The default and the validator are the SAME predicate.
+
+    Offering `latest` for a source nothing can resolve one for defaults
+    the reader straight into a refusal two prompts later, which throws
+    away answers they had already given.  This is the invariant that
+    replaces the two hand-written rules.
+    """
+
+    from gpuwm.source_cycles import cycle_grid_for
+
+    validator = interactive._cycle_validator("nam")
+    if cycle_grid_for("nam") is None:
+        assert interactive.default_cycle_answer("nam") is None
+        with pytest.raises(ValueError) as refusal:
+            validator("latest")
+        assert "declares when that source initializes" in str(refusal.value)
 
 
 @pytest.mark.parametrize("present", [True, False])

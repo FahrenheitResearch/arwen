@@ -12,10 +12,27 @@ follow = { field = "uh", threshold = 100.0, fallback_threshold = 35.0, search_ma
 ```
 
 `retire` takes the same trigger vocabulary `spawn` does -- `"uh"`,
-`"reflectivity"`, `"time"`. The two field triggers retire a nest when the
-maximum signal under its live footprint stays at or below `threshold`
-continuously for `sustained_s`, once `min_lifetime_s` of that episode has
-elapsed. `"time"` is the deterministic form, and it is the only one whose
+`"reflectivity"`, `"pressure"`, `"time"`. A field trigger retires a nest
+when the signal under its live footprint stays QUIET continuously for
+`sustained_s`, once `min_lifetime_s` of that episode has elapsed. Quiet
+is the trigger's own sense of decay:
+
+| trigger | quiet when | `threshold` |
+| --- | --- | --- |
+| `uh`, `reflectivity` | the footprint MAXIMUM is at or below `threshold` | m2 s-2 / dBZ |
+| `pressure`, `level_hpa = 0` | the footprint MINIMUM has FILLED to or above `threshold` | hPa (800-1100) |
+| `pressure`, `level_hpa = 850` (default) | the vortex DEPTH under the footprint -- the height field's own span -- has fallen below `threshold` | m (1-500) |
+
+A dying cyclone is a rising minimum, which is why the pressure row is
+the maximum test inverted rather than the same test with a different
+number. Under `level_hpa` the depth is used rather than an absolute
+height because an 850 hPa surface is ~1500 m in the deep tropics and
+~1350 m in a cold airmass: a fixed height would retire the nest on the
+airmass instead of on the storm. `level_hpa` is refused on a maximum
+trigger and on `"time"`, and the two threshold bands are disjoint, so a
+units error refuses at load.
+
+`"time"` is the deterministic form, and it is the only one whose
 boundaries can be written down before the run starts:
 
 ```toml
@@ -58,6 +75,24 @@ separate `StormTracker`, so cadence and cooldown state cannot cross-talk.
 Legacy tree-level `[relocation]` remains supported unchanged. A single child
 cannot select both authorities.
 
+## Shipped configs
+
+`configs/nest_lifecycle_20240521_4km.toml` is the retire -> re-arm proof: one
+slot, two episodes, `time` triggers throughout so the episode boundaries are
+arithmetic and the frames they produce can be checked against a timetable
+written before the run. `configs/nest_spawn_oneshot_20240521_4km.toml` is the
+same geometry with the lifecycle tables removed, and must keep writing flat
+`wrfout_d02_*` paths -- the default-path promise stated as two runs.
+
+`configs/cyclone_nest_slots_12km.toml` is the tropical shape: **three** dormant
+4 km slots on a 12 km GFS parent, each opening itself on a pressure minimum,
+riding it, and closing when it fills. Every trigger in it is the same signal
+used three ways -- `spawn` on a low deep enough to be worth 4 km, `follow` on
+the same low as it moves, `retire` when it fills -- with `level_hpa = 850` on
+all three, so the threshold is metres of geopotential height and means the same
+thing in any basin or season. The three slots are kept off one storm by the
+exclusion rule rather than by their windows.
+
 ## Restart
 
 Restart with per-domain lifecycle tables is admitted. The checkpoint persists
@@ -78,8 +113,42 @@ pass; a resumed episode-2 domain writes `dNN/episode-002/` from its first frame.
 
 The contract is bit-identity: a run split at a checkpoint and resumed produces
 the same wrfout frames and the same final state as the unbroken run, for any
-number of segments. Receipts (`spawn_receipts.json`, relocation receipts) are
+number of segments. Receipts (`spawn_receipts.jsonl`, relocation receipts) are
 outside it -- each segment owns its own ledger.
+
+## Cost over a long forecast
+
+Two things used to grow with the length of the run rather than with the size
+of the config, and both are bounded now.
+
+`spawn_receipts.jsonl` is **appended**, one complete JSON object per line,
+flushed as each boundary is decided. It was previously one JSON document
+re-serialised whole at every boundary, so the bytes a run wrote to it grew as
+the square of its length. Every line carries its own `contract`, so a killed
+process loses nothing earlier and a reader never parses a truncated array. The
+in-memory ledger keeps every decision and a window of the most recent held
+boundaries; the file keeps all of them.
+
+Leg boundaries are taken at **decision points**, not at every history interval.
+Each one costs a full schedule rebuild, and a re-armable slot used to keep
+asking for them for the whole run -- ~4,600 rebuilds at 384 h to re-read one
+cooldown clock. A cooldown that has not elapsed, a window that has not opened,
+a manual trigger's `at_s` and a minimum lifetime that has not run out are all
+known instants, so the walk runs straight to the earliest of them. Anything
+that reads the live field (a field retirement past its `min_lifetime_s`, a
+field spawn inside its window) keeps every boundary, and so does a run with a
+mounted relocation runner, which stays on its follower's cadence.
+
+A `uh` or `reflectivity` trigger anywhere in the tree forfeits this entirely,
+and that is not conservatism -- it is the one place skipping a boundary would
+change an ANSWER rather than a cost. Those two signals are consumer-owned
+windows the runner **zeroes at every boundary it takes**, so what a watch reads
+is "the strongest since I last looked". Skip six hours of boundaries and the
+next look sees six hours of accumulation: a slot coming off its cooldown would
+fire immediately on rotation that happened while it was spent. `pressure` is
+exempt because it is reduced from the live prognostic column and carries no
+window at all (the line `STASH_BACKED_FIELDS` already draws for the follow
+cadence).
 
 The block states contract `gpuwm-nest-lifecycle-restart.v1` and is honored whole
 or refused by name. A restore refuses when: the checkpoint carries no lifecycle

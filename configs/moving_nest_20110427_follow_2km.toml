@@ -12,14 +12,18 @@
 # six-hourly is already fetched (see tools/moving_nest_demo_20110427.ps1,
 # which stages ${GPUWM_DEMO_20110427_ROOT}).
 #
-# The [relocation] block is the leg-1 mechanism surface; [relocation.follow]
-# is the tracker (gpuwm.core.storm_tracking).  The relocation RUNNER that
-# evaluates the tracker each cycle boundary lands on lane/moving-nest-leg2;
-# until it merges, this config validates end-to-end and integrates as a
-# static nest (relocation is fingerprint-inert by design).
+# The [relocation] block is the mechanism surface; [relocation.follow] is
+# the tracker (gpuwm.core.storm_tracking).  The relocation runner consults
+# that tracker at every complete cycle boundary on the cadence below and
+# rebuilds the child at the placement it proposes, so this arm really does
+# move its nest.
 #
-# restart_interval_s stays 0: a restart across a move promises nothing
-# (Drew, 2026-08-06), so the moving arm does not checkpoint.
+# restart_interval_s is LIVE, hourly.  A checkpoint of a run with a live
+# follower carries the placement each domain was actually at, the tracker's
+# hysteresis, the follower's segment chain and the acoustic Omega, and a
+# resume off one reproduces the unbroken run frame for frame -- including
+# across an executed move.  Nothing about that depends on where the forcing
+# came from.
 
 [experiment]
 name = "moving_nest_20110427_follow_2km"
@@ -29,7 +33,7 @@ feedback = 0
 smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
-restart_interval_s = 0.0
+restart_interval_s = 3600.0
 
 [projection]
 map_proj = "lambert"

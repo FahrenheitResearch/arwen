@@ -37,13 +37,19 @@ start uses (:mod:`gpuwm.ingest.nest_init`) rather than a re-derivation:
    (the analytic base is a per-column pure function of the terrain
    bytes), which is what keeps the donor-alignment instrument armed.
 
-3. **Blend frames are rebased, not resplit silently.**  Inside the two
-   placements' blend frames the child base states genuinely differ, so
-   the bitwise transplant of perturbation fields there would silently
-   change totals.  :func:`rebase_transplanted_perturbations` (installed
-   as the initializer's ``post_transplant`` hook) preserves the
-   outgoing child's TOTALS on exactly the cells whose base bytes
-   differ, and leaves every other cell's bitwise stamp untouched.
+3. **Blend frames resplit against the rebuilt base, and must.**  Inside
+   the two placements' blend frames the child base states genuinely
+   differ -- ``blend_terrain`` makes a cell's EFFECTIVE terrain a
+   function of its ROW, so a move that changes a column's row changes
+   the ground under it.  The perturbations are carried BITWISE anyway
+   (WRF's ``mediation_nest_move.F`` does exactly that), which lets the
+   column totals change by the base-state slab between the two effective
+   terrains -- the mass and heat of the air below the old numerical
+   floor.  :func:`rederive_after_transplant` (installed as the
+   initializer's ``post_transplant`` hook) counts the base-changed cells
+   and re-derives the EOS.  Preserving the totals there instead REFUSES
+   that slab and manufactures a hydrostatic hole; it was built, measured
+   on Melissa's Andes-frame move, and retired.  See that function.
 
 4. **Land state moves by donor fill.**  Soil, snow and surface fields
    live on the physics driver, outside the serialised-state transplant;
@@ -54,8 +60,11 @@ start uses (:mod:`gpuwm.ingest.nest_init`) rather than a re-derivation:
    receipt.  The route-side driver rebuild lives in
    :class:`gpuwm.runtime.RealRelocationChildPreparer`.
 
-Nothing here decides when or where to move, and a restart across a move
-still promises nothing (Drew, 2026-08-06).
+Nothing here decides when or where to move.  A restart across a move is
+no longer refused and no longer promises nothing: it reproduces the run
+that wrote the checkpoint bit for bit, which puts this module's fill on
+the resume path as well as the live one.  See
+:data:`gpuwm.core.nest_relocation.RESTART_ACROSS_MOVE_POSTURE`.
 """
 
 from __future__ import annotations
@@ -79,8 +88,9 @@ REAL_DATA_FOOTPRINT_REBUILT_STATICS = (
 REAL_DATA_STRIP_FILL_SOURCE = (
     "full-parent SINT adjusted to footprint-rebuilt fine terrain "
     "(t=0 nest cold-start lineage); overlap then stamped bitwise from "
-    "the outgoing child, blend-frame perturbations rebased to preserve "
-    "totals; land-surface state donor-filled per leg-1's contract")
+    "the outgoing child, blend-frame perturbations carried bitwise and "
+    "resplit against the rebuilt base; land-surface state donor-filled "
+    "per leg-1's contract")
 
 #: Driver-held land-surface continuation state a move carries: the Noah
 #: prognostics, snow state, and the seeded surface diagnostics.  Fields a
@@ -104,8 +114,11 @@ OVERLAP_STATIC_EQUALITY_FIELDS = (
 )
 
 #: (perturbation, base) pairs whose split changes when the base changes.
-#: Everything else the transplant carries is a physical total.
-_REBASE_PAIRS = (("thp", "thb"), ("php", "phb"), ("mup", "mub2d"))
+#: Counted and reported per move; the perturbations themselves are
+#: CARRIED BITWISE, WRF's own move behaviour -- see
+#: :func:`rederive_after_transplant` for why the totals-preserving
+#: alternative was built, measured, and retired.
+_SPLIT_PAIRS = (("thp", "thb"), ("php", "phb"), ("mup", "mub2d"))
 
 
 def _host(value, dtype=None) -> np.ndarray:
@@ -305,35 +318,55 @@ def overlap_mask_for_plan(plan, shape) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Blend-frame rebase: totals survive where the base bytes differ
+# After the transplant: carry perturbations bitwise, re-derive the EOS
 # ---------------------------------------------------------------------------
 
-def rebase_transplanted_perturbations(*, source_state, target_state,
-                                      plan, cfg) -> dict[str, object]:
-    """Preserve totals where the outgoing and incoming bases differ.
+def rederive_after_transplant(*, source_state, target_state,
+                              plan, cfg) -> dict[str, object]:
+    """Re-derive the EOS on the rebuilt child; perturbations stay bitwise.
 
-    The transplant stamps perturbation fields bitwise; against an equal
-    base that preserves the total, and the doubly-interior overlap has
-    equal bases by construction.  Inside either placement's blend frame
-    the bases differ, so on exactly the cells whose base bytes differ
-    (a per-cell bitwise comparison, not a geometric guess) the stamped
-    perturbation is corrected to ``(pert_out + base_out) - base_in`` in
-    the field's own float32 arithmetic -- the same split arithmetic the
-    t=0 path uses to set ``thp`` -- and the EOS diagnostics are then
-    re-derived so ``p``/``al``/``alt`` agree with the corrected split.
-    On every cell whose base bytes are equal the bitwise stamp is left
-    untouched, so the certified bulk behaviour is preserved exactly.
+    Inside either placement's blend frame the base states differ -- the
+    blend makes a cell's EFFECTIVE terrain a function of its ROW, so a
+    move that changes a column's row changes the ground under it, by
+    hundreds of metres where the fine and parent terrain disagree.  The
+    stamped perturbations are deliberately left alone there: against the
+    rebuilt base the split re-derives WRF's own way (``mediation_nest_move.F``
+    carries the perturbation arrays and recomputes nothing), and the
+    column totals CHANGE by exactly the base-state slab between the two
+    effective terrains, which is the mass, heat and geopotential of the
+    air that was below the old numerical floor.
+
+    A totals-preserving alternative was built here first, and it is
+    retired because it was MEASURED to manufacture the imbalance it
+    meant to prevent.  Preserving column totals across an effective-
+    terrain DROP refuses the slab: on Melissa's eighth relocation
+    (2025-10-22 02:00, d02's southern blend frame on the Colombian
+    Andes, fine terrain 2271 m against parent ~1100 m) it left ``MU``
+    at -4590 Pa -- a 4.6 kPa dry-mass hole against the column's own
+    terrain -- and the model surface 100 m below the ground
+    (``z(k=0)`` 1001.8 m under ``HGT`` 1104.5 m), and the column went
+    non-finite six d02 steps later.  Carrying the perturbations bitwise
+    survived the same move on the same bytes.  Over water the two
+    behaviours are identical -- fine and parent terrain agree, the base
+    bytes match, there is nothing to split differently -- which is why
+    every ocean-track case was blind to the difference.
+
+    The base-changed cells are still counted per pair, per move: the
+    counts are the receipt's statement of how much ground changed role,
+    and a nonzero count over water would again be the wiring defect the
+    old instrument was hunting.  The EOS diagnostics are then re-derived
+    so ``p``/``al``/``alt`` agree with the carried perturbations against
+    the rebuilt base.
     """
     from gpuwm.core.diagnostics import update_diagnostics
 
-    rebased: dict[str, int] = {}
-    for pert_name, base_name in _REBASE_PAIRS:
+    base_changed: dict[str, int] = {}
+    for pert_name, base_name in _SPLIT_PAIRS:
         pert_target = getattr(target_state, pert_name, None)
         base_target = getattr(target_state, base_name, None)
-        pert_source = getattr(source_state, pert_name, None)
         base_source = getattr(source_state, base_name, None)
         if any(value is None for value in (pert_target, base_target,
-                                           pert_source, base_source)):
+                                           base_source)):
             continue
         window = plan.window(np.shape(pert_target))
         if window is None:
@@ -342,19 +375,14 @@ def rebase_transplanted_perturbations(*, source_state, target_state,
         base_out = _host(base_source, np.float32)[..., src_j, src_i]
         base_in = _host(base_target, np.float32)[..., dst_j, dst_i]
         differs = base_out.view(np.uint32) != base_in.view(np.uint32)
-        count = int(np.count_nonzero(differs))
-        rebased[pert_name] = count
-        if not count:
-            continue
-        pert = np.array(_host(pert_target, np.float32)[..., dst_j, dst_i],
-                        copy=True)
-        pert[differs] = ((pert[differs] + base_out[differs])
-                         - base_in[differs])
-        _write_window(pert_target, window, pert)
+        base_changed[pert_name] = int(np.count_nonzero(differs))
     update_diagnostics(target_state, cfg.hypsometric_opt)
     return {
-        "pairs": {pert: base for pert, base in _REBASE_PAIRS},
-        "rebased_cells": rebased,
+        "pairs": {pert: base for pert, base in _SPLIT_PAIRS},
+        "base_changed_cells": base_changed,
+        "perturbation_carry": (
+            "bitwise (WRF mediation_nest_move lineage); totals resplit "
+            "against the rebuilt base"),
         "diagnostics_rederived": True,
     }
 
@@ -433,7 +461,8 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
                                 reference_grid, reference_i_parent_start,
                                 reference_j_parent_start,
                                 drift_tolerance_deg: float = 1.0e-8,
-                                statics_builder=None):
+                                statics_builder=None,
+                                root_frame_shift=None):
     """Build the per-footprint rebuild seam for one real-data child.
 
     ``reference_grid`` is the child's grid as originally placed
@@ -445,8 +474,8 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
     :func:`gpuwm.core.nest_relocation.relocate_child`'s initializer
     contract, states its provenance, scopes the donor-alignment
     instrument to the region where its invariant is defined
-    (``donor_alignment_frame_width``), and installs the blend-frame
-    rebase as its ``post_transplant`` hook.
+    (``donor_alignment_frame_width``), and installs the post-transplant
+    EOS re-derivation as its ``post_transplant`` hook.
 
     WHERE THE STATICS COME FROM is the one route-owned seam.  The
     case-data route holds its input ``catalog`` (the GEOG source) and
@@ -457,7 +486,7 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
     .corridor_footprint_statics_builder`) carrying ``static_provenance``
     and ``source_label`` attributes for the receipt.  Everything after
     the statics -- the SINT fill, the t=0 terrain adjustment, the
-    rebase hook -- is one implementation, never forked per route.
+    re-derivation hook -- is one implementation, never forked per route.
     """
     if not hasattr(child_config, "run") or not hasattr(child_config,
                                                        "grid_id"):
@@ -494,8 +523,23 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
             raise RelocationRefusal(
                 f"this initializer serves grid_id {child_config.grid_id}, "
                 f"asked to rebuild grid_id {new_dc.grid_id}")
-        shift_i = (int(new_dc.i_parent_start) - ref_i) * ratio
-        shift_j = (int(new_dc.j_parent_start) - ref_j) * ratio
+        if root_frame_shift is not None:
+            # A mover whose ANCESTOR also moves ([relocation.containment])
+            # cannot derive its earth displacement from its own placement
+            # change: the placement is an offset inside a frame that
+            # slides.  The route's resolver composes the live ancestor
+            # chain (origin_in_frame_cells over the live tree patched
+            # with new_dc, minus the same origin at reference time), in
+            # this child's own cells -- every term an integer.  MEASURED
+            # without it: the first d03 move after a d02 slide translated
+            # from the stale frame and the drift gate below refused at
+            # 2.5e-01 deg, which is exactly the slide (-1, -2) d01 cells
+            # in child cells.
+            shift_i, shift_j = (int(v) for v in
+                                root_frame_shift(new_dc, parent_node))
+        else:
+            shift_i = (int(new_dc.i_parent_start) - ref_i) * ratio
+            shift_j = (int(new_dc.j_parent_start) - ref_j) * ratio
         grid = reference_grid.translated(shift_i, shift_j)
         # The translated frame and the parent's nest arithmetic must
         # describe the same physical corner; drift means the reference
@@ -562,8 +606,23 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
                       blend_width=blend_width)
         blend_terrain(phb_int, state.phb, spec_bdy_width=spec_width,
                       blend_width=blend_width)
+        # A MOVE IS NOT AN INITIALIZATION.  WRF blends the same terrain
+        # triple here that `med_nest_initial` does, and then stops:
+        # `adjust_tempqv` is absent from `share/mediation_nest_move.F`
+        # entirely, and `press_adj` is set .FALSE. for both parent (:242)
+        # and nest (:261) before `start_domain`.  Only the t = 0 path
+        # (`mediation_integrate.F` :763 and :809) runs them.
+        #
+        # The reason is physical: at t = 0 the child's columns came from
+        # its parent and have never been consistent with its own terrain,
+        # so theta and qv must be corrected for the base-column-mass
+        # change.  A moving child's columns are its own and already
+        # consistent; correcting them against a blend that only perturbs
+        # `mub` in the frame injects an anomaly into fields that were
+        # right.
         _adjust_and_rederive(state, cfg, coord, save_mub,
-                             static_fields["HGT_M"])
+                             static_fields["HGT_M"],
+                             column_mass_correction=False)
         undershoot = clamp_interpolation_undershoot(state)
         seed_rk_time_t_copies(state)
         del ht_int, mub_int, phb_int, save_mub
@@ -594,7 +653,7 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
                         preprocess_receipt=receipt)
 
     def post_transplant(*, source_state, target_state, plan):
-        return rebase_transplanted_perturbations(
+        return rederive_after_transplant(
             source_state=source_state, target_state=target_state,
             plan=plan, cfg=cfg)
 
@@ -623,5 +682,5 @@ __all__ = [
     "clamp_interpolation_undershoot", "donor_fill_plan",
     "overlap_mask_for_plan",
     "overlap_statics_mismatches", "real_relocation_initializer",
-    "rebase_transplanted_perturbations",
+    "rederive_after_transplant",
 ]

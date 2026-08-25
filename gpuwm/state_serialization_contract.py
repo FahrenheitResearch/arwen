@@ -289,9 +289,35 @@ def setup_fingerprint(state, *, error_type: type[Exception] = ValueError) -> str
 #: data; this module is where this package's serialization data lives.
 ADVECTIVE_FORCING_STATE = ("rthften", "rqvften")
 
+#: Arrays a CHECKPOINT must carry that are NOT part of the state
+#: identity.  The distinction is the whole point of this tuple.
+#:
+#: ``STATE_SERIALIZED_ATTRS`` is not merely "what a checkpoint holds": it
+#: is what :func:`gpuwm.ensemble.state_sha.live_state_sha256` hashes, and
+#: therefore what ``relocate_child`` compares to assert a parent is never
+#: written across a move, and what the ensemble and streaming digests
+#: attest.  Anything in there is a claim about the domain's physical
+#: state.
+#:
+#: ``ww_pp`` -- the acoustic perturbation eta mass flux Omega'' -- has to
+#: survive a restart (it is the ONE acoustic perturbation field
+#: ``small_step_init`` does not seed, so it carries into every acoustic
+#: loop and reaches the scalars through WRF ``sumflux`` at the specified
+#: lateral boundary) and must NOT be in that identity: it is a view into
+#: the shared dycore workspace, which a child rebuild legitimately
+#: reuses.  Putting it in the identity made the relocation
+#: parent-invariance assertion fire on workspace churn -- a false
+#: positive on a real safety check.
+#:
+#: So it rides its own ``acoustic/`` key namespace: written and restored
+#: by ``gpuwm/io/restart.py``, invisible to the ``state/`` key-set
+#: comparison, and invisible to every identity hash.
+CHECKPOINT_ONLY_STATE = ("ww_pp",)
+
 
 __all__ = [
     "ADVECTIVE_FORCING_STATE",
+    "CHECKPOINT_ONLY_STATE",
     "LATERAL_BOUNDARY_PREFIX_SCHEMA",
     "STATE_SERIALIZED_ATTRS",
     "STATE_SETUP_ARRAYS",

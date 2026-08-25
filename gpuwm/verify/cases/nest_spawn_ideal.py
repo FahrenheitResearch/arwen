@@ -35,7 +35,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from gpuwm.core.nest_spawn import SpawnConfig
-from gpuwm.core.spawn_runner import SpawnRunner
+from gpuwm.core.spawn_runner import RECEIPTS_SUFFIX, SpawnRunner
 from gpuwm.experiment import pre_spawn_experiment
 from gpuwm.runtime import walk_spawn_legs
 from gpuwm.static.lambert import grids_from_projection_config
@@ -170,7 +170,7 @@ def run(outdir: str | Path, *, run_seconds: float = RUN_SECONDS,
     preparer = _IdealizedSpawnPreparer(exp.start_time)
     runner = SpawnRunner.from_experiment(
         exp, on_child_built=preparer,
-        receipts_path=outdir / "spawn_receipts.json")
+        receipts_path=outdir / f"spawn_receipts{RECEIPTS_SUFFIX}")
     if runner is None:
         raise RuntimeError("the scaffold declares no dormant nest")
 

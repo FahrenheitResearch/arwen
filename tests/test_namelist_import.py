@@ -1132,15 +1132,16 @@ def test_omitted_keys_take_wrf_registry_defaults(tmp_path):
     Registry defaults, never gpuwm-convenient values."""
     # feedback omitted => Registry default 1 => an implicitly TWO-WAY
     # namelist selects the experimental path instead of silently
-    # importing as one-way.  Keep smooth_option explicit here because its
-    # independent Registry default 2 remains unsupported.
+    # importing as one-way.
     inp = INPUT_TEXT.replace(" feedback = 0,\n", "")
     toml_text, _ = import_namelists(*_pair(tmp_path, inp=inp))
     assert _load(tmp_path, toml_text).feedback == 1
-    # smooth_option omitted => Registry default 2 => rejected loudly
+    # smooth_option omitted => Registry default 2 (smdsm), which the
+    # runtime now implements (interp_fcn.F:3937-4014), so a stock WRF
+    # namelist imports and loads unedited.
     inp = INPUT_TEXT.replace(" smooth_option = 0,\n", "")
-    with pytest.raises(ValueError, match="smooth_option"):
-        import_namelists(*_pair(tmp_path, inp=inp))
+    toml_text, _ = import_namelists(*_pair(tmp_path, inp=inp))
+    assert _load(tmp_path, toml_text).smooth_option == 2
     # km_opt omitted => Registry default -1 = must-set => hard error
     # (surfaced by the one-sweep missing-key census)
     inp = INPUT_TEXT.replace(" km_opt = 4, 4,\n", "")

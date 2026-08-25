@@ -463,3 +463,95 @@ extern "C" __global__ void nest_copy_fcni(
     cfld[I3(k, cj - 1, ci - 1, nyp, nxp)] =
         nfld[I3(k, nj - 1, ni - 1, nyc, nxc)];
 }
+
+// ---------------------------------------------------------------------------
+// The feedback smoothers (interp_fcn.F:3794-4014), applied to the parent
+// AFTER the restriction unpack -- feedback_domain_em_part2.F:176-193 runs
+// nest_feedbackup_smooth.inc as the last act of the feedback transaction.
+// Registry flag `s` marks every fed-back field (Registry.EM_COMMON: u :159,
+// v :172, w :183, ph :199, t :211, mu :288, moist :454ff), default fcn
+// `smoother` (reg_parse.c:650), so the smoothed inventory IS the feedback
+// inventory.
+//
+// Both smoothers share one two-stage shape per (pass, k):
+//   stage 1 filters along J from the parent field into a scratch plane and
+//     COPIES a one-cell ring around the window (sm121's cfldnew init loop,
+//     :3910-3915; smdsm's committed cfld outside the window);
+//   stage 2 filters along I from the scratch back into the parent field.
+// That reproduces both Fortran dataflows exactly: sm121's I pass reads
+// cfldnew, which holds J-filtered values in the window and the pre-pass
+// copy outside it (:3927-3931); smdsm COMMITS its J pass before the I pass
+// reads (:4001-4004), so in-window neighbours are J-filtered and ring
+// neighbours are the original field either way.
+//
+// The window per axis is [pos+2, pos+span-2-stag] in WRF's 1-based domain
+// cells (:3918-3921, :3993-3994), span = (n?de-n?ds)/nr?, stag = 0 on the
+// field's staggered axis and 1 otherwise.  The module compiles with
+// -fmad=false, so the FP32 expression order below is the rounding order.
+
+// MOD 0: sm121 (:3864-3935), one pass.  The Fortran sums HIGH-side
+//        neighbour first -- `0.25 * ( cfld(j+1) + 2.*cfld(j) + cfld(j-1) )`
+//        left-associates as ((c + 2b) + a), and FP32 addition is not
+//        associative, so the order below IS the value (measured: the
+//        (a + 2b) + c spelling lands 1 ULP off on ~40% of cells).
+// MOD 1: smdsm (:3937-4014), b + xnu*((c + a)*0.5 - b), passes 1 and 2
+//        with xnu = +0.50 / -0.52 (:3976); the two-term sum commutes.
+__device__ __forceinline__ float smooth_filter(int mode, float xnu,
+                                               float a, float b, float c)
+{
+    if (mode == 0)
+        return 0.25f * ((c + 2.0f * b) + a);                   // :3927/:3934
+    return b + xnu * ((c + a) * 0.5f - b);                     // :3999/:4007
+}
+
+// Window decode shared by both stages: threads cover (niw + 2*ring) x
+// (njw + 2*ring) x nz cells at 0-based origin (i0-ring, j0-ring).
+__device__ __forceinline__ bool smooth_cell(size_t tid, int i0, int j0,
+                                            int niw, int njw, int ring,
+                                            int nz, int* i, int* j, int* k)
+{
+    int nit = niw + 2 * ring;
+    int njt = njw + 2 * ring;
+    size_t total = (size_t)nz * njt * nit;
+    if (tid >= total) return false;
+    *i = (i0 - ring) + (int)(tid % nit);
+    *j = (j0 - ring) + (int)((tid / nit) % njt);
+    *k = (int)(tid / ((size_t)nit * njt));
+    return true;
+}
+
+// Stage 1: scratch[window] = J-filter(parent); scratch[ring] = parent.
+extern "C" __global__ void nest_smooth_j(
+    const float* __restrict__ cfld,    // parent (nz, nyp, nxp)
+    float* __restrict__ scr,           // scratch, same extents
+    int mode, float xnu,
+    int i0, int j0, int niw, int njw,  // 0-based window, inclusive counts
+    int nz, int nyp, int nxp)
+{
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int i, j, k;
+    if (!smooth_cell(tid, i0, j0, niw, njw, 1, nz, &i, &j, &k)) return;
+    bool inside = (i >= i0 && i < i0 + niw && j >= j0 && j < j0 + njw);
+    float b = cfld[I3(k, j, i, nyp, nxp)];
+    if (!inside) { scr[I3(k, j, i, nyp, nxp)] = b; return; }
+    float a = cfld[I3(k, j - 1, i, nyp, nxp)];
+    float c = cfld[I3(k, j + 1, i, nyp, nxp)];
+    scr[I3(k, j, i, nyp, nxp)] = smooth_filter(mode, xnu, a, b, c);
+}
+
+// Stage 2: parent[window] = I-filter(scratch).
+extern "C" __global__ void nest_smooth_i(
+    float* __restrict__ cfld,
+    const float* __restrict__ scr,
+    int mode, float xnu,
+    int i0, int j0, int niw, int njw,
+    int nz, int nyp, int nxp)
+{
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int i, j, k;
+    if (!smooth_cell(tid, i0, j0, niw, njw, 0, nz, &i, &j, &k)) return;
+    float a = scr[I3(k, j, i - 1, nyp, nxp)];
+    float b = scr[I3(k, j, i, nyp, nxp)];
+    float c = scr[I3(k, j, i + 1, nyp, nxp)];
+    cfld[I3(k, j, i, nyp, nxp)] = smooth_filter(mode, xnu, a, b, c);
+}

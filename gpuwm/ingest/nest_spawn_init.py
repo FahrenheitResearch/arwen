@@ -58,10 +58,14 @@ DRIVER state (Noah/NoahMP continuation) follows the same rule it does at
 every leg boundary and relocation: re-initialised by ``on_child_built``,
 never invented here.
 
-A restart across a spawn promises nothing -- the moving-nest 2026-08-06
-posture, inherited whole.  The spawn invalidates the tree restart
-fingerprint by construction (the activated placement differs from the
-declared one), and nothing here relaxes that.
+A restart across a spawn resumes, and this module is on that path too:
+:func:`gpuwm.runtime.restore_nest_lifecycle` re-materializes every live
+episode through the same entry point a leg boundary uses, at the
+placement the slot fired on.  What the spawn still does is move the tree
+restart fingerprint by construction -- the activated placement differs
+from the declared one -- so a checkpoint written after a spawn is refused
+by a FRESH build and resumes only into the run that wrote it.  Nothing
+here relaxes that.
 """
 
 from __future__ import annotations

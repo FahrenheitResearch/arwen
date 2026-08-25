@@ -337,6 +337,7 @@ def prepare_era5_wrf(
     cpu_preprocess_bridge: Path | None = None,
     geog_root: Path | None = None,
     hierarchy_workers: int | None = None,
+    statics_corridor=None,
     hierarchy_source_orography: SourceOrographyDeclaration | None = None,
     water_temperature_overlay: Path | None = None,
     water_temperature_policy_declared: str | None = None,
@@ -770,6 +771,16 @@ def prepare_era5_wrf(
         shutil.copy2(Path(input_manifest), portable_source_manifest)
         _write_static_cache(static_cache, static)
         _write_geometry_receipt(geometry_receipt, grid, cfg, static_cache)
+        # Refused HERE rather than left to the hierarchy call, because the
+        # hierarchy call is exactly what does not happen on a single-domain
+        # preparation: without this the flag would be accepted, silently
+        # emit nothing, and the missing corridor would surface much later
+        # as the forecast runner's relocation refusal.
+        if statics_corridor is not None and len(exp.domains) < 2:
+            raise ValueError(
+                "--statics-corridor prepares child-resolution statics over "
+                "a parent extent, and this experiment has no child domain; "
+                "remove the flag or prepare a domain tree")
         if len(exp.domains) > 1:
             selected_workers = hierarchy_workers
             if selected_workers is None:
@@ -806,6 +817,7 @@ def prepare_era5_wrf(
                 # A child sees the catalog, not the case data.
                 soil_texture_downscale=declared_soil_texture_downscale(
                     declared),
+                statics_corridor=statics_corridor,
             )
             hierarchy_seconds = time.perf_counter() - hierarchy_started
             final_manifest = _verify_input_manifest(
@@ -823,6 +835,15 @@ def prepare_era5_wrf(
                 "input_manifest_sha256": input_manifest_digest,
                 "decoder_sha256": _sha256(paths["bridge"]),
                 "preprocessing": preprocess_receipt,
+                # Present only when the preparation opted in: the sealed
+                # statics-corridor set, digest-bound here the way every
+                # other sealed artifact is.  Absent, the proof is
+                # byte-for-byte what it always was.
+                **(
+                    {"statics_corridor": dict(
+                        hierarchy.statics_corridor_receipt)}
+                    if hierarchy.statics_corridor_receipt is not None
+                    else {}),
                 **soil_floor_binding,
                 # The soil-state SOURCE resolution, unconditional: a reader
                 # of this forecast must be able to answer "how coarse was
@@ -1008,6 +1029,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     parser.add_argument("--geog-root", type=Path)
     parser.add_argument("--hierarchy-workers", type=int)
+    parser.add_argument(
+        "--statics-corridor", nargs="?", const="all", default=None,
+        metavar="GRID_IDS",
+        help="seal child-resolution statics over the parent extent for "
+             "every child (bare flag) or for a comma-separated list of "
+             "child grid ids.  REQUIRED when the experiment configures "
+             "[relocation]: a prepared bundle runs without WPS_GEOG, so a "
+             "nest that moves onto ground it has not visited has no other "
+             "source of terrain, landuse and soil category.  Costs host "
+             "RAM and disk only, never VRAM")
     return parser
 
 
@@ -1015,6 +1046,23 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    # `all` or an explicit child list, resolved at the door so a typo is an
+    # argv complaint rather than a failure deep in the hierarchy.  Spelled
+    # exactly as the GFS and mapped front doors spell it, so all three take
+    # the same string.
+    statics_corridor = args.statics_corridor
+    if statics_corridor is not None and statics_corridor != "all":
+        try:
+            statics_corridor = tuple(
+                int(part) for part in statics_corridor.split(",") if part)
+        except ValueError:
+            parser.error(
+                "--statics-corridor accepts 'all' or a comma-separated "
+                f"list of child grid ids, not {args.statics_corridor!r}")
+        if not statics_corridor:
+            parser.error(
+                "--statics-corridor was given an empty grid-id list; pass "
+                "the bare flag for every child, or name ids")
     try:
         hierarchy_source_orography = _domain_source_orography(
             args.domain_source_orography,
@@ -1038,6 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
         cpu_preprocess_bridge=args.cpu_preprocess_bridge,
         geog_root=args.geog_root,
         hierarchy_workers=args.hierarchy_workers,
+        statics_corridor=statics_corridor,
         hierarchy_source_orography=hierarchy_source_orography,
         water_temperature_overlay=args.water_temperature_overlay,
     )

@@ -220,13 +220,22 @@ table you wrote by hand would be overwritten.  `--tiles {on,auto}` (with
 `--child-size`) is how you ask that door for a streamed child; see
 [CLI-OPTIONS.md](CLI-OPTIONS.md#gpuwm-downscale).
 
-`gpuwm run` is also the door for **two-way feedback with `[tiles]`**.  The
-prepared-hierarchy route refuses `feedback = 1` because its artifacts are
-written one-way and read one-way, and its refusal redirects two-way users to
-`gpuwm run`, "which builds its domain tree in-process".  That sentence used
-to be half true: `gpuwm run` refused `[tiles]` in turn, so the two-way +
-streamed shape was expressible in neither door.  Wiring the builders here
-closes it and leaves the hierarchy's export format alone.
+`gpuwm run` is also a door for **two-way feedback with `[tiles]`**.  Neither
+half is refused by a route any more.  The prepared-hierarchy route used to
+refuse `feedback = 1` outright, on the grounds that its artifacts are written
+one-way and read one-way; that was always vacuous for the artifacts -- an
+initial state, sealed statics and a boundary series are byte-identical
+however the tree couples at run time -- and it is now false for the executor,
+which activates the feedback transaction whenever the experiment asks.
+`gpuwm run` refused `[tiles]` in turn, and wiring the builders here closed
+that half.  So the two-way + streamed shape is expressible in both doors, and
+the export format is unchanged.
+
+What still refuses `feedback = 1` is the TREE, not the door, and it refuses
+identically wherever you launch: the nest coupler names unequal parent/child
+vertical level counts, mixed parent/child microphysics, and mismatched active
+prognostic field inventories when it is built.  `gpuwm check` prints those
+three preconditions for any config carrying `feedback = 1`.
 
 A route that reads `[tiles]` at no point still **refuses** an enabled mode at
 admission (`gpuwm.core.streaming.refuse_unrouted_streaming`), and that is the

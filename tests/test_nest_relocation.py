@@ -259,9 +259,10 @@ def test_donor_alignment_fails_when_the_shift_is_wrong():
 
 
 # ---------------------------------------------------------------------------
-# The append-only segment -- receipt bookkeeping, not a restart contract.
-# A restart across a move promises nothing (Drew, 2026-08-06), so these
-# pin that the history READS correctly; none of them licenses a resume.
+# The append-only segment -- the history a receipt reads and a resume
+# replays.  These pin that it READS correctly; the resume across a move
+# is proven where it happens, in the restart suites, and none of these
+# licenses one on its own.
 # ---------------------------------------------------------------------------
 
 def _record(di):
@@ -513,10 +514,12 @@ def test_placement_independent_identity_is_equal_across_a_move():
 def test_the_full_prepared_identity_still_differs_across_a_move():
     """The RULED behaviour, pinned: a move invalidates the cache key.
 
-    A restart across a move promises nothing (Drew, 2026-08-06), so this
-    is the intended outcome rather than a blocker to be lifted later.  If
-    it ever passes as equal, something has started claiming a resume
-    across a placement boundary is meaningful.
+    This stayed true when the resume across a move became exact, because
+    the resume does not reach past the placement -- it replays the move
+    chain into the restart fingerprint and arrives at the checkpoint's
+    value only for the run that wrote it.  A FRESH build still must not
+    key to a moved tree.  If this ever passes as equal, something has
+    started handing a moved state to a preparation that never moved.
     """
     from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
 
@@ -807,3 +810,53 @@ def test_relocation_verify_case_passes_every_component(tmp_path):
 
     assert report["components"]["post_move_integration"]["steps"] > 0
     assert report["real_move_segment"]["generation"] == 2
+
+
+def test_prognostic_probe_is_clean_after_a_correct_stamp():
+    """The instrument reads zero when the transplant did its job."""
+    from gpuwm.core.nest_relocation import overlap_prognostic_mismatches
+
+    source = _ramp_state()
+    target = _ramp_state(offset=1000.0)
+    plan = _plan(di=2)
+    transplant_overlap(source_state=source, target_state=target, plan=plan,
+                       attrs=_ATTRS)
+    verdict = overlap_prognostic_mismatches(source, target, plan,
+                                            attrs=_ATTRS)
+    assert verdict["pass"], verdict
+    assert verdict["mismatched_fields"] == {}
+    assert verdict["compared_cells"] > 0
+
+
+def test_prognostic_probe_catches_a_post_transplant_perturbation():
+    """THE NEGATIVE CONTROL, and the reason this probe exists.
+
+    A hook that runs after the stamp can undo it silently -- nothing
+    downstream re-checks the overlap, which is how a perturbation of
+    exactly this shape stayed invisible.  One altered word inside the
+    overlap must be counted, and one altered word OUTSIDE it must not,
+    or the instrument would be reading the strip instead of the claim.
+    """
+    from gpuwm.core.nest_relocation import overlap_prognostic_mismatches
+
+    source = _ramp_state()
+    target = _ramp_state(offset=1000.0)
+    plan = _plan(di=2)
+    transplant_overlap(source_state=source, target_state=target, plan=plan,
+                       attrs=_ATTRS)
+
+    # A "post_transplant hook" nudges one interior cell of thp.
+    target.thp[0, 1, 1] = np.float32(target.thp[0, 1, 1] + 1.0e-6)
+    verdict = overlap_prognostic_mismatches(source, target, plan,
+                                            attrs=_ATTRS)
+    assert not verdict["pass"]
+    assert verdict["mismatched_fields"] == {"thp": 1}, verdict
+
+    # The strip is NOT the overlap: a change out there is invisible here,
+    # which is what makes a nonzero count mean something.
+    fresh = _ramp_state(offset=1000.0)
+    transplant_overlap(source_state=source, target_state=fresh, plan=plan,
+                       attrs=_ATTRS)
+    fresh.thp[0, 1, fresh.thp.shape[-1] - 1] = np.float32(-12345.0)
+    assert overlap_prognostic_mismatches(source, fresh, plan,
+                                         attrs=_ATTRS)["pass"]

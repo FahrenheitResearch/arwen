@@ -15,14 +15,17 @@
 # six-hourly is already fetched (see tools/moving_nest_demo_20110427.ps1,
 # which stages ${GPUWM_DEMO_20110427_ROOT}).
 #
-# The [relocation] block is the leg-1 mechanism surface; [relocation.follow]
-# is the tracker (gpuwm.core.storm_tracking).  The relocation RUNNER that
-# evaluates the tracker each cycle boundary lands on lane/moving-nest-leg2;
-# until it merges, this config validates end-to-end and integrates as a
-# static nest (relocation is fingerprint-inert by design).
+# The [relocation] block is the mechanism surface; [relocation.follow] is
+# the tracker (gpuwm.core.storm_tracking).  The relocation runner consults
+# that tracker at every complete cycle boundary on the cadence below and
+# rebuilds the child at the placement it proposes, so this arm really does
+# move its nest.
 #
-# restart_interval_s stays 0: a restart across a move promises nothing
-# (Drew, 2026-08-06), so the moving arm does not checkpoint.
+# restart_interval_s stays 0 here for a reason that is about THIS arm and
+# not about restart: the proof is a 20-minute run whose whole point is the
+# move ledger, and a checkpoint inside it would only lengthen the run.  A
+# resume across an executed move is supported and is proven on the follow
+# arm, which checkpoints hourly.
 
 [experiment]
 name = "moving_nest_20110427_move_proof"

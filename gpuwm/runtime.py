@@ -1411,8 +1411,10 @@ class RealRelocationChildPreparer:
     * ``capture_outgoing(node)`` -- before the move, while the outgoing
       child is whole: snapshot the driver-held land-surface continuation
       state (:data:`~gpuwm.ingest.relocation_init.
-      LAND_SURFACE_CONTINUATION_FIELDS`) and keep a reference to the
-      outgoing footprint's statics.
+      LAND_SURFACE_CONTINUATION_FIELDS`), the per-column physics
+      continuation and the surface-radiation carriers with their
+      provenance ledger (:mod:`gpuwm.core.physics_continuation`), and
+      keep a reference to the outgoing footprint's statics.
     * ``__call__(initialized, new_dc, parent_node)`` -- the rebuild:
       FIRST assert the footprint-rebuilt statics equal the outgoing
       child's bitwise on shared ground (identical source + identical
@@ -1430,6 +1432,15 @@ class RealRelocationChildPreparer:
       footprint that produced them.
     """
 
+    # CLASS-LEVEL, because the subclasses do not chain __init__.
+    # PreparedTreeRelocationChildPreparer restates this whole body rather
+    # than calling super(), so an instance attribute set only here is
+    # absent on exactly the preparers the prepared-tree route actually
+    # uses -- an AttributeError on the first relocation, which is how
+    # this was caught.  A class attribute is inherited whatever a
+    # subclass's __init__ does or does not do.
+    _plan_override = None
+
     def __init__(self, *, exp: ExperimentConfig, data: CaseDataConfig,
                  model):
         self.exp = exp
@@ -1439,12 +1450,14 @@ class RealRelocationChildPreparer:
         self.last_receipt = None
         self._captured = None
         self._pending_refresh = None
+        self._plan_override = None
 
     def attach_writers(self, writers) -> None:
         self.writers = writers
 
     def capture_outgoing(self, node) -> None:
-        from gpuwm.core.physics_continuation import capture_continuation
+        from gpuwm.core.physics_continuation import (capture_carriers,
+                                                     capture_continuation)
         from gpuwm.ingest.relocation_init import (
             LAND_SURFACE_CONTINUATION_FIELDS)
 
@@ -1455,9 +1468,31 @@ class RealRelocationChildPreparer:
                 value = driver.fields.get(name)
                 if value is not None:
                     fields[name] = _relocation_host(value)
+        # THE CUMULUS TRIGGER MEMORY, which a move was throwing away.
+        # Kain-Fritsch triggers off `w0avg`, a running mean of vertical
+        # velocity kept on the cumulus callable rather than on the state
+        # (gpuwm/core/kf.py; the restart path carries it as
+        # `cumulus/w0avg`).  `ensure_trigger_history` re-allocates it to
+        # ZEROS whenever the state object changes -- "a driver moved to a
+        # new state still gets a fresh mean" -- and a relocation replaces
+        # the state object, so every move wiped the memory and KF stopped
+        # triggering until it rebuilt over one or two cudt intervals.
+        #
+        # MEASURED: d02 at 4.5 km with cu_physics = 1 and cudt = 10 min
+        # lost 12% of its rain and gained 10% cloud after a move, with
+        # rain NUMBER conserved, recovering in about 17 minutes -- and
+        # the rendered echo showed new convective blobs appearing exactly
+        # every 600 s, then dying back after each relocation.  The
+        # descendant d03 runs cu_physics = 0 and moved 0.5%.
+        trigger = None
+        cumulus = getattr(driver, "cumulus_callable", None)
+        w0avg = getattr(cumulus, "w0avg", None)
+        if w0avg is not None:
+            trigger = _relocation_host(w0avg)
         case = self.model._prepared_by_grid_id.get(int(node.cfg.grid_id))
         self._captured = {
             "grid_id": int(node.cfg.grid_id),
+            "cumulus_w0avg": trigger,
             "i_parent_start": int(node.cfg.i_parent_start),
             "j_parent_start": int(node.cfg.j_parent_start),
             "fields": fields,
@@ -1467,6 +1502,15 @@ class RealRelocationChildPreparer:
             # cold-restarting on the whole child (the 2026-08-16 moving-
             # nest KF artifact report).
             "continuation": capture_continuation(node.state, driver),
+            # THE SURFACE-RADIATION CARRIERS and their ledger.  A carrier
+            # is consumed on every surface step but produced only on the
+            # radiation cadence, so a child rebuilt from cold between two
+            # radiation calls holds allocation fill under a ledger that
+            # says nothing ever wrote it -- and the carrier contract
+            # refuses, correctly, at the first move (the 2026-08-24
+            # node-2 campaign's GLW refusal).  See
+            # gpuwm/core/physics_continuation.py.
+            "carriers": capture_carriers(driver),
             "static_fields": (None if case is None
                               else case.static_fields),
         }
@@ -1496,18 +1540,47 @@ class RealRelocationChildPreparer:
             raise RelocationRefusal(
                 "the relocation initializer produced no static fields; "
                 "the real-data route requires footprint-rebuilt statics")
-        plan = plan_relocation(
-            placement_from=Placement(
-                grid_id=captured["grid_id"],
-                i_parent_start=captured["i_parent_start"],
-                j_parent_start=captured["j_parent_start"]),
-            placement_to=Placement(
-                grid_id=int(new_dc.grid_id),
-                i_parent_start=int(new_dc.i_parent_start),
-                j_parent_start=int(new_dc.j_parent_start),
-                generation=1),
-            parent_grid_ratio=int(new_dc.parent_grid_ratio),
-            child_nx=int(cfg.nx), child_ny=int(cfg.ny))
+        # A DESCENDANT'S DISPLACEMENT IS NOT IN ITS PLACEMENT.  The mover
+        # derives its plan from the placement pair, and that is right for
+        # it: its `i_parent_start` changed, so `(to - from) * ratio` IS
+        # the ground it travelled.  A domain that rode along under a
+        # moving ancestor never changes its own placement -- it sits at
+        # the same offset inside a parent that moved -- so the same
+        # subtraction yields ZERO while its statics, cropped from a
+        # root-anchored corridor at `origin_in_frame_cells`, moved by the
+        # ancestor's displacement times the ratio product.
+        #
+        # The regrounder already holds the honest plan (built by
+        # `plan_descendant_reground` from the ground displacement, and
+        # already used for the donor-alignment check and the overlap
+        # transplant); it hands it over here rather than let this
+        # recompute a zero.
+        #
+        # MEASURED before this: the d03 statics-equality check compared
+        # two corridor crops 9 cells apart through a zero-shift window.
+        # Over open ocean every compared field is constant, so it passed;
+        # the first footprint to touch the Hawaiian coast refused with
+        # {'HGT_M': 22, 'LANDMASK': 4, 'LU_INDEX': 4, ...}, reproduced
+        # exactly by differencing crop_at(1854, 900) against
+        # crop_at(1845, 900) with no offset.  The same zero also staged
+        # every land-surface continuation field (smois, tslb, tsk, snow,
+        # ...) without moving it, leaving d03's soil column displaced
+        # from its own terrain by the full travel of each move.
+        plan = self._plan_override
+        self._plan_override = None
+        if plan is None:
+            plan = plan_relocation(
+                placement_from=Placement(
+                    grid_id=captured["grid_id"],
+                    i_parent_start=captured["i_parent_start"],
+                    j_parent_start=captured["j_parent_start"]),
+                placement_to=Placement(
+                    grid_id=int(new_dc.grid_id),
+                    i_parent_start=int(new_dc.i_parent_start),
+                    j_parent_start=int(new_dc.j_parent_start),
+                    generation=1),
+                parent_grid_ratio=int(new_dc.parent_grid_ratio),
+                child_nx=int(cfg.nx), child_ny=int(cfg.ny))
 
         # THE LOAD-BEARING ASSERTION (Drew's design ruling): statics
         # rebuilt from the same source over the same cells must equal the
@@ -1550,7 +1623,9 @@ class RealRelocationChildPreparer:
         # the freshly exposed strip cold-starts.  Before this landed the
         # whole child cold-started at every move, which is the reported
         # moving-nest KF artifact (2026-08-16).
-        from gpuwm.core.physics_continuation import (restore_continuation,
+        from gpuwm.core.physics_continuation import (restore_carriers,
+                                                     restore_continuation,
+                                                     shift_carriers,
                                                      shift_continuation)
 
         shifted = shift_continuation(
@@ -1566,6 +1641,27 @@ class RealRelocationChildPreparer:
                 "restored": False,
                 "reason": "the rebuilt child carries no physics driver, "
                           "so its continuation state cold-starts",
+            }
+        # THE SURFACE-RADIATION CARRIERS.  Same plan window as the
+        # serialised-state transplant, same donor fill as the
+        # land-surface continuation fields above -- a carrier and the
+        # skin temperature it drives reach a fresh strip cell from the
+        # SAME donor column -- and the ledger travels verbatim so the
+        # staleness half of the carrier guard stays armed across the
+        # move.  Without this the first surface call after a move met a
+        # ledger with no producer for GLW and refused (2026-08-24).
+        carrier_capture = captured.get("carriers") or {}
+        if new_state is not None and new_driver is not None:
+            carriers = restore_carriers(
+                new_driver,
+                shift_carriers(carrier_capture.get("fields") or {}, plan,
+                               fill),
+                carrier_capture.get("contract"))
+        else:
+            carriers = {
+                "restored": False,
+                "reason": "the rebuilt child carries no physics driver, "
+                          "so it holds no radiative carriers to keep",
             }
         self._pending_refresh = (int(new_dc.grid_id), initialized.grid,
                                  static)
@@ -1584,9 +1680,11 @@ class RealRelocationChildPreparer:
                 - set(captured["fields"])),
             "accumulators_reinitialized": not continuation["restored"],
             "physics_continuation": continuation,
+            "radiation_carriers": carriers,
             "driver_rebuild_seconds": driver_seconds,
             "preparer_seconds": _time.perf_counter() - started,
         }
+
 
     def _rebuild_driver(self, initialized, new_dc, parent_node,
                         moved) -> float:
@@ -1624,6 +1722,44 @@ class RealRelocationChildPreparer:
         if self.writers is not None:
             self.writers.refresh_domain(grid_id, grid=grid,
                                         static_fields=static)
+
+
+def build_track_writer(exp: ExperimentConfig, outdir):
+    """The ``[relocation.track]`` writer for a run, or ``None``.
+
+    Both relocation routes wire this the same way, because a track row is
+    rendered from the tracker's fix and neither route contributes
+    anything to it.  What the ROUTE owns is the one thing the config
+    deliberately does not carry: the run's INITIAL time, which every
+    row's valid-time column is measured from.
+
+    ``None`` when the config carries no ``[relocation.track]`` table, and
+    then nothing anywhere in the run changes.
+    """
+    relocation = getattr(exp, "relocation", None)
+    config = getattr(relocation, "track", None)
+    if config is None:
+        return None
+    from gpuwm.core.storm_track_writer import TrackWriter
+    from gpuwm.core.storm_tracking import all_levels_of
+
+    # The tracker's FIELD and the isobaric surfaces it watches decide
+    # this file's columns, and they are fixed at open time -- so the
+    # header is a statement about the CONFIG, not about what any one
+    # consultation managed to find.  A rotation or echo tracker writes
+    # the moving domain's centre and nothing else
+    # (storm_track_writer.POSITION_ONLY_FIELDS).
+    #
+    # ALL the levels, not just the steering ones: a surface named in
+    # [relocation.track] output_level that level_hpa does not track is
+    # computed for the FILE (FollowConfig.report_level_hpa), so the
+    # writer's columns are exactly the surfaces a consultation produces.
+    follow = getattr(relocation, "follow", None)
+    return TrackWriter(config, initial_time=exp.start_time,
+                       outdir=Path(outdir),
+                       levels=all_levels_of(follow),
+                       tracked_field=str(
+                           getattr(follow, "field", "pressure")))
 
 
 def build_real_relocation_runner(exp: ExperimentConfig,
@@ -1672,11 +1808,13 @@ def build_real_relocation_runner(exp: ExperimentConfig,
             exp, schedule=model.schedule, on_child_built=preparer,
             initializer=initializer,
             static_provenance=REAL_DATA_FOOTPRINT_REBUILT_STATICS,
+            track_writer=build_track_writer(exp, outdir),
             receipts_path=Path(outdir) / receipts_name)
     return RelocationRunner(
         config=relocation, schedule=model.schedule,
         on_child_built=preparer, provider=provider, initializer=initializer,
         static_provenance=REAL_DATA_FOOTPRINT_REBUILT_STATICS,
+        track_writer=build_track_writer(exp, outdir),
         receipts_path=Path(outdir) / receipts_name)
 
 
@@ -1726,7 +1864,12 @@ def build_real_relocation_runners(exp: ExperimentConfig,
             exp.relocation, enabled=True, grid_id=gid,
             max_move_parent_cells=follow.max_move_parent_cells,
             min_overlap_fraction=follow.min_overlap_fraction,
-            cadence_seconds=cadence, follow=follow.tracker, moves=())
+            cadence_seconds=cadence, follow=follow.tracker, moves=(),
+            # One [relocation.track] file has one writer.  The legacy/tree
+            # follower owns it; a per-domain follower dropping the table
+            # here writes no track rather than a second stream into the
+            # same CSV.  Per-follower track paths are a named follow-up.
+            track=None)
         view = _replace(exp, relocation=relocation)
         runner = build_real_relocation_runner(
             view, data, model, outdir, provider=provider,
@@ -1834,22 +1977,334 @@ def build_prepared_tree_relocation_runner(exp: ExperimentConfig, *,
     from gpuwm.static.corridor import (CORRIDOR_REBUILT_STATICS,
                                        corridor_footprint_statics_builder)
 
+    corridors = (statics_corridor if isinstance(statics_corridor, dict)
+                 else {int(relocation.grid_id): statics_corridor})
     node = model.node(int(relocation.grid_id))
     child_config = node.cfg
+
+    def _mover_statics_builder(grid_id: int):
+        """Corridor crop for a mover, honouring the corridor's frame.
+
+        A parent-anchored corridor (nothing above the mover moves) crops
+        by the mover's own placement, exactly as before.  A ROOT-anchored
+        one -- the [relocation.containment] case, where the mover's
+        parent slides -- must crop at the mover's live origin in the
+        root's frame, composed from the LIVE ancestor placements plus the
+        placement being built (the tree still carries the old one while
+        the initializer runs), which is why the live map is patched with
+        ``new_dc`` before the origin is taken.
+        """
+        from gpuwm.static.corridor import (corridor_frame_kwargs,
+                                           origin_in_frame_cells)
+
+        corridor = corridors[int(grid_id)]
+        if not corridor_frame_kwargs(exp, model.node(int(grid_id)).cfg):
+            return corridor_footprint_statics_builder(corridor)
+        root_id = next(int(d.grid_id) for d in exp.domains
+                       if int(d.parent_id) in (0, int(d.grid_id)))
+
+        def statics_builder(grid, new_dc):
+            del grid
+            live = {int(n.cfg.grid_id): n.cfg
+                    for n in model.walk_parent_first()}
+            live[int(new_dc.grid_id)] = new_dc
+            origin = origin_in_frame_cells(
+                live, int(new_dc.grid_id), root_id)
+            return corridor.crop_at(*origin)
+
+        statics_builder.static_provenance = CORRIDOR_REBUILT_STATICS
+        statics_builder.source_label = (
+            f"statics-corridor d{int(grid_id):02d} (root frame) "
+            f"sha256:{corridor.cache_sha256[:12]}")
+        statics_builder.highres_applied = False
+        return statics_builder
+
+    def _root_frame_shift_resolver(grid_id: int):
+        """The mover's translation in ITS OWN cells, root-frame composed.
+
+        None when nothing above the mover moves -- the legacy
+        placement-difference formula is then exact.  Under
+        [relocation.containment] the mover's parent slides, so the
+        placement is an offset inside a moving frame; the resolver
+        composes the LIVE ancestor chain (patched with the placement
+        being built) against the same chain at wiring time.  Every term
+        is an integer in the mover's own cells, the same arithmetic the
+        root-framed corridor crop stands on.
+        """
+        from gpuwm.static.corridor import (corridor_frame_kwargs,
+                                           origin_in_frame_cells)
+
+        if not corridor_frame_kwargs(exp, model.node(int(grid_id)).cfg):
+            return None
+        root_id = next(int(d.grid_id) for d in exp.domains
+                       if int(d.parent_id) in (0, int(d.grid_id)))
+        reference = {int(n.cfg.grid_id): n.cfg
+                     for n in model.walk_parent_first()}
+        ref_oi, ref_oj = origin_in_frame_cells(
+            reference, int(grid_id), root_id)
+
+        def resolve(new_dc, parent_node):
+            del parent_node
+            live = {int(n.cfg.grid_id): n.cfg
+                    for n in model.walk_parent_first()}
+            live[int(new_dc.grid_id)] = new_dc
+            oi, oj = origin_in_frame_cells(live, int(new_dc.grid_id),
+                                           root_id)
+            return oi - ref_oi, oj - ref_oj
+
+        return resolve
+
     initializer = real_relocation_initializer(
         vertical=exp.vertical, child_config=child_config,
         reference_grid=node.grid,
         reference_i_parent_start=child_config.i_parent_start,
         reference_j_parent_start=child_config.j_parent_start,
-        statics_builder=corridor_footprint_statics_builder(
-            statics_corridor))
+        statics_builder=_mover_statics_builder(int(relocation.grid_id)),
+        root_frame_shift=_root_frame_shift_resolver(
+            int(relocation.grid_id)))
     preparer = PreparedTreeRelocationChildPreparer(
         exp=exp, model=model, radiation_workspace=radiation_workspace)
-    return RelocationRunner.from_experiment(
+    runner = RelocationRunner.from_experiment(
         exp, schedule=model.schedule, on_child_built=preparer,
         initializer=initializer,
         static_provenance=CORRIDOR_REBUILT_STATICS,
+        reground_descendant=build_prepared_tree_descendant_regrounder(
+            exp, model=model, corridors=corridors,
+            radiation_workspace=radiation_workspace),
+        track_writer=build_track_writer(exp, outdir),
         receipts_path=Path(outdir) / "relocation_receipts.json")
+    containment = getattr(relocation, "containment", None)
+    if containment is not None:
+        parent_node = model.node(int(containment.grid_id))
+        runner.wire_containment(
+            initializer=real_relocation_initializer(
+                vertical=exp.vertical, child_config=parent_node.cfg,
+                reference_grid=parent_node.grid,
+                reference_i_parent_start=parent_node.cfg.i_parent_start,
+                reference_j_parent_start=parent_node.cfg.j_parent_start,
+                statics_builder=_mover_statics_builder(
+                    int(containment.grid_id))),
+            on_child_built=PreparedTreeRelocationChildPreparer(
+                exp=exp, model=model,
+                radiation_workspace=radiation_workspace),
+            static_provenance=CORRIDOR_REBUILT_STATICS)
+    return runner
+
+
+def build_prepared_tree_descendant_regrounder(exp, *, model, corridors,
+                                              radiation_workspace=None):
+    """The mid-tree seam: re-ground one descendant of a moved domain.
+
+    ``relocate_child`` hands this every descendant of the mover, with the
+    plan whose shift is that descendant's ground displacement in its own
+    cells.  The descendant's PLACEMENT is untouched -- it is an offset
+    inside a parent that carried it along -- so there is no re-placement
+    here; what there is, is new ground, and therefore the same rebuild
+    the mover itself gets.
+
+    ``None`` when nothing below the mover exists, which keeps a leaf
+    mover on exactly the path it had before mid-tree moves existed.
+
+    WHERE THE STATICS COME FROM.  The descendant's own corridor, cropped
+    at its LIVE origin in the ROOT's frame.  That origin is read from the
+    tree AFTER the mover has been re-placed, so it already includes the
+    parent's displacement -- and it is counted in the descendant's own
+    cells, the only frame in which it is an integer
+    (:func:`gpuwm.static.corridor.origin_in_frame_cells`).
+    """
+    from gpuwm.core.nest_relocation import (_DONOR_ALIGNMENT_FIELDS,
+                                            RelocationRefusal,
+                                            donor_alignment_check,
+                                            relocatable_attrs,
+                                            release_state_arrays,
+                                            snapshot_state_to_host,
+                                            transplant_overlap)
+    from gpuwm.ingest.relocation_init import real_relocation_initializer
+    from gpuwm.static.corridor import (CORRIDOR_REBUILT_STATICS,
+                                       origin_in_frame_cells,
+                                       relocating_subtree_grid_ids)
+
+    subtree = relocating_subtree_grid_ids(exp)
+    if len(subtree) < 2:
+        return None
+    # ONE PREPARER PER DESCENDANT, never the mover's.
+    # PreparedTreeRelocationChildPreparer holds its outgoing capture in a
+    # single slot (`self._captured`), which is correct for the one domain
+    # it was built to serve and wrong the moment a second domain borrows
+    # it: the descendant's capture lands in the mover's slot, and the
+    # mover's NEXT move then asserts its statics against the descendant's.
+    # MEASURED before this was split: move 1 passed, move 2 refused with
+    # 2749 mismatched cells in LANDUSEF/SOILCTOP/SOILCBOT -- a whole
+    # domain's worth of disagreement, not the one-ULP kind.
+    preparers = {gid: PreparedTreeRelocationChildPreparer(
+        exp=exp, model=model, radiation_workspace=radiation_workspace)
+        for gid in subtree}
+
+    def attach_writers(writers) -> None:
+        """Fan the run's writers out to EVERY descendant preparer.
+
+        ``PreparedTreeRelocationChildPreparer.after_move`` refreshes a
+        domain's output grid and statics through ``self.writers``, and
+        returns silently when that is None.  The route attaches writers to
+        the mover's preparer only (``relocation_runner.on_child_built``),
+        so the per-descendant preparers introduced here would each hold
+        None and refresh nothing -- the descendant would integrate on its
+        new ground while every frame it wrote kept the coordinates of the
+        footprint it had left.
+
+        MEASURED before this: across six d02 moves the parent's XLONG
+        marched -153.887 -> -155.438 while d03's stayed pinned at
+        -152.451..-143.607, until the stale extent poked outside its own
+        parent.  The values were computed on the right ground; only the
+        georeferencing was wrong, which is exactly the failure that looks
+        fine until someone plots it.
+        """
+        for member in preparers.values():
+            member.attach_writers(writers)
+    root_id = next(int(d.grid_id) for d in exp.domains
+                   if int(d.parent_id) in (0, int(d.grid_id)))
+
+    def reground(*, node, plan, delta_parent_cells):
+        grid_id = int(node.cfg.grid_id)
+        corridor = corridors[grid_id]
+        preparer = preparers[grid_id]
+
+        def statics_builder(grid, new_dc):
+            del grid
+            live = {int(n.cfg.grid_id): n.cfg
+                    for n in model.walk_parent_first()}
+            origin = origin_in_frame_cells(live, int(new_dc.grid_id), root_id)
+            return corridor.crop_at(*origin)
+
+        statics_builder.static_provenance = CORRIDOR_REBUILT_STATICS
+        statics_builder.source_label = (
+            f"statics-corridor d{grid_id:02d} (root frame) "
+            f"sha256:{corridor.cache_sha256[:12]}")
+        statics_builder.highres_applied = False
+
+        # THE REFERENCE PLACEMENT IS OFFSET, and it has to be.  The
+        # initializer derives its translation from the placement CHANGE,
+        # `(new_dc.i_parent_start - ref_i) * ratio`, and a descendant's
+        # placement does not change -- so declaring the real one yields a
+        # zero shift and leaves the reference grid describing pre-move
+        # ground, while the parent-resolved grid has already moved.  Its
+        # drift gate then refuses by exactly the parent's displacement.
+        #
+        # Declaring `placement - delta` makes the shift come out as the
+        # ground displacement, which is what actually happened to this
+        # domain.  Same trick, and the same reason, as the synthetic
+        # placements in `plan_descendant_reground`: the pair is a way to
+        # spell a displacement, not a record of where anything sits.
+        delta_i, delta_j = delta_parent_cells
+        initializer = real_relocation_initializer(
+            vertical=exp.vertical, child_config=node.cfg,
+            reference_grid=node.grid,
+            reference_i_parent_start=int(node.cfg.i_parent_start) - delta_i,
+            reference_j_parent_start=int(node.cfg.j_parent_start) - delta_j,
+            statics_builder=statics_builder)
+
+        capture = getattr(preparer, "capture_outgoing", None)
+        if callable(capture):
+            capture(node)
+        # The descendant's placement pair says nothing about how far its
+        # ground moved; `plan` does.  See the plan-override comment in
+        # RealRelocationChildPreparer.__call__.
+        preparer._plan_override = plan
+        source_state = snapshot_state_to_host(
+            node.state, tuple(relocatable_attrs()) + _DONOR_ALIGNMENT_FIELDS)
+        release_state_arrays(node.state)
+        initialized = initializer(
+            node.cfg, node.parent,
+            scratch_arena=getattr(model, "_scratch_arena", None),
+            dycore_state_workspace=getattr(
+                model, "_dycore_state_workspace", None))
+        preparer(initialized, node.cfg, node.parent)
+
+        frame_width = int(
+            getattr(initializer, "donor_alignment_frame_width", 0) or 0)
+        alignment = donor_alignment_check(
+            source_state=source_state, target_state=initialized.state,
+            plan=plan, frame_width=frame_width)
+        if not alignment["pass"]:
+            raise RelocationRefusal(
+                f"descendant d{grid_id:02d}'s re-grounded base state does "
+                f"not match its outgoing one on the overlap, so the two "
+                f"footprints do not share donor cells: {alignment}. The "
+                "ground displacement carried down from the mover is wrong, "
+                "or its corridor is anchored to a frame that moved.")
+        transplant = transplant_overlap(
+            source_state=source_state, target_state=initialized.state,
+            plan=plan)
+        # The same two-point probe the mover gets; a descendant is the
+        # control that made the mover's deficit legible in the first
+        # place, so it has to be measurable the same way.
+        from gpuwm.core.nest_relocation import (
+            overlap_prognostic_mismatches, relocation_probe_enabled)
+        probe = None
+        if relocation_probe_enabled():
+            probe = {"after_transplant": overlap_prognostic_mismatches(
+                source_state, initialized.state, plan)}
+        post_transplant = getattr(initializer, "post_transplant", None)
+        post_receipt = (
+            None if post_transplant is None else post_transplant(
+                source_state=source_state, target_state=initialized.state,
+                plan=plan))
+        if probe is not None:
+            probe["after_post_transplant"] = overlap_prognostic_mismatches(
+                source_state, initialized.state, plan)
+
+        # THE RK TIME-t SEEDS, which a descendant needs for exactly the
+        # reason the mover does.  `real_relocation_initializer` runs WRF's
+        # start_domain lineage, which seeds the time-t copies (u0, thp0,
+        # qv0, qr0, ...) from the SINT-of-parent cold-start fields.  The
+        # transplant then overwrites the CURRENT fields on the overlap
+        # with the outgoing child's -- so without re-seeding, the first
+        # RK substep reads cold-start values over ground the transplant
+        # just corrected, and every prognostic starts the step with a
+        # fabricated tendency equal to (transplanted - interpolated).
+        #
+        # `relocate_child` does this for the mover (`rk_seeds_refreshed`
+        # on its receipt); nothing was doing it for the domains carried
+        # along, so a descendant began each post-move step from its
+        # parent's interpolation rather than from itself.  Same call,
+        # same place in the sequence: after post_transplant, before the
+        # node adopts the new state.
+        from gpuwm.ingest.nest_init import seed_rk_time_t_copies
+        rk_seeds = seed_rk_time_t_copies(initialized.state)
+
+        node.grid = getattr(initialized, "grid", node.grid)
+        node.state = initialized.state
+        # THE POST-MOVE SEAM, which a descendant needs exactly as much as
+        # the mover does.  RelocationRunner calls these two for the domain
+        # it moved; nothing was calling them for the domains that moved
+        # WITH it, so a descendant integrated on its new ground while its
+        # output metadata still described the old one.
+        #
+        # MEASURED before this: after d02 moved [-2,-2], its wrfout
+        # correctly reported I_PARENT_START 105 and XLONG shifted by
+        # -0.517 deg, while d03 -- which had ridden along the same
+        # distance -- still wrote the XLAT/XLONG of its pre-move
+        # footprint.  Every d03 frame after a move was georeferenced to
+        # ground it had already left, which is invisible in the field
+        # values and obvious the moment it is plotted against its parent.
+        from gpuwm.core.state import refresh_model_time
+        refresh_model_time(node.state, node.clock)
+        after_move = getattr(preparer, "after_move", None)
+        if callable(after_move):
+            after_move(node)
+        return {
+            "statics": statics_builder.source_label,
+            "static_fields": CORRIDOR_REBUILT_STATICS,
+            "donor_alignment": alignment,
+            "transplant": transplant,
+            "prognostic_overlap_probe": probe,
+            "rk_seeds_refreshed": len(rk_seeds),
+            "post_transplant": post_receipt,
+            "rebuild": getattr(initialized, "preprocess_receipt", None),
+        }
+
+    reground.attach_writers = attach_writers
+    return reground
 
 
 class RealSpawnChildPreparer:
@@ -1962,7 +2417,7 @@ def build_real_spawn_runner(exp: ExperimentConfig, data: CaseDataConfig,
     calendar, so its physics driver can be attached.  Routes without
     them keep the refusal (gpuwm.experiment.refuse_unrouted_spawn).
     """
-    from gpuwm.core.spawn_runner import SpawnRunner
+    from gpuwm.core.spawn_runner import RECEIPTS_SUFFIX, SpawnRunner
 
     preparer = RealSpawnChildPreparer(exp=exp, data=data, model=model)
 
@@ -1975,7 +2430,7 @@ def build_real_spawn_runner(exp: ExperimentConfig, data: CaseDataConfig,
 
     return SpawnRunner.from_experiment(
         exp, on_child_built=preparer, statics_provider=statics_provider,
-        receipts_path=Path(outdir) / "spawn_receipts.json")
+        receipts_path=Path(outdir) / f"spawn_receipts{RECEIPTS_SUFFIX}")
 
 
 def _tree_forcing_cadence_seconds(catalog) -> float:
@@ -2659,6 +3114,63 @@ def resume_boundary_due(model, spawn_runner, *, leg: float, total: float,
     return abs(offset) <= tol * max(1.0, abs(elapsed))
 
 
+def spawn_leg_boundary(spawn_runner, elapsed, *, leg, total,
+                       relocation_cadence_s=None, tol=1.0e-9):
+    """Where the next leg ends: the next DECISION POINT, not the next tick.
+
+    Every boundary costs one full schedule rebuild
+    (:func:`_retarget_tree_schedule`), so a boundary is only worth taking
+    where the tree could actually change.  Three shapes, in order of how
+    much they save:
+
+    * nothing pending -- run straight to the end, which is what the walk
+      has always done once every watch has fired;
+    * a KNOWN next instant (a cooldown that has not elapsed, a window
+      that has not opened, a manual trigger's ``at_s``, a minimum
+      lifetime that has not run out) -- run to it.  This is the case a
+      re-armable slot used to defeat entirely: it kept
+      ``needs_boundaries`` true for the whole run, so a 384 h forecast
+      rebuilt its schedule ~4,600 times to keep re-reading one clock;
+    * an unknowable instant -- something reads the live field, or any
+      trigger in the tree reads a consumer-owned window this walk would
+      stop zeroing (see :meth:`~gpuwm.core.spawn_runner.SpawnRunner
+      .next_decision_time`) -- take the next tick of the leg lattice,
+      unchanged.
+
+    The returned boundary always lands ON the leg lattice: a leg length
+    is validated as a whole number of root steps and the schedule builder
+    needs one, so a horizon between two ticks rounds UP to the next.
+
+    ``relocation_cadence_s`` pins the boundary to a live follower's own
+    cadence.  The leg length already IS that cadence when the config sets
+    one (:func:`_spawn_leg_seconds`), so for a run with a mounted
+    relocation runner this preserves today's rhythm exactly rather than
+    changing two things at once.
+    """
+    elapsed, total, leg = float(elapsed), float(total), float(leg)
+    if elapsed + tol >= total:
+        return total
+    if not spawn_runner.needs_boundaries:
+        return total
+    if not math.isfinite(leg) or leg <= 0.0:
+        return total
+    lattice = min(total, (math.floor(elapsed / leg) + 1) * leg)
+    horizon = spawn_runner.next_decision_time(elapsed)
+    if horizon is None:
+        boundary = lattice
+    else:
+        snapped = min(
+            total, math.ceil((float(horizon) - tol) / leg) * leg)
+        boundary = max(lattice, snapped)
+    if relocation_cadence_s:
+        cadence = float(relocation_cadence_s)
+        if math.isfinite(cadence) and cadence > 0.0:
+            boundary = min(
+                boundary,
+                min(total, (math.floor(elapsed / cadence) + 1) * cadence))
+    return boundary
+
+
 def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
                     spawn_runner, writers, lbc_interval_s,
                     relocation_runner=None, relocation_runner_factory=None,
@@ -2675,7 +3187,12 @@ def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
     of the forecast".
 
     Restart across a spawn boundary inherits the moving-nest posture
-    whole: it promises nothing (Drew, 2026-08-06).
+    whole, and that posture is no longer "promises nothing": a checkpoint
+    written mid-episode carries the lifecycle block, and
+    :func:`restore_nest_lifecycle` rebuilds the tree the checkpoint
+    describes -- runner seeded, every live episode materialized at its
+    FIRED placement, schedule re-aimed over the restored domain set --
+    before any state lands.
 
     ``spawned_stepper_factory(grid_id, node) -> stepper | None`` adjudicates
     a NEWBORN's execution mode.  It is consulted only when this run is
@@ -2712,10 +3229,14 @@ def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
             spawned_stepper_factory=spawned_stepper_factory, leg=leg)
     while True:
         elapsed = float(model.root.clock.elapsed_seconds)
-        if spawn_runner.needs_boundaries and elapsed + tol < total:
-            boundary = min(total, (math.floor(elapsed / leg) + 1) * leg)
-        else:
-            boundary = total
+        boundary = spawn_leg_boundary(
+            spawn_runner, elapsed, leg=leg, total=total, tol=tol,
+            # A mounted relocation runner keeps the leg on its own
+            # cadence: the follower is consulted inside
+            # execute_experiment, but this lane changes the leg's LENGTH
+            # and a live follower is not the place to prove that.
+            relocation_cadence_s=(leg if relocation_runner is not None
+                                  else None))
         _retarget_tree_schedule(
             model, spawn_runner.active, boundary, lbc_interval_s)
         # The relocation runner watches ONE grid; while that grid is
@@ -3760,16 +4281,16 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     #
     # THIS IS THE ROUTE THE UNION HAD TO LAND ON.  Two-way feedback and
     # [tiles] were disjoint: `gpuwm run` refused [tiles] here by name,
-    # and the prepared-hierarchy route refuses feedback=1 at PREPARATION
-    # (gpuwm/source_hierarchy.py), because its artifacts are written
-    # one-way and read one-way and it executes with skip_feedback_path.
-    # Only one of those two refusals is about wiring.  The hierarchy's is
-    # about the shape of what it exports, and its own message already
-    # redirects two-way users here -- "runs on the native experiment-
-    # runner route, `gpuwm run`, which builds its domain tree in-process".
-    # That sentence was only half true while this route could not stream.
-    # Wiring the builders here makes it true and leaves the export format
-    # alone.
+    # and the prepared-hierarchy route refused feedback=1 at PREPARATION.
+    # Only one of those two refusals was ever about wiring, and BOTH are
+    # gone now -- the builders are wired below, and the prepared route
+    # executes with skip_feedback_path=(feedback == 0) rather than
+    # unconditionally (gpuwm/prepared_domain_tree_forecast.py:2203,
+    # gpuwm/source_hierarchy.py:129).  So this route is no longer the
+    # only address for two-way; it is the one that reaches it without a
+    # preparation step.  What still refuses is the coupler, by name, for
+    # the three tree shapes feedback cannot serve (gpuwm/core/nest.py:
+    # 232-249), and it refuses them identically on either route.
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     follow_configured = exp.relocation.enabled and (
@@ -3991,6 +4512,16 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                 attach_many(writers)
             else:
                 relocation_runner.on_child_built.attach_writers(writers)
+            # ...and to the descendant preparers of a MID-TREE move, which
+            # are separate instances and would otherwise refresh nothing.
+            # Reached through getattr twice: a runner COLLECTION carries no
+            # descendant regrounder, and a run with no runner at all must
+            # not be touched by this path.
+            _regrounder = getattr(
+                relocation_runner, "reground_descendant", None)
+            _fan = getattr(_regrounder, "attach_writers", None)
+            if callable(_fan):
+                _fan(writers)
 
         def history_handler(tree, node, ticks):
             # A STREAMED domain's forecast is in its pinned host store and

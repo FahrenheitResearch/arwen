@@ -95,8 +95,11 @@ def _declaring_before_first_domain(text: str, block: str) -> str:
     return text[:match.start()] + block + text[match.start():]
 
 
-def _mapped_proof_literals() -> dict[str, set[str]]:
+def _mapped_proof_literals() -> tuple[dict[str, set[str]],
+                                      dict[str, set[str]]]:
     """The top-level keys ``gpuwm/mapped_direct.py`` actually writes.
+
+    Returns ``(required, optional)``, each keyed by schema constant.
 
     Read out of the writer's own source with :mod:`ast`, from the two
     ``proof = {...}`` assignments it publishes -- one direct, one
@@ -105,6 +108,13 @@ def _mapped_proof_literals() -> dict[str, set[str]]:
     normalized to ``forcing_hours`` because that is the only spelling
     the reader accepts (a sub-hourly mapped preparation is refused
     elsewhere, by name).
+
+    A key the writer spreads in conditionally --
+    ``**({...} if <receipt> is not None else {})`` -- is OPTIONAL rather
+    than computed: the document carries it only when that preparation
+    opted in, so the runner has to accept the proof with it and without
+    it.  Those are reported separately so the gate below can bind both
+    halves instead of guessing which set a new key belongs in.
 
     This exists because reading a writer's source is still a great deal
     better than restating its inventory in the reader and hoping.  When
@@ -120,6 +130,7 @@ def _mapped_proof_literals() -> dict[str, set[str]]:
     source = (ROOT / "gpuwm" / "mapped_direct.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     found: dict[str, set[str]] = {}
+    conditional: dict[str, set[str]] = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign) or not isinstance(
                 node.value, ast.Dict):
@@ -129,6 +140,7 @@ def _mapped_proof_literals() -> dict[str, set[str]]:
                 and node.targets[0].id == "proof"):
             continue
         keys: set[str] = set()
+        opted_in: set[str] = set()
         schema_name = None
         for key, value in zip(node.value.keys, node.value.values):
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
@@ -137,6 +149,27 @@ def _mapped_proof_literals() -> dict[str, set[str]]:
                     schema_name = value.id
             elif isinstance(key, ast.Name) and key.id == "forcing_key":
                 keys.add("forcing_hours")
+            elif key is None:
+                # A `**` spread.  The writer uses it for one thing --
+                # `**({...} if <receipt> is not None else {})` -- so both
+                # branches are read and every key either can contribute
+                # is optional.  Anything else spread in here is a new
+                # shape that needs a decision, not a silent pass.
+                branches = ([value.body, value.orelse]
+                            if isinstance(value, ast.IfExp) else [value])
+                for branch in branches:
+                    if not isinstance(branch, ast.Dict):
+                        raise AssertionError(
+                            "gpuwm/mapped_direct.py spreads a proof key "
+                            "this gate cannot read statically; teach it, "
+                            "do not delete it")
+                    for spread in branch.keys:
+                        if not (isinstance(spread, ast.Constant)
+                                and isinstance(spread.value, str)):
+                            raise AssertionError(
+                                "gpuwm/mapped_direct.py spreads a computed "
+                                "proof key; teach it, do not delete it")
+                        opted_in.add(spread.value)
             else:  # pragma: no cover - a new computed key needs a decision
                 raise AssertionError(
                     "gpuwm/mapped_direct.py grew a proof key this gate "
@@ -146,7 +179,8 @@ def _mapped_proof_literals() -> dict[str, set[str]]:
         keys.add("proof_content_sha256")
         assert schema_name is not None
         found[schema_name] = keys
-    return found
+        conditional[schema_name] = opted_in
+    return found, conditional
 
 
 def test_the_reader_and_the_writer_agree_on_the_mapped_proof_inventory():
@@ -161,7 +195,7 @@ def test_the_reader_and_the_writer_agree_on_the_mapped_proof_inventory():
     every test green.
     """
 
-    literals = _mapped_proof_literals()
+    literals, optional = _mapped_proof_literals()
     assert set(literals) == {"PROOF_SCHEMA", "HIERARCHY_PROOF_SCHEMA"}, (
         "gpuwm/mapped_direct.py no longer publishes exactly two proof "
         f"documents; it publishes {sorted(literals)}")
@@ -172,6 +206,15 @@ def test_the_reader_and_the_writer_agree_on_the_mapped_proof_inventory():
         == set(runner.MAPPED_HIERARCHY_PROOF_KEYS), (
         "the mapped hierarchy proof the writer publishes and the "
         "inventory the forecast runner accepts have drifted apart")
+    # The opted-in half, bound the same way.  A key the writer can add
+    # conditionally that the runner does not tolerate is the same dead
+    # last leg as a required key it does not know -- it just waits for
+    # someone to turn the option on.
+    assert optional["PROOF_SCHEMA"] | optional["HIERARCHY_PROOF_SCHEMA"] \
+        == set(runner.MAPPED_OPTIONAL_PROOF_KEYS), (
+        "the mapped proof keys the writer publishes only on opt-in and "
+        "the optional inventory the forecast runner tolerates have "
+        "drifted apart")
 
 
 def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(

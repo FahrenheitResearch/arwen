@@ -38,6 +38,7 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
+from gpuwm.core.model import publish_declared_experiment
 
 from gpuwm.config import RunConfig
 from gpuwm.core.nssl2_contract import (
@@ -259,7 +260,18 @@ def test_every_domainstate_attribute_is_classified(monkeypatch, overrides):
     manifest = restart.state_manifest(state)
     expected = {f"state/{name}" for name in restart.STATE_SERIALIZED_ATTRS
                 if getattr(state, name, None) is not None}
+    # CHECKPOINT-ONLY carriers ride their OWN namespace, and the
+    # separation is load-bearing rather than cosmetic: `state/` is what
+    # live_state_sha256 hashes, and therefore what relocate_child
+    # compares to assert a parent is never written across a move.  A
+    # dycore-workspace view in there makes that assertion fire on
+    # workspace churn, which is a false positive on a real safety check.
+    expected |= {f"acoustic/{name}"
+                 for name in restart.CHECKPOINT_ONLY_STATE
+                 if getattr(state, name, None) is not None}
     assert set(manifest) == expected
+    assert not any(key.startswith("state/") for key in manifest
+                   if key[len("state/"):] in restart.CHECKPOINT_ONLY_STATE)
     if overrides.get("mp_physics") == 10:
         # W6 advisory: h_diabatic is restart state (WRF `rdu`,
         # Registry.EM_COMMON:1389); effective radii feed the next
@@ -411,8 +423,16 @@ def test_physicsdriver_attribute_classification_matches_source():
                         and isinstance(sub.value, ast.Name)
                         and sub.value.id == "self"):
                     assigned.add(sub.attr)
-    classified = (set(restart.DRIVER_SERIALIZED_ATTRS)
-                  | set(restart.DRIVER_REBUILT_ATTRS))
+    serialized = set(restart.DRIVER_SERIALIZED_ATTRS)
+    rebuilt = set(restart.DRIVER_REBUILT_ATTRS)
+    checkpoint_only = set(restart.DRIVER_CHECKPOINT_ONLY_ATTRS)
+    classified = serialized | rebuilt | checkpoint_only
+    # THREE classes, and a name belongs to exactly one: the union above
+    # would hide a name filed twice, and "rebuilt" and "carried in the
+    # checkpoint" are contradictory instructions to the restore path.
+    assert not serialized & rebuilt
+    assert not serialized & checkpoint_only
+    assert not rebuilt & checkpoint_only
     assert "refl_10cm" in restart.DRIVER_REBUILT_ATTRS
     assert "refl_10cm" not in restart.DRIVER_SERIALIZED_ATTRS
     for name in ("_sr_roundoff_upper", "_sr_roundoff_max_ulps",
@@ -424,6 +444,25 @@ def test_physicsdriver_attribute_classification_matches_source():
             sorted(assigned - classified),
         "stale manifest entries": sorted(classified - assigned),
     }
+
+
+def test_olr_is_carried_by_the_checkpoint_and_not_rebuilt():
+    """It was ``rebuild``, and a resumed run therefore published 0 W m-2
+    of outgoing longwave into every frame before its first post-restart
+    radiation call -- the only variable of 77 that differed across a
+    restart, on any configuration.  It is written on RADIATION's cadence,
+    which is coarser than the history cadence, so a frame between calls
+    publishes the last computed field and there is nothing to rebuild it
+    from.
+
+    Its own namespace, like ``acoustic/``: no ``driver/``/``fields/``/
+    ``cumulus/`` key set moves, so every checkpoint already on disk stays
+    restorable.  That was the stated cost of carrying it, and it is not a
+    cost this shape pays.
+    """
+    assert "olr" in restart.DRIVER_CHECKPOINT_ONLY_ATTRS
+    assert "olr" not in restart.DRIVER_REBUILT_ATTRS
+    assert "olr" not in restart.DRIVER_SERIALIZED_ATTRS
 
 
 def _harvest_scratch_slots() -> tuple[set[str], set[str]]:
@@ -1489,7 +1528,7 @@ def test_thompson_restart_identity_binds_implementation_and_table_bytes(
 
 
 def test_thompson_restart_identity_resolves_packaged_root_without_env(
-        monkeypatch):
+        monkeypatch, tmp_path):
     """The identity binds the RESOLVED root: packaged default, env override.
 
     Until the mp8 promotion (product/v1 packaging lane 2026-07-28) this
@@ -1500,8 +1539,26 @@ def test_thompson_restart_identity_resolves_packaged_root_without_env(
     the restart identity resolves exactly the root the forecast adapter
     loads, records the promoted admission token instead of the retired
     guard, and still honors the override.
+
+    THE USER-LEVEL CACHE IS PINNED TO AN EMPTY DIRECTORY, and that is
+    the whole reason this takes ``tmp_path``.  ``thompson_table_root``
+    answers env override, then a COMPLETE packaged root, then a COMPLETE
+    staged root under ``~/.gpuwm/tables/thompson``.  A wheel install
+    externalizes the packaged assets, so on any box where someone has
+    run ``gpuwm fetch-tables`` the third branch answers and this test
+    read the staged path -- a red that says nothing about the product
+    and everything about whose machine ran it.  Three lanes proved it
+    identical on pristine tips.  Pointing the staged root at an empty
+    directory makes the assertion about resolution ORDER, which is what
+    it is for, on a box with a cache and on a box without one.
     """
+    from gpuwm import physics_compat
     from gpuwm.physics_compat import packaged_thompson_table_root
+
+    staged = tmp_path / "user-cache" / "thompson"
+    staged.mkdir(parents=True)
+    monkeypatch.setattr(physics_compat, "user_thompson_table_root",
+                        lambda: staged)
 
     cfg = _cfg(moist=True, mp_physics=8)
     state, _ = _shim_driver_state(cfg, monkeypatch)
@@ -1524,6 +1581,49 @@ def test_thompson_restart_identity_resolves_packaged_root_without_env(
     monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", "/override/thompson")
     restart.physics_setup_identity(state, cfg)
     assert seen[-1] == "/override/thompson"
+
+
+def test_thompson_identity_reads_a_complete_staged_root_over_a_short_one(
+        monkeypatch, tmp_path):
+    """The OTHER direction of the isolation above, pinned once.
+
+    The test before this one asserts the packaged root answers when the
+    staged root cannot.  That assertion is only worth something if the
+    staged root CAN answer when it is complete -- otherwise pinning an
+    empty directory would pass for the wrong reason on every box, and
+    the resolution order would be untested in the direction users
+    actually hit after ``gpuwm fetch-tables``.
+
+    Both roots are pinned here rather than only the staged one, so the
+    branch under test is the same on a git clone (complete packaged root)
+    and on a wheel install (externalized, short).
+    """
+    from gpuwm import physics_compat
+    from gpuwm.core.thompson_contract import CLASSIC_TABLE_ASSETS
+
+    packaged = tmp_path / "packaged-short" / "tables"
+    packaged.mkdir(parents=True)
+    staged = tmp_path / "user-cache" / "thompson"
+    staged.mkdir(parents=True)
+    for asset in CLASSIC_TABLE_ASSETS:
+        (staged / asset.filename).write_bytes(b"")
+    monkeypatch.setattr(physics_compat, "packaged_thompson_table_root",
+                        lambda: packaged)
+    monkeypatch.setattr(physics_compat, "user_thompson_table_root",
+                        lambda: staged)
+
+    cfg = _cfg(moist=True, mp_physics=8)
+    state, _ = _shim_driver_state(cfg, monkeypatch)
+    seen = []
+    monkeypatch.setattr(
+        restart, "_thompson_table_identity",
+        lambda path: seen.append(path) or {
+            "schema": 1, "table_set": "fixture", "assets": []})
+    monkeypatch.delenv("GPUWM_EXPERIMENTAL_THOMPSON_MP8", raising=False)
+    monkeypatch.delenv("GPUWM_THOMPSON_TABLE_ROOT", raising=False)
+
+    restart.physics_setup_identity(state, cfg)
+    assert seen == [str(staged)]
 
 
 def test_restart_header_binds_resolved_physics_and_active_assets(
@@ -2488,10 +2588,15 @@ def _member_names(path) -> list[str]:
 #: The lifecycle-free two-domain checkpoint, as one number.  It moves only
 #: when the checkpoint FORMAT moves; a nest-lifecycle feature that touches
 #: it has broken every checkpoint written before it.
+#:
+#: Re-pinned when the relocation carry landed: every tree member gained
+#: the ``placement`` header field and the ``acoustic/ww_pp`` carrier,
+#: both absent-tolerant on restore -- a checkpoint written before the
+#: move still restores; these pins state the format going FORWARD.
 _LIFECYCLE_FREE_ROOT_DIGEST = \
-    "40bab09427d448b597c63f407f1bc04574c995d63a49293ecda34d9ce328c483"
+    "194bd6a0613231ab32c41bdb3fb19dd99c5357f08b2b6e052d7ab5adc1704a98"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
-    "629c31f868d90bf4fbea5238615c3ee429d6c7cec1961e49e3049bc248bba5fe"
+    "6c8b3f3a6f73961d2b8dcddd6f4c93ec0873dd05039c37716d27fef3dcc2c8f4"
 
 
 def test_a_lifecycle_free_tree_checkpoint_is_byte_identical(
@@ -2527,7 +2632,8 @@ def test_a_lifecycle_free_tree_checkpoint_names_no_lifecycle_key(
         "domain_start_time", "driver", "dtbc_fp32_bits", "elapsed_seconds",
         "elapsed_ticks", "experiment_fingerprint", "format_version",
         "grid_id", "nest_tables", "parent_id", "phase", "physics_setup",
-        "physics_setup_fingerprint", "producer", "root_external_lbc_clock",
+        "physics_setup_fingerprint", "placement", "producer",
+        "root_external_lbc_clock",
         "run_trackers", "setup_fingerprint", "tick_den",
     ]
     assert not any(name.startswith("scratch/uh_")
@@ -2600,7 +2706,11 @@ def _lifecycle_tree_fixture(monkeypatch, *, follow: bool = True,
         monkeypatch, forcing_count=2, run_seconds=3600.0,
         payload_seed=payload_seed, nwp_diagnostics=1)
     exp = _lifecycle_experiment(follow=follow)
-    model._activation_context = {"experiment": exp}
+    # Published the way every route publishes it, and NOT through the
+    # case-data route's build-time context: a tree assembled from a
+    # prepared cache has no such context, and a checkpoint is not a
+    # property of how the tree was built.
+    publish_declared_experiment(model, exp)
     model._spawn_leg_seconds = 360.0
     root, child = tuple(model.walk_parent_first())
     # The follower has carried d02 off its declared footprint; only
@@ -2715,6 +2825,77 @@ def test_a_follower_entry_merges_the_writers_three_keys_with_the_runners_four(
     model._relocation_runner.runners[2].restore_state(entry)
 
 
+def test_the_declaration_is_published_on_the_tree_not_read_off_a_route(
+        monkeypatch, tmp_path):
+    """Checkpointing a run with a live follower is a GENERIC capability.
+
+    The entry has to say where the experiment DECLARED a domain, so that
+    a resume can tell a nest the follower moved from a nest someone
+    reconfigured.  That fact belongs to the configuration.  Reading it
+    out of ``_activation_context`` -- the case-data route's build-time
+    bundle of case data, forcing calendar and radiation workspace --
+    made the capability a property of how the tree was built: a tree
+    restored from a prepared cache has no such bundle, so its first
+    checkpoint refused however the tree was forced.
+    """
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    assert getattr(model, "_activation_context", None) is None
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    entry = restart.read_restart_header(root_path)[
+        restart.NEST_LIFECYCLE_HEADER_KEY]["followers"]["2"]
+    assert entry["kind"] == "per-domain"
+    assert entry["declared_placement"] == [20, 18]
+    assert entry["current_placement"] == [24, 21]
+
+
+def test_a_tree_that_publishes_no_declaration_still_refuses_by_name(
+        monkeypatch, tmp_path):
+    """The refusal is kept, and it is kept NAMED.
+
+    A tree that states no declaration anywhere really cannot say whether
+    the placement it is about to write is the declared one or one the
+    follower moved to, and a checkpoint that cannot say is a resume that
+    reads a moved nest as a reconfigured one.
+    """
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    model._declared_experiment = None
+
+    with pytest.raises(restart.RestartManifestError,
+                       match="no declared experiment"):
+        restart.write_tree_restart(
+            tmp_path, model, start + timedelta(seconds=3600))
+
+
+def test_a_follower_resumes_off_a_checkpoint_no_route_context_wrote(
+        monkeypatch, tmp_path):
+    """The other half: the block written from the published declaration
+    seeds a live follower through the ordinary resume seam.
+
+    The cooldown anchors are the state a resume most easily loses -- a
+    tracker that forgets them proposes at the resumed run's first cadence
+    boundary, moving the nest early and spinning up the strip it just
+    filled -- so they are what this asserts landed.
+    """
+    from gpuwm.runtime import restore_nest_followers
+
+    model, start = _lifecycle_tree_fixture(monkeypatch)
+    root_path = restart.write_tree_restart(
+        tmp_path, model, start + timedelta(seconds=3600))
+
+    resumed, _start = _lifecycle_tree_fixture(monkeypatch, payload_seed=17)
+    provider = restart.lifecycle_followers(resumed)[2].provider
+    provider._last_proposal_t = None            # a cold resumed tracker
+    provider._last_move_t = None
+
+    peek = restart.read_tree_lifecycle_header(root_path, resumed)
+    assert restore_nest_followers(resumed, peek) == [2]
+    assert provider._last_proposal_t == 60.0
+    assert provider._last_move_t is None
+    assert restart.lifecycle_followers(resumed)[2].moves_executed == 0
+
+
 def test_a_legacy_follower_says_so(monkeypatch, tmp_path):
     """Tree-level ``[relocation]`` and a per-domain ``[follow]`` produce
     different rebuild paths on the way back in, so the entry says which."""
@@ -2756,8 +2937,7 @@ def test_a_lifecycle_run_that_declares_no_window_writes_none(
     over the slots a domain HAS, never a fixed name list."""
     model, start = _sealed_tree_fixture(
         monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
-    model._activation_context = {
-        "experiment": _lifecycle_experiment(follow=False)}
+    publish_declared_experiment(model, _lifecycle_experiment(follow=False))
     model._spawn_leg_seconds = 360.0
     from gpuwm.core.spawn_runner import SpawnRunner
 
@@ -4355,3 +4535,87 @@ def test_real74_restart_continuation_is_bit_identical(tmp_path):
     # The resumed run does not rewrite the 12Z cold-start frame.
     assert not (out_b / "wrfout_d01_1974-04-03_12_00_00").exists()
     assert (out_c / "wrfout_d01_1974-04-03_12_00_00").exists()
+
+
+def test_olr_is_written_into_the_checkpoint_and_restored(monkeypatch,
+                                                        tmp_path):
+    """The carry itself: a driver whose longwave scheme publishes a TOA
+    flux writes ``diag/olr``, and a resume lands on that field rather
+    than on the zeros a fresh driver allocates."""
+    cfg = _cfg()
+    state, driver = _shim_driver_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, 7)
+    shape = state.mup.shape
+    driver.olr = np.full(shape, 301.5, dtype=np.float32)
+    target = tmp_path / "ck.npz"
+    restart.write_restart(target, state, cfg)
+    with np.load(target, allow_pickle=False) as data:
+        assert "diag/olr" in data.files
+        np.testing.assert_array_equal(data["diag/olr"], driver.olr)
+
+    state2, driver2 = _shim_driver_state(cfg, monkeypatch)
+    _fill_setup(state2)
+    driver2.olr = np.zeros(shape, dtype=np.float32)
+    restart.restore_restart(target, state2, cfg)
+    np.testing.assert_array_equal(driver2.olr, np.full(shape, 301.5,
+                                                       dtype=np.float32))
+
+
+def test_a_checkpoint_without_the_diag_namespace_still_restores(monkeypatch,
+                                                               tmp_path):
+    """The cost that used to be the argument against carrying OLR was
+    that it "would reject every checkpoint already on disk".  It does
+    not: the key has its own ``diag/`` namespace, absent-tolerant on
+    restore, so an older checkpoint resumes with the zeros its own build
+    resumed with anyway.
+
+    Proven by STRIPPING the key from a checkpoint this build wrote --
+    which is exactly what an older one looks like -- rather than by
+    keeping a stale fixture that would rot.
+    """
+    cfg = _cfg()
+    state, driver = _shim_driver_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, 11)
+    shape = state.mup.shape
+    driver.olr = np.full(shape, 288.0, dtype=np.float32)
+    written = tmp_path / "ck.npz"
+    restart.write_restart(written, state, cfg)
+
+    def strip_diag(payload, header):
+        removed = [k for k in list(payload) if k.startswith("diag/")]
+        assert removed, ("nothing to strip -- this build wrote no diag/ "
+                         "keys, so the test would pass vacuously")
+        for key in removed:
+            payload.pop(key)
+
+    older = _rewrite_restart_archive(written, tmp_path / "older.npz",
+                                     strip_diag)
+
+    state2, driver2 = _shim_driver_state(cfg, monkeypatch)
+    _fill_setup(state2)
+    driver2.olr = np.zeros(shape, dtype=np.float32)
+    restart.restore_restart(older, state2, cfg)          # must not raise
+    assert not driver2.olr.any()
+
+
+def test_a_resume_whose_scheme_publishes_no_olr_ignores_the_key(monkeypatch,
+                                                                tmp_path):
+    """Tolerant in the OTHER direction too, and it is a real
+    configuration rather than a defensive shrug: the buffer exists only
+    when the attached longwave scheme declares a TOA flux, so a resume
+    onto a scheme that does not has nowhere to put the field."""
+    cfg = _cfg()
+    state, driver = _shim_driver_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, 13)
+    driver.olr = np.full(state.mup.shape, 275.0, dtype=np.float32)
+    target = tmp_path / "ck.npz"
+    restart.write_restart(target, state, cfg)
+
+    state2, driver2 = _shim_driver_state(cfg, monkeypatch)
+    _fill_setup(state2)
+    driver2.olr = None                       # no TOA-flux producer
+    restart.restore_restart(target, state2, cfg)         # must not raise
+    assert driver2.olr is None

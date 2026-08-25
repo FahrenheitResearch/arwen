@@ -78,7 +78,7 @@ def _stashing_step(state, cfg, *, refl_10cm_due=False, **_kwargs):
             state, np.asarray([cfg.grid_id, endpoint], dtype=np.int64))
 
 
-def _tree(*, delay_s: int):
+def _tree(*, delay_s: int, smooth_option: int = 0):
     """A two-domain CPU tree whose child starts ``delay_s`` late (or not).
 
     Hand-assembled for the same reason tests/test_model.py's fixtures are:
@@ -95,7 +95,8 @@ def _tree(*, delay_s: int):
             run=replace(dc.run, run_seconds=RUN_SECONDS,
                         output_interval_s=HISTORY_SECONDS))
         for dc in base.domains)
-    exp = replace(base, run_seconds=RUN_SECONDS, domains=domains)
+    exp = replace(base, run_seconds=RUN_SECONDS, domains=domains,
+                  smooth_option=smooth_option)
     tick_clock = resolve_clock(exp, lbc_interval_s=60)
     clocks = tick_clock.clocks()
     grids = grids_from_projection_config(exp)
@@ -158,8 +159,10 @@ def _activate_in_place(monkeypatch):
             grid=parent.grid, state=_HistoryState()))
     monkeypatch.setattr("gpuwm.runtime.prepare_child_case",
                         lambda *args, **kwargs: SimpleNamespace())
-    monkeypatch.setattr("gpuwm.core.nest.NestCoupler",
-                        lambda node, feedback=0: _Coupler(node))
+    # The class, never a lambda narrowed to the keywords of the day: the
+    # double carries NestCoupler's own signature, so a coupling setting
+    # the activation path forwards is recorded here instead of raising.
+    monkeypatch.setattr("gpuwm.core.nest.NestCoupler", _Coupler)
 
 
 # --- the predicate every consume site now shares -------------------------
@@ -214,6 +217,28 @@ def test_the_root_keeps_its_own_frames_while_the_child_waits(monkeypatch):
                                                        240, 300]
     assert root_frames[0][1] is None
     assert all(refl is not None for _ticks, refl in root_frames[1:])
+
+
+def test_the_delayed_child_is_coupled_with_the_experiments_settings(
+        monkeypatch):
+    """A child built at its activation epoch is coupled exactly as one
+    built at t = 0 is: every coupling setting on the experiment reaches
+    the NestCoupler that ``on_domain_start`` constructs.  Without this a
+    delayed nest silently runs one-way or unsmoothed while the config
+    asks for neither, and the two construction sites drift apart unseen.
+    """
+    _activate_in_place(monkeypatch)
+    exp, model = _tree(delay_s=DELAY_SECONDS, smooth_option=2)
+
+    _run(model, monkeypatch)
+
+    # The fixture's pre-activation coupler is built bare, so reading the
+    # experiment's non-default smoother here also proves the coupler was
+    # rebuilt at the activation epoch rather than carried over.
+    coupler = model.node(2).coupler
+    assert (coupler.feedback, coupler.smooth_option) == (exp.feedback,
+                                                         exp.smooth_option)
+    assert coupler.smooth_option == 2
 
 
 def test_all_domains_at_the_experiment_start_are_untouched(monkeypatch):
@@ -295,7 +320,13 @@ def test_a_delayed_child_config_loads_instead_of_refusing(tmp_path):
 def test_the_shipped_run_door_accepts_a_delayed_child(tmp_path, capsys):
     """The exit code, not just the exception.  This config exited 2 with
     the categorical refusal in 2.5.0; it now passes the load gate and is
-    refused only by what it genuinely lacks here -- declared inputs."""
+    refused only by what it genuinely lacks here -- a [case_data] table.
+
+    That substitute refusal has to keep carrying its own weight, so it is
+    pinned to the two things a refusal owes: the concrete breakage it
+    prevents, and the remedy for it.  Matching a bare phrase would go on
+    passing for a message that had been reduced to naming a failure.
+    """
     import gpuwm.cli as cli
     from test_experiment import _write
 
@@ -303,7 +334,17 @@ def test_the_shipped_run_door_accepts_a_delayed_child(tmp_path, capsys):
     assert cli.main(["run", str(path)]) == 2
     message = capsys.readouterr().err
     assert "delayed nest activation" not in message
-    assert "declared inputs" in message
+    # The breakage: the table that is absent, and what the route cannot
+    # open without it.
+    assert "carries no [case_data] table" in message
+    assert ("no forcing, no Vtable, no WPS namelist and no geography root"
+            in message)
+    # The remedy: both the emitting command and the hand-edit, naming the
+    # inputs the table declares.
+    assert "remedy:" in message
+    assert "gpuwm domain --source era5" in message
+    assert "add a [case_data] table declaring" in message
+    assert "forcing, vtable, wps_namelist, geog_root" in message
 
 
 # --- the shapes that remain unsupported, refused by route ---------------

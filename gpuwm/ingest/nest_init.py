@@ -637,24 +637,56 @@ def _apply_press_adj_mu(state: DomainState, ht_fine) -> None:
 
 
 def _adjust_and_rederive(state: DomainState, cfg, coord: VerticalCoord,
-                         save_mub, ht_fine) -> BaseState:
-    """Run adjust_tempqv, base/EOS re-derivation, then nest press_adj."""
+                         save_mub, ht_fine, *,
+                         column_mass_correction: bool = True) -> BaseState:
+    """Run adjust_tempqv, base/EOS re-derivation, then nest press_adj.
+
+    ``column_mass_correction=False`` drops the first and last of those and
+    keeps only the re-derivation, WHICH IS WHAT A MOVE GETS IN WRF.
+
+    Read the two mediation layers side by side.  Nest INITIALIZATION
+    (``share/mediation_integrate.F``, ``med_nest_initial``) blends the
+    terrain triple and then, at :763, calls ``adjust_tempqv`` on
+    ``t_2``/``p``/``QVAPOR``, and at :809 sets ``press_adj = .TRUE.`` so
+    ``start_domain`` applies the MU correction too.  A nest MOVE
+    (``share/mediation_nest_move.F``) blends the SAME terrain triple --
+    and then calls neither: ``adjust_tempqv`` appears nowhere in that
+    file, and ``press_adj`` is explicitly set ``.FALSE.`` for both the
+    parent (:242) and the nest (:261) before ``start_domain``.
+
+    The asymmetry is not an oversight.  At t = 0 the child's columns came
+    from the parent and have never been consistent with the child's own
+    terrain, so temperature and vapour have to be corrected for the
+    base-column-mass change.  A moving nest's columns are its OWN, already
+    consistent -- the blend perturbs ``mub`` only in the frame, and
+    correcting theta/qv against that perturbation injects a
+    thermodynamic anomaly into a field that was already right.
+
+    MEASURED (runs/ab-reloc-moisture, arms C vs D): with the t = 0
+    lineage on every move, d02's rain fell 12% and cloud rose 10% within
+    150 s of a move, edge-weighted (-83% in the outer frame, -5% deep
+    inside) and recovering over about one rain fall-through time.  The
+    descendant d03, whose driver is rebuilt identically but whose
+    placement does not change, moved 0.5%.
+    """
     # WRF's reference T is moist-theta perturbation from 300 K because
     # use_theta_m=1.  gpuwm stores dry theta; use_theta_m=0 is the
     # algebraically equivalent dry-frame branch.
     theta_300 = state.total_theta() - np.float32(300.0)
-    pb = state.pb if state.pb.ndim == 3 else state.pb[:, None, None]
-    pressure_perturbation = state.p - pb
-    adjust_tempqv(
-        state.mub2d, save_mub, state.c3h, state.c4h,
-        float(state.p_top), theta_300, pressure_perturbation, state.qv,
-        use_theta_m=0)
+    if column_mass_correction:
+        pb = state.pb if state.pb.ndim == 3 else state.pb[:, None, None]
+        pressure_perturbation = state.p - pb
+        adjust_tempqv(
+            state.mub2d, save_mub, state.c3h, state.c4h,
+            float(state.p_top), theta_300, pressure_perturbation, state.qv,
+            use_theta_m=0)
     adjusted_theta = theta_300 + np.float32(300.0)
     base = _base_from_blended(state, cfg, coord, float(state.p_top))
     state.load_base(coord, base)
     state.thp[...] = adjusted_theta - state.thb
     update_diagnostics(state, cfg.hypsometric_opt)
-    _apply_press_adj_mu(state, ht_fine)
+    if column_mass_correction:
+        _apply_press_adj_mu(state, ht_fine)
     return base
 
 

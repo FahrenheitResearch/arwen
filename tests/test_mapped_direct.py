@@ -564,6 +564,11 @@ def _install_prepare_fakes(
     hierarchy_result = SimpleNamespace(
         static_catalog_receipt={"status": "PASS"},
         source_coverage_receipt={"status": "PASS"},
+        # The real RegularSourceHierarchyResult declares this with a
+        # None default; a double that omits it is not the contract the
+        # route consumes.  None here is the no-corridor preparation, so
+        # the proof this test compares stays byte-for-byte what it was.
+        statics_corridor_receipt=None,
         forcing_times=tuple(snapshot.valid_time for snapshot in snapshots),
         boundary_interval_seconds=cadence,
         hierarchy=SimpleNamespace(
@@ -1117,6 +1122,79 @@ def test_role_bindings_reject_duplicate_singleton_and_malformed_roles():
             mapped_direct._role_bindings([binding], multiple=False)
 
 
+def _corridor_forwarded(monkeypatch, corridor_argv):
+    """What `main` hands `prepare_mapped_wrf` for one corridor spelling."""
+
+    observed = {}
+    monkeypatch.setattr(
+        mapped_direct, "load_mapping", lambda path: {"format": "grib2"})
+
+    def prepare(**kwargs):
+        observed.update(kwargs)
+        return {"schema": "proof", "status": "PASS"}
+
+    monkeypatch.setattr(mapped_direct, "prepare_mapped_wrf", prepare)
+    assert mapped_direct.main([
+        "--source-format", "grib2",
+        "--composition", "/case/composition.json",
+        "--mapping", "/case/mapping.json",
+        "--input", "/source/f000.grib2",
+        "--input-manifest", "/case/input-manifest.json",
+        "--input-manifest-sha256", _DIGEST,
+        "--grib2-inventory", "/bin/grib2_inventory",
+        "--grib2-dump", "/bin/grib2_dump",
+        "--wps-namelist", "/case/namelist.wps",
+        "--geog-root", "/static/WPS_GEOG",
+        "--experiment-config", "/case/experiment.toml",
+        "--output-root", "/output/mapped",
+        *corridor_argv,
+    ]) == 0
+    return observed["statics_corridor"]
+
+
+def test_mapped_cli_forwards_the_corridor_selection_in_both_spellings(
+        monkeypatch):
+    # The bare flag stays the STRING "all" rather than being expanded
+    # here: `validated_corridor_selection` owns the resolution, and two
+    # readers expanding it independently is how a priced corridor set
+    # and a written one come apart.
+    assert _corridor_forwarded(monkeypatch, ["--statics-corridor"]) == "all"
+    assert _corridor_forwarded(
+        monkeypatch, ["--statics-corridor", "2,3"]) == (2, 3)
+    assert _corridor_forwarded(monkeypatch, []) is None
+
+
+@pytest.mark.parametrize(
+    "value, message",
+    [("2,x", "comma-separated list of child grid ids"),
+     (",", "empty grid-id list")],
+)
+def test_mapped_cli_refuses_a_malformed_corridor_at_the_door(
+        monkeypatch, capsys, value, message):
+    # At the DOOR: the mapping must not have to load before a typo in an
+    # argv value is reported, or the reader gets a FileNotFoundError for
+    # an unrelated path and never sees the real complaint.
+    def refuse_load(path):  # pragma: no cover - must never run
+        raise AssertionError("the mapping loaded before argv was checked")
+
+    monkeypatch.setattr(mapped_direct, "load_mapping", refuse_load)
+    with pytest.raises(SystemExit):
+        mapped_direct.main([
+            "--source-format", "grib2",
+            "--composition", "/case/composition.json",
+            "--mapping", "/case/mapping.json",
+            "--input", "/source/f000.grib2",
+            "--input-manifest", "/case/input-manifest.json",
+            "--input-manifest-sha256", _DIGEST,
+            "--wps-namelist", "/case/namelist.wps",
+            "--geog-root", "/static/WPS_GEOG",
+            "--experiment-config", "/case/experiment.toml",
+            "--output-root", "/output/mapped",
+            "--statics-corridor", value,
+        ])
+    assert message in capsys.readouterr().err
+
+
 def test_mapped_cli_forwards_exact_composed_hierarchy_arguments(
         monkeypatch, capsys):
     observed = {}
@@ -1191,6 +1269,10 @@ def test_mapped_cli_forwards_exact_composed_hierarchy_arguments(
         "preprocess_workers": 7,
         "cpu_preprocess_bridge": Path("/bin/libgpuwm_preprocess_cpu.so"),
         "hierarchy_workers": 6,
+        # This argv names no --statics-corridor, and the absence is
+        # forwarded as itself: None is "seal nothing", which is what
+        # every preparation that does not move a nest wants.
+        "statics_corridor": None,
     }
     assert '"status": "PASS"' in capsys.readouterr().out
 

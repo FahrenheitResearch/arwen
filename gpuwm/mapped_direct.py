@@ -424,6 +424,7 @@ def prepare_mapped_wrf(
     preprocess_workers: int | None = None,
     cpu_preprocess_bridge: str | Path | None = None,
     hierarchy_workers: int | None = None,
+    statics_corridor=None,
     _source_manifest: str | Path | None = None,
     _source_manifest_sha256: str | None = None,
     _source_adapter: str = "rw-wps-mapped-composition-v2",
@@ -444,6 +445,22 @@ def prepare_mapped_wrf(
     that does not belong to this domain is refused rather than trusted.
     ``geog_root`` remains required either way: the proof's geog_datasets
     binding and any child-domain statics are still resolved from the tree.
+
+    ``statics_corridor`` opts this preparation into emitting the sealed
+    child-resolution statics corridors
+    (:func:`gpuwm.static.corridor.emit_statics_corridor_set`), exactly as
+    the GFS and HRRR hierarchy stages already do.  It is what a RELOCATING
+    nest needs and cannot rebuild for itself: a prepared bundle runs with
+    no GEOG source, so the ground a nest has not visited yet has to be
+    sealed at preparation time or the move has nothing to stand on.
+    ``gpuwm.prepared_domain_tree_forecast`` refuses a configured
+    ``[relocation]`` against a bundle that carries no corridor for the
+    mover, by name -- so a mapped tree that means to move MUST pass this.
+    ``None`` selects nothing, ``"all"`` every child, and a sequence
+    exactly those child grid ids; the resolution itself belongs to
+    :func:`gpuwm.static.corridor.validated_corridor_selection`, which the
+    hierarchy call applies, so this route cannot resolve a bare flag to a
+    different set than `run-plan --estimate` priced.
 
     ``_source_manifest``/``_source_manifest_sha256`` are the seam for a
     NAMED-SOURCE route whose user-facing sealed authority is its own
@@ -650,6 +667,17 @@ def prepare_mapped_wrf(
     from gpuwm.static.highres_production import refuse_inert_highres
     refuse_inert_highres(experiment_config, lane="mapped adapter")
     hierarchy = len(exp.domains) > 1
+    # Refused HERE rather than left to the hierarchy call, because the
+    # hierarchy call is the thing that does not happen on a single-domain
+    # preparation: without this the flag would be accepted, silently emit
+    # nothing, and the missing corridor would surface hours later as the
+    # forecast runner's relocation refusal.  Same guard, same reason, as
+    # `gpuwm.gfs_direct` (statics_corridor / len(exp.domains) < 2).
+    if statics_corridor is not None and not hierarchy:
+        raise ValueError(
+            "--statics-corridor prepares child-resolution statics over a "
+            "parent extent, and this experiment has no child domain; "
+            "remove the flag or prepare a domain tree")
     target_contract = _validate_target_contract(
         mapping_contract,
         exp,
@@ -1023,6 +1051,7 @@ def prepare_mapped_wrf(
                 artifact_manifest_reference=(
                     "../hierarchy-artifacts/domain-artifacts.json"
                 ),
+                statics_corridor=statics_corridor,
             )
             hierarchy_seconds = time.perf_counter() - hierarchy_started
             run_control_after = {
@@ -1080,6 +1109,16 @@ def prepare_mapped_wrf(
                 "wrf_manifest": dict(
                     hierarchy_result.hierarchy.wrf_manifest
                 ),
+                # Present only when the preparation opted in: the sealed
+                # statics-corridor set, digest-bound here the way every
+                # other sealed artifact is.  Absent, the proof is
+                # byte-for-byte what it always was -- which is what keeps
+                # every retained mapped hash valid across this change.
+                **(
+                    {"statics_corridor": dict(
+                        hierarchy_result.statics_corridor_receipt)}
+                    if hierarchy_result.statics_corridor_receipt is not None
+                    else {}),
                 "timing_seconds": {
                     "static_root": static_seconds,
                     "decode_and_compose": decode_seconds,
@@ -1328,6 +1367,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     parser.add_argument("--hierarchy-workers", type=int)
     parser.add_argument(
+        "--statics-corridor", nargs="?", const="all", default=None,
+        metavar="GRID_IDS",
+        help="seal child-resolution statics over the parent extent for "
+             "every child (bare flag) or for a comma-separated list of "
+             "child grid ids.  REQUIRED when the experiment configures "
+             "[relocation]: a prepared bundle runs without WPS_GEOG, so "
+             "a nest that moves onto ground it has not visited has no "
+             "other source of terrain, landuse and soil category.  Costs "
+             "host RAM and disk only, never VRAM",
+    )
+    parser.add_argument(
         "--prepared-forecast-source", default=None, metavar="ID",
         help="the source id the finished bundle is run under, so this "
              "door can print the complete hash-bound forecast command "
@@ -1414,6 +1464,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.primary_files = read_input_list(args.input_list)
         except ValueError as error:
             parser.error(str(error))
+    # Resolved beside the input list and for the same reason: `all` or an
+    # explicit child list is an ARGV question, so a typo belongs in the
+    # usage complaint rather than eleven frames into the hierarchy behind
+    # a mapping that had to load first.  Spelled exactly as `rw-wps
+    # --source gfs` spells it, so both front doors take the same string.
+    statics_corridor = args.statics_corridor
+    if statics_corridor is not None and statics_corridor != "all":
+        try:
+            statics_corridor = tuple(
+                int(part) for part in statics_corridor.split(",") if part)
+        except ValueError:
+            parser.error(
+                "--statics-corridor accepts 'all' or a comma-separated "
+                f"list of child grid ids, not {args.statics_corridor!r}")
+        if not statics_corridor:
+            parser.error(
+                "--statics-corridor was given an empty grid-id list; "
+                "pass the bare flag for every child, or name ids")
     mapping = load_mapping(args.mapping)
     if mapping["format"] != args.source_format:
         parser.error(
@@ -1523,6 +1591,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         preprocess_workers=args.preprocess_workers,
         cpu_preprocess_bridge=args.cpu_preprocess_bridge,
         hierarchy_workers=args.hierarchy_workers,
+        statics_corridor=statics_corridor,
     )
     print(json.dumps(proof, indent=2, sort_keys=True, allow_nan=False))
     for line in _next_command_lines(args, proof):

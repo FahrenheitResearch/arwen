@@ -491,7 +491,34 @@ class RunPlan:
             raise PlanError(
                 "an intent plan has no config bytes until the wizard has "
                 "generated them; resolve_plan does that")
-        return Path(self.config_path).read_bytes()
+        try:
+            return Path(self.config_path).read_bytes()
+        except OSError as error:
+            # An unreadable config.path is a PLAN defect, not a crash.
+            # This read is the first thing every mode does -- --resolve,
+            # --estimate and the execution road all reach it through
+            # resolve_plan -- so an OSError escaping here left the two
+            # query modes printing a bare FileNotFoundError traceback at
+            # exit 1, and the execution road emitting a `failed` event
+            # whose remedy named a declared [case_data] input when the
+            # file that was missing is the config itself.  PlanError is
+            # a ValueError, which gpuwm.cli.main prints as one sentence
+            # at exit 2 -- the exit code every other refusal in this
+            # front door already uses.
+            raise PlanError(layered(
+                f"run plan {self.source} names config.path "
+                f"{self.config_path}, which gpuwm run-plan cannot read: "
+                f"{error.strerror or error}.  Nothing was started.  "
+                "Point 'config.path' at the TOML on disk -- a relative "
+                "path resolves against the plan's own directory, not "
+                "the working directory -- or carry the config text "
+                "itself in 'config.inline'.",
+                "That file IS the configuration, so every mode reads it "
+                "before anything else: --resolve, --estimate and the "
+                "execution road all reach it through resolve_plan.  "
+                "There is no half-answer to give from a plan whose "
+                "config is absent, and the estimate and VRAM figures a "
+                "front end shows next are derived from it.")) from error
 
 
 def _nonempty_string(value: object, label: str) -> str:
@@ -2094,9 +2121,8 @@ def generate_intent_config(plan: RunPlan, *, destination: Path
                       if requested.strip().lower() == "latest"
                       else "declared"),
             "note": (
-                "`latest` probed the mirrors for the newest cycle "
-                "complete through the end of the requested window; the "
-                "concrete cycle is recorded so this run is reproducible"
+                _latest_cycle_note(str(plan.config_intent.get(
+                    "source", "era5")))
                 if requested.strip().lower() == "latest"
                 else "as declared in the intent")})
     for domain in emitted.get("domain") or ():
@@ -3656,6 +3682,48 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         return 1
 
 
+def _cycle_spacing_hours(grid, cycle) -> int | None:
+    """Hours from ``cycle`` to the next init on ``grid``, or ``None``.
+
+    The spacing a producer actually runs at, read off its own hour set
+    rather than assumed to be one of two numbers.  ICON-EU's three
+    hours and GEM-GDPS's twelve are both real, and a shared constant was
+    wrong for both.
+    """
+
+    if grid is None:
+        return None
+    hours = sorted(grid.hours)
+    if len(hours) == 1:
+        return 24
+    following = next((hour for hour in hours if hour > cycle.hour), None)
+    if following is None:
+        return 24 - cycle.hour + hours[0]
+    return following - cycle.hour
+
+
+def _latest_cycle_note(source: str) -> str:
+    """How ``latest`` was answered for this source, in this source's terms.
+
+    Two mechanisms, and a note that claimed the wrong one is worse than
+    no note: a reader shown "probed the mirrors" for a source with no
+    mirrors to probe would go looking for a network step that never
+    happened.  The mechanism is read off the same predicate the resolver
+    dispatches on, so the two can never disagree.
+    """
+
+    from gpuwm.fetch import cycle_is_probeable
+
+    if cycle_is_probeable(source):
+        return ("`latest` probed the mirrors for the newest cycle "
+                "complete through the end of the requested window; the "
+                "concrete cycle is recorded so this run is reproducible")
+    return ("`latest` resolved from this source's declared publication "
+            "delay -- it publishes no object a probe can ask for -- so "
+            "the cycle is the newest its registry row says exists; the "
+            "concrete cycle is recorded so this run is reproducible")
+
+
 def resolve_fetch_cycle(arguments: Sequence[str]
                         ) -> tuple[list[str], list[dict[str, Any]],
                                    list[dict[str, Any]]]:
@@ -3680,7 +3748,8 @@ def resolve_fetch_cycle(arguments: Sequence[str]
     that coin flip, and the value handed onward is the canonical one.
     """
 
-    from gpuwm.fetch import GFS_CONTAINER_SOURCES, resolve_latest_cycle
+    from gpuwm.fetch import resolve_latest_cycle
+    from gpuwm.source_cycles import cycle_grid_for
 
     arguments = list(arguments)
     try:
@@ -3718,10 +3787,15 @@ def resolve_fetch_cycle(arguments: Sequence[str]
     # caller may assume, which is worth one line.  Reported as a
     # warning, never a refusal.
     warnings: list[dict[str, Any]] = []
-    step = 6 if source in GFS_CONTAINER_SOURCES else 1
+    # "Older than it needs to be" is measured in THIS source's cycles,
+    # not in a step two model names shared.  A grid the resolver just
+    # used is the one that says how far apart this producer's inits are;
+    # a source that declares none cannot be judged late and is not.
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    grid = cycle_grid_for(source)
     behind = int((now - cycle).total_seconds() // 3600)
-    if behind >= 2 * step:
+    step = _cycle_spacing_hours(grid, cycle)
+    if step is not None and behind >= 2 * step + grid.delay_hours:
         warnings.append({
             "code": "latest_cycle_is_not_the_newest",
             "message": (

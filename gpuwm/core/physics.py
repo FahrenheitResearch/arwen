@@ -1796,6 +1796,13 @@ class PhysicsDriver:
         # which is also what WRF publishes in its own t=0 history frame,
         # because OLR is a plain zero-initialised ``misc`` array and the
         # time-0 write precedes the first radiation call.
+        #
+        # A RESTART IS NOT THE FIRST CALL OF A RUN, so these zeros are
+        # overwritten by the checkpoint's own OLR on resume
+        # (restart.DRIVER_CHECKPOINT_ONLY_ATTRS).  They were not, and a
+        # resumed run published 0 W m-2 into every frame before its first
+        # post-restart radiation call -- the only variable of 77 that
+        # differed across a restart, on any configuration.
         self.olr = (
             cp.zeros(state.p.shape[1:], dtype=DTYPE)
             if self.radiation_active and getattr(

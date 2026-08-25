@@ -272,9 +272,14 @@ def test_exact_four_domain_thompson_nssl_plan_is_advertised_not_whitelisted(
     arbitrary_plan = runner.resolve_execution_plan(arbitrary)
     assert arbitrary_plan["plan_id"] == runner.ARBITRARY_PLAN_ID
     assert arbitrary_plan["launch_allowed"] is True
-    with pytest.raises(
-            ValueError, match="static one-way execution plan.*feedback=1"):
-        runner.resolve_execution_plan(replace(arbitrary, feedback=1))
+    # The feedback=1 refusal that stood here is lifted: the plan resolves
+    # for a two-way tree exactly as for a one-way one (feedback is a
+    # runtime coupling behaviour; the coupler owns the refusals that
+    # remain -- mixed microphysics, unequal nz, mismatched inventories).
+    two_way_plan = runner.resolve_execution_plan(
+        replace(arbitrary, feedback=1))
+    assert two_way_plan["plan_id"] == arbitrary_plan["plan_id"]
+    assert two_way_plan["launch_allowed"] is True
 
 
 def test_mixed_plan_still_rejects_a_missing_real_translation_policy(
@@ -916,18 +921,25 @@ def test_follow_source_with_a_verified_corridor_is_accepted(
     stub = object()
 
     def fake_load(directory, *, expected_set_receipt, grid_id, child_dc,
-                  parent_run, reference_grid):
+                  parent_run, reference_grid, frame_kwargs):
         seen.update(directory=Path(directory), grid_id=grid_id,
                     expected=expected_set_receipt,
                     child=int(child_dc.grid_id),
-                    parent_nx=int(parent_run.nx))
+                    parent_nx=int(parent_run.nx),
+                    frame_kwargs=frame_kwargs)
         return stub
 
     monkeypatch.setattr(corridor_module, "load_child_statics_corridor",
                         fake_load)
     inputs = _preflight(prepared, document, config)
     assert inputs.source == source
-    assert inputs.statics_corridor is stub
+    # A SET, keyed by grid_id: a mid-tree move changes the ground under
+    # the whole subtree, so each member carries its own corridor.  On a
+    # leaf mover -- this case -- that set has exactly one entry.
+    assert inputs.statics_corridor == {2: stub}
+    # Nothing above the mover moves here, so the corridor anchors to the
+    # child's own parent -- the pre-mid-tree geometry, unchanged.
+    assert seen["frame_kwargs"] == {}
     assert seen["grid_id"] == 2 and seen["child"] == 2
     assert seen["parent_nx"] == 100
     assert seen["expected"] == _D02_CORRIDOR_SET
@@ -935,8 +947,8 @@ def test_follow_source_with_a_verified_corridor_is_accepted(
     # artifact writer that makes hierarchy-artifacts/ is one writer.
     assert seen["directory"] == (
         prepared / "hierarchy-artifacts" / "statics-corridor")
-    assert inputs.statics_corridor_cache_path == (
-        prepared / "hierarchy-artifacts" / "statics-corridor" / "d02.npz")
+    assert inputs.statics_corridor_cache_path == [
+        prepared / "hierarchy-artifacts" / "statics-corridor" / "d02.npz"]
 
 
 @pytest.mark.parametrize("source", _DOCUMENTS)
@@ -985,3 +997,29 @@ def test_bounds_only_relocation_still_passes_without_a_corridor(
     inputs = _preflight(prepared, receipt, config)
     assert inputs.statics_corridor is None
     assert inputs.statics_corridor_cache_path is None
+
+
+def test_the_prepared_tree_route_publishes_the_identity_its_checkpoint_needs():
+    """The concrete breakage this gate prevents, named.
+
+    Without ``publish_declared_experiment`` the first checkpoint of a
+    prepared-tree run with a live follower refuses -- the writer cannot
+    say whether the placement it is recording is the declared one or one
+    the follower moved to.  Without ``publish_lifecycle_runners`` the
+    writer cannot see the follower at all until the runner's first
+    receipt attaches it, so the block is missing from every checkpoint
+    taken before the first cadence boundary.  And without the peek and
+    the follower restore on the way back in, a resume drops the segment
+    chain and both cooldown anchors: the nest is then free to move at the
+    resumed run's first boundary, on a history that did not happen.
+    """
+    import inspect
+
+    from gpuwm import prepared_domain_tree_forecast as module
+
+    source = inspect.getsource(module.run_prepared_tree)
+    for call in ("publish_declared_experiment(",
+                 "publish_lifecycle_runners(",
+                 "read_tree_lifecycle_header(",
+                 "restore_nest_followers("):
+        assert call in source, f"the prepared tree route never calls {call}"

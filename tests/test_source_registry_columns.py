@@ -246,3 +246,95 @@ def test_a_grafted_row_carries_both_columns_through_the_manifest():
 
 def test_the_capability_manifest_stays_json():
     json.dumps(registry.source_capability_manifest())
+
+
+# ---------------------------------------------------------------------------
+# The CYCLE-GRID column: when a source initializes, and when its bytes land
+# ---------------------------------------------------------------------------
+
+
+def test_a_declared_grid_agrees_with_the_route_table_it_repeats():
+    """One schedule, two places it may be written, never two answers.
+
+    A row may declare a grid the fetch route also declares (the legacy
+    transports do not, today, but nothing stops a future row from
+    doing both).  Where both exist they must agree, or `--cycle latest`
+    and `gpuwm fetch` would disagree about which cycles this producer
+    runs -- silently, and only for that one source.
+    """
+
+    from gpuwm import fetch_routes
+    from gpuwm.source_cycles import route_cycle_grid
+
+    for adapter in registry.source_adapters():
+        if adapter.cycle_grid is None:
+            continue
+        derived = route_cycle_grid(adapter.source_id)
+        if derived is None:
+            continue
+        assert adapter.cycle_grid.hours == derived.hours, (
+            f"{adapter.source_id}: the row says {adapter.cycle_grid.hours} "
+            f"and {fetch_routes.ROUTE_TABLE_NAME} says {derived.hours}")
+
+
+def test_the_hourly_models_horizon_rule_matches_the_module_that_owns_it():
+    """The declared horizon is a REPEAT, and a repeat needs a guard.
+
+    The row states which cycle hours run long, in the same shape the
+    route table states it.  ``gpuwm.hrrr_forecast`` is where that rule
+    is implemented; if the two drift, `--cycle latest` starts offering a
+    cycle whose ladder cannot reach the requested window.
+    """
+
+    from gpuwm.hrrr_forecast import (HRRR_EXTENDED_CYCLE_HOURS,
+                                     HRRR_EXTENDED_HORIZON_HOURS,
+                                     HRRR_STANDARD_HORIZON_HOURS)
+
+    grid = registry.get_source_adapter("hrrr").cycle_grid
+    assert grid is not None
+    assert grid.horizons == (
+        (tuple(sorted(HRRR_EXTENDED_CYCLE_HOURS)),
+         HRRR_EXTENDED_HORIZON_HOURS),
+        (None, HRRR_STANDARD_HORIZON_HOURS))
+
+
+def test_a_grid_declaration_states_its_basis():
+    """A number nobody can trace is a number nobody can correct."""
+
+    for adapter in registry.source_adapters():
+        if adapter.cycle_grid is None:
+            continue
+        assert adapter.cycle_grid.basis.strip(), (
+            f"{adapter.source_id} declares a cycle grid with no basis")
+
+
+def test_the_grid_column_travels_through_the_manifest_as_json():
+    """Adding a source is a row: the manifest repeats what the row says."""
+
+    from gpuwm.source_cycles import CycleGrid
+
+    grafted = dataclasses.replace(
+        registry.source_adapters()[0],
+        source_id="probe-arbitrary-model",
+        cycle_grid=CycleGrid(hours=(0, 12), delay_hours=2.5,
+                             search_hours=36, basis="probe"))
+    entry = grafted.to_dict()
+    assert entry["cycle_grid"] == {
+        "hours": [0, 12], "delay_hours": 2.5, "search_hours": 36,
+        "basis": "probe", "record_end": None, "horizons": []}
+    json.dumps(entry)
+
+
+def test_a_grid_refuses_a_shape_that_would_resolve_to_nothing():
+    """The declaration is checked where it is written, not at use."""
+
+    from gpuwm.source_cycles import CycleGrid
+
+    with pytest.raises(ValueError, match="at least one UTC hour"):
+        CycleGrid(hours=())
+    with pytest.raises(ValueError, match="sorted and unique"):
+        CycleGrid(hours=(12, 0))
+    with pytest.raises(ValueError, match="UTC hours of day"):
+        CycleGrid(hours=(0, 24))
+    with pytest.raises(ValueError, match="positive window"):
+        CycleGrid(hours=(0,), search_hours=0)

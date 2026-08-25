@@ -1047,7 +1047,11 @@ def _required_era5_args(args: argparse.Namespace) -> list[str]:
         "--grib2-inventory": args.grib2_inventory,
         "--grib2-dump": args.grib2_dump,
         "--no-stock-wrf-export": args.no_stock_wrf_export or None,
-        "--statics-corridor": args.statics_corridor,
+        # NOT here any more: --statics-corridor.  It was listed as unused
+        # because gpuwm.era5_direct had no such flag to forward to, which
+        # made ERA5 a static-tree-only route -- and ERA5 is the source the
+        # prepared TREE runner names for reanalysis, so a moving nest over
+        # a historical event had nowhere to run.
     }
     errors.extend(
         f"{flag} is not used by --source era5"
@@ -1522,7 +1526,13 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
         "--gfs-series": args.gfs_series,
         "--cycle": args.cycle,
         "--no-stock-wrf-export": args.no_stock_wrf_export or None,
-        "--statics-corridor": args.statics_corridor,
+        # NOT here any more: --statics-corridor.  It was listed as
+        # unused because the mapped runner had no such flag to forward
+        # to, which made every packaged mapped source a static-tree-only
+        # route -- a [relocation] config could be prepared and then only
+        # refused, hours later, by the forecast runner.  The mapped
+        # hierarchy call always accepted `statics_corridor`; what was
+        # missing was the argv path to it.
     }
     errors.extend(
         f"{flag} is not used by --source mapped"
@@ -1738,6 +1748,15 @@ def _era5_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--domain-source-orography", binding))
     if args.hierarchy_workers is not None:
         command.extend(("--hierarchy-workers", str(args.hierarchy_workers)))
+    if args.statics_corridor is not None:
+        # Forwarded in the caller's own spelling, for the reason the GFS
+        # and mapped builders carry: re-expanding a bare flag here would
+        # let this door and `run-plan --estimate` resolve one argv to two
+        # different corridor sets.
+        if args.statics_corridor == "all":
+            command.append("--statics-corridor")
+        else:
+            command.extend(("--statics-corridor", args.statics_corridor))
     return command
 
 
@@ -1900,6 +1919,16 @@ def _mapped_command(args: argparse.Namespace) -> list[str]:
                 str(args.hierarchy_workers),
             )
         )
+    if args.statics_corridor is not None:
+        # Forwarded in the caller's own spelling -- bare for every child,
+        # the id list otherwise -- because the corridor SET is what the
+        # forecast runner checks the mover against, and re-expanding a
+        # bare flag here would let this door and `run-plan --estimate`
+        # resolve the same argv to two different sets.
+        if args.statics_corridor == "all":
+            command.append("--statics-corridor")
+        else:
+            command.extend(("--statics-corridor", args.statics_corridor))
     # The one thing the generic runner cannot know: which registered
     # source id this preparation is FOR.  It is what the prepared
     # forecast binds to, so without it the mapped route could finish and

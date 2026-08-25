@@ -69,7 +69,8 @@ from gpuwm.core.microphysics_transition import (
     transition_parent_field_shape,
 )
 from gpuwm.core.inflow_perturbation import build_inflow_perturbation
-from gpuwm.core.nest_interp import bdy_interp1, copy_fcn, register_nest
+from gpuwm.core.nest_interp import (bdy_interp1, copy_fcn, register_nest,
+                                    smoother)
 from gpuwm.core.preflight import (nest_field_kinds, nest_slot_dtypes,
                                   nest_slot_shapes)
 from gpuwm.ingest.lateral_bc import (attach_nest_boundaries,
@@ -79,6 +80,23 @@ from gpuwm.ingest.lateral_bc import (attach_nest_boundaries,
 
 _STAGGER = {"u": "x", "v": "y"}
 _APPLICATION_NAME = {"t": "theta", "ph": "phi"}
+
+#: The six SIGNED prognostics in the feedback inventory; everything else
+#: (qv, qc, qr, ... and every number concentration) is positive-definite
+#: and gets the post-smdsm non-negativity clamp in ``feedback_commit``.
+_SIGNED_KINDS = frozenset({"u", "v", "w", "t", "ph", "mu"})
+
+
+def _clip_nonnegative(window) -> None:
+    """``max(x, 0)`` in place -- exact in FP32, deterministic, and a
+    no-op on any value the convex operators produced."""
+    xp = window.__class__.__module__.partition(".")[0]
+    if xp == "cupy":
+        import cupy as cp
+
+        cp.maximum(window, cp.float32(0.0), out=window)
+    else:
+        np.maximum(window, np.float32(0.0), out=window)
 _SIDES = (("west", "xs"), ("east", "xe"),
           ("south", "ys"), ("north", "ye"))
 _GEOMETRY_NAMES = ("ci", "ip", "cj", "jp", "xig", "xjg")
@@ -184,7 +202,8 @@ class NestCoupler:
     y-staggered horizontal geometry; w/ph use mass horizontal geometry.
     """
 
-    def __init__(self, child_node, *, feedback: int = 0):
+    def __init__(self, child_node, *, feedback: int = 0,
+                 smooth_option: int = 0):
         if child_node.parent is None:
             raise ValueError("NestCoupler requires a child DomainNode")
         if child_node.cfg.parent_id != child_node.parent.cfg.grid_id:
@@ -193,6 +212,15 @@ class NestCoupler:
         if feedback not in (0, 1):
             raise ValueError("NestCoupler feedback must be 0 or 1")
         self.feedback = int(feedback)
+        if smooth_option not in (0, 1, 2):
+            raise ValueError(
+                "NestCoupler smooth_option must be 0 (none), 1 (sm121) or "
+                "2 (smdsm)")
+        #: WRF's post-feedback parent smoother selection.  Held even at
+        #: feedback = 0 -- ``SUBROUTINE smoother`` returns before reading
+        #: it when feedback is off (interp_fcn.F:3823-3824), and this
+        #: coupler's commit path does the same.
+        self.smooth_option = int(smooth_option)
         child = child_node.cfg
         parent = child_node.parent.cfg
         self.registrations = self._build_registrations()
@@ -682,6 +710,44 @@ class NestCoupler:
                 parent.state, kind, restricted, reg,
                 spec_zone=run.spec_zone)
             written.append(_state_attr(kind))
+
+        # The parent smoother, LAST -- feedback_domain_em_part2.F:176-193
+        # runs nest_feedbackup_smooth.inc after the unpack, over every
+        # fed-back field (Registry flag `s` rides with `u` on all of them:
+        # Registry.EM_COMMON:159/172/183/199/211/288/454ff).  The
+        # ``nest_parent_field`` slot is free again -- the restriction is
+        # done with it -- so the smoother's scratch is the same audited
+        # allocation and this adds no memory.  Runs before the streamed
+        # push-back below so a streamed parent's store receives the
+        # smoothed field, not the raw restriction.
+        if self.smooth_option != 0:
+            from gpuwm.core.nest_interp import smoother_parent_window
+
+            for kind in payload["kinds"]:
+                reg = self.registrations[_STAGGER.get(kind, "m")]
+                field = getattr(parent.state, _state_attr(kind))
+                smoother(
+                    field, reg, smooth_option=self.smooth_option,
+                    scratch=self._scratch("nest_parent_field"))
+                # smdsm's de-smoothing pass is ANTI-diffusive (xnu =
+                # -0.52, interp_fcn.F:3976) and can undershoot a sharp
+                # gradient; on a positive-definite species that is a
+                # small negative -- MEASURED, first d02->d01 feedback of
+                # the Melissa two-way run: qv = -2.2e-07 inside the
+                # rectangle, and the health gate rightly refused it.
+                # WRF tolerates the transient because its microphysics
+                # clamps moisture at CONSUMPTION (e.g. Thompson's
+                # MAX(1.e-10, qv)); ArWen's gate asserts the bound at
+                # the period boundary, so the transaction re-establishes
+                # it here, over exactly the cells the smoother wrote.
+                # The restriction itself is a convex average and sm121's
+                # weights are convex, so only the smdsm path can trip
+                # this; the clamp is a provable no-op everywhere else.
+                if kind not in _SIGNED_KINDS:
+                    i0, j0, niw, njw = smoother_parent_window(reg)
+                    if niw > 0 and njw > 0:
+                        window = field[..., j0:j0 + njw, i0:i0 + niw]
+                        _clip_nonnegative(window)
         if streamed_parent:
             _sync_out(parent.state, tuple(dict.fromkeys(written)))
         self.feedback_count += 1
@@ -695,15 +761,39 @@ class NestCoupler:
         if self._prepared_feedback is None:
             raise RuntimeError("feedback finalize has no committed transaction")
         from gpuwm.core.diagnostics import update_diagnostics
+        from gpuwm.core.nest_interp import (feedback_parent_bounds,
+                                            smoother_parent_window)
 
         parent = node.parent
-        # WHOLE-PARENT, and that is the point of the call: WRF re-runs
+        # WINDOWED to the columns the transaction touched.  WRF re-runs
         # start_domain on the parent after med_nest_feedback
-        # (share/mediation_integrate.F:787-838).  ``feedback_commit`` has
-        # already made the four inputs correct everywhere on a streamed
-        # parent, so this reads the domain rather than the attach-time
-        # snapshot; the three outputs go back to the store.
-        update_diagnostics(parent.state, parent.cfg.run.hypsometric_opt)
+        # (share/mediation_integrate.F:787-838), and this call used to
+        # mirror that as a whole-parent re-diagnosis -- but calc_p_alpha
+        # is column-local and its inputs (thp, php, mup, qv) changed only
+        # inside the mass-frame restriction rectangle plus the smoother's
+        # window, so the windowed call is BITWISE the whole-parent call:
+        # equal on the window by identical arithmetic, equal off it
+        # because unchanged inputs reproduce the columns' standing
+        # values.  The union below is exact for any spec_zone; on this
+        # tree it cuts the re-diagnosis to ~10% of the parent's columns,
+        # once per parent step per nest.  ``feedback_commit`` has already
+        # made the inputs correct everywhere on a streamed parent, so
+        # this reads the domain rather than the attach-time snapshot;
+        # the three outputs go back to the store.
+        run = node.cfg.run
+        reg_m = self.registrations["m"]
+        ci_lo, ci_hi, cj_lo, cj_hi = feedback_parent_bounds(
+            reg_m, spec_zone=run.spec_zone)
+        if self.smooth_option != 0:
+            i0, j0, niw, njw = smoother_parent_window(reg_m)
+            if niw > 0 and njw > 0:
+                ci_lo = min(ci_lo, i0)
+                ci_hi = max(ci_hi, i0 + niw - 1)
+                cj_lo = min(cj_lo, j0)
+                cj_hi = max(cj_hi, j0 + njw - 1)
+        update_diagnostics(
+            parent.state, parent.cfg.run.hypsometric_opt,
+            window=(cj_lo, ci_lo, cj_hi - cj_lo + 1, ci_hi - ci_lo + 1))
         _sync_out(parent.state, _DIAGNOSTIC_OUTPUTS)
         self._prepared_feedback = None
 

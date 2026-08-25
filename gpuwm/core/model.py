@@ -160,6 +160,16 @@ class ExperimentState:
     #: bans getattr reflection here.
     _activation_context = None
 
+    #: The experiment this tree was CONFIGURED from, published by
+    #: whichever route built the tree (:func:`publish_declared_experiment`).
+    #: Deliberately not a key of ``_activation_context`` above: that
+    #: bundle is one route's ingest context and a tree assembled from a
+    #: prepared cache has none of it, so a checkpoint that reached for
+    #: the declaration there could only be written by the route that
+    #: happened to carry the ingest.  Same unannotated class attribute
+    #: for the same reason.
+    _declared_experiment = None
+
     def node(self, grid_id: int) -> DomainNode:
         """Return one domain node by its configured grid identifier."""
         return self.nodes_by_grid_id[grid_id]
@@ -413,9 +423,12 @@ def restart_identity_payload(exp) -> dict:
             domain.pop(name, None)
         # Same convention for the per-domain spawn declaration: absent
         # stays absent (pre-feature fingerprints byte-identical), and a
-        # declared spawn BINDS -- a restart across a spawn promises
-        # nothing (the moving-nest 2026-08-06 posture), and binding the
-        # declaration is what keeps that a refusal rather than a shrug.
+        # declared spawn BINDS, value for value.  It decides trajectory --
+        # when a slot fires, where the newborn lands, how many episodes it
+        # may serve -- and a resume rebuilds the checkpoint's live tree
+        # from the runner's state, so restoring one under a DIFFERENT
+        # declaration would re-materialize episodes against a policy that
+        # never produced them.  Binding it makes that a refusal.
         if domain.get("spawn") is None:
             domain.pop("spawn", None)
         # The three per-domain lifecycle tables take the SAME convention as
@@ -443,8 +456,8 @@ def restart_identity_payload(exp) -> dict:
                 domain.pop(name, None)
         # The per-domain [tiles] road leaves the identity UNCONDITIONALLY,
         # declared or not -- the one place this file's absent-stays-absent
-        # convention is not enough.  A declared spawn binds because a
-        # restart across a spawn promises nothing; a declared tiling binds
+        # convention is not enough.  A declared spawn binds because it
+        # decides the trajectory a resume rebuilds; a declared tiling binds
         # NOTHING because its entire claim is that it changes no bytes, and
         # binding it would refuse the operation it exists for: a domain
         # that streamed resuming resident, or a domain that outgrew its
@@ -558,6 +571,26 @@ def _forcing_cadence_seconds(catalog) -> float:
             "the integer DomainClock requires one uniform forcing cadence; "
             f"InputCatalog deltas are {sorted(deltas)}")
     return deltas.pop()
+
+
+def publish_declared_experiment(model, exp) -> None:
+    """Publish, on the tree, the experiment the tree was configured from.
+
+    THE ONE CARRIER, for every route.  A checkpoint that persists a live
+    follower has to record where each domain was DECLARED alongside where
+    it now sits, or a resume cannot tell a nest the follower moved from a
+    nest somebody reconfigured -- and the declaration is a fact about the
+    configuration, not about whichever ingest built the tree.  Any route
+    that assembles an :class:`ExperimentState` calls this, so restart
+    stays a capability of the tree rather than of the route.
+    """
+    if exp is None:
+        raise ValueError(
+            "a tree is published with the experiment it was configured "
+            "from; publishing None leaves the checkpoint writer unable to "
+            "say whether a follower's recorded placement is the declared "
+            "one or one the follower moved to")
+    model._declared_experiment = exp
 
 
 def build_experiment(exp, case_data) -> ExperimentState:
@@ -713,7 +746,9 @@ def build_experiment(exp, case_data) -> ExperimentState:
             cfg=dc, grid=initialized.grid, state=initialized.state,
             clock=clocks[dc.grid_id], parent=parent,
             children=[], coupler=None)
-        node.coupler = ConcreteNestCoupler(node, feedback=exp.feedback)
+        node.coupler = ConcreteNestCoupler(
+            node, feedback=exp.feedback,
+            smooth_option=exp.smooth_option)
         node._started = clocks[dc.grid_id].spec.start_ticks == 0
         parent.children.append(node)
         # The marker is present both before and after FORCE.  It makes the
@@ -739,6 +774,7 @@ def build_experiment(exp, case_data) -> ExperimentState:
     built._initial_perturbation_receipts = tuple(
         initial_perturbation_receipts)
     built._input_catalog = catalog
+    publish_declared_experiment(built, exp)
     built._activation_context = {
         "experiment": exp,
         "case_data": case_data,
@@ -943,7 +979,16 @@ def execute_experiment(
         from gpuwm.core.streaming import TRACKER_PLANE_CARRIERS
 
         parent_stream = None
-        collection = bool(getattr(relocation_runner, "is_collection", False))
+        # Attribute access in a try, never reflection -- the same idiom
+        # the dormant-target test above uses, for the same reason: this
+        # module is AST-audited against getattr/setattr
+        # (tests/test_clock.py::test_no_float_elapsed_accumulation_audit),
+        # and the only callers without the attribute are the bare runner
+        # stubs in the refusal tests.
+        try:
+            collection = bool(relocation_runner.is_collection)
+        except AttributeError:
+            collection = False
         if collection and relocation_runner.is_due(model, clocks):
             for target_gid in relocation_runner.target_grid_ids:
                 if target_gid not in model.nodes_by_grid_id:
@@ -1027,7 +1072,9 @@ def execute_experiment(
                 node.parent.state.physics.radiation_callable))
         node.grid = initialized.grid
         node.state = initialized.state
-        node.coupler = ConcreteNestCoupler(node, feedback=exp.feedback)
+        node.coupler = ConcreteNestCoupler(
+            node, feedback=exp.feedback,
+            smooth_option=exp.smooth_option)
         refresh_model_time(node.state, clock)
         node.state._nest_restart_classification = "REBUILT"
         node._started = True

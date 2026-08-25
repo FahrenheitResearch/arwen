@@ -51,29 +51,42 @@ WHAT THIS MODULE DELIBERATELY DOES NOT DO.  It does not decide *when* or
 *where* to move -- there is no tracker, no scoring, no hysteresis here.
 Placement is an input.
 
-WHAT A RESTART ACROSS A MOVE PROMISES: NOTHING.  Ruled by Drew on
-2026-08-06 -- *"a restart across a move promises nothing imo its a pure
-efficiency experiment"*.  Moving nests exist so that a low-VRAM card can
-run a smaller nest that FOLLOWS the weather at a resolution a static nest
-of the same cost could never reach; that is the whole value, and it does
-not need a resume story.  So a relocation invalidates any restart claim
-outright, and this module keeps every existing refusal exactly as it
-found it: the prepared-cache key and the tree restart fingerprint still
-bind the placement, and moving a nest still invalidates them.
+WHAT A RESTART ACROSS A MOVE PROMISES: THE RUN THAT WROTE IT, BIT FOR
+BIT.  It promised NOTHING under the 2026-08-06 ruling -- *"a restart
+across a move promises nothing imo its a pure efficiency experiment"* --
+and that was a true statement about the machinery as it then stood,
+which carried none of the three things a resume needs across a
+checkpoint: the placement and the tracker's hysteresis, the acoustic
+Omega, and the tracker's consultation window.  All three are carried
+now, the resume reproduces the unbroken run bit for bit, and the posture
+moved with them.  :data:`RESTART_ACROSS_MOVE_POSTURE` below is the
+current wording and is the only text in this module allowed to state it.
+
+Moving nests still exist so that a low-VRAM card can run a smaller nest
+that FOLLOWS the weather at a resolution a static nest of the same cost
+could never reach; a resume is a second thing they can now do, not the
+reason they exist.  WHAT DID NOT CHANGE IS THE IDENTITY.  The
+prepared-cache key and the tree restart fingerprint still bind the
+placement, a move still invalidates both against a FRESH build, and a
+moved checkpoint resumes only by replaying its own chain of move digests
+back into that fingerprint -- so the gate keeps its full meaning and
+merely stops being unpassable for the run that wrote it.
 
 Determinism WITHIN a placement is unaffected and still holds -- not
 because anything here protects it, but because nothing here touches the
-machinery that provides it.  Across a placement boundary nothing is
-promised at all.  :class:`Placement` and :class:`RelocationSegment` are
-therefore internal bookkeeping: they record what happened for receipts
-and diagnostics, and they are NOT a reproducibility contract.  See
-``docs/nest-relocation-identity-decision.md``.
+machinery that provides it.  :class:`Placement` and
+:class:`RelocationSegment` still record what happened for receipts and
+diagnostics, but the record digests they carry are what the resume
+replays, so a lenient reader of one is a correctness defect and not a
+cosmetic one.  See ``docs/nest-relocation-identity-decision.md``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -81,13 +94,25 @@ import numpy as np
 #: Versioned label for the relocation receipt, hashed into segment ids.
 RELOCATION_CONTRACT = "gpuwm-nest-relocation.v1"
 
-#: The ruled posture, spelled once so every receipt that has to state it
+#: The posture, spelled once so every receipt that has to state it
 #: states the same words.  Stamped into checkpoint headers written after a
 #: move and surfaced by any restore that reads one.
+#:
+#: It used to say a restart across a move promised NOTHING -- "a pure
+#: efficiency experiment, never certified, never comparable to an
+#: unbroken run" (Drew, 2026-08-06) -- and the resume was gated behind
+#: --allow-restart-across-move on the strength of it.  That was true of
+#: the machinery as it stood: three things a resume needs were not
+#: carried.  All three are now (the placement and the tracker's
+#: hysteresis in the relocation header, the acoustic Omega in
+#: CHECKPOINT_ONLY_STATE, the consultation window in
+#: restart.CARRIED_SCRATCH_SLOTS), the resume is bit-for-bit against the
+#: unbroken run, and the gate is gone.  What remains is a statement of
+#: what the checkpoint IS, which a header should carry anyway.
 RESTART_ACROSS_MOVE_POSTURE = (
-    "TOLERATED_EXPERIMENT: a restart across a nest relocation promises "
-    "nothing (Drew, 2026-08-06) -- it is a pure efficiency experiment, "
-    "never certified, never comparable to an unbroken run")
+    "this checkpoint was written after a nest relocation; its identity is "
+    "chained to the move history, so it resumes only into the run that "
+    "wrote it -- and it reproduces that run bit for bit")
 
 #: Placement is Layer 2 of the three-layer identity.  These are the
 #: :class:`gpuwm.experiment.DomainConfig` fields it owns, and therefore the
@@ -200,12 +225,13 @@ def placement_independent_identity(domain_config) -> dict[str, object]:
     the same grid, physics and timestep, and differ at most in where the
     child sits inside its parent.
 
-    NOTHING IN THE TREE CONSUMES THIS, and under the 2026-08-06 ruling
-    nothing needs to: a restart across a move promises nothing, so there
-    is no resume path that has to be taught to see past the placement.
-    The prepared-cache key and the tree restart fingerprint still bind the
-    placement and still invalidate on a move, which is now the intended
-    behaviour rather than a blocker.  This function exists for
+    NOTHING IN THE TREE CONSUMES THIS, and nothing needs to even now that
+    a moved checkpoint resumes.  The resume does not see PAST the
+    placement; it replays the move chain back into the fingerprint, which
+    reaches the same value by the same route the run took.  So the
+    prepared-cache key and the tree restart fingerprint still bind the
+    placement and still invalidate against a fresh build, which is the
+    intended behaviour rather than a blocker.  This function exists for
     comparability questions and for the segment bookkeeping below -- "are
     these two configs the same domain in different places?" -- not to
     relax a refusal.  See ``docs/nest-relocation-identity-decision.md``.
@@ -243,12 +269,14 @@ SEGMENT_JSON_KEYS = ("contract", "base_identity_sha256", "segment_id",
 class RelocationRecord:
     """One accepted move, recorded for the receipt.
 
-    BOOKKEEPING, NOT A CONTRACT.  A record names its predecessor's digest
-    so a sequence of moves reads as an ordered history rather than a set,
-    which is what makes a receipt legible after the fact.  It is not a
-    replay guarantee: a restart across a move promises nothing
-    (2026-08-06 ruling), and no code may treat the presence of a chain as
-    permission to resume across one.
+    A record names its predecessor's digest so a sequence of moves reads
+    as an ordered history rather than a set, which is what makes a
+    receipt legible after the fact -- and, since the resume became exact,
+    what a restore replays to rebuild the fingerprint the run had.  The
+    PRESENCE of a chain is still not permission to resume: what permits
+    it is replaying these digests, in this order, onto this build's own
+    fingerprint and arriving at the checkpoint's value.  A different
+    config still mismatches, because the base of the chain differs.
     """
 
     placement_from: Placement
@@ -352,12 +380,12 @@ class RelocationSegment:
     every move, so a receipt can name the exact placement history a state
     came out of.
 
-    BOOKKEEPING, NOT A CONTRACT.  This addresses a history; it does not
-    promise one can be replayed.  Under the 2026-08-06 ruling a restart
-    across a move promises nothing, so nothing may read a matching
-    ``segment_id`` as licence to resume across a placement boundary.  What
-    it is for is receipts and diagnostics: knowing which moves produced
-    the state in front of you.
+    THE SEGMENT ID IS AN ADDRESS, NOT A LICENCE.  It names a history so
+    a receipt can say which moves produced the state in front of you.  A
+    resume across a placement boundary is permitted by replaying the
+    records' digests into the restart fingerprint and matching the
+    checkpoint's value, never by two ``segment_id`` strings comparing
+    equal -- so nothing may shortcut the replay by reading this field.
     """
 
     base_identity_sha256: str
@@ -719,6 +747,72 @@ def transplant_overlap(*, source_state, target_state, plan: RelocationPlan,
 #: independent check of the shift arithmetic (see module docstring).
 _DONOR_ALIGNMENT_FIELDS = ("pb", "alb", "thb", "phb", "mub2d")
 
+#: Environment switch for :func:`overlap_prognostic_mismatches`.  Off by
+#: default because the check walks every stamped field over the whole
+#: overlap, which is real work on a 2.6 M-cell child.
+_LOG = logging.getLogger("gpuwm.nest_relocation")
+
+RELOCATION_PROBE_ENV = "GPUWM_RELOC_PROBE"
+
+
+def relocation_probe_enabled() -> bool:
+    return os.environ.get(RELOCATION_PROBE_ENV, "").strip() not in ("", "0")
+
+
+def overlap_prognostic_mismatches(source_state, target_state, plan,
+                                  attrs=None) -> dict[str, object]:
+    """Per-field bitwise mismatch counts on the shared ground, PROGNOSTIC.
+
+    THE CLAIM NOTHING WAS CHECKING.  ``overlap_statics_mismatches``
+    asserts the rebuilt STATICS equal the outgoing child's, and
+    ``donor_alignment_check`` asserts the rebuilt BASE state does
+    (:data:`_DONOR_ALIGNMENT_FIELDS` is ``pb``/``alb``/``thb``/``phb``/
+    ``mub2d`` and nothing else).  Between them they cover everything
+    except the fields the forecast is actually made of -- and the
+    transplant's whole promise is that those arrive bitwise.
+
+    So this is the missing instrument, and it is deliberately usable at
+    TWO points: straight after :func:`transplant_overlap`, where a
+    nonzero count means the stamp itself is wrong, and again after the
+    initializer's ``post_transplant`` hook, where a count that was zero
+    and is now nonzero names a field that hook perturbed.  The pair is
+    the diagnosis; either alone is only half of it.
+
+    Returns the same shape as its statics sibling so a caller can log or
+    refuse on either identically.
+    """
+    attrs = relocatable_attrs() if attrs is None else tuple(attrs)
+    fields: dict[str, int] = {}
+    absent: list[str] = []
+    compared_cells = 0
+    for name in attrs:
+        source = getattr(source_state, name, None)
+        target = getattr(target_state, name, None)
+        if source is None or target is None:
+            if (source is None) != (target is None):
+                absent.append(name)
+            continue
+        source = np.asarray(_host(source))
+        target = np.asarray(_host(target))
+        if source.shape != target.shape:
+            fields[name] = max(int(source.size), int(target.size), 1)
+            continue
+        window = plan.window(source.shape)
+        if window is None:
+            continue
+        (dst_j, src_j), (dst_i, src_i) = window
+        actual = np.ascontiguousarray(target[..., dst_j, dst_i])
+        expected = np.ascontiguousarray(source[..., src_j, src_i])
+        fields[name] = _bit_mismatches(actual, expected)
+        compared_cells += int(actual.size)
+    return {
+        "fields": fields,
+        "absent_on_one_side": sorted(absent),
+        "compared_cells": int(compared_cells),
+        "mismatched_fields": {n: c for n, c in fields.items() if c},
+        "pass": bool(compared_cells) and not any(fields.values()),
+    }
+
 
 def _interior_window(window, shape, shift_j: int, shift_i: int,
                      frame_width: int):
@@ -999,7 +1093,10 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
                    scratch_arena=None, dycore_state_workspace=None,
                    state_digest=None, staging: str = "device",
                    on_before_release=None,
-                   static_provenance: str | None = None) -> dict[str, object]:
+                   static_provenance: str | None = None,
+                   reground_descendant=None,
+                   earth_fixed_descendants=frozenset()
+                   ) -> dict[str, object]:
     """Move a live child domain to a new placement, in place on the node.
 
     The three things this does, in the order they must happen:
@@ -1059,14 +1156,17 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     it is the ``on_child_built`` preparer's to carry.  The front-door
     route preparers (:class:`gpuwm.runtime.RealRelocationChildPreparer`
     and the prepared-tree subclass) DO carry it -- the land-surface
-    continuation fields by donor-filled transplant, and the registry-
+    continuation fields by donor-filled transplant, the registry-
     derived per-column driver state (KF timers/held rates, precipitation
-    accumulators, W0AVG) through :mod:`gpuwm.core.physics_continuation`
-    -- because a preparer that re-initialised it cold-restarted cumulus
-    on the whole child at every move (the 2026-08-16 moving-nest KF
-    artifact report).  A bespoke ``on_child_built`` that carries nothing
-    still gets a cold child, and its receipt says so
-    (``accumulators_reinitialized``).
+    accumulators, W0AVG) and the surface-radiation carriers with their
+    provenance ledger, both through
+    :mod:`gpuwm.core.physics_continuation` -- because a preparer that
+    re-initialised it cold-restarted cumulus on the whole child at every
+    move (the 2026-08-16 moving-nest KF artifact report) and left the
+    moved child with no producer for GLW between radiation calls (the
+    2026-08-24 node-2 campaign refusal).  A bespoke ``on_child_built``
+    that carries nothing still gets a cold child, and its receipt says
+    so (``accumulators_reinitialized``).
     """
     from gpuwm.ingest.nest_init import parent_only_init, seed_rk_time_t_copies
 
@@ -1086,13 +1186,30 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
         raise RelocationRefusal(
             "the root domain has no parent to be placed in; relocation "
             "applies to a child")
-    if getattr(child_node, "children", None):
+    if earth_fixed_descendants:
+        _fixed = frozenset(int(g) for g in earth_fixed_descendants)
+        _needs_reground = any(
+            int(node.cfg.grid_id) not in _fixed
+            for node, _di, _dj in descendant_regroundings(
+                child_node, 1, 1, earth_fixed=_fixed))
+    else:
+        _needs_reground = bool(getattr(child_node, "children", None))
+    if _needs_reground and reground_descendant is None:
         raise RelocationRefusal(
-            f"child d{child_node.cfg.grid_id:02d} has children of its own; "
-            "moving it would silently change the ground under every "
-            "grandchild while their placements and donor tables still "
-            "describe the old footprint.  Relocation moves a LEAF domain; "
-            "a moving mid-tree domain is unimplemented, not implied")
+            f"child d{child_node.cfg.grid_id:02d} has children of its own, "
+            "and no reground_descendant handler was supplied; moving it "
+            "would silently change the ground under every grandchild while "
+            "their statics still describe the old footprint.  A mid-tree "
+            "move is implemented (see descendant_regroundings / "
+            "plan_descendant_reground) but it needs the ROUTE to rebuild "
+            "each descendant's statics for its new ground, which is why "
+            "the handler is the seam and not a flag: a route with no "
+            "statics source for the descendants cannot honour it.  On the "
+            "prepared routes that means a statics corridor for every "
+            "descendant of the mover, not just the mover.  (A descendant "
+            "named in earth_fixed_descendants is exempt: it compensates "
+            "the move instead of riding along, so its ground does not "
+            "change.)")
     if child_node.coupler is None:
         raise RelocationRefusal(
             f"child d{child_node.cfg.grid_id:02d} has no coupler; a domain "
@@ -1192,6 +1309,14 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     transplant = transplant_overlap(
         source_state=source_state, target_state=initialized.state,
         plan=plan)
+    # THE PROBE, in two halves (see overlap_prognostic_mismatches): the
+    # stamp on its own, then the same check after the hook below.  A
+    # field that is clean here and dirty there was perturbed by the hook,
+    # which is the distinction no receipt could previously draw.
+    probe = None
+    if relocation_probe_enabled():
+        probe = {"after_transplant": overlap_prognostic_mismatches(
+            source_state, initialized.state, plan)}
     # The initializer's post-transplant hook: the real-data route rebases
     # blend-frame perturbations onto the rebuilt base so totals survive
     # exactly where the base bytes differ, then re-derives the EOS
@@ -1203,6 +1328,11 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
         post_receipt = post_transplant(
             source_state=source_state, target_state=initialized.state,
             plan=plan)
+    if probe is not None:
+        probe["after_post_transplant"] = overlap_prognostic_mismatches(
+            source_state, initialized.state, plan)
+        _LOG.warning("relocation probe d%02d: %s",
+                     int(new_dc.grid_id), json.dumps(probe, default=str))
     used_after_rebuild = _device_used_bytes()
     staging_receipt: dict[str, object] = {
         "mode": staging,
@@ -1247,6 +1377,98 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     child_node.state._nest_restart_classification = "REBUILT"
     coupler_receipt = child_node.coupler.relocate()
 
+    # ---- the subtree: the ground moved under every descendant ----------
+    # Ordered parent-first (descendant_regroundings appends before it
+    # recurses), because a descendant is rebuilt by SINT of its PARENT and
+    # the parent must already be standing on its new ground.  The mover is
+    # committed at this point, so a descendant failure is the same class of
+    # unrecoverable-after-release failure the host staging path already
+    # documents -- it is not made recoverable by pretending otherwise.
+    descendant_receipts: list[dict[str, object]] = []
+    earth_fixed_descendants = frozenset(
+        int(g) for g in (earth_fixed_descendants or ()))
+    if reground_descendant is not None or earth_fixed_descendants:
+        move_i = (int(placement_to.i_parent_start)
+                  - int(placement_from.i_parent_start))
+        move_j = (int(placement_to.j_parent_start)
+                  - int(placement_from.j_parent_start))
+        for node, delta_i, delta_j in descendant_regroundings(
+                child_node, move_i, move_j,
+                earth_fixed=earth_fixed_descendants):
+            if int(node.cfg.grid_id) in earth_fixed_descendants:
+                # COMPENSATED ride-along: this descendant is a mover in
+                # its own right, so instead of dragging it across the
+                # earth by the ancestor's displacement and transplanting
+                # its whole state, its PLACEMENT moves by -delta and its
+                # earth position does not move at all.  The integer-cell
+                # transplant above resampled the parent's statics at the
+                # same earth points, so every input this descendant reads
+                # (blend-frame terrain included) is bitwise what it was
+                # -- the state is carried untouched, and only the donor
+                # geometry (coupler.relocate) and the rolling boundary
+                # tables (invalidated by it) change.
+                from dataclasses import replace as _replace
+
+                comp = _replace(
+                    node.cfg,
+                    i_parent_start=int(node.cfg.i_parent_start) - delta_i,
+                    j_parent_start=int(node.cfg.j_parent_start) - delta_j)
+                if comp.i_parent_start < 1 or comp.j_parent_start < 1:
+                    raise RelocationRefusal(
+                        f"earth-fixed descendant d{comp.grid_id:02d} "
+                        f"compensation ({-delta_i},{-delta_j}) leaves its "
+                        "parent's 1-based frame; the mover's shift must "
+                        "be clamped by its earth-fixed descendants' "
+                        "admissible band before commitment")
+                _prevalidate_placement(comp, child_node)
+                placement_pair = (
+                    [int(node.cfg.i_parent_start),
+                     int(node.cfg.j_parent_start)],
+                    [int(comp.i_parent_start), int(comp.j_parent_start)])
+                node.cfg = comp
+                node.state._nest_restart_classification = "REBUILT"
+                descendant_receipts.append({
+                    "grid_id": int(node.cfg.grid_id),
+                    "parent_id": int(node.cfg.parent_id),
+                    "delta_parent_cells": [int(delta_i), int(delta_j)],
+                    "earth_fixed": True,
+                    "placement_from": placement_pair[0],
+                    "placement_to": placement_pair[1],
+                    "state_carried_bitwise": True,
+                    "coupler": node.coupler.relocate(),
+                })
+                continue
+            dplan = plan_descendant_reground(
+                node.cfg, delta_i, delta_j,
+                generation=placement_from.generation)
+            if dplan.disjoint:
+                raise RelocationRefusal(
+                    f"the move carries descendant "
+                    f"d{int(node.cfg.grid_id):02d} entirely off its own "
+                    f"old ground (shift {dplan.shift_i},{dplan.shift_j} "
+                    f"cells of a {dplan.child_cells}-cell domain); nothing "
+                    "it integrated would survive, which is a new domain "
+                    "rather than a move.  Reduce max_move_parent_cells or "
+                    "raise min_overlap_fraction so the mover's step stays "
+                    "inside the FINEST descendant's overlap, not just its "
+                    "own -- the same move is a larger fraction of a finer "
+                    "domain.")
+            receipt = reground_descendant(
+                node=node, plan=dplan,
+                delta_parent_cells=(int(delta_i), int(delta_j)))
+            # The descendant's placement never changed, so its donor
+            # tables are still valid -- but its parent's state OBJECT was
+            # replaced above, so the coupler edge has to be re-seated.
+            node.state._nest_restart_classification = "REBUILT"
+            descendant_receipts.append({
+                "grid_id": int(node.cfg.grid_id),
+                "parent_id": int(node.cfg.parent_id),
+                "delta_parent_cells": [int(delta_i), int(delta_j)],
+                "plan": dplan.to_json(),
+                "coupler": node.coupler.relocate(),
+                "reground": receipt,
+            })
+
     record = RelocationRecord(
         placement_from=placement_from, placement_to=placement_to,
         parent_grid_ratio=int(old_dc.parent_grid_ratio),
@@ -1275,6 +1497,11 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
             "post_transplant": post_receipt,
         },
         "coupler": coupler_receipt,
+        "prognostic_overlap_probe": probe,
+        # Absent on a leaf move, so a leaf receipt is byte-identical to
+        # what it was before mid-tree moves existed.
+        **({"descendants": descendant_receipts}
+           if descendant_receipts else {}),
         "transplant": transplant,
         "rk_seeds_refreshed": list(seeded),
         "donor_alignment": alignment,
@@ -1290,6 +1517,106 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
         "segment_state": segment,
         "record_sha256": segment.records[-1].sha256,
     }
+
+
+def descendant_regroundings(moving_node, shift_i: int, shift_j: int,
+                            *, earth_fixed=frozenset()
+                            ) -> list[tuple[object, int, int]]:
+    """``(node, delta_i, delta_j)`` for every descendant of a mover.
+
+    WHAT A DESCENDANT EXPERIENCES.  When a mid-tree domain relocates, its
+    children do NOT change placement -- a child's ``i_parent_start`` is an
+    offset inside its parent, and the parent carried it along -- but the
+    GROUND under them moved by exactly the parent's displacement.  So a
+    descendant needs the same treatment the mover needs (statics rebuilt
+    for the new ground, overlap transplanted, fresh strip filled from its
+    parent) and none of the placement arithmetic.
+
+    THE ARITHMETIC, AND WHY IT STAYS EXACT.  ``shift_i`` is the mover's
+    placement change in ITS parent's cells.  Descending one level
+    multiplies the displacement by that level's refinement ratio, so a
+    move of ``di`` cells of the mover's parent is::
+
+        mover's own cells        di * r_mover
+        a child of the mover     di * r_mover * r_child
+        a grandchild             di * r_mover * r_child * r_grandchild
+
+    Every factor is an integer, so every descendant's displacement is a
+    WHOLE number of its own cells -- which is the property the whole
+    design rests on (a pure index-space copy, and SINT statics that are
+    bitwise identical on the overlap).  A moving mid-tree domain is
+    therefore not a weaker operation than a moving leaf; it is the same
+    operation applied down a chain of exact integer ratios.
+
+    The returned delta is expressed in each descendant's OWN PARENT's
+    cells, which is the frame :func:`plan_relocation` wants, so
+    :func:`plan_descendant_reground` can hand it straight over.
+
+    ``earth_fixed`` names descendants that COMPENSATE instead of riding
+    along: their placement moves by ``-delta`` so their earth position
+    does not move at all.  The walk does not descend past one -- its own
+    subtree experiences zero net ground displacement (the ancestor's
+    displacement and the compensation cancel exactly, both being whole
+    numbers of the same cells), so there is nothing to re-ground below
+    it.  A grandchild of the mover whose parent rides along still gets
+    its row.
+    """
+    earth_fixed = frozenset(int(g) for g in (earth_fixed or ()))
+    out: list[tuple[object, int, int]] = []
+
+    def walk(node, cum: int) -> None:
+        for child in (getattr(node, "children", None) or ()):
+            out.append((child, int(shift_i) * cum, int(shift_j) * cum))
+            if int(child.cfg.grid_id) in earth_fixed:
+                continue
+            walk(child, cum * int(child.cfg.parent_grid_ratio))
+
+    walk(moving_node, int(moving_node.cfg.parent_grid_ratio))
+    return out
+
+
+def plan_descendant_reground(child_dc, delta_i: int, delta_j: int,
+                             *, generation: int = 0) -> "RelocationPlan":
+    """The overlap plan for a descendant whose GROUND moved under it.
+
+    BOTH placements handed to :func:`plan_relocation` are synthetic.  The
+    descendant's placement never changed, so there is no real pair to
+    give; what the transplant needs is only their DIFFERENCE, which is
+    the ground displacement in the descendant's parent's cells.
+
+    They are also BIASED to stay >= 1.  ``Placement`` enforces 1-based
+    WRF namelist semantics, and a westward/southward move of a
+    descendant already near its parent's low edge drives a naive
+    ``i_parent_start - delta`` negative -- which refused a move that is
+    perfectly admissible.  Adding the same offset to both sides leaves
+    the difference, and therefore the plan, untouched.
+
+    So the placements inside the returned plan are an artefact of reusing
+    the planner and are NOT a record of where anything sits; the honest
+    record is ``delta_parent_cells`` on the relocation receipt.
+
+    Reusing the same planner rather than writing a second one is
+    deliberate: the disjoint test, the overlap-cell count and the index
+    arithmetic the leaf path is asserted against are the ones a
+    descendant gets too.
+    """
+    ref_i, ref_j = int(child_dc.i_parent_start), int(child_dc.j_parent_start)
+    di, dj = int(delta_i), int(delta_j)
+    bias_i = max(0, 1 - min(ref_i, ref_i + di))
+    bias_j = max(0, 1 - min(ref_j, ref_j + dj))
+    return plan_relocation(
+        placement_from=Placement(
+            grid_id=int(child_dc.grid_id),
+            i_parent_start=ref_i + bias_i,
+            j_parent_start=ref_j + bias_j,
+            generation=int(generation)),
+        placement_to=Placement(
+            grid_id=int(child_dc.grid_id),
+            i_parent_start=ref_i + bias_i + di,
+            j_parent_start=ref_j + bias_j + dj,
+            generation=int(generation) + 1),
+        parent_grid_ratio=int(child_dc.parent_grid_ratio),
+        child_nx=int(child_dc.run.nx), child_ny=int(child_dc.run.ny))
 
 
 def mark_fingerprint_across_move(fingerprint: str,

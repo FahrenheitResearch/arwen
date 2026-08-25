@@ -2954,3 +2954,129 @@ def test_the_real_command_exits_nonzero_with_failed_as_its_last_line(
     assert events[-1]["error_class"]
     assert events[-1]["message"]
     assert read_events(run_dir / EVENTS_FILENAME) == events
+
+
+# ---------------------------------------------------------------------------
+# A config.path that is not on disk
+# ---------------------------------------------------------------------------
+
+
+def _absent_config_plan(tmp_path) -> tuple[Path, Path]:
+    """A plan naming a config that was never written, and that path."""
+
+    absent = tmp_path / "nowhere" / "case.toml"
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps({
+        "schema": PLAN_SCHEMA, "name": "absent-config",
+        "route": "experiment", "config": {"path": str(absent)},
+        "output_root": str(tmp_path / "run")}), encoding="utf-8")
+    return path, absent
+
+
+def test_an_unreadable_config_path_refuses_at_the_read_seam(tmp_path):
+    """PlanError is a ValueError, which is what exits 2 rather than crashing.
+
+    The class is the mechanism the two subprocess tests below measure;
+    asserting it here is what points a failure at this seam instead of
+    at the front door.
+    """
+
+    plan_path, _absent = _absent_config_plan(tmp_path)
+    with pytest.raises(PlanError) as refusal:
+        load_plan(plan_path).config_bytes()
+    assert "config.path" in str(refusal.value)
+
+
+def test_the_query_doors_refuse_an_absent_config_at_exit_2(tmp_path):
+    """The estimate door's exit code, and the door beside it.
+
+    ``config.path`` is read before anything else and the read had
+    nothing between it and the terminal: ``--estimate`` and
+    ``--resolve`` printed a bare FileNotFoundError traceback at exit 1,
+    where every other plan defect on this door is one sentence at exit
+    2.  A front end driving the estimate strip got a crash it could not
+    tell apart from a broken install.
+    """
+
+    from gpuwm.explain import EXPLAIN_MARK
+
+    plan_path, absent = _absent_config_plan(tmp_path)
+    for mode in ("--estimate", "--resolve"):
+        result = _cli(mode, str(plan_path), cwd=tmp_path)
+
+        assert result.returncode == 2, result.stderr
+        assert "Traceback" not in result.stderr
+        # The missing path, the plan key that named it, and the remedy.
+        assert str(absent) in result.stderr
+        assert "config.path" in result.stderr
+        assert "config.inline" in result.stderr
+        assert EXPLAIN_MARK.strip() not in result.stderr
+        # stdout is the machine channel: a refused query prints no
+        # document rather than a partial one.
+        assert result.stdout == ""
+
+
+def test_the_execution_road_calls_an_absent_config_a_plan_defect(tmp_path):
+    """Same input, the road that runs.
+
+    This one never crashed -- the event boundary catches everything --
+    but it classed the failure ``FileNotFoundError``, whose remedy sends
+    the reader to `gpuwm check CONFIG` for a declared [case_data] input.
+    The file that is absent is the config itself, and that remedy has
+    nothing to say about it.
+    """
+
+    plan_path, absent = _absent_config_plan(tmp_path)
+    result = _cli(str(plan_path), cwd=tmp_path)
+
+    assert result.returncode == 1
+    events = [json.loads(line) for line in result.stdout.splitlines()
+              if line.strip()]
+    assert events[-1]["event"] == "failed"
+    assert events[-1]["error_class"] == "PlanError"
+    assert "fix the plan document" in events[-1]["remedy"]
+    assert str(absent) in events[-1]["message"]
+
+
+# ---------------------------------------------------------------------------
+# `--cycle latest` through the intent door
+# ---------------------------------------------------------------------------
+
+
+def test_an_intent_resolves_latest_for_a_reanalysis_through_the_real_door(
+        tmp_path):
+    """Studio drives this exact shape, and it used to be a refusal.
+
+    ``run-plan --resolve`` on an era5 intent carrying ``cycle:
+    "latest"`` exited 2 with "--cycle latest is only meaningful for
+    gfs/gdas/hrrr; ERA5 is a reanalysis published with a delay of
+    several days" -- a sentence about a delay, offered instead of the
+    time that delay defines.  No network: the CDS publishes no object to
+    probe, so the answer comes from the declared publication delay.
+    """
+
+    from datetime import datetime, timedelta, timezone
+
+    plan_path = _intent_plan(tmp_path, tmp_path / "run", cycle="latest")
+    result = _cli("--resolve", str(plan_path), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    document = json.loads(result.stdout)
+    resolved = [entry for entry in document["automatic_resolutions"]
+                if entry["key"] == "cycle"]
+    assert resolved, "the resolved cycle is not reported"
+    assert resolved[0]["basis"] == "resolved_latest"
+    # The literal query is never what runs: the concrete cycle is.
+    assert resolved[0]["value"] != "latest"
+    cycle = datetime.strptime(resolved[0]["value"], "%Y-%m-%dT%H")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Behind real time by the delay the registry row declares, and on
+    # the analysis grid it declares, rather than at an arbitrary hour.
+    assert cycle < now - timedelta(days=4)
+    assert cycle.hour in (0, 6, 12, 18)
+    # The note says which mechanism answered, because a reader told
+    # "probed the mirrors" would go looking for a network step that
+    # never happened.
+    assert "declared publication delay" in resolved[0]["note"]
+    # And the plan the wizard wrote starts AT that cycle.
+    assert cycle.strftime("%Y-%m-%dT%H") in document["generated_config"]

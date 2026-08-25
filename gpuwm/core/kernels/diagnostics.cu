@@ -32,6 +32,14 @@
 // dry-mass field (a broadcast scalar when flat).  qv is read only when
 // moist = 1 (dry launches pass a dummy pointer).  c3h/c4h/c3f/c4f and
 // p_top are read only when hypso = 2 (opt-1 launches may pass zeros).
+//
+// (j0, i0, nyw, nxw) restrict the launch to a column WINDOW.  The kernel
+// is column-local -- each thread reads and writes only its own (j, i) --
+// so a windowed launch is bitwise the full launch on the window and a
+// no-op off it.  The full-domain call passes (0, 0, ny, nx), for which
+// the (j, i) decode below is arithmetic-identical to the pre-window
+// `j = col / nx` form.  The consumer is the two-way-feedback finalize,
+// which re-diagnoses only the parent columns the restriction touched.
 
 extern "C" __global__
 void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
@@ -51,14 +59,15 @@ void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
                   const real* __restrict__ qv,    // (nz, ny, nx) vapor (moist)
                   real p_top, int hypso,
                   int moist, int base3d, int nz, int ny, int nx,
+                  int j0, int i0, int nyw, int nxw,
                   real* __restrict__ p,           // (nz, ny, nx) full pressure
                   real* __restrict__ al,          // (nz, ny, nx) alpha'
                   real* __restrict__ alt)         // (nz, ny, nx) total alpha
 {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
-    if (col >= ny * nx) return;
-    int j = col / nx;
-    int i = col - j * nx;
+    if (col >= nyw * nxw) return;
+    int j = j0 + col / nxw;
+    int i = i0 + (col - (col / nxw) * nxw);
 
     // Base-profile indexing: level stride and column offset collapse to
     // (1, 0) for flat 1-D columns.

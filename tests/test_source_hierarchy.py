@@ -213,10 +213,15 @@ def test_regular_source_hierarchy_accepts_branched_d06_parent_order(
     ] == [0, 1, 2, 2, 3, 4]
 
 
-def test_regular_source_hierarchy_rejects_two_way_or_parent_cycle_before_work(
+def test_regular_source_hierarchy_accepts_two_way_and_rejects_cycles(
         tmp_path, monkeypatch):
-    with pytest.raises(ValueError, match="feedback=0"):
-        _call(tmp_path, monkeypatch, feedback=1)
+    """feedback=1 authors the same artifacts (the old refusal is lifted:
+    coupling is runtime behaviour with no ingest footprint); a malformed
+    value and a parent cycle still refuse before any static work."""
+    result, observed = _call(tmp_path, monkeypatch, feedback=1)
+    assert result.hierarchy == "native-result"
+    with pytest.raises(ValueError, match="feedback must be 0 or 1"):
+        _call(tmp_path, monkeypatch, feedback=2)
     with pytest.raises(ValueError, match="must precede"):
         _call(
             tmp_path,
@@ -389,8 +394,15 @@ def test_regular_source_hierarchy_emits_corridors_only_on_opt_in(
 
     calls = []
 
-    def fake_build(*, child_dc, parent_run, reference_grid, static_catalog):
+    def fake_build(*, child_dc, parent_run, reference_grid, static_catalog,
+                   frame_kwargs):
         assert static_catalog.files == ("wps", "geog")
+        # A tree with no mover anchors every corridor to the child's own
+        # parent, which is what {} means -- so the geometry, the receipt
+        # and the sealed bytes are what they were before mid-tree moves
+        # existed.  This is the regression that catches a frame chosen
+        # two ways.
+        assert frame_kwargs == {}
         calls.append((int(child_dc.grid_id), int(parent_run.nx),
                       reference_grid.name))
         return SimpleNamespace(grid_id=int(child_dc.grid_id), fields={},

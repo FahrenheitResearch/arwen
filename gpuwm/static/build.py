@@ -1084,7 +1084,34 @@ class _DomainSampler:
         for j0 in range(0, nyw, chunk):
             j1 = min(j0 + chunk, nyw)
             yy = win.y0 + np.arange(j0, j1, dtype=np.float64)
-            lat, lon = ds.xy_to_latlon(xs_abs[None, :], yy[:, None])
+            # CANONICAL SOURCE INDEX, or the same physical pixel bins
+            # differently depending on which window read it.
+            #
+            # `window` unwraps x by +nx_global for a domain that straddles
+            # the antimeridian, so a pixel arrives here as x + nx_global
+            # while a domain that does not straddle reads the very same
+            # ground at x.  `xy_to_latlon` is affine in the index, so those
+            # two produce longitudes that differ by ~1e-13 -- the same
+            # ground, rounded differently -- and a pixel column sitting on
+            # a destination cell boundary then NINTs into a different cell
+            # on one branch than on the other.  Folding the LONGITUDE is
+            # not enough: the two indices have already rounded apart by
+            # then.  The index is what has to be canonical.
+            #
+            # MEASURED on a 27/9/3 km Pacific tree whose d01 crosses the
+            # dateline: the parent-extent statics corridor and the d02
+            # footprint build disagreed on the pixel count of six whole
+            # destination columns (100 vs 110 source pixels), moving
+            # LANDUSEF/SOILCTOP/SOILCBOT by one float32 ULP.  A corridor
+            # crop and a direct build are compared in exactly one place --
+            # the first move's overlap-statics equality -- so that is what
+            # this guards.  It is NOT what caused the mid-run refusals;
+            # see the attribution note in `cell_coords`.
+            xs_use = xs_abs
+            if getattr(ds, "wraps_x", False):
+                nxg = int(ds.nx_global)
+                xs_use = np.where(xs_abs > nxg, xs_abs - nxg, xs_abs)
+            lat, lon = ds.xy_to_latlon(xs_use[None, :], yy[:, None])
             # The accumulation path was already oracle-matched in float64;
             # only target-point stencil selection needs WPS's real precision.
             gx, gy = self.grid.latlon_to_ij(lat, lon)
@@ -1133,6 +1160,9 @@ class _DomainSampler:
             out[~active] = fill
         todo = np.isnan(out) & active
         if todo.any():
+            # cell_coords speaks DATASET coordinates now (upstream
+            # 2.5.2 removed the lossy window round trip outright,
+            # which supersedes the local unwrap_to_window flag).
             xi, yi = self.cell_coords(ds, win)
             out[todo] = self._interp_tile_sequence(
                 ds, z, xi[todo], yi[todo], seq)

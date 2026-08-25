@@ -508,20 +508,22 @@ def test_feedback_zero_output_is_pinned_and_costs_nothing(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# V-6: feedback = 1 is a legal config value that one whole route cannot
-# prepare -- say so before the 26-second build, not after
+# V-6: feedback = 1 is a legal config value with real preconditions --
+# say what they are before the 26-second build, not after
 # ---------------------------------------------------------------------------
 
 
-def test_check_advises_on_two_way_before_the_route_refuses_it():
+def test_check_advises_on_two_way_before_the_tree_refuses_it():
     """`gpuwm check` passed feedback=1 in silence, identically to fb0.
 
     A node-7 validation run authored a matched A/B pair differing only
     in the feedback value, ran `gpuwm check` on the two-way half, got a
     clean PASS and exit 0, and learned only at prepare -- after a 26 s
-    hierarchy build -- that the prepared-hierarchy route refuses two-way
-    nesting outright.  The gate is right; the silence upstream of it was
-    not.  This is an advisory and changes no exit code.
+    hierarchy build -- that the prepared-hierarchy route refused two-way
+    nesting outright.  That ROUTE refusal is now lifted; the advisory
+    survives because what still refuses is the TREE, and the coupler's
+    three named preconditions are exactly what an author needs before
+    paying for the ingest.  This is an advisory and changes no exit code.
     """
 
     from types import SimpleNamespace
@@ -533,28 +535,46 @@ def test_check_advises_on_two_way_before_the_route_refuses_it():
     assert feedback_advisory(SimpleNamespace(feedback=0)) is None
     assert feedback_advisory(SimpleNamespace(feedback=1)) \
         == FEEDBACK_TWO_WAY_ADVISORY
-    # It names the route that CAN run it and the route that cannot.
+    # Both routes run it, so neither may be named as the one that cannot.
     assert "gpuwm run" in FEEDBACK_TWO_WAY_ADVISORY
-    assert "refuses it at preparation" in FEEDBACK_TWO_WAY_ADVISORY
+    assert "BOTH routes" in FEEDBACK_TWO_WAY_ADVISORY
+    assert "refuses it at preparation" not in FEEDBACK_TWO_WAY_ADVISORY
     assert "experimental" in FEEDBACK_TWO_WAY_ADVISORY
+    # ...and it names all three shapes the coupler refuses at build,
+    # which are the reasons a legal feedback = 1 config still stops.
+    for precondition in ("vertical level counts", "microphysics",
+                         "field inventories"):
+        assert precondition in FEEDBACK_TWO_WAY_ADVISORY
 
 
-def test_the_hierarchy_refusal_names_where_two_way_is_supported():
-    """A refusal that names no alternative reads as a dead end."""
+def test_the_hierarchy_stamps_the_experiments_own_feedback():
+    """The authoring refusal is LIFTED: artifacts are coupling-agnostic.
+
+    An initial state, sealed statics and a boundary series are
+    byte-identical however the tree couples at run time, so the topology
+    now stamps the experiment's feedback setting instead of refusing
+    everything but 0.  What remains refused is an out-of-range value.
+    """
 
     import pytest
 
-    from gpuwm.source_hierarchy import _validated_static_one_way_topology
-
     from types import SimpleNamespace
 
-    domains = (SimpleNamespace(grid_id=1), SimpleNamespace(grid_id=2))
-    experiment = SimpleNamespace(feedback=1, domains=domains)
+    from gpuwm.source_hierarchy import _validated_static_one_way_topology
 
-    with pytest.raises(ValueError) as caught:
+    parent = _domain(1, 0, nx=9, ny=9)
+    child = _domain(2, 1, nx=9, ny=9, ratio=3)
+    for feedback in (0, 1):
+        experiment = SimpleNamespace(
+            feedback=feedback, domains=(parent, child),
+            start_time=datetime(2026, 1, 1))
+        topology = _validated_static_one_way_topology(
+            experiment, grids=(object(), object()))
+        assert topology["feedback"] == feedback
+        assert topology["status"] == "PASS"
+    experiment = SimpleNamespace(
+        feedback=3, domains=(parent, child),
+        start_time=datetime(2026, 1, 1))
+    with pytest.raises(ValueError, match="feedback must be 0 or 1"):
         _validated_static_one_way_topology(
             experiment, grids=(object(), object()))
-    message = str(caught.value)
-    assert "feedback=0" in message
-    assert "gpuwm run" in message
-    assert "not available through a prepared hierarchy" in message

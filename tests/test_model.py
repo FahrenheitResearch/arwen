@@ -21,8 +21,20 @@ from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
 
 
 class _Coupler:
-    def __init__(self, child):
+    """Stands in for ``gpuwm.core.nest.NestCoupler``.
+
+    The keyword-only pair mirrors that constructor and must keep
+    mirroring it.  A double whose signature is narrower than its
+    collaborator's turns a widened production call into a TypeError
+    raised from inside the double, which reads as a defect in the code
+    under test rather than as the stale fixture it is.  Both values are
+    held so a caller can be asserted to have passed them on.
+    """
+
+    def __init__(self, child, *, feedback: int = 0, smooth_option: int = 0):
         self.child = child
+        self.feedback = int(feedback)
+        self.smooth_option = int(smooth_option)
         self.valid = False
         self.calls = []
 

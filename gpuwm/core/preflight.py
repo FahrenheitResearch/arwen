@@ -414,17 +414,31 @@ _WINDOWS_PLATFORM_NAMES = ("cygwin",)
 #: `feedback = 1` is a legal schema value, so a node-7 validation run
 #: authored one, got a clean PASS and exit 0 here -- output identical to
 #: the feedback=0 twin -- and discovered only at prepare, after a 26 s
-#: hierarchy build, that the prepared-hierarchy route refuses two-way
-#: nesting outright.  The refusal is correct and stays exactly as it is;
-#: what misled was the silence upstream of it.  This is an advisory, not
-#: a gate: it changes no exit code and blocks nothing.
+#: hierarchy build, that the prepared-hierarchy route refused two-way
+#: nesting outright.  THAT ROUTE REFUSAL IS LIFTED and this text moved
+#: with it: the prepared executor now passes
+#: ``skip_feedback_path=(feedback == 0)``
+#: (gpuwm/prepared_domain_tree_forecast.py:2203) and the hierarchy
+#: stamps the experiment's own setting instead of refusing everything
+#: but 0 (gpuwm/source_hierarchy.py:129).  A wizard-built three-domain
+#: tree taken through the shipped front doors on real forcing recorded
+#: 640 feedback transactions against 0 on the arm that differed only in
+#: the two [experiment] keys.  What survives is the experimental stamp
+#: and the three shapes the coupler refuses BY NAME when it is built
+#: (gpuwm/core/nest.py:232-249) -- those are what a two-way author needs
+#: before the ingest rather than after it.  This is an advisory, not a
+#: gate: it changes no exit code and blocks nothing.
 FEEDBACK_TWO_WAY_ADVISORY = (
     "experimental: feedback = 1 selects two-way nest feedback, which is "
-    "stamped experimental and runs on the native experiment-runner route "
-    "(`gpuwm run`) only.  The prepared-hierarchy route -- `rw-wps` "
-    "preparation followed by the domain-tree runner -- refuses it at "
-    "preparation, so a config carrying feedback = 1 cannot be prepared "
-    "there no matter what this preflight reports."
+    "stamped experimental and runs on BOTH routes -- the native "
+    "experiment-runner route (`gpuwm run`) and the prepared-hierarchy "
+    "route, `rw-wps` preparation followed by the domain-tree runner.  "
+    "What refuses is not the route but the tree: the nest coupler names "
+    "three shapes it cannot feed back when it is built -- unequal "
+    "parent/child vertical level counts, mixed parent/child "
+    "microphysics, and mismatched active prognostic field inventories.  "
+    "A tree clear of those three runs two-way wherever it is launched; "
+    "feedback = 0 output is unchanged either way."
 )
 
 

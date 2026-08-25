@@ -38,6 +38,7 @@ summation paths round like the FP64 mirrors (plan Task 10).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -712,6 +713,82 @@ def copy_fcni(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
         raise TypeError("copy_fcni operates on INTEGER (int32) fields")
     if count > 0:
         _launch(_kernel("nest_copy_fcni"), count, (c3, n3, *args))
+    return cfld
+
+
+#: ``smdsm``'s smoother/de-smoother pair, ``xnu = (/ 0.50 , -0.52 /)``
+#: (interp_fcn.F:3976).  The odd pass smooths, the even pass de-smooths.
+SMDSM_XNU = (np.float32(0.50), np.float32(-0.52))
+
+
+def smoother_parent_window(reg: NestRegistration
+                           ) -> tuple[int, int, int, int]:
+    """The 0-based parent window WRF's feedback smoothers filter.
+
+    ``[pos+2, pos+span-2-stag]`` per axis in 1-based domain cells
+    (interp_fcn.F:3918-3921 / :3993-3994), ``span = (n?de-n?ds)/nr?`` --
+    the nest's mass extent in parent cells, the same number for every
+    stagger -- and ``stag`` 0 on the field's staggered axis, 1 otherwise.
+    Returned as ``(i0, j0, niw, njw)``: 0-based low corner plus counts,
+    the launch shape rather than the Fortran bounds.  A count can be
+    ``<= 0`` on a tiny nest, which is WRF's zero-trip DO loop: nothing
+    is smoothed.
+    """
+    span_i = (reg.nxc - (1 if reg.xstag else 0)) // reg.nri
+    span_j = (reg.nyc - (1 if reg.ystag else 0)) // reg.nrj
+    istag = 0 if reg.xstag else 1
+    jstag = 0 if reg.ystag else 1
+    return (reg.i_parent_start + 1, reg.j_parent_start + 1,
+            span_i - 3 - istag, span_j - 3 - jstag)
+
+
+def smoother(cfld, reg: NestRegistration, *, smooth_option: int, scratch):
+    """WRF's post-feedback parent smoother, in place (interp_fcn.F:3794).
+
+    Dispatch exactly as ``SUBROUTINE smoother``: 0 is a no-op, 1 is
+    ``sm121`` (:3864-3935, one 1-2-1 pass), 2 is ``smdsm`` (:3937-4014,
+    a +0.50 smoothing pass then a -0.52 de-smoothing pass).  The caller
+    owns the ``feedback == 0 -> RETURN`` guard (:3823) because ArWen's
+    coupler, not a namelist read, knows the feedback setting.
+
+    Each pass is two launches per the dataflow both Fortran routines
+    share: a J-direction filter into ``scratch`` (whose one-cell ring
+    around the window keeps the unfiltered field, standing in for
+    sm121's ``cfldnew`` init copy and for smdsm's never-written cells),
+    then an I-direction filter from ``scratch`` back into the field.
+
+    ``scratch`` is any float32 device buffer with capacity for
+    ``cfld``'s elements; the audited ``nest_parent_field`` arena slot is
+    the intended one -- the restriction is done with it by the time the
+    smoother runs, so the smoother introduces no allocation.
+    """
+    smooth_option = int(smooth_option)
+    if smooth_option == 0:
+        return cfld
+    if smooth_option not in (1, 2):
+        raise ValueError(
+            f"smooth_option must be 0, 1 or 2, got {smooth_option}")
+    c3 = _as3d(cfld)
+    nz, nyp, nxp = c3.shape
+    if (nyp, nxp) != (reg.nyp, reg.nxp):
+        raise ValueError("field does not match the registration extents")
+    i0, j0, niw, njw = smoother_parent_window(reg)
+    if niw <= 0 or njw <= 0:
+        return cfld
+    count = math.prod(c3.shape)
+    s3 = scratch.reshape(-1)[:count].reshape(c3.shape)
+    if s3.dtype != np.float32:
+        raise ValueError("smoother scratch must be float32")
+    mode = np.int32(0 if smooth_option == 1 else 1)
+    passes = (SMDSM_XNU if smooth_option == 2
+              else (np.float32(0.0),))
+    dims = (np.int32(i0), np.int32(j0), np.int32(niw), np.int32(njw),
+            np.int32(nz), np.int32(nyp), np.int32(nxp))
+    for xnu in passes:
+        _launch(_kernel("nest_smooth_j"),
+                nz * (njw + 2) * (niw + 2), (c3, s3, mode, xnu, *dims))
+        _launch(_kernel("nest_smooth_i"),
+                nz * njw * niw, (c3, s3, mode, xnu, *dims))
     return cfld
 
 

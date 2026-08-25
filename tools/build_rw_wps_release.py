@@ -151,6 +151,17 @@ _CORE_MODULES = {
     "grid.py",
     "landuse.py",
     "microphysics_transition.py",
+    # The sea-level pressure reduction and its nine-point smoother,
+    # reached by storm_tracking.py below when a follow block tracks
+    # `field = 'pressure'`.  Same shape as sase_limits.py further down:
+    # the arithmetic lives in gpuwm/core rather than in its historical
+    # home under gpuwm/verify because that tree is developer
+    # verification and this distribution omits it -- staging
+    # storm_tracking.py while it reached across that boundary is what
+    # the verification-import scan below refused.  Leaf module, numpy at
+    # module scope and nothing internal, so it carries no CuPy and no
+    # forecast executor.
+    "mslp.py",
     "nest_interp.py",
     # Config VALIDATION for the two storm-following blocks, which is
     # preprocessing work: `gpuwm/experiment.py` is staged, and it calls
@@ -162,6 +173,19 @@ _CORE_MODULES = {
     # so they carry no CuPy and no forecast executor.
     "storm_tracking.py",
     "nest_spawn.py",
+    # The SAME config-validation reason, for the `[relocation.track]`
+    # table: `gpuwm/experiment.py` calls `build_track_config` while
+    # LOADING a config, and reads `POSITION_ONLY_FIELDS` and
+    # `SURFACE_LEVEL` from here to refuse a track block whose columns the
+    # configured tracker could never fill.  Those three imports sit at
+    # function scope inside the loader, so leaving the module behind made
+    # this wheel refuse to read a valid storm-following TOML -- and the
+    # staging scan below refused the wheel outright rather than shipping
+    # a half-readable one.  Module scope is stdlib plus numpy, and its one
+    # internal lookup is `gpuwm.core.storm_tracking`, staged directly
+    # above for the same reason.  No CuPy, no forecast executor: the CSV
+    # this module writes is driven from `gpuwm/runtime.py`, excluded.
+    "storm_track_writer.py",
     # The SAME reason as the two directly above, for the three lifecycle
     # tables that sit beside `spawn` on a `[[domain]]`: `gpuwm/experiment.py`
     # calls `build_retire_config` for `retire`, `build_rearm_config` for

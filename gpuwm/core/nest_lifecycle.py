@@ -14,13 +14,24 @@ import numpy as np
 
 from gpuwm.core import uh_diag
 from gpuwm.core.storm_tracking import (FollowConfig, NestFootprint,
-                                       _plane_from_state, build_follow_config)
+                                       _plane_from_state,
+                                       build_follow_config,
+                                       is_minimum_signal,
+                                       normalise_pressure_surface,
+                                       pressure_surface_json)
 
 RETIRE_CONTRACT = "gpuwm-nest-retire.v1"
 REARM_CONTRACT = "gpuwm-nest-rearm.v1"
-RETIRE_TRIGGERS = ("uh", "reflectivity", "time")
+#: The same vocabulary ``spawn`` carries, for the same reason: a slot
+#: that can be OPENED on a signal has to be closable on the same signal,
+#: or the two ends of one episode are policing different weather.
+#: ``"pressure"`` is the inverted one -- a decaying cyclone is a RISING
+#: minimum, not a falling maximum.
+RETIRE_TRIGGERS = ("uh", "reflectivity", "pressure", "time")
 RETIRE_KEYS = frozenset({
     "trigger", "threshold", "sustained_s", "min_lifetime_s", "at_s",
+    # PRESSURE ONLY: which surface the decay is measured on.
+    "level_hpa",
 })
 REARM_KEYS = frozenset({"max_firings", "cooldown_s"})
 DOMAIN_FOLLOW_EXTRA_KEYS = frozenset({
@@ -32,10 +43,16 @@ DOMAIN_FOLLOW_EXTRA_KEYS = frozenset({
 class RetireConfig:
     """When one live spawned nest stops participating in the next leg.
 
-    Field-triggered retirement means the maximum signal under the *live child
-    footprint* stays at or below ``threshold`` continuously for ``sustained_s``
-    after ``min_lifetime_s`` has elapsed.  ``time`` is deterministic test/manual
-    policy and retires after ``at_s`` seconds of that episode's active lifetime.
+    Field-triggered retirement means the signal under the *live child
+    footprint* stays QUIET continuously for ``sustained_s`` after
+    ``min_lifetime_s`` has elapsed.  Quiet is the trigger's own sense of
+    decay: for the maximum triggers the footprint maximum at or below
+    ``threshold``; for ``"pressure"`` the inversion of that, because a
+    dying cyclone is a rising minimum -- an absolute sea-level ceiling
+    the storm has FILLED past (``level_hpa = 0``), or a vortex whose
+    geopotential-height depth on the tracked surface has fallen below
+    ``threshold`` metres.  ``time`` is deterministic test/manual policy
+    and retires after ``at_s`` seconds of that episode's active lifetime.
     """
 
     trigger: str
@@ -43,6 +60,11 @@ class RetireConfig:
     sustained_s: float = 0.0
     min_lifetime_s: float = 0.0
     at_s: float | None = None
+    #: The surface the decay is measured on, under ``trigger =
+    #: "pressure"``.  Same convention and same validator as ``spawn``
+    #: and ``[relocation.follow]``: absent is 850 hPa, ``0`` is the
+    #: sea-level form, and the two threshold bands are disjoint.
+    level_hpa: "float | tuple[float, ...] | None" = None
 
     def __post_init__(self) -> None:
         if self.trigger not in RETIRE_TRIGGERS:
@@ -63,6 +85,25 @@ class RetireConfig:
                 raise ValueError(f"retire trigger={self.trigger!r} refuses at_s; field decay chooses the instant")
             if self.threshold is None or not math.isfinite(float(self.threshold)):
                 raise ValueError(f"retire trigger={self.trigger!r} requires a finite threshold")
+        # ONE surface, for the same reason spawn takes one: the decay
+        # test compares ONE number against the threshold, and a mean of
+        # per-level centres is not a number this test can read.
+        levels, defaulted = normalise_pressure_surface(
+            self.level_hpa, field=self.trigger,
+            threshold=(0.0 if self.threshold is None else self.threshold),
+            label="retire", selector="trigger", allow_multiple=False)
+        object.__setattr__(self, "_level_defaulted", defaulted)
+        object.__setattr__(self, "level_hpa", levels)
+
+    @property
+    def level(self) -> float | None:
+        """The single surface the plane builder is asked for.
+
+        ``None`` is the sea-level reduction, which is the shape
+        :func:`gpuwm.core.storm_tracking._plane_from_state` already
+        reads; a tuple of one is an isobaric surface.
+        """
+        return (self.level_hpa or (None,))[0]
 
     def to_json(self) -> dict[str, object]:
         out: dict[str, object] = {
@@ -75,6 +116,12 @@ class RetireConfig:
             out["threshold"] = float(self.threshold)
         if self.at_s is not None:
             out["at_s"] = float(self.at_s)
+        if self.trigger == "pressure":
+            out.update(pressure_surface_json(
+                self.level_hpa,
+                defaulted=bool(getattr(self, "_level_defaulted", False))))
+            if self.level_hpa is not None:
+                out["threshold_units"] = "m of vortex depth under the footprint"
         return out
 
 
@@ -111,6 +158,16 @@ def build_retire_config(table: dict, source: str, *, grid_id: int) -> RetireConf
     if "trigger" not in table:
         raise ValueError(f"{label} of {source} is missing required key 'trigger'")
     kwargs = dict(table)
+    if "level_hpa" in kwargs:
+        raw = kwargs["level_hpa"]
+        seq = raw if isinstance(raw, (list, tuple)) else [raw]
+        for index, item in enumerate(seq):
+            if isinstance(item, bool) or not isinstance(item, (int, float)):
+                where = (f"level_hpa[{index}]"
+                         if isinstance(raw, (list, tuple)) else "level_hpa")
+                raise ValueError(
+                    f"{where} in {label} of {source} must be a number in "
+                    f"hPa, got {item!r}")
     try:
         return RetireConfig(**kwargs)
     except (TypeError, ValueError) as err:
@@ -201,14 +258,47 @@ class RetirementWatch:
             self.receipts.append(row)
             return row
 
+        minimum = is_minimum_signal(cfg.trigger)
+        level = cfg.level if minimum else None
         plane = _plane_from_state(
             parent_state, cfg.trigger,
-            uh_slot=uh_diag.UH_SPAWN_WINDOW_SLOT)
+            uh_slot=uh_diag.UH_SPAWN_WINDOW_SLOT,
+            level_hpa=level)
         fp = NestFootprint.coerce(child_cfg)
         box = fp.search_box(plane.shape, 0)
         sample = np.asarray(plane[box])
-        maximum = float(np.nanmax(sample)) if sample.size else float("-inf")
-        quiet = maximum <= float(cfg.threshold)
+        extra: dict[str, object] = {}
+        if not minimum:
+            measured = (float(np.nanmax(sample)) if sample.size
+                        else float("-inf"))
+            quiet = measured <= float(cfg.threshold)
+            kind, units = "maximum", "field"
+        else:
+            # A DYING CYCLONE IS A RISING MINIMUM.  The maximum test
+            # inverted is the whole change, but WHICH minimum depends on
+            # the surface, exactly as it does on the spawn side:
+            #
+            #  * sea level -- an absolute hPa ceiling.  The storm has
+            #    filled past it when the deepest cell under the footprint
+            #    is at or above it.
+            #  * an isobaric surface -- the threshold is METRES, and what
+            #    decays is the vortex's DEPTH under the footprint (the
+            #    height field's own span).  An absolute height cannot be
+            #    used: 850 hPa is ~1500 m in the deep tropics and ~1350 m
+            #    in a cold airmass, so a fixed number would retire the
+            #    nest on the airmass rather than on the storm.
+            finite = sample[np.isfinite(sample)]
+            if level is None:
+                measured = (float(finite.min()) if finite.size
+                            else float("inf"))
+                quiet = measured >= float(cfg.threshold)
+                kind, units = "minimum", "hPa"
+            else:
+                measured = (float(finite.max()) - float(finite.min())
+                            if finite.size else 0.0)
+                quiet = measured < float(cfg.threshold)
+                kind, units = "depth", "m"
+            extra["level_hpa"] = None if level is None else float(level)
         if quiet:
             if self.quiet_since is None:
                 self.quiet_since = t
@@ -218,8 +308,17 @@ class RetirementWatch:
         retire = bool(quiet and quiet_for >= float(cfg.sustained_s))
         row = {**base, "decision": "retire" if retire else ("hold:quiet" if quiet else "hold:signal"),
                "retire": retire, "field": cfg.trigger,
-               "threshold": float(cfg.threshold), "max_value": maximum,
+               "threshold": float(cfg.threshold), "max_value": measured,
                "quiet_for_s": quiet_for, "sustained_s": float(cfg.sustained_s)}
+        if minimum:
+            # "max_value" carries the number the threshold was compared
+            # against, in the field's own units, for every trigger --
+            # one receipt shape, the same ruling storm_tracking makes
+            # for "cells_above_threshold".  These two say which number
+            # it is, so no reader has to infer it from the trigger.
+            row["extremum_kind"] = kind
+            row["extremum_units"] = units
+            row.update(extra)
         self.receipts.append(row)
         return row
 

@@ -70,7 +70,7 @@ ROUTE_TABLE_SCHEMA = "gpuwm-fetch-routes-v1"
 #: resolving a key shape nothing was measured against.  Kept in sync by
 #: ``tests/test_fetch_routes.py``.
 ROUTE_TABLE_SHA256 = (
-    "a7c09372d4f631a9bc91f2301da20dce4cd999f8e982451608fdc96cb68c359f"
+    "cad041195e608d29af6c6d7f0f74b0b5c40d72faed3564ea55cef5e90be28521"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own
@@ -186,6 +186,14 @@ class Route:
     host_note: str
     coverage_note: str
     cycle_hours: tuple[int, ...]
+    #: MEASURED hours between a nominal cycle time and this producer's
+    #: bytes appearing on the ladder head.  It is what lets ``--cycle
+    #: latest`` start its walk at a cycle that plausibly exists instead
+    #: of HEAD-ing its way down from a cycle nobody has published yet:
+    #: publication lag differs by hours between these producers, and a
+    #: resolver that assumed one producer's timing spent a probe per
+    #: candidate discovering the others'.
+    publication_lag_hours: float
     ladders: tuple[tuple[tuple[int, ...] | None, tuple[tuple[int, int], ...]], ...]
     cadences: tuple[int, ...]
     default_cadence: int
@@ -248,6 +256,7 @@ def _build_routes() -> Mapping[str, Route]:
             host_note=str(raw.get("host_note", "")),
             coverage_note=str(raw.get("coverage_note", "")),
             cycle_hours=tuple(int(hour) for hour in raw["cycle_hours"]),
+            publication_lag_hours=float(raw["publication_lag_hours"]),
             ladders=ladders,
             cadences=tuple(int(value) for value in raw["cadences"]),
             default_cadence=int(raw["default_cadence"]),

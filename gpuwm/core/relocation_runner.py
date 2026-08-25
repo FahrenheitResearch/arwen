@@ -42,12 +42,16 @@ After an executed move the runner calls the provider's OPTIONAL
 semantics for trackers whose cooldown should count acceptances rather
 than proposals); a provider without the hook simply is not notified.
 
-A restart across a move promises nothing (Drew, 2026-08-06).  After
-every executed move the runner chains the record into the model's live
-restart fingerprint
+After every executed move the runner chains the record into the model's
+live restart fingerprint
 (:func:`~gpuwm.core.nest_relocation.mark_fingerprint_across_move`), so
-checkpoints written later refuse to resume into a fresh build BY
-CONSTRUCTION and the refusal names relocation.
+checkpoints written later refuse to resume into a FRESH build BY
+CONSTRUCTION and the refusal names relocation.  That chaining is also
+what makes the resume possible at all: a restore replays the same
+digests in the same order onto its own fingerprint, so it reaches the
+checkpoint's value exactly when it is the run that wrote it.  See
+:data:`~gpuwm.core.nest_relocation.RESTART_ACROSS_MOVE_POSTURE` for what
+a moved checkpoint promises, which is no longer nothing.
 """
 
 from __future__ import annotations
@@ -105,8 +109,10 @@ class ManualMoveProvider:
     def __init__(self, moves):
         self._pending = list(moves)
 
-    def __call__(self, parent_state, nest_footprint, t):
-        del parent_state, nest_footprint  # the itinerary is time-driven
+    def __call__(self, parent_state, nest_footprint, t, refinement=None):
+        # the itinerary is time-driven, and a scripted move has nothing
+        # to refine: the placement IS the input.
+        del parent_state, nest_footprint, refinement
         if not self._pending:
             return None
         head = self._pending[0]
@@ -185,8 +191,9 @@ class RelocationRunner:
 
     def __init__(self, *, config, schedule, on_child_built,
                  provider=None, staging: str = "host",
+                 reground_descendant=None,
                  receipts_path=None, initializer=None,
-                 static_provenance=None):
+                 static_provenance=None, track_writer=None):
         if not getattr(config, "enabled", False):
             raise RelocationRefusal(
                 "RelocationRunner requires [relocation] enabled = true; a "
@@ -215,10 +222,31 @@ class RelocationRunner:
         self.provider = provider
         self.on_child_built = on_child_built
         self.staging = str(staging)
+        # None on a leaf mover, which is every mover before mid-tree
+        # moves existed; relocate_child then keeps its refusal for a
+        # mover that HAS children, so nothing silently changes.
+        self.reground_descendant = reground_descendant
         self.receipts_path = (None if receipts_path is None
                               else Path(receipts_path))
         self.cadence_periods = _cadence_periods(
             getattr(config, "cadence_seconds", None), schedule)
+        #: The [relocation.containment] leg: the mover's parent slides to
+        #: keep the mover contained, with the mover EARTH-FIXED under the
+        #: slide.  The route wires the parent's own initializer/preparer
+        #: pair through :meth:`wire_containment`; without that wiring a
+        #: configured containment refuses at the first opportunity rather
+        #: than silently never sliding.
+        self.containment = getattr(config, "containment", None)
+        self.containment_cadence_periods = (
+            None if self.containment is None else _cadence_periods(
+                self.containment.cadence_seconds
+                if self.containment.cadence_seconds is not None
+                else getattr(config, "cadence_seconds", None), schedule))
+        self.containment_initializer = None
+        self.containment_preparer = None
+        self.containment_static_provenance = None
+        self._containment_segment = None
+        self.containment_moves_executed = 0
         #: The per-footprint child rebuild seam (2026-08-06 statics-on-
         #: move requirement): a route that rebuilds own-source statics at
         #: the new footprint passes its builder here, with the provenance
@@ -226,15 +254,44 @@ class RelocationRunner:
         #: parent-interpolated fallback, which every receipt records.
         self.initializer = initializer
         self.static_provenance = static_provenance
+        #: The [[relocation.track]] streams
+        #: (:class:`gpuwm.core.storm_track_writer.TrackWriter`), or None.
+        #: A DIAGNOSTIC: it renders the fix the tracker already produced
+        #: and cannot move anything.  Its cadence joins the mover's and
+        #: the containment leg's in :meth:`is_due`, so a stream asking
+        #: for a finer interval gets its own opportunities.
+        self.track_writer = track_writer
+        self.track_cadence_periods = (
+            None if track_writer is None
+            else self._track_periods(track_writer, config, schedule))
         self.receipts: list[dict] = []
         self.moves_executed = 0
+        self.track_records = 0
         self._segment = None
+
+    @staticmethod
+    def _track_periods(track_writer, config, schedule) -> int:
+        """The opportunity rhythm the track file needs.
+
+        The writer then decides for itself whether it wants this
+        particular boundary; the runner only has to be awake often
+        enough.  No ``interval_seconds`` rides the mover's own cadence,
+        which is the free case -- the fix already exists at those
+        boundaries and nothing extra is reduced.
+        """
+        mover_periods = _cadence_periods(
+            getattr(config, "cadence_seconds", None), schedule)
+        interval = track_writer.stream.config.interval_seconds
+        if interval is None:
+            return mover_periods
+        return min(mover_periods, _cadence_periods(interval, schedule))
 
     @classmethod
     def from_experiment(cls, exp, *, schedule, on_child_built,
                         provider=None, staging: str = "host",
                         receipts_path=None, initializer=None,
-                        static_provenance=None) -> "RelocationRunner":
+                        static_provenance=None, track_writer=None,
+                        reground_descendant=None) -> "RelocationRunner":
         """Build from a validated experiment (the routes' entry point).
 
         ``provider`` overrides the config-derived source only for the
@@ -252,7 +309,8 @@ class RelocationRunner:
         return cls(config=relocation, schedule=schedule,
                    on_child_built=on_child_built, provider=provider,
                    staging=staging, receipts_path=receipts_path,
-                   initializer=initializer,
+                   initializer=initializer, track_writer=track_writer,
+                   reground_descendant=reground_descendant,
                    static_provenance=static_provenance)
 
     # -- the restart state -------------------------------------------------
@@ -378,6 +436,11 @@ class RelocationRunner:
         self.receipts.append(entry)
         if getattr(model, "_relocation_receipts", None) is not self.receipts:
             model._relocation_receipts = self.receipts
+        # The checkpoint writer holds the MODEL, not the runner, and it
+        # has to ask what the tracker's hysteresis is standing at.  Same
+        # attachment the receipts already use.
+        if getattr(model, "_relocation_runner", None) is not self:
+            model._relocation_runner = self
         if self.receipts_path is not None:
             _atomic_json(self.receipts_path, {
                 "contract": RELOCATION_RUNNER_CONTRACT,
@@ -449,8 +512,398 @@ class RelocationRunner:
         root_clock = clocks[model.root.cfg.grid_id]
         ticks = int(root_clock.ticks)
         period_ticks = int(model.schedule.period_ticks)
-        return ticks != 0 and ticks % (
+        due = ticks != 0 and ticks % (
             period_ticks * self.cadence_periods) == 0
+        if self.containment_cadence_periods is not None:
+            due = due or (ticks != 0 and ticks % (
+                period_ticks * self.containment_cadence_periods) == 0)
+        if self.track_cadence_periods is not None:
+            due = due or (ticks != 0 and ticks % (
+                period_ticks * self.track_cadence_periods) == 0)
+        return due
+
+    # -- the containment leg ----------------------------------------------
+
+    def wire_containment(self, *, initializer, on_child_built,
+                         static_provenance=None) -> None:
+        """Hand the sliding parent its own rebuild pair.
+
+        A separate pair from the mover's on purpose: the initializer is
+        resolution-specific (it crops the PARENT's corridor, not the
+        mover's) and the preparer holds per-domain capture state that
+        must never be shared between two domains (the regrounder learned
+        that the hard way).
+        """
+        self.containment_initializer = initializer
+        self.containment_preparer = on_child_built
+        self.containment_static_provenance = static_provenance
+
+    def _containment_opportunity(self, model, clocks, elapsed,
+                                 period, before_rebuild):
+        """One containment consultation: slide the mover's parent when
+        the mover has drifted past the dead-band, with the mover
+        earth-fixed under the slide.  Records rows only when it acts or
+        refuses -- an in-band hold is silent, because the mover rows
+        already carry the placement every consultation reads."""
+        cont = self.containment
+        mover = model.node(int(self.config.grid_id))
+        parent_node = model.node(int(cont.grid_id))
+        if not bool(getattr(mover, "_started", True)) or not bool(
+                getattr(parent_node, "_started", True)):
+            return None
+        ratio_m = int(mover.cfg.parent_grid_ratio)
+        span_i = int(mover.cfg.run.nx) // ratio_m
+        span_j = int(mover.cfg.run.ny) // ratio_m
+        centered_i = (int(parent_node.cfg.run.nx) - span_i) // 2 + 1
+        centered_j = (int(parent_node.cfg.run.ny) - span_j) // 2 + 1
+        dev_i = int(mover.cfg.i_parent_start) - centered_i
+        dev_j = int(mover.cfg.j_parent_start) - centered_j
+        deadband = int(cont.deadband_cells)
+        if max(abs(dev_i), abs(dev_j)) < deadband:
+            return None
+        if (self.containment_initializer is None
+                or self.containment_preparer is None):
+            return self._record(model, {
+                "event": "containment_refused",
+                "elapsed_seconds": elapsed,
+                "grid_id": int(cont.grid_id),
+                "reason": "[relocation.containment] is configured but the "
+                          "route wired no initializer/preparer pair for "
+                          "the sliding parent (wire_containment); the "
+                          "mover keeps tracking inside a frame that "
+                          "cannot slide"})
+        ratio_p = int(parent_node.cfg.parent_grid_ratio)
+        want_i = int(round(dev_i / ratio_p))
+        want_j = int(round(dev_j / ratio_p))
+        limit = cont.max_move_parent_cells
+        if limit is not None:
+            limit = int(limit)
+            want_i = max(-limit, min(limit, want_i))
+            want_j = max(-limit, min(limit, want_j))
+
+        # Admissible for BOTH: the slid parent inside its own parent, and
+        # the earth-fixed mover's compensated placement inside the slid
+        # parent.  The walk toward zero mirrors _clamped_shift.
+        from dataclasses import replace as _replace
+
+        from gpuwm.core.nest_relocation import _prevalidate_placement
+
+        def admissible(di, dj) -> bool:
+            cand = _replace(
+                parent_node.cfg,
+                i_parent_start=int(parent_node.cfg.i_parent_start) + di,
+                j_parent_start=int(parent_node.cfg.j_parent_start) + dj)
+            if cand.i_parent_start < 1 or cand.j_parent_start < 1:
+                return False
+            comp = _replace(
+                mover.cfg,
+                i_parent_start=int(mover.cfg.i_parent_start)
+                - di * ratio_p,
+                j_parent_start=int(mover.cfg.j_parent_start)
+                - dj * ratio_p)
+            if comp.i_parent_start < 1 or comp.j_parent_start < 1:
+                return False
+            try:
+                _prevalidate_placement(cand, parent_node.parent)
+                _prevalidate_placement(comp, parent_node)
+            except ValueError:
+                return False
+            return True
+
+        di, dj = want_i, want_j
+        clamped = False
+        while (di, dj) != (0, 0) and not admissible(di, dj):
+            clamped = True
+            if abs(di) >= abs(dj) and di != 0:
+                di -= 1 if di > 0 else -1
+            elif dj != 0:
+                dj -= 1 if dj > 0 else -1
+        if (di, dj) == (0, 0):
+            return self._record(model, {
+                "event": "containment_held",
+                "elapsed_seconds": elapsed,
+                "grid_id": int(cont.grid_id),
+                "mover_deviation_cells": [dev_i, dev_j],
+                "requested_shift_parent_cells": [want_i, want_j],
+                "reason": "the requested slide clamps to the null move at "
+                          "the admissible band (parent edge, or the "
+                          "mover's compensated placement)"})
+        if self._containment_segment is None:
+            self._containment_segment = base_segment(parent_node.cfg)
+        capture = getattr(self.containment_preparer, "capture_outgoing",
+                          None)
+        if callable(capture):
+            capture(parent_node)
+        fingerprint_before = model.experiment_fingerprint
+        # The governance block re-aimed at the sliding parent: bounds
+        # authorise BY GRID ID, and the config's own id names the tracked
+        # mover.  Everything else (mode opt-in, min_overlap_fraction)
+        # carries over; the containment table is dropped from the shim so
+        # the config's own strict-ancestor validation does not read the
+        # re-aimed id as self-containment.
+        bounds = _replace(self.config, grid_id=int(cont.grid_id),
+                          containment=None)
+        receipt = relocate_child(
+            parent_node,
+            i_parent_start=int(parent_node.cfg.i_parent_start) + di,
+            j_parent_start=int(parent_node.cfg.j_parent_start) + dj,
+            segment=self._containment_segment, bounds=bounds,
+            initializer=self.containment_initializer,
+            static_provenance=self.containment_static_provenance,
+            on_child_built=self.containment_preparer,
+            scratch_arena=getattr(model, "_scratch_arena", None),
+            dycore_state_workspace=getattr(
+                model, "_dycore_state_workspace", None),
+            staging=self.staging,
+            reground_descendant=self.reground_descendant,
+            earth_fixed_descendants=frozenset(
+                {int(self.config.grid_id)}),
+            on_before_release=(
+                None if before_rebuild is None
+                else (lambda: before_rebuild(int(cont.grid_id)))))
+        self._containment_segment = receipt["segment_state"]
+        self.containment_moves_executed += 1
+        from gpuwm.core.state import refresh_model_time
+
+        refresh_model_time(parent_node.state, parent_node.clock)
+        after_move = getattr(self.containment_preparer, "after_move", None)
+        if callable(after_move):
+            after_move(parent_node)
+        record_sha = receipt["record_sha256"]
+        model.experiment_fingerprint = mark_fingerprint_across_move(
+            fingerprint_before, record_sha)
+        components = getattr(
+            model, "_experiment_fingerprint_components", None)
+        if components is not None:
+            marked = dict(components)
+            history = list(marked.get("relocation", {}).get("records", []))
+            history.append(record_sha)
+            marked["relocation"] = {"records": history}
+            model._experiment_fingerprint_components = marked
+        return self._record(model, {
+            "event": "contained",
+            "elapsed_seconds": elapsed,
+            "period": (None if period is None else int(period)),
+            "grid_id": int(cont.grid_id),
+            "mover_deviation_cells": [dev_i, dev_j],
+            "requested_shift_parent_cells": [want_i, want_j],
+            "executed_shift_parent_cells": [di, dj],
+            "clamped": clamped,
+            "placement_from": receipt["plan"]["placement_from"],
+            "placement_to": receipt["plan"]["placement_to"],
+            # The earth-fixed compensation rows: the tracked mover's
+            # placement change and its bitwise state carry.
+            "descendants": receipt.get("descendants", []),
+            "donor_alignment_pass": bool(
+                receipt["donor_alignment"]["pass"]),
+            "parent_bitwise_unchanged": bool(
+                receipt["parent_bitwise_unchanged"]),
+            "segment_id": receipt["segment"]["segment_id"],
+            "generation": receipt["segment"]["generation"],
+            "record_sha256": record_sha,
+            "experiment_fingerprint": {
+                "before": fingerprint_before,
+                "after": model.experiment_fingerprint,
+            },
+        })
+
+    # -- the track leg ----------------------------------------------------
+
+    def _track_opportunity(self, model, elapsed, *, locate: bool):
+        """Render one consultation into the configured track streams.
+
+        ``locate=False`` is the boundary the mover was consulted on: the
+        provider's own fix is reused, so a track row at the default
+        interval costs a format call and nothing else.  ``locate=True``
+        is a track-only boundary, where the writer asks for a fix of its
+        own through the stateless :meth:`StormTracker.locate` seam.
+
+        NEVER RAISES, and that is a contract rather than caution.  A
+        track file is a diagnostic; a diagnostic that can end a
+        twelve-hour forecast is a defect.  Every fault lands on the
+        writer's own receipt, exactly as a tracker refusal lands on a
+        receipt row instead of stopping the run.
+        """
+        writer = self.track_writer
+        if writer is None:
+            return None
+        try:
+            node = model.node(int(self.config.grid_id))
+            if not bool(getattr(node, "_started", True)):
+                return None
+            fix = getattr(self.provider, "last_fix", None)
+            stale = fix is None or float(
+                fix.evidence.get("t", -1.0)) != float(elapsed)
+            if getattr(writer, "position_only", False):
+                # A rotation or echo track row is the MOVER'S OWN centre
+                # (storm_track_writer.POSITION_ONLY_FIELDS), which the fix
+                # does not enter -- so a track-only boundary skips the
+                # locate rather than pay for a whole-plane reduction whose
+                # answer never reaches the file.  The consultation's own
+                # fix is still reused when it is fresh: it costs nothing
+                # and it is what tells the receipt whether the tracker saw
+                # anything on this beat.
+                if stale:
+                    fix = None
+            elif locate or stale:
+                locator = getattr(self.provider, "locate", None)
+                if locator is None:
+                    return None
+                from gpuwm.core.storm_tracking import refinement_from_node
+
+                refine_grid_id = getattr(
+                    getattr(self.config, "follow", None),
+                    "refine_grid_id", None)
+                refinement = (
+                    None if refine_grid_id is None
+                    else refinement_from_node(node, int(refine_grid_id)))
+                fix = locator(node.parent.state, node.cfg, float(elapsed),
+                              refinement=refinement)
+            refine_node = (None if fix is None or fix.refined_on is None
+                           else model.node(int(fix.refined_on)))
+            row = writer.emit(
+                fix, t=float(elapsed),
+                parent_state=node.parent.state,
+                parent_grid=getattr(node.parent, "grid", None),
+                # The mover's own grid, rebuilt by relocate_child on every
+                # move, so a position-only row is where the nest is NOW.
+                mover_grid=getattr(node, "grid", None),
+                refine_state=(None if refine_node is None
+                              else refine_node.state),
+                refine_grid=(None if refine_node is None
+                             else getattr(refine_node, "grid", None)))
+        except Exception as error:                   # noqa: BLE001
+            return self._record(model, {
+                "event": "track_faulted",
+                "elapsed_seconds": float(elapsed),
+                "reason": f"the track writer could not be served at this "
+                          f"boundary and the run continues: {error}"})
+        if row is not None and row.get("emitted"):
+            self.track_records += 1
+        return row
+
+    def continuity_state(self) -> dict:
+        """What a resume has to land on to keep tracking coherent.
+
+        Placement gets the tree's GEOMETRY back; this is the rest of it.
+        Without the cooldown anchor a resumed run's hysteresis starts
+        cold, so its first consultation is free to move on a beat the
+        unbroken run was still suppressing -- a different forecast, from
+        a bookkeeping scalar.  ``moves_executed`` is carried for the same
+        reason the receipts are: an audit that restarts at zero cannot
+        be reconciled with the run it continues.
+        """
+        return {
+            "moves_executed": int(self.moves_executed),
+            "last_move_t": (
+                None if getattr(self.provider, "_last_move_t", None) is None
+                else float(self.provider._last_move_t)),
+        }
+
+    def restore_continuity(self, state) -> dict:
+        """Put :meth:`continuity_state` back after a restore.
+
+        Duck-typed on the provider, like ``notify_move_executed``: a
+        programmatic provider with no cooldown of its own simply has
+        nothing to set, and says so in the returned row rather than
+        failing.
+        """
+        applied = {}
+        moves = state.get("moves_executed")
+        if moves is not None:
+            self.moves_executed = int(moves)
+            applied["moves_executed"] = int(moves)
+        last = state.get("last_move_t")
+        if last is not None and hasattr(self.provider, "_last_move_t"):
+            self.provider._last_move_t = float(last)
+            applied["last_move_t"] = float(last)
+        elif last is not None:
+            applied["last_move_t_skipped"] = (
+                "provider carries no cooldown anchor")
+        return applied
+
+    def adopt_placement(self, model, node, *, i_parent_start: int,
+                        j_parent_start: int, force: bool = False) -> dict:
+        """Rebuild ``node`` at an ABSOLUTE placement, for a restore.
+
+        A checkpoint records where each domain actually was.  A tree
+        built from the config puts a moved nest back at its original
+        placement, and every setup array it owns -- terrain, map factors,
+        base state, the parent's SINT donor tables -- then describes the
+        wrong ground, which ``setup_fingerprint`` refuses.  This puts the
+        node where the checkpoint says it was, BEFORE any state is
+        restored into it.
+
+        It is the same mechanism a move uses, with the same corridor
+        wiring, because the geometry problem is identical: build the
+        child afresh at a placement and rebuild the donor tables for it.
+        What it deliberately does NOT do is pretend a move happened --
+        the tracker is not told (no cooldown burns), ``moves_executed``
+        does not advance, and the receipt is its own event.  The storm
+        did not move here; the run is being put back where it was.
+
+        The transplant of the outgoing child's overlap runs and is then
+        overwritten wholesale by the restore.  That is wasted work, not
+        wrong work, and it keeps this on the one audited path rather than
+        a second one that could drift from it.
+        """
+        from dataclasses import replace as _replace
+
+        from gpuwm.core.nest_relocation import relocate_child
+        from gpuwm.core.state import refresh_model_time
+
+        grid_id = int(node.cfg.grid_id)
+        was = (int(node.cfg.i_parent_start), int(node.cfg.j_parent_start))
+        want = (int(i_parent_start), int(j_parent_start))
+        if was == want and not force:
+            return {"event": "placement-already-correct",
+                    "grid_id": grid_id, "placement": list(want)}
+        # ``force`` exists because the placement NUMBER is not the whole
+        # story.  A nest that moved away and came back is at its original
+        # i/j with setup arrays that came from a relocation rebuild
+        # rather than the prepared cache, and those are not the same
+        # bytes -- phb measured 2**-6 apart.  A resume must re-run the
+        # rebuild for any grid the checkpointed run relocated, whatever
+        # the numbers say.
+        capture = getattr(self.on_child_built, "capture_outgoing", None)
+        if callable(capture):
+            capture(node)
+        if self._segment is None:
+            self._segment = base_segment(node.cfg)
+        bounds = self.config
+        if int(self.config.grid_id) != grid_id:
+            # A containment ancestor being put back: authorise BY GRID
+            # ID, the same re-aim the containment leg makes.
+            bounds = _replace(self.config, grid_id=grid_id,
+                              containment=None)
+        receipt = relocate_child(
+            node,
+            i_parent_start=want[0], j_parent_start=want[1],
+            segment=self._segment, bounds=bounds,
+            initializer=self.initializer,
+            static_provenance=self.static_provenance,
+            on_child_built=self.on_child_built,
+            scratch_arena=getattr(model, "_scratch_arena", None),
+            dycore_state_workspace=getattr(
+                model, "_dycore_state_workspace", None),
+            staging=self.staging,
+            reground_descendant=self.reground_descendant)
+        self._segment = receipt["segment_state"]
+        refresh_model_time(node.state, node.clock)
+        after_move = getattr(self.on_child_built, "after_move", None)
+        if callable(after_move):
+            after_move(node)
+        return self._record(model, {
+            "event": "placement-restored",
+            "grid_id": grid_id,
+            "placement_from": {"i_parent_start": was[0],
+                               "j_parent_start": was[1]},
+            "placement_to": {"i_parent_start": want[0],
+                             "j_parent_start": want[1]},
+            "donor_alignment_pass": receipt.get("donor_alignment_pass"),
+            "parent_bitwise_unchanged": receipt.get(
+                "parent_bitwise_unchanged"),
+        })
 
     def on_period_begin(self, model, clocks, *, period=None,
                         before_rebuild=None):
@@ -463,19 +916,79 @@ class RelocationRunner:
         root_clock = clocks[model.root.cfg.grid_id]
         ticks = int(root_clock.ticks)
         period_ticks = int(model.schedule.period_ticks)
-        if ticks == 0 or ticks % (
-                period_ticks * self.cadence_periods) != 0:
+        mover_due = ticks != 0 and ticks % (
+            period_ticks * self.cadence_periods) == 0
+        containment_due = (
+            self.containment_cadence_periods is not None
+            and ticks != 0
+            and ticks % (period_ticks
+                         * self.containment_cadence_periods) == 0)
+        # THE TRACK EMITS AT t = 0, and the mover and the containment leg
+        # do not.  A track's first row is the run's own initial
+        # position, and a track that starts one cadence in has silently
+        # dropped it.  on_period_begin also fires at the START of each
+        # period, so t = run_seconds is never an opportunity -- the last
+        # row of an N-second run is at the last boundary before N, and
+        # without t = 0 the initial position has nowhere to come from.
+        #
+        # Safe because locate() is stateless and silent: consulting the
+        # tracker at t = 0 appends no receipt, burns no cooldown, and
+        # cannot move anything.  The mover keeps ticks != 0, because a
+        # relocation at t = 0 would move a nest before it has integrated.
+        track_due = (
+            self.track_cadence_periods is not None
+            and (ticks == 0
+                 or ticks % (period_ticks * self.track_cadence_periods) == 0))
+        if not mover_due and not containment_due and not track_due:
             return None
         elapsed = float(root_clock.elapsed_seconds)
+        if containment_due:
+            # The slide first, so the tracker then evaluates the storm in
+            # the already-slid frame: a slide plus a track in one
+            # opportunity re-centers AND follows, instead of following
+            # first and immediately un-centering what it just did.
+            self._containment_opportunity(
+                model, clocks, elapsed, period, before_rebuild)
+        if not mover_due:
+            if track_due:
+                # A track-only boundary: locate WITHOUT proposing, so the
+                # writer gets a fix and the tracker's hysteresis is
+                # untouched (StormTracker.locate is stateless and
+                # silent).  Nothing is reset here either -- the UH window
+                # belongs to the mover's consultation and stays there, so
+                # however often a track stream looks, the nest goes to
+                # exactly the same places.
+                self._track_opportunity(model, elapsed, locate=True)
+            return None
         grid_id = int(self.config.grid_id)
         node = model.node(grid_id)
         if not bool(getattr(node, "_started", True)):
+            if track_due:
+                self._track_opportunity(model, elapsed, locate=True)
             return self._record(model, {
                 "event": "held", "elapsed_seconds": elapsed,
                 "reason": f"d{grid_id:02d} has not started; a domain that "
                           "does not exist yet cannot move"})
-        # The tracker seam, verbatim: parent state, footprint, model time.
-        desired = self.provider(node.parent.state, node.cfg, elapsed)
+        # The tracker seam, verbatim: parent state, footprint, model time
+        # -- plus the optional second stage.  The runner is the only side
+        # that can walk the tree, so it builds the refinement source and
+        # the tracker stays a pure function of the fields it is handed.
+        # A provider that wants no refinement never sees the argument.
+        from gpuwm.core.storm_tracking import refinement_from_node
+
+        refinement = None
+        refine_grid_id = getattr(
+            getattr(self.config, "follow", None), "refine_grid_id", None)
+        if refine_grid_id is not None:
+            refinement = refinement_from_node(node, int(refine_grid_id))
+        # Passed ONLY when there is one, so the seam a provider without a
+        # second stage sees is byte-for-byte the three-argument call it
+        # has always been handed.
+        desired = (
+            self.provider(node.parent.state, node.cfg, elapsed,
+                          refinement=refinement)
+            if refinement is not None
+            else self.provider(node.parent.state, node.cfg, elapsed))
         # This consumer's window is "max since I last looked", so it is
         # zeroed HERE -- immediately after the look, before any branch on
         # what the look returned, and on HELD evaluations exactly as on
@@ -487,6 +1000,14 @@ class RelocationRunner:
         # scripted move list) and of a state with no window allocated.
         follow_slot = getattr(self.provider, "uh_slot", UH_FOLLOW_WINDOW_SLOT)
         reset_tracker_window(node.parent.state, follow_slot)
+        if track_due:
+            # The FREE case: the provider just located the storm, so the
+            # writer renders the fix that consultation produced rather
+            # than paying for a second reduction to re-derive it.  Before
+            # the branch on `desired`, so a held cadence still writes a
+            # track row -- the storm was there whether or not the nest
+            # was allowed to follow it.
+            self._track_opportunity(model, elapsed, locate=False)
         if desired is None:
             return self._record(model, {
                 "event": "held", "elapsed_seconds": elapsed,
@@ -528,6 +1049,7 @@ class RelocationRunner:
             dycore_state_workspace=getattr(
                 model, "_dycore_state_workspace", None),
             staging=self.staging,
+            reground_descendant=self.reground_descendant,
             on_before_release=(
                 None if before_rebuild is None
                 else (lambda: before_rebuild(grid_id))))
@@ -548,9 +1070,10 @@ class RelocationRunner:
         notify = getattr(self.provider, "notify_move_executed", None)
         if callable(notify):
             notify(elapsed, (executed_i, executed_j))
-        # A restart across a move promises nothing: chain the record into
-        # the live fingerprint so later checkpoints are keyed to the move
-        # history and refuse a fresh build by name.
+        # Chain the record into the live fingerprint so later checkpoints
+        # are keyed to the move history: a fresh build is refused by name,
+        # and a restore of this run's own checkpoint reaches the same
+        # value by replaying the same digests in the same order.
         record_sha = receipt["record_sha256"]
         model.experiment_fingerprint = mark_fingerprint_across_move(
             fingerprint_before, record_sha)
@@ -600,6 +1123,24 @@ class RelocationRunner:
                 "land_surface": land_surface,
             },
             "staging": receipt["staging"],
+            # A MID-TREE move re-grounds the whole subtree, and each
+            # descendant carries its own bitwise donor-alignment verdict.
+            # Those verdicts are the evidence that the ground displacement
+            # was carried down correctly, so they belong on the ledger and
+            # not only in the exception that would have been raised had one
+            # failed.  Absent on a leaf move, which keeps a leaf receipt
+            # exactly the shape it has always been.
+            **({"descendants": [
+                {"grid_id": d["grid_id"],
+                 "delta_parent_cells": d["delta_parent_cells"],
+                 "shift_child_cells": d["plan"]["shift_child_cells"],
+                 "overlap_cells": d["plan"]["overlap_cells"],
+                 "donor_alignment_pass": bool(
+                     (d.get("reground") or {})
+                     .get("donor_alignment", {}).get("pass")),
+                 "statics": (d.get("reground") or {}).get("statics")}
+                for d in receipt["descendants"]]}
+               if receipt.get("descendants") else {}),
             "donor_alignment_pass": bool(receipt["donor_alignment"]["pass"]),
             "parent_bitwise_unchanged": bool(
                 receipt["parent_bitwise_unchanged"]),
@@ -624,6 +1165,16 @@ class RelocationRunner:
             "moves_executed": int(self.moves_executed),
             "staging": self.staging,
         }
+        if self.containment is not None:
+            summary["containment_moves_executed"] = int(
+                self.containment_moves_executed)
+        if self.track_writer is not None:
+            # How many records, how many emissions were skipped, and the
+            # first few faults if any.  A track file that quietly wrote
+            # nothing is a finding, and a summary that only counted
+            # successes could not show it.
+            summary["track"] = self.track_writer.close()
+            summary["track_records"] = int(self.track_records)
         unconsumed = getattr(self.provider, "unconsumed", None)
         if callable(unconsumed):
             summary["unconsumed_moves"] = list(unconsumed())

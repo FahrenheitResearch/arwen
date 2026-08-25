@@ -239,7 +239,7 @@ def test_receipts_are_written_when_a_path_is_given(case, tmp_path,
     import json
 
     monkeypatch.setattr("gpuwm.core.dycore.step", lambda *_a, **_k: None)
-    path = tmp_path / "spawn-receipts.json"
+    path = tmp_path / "spawn-receipts.jsonl"
     runner = SpawnRunner.from_experiment(
         case["exp"], on_child_built=lambda *_a: None, array_module=np,
         receipts_path=path)
@@ -247,10 +247,13 @@ def test_receipts_are_written_when_a_path_is_given(case, tmp_path,
                      grids=(case["grids"][0],))
     runner.on_leg_boundary(model)
     runner.close_receipt()
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["contract"] == SPAWN_RUNNER_CONTRACT
-    events = [row["event"] for row in payload["receipts"]]
-    assert events == ["spawned", "closed"]
+    # One complete JSON object per line, appended as each boundary is
+    # decided -- see gpuwm.core.spawn_runner.RECEIPTS_SUFFIX for why this
+    # is not one document rewritten every time.
+    rows = [json.loads(line) for line
+            in path.read_text(encoding="utf-8").splitlines()]
+    assert {row["contract"] for row in rows} == {SPAWN_RUNNER_CONTRACT}
+    assert [row["event"] for row in rows] == ["spawned", "closed"]
 
 
 # ---------------------------------------------------------------------------

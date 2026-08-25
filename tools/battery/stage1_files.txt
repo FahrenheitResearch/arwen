@@ -907,3 +907,14 @@ tests/test_dycore_advective_forcing_export.py
 # no longer runs, or a record whose signature stops verifying, is found by
 # whoever tries to reproduce a published number rather than by the gate.
 tests/test_speedrun.py
+
+# The 2.5.4 nest wave, verified on node-2 hardware AFTER stage 1 went
+# green.  Both defects that leg found were invisible here for one reason:
+# none of these three files was in this list.  A moved nest lost its
+# surface-radiation carriers and refused at the first move under shipped
+# radiation defaults; a prepared-tree run with a live follower could not
+# checkpoint.  Both are front-door paths on headline 2.5.4 features, and
+# both would have reached a user before they reached a test.
+tests/test_restart.py
+tests/test_prepared_domain_tree_forecast.py
+tests/test_relocation_radiation_carriers.py

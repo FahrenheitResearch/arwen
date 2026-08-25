@@ -460,11 +460,17 @@ def test_accepts_tree_wide_experimental_feedback_and_rejects_other_values(
             experiment="restart_interval_s = 0.0\nfeedback = 2"))
 
 
-def test_rejects_nonzero_smooth_option(tmp_path):
+def test_smooth_option_accepts_wrf_range_and_refuses_beyond(tmp_path):
+    """0/1/2 are WRF's smoother options (interp_fcn.F:3834-3860); the
+    Registry default 2 loads, so an imported namelist runs unedited."""
+    exp = load_experiment(_write(
+        tmp_path,
+        experiment="restart_interval_s = 0.0\nsmooth_option = 2"))
+    assert exp.smooth_option == 2
     with pytest.raises(ValueError, match="smooth_option"):
         load_experiment(_write(
             tmp_path,
-            experiment="restart_interval_s = 0.0\nsmooth_option = 2"))
+            experiment="restart_interval_s = 0.0\nsmooth_option = 3"))
 
 
 def test_rejects_non_divisible_cadences(tmp_path):

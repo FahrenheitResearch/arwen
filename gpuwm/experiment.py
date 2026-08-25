@@ -93,6 +93,15 @@ _MOVING_NEST_KEYS = frozenset({
 _RELOCATION_KEYS = frozenset({
     "enabled", "grid_id", "mode", "max_move_parent_cells",
     "min_overlap_fraction", "cadence_seconds", "follow", "move",
+    "containment", "track",
+})
+
+#: Keys accepted in ``[relocation.containment]`` -- the ancestor that
+#: slides to keep the tracked mover contained (see
+#: :class:`ContainmentConfig`).
+_RELOCATION_CONTAINMENT_KEYS = frozenset({
+    "grid_id", "deadband_cells", "max_move_parent_cells",
+    "cadence_seconds",
 })
 
 #: Keys accepted in each ``[[relocation.move]]`` row (the manual follow
@@ -726,6 +735,65 @@ class ScheduledRelocationMove:
 
 
 @dataclass(frozen=True)
+class ContainmentConfig:
+    """An ancestor that slides to keep the tracked mover contained.
+
+    The two-mover shape one storm actually needs: the TRACKED mover
+    (``[relocation] grid_id``) follows the vortex in its own parent's
+    cells, and one strict ancestor of it -- this block -- slides in
+    whole cells of ITS parent whenever the mover has drifted more than
+    ``deadband_cells`` (mover's-parent cells) from the centered
+    placement.  While the ancestor slides, the tracked mover is
+    EARTH-FIXED: its placement is compensated by ``-shift x ratio`` so
+    the storm's frame does not move at all
+    (:func:`gpuwm.core.nest_relocation.relocate_child`,
+    ``earth_fixed_descendants``).  This is deliberately not a second
+    storm tracker -- two trackers can disagree and fight; a containment
+    policy reads only placements, so it cannot.
+
+    ``cadence_seconds`` ``None`` means the mover's own cadence.
+    """
+
+    grid_id: int
+    deadband_cells: int = 8
+    max_move_parent_cells: int | None = 1
+    cadence_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        if int(self.grid_id) < 2:
+            raise ValueError(
+                f"containment grid_id = {self.grid_id!r} names the root "
+                "or an invalid id; only a nest can slide")
+        if int(self.deadband_cells) < 1:
+            raise ValueError(
+                f"containment deadband_cells = {self.deadband_cells!r} "
+                "must be at least 1 mover's-parent cell; a zero dead-band "
+                "slides on every consultation")
+        if (self.max_move_parent_cells is not None
+                and int(self.max_move_parent_cells) < 1):
+            raise ValueError(
+                "containment max_move_parent_cells must be at least 1")
+        if self.cadence_seconds is not None and (
+                not math.isfinite(float(self.cadence_seconds))
+                or float(self.cadence_seconds) <= 0.0):
+            raise ValueError(
+                f"containment cadence_seconds = {self.cadence_seconds!r} "
+                "must be a finite, positive number of model seconds")
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "grid_id": int(self.grid_id),
+            "deadband_cells": int(self.deadband_cells),
+            "max_move_parent_cells": (
+                None if self.max_move_parent_cells is None
+                else int(self.max_move_parent_cells)),
+            "cadence_seconds": (
+                None if self.cadence_seconds is None
+                else float(self.cadence_seconds)),
+        }
+
+
+@dataclass(frozen=True)
 class RelocationConfig:
     """Bounds and (optionally) a follow source for discrete relocation.
 
@@ -764,6 +832,16 @@ class RelocationConfig:
     follow: "object | None" = None
     #: The manual itinerary (``[[relocation.move]]`` rows), or empty.
     moves: tuple[ScheduledRelocationMove, ...] = ()
+    #: The ``[relocation.containment]`` ancestor-slide block
+    #: (:class:`ContainmentConfig`), or ``None``.
+    containment: "ContainmentConfig | None" = None
+    #: The ``[relocation.track]`` output file
+    #: (:class:`gpuwm.core.storm_track_writer.TrackConfig`), or ``None``.
+    #: A DIAGNOSTIC: it reads the vortex fix the tracker already
+    #: produced and writes it where other tooling can read it.  Absent
+    #: means no track file and a byte-identical forecast.  ONE file,
+    #: because a run has one vortex.
+    track: "object | None" = None
 
     def __post_init__(self) -> None:
         if not self.enabled:
@@ -779,6 +857,16 @@ class RelocationConfig:
                     "block are refused: an itinerary with no mechanism to "
                     "drive is a config that half-opted-in; set enabled = "
                     "true deliberately, or delete the rows")
+            if self.containment is not None:
+                raise ValueError(
+                    "[relocation.containment] on a disabled [relocation] "
+                    "block is refused: an ancestor slide with no mover to "
+                    "contain is a config that half-opted-in")
+            if self.track is not None:
+                raise ValueError(
+                    "[relocation.track] on a disabled [relocation] block "
+                    "is refused: the track is the TRACKER's answer written "
+                    "out, and a disabled block runs no tracker")
             return
         if self.mode != DISCRETE_RELOCATION_MODE:
             raise ValueError(
@@ -812,6 +900,27 @@ class RelocationConfig:
                 "follow sources; with both present one would be silently "
                 "ignored, so both are refused -- keep the tracker or the "
                 "manual itinerary, not both")
+        if self.containment is not None:
+            if self.follow is None and not self.moves:
+                raise ValueError(
+                    "[relocation.containment] slides an ancestor to keep "
+                    "the tracked mover contained, and this [relocation] "
+                    "tracks nothing ([relocation.follow] or "
+                    "[[relocation.move]]); add a follow source, or delete "
+                    "the containment table")
+            if int(self.containment.grid_id) == int(self.grid_id):
+                raise ValueError(
+                    "[relocation.containment] grid_id equals the mover's "
+                    "own; containment names a STRICT ANCESTOR of the "
+                    "tracked mover")
+        if self.track is not None and self.follow is None:
+            raise ValueError(
+                "[relocation.track] writes the vortex position the "
+                "TRACKER finds, and this [relocation] has no "
+                "[relocation.follow] block -- a scripted "
+                "[[relocation.move]] itinerary knows where to put the "
+                "nest but nothing about where the storm is. Add a follow "
+                "block, or delete the track table.")
         cadence = self.cadence_seconds
         if cadence is not None:
             if self.follow is None and not self.moves:
@@ -860,6 +969,10 @@ class RelocationConfig:
             "follow": (None if self.follow is None
                        else self.follow.to_json()),
             "moves": [move.to_json() for move in self.moves],
+            "containment": (None if self.containment is None
+                            else self.containment.to_json()),
+            "track": (None if self.track is None
+                      else self.track.to_json()),
         }
 
 
@@ -885,7 +998,11 @@ class ExperimentConfig:
     integer blend_width ... 5 "width of cg fg terrain blended zone"``).
     ``feedback`` is a tree-wide switch: 0 is the production one-way path
     and 1 enables the experimental child-to-parent restriction path.
-    ``smooth_option`` remains 0 because parent smoothing is not implemented.
+    ``smooth_option`` selects WRF's post-feedback parent smoother
+    (interp_fcn.F:3794-4014): 0 none, 1 ``sm121``, 2 ``smdsm`` (WRF's
+    Registry default).  It is read only when feedback = 1, exactly as
+    WRF's ``SUBROUTINE smoother`` returns before dispatching when
+    feedback is off (:3823-3824).
     """
 
     name: str
@@ -953,10 +1070,10 @@ class ExperimentConfig:
             raise ValueError(
                 "feedback must be 0 (one-way) or 1 (experimental "
                 f"two-way), got {self.feedback!r}.")
-        if self.smooth_option != 0:
+        if self.smooth_option not in (0, 1, 2):
             raise ValueError(
-                "smooth_option must remain 0; parent smoothing is not "
-                f"implemented, got {self.smooth_option!r}.")
+                "smooth_option must be 0 (none), 1 (sm121) or 2 (smdsm), "
+                f"got {self.smooth_option!r}.")
         if (isinstance(self.column_chunk, bool)
                 or not isinstance(self.column_chunk, int)
                 or self.column_chunk < 1):
@@ -1263,6 +1380,34 @@ def _build_relocation(raw: dict, source: str, domains,
                 f"{table['follow']!r}.")
         from gpuwm.core.storm_tracking import build_follow_config
         follow = build_follow_config(dict(table["follow"]), source)
+    containment = None
+    if "containment" in table:
+        if not isinstance(table["containment"], dict):
+            raise ValueError(
+                f"containment in [relocation] of {source} must be the "
+                "[relocation.containment] TABLE (the ancestor-slide "
+                f"block), got {table['containment']!r}.")
+        crow = dict(table["containment"])
+        _reject_unknown_keys("relocation.containment", crow,
+                             _RELOCATION_CONTAINMENT_KEYS, source)
+        _require_keys("relocation.containment", crow, ("grid_id",), source)
+        try:
+            containment = ContainmentConfig(
+                grid_id=int(crow["grid_id"]),
+                deadband_cells=int(crow.get("deadband_cells", 8)),
+                max_move_parent_cells=(
+                    None if crow.get("max_move_parent_cells") is None
+                    else int(crow["max_move_parent_cells"])),
+                cadence_seconds=(
+                    None if crow.get("cadence_seconds") is None
+                    else float(crow["cadence_seconds"])))
+        except ValueError as err:
+            raise ValueError(
+                f"[relocation.containment] of {source}: {err}") from None
+    track = None
+    if "track" in table:
+        from gpuwm.core.storm_track_writer import build_track_config
+        track = build_track_config(table["track"], source)
     try:
         relocation = RelocationConfig(
             enabled=True,
@@ -1278,9 +1423,30 @@ def _build_relocation(raw: dict, source: str, domains,
                 None if table.get("cadence_seconds") is None
                 else float(table["cadence_seconds"])),
             follow=follow,
-            moves=tuple(moves))
+            moves=tuple(moves),
+            containment=containment,
+            track=track)
     except ValueError as err:
         raise ValueError(f"[relocation] of {source}: {err}") from None
+    if containment is not None:
+        # A strict ancestor, proven against the tree rather than trusted:
+        # the whole design (compensated ride-along under the slide) rests
+        # on the mover being INSIDE the sliding domain.
+        by_id = {int(dc.grid_id): dc for dc in domains}
+        if int(containment.grid_id) not in by_id:
+            raise ValueError(
+                f"[relocation.containment] grid_id = "
+                f"{containment.grid_id} of {source} is not a domain of "
+                f"this experiment (have {sorted(by_id)}).")
+        mover_parent = int(by_id[int(relocation.grid_id)].parent_id)
+        if int(containment.grid_id) != mover_parent:
+            raise ValueError(
+                f"[relocation.containment] grid_id = "
+                f"{containment.grid_id} of {source} is not the tracked "
+                f"mover's parent (d{relocation.grid_id:02d}'s parent is "
+                f"d{mover_parent:02d}); containment slides the frame the "
+                "mover moves inside, and its dead-band is measured in "
+                "that frame's cells.")
     # The runner fires at complete cycle boundaries (root steps, where
     # every parent-child pair is synchronized), so a cadence or a
     # scheduled move that does not land on one can never fire.  Refused
@@ -1302,6 +1468,16 @@ def _build_relocation(raw: dict, source: str, domains,
             f"steps (root dt = {float(root_dt)} s); relocations execute "
             "at parent-step boundaries, and this cadence never lands on "
             "one.")
+    if (relocation.containment is not None
+            and relocation.containment.cadence_seconds is not None
+            and not _whole_root_steps(
+                relocation.containment.cadence_seconds)):
+        raise ValueError(
+            f"cadence_seconds = "
+            f"{relocation.containment.cadence_seconds} in "
+            f"[relocation.containment] of {source} is not a whole number "
+            f"of root steps (root dt = {float(root_dt)} s); it can never "
+            "fire.")
     for move in relocation.moves:
         if not _whole_root_steps(move.at_seconds):
             raise ValueError(
@@ -1316,7 +1492,271 @@ def _build_relocation(raw: dict, source: str, domains,
     if relocation.follow is not None:
         _refuse_unservable_follow_cadence(
             relocation, domains, source, root_dt=root_dt)
+    if relocation.track is not None:
+        _refuse_unservable_track(relocation, domains, source,
+                                 root_dt=root_dt,
+                                 whole_root_steps=_whole_root_steps)
+        relocation = _with_report_levels(relocation, source)
     return relocation
+
+
+def _report_levels_for(relocation) -> tuple:
+    """Surfaces ``output_level`` names that ``level_hpa`` does not steer.
+
+    Order is ``output_level``'s own, so the track file's extra columns
+    appear where the config asked for them; the surface block and any
+    already-steered surface drop out because they are not extra.
+    """
+    from gpuwm.core.storm_track_writer import SURFACE_LEVEL
+    from gpuwm.core.storm_tracking import levels_of
+
+    track = getattr(relocation, "track", None)
+    follow = getattr(relocation, "follow", None)
+    if track is None or follow is None or track.output_level is None:
+        return ()
+    known = {round(float(SURFACE_LEVEL), 6)} | {
+        round(float(v), 6) for v in levels_of(follow)}
+    out, seen = [], set()
+    for value in track.output_level:
+        key = round(float(value), 6)
+        if key in known or key in seen:
+            continue
+        seen.add(key)
+        out.append(float(value))
+    return tuple(out)
+
+
+def _attach_report_levels(relocation, extra, source):
+    """Build the follow config the extras imply, to surface its refusals
+    at LOAD -- the caller keeps the refusal, ``_with_report_levels``
+    keeps the result, and both go through this one constructor so they
+    cannot disagree about what is admissible."""
+    try:
+        return _dc_replace(relocation.follow,
+                           report_level_hpa=tuple(extra))
+    except ValueError as err:
+        raise ValueError(
+            f"[relocation.track] output_level of {source}: {err}") from None
+
+
+def _with_report_levels(relocation, source):
+    """``relocation`` with the report-only surfaces on its follow block."""
+    extra = _report_levels_for(relocation)
+    if not extra:
+        return relocation
+    return _dc_replace(
+        relocation, follow=_attach_report_levels(relocation, extra, source))
+
+
+def _refuse_unservable_track(relocation, domains, source, *, root_dt,
+                             whole_root_steps) -> None:
+    """A track stream that cannot produce honest records refuses AT LOAD.
+
+    Two ways to configure one that cannot, each refused by name here
+    rather than discovered as an empty file after a twelve-hour run:
+
+    **An interval that can never fire.**  The runner only acts at
+    complete cycle boundaries, so an interval that is not a whole number
+    of root steps rounds to whichever boundary happens to follow it.
+    Same contract ``cadence_seconds`` holds, same refusal.
+
+    **A finer interval on a stash-backed field THE ROW READS.**  ``uh``
+    and ``reflectivity`` are not reduced on demand: they are planes
+    somebody else folded into a scratch slot on somebody else's rhythm,
+    and asking for one between those instants gets an answer that does
+    not mean what the tracker's answer means.
+
+    That argument only bites if the row is derived from the plane, and
+    for those two fields it no longer is: a rotation or echo tracker
+    writes POSITION ONLY -- the mover's own centre, off the mover's own
+    grid, exact at every cycle boundary -- so the runner skips locating
+    on a track-only boundary and there is nothing stale to read.  The
+    refusal is kept, expressed as the fields that are stash-backed AND
+    not position-only, so it comes back on its own if either set ever
+    changes; today that difference is empty.
+
+    ``refl_10cm`` is stashed by the microphysics inside its
+    ``refl_10cm_due`` branch, which follows the HISTORY cadence -- so a
+    track emission off that cadence reads a plane from some earlier
+    instant, or none at all, and issue #111's refusal
+    (:func:`_refuse_unservable_follow_cadence`) is the same contract one
+    step further out.  The UH follow window is reset once per relocation
+    cadence by the runner, so a read between resets sees a PARTIAL
+    accumulation: the track row would report a centre derived from two
+    minutes of rotation while the nest was steered by six, and the file
+    would disagree with the model it claims to describe.  "Two formats,
+    one fix" is the whole design, and a partial window breaks it.
+
+    Note what this refusal is NOT: reading a stash does not perturb the
+    forecast.  The reset belongs to the mover's consultation and stays
+    there, so a track stream cannot move the nest however often it
+    looks.  This is about the honesty of the record, not its safety.
+
+    A ``pressure`` tracker reduces from the live prognostic column, which
+    is valid at every cycle boundary, so it is exempt -- the same line
+    :data:`gpuwm.core.storm_tracking.STASH_BACKED_FIELDS` already draws
+    for the follow cadence.
+
+    THE 10-M WIND REFUSAL IS SCOPED THE SAME WAY, and for the same
+    reason: it exists because ``vmax`` would be written as a plausible
+    0.00 m/s under ``sf_sfclay_physics = 0``, and a position-only row has
+    no ``vmax`` column to be wrong about.  Note this is a refusal on
+    :data:`gpuwm.core.storm_tracking.STASH_BACKED_FIELDS`' cousin
+    question, not on the tracker itself:
+    :func:`_refuse_unservable_follow_cadence` still applies in full,
+    because the NEST is steered by the plane whatever the file says.
+    """
+    from gpuwm.core.storm_track_writer import POSITION_ONLY_FIELDS
+    from gpuwm.core.storm_tracking import STASH_BACKED_FIELDS
+
+    # BOTH refusals below are about COLUMNS the row would carry, so both
+    # are scoped to the shape of the row.  A rotation or echo tracker
+    # writes POSITION ONLY -- a clock and the mover's own centre, read
+    # from the mover's own grid -- so it carries no peak wind to be wrong
+    # about and reads no stash to be stale.  See POSITION_ONLY_FIELDS.
+    tracked_field = getattr(relocation.follow, "field", None)
+    position_only = tracked_field in POSITION_ONLY_FIELDS
+
+    # WHICH BLOCKS, checked against what the tracker actually produces.
+    # A column of all-NaN nobody can fill is the same defect as a track
+    # file nobody configured, so a block the run cannot write refuses by
+    # name here rather than appearing as a dead column after twelve
+    # hours.
+    if relocation.track.output_level is not None:
+        from gpuwm.core.storm_track_writer import SURFACE_LEVEL
+        from gpuwm.core.storm_tracking import levels_of
+
+        if position_only:
+            raise ValueError(
+                f"[relocation.track] of {source} refuses output_level "
+                f"under [relocation.follow] field = {tracked_field!r}: "
+                "that file is a clock and the moving domain's own centre, "
+                "with no surface block and no isobaric surfaces, so there "
+                "is nothing to choose between. Delete output_level, or "
+                "track on field = 'pressure'.")
+        # A SURFACE NAMED HERE AND NOT IN level_hpa IS REPORT-ONLY.
+        #
+        # The two keys answer different questions -- level_hpa is what
+        # STEERS the nest, output_level is what the FILE carries -- and
+        # tying the second to the first cost one or the other.  A nest
+        # wants a curated handful (850/700/500 is the classic steering
+        # set; averaging in a 200 hPa outflow centre would drag it off
+        # the eyewall), while a forecaster reading vortex tilt wants the
+        # whole profile.  So the extras are computed, given their own
+        # centre search and their own columns, and kept OUT of the
+        # steering mean (storm_tracking.centre_over_levels).
+        #
+        # Each costs one more plane and one more centre search per
+        # consultation -- 2.3 ms on this box at 378x378x49, flat in the
+        # number of surfaces -- so a twenty-surface profile is 0.15% of a
+        # three-day run at the relocation cadence.  That is why there is
+        # no cap on how many may be named.
+        tracked = levels_of(relocation.follow)
+        steer = {round(float(v), 6) for v in tracked}
+        extra, seen = [], set()
+        for value in relocation.track.output_level:
+            key = round(float(value), 6)
+            if key == round(float(SURFACE_LEVEL), 6) or key in steer:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            extra.append(float(value))
+        if extra:
+            if position_only:
+                raise ValueError(                      # unreachable today
+                    "position-only trackers refuse output_level above")
+            if not tracked:
+                raise ValueError(
+                    "[relocation.track] output_level of "
+                    f"{source} names {', '.join(f'{v:g}' for v in extra)}, "
+                    "but [relocation.follow] tracks SEA LEVEL "
+                    f"(level_hpa = {SURFACE_LEVEL:g}). The surface block "
+                    "and an isobaric profile are different reductions in "
+                    "different units, and this run computes only the "
+                    "first. Track on an isobaric surface -- level_hpa = "
+                    "850 -- to report others beside it.")
+            # The surfaces themselves are validated where they are
+            # ATTACHED (_attach_report_levels, below): this function
+            # refuses and does not build, and a value that has to survive
+            # the call cannot be set on a local here.
+            _attach_report_levels(relocation, extra, source)
+
+    # VMAX is a 10-m wind, and a 10-m wind is a SURFACE-LAYER product.
+    # gpuwm.core.physics allocates every SFCLAY_OUTPUTS name
+    # unconditionally and fills them only when a scheme runs, so under
+    # sf_sfclay_physics = 0 u10/v10 exist and are identically zero.  A
+    # track row would then carry VMAX = 0 kt, which is not a missing
+    # value -- it is a plausible-looking number of the wrong quantity,
+    # and a deck reader has no way to tell.  Refused on the SELECTOR, at
+    # load, naming the domain and the knob.
+    by_id = {int(dc.grid_id): dc for dc in domains}
+    mover = by_id.get(int(relocation.grid_id))
+    wind_sources = set()
+    if not position_only:
+        wind_sources = {int(mover.parent_id)} if mover is not None else set()
+        refine = getattr(relocation.follow, "refine_grid_id", None)
+        if refine is not None:
+            wind_sources.add(int(refine))
+    for gid in sorted(wind_sources):
+        dc = by_id.get(gid)
+        if dc is None:
+            continue
+        holder = getattr(dc, "run", None) or dc
+        selector = getattr(holder, "sf_sfclay_physics", None)
+        # None is "this object does not carry a resolved physics
+        # selector", which is a different statement from "this domain
+        # runs no surface layer" and must not be reported as one.  The
+        # config loader always resolves it, so only a hand-built domain
+        # reaches here with None.
+        if selector is not None and int(selector) == 0:
+            raise ValueError(
+                f"[relocation.track] of {source} needs a 10-m wind for "
+                f"the peak wind, and d{gid:02d} -- which the tracker can read the "
+                f"vortex off -- runs sf_sfclay_physics = 0. No "
+                "surface-layer scheme means u10/v10 are allocated and "
+                "never filled, so the wind would be written as 0.00 m/s: "
+                "not a "
+                "missing value, a wrong one. Set sf_sfclay_physics on "
+                f"d{gid:02d}, or delete the track table.")
+
+    consult = relocation.cadence_seconds
+    if consult is None:
+        consult = float(root_dt)
+    cfg = relocation.track
+    interval = cfg.interval_seconds
+    if interval is not None:
+        if not whole_root_steps(interval):
+            raise ValueError(
+                f"[relocation.track] interval_seconds = {interval} of "
+                f"{source} is not a whole number of root steps (root dt = "
+                f"{float(root_dt)} s); the track writer emits at complete "
+                "cycle boundaries, and this interval never lands on one.")
+        if interval < float(consult) - _REL_TOL:
+            # Only a field that is BOTH stash-backed and actually read by
+            # the row.  Written as the difference rather than as a literal
+            # list so the guard keeps its meaning if either set changes:
+            # today it is empty, because the two stash-backed fields are
+            # exactly the two whose row no longer reads a plane.
+            field = tracked_field
+            if field in set(STASH_BACKED_FIELDS) - set(POSITION_ONLY_FIELDS):
+                raise ValueError(
+                    f"[relocation.track] interval_seconds = {interval} "
+                    f"of {source} is finer than the {float(consult)} s "
+                    f"cadence the tracker is consulted on, and "
+                    f"[relocation.follow] field = {field!r} is served from "
+                    "a SCRATCH STASH rather than reduced on demand. "
+                    "reflectivity exists only at history instants, and the "
+                    "uh window is reset once per relocation cadence -- so "
+                    "between consultations a track row would be computed "
+                    "from a stale plane or a partial accumulation, and "
+                    "would report a centre the nest was never steered by. "
+                    "(It would not MOVE the nest: the window reset belongs "
+                    "to the mover's consultation. This is about the record "
+                    "being true, not the run being safe.) Either set "
+                    "interval_seconds >= cadence_seconds, or track on "
+                    "field = 'pressure', which is reduced from the live "
+                    "prognostic column and is valid at every boundary.")
 
 
 def _refuse_unservable_follow_cadence(relocation, domains, source,
@@ -1350,6 +1790,18 @@ def _refuse_unservable_follow_cadence(relocation, domains, source,
     the parent.
     """
 
+    from gpuwm.core.storm_tracking import STASH_BACKED_FIELDS
+
+    # A pressure tracker reduces its plane from the live prognostic
+    # column (gpuwm.core.storm_tracking.mslp_hpa_from_state), which is
+    # valid at EVERY cycle boundary.  There is no stash to miss, so the
+    # whole contract below is inapplicable -- and enforcing it anyway
+    # would refuse a perfectly servable cadence and send the reader to a
+    # knob that has nothing to do with it.  Gated on the field rather
+    # than deleted: uh and reflectivity still depend on the stash, and
+    # the uh echo handoff is automatic, so both keep the refusal.
+    if getattr(relocation.follow, "field", None) not in STASH_BACKED_FIELDS:
+        return
     by_id = {int(dc.grid_id): dc for dc in domains}
     try:
         child = by_id[int(relocation.grid_id)]
@@ -1895,12 +2347,12 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             "rejected: feedback must be 0 (one-way) or 1 "
             "(experimental two-way child-to-parent restriction).")
     smooth_option = exp.get("smooth_option", 0)
-    if smooth_option != 0:
+    if smooth_option not in (0, 1, 2):
         raise ValueError(
             f"smooth_option = {smooth_option!r} in [experiment] of "
-            f"{source} is rejected: the parent smoother is not "
-            "implemented, including for experimental feedback = 1; set "
-            "smooth_option = 0.")
+            f"{source} is rejected: WRF's post-feedback parent smoother "
+            "options are 0 (none), 1 (sm121) or 2 (smdsm, the WRF "
+            "Registry default); it applies only when feedback = 1.")
     blend_width = _positive_int("experiment", "blend_width",
                                 exp.get("blend_width", 5), source, 0)
     spec_bdy_width = _positive_int("experiment", "spec_bdy_width",

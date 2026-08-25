@@ -11,7 +11,7 @@ small ``.idx`` object.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 import os
@@ -302,8 +302,105 @@ def test_latest_fails_closed_when_no_cycle_is_complete():
         fetch.resolve_latest_cycle(
             "gfs", 6, now=datetime(2026, 7, 28, 5, 30),
             probe=lambda url: False)
-    with pytest.raises(ValueError, match="reanalysis"):
-        fetch.resolve_latest_cycle("era5", 6)
+
+
+# ---------------------------------------------------------------------------
+# `latest` for every registered source, from declared facts
+# ---------------------------------------------------------------------------
+
+
+def test_latest_resolves_a_reanalysis_to_its_newest_published_analysis():
+    """ERA5 has a latest, and it is a time, not a refusal.
+
+    The resolver used to answer this with "--cycle latest is only
+    meaningful for gfs/gdas/hrrr; ERA5 is a reanalysis published with a
+    delay of several days" -- which describes a delay, and a delay is a
+    number, and a number resolves.  The CDS publishes no object to HEAD,
+    so the declared delay IS the answer and no probe is spent.
+    """
+
+    probed = []
+    cycle = fetch.resolve_latest_cycle(
+        "era5", 6, now=datetime(2026, 7, 28, 5, 30),
+        probe=lambda url: probed.append(url) or False)
+
+    # Five days back, snapped onto the 6-hourly analysis grid.
+    assert cycle == datetime(2026, 7, 23, 0)
+    # A job API has nothing to probe, so nothing was probed.
+    assert probed == []
+
+
+def test_latest_resolves_a_source_that_was_never_in_the_trio():
+    """RAP is not gfs/gdas/hrrr and its `latest` is derived, not branched.
+
+    The probe URLs come from the route table's own planner, so this
+    holds for every table route without a line naming one.
+    """
+
+    now = datetime(2026, 7, 28, 5, 30)
+    served = fetch.cycle_probe_urls("rap", datetime(2026, 7, 28, 2), 6)
+    cycle = fetch.resolve_latest_cycle(
+        "rap", 6, now=now, probe=lambda url: url in served)
+
+    assert cycle == datetime(2026, 7, 28, 2)
+
+
+def test_latest_refuses_an_undeclared_source_by_naming_the_absence():
+    """Not "it is not on the list" -- what the row does not declare."""
+
+    with pytest.raises(ValueError) as refusal:
+        fetch.resolve_latest_cycle("nam", 6,
+                                   now=datetime(2026, 7, 28, 5, 30))
+    text = str(refusal.value)
+    assert "nam" in text
+    assert "declares when that source initializes" in text
+    # And it must not name any other source as the reason.
+    assert "gfs/gdas/hrrr" not in text
+    assert "ERA5" not in text and "reanalysis" not in text
+
+
+def test_every_registered_source_resolves_latest_or_says_what_it_lacks():
+    """THE GATE THAT PREVENTS THE NEXT TRIO.
+
+    Every row in the registry is asked the same question, and the answer
+    is either a concrete cycle or a refusal DERIVED from that row.  A
+    future capability decided by a hand-written list of model names
+    fails here, because the refusal it produces will not carry the
+    row-derived sentence.
+    """
+
+    from gpuwm.source_adapters import source_adapters
+    from gpuwm.source_cycles import cycle_grid_for
+
+    now = datetime(2026, 7, 28, 5, 30)
+    resolved, refused = [], []
+    for adapter in source_adapters():
+        source = adapter.source_id
+        try:
+            cycle = fetch.resolve_latest_cycle(
+                source, 0, now=now, probe=lambda url: True)
+        except ValueError as refusal:
+            assert cycle_grid_for(source) is None, (
+                f"{source} declares a cycle grid but latest refused it")
+            assert "declares when that source initializes" in str(refusal), (
+                f"{source} was refused by something other than its row")
+            refused.append(source)
+            continue
+        except RuntimeError:
+            # A probe that answers yes cannot exhaust the ladder; this
+            # would be a horizon miss, which is still a derived answer.
+            refused.append(source)
+            continue
+        assert cycle_grid_for(source) is not None
+        assert cycle <= now
+        resolved.append(source)
+
+    # The trio is dead: every table-route source resolves, and so does
+    # the reanalysis that used to be the refusal's own example.
+    for source in ("gfs", "gdas", "hrrr", "era5", "rap", "icon-eu",
+                   "gem-gdps", "aifs"):
+        assert source in resolved, f"{source} should resolve latest"
+    assert refused, "the gate is vacuous if nothing is refused"
 
 
 # ---------------------------------------------------------------------------

@@ -330,10 +330,20 @@ def _cpu_initializer(monkeypatch, parent_node, reference_dc,
         reference_j_parent_start=reference_dc.j_parent_start)
 
 
-def test_initializer_reproduces_the_t0_terrain_adjustment(monkeypatch):
-    """The rebuilt child's base channel equals the t=0 lineage composed
-    independently from the nest_init primitives on the same footprint,
-    and the adjustment demonstrably FIRED (treatment, not a no-op)."""
+def test_initializer_blends_terrain_but_takes_no_t0_column_correction(
+        monkeypatch):
+    """A MOVE IS NOT AN INITIALIZATION, and WRF spells the difference out.
+
+    Both paths blend the same terrain triple.  Only the t = 0 path then
+    corrects theta/qv/MU for the base-column-mass change:
+    ``adjust_tempqv`` is called at ``mediation_integrate.F:763`` and
+    ``press_adj`` set ``.TRUE.`` at :809, while
+    ``share/mediation_nest_move.F`` calls the former nowhere and sets the
+    latter ``.FALSE.`` for parent (:242) and nest (:261) alike.
+
+    So this pins BOTH halves: the blend and the re-derivation still land
+    bitwise, and the column-mass correction demonstrably does NOT fire.
+    """
     from gpuwm.core.nest_interp import blend_terrain
     from gpuwm.ingest.real import _make_real_base
 
@@ -377,22 +387,31 @@ def test_initializer_reproduces_the_t0_terrain_adjustment(monkeypatch):
     np.testing.assert_array_equal(state.thb, np.asarray(base_e.thb, F32))
     np.testing.assert_array_equal(state.alb, np.asarray(base_e.alb, F32))
 
-    # Treatment fired: the base-mass change reached theta (adjust_tempqv)
-    # and press_adj wrote MU -- in the blend frame only, where the
-    # blended terrain differs from the fine input.
+    # thp is still REBASED against the newly derived thb, so that total
+    # theta survives the base change -- that part a move does need.
     parent_thp = sint32(parent_node.state.thp)
     assert np.count_nonzero(
         state.thp.view(np.uint32) != parent_thp.view(np.uint32)) > 0
-    frame = ni.blend_zone_mask((_CNY, _CNX), spec_bdy_width=1,
-                               blend_width=1)
-    # adjust_tempqv leaves MU alone, so any change from the parent SINT
-    # is press_adj's -- and press_adj corrects (blended - fine) terrain,
-    # which is nonzero only inside the blend frame.
+
+    # But press_adj did NOT fire.  It is the only thing in this sequence
+    # that writes MU, so MU matching the parent SINT bitwise EVERYWHERE
+    # -- inside the blend frame as well as out -- is the whole claim.
     mup_parent = sint32(parent_node.state.mup)
     mup_delta = state.mup.view(np.uint32) != mup_parent.view(np.uint32)
-    assert mup_delta.any() and not mup_delta[~frame].any()
+    frame = ni.blend_zone_mask((_CNY, _CNX), spec_bdy_width=1,
+                               blend_width=1)
+    assert frame.any(), "a blend frame must exist or this proves nothing"
+    assert not mup_delta.any(), (
+        "press_adj wrote MU on a relocation; WRF sets press_adj = .FALSE. "
+        "on a move (share/mediation_nest_move.F:242,261)")
+
+    # And adjust_tempqv did not touch vapour: on a move the child's
+    # columns are its own and already consistent with its terrain.
+    if parent_node.state.qv is not None:
+        np.testing.assert_array_equal(state.qv, sint32(parent_node.state.qv))
+
     np.testing.assert_array_equal(state.mup0, state.mup)
-    # RK seeds re-taken after the adjustment.
+    # RK seeds re-taken after the re-derivation.
     np.testing.assert_array_equal(state.thp0, state.thp)
 
 
@@ -517,10 +536,22 @@ def test_donor_fill_apply_handles_soil_stacks():
 
 
 # ---------------------------------------------------------------------------
-# 5. Blend-frame rebase: totals survive exactly where bases differ
+# 5. After the transplant: perturbations carry bitwise, base changes counted
 # ---------------------------------------------------------------------------
 
-def test_rebase_preserves_totals_only_where_base_bytes_differ(monkeypatch):
+def test_perturbations_carry_bitwise_and_base_changes_are_counted(monkeypatch):
+    """The blend frame resplits; it does NOT preserve the column total.
+
+    This pinned the opposite contract until 2026-08-21.  Preserving the
+    total across a blend-frame base change refuses the base-state slab
+    between the two effective terrains, and MEASURED on Melissa's eighth
+    relocation (d02's southern frame on the Colombian Andes, fine terrain
+    2271 m against parent ~1100 m) that manufactured a 4.6 kPa dry-mass
+    hole -- ``MU`` at -4590 Pa, the model surface 100 m BELOW its own
+    ``HGT`` -- and the column went non-finite six d02 steps later.  WRF's
+    ``mediation_nest_move.F`` carries the perturbation arrays and lets
+    the totals move; so does this.
+    """
     import gpuwm.core.diagnostics as diagnostics
 
     diagnosed = []
@@ -542,15 +573,21 @@ def test_rebase_preserves_totals_only_where_base_bytes_differ(monkeypatch):
     source = SimpleNamespace(thp=thp_src, thb=thb_src)
     target = SimpleNamespace(thp=thp_src.copy(), thb=thb_dst)
     cfg = SimpleNamespace(hypsometric_opt=2)
-    receipt = ri.rebase_transplanted_perturbations(
+    receipt = ri.rederive_after_transplant(
         source_state=source, target_state=target, plan=plan, cfg=cfg)
-    assert receipt["rebased_cells"]["thp"] == nz * nx
+    # The base-changed cells are still COUNTED -- that is the receipt's
+    # statement of how much ground changed role, and a nonzero count over
+    # water is still the wiring defect worth catching.
+    assert receipt["base_changed_cells"]["thp"] == nz * nx
     assert receipt["diagnostics_rederived"] and diagnosed == [2]
-    # Bulk: the bitwise stamp is untouched.
-    np.testing.assert_array_equal(target.thp[:, 1:, :], thp_src[:, 1:, :])
-    # Frame: the TOTAL is preserved in float32 split arithmetic.
-    expected = (thp_src[:, 0, :] + thb_src[:, 0, :]) - thb_dst[:, 0, :]
-    np.testing.assert_array_equal(target.thp[:, 0, :], expected)
+    assert "bitwise" in receipt["perturbation_carry"]
+    # Every cell, frame included, keeps the bitwise stamp.
+    np.testing.assert_array_equal(target.thp, thp_src)
+    # And the frame's TOTAL therefore moves by exactly the base change,
+    # which is the slab of air between the two effective terrains.
+    moved = (target.thp[:, 0, :] + thb_dst[:, 0, :]) - (
+        thp_src[:, 0, :] + thb_src[:, 0, :])
+    np.testing.assert_allclose(moved, F32(1.5), rtol=0, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------

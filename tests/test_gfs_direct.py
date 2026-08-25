@@ -1387,17 +1387,26 @@ def test_the_gfs_front_door_forwards_the_corridor_request_only_when_named():
     assert any("requires --geog-root" in error for error in errors)
 
 
-def test_the_corridor_request_is_a_gfs_route_flag_and_says_so_elsewhere():
+def test_the_corridor_request_is_refused_by_the_routes_that_cannot_seal_one():
+    """`--statics-corridor` is no longer GFS-only.
+
+    A moving nest needs terrain and land use for everywhere it can reach,
+    so the mapped and ERA5 routes learned to seal a corridor too, and
+    both therefore ACCEPT the flag now.  The routes that cannot build one
+    still refuse it by name, which is the half worth pinning: a flag
+    that is silently ignored is worse than one that is refused.
+    """
     from gpuwm import source_cli
 
     args = _gfs_front_door_args(["--statics-corridor"])
-    for validator in (source_cli._required_era5_args,
-                      source_cli._required_twentycr_args,
-                      source_cli._required_mapped_args,
+    for validator in (source_cli._required_twentycr_args,
                       source_cli._required_hrrr_args):
         errors = validator(args)
-        assert any("--statics-corridor" in error for error in errors), \
-            validator.__name__
+        assert any("--statics-corridor" in error for error in errors),             validator.__name__
+    for validator in (source_cli._required_era5_args,
+                      source_cli._required_mapped_args):
+        errors = validator(args)
+        assert not any("--statics-corridor" in error for error in errors),             validator.__name__
 
 
 def test_the_gfs_adapter_cli_carries_the_corridor_request_to_the_preparation(

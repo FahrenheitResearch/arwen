@@ -214,30 +214,21 @@ def _validate_source(raw: str) -> None:
 def _cycle_validator(source: str):
     """A cycle validator bound to the source, because the rules differ.
 
-    ``latest`` resolves for GFS and HRRR and is refused for ERA5 -- a
-    reanalysis with weeks of latency has no "latest" to probe.  Catching
-    that here, while the reader is still typing, is better than
-    accepting it and failing after the point and hours are already
-    collected.
+    Whether ``latest`` has an answer is a property of the source's
+    declared initialization grid, asked here while the reader is still
+    typing rather than after the point and hours are already collected.
     """
 
     def validate(raw: str) -> None:
         if raw.strip().lower() == "latest":
-            if source == "era5":
-                raise ValueError(
-                    "era5 is a reanalysis with weeks of latency, so there "
-                    "is no 'latest' to probe -- name the analysis time as "
-                    "YYYY-MM-DDTHH (UTC)")
-            # Everything else `latest` cannot mean is the flags door's own
-            # rule, asked here rather than restated: a source with no
-            # download route has no mirror to probe for a complete cycle.
-            from gpuwm.domain_wizard import source_has_fetch_front_door
+            # WHETHER `latest` HAS AN ANSWER is the resolver's question,
+            # asked here rather than restated.  This door used to answer
+            # it with a branch on era5 and a fetch-door check, so a
+            # reanalysis whose publication delay is a declared number was
+            # told it had no latest at all.
+            from gpuwm.fetch import require_cycle_grid
 
-            if not source_has_fetch_front_door(source):
-                raise ValueError(
-                    f"'latest' cannot be resolved for {source}: nothing can "
-                    "probe its mirrors for a complete cycle yet -- name the "
-                    "cycle you staged as YYYY-MM-DDTHH (UTC)")
+            require_cycle_grid(source)
             return
         from gpuwm.fetch import parse_cycle
 
@@ -290,6 +281,22 @@ def _default_out_path(lat: float, lon: float) -> str:
     return str(Path(DEFAULT_OUT_DIR) / f"{_default_name(lat, lon)}.toml")
 
 
+def default_cycle_answer(source: str) -> str | None:
+    """What the cycle prompt offers for ``source``, or ``None``.
+
+    ``latest`` is offered where something can resolve it, and that is
+    ONE question: does this source declare when it initializes.  The
+    predicate is the resolver's own, so the default can never offer an
+    answer the next prompt refuses -- which is what it did while two
+    hand-written rules (a branch naming era5, and a fetch-door check)
+    stood in for it.
+    """
+
+    from gpuwm.source_cycles import cycle_grid_for
+
+    return "latest" if cycle_grid_for(source) is not None else None
+
+
 def collect(*, printer=print) -> list[str]:
     """Run the prompt session; return the ``argv`` it assembled.
 
@@ -317,15 +324,7 @@ def collect(*, printer=print) -> list[str]:
     for note in source_credential_notes(source):
         printer(f"  note: {note}")
 
-    # `latest` is only offered where something can resolve it: it means
-    # "the newest cycle whose objects are published", which only the fetch
-    # door's per-source probe can answer.  Offering it for a source with
-    # no download route would default the reader into a refusal.
-    from gpuwm.domain_wizard import source_has_fetch_front_door
-
-    cycle_default = ("latest"
-                     if source != "era5" and source_has_fetch_front_door(source)
-                     else None)
+    cycle_default = default_cycle_answer(source)
     cycle = _ask("  cycle, YYYY-MM-DDTHH or latest", cycle_default,
                  _cycle_validator(source))
 

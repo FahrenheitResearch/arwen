@@ -1736,22 +1736,13 @@ def _resolve_cycle(raw: str, *, source: str, hours: int,
 
     if raw.strip().lower() != "latest":
         return parse_cycle(raw, source)
-    if source == "era5":
-        raise ValueError(
-            "--cycle latest is not available for --source era5: ERA5 is a "
-            "reanalysis with weeks of latency, so name the analysis time "
-            "you want as YYYY-MM-DDTHH (UTC)")
-    if not source_has_fetch_front_door(source):
-        # `latest` means "the newest cycle whose objects are already
-        # published", and that is a question only the fetch door's
-        # per-source probe can ask.  Refused here, by name, rather than
-        # relayed as a network failure the reader cannot act on.
-        raise ValueError(
-            f"--cycle latest is not available for --source {source}: "
-            "resolving it means probing that source's mirrors for a "
-            "complete cycle, and `gpuwm fetch` has no download route for "
-            "this source yet, so nothing can do the probing.  Name the "
-            "cycle you staged as YYYY-MM-DDTHH (UTC)")
+    # NO PER-SOURCE BRANCH HERE.  This door used to refuse era5 by name
+    # ("a reanalysis with weeks of latency") and everything without a
+    # fetch front door by another, so `latest` was a capability three
+    # models had.  It is now one question asked of the source's declared
+    # initialization grid, and the refusal for a source that declares
+    # none is that resolver's own -- which names the missing declaration
+    # rather than a list this door would have to keep in step.
     from gpuwm.fetch import resolve_latest_cycle
     try:
         cycle = resolve_latest_cycle(source, start_hour + hours)
@@ -1761,8 +1752,15 @@ def _resolve_cycle(raw: str, *, source: str, hours: int,
             " -- the resolver probes the public mirrors, so this needs "
             "network access; pass an explicit YYYY-MM-DDTHH (UTC) cycle "
             "instead") from error
+    # "complete" is a claim a PROBE earns.  A source with no object to
+    # probe resolves from its declared publication delay, and saying
+    # "complete" there would attest to a check nothing ran.
+    from gpuwm.fetch import cycle_is_probeable
+
+    standing = ("newest complete" if cycle_is_probeable(source)
+                else "newest published")
     print(f"gpuwm domain: --cycle latest resolved to "
-          f"{cycle:%Y-%m-%dT%H}Z (newest complete {source} cycle "
+          f"{cycle:%Y-%m-%dT%H}Z ({standing} {source} cycle "
           f"covering f{start_hour + hours:03d})")
     return cycle
 

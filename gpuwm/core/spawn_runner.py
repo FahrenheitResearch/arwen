@@ -31,8 +31,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
-import tempfile
 from pathlib import Path
 
 from gpuwm.core.uh_diag import (UH_SPAWN_WINDOW_SLOT,
@@ -59,6 +57,39 @@ _SPAWN_STATE_BREAKAGE = {
     "quiet_since": "a sustained-decay timer holds instead of retiring",
     "spawns_executed": "the run's own account of what it did is wrong",
 }
+
+#: How many HELD boundary records the in-memory ledger keeps.
+#:
+#: A held record says the tree did not change, and there is one per leg
+#: boundary for the whole run -- ~4,600 of them at 384 h.  The FILE keeps
+#: every one of them (that is the audit trail); memory keeps a recent
+#: window, so the ledger a caller embeds in its own receipt is bounded by
+#: the CONFIG rather than by the forecast length.  Decisions -- a spawn,
+#: a retirement, a re-arm, the closing summary -- are never evicted:
+#: their count is bounded by slots x max_firings, so keeping them all
+#: costs nothing that grows.
+#:
+#: 64 is a window, not a budget: enough that a failure's recent history
+#: is in hand without opening the file, small enough that the ledger is
+#: the same size at hour 400 as at hour 4.
+HELD_RECEIPTS_KEPT = 64
+
+#: The record shape of the receipts stream: ONE COMPLETE JSON OBJECT PER
+#: LINE, appended and flushed as each boundary is decided.
+#:
+#: It replaces a whole-file rewrite.  ``_atomic_json`` re-serialised the
+#: entire ledger at every boundary, so the bytes a run wrote grew as the
+#: SQUARE of its length -- at 384 h that is tens of gigabytes of writes
+#: to a diagnostic nobody reads until the run ends.  It also republished
+#: through a temporary and ``os.replace``, which is the exact pattern
+#: that killed a 6 h run on Windows when a user tailed the file
+#: (WinError 5); the track writer already moved off it for that reason
+#: (gpuwm.core.storm_track_writer._Stream.open) and this follows it.
+#:
+#: Every line carries its own ``contract``, so a line stands alone: a
+#: killed process loses nothing earlier, and a reader never has to parse
+#: a truncated array.
+RECEIPTS_SUFFIX = ".jsonl"
 
 _LOG = logging.getLogger(__name__)
 
@@ -95,22 +126,6 @@ def _placement(value, what: str) -> tuple[int, int]:
             f"{what} must be a two-element parent-cell placement, got "
             f"{value!r}")
     return pair
-
-
-def _atomic_json(path: Path, payload: dict) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream, indent=2, sort_keys=True, default=str)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 class SpawnRunner:
@@ -150,6 +165,15 @@ class SpawnRunner:
         self.array_module = array_module
         self.receipts_path = (None if receipts_path is None
                               else Path(receipts_path))
+        #: The append-only stream, opened on the first record.  Lazy so a
+        #: runner that is constructed and never consulted leaves no file
+        #: behind claiming a boundary happened.
+        self._receipt_stream = None
+        #: Whether this runner has ever opened its stream.  Latches the
+        #: truncate to the FIRST record so a reopen appends.
+        self._receipts_opened = False
+        #: How many HELD records the in-memory ledger currently holds.
+        self._held_kept = 0
         #: grid_id -> fired (i_parent_start, j_parent_start)
         self.spawned: dict[int, tuple[int, int]] = {}
         #: grid_id -> the live ChildInitResult carried across legs
@@ -214,6 +238,107 @@ class SpawnRunner:
             and self.episodes.get(gid, 0) < int(self.experiment.domain(gid).rearm.max_firings)
             for gid in self.retired)
         return bool(self.controller.pending or active_retire or can_rearm)
+
+    def next_decision_time(self, t: float) -> float | None:
+        """The earliest model time a leg boundary could change the tree.
+
+        ``None`` means "the next boundary, whenever it is": something
+        here reads the LIVE FIELD, so the instant is unknowable and the
+        walk must keep asking.  A number means nothing can happen before
+        it, and :func:`gpuwm.runtime.spawn_leg_boundary` may run the leg
+        straight to it.
+
+        THE DEFECT THIS CLOSES.  :attr:`needs_boundaries` stays true for
+        the whole run whenever any retired slot can still re-arm, and
+        every boundary it grants costs one full schedule rebuild
+        (:func:`gpuwm.runtime.walk_spawn_legs`).  A 384 h run with a
+        re-armable slot therefore rebuilt its schedule ~4,600 times to
+        discover ~4,600 times that a cooldown had not elapsed.  A
+        cooldown is a KNOWN instant; so is a window that has not opened,
+        and so is a manual trigger.  Each of those contributes its own
+        instant here instead of a boundary.
+
+        Deliberately EARLY where it cannot be exact: a slot whose re-arm
+        also waits on a parent episode reports its cooldown anyway.
+        Asking too soon costs one rebuild; asking too late would miss a
+        decision, and this is a cost fix, not a policy change.
+
+        A STASH-BACKED WATCH FORFEITS THE WHOLE OPTIMISATION, and that is
+        the one place skipping a boundary would change an ANSWER rather
+        than a cost.  ``uh`` and ``reflectivity`` are consumer-owned
+        windows that this runner ZEROES at every boundary it takes: the
+        signal a watch reads is "the strongest since I last looked".
+        Skip six hours of boundaries and the next look sees six hours of
+        accumulation, so a slot coming off its cooldown would fire
+        immediately on rotation that happened while it was spent -- the
+        same stale-signal episode the re-arm's own "not at this
+        boundary" rule exists to prevent.  Whenever any slot that can
+        still act reads one of those planes, every boundary is taken.
+        Pressure is exempt because it is reduced from the live column and
+        carries no window at all (STASH_BACKED_FIELDS).
+        """
+        from gpuwm.core.storm_tracking import STASH_BACKED_FIELDS
+
+        t = float(t)
+        horizons: list[float] = []
+        for gid in sorted(self.controller.watches):
+            watch = self.controller.watches[gid]
+            spent = (watch.closed and gid not in self.spawned
+                     and gid not in self.retired)
+            if spent:
+                continue
+            triggers = [watch.config.trigger]
+            retire = self._retirement.get(gid)
+            if retire is not None:
+                triggers.append(retire.config.trigger)
+            if any(name in STASH_BACKED_FIELDS for name in triggers):
+                return None
+        for gid in sorted(self.controller.watches):
+            watch = self.controller.watches[gid]
+            if gid in self.spawned:
+                # LIVE.  Only a retirement policy can end it.
+                retire = self._retirement.get(gid)
+                if retire is None:
+                    continue
+                cfg = retire.config
+                born = float(self.birth_times.get(gid, t))
+                floor_t = born + float(cfg.min_lifetime_s)
+                if cfg.trigger == "time":
+                    horizons.append(max(floor_t, born + float(cfg.at_s)))
+                    continue
+                # A field decay reads the plane.  Before min_lifetime_s
+                # every evaluation is a guaranteed hold; after it the
+                # instant belongs to the weather.
+                if t < floor_t:
+                    horizons.append(floor_t)
+                    continue
+                return None
+            if gid in self.retired:
+                rearm = getattr(self.experiment.domain(gid), "rearm", None)
+                if rearm is None or self.episodes.get(gid, 0) >= int(
+                        rearm.max_firings):
+                    continue                      # the slot is spent
+                retired_t = self.retired_times.get(gid)
+                if retired_t is None:
+                    return None
+                horizons.append(float(retired_t) + float(rearm.cooldown_s))
+                continue
+            if watch.fired or watch.closed:
+                continue
+            cfg = watch.config
+            if cfg.trigger == "time":
+                horizons.append(float(cfg.at_s))
+                continue
+            if t < float(cfg.earliest_s):
+                horizons.append(float(cfg.earliest_s))
+                continue
+            # Inside its window, a field trigger can fire at any
+            # boundary; past latest_s it still owes one boundary, to
+            # record that the window closed.
+            return None
+        if not horizons:
+            return None
+        return min(horizons)
 
     def _descendants(self, grid_id: int) -> set[int]:
         out = {int(grid_id)}
@@ -477,17 +602,63 @@ class SpawnRunner:
 
     # -- receipts ---------------------------------------------------------
 
+    def _append_to_stream(self, entry: dict) -> None:
+        """One line, flushed.  See :data:`RECEIPTS_SUFFIX` for why."""
+        if self.receipts_path is None:
+            return
+        if self._receipt_stream is None:
+            self.receipts_path.parent.mkdir(parents=True, exist_ok=True)
+            # Truncate ONCE, on this runner's first record, and append
+            # for the rest of its life -- one file per run segment, never
+            # renamed.  Each segment owns its own ledger
+            # (docs/nest-lifecycle.md), and the runner already refuses an
+            # --outdir that holds a previous run, so a fresh directory is
+            # a fresh file.
+            #
+            # The mode is latched because close_receipt() closes the
+            # handle: a caller that records anything after it -- a second
+            # close, a driver that summarises twice -- would otherwise
+            # truncate the whole ledger to that one line.
+            mode = "a" if self._receipts_opened else "w"
+            self._receipts_opened = True
+            self._receipt_stream = self.receipts_path.open(
+                mode, encoding="utf-8", newline="\n")
+        self._receipt_stream.write(
+            json.dumps(entry, sort_keys=True, default=str) + "\n")
+        # Flushed per record: a killed process loses nothing, because the
+        # bytes are already with the OS and every record is one complete
+        # line, so nothing earlier can be corrupted.
+        self._receipt_stream.flush()
+
+    def _retain(self, entry: dict) -> None:
+        """Keep the entry in memory, bounded in the run's LENGTH.
+
+        Every decision is kept -- their count is bounded by the config.
+        Held boundaries are the stream that grows with the forecast, so
+        the oldest is evicted once the window is full.  The window is
+        the RECENT end, because ``receipts[-1]`` is what every caller
+        reads it for.
+        """
+        self.receipts.append(entry)
+        if entry.get("event") != "held":
+            return
+        self._held_kept += 1
+        while self._held_kept > HELD_RECEIPTS_KEPT:
+            for index, row in enumerate(self.receipts):
+                if row.get("event") == "held":
+                    del self.receipts[index]
+                    self._held_kept -= 1
+                    break
+            else:                                     # pragma: no cover
+                self._held_kept = 0
+
     def _record(self, entry: dict) -> dict:
         entry = {"contract": SPAWN_RUNNER_CONTRACT, **entry}
         rows = self.controller.drain_receipts()
         if rows:
             entry["watch_receipts"] = rows
-        self.receipts.append(entry)
-        if self.receipts_path is not None:
-            _atomic_json(self.receipts_path, {
-                "contract": SPAWN_RUNNER_CONTRACT,
-                "receipts": self.receipts,
-            })
+        self._append_to_stream(entry)
+        self._retain(entry)
         return entry
 
     # -- the leg-boundary hook --------------------------------------------
@@ -764,8 +935,11 @@ class SpawnRunner:
         if model is not None and getattr(
                 model, "_spawn_receipts", None) is not self.receipts:
             model._spawn_receipts = self.receipts
+        if self._receipt_stream is not None:
+            self._receipt_stream.close()
+            self._receipt_stream = None
         return entry
 
 
-__all__ = ["SPAWN_RUNNER_CONTRACT", "SPAWN_STATE_KEYS", "SpawnRunner",
-           "SpawnRunnerRefusal"]
+__all__ = ["HELD_RECEIPTS_KEPT", "RECEIPTS_SUFFIX", "SPAWN_RUNNER_CONTRACT",
+           "SPAWN_STATE_KEYS", "SpawnRunner", "SpawnRunnerRefusal"]

@@ -44,13 +44,14 @@ def _recent_cycle(route: fetch_routes.Route, *, lag_hours: int) -> datetime:
     raise AssertionError(f"no cycle hour for {route.source_id}")
 
 
-#: ``source -> publication lag (hours)`` to look back by, measured on
-#: 2026-08-17.  Deliberately generous: this suite proves that a resolved
-#: URL is real, not that a producer is punctual.
+#: ``source -> publication lag (hours)`` to look back by.  READ from the
+#: route table, which now ships the same measured numbers this suite
+#: used to keep privately: they are what `--cycle latest` resolves
+#: against, so a private copy here would let the shipped resolver drift
+#: from the only place the lags were ever checked against a live host.
 _LAG_HOURS = {
-    "hrrr-prs": 3, "rap": 3, "rrfs": 5, "gefs": 8, "aigfs": 6,
-    "aigefs": 6, "ecmwf-open-data": 12, "aifs": 8, "icon-eu": 5,
-    "gem-gdps": 8,
+    source: fetch_routes.route_for(source).publication_lag_hours
+    for source in fetch_routes.route_ids()
 }
 
 

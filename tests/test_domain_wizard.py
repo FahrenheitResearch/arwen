@@ -322,9 +322,59 @@ def test_cycle_latest_resolves_instead_of_contradicting_itself(
     assert "--cycle 2026-07-29T18" in printed
 
 
-def test_cycle_latest_is_refused_for_era5_with_a_reason(tmp_path, capsys):
-    rc, _ = _run_wizard(tmp_path, source="era5", cycle="latest")
-    _assert_refused(capsys, "reanalysis with weeks of latency", rc)
+def test_cycle_latest_resolves_for_a_reanalysis(tmp_path, capsys):
+    """A reanalysis has a latest, and this door writes it into the file.
+
+    It used to refuse here -- "a reanalysis with weeks of latency" --
+    which is a statement about a DELAY, and a delay is a number, and a
+    number resolves.  The wizard asks the resolver rather than carrying
+    a list of the sources that may ask.
+    """
+
+    from datetime import datetime, timedelta, timezone
+
+    rc, out = _run_wizard(tmp_path, source="era5", cycle="latest")
+    assert rc == 0, capsys.readouterr().err
+    emitted = out.read_text(encoding="utf-8")
+    # The RESOLVED cycle, never the literal query.  (Not a bare "latest"
+    # search: pytest's tmp_path carries this test's own name.)
+    assert 'cycle = "latest"' not in emitted
+    printed = capsys.readouterr().out
+    assert "--cycle latest resolved to" in printed
+    start = [line for line in emitted.splitlines()
+             if line.startswith("start_time = ")][0]
+    resolved = datetime.strptime(start.split(" = ")[1].strip(),
+                                 "%Y-%m-%dT%H:%M:%S")
+    # Behind real time by the delay the row declares, on its own grid.
+    assert resolved < datetime.now(timezone.utc).replace(
+        tzinfo=None) - timedelta(days=4)
+    assert resolved.hour in (0, 6, 12, 18)
+
+
+def test_every_source_this_door_can_plan_can_also_resolve_latest():
+    """`latest` is offered exactly where it resolves, with no list.
+
+    The interactive door defaults the cycle question to ``latest`` for
+    any source it can plan; a source it offers that cannot resolve one
+    would default the reader straight into a refusal.  The two used to
+    be kept in step by hand -- one branch naming era5, another asking
+    whether a fetch door existed -- which is how a reanalysis came to be
+    offered nothing at all.
+    """
+
+    from gpuwm import domain_interactive
+    from gpuwm.domain_wizard import planable_sources
+    from gpuwm.source_cycles import cycle_grid_for
+
+    for source in planable_sources():
+        offered = domain_interactive.default_cycle_answer(source)
+        resolves = cycle_grid_for(source) is not None
+        assert (offered == "latest") is resolves, (
+            f"{source} is offered {offered!r} but "
+            f"{'can' if resolves else 'cannot'} resolve one")
+    # Not vacuous: the reanalysis that used to be excluded by name is
+    # offered `latest` now, and it resolves.
+    assert domain_interactive.default_cycle_answer("era5") == "latest"
 
 
 def test_tropical_points_get_the_halved_root_clock(tmp_path, capsys):

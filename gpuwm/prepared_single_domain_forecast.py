@@ -590,6 +590,16 @@ MAPPED_HIERARCHY_PROOF_KEYS = frozenset({
     "artifact_receipt", "wrf_manifest", "timing_seconds",
     "proof_content_sha256",
 })
+#: Top-level proof keys the writer publishes ONLY when that preparation
+#: opted in, so the runner has to take the document with them and
+#: without them.  ``gpuwm/mapped_direct.py`` spreads these in
+#: conditionally -- ``**({...} if <receipt> is not None else {})`` --
+#: which is why they cannot sit in the required sets above: a mapped
+#: bundle prepared without the corridor carries byte-for-byte the proof
+#: it always did, and every retained hash stays valid.  Requiring them
+#: would refuse that bundle; ignoring them would refuse the opted-in one,
+#: and the exactness for every OTHER key is what this inventory is for.
+MAPPED_OPTIONAL_PROOF_KEYS = frozenset({"statics_corridor"})
 _SOURCE_ADAPTER = {
     # The generic mapped adapter, truthfully: a packaged profile is
     # prepared by `gpuwm.mapped_direct` with nothing model-specific in
@@ -3932,9 +3942,15 @@ def _validate_packaged_mapped_evidence(
     expected_proof_keys = (
         direct_proof_keys if schema == _PROOF_SCHEMA[source]
         else hierarchy_proof_keys)
+    # Every required key present, and nothing beyond them but the
+    # declared-optional ones: a missing key and an unrecognised key are
+    # both still refusals, which is the exactness this inventory exists
+    # to hold.
+    observed = set(proof)
     if (schema not in {
             _PROOF_SCHEMA[source], _HIERARCHY_PROOF_SCHEMA[source]}
-            or set(proof) != expected_proof_keys):
+            or not expected_proof_keys <= observed
+            or observed - expected_proof_keys - MAPPED_OPTIONAL_PROOF_KEYS):
         raise ValueError(f"mapped {source} proof top-level inventory differs")
     if schema == _HIERARCHY_PROOF_SCHEMA[source] \
             and not isinstance(proof.get("target_contract"), dict):

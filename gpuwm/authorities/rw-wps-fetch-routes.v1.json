@@ -33,6 +33,7 @@
         {"name": "aws", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+      "publication_lag_hours": 3,
       "ladders": [
         {"cycle_hours": [0, 6, 12, 18], "steps": [[48, 1]]},
         {"cycle_hours": null, "steps": [[18, 1]]}
@@ -67,6 +68,7 @@
         {"name": "aws", "base": "https://noaa-rap-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+      "publication_lag_hours": 3,
       "ladders": [
         {"cycle_hours": [3, 9, 15, 21], "steps": [[51, 1]]},
         {"cycle_hours": null, "steps": [[21, 1]]}
@@ -103,6 +105,7 @@
       "host_note": "noaa-rrfs-pds is the RETIRED prototype feed: it stopped mid-day on 2026-08-12 by design and nothing newer will ever appear there. The operational bucket is noaa-rrfs-ops-pds, and NOMADS serves the same product set under rrfs/v1.0 (rrfs/prod is 403 until the 2026-10-06 implementation).",
       "cycle_note": "RRFS runs hourly, but only the 00/06/12/18Z cycles publish the hourly prslev/2dfld pair this profile initialises from. MEASURED 2026-08-16: a synoptic cycle holds 1,846 objects with prslev f000..f084; an off-synoptic cycle holds 144, all of them sub-hourly 2dfld, with no prslev at any lead. Offering the off-synoptic cycles here would resolve keys that are 404s.",
       "cycle_hours": [0, 6, 12, 18],
+      "publication_lag_hours": 5,
       "ladders": [
         {"cycle_hours": null, "steps": [[84, 1]]}
       ],
@@ -143,6 +146,7 @@
         {"name": "aws", "base": "https://noaa-gefs-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "cycle_hours": [0, 6, 12, 18],
+      "publication_lag_hours": 8,
       "ladders": [
         {"cycle_hours": [0], "steps": [[240, 3], [840, 6]]},
         {"cycle_hours": null, "steps": [[240, 3], [384, 6]]}
@@ -201,6 +205,7 @@
       ],
       "host_note": "NOMADS ONLY, and the refusal to mirror is deliberate. noaa-nws-graphcastgfs-pds publishes objects under byte-identical key names that are a DIFFERENT product -- the experimental EAGLE stream, subCentre 2 against the operational subCentre 0, 65 pres messages against 78, and 500 hPa geopotential height differing by 8.7 gpm. Every packaged selector pins subcenter=0, so the S3 copies refuse at decode by identity octet. Nothing in the filename distinguishes them. SCN 25-89: 'Data for these models will be on the NCEP NOMADS server only'. NOMADS keeps a 10-day rolling window; there is no archive behind this door.",
       "cycle_hours": [0, 6, 12, 18],
+      "publication_lag_hours": 6,
       "ladders": [{"cycle_hours": null, "steps": [[384, 6]]}],
       "cadences": [6],
       "default_cadence": 6,
@@ -249,6 +254,7 @@
       ],
       "host_note": "the S3 mirror lags NOMADS by about three hours and is the EAGLE experimental line's own bucket; NOMADS is the operational door.",
       "cycle_hours": [0, 6, 12, 18],
+      "publication_lag_hours": 6,
       "ladders": [{"cycle_hours": null, "steps": [[384, 6]]}],
       "cadences": [6],
       "default_cadence": 6,
@@ -306,6 +312,7 @@
       ],
       "host_note": "only the 0.25 deg open set is CC-BY-4.0; the 9 km HRES fields are licensed and are not behind this door. IFS publishes LATER than AIFS -- a cycle whose aifs-single tree is complete may hold only a BUFR track file here.",
       "cycle_hours": [0, 6, 12, 18],
+      "publication_lag_hours": 12,
       "ladders": [
         {"cycle_hours": [0, 12], "steps": [[144, 3], [360, 6]]},
         {"cycle_hours": null, "steps": [[144, 3]]}
@@ -340,6 +347,7 @@
         {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "retention_hours": null, "why": "the mirror, reachable with --transport aws"}
       ],
       "cycle_hours": [0, 6, 12, 18],
+      "publication_lag_hours": 8,
       "ladders": [{"cycle_hours": null, "steps": [[360, 6]]}],
       "cadences": [6],
       "default_cadence": 6,
@@ -372,6 +380,7 @@
       "host_note": "opendata.dwd.de keeps roughly a rolling day; there is no archive behind this door. Every object is bz2-wrapped and stays that way -- the acquisition codec stages them for the decoder.",
       "coverage_note": "ICON-EU spans 23.5 W to 62.5 E, 29.5 to 70.5 N. A domain outside that window is refused at prep by the horizontal mapper, which names the offending corner and the window the source covers.",
       "cycle_hours": [0, 3, 6, 9, 12, 15, 18, 21],
+      "publication_lag_hours": 5,
       "ladders": [
         {"cycle_hours": [0, 6, 12, 18], "steps": [[78, 1], [120, 3]]},
         {"cycle_hours": null, "steps": [[30, 1], [48, 6]]}
@@ -434,6 +443,7 @@
       ],
       "host_note": "MSC Datamart publishes one single-message JPEG2000 file per variable-level. The lead directories run hourly to 240 h, but the full model state exists only every three hours -- the intermediate directories carry surface-only files.",
       "cycle_hours": [0, 12],
+      "publication_lag_hours": 8,
       "ladders": [{"cycle_hours": null, "steps": [[240, 3]]}],
       "cadences": [3, 6],
       "default_cadence": 3,

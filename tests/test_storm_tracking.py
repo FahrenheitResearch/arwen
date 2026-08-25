@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import gpuwm.core.storm_tracking as st
 from gpuwm.core.storm_tracking import (FOLLOW_KEYS,
                                        PARENT_EDGE_KEEPOUT_CELLS,
                                        FollowConfig, NestFootprint,
@@ -621,6 +622,283 @@ def test_tracker_receipts_open_with_the_echoed_config():
     first = tracker.receipts[0]
     assert first["decision"] == "configured"
     assert first["config"]["threshold"] == 50.0
-    assert set(first["config"]) >= (FOLLOW_KEYS - {"fallback_threshold"})
+    # Both optional keys are echoed only when configured, so neither
+    # is required in the receipt of a config that did not set it.
+    assert set(first["config"]) >= (
+        FOLLOW_KEYS - {"fallback_threshold", "level_hpa", "refine_grid_id"})
     assert tracker.drain_receipts()          # hands them over ...
     assert tracker.receipts == []            # ... and clears the ledger
+
+
+# ---------------------------------------------------------------------------
+# The isobaric (mid-level) tracker: WRF's `track_level`, discretely
+# ---------------------------------------------------------------------------
+
+def _isobaric_state(*, ny=120, nx=140, nz=40, ic=45.0, jc=70.0,
+                    depth_pa=4000.0, scale_height=8000.0):
+    """A hydrostatic column with a Gaussian surface low at (ic, jc).
+
+    With a uniform height column and ``p = psfc * exp(-z/H)``, the height
+    of the ``P`` isobaric surface is ``H * ln(psfc/P)`` -- so the surface
+    low puts a height MINIMUM on every isobaric surface, at exactly the
+    cell the low is centred on, with an analytic answer to check against.
+    """
+    from gpuwm.core.storm_tracking import GRAVITY_M_S2
+
+    z_half = np.linspace(20.0, 18000.0, nz)
+    jj, ii = np.mgrid[0:ny, 0:nx]
+    psfc = 101000.0 - depth_pa * np.exp(
+        -(((ii - ic) / 8.0) ** 2 + ((jj - jc) / 8.0) ** 2))
+    pressure = psfc[None, :, :] * np.exp(-z_half[:, None, None]
+                                         / scale_height)
+    z_full = np.empty(nz + 1)
+    z_full[1:-1] = 0.5 * (z_half[:-1] + z_half[1:])
+    z_full[0] = z_half[0] - (z_full[1] - z_half[0])
+    z_full[-1] = z_half[-1] + (z_half[-1] - z_full[-2])
+    phi = z_full[:, None, None] * GRAVITY_M_S2 * np.ones((nz + 1, ny, nx))
+    state = SimpleNamespace(p=pressure, php=phi, phb=np.zeros_like(phi),
+                            qv=np.zeros_like(pressure))
+    state.total_theta = lambda: np.full_like(pressure, 300.0)
+    return state, psfc
+
+
+def test_isobaric_height_matches_the_analytic_surface():
+    """The reduction is the surface, not an approximation of it."""
+    state, psfc = _isobaric_state()
+    plane = st.level_height_m_from_state(state, 850.0)
+    analytic = 8000.0 * np.log(psfc / 85000.0)
+    # The minimum sits on the same cell; the smoother broadens the core,
+    # so agreement is checked where the field is not curved.
+    assert np.unravel_index(int(plane.argmin()), plane.shape) == \
+        np.unravel_index(int(analytic.argmin()), analytic.shape)
+    far = np.ones_like(plane, dtype=bool)
+    far[40:100, 15:75] = False
+    assert np.abs(plane[far] - analytic[far]).max() < 0.05
+
+
+def test_isobaric_threshold_is_relative_so_the_centre_is_threshold_free():
+    """THE POINT OF THE RELATIVE THRESHOLD.
+
+    An absolute ceiling has to be re-tuned whenever the environment
+    moves; anchoring on the search box's own minimum means the centroid
+    is the same cell whether the user asked for a 10 m slice of the core
+    or a 60 m one.  That insensitivity is what makes the choice safe.
+    """
+    state, _ = _isobaric_state(ic=45.0, jc=70.0)
+    plane = st.level_height_m_from_state(state, 850.0)
+    fp = st.NestFootprint(grid_id=2, i_parent_start=20, j_parent_start=45,
+                          child_nx=90, child_ny=90, parent_grid_ratio=3)
+    box = fp.search_box(plane.shape, 20)
+    centres = []
+    for threshold in (10.0, 30.0, 60.0):
+        found = st.locate_signal(plane, "pressure", threshold, box,
+                                 relative_to_minimum=True)
+        assert found is not None
+        centres.append((round(found["ci"], 6), round(found["cj"], 6)))
+        # and the extremum comes back in metres, un-negated
+        assert 900.0 < st.signal_extremum(found, "pressure") < 1300.0
+    assert centres == [(45.0, 70.0)] * 3
+
+
+def test_isobaric_surface_below_ground_does_not_vote():
+    """A column with no such surface must not be extrapolated onto one.
+
+    Terrain is the reason this matters: an island in the search box would
+    otherwise contribute a fabricated height, and a fabricated height can
+    outrank the real centre in the very field steering the nest.
+    """
+    state, _ = _isobaric_state()
+    # A "mountain" block: surface pressure there drops to ~909 hPa, so
+    # the 950 hPa surface is underground over the block and nowhere
+    # else -- the vortex core bottoms out at 970 hPa, still above it.
+    state.p = state.p.copy()
+    state.p[:, 10:30, 10:30] *= 0.90
+    plane = st.level_height_m_from_state(state, 950.0)
+    assert not np.isfinite(plane[10:30, 10:30]).any()
+    assert np.isfinite(plane[60:100, 20:120]).all()
+
+    # NaN must not have leaked out of the block through the smoother.
+    assert np.isfinite(plane).sum() == plane.size - 400
+
+    # An excluded cell cannot vote, whatever its fabricated value would
+    # have been: the centroid is unchanged by the block's presence.
+    clean, _ = _isobaric_state()
+    fp = st.NestFootprint(grid_id=2, i_parent_start=2, j_parent_start=2,
+                          child_nx=300, child_ny=300, parent_grid_ratio=3)
+    box = fp.search_box(plane.shape, 0)
+    with_block = st.locate_signal(plane, "pressure", 30.0, box,
+                                  relative_to_minimum=True)
+    without = st.locate_signal(
+        st.level_height_m_from_state(clean, 950.0), "pressure", 30.0, box,
+        relative_to_minimum=True)
+    assert (round(with_block["ci"], 6), round(with_block["cj"], 6)) ==            (round(without["ci"], 6), round(without["cj"], 6))
+
+
+def test_isobaric_level_outside_the_column_everywhere_refuses():
+    """Not a hold: a level no column reaches is a configuration error."""
+    state, _ = _isobaric_state()
+    state.p = state.p * 0.5           # surface now near 505 hPa
+    with pytest.raises(st.TrackerRefusal, match="outside the parent"):
+        st.level_height_m_from_state(state, 1000.0)
+
+
+def test_level_hpa_refuses_every_units_error_at_admission():
+    base = {"field": "pressure", "threshold": 30.0,
+            "search_margin_cells": 40, "min_shift_cells": 1,
+            "max_shift_cells": 6, "cooldown_seconds": 1800.0}
+    st.build_follow_config({**base, "level_hpa": 850}, "ok")     # admits
+    with pytest.raises(ValueError, match="units error"):
+        st.build_follow_config({**base, "level_hpa": 85000}, "x")
+    with pytest.raises(ValueError, match="units error"):
+        st.build_follow_config({**base, "level_hpa": 12}, "x")
+    with pytest.raises(ValueError, match="RELATIVE"):
+        st.build_follow_config(
+            {**base, "level_hpa": 850, "threshold": 1000.0}, "x")
+    with pytest.raises(ValueError, match="refuses level_hpa"):
+        st.build_follow_config(
+            {**base, "field": "uh", "level_hpa": 850,
+             "fallback_threshold": 35.0}, "x")
+
+
+def test_omitting_level_hpa_is_the_850_hpa_surface():
+    """The default surface, and the receipt says it was defaulted."""
+    base = {"field": "pressure", "threshold": 30.0,
+            "search_margin_cells": 40, "min_shift_cells": 1,
+            "max_shift_cells": 6, "cooldown_seconds": 1800.0}
+    cfg = st.build_follow_config(base, "ok")
+    assert cfg.level_hpa == (st.DEFAULT_LEVEL_HPA,) == (850.0,)
+    record = cfg.to_json()
+    assert record["level_hpa"] == [850.0]
+    assert record["level_hpa_source"] == "default"
+    assert record["threshold_units"] == "m above search-box minimum"
+    # A surface NAMED is the same surface, and says so.
+    named = st.build_follow_config({**base, "level_hpa": 850.0}, "ok")
+    assert named.level_hpa == cfg.level_hpa
+    assert named.to_json()["level_hpa_source"] == "config"
+
+
+def test_level_hpa_zero_is_the_mslp_tracker_unchanged():
+    """The sea-level tracker is still there, spelled as a choice.
+
+    It is the one form whose threshold is an absolute hPa ceiling, and
+    every guard that band had still fires.
+    """
+    base = {"field": "pressure", "threshold": 1004.0, "level_hpa": 0,
+            "search_margin_cells": 40, "min_shift_cells": 1,
+            "max_shift_cells": 6, "cooldown_seconds": 1800.0}
+    cfg = st.build_follow_config(base, "ok")
+    # Carried internally as None -- the ONE shape every consumer reads.
+    assert cfg.level_hpa is None
+    assert st.levels_of(cfg) == ()
+    record = cfg.to_json()
+    assert record["threshold_units"] == "hPa (absolute MSLP ceiling)"
+    assert record["level_hpa"] == [0.0]
+    with pytest.raises(ValueError, match="1100"):
+        st.build_follow_config({**base, "threshold": 100400.0}, "x")
+
+
+def test_the_default_refuses_a_pre_default_mslp_config_by_name():
+    """An hPa ceiling with no level_hpa used to mean sea level and now
+    means 850 hPa, where the threshold is metres.  It must refuse at
+    load -- silently reinterpreting the number would steer the nest off
+    a different field -- and the message must carry both ways out."""
+    base = {"field": "pressure", "threshold": 1005.0,
+            "search_margin_cells": 40, "min_shift_cells": 1,
+            "max_shift_cells": 6, "cooldown_seconds": 1800.0}
+    with pytest.raises(ValueError) as err:
+        st.build_follow_config(base, "old")
+    assert "level_hpa = 0" in str(err.value)
+    assert "850" in str(err.value)
+    # ...and both ways out are ways out.
+    assert st.build_follow_config(
+        {**base, "level_hpa": 0}, "ok").level_hpa is None
+    assert st.build_follow_config(
+        {**base, "threshold": 30.0}, "ok").level_hpa == (850.0,)
+
+
+def test_sea_level_cannot_be_a_term_in_a_deep_layer_mean():
+    """0 is not an isobaric surface, so it cannot be averaged with any."""
+    base = {"field": "pressure", "threshold": 30.0,
+            "search_margin_cells": 40, "min_shift_cells": 1,
+            "max_shift_cells": 6, "cooldown_seconds": 1800.0}
+    with pytest.raises(ValueError, match="mixes 0"):
+        st.build_follow_config({**base, "level_hpa": [0, 850.0]}, "x")
+
+
+def test_a_non_pressure_field_still_refuses_an_explicit_sea_level():
+    """level_hpa = 0 normalises to None, and the refusal must be decided
+    BEFORE that -- or `field = "uh", level_hpa = 0` would normalise
+    itself out of the guard and be quietly accepted."""
+    base = {"field": "uh", "threshold": 25.0, "fallback_threshold": 40.0,
+            "search_margin_cells": 40, "min_shift_cells": 1,
+            "max_shift_cells": 6, "cooldown_seconds": 1800.0}
+    assert st.build_follow_config(base, "ok").level_hpa is None
+    with pytest.raises(ValueError, match="refuses level_hpa"):
+        st.build_follow_config({**base, "level_hpa": 0}, "x")
+
+
+# ---------------------------------------------------------------------------
+# Report-only surfaces: computed, reported, never steering
+# ---------------------------------------------------------------------------
+
+def test_report_only_surfaces_are_excluded_from_the_mean():
+    """centre_over_levels means the STEERING set and carries all of them.
+
+    Built so the two answers cannot coincide by accident: the steering
+    surface's bowl is at one place and both report surfaces' bowls are
+    far away, so a mean that wrongly included them would land visibly
+    between.
+    """
+    from types import SimpleNamespace
+
+    from gpuwm.core.storm_tracking import centre_over_levels
+
+    ny = nx = 80
+    box = (slice(0, ny), slice(0, nx))
+
+    def bowl(cj, ci):
+        j, i = np.mgrid[0:ny, 0:nx]
+        r2 = (j - cj) ** 2 + (i - ci) ** 2
+        return (1500.0 - 60.0 * np.exp(-r2 / 18.0)).astype(np.float64)
+
+    planes = [(850.0, bowl(20.0, 20.0)),      # steers
+              (700.0, bowl(60.0, 60.0)),      # reports only
+              (500.0, bowl(70.0, 10.0))]      # reports only
+    cfg = SimpleNamespace(field="pressure", threshold=30.0,
+                          level_hpa=(850.0,),
+                          report_level_hpa=(700.0, 500.0))
+    found, level_fixes, declined = centre_over_levels(planes, cfg, box, None)
+
+    assert found is not None
+    # The steering surface's own centre, not a three-way mean.
+    assert abs(found["ci"] - 20.0) < 1.0 and abs(found["cj"] - 20.0) < 1.0
+    assert "levels_averaged" not in found      # one surface voted
+    assert found["levels_reported"] == 3
+    # ...and all three still reach the file.
+    assert sorted(f.level_hpa for f in level_fixes) == [500.0, 700.0, 850.0]
+    assert not declined
+
+
+def test_a_hold_when_only_report_surfaces_answer():
+    """No steering surface answered, so there is no centre to follow --
+    even though report-only surfaces found one.  Inventing a centre from
+    surfaces the configuration says not to steer on would move the nest
+    on a signal it was told to ignore."""
+    from types import SimpleNamespace
+
+    from gpuwm.core.storm_tracking import centre_over_levels
+
+    ny = nx = 60
+    box = (slice(0, ny), slice(0, nx))
+    j, i = np.mgrid[0:ny, 0:nx]
+    flat = np.full((ny, nx), 1500.0)
+    bowl = (1500.0 - 60.0 * np.exp(
+        -((j - 30.0) ** 2 + (i - 30.0) ** 2) / 18.0)).astype(np.float64)
+    cfg = SimpleNamespace(field="pressure", threshold=30.0,
+                          level_hpa=(850.0,), report_level_hpa=(700.0,))
+    found, level_fixes, declined = centre_over_levels(
+        [(850.0, flat), (700.0, bowl)], cfg, box, None)
+
+    assert found is None                       # a hold, correctly
+    assert [f.level_hpa for f in level_fixes] == [700.0]   # still auditable
+    assert declined and declined[0]["level_hpa"] == 850.0
