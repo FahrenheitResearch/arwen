@@ -1301,7 +1301,11 @@ def _transported_source_fields(source_mp_physics: int) -> tuple[str, ...]:
         names += ["nr", "ni", "ns", "ng"]
     elif source_mp == 18:
         names = list(_NSSL_FIELDS)
-    elif source_mp != 0:
+    elif source_mp not in {0, 6}:
+        # mp=6 (WSM6) is single-moment: the shared mixing-ratio branch above
+        # is its whole transported set, and it must NOT fall into this
+        # refusal -- every member of OFFLINE_CHILD_MP_PHYSICS has to exit
+        # this chain with a mapping, which the contract test now pins.
         raise OfflineChildContractError(
             f"unsupported parent mp_physics={source_mp}")
     return tuple(names)

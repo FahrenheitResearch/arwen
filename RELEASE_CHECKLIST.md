@@ -81,6 +81,23 @@ reproduce them, not because their proofs are optional:
       on `tools/battery/stage1_files.txt` so a lane runs them too, but the
       list alone does not close this -- running them WITHOUT CuPy is the
       half that catches the class.
+- [ ] **The committed public snapshot tree equals the verified snapshot,
+      file for file, BEFORE the tag.**  Compare `git ls-tree -r HEAD
+      --name-only` in the public repo against `find . -type f` in the
+      snapshot directory, both directions, and require an empty diff.
+      The breakage this prevents: the public repo's `.gitignore` carries
+      `tools/rustwx/vendor/**/target/` for cargo build directories, and
+      the vendored cc crate has a SOURCE directory named `cc/src/target/`.
+      Its four files are tracked, so the rule is inert -- until an
+      assembly that runs `git rm -r .` before re-adding drops them from
+      the index, at which point `git add -A` skips them as freshly
+      ignorable and the commit silently loses them.  That is how the
+      v2.5.5 tag shipped a tree whose `cargo build --release --locked`
+      could not verify the vendored cc checksum, the bridges job failed,
+      and the number was spent.  Assemble by overlay copy onto the
+      existing tree (no `git rm`), or `git add -Af`; either way this
+      compare is the gate, because the next ignore rule to swallow a
+      source directory will not announce itself either.
 - [ ] The tag and `[project].version` in `pyproject.toml` agree
       (`vX.Y.Z` and `X.Y.Z`).  That equality is a refusal: a bundle named
       for one while the wheel says the other is a download nobody can find.

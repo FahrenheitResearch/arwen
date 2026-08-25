@@ -647,3 +647,27 @@ def test_mp28_cross_scheme_offline_edges_are_refused_by_name(tmp_path):
     # calling it rather than the two wrappers.
     with pytest.raises(OfflineChildContractError, match="REFUSED"):
         map_microphysics_to_nssl18({}, source_mp_physics=28)
+
+
+def test_every_admitted_parent_scheme_has_a_transport_mapping():
+    # The contract set and the transport function are two spellings of the
+    # same promise.  WSM6 (mp=6) was admitted by OFFLINE_CHILD_MP_PHYSICS
+    # and then refused by _transported_source_fields, which never
+    # terminated its chain for a single-moment parent -- a stock WSM6
+    # archive hit "unsupported" from a path whose contract said supported
+    # (reported by a user against 2.5.2).
+    from gpuwm.offline_child import (
+        OFFLINE_CHILD_MP_PHYSICS,
+        _transported_source_fields,
+    )
+
+    for mp in sorted(OFFLINE_CHILD_MP_PHYSICS):
+        fields = _transported_source_fields(mp)
+        assert fields, f"mp_physics={mp} transports no fields"
+
+
+def test_wsm6_transports_the_single_moment_set():
+    from gpuwm.offline_child import _transported_source_fields
+
+    assert _transported_source_fields(6) == (
+        "qv", "qc", "qr", "qi", "qs", "qg")

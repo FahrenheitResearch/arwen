@@ -1,6 +1,12 @@
 # Changelog
 
-## 2.5.5 (2026-08-25)
+## 2.5.6 (2026-08-25)
+
+2.5.5 was tagged but never published: the public snapshot commit lost four
+vendored Rust build files to the build-directory ignore rule, so the release
+cut could not build the bridges and nothing reached PyPI. The tag stays where
+it is, because tags here are forward-only. Everything 2.5.5 carried ships
+here.
 
 A run that narrates its own life, and radiation that fits the card.
 
@@ -32,6 +38,8 @@ Fixed:
 - Grell-Freitas column arrays leave the fully-resident kernel frame on
   the MPAS column-batch path, shrinking the port's fixed device
   reservation.
+- Offline downscaling from a WSM6 parent works; the transport table
+  refused a scheme its own contract admits.
 
 ## 2.5.4 (2026-08-24)
 
