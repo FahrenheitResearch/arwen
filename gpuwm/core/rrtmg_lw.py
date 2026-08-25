@@ -4207,13 +4207,82 @@ def gpu_rrtmg_lw(ncol, nlay, icld, play, plev, tlay, tlev, tsfc, h2ovmr,
 # f32 inputs never leave the device.
 # ---------------------------------------------------------------------------
 
-#: Default columns per chunk.  At nlay=74 the peak transient of one chunk
-#: is ~1.5 GiB (see lw_batched_vram_bytes), well inside this lane's ~10 GiB
-#: share of the card, and the rtrn march grid (4096*140 = 573,440 threads)
-#: is ~2.2x the RTX 5090's resident-thread capacity (170 SMs x 1536 =
-#: 261,120), so occupancy is already saturated; larger chunks buy nothing
-#: but VRAM.
-LW_BATCH_COLUMN_CHUNK = 4096
+#: Ceiling of the auto-sized columns-per-chunk (#310).  4096 was the
+#: hardwired default, sized when the reference card was a 170 SM part: at
+#: nlay=74 the peak transient of one chunk is ~1.5 GiB (see
+#: lw_batched_vram_bytes), and the rtrn march grid (4096*140 = 573,440
+#: threads) is ~2.2x even that part's resident-thread capacity (170 SMs
+#: x 1536 = 261,120), so occupancy was already saturated and the excess
+#: bought nothing but VRAM.  The default width is now
+#: ``batch_column_chunk(NGPTLW, LW_BATCH_COLUMN_CHUNK_CEILING)`` -- the
+#: smallest quantum multiple that saturates THIS device, never above
+#: this ceiling -- resolved lazily through the module attribute
+#: ``LW_BATCH_COLUMN_CHUNK`` so CPU-only imports never touch CUDA.
+LW_BATCH_COLUMN_CHUNK_CEILING = 4096
+
+#: The auto width is rounded UP to this quantum and never sinks below it.
+BATCH_CHUNK_QUANTUM = 256
+
+#: Cache of the device resident-thread capacity, keyed by device id.
+_RESIDENT_THREADS_CACHE: dict = {}
+
+
+def _device_resident_threads():
+    """Resident-thread capacity of the current CUDA device, or ``None``.
+
+    ``None`` (no cupy, no driver, no device) makes the auto width fall
+    back to the ceiling -- the exact pre-#310 behaviour -- so CPU-only
+    environments and host-side pricing stay deterministic and price the
+    conservative (widest) workspace.
+    """
+    try:
+        import cupy as cp
+        dev_id = int(cp.cuda.runtime.getDevice())
+        cached = _RESIDENT_THREADS_CACHE.get(dev_id)
+        if cached is not None:
+            return cached
+        attrs = cp.cuda.Device(dev_id).attributes
+        capacity = (int(attrs["MultiProcessorCount"])
+                    * int(attrs["MaxThreadsPerMultiProcessor"]))
+    except Exception:
+        return None
+    if capacity <= 0:
+        return None
+    _RESIDENT_THREADS_CACHE[dev_id] = capacity
+    return capacity
+
+
+def batch_column_chunk(threads_per_column, ceiling, *,
+                       quantum=BATCH_CHUNK_QUANTUM, resident_threads=None):
+    """Columns per chunk that saturate the device (#310 narrowing).
+
+    The batched RRTMG engines launch ``threads_per_column`` threads per
+    column (LW rtrn march: NGPTLW=140; SW spcvmc: NGPTSW=112) and their
+    per-chunk workspace scales linearly with the chunk width, so any
+    width beyond the device's resident-thread capacity buys VRAM and no
+    occupancy.  Returns the smallest multiple of ``quantum`` whose
+    launch covers ``resident_threads`` (the current device's capacity
+    when not given), clamped to ``[quantum, ceiling]``.  With no usable
+    device the ceiling is returned unchanged.  Chunk width is workspace
+    shape only: per-column results are bitwise identical at any width
+    (both translation units' contract, proved over the fixture decks).
+    """
+    ceiling = int(ceiling)
+    if resident_threads is None:
+        resident_threads = _device_resident_threads()
+    if not resident_threads or int(resident_threads) <= 0:
+        return ceiling
+    quantum = int(quantum)
+    need = -(-int(resident_threads) // int(threads_per_column))
+    need = -(-need // quantum) * quantum
+    return max(quantum, min(ceiling, need))
+
+
+def __getattr__(name):
+    if name == "LW_BATCH_COLUMN_CHUNK":
+        return batch_column_chunk(NGPTLW, LW_BATCH_COLUMN_CHUNK_CEILING)
+    raise AttributeError(
+        f"module {__name__!r} has no attribute {name!r}")
 
 #: Every kernel in the LW translation unit (local-frame audit surface).
 LW_GPU_KERNEL_NAMES = (
@@ -4429,7 +4498,8 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
     nl = int(nlay)
     ncol = int(ncol)
     assert nl <= MAX_RADIATION_LAYERS, "rlw_rtrn_march RLW_MAXLAY"
-    chunk = int(column_chunk) if column_chunk else LW_BATCH_COLUMN_CHUNK
+    chunk = (int(column_chunk) if column_chunk
+             else batch_column_chunk(NGPTLW, LW_BATCH_COLUMN_CHUNK_CEILING))
     if chunk < 1:
         raise ValueError("column_chunk must be >= 1")
 

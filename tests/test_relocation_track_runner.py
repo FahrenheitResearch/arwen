@@ -504,3 +504,69 @@ def test_a_position_only_track_steers_nothing_either(tmp_path):
                 provider.consultations)
 
     assert placements(None) == placements(60.0)
+
+
+# ---------------------------------------------------------------------------
+# The fix on the per-step stream
+# ---------------------------------------------------------------------------
+#
+# The CSV is the archive; the event is the same fix, live, emitted at the
+# instant the row is written.  A map tailing progress.jsonl can then draw
+# the track without also tailing (and parsing the declared header of) a
+# second file.
+
+
+def _logged(model, tmp_path):
+    from datetime import datetime
+
+    from gpuwm.progress_log import StepLog, publish_step_log
+
+    log = StepLog(start_time=datetime(2026, 8, 15, 0, 0, 0),
+                  run_seconds=3600.0,
+                  jsonl_path=tmp_path / "progress.jsonl")
+    publish_step_log(model, log)
+    return log
+
+
+def _fixes(tmp_path, log):
+    from gpuwm.progress_log import read_step_log
+
+    log.close(status="SUCCESS")
+    return [r for r in read_step_log(tmp_path / "progress.jsonl")
+            if r["event"] == "track_fix"]
+
+
+def test_every_written_track_row_is_also_an_event(tmp_path):
+    """One row, one event, same position, same instant."""
+    parent_plane, parent, child = _cpu_tree()
+    _dress(parent, child)
+    model = _model(parent, child)
+    log = _logged(model, tmp_path)
+    writer = _writer(tmp_path / "t", TrackConfig("t.csv"))
+    runner = _runner(parent_plane, _config(cadence=60.0), _Provider(),
+                     track_writer=writer)
+    _run(runner, model, parent, child, range(0, 241, 60))
+    runner.close_receipt(model)
+
+    rows = (tmp_path / "t" / "t.csv").read_text(
+        encoding="utf-8").splitlines()[1:]
+    fixes = _fixes(tmp_path, log)
+    assert len(fixes) == len(rows) > 0
+    assert [f["model_seconds"] for f in fixes] == _seconds(rows)
+    assert all(f["domain"] == 2 for f in fixes), "the domain being STEERED"
+    for fix, row in zip(fixes, rows):
+        lat, lon = row.split(",")[1:3]
+        assert fix["lat"] == pytest.approx(float(lat), abs=5e-7)
+        assert fix["lon"] == pytest.approx(float(lon), abs=5e-7)
+        assert fix["found"] is True
+
+
+def test_a_run_without_a_track_block_emits_no_fixes(tmp_path):
+    """No track file, no track events: the inertness rule, per feature."""
+    parent_plane, parent, child = _cpu_tree()
+    _dress(parent, child)
+    model = _model(parent, child)
+    log = _logged(model, tmp_path)
+    runner = _runner(parent_plane, _config(cadence=60.0), _Provider())
+    _run(runner, model, parent, child, range(0, 241, 60))
+    assert _fixes(tmp_path, log) == []

@@ -23,6 +23,23 @@ case (``gpuwm go`` gives it ``<case>/png``), so this module never
 invents a case name -- it could not, and a case name in generic code is
 a rule this project has paid for twice.
 
+A nest that RETIRES and RE-ARMS lives more than once, and its lives are
+separated one segment deeper::
+
+    <--out>/<domain-token>/<episode>/<product>/<valid-day>/<file>.png
+
+*which nest, which life, which chart, which day.*  The order above is
+untouched -- domain still before product still before valid day -- and
+the episode sits under the domain it is an episode OF, which is where
+``gpuwm.io.wrfout`` already files that nest's history
+(``d05/episode-002/``).  Without it, two episodes of one nest at one
+valid time -- the retiring episode's last frame and the re-armed
+episode's ACTIVATION frame, which the history writer's own duplicate
+guard exists to keep apart -- render to one delivered name, and the
+second replaces the first with no failure and no warning.  A domain
+that declares no ``retire``/``rearm`` has one life, reports episode
+``0``, and files at exactly the three segments it always did.
+
 Four properties are the contract, and each is pinned by a test in
 ``tests/test_render_layout.py``:
 
@@ -112,6 +129,19 @@ UNCLASSIFIED = "unclassified"
 #: as ``gpuwm.render.NATIVE_GRID_SLUG`` and as the rust engine's
 #: ``native_grid`` spell it -- one word for one fact.
 NATIVE_GRID = "native_grid"
+
+#: The head of the lifecycle-EPISODE segment, and the one place this
+#: tree spells it.  ``gpuwm.io.wrfout`` files an episodic domain's
+#: history under ``d05/episode-002/`` and imports this to say so, so the
+#: history tree and the delivered tree cannot drift into two spellings
+#: of one fact.
+EPISODE_PREFIX = "episode-"
+
+#: An episode segment, as :func:`episode_segment` writes it.  Three
+#: digits is the ZERO-PADDING width, not a ceiling: a slot re-armed a
+#: thousand times writes four, and a reader that demanded exactly three
+#: would stop recognising the tree at ``episode-1000``.
+_EPISODE = re.compile(rf"^{EPISODE_PREFIX}(\d{{3,}})$")
 
 #: ``YYYY-MM-DD`` at the head of a WRF ``Times`` record
 #: (``1974-04-03_18:00:00``), its filename-safe form
@@ -254,27 +284,88 @@ def valid_day(stamp: str | None) -> str | None:
         return None
 
 
+def episode_segment(episode: int | None) -> str | None:
+    """``episode-002`` for a lifecycle episode, ``None`` for no episode.
+
+    The number is the lifecycle's own, as
+    :func:`gpuwm.core.nest_lifecycle.output_episode` reports it: a
+    domain that declares ``retire``/``rearm`` reports the episode it is
+    living (counting from 1), and a domain that declares neither reports
+    ``0``.  ``0`` therefore means "this nest has one life", which is not
+    an episode and gets no segment -- which is what keeps every run
+    shipped so far filing at exactly the path it always did.
+
+    Zero-padded to three digits so a listing sorts into episode order,
+    and no wider than the number needs, so ``episode-1000`` is still
+    that episode's folder rather than a truncation of it.
+    """
+
+    if episode is None:
+        return None
+    number = int(episode)
+    if number <= 0:
+        return None
+    return f"{EPISODE_PREFIX}{number:03d}"
+
+
+def episode_number(name) -> int | None:
+    """The episode a folder name spells, or ``None`` if it spells none.
+
+    The exact inverse of :func:`episode_segment`, and the reason both
+    exist here: the render side learns which episode a history file
+    belongs to by reading the folder the history writer filed it in, so
+    a name written by one function is read back by the other rather
+    than by a second copy of the grammar.
+
+    ``episode-000`` answers ``None``.  It is what a lifecycle-free
+    domain would spell if anything ever wrote it, and reading it as an
+    episode would put a nest with one life under a segment that claims
+    it had more.
+    """
+
+    if name is None:
+        return None
+    match = _EPISODE.match(str(name).strip())
+    if match is None:
+        return None
+    number = int(match.group(1))
+    return number if number > 0 else None
+
+
 def product_dir(*, domain: str | None, product: str | None,
-                day: str | None) -> Path:
+                day: str | None, episode: int | None = None) -> Path:
     """The relative directory one product frame belongs in.
 
     Relative on purpose: the root is the caller's ``--out``, and a
     function that joined it would be one that could be handed the wrong
     root without anyone noticing.
+
+    ``episode`` EXTENDS the 2026-08-06 ruling rather than reordering it:
+    domain still comes before product, which still comes before the
+    valid day, and the episode sits under the domain it is an episode
+    OF -- the same place ``gpuwm.io.wrfout`` already puts it in the
+    history tree.  Absent (the default, and every run that declares no
+    ``retire``/``rearm``), the directory is the three segments it has
+    always been, character for character.
     """
 
-    return (Path(domain or NATIVE_GRID) / (product or UNCLASSIFIED)
-            / (day or UNDATED))
+    directory = Path(domain or NATIVE_GRID)
+    segment = episode_segment(episode)
+    if segment is not None:
+        directory = directory / segment
+    return directory / (product or UNCLASSIFIED) / (day or UNDATED)
 
 
 def place(root, *, domain: str | None, product: str | None,
-          day: str | None, filename: str,
+          day: str | None, filename: str, episode: int | None = None,
           layout: str = DEFAULT_LAYOUT) -> Path:
     """The full path for one rendered PNG, under ``root``.
 
     ``layout=FLAT`` returns ``root / filename`` -- the v2.4.1 spelling,
     unchanged, so a consumer pinned to it keeps working while it is
-    updated.
+    updated.  It has no folders to carry an episode and grows none:
+    ``--layout flat`` is a compatibility spelling, and a flat directory
+    that quietly gained a subdirectory would not be one.
     """
 
     root = Path(root)
@@ -285,7 +376,7 @@ def place(root, *, domain: str | None, product: str | None,
             f"unknown render layout {layout!r}; choose from "
             f"{', '.join(LAYOUTS)}")
     return root / product_dir(domain=domain, product=product,
-                              day=day) / filename
+                              day=day, episode=episode) / filename
 
 
 def _folder_tokens(name: str, *, domain: str | None,
@@ -488,7 +579,8 @@ def iter_rendered(root) -> list[Path]:
     return sorted(found, key=lambda path: path.as_posix())
 
 
-def describe(root: str = "<--out>", *, sep: str | None = None) -> str:
+def describe(root: str = "<--out>", *, sep: str | None = None,
+             episode: bool = False) -> str:
     """The one sentence a script author needs, for --help and docs.
 
     ``sep`` defaults to THIS platform's separator, which is what the
@@ -501,17 +593,31 @@ def describe(root: str = "<--out>", *, sep: str | None = None) -> str:
     because those strings are shared by every reader on every platform:
     a page regenerated on Windows must not ship backslashes to somebody
     running Linux.
+
+    ``episode=True`` is for a render whose inputs come from a nest that
+    retires and re-arms, and it is the door's business to know which it
+    has: the sentence is printed BEFORE any picture is drawn so a script
+    can watch one path, and naming a path one segment short of the one
+    the frames arrive at is worse than naming none.  It stays OFF by
+    default because that is what every lifecycle-free render writes, and
+    the default sentence is the one already published.
     """
 
     mark = os.sep if sep is None else sep
-    return (f"{root}{mark}<domain>{mark}<product>{mark}<valid-day>{mark}"
-            f"<file>.png (domain as d02-3km / d05-111m / native_grid, "
-            f"valid-day as YYYY-MM-DD)")
+    if not episode:
+        return (f"{root}{mark}<domain>{mark}<product>{mark}<valid-day>{mark}"
+                f"<file>.png (domain as d02-3km / d05-111m / native_grid, "
+                f"valid-day as YYYY-MM-DD)")
+    return (f"{root}{mark}<domain>{mark}<episode>{mark}<product>{mark}"
+            f"<valid-day>{mark}<file>.png (domain as d02-3km / d05-111m "
+            f"/ native_grid, episode as episode-002, valid-day as "
+            f"YYYY-MM-DD)")
 
 
 __all__ = [
-    "DEFAULT_LAYOUT", "FLAT", "LAYOUTS", "NATIVE_GRID", "NESTED",
-    "UNCLASSIFIED", "UNDATED", "delivered_name", "describe",
-    "engine_name", "fs_path", "iter_rendered", "parse_engine_output",
-    "place", "product_dir", "valid_day",
+    "DEFAULT_LAYOUT", "EPISODE_PREFIX", "FLAT", "LAYOUTS", "NATIVE_GRID",
+    "NESTED", "UNCLASSIFIED", "UNDATED", "delivered_name", "describe",
+    "engine_name", "episode_number", "episode_segment", "fs_path",
+    "iter_rendered", "parse_engine_output", "place", "product_dir",
+    "valid_day",
 ]

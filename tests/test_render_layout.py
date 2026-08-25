@@ -808,6 +808,10 @@ def test_the_document_a_script_author_reads_is_the_layout_the_code_writes():
     # is the gate for, and they are unchanged.
     assert ("<--out>/<run folder>/<domain>/<product>/<valid-day>"
             "/<filename>.png") in text
+    # And the one extra segment a nest that retires and re-arms gets,
+    # spelled where a script author will read it.
+    assert ("<--out>/<run folder>/<domain>/<episode>/<product>/"
+            "<valid-day>/<filename>.png") in text
     assert "run-output-folders.md" in text
     # The escape hatch is named as a compatibility measure, never as the
     # fix -- "fixed means default".
@@ -825,6 +829,14 @@ def test_the_document_a_script_author_reads_is_the_layout_the_code_writes():
         product="composite_reflectivity", day="1974-04-04",
         filename="x.png").parent
     assert Path(predicted) == actual
+    # The same recipe, for a nest on its second life.
+    predicted_episode = namespace["product_dir"](
+        "out/myarea/png", "d05-500m", "composite_reflectivity",
+        datetime.datetime(1974, 4, 4, 0, 0), episode=2)
+    assert Path(predicted_episode) == render_layout.place(
+        "out/myarea/png", domain="d05-500m",
+        product="composite_reflectivity", day="1974-04-04", episode=2,
+        filename="x.png").parent
 
 
 def test_the_render_door_prints_where_it_is_about_to_write(wrfout,
@@ -930,6 +942,48 @@ def test_a_delivered_path_fits_the_windows_tools_that_open_it(tmp_path,
     length = _delivered_length(relative)
     assert length <= DELIVERED_PATH_BUDGET, (
         f"{length} characters: {_TYPICAL_CASE_ROOT}\\{relative}")
+
+
+#: What an EPISODIC delivery may cost.  The episode segment is a folder,
+#: so it costs its own name plus a separator on every path under it, and
+#: that cost is stated here rather than discovered on a delivery: the
+#: measured 310-character tree that produced :func:`delivered_name` was
+#: found by a recipient, not by a test.  Still under Windows' 260 --
+#: with less slack than an ordinary delivery has, which is the honest
+#: price of separating a nest's two lives.
+EPISODIC_PATH_BUDGET = (DELIVERED_PATH_BUDGET
+                        + len(render_layout.episode_segment(999)) + 1)
+
+
+def test_an_episodic_delivery_still_fits_the_ceiling(tmp_path, capsys):
+    """The deepest real layout AND a second life of the nest.
+
+    The segment buys collision-free galleries with path length, and
+    length is the currency this layout has already been billed in.  The
+    same deepest-real-delivery measurement, one episode deeper.
+    """
+
+    from gpuwm.render import _place_engine_output
+
+    outdir = tmp_path / _DEEP_RUN
+    outdir.mkdir(parents=True)
+    (outdir / _DEEP_ENGINE_NAME).write_bytes(b"\x89PNG\r\n\x1a\nlong")
+
+    placed = _place_engine_output(outdir / _DEEP_ENGINE_NAME, outdir,
+                                  _DEEP_DOMAIN, render_layout.NESTED,
+                                  episode=2)
+    assert "left flat" not in capsys.readouterr().err
+
+    relative = Path(_DEEP_RUN) / placed.relative_to(outdir)
+    assert relative.parts[1:5] == (_DEEP_DOMAIN, "episode-002",
+                                   _DEEP_PRODUCT, _DEEP_DAY)
+
+    length = _delivered_length(relative)
+    assert length <= EPISODIC_PATH_BUDGET, (
+        f"{length} characters: {_TYPICAL_CASE_ROOT}\\{relative}")
+    # And still inside the classic ceiling itself, which is the line
+    # that decides whether a recipient's own tools can open the file.
+    assert length < 260, length
 
 
 def test_the_shortening_takes_only_what_the_folders_already_spell():
@@ -1051,3 +1105,409 @@ def test_pair_matching_survives_the_shortening(tmp_path):
     flat = tmp_path / (
         "arwen_wrf_19740403_18z_f000_d02-3km_composite_reflectivity.png")
     assert product_name(flat) == "d02-3km_composite_reflectivity"
+
+
+# -- one nest, two lives -----------------------------------------------
+#
+# A domain that declares ``retire``/``rearm`` puts a SECOND history run
+# through one slot.  The history writer already separates those on disk
+# (``d05/episode-002/``), because two episodes of one nest can publish
+# the SAME valid time: the retiring episode's last frame and the
+# re-armed episode's activation frame land on the same instant, and the
+# writer's own duplicate guard names that as a frame-destroying event.
+#
+# The delivered PNG tree had no such segment.  Both of those frames
+# carry one domain token, one product slug and one valid day, so they
+# rendered to ONE delivered name and the later one replaced the earlier
+# -- silently, because a render that overwrites reports success.  What
+# is left is a single gallery holding frames from two different lives of
+# the nest with no way to tell which is which.
+
+
+def test_an_episode_is_spelled_one_way_for_the_whole_tree():
+    """One fact, one spelling: the history tree's and the render tree's.
+
+    The number is the lifecycle's own (``SpawnRunner.episodes`` through
+    :func:`gpuwm.core.nest_lifecycle.output_episode`), which reports 0
+    for a domain that declares no lifecycle -- so 0 is not an episode
+    here either, it is the absence of one.
+    """
+
+    assert render_layout.episode_segment(1) == "episode-001"
+    assert render_layout.episode_segment(2) == "episode-002"
+    # Three digits is a minimum width, not a ceiling.
+    assert render_layout.episode_segment(1234) == "episode-1234"
+    assert render_layout.episode_segment(0) is None
+    assert render_layout.episode_segment(None) is None
+
+    assert render_layout.episode_number("episode-002") == 2
+    assert render_layout.episode_number("episode-1234") == 1234
+    # `episode-000` is what a lifecycle-free domain would spell if
+    # anything ever wrote it; it names no episode and must not be read
+    # as one.
+    assert render_layout.episode_number("episode-000") is None
+    assert render_layout.episode_number("d05-500m") is None
+    assert render_layout.episode_number("composite_reflectivity") is None
+    assert render_layout.episode_number("1974-04-03") is None
+    assert render_layout.episode_number(None) is None
+    for number in (1, 2, 9, 10, 99, 100, 999, 1000):
+        assert render_layout.episode_number(
+            render_layout.episode_segment(number)) == number
+
+
+def test_the_episode_extends_the_ruling_instead_of_inverting_it():
+    """Domain, then episode, then product, then valid day.
+
+    The 2026-08-06 ruling's order is preserved exactly -- domain before
+    product before valid day -- with the episode slotted under the
+    domain it belongs to, which is where the history tree already puts
+    it.  Nothing collapses back towards flat.
+    """
+
+    root = Path("out") / "case"
+    placed = render_layout.place(
+        root, domain="d05-500m", product="composite_reflectivity",
+        day="1974-04-03", episode=2,
+        filename="arwen_wrf_19740403_18z_f001.png")
+    assert placed == (root / "d05-500m" / "episode-002"
+                      / "composite_reflectivity" / "1974-04-03"
+                      / "arwen_wrf_19740403_18z_f001.png")
+    ordering = [part for part in placed.parts
+                if part in ("d05-500m", "episode-002",
+                            "composite_reflectivity", "1974-04-03")]
+    assert ordering == ["d05-500m", "episode-002",
+                        "composite_reflectivity", "1974-04-03"]
+
+
+def test_a_run_with_no_lifecycle_files_exactly_where_it_always_did():
+    """The byte-identity promise: no episode, no segment, no change.
+
+    Every existing run is this case.  ``retire``/``rearm`` are what put
+    a second episode through a slot; a plain run, a one-shot spawn and a
+    following nest all report no episode, and their paths must be the
+    same strings as before this segment existed.
+    """
+
+    root = Path("out") / "case"
+    legacy = (root / "d02-3km" / "composite_reflectivity" / "1974-04-03"
+              / "arwen_wrf_19740403_18z_f000.png")
+    for absent in (None, 0):
+        assert render_layout.place(
+            root, domain="d02-3km", product="composite_reflectivity",
+            day="1974-04-03", episode=absent,
+            filename="arwen_wrf_19740403_18z_f000.png") == legacy
+    # And the call that does not mention episodes at all, which is every
+    # caller written before this segment existed.
+    assert render_layout.place(
+        root, domain="d02-3km", product="composite_reflectivity",
+        day="1974-04-03",
+        filename="arwen_wrf_19740403_18z_f000.png") == legacy
+    assert render_layout.product_dir(
+        domain="d02-3km", product="composite_reflectivity",
+        day="1974-04-03") == render_layout.product_dir(
+            domain="d02-3km", product="composite_reflectivity",
+            day="1974-04-03", episode=0)
+    # The escape hatch has no folders at all, so it cannot grow one.
+    assert render_layout.place(
+        root, domain="d02-3km", product="refl", day="1974-04-03",
+        episode=2, filename="x.png",
+        layout=render_layout.FLAT) == root / "x.png"
+
+
+def test_the_history_writer_and_the_delivered_tree_agree_on_the_segment():
+    """The two trees spell one episode ONE way, from one definition.
+
+    If they drift, a reader who found ``d05/episode-002`` in the history
+    tree looks for the pictures of that episode under a name the render
+    never wrote, and the collision this segment prevents comes back
+    wearing a different spelling.
+    """
+
+    from datetime import datetime as _datetime
+
+    from gpuwm.io.wrfout import PerDomainWrfoutWriters
+
+    class _Recorder:
+        def __init__(self):
+            self.paths = []
+            self.global_attrs = {}
+
+        def submit(self, path, valid_time, state, **kwargs):
+            self.paths.append(path)
+
+    import tempfile
+    root = Path(tempfile.mkdtemp())
+    writers = object.__new__(PerDomainWrfoutWriters)
+    writers.output_dir = root
+    writers.start_time = _datetime(1974, 4, 3, 18, 0, 0)
+    writers._metadata_by_grid_id = {5: {}}
+    writers._archived_paths = []
+    writers._episode_by_grid_id = {5: 2}
+    writers._writers = {5: _Recorder()}
+    writers._published_paths = set()
+
+    import types
+    node = types.SimpleNamespace(
+        cfg=types.SimpleNamespace(grid_id=5),
+        clock=types.SimpleNamespace(tick_den=1),
+        state=types.SimpleNamespace())
+    writers.submit(node, 0)
+    written = writers._writers[5].paths[0]
+    assert written.parent == (root / "d05"
+                              / render_layout.episode_segment(2))
+
+
+def test_two_episodes_of_one_domain_no_longer_share_a_delivered_name(
+        monkeypatch, tmp_path):
+    """The ledger's breakage, through the real placement seam.
+
+    Two history files of ONE nest at ONE valid time -- the retiring
+    episode's final frame and the re-armed episode's activation frame --
+    render to the engine's identical filename.  Without the episode
+    segment the second ``os.replace`` lands on the first and one picture
+    is gone, with no failure, no warning and no way to notice from the
+    tree.
+    """
+
+    import subprocess
+
+    from gpuwm import render as render_module
+
+    first = tmp_path / "wrfout" / "d05" / "episode-001"
+    second = tmp_path / "wrfout" / "d05" / "episode-002"
+    for directory in (first, second):
+        directory.mkdir(parents=True)
+    stem = "wrfout_d05_1974-04-03_19-00-00.nc"
+    inputs = [_write_wrfout(first / stem, dx=500.0),
+              _write_wrfout(second / stem, dx=500.0)]
+    out = tmp_path / "png"
+    # ONE name, from both inputs: the engine's filename carries the
+    # cycle, the lead, the domain and the product, and both episodes
+    # agree on every one of them.
+    name = ("rustwx_wrf_19740403_18z_f001_d05-500m_"
+            "composite_reflectivity.png")
+
+    class Result:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout: str):
+            self.stdout = stdout
+
+    drawn = []
+
+    def fake_run(command, **kwargs):
+        out_dir = Path(command[command.index("--out-dir") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Different bytes per invocation, so a replaced picture is
+        # detectable rather than merely suspected.
+        drawn.append(len(drawn))
+        (out_dir / name).write_bytes(f"PNG-{drawn[-1]}".encode())
+        return Result(f"RENDERED slug {out_dir / name}\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(render_module, "renderer_refusal", lambda _r: None)
+    monkeypatch.setattr("gpuwm.rustwx.find_renderer",
+                        lambda: tmp_path / "rw_wrfbatch")
+
+    written, failures, skipped = render_module.render_wrfouts_rust(
+        inputs, products="all", timeidx=None, outdir=out,
+        size=(800, 600), source_label="ArWen test")
+    assert failures == [] and skipped == []
+    assert sorted(p.relative_to(out).as_posix() for p in written) == [
+        "d05-500m/episode-001/composite_reflectivity/1974-04-03/"
+        "arwen_wrf_19740403_18z_f001.png",
+        "d05-500m/episode-002/composite_reflectivity/1974-04-03/"
+        "arwen_wrf_19740403_18z_f001.png"]
+    assert len(set(written)) == 2
+    assert {path.read_bytes() for path in written} == {b"PNG-0", b"PNG-1"}
+    assert len(list(out.rglob("*.png"))) == 2
+
+
+def test_a_lifecycle_free_render_is_byte_identical_through_the_seam(
+        monkeypatch, tmp_path):
+    """The same seam, an input that declares no episode: no new segment.
+
+    The paired half of the test above, and the one that has to hold for
+    every run shipped so far.
+    """
+
+    import subprocess
+
+    from gpuwm import render as render_module
+
+    wrfout = _write_wrfout(tmp_path / "wrfout_d02_1974-04-03_18-00-00.nc",
+                           dx=3000.0)
+    out = tmp_path / "png"
+    name = ("rustwx_wrf_19740403_18z_f000_d02-3km_"
+            "composite_reflectivity.png")
+
+    class Result:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout: str):
+            self.stdout = stdout
+
+    def fake_run(command, **kwargs):
+        out_dir = Path(command[command.index("--out-dir") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / name).write_bytes(b"PNG")
+        return Result(f"RENDERED slug {out_dir / name}\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(render_module, "renderer_refusal", lambda _r: None)
+    monkeypatch.setattr("gpuwm.rustwx.find_renderer",
+                        lambda: tmp_path / "rw_wrfbatch")
+
+    written, _failures, _skipped = render_module.render_wrfouts_rust(
+        [wrfout], products="all", timeidx=None, outdir=out,
+        size=(800, 600), source_label="ArWen test")
+    assert [p.relative_to(out).as_posix() for p in written] == [
+        "d02-3km/composite_reflectivity/1974-04-03/"
+        "arwen_wrf_19740403_18z_f000.png"]
+
+
+def test_the_matplotlib_fallback_files_episodes_the_same_way(tmp_path):
+    """One layout for both engines, episode segment included."""
+
+    from gpuwm import render as render_module
+
+    episode = tmp_path / "wrfout" / "d02" / "episode-003"
+    episode.mkdir(parents=True)
+    wrfout = _write_wrfout(episode / "wrfout_d02_1974-04-03_18-00-00.nc")
+    out = tmp_path / "png"
+    written, failures, skipped = render_module.render_wrfouts(
+        [wrfout], products=("t2",), timeidx=0, outdir=out, dpi=72,
+        source_label="ArWen test")
+    assert failures == [] and skipped == []
+    assert [p.relative_to(out).as_posix() for p in written] == [
+        "d02-1km/episode-003/t2/1974-04-03/"
+        f"t2_d02-1km_{_STAMPS[0].replace(':', '-')}.png"]
+
+
+def test_pair_matching_reads_through_the_episode_segment(tmp_path):
+    """`--pair` keys on domain and product, wherever the episode sits.
+
+    The key is rebuilt from the folders above the frame.  With an
+    episode segment in the way, an unchanged reader would key on
+    ``episode-002_composite_reflectivity`` and pair nothing -- and two
+    runs' second episodes are exactly what a lifecycle comparison wants
+    to look at.
+    """
+
+    from gpuwm.pair_compose import product_name
+
+    episodic = (tmp_path / "d05-500m" / "episode-002"
+                / "composite_reflectivity" / "1974-04-03"
+                / "arwen_wrf_19740403_18z_f001.png")
+    plain = (tmp_path / "d05-500m" / "composite_reflectivity"
+             / "1974-04-03" / "arwen_wrf_19740403_22z_f002.png")
+    assert product_name(episodic) == "d05-500m_composite_reflectivity"
+    assert product_name(episodic) == product_name(plain)
+
+
+def test_the_speedrun_capsule_names_products_not_episodes(tmp_path):
+    """Every reader of the tree reads the SAME tree.
+
+    The capsule records which products a run drew by naming the folder
+    they are filed under.  One segment deeper, a reader counting from
+    the left records ``episode-002`` as the product and loses the real
+    name -- the layout's "one walker" property broken by arithmetic.
+    """
+
+    from gpuwm.speedrun_cli import _rendered_products
+
+    for relative in ("d02-3km/composite_reflectivity/1974-04-03/a.png",
+                     "d05-500m/episode-001/2m_temperature/1974-04-03/b.png",
+                     "d05-500m/episode-002/2m_temperature/1974-04-03/c.png"):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"PNG")
+    products, files = _rendered_products(tmp_path)
+    assert products == ["2m_temperature", "composite_reflectivity"]
+    assert len(files) == 3
+
+
+def test_the_early_render_publishes_an_episodic_layout(tmp_path):
+    """first_products carries the whole relative path, episode included.
+
+    Its receipt is the manifest a finalize stage re-checks digests
+    against, so a segment the publisher flattened would be a picture the
+    re-check looks for where it is not.
+    """
+
+    from gpuwm import first_products
+
+    render_dir = tmp_path / "png"
+    render_dir.mkdir()
+    frame = tmp_path / "wrfout_d05_1974-04-03_18_00_00"
+    frame.write_bytes(b"not really a wrfout, only its digest is read")
+
+    relative = ("d05-500m/episode-002/refl/1974-04-03/"
+                "refl_d05-500m_1974-04-03_18-00-00.png")
+
+    def fake_runner(command):
+        scratch = Path(command[command.index("--out") + 1])
+        target = scratch / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"PNG-bytes")
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    trigger = first_products.FirstProducts(
+        {"render": render_dir, "render_products": "refl"},
+        report=lambda _event: None,
+        warn=lambda *args, **kwargs: None,
+        runner=fake_runner)
+    trigger.frame_committed(domain=5, valid_time="1974-04-03T18:00:00",
+                            path=frame)
+    receipt = trigger.wait(timeout=60.0)
+
+    assert receipt is not None
+    assert [entry["name"] for entry in receipt["written"]] == [relative]
+    assert (render_dir / relative).read_bytes() == b"PNG-bytes"
+
+
+def test_the_door_prints_the_episode_segment_when_it_will_write_one(
+        tmp_path, capsys):
+    """The path a script watches has to be the path that appears.
+
+    The door prints where it is about to write BEFORE it draws.  For an
+    episodic input that sentence has one more segment in it, and a
+    script told the shorter one watches a directory no picture arrives
+    in.
+    """
+
+    episode = tmp_path / "wrfout" / "d02" / "episode-002"
+    episode.mkdir(parents=True)
+    wrfout = _write_wrfout(episode / "wrfout_d02_1974-04-03_18-00-00.nc")
+    out = tmp_path / "png"
+    rc = cli.main(["render", "--engine", "matplotlib", str(wrfout),
+                   "--products", "t2", "--timeidx", "0",
+                   "--out", str(out), "--dpi", "72"])
+    assert rc == 0
+    printed = capsys.readouterr().out
+    run_dir = _run_dir(out)
+    assert render_layout.describe(str(run_dir), episode=True) in printed
+    drawn = sorted(run_dir.rglob("*.png"))
+    assert [p.relative_to(run_dir).as_posix() for p in drawn] == [
+        "d02-1km/episode-002/t2/1974-04-03/"
+        f"t2_d02-1km_{_STAMPS[0].replace(':', '-')}.png"]
+
+
+def test_the_described_sentence_is_unchanged_for_a_run_with_no_episodes():
+    """The default sentence is the one shipped, character for character."""
+
+    assert render_layout.describe("<--out>", sep="/") == (
+        "<--out>/<domain>/<product>/<valid-day>/<file>.png "
+        "(domain as d02-3km / d05-111m / native_grid, valid-day as "
+        "YYYY-MM-DD)")
+    described = render_layout.describe(episode=True)
+    for segment in ("<domain>", "<episode>", "<product>", "<valid-day>"):
+        assert segment in described, described

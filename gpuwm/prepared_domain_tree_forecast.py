@@ -1850,6 +1850,14 @@ def run_prepared_tree(
     model._resume_committed_history_grid_ids = frozenset()
     model._io_manager = None
     model._last_checkpoint = None
+    # The seam every mid-run lifecycle and relocation emitter reaches
+    # for.  Published on the MODEL and not on the runners: this route
+    # can rebuild a relocation runner mid-run (a follow target that was
+    # dormant acquires one at the leg boundary it is born on), and a log
+    # wired into a runner at construction would be a log the run's later
+    # runners never got -- the nest that moved would be exactly the one
+    # nothing recorded.
+    progress_log.publish_step_log(model, step_log)
 
     # The corridor lift: with a verified statics corridor on hand this
     # route wires the SAME RelocationRunner the case-data route does --

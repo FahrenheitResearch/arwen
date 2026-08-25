@@ -420,7 +420,12 @@ script can compute a path without globbing.  See
 Live progress is `run-progress.json` in the output directory (atomic,
 schema `gpuwm.run-progress/v1`); restart checkpoints are written every
 `restart_interval_s` and `gpuwm resume` continues from the newest valid
-one.  That is this route, the `[case_data]` route.  When you need to
+one.  `gpuwm branch` is resume's other half: a NEW run seeded from the
+same checkpoint with changed settings, written to its own folder, with
+the source run opened read-only and every setting a checkpoint binds
+refused by name.  See
+[docs/branch-from-checkpoint.md](docs/branch-from-checkpoint.md).
+That is this route, the `[case_data]` route.  When you need to
 resume, run a `[case_data]` experiment or a multi-domain config: both
 checkpoint.  The prepared single-domain forecaster writes none at any
 `restart_interval_s`, and `gpuwm check` says so before you spend the

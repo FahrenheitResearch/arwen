@@ -500,6 +500,106 @@ def test_every_row_is_flushed_so_a_killed_process_loses_nothing(tmp_path):
     writer.close()
 
 
+# ---------------------------------------------------------------------------
+# The live tail: a reader watching the file WHILE the run writes it
+# ---------------------------------------------------------------------------
+
+def test_the_header_is_on_disk_before_the_first_fix_arrives(tmp_path):
+    """A tail attaches when the run starts, which is BEFORE the tracker
+    has been consulted once.  If the header were still in the buffer the
+    reader would have no column names, and a track file whose names
+    arrive late is a file every reader has to guess the shape of."""
+    import csv as _csv
+    writer = _writer(tmp_path)                   # constructed, never emitted
+    with (tmp_path / "track.csv").open(encoding="utf-8", newline="") as fh:
+        reader = _csv.DictReader(fh)
+        assert reader.fieldnames == list(tw.csv_columns())
+        assert list(reader) == []                # names, and no rows yet
+    assert (tmp_path / "track.csv").stat().st_size == len(tw.CSV_HEADER) + 1
+    writer.close()
+
+
+def test_a_second_handle_mid_stream_only_ever_sees_complete_rows(tmp_path):
+    """The tail contract: a reader that opens the file between two
+    emissions parses every visible line with ``csv.DictReader`` and gets
+    whole rows -- never a half-written one, never a row missing its
+    tail columns.  A UI drawing a track polyline from a torn row plots
+    the storm somewhere it never was."""
+    import csv as _csv
+    writer = _writer(tmp_path)
+    names = list(tw.csv_columns())
+    for step in range(1, 6):
+        t = 1800.0 * step
+        writer.emit(_fix(t=t), t=t, parent_state=_state(),
+                    parent_grid=_Grid())
+        # A SECOND HANDLE, opened fresh while the writer still holds its
+        # own -- the tail's own posture, not a peek at our buffer.
+        with (tmp_path / "track.csv").open(encoding="utf-8",
+                                           newline="") as fh:
+            text = fh.read()
+            rows = list(_csv.DictReader(text.splitlines(),
+                                        restkey="_extra", restval="_short"))
+        # Every byte on disk ends a line: no partial row is ever visible.
+        assert text.endswith("\n")
+        assert len(rows) == step
+        for row in rows:
+            assert list(row) == names            # no _extra, no missing name
+            assert "_extra" not in row and "_short" not in row.values()
+            assert row["valid_time"] and float(row["lat_deg"]) == \
+                pytest.approx(10.5)
+    writer.close()
+
+
+def test_every_row_write_is_followed_by_a_flush(tmp_path):
+    """The policy stated as a count.  Buffering a track file to a 8 KiB
+    boundary would hold ~150 rows -- hours of a storm -- so the flush is
+    per row and this pins it rather than trusting the docstring."""
+    writer = _writer(tmp_path)
+
+    class _Counting:
+        def __init__(self, inner):
+            self.inner, self.writes, self.flushes = inner, 0, 0
+
+        def write(self, text):
+            self.writes += 1
+            return self.inner.write(text)
+
+        def flush(self):
+            self.flushes += 1
+            return self.inner.flush()
+
+        def close(self):
+            return self.inner.close()
+
+    writer.stream.handle = counting = _Counting(writer.stream.handle)
+    for step in range(1, 4):
+        t = 1800.0 * step
+        writer.emit(_fix(t=t), t=t, parent_state=_state(),
+                    parent_grid=_Grid())
+        assert counting.flushes == counting.writes == step
+    writer.close()
+
+
+def test_the_track_handle_is_line_buffered_so_the_flush_is_not_a_habit(
+        tmp_path):
+    """Tail-safety is a property of the FILE, not of a call site
+    remembering to flush.  The handle is line buffered, so a row reaches
+    the OS when its newline is written even through a write path that
+    forgets -- which is the way this guarantee would otherwise rot the
+    next time somebody adds one."""
+    import csv as _csv
+    writer = _writer(tmp_path)
+    assert writer.stream.handle.line_buffering is True
+    # A row written straight at the handle, with NO flush after it.
+    writer.stream.handle.write(format_row(
+        valid_time=dt.datetime(2025, 10, 24, 14, 0, 0), lat=1.0, lon=2.0,
+        mslp_mb=3.0, vmax_m_s=4.0) + "\n")
+    with (tmp_path / "track.csv").open(encoding="utf-8", newline="") as fh:
+        rows = list(_csv.DictReader(fh))
+    assert len(rows) == 1 and rows[0]["valid_time"] == "2025-10-24_14:00:00"
+    writer.close()
+
+
 def test_a_run_starts_a_fresh_file_rather_than_appending_to_a_stale_one(
         tmp_path):
     (tmp_path / "track.csv").write_text("stale garbage\n", encoding="utf-8")

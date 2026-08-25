@@ -67,6 +67,7 @@ from gpuwm.core.nest_relocation import (RelocationRefusal, RelocationSegment,
                                         base_segment,
                                         mark_fingerprint_across_move,
                                         relocate_child)
+from gpuwm.progress_log import centre_latlon, model_step_log
 
 #: Versioned label for the runner's own receipt rows.
 from gpuwm.core.uh_diag import (UH_FOLLOW_WINDOW_SLOT,
@@ -630,6 +631,9 @@ class RelocationRunner:
                           "mover's compensated placement)"})
         if self._containment_segment is None:
             self._containment_segment = base_segment(parent_node.cfg)
+        # BEFORE the rebuild: relocate_child reassigns the node's grid, so
+        # the position it is sliding away from exists only until then.
+        slid_from = centre_latlon(getattr(parent_node, "grid", None))
         capture = getattr(self.containment_preparer, "capture_outgoing",
                           None)
         if callable(capture):
@@ -680,6 +684,18 @@ class RelocationRunner:
             history.append(record_sha)
             marked["relocation"] = {"records": history}
             model._experiment_fingerprint_components = marked
+        # The live copy of this receipt, for anything watching the run
+        # rather than reading it afterwards.
+        model_step_log(model).containment_moved(
+            domain=int(cont.grid_id), model_seconds=elapsed,
+            mover=int(self.config.grid_id),
+            placement_from=receipt["plan"]["placement_from"],
+            placement_to=receipt["plan"]["placement_to"],
+            requested_shift=[want_i, want_j],
+            executed_shift=[di, dj], clamped=clamped,
+            mover_deviation_cells=[dev_i, dev_j],
+            grid=getattr(parent_node, "grid", None),
+            lat_from=slid_from[0], lon_from=slid_from[1])
         return self._record(model, {
             "event": "contained",
             "elapsed_seconds": elapsed,
@@ -780,6 +796,15 @@ class RelocationRunner:
                           f"boundary and the run continues: {error}"})
         if row is not None and row.get("emitted"):
             self.track_records += 1
+            # OUTSIDE the try above, deliberately: an emit fault here is
+            # not a track fault, and recording it as one would name the
+            # wrong subsystem on the run's receipts.  One row written,
+            # one event, at the same instant and with the same position.
+            model_step_log(model).track_fix(
+                domain=int(self.config.grid_id), model_seconds=float(elapsed),
+                lat=row.get("lat"), lon=row.get("lon"),
+                found=not bool(row.get("no_signal")),
+                refined_on=(None if fix is None else fix.refined_on))
         return row
 
     def continuity_state(self) -> dict:
@@ -1036,6 +1061,10 @@ class RelocationRunner:
         capture = getattr(self.on_child_built, "capture_outgoing", None)
         if callable(capture):
             capture(node)
+        # BEFORE the rebuild: relocate_child reassigns the node's grid, so
+        # the position the nest is LEAVING exists only until then, and a
+        # live map wants it for the origin ghost.
+        moved_from = centre_latlon(getattr(node, "grid", None))
         fingerprint_before = model.experiment_fingerprint
         receipt = relocate_child(
             node,
@@ -1093,6 +1122,17 @@ class RelocationRunner:
         strip_fill_source = getattr(
             self.initializer, "strip_fill_source", STRIP_FILL_SOURCE)
         land_surface = getattr(self.on_child_built, "last_receipt", None)
+        # The live copy of this receipt.  Only an EXECUTED move is an
+        # event: a hold redraws nothing, and the receipts above carry
+        # every one of them with its reason.
+        model_step_log(model).nest_moved(
+            domain=grid_id, model_seconds=elapsed,
+            placement_from=plan["placement_from"],
+            placement_to=plan["placement_to"],
+            requested_shift=[di, dj],
+            executed_shift=[executed_i, executed_j],
+            clamped_by=clamps, grid=getattr(node, "grid", None),
+            lat_from=moved_from[0], lon_from=moved_from[1])
         return self._record(model, {
             "event": "relocated",
             "elapsed_seconds": elapsed,

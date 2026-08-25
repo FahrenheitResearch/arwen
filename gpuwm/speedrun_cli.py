@@ -470,7 +470,15 @@ def _rendered_products(render_root: Path) -> tuple[list[str],
     The product name is the folder the render layout files a picture
     under (``<run>/<domain>/<product>/<valid-day>/*.png``), so this
     reads the SHIPPED layout rather than parsing filenames.
+
+    A nest that retires and re-arms files one segment deeper
+    (``<domain>/<episode>/<product>/<valid-day>/``), so the position is
+    asked of the tree rather than counted from the left: reading slot 1
+    blindly would report ``episode-002`` as a product name and lose the
+    real one out of the capsule.
     """
+
+    from gpuwm import render_layout
 
     files: list[dict[str, Any]] = []
     products: set[str] = set()
@@ -478,8 +486,11 @@ def _rendered_products(render_root: Path) -> tuple[list[str],
         return [], []
     for png in sorted(render_root.rglob("*.png")):
         relative = png.relative_to(render_root)
-        if len(relative.parts) >= 3:
-            products.add(relative.parts[1])
+        parts = relative.parts
+        if len(parts) >= 3:
+            deeper = (len(parts) > 3
+                      and render_layout.episode_number(parts[1]) is not None)
+            products.add(parts[2 if deeper else 1])
         files.append({"relpath": relative.as_posix(),
                       "bytes": png.stat().st_size,
                       "sha256": speedrun.digest_file(png)})

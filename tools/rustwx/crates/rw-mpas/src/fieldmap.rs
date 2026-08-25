@@ -73,6 +73,9 @@ pub static FIELD_MAP: &[FieldMapping] = &[
     f("QICE", Some("qi"), Rank::Mass3d, "kg kg-1", "Ice mixing ratio", FieldSource::History, ""),
     f("QSNOW", Some("qs"), Rank::Mass3d, "kg kg-1", "Snow mixing ratio", FieldSource::History, ""),
     f("QGRAUP", Some("qg"), Rank::Mass3d, "kg kg-1", "Graupel mixing ratio", FieldSource::History, ""),
+    f("REFL_10CM", Some("refl10cm"), Rank::Mass3d, "dBZ", "Radar reflectivity (lambda = 10 cm)",
+      FieldSource::History,
+      "the model's own microphysics-time diagnostic; when the history carries it, reflectivity products read the model rather than the renderer's hydrometeor fallback"),
     f("U", Some("u_zonal"), Rank::U3d, "m s-1", "x-wind component", FieldSource::History,
       "earth-relative zonal wind, restaggered in x"),
     f("V", Some("v_meridional"), Rank::V3d, "m s-1", "y-wind component", FieldSource::History,
@@ -84,6 +87,8 @@ pub static FIELD_MAP: &[FieldMapping] = &[
       "identically zero; see PHB"),
     // --- surface diagnostics ------------------------------------------------
     f("T2", Some("t2"), Rank::Surface, "K", "TEMP at 2 M", FieldSource::History, ""),
+    f("Q2", Some("q2"), Rank::Surface, "kg kg-1", "QV at 2 M", FieldSource::History,
+      "published bitwise by the history writer; native q2 carries occasional small negatives, so dewpoint consumers clamp at their own boundary"),
     f("PSFC", Some("surface_pressure"), Rank::Surface, "Pa", "SFC PRESSURE", FieldSource::History, ""),
     f("U10", Some("u10"), Rank::Surface, "m s-1", "U at 10 M", FieldSource::History, ""),
     f("V10", Some("v10"), Rank::Surface, "m s-1", "V at 10 M", FieldSource::History, ""),
@@ -116,10 +121,6 @@ pub static FIELD_MAP: &[FieldMapping] = &[
 /// does not carry. Gaps to file against the output stream, not things to
 /// synthesize.
 pub static ABSENT_WRF_FIELDS: &[(&str, &str, &str)] = &[
-    ("Q2", "2m water-vapour mixing ratio",
-     "the port history writes no q2 and the proof receipt sets q2_products_allowed=false; blocks 2m_dewpoint, 2m_relative_humidity and both of their 10m-wind variants"),
-    ("REFL_10CM", "native 10 cm radar reflectivity",
-     "not in the port history stream; the renderer falls back to its own dbz diagnostic from QRAIN/QSNOW/QGRAUP, so reflectivity products still render but they are the renderer's diagnostic, not the model's"),
     ("UP_HELI_MAX", "maximum updraught helicity",
      "not in the port history stream; blocks composite_reflectivity_uh"),
     ("WSPD10MAX", "maximum 10 m wind speed",
@@ -139,9 +140,12 @@ pub static ABSENT_WRF_FIELDS: &[(&str, &str, &str)] = &[
 pub fn field_set_allows(field_set: &str, mapping: &FieldMapping) -> bool {
     match field_set {
         "full" => true,
+        // REFL_10CM rides in the surface set because its consumer product --
+        // composite reflectivity, the MRMS-comparable quantity -- is a
+        // surface-deliverable map even though the carrier is 3-D.
         "surface" => matches!(
             mapping.wrf_name,
-            "T" | "P" | "PB" | "QVAPOR" | "PH" | "PHB"
+            "T" | "P" | "PB" | "QVAPOR" | "PH" | "PHB" | "REFL_10CM"
         ) || matches!(mapping.rank, Rank::Surface | Rank::Soil),
         _ => true,
     }
@@ -149,4 +153,43 @@ pub fn field_set_allows(field_set: &str, mapping: &FieldMapping) -> bool {
 
 pub fn field_set_is_known(field_set: &str) -> bool {
     matches!(field_set, "full" | "surface")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mapping(wrf_name: &str) -> &'static FieldMapping {
+        FIELD_MAP
+            .iter()
+            .find(|m| m.wrf_name == wrf_name)
+            .unwrap_or_else(|| panic!("{wrf_name} is not mapped; the obs referee's model bundle refuses frames without it"))
+    }
+
+    #[test]
+    fn q2_is_a_mapped_surface_history_field() {
+        let q2 = mapping("Q2");
+        assert_eq!(q2.mpas_name, Some("q2"));
+        assert_eq!(q2.rank, Rank::Surface);
+        assert_eq!(q2.source, FieldSource::History);
+        assert!(field_set_allows("surface", q2));
+    }
+
+    #[test]
+    fn refl_10cm_is_a_mapped_mass3d_history_field_in_both_sets() {
+        let refl = mapping("REFL_10CM");
+        assert_eq!(refl.mpas_name, Some("refl10cm"));
+        assert_eq!(refl.rank, Rank::Mass3d);
+        assert_eq!(refl.source, FieldSource::History);
+        assert!(field_set_allows("surface", refl));
+        assert!(field_set_allows("full", refl));
+    }
+
+    #[test]
+    fn the_declared_absent_list_no_longer_names_the_mapped_pair() {
+        for (name, _, _) in ABSENT_WRF_FIELDS {
+            assert_ne!(*name, "Q2");
+            assert_ne!(*name, "REFL_10CM");
+        }
+    }
 }

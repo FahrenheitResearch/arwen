@@ -1255,3 +1255,128 @@ def test_swapping_the_two_legs_would_be_caught():
 
     assert seen == [70]                       # the STALE placement
     assert int(d03.cfg.i_parent_start) == 64  # slid afterwards
+
+
+# ---------------------------------------------------------------------------
+# The live stream: a move a map can draw
+# ---------------------------------------------------------------------------
+#
+# The receipts have always carried every move.  What they cannot do is
+# say anything WHILE THE RUN IS ALIVE: relocation_receipts.json is
+# rewritten whole on every row, for a post-mortem to read afterwards, so
+# a live map had no per-step stream to tail and the nest rectangles
+# could not move.  These cells hold the runner to emitting into
+# progress.jsonl as well, at the same instants the receipts record.
+
+
+def _logged(model, tmp_path):
+    """Attach a real step log to the fake model, the way a route does."""
+    from datetime import datetime
+
+    from gpuwm.progress_log import StepLog, publish_step_log
+
+    log = StepLog(start_time=datetime(2026, 8, 15, 0, 0, 0),
+                  run_seconds=3600.0,
+                  jsonl_path=tmp_path / "progress.jsonl")
+    publish_step_log(model, log)
+    return log
+
+
+def _stream(tmp_path, log):
+    from gpuwm.progress_log import read_step_log
+
+    log.close(status="SUCCESS")
+    return read_step_log(tmp_path / "progress.jsonl")
+
+
+def test_an_executed_move_reaches_the_per_step_stream(tmp_path):
+    parent_plane, parent, child = _cpu_tree()
+    start = (int(child.cfg.i_parent_start), int(child.cfg.j_parent_start))
+    model = _model(parent, child)
+    log = _logged(model, tmp_path)
+    runner = _runner(parent_plane, _manual_config((
+        ScheduledRelocationMove(60.0, 2, 0),)))
+
+    for ticks in (0, 60, 120):
+        _advance(model, parent, child, ticks)
+        runner.on_period_begin(model, {1: parent.clock})
+
+    moves = [r for r in _stream(tmp_path, log) if r["event"] == "nest_moved"]
+    assert len(moves) == 1, "one executed move, one event"
+    move, = moves
+    assert move["domain"] == 2
+    assert move["model_seconds"] == 60.0
+    assert move["valid_time"] == "2026-08-15_00:01:00"
+    assert move["placement_from"] == {"i_parent_start": start[0],
+                                      "j_parent_start": start[1]}
+    assert move["placement_to"] == {"i_parent_start": start[0] + 2,
+                                    "j_parent_start": start[1]}
+    assert move["executed_shift_parent_cells"] == [2, 0]
+    assert move["requested_shift_parent_cells"] == [2, 0]
+
+
+def test_a_held_cadence_boundary_puts_nothing_on_the_stream(tmp_path):
+    """A hold redraws nothing, so it is not an event.
+
+    The receipts carry every hold with its reason; putting one on the
+    per-step stream would emit a record at every cadence boundary a
+    storm sits still and give a consumer nothing to do with it.
+    """
+    parent_plane, parent, child = _cpu_tree()
+    model = _model(parent, child)
+    log = _logged(model, tmp_path)
+    runner = _runner(parent_plane, _manual_config(()),
+                     provider=lambda *_a, **_k: None)
+
+    for ticks in (0, 60, 120):
+        _advance(model, parent, child, ticks)
+        runner.on_period_begin(model, {1: parent.clock})
+
+    assert [r["event"] for r in runner.receipts] == ["held", "held"]
+    assert not [r for r in _stream(tmp_path, log)
+                if r["event"].startswith("nest_")]
+
+
+def test_a_containment_slide_reaches_the_stream_naming_both_domains(tmp_path):
+    parent_plane, parent, child, d03 = _tree3()
+    runner, model, clocks = _containment_runner(
+        parent, child, d03, parent_plane)
+    log = _logged(model, tmp_path)
+    runner.on_period_begin(model, clocks)
+
+    slide, = [r for r in _stream(tmp_path, log)
+              if r["event"] == "containment_moved"]
+    # The domain that MOVED is d02; d03 is the mover it moved for, and
+    # it stayed earth-fixed under the slide.
+    assert slide["domain"] == 2 and slide["mover"] == 3
+    assert slide["placement_from"]["i_parent_start"] == 85
+    assert slide["placement_to"]["i_parent_start"] == 87
+    assert slide["mover_deviation_cells"] == [14, 0]
+    assert slide["executed_shift_parent_cells"] == [2, 0]
+
+
+def test_publishing_a_log_changes_no_decision_the_runner_makes(tmp_path):
+    """The emitters are telemetry, and telemetry never steers.
+
+    The same property the track writer has to have: if publishing a log
+    changed one decision, the stream would be steering the model it
+    claims to observe.
+    """
+    def run(with_log):
+        parent_plane, parent, child = _cpu_tree()
+        model = _model(parent, child)
+        if with_log:
+            _logged(model, tmp_path)
+        runner = _runner(parent_plane, _manual_config((
+            ScheduledRelocationMove(60.0, 2, 0),
+            ScheduledRelocationMove(120.0, 0, 1))))
+        for ticks in (0, 60, 120, 180):
+            _advance(model, parent, child, ticks)
+            runner.on_period_begin(model, {1: parent.clock})
+        runner.close_receipt(model)
+        return ([r["event"] for r in runner.receipts],
+                (int(child.cfg.i_parent_start),
+                 int(child.cfg.j_parent_start)),
+                model.experiment_fingerprint)
+
+    assert run(False) == run(True)

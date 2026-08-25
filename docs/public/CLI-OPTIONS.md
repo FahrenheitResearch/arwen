@@ -19,6 +19,28 @@ Everything is listed with the help text the tool itself prints.  A door's positi
 | `--skeleton JSON` | create a review-required descriptor scaffold and stop |
 | `--vtable VTABLE` | 11-column WPS Vtable selector authority. Required for GRIB descriptors, and never defaulted: this command adapts arbitrary sources, and quietly reaching for a GFS Vtable would mis-map every other product. Must be omitted for NetCDF descriptors, whose selectors name CF variables directly. A worked GFS example installs with the package -- <gpuwm package>\authorities\Vtable.GFS.rw-wps |
 
+## `gpuwm branch`
+
+| argument | what it does |
+|---|---|
+| `CONFIG` | the config the source run used; the branch edits a copy of it and the restart identity check refuses any other |
+
+| option | what it does |
+|---|---|
+| `--allow-shared-gpu` | UNSUPPORTED: permit another substantial CUDA compute context; device verification and the GPUWM UUID lock remain enforced |
+| `--directory-input-hash {inventory,content}` | how declared directory inputs (the static geography tree) are bound to this run's identity: 'inventory' (default) uses relative path, size, and mtime; 'content' reads every file and uses its SHA-256. Use 'content' when two runs being compared for byte identity stage their geography separately, and when an mtime-preserving change to that tree must not go unnoticed (docs/public/DETERMINISM.md). Also settable as GPUWM_DIRECTORY_INPUT_HASH. |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--from CKPT|latest` | explicit gpuwmrst_*.npz checkpoint to branch from, or 'latest' (default) for the newest valid set in --from-run |
+| `--from-run RUNDIR` | the source run's output directory -- where its gpuwmrst_*.npz checkpoints are. Optional only when --from names a checkpoint file explicitly |
+| `--gpu-uuid GPU-UUID` | physical GPU UUID to lock (required on multi-GPU hosts) |
+| `--health-debug` | enable debug phase health attribution hooks |
+| `--no-supervise` | run the experiment in this process (escape hatch; disables fresh-process recovery and exclusive-GPU supervision) |
+| `--outdir OUT` | the NEW run's output directory; it must be empty and must not be inside the source run |
+| `--prep-timeout SECONDS` | optional preparation heartbeat timeout; default is no timeout until integration begins |
+| `--prepare-only` | write the branch run directory, its config and its receipts, then stop without integrating -- the price-it-first step a what-if screen shows before committing a card |
+| `--set KEY=VALUE` | a setting to change in the branched run, repeatable. Changeable from a checkpoint: run_seconds, restart_interval_s, acknowledgements, relocation.*, tiles.*, output.*, domain.<grid_id>.history_interval_s, domain.<grid_id>.tiles.*, domain.<grid_id>.output.*. Everything else is refused by name, because the restart identity binds it |
+| `--supervisor-max-restarts N` | fresh-process recovery attempts (default 3) |
+
 ## `gpuwm cases`
 
 | option | what it does |
@@ -820,7 +842,7 @@ Takes no options of its own.
 | `--prepared-root` | _(the parser declares no help text for this option)_ |
 | `--progress-every N` | report every Nth model step (default 1, WRF's own cadence). The first and last step of every domain are always reported, and this thins ONLY `step` records -- output, restart and domain events are never thinned |
 | `--progress-format {text,jsonl,off}` | how this run reports its progress. `text` (the default) prints one WRF-shaped `Timing for main:` line per model time step per domain on stdout and ALSO writes the machine stream to OUTDIR/progress.jsonl; `jsonl` writes only that stream, leaving stdout free of sentences; `off` disables per-step reporting entirely |
-| `--progress-output PATH` | where the machine stream is written; defaults to OUTDIR/progress.jsonl. Append-only JSONL at gpuwm.step-log/v2, one record per printed line, with a dense `sequence` so a consumer can detect a lost line. `-` sends the records to stdout instead of to a file, which with --progress-format jsonl is a pure record pipe |
+| `--progress-output PATH` | where the machine stream is written; defaults to OUTDIR/progress.jsonl. Append-only JSONL at gpuwm.step-log/v3, one record per printed line, with a dense `sequence` so a consumer can detect a lost line. `-` sends the records to stdout instead of to a file, which with --progress-format jsonl is a pure record pipe |
 | `--proof-sha256` | _(the parser declares no help text for this option)_ |
 | `--render-dir DIR` | where --render-products publishes; defaults to OUTDIR/png. Ignored without --render-products |
 | `--render-products SPEC` | `gpuwm render --products`' own spec -- a comma-separated product list, or `all`, or `none` -- for the FIRST frame this run commits, rendered on a worker thread while the forecast is still integrating. Absent is off, and off is the default: there is deliberately no second switch, so "which products" has one answer that cannot disagree with itself. The first frame is the analysis at t = 0, durable before a single step is integrated |
@@ -860,7 +882,7 @@ Takes no options of its own.
 | `--prepared-root` | _(the parser declares no help text for this option)_ |
 | `--progress-every N` | report every Nth model step (default 1, WRF's own cadence). The first and last step of every domain are always reported, and this thins ONLY `step` records -- output, restart and domain events are never thinned |
 | `--progress-format {text,jsonl,off}` | how this run reports its progress. `text` (the default) prints one WRF-shaped `Timing for main:` line per model time step per domain on stdout and ALSO writes the machine stream to OUTDIR/progress.jsonl; `jsonl` writes only that stream, leaving stdout free of sentences; `off` disables per-step reporting entirely |
-| `--progress-output PATH` | where the machine stream is written; defaults to OUTDIR/progress.jsonl. Append-only JSONL at gpuwm.step-log/v2, one record per printed line, with a dense `sequence` so a consumer can detect a lost line. `-` sends the records to stdout instead of to a file, which with --progress-format jsonl is a pure record pipe |
+| `--progress-output PATH` | where the machine stream is written; defaults to OUTDIR/progress.jsonl. Append-only JSONL at gpuwm.step-log/v3, one record per printed line, with a dense `sequence` so a consumer can detect a lost line. `-` sends the records to stdout instead of to a file, which with --progress-format jsonl is a pure record pipe |
 | `--restart` | resume from any member of a gpuwmrst checkpoint set written by an earlier run of this prepared tree; only the forecast length (run_seconds) and the output/restart cadence (history_interval_s, restart_interval_s) may differ from the run that wrote it -- the same contract `gpuwm run --restart` publishes. Anything else is refused by name |
 | `--sealed-forcing-extension` | write/restore checkpoints using the explicit append-only forcing-prefix contract |
 | `--show-capabilities` | print this runner's capability JSON and exit; it must be the only argument |

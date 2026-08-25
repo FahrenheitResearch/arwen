@@ -63,10 +63,10 @@ Two honest differences from `wrf.exe`, both deliberate:
 ## The machine stream: `progress.jsonl`
 
 Beside the outputs, at `<outdir>/progress.jsonl` unless you move it.
-Append-only, one JSON object per line, schema `gpuwm.step-log/v2`:
+Append-only, one JSON object per line, schema `gpuwm.step-log/v3`:
 
 ```json
-{"schema":"gpuwm.step-log/v2","sequence":4,"emitted_unix_ms":1779300012431,
+{"schema":"gpuwm.step-log/v3","sequence":4,"emitted_unix_ms":1779300012431,
  "event":"step","text":"Timing for main: time 2026-05-20_18:00:24 on domain   1:     0.06104 elapsed seconds  step 2",
  "domain":1,"step":2,"valid_time":"2026-05-20_18:00:24","model_seconds":24.0,
  "step_wall_seconds":0.06104,"fraction":0.006667}
@@ -82,7 +82,8 @@ Three properties worth relying on:
   feeding both.
 - **The tag set is closed.** Every record is one of `run_start`,
   `phase`, `domain_start`, `step`, `output_written`, `restart_written`,
-  `domain_end`, `run_end`, so a `switch` on `event` can be exhaustive.
+  `domain_end`, `run_end`, plus the six nest tags below, so a `switch`
+  on `event` can be exhaustive.
 
 ### The road to step 1: `phase` records (new in v2)
 
@@ -93,7 +94,7 @@ spend waiting. `phase` records close that. Each carries a `name` and a
 else:
 
 ```json
-{"schema":"gpuwm.step-log/v2","sequence":2,"emitted_unix_ms":1779300009911,
+{"schema":"gpuwm.step-log/v3","sequence":2,"emitted_unix_ms":1779300009911,
  "event":"phase","text":"gpuwm: phase preflight_verify:     1.90000 elapsed seconds",
  "name":"preflight_verify","wall_seconds":1.9}
 ```
@@ -121,11 +122,64 @@ kernels cached for the previous card, so nothing was reusable, and 51 s
 of recompilation ran inside step 1's wall with nothing anywhere naming
 it.
 
-**Upgrading from `gpuwm.step-log/v1`.** Nothing v1 emitted changed shape
--- v2 adds one tag and one `run_end` field. The schema string moved
-anyway, because a v1 consumer meeting `phase` should refuse loudly
+### What the tree does to itself: the nest tags (new in v3)
+
+A run can move a nest across half a state, retire an episode and re-arm
+the slot, and until v3 the per-step stream said nothing about any of it.
+Those decisions lived only in `relocation_receipts.json` and
+`spawn_receipts.json`, which are written for a post-mortem -- so nothing
+watching a run **live** could draw the tree it was watching.
+
+Six tags close that. Every one of them carries the same four fields as
+the rest of the stream -- `domain`, `step`, `valid_time`,
+`model_seconds` -- plus `lat`/`lon` where a position exists:
+
+| `event` | when it fires | what else it carries |
+|---|---|---|
+| `nest_spawned` | a dormant nest's trigger fired and its child was built | `episode`, `parent`, `placement`, `trigger` |
+| `nest_retired` | a live episode stopped; the domain leaves the next leg | `episode`, `reason` |
+| `nest_rearmed` | a retired slot re-opened for a later episode | `episode` (the one it is armed **for**), `cooldown_seconds` |
+| `nest_moved` | a follower executed a relocation | `placement_from`, `placement_to`, `lat_from`/`lon_from`, requested and executed shift, `clamped_by` |
+| `containment_moved` | the mover's **parent** slid to keep it contained | `mover`, the same placement pair, `mover_deviation_cells`, `clamped` |
+| `track_fix` | one tracker fix, as the track file records it | `found`, `refined_on` |
+
+```json
+{"schema":"gpuwm.step-log/v3","sequence":812,"emitted_unix_ms":1779301832004,
+ "event":"nest_moved","text":"d02 2026-05-20_18:20:00 gpuwm: nest_moved, i=20 j=18 -> i=22 j=18 at lat 35.2150 lon -96.8050",
+ "domain":2,"step":600,"valid_time":"2026-05-20_18:20:00","model_seconds":1200.0,
+ "lat":35.215,"lon":-96.805,
+ "placement_from":{"i_parent_start":20,"j_parent_start":18},
+ "placement_to":{"i_parent_start":22,"j_parent_start":18},
+ "requested_shift_parent_cells":[3,0],"executed_shift_parent_cells":[2,0],
+ "clamped_by":["max_move_parent_cells"],"lat_from":35.195,"lon_from":-96.805}
+```
+
+Three properties worth knowing before you build on these:
+
+- **Old placement AND new, on the move itself.** You never have to
+  remember the previous event to know where a nest came from, which
+  matters across a reconnect.
+- **A hold is not an event.** A relocation that decided not to move
+  happens at every cadence boundary a storm sits still and redraws
+  nothing; the run's relocation receipts carry every hold with its
+  reason.
+- **A position can be `null`.** An idealized run carries no map
+  projection, so its nest events have no place on a map and say so
+  rather than inventing one. `nest_rearmed` is always position-free:
+  nothing has been built yet.
+
+**A run with no nests emits none of these.** A single-domain forecast,
+or a tree with no `spawn`, `retire`, `rearm`, `[relocation]` or
+`[relocation.track]`, produces exactly the stream it produced before
+these tags existed.
+
+**Upgrading from an older schema.** Nothing an older version emitted
+changed shape -- v2 adds one tag and one `run_end` field, v3 adds the
+six above and nothing else. The schema string moves anyway, because a
+consumer meeting a tag it was never told about should refuse loudly
 rather than silently skip a record, and the schema is how it does that.
-`read_step_log` replays both.
+`read_step_log` replays `gpuwm.step-log/v1`, `gpuwm.step-log/v2` and
+`gpuwm.step-log/v3`.
 
 One boundary, stated rather than implied: `run_end` reports the outcome
 of the **integration**, emitted once the last frame is durable. Work

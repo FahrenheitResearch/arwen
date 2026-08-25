@@ -3352,7 +3352,12 @@ class CudaSW:
         ncol = int(ncol)
         assert nlayers + 1 <= self.max_nlay + 1
         nl1 = nlayers + 1
-        chunk = int(column_chunk) if column_chunk else SW_BATCH_COLUMN_CHUNK
+        if column_chunk:
+            chunk = int(column_chunk)
+        else:
+            from gpuwm.core.rrtmg_lw import batch_column_chunk
+            chunk = batch_column_chunk(
+                NGPTSW, SW_BATCH_COLUMN_CHUNK_CEILING)
         if chunk < 1:
             raise ValueError("column_chunk must be >= 1")
         i32, f32 = np.int32, np.float32
@@ -3664,15 +3669,28 @@ class CudaSW:
 # the device.
 # ===========================================================================
 
-#: Default columns per chunk.  The spcvmc stage runs one thread per
-#: (column, g-point): 2048 x 112 = 229,376 threads, ~0.88x the RTX
-#: 5090's resident-thread capacity (170 SMs x 1536 = 261,120), so the
-#: grid is essentially saturated; doubling the chunk would double the
-#: dominant per-chunk transient (the explicit spcvmc workspace,
-#: ~1.6 GiB at nlay = 50 -- see sw_batched_vram_bytes) for < 1.14x more
-#: resident work.  ~2.1 GiB peak transient sits well inside this lane's
-#: ~10 GiB share of the card.
-SW_BATCH_COLUMN_CHUNK = 2048
+#: Ceiling of the auto-sized columns-per-chunk (#310).  2048 was the
+#: hardwired default, reasoned against a 170 SM part: the spcvmc stage
+#: runs one thread per (column, g-point), 2048 x 112 = 229,376 threads,
+#: ~0.88x that part's resident-thread capacity (170 SMs x 1536 =
+#: 261,120), and doubling the chunk would double the dominant per-chunk
+#: transient (the explicit spcvmc workspace -- see sw_batched_vram_bytes)
+#: for < 1.14x more resident work.  Every smaller part paid the same
+#: workspace for occupancy it could not host, so the default width is
+#: now ``batch_column_chunk(NGPTSW, SW_BATCH_COLUMN_CHUNK_CEILING)``
+#: (gpuwm.core.rrtmg_lw) -- the smallest quantum multiple that saturates
+#: THIS device, never above this ceiling -- resolved lazily through the
+#: module attribute ``SW_BATCH_COLUMN_CHUNK`` so CPU-only imports never
+#: touch CUDA.
+SW_BATCH_COLUMN_CHUNK_CEILING = 2048
+
+
+def __getattr__(name):
+    if name == "SW_BATCH_COLUMN_CHUNK":
+        from gpuwm.core.rrtmg_lw import batch_column_chunk
+        return batch_column_chunk(NGPTSW, SW_BATCH_COLUMN_CHUNK_CEILING)
+    raise AttributeError(
+        f"module {__name__!r} has no attribute {name!r}")
 
 #: Workspace geometry of rsw_spcvmc_gpt[_b]: per thread,
 #: SPCVMC_WK_ARRAYS float32 arrays and SPCVMC_WKC_ARRAYS uint8 arrays of

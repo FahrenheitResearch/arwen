@@ -239,6 +239,31 @@ def _domain_tag(path: Path) -> str | None:
     return match.group(1) if match else None
 
 
+def history_episode(path) -> int | None:
+    """The lifecycle episode one history file's own folder declares.
+
+    ``None`` when it declares none, which is every run that does not
+    declare ``retire``/``rearm`` and therefore every run shipped so far.
+
+    The evidence is the folder the HISTORY WRITER filed the frame in.
+    A nest that retires and re-arms puts a second history run through
+    one slot, and ``gpuwm.io.wrfout`` separates those as
+    ``d05/episode-002/`` using
+    :func:`gpuwm.core.nest_lifecycle.output_episode`'s number -- so the
+    number read back here is the lifecycle's own, not a second count
+    kept by the renderer.  Read from the IMMEDIATE parent, because that
+    is exactly where the writer puts it: a deeper search would let a
+    case folder somebody named ``episode-002`` relabel every frame of
+    every nest under it.
+
+    The spelling is :func:`gpuwm.render_layout.episode_number`'s, the
+    inverse of the one the writer used, so the two trees cannot drift
+    into disagreeing about which episode a picture belongs to.
+    """
+
+    return render_layout.episode_number(Path(path).parent.name)
+
+
 def _grid_spacing_m(path: Path) -> float | None:
     """The file's own ``DX`` in metres, or None when it declares none."""
 
@@ -697,6 +722,10 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
         domain = _domain_tag(path)
         spacing_m = _grid_spacing_m(path)
         token = domain_token(domain, spacing_m)
+        # Which LIFE of this nest, when it has more than one.  Both
+        # engines file the same way, so a run that renders half its
+        # frames through each does not end up with two trees.
+        episode = history_episode(path)
         if timeidx is None:
             indices = range(len(stamps))
         elif timeidx >= len(stamps):
@@ -741,6 +770,7 @@ def render_wrfouts(paths, *, products: tuple[str, ...],
                 out_png = render_layout.place(
                     outdir, domain=token, product=product,
                     day=render_layout.valid_day(stamp), layout=layout,
+                    episode=episode,
                     filename=(f"{product}_{token}_"
                               f"{_stamp_for_filename(stamp)}.png"))
                 # The token separates nests, but it cannot separate two
@@ -1132,10 +1162,12 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
     The domain token comes from the LAST file, the frame whose valid
     time the panels carry; every file in a series is one nest by
     construction, because a store that mixed two nests would merge two
-    grids into one run.  Placement and rebranding are
-    :func:`_place_engine_output`'s, unchanged, so these panels land in
-    the same ``<out>/<domain>/<product>/<valid-day>/`` layout as every
-    other render.
+    grids into one run.  The lifecycle episode comes from the same file
+    for the same reason: a store spanning a retire/re-arm boundary would
+    difference one life of a nest against another.  Placement and
+    rebranding are :func:`_place_engine_output`'s, unchanged, so these
+    panels land in the same ``<out>/<domain>/<product>/<valid-day>/``
+    layout as every other render.
     """
 
     from gpuwm import rustwx
@@ -1149,6 +1181,7 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
     outdir.mkdir(parents=True, exist_ok=True)
     subject = series[-1]
     token = domain_token(_domain_tag(subject), _grid_spacing_m(subject))
+    episode = history_episode(subject)
     width, height = size
     with scratch_store(outdir) as store:
         written, failures, skipped = rustwx.run_renderer_series(
@@ -1157,7 +1190,8 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
             else str(timeidx), width=width, height=height, heavy=heavy,
             source_label=source_label, overlays=overlays,
             annotate=annotate, streamlines=streamlines)
-    written = [_place_engine_output(png, outdir, token, layout)
+    written = [_place_engine_output(png, outdir, token, layout,
+                                    episode=episode)
                for png in written]
     return written, failures, skipped
 
@@ -1208,6 +1242,13 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
         # the file beats a transcription, and one file's outputs all
         # belong to one nest whatever any filename says.
         token = domain_token(_domain_tag(path), _grid_spacing_m(path))
+        # And which LIFE of that nest, read from the folder the history
+        # writer filed the file in.  Two episodes of one nest can carry
+        # one valid time -- the retiring one's last frame and the
+        # re-armed one's activation frame -- and the engine names them
+        # identically, so without this the second delivery replaces the
+        # first.
+        episode = history_episode(path)
         with scratch_store(outdir) as store:
             file_written, file_failures, file_skipped = rustwx.run_renderer(
                 renderer, path, store_root=store, out_dir=outdir,
@@ -1215,7 +1256,8 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                 height=height, heavy=heavy, source_label=source_label,
                 overlays=overlays, annotate=annotate,
                 streamlines=streamlines)
-        file_written = [_place_engine_output(png, outdir, token, layout)
+        file_written = [_place_engine_output(png, outdir, token, layout,
+                                             episode=episode)
                         for png in file_written]
         written.extend(file_written)
         failures.extend(file_failures)
@@ -1264,7 +1306,8 @@ def _rebrand_engine_output(png: Path) -> Path:
 
 
 def _place_engine_output(png: Path, outdir: Path, domain: str,
-                         layout: str) -> Path:
+                         layout: str, *,
+                         episode: int | None = None) -> Path:
     """Rebrand one engine-written PNG and file it under the layout.
 
     The rust engine writes every picture straight into ``--out-dir``
@@ -1306,8 +1349,14 @@ def _place_engine_output(png: Path, outdir: Path, domain: str,
     # step, rather than in the engine: the vendored crate stays
     # byte-identical to its campaign builds, and `--layout flat` keeps
     # the v2.4.1 name (this branch is nested-only; flat returned above).
+    # The episode is the CALLER's, read from the history file this
+    # picture was drawn from: the engine's filename cannot carry it,
+    # because the engine knows nothing about a nest's lifecycle.  Absent
+    # -- every run that declares no retire/rearm -- the path is the
+    # three segments it has always been.
     target = render_layout.place(
         outdir, domain=filed_domain, product=product, day=day,
+        episode=episode,
         filename=render_layout.delivered_name(
             png.name, domain=filed_domain, product=product),
         layout=layout)
@@ -2112,8 +2161,15 @@ def render_main(args: argparse.Namespace) -> int:
         # One separator on both arms: the reader's own --out arrives
         # with this platform's, and gluing a forward-slash template
         # behind it printed a path in two spellings (UX finding N24).
+        # An input filed under a lifecycle episode gets one more
+        # segment, and the sentence has to say so: a script handed the
+        # three-segment template would watch a directory this render
+        # never writes to.  Asked of the INPUTS, which are known here,
+        # rather than assumed.
+        episodic = any(history_episode(path) is not None
+                       for path in args.wrfout)
         print(f"render: layout {args.layout} -- "
-              + (render_layout.describe(str(args.out))
+              + (render_layout.describe(str(args.out), episode=episodic)
                  if args.layout == render_layout.NESTED
                  else f"{args.out}{os.sep}<file>.png (legacy flat)"))
         if engine == "rust":

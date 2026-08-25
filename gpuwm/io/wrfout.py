@@ -26,7 +26,7 @@ import traceback
 import numpy as np
 import netCDF4
 
-from gpuwm import perf_timing
+from gpuwm import perf_timing, render_layout
 from gpuwm.config import NO_LAND_SURFACE_SOIL_LAYERS, soil_layer_count
 from gpuwm.io.classic_tape import (ClassicDim, ClassicTape, ClassicVariable,
                                    classic_attr_value)
@@ -2224,9 +2224,16 @@ class PerDomainWrfoutWriters:
         valid_time = self.start_time + timedelta(seconds=seconds)
         episode = int(self._episode_by_grid_id.get(node.cfg.grid_id, 0))
         base_dir = self.output_dir
-        if episode > 0:
+        # THE spelling, from `gpuwm.render_layout`, because the delivered
+        # PNG tree carries the same segment for the same frames: a
+        # reader who found `d05/episode-002` here has to find that
+        # episode's pictures under a folder spelled the same way, and
+        # two independent format strings are two spellings waiting to
+        # drift apart.
+        segment = render_layout.episode_segment(episode)
+        if segment is not None:
             base_dir = (self.output_dir / f"d{int(node.cfg.grid_id):02d}"
-                        / f"episode-{episode:03d}")
+                        / segment)
             base_dir.mkdir(parents=True, exist_ok=True)
         path = base_dir / wrfout_filename(valid_time, node.cfg.grid_id)
         # SAME-RUN duplicates only.  The breakage this names is a lifecycle

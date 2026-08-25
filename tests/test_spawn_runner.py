@@ -181,6 +181,77 @@ def test_spawn_fires_inside_a_real_two_leg_walk(case, monkeypatch):
         assert np.isfinite(_host(getattr(child.state, name))).all()
 
 
+def test_the_birth_reaches_the_per_step_stream(case, monkeypatch, tmp_path):
+    """A nest being born is an event a live view has to be told about.
+
+    Before this, the only record of a birth was ``spawn_receipts.json``,
+    which is written for a post-mortem: anything watching the run saw a
+    new domain start stepping and had to infer what had happened, with
+    no placement, no episode number and no position.
+    """
+    from datetime import datetime
+
+    from gpuwm.progress_log import (NEST_EVENTS, StepLog, publish_step_log,
+                                    read_step_log)
+
+    monkeypatch.setattr("gpuwm.core.dycore.step", lambda *_a, **_k: None)
+    runner = SpawnRunner.from_experiment(
+        case["exp"], on_child_built=lambda *_a: None, array_module=np)
+    model, _ = _walk(_leg(runner.active), case["parent"].state,
+                     grids=(case["grids"][0],))
+
+    log = StepLog(start_time=datetime(2026, 8, 15, 0, 0, 0),
+                  run_seconds=600.0, jsonl_path=tmp_path / "progress.jsonl")
+    publish_step_log(model, log)
+    assert runner.on_leg_boundary(model) is not None
+    log.close(status="SUCCESS")
+
+    records = [r for r in read_step_log(tmp_path / "progress.jsonl")
+               if r["event"] in NEST_EVENTS]
+    born, = records
+    assert born["event"] == "nest_spawned"
+    assert born["domain"] == 2
+    assert born["parent"] == 1
+    assert born["episode"] == 1
+    assert born["placement"] == {"i_parent_start": 20, "j_parent_start": 18}
+    assert born["model_seconds"] == pytest.approx(LEG)
+    # A newborn has taken no step of its own and says so.
+    assert born["step"] == 0
+    # The tree is projected, so the birth has a place on a map -- read
+    # off the newborn's OWN grid, which is what a rectangle is drawn at.
+    assert born["lat"] is not None and born["lon"] is not None
+    assert -90.0 <= born["lat"] <= 90.0
+
+
+def test_a_run_that_never_fires_puts_nothing_on_the_stream(case, monkeypatch,
+                                                           tmp_path):
+    """A watch that has not fired is not an event.
+
+    The leg BEFORE the trigger evaluates the same watch and decides
+    nothing happened; the stream has to stay silent through it, or every
+    leg boundary of every spawn run emits a record saying so.
+    """
+    from datetime import datetime
+
+    from gpuwm.progress_log import (NEST_EVENTS, StepLog, publish_step_log,
+                                    read_step_log)
+
+    monkeypatch.setattr("gpuwm.core.dycore.step", lambda *_a, **_k: None)
+    runner = SpawnRunner.from_experiment(
+        case["exp"], on_child_built=lambda *_a: None, array_module=np)
+    model, _ = _walk(_leg(runner.active, LEG / 2), case["parent"].state,
+                     grids=(case["grids"][0],))
+
+    log = StepLog(start_time=datetime(2026, 8, 15, 0, 0, 0),
+                  run_seconds=600.0, jsonl_path=tmp_path / "progress.jsonl")
+    publish_step_log(model, log)
+    assert runner.on_leg_boundary(model, t=LEG / 2) is None
+    log.close(status="SUCCESS")
+
+    assert not [r for r in read_step_log(tmp_path / "progress.jsonl")
+                if r["event"] in NEST_EVENTS]
+
+
 def test_a_second_boundary_after_the_fire_is_a_no_op(case, monkeypatch):
     """Once every watch has fired the runner stops doing work, and the
     active view keeps the newborn at its fired placement."""

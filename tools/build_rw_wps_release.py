@@ -140,6 +140,16 @@ _TOP_LEVEL_EXCLUDES = {
     # gpuwm.io.restart -- one forbidden here, the other not staged at
     # all.  A preprocessing wheel has no checkpoints to resume from.
     "resume.py",
+    # `gpuwm branch` is resume's other half: a NEW run seeded from an
+    # existing run's checkpoint (gpuwm.branch).  It reached this staging
+    # the same way resume.py did -- it is a top-level module and nothing
+    # RW-WPS ships imports it (the one importer is the excluded
+    # gpuwm.cli) -- and its own lookups are the forecast executor in
+    # gpuwm.core.model and the checkpoint locator in gpuwm.resume, one
+    # forbidden here and the other excluded directly above, so staging
+    # it fails this builder's own unresolved-import scan on four
+    # imports.  A preprocessing wheel has no checkpoints to branch from.
+    "branch.py",
     "runtime.py",
     "state_digest.py",
     "supervisor.py",

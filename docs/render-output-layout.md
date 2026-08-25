@@ -7,6 +7,13 @@ before it exists:
 <--out>/<run folder>/<domain>/<product>/<valid-day>/<filename>.png
 ```
 
+and, for a nest that retires and re-arms during the run, one segment
+more:
+
+```
+<--out>/<run folder>/<domain>/<episode>/<product>/<valid-day>/<filename>.png
+```
+
 This is the default. There is no flag to turn it on.
 
 The `<run folder>` level is one render invocation's own timestamped
@@ -30,11 +37,12 @@ out/myarea/png/
       ...
 ```
 
-## The three segments
+## The segments
 
 | segment | what it is | values |
 | --- | --- | --- |
 | `<domain>` | the nest, with its grid spacing | `d02-3km`, `d04-100m`, `d05-111m`; `native_grid` when the input file proves no domain identity (no `GRID_ID`, no `wrfout_dNN` name) |
+| `<episode>` | which life of that nest — **present only** for a nest that declares `retire`/`rearm` | `episode-001`, `episode-002`, … |
 | `<product>` | the chart | rust engine (the default, and the only one `--engine auto` selects): the catalog slug, e.g. `composite_reflectivity`, `2m_temperature`, `total_qpf`, `sbcape`. The `--engine matplotlib` workaround, asked for by name: `refl`, `t2`, `wind10`, `precip`, `olr` |
 | `<valid-day>` | `YYYY-MM-DD` of the time the frame is VALID | `1974-04-04`; `undated` when the file carries no readable valid time |
 
@@ -48,6 +56,51 @@ Two details worth knowing before you write a path by hand:
   initialised. A 22Z cycle at f+02 files under the next morning. This is
   why the example above has a `1974-04-04` folder under a run that
   started on the 3rd.
+## A nest that lives more than once
+
+A nest configured with `retire` / `rearm` spawns, runs, retires, and can
+spawn again later in the same forecast. Each of those lives is an
+**episode**, numbered from 1, and each gets its own folder under the
+domain:
+
+```
+out/myarea/png/
+  d05-500m/
+    episode-001/
+      composite_reflectivity/
+        1974-04-03/  arwen_wrf_19740403_18z_f000.png
+                     arwen_wrf_19740403_18z_f001.png
+    episode-002/
+      composite_reflectivity/
+        1974-04-03/  arwen_wrf_19740403_18z_f001.png
+```
+
+Note the last two lines: the same filename appears in both episodes.
+That is not a duplicate — it is the retiring episode's final frame and
+the re-armed episode's activation frame, two different pictures of two
+different lives of the nest at one valid time. The nest's own history
+files are separated the same way and for the same reason
+(`run/wrfout/d05/episode-002/`); without the segment here, the second
+picture would land on the first and one of them would be gone, with no
+failure and no warning to say so.
+
+The number is the run's own episode number — the one the forecast used
+to file the history — so the pictures of `run/wrfout/d05/episode-002/`
+are the pictures under `d05-500m/episode-002/`, always.
+
+The segment is a folder, so it costs twelve characters on every path
+below it. The deepest real delivery measured — a run folder carrying
+both timestamps, a stored-variable product slug with its digest, and a
+sub-hourly frame — is 229 characters from a typical case root, and 241
+with an episode. Still inside Windows' 260, with less slack than an
+ordinary delivery: on an episodic run, keep the case root short.
+
+**A domain with no `retire`/`rearm` has one life and gets no segment.**
+That is every ordinary run, every one-shot spawned nest, and every
+storm-following nest: `follow` moves a nest within one episode, so its
+frames before and after a move belong to one series and stay in one
+folder. Their paths are exactly what they were before episodes existed.
+
 ## The filename carries what the folders do not
 
 A delivered filename is
@@ -83,21 +136,28 @@ directory with no globbing and no directory listing:
 ```python
 from pathlib import Path
 
-def product_dir(out, domain, product, valid_time):
+def product_dir(out, domain, product, valid_time, episode=None):
     """Where `gpuwm render` will put this product's frames."""
-    return Path(out) / domain / product / valid_time.strftime("%Y-%m-%d")
+    directory = Path(out) / domain
+    if episode:                     # a retire/rearm nest; None otherwise
+        directory = directory / f"episode-{episode:03d}"
+    return directory / product / valid_time.strftime("%Y-%m-%d")
 ```
 
 That is the whole contract. `gpuwm.render_layout` is the in-tree
-implementation of it (`place`, `product_dir`, `valid_day`) if you would
-rather import than transcribe, and `gpuwm render` prints the layout it
-is about to write **before** it draws anything:
+implementation of it (`place`, `product_dir`, `valid_day`,
+`episode_segment`) if you would rather import than transcribe, and
+`gpuwm render` prints the layout it is about to write **before** it
+draws anything:
 
 ```
 render: engine rust (.../rw_wrfbatch.exe)
 render: run folder run-20260817-041233Z_i202605171800Z under out/myarea/png
 render: layout nested -- out/myarea/png/run-20260817-041233Z_i202605171800Z/<domain>/<product>/<valid-day>/<file>.png (domain as d02-3km / d05-111m / native_grid, valid-day as YYYY-MM-DD)
 ```
+
+Hand it history files from an episodic nest and the same line names the
+`<episode>` segment too, because that is where those frames will land.
 
 To watch for one frame becoming readable, watch that one path. A
 picture appears at its final name atomically: both engines write

@@ -28,13 +28,15 @@ import numpy as np
 import pytest
 
 from gpuwm.progress_log import (FRAME_MARKER_DIRNAME, FRAME_MARKER_SCHEMA,
-                                STEP_LOG_EVENTS, STEP_LOG_FILENAME,
-                                STEP_LOG_SCHEMA, STEP_LOG_SCHEMAS, StepLog,
+                                NEST_EVENTS, STEP_LOG_EVENTS,
+                                STEP_LOG_FILENAME, STEP_LOG_SCHEMA,
+                                STEP_LOG_SCHEMAS, StepLog,
                                 format_domain_end_line,
                                 format_domain_start_line,
                                 format_output_line, format_restart_line,
                                 format_run_end_line, format_step_line,
-                                format_model_time, open_step_log,
+                                format_model_time, model_step_log,
+                                open_step_log, publish_step_log,
                                 read_step_log)
 
 REPO = Path(__file__).resolve().parents[1]
@@ -248,6 +250,17 @@ def test_every_tag_emitted_is_declared(tmp_path):
                     step_wall_seconds=0.1)
     log.output_committed(domain=1, valid_time=START, path=frame)
     log.restart_written(domain=1, valid_time=START, path=frame)
+    log.nest_spawned(domain=2, model_seconds=1.0, episode=1, parent=1)
+    log.nest_moved(domain=2, model_seconds=1.0,
+                   placement_from={"i_parent_start": 1, "j_parent_start": 1},
+                   placement_to={"i_parent_start": 2, "j_parent_start": 1})
+    log.containment_moved(
+        domain=1, model_seconds=1.0, mover=2,
+        placement_from={"i_parent_start": 1, "j_parent_start": 1},
+        placement_to={"i_parent_start": 2, "j_parent_start": 1})
+    log.track_fix(domain=2, model_seconds=1.0, lat=35.0, lon=-97.0)
+    log.nest_retired(domain=2, model_seconds=1.0, episode=1)
+    log.nest_rearmed(domain=2, model_seconds=1.0, episode=2)
     log.close(status="SUCCESS")
     seen = {r["event"] for r in read_step_log(tmp_path / STEP_LOG_FILENAME)}
     assert seen <= set(STEP_LOG_EVENTS)
@@ -643,6 +656,22 @@ def test_both_runners_actually_wire_the_step_observer(module_name):
     assert "step_log.output_committed" in source, module_name
 
 
+def test_the_tree_door_publishes_its_log_where_the_runners_look():
+    """The nest tags reach the stream through the MODEL, so the tree
+    route -- the one door that runs relocation -- has to put its log
+    there.  Source-level for the same reason as the cell above: the call
+    site is inside a GPU forecast.  Without this line every relocation
+    on the shipped route emits into the inert log and the live map draws
+    nothing, with no error anywhere to say so.
+    """
+
+    import importlib
+
+    module = importlib.import_module("gpuwm.prepared_domain_tree_forecast")
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert "publish_step_log(model, step_log)" in source
+
+
 @pytest.mark.parametrize("module_name", [
     "gpuwm.prepared_single_domain_forecast",
     "gpuwm.prepared_domain_tree_forecast",
@@ -938,27 +967,30 @@ def test_the_observer_costs_a_measurable_and_small_fraction(monkeypatch,
 # ---------------------------------------------------------------------------
 
 
-def test_the_schema_is_v2_and_the_reader_still_takes_v1(tmp_path):
+def test_the_schema_is_v3_and_the_reader_still_takes_what_shipped(tmp_path):
     """A schema bump, and a reader that can replay what shipped.
 
-    v1 consumers refuse an unknown schema loudly and that is correct --
-    a `phase` record is a tag they were never told about.  What must not
+    Older consumers refuse an unknown schema loudly and that is correct
+    -- a `phase` record is a tag v1 was never told about, and the six
+    lifecycle tags are ones v2 was never told about.  What must not
     happen is this tree losing the ability to read the streams its own
-    published wheels wrote, so `read_step_log` takes both.
+    published wheels wrote, so `read_step_log` takes every one.
     """
 
-    assert STEP_LOG_SCHEMA == "gpuwm.step-log/v2"
-    assert "gpuwm.step-log/v1" in STEP_LOG_SCHEMAS
+    assert STEP_LOG_SCHEMA == "gpuwm.step-log/v3"
+    for shipped in ("gpuwm.step-log/v1", "gpuwm.step-log/v2"):
+        assert shipped in STEP_LOG_SCHEMAS
     assert STEP_LOG_SCHEMA in STEP_LOG_SCHEMAS
 
-    legacy = tmp_path / "v1.jsonl"
-    legacy.write_text(
-        json.dumps({"schema": "gpuwm.step-log/v1", "sequence": 1,
-                    "event": "run_start"}) + "\n"
-        + json.dumps({"schema": "gpuwm.step-log/v1", "sequence": 2,
-                      "event": "run_end"}) + "\n",
-        encoding="utf-8")
-    assert len(read_step_log(legacy)) == 2
+    for version in ("v1", "v2"):
+        legacy = tmp_path / f"{version}.jsonl"
+        legacy.write_text(
+            json.dumps({"schema": f"gpuwm.step-log/{version}", "sequence": 1,
+                        "event": "run_start"}) + "\n"
+            + json.dumps({"schema": f"gpuwm.step-log/{version}",
+                          "sequence": 2, "event": "run_end"}) + "\n",
+            encoding="utf-8")
+        assert len(read_step_log(legacy)) == 2
 
     alien = tmp_path / "alien.jsonl"
     alien.write_text(
@@ -1150,3 +1182,324 @@ def test_the_null_log_takes_the_new_calls_too(tmp_path):
     log.phase("preflight_verify", 1.0)
     log.announce_kernel_compile(reason="cold_cache", compute_capability="86")
     log.close()
+
+
+# ---------------------------------------------------------------------------
+# step-log/v3: what the tree does to itself -- lifecycle and relocation
+# ---------------------------------------------------------------------------
+#
+# The gap these close, stated once: a run could move a nest across half a
+# state, retire an episode and re-arm the slot, and the per-step stream
+# said nothing at all.  Every one of those decisions lived only in a
+# receipt file written for a post-mortem, so a live map had no way to
+# draw the tree it was watching -- the rectangles could not move and the
+# track could not be drawn.  These six tags are that stream.
+
+
+PLACEMENT_A = {"i_parent_start": 20, "j_parent_start": 18}
+PLACEMENT_B = {"i_parent_start": 22, "j_parent_start": 18}
+
+
+class FakeGrid:
+    """The one method a placement is turned into a position through.
+
+    ``ProjectedGrid.ij_to_latlon`` takes 1-BASED mass coordinates; this
+    is the same surface :mod:`gpuwm.core.storm_track_writer` reads, so a
+    log that gets a position out of this gets one out of a real grid.
+    """
+
+    def __init__(self, lat0=35.0, lon0=-97.0, step=0.01, e_we=41, e_sn=41):
+        self.lat0, self.lon0, self.step = lat0, lon0, step
+        self.e_we, self.e_sn = e_we, e_sn
+
+    def ij_to_latlon(self, x, y):
+        return (self.lat0 + (y - 1.0) * self.step,
+                self.lon0 + (x - 1.0) * self.step)
+
+
+def test_the_lifecycle_vocabulary_is_declared_and_spelled_as_the_spec_says():
+    """The six tags a live map binds to, by name.
+
+    Studio's Live Run screen is being built against these spellings in a
+    parallel lane, so a rename here is a rename of somebody else's
+    parser.  Enumerated rather than described.
+    """
+
+    assert NEST_EVENTS == ("nest_spawned", "nest_retired", "nest_rearmed",
+                           "nest_moved", "containment_moved", "track_fix")
+    for tag in NEST_EVENTS:
+        assert tag in STEP_LOG_EVENTS, tag
+
+
+def test_a_spawn_is_an_event_with_a_domain_a_time_and_a_position(tmp_path):
+    log, text = make_log(tmp_path)
+    log.domain_step(grid_id=1, step_count=5, model_seconds=60.0,
+                    step_wall_seconds=0.1)
+    log.nest_spawned(domain=3, model_seconds=60.0, episode=1, parent=1,
+                     placement=PLACEMENT_A, grid=FakeGrid(),
+                     trigger="uh")
+    log.close(status="SUCCESS")
+
+    record, = [r for r in read_step_log(tmp_path / STEP_LOG_FILENAME)
+               if r["event"] == "nest_spawned"]
+    assert record["domain"] == 3
+    assert record["parent"] == 1
+    assert record["episode"] == 1
+    assert record["trigger"] == "uh"
+    assert record["placement"] == PLACEMENT_A
+    assert record["valid_time"] == "2026-08-15_00:01:00"
+    assert record["model_seconds"] == 60.0
+    # A newborn has taken no step of its own, and says so rather than
+    # borrowing its parent's count.
+    assert record["step"] == 0
+    # The grid's own centre: mass dimensions 40x40, 0-based centre 19.5,
+    # which ij_to_latlon reads as the 1-based 20.5.
+    assert record["lat"] == pytest.approx(35.195)
+    assert record["lon"] == pytest.approx(-96.805)
+    # One emit, two streams -- the same property every other tag has.
+    assert record["text"] in text.getvalue()
+    assert "nest_spawned" in record["text"]
+
+
+def test_retire_and_rearm_are_separate_events_carrying_the_episode(tmp_path):
+    log, _ = make_log(tmp_path)
+    log.nest_retired(domain=3, model_seconds=2700.0, episode=1,
+                     reason="retire", grid=FakeGrid())
+    log.nest_rearmed(domain=3, model_seconds=3600.0, episode=2,
+                     cooldown_seconds=900.0)
+    log.close(status="SUCCESS")
+
+    records = {r["event"]: r for r in
+               read_step_log(tmp_path / STEP_LOG_FILENAME)}
+    retired = records["nest_retired"]
+    assert retired["domain"] == 3 and retired["episode"] == 1
+    assert retired["reason"] == "retire"
+    assert retired["valid_time"] == "2026-08-15_00:45:00"
+    assert retired["lat"] is not None and retired["lon"] is not None
+
+    rearmed = records["nest_rearmed"]
+    # The episode the slot is armed FOR, not the one that ended: the
+    # bound rearm counts against is stated in firings.
+    assert rearmed["episode"] == 2
+    assert rearmed["cooldown_seconds"] == 900.0
+    # Nothing exists to have a position yet, and a re-arm says so rather
+    # than repeating where the last episode happened to sit.
+    assert rearmed["lat"] is None and rearmed["lon"] is None
+
+
+def test_a_move_carries_the_placement_it_left_and_the_one_it_took(tmp_path):
+    """Old AND new, because a map has to draw the origin ghost."""
+
+    log, _ = make_log(tmp_path)
+    log.domain_step(grid_id=2, step_count=40, model_seconds=600.0,
+                    step_wall_seconds=0.1)
+    log.nest_moved(domain=2, model_seconds=600.0,
+                   placement_from=PLACEMENT_A, placement_to=PLACEMENT_B,
+                   requested_shift=[3, 0], executed_shift=[2, 0],
+                   clamped_by=["max_move_parent_cells"],
+                   grid=FakeGrid(lat0=35.02),
+                   lat_from=35.195, lon_from=-96.805)
+    log.close(status="SUCCESS")
+
+    record, = [r for r in read_step_log(tmp_path / STEP_LOG_FILENAME)
+               if r["event"] == "nest_moved"]
+    assert record["domain"] == 2
+    assert record["step"] == 40
+    assert record["placement_from"] == PLACEMENT_A
+    assert record["placement_to"] == PLACEMENT_B
+    assert record["requested_shift_parent_cells"] == [3, 0]
+    assert record["executed_shift_parent_cells"] == [2, 0]
+    assert record["clamped_by"] == ["max_move_parent_cells"]
+    # The position it took, and the position it left.
+    assert record["lat"] == pytest.approx(35.215)
+    assert record["lat_from"] == pytest.approx(35.195)
+    assert record["lon_from"] == pytest.approx(-96.805)
+
+
+def test_a_containment_slide_names_the_slider_and_the_mover(tmp_path):
+    """Two grid ids, and they are not interchangeable: the domain that
+    MOVED is the parent, and the one it moved to keep contained did not
+    move at all."""
+
+    log, _ = make_log(tmp_path)
+    log.containment_moved(domain=2, model_seconds=600.0, mover=3,
+                          placement_from=PLACEMENT_A,
+                          placement_to=PLACEMENT_B,
+                          requested_shift=[5, 0], executed_shift=[2, 0],
+                          clamped=True, mover_deviation_cells=[14, 0],
+                          grid=FakeGrid())
+    log.close(status="SUCCESS")
+
+    record, = [r for r in read_step_log(tmp_path / STEP_LOG_FILENAME)
+               if r["event"] == "containment_moved"]
+    assert record["domain"] == 2 and record["mover"] == 3
+    assert record["mover_deviation_cells"] == [14, 0]
+    assert record["clamped"] is True
+    assert record["placement_to"] == PLACEMENT_B
+
+
+def test_a_track_fix_is_a_position_and_the_domain_it_steers(tmp_path):
+    log, _ = make_log(tmp_path)
+    log.track_fix(domain=2, model_seconds=600.0, lat=14.2, lon=-74.1,
+                  found=True, refined_on=3)
+    log.track_fix(domain=2, model_seconds=1200.0, lat=None, lon=None,
+                  found=False)
+    log.close(status="SUCCESS")
+
+    first, second = [r for r in read_step_log(tmp_path / STEP_LOG_FILENAME)
+                     if r["event"] == "track_fix"]
+    assert first["domain"] == 2
+    assert (first["lat"], first["lon"]) == (14.2, -74.1)
+    assert first["found"] is True and first["refined_on"] == 3
+    # A consultation that found nothing is still a record: the file's
+    # time axis keeps its gap visible instead of leaving a reader to
+    # infer one from a jump in the clock.
+    assert second["found"] is False
+    assert second["lat"] is None and second["lon"] is None
+
+
+def test_a_position_that_cannot_be_derived_is_null_and_not_a_crash(tmp_path):
+    """Telemetry never fails a run.
+
+    An idealized tree carries no projection at all, and a node whose
+    grid is a stand-in must produce a record with no position rather
+    than an exception inside the integration loop.
+    """
+
+    log, _ = make_log(tmp_path)
+    log.nest_moved(domain=2, model_seconds=60.0, placement_from=PLACEMENT_A,
+                   placement_to=PLACEMENT_B, grid="not-a-grid")
+    log.nest_spawned(domain=3, model_seconds=60.0, episode=1, grid=None)
+    log.close(status="SUCCESS")
+
+    records = [r for r in read_step_log(tmp_path / STEP_LOG_FILENAME)
+               if r["event"] in NEST_EVENTS]
+    assert len(records) == 2
+    assert all(r["lat"] is None and r["lon"] is None for r in records)
+
+
+def test_the_null_log_takes_the_lifecycle_calls_too(tmp_path):
+    """``--progress-format off`` must not be the one road that crashes."""
+
+    log = open_step_log(outdir=tmp_path, start_time=START, run_seconds=60.0,
+                        progress_format="off")
+    log.nest_spawned(domain=3, model_seconds=1.0, episode=1)
+    log.nest_retired(domain=3, model_seconds=2.0, episode=1)
+    log.nest_rearmed(domain=3, model_seconds=3.0, episode=2)
+    log.nest_moved(domain=2, model_seconds=4.0, placement_from=PLACEMENT_A,
+                   placement_to=PLACEMENT_B)
+    log.containment_moved(domain=1, model_seconds=5.0, mover=2,
+                          placement_from=PLACEMENT_A,
+                          placement_to=PLACEMENT_B)
+    log.track_fix(domain=2, model_seconds=6.0, lat=1.0, lon=2.0)
+    log.close()
+
+
+def test_a_model_with_no_log_published_still_answers_the_emitters():
+    """The seam the runners reach the stream through.
+
+    A relocation runner is handed the MODEL, not the log, so a route
+    that opens no step log at all (or opened an inert one) must leave
+    every emit site a no-op rather than a guard each call site has to
+    remember.
+    """
+
+    from types import SimpleNamespace
+
+    model = SimpleNamespace()
+    log = model_step_log(model)
+    assert log.enabled is False
+    log.nest_moved(domain=2, model_seconds=1.0, placement_from=PLACEMENT_A,
+                   placement_to=PLACEMENT_B)
+
+    real = StepLog(start_time=START, run_seconds=60.0)
+    publish_step_log(model, real)
+    assert model_step_log(model) is real
+    real.close(status="SUCCESS")
+
+
+# ---------------------------------------------------------------------------
+# The inertness gate: a run with no nests emits exactly what it always did
+# ---------------------------------------------------------------------------
+
+#: Which fields of a record differ between two identical runs on two
+#: machines, keyed by the tag that carries them.  Everything NOT named
+#: here is a property of the run and is compared byte for byte.
+_VOLATILE = {
+    "run_start": ("emitted_unix_ms", "pid", "frame_marker_dir"),
+    "phase": ("emitted_unix_ms",),
+    "domain_start": ("emitted_unix_ms",),
+    "step": ("emitted_unix_ms",),
+    "output_written": ("emitted_unix_ms", "path", "marker"),
+    "restart_written": ("emitted_unix_ms", "path"),
+    "domain_end": ("emitted_unix_ms",),
+    # ``text`` joins the list on run_end alone: that sentence quotes the
+    # run's wall clock, so it is the one printed line whose bytes are a
+    # property of the machine.  Its grammar is pinned by
+    # ``test_run_end_states_the_outcome`` instead.
+    "run_end": ("emitted_unix_ms", "wall_seconds", "text"),
+}
+
+NEST_FREE_GOLDEN = Path(__file__).parent / "data" / (
+    "progress-nest-free-stream.jsonl")
+
+
+def nest_free_stream(tmp_path) -> str:
+    """One nest-free run's whole stream, with the volatile fields fixed.
+
+    Deliberately exercises every tag a nest-free forecast can reach, so
+    the comparison below covers the whole surface rather than a sample.
+    """
+
+    log, _ = make_log(tmp_path)
+    frame = tmp_path / "wrfout_d01_2026-08-15_00_00_00"
+    frame.write_bytes(b"x" * 7)
+    log.phase("preflight_verify", 0.5)
+    for step in (1, 2):
+        log.domain_step(grid_id=1, step_count=step,
+                        model_seconds=12.0 * step, step_wall_seconds=0.25)
+    log.output_committed(domain=1, valid_time=START, path=frame,
+                         wall_seconds=0.5)
+    log.restart_written(domain=1, valid_time=START, path=frame)
+    log.close(status="SUCCESS")
+
+    lines = []
+    for record in read_step_log(tmp_path / STEP_LOG_FILENAME):
+        fixed = dict(record)
+        # The version stamp is the ONE difference this vocabulary is
+        # allowed to make to a nest-free stream, and it is pinned by its
+        # own cell above rather than smuggled through this one.
+        fixed["schema"] = "<schema>"
+        for key in _VOLATILE[record["event"]]:
+            fixed[key] = "<volatile>"
+        lines.append(json.dumps(fixed))
+    return "\n".join(lines) + "\n"
+
+
+def test_a_run_with_no_nests_emits_exactly_what_it_emitted_before(tmp_path):
+    """THE INERTNESS GATE, and it is the point of the whole lane.
+
+    A forecast with one domain, no relocation and no spawn must be
+    unable to tell that the lifecycle vocabulary exists.  The golden
+    beside this file was taken from the stream BEFORE these six tags
+    landed; the only difference the change is permitted to make to it is
+    the schema version stamp, which is fixed above and pinned on its
+    own.  Anything else -- a new record, a new field on an old record, a
+    changed value -- fails here, and that is the intent: a run that grew
+    a byte because a feature it does not use exists is a regression.
+    """
+
+    assert NEST_FREE_GOLDEN.is_file(), (
+        f"{NEST_FREE_GOLDEN} is the recorded nest-free stream and it is "
+        "missing; without it there is nothing to be inert against")
+    assert nest_free_stream(tmp_path) == NEST_FREE_GOLDEN.read_text(
+        encoding="utf-8")
+
+
+def test_the_nest_free_stream_carries_no_word_of_the_new_vocabulary(tmp_path):
+    """The same claim, said the other way, so a failure reads plainly."""
+
+    nest_free_stream(tmp_path)
+    text = (tmp_path / STEP_LOG_FILENAME).read_text(encoding="utf-8")
+    for tag in NEST_EVENTS:
+        assert tag not in text, tag

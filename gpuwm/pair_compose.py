@@ -26,8 +26,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from gpuwm.render_layout import (UNDATED, engine_name, fs_path,
-                                 iter_rendered, valid_day)
+from gpuwm.render_layout import (UNDATED, engine_name, episode_number,
+                                 fs_path, iter_rendered, valid_day)
 
 #: The rust renderer's forecast-hour marker.  Everything before it is the
 #: run's identity (model, init date, cycle), which two compared runs are
@@ -54,6 +54,13 @@ def _layout_tokens(path: Path) -> tuple[str, str] | None:
     the honest ``undated`` bucket) is what identifies the tree.  A flat
     directory, or any other tree, answers ``None`` and the key is read
     from the filename alone, exactly as it always was.
+
+    A nest that retires and re-arms has one more folder between the
+    domain and the product (``d05-500m/episode-002/...``).  It is
+    stepped over rather than read: the pairing key is domain and
+    product, and keying ``episode-002_composite_reflectivity`` would
+    make every episodic frame pair with nothing -- while two runs'
+    second episodes are exactly what a lifecycle comparison is for.
     """
 
     day = path.parent
@@ -61,6 +68,8 @@ def _layout_tokens(path: Path) -> tuple[str, str] | None:
     domain = product.parent
     if day.name != UNDATED and valid_day(day.name) is None:
         return None
+    if episode_number(domain.name) is not None:
+        domain = domain.parent
     if not product.name or not domain.name:
         return None
     return domain.name, product.name

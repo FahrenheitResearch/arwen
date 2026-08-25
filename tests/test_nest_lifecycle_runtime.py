@@ -654,6 +654,111 @@ def test_a_one_shot_slot_has_no_retirement_watch(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The episode on the per-step stream
+# ---------------------------------------------------------------------------
+#
+# An episode beginning and ending was invisible until the run was over:
+# it lived in spawn_receipts.json, which is a post-mortem artifact.  A
+# live view has to be told at the boundary, which is what these carry.
+
+
+def _logged(model, tmp_path):
+    from datetime import datetime
+
+    from gpuwm.progress_log import StepLog, publish_step_log
+
+    log = StepLog(start_time=datetime(2026, 8, 15, 0, 0, 0),
+                  run_seconds=7200.0,
+                  jsonl_path=tmp_path / "progress.jsonl")
+    publish_step_log(model, log)
+    return log
+
+
+def _nest_records(tmp_path, log):
+    from gpuwm.progress_log import NEST_EVENTS, read_step_log
+
+    log.close(status="SUCCESS")
+    return [r for r in read_step_log(tmp_path / "progress.jsonl")
+            if r["event"] in NEST_EVENTS]
+
+
+def test_a_retirement_reaches_the_per_step_stream(tmp_path):
+    exp, runner, model = _spawned_runner(tmp_path)
+    log = _logged(model, tmp_path)
+    _retire_d02(runner, model)
+
+    record, = _nest_records(tmp_path, log)
+    assert record["event"] == "nest_retired"
+    assert record["domain"] == 2
+    assert record["episode"] == 1
+    assert record["model_seconds"] == 2700.0
+    assert record["valid_time"] == "2026-08-15_00:45:00"
+    # The decision the watch actually made, not a paraphrase of it.
+    assert record["reason"] == "retire"
+
+
+def test_the_boundaries_before_a_retirement_emit_nothing(tmp_path):
+    """A watch that held is not an episode event.
+
+    The retirement ladder walks three boundaries and only the last one
+    ends an episode; emitting on the holds would put a record on the
+    stream at every leg boundary of every run that declares a retire
+    table, with nothing for a consumer to redraw.
+    """
+    exp, runner, model = _spawned_runner(tmp_path)
+    log = _logged(model, tmp_path)
+    for t in (600.0, 1800.0):
+        runner.on_leg_boundary(model, t=t)
+    assert _nest_records(tmp_path, log) == []
+
+
+#: The same lifecycle, on a FIELD trigger the quiet parent never fires.
+#: A ``time`` trigger re-fires the instant its slot re-arms, which is
+#: correct behaviour and makes the re-arm impossible to observe on its
+#: own; this slot re-arms and then waits for signal that never comes.
+LIFECYCLE_QUIET = (
+    'spawn = { trigger = "uh", threshold = 500.0, earliest_s = 0.0, '
+    'latest_s = 86400.0 }\n'
+    'retire = { trigger = "uh", threshold = 60.0, sustained_s = 900.0, '
+    'min_lifetime_s = 1800.0 }\n'
+    'rearm = { max_firings = 3, cooldown_s = 600.0 }')
+
+
+def test_a_rearm_reaches_the_stream_naming_the_episode_it_arms_for(tmp_path):
+    exp, runner, model = _spawned_runner(tmp_path, d02=LIFECYCLE_QUIET)
+    log = _logged(model, tmp_path)
+    _retire_d02(runner, model)
+    # Past the declared cooldown, the slot re-opens at the next boundary.
+    cooldown = float(exp.domain(2).rearm.cooldown_s)
+    runner.on_leg_boundary(model, t=2700.0 + cooldown + 600.0)
+
+    events = _nest_records(tmp_path, log)
+    assert [r["event"] for r in events] == ["nest_retired", "nest_rearmed"]
+    rearmed = events[-1]
+    assert rearmed["domain"] == 2
+    # The episode it is armed FOR: max_firings is stated in firings, so
+    # a consumer counting episodes must see the one about to start.
+    assert rearmed["episode"] == 2
+    assert rearmed["cooldown_seconds"] == cooldown
+    # Nothing has been built yet, so there is nothing to place on a map.
+    assert rearmed["lat"] is None and rearmed["lon"] is None
+
+
+def test_publishing_a_log_changes_no_lifecycle_decision(tmp_path):
+    """Telemetry never steers: the same boundaries, the same tree."""
+    def run(with_log):
+        exp, runner, model = _spawned_runner(tmp_path)
+        if with_log:
+            _logged(model, tmp_path)
+        record = _retire_d02(runner, model)
+        return (sorted(runner.retired), sorted(runner.spawned),
+                dict(runner.episodes), dict(runner.retired_times),
+                record["retired_grid_ids"])
+
+    assert run(False) == run(True)
+
+
+# ---------------------------------------------------------------------------
 # The restart ADMISSION, all four directions
 # ---------------------------------------------------------------------------
 #

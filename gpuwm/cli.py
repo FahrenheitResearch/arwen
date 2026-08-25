@@ -62,6 +62,7 @@ from pathlib import Path
 from gpuwm import capabilities
 from gpuwm import data_assets
 from gpuwm.adapt import register_cli as adapt_register_cli
+from gpuwm.branch import register_cli as branch_register_cli
 from gpuwm.bridge_assets import register_cli as bridge_assets_register_cli
 from gpuwm.certify.cli import register_cli as certify_register_cli
 from gpuwm.config import load_config
@@ -216,7 +217,7 @@ _INTERRUPT_EXIT_CODE = 130
 #: Commands that can run for minutes, where "Ctrl-C does nothing" is a
 #: surprise worth one line rather than a discovery.
 _LONG_RUNNING_COMMANDS = frozenset({
-    "go", "run", "run-plan", "resume", "fetch", "fetch-geog",
+    "go", "run", "run-plan", "resume", "branch", "fetch", "fetch-geog",
     "fetch-tables", "fetch-bridges", "setup", "verify", "downscale",
     "enprod", "render", "dual-run", "certify", "spectral",
     # The unbundled stages run for exactly as long as the welded ones
@@ -433,6 +434,12 @@ def build_parser() -> argparse.ArgumentParser:
     # supervision surface; the checkpoint is resolved below and dispatch
     # is then run's own path with args.restart set.
     supervisor_register_cli(sub, "resume")
+    # `branch` is resume's other half: a NEW run seeded from an existing
+    # run's checkpoint (gpuwm.branch).  It integrates exactly as `run`
+    # does once its config is written, so it carries run's supervision
+    # surface for the same reason resume does.
+    branch_register_cli(sub)
+    supervisor_register_cli(sub, "branch")
     imp = sub.add_parser(
         "import-namelist",
         help="translate WRF namelist.wps + namelist.input into a "
@@ -840,6 +847,22 @@ def _dispatch(args) -> int:
                   file=sys.stderr)
         print(f"resume: continuing from {resolution.checkpoint}")
         args.restart = resolution.checkpoint
+        # Fall through to the run dispatch below.
+
+    if args.command == "branch":
+        # The what-if door: prepare a NEW run directory from the source
+        # run's checkpoint, then dispatch as an ordinary run against the
+        # config that directory now owns.  Every safety property is
+        # still the run machinery's -- the branched config carries the
+        # checkpoint's restart identity by construction (gpuwm.branch
+        # compares the payloads before writing anything), so the restart
+        # guard adjudicates this restore exactly as it does a resume's.
+        from gpuwm.branch import prepare_branch_from_cli
+        plan = prepare_branch_from_cli(args)
+        if args.prepare_only:
+            return 0
+        args.config = plan.config_path
+        args.restart = plan.checkpoint
         # Fall through to the run dispatch below.
 
     # [[domain]]/[experiment] tables route to the experiment path; the

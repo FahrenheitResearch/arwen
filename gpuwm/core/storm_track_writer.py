@@ -48,6 +48,30 @@ any column of any row.  So the file is valid RFC 4180 *and*
 awk or shell reader depends on, and the reason nothing here imports
 :mod:`csv` to write it.
 
+TAIL-SAFE WHILE IT IS BEING WRITTEN.  The file is LINE BUFFERED and
+flushed after every row, so a reader that opens it mid-run -- ``tail
+-f``, a live plot, a UI drawing the track as the storm moves -- always
+sees complete rows: every consultation that has happened is on disk,
+and no half-written row is ever visible, because a row reaches the
+operating system the instant its newline is written.  That is what lets
+``csv.DictReader`` on a second handle be correct AT ANY MOMENT rather
+than only once the run has closed the file.  The buffering is the
+guarantee and the explicit flush is the statement of it: neither is
+allowed to be the only one, because a write path added later that
+forgets to flush would otherwise hold rows back to an 8 KiB boundary --
+roughly 150 rows, hours of a storm -- and the live tail would stall
+without anything looking broken.
+
+WHAT IS NOT PROMISED IS ``fsync``.  Rows are handed to the OS, never
+forced onto the platter.  A KILLED PROCESS therefore loses nothing --
+the kernel already holds every row -- while a POWER CUT may lose the
+last rows the disk had not yet written.  That is the right trade for a
+diagnostic that runs beside a forecast: an fsync per row would put a
+device flush on the model's own thread at the relocation cadence, to
+protect a file whose next row is due in minutes and whose contents are
+recomputable from the run.  Durability across a power loss is the
+restart file's job, and the forecast already pays for that one.
+
 THE PROVENANCE BANNER IS GONE, deliberately.  A ``# gpuwm storm track``
 line above the names is exactly what forces every reader to pass
 ``comment="#"``, and the run's receipt already carries the path, the
@@ -659,11 +683,22 @@ class _Stream:
         # never renamed, so tailing it cannot break the forecast the way
         # a rewrite-and-rename can on Windows (a user tailing the
         # receipts once killed a 6 h run with WinError 5).
-        self.handle = self.path.open("w", encoding="utf-8", newline="\n")
+        #
+        # LINE BUFFERED (buffering=1) is the tail-safety guarantee: the
+        # runtime itself flushes when a newline is written, so a row
+        # reaches the OS as a whole row through EVERY write path, not
+        # only the one below that remembers to flush.  It changes no
+        # byte of the file -- only when those bytes leave this process.
+        self.handle = self.path.open("w", buffering=1, encoding="utf-8",
+                                     newline="\n")
         self.handle.write(
             csv_header(self.levels, tracked_field=self.tracked_field,
                        output_level=self.output_level)
             + "\n")
+        # THE HEADER IS ON DISK BEFORE THE FIRST CONSULTATION.  A tail
+        # attaches when the run starts, which is before the tracker has
+        # been asked anything; a reader that finds an empty file has no
+        # column names and has to guess the shape of what follows.
         self.handle.flush()
 
     def _refuse_to_clobber(self) -> None:
@@ -713,10 +748,18 @@ class _Stream:
             "and de-duplicating on valid_time reconstructs one deck.")
 
     def write(self, line: str, t: float) -> None:
+        """One row, on disk before this returns.
+
+        FLUSH PER ROW, stated rather than inherited: the newline the
+        line-buffered handle acts on and this flush say the same thing
+        twice on purpose, so the guarantee survives a handle somebody
+        later opens differently.  A killed process loses nothing (the
+        bytes are already with the OS) and a reader tailing the file
+        sees whole rows only, because a row is written and flushed as
+        one line.  Not fsync -- see the module docstring for why a
+        device flush does not belong on the model's thread.
+        """
         self.handle.write(line + "\n")
-        # Flushed per record: a killed process loses nothing, because the
-        # bytes are already with the OS and every record is one complete
-        # line, so nothing earlier can be corrupted.
         self.handle.flush()
         self.emitted += 1
         self._last_emit_t = float(t)
@@ -747,6 +790,12 @@ class TrackWriter:
     directory); driven by
     :class:`gpuwm.core.relocation_runner.RelocationRunner`, which is the
     only thing that knows when a consultation happened.
+
+    The file is TAIL-SAFE for the whole life of the run: the header is
+    on disk before the first consultation, and every row is line
+    buffered and flushed as it lands, so a reader watching the file
+    sees complete rows and never a torn one.  ``fsync`` is deliberately
+    not part of that -- both halves are stated in the module docstring.
     """
 
     def __init__(self, config: TrackConfig, *, initial_time, outdir=None,
@@ -830,7 +879,14 @@ class TrackWriter:
             stream.faults.append(f"{stamp:%Y-%m-%d_%H:%M:%S}: {error}")
             return {"contract": TRACK_CONTRACT, "t": float(t),
                     "emitted": False, "reason": str(error)}
-        row = {"contract": TRACK_CONTRACT, "t": float(t), "emitted": True}
+        # The position that reached the FILE, carried back on the receipt.
+        # The caller renders the same fix into the per-step event stream,
+        # and deriving it a second time there would be a second answer to
+        # a question this method has already answered -- the two could
+        # then disagree about where the storm was, which is exactly the
+        # class of error `_sample`'s one-grid rule exists to prevent.
+        row = {"contract": TRACK_CONTRACT, "t": float(t), "emitted": True,
+               "lat": sample.get("lat"), "lon": sample.get("lon")}
         if no_signal:
             # POSITION-ONLY reached here with nothing found: the row is
             # still true (the nest IS somewhere), so the fact that the

@@ -79,6 +79,7 @@ from __future__ import annotations
 import atexit
 import dataclasses
 import json
+import math
 import os
 import sys
 import threading
@@ -91,17 +92,19 @@ from typing import Any
 #: One JSONL line per event, at this schema.
 #:
 #: v2 adds one event tag, ``phase``, and one field on ``run_end``
-#: (``first_step_excess_seconds``).  Nothing that v1 emitted changed
-#: shape, so a v2 stream differs from a v1 stream only by carrying more
-#: -- but the schema string moves anyway, because a v1 consumer meeting
-#: a tag it was never told about must refuse loudly rather than skip it,
+#: (``first_step_excess_seconds``).  v3 adds the six :data:`NEST_EVENTS`
+#: tags and nothing else.  Nothing an older version emitted changed
+#: shape, so a v3 stream differs from a v2 stream only by carrying more
+#: -- but the schema string moves anyway, because a consumer meeting a
+#: tag it was never told about must refuse loudly rather than skip it,
 #: and refusing on the schema is how it does that.
-STEP_LOG_SCHEMA = "gpuwm.step-log/v2"
+STEP_LOG_SCHEMA = "gpuwm.step-log/v3"
 
 #: Every schema :func:`read_step_log` will replay.  A published wheel's
 #: progress.jsonl outlives the version that wrote it, and this tree must
 #: not lose the ability to read the streams it has already shipped.
-STEP_LOG_SCHEMAS = ("gpuwm.step-log/v2", "gpuwm.step-log/v1")
+STEP_LOG_SCHEMAS = ("gpuwm.step-log/v3", "gpuwm.step-log/v2",
+                    "gpuwm.step-log/v1")
 
 #: One JSON document per durable output frame.
 FRAME_MARKER_SCHEMA = "gpuwm.frame-ready/v1"
@@ -115,11 +118,47 @@ STEP_LOG_FILENAME = "progress.jsonl"
 #: confusion this whole feature exists to remove.
 FRAME_MARKER_DIRNAME = "ready"
 
+#: What the tree does to ITSELF, as opposed to what it computes.
+#:
+#: The gap these close: a run could relocate a nest across half a state,
+#: retire an episode and re-arm the slot, and the per-step stream said
+#: nothing at all.  Those decisions lived only in
+#: ``relocation_receipts.json`` and ``spawn_receipts.json``, files
+#: written for a post-mortem, so anything watching a run LIVE could not
+#: draw the tree it was watching -- the nest rectangles could not move,
+#: the storm track could not be drawn, and an episode beginning or
+#: ending was invisible until the run was over.
+#:
+#: The spellings are a published contract, not an internal name: they
+#: are what a live consumer switches on.  What each one means:
+#:
+#: ``nest_spawned``      a dormant nest's trigger fired and the child was
+#:                       materialized -- the birth AND the activation,
+#:                       which on this engine are one leg-boundary act.
+#: ``nest_retired``      a live episode stopped participating; the domain
+#:                       leaves the next leg's tree.
+#: ``nest_rearmed``      a retired slot re-opened for a later episode.
+#:                       Nothing exists yet, so it carries no position.
+#: ``nest_moved``        a follower executed a relocation, carrying the
+#:                       placement it left and the one it took.
+#: ``containment_moved`` the mover's PARENT slid to keep the mover
+#:                       contained, with the mover earth-fixed under it.
+#: ``track_fix``         one tracker fix as the track file records it.
+#:
+#: A relocation that HELD is deliberately not an event.  A hold is the
+#: absence of a move, it happens at every cadence boundary a storm sits
+#: still, and the receipts already carry every one of them with the
+#: reason; a live map has nothing to redraw for it.
+NEST_EVENTS = (
+    "nest_spawned", "nest_retired", "nest_rearmed",
+    "nest_moved", "containment_moved", "track_fix",
+)
+
 #: Every tag this module will ever emit.  A consumer switching on
 #: ``event`` can be exhaustive against this tuple.
 STEP_LOG_EVENTS = (
     "run_start", "phase", "domain_start", "step", "output_written",
-    "restart_written", "domain_end", "run_end",
+    "restart_written", "domain_end", "run_end", *NEST_EVENTS,
 )
 
 #: Step 1 must exceed this multiple of the median of the steps that
@@ -243,6 +282,88 @@ def format_domain_start_line(*, domain: int, valid_time) -> str:
 def format_domain_end_line(*, domain: int, valid_time, steps: int) -> str:
     return (f"d{int(domain):02d} {format_model_time(valid_time)} "
             f"gpuwm: domain end, {int(steps)} steps")
+
+
+def format_nest_line(*, event: str, domain: int, valid_time,
+                     detail: str) -> str:
+    """One lifecycle or relocation event, in the module's own grammar.
+
+    WRF has no sentence for any of these -- it has no trigger-spawned
+    nests, no re-armable slots and no tracker of its own -- so the
+    grammar borrows the shape ``domain start``/``domain end`` already
+    use: the domain, the valid time, ``gpuwm:``, and then the event.
+    A ``Timing for main:`` parser is unaffected, because it
+    prefix-matches and this line starts with ``dNN``.
+
+    The tag itself is the first word of the sentence rather than a
+    prose paraphrase of it, so ``grep nest_moved`` finds the text lines
+    and the JSONL records with one pattern.
+    """
+
+    return (f"d{int(domain):02d} {format_model_time(valid_time)} "
+            f"gpuwm: {str(event)}, {detail}")
+
+
+def format_position(lat, lon) -> str:
+    """The position clause a nest sentence ends with, or nothing.
+
+    ``at lat 35.1900 lon -96.8100``.  Empty when the position could not
+    be derived, which is the truthful rendering: an idealized tree has
+    no projection, so its nest events have no place on a map and must
+    not pretend to.
+    """
+
+    if lat is None or lon is None:
+        return ""
+    return f" at lat {float(lat):.4f} lon {float(lon):.4f}"
+
+
+def centre_latlon(grid) -> tuple[float | None, float | None]:
+    """The geographic centre of one domain's grid, or ``(None, None)``.
+
+    Asked of the grid in ITS OWN index space, through the same
+    :func:`gpuwm.core.storm_track_writer.grid_center_latlon` the track
+    file uses, so a nest rectangle drawn from these events and a track
+    row drawn from that file cannot disagree about where the domain is.
+    The grid is rebuilt on every relocation, so this is where the nest
+    is NOW rather than where it was declared.
+
+    TOLERANT BY CONTRACT, not by carelessness.  This is telemetry on the
+    integration thread: an idealized tree carries a stand-in for a grid,
+    a streamed domain may carry none at all, and a run must not die
+    mid-forecast because a log line wanted a latitude.  Anything that
+    cannot be converted becomes ``(None, None)`` and the record says so.
+    """
+
+    if grid is None:
+        return (None, None)
+    try:
+        from gpuwm.core.storm_track_writer import grid_center_latlon
+
+        lat, lon = grid_center_latlon(grid)
+        lat, lon = float(lat), float(lon)
+    except Exception:  # noqa: BLE001 - telemetry never fails a run
+        return (None, None)
+    if not (math.isfinite(lat) and math.isfinite(lon)
+            and -90.0 <= lat <= 90.0):
+        return (None, None)
+    return (round(lat, 6), round(lon, 6))
+
+
+def _placement_json(value) -> dict[str, int] | None:
+    """One placement, in the spelling every relocation receipt uses."""
+
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {"i_parent_start": int(value["i_parent_start"]),
+                "j_parent_start": int(value["j_parent_start"])}
+    i, j = value
+    return {"i_parent_start": int(i), "j_parent_start": int(j)}
+
+
+def _shift_json(value) -> list[int] | None:
+    return None if value is None else [int(value[0]), int(value[1])]
 
 
 def format_run_end_line(*, status: str, steps: int,
@@ -675,6 +796,178 @@ class StepLog:
                 "size_bytes": size,
             })
 
+    # -- what the tree does to itself ---------------------------------
+    #
+    # Every one of these is raised from the INTEGRATION thread -- the
+    # relocation runner at PERIOD_BEGIN, the spawn runner at a leg
+    # boundary -- so reading ``self._domains`` here is the same thread
+    # that writes it and needs no lock of its own; ``_emit`` still takes
+    # one, because a wrfout writer thread can be landing a frame at the
+    # same instant.
+
+    def domain_step_count(self, domain: int) -> int:
+        """How many steps this domain has completed, 0 before its first.
+
+        A newborn reports 0 and that is the true answer: it was born at
+        a boundary and has integrated nothing.  Borrowing its parent's
+        count would put the event on the wrong row of a step ticker.
+        """
+
+        state = self._domains.get(int(domain))
+        return 0 if state is None else int(state[0])
+
+    def _nest_event(self, event: str, *, domain, model_seconds, detail: str,
+                    grid=None, lat=None, lon=None, **fields: Any) -> None:
+        domain = int(domain)
+        model_seconds = float(model_seconds)
+        valid = self._valid(model_seconds)
+        if lat is None and lon is None and grid is not None:
+            lat, lon = centre_latlon(grid)
+        self._emit(event, format_nest_line(
+            event=event, domain=domain, valid_time=valid,
+            detail=detail + format_position(lat, lon)), {
+                "domain": domain,
+                "step": self.domain_step_count(domain),
+                "valid_time": valid,
+                "model_seconds": model_seconds,
+                "lat": lat,
+                "lon": lon,
+                **fields,
+            })
+
+    def nest_spawned(self, *, domain, model_seconds, episode,
+                     parent=None, placement=None, grid=None,
+                     trigger=None, **fields: Any) -> None:
+        """A dormant nest's trigger fired and its child now exists.
+
+        Birth AND activation in one record, because on this engine they
+        are one act: :meth:`SpawnRunner.on_leg_boundary` materializes
+        the child at the same leg boundary that admits it to the next
+        leg's schedule, so there is no interval in which a nest is born
+        but not yet running for a second event to mark.
+        """
+
+        placement = _placement_json(placement)
+        where = ("" if placement is None else
+                 f" at i={placement['i_parent_start']} "
+                 f"j={placement['j_parent_start']}")
+        self._nest_event(
+            "nest_spawned", domain=domain, model_seconds=model_seconds,
+            detail=f"episode {int(episode)}{where}", grid=grid,
+            episode=int(episode),
+            parent=(None if parent is None else int(parent)),
+            placement=placement,
+            trigger=(None if trigger is None else str(trigger)),
+            **fields)
+
+    def nest_retired(self, *, domain, model_seconds, episode, reason=None,
+                     grid=None, **fields: Any) -> None:
+        """One live episode stopped; the domain leaves the next leg."""
+
+        self._nest_event(
+            "nest_retired", domain=domain, model_seconds=model_seconds,
+            detail=f"episode {int(episode)} ended"
+                   + ("" if reason is None else f" ({reason})"),
+            grid=grid, episode=int(episode),
+            reason=(None if reason is None else str(reason)), **fields)
+
+    def nest_rearmed(self, *, domain, model_seconds, episode,
+                     cooldown_seconds=None, **fields: Any) -> None:
+        """A retired slot re-opened, for the episode it is armed FOR.
+
+        Carries no position, and that absence is the point: nothing has
+        been built yet, and repeating where the previous episode sat
+        would draw a rectangle for a nest that does not exist.
+        """
+
+        self._nest_event(
+            "nest_rearmed", domain=domain, model_seconds=model_seconds,
+            detail=f"armed for episode {int(episode)}",
+            episode=int(episode),
+            cooldown_seconds=(None if cooldown_seconds is None
+                              else float(cooldown_seconds)),
+            **fields)
+
+    def nest_moved(self, *, domain, model_seconds, placement_from,
+                   placement_to, requested_shift=None, executed_shift=None,
+                   clamped_by=(), grid=None, lat_from=None, lon_from=None,
+                   **fields: Any) -> None:
+        """One executed relocation, with the placement it LEFT.
+
+        Old and new both, because a live map draws the origin ghost from
+        the one and the moving rectangle from the other, and a consumer
+        that had to remember the previous event to know where a nest
+        came from would get it wrong across a reconnect.
+        """
+
+        placement_from = _placement_json(placement_from)
+        placement_to = _placement_json(placement_to)
+        self._nest_event(
+            "nest_moved", domain=domain, model_seconds=model_seconds,
+            detail=(f"i={placement_from['i_parent_start']} "
+                    f"j={placement_from['j_parent_start']} -> "
+                    f"i={placement_to['i_parent_start']} "
+                    f"j={placement_to['j_parent_start']}"),
+            grid=grid,
+            placement_from=placement_from,
+            placement_to=placement_to,
+            requested_shift_parent_cells=_shift_json(requested_shift),
+            executed_shift_parent_cells=_shift_json(executed_shift),
+            clamped_by=[str(name) for name in (clamped_by or ())],
+            lat_from=lat_from, lon_from=lon_from, **fields)
+
+    def containment_moved(self, *, domain, model_seconds, mover,
+                          placement_from, placement_to,
+                          requested_shift=None, executed_shift=None,
+                          clamped=False, mover_deviation_cells=None,
+                          grid=None, lat_from=None, lon_from=None,
+                          **fields: Any) -> None:
+        """The mover's PARENT slid to keep the mover contained.
+
+        Two grid ids, and they are not interchangeable: ``domain`` is
+        the domain that moved, ``mover`` is the one it moved for and
+        which stayed earth-fixed under the slide.
+        """
+
+        placement_from = _placement_json(placement_from)
+        placement_to = _placement_json(placement_to)
+        self._nest_event(
+            "containment_moved", domain=domain, model_seconds=model_seconds,
+            detail=(f"for d{int(mover):02d}: "
+                    f"i={placement_from['i_parent_start']} "
+                    f"j={placement_from['j_parent_start']} -> "
+                    f"i={placement_to['i_parent_start']} "
+                    f"j={placement_to['j_parent_start']}"),
+            grid=grid, mover=int(mover),
+            placement_from=placement_from,
+            placement_to=placement_to,
+            requested_shift_parent_cells=_shift_json(requested_shift),
+            executed_shift_parent_cells=_shift_json(executed_shift),
+            clamped=bool(clamped),
+            mover_deviation_cells=_shift_json(mover_deviation_cells),
+            lat_from=lat_from, lon_from=lon_from, **fields)
+
+    def track_fix(self, *, domain, model_seconds, lat=None, lon=None,
+                  found=True, refined_on=None, **fields: Any) -> None:
+        """One tracker fix, as the run's track file records it.
+
+        ``domain`` is the domain being STEERED, not the one the signal
+        was found on -- that is ``refined_on`` when a two-stage tracker
+        refined the centre on a finer grid.
+
+        A consultation that found nothing is still emitted, with a null
+        position and ``found`` false, for the same reason the track file
+        writes an all-NaN row: the time axis stays complete and the gap
+        is visible instead of being inferred from a jump in the clock.
+        """
+
+        self._nest_event(
+            "track_fix", domain=domain, model_seconds=model_seconds,
+            detail=("fix" if found else "no signal"),
+            lat=lat, lon=lon, found=bool(found),
+            refined_on=(None if refined_on is None else int(refined_on)),
+            **fields)
+
     def close(self, *, status: str = "SUCCESS", error: str | None = None
               ) -> None:
         """Close every domain, say how the run ended, release the file.
@@ -860,6 +1153,27 @@ class _NullStepLog:
     def restart_written(self, **_fields) -> None:
         return None
 
+    def domain_step_count(self, _domain) -> int:
+        return 0
+
+    def nest_spawned(self, **_fields) -> None:
+        return None
+
+    def nest_retired(self, **_fields) -> None:
+        return None
+
+    def nest_rearmed(self, **_fields) -> None:
+        return None
+
+    def nest_moved(self, **_fields) -> None:
+        return None
+
+    def containment_moved(self, **_fields) -> None:
+        return None
+
+    def track_fix(self, **_fields) -> None:
+        return None
+
     def close(self, **_fields) -> None:
         return None
 
@@ -868,6 +1182,44 @@ class _NullStepLog:
 
     def __exit__(self, *_exc_info) -> None:
         return None
+
+
+#: The one inert log every un-logged call site lands on.  Stateless, so
+#: one instance serves every caller.
+NULL_STEP_LOG = _NullStepLog()
+
+
+#: Where a run's step log hangs off its model, beside the other live
+#: attachments the tree already carries (``_relocation_receipts``,
+#: ``_relocation_runner``, ``_scratch_arena``).
+_MODEL_STEP_LOG_ATTR = "_step_log"
+
+
+def publish_step_log(model, step_log) -> None:
+    """Give a model the log its mid-run emitters will reach for.
+
+    THE MODEL, not the runners, and that is the whole point of this
+    seam.  A relocation runner can be REBUILT mid-run -- a follow target
+    that was dormant acquires one the moment it is born
+    (``gpuwm.runtime._leg_boundary_pass``) -- so a log wired into a
+    runner at construction is a log the run's later runners never get,
+    and the nest that moved would be the one nothing recorded.  The
+    model outlives every one of them.
+    """
+
+    setattr(model, _MODEL_STEP_LOG_ATTR, step_log)
+
+
+def model_step_log(model):
+    """The log this run publishes on, or the inert one.
+
+    Never ``None``, so no emit site needs a guard.  Every guard is a
+    place a lifecycle event can be silently forgotten, and a run that
+    said nothing is the failure this whole module exists for.
+    """
+
+    log = getattr(model, _MODEL_STEP_LOG_ATTR, None)
+    return NULL_STEP_LOG if log is None else log
 
 
 def open_step_log(*, outdir, start_time, run_seconds,
@@ -1060,12 +1412,13 @@ def add_progress_arguments(parser) -> None:
 
 __all__ = [
     "FIRST_STEP_EXCESS_FACTOR", "FRAME_MARKER_DIRNAME", "FRAME_MARKER_SCHEMA",
-    "PROGRESS_FORMATS", "STDOUT_SENTINEL", "STEP_LOG_EVENTS",
-    "STEP_LOG_FILENAME", "STEP_LOG_SCHEMA", "STEP_LOG_SCHEMAS",
-    "LandingFanout", "ProgressOptions", "StepLog",
-    "add_progress_arguments", "format_domain_end_line",
-    "format_domain_start_line", "format_model_time", "format_output_line",
-    "format_phase_line", "format_restart_line", "format_run_end_line",
-    "format_step_line", "open_step_log", "read_step_log",
+    "NEST_EVENTS", "NULL_STEP_LOG", "PROGRESS_FORMATS", "STDOUT_SENTINEL",
+    "STEP_LOG_EVENTS", "STEP_LOG_FILENAME", "STEP_LOG_SCHEMA",
+    "STEP_LOG_SCHEMAS", "LandingFanout", "ProgressOptions", "StepLog",
+    "add_progress_arguments", "centre_latlon", "format_domain_end_line",
+    "format_domain_start_line", "format_model_time", "format_nest_line",
+    "format_output_line", "format_phase_line", "format_position",
+    "format_restart_line", "format_run_end_line", "format_step_line",
+    "model_step_log", "open_step_log", "publish_step_log", "read_step_log",
     "write_frame_marker",
 ]

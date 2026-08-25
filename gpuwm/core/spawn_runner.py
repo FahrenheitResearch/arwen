@@ -35,6 +35,7 @@ from pathlib import Path
 
 from gpuwm.core.uh_diag import (UH_SPAWN_WINDOW_SLOT,
                                reset_tracker_window)
+from gpuwm.progress_log import model_step_log
 
 SPAWN_RUNNER_CONTRACT = "gpuwm.spawn-runner.v1"
 
@@ -703,6 +704,12 @@ class SpawnRunner:
         # Re-arm only slots retired on an EARLIER boundary.  Even with a zero
         # cooldown, retire+spawn at the same instant would let stale signal
         # create two episodes with no inactive interval.
+        # The live view's copy of every lifecycle decision this boundary
+        # makes.  Reached through the MODEL rather than through this
+        # runner, because a route that opened no step log leaves it inert
+        # and no call site here needs a guard.
+        stream = model_step_log(model)
+
         rearmed = []
         for gid in self._rearm_ready(t):
             self.retired.remove(gid)
@@ -710,6 +717,16 @@ class SpawnRunner:
                 t=t, episode=self.episodes.get(gid, 0) + 1)
             self._retirement.get(gid) and self._retirement[gid].reset()
             rearmed.append(gid)
+            cooldown = getattr(
+                getattr(self.experiment.domain(gid), "rearm", None),
+                "cooldown_s", None)
+            stream.nest_rearmed(
+                domain=gid, model_seconds=t,
+                # The episode it is armed FOR: max_firings is stated in
+                # firings, so a consumer counting episodes has to see the
+                # one about to start, not the one that ended.
+                episode=self.episodes.get(gid, 0) + 1,
+                cooldown_seconds=cooldown)
 
         started = [node for node in model.walk_parent_first()
                    if bool(getattr(node, "_started", True))]
@@ -734,6 +751,11 @@ class SpawnRunner:
         retired_grid_ids: set[int] = set()
         for gid in retired_roots:
             retired_grid_ids.update(self._descendants(gid))
+        # What the watch actually decided, per root, so the event names
+        # the decision rather than paraphrasing it; a descendant retired
+        # by cascade took no decision of its own and says which.
+        decisions = {int(row["grid_id"]): str(row.get("decision"))
+                     for row in lifecycle_rows}
         # Only declared spawn slots participate in the active-experiment map;
         # runtime detachment below also receives static descendants.
         for gid in sorted(retired_grid_ids):
@@ -744,6 +766,17 @@ class SpawnRunner:
                 watch = self._retirement.get(gid)
                 if watch is not None:
                     watch.reset()
+                # Emitted while the domain is still IN the tree: the leg
+                # boundary detaches it afterwards, and a node that is
+                # gone has no grid to take a position from.
+                node = model.nodes_by_grid_id.get(int(gid))
+                stream.nest_retired(
+                    domain=gid, model_seconds=t,
+                    episode=self.episodes.get(gid, 0),
+                    reason=decisions.get(
+                        int(gid), "the parent episode retired"),
+                    grid=(None if node is None
+                          else getattr(node, "grid", None)))
 
         parent_states = {int(node.cfg.grid_id): node.state
                          for node in started
@@ -840,6 +873,19 @@ class SpawnRunner:
                                   for key, value in receipt.items()
                                   if key != "child_result"},
             })
+            # The newborn is not on the model yet -- the leg boundary
+            # attaches it after this returns -- so its position comes off
+            # the child result the materializer just built, which is the
+            # same grid the node will carry.
+            stream.nest_spawned(
+                domain=gid, model_seconds=t,
+                episode=int(self.episodes[gid]),
+                parent=int(self.controller.parent_of[gid]),
+                placement=(int(event.i_parent_start),
+                           int(event.j_parent_start)),
+                trigger=getattr(getattr(child_dc, "spawn", None),
+                                "trigger", None),
+                grid=getattr(receipt["child_result"], "grid", None))
 
         recorded = self._record({
             "event": "spawned",

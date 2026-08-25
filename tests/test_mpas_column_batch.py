@@ -81,6 +81,20 @@ def test_phase2_is_the_arw_microphysics_dispatch():
         is microphysics.apply
 
 
+def test_phase2_carries_wrf_diagflag_for_refl_10cm():
+    # THE BREAKAGE THIS PREVENTS: the MPAS port's history stream carried no
+    # refl10cm, which left the obs referee's three MRMS reflectivity metrics
+    # unscorable.  The seam must accept WRF's history-step diagflag so the
+    # due step's OWN microphysics call computes REFL_10CM (prepared pressure
+    # + post-call temperature); dropping the kwarg silently re-severs the
+    # model's reflectivity from every downstream referee.
+    import inspect
+    parameters = inspect.signature(
+        mcb.MpasColumnBatchPhysics.run_phase2).parameters
+    assert "refl_10cm_due" in parameters
+    assert parameters["refl_10cm_due"].default is False
+
+
 def test_the_prepare_atmosphere_supplied_seam_exists():
     """The grid-adaptation seam is a read of the state attribute.
 

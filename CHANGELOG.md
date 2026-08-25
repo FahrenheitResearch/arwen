@@ -1,5 +1,38 @@
 # Changelog
 
+## 2.5.5 (2026-08-25)
+
+A run that narrates its own life, and radiation that fits the card.
+
+New:
+- Nest lifecycle in the per-step stream (schema gpuwm.step-log/v3):
+  nest_spawned, nest_retired, nest_rearmed, nest_moved, containment_moved
+  and track_fix, each with the domain, its step count, the valid time and
+  the position. v1 and v2 streams replay unchanged.
+- The delivered render layout gains an episode segment
+  (out/domain/episode-NNN/product/valid-day), so two lives of one nest
+  publishing the same valid time no longer overwrite each other.
+  Non-episodic runs keep their exact paths.
+- gpuwm branch: a what-if door that seeds a new run from an existing
+  checkpoint, with --set overrides. A pinned setting is refused by name
+  with the changeable list in the sentence.
+- The MPAS seam publishes refl10cm and q2 in the default history stream,
+  computed inside the history step's own microphysics call, and the
+  rw-mpas converter maps REFL_10CM and Q2. Reflectivity products read the
+  model's own field instead of a hydrometeor fallback.
+
+Fixed:
+- The vortex track CSV is tail-safe while the run writes it: every row
+  reaches the OS at its newline, and the header is readable before the
+  first fix.
+- The legacy-RRTMG batch chunk width sizes itself to the device it runs
+  on instead of paying the largest card's workspace everywhere. Results
+  are byte-identical at any width. Measured 2026-08-24 on an RTX 5070 Ti
+  (gpuwm-hex x1.40962): peak process memory 6,724.0 to 5,604.0 MiB.
+- Grell-Freitas column arrays leave the fully-resident kernel frame on
+  the MPAS column-batch path, shrinking the port's fixed device
+  reservation.
+
 ## 2.5.4 (2026-08-24)
 
 Two-way nests and nest slots that open and close on the storm.

@@ -180,7 +180,7 @@ have carried.
 ```python
 receipt = seam.run_phase2(theta=theta, qv=qv, qc=qc, qr=qr, qi=qi,
                           qs=qs, qg=qg, pressure=p, rho_dry=rho,
-                          z_interface=z8w)
+                          z_interface=z8w, refl_10cm_due=False)
 ```
 
 - Runs WSM6 through `gpuwm.core.microphysics.apply` plus
@@ -193,6 +193,15 @@ receipt = seam.run_phase2(theta=theta, qv=qv, qc=qc, qr=qr, qi=qi,
   retained `h_diabatic`.
 - Returns per-call `[column]` copies: `rainncv`, `snowncv`,
   `graupelncv` (mm) and `sr`.
+- `refl_10cm_due=True` is WRF's history-step `diagflag`: the scheme
+  adapter computes REFL_10CM inside the same microphysics call from its
+  post-call temperature and the unchanged prepared pressure
+  (`gpuwm/core/refl.py`, PROVENANCE D2 -- the point where WRF and
+  native MPAS-A compute `refl10cm`), and the receipt gains
+  `refl_10cm`, a seam-owned `[nz, column]` float32 device copy.
+  Computing it outside the call would pair post-scheme temperature
+  with re-derived post-scheme pressure -- a different field than WRF
+  defines. Never carried across steps; not restart state.
 - Strict alternation: phase 1 then phase 2, every step. Out-of-order
   calls refuse.
 

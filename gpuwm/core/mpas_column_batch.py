@@ -791,7 +791,7 @@ class MpasColumnBatchPhysics:
 
     # ------------------------------------------------------------------
     def run_phase2(self, *, theta, qv, qc, qr, qi, qs, qg, pressure,
-                   rho_dry, z_interface) -> dict:
+                   rho_dry, z_interface, refl_10cm_due: bool = False) -> dict:
         """Run WSM6 in place on the caller's post-transport arrays.
 
         ``theta`` and all six species are updated IN the caller's memory
@@ -800,6 +800,15 @@ class MpasColumnBatchPhysics:
         this call (pinned contract), so no clamp is applied here.
         Returns per-call surface diagnostics as ``[column]`` copies:
         rainncv/snowncv/graupelncv (mm) and sr.
+
+        ``refl_10cm_due`` is WRF's history-step ``diagflag``: when True the
+        scheme adapter computes REFL_10CM inside the same microphysics call
+        from its post-call temperature and the unchanged prepared pressure
+        (gpuwm/core/refl.py, PROVENANCE.md D2 -- exactly where WRF and native
+        MPAS-A compute ``refl10cm``), and the receipt gains ``refl_10cm`` as
+        a seam-owned ``(nz, column)`` device copy.  Computing it after this
+        call instead would pair post-scheme temperature with re-derived
+        post-scheme pressure, which is a different field than WRF defines.
         """
         if self._pending_phase != _PHASE2:
             raise RuntimeError(
@@ -840,7 +849,7 @@ class MpasColumnBatchPhysics:
             # microphysics dispatch, then the driver's bucket/RAINBL
             # acceptance.
             diagnostics = type(self)._PHASE2_MICROPHYSICS(
-                state, cfg, self._dt, refl_10cm_due=False)
+                state, cfg, self._dt, refl_10cm_due=refl_10cm_due)
             driver.accept_microphysics(diagnostics)
             receipt = {
                 "rainncv": diagnostics.rainncv.reshape(ncol).copy(),
@@ -849,6 +858,13 @@ class MpasColumnBatchPhysics:
                     diagnostics.graupelncv.reshape(ncol).copy(),
                 "sr": diagnostics.sr.reshape(ncol).copy(),
             }
+            if refl_10cm_due:
+                # Consume the one-frame D2 handoff here, inside the same
+                # transaction: an unconsumed stash is a cadence bug the
+                # next due call would refuse loudly.
+                from gpuwm.core.refl import consume_refl_10cm
+                receipt["refl_10cm"] = (
+                    consume_refl_10cm(state).reshape(nz, ncol).copy())
         finally:
             # Re-anchor the state carriers on seam-owned memory so no
             # later call can reach the caller's arrays by accident.
