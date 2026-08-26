@@ -901,11 +901,39 @@ class RelocationRunner:
             # ID, the same re-aim the containment leg makes.
             bounds = _replace(self.config, grid_id=grid_id,
                               containment=None)
+        # A RESTORE IS NOT A STEERING DECISION.  max_move_parent_cells
+        # and min_overlap_fraction bound what one CONSULTATION may do --
+        # they exist so a single noisy centroid cannot fling the nest
+        # across the domain and expose a spin-up strip.  Putting a nest
+        # back where the checkpoint says it was is neither noisy nor a
+        # decision: the distance is however far the storm travelled, and
+        # the state about to be written over it comes from the
+        # checkpoint, so there is no integrated state for an overlap
+        # floor to protect.  Judged against the per-move cap, a resume
+        # after a day of following a storm refuses ("the move is 8 parent
+        # cells, over the configured maximum of 2") -- and the `force`
+        # flag never reached this, because it only skipped the no-op
+        # early return above.
+        #
+        # The checks that DO still apply are the ones about authority
+        # rather than magnitude: relocation enabled, and this grid being
+        # the one [relocation] names.
+        bounds = _replace(bounds, max_move_parent_cells=None,
+                          min_overlap_fraction=None)
+        # The containment ancestor has its OWN initializer -- the mover's
+        # serves one grid and refuses any other ("this initializer serves
+        # grid_id 3, asked to rebuild grid_id 2").  This is the same
+        # routing `_containment_opportunity` makes when it slides that
+        # grid during a run; a restore has to make it too.
+        initializer = self.initializer
+        if (int(self.config.grid_id) != grid_id
+                and self.containment_initializer is not None):
+            initializer = self.containment_initializer
         receipt = relocate_child(
             node,
             i_parent_start=want[0], j_parent_start=want[1],
             segment=self._segment, bounds=bounds,
-            initializer=self.initializer,
+            initializer=initializer,
             static_provenance=self.static_provenance,
             on_child_built=self.on_child_built,
             scratch_arena=getattr(model, "_scratch_arena", None),

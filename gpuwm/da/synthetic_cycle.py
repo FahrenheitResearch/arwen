@@ -903,7 +903,7 @@ stand_lon = -97.0
 [shared]
 nz = {nz}
 ztop = {top}
-p_top = 10000.0
+p_top = 5000.0
 
 [[domain]]
 grid_id = 1

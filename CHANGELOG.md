@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.5.7 (2026-08-25)
+
+Fixed:
+- The default model top moves from 100 hPa to 50 hPa (p_top 5000 Pa, the
+  WRF Registry default), taking the damp_opt=3 sponge base from ~11 km
+  to ~15.6 km AGL. The 100 hPa lid damped anvil-layer updrafts and
+  smeared convective structure on a bare default run; measured on a
+  3 km HRRR A/B vs MRMS, the 50 hPa lid restores updraft tops and core
+  counts at equal-or-better FSS and no VRAM or wall cost. Emissions are
+  bounded per source: a source whose certified ladder stops at 100 hPa
+  (GFS pgrb2, 20CRv3 NetCDF) keeps its covered top.
+- A tree with [relocation.containment] can be resumed: the checkpoint
+  records the parent slides in the move chain, the slid parent is put
+  back with its own initializer, and a restore is no longer judged by
+  the per-move steering cap.
+- A resumed or branched run of a moving nest keeps the precipitation
+  totals a move shifted into the domain edge; the restore migration
+  zeroes only what no relocation carries.
+
+The moving-nest restart fixes were contributed by Roch.
+
 ## 2.5.6 (2026-08-25)
 
 2.5.5 was tagged but never published: the public snapshot commit lost four

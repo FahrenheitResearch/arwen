@@ -3822,9 +3822,27 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
     # history, so a fresh build still refuses this set by construction;
     # the block below is what lets a legitimate resume replay that chain
     # and what lets any reader of the member state the posture by name.
+    # EVERY EVENT THAT MARKED THE FINGERPRINT, not just the mover's.
+    # The containment leg (`event: "contained"`) slides the mover's
+    # PARENT through the same relocate_child, so it chains its own record
+    # into the live fingerprint exactly as a `"relocated"` event does.
+    # Listing only the mover's moves recorded 63 marks where 70 had been
+    # applied, so the replay reconstructed a different value and the
+    # resume was refused -- on every checkpoint of every tree that has a
+    # [relocation.containment] block, which is the shape the subsystem is
+    # built around.  It also left the slid parent out of
+    # `moved_grid_ids`, so the restore put it back with the MOVER's
+    # initializer and failed "this initializer serves grid_id 3, asked to
+    # rebuild grid_id 2".
+    #
+    # Receipt order is chronological and the chain is order-sensitive
+    # (mark_fingerprint_across_move is a one-way fold), so taking both
+    # event kinds in receipt order is what reproduces the live value.
     executed_moves = [
         entry for entry in getattr(model, "_relocation_receipts", ())
-        if isinstance(entry, dict) and entry.get("event") == "relocated"]
+        if isinstance(entry, dict)
+        and entry.get("event") in ("relocated", "contained")
+        and entry.get("record_sha256")]
     # THE CHAIN IS THE RUN'S, NOT THE SEGMENT'S.  A resumed run's live
     # fingerprint is the fresh build folded over EVERY move the whole run
     # has made, including the ones an earlier segment made; a checkpoint
@@ -4762,6 +4780,34 @@ def _validate_restart(path, state, cfg, *,
         format_version=format_version, elapsed=elapsed)
 
 
+def _grid_relocated(header, cfg) -> bool:
+    """Did THIS grid's ground move during the checkpointed run?
+
+    ``moved_grid_ids`` is the per-grid answer and is what a relocating
+    run records; a grid absent from it never moved, so its ring cannot
+    have been shifted and it keeps the migration unchanged.
+
+    An older checkpoint can carry the relocation block without the list.
+    That is read as "moved", not as "did not move", and the fallback is
+    safe in both directions: the block's PRESENCE already proves a build
+    far newer than the ring exclusion, so such a file has nothing to
+    migrate, while normalizing it anyway would be the data loss this
+    gate exists to stop.
+    """
+    relocation = header.get("relocation")
+    if not isinstance(relocation, Mapping):
+        return False
+    moved = relocation.get("moved_grid_ids")
+    if moved is None:
+        return True
+    grid_id = header.get("grid_id")
+    if grid_id is None:
+        grid_id = getattr(cfg, "grid_id", None)
+    if grid_id is None:
+        return True
+    return any(int(gid) == int(grid_id) for gid in moved)
+
+
 def _apply_validated_restart(validated: _ValidatedRestart,
                              state, cfg) -> RestartInfo:
     """Apply an already complete-set-validated member in place."""
@@ -4827,9 +4873,14 @@ def _apply_validated_restart(validated: _ValidatedRestart,
     # spec-zone ring exclusion (same format version) can carry nonzero
     # ring MP accumulators/diagnostics and stale ring h_diabatic from
     # whole-field microphysics; no WRF-valid trajectory can contain them.
-    # Idempotent on post-fix checkpoints (see the function's docstring).
+    # Idempotent on post-fix checkpoints (see the function's docstring)
+    # EXCEPT on a domain that relocated, whose ring holds accumulator
+    # values a move shifted there out of the interior -- real history for
+    # ground that is still in the domain, and zeroing it loses rain the
+    # rest of the forecast never puts back.
     from gpuwm.core.microphysics import normalize_spec_zone_ring_after_restore
-    normalize_spec_zone_ring_after_restore(state, cfg)
+    normalize_spec_zone_ring_after_restore(
+        state, cfg, relocated=_grid_relocated(header, cfg))
     state.elapsed_seconds = elapsed
     return RestartInfo(elapsed_seconds=elapsed,
                        run_trackers=header.get("run_trackers"),

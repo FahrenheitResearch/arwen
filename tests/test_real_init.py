@@ -826,11 +826,14 @@ def test_cpu_real_state_and_lbc_materialization_do_not_call_cuda(monkeypatch):
     monkeypatch.setattr(cp, "asarray", forbidden)
 
     def initialize():
+        # The synthetic source column tops at 100 hPa exactly, so the
+        # model top is pinned there; the DEFAULT (50 hPa) is pinned by
+        # tests/test_ptop_default.py and would sit above this source.
         return initialize_real(
             snapshot, cfg,
             make_vertical_coord(
                 cfg.nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
-            terrain, source_orography=source_orography,
+            terrain, source_orography=source_orography, p_top=10000.0,
             preprocess_backend=Backend(), state_backend="cpu")
 
     first = initialize()
@@ -884,16 +887,19 @@ def test_hrrr_defaults_to_rh_vertical_path_unless_use_sh_qv_is_explicit():
     source_orography = np.full((ny, nx), 300.0)
     terrain = source_orography.copy()
 
+    # p_top pinned to the synthetic column's own 100 hPa top; the flag
+    # under test is use_sh_qv, not the model top.
     default_result = initialize_real(
         snapshot, cfg,
         make_vertical_coord(cfg.nz, hybrid_opt=2, etac=0.2,
                             eta_levels=eta),
-        terrain, source_orography=source_orography)
+        terrain, source_orography=source_orography, p_top=10000.0)
     direct_result = initialize_real(
         snapshot, cfg,
         make_vertical_coord(cfg.nz, hybrid_opt=2, etac=0.2,
                             eta_levels=eta),
-        terrain, source_orography=source_orography, use_sh_qv=True)
+        terrain, source_orography=source_orography, p_top=10000.0,
+        use_sh_qv=True)
     default_qv = cp.asnumpy(default_result.state.qv)
     direct_qv = cp.asnumpy(direct_result.state.qv)
     np.testing.assert_array_equal(
@@ -919,7 +925,7 @@ def test_hrrr_defaults_to_rh_vertical_path_unless_use_sh_qv_is_explicit():
             bad_snapshot, cfg,
             make_vertical_coord(cfg.nz, hybrid_opt=2, etac=0.2,
                                 eta_levels=eta),
-            terrain, source_orography=source_orography)
+            terrain, source_orography=source_orography, p_top=10000.0)
 
 
 @requires_gpu
@@ -983,11 +989,13 @@ def test_real_init_parallel_cpu_backend_is_worker_stable_and_matches_cuda():
     terrain = source_orography + 120.0 * np.sin(np.arange(nx))[None, :]
 
     def initialize(**options):
+        # p_top pinned to the synthetic column's own 100 hPa top.
         return initialize_real(
             snapshot, cfg,
             make_vertical_coord(
                 cfg.nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
-            terrain, source_orography=source_orography, **options)
+            terrain, source_orography=source_orography, p_top=10000.0,
+            **options)
 
     cuda = initialize(preprocess_backend="cuda")
     try:
@@ -1064,11 +1072,13 @@ def test_real_init_cpu_backend_handles_hrrr_hydrometeor_inventory(
     source_orography = terrain
 
     def initialize(backend):
+        # p_top pinned to the synthetic column's own 100 hPa top.
         return initialize_real(
             snapshot, cfg,
             make_vertical_coord(
                 cfg.nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
             terrain, source_orography=source_orography, use_sh_qv=True,
+            p_top=10000.0,
             preprocess_backend=backend,
             preprocess_workers=8 if backend == "cpu" else None)
 

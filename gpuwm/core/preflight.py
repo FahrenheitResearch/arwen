@@ -4656,7 +4656,7 @@ def k_distribution_bytes() -> int:
     return total
 
 
-def rrtmgp_workspace_phases(nz: int, column_chunk: int, p_top: float = 10000.0
+def rrtmgp_workspace_phases(nz: int, column_chunk: int, p_top: float = 5000.0
                             ) -> dict[str, dict[str, tuple[tuple[int, ...],
                                                            int]]]:
     """Per-chunk SIMULTANEOUS live sets, one dict per solver phase.
@@ -4762,7 +4762,7 @@ def rrtmgp_workspace_phases(nz: int, column_chunk: int, p_top: float = 10000.0
     }
 
 
-def rrtmgp_workspace_shapes(nz: int, column_chunk: int, p_top: float = 10000.0
+def rrtmgp_workspace_shapes(nz: int, column_chunk: int, p_top: float = 5000.0
                             ) -> dict[str, tuple[tuple[int, ...], int]]:
     """The shared chunk workspace: the phase-maximum simultaneous set,
     ``{"<phase>/<name>": (shape, itemsize)}`` (see
@@ -4778,7 +4778,7 @@ def rrtmgp_workspace_shapes(nz: int, column_chunk: int, p_top: float = 10000.0
 
 
 def rrtmgp_column_shapes(
-        cfg: RunConfig, p_top: float = 10000.0, *,
+        cfg: RunConfig, p_top: float = 5000.0, *,
         column_chunk: int = DEFAULT_COLUMN_CHUNK,
 ) -> dict[str, tuple[tuple[int, ...], int]]:
     """Per-domain radiation column packing transients (rrtmgp.py
@@ -5117,7 +5117,7 @@ class DomainMemoryEstimate:
 def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
                     parent: DomainConfig | None = None,
                     n_lbc_intervals: int = 0,
-                    p_top: float = 10000.0,
+                    p_top: float = 5000.0,
                     column_chunk: int = DEFAULT_COLUMN_CHUNK,
                     ) -> DomainMemoryEstimate:
     """Itemized :class:`DomainMemoryEstimate` for one domain.
@@ -5881,7 +5881,7 @@ def pool_retention_residual_bytes() -> int:
 
 
 def _workspace_total_bytes(nz: int, column_chunk: int,
-                           p_top: float = 10000.0) -> int:
+                           p_top: float = 5000.0) -> int:
     return sum(math.prod(shape) * size for shape, size in
                rrtmgp_workspace_shapes(nz, column_chunk, p_top).values())
 

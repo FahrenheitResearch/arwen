@@ -1,0 +1,18 @@
+{
+  "arms": {
+    "control": {
+      "column_depth_m_mean_t0": 15873.751426001623,
+      "frame_count": 19,
+      "p_top_pa": 10000.0,
+      "probes_file": "~/ptop-ab-20260824/probes/probes_control.json",
+      "sponge_base_m_agl_mean_t0": 10873.751426001623
+    },
+    "treatment": {
+      "column_depth_m_mean_t0": 20197.93005297956,
+      "frame_count": 19,
+      "p_top_pa": 5000.0,
+      "probes_file": "~/ptop-ab-20260824/probes/probes_treatment.json",
+      "sponge_base_m_agl_mean_t0": 15197.930052979558
+    }
+  }
+}

@@ -1175,6 +1175,124 @@ def test_restore_normalizes_spec_zone_ring_microphysics(monkeypatch,
             np.testing.assert_array_equal(got, src, err_msg="h_diabatic")
 
 
+def _ring_seeded_state(monkeypatch, cfg, *, seed):
+    """A state whose spec-zone ring carries nonzero MP accumulators.
+
+    Pre-fix whole-field microphysics is one way to get there; a
+    RELOCATION is the other, and the two are indistinguishable in the
+    bytes -- which is the whole reason the restore has to be told which
+    it is looking at.
+    """
+    state = _shim_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, seed=seed)
+    rng = np.random.default_rng(seed)
+    for slot in _RING_CARRIED_SLOTS:
+        state.scratch((cfg.ny, cfg.nx), slot)[...] = 0.5 + np.abs(
+            rng.standard_normal((cfg.ny, cfg.nx))).astype(np.float32)
+    state.h_diabatic[...] = rng.standard_normal(
+        (cfg.nz, cfg.ny, cfg.nx)).astype(np.float32)
+    return state
+
+
+#: The accumulators a relocation shifts in index space AND the ring guard
+#: excludes -- the exact intersection the exemption covers.  Spelled here
+#: so the test states its own subject; the production rule reads it from
+#: ``physics_continuation.continuation_slots()`` instead of a list.
+_RING_CARRIED_SLOTS = ("mp_rainnc", "mp_rainncv", "mp_snownc", "mp_snowncv",
+                       "mp_graupelnc", "mp_graupelncv", "mp_sr")
+
+
+def _ring_mask_2d(cfg):
+    ring = np.ones((cfg.ny, cfg.nx), dtype=bool)
+    sz = cfg.spec_zone
+    ring[sz:cfg.ny - sz, sz:cfg.nx - sz] = False
+    return ring
+
+
+@pytest.mark.parametrize(
+    ("moved_grid_ids", "ring_survives"),
+    [([1], True), ([2, 3], False), (None, True)],
+    ids=["this-grid-moved", "another-grid-moved", "no-list-recorded"])
+def test_a_relocated_domain_keeps_the_ring_its_move_shifted_into_it(
+        monkeypatch, tmp_path, moved_grid_ids, ring_survives):
+    """A move puts REAL accumulation in the ring, and the migration must
+    not eat it.
+
+    ``shift_continuation`` moves the carried accumulators in INDEX space,
+    so one eastward step makes the column that spent the run accumulating
+    at interior ``i = 1`` into ring ``i = 0`` -- same ground, same rain
+    total, and it becomes interior again on the next westward step.  The
+    v5 ring migration was written when only pre-fix whole-field
+    microphysics could leave a ring nonzero, and its idempotence claim
+    fails on exactly this file: MEASURED on a 1 km nest 6 h into a 24 h
+    forecast, a resume came back with its whole west column of RAINNC
+    zeroed (up to 3.77 mm) and frozen there, the single variable of 77
+    that was not byte-identical across the seam.
+
+    The gate is per-grid, so a domain the run never moved keeps the
+    migration unchanged, and a checkpoint that records the relocation
+    without the per-grid list is read as "moved": its block's mere
+    presence already proves a build newer than the ring exclusion, so it
+    has nothing to migrate, while normalizing it anyway is the data loss.
+    """
+    cfg = _cfg(nx=8, ny=7, moist=True, mp_physics=10, nested=True)
+    assert int(cfg.grid_id) == 1, "the parametrization names grid 1"
+    state = _ring_seeded_state(monkeypatch, cfg, seed=20260825)
+    written = restart.write_restart(tmp_path / "moved.npz", state, cfg)
+
+    def stamp(payload, header):
+        block = {"moves": 7, "segment_id": "0" * 64}
+        if moved_grid_ids is not None:
+            block["moved_grid_ids"] = moved_grid_ids
+        header["relocation"] = block
+
+    path = _rewrite_restart_archive(written, tmp_path / "stamped.npz", stamp)
+
+    fresh = _shim_state(cfg, monkeypatch)
+    _fill_setup(fresh)
+    restart.restore_restart(path, fresh, cfg)
+
+    ring = _ring_mask_2d(cfg)
+    for slot in _RING_CARRIED_SLOTS:
+        got, src = fresh._scratch[slot], state._scratch[slot]
+        np.testing.assert_array_equal(got[~ring], src[~ring], err_msg=slot)
+        if ring_survives:
+            np.testing.assert_array_equal(got[ring], src[ring], err_msg=slot)
+            assert (got[ring] != 0.0).all(), (
+                f"{slot}: the fixture must seed a NONZERO ring or this "
+                "test passes vacuously")
+        else:
+            assert (got[ring] == 0.0).all(), slot
+    # h_diabatic is NOT relocation-carried and its WRF ring value is an
+    # unconditional zero (the ring guard re-pins it on every microphysics
+    # call), so the migration keeps it in both arms.  Conflating the two
+    # classes is what produced the defect.
+    assert (fresh.h_diabatic[:, ring] == 0.0).all()
+
+
+def test_grid_relocated_reads_the_checkpoint_header_per_grid():
+    """The gate's truth table, stated once, away from any state."""
+    cfg = _cfg()
+    assert restart._grid_relocated({"grid_id": 3}, cfg) is False
+    assert restart._grid_relocated(
+        {"grid_id": 3, "relocation": None}, cfg) is False
+    assert restart._grid_relocated(
+        {"grid_id": 3, "relocation": {"moved_grid_ids": [2, 3]}}, cfg) is True
+    assert restart._grid_relocated(
+        {"grid_id": 1, "relocation": {"moved_grid_ids": [2, 3]}}, cfg) is False
+    # No list recorded: read as moved (the block's presence already dates
+    # the file past the ring exclusion).
+    assert restart._grid_relocated(
+        {"grid_id": 1, "relocation": {"moves": 4}}, cfg) is True
+    # No grid_id in the header: the live config answers instead.
+    assert restart._grid_relocated(
+        {"relocation": {"moved_grid_ids": [int(cfg.grid_id)]}}, cfg) is True
+    assert restart._grid_relocated(
+        {"relocation": {"moved_grid_ids": [int(cfg.grid_id) + 1]}},
+        cfg) is False
+
+
 def _nssl2_restart_fixture(monkeypatch, *, seed: int = 1):
     cfg = _cfg(moist=True, mp_physics=18)
     state, driver = _shim_driver_state(cfg, monkeypatch)

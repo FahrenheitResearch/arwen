@@ -2324,7 +2324,7 @@ class RealInitResult:
 
 def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     coord: VerticalCoord, terrain, *, source_orography=None,
-                    p_top=10000.0, sfcp_to_sfcp=True,
+                    p_top=5000.0, sfcp_to_sfcp=True,
                     use_sh_qv=False,
                     column_workers=1,
                     preprocess_backend="cuda",

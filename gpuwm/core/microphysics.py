@@ -607,7 +607,9 @@ def _apply_thompson(
 
 
 def normalize_spec_zone_ring_after_restore(state: DomainState,
-                                           cfg: RunConfig) -> None:
+                                           cfg: RunConfig,
+                                           *, relocated: bool = False
+                                           ) -> None:
     """Restart migration normalization: zero the specified-zone ring of
     every microphysics-owned accumulator/diagnostic slot and of
     h_diabatic after a checkpoint restore.
@@ -627,13 +629,43 @@ def normalize_spec_zone_ring_after_restore(state: DomainState,
     checkpoints already carry zero rings), so the restart format version
     is unchanged: this function IS the documented migration step for
     pre-fix checkpoints.  Periodic/open domains are untouched.
+
+    ``relocated`` NAMES THE ONE TRAJECTORY THAT BREAKS THE IDEMPOTENCE
+    CLAIM ABOVE, and it is not a pre-fix file.  A relocation shifts the
+    carried accumulators in INDEX space
+    (:func:`gpuwm.core.physics_continuation.shift_continuation`), so a
+    column that spent the run accumulating as interior ``i = 1`` becomes
+    ring ``i = 0`` the moment the nest steps one cell east -- still the
+    same ground, still that ground's real rain total, and still able to
+    return to the interior on the next westward step.  A post-fix
+    checkpoint of a MOVING nest therefore carries a nonzero ring
+    legitimately, this normalization is not idempotent on it, and firing
+    it destroys accumulated precipitation that no later step recomputes
+    (MEASURED: a 1 km nest 6 h into a 24 h run resumed with its whole
+    west column of RAINNC zeroed, up to 3.77 mm, frozen for the rest of
+    the forecast).  WRF's own moving nest shifts RAINNC wholesale for the
+    same reason.
+
+    The exemption is exactly the RELOCATION-CARRIED set, read from the
+    registry that decides what a move shifts rather than restated here,
+    so the two cannot drift.  ``refl_10cm`` and ring h_diabatic are NOT
+    in it and are normalized either way: nothing shifts them, the ring
+    guard re-pins h_diabatic on every microphysics call, and WRF's ring
+    value for both is an unconditional zero.
     """
     if cfg.mp_physics == 0:
         return
     slices = _ring_guard_slices(state, cfg)
     if slices is None:
         return
+    carried: frozenset[str] = frozenset()
+    if relocated:
+        from gpuwm.core.physics_continuation import continuation_slots
+
+        carried = frozenset(continuation_slots())
     for slot in _RING_SURFACE_SLOTS + _RING_VOLUME_SLOTS:
+        if slot in carried:
+            continue
         arr = state.existing_scratch(slot)
         if arr is None:
             continue

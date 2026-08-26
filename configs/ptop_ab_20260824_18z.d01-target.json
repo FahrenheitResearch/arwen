@@ -1,0 +1,19 @@
+{
+  "dx_m": 3000.0,
+  "dy_m": 3000.0,
+  "map_proj": "lambert",
+  "name": "ptop_ab_20260824_18z",
+  "nx": 232,
+  "ny": 184,
+  "nz": 49,
+  "ref_lat": 44.2,
+  "ref_lon": -101.0,
+  "relax_zone": 4,
+  "schema": "gpuwm-hrrr-target-domain-v1",
+  "spec_bdy_width": 5,
+  "spec_zone": 1,
+  "stand_lon": -101.0,
+  "time_step_seconds": 15,
+  "truelat1": 34.2,
+  "truelat2": 54.2
+}

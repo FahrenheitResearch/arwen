@@ -200,7 +200,7 @@ class SharedRRTMGPChunkWorkspace:
 
     nz: int
     column_chunk: int
-    p_top: float = 10000.0
+    p_top: float = 5000.0
     _array_module: object | None = field(
         default=None, repr=False, compare=False)
     _phase_layouts_input: object | None = field(

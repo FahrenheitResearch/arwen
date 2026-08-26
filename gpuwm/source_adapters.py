@@ -122,6 +122,18 @@ class SourceAdapter:
     #: (the generic ``mapped`` route reads it from the caller's own mapping),
     #: and the wizard refuses to plan such a source by name.
     forcing_interval_seconds: float | None = None
+    #: The smallest pressure (Pa) this source's CERTIFIED inventory serves
+    #: -- the top of the ladder its route decodes, a published fact of the
+    #: source like its cadence.  ``None`` means the column reaches at
+    #: least the wizard's default model top
+    #: (:data:`gpuwm.domain_wizard.DEFAULT_MODEL_TOP_PA`, 5000 Pa) and the
+    #: default is emitted unchanged; a declared value floors the emitted
+    #: ``p_top`` so a bare ``gpuwm domain --source X`` config never asks
+    #: for a model top its own source cannot cover and refuses at
+    #: preparation after the acquisition was already paid for.  Gated by
+    #: tests/test_ptop_default.py against the packaged mapping's own
+    #: level table.
+    certified_source_top_pa: float | None = None
     #: Where this source's native grid reaches, or ``None`` for a global
     #: product.  A declared window (see :mod:`gpuwm.source_coverage`) is what
     #: lets `gpuwm domain` refuse an out-of-coverage plan AT PLAN TIME with
@@ -236,6 +248,7 @@ def _adapter(
     composition: str | None = None,
     member_set: str | None = None,
     forcing_interval_seconds: float | None = None,
+    certified_source_top_pa: float | None = None,
     coverage: CoverageWindow | None = None,
     cycles: CycleGrid | None = None,
     notes: str = "",
@@ -268,6 +281,7 @@ def _adapter(
         composition_requirement=composition,
         member_set=member_set,
         forcing_interval_seconds=forcing_interval_seconds,
+        certified_source_top_pa=certified_source_top_pa,
         coverage_window=coverage,
         cycle_grid=cycles,
         display_name=name,
@@ -528,6 +542,10 @@ _ADAPTERS = (
         runnable=True,
         runner="gfs_pgrb2_0p25_v1",
         forcing_interval_seconds=10800.0,
+        # The certified 21-level pgrb2 ladder stops at 100 hPa; deeper
+        # tops exist upstream but fetching them is the explicit
+        # `gpuwm fetch --p-top-pa` act, so a bare emission stays here.
+        certified_source_top_pa=10000.0,
         # No delay is declared because the completeness probe decides
         # publication object by object; a delay could only start the
         # walk after a cycle the probe would have accepted.
@@ -1218,6 +1236,9 @@ _ADAPTERS = (
         runner="mapped_composition_v1",
         packaged_profile="20crv3-netcdf-v1",
         forcing_interval_seconds=10800.0,
+        # The PSL humidity series stops at 100 hPa and the mapping
+        # declares the intersection, so 100 hPa is this route's ladder.
+        certified_source_top_pa=10000.0,
         notes=(
             "The publicly downloadable form of 20CRv3: NOAA PSL's sub-daily "
             "NetCDF SI series, decoded through the Rust rw_netcdf bridge with "

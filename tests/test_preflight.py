@@ -1885,16 +1885,18 @@ def test_gas_table_meta_and_default_chunk():
     default = {f.name: f.default
                for f in dataclasses.fields(RRTMGPRadiation)}["column_chunk"]
     assert pf.DEFAULT_COLUMN_CHUNK == default == 3125
-    # 359 825 000 B = 343.16 MiB.  The history of this number IS the
+    # 354 375 000 B = 337.96 MiB.  The history of this number IS the
     # history of the layout: 1 025 700 000 (978.18 MiB) originally;
     # 774 375 000 (738.50) when the RTE phases stopped carrying slots
     # they never read; 832 375 000 (793.83) when the finalize fused into
-    # the solvers and the finalized cubes stopped existing; and
-    # 359 825 000 now that the LW solver derives its own Planck sources
-    # and lay_source/lev_source/sfc_source stopped existing too.  All
+    # the solvers and the finalized cubes stopped existing;
+    # 359 825 000 when the LW solver derived its own Planck sources
+    # and lay_source/lev_source/sfc_source stopped existing; and
+    # 354 375 000 when the default model top moved from 100 to 50 hPa
+    # (fewer above-model layers; tests/test_ptop_default.py).  All
     # four phases sit within 3% of each other -- there is no dominant
     # phase left to shrink.
-    assert pf._workspace_total_bytes(49, default) == 359825000
+    assert pf._workspace_total_bytes(49, default) == 354375000
 
 
 def test_estimate_uses_experiment_column_chunk(exp4):
@@ -1963,12 +1965,14 @@ def test_rrtmgp_chunk_loops_and_mcica_seed_are_column_local():
 
 def test_workspace_is_the_phase_maximum_simultaneous_set():
     """Shadow F2 fix: the workspace bound is the max over the four solver
-    phases' EXACT live sets (col_dry included).  WRF's 100-hPa cap adds 25
-    LW and one SW layer.  The maximum is now LW OPTICS, by under 3%: with
-    the finalize fused into the solvers and the LW solver deriving its own
+    phases' EXACT live sets (col_dry included).  At the 50 hPa default
+    model top (tests/test_ptop_default.py) WRF's cap construction adds 13
+    LW and one SW layer, so the maximum is now SW OPTICS; with the
+    finalize fused into the solvers and the LW solver deriving its own
     Planck sources, the finalized optics cubes and all three Planck source
-    arrays exist in no phase, and the four phases are within 3% of one
-    another -- the layout has no dominant phase left."""
+    arrays exist in no phase.  (At the previous 100 hPa default the cap
+    added 25 LW layers and LW OPTICS led, 1 439 300 000 B, all four
+    phases within 3%.)"""
     phases = pf.rrtmgp_workspace_phases(49, 12500)
 
     def total(items):
@@ -1976,8 +1980,8 @@ def test_workspace_is_the_phase_maximum_simultaneous_set():
                    for shape, size in items.values())
 
     assert {name: total(items) for name, items in phases.items()} == {
-        "lw_optics": 1439300000,
-        "lw_rte": 1409500000,
+        "lw_optics": 1205900000,
+        "lw_rte": 1185100000,
         "sw_optics": 1417500000,
         "sw_rte": 1397550000,
     }
@@ -2003,7 +2007,7 @@ def test_workspace_is_the_phase_maximum_simultaneous_set():
     # solvers, what an RTE phase DOES carry is exactly what the fused
     # solver reads -- the gas cube(s), the band cloud cubes it consumes and
     # the McICA mask -- and the finalized optics cubes exist in no phase.
-    assert phases["lw_optics"]["col_dry"] == ((12500, 74), 4)
+    assert phases["lw_optics"]["col_dry"] == ((12500, 62), 4)
     assert phases["sw_optics"]["col_dry"] == ((12500, 50), 4)
     for dead in ("cld_asy", "col_dry", "optics_tau"):
         assert dead not in phases["lw_rte"]
@@ -2012,7 +2016,7 @@ def test_workspace_is_the_phase_maximum_simultaneous_set():
     for phase in phases.values():
         assert not any(name.startswith("optics_") for name in phase)
     # LW Planck reads the VMR back; SW builds no Planck source and does not.
-    assert phases["lw_rte"]["vmr"] == ((12500, 74, 20), 4)
+    assert phases["lw_rte"]["vmr"] == ((12500, 62, 20), 4)
     # The later sw_rte phase enumerates mu0 + the three flux arrays.
     assert phases["sw_rte"]["mu0"] == ((12500, 50), 4)
     assert phases["sw_rte"]["flux_dir"] == ((12500, 51), 4)
@@ -2022,13 +2026,16 @@ def test_workspace_is_the_phase_maximum_simultaneous_set():
     assert phases["sw_rte"]["mcica_mask"] == ((12500, 50, 224), 1)
 
     full = pf._workspace_total_bytes(49, 12500)
-    assert full == 1439300000
+    assert full == 1417500000
     assert pf._workspace_total_bytes(49, 6250) * 2 == full
     assert pf._workspace_total_bytes(49, 3125) * 4 == full
+    # SW OPTICS is the maximum phase at the 50 hPa default (LW led at
+    # the previous 100 hPa default, where its 25 above-model layers
+    # outweighed SW's one).
     shapes = pf.rrtmgp_workspace_shapes(49, 12500)
-    assert all(name.startswith("lw_optics/") for name in shapes)
-    assert shapes["lw_optics/gas_tau"] == ((12500, 74, 256), 4)
-    assert shapes["lw_optics/mcica_mask"] == ((12500, 74, 256), 1)
+    assert all(name.startswith("sw_optics/") for name in shapes)
+    assert shapes["sw_optics/gas_tau"] == ((12500, 50, 224), 4)
+    assert shapes["sw_optics/mcica_mask"] == ((12500, 50, 224), 1)
     # The Planck source arrays exist in no phase: the LW solver derives
     # them in registers (rrtmgp_planck_common.cuh).
     for gone in ("lay_source", "lev_source", "sfc_source"):
@@ -2049,7 +2056,7 @@ def test_shared_rrtmgp_workspace_is_one_real_allocation_with_full_audit():
     workspace = SharedRRTMGPChunkWorkspace(
         nz=3, column_chunk=2, _array_module=np,
         _phase_layouts_input=layouts)
-    assert workspace.p_top == 10000.0
+    assert workspace.p_top == 5000.0
     assert workspace.nbytes == pf._workspace_total_bytes(3, 2)
     for phase, items in layouts.items():
         views = workspace.phase(phase, 2)
@@ -2089,11 +2096,13 @@ def test_rrtmgp_column_transients(d01_cfg):
     assert cols["columns/play"] == ((ncol, 49), 4)
     assert cols["columns/plev"] == ((ncol, 50), 4)
     assert cols["columns/effs"] == ((ncol, 49), 4)  # Morrison extras
-    assert cols["columns/metadata_jt"] == ((chunk, 74), 4)
-    assert cols["columns/upper_peak_play"] == ((chunk, 74), 4)
-    assert cols["columns/upper_peak_plev"] == ((chunk, 75), 4)
+    # 62 = 49 model + 13 above-model LW layers at the 50 hPa default
+    # (74 = 49 + 25 at the previous 100 hPa default).
+    assert cols["columns/metadata_jt"] == ((chunk, 62), 4)
+    assert cols["columns/upper_peak_play"] == ((chunk, 62), 4)
+    assert cols["columns/upper_peak_plev"] == ((chunk, 63), 4)
     assert pf.rrtmgp_column_shapes(
-        d01_cfg, column_chunk=17)["columns/metadata_jt"] == ((17, 74), 4)
+        d01_cfg, column_chunk=17)["columns/metadata_jt"] == ((17, 62), 4)
     assert pf.rrtmgp_column_shapes(RunConfig(**_TINY)) == {}
 
 

@@ -1,0 +1,158 @@
+{
+  "evaluator_commit": "8c6a109c341d29b70acc7ed0ffffcd17ee7f6096",
+  "parameters": {
+    "arms": [
+      {
+        "arm_id": "control"
+      }
+    ],
+    "cases": [
+      {
+        "case_id": "ptop-ab-plains-20260824",
+        "init_time": "2026-08-24T18:00:00",
+        "station_table_sha256": ""
+      }
+    ],
+    "precipitation": {
+      "contingency_scores": "equitable threat score and frequency bias at the same thresholds",
+      "guardrail_half_width_cells": 8,
+      "guardrail_statistic": "case mean over accumulation windows of FSS at the guardrail threshold and neighborhood",
+      "guardrail_threshold_mm": 10.0,
+      "guardrail_window_hours": 6,
+      "model_field": "run-total grid-scale precipitation differenced over the accumulation window",
+      "neighborhood_boundary": "zero",
+      "neighborhood_half_widths_cells": [
+        1,
+        4,
+        8,
+        16
+      ],
+      "observed_quantity": "precipitation_accumulation",
+      "regrid_max_distance_m": 7000.0,
+      "regrid_method": "nearest",
+      "scoring_grid": "the observation analysis grid",
+      "thresholds_mm": [
+        2.5,
+        10.0,
+        25.0
+      ],
+      "window_hours": [
+        1,
+        6
+      ]
+    },
+    "promotion": {
+      "alpha": 0.05,
+      "chaos_floor": "the cross-case median difference must exceed the twin band for the same score",
+      "delegation_reference": "",
+      "guardrail_rule": "no guardrail may degrade the cross-case median by more than that metric's own twin band",
+      "guardrails": [
+        {
+          "direction": "lower_is_better",
+          "name": "median_station_rmse:temperature_2m",
+          "source": "surface"
+        },
+        {
+          "direction": "lower_is_better",
+          "name": "median_station_rmse:dewpoint_2m",
+          "source": "surface"
+        },
+        {
+          "direction": "lower_is_better",
+          "name": "median_station_rmse:wind_speed_10m",
+          "source": "surface"
+        },
+        {
+          "direction": "higher_is_better",
+          "name": "mean_fss:precipitation",
+          "source": "precipitation"
+        }
+      ],
+      "integrity_rule": "every scored integration passed its dual-run byte screen, every observation re-hashed clean, every receipt carries its registration hash and evaluator commit, and no stand-in input appears anywhere in the evidence",
+      "interaction_rule": "single-patch arms are the promotion evidence; a combined-patch arm is reported and is never a promotion basis",
+      "overrule_window": "",
+      "ratification_reference": "",
+      "rule_status": "proposed-unratified",
+      "test": "one-sided exact Wilcoxon signed-rank test on the per-case differences, H1: median > 0",
+      "twin_band_statistic": "median over cases of |S(twin) - S(control)| for the same score",
+      "zero_difference_policy": "exact-zero differences are dropped and the sample size reduced (Wilcoxon 1945); tied magnitudes take average ranks and the null distribution is enumerated over sign assignments of the observed absolute ranks, which keeps the test exact under ties"
+    },
+    "reflectivity": {
+      "frame_coverage_floor": 0.9,
+      "frame_selection": "inside the matching tolerance, the scored frame is the nearest frame whose observed fraction meets the coverage floor (ties to the earlier frame); a lead whose whole window is below the floor is recorded missing-obs, named in the score record, and left out of the lead mean. The tolerance itself does not widen",
+      "frequency_matched_definition": "the model threshold is the linear-interpolated quantile of the model field over the shared-valid scored cells at 1 - f_obs, so model and observed exceedance coverage agree",
+      "frequency_matched_reported": true,
+      "fss_definition": "Roberts & Lean 2008 with a shared validity mask: neighborhood fraction = boxcar(event AND valid)/boxcar(valid); cells with an empty neighborhood are dropped; FSS = 1 when both fraction fields are identically zero over the scored region",
+      "fss_useful_definition": "0.5 + f_obs/2",
+      "interior_rim_m": 45000.0,
+      "missing_policy": "observed missing or flagged cells are excluded from both fields; an arm with a missing frame fails, it is not skipped",
+      "model_field": "column maximum over k of REFL_10CM, each model's own scheme-consistent reflectivity operator",
+      "neighborhood_boundary": "zero",
+      "neighborhood_half_widths_cells": [
+        1,
+        4,
+        8,
+        16
+      ],
+      "obs_match_tolerance_seconds": 240,
+      "observed_quantity": "composite_reflectivity",
+      "primary_half_width_cells": 4,
+      "primary_scalar": "mean over the scored leads of FSS at the primary threshold and primary neighborhood",
+      "primary_threshold_dbz": 30.0,
+      "regrid_max_distance_m": 4500.0,
+      "regrid_method": "nearest",
+      "thresholds_dbz": [
+        20.0,
+        30.0,
+        40.0,
+        50.0
+      ]
+    },
+    "scored_lead_hours": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18
+    ],
+    "spinup_policy": "leads before the first scored hour are reported separately and never scored",
+    "surface": {
+      "elevation_tolerance_m": 100.0,
+      "guardrail_statistic": "median over stations of the per-station RMSE",
+      "interpolation": "bilinear",
+      "match_tolerance_seconds": 600,
+      "maximum_screen_fraction": 0.05,
+      "minimum_reporting_fraction": 0.8,
+      "model_diagnostics": "surface diagnostics come from the mandated science core; the battery reimplements none of them",
+      "pairing": "one frozen station set per case scores every arm; a (station, hour) with no report inside the tolerance is missing for all arms",
+      "reported_unscored": [
+        "mslp"
+      ],
+      "station_admission": "inside the interior mask, land, |model terrain - station elevation| <= tolerance (dropped, never corrected), reporting at least the minimum fraction of scored hours",
+      "variables": [
+        "temperature_2m",
+        "dewpoint_2m",
+        "wind_speed_10m"
+      ]
+    },
+    "twin": {
+      "perturbation": "one documented FP ULP on the wrfinput theta field (tools/n5s/perturb_ulp.py)",
+      "rung": "rung-1-one-ulp-theta"
+    }
+  },
+  "registration_sha256": "084f8a8dcd96d84110e9d7667d0e613d542cfcbd6014b11e5eba900f0ad0290a",
+  "rule_status": "proposed-unratified",
+  "schema": "gpuwm.obs-battery-registration/v1"
+}

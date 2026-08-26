@@ -623,8 +623,11 @@ GEOG_DATASETS = (
     "lai_modis_10m", "albedo_modis", "maxsnowalb_modis", "soiltemp_1deg",
 )
 
-#: Certified 49-mass-level vertical coordinate (50 full eta levels,
-#: p_top 100 hPa) -- the reference configuration's ladder.
+#: Certified 49-mass-level vertical coordinate (50 full eta levels) --
+#: the reference configuration's ladder.  Eta is normalized, so one
+#: ladder serves any emitted model top: certified at 100 hPa, and run
+#: A/B at the 50 hPa default on the 2026-08-24 plains receipt (same
+#: levels, deeper column, byte-verified P_TOP in both arms' output).
 _ETA_LEVELS = (
     1.0, 0.9978, 0.99519, 0.99212, 0.98849,
     0.98422, 0.97918, 0.97325, 0.96627, 0.95808,
@@ -650,8 +653,42 @@ _PACKAGED_VTABLE = Path(__file__).parent / "data" / "vtables" / \
 #: diffusion/damping/acoustic settings.  Morrison (10) stays fully
 #: selectable at its registry maturity label; its morr_rimed_ice knob is
 #: Morrison-only and is deliberately absent here.
+#: The default model top (Pa).  50 hPa (~20.6 km) -- WRF v4.6.1's own
+#: p_top_requested Registry default (Registry.EM_COMMON:2275) and the
+#: convection-allowing community standard.  The prior 10000 Pa (100 hPa,
+#: ~16 km) default put the damp_opt=3 zdamp=5000 sponge base near
+#: 10.9 km AGL, inside deep convection's anvil layer: measured on the
+#: 2026-08-24 plains A/B, the 100 hPa arm's anvil-layer max updrafts
+#: plateaued at ~17 m/s and collapsed at the sponge base while the
+#: 50 hPa arm peaked at 22 m/s with natural decay near 13 km, carried
+#: more >=40 dBZ core cells and higher cloud tops, scored equal-or-
+#: better MRMS FSS, and ran 12.9% faster at the same VRAM (tests/
+#: test_ptop_default.py carries the receipt).  Emissions bound this
+#: default per source via :func:`emitted_model_top_pa`.
+DEFAULT_MODEL_TOP_PA = 5000.0
+
+
+def emitted_model_top_pa(source: str | None) -> float:
+    """The model top (Pa) a config emitted for SOURCE carries.
+
+    The default, unless the source's registry row declares a certified
+    inventory top the default sits above (``certified_source_top_pa``
+    -- e.g. the GFS 21-level ladder stops at 100 hPa).  Without the
+    bound, a bare ``gpuwm domain --source gfs`` emission would ask for
+    a model top its own certified inventory cannot cover and refuse at
+    preparation, after the user already paid for the acquisition.
+    """
+
+    if source is None:
+        return DEFAULT_MODEL_TOP_PA
+    ceiling = get_source_adapter(source).certified_source_top_pa
+    if ceiling is None:
+        return DEFAULT_MODEL_TOP_PA
+    return max(DEFAULT_MODEL_TOP_PA, float(ceiling))
+
+
 _SHARED_GRID_AND_DYNAMICS = {
-    "nz": 49, "ztop": 20000.0, "p_top": 10000.0,
+    "nz": 49, "ztop": 20000.0, "p_top": DEFAULT_MODEL_TOP_PA,
     "eta_levels": _ETA_LEVELS,
     "hybrid_opt": 2, "etac": 0.2, "base_temp": 290.0,
     "time_step_sound": 4, "emdiv": 0.01,
@@ -2992,6 +3029,11 @@ def render_config(*, name: str, start_time: datetime, hours: int,
         "restart_interval_s": 0.0 if not ratios else 3600.0,
     }
     shared = shared_physics(profile)
+    # The vertical default is bounded by the source's certified column:
+    # the ladder is eta-normalized, so only p_top moves (see
+    # DEFAULT_MODEL_TOP_PA / emitted_model_top_pa).
+    shared["p_top"] = emitted_model_top_pa(
+        (fetch_hints or {}).get("source"))
     shared["map_proj"] = WRF_MAP_PROJ_CODES[projection["map_proj"]]
     # Nocturnal validity of the emitted radiation pairing, stated in the
     # header of EVERY emitted file and, where the pairing is asymmetric
