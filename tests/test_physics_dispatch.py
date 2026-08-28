@@ -304,15 +304,33 @@ def test_noah_sfcdiags_is_scheme_specific():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("overrides,component", [
-    # RUC at nine layers with the MM5 surface layer is now ADMITTED, so the
-    # rows here are the two narrower things still refused rather than the
-    # scheme.  Both are coherent WRF requests gpuwm has no fixture for, which
-    # is the distinction this test exists to keep visible.
-    (dict(sf_sfclay_physics=91, sf_surface_physics=3, num_soil_layers=6),
-     "RUC soil geometry"),
-    (dict(sf_sfclay_physics=5, bl_pbl_physics=5, sf_surface_physics=3,
-          num_soil_layers=6, nz=5),
-     "RUC soil geometry"),
+    # THE ROWS MOVED OFF SOIL GEOMETRY ENTIRELY, in two steps on this branch.
+    #
+    # First the {6, 9} land-surface geometry lift renamed what these rows
+    # asserted: the blocker they named, "RUC soil geometry", stopped being
+    # true of six levels once gpuwm.core.ruc.ruc_soil_geometry became
+    # parametric and oracle-matched at both counts, so the rows were
+    # repointed at the narrower "RUC forecast column soil geometry" -- the
+    # CUDA column's own nine-level pin -- and went green there.
+    #
+    # THE RUC_NZS LIFT THEN RETIRED THAT SECOND BLOCKER TOO, so there is no
+    # longer any soil-geometry refusal for these two configs to receive.  The
+    # rows cannot simply be repointed a third time either: measured while
+    # retiring it, gpuwm.config's soil-layer resolver refuses EVERY geometry
+    # mismatch before validate_run_config reaches the physics-suite check, so
+    # on THIS path a bad num_soil_layers is a ValueError from the resolver
+    # and the soil-geometry blockers are not reachable at all.  The one that
+    # survives -- WRF's own refusal outside {6, 9} -- is asserted directly
+    # against pending_wrf_physics_components in
+    # test_a_geometry_wrf_does_not_tabulate_is_still_blocked below, which is
+    # the surface where it does fire.
+    #
+    # What remains here is a coherent WRF request gpuwm refuses through the
+    # suite check, which is what this test is actually for: the RECEIPT.
+    (dict(sf_sfclay_physics=5, bl_pbl_physics=1),
+     "WRF v4.6.1 PBL/surface-layer compatibility"),
+    (dict(sf_sfclay_physics=0, bl_pbl_physics=5),
+     "WRF v4.6.1 PBL/surface-layer compatibility"),
 ])
 def test_in_port_schemes_fail_closed_with_a_port_receipt(overrides, component):
     with pytest.raises(UnsupportedPhysicsSuiteError) as caught:
@@ -334,6 +352,50 @@ def test_in_port_schemes_fail_closed_with_a_port_receipt(overrides, component):
         resolve_physics_slot("sf_surface_physics", 7)
     assert "PHYSICS_SLOT_DISPATCH" in str(unrouted.value)
     assert "refusing to substitute" in str(unrouted.value)
+
+
+@pytest.mark.parametrize("selectors,component", [
+    # WRF's OWN refusal: init_soil_depth_3 tabulates zs for 6 and 9 and
+    # leaves it uninitialised otherwise, and is fatal at 4 and 5.
+    (dict(sf_surface_physics=3, num_soil_layers=4), "RUC soil geometry"),
+    (dict(sf_surface_physics=3, num_soil_layers=5), "RUC soil geometry"),
+    # Noah-MP's geometry is a gpuwm fixture statement, and unchanged here.
+    (dict(sf_surface_physics=4, num_soil_layers=9), "Noah-MP soil geometry"),
+    (dict(sf_surface_physics=4, num_soil_layers=6), "Noah-MP soil geometry"),
+])
+def test_a_geometry_wrf_does_not_tabulate_is_still_blocked(selectors, component):
+    """The soil-geometry blockers, asserted where they actually fire.
+
+    The RUC_NZS lift retired ONE of the two RUC soil blockers -- the forecast
+    column's nine-level pin -- and deliberately left the other untouched.
+    This is the half that survives, plus Noah-MP's, checked directly against
+    pending_wrf_physics_components because validate_run_config's own
+    soil-layer resolver refuses a bad geometry before the suite check runs.
+
+    Six levels is NOT in this list any more, and that is the point: it is an
+    admitted geometry that warns rather than blocks.
+    """
+    from gpuwm.physics_compat import pending_wrf_physics_components
+
+    blockers = pending_wrf_physics_components(
+        mp_physics=8, sf_sfclay_physics=91, bl_pbl_physics=1, **selectors)
+    assert component in [item.component for item in blockers]
+
+
+def test_six_soil_levels_is_no_longer_a_blocker():
+    """The retirement itself, stated as a test rather than an absence.
+
+    A guard that is deleted and not replaced leaves nothing that fails if it
+    comes back by accident.
+    """
+    from gpuwm.physics_compat import pending_wrf_physics_components
+
+    blockers = pending_wrf_physics_components(
+        mp_physics=8, sf_sfclay_physics=91, bl_pbl_physics=1,
+        sf_surface_physics=3, num_soil_layers=6)
+    assert blockers == ()
+    assert soil_layer_count(_cfg(sf_surface_physics=3,
+                                 num_soil_layers=6)) == 6
 
 
 @pytest.mark.parametrize("overrides", [

@@ -688,3 +688,51 @@ def test_grib2_water_temperature_round_trip(tmp_path):
     np.testing.assert_allclose(
         overlay.temperature_k,
         _analytic(latitude[:, None], longitude[None, :]), atol=2.0e-2)
+
+
+def test_the_mp28_aerosol_pair_is_scheme_scoped_and_refused_off_scheme():
+    """The two selectors bind mp=28 identity and cannot exist elsewhere.
+
+    Same property, same proof shape as the WDM6 pair
+    (tests/test_wdm6.py): the keys are ABSENT from a non-mp=28 domain's
+    identity payload, so both frozen anchors above hash exactly as they
+    did before the pair existed, and they are PRESENT AND BOUND for an
+    mp=28 domain, so an aerosol-aware checkpoint cannot resume under a
+    different aerosol initial state.  The scoping is lossless only
+    because validate_run_config refuses an off-scheme non-default, so
+    that refusal is asserted here beside the scoping it justifies.
+    """
+    from dataclasses import replace
+
+    import pytest
+
+    from gpuwm.config import validate_run_config
+    from gpuwm.core.model import (SCHEME_SCOPED_RUN_FIELDS,
+                                  restart_identity_payload)
+    from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
+
+    assert SCHEME_SCOPED_RUN_FIELDS[28] == (
+        "wif_climatology_path", "mp28_aerosol_source")
+
+    scaffold = load_scaffold()
+    run = scaffold.domains[0].run
+    assert run.mp_physics != 28
+
+    def payload(new_run):
+        exp = replace(scaffold, domains=(
+            replace(scaffold.domains[0], run=new_run),))
+        return restart_identity_payload(exp)["domains"][0]["run"]
+
+    off = payload(run)
+    for name in SCHEME_SCOPED_RUN_FIELDS[28]:
+        assert name not in off, name
+
+    on = payload(replace(run, mp_physics=28,
+                         mp28_aerosol_source="synthetic"))
+    assert on["mp28_aerosol_source"] == "synthetic"
+    assert on["wif_climatology_path"] == ""
+
+    for field, stray in (("mp28_aerosol_source", "synthetic"),
+                         ("wif_climatology_path", "somewhere.dat")):
+        with pytest.raises(ValueError, match="requires mp_physics=28"):
+            validate_run_config(replace(run, **{field: stray}))

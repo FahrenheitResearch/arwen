@@ -293,6 +293,10 @@ extern "C" __global__ void rrtmgp_planck_sources(
   // level sources still read their adjacent layers out of local memory, and
   // consecutive threads now write consecutive g-points of every output.
   const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  // Device-side belt for the pfrac[128] ceiling below.  The LOUD refusal
+  // lives on the host (_planck_sources raises before any launch, naming
+  // this array); this bare return only stops an out-of-bounds write if a
+  // future caller bypasses that door.
   if (nlay > 128) return;
   const int col = tid / ngpt;
   const int gpt = tid - col * ngpt;

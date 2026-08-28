@@ -246,6 +246,9 @@ Everything is listed with the help text the tool itself prints.  A door's positi
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--from DIR` | stage from a local directory instead of downloading (offline installs); verification is identical |
+| `--wif` | also stage QNWFA_QNIFA_SIGMA_MONTHLY.dat (215 MiB), the global monthly aerosol climatology the mp_physics=28 WIF ingest reads (aer_init_opt=1 with wif_input_opt=1), into ~/.gpuwm/wif under the same SHA-256 contract. Opt-in: it is an input dataset, not a coefficient table, and no default install opens it |
+| `--wif-only` | with --wif, stage only that dataset and leave the coefficient tables alone |
+| `--wif-root DIR` | stage the WIF dataset into DIR instead of ~/.gpuwm/wif (same meaning as GPUWM_WIF_DATA_ROOT) |
 
 ## `gpuwm go`
 

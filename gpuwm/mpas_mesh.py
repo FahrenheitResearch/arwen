@@ -143,6 +143,17 @@ INIT_ABI_MARKER = (
 CONVERT_ABI_MARKER = (
     "gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED")
 
+#: ``rw_mpas_lbc``'s contract, at the head of its argument vector.  The
+#: crate's literal is four usage lines with newlines between them, so
+#: this is a prefix rather than the whole thing, for the reason
+#: :data:`INIT_ABI_MARKER` states: a marker that has to reproduce an
+#: embedded newline exactly breaks on a reflow that changed nothing.
+#: Spelled to match :data:`gpuwm.bridges.BRIDGE_ABI_MARKERS`; a test
+#: binds the two.
+LBC_ABI_MARKER = (
+    "rw_mpas_lbc --grid INIT.nc --out-dir DIR "
+    "--start-time YYYY-MM-DD_HH:MM:SS --stop-time YYYY-MM-DD_HH:MM:SS")
+
 CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
 
 _PROBE_TIMEOUT_S = 60
@@ -306,11 +317,26 @@ CONVERT = MpasBridge(
     abi_marker=CONVERT_ABI_MARKER,
 )
 
+#: The lateral-boundary producer.  It is the fifth binary this comment
+#: anticipated, and it arrived in the state ``rw_mpas_convert`` and
+#: ``rw_mpas_mesh`` each arrived in: written, committed, built by every
+#: release cut, and carried by no bundle -- so the only way to obtain it
+#: was a Rust toolchain and a source checkout, which by this project's
+#: rule means it was not shipped.  A limited-area mesh reaches no
+#: forecast without it: the cull produces the mesh, and this produces
+#: the boundary series that mesh is driven by.
+LBC = MpasBridge(
+    name="rw_mpas_lbc",
+    env_var="GPUWM_RW_MPAS_LBC",
+    subject="the MPAS lateral-boundary producer",
+    abi_marker=LBC_ABI_MARKER,
+)
+
 #: Every MPAS binary the crate builds, by artifact name.  Read by
-#: ``gpuwm doctor`` and by the bundle-coverage test, so a fifth binary
+#: ``gpuwm doctor`` and by the bundle-coverage test, so a sixth binary
 #: is a row here and is reported without a second edit.
 BRIDGES: dict[str, MpasBridge] = {
-    bridge.name: bridge for bridge in (MESH, STATIC, INIT, CONVERT)}
+    bridge.name: bridge for bridge in (MESH, STATIC, INIT, CONVERT, LBC)}
 
 
 # ---------------------------------------------------------------------------
@@ -986,63 +1012,87 @@ PORT_BLOCKING_STATIC_FIELDS = ("deriv_two",)
 
 
 def _short_edge_refusal(agreement) -> str | None:
-    """The pair is complete but its shortest dual edges are too short to store.
+    """The pair is complete but the port's own gates would still stop it.
 
-    A static writes every coordinate and length as FP32 at earth-radius
-    magnitude, where one ULP is half a metre.  The MPAS port recomputes
-    ``dvEdge`` from the stored vertices and compares at ``rtol = 2.0e-5``
-    with ``atol = 0.0`` (``mpas_port/mesh.py:808``), so a mesh carrying a
-    near-degenerate dual edge is refused WHOLE:
+    THE LIVE CONTRACT (the port changed it on 2026-08-23; this door kept
+    quoting the retired one until the stale-guard audit of 2026-08-25,
+    finding 3, caught it):
 
-        MeshValidationError: MPAS mesh validation failed:
-         - dvEdge disagrees with spherical vertex arc length
-
-    MEASURED on generated meshes at a 120 km background: shortest dual
-    edge 7,337.6 m at 2,000 cells, 75.0 m at 12,000, 7.2 m at 40,962,
-    3.4 m at 127,051 -- against 45,016.7 m on the PUBLISHED x1.40962 at
-    the same 40,962 cells, which has nothing under 5 km.  So this is the
-    relaxation leaving a handful of near-coincident Voronoi vertices
-    behind, not a property of the resolution and not a tolerance that
-    wants loosening.
+    * STORAGE: the port recomputes ``dvEdge`` from the stored vertices
+      and compares with an ABSOLUTE floor of ``2*sqrt(3)`` coordinate
+      ULPs -- 1.73 m for FP32 at earth radius -- plus a ~9.5e-7 rtol
+      (``mpas_port/mesh.py``, ``spherical_arc_tolerance``).  The retired
+      ``rtol 2e-5 / atol 0.0`` comparison no longer exists.  MEASURED
+      2026-08-25: a generated 654,432-cell pair carrying 12,732 edges
+      past the retired 2e-5 bound (worst 4.64e-5 relative, 0.634 m
+      absolute) is ACCEPTED whole by the live
+      ``Mesh.from_netcdf(validate=True)``.
+    * RATIO: short dual edges are gated by ``DualEdgePolicy``:
+      ``dvEdge/dcEdge >= 0.02``, refused before any CUDA allocation with
+      ``DualEdgeAdmissionError``.  The TRiSK tangential terms divide by
+      ``dvEdge``, so a ratio of 6.83e-5 amplifies a tangential gradient
+      ~15,000x, and the measured runaway in the first outer step sits on
+      the worst such edge.
 
     Reported rather than refused at the door: the files are written and a
-    consumer with a looser metric check can use them.  What must not
-    happen again is the door calling such a pair runnable.
+    consumer with a looser gate can use them.  What must not happen is
+    the door quoting a comparison the port stopped performing.
     """
 
-    worst = agreement.get("max_dv_edge_relative") if isinstance(agreement, dict) else None
-    bound = agreement.get("consumer_metric_rtol") if isinstance(agreement, dict) else None
-    if worst is None or bound is None:
-        # Silence is not evidence of health.  An engine too old to take the
-        # reading cannot be quoted as having taken a good one -- the same
-        # trap the absent-field branch below already names.
+    if not isinstance(agreement, dict):
+        agreement = {}
+    worst_abs = agreement.get("max_dv_edge_absolute_m")
+    atol = agreement.get("port_arc_atol_m")
+    ratio = agreement.get("min_dv_over_dc")
+    floor = agreement.get("port_min_dv_over_dc")
+    if worst_abs is None or atol is None or ratio is None or floor is None:
+        # Silence is not evidence of health, and neither is a reading
+        # taken against the RETIRED contract: an engine that judged
+        # storage at rtol 2e-5 / atol 0.0 answered a question the port
+        # stopped asking on 2026-08-23.
         return ("NOT MEASURED whether this pair reaches the MPAS port: the "
-                "static engine reported no FP32 metric agreement, so whether "
-                "its shortest dual edges survive being stored as FP32 at "
-                "earth radius is unknown.  Rebuild the static with an engine "
-                "that reports fp32_metric_agreement, or re-run with "
-                "--receipt and read it there.")
-    if float(worst) <= float(bound):
-        return None
-    return (
-        "NOT RUNNABLE through the MPAS port: this mesh's shortest dual edge "
-        f"is {float(agreement.get('min_dv_edge_m', 0.0)):,.1f} m, and "
-        f"{int(agreement.get('edges_past_consumer_tolerance', 0)):,} edge(s) "
-        "cannot survive being stored as FP32 at earth radius -- the worst "
-        f"disagrees with its own vertices by {float(worst):.2e} against the "
-        f"port's {float(bound):.1e} tolerance.  The port recomputes dvEdge "
-        "from the stored vertices and refuses the whole pair with "
-        "'dvEdge disagrees with spherical vertex arc length'.\n"
-        "what this is: near-degenerate Voronoi vertices -- cell corners that "
-        "nearly coincide.  The published x1.40962 has no dual edge under "
-        "45 km at the same cell count, so it is not the resolution.\n"
-        "what does work: fewer cells.  A 2,000-cell mesh measured 7,337.6 m "
-        "at its shortest and the port loads it and builds its transport "
-        "stencil.\n"
-        "what does NOT work, measured: more relaxation.  --sweeps 200, 600 "
-        "and 2000 on the same 12,000-cell request all deliver the same "
-        "75.04 m shortest edge and the same 3 edges under a kilometre, so "
-        "the relaxation has converged and this is the converged mesh.")
+                "static engine reported no FP32 metric agreement against "
+                "the port's live contract (the 1.73 m storage atol and the "
+                "0.02 dvEdge/dcEdge floor)."
+                + ("  This receipt's reading was judged against the retired "
+                   "rtol 2e-5 comparison the port no longer performs, so it "
+                   "cannot be quoted either way."
+                   if agreement.get("consumer_metric_rtol") is not None
+                   else "")
+                + "  Rebuild the static with a current engine, or re-run "
+                  "with --receipt and read fp32_metric_agreement there.")
+    past_storage = int(agreement.get("edges_past_port_storage_tolerance", 0))
+    if past_storage:
+        return (
+            "NOT RUNNABLE through the MPAS port: "
+            f"{past_storage:,} edge(s) disagree with their own stored "
+            f"vertices by more than the port's {float(atol):.2f} m storage "
+            f"tolerance (worst {float(worst_abs):.2f} m).  The port "
+            "recomputes dvEdge from the stored vertices with an absolute "
+            "floor of 2*sqrt(3) coordinate ULPs and refuses the whole "
+            "pair.  A generated pair sits under one coordinate rounding "
+            "(0.87 m) by construction, so a reading past 1.73 m means the "
+            "file was rescaled or edited after generation, not that the "
+            "mesh is too fine.")
+    if float(ratio) < float(floor):
+        below = int(agreement.get("edges_below_admission_floor", 0))
+        return (
+            "NOT RUNNABLE through the MPAS port: this mesh's worst dual "
+            f"edge is {float(agreement.get('min_dv_edge_m', 0.0)):,.1f} m, "
+            f"dvEdge/dcEdge = {float(ratio):.2e} against the port's "
+            f"admitted floor of {float(floor):g} ({below:,} edge(s) below "
+            "it).  The TRiSK tangential terms divide by dvEdge, so a "
+            f"gradient across that edge is amplified {1.0 / max(float(ratio), 1e-300):,.0f}x "
+            "over a normal one, and the port refuses the whole pair with "
+            "DualEdgeAdmissionError before any CUDA allocation.\n"
+            "what this is: a pentagon-heptagon dislocation -- two dual "
+            "vertices that nearly coincide.  A uniform request does not "
+            "produce one (the icosahedral seed has no dislocations); "
+            "MEASURED 2026-08-25, re-relaxing the same refinement request "
+            "re-rolls the dislocation rather than draining it.\n"
+            "what does work, measured: a different refinement layout, or "
+            "fewer cells in the refined region.")
+    return None
 
 
 def runnability_verdict(unwritten_operator_fields,
@@ -1507,7 +1557,8 @@ def mesh_main(args) -> int:
 
 __all__ = [
     "BRIDGES", "CONVERT", "CONVERT_ABI_MARKER", "CardCapacity", "INIT",
-    "INIT_ABI_MARKER", "MESH", "MESH_ABI_MARKER", "MeshRequestError",
+    "INIT_ABI_MARKER", "LBC", "LBC_ABI_MARKER",
+    "MESH", "MESH_ABI_MARKER", "MeshRequestError",
     "MeshRoughnessError", "MpasBridge", "SIZING_DATA_PATH", "SIZING_SCHEMA",
     "PORT_BLOCKING_STATIC_FIELDS", "STATIC", "STATIC_ABI_MARKER", "Sizing",
     "Smoothness", "build_parser", "build_spec", "build_static", "crate_dir",

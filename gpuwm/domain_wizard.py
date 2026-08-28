@@ -170,11 +170,39 @@ ROOT_TIME_STEP_S = 60
 #: trajectory evidence still supports a conservative tropical clock:
 #: convection is deeper and more continuous at low latitude, so the
 #: 5 s/km rule of thumb (WRF's own 6*dx_km agrees with it) is not
-#: conservative enough there.  Halving is the cheapest possible remedy:
-#: radiation and cumulus are called on wall-clock intervals, so 4x the
-#: steps cost node 2 only +22% wall time (490 s vs 400 s for the same
-#: 6 h).
+#: conservative enough there.
 #: Receipt: ARWEN-NODE2-4090-CUDA128-WORLDWIDE-20260730.md, PP-9.
+#:
+#: RE-MEASURED 2026-08-26 under the corrected v1.1 monitor, which is
+#: what the stale-guard audit of 2026-08-25 asked for: this guard had
+#: been retained on a substituted rationale after its motivating
+#: instrument was found wrong, so it was re-run on the instrument that
+#: replaced it.  The motivating case (14.6 N, Mercator, 386x308 at
+#: 12 km, morrison rte-rrtmgp, 6 h GFS) on an RTX 3080, one arm per
+#: clock, identical in every other byte:
+#:
+#:   ========  ==========  ==================  ============  =========
+#:   clock     completes   peak vertical CFL   peak w_max    forecast
+#:   ========  ==========  ==================  ============  =========
+#:   30 s      yes         0.976               5.11 m/s      261 s
+#:   60 s      yes         1.997               8.52 m/s      151 s
+#:   ========  ==========  ==================  ============  =========
+#:
+#: The un-halved clock runs the tropical domain at TWICE the vertical
+#: Courant limit -- the co-located |w|/dz the corrected monitor
+#: measures, not the old global-max artefact -- while the halved clock
+#: holds it just under 1.  Neither arm produced a NaN in 6 h, so the
+#: breakage this prevents is stated as what it is: sustained integration
+#: past the vertical Courant limit, where the scheme is outside its
+#: stability region and any given case surviving is luck, not margin.
+#: Note also that 0.976 leaves this guard almost NO headroom, so it is
+#: not over-conservative at 30 s.
+#:
+#: The cost is larger than the +22% this note used to quote from node 2:
+#: on this card the halved clock cost +73% of forecast wall (261 s vs
+#: 151 s).  Recorded as measured rather than left at the friendlier
+#: figure -- the guard is justified by the CFL evidence, not by being
+#: cheap.
 TROPICAL_ROOT_TIME_STEP_S = 30
 
 #: Parent rows a child boundary must clear: spec_bdy_width + blend_width

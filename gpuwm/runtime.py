@@ -845,7 +845,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
             # the unperturbed analysis.
             init_kwargs["initial_perturbation"] = perturbation_applier
         result = initialize_real(
-            met, cfg, coord, static["HGT_M"], **init_kwargs)
+            met, cfg, coord, static["HGT_M"], grid=grid, **init_kwargs)
         f, e = grid.coriolis_m()
         # SINALPHA/COSALPHA (geo_em conventions): WRF's coriolis applies
         # the rotation terms unconditionally (module_em.F:761-769).

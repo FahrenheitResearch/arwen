@@ -33,6 +33,7 @@ from gpuwm.case_data import (
     load_experiment_case_bytes,
     resolve_source_orography,
 )
+from gpuwm.config import soil_layer_count
 from gpuwm.experiment import ExperimentConfig, load_experiment
 from gpuwm.ingest.grib import (
     cached_era5_snapshots,
@@ -668,7 +669,7 @@ def prepare_era5_wrf(
             cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac,
             eta_levels=exp.vertical.eta_levels)
         initialized = initialize_real(
-            met, cfg, coord, static["HGT_M"],
+            met, cfg, coord, static["HGT_M"], grid=grid,
             source_orography=source_terrain,
             p_top=exp.vertical.p_top, sfcp_to_sfcp=True,
             preprocess_backend=preprocess,
@@ -696,6 +697,9 @@ def prepare_era5_wrf(
     soil = preprocess_land_surface_soil(
         initial_met.fields,
         sf_surface_physics=int(cfg.sf_surface_physics),
+        # Resolved, not defaulted: see gpuwm/ingest/hrrr_physics.py for the
+        # failure this closes.  Inert at every geometry but RUC's six.
+        num_soil_layers=soil_layer_count(cfg),
         soil_type=static["SCT_DOM"],
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"],

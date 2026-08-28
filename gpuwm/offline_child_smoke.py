@@ -22,6 +22,7 @@ import time
 
 import numpy as np
 
+from gpuwm.aerosol_source_receipt import aerosol_source_report_entry
 from gpuwm.config import soil_layer_count, validate_run_config
 from gpuwm.offline_child import (
     OfflineChildPlacement,
@@ -447,6 +448,23 @@ def run(outdir: str | Path, *, duration_seconds: float = 9.0,
         "total_vram_bytes": int(total_memory),
         "wall_seconds": time.perf_counter() - started,
     }
+    # Nothing, today, and that is the correct output rather than an
+    # oversight: this smoke pins mp_physics=10 for both the parent and the
+    # child, and Morrison has no water-friendly/ice-friendly aerosol number
+    # fields, so there is no aerosol source to report and no key is added.
+    # It is called anyway -- rather than the decision being frozen into a
+    # comment -- so that the day this smoke moves to an aerosol-aware
+    # scheme its report gains the same block every other route's does,
+    # instead of silently keeping the wrong shape.  Same inheritance
+    # argument as gpuwm/offline_child_run.py if it ever does: the child
+    # takes QNWFA/QNIFA from the parent frames, it resolves no dataset.
+    report.update(aerosol_source_report_entry(
+        {}, mp_physics=child_cfg.mp_physics,
+        when_unrecorded=(
+            "this child's aerosol state would be interpolated from the "
+            "archived parent history frames, not initialized from a "
+            "dataset; the parent run's own report is where the source is "
+            "recorded")))
     temporary = outdir / "report.json.tmp"
     temporary.write_text(
         json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")

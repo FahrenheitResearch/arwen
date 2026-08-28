@@ -10,6 +10,11 @@
 
 pub mod dealias;
 pub mod quantization;
+// The static-dataset ingest arm: a WPS intermediate READER (the
+// inverse of src/bin/met_intermediate.rs's writer) and the
+// global-source bilinear the seam of a cyclic lat/lon grid needs.
+pub mod wif_ffi;
+pub mod wps_intermediate;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI32, Ordering};

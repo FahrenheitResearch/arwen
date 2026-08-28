@@ -225,9 +225,12 @@ def test_an_executable_read_outranks_a_string_literal_mention() -> None:
     """A namelist table spells a knob without reading it.
 
     ``gpuwm/core/ruc_contract.py`` carries ``num_soil_layers`` only as a dict
-    key, pinned to the unported nine-layer geometry.  Prose stripping cannot
-    remove it -- a string literal can be a real read -- so the ranking has to
-    place it below a file that reads the knob as an identifier.
+    key, pinned to the geometry its ORACLE was generated at.  (It used to be
+    "the unported nine-layer geometry"; the forecast column runs at both of
+    WRF's counts now, and it is the oracle assets that are nine-level only.)
+    Prose stripping cannot remove it -- a string literal can be a real read --
+    so the ranking has to place it below a file that reads the knob as an
+    identifier.
     """
 
     candidates = consuming_read_candidates("num_soil_layers")

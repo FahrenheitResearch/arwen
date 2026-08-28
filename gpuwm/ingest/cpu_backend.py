@@ -39,6 +39,9 @@ _ERRORS = {
     5: "no source level is above the surface",
     6: "target pressure lies above the source top",
     7: "no interpolation window fits the assembled column",
+    8: "input file could not be opened or read",
+    9: "input file is not the declared intermediate format",
+    10: "target point escapes the source grid",
     127: "native CPU backend panicked",
 }
 
@@ -321,6 +324,41 @@ class CpuPreprocessBackend:
             size, ctypes.c_float, size, size,
         ]
         library.gpuwm_wrf_vert_interp_f32.restype = ctypes.c_int32
+        # The static-dataset entries are looked up the same way the
+        # indexed-donor entry below is, and for the same reason.
+        self.wps_intermediate_reader = False
+        self.cyclic_bilinear = False
+        try:
+            inventory = library.gpuwm_wps_intermediate_inventory
+            read = library.gpuwm_wps_intermediate_read
+            message = library.gpuwm_bridge_last_error
+        except AttributeError:
+            pass
+        else:
+            inventory.argtypes = [pointer, size, pointer, pointer]
+            inventory.restype = ctypes.c_int32
+            read.argtypes = [
+                pointer, size, pointer, pointer, pointer,
+                ctypes.c_uint64, ctypes.c_uint64,
+            ]
+            read.restype = ctypes.c_int32
+            message.argtypes = [pointer, size]
+            message.restype = size
+            self.wps_intermediate_reader = True
+        try:
+            cyclic = library.gpuwm_regular_cyclic_bilinear_f32
+        except AttributeError:
+            pass
+        else:
+            cyclic.argtypes = [
+                pointer, pointer, pointer, pointer,
+                size, size, size, size,
+                ctypes.c_double, ctypes.c_double,
+                ctypes.c_double, ctypes.c_double, size,
+            ]
+            cyclic.restype = ctypes.c_int32
+            self.cyclic_bilinear = True
+
         # The indexed-donor entry is looked UP, not versioned in.  The ABI
         # integer above describes the shape of the calls that already
         # existed, and bumping it to advertise an addition would refuse
@@ -339,6 +377,157 @@ class CpuPreprocessBackend:
         ]
         indexed.restype = ctypes.c_int32
         self.indexed_donor_interp = True
+
+    def _native_message(self) -> str:
+        """The sentence behind the last nonzero static-dataset return."""
+
+        if not self.wps_intermediate_reader:
+            return ""
+        buffer = ctypes.create_string_buffer(1024)
+        written = int(self._library.gpuwm_bridge_last_error(
+            ctypes.c_void_p(ctypes.addressof(buffer)), len(buffer)))
+        return buffer.raw[:written].decode("utf-8", "replace")
+
+    def _raise_native(self, code: int, operation: str) -> None:
+        """Raise with the library's own sentence when it has one.
+
+        Codes below 8 describe a shape the CALLER got wrong; 8, 9 and 10
+        describe the INPUT, and an integer cannot say which version a
+        rejected file declared or which record ran short.  A refusal that
+        cannot name its breakage is not a refusal, so those three carry
+        the native message.
+        """
+
+        if not code:
+            return
+        detail = _ERRORS.get(code, f"unknown native error {code}")
+        message = self._native_message() if code in (8, 9, 10) else ""
+        if message:
+            raise ValueError(
+                f"parallel CPU {operation} failed: {detail}: {message}")
+        raise ValueError(f"parallel CPU {operation} failed: {detail}")
+
+    def read_wps_intermediate(self, path):
+        """Decode every field record of a WPS intermediate (IFV=5) file.
+
+        Returns ``(records, data)``: ``records`` is a list of per-record
+        metadata dicts in file order -- ``field``, ``xlvl``, ``nx``,
+        ``ny``, ``iproj``, ``startlat``, ``startlon``, ``deltalat``,
+        ``deltalon``, ``offset`` -- and ``data`` is the concatenated FP32
+        payload, x fastest.  Nothing here knows what a field MEANS:
+        selection and stacking are the caller's table work, so the same
+        reader serves ungrib output, ``met_intermediate`` output and a
+        ``constants_name`` static dataset alike.
+        """
+
+        if not self.wps_intermediate_reader:
+            raise RuntimeError(
+                "this CPU preprocessing bridge predates "
+                "gpuwm_wps_intermediate_read; rebuild tools/grib1_bridge")
+        encoded = str(path).encode("utf-8")
+        buffer = ctypes.create_string_buffer(encoded)
+        n_records = ctypes.c_uint64(0)
+        n_points = ctypes.c_uint64(0)
+        code = int(self._library.gpuwm_wps_intermediate_inventory(
+            ctypes.c_void_p(ctypes.addressof(buffer)), len(encoded),
+            ctypes.byref(n_records), ctypes.byref(n_points)))
+        self._raise_native(code, "WPS intermediate inventory")
+        records = int(n_records.value)
+        points = int(n_points.value)
+        if records == 0:
+            raise ValueError(
+                f"{path}: the WPS intermediate file holds no field "
+                "records; reading zero records as success would hand the "
+                "caller a silently unpopulated grid")
+        names = np.empty(records * 9, dtype=np.uint8)
+        meta = np.empty(records * 8, dtype=np.float64)
+        data = np.empty(points, dtype=np.float32)
+        code = int(self._library.gpuwm_wps_intermediate_read(
+            ctypes.c_void_p(ctypes.addressof(buffer)), len(encoded),
+            ctypes.c_void_p(names.ctypes.data),
+            ctypes.c_void_p(meta.ctypes.data),
+            ctypes.c_void_p(data.ctypes.data),
+            ctypes.c_uint64(records), ctypes.c_uint64(points)))
+        self._raise_native(code, "WPS intermediate read")
+        out = []
+        offset = 0
+        raw_names = names.reshape(records, 9).tobytes()
+        meta = meta.reshape(records, 8)
+        for index in range(records):
+            field = raw_names[index * 9:(index + 1) * 9]
+            field = field.decode("ascii", "replace").strip()
+            nx = int(meta[index, 1])
+            ny = int(meta[index, 2])
+            out.append({
+                "field": field,
+                "xlvl": float(meta[index, 0]),
+                "nx": nx, "ny": ny,
+                "iproj": int(meta[index, 3]),
+                "startlat": float(meta[index, 4]),
+                "startlon": float(meta[index, 5]),
+                "deltalat": float(meta[index, 6]),
+                "deltalon": float(meta[index, 7]),
+                "offset": offset,
+            })
+            offset += ny * nx
+        return out, data
+
+    def interpolate_regular_cyclic(
+            self, field, target_lat, target_lon, *, startlat, deltalat,
+            startlon, deltalon, workers: int | None = None) -> np.ndarray:
+        """Bilinear from a regular lat/lon source that may be global in x.
+
+        :meth:`interpolate_regular` derives its donor with an FP32 floor
+        and clamps the last column, which is right for a bounded source
+        and wrong at a GLOBAL source's seam -- a target between the last
+        and first columns must take its second donor from column 0.  This
+        entry is the global-capable operator, and it decides cyclicity
+        from the source's own declared axis span, not from a flag.
+
+        Arithmetic is the tree's
+        ``canonical-f32-coordinate-f64-bilinear-single-round-v1`` policy:
+        coordinates and weights in FP64, one round to FP32 at the end.
+        """
+
+        if not self.cyclic_bilinear:
+            raise RuntimeError(
+                "this CPU preprocessing bridge predates "
+                "gpuwm_regular_cyclic_bilinear_f32; rebuild "
+                "tools/grib1_bridge")
+        source = _host_f32(field)
+        if source.ndim < 2 or min(source.shape[-2:]) < 2:
+            raise ValueError(
+                "field must carry a source grid of at least 2x2")
+        latitudes = np.ascontiguousarray(
+            np.asarray(target_lat, dtype=np.float64).ravel())
+        longitudes = np.ascontiguousarray(
+            np.asarray(target_lon, dtype=np.float64).ravel())
+        if latitudes.shape != longitudes.shape or latitudes.size == 0:
+            raise ValueError(
+                "target latitude/longitude must be non-empty and "
+                "equal-shaped")
+        target_shape = np.asarray(target_lat).shape
+        source_ny, source_nx = int(source.shape[-2]), int(source.shape[-1])
+        leading_shape = source.shape[:-2]
+        nlead = int(np.prod(leading_shape, dtype=np.int64)) or 1
+        source = np.ascontiguousarray(
+            source.reshape((nlead, source_ny, source_nx)))
+        output = np.empty((nlead, latitudes.size), dtype=np.float32)
+        count = _workers(workers, latitudes.size)
+        code = int(self._library.gpuwm_regular_cyclic_bilinear_f32(
+            ctypes.c_void_p(source.ctypes.data),
+            ctypes.c_void_p(latitudes.ctypes.data),
+            ctypes.c_void_p(longitudes.ctypes.data),
+            ctypes.c_void_p(output.ctypes.data),
+            nlead, source_ny, source_nx, latitudes.size,
+            ctypes.c_double(float(startlat)),
+            ctypes.c_double(float(deltalat)),
+            ctypes.c_double(float(startlon)),
+            ctypes.c_double(float(deltalon)),
+            count,
+        ))
+        self._raise_native(code, "cyclic horizontal interpolation")
+        return output.reshape((*leading_shape, *target_shape))
 
     def close(self) -> None:
         """Release the Windows DLL handle held by a short-lived verifier.

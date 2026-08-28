@@ -135,3 +135,29 @@ tests/test_native_wrf_distribution.py
 # FAILED bridges -- no GRIB decoder, no NetCDF decoder, renderer
 # rw_wrfbatch not built.  About 4 s.
 tests/test_wheel_pin_gate.py
+
+# The MYNN sibling-kernel strip proof.  The rule applied is this list's
+# own: a file belongs here when fastfix.py can NEVER select it, because it
+# has no import edge to any product module -- it reads the tree.  This one
+# imports only pathlib/hashlib and then walks gpuwm/core/kernels/*.cu by
+# path.  A .cu file is not a Python module, so an edit to the very source
+# it gates creates no import edge and the selector is blind to it at every
+# depth -- the same shape as the route_inventory.json miss this list was
+# created for.
+#
+# What it proves: mynn_dmp_sibling.cu is the frozen mynn_pbl.cu plus
+# complete lines carrying one marker, and stripping every marked line
+# restores the frozen bytes exactly.  A sibling that acquires arithmetic
+# of its own stops being a rename and becomes a second physics
+# implementation under one name.  4 passed, 0.37 s.
+tests/test_mynn_dmp_sibling.py
+
+# The exclusion gate.  Same rule, same reason it cannot be selected: it
+# imports re/subprocess/pathlib and then walks `git ls-files`, so no edit
+# to any file it scans creates an import edge to it.  It is also the one
+# gate whose failure is not a bug but a disclosure -- it fails when this
+# branch has regained the excluded subsystem it was built to exclude, and
+# this branch is what a public 2.5.8 release is cut from.  A gate like
+# that must run on every lane, not on the lanes that happen to touch the
+# right module.  3 passed, 15.4 s (it reads about 5600 tracked files).
+tests/test_excluded_subsystem_absent.py

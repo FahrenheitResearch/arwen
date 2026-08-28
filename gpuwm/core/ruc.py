@@ -33,6 +33,7 @@ from gpuwm.core.ruc_contract import (
     NUM_SOIL_LAYERS,
     RUC_SOIL_LEVELS_M,
     RUC_TABLE_ASSETS,
+    WRF_SUPPORTED_NUM_SOIL_LAYERS,
 )
 
 #: numpy under a private name, so a function can shadow ``np`` with a caller's
@@ -610,23 +611,81 @@ def load_ruc_parameters(root: str | Path | None = None) -> RucParameterBundle:
     )
 
 
-def ruc_soil_geometry() -> tuple[np.ndarray, np.ndarray]:
-    """Return WRF's nine RUC level depths and derived ``DZS`` values."""
+def ruc_soil_geometry(
+        num_soil_layers: int = NUM_SOIL_LAYERS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return one RUC geometry's level depths and derived ``DZS`` values.
 
-    zs = np.asarray(RUC_SOIL_LEVELS_M, dtype=np.float32)
-    zs2 = np.empty(NUM_SOIL_LAYERS, dtype=np.float32)
-    dzs = np.empty(NUM_SOIL_LAYERS, dtype=np.float32)
-    half = np.float32(0.5)
-    zs2[0] = np.float32(0.0)
-    zs2[1] = np.float32((zs[1] + zs[0]) * half)
-    dzs[0] = np.float32(zs2[1] - zs2[0])
-    for level in range(1, NUM_SOIL_LAYERS - 1):
-        # This intentionally overwrites ZS2(2), exactly as WRF does.
-        zs2[level] = np.float32((zs[level + 1] + zs[level]) * half)
-        dzs[level] = np.float32(zs2[level] - zs2[level - 1])
-    zs2[-1] = zs[-1]
-    dzs[-1] = np.float32(zs2[-1] - zs2[-2])
-    return zs, dzs
+    A PARAMETER, not a constant.  ``init_soil_depth_3``
+    (``share/module_soil_pre.F:1153-1194``) is one routine over a table of
+    ``zs`` arrays -- it does not have a nine-level branch and a six-level
+    branch -- so gpuwm has one function over one table too.  The table and the
+    derivation both live in :func:`gpuwm.ingest.ruc_soil.ruc_soil_depths`,
+    which is the routine's oracle-matched port; transcribing the derivation a
+    second time here is what made the six-level geometry reachable from the
+    ingest path and unreachable from the forecast path.
+
+    Verified against WRF 4.7.1 ``real.exe`` ``wrfinput_d01`` ZS/DZS at both
+    admitted geometries, including the FP32 artifact ``DZS(7) = 0.4999999`` at
+    nine levels that a float64-then-round derivation does not produce.
+
+    The default is :data:`NUM_SOIL_LAYERS` so every existing caller keeps the
+    nine-level arrays it had, bit for bit.
+    """
+
+    from gpuwm.ingest.ruc_soil import ruc_soil_depths
+
+    zs, dzs = ruc_soil_depths(int(num_soil_layers))
+    return (np.asarray(zs, dtype=np.float32),
+            np.asarray(dzs, dtype=np.float32))
+
+
+def _resolved_soil_levels(profile, what: str, *,
+                          tail: str = "...horizontal...") -> int:
+    """The admitted soil geometry this profile declares.
+
+    The COUNT comes from the array, not from a module constant -- that is the
+    un-pinning.  The admitted SET is WRF's own (``init_soil_depth_3``,
+    ``share/module_soil_pre.F:1153-1194``, which tabulates ``zs`` for exactly
+    two lengths), read from :mod:`gpuwm.core.ruc_contract` rather than written
+    again here.
+
+    :mod:`gpuwm.core.ruc_gpu` imports THIS function rather than mirroring it,
+    so a shape error reads the same on the host lane and the device lane.  The
+    substring ``must have shape`` is load-bearing -- several tests match on it
+    -- and at nine levels the message is what it always was apart from naming
+    the set instead of the one count.
+    """
+    admitted = WRF_SUPPORTED_NUM_SOIL_LAYERS
+    shape = tuple(getattr(profile, "shape", ()))
+    if len(shape) < 2 or shape[0] not in admitted:
+        raise ValueError(
+            f"{what} must have shape "
+            f"({' or '.join(str(count) for count in admitted)}, {tail}), "
+            f"got {shape}")
+    return int(shape[0])
+
+
+def ruc_zshalf(zs) -> "np.ndarray":
+    """Layer-interface depths from level depths.
+
+    ``phys/module_sf_ruclsm.F:699-704``.  ONE transcription: this replaced
+    three identical loops in this module plus a fourth in
+    :mod:`gpuwm.core.ruc_gpu`.  The device derives the same expression from
+    ``__constant__ ruc_soil_layer_depth`` in seven kernels; both are
+    ``fadd_rn(zs[k-1], zs[k])`` then ``fmul_rn(.., 0.5f)``, so they agree bit
+    for bit at every geometry -- multiplying a finite float32 by 0.5 is exact.
+    ``tests/test_ruc_nzs_tier.py`` pins that agreement numerically at 6 and 9.
+
+    ``zshalf[0]`` is zero by construction, not the midpoint the loop would
+    give, which is WRF's own special case.
+    """
+    count = int(len(zs))
+    half = _NUMPY.zeros(count, dtype=_NUMPY.float32)
+    for level in range(1, count):
+        half[level] = _NUMPY.float32(
+            _NUMPY.float32(zs[level - 1] + zs[level]) * _NUMPY.float32(0.5))
+    return half
 
 
 def _horizontal_integer_field(
@@ -658,7 +717,8 @@ def _horizontal_float_field(
     return raw
 
 
-def _root_count_field(value, shape: tuple[int, ...], *, arrays=None) -> np.ndarray:
+def _root_count_field(value, shape: tuple[int, ...], *, arrays=None,
+                      nzs: int = NUM_SOIL_LAYERS) -> np.ndarray:
     np = arrays if arrays is not None else _NUMPY
     raw = np.asarray(value)
     if not np.issubdtype(raw.dtype, np.integer):
@@ -671,9 +731,9 @@ def _root_count_field(value, shape: tuple[int, ...], *, arrays=None) -> np.ndarr
                 f"nroot shape {raw.shape} is not broadcastable to {shape}"
             ) from exc
     roots = raw.astype(np.int32, copy=False)
-    if np.any((roots < 1) | (roots >= NUM_SOIL_LAYERS)):
-        bad = int(roots[(roots < 1) | (roots >= NUM_SOIL_LAYERS)][0])
-        raise ValueError(f"RUC nroot {bad} is outside 1..8")
+    if np.any((roots < 1) | (roots >= nzs)):
+        bad = int(roots[(roots < 1) | (roots >= nzs)][0])
+        raise ValueError(f"RUC nroot {bad} is outside 1..{nzs - 1}")
     return roots
 
 
@@ -894,11 +954,7 @@ def ruc_soil_properties(
     for name in RUC_SOIL_PROPERTY_PROFILE_INPUTS:
         array = np.asarray(values[name], dtype=np.float32)
         if shape is None:
-            if array.ndim < 2 or array.shape[0] != NUM_SOIL_LAYERS:
-                raise ValueError(
-                    "RUC soil-property profiles must have shape "
-                    f"({NUM_SOIL_LAYERS}, ...horizontal...), got {array.shape}"
-                )
+            nzs = _resolved_soil_levels(array, "RUC soil-property profiles")
             shape = array.shape
         elif array.shape != shape:
             raise ValueError(
@@ -926,12 +982,12 @@ def ruc_soil_properties(
     }
     ncolumn = int(np.prod(horizontal_shape))
     profile_flat = {
-        name: array.reshape(NUM_SOIL_LAYERS, ncolumn)
+        name: array.reshape(nzs, ncolumn)
         for name, array in profiles.items()
     }
     column_flat = {name: array.reshape(ncolumn) for name, array in columns.items()}
     output_flat = {
-        name: array.reshape(NUM_SOIL_LAYERS, ncolumn)
+        name: array.reshape(nzs, ncolumn)
         for name, array in outputs.items()
     }
 
@@ -985,7 +1041,7 @@ def ruc_soil_properties(
             )
         )
 
-        for level in range(NUM_SOIL_LAYERS - 1):
+        for level in range(nzs - 1):
             tav = profile_flat["tav"][level, column]
             tn = np.float32(tav - np.float32(273.15))
             soilicem = profile_flat["soilicem"][level, column]
@@ -1111,7 +1167,7 @@ def ruc_soil_properties(
             output_flat["diffu"][level, column] = diffu
             output_flat["thdif"][level, column] = np.float32(kjpl / cap)
 
-        for level in range(NUM_SOIL_LAYERS):
+        for level in range(nzs):
             soilice = profile_flat["soilice"][level, column]
             ice = np.float32(riw * soilice)
             if np.float32(ws - ice) < np.float32(0.12):
@@ -1166,17 +1222,18 @@ def ruc_transpiration(
     mminlu: str = "MODIFIED_IGBP_MODIS_NOAH",
     parameters: RucParameterBundle | None = None,
 ) -> RucTranspiration:
-    """Transcribe WRF ``transf`` for per-column 1..8-level root zones."""
+    """Transcribe WRF ``transf`` for per-column ``1..nzs-1``-level root zones.
+
+    The root-zone ceiling follows the resolved soil geometry -- 1..8 at nine
+    levels, 1..5 at six -- rather than the nine-level literal this docstring
+    carried while nine was the only geometry.
+    """
     liquid = np.asarray(soiliqw, dtype=np.float32)
-    if liquid.ndim < 2 or liquid.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC soiliqw must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {liquid.shape}"
-        )
+    nzs = _resolved_soil_levels(liquid, "RUC soiliqw")
     if not np.all(np.isfinite(liquid)):
         raise ValueError("soiliqw must be finite")
     horizontal_shape = liquid.shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
     column_values = {
         name: _horizontal_float_field(value, horizontal_shape, name)
         for name, value in (
@@ -1202,16 +1259,11 @@ def ruc_transpiration(
     if np.any(column_values["ref"] <= column_values["wilt"]):
         raise ValueError("RUC ref must exceed wilt")
 
-    zs, _ = ruc_soil_geometry()
-    zshalf = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-    half = np.float32(0.5)
-    for level in range(1, NUM_SOIL_LAYERS):
-        zshalf[level] = np.float32(
-            np.float32(zs[level - 1] + zs[level]) * half
-        )
+    zs, _ = ruc_soil_geometry(nzs)
+    zshalf = ruc_zshalf(zs)
 
     ncolumn = int(np.prod(horizontal_shape))
-    liquid_flat = liquid.reshape(NUM_SOIL_LAYERS, ncolumn)
+    liquid_flat = liquid.reshape(nzs, ncolumn)
     columns = {
         name: value.reshape(ncolumn) for name, value in column_values.items()
     }
@@ -1219,7 +1271,7 @@ def ruc_transpiration(
     roots_flat = roots.reshape(ncolumn)
     weights = np.zeros_like(liquid)
     totals = np.zeros(horizontal_shape, dtype=np.float32)
-    weights_flat = weights.reshape(NUM_SOIL_LAYERS, ncolumn)
+    weights_flat = weights.reshape(nzs, ncolumn)
     totals_flat = totals.reshape(ncolumn)
     one = np.float32(1.0)
     zero = np.float32(0.0)
@@ -1320,19 +1372,20 @@ def ruc_transpiration(
 
 def _ruc_soil_solver_geometry(
     delt: np.float32,
+    nzs: int = NUM_SOIL_LAYERS,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Construct WRF RUC ``zsmain/zshalf/dtdzs/dtdzs2`` in float32."""
+    """Construct WRF RUC ``zsmain/zshalf/dtdzs/dtdzs2`` in float32.
 
-    zsmain, _ = ruc_soil_geometry()
-    zshalf = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-    for level in range(1, NUM_SOIL_LAYERS):
-        zshalf[level] = np.float32(
-            np.float32(zsmain[level - 1] + zsmain[level])
-            * np.float32(0.5)
-        )
-    dtdzs = np.zeros(2 * (NUM_SOIL_LAYERS - 2), dtype=np.float32)
-    dtdzs2 = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-    for fortran_level in range(2, NUM_SOIL_LAYERS):
+    ``nzs`` defaults to :data:`nzs` so a caller that has not been
+    threaded still gets the nine-level arrays it had, bit for bit.  ``dtdzs``
+    is ``2 * (nzs - 2)`` long, which is the device's ``RUC_DTDZS_LEN``.
+    """
+
+    zsmain, _ = ruc_soil_geometry(nzs)
+    zshalf = ruc_zshalf(zsmain)
+    dtdzs = np.zeros(2 * (nzs - 2), dtype=np.float32)
+    dtdzs2 = np.zeros(nzs, dtype=np.float32)
+    for fortran_level in range(2, nzs):
         first = 2 * fortran_level - 3
         second = first + 1
         level = fortran_level - 1
@@ -1370,11 +1423,7 @@ def ruc_soil_moisture_step(
     for name in RUC_SOIL_MOISTURE_PROFILE_INPUTS:
         array = np.asarray(values[name], dtype=np.float32)
         if shape is None:
-            if array.ndim < 2 or array.shape[0] != NUM_SOIL_LAYERS:
-                raise ValueError(
-                    "RUC soilmoist profiles must have shape "
-                    f"({NUM_SOIL_LAYERS}, ...horizontal...), got {array.shape}"
-                )
+            nzs = _resolved_soil_levels(array, "RUC soilmoist profiles")
             shape = array.shape
         elif array.shape != shape:
             raise ValueError(
@@ -1396,17 +1445,17 @@ def ruc_soil_moisture_step(
     if np.any(columns["ksat"] < np.float32(0.0)):
         raise ValueError("RUC soilmoist ksat must be nonnegative")
 
-    zsmain, zshalf, dtdzs, dtdzs2 = _ruc_soil_solver_geometry(timestep)
+    zsmain, zshalf, dtdzs, dtdzs2 = _ruc_soil_solver_geometry(timestep, nzs)
     ncolumn = int(np.prod(horizontal_shape))
     profile_flat = {
-        name: array.reshape(NUM_SOIL_LAYERS, ncolumn)
+        name: array.reshape(nzs, ncolumn)
         for name, array in profiles.items()
     }
     column_flat = {name: array.reshape(ncolumn) for name, array in columns.items()}
     moisture = np.array(profiles["soilmois"], dtype=np.float32, copy=True)
     liquid = np.array(profiles["soiliqw"], dtype=np.float32, copy=True)
-    moisture_flat = moisture.reshape(NUM_SOIL_LAYERS, ncolumn)
-    liquid_flat = liquid.reshape(NUM_SOIL_LAYERS, ncolumn)
+    moisture_flat = moisture.reshape(nzs, ncolumn)
+    liquid_flat = liquid.reshape(nzs, ncolumn)
     horizontal_outputs = {
         name: np.empty(horizontal_shape, dtype=np.float32)
         for name in ("mavail", "runoff", "runoff2", "infiltrp", "infmax")
@@ -1419,14 +1468,14 @@ def ruc_soil_moisture_step(
     minimum = np.float32(1.0e-8)
 
     for column in range(ncolumn):
-        cosmc = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-        rhsmc = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
+        cosmc = np.zeros(nzs, dtype=np.float32)
+        rhsmc = np.zeros(nzs, dtype=np.float32)
         # WRF evaluates several experimental lower-boundary forms and then
         # intentionally overwrites them with this zero-gradient condition.
         cosmc[0] = zero
         rhsmc[0] = moisture_flat[-1, column]
-        for step in range(1, NUM_SOIL_LAYERS - 1):
-            kn = NUM_SOIL_LAYERS - step
+        for step in range(1, nzs - 1):
+            kn = nzs - step
             first = 2 * kn - 3
             x4 = np.float32(
                 np.float32(np.float32(2.0) * dtdzs[first - 1])
@@ -1473,8 +1522,8 @@ def ruc_soil_moisture_step(
         runoff = zero
         runoff2 = zero
         dzs = zsmain[1]
-        r1 = cosmc[NUM_SOIL_LAYERS - 2]
-        r2 = rhsmc[NUM_SOIL_LAYERS - 2]
+        r1 = cosmc[nzs - 2]
+        r2 = rhsmc[nzs - 2]
         r3 = np.float32(profile_flat["diffu"][0, column] / dzs)
         r4 = np.float32(
             r3 + np.float32(profile_flat["hydro"][0, column] * np.float32(0.5))
@@ -1514,7 +1563,7 @@ def ruc_soil_moisture_step(
         frozen_depth = np.float32(
             profile_flat["soilice"][0, column] * zshalf[1]
         )
-        for level in range(1, NUM_SOIL_LAYERS - 1):
+        for level in range(1, nzs - 1):
             thickness = np.float32(zshalf[level + 1] - zshalf[level])
             frozen_depth = np.float32(
                 frozen_depth
@@ -1659,8 +1708,8 @@ def ruc_soil_moisture_step(
                 min(dqm, max(minimum, candidate))
             )
 
-        for level in range(1, NUM_SOIL_LAYERS):
-            coefficient = NUM_SOIL_LAYERS - level - 1
+        for level in range(1, nzs):
+            coefficient = nzs - level - 1
             candidate = np.float32(
                 np.float32(
                     cosmc[coefficient] * moisture_flat[level - 1, column]
@@ -1671,7 +1720,7 @@ def ruc_soil_moisture_step(
                 moisture_flat[level, column] = minimum
             elif candidate > dqm:
                 moisture_flat[level, column] = dqm
-                if level == NUM_SOIL_LAYERS - 1:
+                if level == nzs - 1:
                     thickness = np.float32(zsmain[level] - zshalf[level])
                 else:
                     thickness = np.float32(
@@ -1913,11 +1962,7 @@ def ruc_soil_temperature_step(
     for name in RUC_SOIL_TEMPERATURE_PROFILE_INPUTS:
         array = np.asarray(values[name], dtype=np.float32)
         if shape is None:
-            if array.ndim < 2 or array.shape[0] != NUM_SOIL_LAYERS:
-                raise ValueError(
-                    "RUC soiltemp profiles must have shape "
-                    f"({NUM_SOIL_LAYERS}, ...horizontal...), got {array.shape}"
-                )
+            nzs = _resolved_soil_levels(array, "RUC soiltemp profiles")
             shape = array.shape
         elif array.shape != shape:
             raise ValueError(
@@ -1928,7 +1973,7 @@ def ruc_soil_temperature_step(
         profiles[name] = array
     assert shape is not None
     horizontal_shape = shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
     columns = {
         name: _horizontal_float_field(values[name], horizontal_shape, name)
         for name in RUC_SOIL_TEMPERATURE_COLUMN_INPUTS
@@ -1944,17 +1989,17 @@ def ruc_soil_temperature_step(
     if np.any((columns["mavail"] < 0.0) | (columns["mavail"] > 1.0)):
         raise ValueError("RUC soiltemp mavail must be within 0..1")
 
-    zsmain, zshalf, dtdzs, _ = _ruc_soil_solver_geometry(timestep)
+    zsmain, zshalf, dtdzs, _ = _ruc_soil_solver_geometry(timestep, nzs)
     table = _load_ruc_saturation_table()
     ncolumn = int(np.prod(horizontal_shape))
     profile_flat = {
-        name: array.reshape(NUM_SOIL_LAYERS, ncolumn)
+        name: array.reshape(nzs, ncolumn)
         for name, array in profiles.items()
     }
     column_flat = {name: array.reshape(ncolumn) for name, array in columns.items()}
     roots_flat = roots.reshape(ncolumn)
     temperature = np.array(profiles["tso"], dtype=np.float32, copy=True)
-    temperature_flat = temperature.reshape(NUM_SOIL_LAYERS, ncolumn)
+    temperature_flat = temperature.reshape(nzs, ncolumn)
     outputs = {
         name: np.empty(horizontal_shape, dtype=np.float32)
         for name in ("soilt", "qvg", "qsg", "qcg", "storage")
@@ -1977,11 +2022,11 @@ def ruc_soil_temperature_step(
 
     for column in range(ncolumn):
         root_count = int(roots_flat[column])
-        cotso = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-        rhtso = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
+        cotso = np.zeros(nzs, dtype=np.float32)
+        rhtso = np.zeros(nzs, dtype=np.float32)
         rhtso[0] = temperature_flat[-1, column]
-        for step in range(NUM_SOIL_LAYERS - 2):
-            kn = NUM_SOIL_LAYERS - step - 1
+        for step in range(nzs - 2):
+            kn = nzs - step - 1
             first = 2 * kn - 3
             x1 = np.float32(
                 dtdzs[first - 1]
@@ -2036,8 +2081,8 @@ def ruc_soil_temperature_step(
             np.float32(one - column_flat["vegfrac"][column])
             * column_flat["soilres"][column]
         )
-        d1 = cotso[NUM_SOIL_LAYERS - 2]
-        d2 = rhtso[NUM_SOIL_LAYERS - 2]
+        d1 = cotso[nzs - 2]
+        d2 = rhtso[nzs - 2]
         tn = column_flat["soilt"][column]
         qgold = column_flat["qvg"][column]
         d9 = np.float32(
@@ -2136,8 +2181,8 @@ def ruc_soil_temperature_step(
                 qcg = zero
 
         temperature_flat[0, column] = ts1
-        for level in range(1, NUM_SOIL_LAYERS):
-            coefficient = NUM_SOIL_LAYERS - level - 1
+        for level in range(1, nzs):
+            coefficient = nzs - level - 1
             temperature_flat[level, column] = np.float32(
                 rhtso[coefficient]
                 + np.float32(cotso[coefficient] * temperature_flat[level - 1, column])
@@ -2229,11 +2274,7 @@ def ruc_sea_ice_step(
     for name in RUC_SEA_ICE_PROFILE_INPUTS:
         array = np.asarray(values[name], dtype=np.float32)
         if shape is None:
-            if array.ndim < 2 or array.shape[0] != NUM_SOIL_LAYERS:
-                raise ValueError(
-                    "RUC sice profiles must have shape "
-                    f"({NUM_SOIL_LAYERS}, ...horizontal...), got {array.shape}"
-                )
+            nzs = _resolved_soil_levels(array, "RUC sice profiles")
             shape = array.shape
         elif array.shape != shape:
             raise ValueError(
@@ -2257,16 +2298,16 @@ def ruc_sea_ice_step(
     if np.any(columns["rho"] <= np.float32(0.0)):
         raise ValueError("RUC sice rho must be positive")
 
-    zsmain, _, dtdzs, _ = _ruc_soil_solver_geometry(timestep)
+    zsmain, _, dtdzs, _ = _ruc_soil_solver_geometry(timestep, nzs)
     table = _load_ruc_saturation_table()
     ncolumn = int(np.prod(horizontal_shape))
     profile_flat = {
-        name: array.reshape(NUM_SOIL_LAYERS, ncolumn)
+        name: array.reshape(nzs, ncolumn)
         for name, array in profiles.items()
     }
     column_flat = {name: array.reshape(ncolumn) for name, array in columns.items()}
     temperature = np.array(profiles["tso"], dtype=np.float32, copy=True)
-    temperature_flat = temperature.reshape(NUM_SOIL_LAYERS, ncolumn)
+    temperature_flat = temperature.reshape(nzs, ncolumn)
     scalar_names = (
         "dew", "soilt", "qvg", "qsg", "qcg", "eeta", "qfx", "hfx",
         "s", "evapl", "prcpl", "fltot",
@@ -2298,11 +2339,11 @@ def ruc_sea_ice_step(
     for column in range(ncolumn):
         prcpl = column_flat["prcpms"][column]
         ras = np.float32(column_flat["rho"][column] * np.float32(1.0e-3))
-        cotso = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-        rhtso = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
+        cotso = np.zeros(nzs, dtype=np.float32)
+        rhtso = np.zeros(nzs, dtype=np.float32)
         rhtso[0] = temperature_flat[-1, column]
-        for step in range(NUM_SOIL_LAYERS - 2):
-            kn = NUM_SOIL_LAYERS - step - 1
+        for step in range(nzs - 2):
+            kn = nzs - step - 1
             first = 2 * kn - 3
             x1 = np.float32(
                 dtdzs[first - 1]
@@ -2342,8 +2383,8 @@ def ruc_sea_ice_step(
             rhtso[step + 1] = np.float32(numerator / denominator)
 
         rhcs = profile_flat["capice"][0, column]
-        d1 = cotso[NUM_SOIL_LAYERS - 2]
-        d2 = rhtso[NUM_SOIL_LAYERS - 2]
+        d1 = cotso[nzs - 2]
+        d2 = rhtso[nzs - 2]
         tn = column_flat["soilt"][column]
         d9 = np.float32(
             np.float32(profile_flat["thdifice"][0, column] * rhcs) * dzstop
@@ -2414,8 +2455,8 @@ def ruc_sea_ice_step(
         temperature_flat[0, column] = min(ice_cap, ts1)
         qcg = zero
         soilt = temperature_flat[0, column]
-        for level in range(1, NUM_SOIL_LAYERS):
-            coefficient = NUM_SOIL_LAYERS - level - 1
+        for level in range(1, nzs):
+            coefficient = nzs - level - 1
             temperature_flat[level, column] = min(
                 ice_cap,
                 np.float32(
@@ -2608,12 +2649,13 @@ def _ruc_phase_partition(
     """Apply the freezing curve used before and after WRF ``soiltemp``."""
 
     shape = soilmois.shape
+    nzs = _resolved_soil_levels(soilmois, "RUC phase-partition profiles")
     horizontal_shape = shape[1:]
     ncolumn = int(np.prod(horizontal_shape))
-    moisture = soilmois.reshape(NUM_SOIL_LAYERS, ncolumn)
-    temperature = tso.reshape(NUM_SOIL_LAYERS, ncolumn)
-    frozen_memory = smfrkeep.reshape(NUM_SOIL_LAYERS, ncolumn)
-    freeze_flag = keepfr.reshape(NUM_SOIL_LAYERS, ncolumn)
+    moisture = soilmois.reshape(nzs, ncolumn)
+    temperature = tso.reshape(nzs, ncolumn)
+    frozen_memory = smfrkeep.reshape(nzs, ncolumn)
+    freeze_flag = keepfr.reshape(nzs, ncolumn)
     column_flat = {name: value.reshape(ncolumn) for name, value in columns.items()}
     fields = {
         name: np.zeros(shape, dtype=np.float32)
@@ -2623,7 +2665,7 @@ def _ruc_phase_partition(
         )
     }
     flat = {
-        name: value.reshape(NUM_SOIL_LAYERS, ncolumn)
+        name: value.reshape(nzs, ncolumn)
         for name, value in fields.items()
     }
     zero = np.float32(0.0)
@@ -2643,7 +2685,7 @@ def _ruc_phase_partition(
         bclh = column_flat["bclh"][column]
         maximum = np.float32(dqm + qmin)
         exponent = np.float32(np.float32(-one) / bclh)
-        for level in range(NUM_SOIL_LAYERS):
+        for level in range(nzs):
             level_temperature = temperature[level, column]
             tln = np.float32(np.log(np.float32(level_temperature / freeze)))
             if tln < zero:
@@ -2687,7 +2729,7 @@ def _ruc_phase_partition(
             else:
                 flat["soiliqw"][level, column] = moisture[level, column]
 
-        for level in range(NUM_SOIL_LAYERS - 1):
+        for level in range(nzs - 1):
             middle_temperature = np.float32(
                 half
                 * np.float32(
@@ -2754,7 +2796,7 @@ def _ruc_phase_partition(
                 flat["lwsat"][level, column] = maximum
 
         if update_smfrkeep:
-            for level in range(NUM_SOIL_LAYERS):
+            for level in range(nzs):
                 ice = flat["soilice"][level, column]
                 if ice > zero:
                     frozen_memory[level, column] = ice
@@ -2794,11 +2836,7 @@ def ruc_soil_step(
     for name in RUC_SOIL_STEP_PROFILE_INPUTS:
         array = np.asarray(values[name], dtype=np.float32)
         if shape is None:
-            if array.ndim < 2 or array.shape[0] != NUM_SOIL_LAYERS:
-                raise ValueError(
-                    "RUC soil profiles must have shape "
-                    f"({NUM_SOIL_LAYERS}, ...horizontal...), got {array.shape}"
-                )
+            nzs = _resolved_soil_levels(array, "RUC soil profiles")
             shape = array.shape
         elif array.shape != shape:
             raise ValueError(
@@ -2809,7 +2847,7 @@ def ruc_soil_step(
         profiles[name] = array
     assert shape is not None
     horizontal_shape = shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
     land_type = _horizontal_integer_field(iland, horizontal_shape, "iland")
     columns = {
         name: _horizontal_float_field(values[name], horizontal_shape, name)
@@ -2895,7 +2933,7 @@ def ruc_soil_step(
     )
     soilres = np.empty(horizontal_shape, dtype=np.float32)
     soilres_flat = soilres.reshape(ncolumn)
-    moisture_flat = soilmois.reshape(NUM_SOIL_LAYERS, ncolumn)
+    moisture_flat = soilmois.reshape(nzs, ncolumn)
     piconst = np.float32(3.141592653589793)
     for column in range(ncolumn):
         fc = np.float32(
@@ -2952,10 +2990,10 @@ def ruc_soil_step(
         soilmois, tso, smfrkeep, keepfr, columns, update_smfrkeep=False
     )
 
-    zsmain, zshalf, _, _ = _ruc_soil_solver_geometry(timestep)
+    zsmain, zshalf, _, _ = _ruc_soil_solver_geometry(timestep, nzs)
     transp = np.zeros_like(soilmois)
-    transp_flat = transp.reshape(NUM_SOIL_LAYERS, ncolumn)
-    weights_flat = transpiration.tranf.reshape(NUM_SOIL_LAYERS, ncolumn)
+    transp_flat = transp.reshape(nzs, ncolumn)
+    weights_flat = transpiration.tranf.reshape(nzs, ncolumn)
     ett1 = np.zeros(horizontal_shape, dtype=np.float32)
     dew = np.zeros(horizontal_shape, dtype=np.float32)
     ett_flat = ett1.reshape(ncolumn)
@@ -3026,17 +3064,17 @@ def ruc_soil_step(
     )
     soilmois = moisture.soilmois
     for column in range(ncolumn):
-        for level in range(NUM_SOIL_LAYERS):
-            if phase["soilice"].reshape(NUM_SOIL_LAYERS, ncolumn)[level, column] > zero:
+        for level in range(nzs):
+            if phase["soilice"].reshape(nzs, ncolumn)[level, column] > zero:
                 if (
-                    tso.reshape(NUM_SOIL_LAYERS, ncolumn)[level, column]
-                    > told.reshape(NUM_SOIL_LAYERS, ncolumn)[level, column]
-                    and soilmois.reshape(NUM_SOIL_LAYERS, ncolumn)[level, column]
-                    > smold.reshape(NUM_SOIL_LAYERS, ncolumn)[level, column]
+                    tso.reshape(nzs, ncolumn)[level, column]
+                    > told.reshape(nzs, ncolumn)[level, column]
+                    and soilmois.reshape(nzs, ncolumn)[level, column]
+                    > smold.reshape(nzs, ncolumn)[level, column]
                 ):
-                    keepfr.reshape(NUM_SOIL_LAYERS, ncolumn)[level, column] = one
+                    keepfr.reshape(nzs, ncolumn)[level, column] = one
                 else:
-                    keepfr.reshape(NUM_SOIL_LAYERS, ncolumn)[level, column] = zero
+                    keepfr.reshape(nzs, ncolumn)[level, column] = zero
 
     scalar_names = (
         "cst", "dew", "soilt", "qvg", "qsg", "qcg", "edir1", "ec1",
@@ -3061,9 +3099,9 @@ def ruc_soil_step(
     output_flat = {name: value.reshape(ncolumn) for name, value in output.items()}
     qvg_flat = temperature.qvg.reshape(ncolumn)
     soilt_flat = temperature.soilt.reshape(ncolumn)
-    thdif_flat = properties.thdif.reshape(NUM_SOIL_LAYERS, ncolumn)
-    cap_flat = properties.cap.reshape(NUM_SOIL_LAYERS, ncolumn)
-    tso_flat = tso.reshape(NUM_SOIL_LAYERS, ncolumn)
+    thdif_flat = properties.thdif.reshape(nzs, ncolumn)
+    cap_flat = properties.cap.reshape(nzs, ncolumn)
+    tso_flat = tso.reshape(nzs, ncolumn)
     xlv = np.float32(2.5e6)
     cp_air = np.float32(1004.5)
     stbolt = np.float32(5.67051e-8)
@@ -3201,11 +3239,8 @@ def ruc_initialize_cold_start(
             f"tslb shape {temperature.shape} differs from smois "
             f"{total_water.shape}"
         )
-    if temperature.ndim < 2 or temperature.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            f"RUC soil arrays must have shape ({NUM_SOIL_LAYERS}, ...), "
-            f"got {temperature.shape}"
-        )
+    nzs = _resolved_soil_levels(temperature, "RUC soil arrays",
+                                tail="...")
     if not np.all(np.isfinite(temperature)) or not np.all(np.isfinite(total_water)):
         raise ValueError("RUC tslb and smois must be finite")
     if np.any((temperature < np.float32(170.0)) | (temperature > np.float32(400.0))):
@@ -3249,10 +3284,10 @@ def ruc_initialize_cold_start(
     availability = np.empty(horizontal_shape, dtype=np.float32)
     roughness = np.empty(horizontal_shape, dtype=np.float32)
 
-    t_flat = temperature.reshape(NUM_SOIL_LAYERS, -1)
-    w_flat = total_water.reshape(NUM_SOIL_LAYERS, -1)
-    liquid_flat = liquid.reshape(NUM_SOIL_LAYERS, -1)
-    frozen_flat = frozen.reshape(NUM_SOIL_LAYERS, -1)
+    t_flat = temperature.reshape(nzs, -1)
+    w_flat = total_water.reshape(nzs, -1)
+    liquid_flat = liquid.reshape(nzs, -1)
+    frozen_flat = frozen.reshape(nzs, -1)
     soil_flat = soil_type.reshape(-1)
     vegetation_flat = vegetation_type.reshape(-1)
     ice_flat = ice_fraction.reshape(-1)
@@ -3295,7 +3330,7 @@ def ruc_initialize_cold_start(
         availability_flat[column] = np.float32(
             max(minimum_availability, min(one, raw_availability))
         )
-        for level in range(NUM_SOIL_LAYERS):
+        for level in range(nzs):
             soil_temperature = t_flat[level, column]
             tln = np.float32(np.log(np.float32(soil_temperature / t_freeze)))
             if tln < np.float32(0.0):
@@ -3698,11 +3733,7 @@ def ruc_snow_preparation(
     cover_factor = np.asarray(RUC_SNOW_COVER_FACTOR, dtype=np.float32)
 
     profile = np.asarray(values["ts1d"], dtype=np.float32)
-    if profile.ndim < 2 or profile.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC snow preparation ts1d must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {profile.shape}"
-        )
+    nzs = _resolved_soil_levels(profile, "RUC snow preparation ts1d")
     if not np.all(np.isfinite(profile)):
         raise ValueError("ts1d must be finite")
     shape = profile.shape
@@ -3730,7 +3761,7 @@ def ruc_snow_preparation(
         raise ValueError("RUC snow preparation alb must be below 1")
 
     ncolumn = int(np.prod(horizontal_shape))
-    profile_flat = profile.reshape(NUM_SOIL_LAYERS, ncolumn)
+    profile_flat = profile.reshape(nzs, ncolumn)
     column_flat = {name: array.reshape(ncolumn) for name, array in columns.items()}
     veg_flat = vegetation_category.reshape(ncolumn)
     land_flat = land_category.reshape(ncolumn)
@@ -3740,7 +3771,7 @@ def ruc_snow_preparation(
         for name in RUC_SNOW_PREP_PROFILE_OUTPUTS
     }
     profile_out = {
-        name: array.reshape(NUM_SOIL_LAYERS, ncolumn)
+        name: array.reshape(nzs, ncolumn)
         for name, array in profiles.items()
     }
     outputs = {
@@ -3823,7 +3854,7 @@ def ruc_snow_preparation(
         intersn = zero
         infwater = zero
         # :1452-1458 - the ice column starts at zero on every point.
-        for level in range(NUM_SOIL_LAYERS):
+        for level in range(nzs):
             profile_out["tice"][level, column] = zero
             profile_out["rhosice"][level, column] = zero
             profile_out["capice"][level, column] = zero
@@ -3838,7 +3869,7 @@ def ruc_snow_preparation(
 
         # :1471-1485 sea-ice column properties (Zubov) and the ice albedo.
         if seaice >= np.float32(0.5):
-            for level in range(NUM_SOIL_LAYERS):
+            for level in range(nzs):
                 tice = np.float32(profile_flat[level, column] - freeze)
                 rhosice = np.float32(
                     np.float32(917.6)
@@ -4473,11 +4504,7 @@ def ruc_snow_sea_ice_step(
     for name in RUC_SNOW_SEA_ICE_PROFILE_INPUTS:
         array = np.asarray(values[name], dtype=np.float32)
         if shape is None:
-            if array.ndim < 2 or array.shape[0] != NUM_SOIL_LAYERS:
-                raise ValueError(
-                    "RUC snowseaice profiles must have shape "
-                    f"({NUM_SOIL_LAYERS}, ...horizontal...), got {array.shape}"
-                )
+            nzs = _resolved_soil_levels(array, "RUC snowseaice profiles")
             shape = array.shape
         elif array.shape != shape:
             raise ValueError(
@@ -4509,17 +4536,17 @@ def ruc_snow_sea_ice_step(
     if np.any(columns["snwe"] < np.float32(0.0)):
         raise ValueError("RUC snowseaice snwe must be nonnegative")
 
-    zsmain, zshalf, dtdzs, _ = _ruc_soil_solver_geometry(timestep)
+    zsmain, zshalf, dtdzs, _ = _ruc_soil_solver_geometry(timestep, nzs)
     table = _load_ruc_saturation_table()
     ncolumn = int(np.prod(horizontal_shape))
     profile_flat = {
-        name: array.reshape(NUM_SOIL_LAYERS, ncolumn)
+        name: array.reshape(nzs, ncolumn)
         for name, array in profiles.items()
     }
     column_flat = {name: array.reshape(ncolumn) for name, array in columns.items()}
     integer_flat = {name: array.reshape(ncolumn) for name, array in integers.items()}
     temperature = np.array(profiles["tso"], dtype=np.float32, copy=True)
-    temperature_flat = temperature.reshape(NUM_SOIL_LAYERS, ncolumn)
+    temperature_flat = temperature.reshape(nzs, ncolumn)
     layer_count = np.empty(horizontal_shape, dtype=np.int32)
     layer_count_flat = layer_count.reshape(ncolumn)
     outputs = {
@@ -4633,11 +4660,11 @@ def ruc_snow_sea_ice_step(
             snwe = zero
 
         # module_sf_ruclsm.F:4020-4032 upward tridiagonal sweep in the ice.
-        cotso = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-        rhtso = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-        rhtso[0] = temperature_flat[NUM_SOIL_LAYERS - 1, column]
-        for step in range(NUM_SOIL_LAYERS - 2):
-            kn = NUM_SOIL_LAYERS - step - 1
+        cotso = np.zeros(nzs, dtype=np.float32)
+        rhtso = np.zeros(nzs, dtype=np.float32)
+        rhtso[0] = temperature_flat[nzs - 1, column]
+        for step in range(nzs - 2):
+            kn = nzs - step - 1
             first = 2 * kn - 3
             x1 = np.float32(
                 dtdzs[first - 1] * profile_flat["thdifice"][kn - 2, column]
@@ -4715,18 +4742,18 @@ def ruc_snow_sea_ice_step(
                 denominator = np.float32(denominator + x2)
                 denominator = np.float32(
                     denominator
-                    - np.float32(x2 * cotso[NUM_SOIL_LAYERS - 2])
+                    - np.float32(x2 * cotso[nzs - 2])
                 )
-                cotso[NUM_SOIL_LAYERS - 1] = np.float32(x1sn / denominator)
-                rhtso[NUM_SOIL_LAYERS - 1] = np.float32(
+                cotso[nzs - 1] = np.float32(x1sn / denominator)
+                rhtso[nzs - 1] = np.float32(
                     np.float32(
                         ft
-                        + np.float32(x2 * rhtso[NUM_SOIL_LAYERS - 2])
+                        + np.float32(x2 * rhtso[nzs - 2])
                     )
                     / denominator
                 )
-                cotsn = cotso[NUM_SOIL_LAYERS - 1]
-                rhtsn = rhtso[NUM_SOIL_LAYERS - 1]
+                cotsn = cotso[nzs - 1]
+                rhtsn = rhtso[nzs - 1]
                 tsnav = np.float32(
                     np.float32(
                         half
@@ -4774,13 +4801,13 @@ def ruc_snow_sea_ice_step(
                 denominator = np.float32(denominator + x2)
                 denominator = np.float32(
                     denominator
-                    - np.float32(x2 * cotso[NUM_SOIL_LAYERS - 2])
+                    - np.float32(x2 * cotso[nzs - 2])
                 )
-                cotso[NUM_SOIL_LAYERS - 1] = np.float32(x1sn1 / denominator)
-                rhtso[NUM_SOIL_LAYERS - 1] = np.float32(
+                cotso[nzs - 1] = np.float32(x1sn1 / denominator)
+                rhtso[nzs - 1] = np.float32(
                     np.float32(
                         ft
-                        + np.float32(x2 * rhtso[NUM_SOIL_LAYERS - 2])
+                        + np.float32(x2 * rhtso[nzs - 2])
                     )
                     / denominator
                 )
@@ -4798,13 +4825,13 @@ def ruc_snow_sea_ice_step(
                 denomsn = np.float32(denomsn + x1sn1)
                 denomsn = np.float32(
                     denomsn
-                    - np.float32(x1sn1 * cotso[NUM_SOIL_LAYERS - 1])
+                    - np.float32(x1sn1 * cotso[nzs - 1])
                 )
                 cotsn = np.float32(x1sn / denomsn)
                 rhtsn = np.float32(
                     np.float32(
                         ftsnow
-                        + np.float32(x1sn1 * rhtso[NUM_SOIL_LAYERS - 1])
+                        + np.float32(x1sn1 * rhtso[nzs - 1])
                     )
                     / denomsn
                 )
@@ -4870,12 +4897,12 @@ def ruc_snow_sea_ice_step(
             denominator = np.float32(one + x1sn)
             denominator = np.float32(denominator + x2)
             denominator = np.float32(
-                denominator - np.float32(x2 * cotso[NUM_SOIL_LAYERS - 3])
+                denominator - np.float32(x2 * cotso[nzs - 3])
             )
-            cotso[NUM_SOIL_LAYERS - 2] = np.float32(x1sn / denominator)
-            rhtso[NUM_SOIL_LAYERS - 2] = np.float32(
+            cotso[nzs - 2] = np.float32(x1sn / denominator)
+            rhtso[nzs - 2] = np.float32(
                 np.float32(
-                    ft + np.float32(x2 * rhtso[NUM_SOIL_LAYERS - 3])
+                    ft + np.float32(x2 * rhtso[nzs - 3])
                 )
                 / denominator
             )
@@ -4885,16 +4912,16 @@ def ruc_snow_sea_ice_step(
                 )
                 - freeze
             )
-            cotso[NUM_SOIL_LAYERS - 1] = cotso[NUM_SOIL_LAYERS - 2]
-            rhtso[NUM_SOIL_LAYERS - 1] = rhtso[NUM_SOIL_LAYERS - 2]
-            cotsn = cotso[NUM_SOIL_LAYERS - 1]
-            rhtsn = rhtso[NUM_SOIL_LAYERS - 1]
+            cotso[nzs - 1] = cotso[nzs - 2]
+            rhtso[nzs - 1] = rhtso[nzs - 2]
+            cotsn = cotso[nzs - 1]
+            rhtsn = rhtso[nzs - 1]
 
         # module_sf_ruclsm.F:4114-4131 heat balance coefficients.
         epot = np.float32(-np.float32(qkms * np.float32(qvatm - qsg)))
         rhcs = profile_flat["capice"][0, column]
-        d1 = cotso[NUM_SOIL_LAYERS - 2]
-        d2 = rhtso[NUM_SOIL_LAYERS - 2]
+        d1 = cotso[nzs - 2]
+        d2 = rhtso[nzs - 2]
         tn = soilt
         d9 = np.float32(np.float32(thdifice_top * rhcs) * dzstop)
         d10 = np.float32(np.float32(tkms * cp_air) * rho)
@@ -4916,8 +4943,8 @@ def ruc_snow_sea_ice_step(
         # module_sf_ruclsm.F:4133-4163 snow-side coefficients.
         if snhei >= snth:
             if snhei <= np.float32(deltsn + snth):
-                d1sn = cotso[NUM_SOIL_LAYERS - 1]
-                d2sn = rhtso[NUM_SOIL_LAYERS - 1]
+                d1sn = cotso[nzs - 1]
+                d2sn = rhtso[nzs - 1]
             else:
                 d1sn = cotsn
                 d2sn = rhtsn
@@ -5015,9 +5042,9 @@ def ruc_snow_sea_ice_step(
                     min(
                         ice_cap,
                         np.float32(
-                            rhtso[NUM_SOIL_LAYERS - 1]
+                            rhtso[nzs - 1]
                             + np.float32(
-                                cotso[NUM_SOIL_LAYERS - 1] * soilt1
+                                cotso[nzs - 1] * soilt1
                             )
                         ),
                     )
@@ -5028,9 +5055,9 @@ def ruc_snow_sea_ice_step(
                     min(
                         ice_cap,
                         np.float32(
-                            rhtso[NUM_SOIL_LAYERS - 1]
+                            rhtso[nzs - 1]
                             + np.float32(
-                                cotso[NUM_SOIL_LAYERS - 1] * soilt
+                                cotso[nzs - 1] * soilt
                             )
                         ),
                     )
@@ -5042,8 +5069,8 @@ def ruc_snow_sea_ice_step(
                 min(
                     ice_cap,
                     np.float32(
-                        rhtso[NUM_SOIL_LAYERS - 2]
-                        + np.float32(cotso[NUM_SOIL_LAYERS - 2] * soilt)
+                        rhtso[nzs - 2]
+                        + np.float32(cotso[nzs - 2] * soilt)
                     ),
                 )
             )
@@ -5068,8 +5095,8 @@ def ruc_snow_sea_ice_step(
 
         # module_sf_ruclsm.F:4232-4243 downward substitution through the ice.
         start = 2 if thin else 1
-        for level in range(start, NUM_SOIL_LAYERS):
-            coefficient = NUM_SOIL_LAYERS - level - 1
+        for level in range(start, nzs):
+            coefficient = nzs - level - 1
             temperature_flat[level, column] = np.float32(
                 min(
                     ice_cap,
@@ -5655,11 +5682,7 @@ def ruc_snow_temperature_step(
     for name in RUC_SNOW_TEMPERATURE_PROFILE_INPUTS:
         array = np.asarray(values[name], dtype=np.float32)
         if shape is None:
-            if array.ndim < 2 or array.shape[0] != NUM_SOIL_LAYERS:
-                raise ValueError(
-                    "RUC snowtemp profiles must have shape "
-                    f"({NUM_SOIL_LAYERS}, ...horizontal...), got {array.shape}"
-                )
+            nzs = _resolved_soil_levels(array, "RUC snowtemp profiles")
             shape = array.shape
         elif array.shape != shape:
             raise ValueError(
@@ -5670,7 +5693,7 @@ def ruc_snow_temperature_step(
         profiles[name] = array
     assert shape is not None
     horizontal_shape = shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
     raw_layers = np.asarray(ilnb)
     if not np.issubdtype(raw_layers.dtype, np.integer):
         raise TypeError("RUC snowtemp ilnb must contain integer layer counts")
@@ -5704,18 +5727,18 @@ def ruc_snow_temperature_step(
     if np.any(columns["deltsn"] <= np.float32(0.0)):
         raise ValueError("RUC snowtemp deltsn must be positive")
 
-    zsmain, zshalf, dtdzs, _ = _ruc_soil_solver_geometry(timestep)
+    zsmain, zshalf, dtdzs, _ = _ruc_soil_solver_geometry(timestep, nzs)
     table = _load_ruc_saturation_table()
     ncolumn = int(np.prod(horizontal_shape))
     profile_flat = {
-        name: array.reshape(NUM_SOIL_LAYERS, ncolumn)
+        name: array.reshape(nzs, ncolumn)
         for name, array in profiles.items()
     }
     column_flat = {name: array.reshape(ncolumn) for name, array in columns.items()}
     roots_flat = roots.reshape(ncolumn)
     layers_flat = layers.reshape(ncolumn)
     temperature = np.array(profiles["tso"], dtype=np.float32, copy=True)
-    temperature_flat = temperature.reshape(NUM_SOIL_LAYERS, ncolumn)
+    temperature_flat = temperature.reshape(nzs, ncolumn)
     scalar_names = (
         "soilt", "soilt1", "tsnav", "qvg", "qsg", "qcg", "dew", "snwe",
         "snhei", "rhosn", "beta", "smelt", "snoh", "snflx", "s", "rsm",
@@ -5805,11 +5828,11 @@ def ruc_snow_temperature_step(
         tsnav = zero
 
         # :5103-5115 upward tridiagonal sweep through the soil.
-        cotso = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-        rhtso = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-        rhtso[0] = tso[NUM_SOIL_LAYERS - 1]
-        for step in range(NUM_SOIL_LAYERS - 2):
-            kn = NUM_SOIL_LAYERS - step - 1
+        cotso = np.zeros(nzs, dtype=np.float32)
+        rhtso = np.zeros(nzs, dtype=np.float32)
+        rhtso[0] = tso[nzs - 1]
+        for step in range(nzs - 2):
+            kn = nzs - step - 1
             first = 2 * kn - 3
             x1 = np.float32(dtdzs[first - 1] * thdif[kn - 2])
             x2 = np.float32(dtdzs[first] * thdif[kn - 1])
@@ -5846,15 +5869,15 @@ def ruc_snow_temperature_step(
                 denominator = np.float32(one + x1sn)
                 denominator = np.float32(denominator + x2)
                 denominator = np.float32(
-                    denominator - np.float32(x2 * cotso[NUM_SOIL_LAYERS - 2])
+                    denominator - np.float32(x2 * cotso[nzs - 2])
                 )
-                cotso[NUM_SOIL_LAYERS - 1] = np.float32(x1sn / denominator)
-                rhtso[NUM_SOIL_LAYERS - 1] = np.float32(
-                    np.float32(ft + np.float32(x2 * rhtso[NUM_SOIL_LAYERS - 2]))
+                cotso[nzs - 1] = np.float32(x1sn / denominator)
+                rhtso[nzs - 1] = np.float32(
+                    np.float32(ft + np.float32(x2 * rhtso[nzs - 2]))
                     / denominator
                 )
-                cotsn = cotso[NUM_SOIL_LAYERS - 1]
-                rhtsn = rhtso[NUM_SOIL_LAYERS - 1]
+                cotsn = cotso[nzs - 1]
+                rhtsn = rhtso[nzs - 1]
                 tsnav = np.float32(
                     np.float32(half * np.float32(soilt + tso[0])) - freeze
                 )
@@ -5882,11 +5905,11 @@ def ruc_snow_temperature_step(
                 denominator = np.float32(one + x1sn1)
                 denominator = np.float32(denominator + x2)
                 denominator = np.float32(
-                    denominator - np.float32(x2 * cotso[NUM_SOIL_LAYERS - 2])
+                    denominator - np.float32(x2 * cotso[nzs - 2])
                 )
-                cotso[NUM_SOIL_LAYERS - 1] = np.float32(x1sn1 / denominator)
-                rhtso[NUM_SOIL_LAYERS - 1] = np.float32(
-                    np.float32(ft + np.float32(x2 * rhtso[NUM_SOIL_LAYERS - 2]))
+                cotso[nzs - 1] = np.float32(x1sn1 / denominator)
+                rhtso[nzs - 1] = np.float32(
+                    np.float32(ft + np.float32(x2 * rhtso[nzs - 2]))
                     / denominator
                 )
                 ftsnow = np.float32(
@@ -5898,12 +5921,12 @@ def ruc_snow_temperature_step(
                 denomsn = np.float32(one + x1sn)
                 denomsn = np.float32(denomsn + x1sn1)
                 denomsn = np.float32(
-                    denomsn - np.float32(x1sn1 * cotso[NUM_SOIL_LAYERS - 1])
+                    denomsn - np.float32(x1sn1 * cotso[nzs - 1])
                 )
                 cotsn = np.float32(x1sn / denomsn)
                 rhtsn = np.float32(
                     np.float32(
-                        ftsnow + np.float32(x1sn1 * rhtso[NUM_SOIL_LAYERS - 1])
+                        ftsnow + np.float32(x1sn1 * rhtso[nzs - 1])
                     )
                     / denomsn
                 )
@@ -5942,18 +5965,18 @@ def ruc_snow_temperature_step(
             denominator = np.float32(one + x1sn)
             denominator = np.float32(denominator + x2)
             denominator = np.float32(
-                denominator - np.float32(x2 * cotso[NUM_SOIL_LAYERS - 3])
+                denominator - np.float32(x2 * cotso[nzs - 3])
             )
-            cotso[NUM_SOIL_LAYERS - 2] = np.float32(x1sn / denominator)
-            rhtso[NUM_SOIL_LAYERS - 2] = np.float32(
-                np.float32(ft + np.float32(x2 * rhtso[NUM_SOIL_LAYERS - 3]))
+            cotso[nzs - 2] = np.float32(x1sn / denominator)
+            rhtso[nzs - 2] = np.float32(
+                np.float32(ft + np.float32(x2 * rhtso[nzs - 3]))
                 / denominator
             )
             tsnav = np.float32(np.float32(half * np.float32(soilt + tso[0])) - freeze)
-            cotso[NUM_SOIL_LAYERS - 1] = cotso[NUM_SOIL_LAYERS - 2]
-            rhtso[NUM_SOIL_LAYERS - 1] = rhtso[NUM_SOIL_LAYERS - 2]
-            cotsn = cotso[NUM_SOIL_LAYERS - 1]
-            rhtsn = rhtso[NUM_SOIL_LAYERS - 1]
+            cotso[nzs - 1] = cotso[nzs - 2]
+            rhtso[nzs - 1] = rhtso[nzs - 2]
+            cotsn = cotso[nzs - 1]
+            rhtsn = rhtso[nzs - 1]
 
         # :5203-5224 heat balance (Smirnova et al. 1996, eq. 21, 26).
         nmelt = 0
@@ -5965,8 +5988,8 @@ def ruc_snow_temperature_step(
         trans = np.float32(np.float32(transum * drycan) / zshalf[root_count])
         can = np.float32(wetcan + trans)
         umveg = np.float32(one - vegfrac)
-        d1 = cotso[NUM_SOIL_LAYERS - 2]
-        d2 = rhtso[NUM_SOIL_LAYERS - 2]
+        d1 = cotso[nzs - 2]
+        d2 = rhtso[nzs - 2]
         tn = soilt
         d9 = np.float32(np.float32(thdif[0] * rhcs) * dzstop)
         d10 = np.float32(np.float32(tkms * cp_air) * rho)
@@ -5987,8 +6010,8 @@ def ruc_snow_temperature_step(
         # :5226-5270 the snow row of the tridiagonal system.
         if snhei >= snth:
             if snhei <= np.float32(deltsn + snth):
-                d1sn = cotso[NUM_SOIL_LAYERS - 1]
-                d2sn = rhtso[NUM_SOIL_LAYERS - 1]
+                d1sn = cotso[nzs - 1]
+                d2sn = rhtso[nzs - 1]
             else:
                 d1sn = cotsn
                 d2sn = rhtsn
@@ -6099,21 +6122,21 @@ def ruc_snow_temperature_step(
                 if snhei > np.float32(deltsn + snth):
                     soilt1 = min(freeze, np.float32(rhtsn + np.float32(cotsn * soilt)))
                     tso[0] = np.float32(
-                        rhtso[NUM_SOIL_LAYERS - 1]
-                        + np.float32(cotso[NUM_SOIL_LAYERS - 1] * soilt1)
+                        rhtso[nzs - 1]
+                        + np.float32(cotso[nzs - 1] * soilt1)
                     )
                     tsob = soilt1
                 else:
                     tso[0] = np.float32(
-                        rhtso[NUM_SOIL_LAYERS - 1]
-                        + np.float32(cotso[NUM_SOIL_LAYERS - 1] * soilt)
+                        rhtso[nzs - 1]
+                        + np.float32(cotso[nzs - 1] * soilt)
                     )
                     soilt1 = tso[0]
                     tsob = tso[0]
             elif snhei > zero and snhei < snth:
                 tso[1] = np.float32(
-                    rhtso[NUM_SOIL_LAYERS - 2]
-                    + np.float32(cotso[NUM_SOIL_LAYERS - 2] * soilt)
+                    rhtso[nzs - 2]
+                    + np.float32(cotso[nzs - 2] * soilt)
                 )
                 tso[0] = np.float32(
                     tso[1] + np.float32(np.float32(soilt - tso[1]) * fso)
@@ -6131,8 +6154,8 @@ def ruc_snow_temperature_step(
 
             # :5382-5394 downward substitution.
             start = 2 if (snhei > zero and snhei < snth) else 1
-            for level in range(start, NUM_SOIL_LAYERS):
-                coefficient = NUM_SOIL_LAYERS - level - 1
+            for level in range(start, nzs):
+                coefficient = nzs - level - 1
                 tso[level] = np.float32(
                     rhtso[coefficient]
                     + np.float32(cotso[coefficient] * tso[level - 1])
@@ -6643,11 +6666,7 @@ def ruc_snow_soil_step(
     for name in RUC_SNOW_SOIL_PROFILE_INPUTS:
         array = np.asarray(values[name], dtype=np.float32)
         if shape is None:
-            if array.ndim < 2 or array.shape[0] != NUM_SOIL_LAYERS:
-                raise ValueError(
-                    "RUC snowsoil profiles must have shape "
-                    f"({NUM_SOIL_LAYERS}, ...horizontal...), got {array.shape}"
-                )
+            nzs = _resolved_soil_levels(array, "RUC snowsoil profiles")
             shape = array.shape
         elif array.shape != shape:
             raise ValueError(
@@ -6658,7 +6677,7 @@ def ruc_snow_soil_step(
         profiles[name] = array
     assert shape is not None
     horizontal_shape = shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
     land_type = _horizontal_integer_field(iland, horizontal_shape, "iland")
     snow_layers = np.asarray(ilnb)
     if not np.issubdtype(snow_layers.dtype, np.integer):
@@ -6793,8 +6812,8 @@ def ruc_snow_soil_step(
         parameters=parameters,
     )
 
-    zsmain, zshalf, dtdzs, _ = _ruc_soil_solver_geometry(timestep)
-    tranf_flat = transpiration.tranf.reshape(NUM_SOIL_LAYERS, ncolumn)
+    zsmain, zshalf, dtdzs, _ = _ruc_soil_solver_geometry(timestep, nzs)
+    tranf_flat = transpiration.tranf.reshape(nzs, ncolumn)
 
     # :3387-3398 the snow-layer thresholds, from the entry density.  deltsn
     # is the upper snow layer's thickness and snth the minimum a layer may
@@ -6854,7 +6873,7 @@ def ruc_snow_soil_step(
     )
     # snowtemp returns tso rather than updating it in place.
     tso = snow_result.tso
-    tso_flat = tso.reshape(NUM_SOIL_LAYERS, ncolumn)
+    tso_flat = tso.reshape(nzs, ncolumn)
     beta_flat[:] = snow_result.beta.reshape(ncolumn)
     layers_flat[:] = snow_result.ilnb.reshape(ncolumn)
     snwe_flat[:] = snow_result.snwe.reshape(ncolumn)
@@ -6875,7 +6894,7 @@ def ruc_snow_soil_step(
 
     # :3604-3626 recompute dew or transpiration against the new qsg.
     transp = np.zeros_like(soilmois)
-    transp_flat = transp.reshape(NUM_SOIL_LAYERS, ncolumn)
+    transp_flat = transp.reshape(nzs, ncolumn)
     dew = np.zeros(horizontal_shape, dtype=np.float32)
     ett1 = np.zeros(horizontal_shape, dtype=np.float32)
     dew_flat = dew.reshape(ncolumn)
@@ -6960,11 +6979,11 @@ def ruc_snow_soil_step(
     output_flat = {name: value.reshape(ncolumn) for name, value in output.items()}
     tsnav_flat = snow_flat["tsnav"]
     soilt_flat = snow_flat["soilt"]
-    soilmois_flat = soilmois.reshape(NUM_SOIL_LAYERS, ncolumn)
-    told_flat = told.reshape(NUM_SOIL_LAYERS, ncolumn)
-    smold_flat = smold.reshape(NUM_SOIL_LAYERS, ncolumn)
-    keepfr_flat = keepfr.reshape(NUM_SOIL_LAYERS, ncolumn)
-    soilice_flat = phase["soilice"].reshape(NUM_SOIL_LAYERS, ncolumn)
+    soilmois_flat = soilmois.reshape(nzs, ncolumn)
+    told_flat = told.reshape(nzs, ncolumn)
+    smold_flat = smold.reshape(nzs, ncolumn)
+    keepfr_flat = keepfr.reshape(nzs, ncolumn)
+    soilice_flat = phase["soilice"].reshape(nzs, ncolumn)
     for column in range(ncolumn):
         # :3671-3677 restore the snow-free average when the pack is gone.
         if snow_flat["snhei"][column] == zero:
@@ -6977,7 +6996,7 @@ def ruc_snow_soil_step(
             )
         )
         # :3688-3696 latch keepfr where rain fell on frozen soil.
-        for level in range(NUM_SOIL_LAYERS):
+        for level in range(nzs):
             if soilice_flat[level, column] > zero:
                 if (
                     tso_flat[level, column] > told_flat[level, column]
@@ -7532,11 +7551,7 @@ def ruc_surface_temperature_step(
     for name in RUC_SFCTMP_PROFILE_INPUTS:
         array = np.asarray(values[name], dtype=np.float32)
         if shape is None:
-            if array.ndim < 2 or array.shape[0] != NUM_SOIL_LAYERS:
-                raise ValueError(
-                    "RUC sfctmp profiles must have shape "
-                    f"({NUM_SOIL_LAYERS}, ...horizontal...), got {array.shape}"
-                )
+            nzs = _resolved_soil_levels(array, "RUC sfctmp profiles")
             shape = array.shape
         elif array.shape != shape:
             raise ValueError(
@@ -7557,7 +7572,8 @@ def ruc_surface_temperature_step(
         ivgtyp, horizontal_shape, "ivgtyp", arrays=arrays
     ).reshape(ncolumn)
     roots = _root_count_field(
-        nroot, horizontal_shape, arrays=arrays).reshape(ncolumn)
+        nroot, horizontal_shape, arrays=arrays,
+        nzs=nzs).reshape(ncolumn)
 
     prep = stage["snow_prep"](
         {
@@ -7583,7 +7599,7 @@ def ruc_surface_temperature_step(
     state: dict[str, np.ndarray] = {}
     for name in RUC_SFCTMP_PROFILE_INPUTS:
         state[name] = np.array(
-            profiles[name].reshape(NUM_SOIL_LAYERS, ncolumn),
+            profiles[name].reshape(nzs, ncolumn),
             dtype=np.float32,
             copy=True,
         )
@@ -7617,7 +7633,7 @@ def ruc_surface_temperature_step(
     }
     ice_profile = {
         name: np.asarray(getattr(prep, name), dtype=np.float32).reshape(
-            NUM_SOIL_LAYERS, ncolumn
+            nzs, ncolumn
         )
         for name in ("capice", "thdifice")
     }
@@ -7654,7 +7670,7 @@ def ruc_surface_temperature_step(
     # Shadow (snow-free fraction) copies -- WRF's ``*s`` locals.  Only the
     # columns the mosaic reaches are ever filled.
     shadow_profile = {
-        name: np.zeros((NUM_SOIL_LAYERS, ncolumn), dtype=np.float32)
+        name: np.zeros((nzs, ncolumn), dtype=np.float32)
         for name in RUC_SFCTMP_PROFILE_INPUTS
     }
     shadow = {
@@ -8629,16 +8645,11 @@ def _ruc_driver_soil_geometry(
     ``zshalf(1)`` is 0 rather than the midpoint the loop would give.
     """
 
-    zsmain = np.empty(NUM_SOIL_LAYERS, dtype=np.float32)
-    zshalf = np.empty(NUM_SOIL_LAYERS, dtype=np.float32)
+    nzs = int(len(levels))
+    zsmain = np.empty(nzs, dtype=np.float32)
     zsmain[0] = np.float32(0.0)
-    zshalf[0] = np.float32(0.0)
-    for level in range(1, NUM_SOIL_LAYERS):
-        zsmain[level] = levels[level]
-        zshalf[level] = np.float32(
-            np.float32(0.5) * np.float32(zsmain[level - 1] + zsmain[level])
-        )
-    return zsmain, zshalf
+    zsmain[1:] = levels[1:]
+    return zsmain, ruc_zshalf(zsmain)
 
 
 def ruc_land_surface_step(
@@ -8837,18 +8848,26 @@ def ruc_land_surface_step(
     if not np.isfinite(threshold):
         raise ValueError("RUC driver xice_threshold must be finite")
 
-    # ``zs`` stays on the HOST whatever the namespace is: it is a pinned
-    # nine-element constant, ``_ruc_driver_soil_geometry`` walks it scalar by
-    # scalar, and the depths it produces are broadcast against column fields
-    # rather than indexed by them.
+    # ``zs`` stays on the HOST whatever the namespace is:
+    # ``_ruc_driver_soil_geometry`` walks it scalar by scalar, and the depths
+    # it produces are broadcast against column fields rather than indexed by
+    # them.  The LENGTH is no longer pinned to nine -- it is whichever admitted
+    # geometry the caller brought -- but the VALUES still are: zs must be
+    # exactly WRF's own table for that length, because a column on depths WRF
+    # never tabulated is not RUC at any level count.
     levels = _NUMPY.asarray(zs, dtype=_NUMPY.float32)
-    pinned_levels, _ = ruc_soil_geometry()
-    if levels.shape != pinned_levels.shape or not _NUMPY.array_equal(
-        levels, pinned_levels
-    ):
+    if levels.ndim != 1 or int(levels.shape[0]) not in (
+            WRF_SUPPORTED_NUM_SOIL_LAYERS):
         raise ValueError(
-            "RUC driver zs must be the pinned nine-level RUC grid "
-            f"{tuple(float(v) for v in pinned_levels)}"
+            "RUC driver zs must be one of WRF's tabulated RUC grids, with "
+            f"{' or '.join(str(c) for c in WRF_SUPPORTED_NUM_SOIL_LAYERS)} "
+            f"levels; got shape {levels.shape}"
+        )
+    pinned_levels, _ = ruc_soil_geometry(int(levels.shape[0]))
+    if not _NUMPY.array_equal(levels, pinned_levels):
+        raise ValueError(
+            f"RUC driver zs must be the pinned {int(levels.shape[0])}-level "
+            f"RUC grid {tuple(float(v) for v in pinned_levels)}"
         )
 
     bundle = parameters if parameters is not None else load_ruc_parameters()
@@ -8888,11 +8907,7 @@ def ruc_land_surface_step(
     for name in RUC_DRIVER_PROFILE_STATE:
         array = np.asarray(values[name], dtype=np.float32)
         if shape is None:
-            if array.ndim < 2 or array.shape[0] != NUM_SOIL_LAYERS:
-                raise ValueError(
-                    "RUC driver profiles must have shape "
-                    f"({NUM_SOIL_LAYERS}, ...horizontal...), got {array.shape}"
-                )
+            nzs = _resolved_soil_levels(array, "RUC driver profiles")
             shape = array.shape
         elif array.shape != shape:
             raise ValueError(f"{name} shape {array.shape}; expected {shape}")
@@ -8936,7 +8951,7 @@ def ruc_land_surface_step(
 
     state = {
         name: np.array(
-            profiles[name].reshape(NUM_SOIL_LAYERS, ncolumn),
+            profiles[name].reshape(nzs, ncolumn),
             dtype=np.float32,
             copy=True,
         )
@@ -9137,8 +9152,14 @@ def ruc_land_surface_step(
         forest, np.float32(2.0), np.float32(0.85)).astype(np.float32)
     nroot = np.empty(ncolumn, dtype=np.int32)
     for limit, arm in ((np.float32(0.4), forest), (np.float32(1.1), ~forest)):
+        # STAYS A LITERAL 4.  This is WRF's own :797 fallback for "no level
+        # cleared the threshold", not a level count, so it does not scale with
+        # nzs.  It is in range at both admitted geometries because 4 <= n - 1
+        # for n in {6, 9}; tests/test_ruc_nzs_tier.py asserts that closure, so
+        # widening the admitted set downwards fails loudly instead of writing
+        # an nroot _root_count_field would reject.
         chosen = 4
-        for level in range(1, NUM_SOIL_LAYERS):
+        for level in range(1, nzs):
             if zsmain[level] >= limit:
                 chosen = level + 1
                 break
@@ -9244,15 +9265,15 @@ def ruc_land_surface_step(
     # no argument reaches.  Evaluated anyway, because "dead" is a claim about
     # the source and not a licence to skip it.
     smtotold = np.zeros(ncolumn, dtype=np.float32)
-    for level in range(NUM_SOIL_LAYERS - 1):
+    for level in range(nzs - 1):
         smtotold = (smtotold + (
             (qmin + soilm1d[level]).astype(np.float32)
             * np.float32(zshalf[level + 1] - zshalf[level])
         ).astype(np.float32)).astype(np.float32)
     smtotold = (smtotold + (
-        (qmin + soilm1d[NUM_SOIL_LAYERS - 1]).astype(np.float32)
+        (qmin + soilm1d[nzs - 1]).astype(np.float32)
         * np.float32(
-            zsmain[NUM_SOIL_LAYERS - 1] - zshalf[NUM_SOIL_LAYERS - 1])
+            zsmain[nzs - 1] - zshalf[nzs - 1])
     ).astype(np.float32)).astype(np.float32)
     del smtotold
 
@@ -9382,7 +9403,7 @@ def ruc_land_surface_step(
     # ``:1024-1035`` soil moisture diagnostics.
     smavail = np.zeros(ncolumn, dtype=np.float32)
     smmax = np.zeros(ncolumn, dtype=np.float32)
-    for level in range(NUM_SOIL_LAYERS - 1):
+    for level in range(nzs - 1):
         thickness = np.float32(zshalf[level + 1] - zshalf[level])
         smavail = (smavail + (
             (qmin + soilm1d[level]).astype(np.float32) * thickness
@@ -9391,9 +9412,9 @@ def ruc_land_surface_step(
             (qmin + dqm).astype(np.float32) * thickness
         ).astype(np.float32)).astype(np.float32)
     bottom = np.float32(
-        zsmain[NUM_SOIL_LAYERS - 1] - zshalf[NUM_SOIL_LAYERS - 1])
+        zsmain[nzs - 1] - zshalf[nzs - 1])
     smavail = (smavail + (
-        (qmin + soilm1d[NUM_SOIL_LAYERS - 1]).astype(np.float32) * bottom
+        (qmin + soilm1d[nzs - 1]).astype(np.float32) * bottom
     ).astype(np.float32)).astype(np.float32)
     smmax = (smmax + (
         (qmin + dqm).astype(np.float32) * bottom
@@ -9423,7 +9444,7 @@ def ruc_land_surface_step(
     state["sh2o"][:, land] = np.minimum(
         (soiliqw + qmin).astype(np.float32), moisture)[:, land]
     state["tso"][:, land] = tso1d[:, land]
-    state["tso"][NUM_SOIL_LAYERS - 1, land] = columns["tbot"][land]
+    state["tso"][nzs - 1, land] = columns["tbot"][land]
     state["smfr3d"][:, land] = smfrkeep[:, land]
     state["keepfr3dflag"][:, land] = keepfr[:, land]
 

@@ -759,27 +759,43 @@ The mp=28 physics is a line-for-line transcription of unmodified WRF v4.6.1
 happens at a boundary, and what mixes it.  Each item is a decision, not an
 oversight, and each says what would close it.
 
-- **D9a — WRF's `real.exe` refuses the configuration gpuwm runs.**
-  `dyn_em/module_initialize_real.F:2734-2736` executes
-  `CALL wrf_error_fatal ('wif_input_opt=0 but mp_physics=28')`.  WRF therefore
-  declines to build a `wrfinput` for mp=28 unless the WIF (water/ice-friendly
-  aerosol) metgrid stream is being processed.  gpuwm has no WIF ingest, so it
-  runs the case WRF's initializer refuses, from the synthetic CCN/IN profile
-  gpuwm's port of `thompson_init` installs (`phys/module_mp_thompson.F`
-  `thompson_init`, the `is_aerosol_aware` branch -- WRF's own fallback for
-  exactly this case, and it is the initial condition an mp=28 run integrates;
-  see D9b).  The microphysics is identical; the admission decision is not.
-  The consequence a reader must not miss: a gpuwm mp=28 run and a
-  WIF-initialized WRF mp=28 run are NOT directly comparable, and a comparison
-  between them must not be reported as one.  The statement is carried in
-  `gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION` so it reaches the namelist
-  importer's printed receipt and every `validate_run_config` refusal rather
-  than living only here.  **Vanishes when** a QNWFA/QNIFA metgrid ingest lane
-  lands and `wif_input_opt` becomes a real setting.
+- **D9a — RETIRED.  gpuwm now runs the configuration `real.exe` admits.**
+  This entry used to record the opposite: that
+  `dyn_em/module_initialize_real.F:2734-2736`
+  (`CALL wrf_error_fatal ('wif_input_opt=0 but mp_physics=28')`) refused the
+  only mp=28 initial state gpuwm could produce, because gpuwm had no WIF
+  (water/ice-friendly aerosol) ingest and fell back to `thompson_init`'s
+  synthetic CCN/IN profile.  It named its own closing condition -- "vanishes
+  when a QNWFA/QNIFA metgrid ingest lane lands and `wif_input_opt` becomes a
+  real setting" -- and that condition is met.  `gpuwm/ingest/wif_climatology.py`
+  ports WRF's global monthly QNWFA/QNIFA climatology
+  (`QNWFA_QNIFA_SIGMA_MONTHLY.dat`) with metgrid's `four_pt` horizontal
+  interpolation, `real.exe`'s `monthly_interp_to_date` temporal weighting and
+  its `vert_interp` onto the dry eta pressure, matched to `real.exe` to 1e-5;
+  a real-data mp=28 run takes it BY DEFAULT (`RunConfig.mp28_aerosol_source`
+  = `"auto"`), which is the same state `real.exe` reaches through
+  `use_aero_icbc = .true.` -> `aer_init_opt = 1` with `wif_input_opt = 1`.
+  A gpuwm mp=28 run initialized this way and a WIF-initialized WRF mp=28 run
+  ARE directly comparable, which is the whole point of closing it.
+  The constant that carried the old warning,
+  `gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION`, is gone rather than softened:
+  fixing a defect retires its guards.  What replaces it is
+  `MP28_AEROSOL_SOURCE_DEFAULT` (what a run that found the dataset did) and
+  `MP28_AEROSOL_SYNTHETIC_FALLBACK` (what a run that did not found instead,
+  announced by name in the receipt, because a forecast started from the
+  synthetic profile is a scientifically different forecast).  **Still true:**
+  when no dataset can be located, `mp28_aerosol_source = "auto"` falls back to
+  the synthetic profile and a run that did so is NOT comparable to a
+  WIF-initialized WRF run -- the fallback says so in the receipt, and
+  `mp28_aerosol_source = "climatology"` refuses instead of falling back.
 
-- **D9b — aerosol initial and boundary conditions do not exist as an INGEST
-  lane.**  `aer_init_opt = 0`, `use_aero_icbc = .false.`,
-  `use_rap_aero_icbc = .false.`, `qna_update = 0`, and there is no `nbca`
+- **D9b — aerosol BOUNDARY conditions do not exist as an ingest lane.**
+  NARROWED, not retired: the INITIAL-condition half of this entry closed with
+  D9a above -- `aer_init_opt = 1` with `wif_input_opt = 1` (`use_aero_icbc =
+  .true.`) is ported and is the real-data default.  What remains open is
+  everything downstream of initialization: `use_rap_aero_icbc = .false.`,
+  `qna_update = 0`, no aerosol crosses a specified lateral boundary, and there
+  is no `nbca`
   (black-carbon) species at all -- WRF's `thompsonaero` package registers
   `scalar:...,qnbca` (`Registry/Registry.EM_COMMON:3036`) and gpuwm does not
   allocate it.  What fills the gap is WRF's own fallback: `thompson_init`'s

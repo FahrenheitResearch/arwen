@@ -299,6 +299,14 @@ _STAMP_SOURCES = {
     "rw_mpas_static": "crates/rw-mpas/src/bin/rw_mpas_static.rs",
     "rw_mpas_init": "crates/rw-mpas/src/bin/rw_mpas_init.rs",
     "rw_mpas_convert": "crates/rw-mpas/src/bin/rw_mpas_convert.rs",
+    # The fifth rw-mpas binary, added to BUNDLED_ARTIFACTS by commit
+    # 9223560b4.  Its entry point already declares
+    # GPUWM_BRIDGE_SOURCE_REV_STAMP and black_boxes it in `main` exactly
+    # as its four siblings do, and one `crates/rw-mpas/build.rs` stamps
+    # every bin in the crate, so the row below makes this test READ that
+    # file rather than exempting it: the artifact was provable and simply
+    # unmapped here.
+    "rw_mpas_lbc": "crates/rw-mpas/src/bin/rw_mpas_lbc.rs",
     "rw_nexrad": "crates/rw-nexrad/src/main.rs",
     "rw_odim": "crates/rw-odim/src/bin/rw_odim.rs",
     "rw_mrms": "crates/rw-obs/src/bin/mrms.rs",

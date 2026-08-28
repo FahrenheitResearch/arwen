@@ -25,6 +25,16 @@ use rw_store::netcdf_classic::{
 };
 
 pub const MPAS_EARTH_RADIUS_M: f64 = 6_371_229.0;
+
+/// The outermost regional boundary ring, MPAS's `nBdyLayers = 7` (five
+/// relaxation plus two specified layers). Only cells, edges and vertices at
+/// this mask value may carry absent-neighbour sentinels, and only pixels
+/// landing on these cells take the `mpas_in_cell` containment test.
+pub const REGIONAL_OUTERMOST_MASK: i32 = 7;
+
+/// The in-memory marker for "that neighbour was culled away". Deliberately
+/// `usize::MAX` so an unguarded index panics instead of reading cell 0.
+pub const ABSENT_NEIGHBOR: usize = usize::MAX;
 pub const MPAS_OMEGA: f64 = 7.29212e-5;
 
 /// The schema tag the unified writer stamps into every file it writes.
@@ -284,11 +294,29 @@ pub struct StaticBuildReceipt {
     pub gwd_bands: usize,
     pub gwd_band_bytes: u64,
     pub gwd_variance_smoothed_cells: usize,
+    /// Present when the grid carries a regional boundary zone: the counts
+    /// that say exactly where this static CANNOT match a whole-sphere build,
+    /// because the data needed is outside the region.
+    pub regional: Option<RegionalStaticNotes>,
     /// What FP32 storage did to this file's own edge lengths, and whether the
     /// consumer's recomputation will accept them.
     pub fp32_metric_agreement: crate::staticfile::fp32metrics::Fp32MetricAgreement,
     pub sha256: String,
     pub variables: Vec<String>,
+}
+
+/// The measured regional divergences of one static build, stated so a
+/// comparison against a culled whole-sphere static reads them as expected
+/// rather than as defects.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RegionalStaticNotes {
+    /// Cells at each bdyMaskCell value 0..7.
+    pub ring_cell_counts: [usize; 8],
+    /// Cells whose deriv_two side is 0 because their neighbour ring reaches a
+    /// culled cell (native `atm_initialize_advection_rk` regional behaviour).
+    pub deriv_two_zero_stencil_cells: usize,
+    /// Outermost-ring cells left out of the GWD isolated-point smooth.
+    pub gwd_smooth_skipped_boundary_cells: usize,
 }
 
 #[derive(Debug)]
@@ -538,9 +566,25 @@ impl Mesh {
             }
         }
 
+        // The boundary masks come BEFORE the topology normalisation: on a
+        // regional (culled) mesh the sentinel rules below are keyed off them.
+        let bdy_mask_cell = optional_i32v(&f, "bdyMaskCell", n_cells, 0)?;
+        let bdy_mask_edge = optional_i32v(&f, "bdyMaskEdge", n_edges, 0)?;
+        let bdy_mask_vertex = optional_i32v(&f, "bdyMaskVertex", n_vertices, 0)?;
+
         // Padding slots in MPAS topology are often zero.  Replace them with a
         // harmless zero-based 0 only after active slots are validated.
-        let normalize_padded = |raw: Vec<i32>, upper: usize, name: &str| -> MpasResult<Vec<usize>> {
+        //
+        // `absent_ok`: on a regional mesh, a VALID slot of 0 is the culler's
+        // "that neighbour was culled" sentinel and is legitimate exactly on
+        // outermost-ring cells (bdyMaskCell == 7). Those slots become
+        // ABSENT_NEIGHBOR so every stencil that reads them has to decide, and
+        // can never silently read cell 0.
+        let normalize_padded = |raw: Vec<i32>,
+                                upper: usize,
+                                name: &str,
+                                absent_ok: Option<&[i32]>|
+         -> MpasResult<Vec<usize>> {
             let mut out = vec![0usize; raw.len()];
             for c in 0..n_cells {
                 let used = n_edges_on_cell[c];
@@ -553,6 +597,22 @@ impl Mesh {
                     let k = c * max_edges + s;
                     if s < used {
                         let v = raw[k];
+                        if v == 0 {
+                            if let Some(mask) = absent_ok {
+                                if mask[c] == REGIONAL_OUTERMOST_MASK {
+                                    out[k] = ABSENT_NEIGHBOR;
+                                    continue;
+                                }
+                                return Err(MpasError::Refusal(format!(
+                                    "grid {name}[cell={c},slot={s}]=0 in a VALID slot of a \
+                                     cell with bdyMaskCell={}; only outermost regional cells \
+                                     (mask {REGIONAL_OUTERMOST_MASK}) may carry absent \
+                                     neighbours -- anywhere else the mesh is torn and every \
+                                     stencil over it would read a cell that does not exist",
+                                    mask[c]
+                                )));
+                            }
+                        }
                         if v < 1 || v as usize > upper {
                             return Err(MpasError::Refusal(format!(
                                 "grid {name}[cell={c},slot={s}]={v} is outside 1..={upper}"
@@ -568,9 +628,11 @@ impl Mesh {
         let raw_cells_on_cell = cells_on_cell_raw.clone();
         let raw_edges_on_cell = edges_on_cell_raw.clone();
         let raw_vertices_on_cell = vertices_on_cell_raw.clone();
-        let cells_on_cell = normalize_padded(cells_on_cell_raw, n_cells, "cellsOnCell")?;
-        let edges_on_cell = normalize_padded(edges_on_cell_raw, n_edges, "edgesOnCell")?;
-        let vertices_on_cell = normalize_padded(vertices_on_cell_raw, n_vertices, "verticesOnCell")?;
+        let cells_on_cell =
+            normalize_padded(cells_on_cell_raw, n_cells, "cellsOnCell", Some(&bdy_mask_cell))?;
+        let edges_on_cell = normalize_padded(edges_on_cell_raw, n_edges, "edgesOnCell", None)?;
+        let vertices_on_cell =
+            normalize_padded(vertices_on_cell_raw, n_vertices, "verticesOnCell", None)?;
 
         let coe_raw = i32v(&f, "cellsOnEdge")?;
         let voe_raw = i32v(&f, "verticesOnEdge")?;
@@ -579,7 +641,34 @@ impl Mesh {
         }
         let raw_cells_on_edge = coe_raw.clone();
         let raw_vertices_on_edge = voe_raw.clone();
-        let coe = zero_based(coe_raw, n_cells, "cellsOnEdge", false)?;
+        // A rim edge of a regional mesh has ONE cell; the culler stores 0 in
+        // the other slot, and only on outermost (mask 7) edges.
+        let mut coe = vec![0usize; 2 * n_edges];
+        for e in 0..n_edges {
+            for s in 0..2 {
+                let v = raw_cells_on_edge[2 * e + s];
+                if v == 0 {
+                    if bdy_mask_edge[e] == REGIONAL_OUTERMOST_MASK {
+                        coe[2 * e + s] = ABSENT_NEIGHBOR;
+                        continue;
+                    }
+                    return Err(MpasError::Refusal(format!(
+                        "grid cellsOnEdge[edge={e},slot={s}]=0 on an edge with \
+                         bdyMaskEdge={}; only outermost regional edges (mask \
+                         {REGIONAL_OUTERMOST_MASK}) are one-sided -- anywhere else \
+                         the mesh is torn",
+                        bdy_mask_edge[e]
+                    )));
+                }
+                if v < 1 || v as usize > n_cells {
+                    return Err(MpasError::Refusal(format!(
+                        "grid cellsOnEdge[{}]={v} is outside 1..={n_cells}",
+                        2 * e + s
+                    )));
+                }
+                coe[2 * e + s] = v as usize - 1;
+            }
+        }
         let voe = zero_based(voe_raw, n_vertices, "verticesOnEdge", false)?;
         let cells_on_edge = (0..n_edges).map(|e| [coe[2 * e], coe[2 * e + 1]]).collect();
         let vertices_on_edge = (0..n_edges).map(|e| [voe[2 * e], voe[2 * e + 1]]).collect();
@@ -653,9 +742,9 @@ impl Mesh {
             index_to_cell_id: identity_ids(&f, "indexToCellID", n_cells)?,
             index_to_edge_id: identity_ids(&f, "indexToEdgeID", n_edges)?,
             index_to_vertex_id: identity_ids(&f, "indexToVertexID", n_vertices)?,
-            bdy_mask_cell: optional_i32v(&f, "bdyMaskCell", n_cells, 0)?,
-            bdy_mask_edge: optional_i32v(&f, "bdyMaskEdge", n_edges, 0)?,
-            bdy_mask_vertex: optional_i32v(&f, "bdyMaskVertex", n_vertices, 0)?,
+            bdy_mask_cell,
+            bdy_mask_edge,
+            bdy_mask_vertex,
         };
         mesh.validate()?;
         Ok(mesh)
@@ -676,16 +765,76 @@ impl Mesh {
                 )));
             }
         }
-        if self.bdy_mask_cell.iter().any(|&v| v == 7) {
-            return Err(MpasError::Refusal(
-                "bounded static builder currently refuses limited-area meshes with \
-                 bdyMaskCell==7 because native mpas_in_cell boundary containment has \
-                 not been ported; running anyway would map outside pixels into boundary \
-                 cells. Remedy: use a global mesh or port/verify mpas_in_cell first."
-                    .to_string(),
-            ));
+        // Regional (limited-area) admission. The mpas_in_cell containment the
+        // old blanket bdyMaskCell==7 refusal named as missing is ported now
+        // (see `point_in_cell` and its use in `tile_map`), so a regional mesh
+        // is admitted -- against the sentinel geometry the culler declares,
+        // with every violation named.
+        for (name, mask) in [
+            ("bdyMaskCell", &self.bdy_mask_cell),
+            ("bdyMaskEdge", &self.bdy_mask_edge),
+            ("bdyMaskVertex", &self.bdy_mask_vertex),
+        ] {
+            if let Some((i, &v)) = mask
+                .iter()
+                .enumerate()
+                .find(|&(_, &v)| !(0..=REGIONAL_OUTERMOST_MASK).contains(&v))
+            {
+                return Err(MpasError::Refusal(format!(
+                    "{name}[{i}]={v} is outside 0..={REGIONAL_OUTERMOST_MASK}; the \
+                     boundary-zone stages would index a relaxation ring that does \
+                     not exist"
+                )));
+            }
+        }
+        let regional = self.bdy_mask_cell.iter().any(|&v| v != 0);
+        if regional {
+            // edgesOnCell, verticesOnCell and verticesOnEdge never carry a
+            // zero valid slot on ANY mesh -- every edge and vertex of a kept
+            // cell is kept by the cull -- and the reader above already
+            // refused them by name. What is left to check here are the raw
+            // dual rows the reader carries verbatim.
+            //
+            // The sentinel-bearing dual rows: zeros are legitimate only on
+            // outermost (mask 7) elements. Anywhere else the boundary zone
+            // would start inside the relaxation rings the dycore nudges.
+            for e in 0..self.n_edges {
+                let used = (self.n_edges_on_edge[e].max(0) as usize).min(self.max_edges2);
+                let row = &self.raw_edges_on_edge[e * self.max_edges2..e * self.max_edges2 + used];
+                if row.iter().any(|&v| v == 0) && self.bdy_mask_edge[e] != REGIONAL_OUTERMOST_MASK {
+                    return Err(MpasError::Refusal(format!(
+                        "regional grid edgesOnEdge row {e} carries a 0 inside its \
+                         declared nEdgesOnEdge={used} but bdyMaskEdge={}; absent \
+                         reconstruction stencils belong to mask-{REGIONAL_OUTERMOST_MASK} \
+                         edges only",
+                        self.bdy_mask_edge[e]
+                    )));
+                }
+            }
+            for vx in 0..self.n_vertices {
+                let base = vx * self.vertex_degree;
+                let cz = self.raw_cells_on_vertex[base..base + self.vertex_degree]
+                    .iter()
+                    .any(|&v| v == 0);
+                let ez = self.raw_edges_on_vertex[base..base + self.vertex_degree]
+                    .iter()
+                    .any(|&v| v == 0);
+                if (cz || ez) && self.bdy_mask_vertex[vx] != REGIONAL_OUTERMOST_MASK {
+                    return Err(MpasError::Refusal(format!(
+                        "regional grid vertex {vx} has absent adjacent cells/edges but \
+                         bdyMaskVertex={}; one-sided vertices belong to \
+                         mask-{REGIONAL_OUTERMOST_MASK} only",
+                        self.bdy_mask_vertex[vx]
+                    )));
+                }
+            }
         }
         Ok(())
+    }
+
+    /// True when this mesh carries a regional boundary zone.
+    fn is_regional(&self) -> bool {
+        self.bdy_mask_cell.iter().any(|&v| v != 0)
     }
 
     fn operator_view(&self) -> OperatorMesh<'_> {
@@ -728,6 +877,55 @@ impl Mesh {
         let diameter = 2.0 * max_r;
         2.0 * diameter * diameter
     }
+}
+
+/// What a grid file declares, through the same read-and-validate path the
+/// static builder itself uses.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GridProbe {
+    pub n_cells: usize,
+    pub n_edges: usize,
+    pub n_vertices: usize,
+    /// True when the grid carries a regional boundary zone.
+    pub regional: bool,
+    /// Cells at each bdyMaskCell value 0..7. All in slot 0 for a global mesh.
+    pub ring_cell_counts: [usize; 8],
+    /// cellsOnCell valid slots pointing at culled cells.
+    pub absent_neighbor_slots: usize,
+    /// Edges with one culled side.
+    pub one_sided_edges: usize,
+}
+
+/// Admit or refuse a grid through the static builder's own reader, WITHOUT
+/// touching any geography. This is the probe a door runs before hours of
+/// tile streaming: a regional grid whose sentinel geometry is torn is refused
+/// here with the breakage named, instead of after the archive was read.
+pub fn probe_grid(path: &Path) -> MpasResult<GridProbe> {
+    let mesh = Mesh::read(path)?;
+    let mut ring_cell_counts = [0usize; 8];
+    for &m in &mesh.bdy_mask_cell {
+        ring_cell_counts[m as usize] += 1;
+    }
+    let mut absent_neighbor_slots = 0usize;
+    for c in 0..mesh.n_cells {
+        for s in 0..mesh.n_edges_on_cell[c] {
+            if mesh.cells_on_cell[c * mesh.max_edges + s] == ABSENT_NEIGHBOR {
+                absent_neighbor_slots += 1;
+            }
+        }
+    }
+    let one_sided_edges = (0..mesh.n_edges)
+        .filter(|&e| mesh.cells_on_edge[e].contains(&ABSENT_NEIGHBOR))
+        .count();
+    Ok(GridProbe {
+        n_cells: mesh.n_cells,
+        n_edges: mesh.n_edges,
+        n_vertices: mesh.n_vertices,
+        regional: mesh.is_regional(),
+        ring_cell_counts,
+        absent_neighbor_slots,
+        one_sided_edges,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -816,6 +1014,58 @@ fn xyz(radius: f64, lat: f64, lon: f64) -> [f64; 3] {
     [radius * c * lon.cos(), radius * c * lon.sin(), radius * lat.sin()]
 }
 
+/// MPAS's `mpas_arc_length` verbatim: `r * 2 * asin(|b-a| / (2r))` with
+/// `r = |a|`. Kept literal -- no clamp -- because the containment decisions
+/// below are graded against the native routine's answers.
+#[inline]
+fn native_arc_length(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let r = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    let c = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+    r * 2.0 * (c / (2.0 * r)).asin()
+}
+
+/// MPAS's `mpas_in_cell` (mpas_geometry_utils.F, v8.4.1), the containment
+/// test the old blanket regional refusal named as unported.
+///
+/// A point is inside a Voronoi cell when it is no closer to the MIRROR of the
+/// cell's generating point -- reflected across the great circle through each
+/// pair of adjacent cell vertices -- than to the generating point itself. On
+/// a regional mesh this is what keeps a source pixel whose true owner was
+/// culled from being accumulated into the outermost ring cell the kd search
+/// falls back to.
+fn point_in_cell(mesh: &Mesh, cell: usize, p: [f64; 3]) -> bool {
+    let cc = [mesh.x_cell[cell], mesh.y_cell[cell], mesh.z_cell[cell]];
+    let radius = (cc[0] * cc[0] + cc[1] * cc[1] + cc[2] * cc[2]).sqrt();
+    let inv = 1.0 / radius;
+    let cc_unit = [cc[0] * inv, cc[1] * inv, cc[2] * inv];
+    let in_dist = native_arc_length(p, cc);
+    let ne = mesh.n_edges_on_cell[cell];
+    for i in 0..ne {
+        let v1 = mesh.vertices_on_cell[cell * mesh.max_edges + i];
+        let v2 = mesh.vertices_on_cell[cell * mesh.max_edges + (i + 1) % ne];
+        let a = [
+            mesh.x_vertex[v1] * inv,
+            mesh.y_vertex[v1] * inv,
+            mesh.z_vertex[v1] * inv,
+        ];
+        let b = [
+            mesh.x_vertex[v2] * inv,
+            mesh.y_vertex[v2] * inv,
+            mesh.z_vertex[v2] * inv,
+        ];
+        // `mpas_mirror_point`: reflect the generating point across the great
+        // circle through (a, b) -- rotate it by twice the angle at `a`
+        // between the arcs a->point and a->b, about the axis through `a`.
+        let alpha = crate::static_operators::sphere_angle(a, cc_unit, b);
+        let m = crate::mesh::cull::rotate_about_vector(cc_unit, a, 2.0 * alpha);
+        let mirror = [m[0] * radius, m[1] * radius, m[2] * radius];
+        if native_arc_length(p, mirror) < in_dist {
+            return false;
+        }
+    }
+    true
+}
+
 /// Destination cell for every supersampled subpixel of one tile interior.
 /// Map layout is `[interior_pixel * factor^2 + subpixel]`.
 /// The supersample factor squares into the per-tile destination map, so it is
@@ -829,6 +1079,59 @@ fn validate_supersample(factor: usize) -> MpasResult<()> {
     Ok(())
 }
 
+/// A conservative reject sphere around the whole cell cloud.
+///
+/// On a GLOBAL mesh every pixel is near some cell and the kd search prunes
+/// well. On a REGIONAL mesh most of the planet's pixels are far from EVERY
+/// cell, and a far query defeats kd pruning -- the best distance and every
+/// split-plane distance are the same magnitude, so the search visits most of
+/// the tree, per pixel, for ~96% of the globe. Measured on the first
+/// regional build: 13 CPU-hours into the first dataset with no end in sight.
+///
+/// A pixel farther than `centroid_dist` from the cloud centroid cannot be
+/// within the search radius of any cell (triangle inequality in chord
+/// space), so it is the same `-1` the kd search would have produced, decided
+/// in nanoseconds. Strictly conservative: never rejects a pixel the search
+/// would have kept.
+struct FarReject {
+    centroid: [f64; 3],
+    /// `(R_cloud + sqrt(max_distance2))^2`, in chord metres squared.
+    reject_d2: f64,
+}
+
+impl FarReject {
+    fn new(mesh: &Mesh, max_distance2: f64) -> Self {
+        let n = mesh.n_cells.max(1) as f64;
+        let mut c = [0.0f64; 3];
+        for i in 0..mesh.n_cells {
+            c[0] += mesh.x_cell[i];
+            c[1] += mesh.y_cell[i];
+            c[2] += mesh.z_cell[i];
+        }
+        c = [c[0] / n, c[1] / n, c[2] / n];
+        let mut r_cloud2 = 0.0f64;
+        for i in 0..mesh.n_cells {
+            let d2 = (mesh.x_cell[i] - c[0]).powi(2)
+                + (mesh.y_cell[i] - c[1]).powi(2)
+                + (mesh.z_cell[i] - c[2]).powi(2);
+            r_cloud2 = r_cloud2.max(d2);
+        }
+        let reach = r_cloud2.sqrt() + max_distance2.max(0.0).sqrt();
+        FarReject {
+            centroid: c,
+            reject_d2: reach * reach,
+        }
+    }
+
+    #[inline]
+    fn certainly_out(&self, p: [f64; 3]) -> bool {
+        let d2 = (p[0] - self.centroid[0]).powi(2)
+            + (p[1] - self.centroid[1]).powi(2)
+            + (p[2] - self.centroid[2]).powi(2);
+        d2 > self.reject_d2
+    }
+}
+
 fn tile_map(
     mesh: &Mesh,
     tree: &KdTree,
@@ -838,6 +1141,7 @@ fn tile_map(
     factor: usize,
 ) -> MpasResult<Vec<i32>> {
     validate_supersample(factor)?;
+    let far = FarReject::new(mesh, max_distance2);
     let pixels = (ds.index.tile_x as usize)
         .checked_mul(ds.index.tile_y as usize)
         .and_then(|v| v.checked_mul(factor * factor))
@@ -857,8 +1161,21 @@ fn tile_map(
                     let x = x_center - 0.5 + (si as f64 + 0.5) / factor as f64;
                     let y = y_center - 0.5 + (sj as f64 + 0.5) / factor as f64;
                     let (lat, lon) = ds.source_xy_to_latlon(x, y);
-                    let (cell, d2) = tree.nearest(xyz(mesh.sphere_radius, lat, lon));
-                    out.push(if d2 <= max_distance2 { cell as i32 } else { -1 });
+                    let p = xyz(mesh.sphere_radius, lat, lon);
+                    if far.certainly_out(p) {
+                        out.push(-1);
+                        continue;
+                    }
+                    let (cell, d2) = tree.nearest(p);
+                    // The native regional rule (init_atm_static, nBdyLayers=7):
+                    // a pixel is accepted unconditionally at mask < 7, and on
+                    // an outermost-ring cell only when it is geometrically
+                    // INSIDE that cell -- otherwise its true owner was culled
+                    // and the pixel belongs to nobody in this mesh.
+                    let accepted = d2 <= max_distance2
+                        && (mesh.bdy_mask_cell[cell] != REGIONAL_OUTERMOST_MASK
+                            || point_in_cell(mesh, cell, p));
+                    out.push(if accepted { cell as i32 } else { -1 });
                 }
             }
         }
@@ -1216,6 +1533,109 @@ fn categorical(
     Ok((out, cmin, cmax, ds))
 }
 
+/// Carry a value to every cell that has none, across the mesh's own
+/// neighbour graph.
+///
+/// THE BREAKAGE THIS PREVENTS, MEASURED (2026-08-27, node-2).  A swath the
+/// placement layer put on a winter storm at 66.4 S 162.5 E generated a
+/// 128,019-cell mesh in 435 s and then lost its static outright:
+/// `albedo_modis mapped no valid pixels to cell 111276`.  The archive is not
+/// broken and the mesh is not broken.  MODIS surface albedo is a LAND-ONLY
+/// product, and the Antarctic sea-ice margin is the one band on earth where
+/// the land-use archive calls a cell ice -- so the model's own landmask says
+/// land -- while every albedo pixel inside it is fill.  Measured in the
+/// archive: from 55 S to 65 S the albedo planes are 100 % fill over the
+/// Southern Ocean at every longitude sampled, and the continent's own pixels
+/// resume around 67.5 S.  On a 96 km parent, and on the 4.6 km grid this
+/// project placed at 60.1 S, no cell fell entirely inside that band; at
+/// 66.4 S one did, and one cell cost the whole grid.
+///
+/// `needed` are the cells that must end with a value.  `conduit` are cells
+/// that may CARRY one without keeping it -- the mask-excluded cells, which is
+/// what lets an ice margin separated from the continent by open water still
+/// be reached.  Returns the conduits that were used, so the caller can put
+/// them back to the value they had.
+///
+/// The walk stops as soon as every `needed` cell holds a value: conducting
+/// across the rest of an ocean after the last one is served is work with no
+/// output.  A round settles every cell it can BEFORE any of them becomes a
+/// source, so the spread is a breadth-first ring and what a cell receives does
+/// not depend on the order cells are visited.
+///
+/// `Err` carries the cells that could not be reached at all, which is the case
+/// the refusal was really written for: a field with no valid pixel anywhere a
+/// value could come from.
+#[allow(clippy::too_many_arguments)]
+fn spread_to_unsampled(
+    out: &mut [f32],
+    filled: &mut [bool],
+    nz: usize,
+    needed: &[usize],
+    conduit: Vec<usize>,
+    n_cells: usize,
+    max_edges: usize,
+    n_edges_on_cell: &[usize],
+    cells_on_cell: &[usize],
+) -> Result<Vec<usize>, Vec<usize>> {
+    let mut wants = needed.len();
+    if wants == 0 {
+        return Ok(Vec::new());
+    }
+    let is_conduit = {
+        let mut flags = vec![false; n_cells];
+        for &c in &conduit {
+            flags[c] = true;
+        }
+        flags
+    };
+    let mut pending: Vec<usize> = needed.iter().copied().chain(conduit).collect();
+    let mut used: Vec<usize> = Vec::new();
+    let mut accumulator = vec![0.0f64; nz];
+    let mut settled: Vec<usize> = Vec::new();
+    while wants > 0 {
+        let mut still: Vec<usize> = Vec::with_capacity(pending.len());
+        settled.clear();
+        for &c in &pending {
+            accumulator.iter_mut().for_each(|v| *v = 0.0);
+            let mut n = 0usize;
+            for s in 0..n_edges_on_cell[c] {
+                let k = cells_on_cell[c * max_edges + s];
+                if k == ABSENT_NEIGHBOR || k >= n_cells || !filled[k] {
+                    continue;
+                }
+                for z in 0..nz {
+                    accumulator[z] += out[k * nz + z] as f64;
+                }
+                n += 1;
+            }
+            if n == 0 {
+                still.push(c);
+                continue;
+            }
+            for z in 0..nz {
+                out[c * nz + z] = (accumulator[z] / n as f64) as f32;
+            }
+            settled.push(c);
+        }
+        if settled.is_empty() {
+            return Err(still);
+        }
+        for &c in &settled {
+            filled[c] = true;
+            if is_conduit[c] {
+                used.push(c);
+            } else {
+                wants -= 1;
+            }
+        }
+        if still.is_empty() {
+            break;
+        }
+        pending = still;
+    }
+    Ok(used)
+}
+
 fn continuous_mean(
     ctx: &GeogContext<'_>,
     path: &Path,
@@ -1297,19 +1717,87 @@ fn continuous_mean(
     let sums: Vec<i64> = sums.iter().map(|v| v.load(Ordering::Relaxed)).collect();
     let count: Vec<u64> = count.iter().map(|v| v.load(Ordering::Relaxed)).collect();
     let mut out = checked_vec::<f32>(slots, "continuous", "destination field")?;
+    // A cell is FILLED when it holds a value: either its own average, or one
+    // carried to it across the mesh below.
+    let mut filled = checked_vec::<bool>(mesh.n_cells, "continuous", "fill state")?;
+    let mut needed: Vec<usize> = Vec::new();
+    let mut conduit: Vec<usize> = Vec::new();
     for c in 0..mesh.n_cells {
         if count[c] == 0 {
+            // A cell the mask excludes was never sampled on purpose and keeps
+            // the zero it was allocated with, exactly as before.
             if landmask.map_or(false, |m| m[c] == 0) {
-                continue;
+                conduit.push(c);
+            } else {
+                needed.push(c);
             }
-            return Err(MpasError::Refusal(format!(
-                "{} mapped no valid pixels to cell {c}",
-                path.display()
-            )));
+            continue;
         }
+        filled[c] = true;
         for z in 0..nz {
             out[c * nz + z] =
                 (sums[c * nz + z] as f64 / count[c] as f64 * ds.index.scale_factor) as f32;
+        }
+    }
+
+    // THE BREAKAGE THIS PREVENTS, MEASURED (2026-08-27, node-2).  A swath the
+    // placement layer put on a winter storm at 66.4 S 162.5 E generated a
+    // 128,019-cell mesh in 435 s and then lost its static outright:
+    // `albedo_modis mapped no valid pixels to cell 111276`.  The archive is
+    // not broken and the mesh is not broken.  MODIS surface albedo is a
+    // LAND-ONLY product, and the Antarctic sea-ice margin is the one band on
+    // earth where the land-use archive calls a cell ice -- so the model's own
+    // landmask says land -- while every albedo pixel inside it is fill.
+    // Measured in the archive: at 55 S through 65 S the albedo planes are
+    // 100 % fill over the Southern Ocean at every longitude sampled, and the
+    // continent's own pixels resume around 67.5 S.  On a 96 km parent, and on
+    // the 4.6 km grid this project placed at 60.1 S, no single cell fell
+    // entirely inside that band; at 66.4 S one did, and one cell cost the
+    // whole grid.
+    //
+    // A cell with no sample of its own now takes the mean of the neighbours
+    // that have one, spreading outward over the mesh's own cellsOnCell until
+    // every cell that needs a value has one.  Excluded cells conduct a value
+    // without keeping it, so an ice margin separated from the continent by
+    // open water is still reached.  The refusal is not removed -- it is moved
+    // to the case it was actually written for, a field with no valid pixel
+    // ANYWHERE that a value could come from, and it now says how many cells
+    // and where one of them is.
+    //
+    // Nothing that builds today changes: this path is only entered where the
+    // build previously returned an error and produced no static at all.
+    if !needed.is_empty() {
+        let carried = spread_to_unsampled(
+            &mut out,
+            &mut filled,
+            nz,
+            &needed,
+            conduit,
+            mesh.n_cells,
+            mesh.max_edges,
+            &mesh.n_edges_on_cell,
+            &mesh.cells_on_cell,
+        )
+        .map_err(|stranded| {
+            let example = stranded
+                .iter()
+                .copied()
+                .find(|&c| needed.contains(&c))
+                .unwrap_or(stranded[0]);
+            MpasError::Refusal(format!(
+                "{} mapped no valid pixels to {} cell(s), and no neighbour of theirs has                  a value to carry -- cell {example} at {:.4} N {:.4} E is one. Their whole                  connected region of the mesh is outside the archive's coverage, so a value                  there would be invented rather than carried",
+                path.display(),
+                stranded.len(),
+                mesh.lat_cell[example].to_degrees(),
+                mesh.lon_cell[example].to_degrees()
+            ))
+        })?;
+        // A conduit keeps nothing: it goes back to the zero it was allocated
+        // with, so a mask-excluded cell reads exactly as it did before.
+        for c in carried {
+            for z in 0..nz {
+                out[c * nz + z] = 0.0;
+            }
         }
     }
     Ok((out, ds))
@@ -1567,6 +2055,25 @@ fn snow_albedo(
 /// encoding never needs.  The cap keeps the *predicted peak* -- and therefore
 /// the admission gate -- from being dominated by a term the cache will not
 /// actually use, while still leaving room for every map a global build needs.
+///
+/// MEASURED 2026-08-26 (stale-guard audit 2026-08-25, tile-cache
+/// adjudication), full-geography global builds, receipts beside the packs:
+///
+/// * 12,002 cells: cache stored 93.5 MiB encoded (1,962 maps, 0 declined);
+///   predicted peak 8.42 GiB, OS peak working set 2.73 GB.
+/// * 654,432 cells: cache stored 608 MiB encoded (1,962 maps, 0 declined);
+///   predicted peak 8.94 GiB, OS peak working set 4.48 GB.
+///
+/// So the cap is LIVE as the cache's budget -- encoded use grows roughly
+/// with the square root of cell count (~2.4 GiB extrapolated at 10 M
+/// cells), and 4 GiB holds headroom for every global build in reach while
+/// `declined_for_budget` in the receipt makes an overflow visible.  What
+/// the measurements also show, recorded as a named follow-up rather than
+/// fixed by guess: charging the FULL cap into `predicted_peak_bytes`
+/// over-prices a global build by ~2-3x against the measured peak, because
+/// the raw-sum ask saturates the cap while the encoded reality is 2-14% of
+/// it.  A measured-scaling prediction term needs a third point in the
+/// multi-million-cell class before it can be fit.
 const TILE_MAP_CACHE_CAP_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// One dataset's scratch and its share of the reusable-map ask.
@@ -2612,10 +3119,12 @@ pub fn build_static_reporting(
     );
 
     // What FP32 storage does to this file's own edge lengths, measured on the
-    // values about to be written rather than predicted from the resolution.
-    // The consumer recomputes dvEdge from the stored vertices and refuses the
-    // WHOLE pair when they disagree, so this reading decides whether the mesh
-    // being built can reach a forecast at all.
+    // values about to be written rather than predicted from the resolution,
+    // and judged against the port's LIVE load contract (the 1.73 m storage
+    // atol and the 0.02 dvEdge/dcEdge admission floor -- the retired
+    // rtol 2e-5 / atol 0.0 comparison died with the port's 2026-08-23
+    // contract change; stale-guard audit 2026-08-25, finding 3).  This
+    // reading decides whether the mesh being built can reach a forecast.
     let f32v = |v: &[f64]| -> Vec<f32> { v.iter().map(|&x| x as f32).collect() };
     let fp32_metric_agreement = crate::staticfile::fp32metrics::measure(
         &f32v(&mesh.dv_edge),
@@ -2627,14 +3136,17 @@ pub fn build_static_reporting(
             .iter()
             .map(|&v| v as i64)
             .collect::<Vec<i64>>(),
+        &f32v(&mesh.dc_edge),
         mesh.sphere_radius,
     );
     progress(&format!(
-        "FP32METRICS\t{:.3e}\t{}\t{:.3}\t{}",
-        fp32_metric_agreement.max_dv_edge_relative,
-        fp32_metric_agreement.edges_past_consumer_tolerance,
+        "FP32METRICS\t{:.3e}\t{:.3}\t{}\t{:.3e}\t{}\t{}",
+        fp32_metric_agreement.max_dv_edge_absolute_m,
         fp32_metric_agreement.min_dv_edge_m,
-        fp32_metric_agreement.within_consumer_tolerance()
+        fp32_metric_agreement.edges_past_port_storage_tolerance,
+        fp32_metric_agreement.min_dv_over_dc,
+        fp32_metric_agreement.edges_below_admission_floor,
+        fp32_metric_agreement.port_accepts()
     ));
 
     let provenance = StaticProvenance {
@@ -2725,6 +3237,19 @@ pub fn build_static_reporting(
         gwd_bands: gwd.bands,
         gwd_band_bytes: gwd.band_bytes,
         gwd_variance_smoothed_cells: gwd.smoothed_cells,
+        regional: if mesh.is_regional() {
+            let mut ring_cell_counts = [0usize; 8];
+            for &m in &mesh.bdy_mask_cell {
+                ring_cell_counts[m as usize] += 1;
+            }
+            Some(RegionalStaticNotes {
+                ring_cell_counts,
+                deriv_two_zero_stencil_cells: operators.deriv_two_zero_stencil_cells,
+                gwd_smooth_skipped_boundary_cells: gwd.smooth_skipped_boundary_cells,
+            })
+        } else {
+            None
+        },
         fp32_metric_agreement,
         sha256: crate::sha256_file(&cfg.out_path)?,
         variables: declared_variables().iter().map(|s| s.to_string()).collect(),
@@ -2744,6 +3269,457 @@ mod tests {
     use super::*;
     use crate::static_geog::fixture::{dataset, plane_1234_be, MINIMAL_INDEX, TILE_NAME};
     use crate::sha256_file;
+
+    // -- carrying a value to cells the archive has no pixel for -------------
+
+    /// A ring of `n` cells, each neighbouring the two beside it. Enough
+    /// topology to exercise a breadth-first spread and nothing more.
+    fn ring(n: usize) -> (Vec<usize>, Vec<usize>) {
+        let mut n_edges = vec![2usize; n];
+        let mut cells = vec![ABSENT_NEIGHBOR; n * 2];
+        for c in 0..n {
+            cells[c * 2] = (c + n - 1) % n;
+            cells[c * 2 + 1] = (c + 1) % n;
+        }
+        n_edges[0] = 2;
+        (n_edges, cells)
+    }
+
+    #[test]
+    fn a_cell_with_no_pixels_takes_the_mean_of_the_neighbours_that_have_some() {
+        let n = 4;
+        let (n_edges, cells) = ring(n);
+        // Cell 1 has nothing; its neighbours 0 and 2 hold 10 and 20.
+        let mut out = vec![10.0f32, 0.0, 20.0, 30.0];
+        let mut filled = vec![true, false, true, true];
+        let used = spread_to_unsampled(
+            &mut out, &mut filled, 1, &[1], Vec::new(), n, 2, &n_edges, &cells,
+        )
+        .expect("one unsampled cell between two sampled ones is reachable");
+        assert!(used.is_empty());
+        assert_eq!(out[1], 15.0);
+        assert!(filled[1]);
+        // Nothing else moved.
+        assert_eq!((out[0], out[2], out[3]), (10.0, 20.0, 30.0));
+    }
+
+    #[test]
+    fn every_level_of_a_column_is_carried() {
+        let n = 3;
+        let (n_edges, cells) = ring(n);
+        let nz = 2;
+        let mut out = vec![1.0f32, 3.0, 0.0, 0.0, 5.0, 7.0];
+        let mut filled = vec![true, false, true];
+        spread_to_unsampled(
+            &mut out, &mut filled, nz, &[1], Vec::new(), n, 2, &n_edges, &cells,
+        )
+        .expect("reachable");
+        assert_eq!((out[2], out[3]), (3.0, 5.0));
+    }
+
+    #[test]
+    fn a_conduit_carries_a_value_without_keeping_it() {
+        // 0 has data; 1 is mask-excluded (a water cell); 2 needs a value and
+        // touches only 1. Without conduction 2 is unreachable.
+        let n = 4;
+        let (n_edges, cells) = ring(n);
+        let mut out = vec![8.0f32, 0.0, 0.0, 0.0];
+        let mut filled = vec![true, false, false, false];
+        let used = spread_to_unsampled(
+            &mut out, &mut filled, 1, &[2], vec![1, 3], n, 2, &n_edges, &cells,
+        )
+        .expect("the conduit makes cell 2 reachable");
+        assert_eq!(out[2], 8.0, "carried across the excluded cell unchanged");
+        assert!(used.contains(&1) || used.contains(&3),
+                "the conduit that carried it is reported so the caller can reset it");
+    }
+
+    #[test]
+    fn a_region_with_no_value_anywhere_is_refused_with_the_cells_named() {
+        // Two disjoint pairs: 0-1 hold data, 2-3 are isolated and need one.
+        let n_cells = 4;
+        let n_edges = vec![1usize, 1, 1, 1];
+        let cells = vec![1usize, 0, 3, 2];
+        let mut out = vec![4.0f32, 6.0, 0.0, 0.0];
+        let mut filled = vec![true, true, false, false];
+        let stranded = spread_to_unsampled(
+            &mut out, &mut filled, 1, &[2, 3], Vec::new(), n_cells, 1, &n_edges, &cells,
+        )
+        .expect_err("an unreachable region must refuse, not invent a value");
+        assert_eq!(stranded.len(), 2);
+        assert!(stranded.contains(&2) && stranded.contains(&3));
+    }
+
+    #[test]
+    fn the_spread_is_a_ring_so_the_visit_order_does_not_change_the_answer() {
+        // 0 holds 100; 1 and 2 need values and neighbour each other as well
+        // as 0. If 1 were settled and then USED as a source inside the same
+        // round, 2 would get (100+100)/2 through one path and 100 through the
+        // other depending on order. It must be 100 either way.
+        let n_cells = 4;
+        let (n_edges, cells) = ring(n_cells);
+        let mut out = vec![100.0f32, 0.0, 0.0, 0.0];
+        let mut filled = vec![true, false, false, false];
+        spread_to_unsampled(
+            &mut out, &mut filled, 1, &[1, 2, 3], Vec::new(), n_cells, 2, &n_edges, &cells,
+        )
+        .expect("reachable");
+        assert_eq!(out[1], 100.0);
+        assert_eq!(out[3], 100.0);
+        assert_eq!(out[2], 100.0, "a uniform source stays uniform");
+    }
+
+    #[test]
+    fn nothing_needed_means_nothing_is_touched() {
+        let n_cells = 3;
+        let (n_edges, cells) = ring(n_cells);
+        let mut out = vec![1.0f32, 2.0, 3.0];
+        let mut filled = vec![true, true, true];
+        let used = spread_to_unsampled(
+            &mut out, &mut filled, 1, &[], vec![0, 1, 2], n_cells, 2, &n_edges, &cells,
+        )
+        .expect("no work");
+        assert!(used.is_empty());
+        assert_eq!(out, vec![1.0, 2.0, 3.0]);
+    }
+
+    // -- the regional load path, graded on bytes this module writes ----------
+
+    /// One tiny grid file with configurable boundary masks and sentinel
+    /// placement, through the same classic writer the crate ships. Geometry
+    /// is unit-sphere garbage on purpose: what is under test is the sentinel
+    /// ADMISSION, which reads topology and masks only.
+    fn tiny_grid_nc(
+        label: &str,
+        bdy_cell: Option<[i32; 4]>,
+        bdy_edge: [i32; 4],
+        bdy_vertex: [i32; 4],
+        cells_on_cell: [[i32; 3]; 4],
+        cells_on_edge: [[i32; 2]; 4],
+        vertices_on_cell: [[i32; 3]; 4],
+        edges_on_edge_rows: [[i32; 6]; 4],
+    ) -> PathBuf {
+        use rw_store::netcdf_classic::{NcClassicWriter, NcData, NcDim, NcFormat, NcVarDef, NcType};
+        let path = std::env::temp_dir().join(format!(
+            "rw-mpas-regional-admission-{}-{label}.nc",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let dims = vec![
+            NcDim::fixed("nCells", 4),
+            NcDim::fixed("nEdges", 4),
+            NcDim::fixed("nVertices", 4),
+            NcDim::fixed("maxEdges", 3),
+            NcDim::fixed("maxEdges2", 6),
+            NcDim::fixed("TWO", 2),
+            NcDim::fixed("vertexDegree", 3),
+        ];
+        let (c, e, v, me, me2, two, vd) = (0usize, 1, 2, 3, 4, 5, 6);
+        let mut vars = vec![
+            NcVarDef::new("latCell", NcType::Double, vec![c]),
+            NcVarDef::new("lonCell", NcType::Double, vec![c]),
+            NcVarDef::new("latEdge", NcType::Double, vec![e]),
+            NcVarDef::new("lonEdge", NcType::Double, vec![e]),
+            NcVarDef::new("latVertex", NcType::Double, vec![v]),
+            NcVarDef::new("lonVertex", NcType::Double, vec![v]),
+            NcVarDef::new("xCell", NcType::Double, vec![c]),
+            NcVarDef::new("yCell", NcType::Double, vec![c]),
+            NcVarDef::new("zCell", NcType::Double, vec![c]),
+            NcVarDef::new("xEdge", NcType::Double, vec![e]),
+            NcVarDef::new("yEdge", NcType::Double, vec![e]),
+            NcVarDef::new("zEdge", NcType::Double, vec![e]),
+            NcVarDef::new("xVertex", NcType::Double, vec![v]),
+            NcVarDef::new("yVertex", NcType::Double, vec![v]),
+            NcVarDef::new("zVertex", NcType::Double, vec![v]),
+            NcVarDef::new("dcEdge", NcType::Double, vec![e]),
+            NcVarDef::new("dvEdge", NcType::Double, vec![e]),
+            NcVarDef::new("areaCell", NcType::Double, vec![c]),
+            NcVarDef::new("areaTriangle", NcType::Double, vec![v]),
+            NcVarDef::new("kiteAreasOnVertex", NcType::Double, vec![v, vd]),
+            NcVarDef::new("nominalMinDc", NcType::Double, vec![]),
+            NcVarDef::new("angleEdge", NcType::Double, vec![e]),
+            NcVarDef::new("meshDensity", NcType::Double, vec![c]),
+            NcVarDef::new("weightsOnEdge", NcType::Double, vec![e, me2]),
+            NcVarDef::new("nEdgesOnCell", NcType::Int, vec![c]),
+            NcVarDef::new("nEdgesOnEdge", NcType::Int, vec![e]),
+            NcVarDef::new("cellsOnCell", NcType::Int, vec![c, me]),
+            NcVarDef::new("edgesOnCell", NcType::Int, vec![c, me]),
+            NcVarDef::new("verticesOnCell", NcType::Int, vec![c, me]),
+            NcVarDef::new("cellsOnEdge", NcType::Int, vec![e, two]),
+            NcVarDef::new("verticesOnEdge", NcType::Int, vec![e, two]),
+            NcVarDef::new("edgesOnEdge", NcType::Int, vec![e, me2]),
+            NcVarDef::new("cellsOnVertex", NcType::Int, vec![v, vd]),
+            NcVarDef::new("edgesOnVertex", NcType::Int, vec![v, vd]),
+        ];
+        if bdy_cell.is_some() {
+            vars.push(NcVarDef::new("bdyMaskCell", NcType::Int, vec![c]));
+            vars.push(NcVarDef::new("bdyMaskEdge", NcType::Int, vec![e]));
+            vars.push(NcVarDef::new("bdyMaskVertex", NcType::Int, vec![v]));
+        }
+        let mut w =
+            NcClassicWriter::create(&path, NcFormat::Offset64, dims, Vec::new(), vars, 0).unwrap();
+        // Unit-sphere-ish geometry: four distinct points, nothing degenerate.
+        let ang = [0.1f64, 0.7, 1.3, 1.9];
+        let sc: Vec<f64> = ang.iter().map(|a| a.cos()).collect();
+        let ss: Vec<f64> = ang.iter().map(|a| a.sin()).collect();
+        let zz = vec![0.0f64; 4];
+        for name in ["latCell", "latEdge", "latVertex"] {
+            w.put(name, NcData::Doubles(&zz)).unwrap();
+        }
+        for name in ["lonCell", "lonEdge", "lonVertex"] {
+            w.put(name, NcData::Doubles(&ang)).unwrap();
+        }
+        for name in ["xCell", "xEdge", "xVertex"] {
+            w.put(name, NcData::Doubles(&sc)).unwrap();
+        }
+        for name in ["yCell", "yEdge", "yVertex"] {
+            w.put(name, NcData::Doubles(&ss)).unwrap();
+        }
+        for name in ["zCell", "zEdge", "zVertex"] {
+            w.put(name, NcData::Doubles(&zz)).unwrap();
+        }
+        for name in ["dcEdge", "dvEdge"] {
+            w.put(name, NcData::Doubles(&[0.1; 4])).unwrap();
+        }
+        for name in ["areaCell", "areaTriangle", "meshDensity"] {
+            w.put(name, NcData::Doubles(&[1.0; 4])).unwrap();
+        }
+        w.put("kiteAreasOnVertex", NcData::Doubles(&[1.0; 12])).unwrap();
+        w.put("nominalMinDc", NcData::Doubles(&[0.1])).unwrap();
+        w.put("angleEdge", NcData::Doubles(&[0.0; 4])).unwrap();
+        w.put("weightsOnEdge", NcData::Doubles(&[0.0; 24])).unwrap();
+        w.put("nEdgesOnCell", NcData::Ints(&[3; 4])).unwrap();
+        w.put("nEdgesOnEdge", NcData::Ints(&[2; 4])).unwrap();
+        let flat3 = |rows: [[i32; 3]; 4]| rows.concat();
+        let flat2 = |rows: [[i32; 2]; 4]| rows.concat();
+        w.put("cellsOnCell", NcData::Ints(&flat3(cells_on_cell))).unwrap();
+        w.put("edgesOnCell", NcData::Ints(&flat3([[1, 2, 3], [2, 3, 4], [3, 4, 1], [4, 1, 2]])))
+            .unwrap();
+        w.put("verticesOnCell", NcData::Ints(&flat3(vertices_on_cell))).unwrap();
+        w.put("cellsOnEdge", NcData::Ints(&flat2(cells_on_edge))).unwrap();
+        w.put("verticesOnEdge", NcData::Ints(&flat2([[1, 2], [2, 3], [3, 4], [4, 1]])))
+            .unwrap();
+        w.put("edgesOnEdge", NcData::Ints(&edges_on_edge_rows.concat())).unwrap();
+        w.put("cellsOnVertex", NcData::Ints(&flat3([[1, 2, 3], [2, 3, 4], [3, 4, 1], [4, 1, 2]])))
+            .unwrap();
+        w.put("edgesOnVertex", NcData::Ints(&flat3([[1, 2, 3], [2, 3, 4], [3, 4, 1], [4, 1, 2]])))
+            .unwrap();
+        if let Some(bc) = bdy_cell {
+            w.put("bdyMaskCell", NcData::Ints(&bc)).unwrap();
+            w.put("bdyMaskEdge", NcData::Ints(&bdy_edge)).unwrap();
+            w.put("bdyMaskVertex", NcData::Ints(&bdy_vertex)).unwrap();
+        }
+        w.finish().unwrap();
+        path
+    }
+
+    /// The clean regional layout every corruption below is one delta from:
+    /// cells 2 and 3 are outermost (mask 7) and carry one absent neighbour
+    /// each; edges 2 and 3 are one-sided; vertices 2 and 3 are one-sided.
+    fn clean_regional() -> PathBuf {
+        tiny_grid_nc(
+            "clean",
+            Some([5, 6, 7, 7]),
+            [5, 6, 7, 7],
+            [0, 0, 7, 7],
+            [[2, 3, 4], [1, 3, 4], [1, 2, 0], [1, 2, 0]],
+            [[1, 2], [2, 3], [3, 0], [4, 0]],
+            [[1, 2, 3], [2, 3, 4], [3, 4, 1], [4, 1, 2]],
+            [
+                [1, 2, 0, 0, 0, 0],
+                [2, 3, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0],
+                [0, 2, 0, 0, 0, 0],
+            ],
+        )
+    }
+
+    /// A culler-shaped regional grid loads: sentinels at mask-7 only.
+    #[test]
+    fn a_regional_grid_with_mask7_sentinels_is_admitted() {
+        let path = clean_regional();
+        let probe = probe_grid(&path).expect("the clean regional layout admits");
+        assert!(probe.regional);
+        assert_eq!(probe.ring_cell_counts, [0, 0, 0, 0, 0, 1, 1, 2]);
+        assert_eq!(probe.absent_neighbor_slots, 2);
+        assert_eq!(probe.one_sided_edges, 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// An absent neighbour on a NON-outermost cell is a torn mesh, refused
+    /// with the rule named.
+    #[test]
+    fn a_sentinel_inside_the_relaxation_rings_is_refused() {
+        let path = tiny_grid_nc(
+            "torn-cell",
+            Some([5, 6, 3, 7]),
+            [5, 6, 7, 7],
+            [0, 0, 7, 7],
+            [[2, 3, 4], [1, 3, 4], [1, 2, 0], [1, 2, 0]],
+            [[1, 2], [2, 3], [3, 0], [4, 0]],
+            [[1, 2, 3], [2, 3, 4], [3, 4, 1], [4, 1, 2]],
+            [
+                [1, 2, 0, 0, 0, 0],
+                [2, 3, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0],
+                [0, 2, 0, 0, 0, 0],
+            ],
+        );
+        let err = probe_grid(&path).unwrap_err().to_string();
+        assert!(err.contains("only outermost regional cells"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A one-sided edge below mask 7 is refused with the rule named.
+    #[test]
+    fn a_one_sided_edge_inside_the_rings_is_refused() {
+        let path = tiny_grid_nc(
+            "torn-edge",
+            Some([5, 6, 7, 7]),
+            [5, 6, 2, 7],
+            [0, 0, 7, 7],
+            [[2, 3, 4], [1, 3, 4], [1, 2, 0], [1, 2, 0]],
+            [[1, 2], [2, 3], [3, 0], [4, 0]],
+            [[1, 2, 3], [2, 3, 4], [3, 4, 1], [4, 1, 2]],
+            [
+                [1, 2, 0, 0, 0, 0],
+                [2, 3, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0],
+                [0, 2, 0, 0, 0, 0],
+            ],
+        );
+        let err = probe_grid(&path).unwrap_err().to_string();
+        assert!(err.contains("one-sided"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A mask value past the seven rings is refused with its location.
+    #[test]
+    fn a_mask_outside_the_seven_rings_is_refused() {
+        let path = tiny_grid_nc(
+            "bad-mask",
+            Some([5, 9, 7, 7]),
+            [5, 6, 7, 7],
+            [0, 0, 7, 7],
+            [[2, 3, 4], [1, 3, 4], [1, 2, 0], [1, 2, 0]],
+            [[1, 2], [2, 3], [3, 0], [4, 0]],
+            [[1, 2, 3], [2, 3, 4], [3, 4, 1], [4, 1, 2]],
+            [
+                [1, 2, 0, 0, 0, 0],
+                [2, 3, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0],
+                [0, 2, 0, 0, 0, 0],
+            ],
+        );
+        let err = probe_grid(&path).unwrap_err().to_string();
+        assert!(err.contains("outside 0..=7"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A zero in verticesOnCell's VALID slots can never be a boundary: the
+    /// cull keeps every vertex of a kept cell.
+    #[test]
+    fn a_missing_own_vertex_is_refused_on_a_regional_grid() {
+        let path = tiny_grid_nc(
+            "torn-vertex",
+            Some([5, 6, 7, 7]),
+            [5, 6, 7, 7],
+            [0, 0, 7, 7],
+            [[2, 3, 4], [1, 3, 4], [1, 2, 0], [1, 2, 0]],
+            [[1, 2], [2, 3], [3, 0], [4, 0]],
+            [[1, 2, 3], [2, 3, 4], [3, 4, 0], [4, 1, 2]],
+            [
+                [1, 2, 0, 0, 0, 0],
+                [2, 3, 0, 0, 0, 0],
+                [1, 0, 0, 0, 0, 0],
+                [0, 2, 0, 0, 0, 0],
+            ],
+        );
+        let err = probe_grid(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("verticesOnCell") && err.contains("outside 1..="),
+            "{err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The far-pixel reject sphere is strictly conservative: every point it
+    /// rejects is a point the kd search would have rejected on distance.
+    #[test]
+    fn the_far_reject_never_drops_a_pixel_the_search_would_keep() {
+        let mut mesh = synthetic_mesh(64);
+        // Confine the cells to a small window, the shape the guard exists
+        // for: a regional cloud on one side of the sphere. (The band the
+        // synthetic mesh spreads over is longitude-symmetric, which puts the
+        // centroid at the origin and correctly leaves the guard inert -- and
+        // this test measuring nothing.)
+        for c in 0..mesh.n_cells {
+            let lat = 0.3 * (c as f64 / mesh.n_cells as f64);
+            let lon = 0.3 * ((c * 7 % 64) as f64 / 64.0);
+            let p = xyz(mesh.sphere_radius, lat, lon);
+            mesh.x_cell[c] = p[0];
+            mesh.y_cell[c] = p[1];
+            mesh.z_cell[c] = p[2];
+        }
+        let tree = KdTree::new(&mesh);
+        // A 200 km search radius: what a coarse mesh's own reach looks like,
+        // and small beside the sphere so far points exist.
+        let max_d2 = (200_000.0f64).powi(2);
+        let far = FarReject::new(&mesh, max_d2);
+        let mut rejected = 0usize;
+        for i in 0..2000 {
+            let lat = -1.5 + 3.0 * (i as f64 * 0.618_033_988_749_895).fract();
+            let lon = std::f64::consts::TAU * (i as f64 * 0.414_213_562_373_1).fract();
+            let p = xyz(mesh.sphere_radius, lat, lon);
+            if far.certainly_out(p) {
+                rejected += 1;
+                let (_, d2) = tree.nearest(p);
+                assert!(
+                    d2 > max_d2,
+                    "far reject dropped a pixel at ({lat:.3},{lon:.3}) that the \
+                     search keeps: d2={d2} <= {max_d2}"
+                );
+            }
+        }
+        // The band mesh leaves the poles far away, so the reject sphere must
+        // actually fire or this test is measuring nothing.
+        assert!(rejected > 0, "no probe point was ever far; the guard is untested");
+    }
+
+    /// The mpas_in_cell port, on real spherical geometry: a triangle cell
+    /// around the north pole. The edge through two vertices at colatitude
+    /// 0.1 rad with 120 degrees of longitude between them passes closest to
+    /// the pole at colatitude atan(tan(0.1)*cos(60 deg)) ~ 0.0501 rad.
+    #[test]
+    fn point_in_cell_matches_the_voronoi_edges_of_a_polar_triangle() {
+        let r = MPAS_EARTH_RADIUS_M;
+        let mut mesh = synthetic_mesh(4);
+        let colat = 0.1f64;
+        mesh.x_cell[0] = 0.0;
+        mesh.y_cell[0] = 0.0;
+        mesh.z_cell[0] = r;
+        mesh.n_edges_on_cell[0] = 3;
+        for (k, lon_deg) in [0.0f64, 120.0, 240.0].iter().enumerate() {
+            let lon = lon_deg.to_radians();
+            mesh.x_vertex[k] = r * colat.sin() * lon.cos();
+            mesh.y_vertex[k] = r * colat.sin() * lon.sin();
+            mesh.z_vertex[k] = r * colat.cos();
+            mesh.vertices_on_cell[k] = k; // slots 0..3 of cell 0
+        }
+        let at = |colat: f64, lon_deg: f64| -> [f64; 3] {
+            let lon = lon_deg.to_radians();
+            [
+                r * colat.sin() * lon.cos(),
+                r * colat.sin() * lon.sin(),
+                r * colat.cos(),
+            ]
+        };
+        assert!(point_in_cell(&mesh, 0, at(0.0, 0.0)), "the generating point itself");
+        assert!(point_in_cell(&mesh, 0, at(0.03, 77.0)), "deep inside");
+        assert!(point_in_cell(&mesh, 0, at(0.049, 60.0)), "just inside the far edge");
+        assert!(!point_in_cell(&mesh, 0, at(0.08, 60.0)), "just past the far edge");
+        assert!(!point_in_cell(&mesh, 0, at(0.3, 200.0)), "far outside");
+    }
 
     // -- a synthetic case, built from bytes this module owns -----------------
 
@@ -2938,6 +3914,7 @@ mod tests {
             ol: std::array::from_fn(|_| vec![0.0; mesh.n_cells]),
             hlanduse: vec![1; mesh.n_cells],
             smoothed_cells: 0,
+            smooth_skipped_boundary_cells: 0,
             water_category: 3,
             water_category_source: "fixture".to_string(),
             band_rows: 0,
@@ -2984,6 +3961,7 @@ mod tests {
             defc_a: vec![0.0; per_cell],
             defc_b: vec![0.0; per_cell],
             deriv_two: vec![0.0; mesh.n_edges * 2 * FIFTEEN],
+            deriv_two_zero_stencil_cells: 0,
         }
     }
 

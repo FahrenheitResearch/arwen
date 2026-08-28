@@ -363,6 +363,13 @@ pub enum BatchRenderEvent {
         slug: String,
         output_path: PathBuf,
         render_ms: u128,
+        /// What the finished PNG maps to on the Earth, when the render
+        /// lane could publish it (gpuwm addition, VENDOR.md).  Carried on
+        /// the event so `rw_wrfbatch` can write the run's georeference
+        /// manifest beside the PNGs.
+        georeference: Option<rustwx_render::PanelGeoReference>,
+        /// Why `georeference` is `None`, from the lane that rendered it.
+        georeference_absent_reason: Option<String>,
         completed: usize,
         total: usize,
     },
@@ -398,6 +405,8 @@ enum ProductOutcome {
     Rendered {
         output_path: PathBuf,
         render_ms: u128,
+        georeference: Option<rustwx_render::PanelGeoReference>,
+        georeference_absent_reason: Option<String>,
     },
     Skipped(String),
 }
@@ -680,6 +689,8 @@ pub fn run_batch_render(
                                 ProductOutcome::Rendered {
                                     output_path,
                                     render_ms,
+                                    georeference,
+                                    georeference_absent_reason,
                                 } => {
                                     summary.rendered += 1;
                                     summary.outputs.push(output_path.clone());
@@ -688,6 +699,8 @@ pub fn run_batch_render(
                                         slug,
                                         output_path,
                                         render_ms,
+                                        georeference,
+                                        georeference_absent_reason,
                                         completed,
                                         total: planned,
                                     });
@@ -1054,6 +1067,8 @@ fn render_hour_items(
                 Ok(ProductOutcome::Rendered {
                     output_path,
                     render_ms,
+                    georeference,
+                    georeference_absent_reason,
                 }) => {
                     summary.rendered += 1;
                     summary.outputs.push(output_path.clone());
@@ -1062,6 +1077,8 @@ fn render_hour_items(
                         slug: slug.clone(),
                         output_path,
                         render_ms,
+                        georeference,
+                        georeference_absent_reason,
                         completed: *completed,
                         total: planned,
                     });
@@ -1109,6 +1126,8 @@ fn render_hour_item(
         return Ok(ProductOutcome::Rendered {
             output_path: rendered.output_path,
             render_ms: rendered.total_ms,
+            georeference: rendered.georeference,
+            georeference_absent_reason: rendered.georeference_absent_reason,
         });
     }
     let single = vec![slug.to_string()];
@@ -1124,6 +1143,8 @@ fn render_hour_item(
         return Ok(ProductOutcome::Rendered {
             output_path: rendered.output_path,
             render_ms: rendered.total_ms,
+            georeference: rendered.georeference,
+            georeference_absent_reason: rendered.georeference_absent_reason,
         });
     }
     if let Some(skipped) = outcome.skipped.pop() {
@@ -1167,6 +1188,8 @@ fn render_windowed_items(
             ProductOutcome::Rendered {
                 output_path: rendered.output_path,
                 render_ms: rendered.total_ms,
+                georeference: rendered.georeference,
+                georeference_absent_reason: rendered.georeference_absent_reason,
             },
         );
     }

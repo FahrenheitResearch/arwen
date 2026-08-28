@@ -13,7 +13,7 @@
 use rayon::prelude::*;
 
 use crate::error::{MpasError, MpasResult};
-use crate::mesh::density::MeshSpec;
+use crate::mesh::density::{DensityField, MeshSpec};
 use crate::mesh::derive::Rings;
 use crate::mesh::geom::{V3, add, arc, circumcenter, scale, tri_area, unit};
 use crate::mesh::hull::delaunay_rings;
@@ -52,6 +52,8 @@ pub fn seed_points(spec: &MeshSpec, n_target: usize) -> MpasResult<Vec<V3>> {
             "{n_target} generators cannot tessellate a sphere; four is the minimum that encloses a volume"
         )));
     }
+    // The field is asked millions of times below; prepared once.
+    let spec = spec.prepared();
     // Mean acceptance weight, probed on a coarse lattice, sets the overdraw.
     let probe = 20_000.min(n_target * 4).max(4_000);
     let mean_w: f64 = crate::mesh::density::fibonacci_lattice(probe)
@@ -139,6 +141,19 @@ pub struct LloydOptions {
     pub oscillation_window: usize,
     /// Increases within that window that count as a limit cycle.
     pub oscillation_increases: usize,
+    /// The per-sweep `min dv/dc` monitor's floor. DEFAULT-ON: below it the
+    /// mesh is inside the near-cocircular class the admission gate refuses
+    /// (floor 0.02, published x4 reads 0.0336), and campaign #304 measured
+    /// that further relaxation RE-ROLLS that tail rather than draining it,
+    /// so a converged-but-degraded state must stop at its best iterate or
+    /// refuse -- never quietly ship the last roll of the dice.
+    pub monitor_floor: f64,
+    /// Sweeps the monitor must read below the floor, consecutively, after
+    /// arming, before it stops the relaxation.
+    pub monitor_consecutive: usize,
+    /// The mean residual at which the monitor arms. Before the mesh is
+    /// near-converged the floor is legitimately in flux.
+    pub monitor_arm_mean: f64,
 }
 
 impl Default for LloydOptions {
@@ -153,6 +168,9 @@ impl Default for LloydOptions {
             stall_contraction: 0.999,
             oscillation_window: 10,
             oscillation_increases: 5,
+            monitor_floor: 0.03,
+            monitor_consecutive: 5,
+            monitor_arm_mean: 3e-3,
         }
     }
 }
@@ -164,12 +182,25 @@ pub struct LloydOutcome {
     pub max_delta_over_h: f64,
     pub mean_delta_over_h: f64,
     pub history: Vec<f64>,
+    /// Per-sweep `min dv/dc`, sampled EVERY sweep by the default-on monitor.
+    /// Stamped into every production receipt so a reader can see whether the
+    /// relaxation held the admission gate's own metric or wandered.
+    pub min_dv_over_dc_trajectory: Vec<f64>,
+    /// The final sweep's reading and its edge.
+    pub min_dv_over_dc: f64,
+    pub min_dv_over_dc_edge: (u32, u32),
     pub wall_seconds: f64,
     pub rings: Rings,
 }
 
-/// Relax `points` toward the density-weighted centroidal tessellation of `spec`.
-pub fn relax(points: &mut Vec<V3>, spec: &MeshSpec, opts: &LloydOptions) -> MpasResult<LloydOutcome> {
+/// Relax `points` toward the density-weighted centroidal tessellation of the
+/// field -- the user's [`MeshSpec`] for a uniform or final relaxation, a
+/// [`crate::mesh::density::LevelClamp`] for one rung of the graded ladder.
+pub fn relax<F: DensityField + Sync>(
+    points: &mut Vec<V3>,
+    spec: &F,
+    opts: &LloydOptions,
+) -> MpasResult<LloydOutcome> {
     if !(opts.tolerance > 0.0 && opts.tolerance.is_finite()) {
         return Err(MpasError::Refusal(format!(
             "a relaxation tolerance of {} cannot be reached; the tolerance is the quality contract the mesh is held to and it has to be a positive number",
@@ -184,7 +215,12 @@ pub fn relax(points: &mut Vec<V3>, spec: &MeshSpec, opts: &LloydOptions) -> Mpas
     let started = std::time::Instant::now();
     let mut history: Vec<f64> = Vec::with_capacity(opts.max_sweeps);
     let mut worst_history: Vec<f64> = Vec::with_capacity(opts.max_sweeps);
+    let mut monitor_traj: Vec<f64> = Vec::with_capacity(opts.max_sweeps);
     let mut rings = delaunay_rings(points)?;
+
+    let mut armed = false;
+    let mut consecutive_degrading = 0usize;
+    let mut previous_mq = f64::INFINITY;
 
     for sweep in 1..=opts.max_sweeps {
         let step: Vec<(V3, f64)> = (0..points.len())
@@ -205,20 +241,68 @@ pub fn relax(points: &mut Vec<V3>, spec: &MeshSpec, opts: &LloydOptions) -> Mpas
             };
             points[i] = moved;
         }
+        rings = delaunay_rings(points)?;
+
+        // The DEFAULT-ON per-sweep monitor: the admission gate's own metric,
+        // O(E) from the rings just rebuilt, sampled EVERY sweep.
+        let (mq, medge) = crate::mesh::surgery::min_dv_over_dc(points, &rings);
+        monitor_traj.push(mq);
 
         if mean < opts.tolerance {
+            // Converged. The monitor reading rides out in the outcome -- a
+            // sub-floor reading here is the near-cocircular tail that only
+            // count-changing surgery drains, and the CALLER's gate (the
+            // ladder's level gate, or the emit gate's ratio floor) owns that
+            // verdict; the relaxation's own refusal below is for a tail that
+            // is actively COLLAPSING while convergence has not arrived.
             return Ok(LloydOutcome {
                 sweeps: sweep,
                 max_delta_over_h: worst,
                 mean_delta_over_h: mean,
                 history,
+                min_dv_over_dc_trajectory: monitor_traj,
+                min_dv_over_dc: mq,
+                min_dv_over_dc_edge: medge,
                 wall_seconds: started.elapsed().as_secs_f64(),
-                rings: delaunay_rings(points)?,
+                rings,
             });
         }
 
-        // D1 STALL: the residual has stopped contracting while still above the
-        // contract.
+        if mean < opts.monitor_arm_mean {
+            armed = true;
+        }
+        // R1's own wording: below the floor AND TRENDING DOWN, consecutively,
+        // after near-convergence. A statically low, wandering tail is the
+        // state surgery exists to drain; a collapsing one is the re-roll
+        // failure mode and burning more sweeps into it is refused.
+        if armed && mq < opts.monitor_floor && mq < previous_mq {
+            consecutive_degrading += 1;
+        } else {
+            consecutive_degrading = 0;
+        }
+        previous_mq = mq;
+        if armed && consecutive_degrading >= opts.monitor_consecutive {
+            // This is a DETECTOR WITH A REFUSAL, not a waiver: no floor
+            // moves, and the refusal carries both numbers.
+            return Err(MpasError::Refusal(format!(
+                "the relaxation is collapsing into the near-cocircular class: min dv/dc read {mq:.3e} at edge ({}, {}) -- below the {:.2} monitor floor and strictly falling for {} consecutive sweeps -- after the mean residual reached {mean:.4e} (armed under {:.1e}) without meeting the {:.1e} tolerance. The TRiSK tangential weights divide by dvEdge, so continuing would relax toward a mesh whose worst edge amplifies the tangential wind {:.0}x; the admission gate refuses below 0.02, and campaign #304 measured that more relaxation re-rolls this tail (--sweeps 200/600/2000 all reproduced the same 75.04 m shortest edge) rather than draining it -- draining it needs count-changing surgery, not more sweeps",
+                medge.0,
+                medge.1,
+                opts.monitor_floor,
+                opts.monitor_consecutive,
+                opts.monitor_arm_mean,
+                opts.tolerance,
+                1.0 / mq.max(1e-300)
+            )));
+        }
+
+        // D1 STALL: the residual has stopped contracting -- or contracts too
+        // slowly to reach the contract inside the remaining budget. The
+        // second clause is an EXTRAPOLATION, not taste: a graded level's
+        // post-insertion redistribution legitimately contracts slower than a
+        // uniform relaxation (density surplus migrates one cell width per
+        // sweep across the annulus), and refusing a run whose own arithmetic
+        // says it will finish was this detector's measured false positive.
         if history.len() > opts.stall_window {
             let recent = &history[history.len() - opts.stall_window..];
             let ratios: Vec<f64> = recent
@@ -227,13 +311,27 @@ pub fn relax(points: &mut Vec<V3>, spec: &MeshSpec, opts: &LloydOptions) -> Mpas
                 .collect();
             let logmean: f64 =
                 ratios.iter().map(|r| r.max(1e-30).ln()).sum::<f64>() / ratios.len() as f64;
-            if logmean.exp() > opts.stall_contraction {
-                return Err(MpasError::Refusal(format!(
-                    "the relaxation stalled at mean(delta/h) = {mean:.4e} (worst cell {worst:.4e}) against a target of {:.1e}: over the last {} sweeps the residual contracted by a factor of {:.6} per sweep, which will not reach the target in any budget. The mesh is not a centroidal tessellation, so its edge points do not bisect their dual arcs and the mimetic operators lose their second-order cancellation between neighbours",
-                    opts.tolerance,
-                    opts.stall_window,
-                    logmean.exp()
-                )));
+            let contraction = logmean.exp();
+            if contraction > opts.stall_contraction {
+                let remaining = opts.max_sweeps - sweep;
+                let projected = if contraction < 1.0 {
+                    (opts.tolerance / mean).ln() / contraction.ln()
+                } else {
+                    f64::INFINITY
+                };
+                if !(projected <= remaining as f64) {
+                    return Err(MpasError::Refusal(format!(
+                        "the relaxation stalled at mean(delta/h) = {mean:.4e} (worst cell {worst:.4e}) against a target of {:.1e}: over the last {} sweeps the residual contracted by a factor of {:.6} per sweep, which needs {} more sweeps against the {remaining} the budget has left. The mesh is not a centroidal tessellation, so its edge points do not bisect their dual arcs and the mimetic operators lose their second-order cancellation between neighbours",
+                        opts.tolerance,
+                        opts.stall_window,
+                        contraction,
+                        if projected.is_finite() {
+                            format!("about {:.0}", projected)
+                        } else {
+                            "infinitely many".to_string()
+                        }
+                    )));
+                }
             }
         }
 
@@ -244,15 +342,13 @@ pub fn relax(points: &mut Vec<V3>, spec: &MeshSpec, opts: &LloydOptions) -> Mpas
             let ups = recent.windows(2).filter(|w| w[1] > w[0] * 1.03).count();
             if ups >= opts.oscillation_increases {
                 return Err(MpasError::Refusal(format!(
-                    "the relaxation is in a limit cycle: mean(delta/h) rose in {ups} of the last {} sweeps and sits at {mean:.4e} (worst cell {worst:.4e}) against a target of {:.1e}. The steepest per-cell spacing change this spec asks for is {:.2}%, against 1.53% in the published variable-resolution mesh; generators cannot settle across a ramp that steep, and a mesh emitted from a cycling relaxation is not centroidal anywhere near it",
+                    "the relaxation is in a limit cycle: mean(delta/h) rose in {ups} of the last {} sweeps and sits at {mean:.4e} (worst cell {worst:.4e}) against a target of {:.1e}. The steepest per-cell spacing change this field asks for is {:.2}%, against 1.53% in the published variable-resolution mesh; generators cannot settle across a ramp that steep, and a mesh emitted from a cycling relaxation is not centroidal anywhere near it",
                     opts.oscillation_window,
                     opts.tolerance,
-                    spec.steepest_gradient_per_cell(20_000) * 100.0
+                    crate::mesh::density::steepest_gradient_per_cell_of(spec, 20_000) * 100.0
                 )));
             }
         }
-
-        rings = delaunay_rings(points)?;
     }
 
     // D3 BUDGET.
@@ -267,7 +363,7 @@ pub fn relax(points: &mut Vec<V3>, spec: &MeshSpec, opts: &LloydOptions) -> Mpas
 }
 
 /// One cell's density-weighted centroid and its normalised displacement.
-fn cell_step(points: &[V3], rings: &Rings, spec: &MeshSpec, i: usize) -> (V3, f64) {
+fn cell_step<F: DensityField>(points: &[V3], rings: &Rings, spec: &F, i: usize) -> (V3, f64) {
     let ring = rings.ring(i);
     let deg = ring.len();
     let centre = points[i];
@@ -365,9 +461,10 @@ mod tests {
         // Seeded the way the shipped uniform path seeds: from the icosahedral
         // subdivision (1,200 snaps to GP(11,0) = 1,212). A Fibonacci seed at
         // this size relaxes to a mesh with a pentagon-heptagon dislocation
-        // whose dual edge measured 6,019.8 m -- under the FP32 survival floor
-        // the emit gate below holds every mesh to -- and that is a property
-        // of the seed, not of the relaxation this test exercises.
+        // whose dual edge measured 6,019.8 m -- in the sub-0.02 dv/dc class
+        // the emit gate below refuses, as the port's own DualEdgePolicy
+        // would -- and that is a property of the seed, not of the relaxation
+        // this test exercises.
         let spec = MeshSpec::uniform(700.0);
         let choice = crate::mesh::icosa::snap_cells(1_200, false).unwrap();
         let n = choice.cells;

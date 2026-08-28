@@ -48,7 +48,14 @@ def _frozen_constructors():
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
-    assert names[-95:] == [
+    # RE-BASELINED (lane/wif-climatology + lane/wif-default): 95 -> 97.
+    # TWO fields were appended, ``wif_climatology_path`` and
+    # ``mp28_aerosol_source``, and the second of them is last, which is the
+    # property this test exists to hold.  Reconstructing the old assertion
+    # from the new: names[-97:-2] is exactly the list this window held
+    # before.
+    assert names[-1] == "mp28_aerosol_source"
+    assert names[-97:] == [
         "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
         "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
         "swrad_scat", "wrf_rrtmg_compatibility", "num_soil_layers",
@@ -130,7 +137,22 @@ def test_new_fields_are_reviewed_defaults_appended_last():
         # and the only other value is the declared escape, which a frozen
         # case does not select.  It moves no trajectory and it is not a WRF
         # namelist key, because WRF has no carrier provenance to declare.
-        "surface_radiation_policy"]
+        "surface_radiation_policy",
+        # The mp=28 WIF climatology dataset path (change record: appended
+        # with the lane/wif-climatology commit onto this line).  The empty
+        # default runs not one new instruction, and
+        # validate_aerosol_source_options refuses a set path whose
+        # selectors (aer_init_opt=1 + wif_input_opt=1) do not consume it,
+        # so no frozen trajectory can move.
+        "wif_climatology_path",
+        # Which mp=28 aerosol initial state the run wants (change record:
+        # appended with the lane/wif-default commit onto this line).  At
+        # "auto" a real-data mp=28 run resolves WRF's monthly WIF
+        # climatology and announces the synthetic fallback by name when it
+        # cannot; every frozen case here is idealized or has no dataset, so
+        # each resolves to the same synthetic profile it always did.
+        "mp28_aerosol_source",
+    ]
     # Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors,
     # appended last.  Both defaults are WRF's own Registry defaults
     # (Registry/Registry.EM_COMMON:2656 and
@@ -146,6 +168,18 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # profile.
     assert RunConfig.__dataclass_fields__["aer_init_opt"].default == 0
     assert RunConfig.__dataclass_fields__["wif_input_opt"].default == 0
+
+    # WIF climatology dataset path: the empty default is "resolve it, and
+    # say so if you cannot", which is what makes the field inert for every
+    # frozen case here -- none of them ships a dataset.
+    assert RunConfig.__dataclass_fields__[
+        "wif_climatology_path"].default == ""
+    # And the selector's default, asserted for the same reason the pair
+    # above is: "auto" is the value that reproduces the pre-lane behaviour
+    # whenever no dataset resolves, so a silent change to it would move
+    # every mp=28 real-data trajectory while this file stayed green.
+    assert RunConfig.__dataclass_fields__[
+        "mp28_aerosol_source"].default == "auto"
 
     assert RunConfig.__dataclass_fields__["hmix_k_diag"].default is False
     # WRF v4.6.1 Registry.EM_COMMON:2889 declares moist_mix6_off .false.,

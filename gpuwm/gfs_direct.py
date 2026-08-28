@@ -1416,7 +1416,7 @@ def prepare_gfs_wrf(
                 cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac,
                 eta_levels=exp.vertical.eta_levels)
             initialized = initialize_real(
-                met, cfg, coord, static["HGT_M"],
+                met, cfg, coord, static["HGT_M"], grid=grid,
                 p_top=exp.vertical.p_top, sfcp_to_sfcp=True,
                 preprocess_backend=preprocess,
                 state_backend="preprocess")

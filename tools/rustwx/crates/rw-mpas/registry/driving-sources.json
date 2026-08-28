@@ -1,0 +1,64 @@
+{
+  "rows": [
+    {
+      "name": "wps-intermediate",
+      "reader": "wps-intermediate",
+      "geometry": "regular-latlon",
+      "state": "first-guess",
+      "notes": "The source-agnostic WPS intermediate every registered external model already arrives as. Self-describing slab records on a regular latitude/longitude grid; no variable map is needed or allowed."
+    },
+    {
+      "name": "unstructured-native-stream",
+      "reader": "named-variables",
+      "geometry": "unstructured-sphere",
+      "state": "prognostic",
+      "notes": "An unstructured spherical mesh carrying a decoupled prognostic state, spelled as MPAS v8.4.1 spells it in its history, init and restart streams. Mesh and layer heights may live in a companion grid file when the state file omits them.",
+      "variables": {
+        "cell-latitude": "latCell",
+        "cell-longitude": "lonCell",
+        "edge-latitude": "latEdge",
+        "edge-longitude": "lonEdge",
+        "edge-normal-angle": "angleEdge",
+        "cells-on-vertex": "cellsOnVertex",
+        "cells-on-cell": "cellsOnCell",
+        "edges-on-cell": "edgesOnCell",
+        "edges-per-cell": "nEdgesOnCell",
+        "interface-height": "zgrid",
+        "dry-density": "rho",
+        "dry-potential-temperature": "theta",
+        "vapour-mixing-ratio": "qv",
+        "cloud-mixing-ratio": "qc",
+        "rain-mixing-ratio": "qr",
+        "edge-normal-wind": "u",
+        "vertical-velocity": "w",
+        "valid-time": "xtime"
+      }
+    },
+    {
+      "name": "unstructured-port-stream",
+      "reader": "named-variables",
+      "geometry": "unstructured-sphere",
+      "state": "prognostic",
+      "notes": "The same source kind as unstructured-native-stream, spelled as this program's own forecast history spells it: the edge-normal wind is normal_u, and the frame carries no valid-time variable, so the caller's declared boundary time stands and the receipt records that it was unverified.",
+      "variables": {
+        "cell-latitude": "latCell",
+        "cell-longitude": "lonCell",
+        "edge-latitude": "latEdge",
+        "edge-longitude": "lonEdge",
+        "edge-normal-angle": "angleEdge",
+        "cells-on-vertex": "cellsOnVertex",
+        "cells-on-cell": "cellsOnCell",
+        "edges-on-cell": "edgesOnCell",
+        "edges-per-cell": "nEdgesOnCell",
+        "interface-height": "zgrid",
+        "dry-density": "rho",
+        "dry-potential-temperature": "theta",
+        "vapour-mixing-ratio": "qv",
+        "cloud-mixing-ratio": "qc",
+        "rain-mixing-ratio": "qr",
+        "edge-normal-wind": "normal_u",
+        "vertical-velocity": "w"
+      }
+    }
+  ]
+}

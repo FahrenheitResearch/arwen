@@ -117,6 +117,50 @@ def test_fit_child_size_returns_units_that_fit():
                         child_nx=size, child_ny=size)
 
 
+#: The measured parent of the finding-4 walk: a real 386x308 12 km GFS
+#: parent (morrison rte-rrtmgp suite), its restart-evidence config keys
+#: verbatim.  Physics inherited as data, exactly as a restart carries it.
+_MEASURED_PARENT_CONFIG = {
+    "nx": 386, "ny": 308, "nz": 49, "dx": 12000.0, "dy": 12000.0,
+    "dt": 60.0, "run_seconds": 7200.0, "output_interval_s": 900.0,
+    "ztop": 20000.0, "time_step_sound": 4, "epssm": 0.5,
+    "hybrid_opt": 2, "etac": 0.2, "hypsometric_opt": 2,
+    "moist": True, "moist_cq": True, "mp_physics": 10,
+    "morr_rimed_ice": 1, "ra_physics": 0, "ra_lw_physics": 4,
+    "ra_sw_physics": 4, "radt": 12.0, "ra_rrtmg_variant": "rte-rrtmgp",
+    "sf_sfclay_physics": 91, "sf_surface_physics": 2,
+    "bl_pbl_physics": 1, "cu_physics": 1, "cudt_minutes": 5.0,
+    "num_soil_layers": 4, "km_opt": 4, "diff_6th_opt": 2,
+    "diff_6th_factor": 0.12, "diff_6th_slopeopt": 1,
+    "specified": True, "nested": False, "grid_id": 1,
+    "spec_bdy_width": 5, "spec_zone": 1, "relax_zone": 4,
+    "map_proj": 1, "terrain_opt": 1, "nwp_diagnostics": 1,
+}
+
+
+def test_the_fit_admits_the_child_the_card_measuredly_ran():
+    """The standalone-child fit prices with the affine envelope, not the
+    retired reserve + 1.75x multiplicative path.
+
+    MEASURED 2026-08-26 on the RTX 3080 10 GiB (stale-guard audit
+    2026-08-25, finding 4): from this exact parent at --vram-gib 10,
+    ratio 3, the retired path admitted 282x282 while the affine fit
+    admits 342x342 -- and the 342x342 child RAN WHOLE through the real
+    downscale door (360 steps, 7,200 s simulated, PASS, machine-wide
+    peak 9.24 of 10.24 GB with the desktop compositing beside it).  The
+    retired path refused 47% more child area than the card measuredly
+    holds; a fit that refuses a run the card completes is the defect.
+    """
+
+    parent = {"nx": 386, "ny": 308, "dx": 12000.0, "dy": 12000.0}
+    size = _fit_child_size(
+        parent, dict(_MEASURED_PARENT_CONFIG), j0=154, i0=193, ratio=3,
+        run_seconds=7200.0, output_interval_s=900.0, vram_gib=10.0)
+    assert size >= 342, (
+        f"the fit admits {size}x{size} where the card measuredly ran "
+        "342x342 whole")
+
+
 def test_downscale_cli_dry_run_child_config_mode(tmp_path, capsys):
     start = datetime(1974, 4, 3, 12)
     frames = []

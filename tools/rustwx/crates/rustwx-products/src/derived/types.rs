@@ -179,6 +179,14 @@ pub struct DerivedRenderedRecipe {
     pub output_path: PathBuf,
     pub content_identity: ArtifactContentIdentity,
     pub input_fetch_keys: Vec<String>,
+    /// What the finished PNG maps to on the Earth, when the save path
+    /// could publish it (gpuwm addition, VENDOR.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub georeference: Option<rustwx_render::PanelGeoReference>,
+    /// Why `georeference` is `None`, from the save path itself; a panel
+    /// listed without a transform must say what was missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub georeference_absent_reason: Option<String>,
     pub timing: DerivedRecipeTiming,
 }
 

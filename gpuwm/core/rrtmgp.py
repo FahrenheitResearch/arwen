@@ -3484,7 +3484,17 @@ def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
         raise ValueError("tau must have shape (ncol,nlay,ngpt)")
     ncol, nlay, ngpt = tau.shape
     if nlay > 128:
-        raise ValueError("RRTMGP CUDA RTE supports at most 128 layers")
+        # The ceiling's owner is the Planck-source kernel's fixed
+        # pfrac[128] (see _planck_sources), not the RTE: the solver
+        # kernels compile RRTMGP_MAX_LAYERS to this run's nlay.  This
+        # door-level copy stays because the LW chain feeds on Planck
+        # sources either way (fused or precomputed), and a taller column
+        # must refuse HERE, before any device allocation, rather than
+        # inside whichever stage first touches the fixed array
+        # (re-justified, stale-guard audit 2026-08-25).
+        raise ValueError(
+            "RRTMGP CUDA LW supports at most 128 layers (the Planck-"
+            f"source kernel's fixed pfrac[128]); got {nlay}")
     if planck is None:
         lay_source = _device_profile(lay_source, tau.shape, "lay_source")
         lev_source = _device_profile(
@@ -3571,8 +3581,14 @@ def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
     if tau.ndim != 3:
         raise ValueError("tau must have shape (ncol,nlay,ngpt)")
     ncol, nlay, ngpt = tau.shape
-    if nlay > 128:
-        raise ValueError("RRTMGP CUDA RTE supports at most 128 layers")
+    # No layer ceiling: the SW solver compiles RRTMGP_MAX_LAYERS to this
+    # run's nlay and no kernel on the SW chain holds fixed per-layer
+    # thread storage.  A 128-layer refusal used to sit here, inherited
+    # from the days before per-run specialization; the ceiling's real
+    # owner is the LW Planck-source kernel's pfrac[128], which has its
+    # own raise (retired here 2026-08-25, stale-guard audit -- proven by
+    # a 160-layer transparent-atmosphere run reproducing the analytic
+    # direct beam on the measurement card).
     ssa = _device_profile(ssa, tau.shape, "ssa")
     # On the fused path the asym cube does not exist; the ssa array is the
     # valid-dummy pointer for the never-read parameter.
@@ -3654,6 +3670,18 @@ def _planck_sources(tables: GasTables, play, plev, tlay, tlev, tsfc,
     if play.ndim != 2:
         raise ValueError("play must have shape (ncol,nlay)")
     ncol, nlay = play.shape
+    if nlay > 128:
+        # The OWNER of the RRTMGP layer ceiling: this kernel holds a fixed
+        # per-thread pfrac[128] and its device-side guard is a bare
+        # `return`, so without this raise a taller column came back as
+        # uninitialized source arrays that read as valid radiation
+        # (stale-guard audit 2026-08-25).  The RTE solvers themselves
+        # compile RRTMGP_MAX_LAYERS to this run's nlay and carry no such
+        # ceiling.
+        raise ValueError(
+            "RRTMGP CUDA Planck sources support at most 128 layers: the "
+            "rrtmgp_planck_sources kernel holds a fixed pfrac[128] per "
+            f"thread and this profile has {nlay} layers")
     # plev is validated because it is part of the public gas/source profile
     # contract even though Planck interpolation itself only consumes play.
     plev = _device_profile(plev, (ncol, nlay + 1), "plev")

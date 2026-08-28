@@ -200,6 +200,7 @@ def remap_soil_to_ruc_levels(
     sea_surface_temperature=None,
     num_soil_layers: int = 9,
     moisture_adjustment: bool = False,
+    source_depth_scale: int = 100,
 ) -> RucSoilColumns:
     """Build RUC ``TSLB``/``SMOIS`` the way ``real.exe`` does.
 
@@ -224,6 +225,21 @@ def remap_soil_to_ruc_levels(
         The nodes are the samples, with no anchors at all.  A target level
         outside them is an error, not an extrapolation.
 
+    ``source_depth_scale`` is the integer unit ``source_levels_cm`` is
+    carried in, declared by the source's own remap policy
+    (:func:`gpuwm.ingest.soil_contract.ruc_soil_remap_policy`).  The
+    default 100 is WRF's own: ``char2int2``
+    (``share/module_optional_input.F:1949-1954``) forms soil level depths
+    by integer division into CENTIMETRES and :1994 divides the INTEGER by
+    100, so every metgrid-shaped source runs at 100 and is bit-identical
+    to the oracle.  A producer whose published ladder is finer than a
+    centimetre (ICON's shallowest interior node is 0.005 m) declares a
+    finer scale rather than being refused: the limit at 100 is metgrid's
+    file format, not the soil column, and rounding 0.5 cm onto the 0.0 m
+    node would hand :1958-1968 two samples at one depth.  The arithmetic
+    is unchanged -- ``REAL(level)/scale`` in the same float32 expression
+    order.
+
     ``moisture_adjustment`` is WRF's ``flag_sm_adj`` (namelist default 0,
     ``Registry.EM_COMMON:2537``).  It applies only to a layer source
     (:2067) and rescales the top ``num_soil_layers - 1`` levels so their
@@ -247,10 +263,16 @@ def remap_soil_to_ruc_levels(
         raise ValueError("source_levels_cm must be at least two depths")
     if levels_cm.dtype.kind not in "iu":
         raise ValueError(
-            "source_levels_cm must be INTEGER centimetres: WRF's readers "
-            "form them with integer division and init_soil_3_real:1994 "
-            "divides the INTEGER by 100."
+            "source_levels_cm must be INTEGER depths in units of "
+            "source_depth_scale per metre: WRF's readers form them with "
+            "integer division and init_soil_3_real:1994 divides the INTEGER "
+            "by the scale."
         )
+    scale_value = int(source_depth_scale)
+    if scale_value <= 0:
+        raise ValueError(
+            f"source_depth_scale={source_depth_scale} must be a positive "
+            "integer number of units per metre")
     if np.any(np.diff(levels_cm) <= 0):
         raise ValueError(
             "source_levels_cm must be strictly increasing.  WRF sorts them "
@@ -285,7 +307,7 @@ def remap_soil_to_ruc_levels(
         if not np.isfinite(value).all():
             raise ValueError(f"{name} contains non-finite values")
 
-    hundred = np.float32(100.0)
+    hundred = np.float32(scale_value)
     if source_geometry == _LEVEL_SOURCE:
         depths = (levels_cm.astype(np.float32) / hundred).astype(np.float32)
         temperature_samples = temperature
@@ -295,8 +317,9 @@ def remap_soil_to_ruc_levels(
         depths = np.empty(nlev + 2, dtype=np.float32)
         depths[0] = np.float32(0.0)
         depths[1:nlev + 1] = levels_cm.astype(np.float32) / hundred
-        # :1990 and :2033 spell the deep anchor as 300./100., not as 3.
-        depths[nlev + 1] = np.float32(300.0) / hundred
+        # :1990 and :2033 spell the deep anchor as 300./100., not as 3, so
+        # it is formed at the declared scale rather than written as 3.0.
+        depths[nlev + 1] = np.float32(3.0 * scale_value) / hundred
         temperature_samples = np.concatenate(
             (tsk[None, ...], temperature, tmn[None, ...]), axis=0)
         # :1938-1943.  Note it divides by the difference of the TEMPERATURE
@@ -534,7 +557,7 @@ def _midpoint_cm(name: str, prefix: str) -> int:
 
 
 def _source_soil_profiles(fields, soil_layer_contract):
-    """Return ``(temperature, moisture, levels_cm, geometry)`` for the source.
+    """Return ``(temperature, moisture, levels, geometry, depth_scale)``.
 
     The four source modes are exactly the four
     :func:`gpuwm.ingest.soil.preprocess_noah_soil` dispatches on, and the
@@ -548,16 +571,79 @@ def _source_soil_profiles(fields, soil_layer_contract):
                                             MAPPED_SOIL_TEMPERATURE)
 
     if soil_layer_contract is not None or MAPPED_SOIL_TEMPERATURE in fields:
-        raise ValueError(
-            "the declarative mapped-source path has no RUC target.  "
-            "gpuwm/ingest/soil_contract.py:validate_soil_layer_contract "
-            "compares target_layers against NOAH_LAYER_BOUNDS_M and refuses "
-            "any other by design, because RUC's levels are node depths "
-            "rather than layer bounds.  Admitting RUC there means adding its "
-            "target and proving the remap against a WRF-real nine-level "
-            "initialization; refused here rather than silently remapped "
-            "through Noah's contract"
+        # The declarative mapped-source arm.  Its RUC target is declared
+        # explicitly in gpuwm/ingest/soil_contract.py -- the way that
+        # module's Noah comparison demands -- and the remap policy is
+        # LOOKED UP in that module's RUC_REMAP_POLICIES table, not decided
+        # here: a node contract selects init_soil_3_real's flag_soil_levels
+        # arm and a layer contract its flag_soil_layers arm.  Both arms are
+        # the ones below this branch already run for the native SOILT/SOILW
+        # and ST/GFS_ST dispatches, so mapped-vs-native equality on
+        # identical inputs stays structural and adding a future model is a
+        # composition document, not a branch here.
+        from gpuwm.ingest.soil_contract import ruc_soil_remap_policy
+
+        if soil_layer_contract is None:
+            raise ValueError(
+                "mapped soil arrays require an explicit soil_layer_contract")
+        policy = ruc_soil_remap_policy(soil_layer_contract)
+        contract = policy["contract"]
+        if (MAPPED_SOIL_TEMPERATURE not in fields
+                or MAPPED_SOIL_MOISTURE not in fields):
+            raise KeyError(
+                "declarative mapped soil input requires temperature and "
+                "moisture arrays together")
+        temperature = _host(fields[MAPPED_SOIL_TEMPERATURE])
+        moisture = _host(fields[MAPPED_SOIL_MOISTURE])
+        sample_count = len(policy["sample_depths"])
+        if (temperature.shape != moisture.shape
+                or temperature.shape[0] != sample_count):
+            raise ValueError(
+                "declarative mapped soil arrays must both carry "
+                f"{sample_count} leading {policy['declaration']} samples; got "
+                f"temperature {temperature.shape} and moisture "
+                f"{moisture.shape}")
+        # The mapped route's OWN two bounded moisture repairs, applied to
+        # the source samples RUC integrates exactly as
+        # gpuwm/ingest/soil.py's mapped branch applies them to the Noah
+        # copy (which this arm discards): the bound-kissing decode clamp,
+        # then the counted +-0.05 WPS sixteen_pt overshoot clamp -- "the
+        # mapped twin of the native route's convex-bilinear soil
+        # divergence".  A value beyond the margin is left untouched so
+        # the fail-closed range refusal downstream
+        # (gpuwm/core/ruc.py:ruc_initialize_cold_start's 0..1 check, the
+        # refusal that found this seam) still sees it exactly as decoded.
+        from gpuwm.ingest.quantization import clamp_bound_kissing
+
+        moisture, _ = clamp_bound_kissing(moisture, minimum=0.0, maximum=1.0)
+        overshoot_margin = 0.05
+        overshoot = (
+            (moisture < 0.0) & (moisture >= -overshoot_margin)
+        ) | (
+            (moisture > 1.0) & (moisture <= 1.0 + overshoot_margin)
         )
+        if bool(overshoot.any()):
+            import sys as _sys
+
+            exceedance = float(np.max(np.where(
+                overshoot,
+                np.maximum(-moisture, moisture - 1.0), 0.0)))
+            print(
+                "mapped soil moisture (RUC "
+                f"{policy['policy']}): WPS sixteen_pt "
+                f"overshoot clamped to [0, 1] on "
+                f"{int(np.count_nonzero(overshoot))} value(s) (largest "
+                f"exceedance {exceedance:.4f}); same bounded repair as the "
+                "mapped Noah branch, applied to the source column RUC "
+                "integrates", file=_sys.stderr)
+            repaired = moisture.copy()
+            repaired[overshoot] = np.clip(repaired[overshoot], 0.0, 1.0)
+            moisture = repaired
+        del contract
+        levels_cm = np.array(policy["sample_depths"], dtype=np.int64)
+        return (temperature, moisture, levels_cm,
+                str(policy["geometry"]),
+                int(policy["depth_scale_per_m"]))
 
     if "SOILT" in fields and "SOILW" in fields:
         # HRRR's native depth nodes ARE RUC's nine levels, bit for bit --
@@ -568,7 +654,7 @@ def _source_soil_profiles(fields, soil_layer_contract):
             [int(round(depth * 100.0)) for depth in RUC_LEVEL_DEPTHS_M[9]],
             dtype=np.int64)
         return (_host(fields["SOILT"]), _host(fields["SOILW"]),
-                levels_cm, _LEVEL_SOURCE)
+                levels_cm, _LEVEL_SOURCE, 100)
 
     if all(name in fields for name in _GFS_TEMP_NAMES):
         names, moist_names, prefix = (
@@ -584,7 +670,7 @@ def _source_soil_profiles(fields, soil_layer_contract):
         [_midpoint_cm(name, prefix) for name in names], dtype=np.int64)
     return (np.stack([_host(fields[name]) for name in names]),
             np.stack([_host(fields[name]) for name in moist_names]),
-            levels_cm, _LAYER_SOURCE)
+            levels_cm, _LAYER_SOURCE, 100)
 
 
 def preprocess_ruc_soil(
@@ -683,8 +769,8 @@ def preprocess_ruc_soil(
     # Selected BEFORE the Noah call, so a source RUC has no arm for is
     # refused by name rather than by whatever preprocess_noah_soil says
     # about it first.
-    temperature, moisture, levels_cm, geometry = _source_soil_profiles(
-        fields, soil_layer_contract)
+    (temperature, moisture, levels_cm, geometry,
+     depth_scale) = _source_soil_profiles(fields, soil_layer_contract)
 
     surface = preprocess_noah_soil(
         fields, soil_type=soil_type,
@@ -750,6 +836,7 @@ def preprocess_ruc_soil(
         sea_surface_temperature=None,
         num_soil_layers=num_soil_layers,
         moisture_adjustment=False,
+        source_depth_scale=depth_scale,
     )
 
     return RucSoilState(

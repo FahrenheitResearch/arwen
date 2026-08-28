@@ -29,6 +29,20 @@ installs) under the same verification.  ``GPUWM_TABLE_ASSET_URL_BASE``
 overrides the download base URL (mirrors); the asset filename is
 appended to it either way.
 
+``--wif`` adds ONE more externalized asset to the same transaction: the
+225 MB ``QNWFA_QNIFA_SIGMA_MONTHLY.dat`` global monthly aerosol
+climatology the mp=28 WIF ingest reads
+(:mod:`gpuwm.ingest.wif_dataset` holds its pin and its acquisition
+route).  It is opt-in rather than default because it is an INPUT
+DATASET, not a coefficient table: no scheme selection makes it
+mandatory, only ``aer_init_opt=1`` with ``wif_input_opt=1`` does, and a
+default install must not be asked for a quarter-gigabyte it will never
+open.  It stages into ``~/.gpuwm/wif`` -- its own root, because a table
+root is validated as a complete set and a WPS intermediate file inside
+one would make "complete" unanswerable -- under the identical
+verify-then-atomically-install contract, since the reason both files
+are externalized is one reason: the release checklist's size gates.
+
 WHERE the bytes land moved once, deliberately.  This command used to
 stage into whatever ``thompson_table_root()`` resolved to, which on a
 wheel install is *inside site-packages* -- so the 315 MiB a user had
@@ -92,6 +106,18 @@ _TRANSFER_BLOCK_BYTES = 1024 * 1024
 def asset_url_base() -> str:
     override = os.environ.get(ASSET_URL_BASE_ENV)
     return override.rstrip("/") if override else RELEASE_ASSET_BASE_URL
+
+
+def wif_asset_url_base() -> str:
+    """Where ``--wif`` downloads from.
+
+    The same override and the same default base as the coefficient
+    tables: one externalization policy, not two.  Kept as its own
+    function so the WIF row can be pointed at a mirror on its own the
+    day the two are hosted apart, without a caller learning which.
+    """
+
+    return asset_url_base()
 
 
 class TableAssetError(RuntimeError):
@@ -373,6 +399,16 @@ def fetch_asset_from_dir(root: Path, asset: TableAsset,
 def fetch_tables_main(args) -> int:
     from gpuwm.physics_compat import packaged_thompson_table_root
 
+    # The WIF leg runs FIRST and independently.  `--wif` alone must be
+    # able to stage the input dataset on a box whose coefficient tables
+    # are already complete, and a coefficient-table refusal must not
+    # leave the reader wondering whether the dataset landed.
+    if getattr(args, "wif", False):
+        code = stage_wif_dataset(getattr(args, "from_dir", None),
+                                 getattr(args, "wif_root", None))
+        if code or getattr(args, "wif_only", False):
+            return code
+
     root = staging_root(getattr(args, "root", None))
     packaged = packaged_thompson_table_root()
     if not root.is_dir():
@@ -463,6 +499,77 @@ def fetch_tables_main(args) -> int:
     return 0
 
 
+def stage_wif_dataset(source_dir=None, root=None) -> int:
+    """Stage the mp=28 WIF climatology dataset under the table contract.
+
+    The bytes are verified against
+    :data:`gpuwm.ingest.wif_dataset.WIF_DATASET_ASSET` -- exact size then
+    SHA-256 -- BEFORE the atomic move, an existing file with the wrong
+    bytes is refused rather than overwritten, and a present, valid file
+    costs one hash and exits 0.  That is ``_stage``'s contract unchanged;
+    only the root and the pin differ, because the reason this file is
+    externalized is the same reason ``freezeH2O.dat`` is.
+    """
+
+    from gpuwm.ingest.wif_dataset import (
+        WIF_DATASET_ASSET, WIF_DATASET_FILE, resolve_wif_data_root)
+
+    wif_root = resolve_wif_data_root(root)
+    try:
+        wif_root.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        print(f"gpuwm fetch-tables --wif: cannot create WIF data root "
+              f"{wif_root}: {error}")
+        return 2
+    final = wif_root / WIF_DATASET_FILE
+    mib = WIF_DATASET_ASSET.bytes / (1024 * 1024)
+    if final.is_file():
+        try:
+            _verify_in_place(final, WIF_DATASET_ASSET)
+        except TableAssetError as error:
+            print(f"gpuwm fetch-tables --wif: REFUSED: {error} -- an "
+                  "existing file is never overwritten; delete it and re-run")
+            return 2
+        print(f"gpuwm fetch-tables --wif: {final} already staged and "
+              f"byte-valid ({WIF_DATASET_ASSET.bytes:,} B, SHA-256 "
+              f"{WIF_DATASET_ASSET.sha256[:12]}...); nothing to fetch")
+        return 0
+    try:
+        if source_dir is not None:
+            print(f"gpuwm fetch-tables --wif: staging {WIF_DATASET_FILE} "
+                  f"({mib:.1f} MiB) from {source_dir}")
+            fetch_asset_from_dir(wif_root, WIF_DATASET_ASSET,
+                                 Path(source_dir))
+        else:
+            url = f"{wif_asset_url_base()}/{WIF_DATASET_FILE}"
+            print(f"gpuwm fetch-tables --wif: downloading "
+                  f"{WIF_DATASET_FILE} ({mib:.1f} MiB) from {url}")
+            fetch_asset_from_url(wif_root, WIF_DATASET_ASSET, url)
+    except TableAssetError as error:
+        print(f"gpuwm fetch-tables --wif: REFUSED: {error}")
+        return 2
+    print(f"gpuwm fetch-tables --wif: verified and installed {final} "
+          f"({WIF_DATASET_ASSET.bytes:,} B, SHA-256 "
+          f"{WIF_DATASET_ASSET.sha256[:12]}...)")
+    return 0
+
+
+def _verify_in_place(path: Path, asset: TableAsset) -> None:
+    """Size then SHA-256 of a file already in its final location."""
+
+    actual_bytes = path.stat().st_size
+    if actual_bytes != asset.bytes:
+        raise TableAssetError(
+            f"{path}: {actual_bytes} bytes, expected {asset.bytes}")
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while block := stream.read(_BLOCK_BYTES):
+            digest.update(block)
+    if digest.hexdigest() != asset.sha256:
+        raise TableAssetError(
+            f"{path}: SHA-256 {digest.hexdigest()}, expected {asset.sha256}")
+
+
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "fetch-tables",
@@ -476,6 +583,22 @@ def register_cli(subparsers) -> None:
         "--from", dest="from_dir", metavar="DIR", default=None,
         help="stage from a local directory instead of downloading "
              "(offline installs); verification is identical")
+    parser.add_argument(
+        "--wif", action="store_true",
+        help="also stage QNWFA_QNIFA_SIGMA_MONTHLY.dat (215 MiB), the "
+             "global monthly aerosol climatology the mp_physics=28 WIF "
+             "ingest reads (aer_init_opt=1 with wif_input_opt=1), into "
+             "~/.gpuwm/wif under the same SHA-256 contract.  Opt-in: it "
+             "is an input dataset, not a coefficient table, and no "
+             "default install opens it")
+    parser.add_argument(
+        "--wif-only", dest="wif_only", action="store_true",
+        help="with --wif, stage only that dataset and leave the "
+             "coefficient tables alone")
+    parser.add_argument(
+        "--wif-root", dest="wif_root", metavar="DIR", default=None,
+        help="stage the WIF dataset into DIR instead of ~/.gpuwm/wif "
+             "(same meaning as GPUWM_WIF_DATA_ROOT)")
     parser.set_defaults(func=fetch_tables_main)
     return parser
 
@@ -495,6 +618,8 @@ __all__ = [
     "register_cli",
     "require_thompson_tables",
     "staging_is_self_chosen",
+    "stage_wif_dataset",
     "staging_root",
     "unstaged_table_assets",
+    "wif_asset_url_base",
 ]

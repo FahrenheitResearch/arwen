@@ -41,6 +41,11 @@ pub struct OperatorFields {
     pub defc_a: Vec<f32>,
     pub defc_b: Vec<f32>,
     pub deriv_two: Vec<f32>, // [edge,side,15]
+    /// Regional meshes only: cells whose neighbour ring reaches a culled
+    /// cell, so their side of `deriv_two` is left 0 -- exactly what native
+    /// `atm_initialize_advection_rk` does on a limited-area mesh
+    /// (`cell_list(i) > nCells -> cycle`). 0 on a global mesh.
+    pub deriv_two_zero_stencil_cells: usize,
 }
 
 fn validate(mesh: &OperatorMesh<'_>) -> MpasResult<()> {
@@ -79,7 +84,13 @@ fn validate(mesh: &OperatorMesh<'_>) -> MpasResult<()> {
             let e = mesh.edges_on_cell[c * mesh.max_edges + s];
             let cn = mesh.cells_on_cell[c * mesh.max_edges + s];
             let v = mesh.vertices_on_cell[c * mesh.max_edges + s];
-            if e >= mesh.n_edges || cn >= mesh.n_cells || v >= mesh.x_vertex.len() {
+            // `usize::MAX` is the regional absent-neighbour sentinel: a
+            // culled cell beyond the outermost ring. Legitimate in
+            // cellsOnCell only; the deriv_two stencil skips such cells.
+            if e >= mesh.n_edges
+                || (cn >= mesh.n_cells && cn != usize::MAX)
+                || v >= mesh.x_vertex.len()
+            {
                 return Err(MpasError::Refusal(format!(
                     "corrupt topology at cell {c} slot {s}: edge={e}, neighbor={cn}, vertex={v}"
                 )));
@@ -107,7 +118,7 @@ fn norm(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
-fn sphere_angle(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+pub(crate) fn sphere_angle(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
     let side_a = arc_length(b, c);
     let side_b = arc_length(a, c);
     let side_c = arc_length(a, b);
@@ -257,6 +268,7 @@ pub fn build_operator_fields(mesh: &OperatorMesh<'_>) -> MpasResult<OperatorFiel
 
     let unit_north = [0.0, 0.0, 1.0];
     let pi = 2.0 * 1.0f64.asin();
+    let mut deriv_two_zero_stencil_cells = 0usize;
 
     for cell in 0..mesh.n_cells {
         let ne = mesh.n_edges_on_cell[cell];
@@ -334,6 +346,15 @@ pub fn build_operator_fields(mesh: &OperatorMesh<'_>) -> MpasResult<OperatorFiel
         }
 
         // --- deriv_two polynomial fit over cell center + neighboring cells ---
+        //
+        // The regional branch, exactly native `atm_initialize_advection_rk`:
+        // a cell whose neighbour ring reaches a culled cell is skipped and its
+        // side of deriv_two stays 0 (`if (cell_list(i) > nCells) ... cycle`).
+        // The absent centre is not in the file, so there is nothing to fit.
+        if (0..ne).any(|i| mesh.cells_on_cell[cell * mesh.max_edges + i] >= mesh.n_cells) {
+            deriv_two_zero_stencil_cells += 1;
+            continue;
+        }
         let mut nx = [0.0f64; FIFTEEN];
         let mut ny = [0.0f64; FIFTEEN];
         let mut neighbor_unit = [[0.0f64; 3]; FIFTEEN];
@@ -397,6 +418,7 @@ pub fn build_operator_fields(mesh: &OperatorMesh<'_>) -> MpasResult<OperatorFiel
         defc_a: defa,
         defc_b: defb,
         deriv_two: d2,
+        deriv_two_zero_stencil_cells,
     })
 }
 

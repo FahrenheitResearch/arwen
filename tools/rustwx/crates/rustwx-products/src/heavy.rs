@@ -27,6 +27,23 @@ use std::time::Instant;
 
 // Default allows regional heavy products like Midwest HRRR while still
 // forcing explicit opt-in for CONUS-scale parcel diagnostics.
+//
+// The audit of 2026-08-25 asked whether the crop had removed this
+// guard's premise. It has NOT, and the reason is one branch below:
+// `crop_and_guard_heavy_domain` classifies the intersection first, and a
+// view that COVERS the model grid takes `ProjectedGridIntersection::Full`,
+// where `cropped_cells = full_cells` -- the crop bounds nothing at all in
+// exactly the case this ceiling exists for (a CONUS-wide view of a
+// 1799x1059 = 1.9M-cell source grid). The trigger condition is live.
+//
+// What is NOT settled is the THRESHOLD VALUE: 1.5M was never timed
+// against 3M. That measurement needs the production HRRR product path on
+// an otherwise idle box (an in-tree timing on a 117k-cell wrfout, taken
+// beside concurrent GPU work, was contaminated and is deliberately not
+// quoted here). Protocol recorded in
+// evidence/2026-08-25-stale-guards-engine/named-follow-ups.md: same
+// cycle twice over a ~3M-cell extent, RUSTWX_MAX_HEAVY_CELLS at 1.5M vs
+// 3M, compared on HeavyComputeTiming.
 const DEFAULT_MAX_HEAVY_CELLS: usize = 1_500_000;
 const MAX_HEAVY_CELLS_ENV: &str = "RUSTWX_MAX_HEAVY_CELLS";
 pub const HEAVY_MAP_WIDTH: u32 = 1200;

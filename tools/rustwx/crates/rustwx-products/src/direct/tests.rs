@@ -567,6 +567,70 @@ fn pivotal_lambert_variant_keeps_global_geographic_grids_on_robinson() {
     );
 }
 
+/// One batch, two panels, two DIFFERENT projections -- the measured
+/// finding behind the georeference feature.  A regional CONUS panel is
+/// drawn in a presentation Lambert and a global panel in Robinson, so any
+/// consumer that assumes one transform per batch is wrong on arrival.
+/// Pinned here so a future single-transform assumption fails loudly, and
+/// pinned through `panel_resolved_projection` -- the function that
+/// PUBLISHES the transform -- rather than through the projection ladder
+/// alone, so the published answer itself carries the difference.  The
+/// Lambert's resolved reference latitude is asserted too: it exists only
+/// on the RESOLVED projection, which is why publishing the spec alone
+/// under-determined the map.
+#[test]
+fn one_batch_publishes_different_projections_for_regional_and_global_panels() {
+    let conus_grid = regular_geographic_grid_3x3();
+    let regional = panel_resolved_projection(
+        &conus_grid.lat_deg,
+        &conus_grid.lon_deg,
+        None,
+        (-127.0, -66.0, 23.0, 51.5),
+        16.0 / 9.0,
+    )
+    .expect("a CONUS panel must resolve a projection");
+
+    let global_grid = LatLonGrid::new(
+        GridShape::new(3, 3).unwrap(),
+        vec![-80.0, -80.0, -80.0, 0.0, 0.0, 0.0, 80.0, 80.0, 80.0],
+        vec![
+            -170.0, 0.0, 170.0, -170.0, 0.0, 170.0, -170.0, 0.0, 170.0,
+        ],
+    )
+    .unwrap();
+    let global = panel_resolved_projection(
+        &global_grid.lat_deg,
+        &global_grid.lon_deg,
+        None,
+        (-180.0, 180.0, -90.0, 90.0),
+        16.0 / 9.0,
+    )
+    .expect("a global panel must resolve a projection");
+
+    match regional {
+        rustwx_render::ResolvedProjection::LambertConformal {
+            reference_latitude_deg,
+            ..
+        } => assert_eq!(
+            reference_latitude_deg, PIVOTAL_CONUS_REFERENCE_LATITUDE_DEG,
+            "the resolved Lambert must carry the derived reference latitude \
+             the spec alone does not have"
+        ),
+        other => panic!("a CONUS panel must present in Lambert, got {other:?}"),
+    }
+    assert!(
+        matches!(
+            global,
+            rustwx_render::ResolvedProjection::Robinson { .. }
+        ),
+        "a global panel must present in Robinson, got {global:?}"
+    );
+    assert_ne!(
+        regional, global,
+        "two panels of one batch must be free to publish different projections"
+    );
+}
+
 #[test]
 fn albers_variant_uses_conus_equal_area_regionally_and_robinson_globally() {
     let conus_bounds = (-127.0, -66.0, 23.0, 51.5);

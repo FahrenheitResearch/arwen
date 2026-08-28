@@ -575,6 +575,13 @@ pub struct HrrrWindowedRenderedProduct {
     pub output_path: PathBuf,
     pub timing: HrrrWindowedProductTiming,
     pub metadata: HrrrWindowedProductMetadata,
+    /// What the finished PNG maps to on the Earth, when the save path
+    /// could publish it (gpuwm addition, VENDOR.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub georeference: Option<rustwx_render::PanelGeoReference>,
+    /// Why `georeference` is `None`, from the save path itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub georeference_absent_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1578,12 +1585,26 @@ fn run_hrrr_windowed_batch_from_prepared_with_total_start(
     };
 
     let project_start = Instant::now();
+    // One ratio local feeds the map build and the published projection
+    // below, so the two can never disagree.
+    let target_ratio =
+        map_frame_aspect_ratio(request.output_width, request.output_height, true, true);
     let projected = crate::direct::build_projected_map_with_projection(
         &domain_grid.lat_deg,
         &domain_grid.lon_deg,
         prepared.projection.as_ref(),
         request.domain.bounds,
-        map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
+        target_ratio,
+    )?;
+    // gpuwm addition (VENDOR.md): the transform every windowed panel of
+    // this batch publishes, resolved once from EXACTLY the arguments the
+    // map build above took.
+    let resolved_projection = crate::direct::panel_resolved_projection(
+        &domain_grid.lat_deg,
+        &domain_grid.lon_deg,
+        prepared.projection.as_ref(),
+        request.domain.bounds,
+        target_ratio,
     )?;
     let project_ms = project_start.elapsed().as_millis();
 
@@ -1634,6 +1655,8 @@ fn run_hrrr_windowed_batch_from_prepared_with_total_start(
                         model,
                         source,
                     );
+                    render_request.resolved_projection = Some(resolved_projection);
+                    render_request.geographic_bounds = Some(request.domain.bounds);
                     if let Some(overlay) = request.place_label_overlay.as_ref() {
                         crate::apply_place_label_overlay_with_density_styling(
                             &mut render_request,
@@ -1645,7 +1668,7 @@ fn run_hrrr_windowed_batch_from_prepared_with_total_start(
                         )
                         .map_err(thread_windowed_error)?;
                     }
-                    save_png_profile_with_options(
+                    let save_timing = save_png_profile_with_options(
                         &render_request,
                         &output_path,
                         &request.png_write_options(),
@@ -1664,6 +1687,8 @@ fn run_hrrr_windowed_batch_from_prepared_with_total_start(
                                 total_ms: render_ms,
                             },
                             metadata: computed.metadata,
+                            georeference: save_timing.georeference,
+                            georeference_absent_reason: save_timing.georeference_absent_reason,
                         },
                     })
                 }),

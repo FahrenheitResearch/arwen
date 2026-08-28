@@ -80,7 +80,8 @@ from gpuwm.core.ruc import (RUC_DRIVER_ARW_FORCING,
                             ruc_initialize_cold_start, ruc_soil_geometry)
 from gpuwm.core.ruc_contract import (NUM_SOIL_LAYERS,
                                      RUC_PACKAGE_STATE_FIELDS,
-                                     RUC_SOIL_LEVELS_M)
+                                     RUC_SOIL_LEVELS_M,
+                                     WRF_SUPPORTED_NUM_SOIL_LAYERS)
 from gpuwm.core.surface_forcing import SurfacePrecipitationForcing
 
 #: The vegetation dataset identifier gpuwm's land-use ingest produces, and the
@@ -138,7 +139,8 @@ RUC_STATE_2D = (
     "tsnav", "sfcexc", "sfcevp", "qvg", "qcg", "qsg", "dew",
 )
 
-#: Registry RUC package, 3-D half.  ``(NUM_SOIL_LAYERS, ny, nx)``.
+#: Registry RUC package, 3-D half.  ``(num_soil_layers, ny, nx)`` at
+#: whichever admitted geometry the run resolved.
 RUC_STATE_3D = ("smfr3d", "keepfr3dflag")
 
 #: The driver locals gpuwm publishes as diagnostics.  WRF keeps all four as
@@ -511,7 +513,13 @@ class RucRuntimeParameters:
     def __init__(
             self, bundle=None, *,
             dataset_identifier: str = DEFAULT_VEGETATION_DATASET,
-            seaice_albedo_default: float = SEAICE_ALBEDO_DEFAULT):
+            seaice_albedo_default: float = SEAICE_ALBEDO_DEFAULT,
+            num_soil_layers: int = NUM_SOIL_LAYERS):
+        if int(num_soil_layers) not in WRF_SUPPORTED_NUM_SOIL_LAYERS:
+            raise ValueError(
+                f"RUC num_soil_layers {num_soil_layers!r} is not one of "
+                f"{WRF_SUPPORTED_NUM_SOIL_LAYERS}")
+        self.num_soil_layers = int(num_soil_layers)
         self.bundle = load_ruc_parameters() if bundle is None else bundle
         self.dataset_identifier = str(dataset_identifier)
         value = float(seaice_albedo_default)
@@ -523,7 +531,7 @@ class RucRuntimeParameters:
         # Raises on a dataset gpuwm.core.ruc has no RUC VEGPARM section for,
         # rather than silently falling back to another table.
         self.vegetation = self.bundle.vegetation_for(self.dataset_identifier)
-        self.zs, self.dzs = ruc_soil_geometry()
+        self.zs, self.dzs = ruc_soil_geometry(self.num_soil_layers)
         # module_sf_ruclsm.F has no ISWATER/ISICE table scalar for the RUC
         # sections, so gpuwm.core.ruc resolves them from the section name.
         # Left as None here so exactly one implementation of that rule
@@ -549,8 +557,19 @@ class RucRuntimeParameters:
                           "phys/module_sf_sfcdiags_ruclsm.F:SFCDIAGS_RUCLSM",
             "dataset_identifier": self.dataset_identifier,
             "vegetation_section": self.vegetation.name,
-            "num_soil_layers": int(NUM_SOIL_LAYERS),
-            "soil_level_depths_m": [float(v) for v in RUC_SOIL_LEVELS_M],
+            # The RESOLVED count, not the module constant.  A
+            # nine-level constant in a six-level run's receipt is a false
+            # receipt, and a receipt is the thing a later reader trusts.
+            "num_soil_layers": int(self.num_soil_layers),
+            "soil_level_depths_m": [float(v) for v in self.zs],
+            # What the geometry's numbers have actually been judged against.
+            # Nine levels is compared field for field to WRF v4.6.1 fixtures;
+            # six has a compiled column, host/device agreement and WRF-matched
+            # LEVEL DEPTHS, but no forecast oracle at all.  Never let a
+            # receipt imply otherwise.
+            "soil_geometry_evidence": (
+                "wrf-oracle" if self.num_soil_layers == NUM_SOIL_LAYERS
+                else "internal-consistency-only"),
             "xice_threshold": float(XICE_THRESHOLD),
             "seaice_albedo_default": float(self.seaice_albedo_default),
             "isncovr_opt": int(ISNCOVR_OPT),
@@ -585,10 +604,16 @@ def ruc_cold_start(fields, *, params: RucRuntimeParameters) -> None:
     slab = {name: np.ascontiguousarray(cp.asnumpy(fields[name]))
             for name in ("tslb", "smois", "sh2o", "isltyp", "ivgtyp",
                          "xice", "mavail", "znt", "smfr3d")}
-    if slab["tslb"].shape[0] != NUM_SOIL_LAYERS:
+    resolved = int(slab["tslb"].shape[0])
+    if resolved not in WRF_SUPPORTED_NUM_SOIL_LAYERS:
         raise ValueError(
-            "RUC cold start needs a nine-level soil column, got "
-            f"{slab['tslb'].shape[0]}")
+            "RUC cold start needs a soil column at one of WRF's tabulated "
+            f"geometries {WRF_SUPPORTED_NUM_SOIL_LAYERS}, got {resolved}")
+    if resolved != params.num_soil_layers:
+        raise ValueError(
+            f"RUC cold start got a {resolved}-level soil column but the "
+            f"runtime parameters resolved {params.num_soil_layers} levels; "
+            "the slab and the geometry must be the same run")
     cold = ruc_initialize_cold_start(
         slab["tslb"], slab["smois"], slab["isltyp"], slab["ivgtyp"],
         slab["xice"], mminlu=params.dataset_identifier,

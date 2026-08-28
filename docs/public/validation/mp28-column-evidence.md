@@ -758,8 +758,11 @@ of §6.1's table — 5.6× fewer droplets and +74% domain-total surface rain.
 That is an endpoint magnitude inferred from a different experiment, not a
 measured trajectory difference, and it should be read as an order of
 magnitude for how much this matters, not as a number to quote. It is the
-largest *open* item on this page because, unlike §6.1, nothing closes it
-short of a QNWFA/QNIFA ingest lane.
+largest *open* item on this page. Note what does **not** close it: the
+QNWFA/QNIFA ingest lane landed (§6.5) and fixes the INITIAL condition, but it
+is an initialization route only — no aerosol crosses a specified lateral
+boundary, so the ventilation described above is unchanged. Closing this needs
+an aerosol LBC lane, which does not exist.
 
 ### 6.3 Four column residuals remain, and one of them is worse than it was
 
@@ -773,28 +776,56 @@ and the fact that this fixture got **worse** in this revision, its level-6
 `qr` growing 3.667e-05 → 4.443e-05 as the direct price of pinning the
 terminal apply's contraction, while four others got better.
 
-### 6.4 MYNN will not mix `nc`/`nwfa`/`nifa` — **latent in the v1 scope**
+### 6.4 MYNN mixes the `qn` family when it is asked to — **D9d CLOSED**
 
-`gpuwm/core/mynn_pbl.py` passes `flag_qnc`/`flag_qnwfa`/`flag_qnifa` as
-literal `False`. WRF mixes them when `bl_mynn_mixscalars > 0`. At ArWen's
-pinned MYNN identity that switch is 0 and WRF's own `check_a_mundo` keeps
-`scalar_pblmix` at 0 too, so in the shipped scope the two models agree; the
-divergence is latent, not active. It becomes active the moment
-`bl_mynn_mixscalars` is lit. Deviation **D9d**. (Snow *is* now mixed:
+This section used to record that `gpuwm/core/mynn_pbl.py` passed
+`flag_qnc`/`flag_qnwfa`/`flag_qnifa` as literal `False`, so WRF's
+`bl_mynn_mixscalars > 0` mixing had no ArWen counterpart and the divergence
+was latent rather than active.
+
+`bl_mynn_mixscalars` is now admitted at `{0, 1}` and implemented:
+`gpuwm/core/mynn_scalar_mix.py` and its device twin carry WRF's own qn solves
+(`module_bl_mynn.F:4654-4860`) plus the `scalar_opt > 0` DMP updraft-flux
+terms, and `gpuwm/core/mynn_pbl_runtime.py` drives the `flag_qn*` flags true
+for the five stock species when the switch is 1. The default remains
+`bl_mynn_mixscalars = 0` — WRF's Registry default — so the shipped default
+trajectory is unchanged; what changed is that lighting the switch now mixes
+the qn family as WRF does instead of silently doing nothing.
+
+The `1` arm is admitted only under the combination its anchored oracle
+fixtures were generated at and the runtime was wired for: `bl_pbl_physics = 5`
+(MYNN), `mp_physics = 28` (the one scheme whose state carries the qn family),
+and `bldt = 0`. Anything else refuses by name. (Snow *is* mixed:
 `flag_qs` is true for mp=28, matching `Registry.EM_COMMON:3036`, which was
 a separate defect and is closed.)
 
-### 6.5 WRF's `real.exe` refuses the configuration ArWen runs — **procedural**
+### 6.5 ArWen now runs the configuration `real.exe` admits — **D9a CLOSED**
 
-`dyn_em/module_initialize_real.F:2734-2736` fatals with
-`wif_input_opt=0 but mp_physics=28`. The microphysics ArWen runs is WRF's
-line for line; the admission decision is not. The consequence that matters:
-an ArWen mp=28 run and a WIF-initialised WRF mp=28 run are **not** directly
-comparable, and a comparison between them must not be reported as one. That
-sentence is carried in `gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION` so it
-reaches the namelist importer's receipt and every `validate_run_config`
-refusal. Deviation **D9a**. (The citation was **re-verified for this
-revision** against a full stock WRF v4.6.1 tree: `:2734-2735` is the
+This section used to say the opposite. `dyn_em/module_initialize_real.F:2734-2736`
+fatals with `wif_input_opt=0 but mp_physics=28`, and ArWen had no WIF ingest,
+so it ran the case WRF's initializer refuses and an ArWen mp=28 run was
+**not** directly comparable to a WIF-initialised WRF mp=28 run.
+
+That is no longer the configuration ArWen runs. `gpuwm/ingest/wif_climatology.py`
+ports WRF's global monthly QNWFA/QNIFA climatology
+(`QNWFA_QNIFA_SIGMA_MONTHLY.dat`) — metgrid's `four_pt` horizontal
+interpolation, `real.exe`'s `monthly_interp_to_date` temporal weighting, and
+its `vert_interp` onto the dry eta pressure — matched to `real.exe` to 1e-5,
+and a real-data mp=28 run takes it **by default**
+(`RunConfig.mp28_aerosol_source = "auto"`). That is the state `real.exe`
+reaches through `use_aero_icbc = .true.` → `aer_init_opt = 1` with
+`wif_input_opt = 1`, so the two initial conditions are the same one and the
+runs **are** directly comparable. The constant that carried the old warning,
+`gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION`, was retired with the deviation;
+`MP28_AEROSOL_SOURCE_DEFAULT` and `MP28_AEROSOL_SYNTHETIC_FALLBACK` replace it.
+
+**What survives.** When no dataset can be located, `"auto"` falls back to
+`thompson_init`'s synthetic CCN/IN profile — a real initial condition, but a
+different experiment — and says so by name in the run receipt. A run that fell
+back is not comparable to a WIF-initialised WRF run;
+`mp28_aerosol_source = "climatology"` refuses rather than falling back, and
+`"synthetic"` selects the fallback deliberately. (The `real.exe` citation was
+**re-verified** against a full stock WRF v4.6.1 tree: `:2734-2735` is the
 `ELSE IF (config_flags%mp_physics .EQ. THOMPSONAERO .and.
 config_flags%wif_input_opt .EQ. 0 )` test and `:2736` is the
 `CALL wrf_error_fatal`. Earlier revisions of this page said it had not

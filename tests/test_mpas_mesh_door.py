@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -30,8 +31,16 @@ if str(REPO_ROOT) not in sys.path:
 
 from gpuwm import bridge_assets, bridges, mpas_mesh
 
-#: The three artifacts this crate builds and nothing shipped.
-MPAS_ARTIFACTS = ("rw_mpas_mesh", "rw_mpas_init", "rw_mpas_convert")
+#: The artifacts this crate builds and nothing shipped.  ``rw_mpas_lbc``
+#: is the fourth and it arrived in the same state as the other three:
+#: a declared ``[[bin]]`` that every release cut BUILT, that no bundle
+#: carried, and that no check reported -- so the only way to get it was
+#: a Rust toolchain and a source checkout.  It is the other half of the
+#: limited-area route (``rw_mpas_mesh --cull-parent`` cuts the mesh;
+#: this produces the boundary series that mesh is driven by), so its
+#: absence made the cull's output a file nothing could run.
+MPAS_ARTIFACTS = ("rw_mpas_mesh", "rw_mpas_init", "rw_mpas_convert",
+                  "rw_mpas_lbc")
 
 
 # ---------------------------------------------------------------------------
@@ -277,8 +286,45 @@ def _git(*args: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True)
 
 
+#: Where the MPAS port declares the ArWen build it is pinned to.  The
+#: pin is LIVE state in the port checkout, not a record in this tree.
+_PORT_PIN_SOURCE = Path("src") / "mpas_port" / "cuda_arwen_physics_v841.py"
+_PORT_CHECKOUT_ENV = "GPUWM_HEX_TREE"
+
+
+def _port_checkout() -> Path | None:
+    """Find the MPAS port checkout whose live pin sizes this door.
+
+    ``GPUWM_HEX_TREE`` names it outright; otherwise the port checkout
+    is looked for as ``gpuwm-hex/tree`` beside any ancestor of this
+    repository (which also finds it from a worktree under
+    ``.claude/worktrees/``).
+    """
+
+    override = os.environ.get(_PORT_CHECKOUT_ENV)
+    if override:
+        checkout = Path(override)
+        return checkout if (checkout / _PORT_PIN_SOURCE).is_file() else None
+    for ancestor in Path(REPO_ROOT).resolve().parents:
+        checkout = ancestor / "gpuwm-hex" / "tree"
+        if (checkout / _PORT_PIN_SOURCE).is_file():
+            return checkout
+    return None
+
+
+def _port_live_arwen_pin(checkout: Path) -> str:
+    source = (checkout / _PORT_PIN_SOURCE).read_text(encoding="utf-8")
+    match = re.search(
+        r'^ARWEN_BUILD_COMMIT\s*=\s*"([0-9a-f]{7,40})"', source, flags=re.M)
+    assert match, (
+        f"{checkout / _PORT_PIN_SOURCE} no longer declares "
+        "ARWEN_BUILD_COMMIT, so the port's live pin cannot be read and "
+        "the frame-staleness gate below has nothing to compare against")
+    return match.group(1)
+
+
 def test_the_frame_the_fixed_term_is_derived_from_cannot_go_stale():
-    """The frame names a build, and that build has not moved past its cut.
+    """The frame names a build, and the port's LIVE pin has not passed its cut.
 
     The whole fixed term is derived from ONE kernel frame, and that
     frame is a property of the BUILD.  The build in question is the
@@ -287,14 +333,22 @@ def test_the_frame_the_fixed_term_is_derived_from_cannot_go_stale():
     default stack.  So the number is right and the label is what makes
     it checkable.
 
+    The staleness comparison MUST use the port's live
+    ``ARWEN_BUILD_COMMIT``.  Until 2026-08-25 this test compared the cut
+    against the table's own frozen ``measured_against_arwen_commit``,
+    which by construction predates the cut -- so the watchdog stayed
+    green through two pin moves while the exact condition it names had
+    occurred (stale-guard audit 2026-08-25, finding 2, ledger #347).
+
     The breakage, both directions, because the frame and the residues
     are one measurement set and each residue was obtained by
     SUBTRACTING the store this frame derives:
 
-    * the pin advances to or past the cut and the frame does not: the
-      store stays priced at 2,895.7 MiB on a 70 SM part when the real
-      one is near zero, the fixed term comes out thousands of MiB high,
-      and the door under-sizes -- the card is wasted quietly.
+    * the pin advances to or past the cut (the #294 frame cut) and the
+      frame does not: the store stays priced at 2,895.7 MiB on a 70 SM
+      part when the real one is near zero, the fixed term comes out
+      thousands of MiB high, and the door under-sizes -- the card is
+      wasted quietly.
     * the frame is updated to a post-cut build and the residues are not:
       the derived store falls to 841.6 MiB, and 841.6 plus an unchanged
       2,488.3 MiB residue gives 3,330 MiB against the pinned build's
@@ -305,28 +359,39 @@ def test_the_frame_the_fixed_term_is_derived_from_cannot_go_stale():
     """
 
     store = mpas_mesh.load_sizing().cards["rtx-5090"].local_store
-    pin = store.measured_against_arwen_commit
+    recorded = store.measured_against_arwen_commit
     cut = store.frame_cut_commit
-    assert pin and cut, (
+    assert recorded and cut, (
         "the frame block names no build, so the frame silently means "
         "whichever checkout the reader assumes")
-    assert pin != cut
+    assert recorded != cut
 
     if _git("rev-parse", "--git-dir").returncode != 0:
-        pytest.skip("not a git checkout, so the pin cannot be resolved")
+        pytest.skip("not a git checkout, so no commit can be resolved")
 
-    for name, rev in (("pin", pin), ("frame cut", cut)):
+    checkout = _port_checkout()
+    if checkout is None:
+        pytest.skip(
+            "no MPAS port checkout (gpuwm-hex/tree beside an ancestor, "
+            f"or ${_PORT_CHECKOUT_ENV}), so the port's live ArWen pin "
+            "cannot be read; the frame-staleness condition is a property "
+            "of that live pin and is UNCHECKED on this machine")
+    pin = _port_live_arwen_pin(checkout)
+
+    for name, rev in (("recorded build", recorded), ("frame cut", cut),
+                      ("port's live pin", pin)):
         assert _git("cat-file", "-e", f"{rev}^{{commit}}").returncode == 0, (
             f"the {name} commit {rev} does not resolve in this "
             "repository, so nothing can check what build the footprint "
             "model describes")
 
-    # The pin has to PREDATE the cut.  `--is-ancestor cut pin` succeeds
-    # exactly when the pin is at or past the cut, which is the stale case.
+    # The LIVE pin has to PREDATE the cut.  `--is-ancestor cut pin`
+    # succeeds exactly when the pin is at or past the cut, which is the
+    # stale case.
     assert _git("merge-base", "--is-ancestor", cut, pin).returncode != 0, (
-        f"the MPAS port's ArWen pin {pin} is at or past {cut}, the commit "
-        "that cut the frame the footprint model derives its fixed term "
-        "from.  Every residue in the sizing table was measured by "
+        f"the MPAS port's live ArWen pin {pin} is at or past {cut}, the "
+        "commit that cut the frame the footprint model derives its fixed "
+        "term from.  Every residue in the sizing table was measured by "
         "subtracting a store computed from the PRE-cut frame, so the "
         "fixed terms are now over-priced by thousands of MiB and every "
         "mesh is under-sized.  Re-measure the frame AND every residue on "

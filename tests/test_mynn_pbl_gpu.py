@@ -786,7 +786,9 @@ def test_mynn_mass_flux_tendencies_cuda_reject_nondefault_knobs():
     inputs = {name: cp.asarray(value) for name, value in host.items()}
     for knob, bad in (
         ("bl_mynn_cloudmix", 0), ("bl_mynn_mixqt", 1), ("bl_mynn_edmf", 2),
-        ("bl_mynn_edmf_mom", 2), ("bl_mynn_mixscalars", 1),
+        # W4 mixscalars GPU admission: 1 is now routed (anchored fixtures,
+        # probe_mynn_scalar_mix_gpu); every other nonzero value refused.
+        ("bl_mynn_edmf_mom", 2), ("bl_mynn_mixscalars", 2),
     ):
         with pytest.raises(ValueError, match=knob):
             mynn_tendencies_default_cuda(inputs, **{knob: bad})
@@ -794,6 +796,16 @@ def test_mynn_mass_flux_tendencies_cuda_reject_nondefault_knobs():
         mynn_tendencies_default_cuda(inputs, flag_qi=False)
     with pytest.raises(ValueError, match="FLAG_QNBCA"):
         mynn_tendencies_default_cuda(inputs, flag_qnbca=True)
+    # The device mixscalars lane admits ONLY the fixture combo: all five
+    # qn flags true and every qn/s_awqn input present (CPU twin pins the
+    # same surface).
+    with pytest.raises(ValueError, match="FLAG_QNC true"):
+        mynn_tendencies_default_cuda(inputs, bl_mynn_mixscalars=1)
+    with pytest.raises(TypeError, match="mixscalars"):
+        mynn_tendencies_default_cuda(
+            inputs, bl_mynn_mixscalars=1, flag_qnc=True, flag_qni=True,
+            flag_qnwfa=True, flag_qnifa=True, flag_qnbca=True,
+        )
     missing = dict(inputs)
     del missing["sd_awv"]
     with pytest.raises(TypeError, match="sd_awv"):
@@ -1174,10 +1186,28 @@ def test_mynn_dmp_mf_cuda_rejects_nondefault_knobs_and_shape_drift():
     values = device("land_cumulus")
     for knob, bad in (
         ("bl_mynn_edmf_mom", 0), ("bl_mynn_edmf_tke", 1),
-        ("bl_mynn_mixscalars", 1), ("spp_pbl", 1),
+        # W4 mixscalars GPU admission: the device DMP lane now ROUTES 1
+        # through the sibling unit (kernels/mynn_dmp_sibling.cu), so the
+        # value this loop must refuse is the next one out.  The tendencies
+        # twin (test_mynn_mass_flux_tendencies_cuda_reject_nondefault_knobs)
+        # moved 1 -> 2 for exactly this reason and this file's DMP-MF twin
+        # was missed, which is the gap this line closes: the loop went on
+        # asserting ValueError for an admitted value and passed only
+        # because the call happened to fail LATER, on arity, with a
+        # DIFFERENT exception type.
+        ("bl_mynn_mixscalars", 2), ("spp_pbl", 1),
     ):
         with pytest.raises(ValueError, match=knob):
             mynn_dmp_mf_cuda(values, **{knob: bad})
+    # ADMITTED, but not on THIS fixture.  mixscalars=1 additionally
+    # requires the five qn columns and this is the mixscalars=0 fixture,
+    # so it is refused by ARITY and not by knob -- a TypeError naming the
+    # inputs, not a ValueError naming the knob.  Pinned separately because
+    # that is the distinction the loop above can no longer draw for this
+    # knob, and asserting it here is what keeps 1 from silently becoming
+    # refused again.
+    with pytest.raises(TypeError, match="mixscalars"):
+        mynn_dmp_mf_cuda(values, bl_mynn_mixscalars=1)
     with pytest.raises(ValueError, match="mix_chem"):
         mynn_dmp_mf_cuda(values, mix_chem=True)
     missing = dict(values)

@@ -319,23 +319,43 @@ def _render_child_toml(config: dict, *, tiles_mode: str | None = None) -> str:
 def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
                     run_seconds: float, output_interval_s: float,
                     vram_gib: float) -> int:
-    """Largest centered square child whose itemized estimate fits VRAM.
+    """Largest centered square child whose peak envelope fits the card.
 
-    Budget convention follows the domain wizard: card capacity minus the
-    flat near-capacity reserve.  The fit criterion applies the allocator
-    headroom and the observed peak envelope to the child's itemized
-    resident+transient subtotal -- a conservative standalone-domain
-    reading of the experiment path's ``footprint x envelope <= budget``
-    gate, with the platform-conditional envelope factor
-    (:func:`gpuwm.core.preflight.peak_envelope_factor`).
+    Budget and criterion are the live sizing path's, the same arithmetic
+    the domain wizard and ``gpuwm check`` price with: the free VRAM a
+    card of this capacity really presents
+    (:func:`gpuwm.domain_wizard.card_assumed_free_gib`) minus the
+    external margin, against the AFFINE machine-peak envelope
+    (:func:`gpuwm.core.preflight.estimate_experiment` ->
+    ``peak_envelope_bytes``), stopping short of the budget by
+    :func:`gpuwm.domain_wizard.fit_headroom_bytes`.
+
+    This used to bind two RETIRED constants -- the flat
+    ``vram_reserve_gib`` and the multiplicative
+    ``observed_peak_envelope_bytes`` (the 1.75x WDDM floor that
+    predicted 3.8x the measured peak on the calibration card) -- so it
+    refused children the card holds (stale-guard audit 2026-08-25,
+    finding 4).  MEASURED 2026-08-26 on the RTX 3080 10 GiB, real
+    386x308 12 km GFS parent, ratio 3: the retired pair admitted
+    282x282; this criterion admits 342x342, and the 342x342 child RAN
+    WHOLE through this door -- 360 steps, 7,200 s simulated, PASS,
+    machine-wide peak 9.24 of 10.24 GB.  Evidence:
+    evidence/2026-08-25-stale-guards-engine/.
     """
-    from gpuwm.core.preflight import (
-        ALLOCATOR_HEADROOM, GIB, estimate_domain,
-        observed_peak_envelope_bytes)
-    from gpuwm.domain_wizard import vram_reserve_gib
-    from gpuwm.experiment import DomainConfig
+    from datetime import datetime, timezone
 
-    budget = (float(vram_gib) - vram_reserve_gib(float(vram_gib))) * GIB
+    from gpuwm.core.preflight import (
+        EXTERNAL_MARGIN_BYTES, GIB, estimate_experiment)
+    from gpuwm.domain_wizard import card_assumed_free_gib, fit_headroom_bytes
+    from gpuwm.experiment import experiment_from_run_config
+
+    free_bytes = int(card_assumed_free_gib(float(vram_gib)) * GIB)
+    budget = free_bytes - EXTERNAL_MARGIN_BYTES
+    limit = budget - fit_headroom_bytes(budget)
+    # The memory model is start-time independent; the wrapper needs A
+    # datetime, and the child's real clock comes from the parent frames
+    # at run time.
+    estimate_epoch = datetime(2000, 1, 1, tzinfo=timezone.utc)
     # A size-INDEPENDENT invalidity in the parent's restart-evidence
     # config must surface as itself: every probe used to swallow it and
     # the search then reported "no child fits the budget" -- a VRAM
@@ -360,16 +380,9 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
             return False
         from gpuwm.config import RunConfig
         run = RunConfig(**merged)
-        dc = DomainConfig(
-            grid_id=run.grid_id, parent_id=0, i_parent_start=1,
-            j_parent_start=1, parent_grid_ratio=1,
-            parent_time_step_ratio=1,
-            history_interval_s=float(output_interval_s), run=run)
-        estimate = estimate_domain(dc, n_lbc_intervals=1)
-        subtotal = estimate.resident_bytes + estimate.transient_bytes
-        peak = observed_peak_envelope_bytes(
-            math.ceil(ALLOCATOR_HEADROOM * subtotal))
-        if peak <= budget:
+        exp = experiment_from_run_config(run, estimate_epoch)
+        estimate = estimate_experiment(exp, vram_gib=float(vram_gib))
+        if estimate.peak_envelope_bytes <= limit:
             any_size_fit = True
             return True
         return False

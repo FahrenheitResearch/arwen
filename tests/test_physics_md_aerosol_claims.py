@@ -1345,22 +1345,23 @@ _SIBLING_TEXTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "docs/public/CONFIGURATION.md": ("CONFIGURATION.md", (
         r"(?i)\bruns?\s+it\s+on\s+`?thompson_init`?'s\s+\*?synthetic",
     )),
-    # Scanned as the IMPORTED constant, not as source text: the value is
-    # assembled from adjacent string literals, so the sentence is split
-    # across lines in the file and only exists whole at runtime.
-    "gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION": (
-        "MP28_AEROSOL_SOURCE_DEVIATION", (
-            r"(?i)comes\s+from\s+`?thompson_init`?'s\s+\*?synthetic",
-        )),
+    # RETIRED (lane/wif-default).  This row scanned the imported constant
+    # gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION for the sentence "comes
+    # from thompson_init's synthetic profile".  The constant no longer
+    # exists -- the default it described was flipped to WRF's monthly WIF
+    # aerosol climatology, and fixing a defect retires its guards.  The
+    # sentence it carried did not vanish; it moved to
+    # MP28_AEROSOL_SYNTHETIC_FALLBACK, where it is TRUE of the branch it
+    # names, so scanning it as a wrongness claim would now be wrong itself.
+    # The fallback constant's own wording is pinned by
+    # tests/test_mp28_runnable.py instead.
 }
 
 
 def _sibling_text(key: str) -> str:
     """The text to scan for ``key`` -- a file, or an imported constant."""
-    if key == "gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION":
-        from gpuwm.config import MP28_AEROSOL_SOURCE_DEVIATION
-
-        return MP28_AEROSOL_SOURCE_DEVIATION
+    # (The imported-constant branch retired with
+    # MP28_AEROSOL_SOURCE_DEVIATION; every remaining key is a file.)
     return _read(ROOT / key)
 
 

@@ -1,6 +1,7 @@
 use crate::direct::{
     build_projected_map, build_projected_map_with_projection,
     build_requested_projected_map_with_projection, inverse_raster_projection_for_grid,
+    panel_resolved_projection, requested_panel_resolved_projection,
 };
 use rustwx_core::{CanonicalBundleDescriptor, Field2D, ModelId, ProductKey, SourceId};
 use rustwx_render::{
@@ -111,6 +112,26 @@ fn build_derived_projected_map_with_projection(
         )
     } else {
         build_projected_map_with_projection(lat_deg, lon_deg, projection, bounds, target_ratio)
+    }
+}
+
+/// The resolved projection of a panel drawn on a map from
+/// [`build_derived_projected_map_with_projection`]: the SAME model branch,
+/// so an RRFS-A panel resolves through the requested-frame options and
+/// every other model through the two-branch presentation choice -- exactly
+/// what the map builder above did (gpuwm addition, VENDOR.md).
+fn derived_panel_resolved_projection(
+    model: ModelId,
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&rustwx_core::GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<rustwx_render::ResolvedProjection, Box<dyn std::error::Error>> {
+    if matches!(model, ModelId::RrfsA) {
+        requested_panel_resolved_projection(lat_deg, lon_deg, projection, bounds, target_ratio)
+    } else {
+        panel_resolved_projection(lat_deg, lon_deg, projection, bounds, target_ratio)
     }
 }
 
@@ -948,6 +969,8 @@ fn run_derived_batch_from_loaded_bundles_with_precomputed(
                 output_path,
                 content_identity,
                 input_fetch_keys: input_fetch_keys.clone(),
+                georeference: save_timing.georeference,
+                georeference_absent_reason: save_timing.georeference_absent_reason,
                 timing: DerivedRecipeTiming {
                     render_to_image_ms: save_timing.png_timing.render_to_image_ms,
                     data_layer_draw_ms: derived_data_layer_draw_ms(
@@ -2792,6 +2815,20 @@ fn render_derived_heavy_recipe(
     )?;
     render_request.chrome_scale = static_chrome_scale();
     render_request.title = Some(derived_title_for_request(request, recipe.title()));
+    // gpuwm addition (VENDOR.md): publish this panel's transform from the
+    // SAME arguments every caller's `build_derived_projected_map_with_projection`
+    // took for the `projected` map passed in beside `grid` -- the model
+    // branch, the caller's mesh, `request.domain.bounds`, and the one
+    // ratio expression every derived map build in this file uses.
+    render_request.resolved_projection = Some(derived_panel_resolved_projection(
+        model,
+        &grid.lat_deg,
+        &grid.lon_deg,
+        projection,
+        request.domain.bounds,
+        map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
+    )?);
+    render_request.geographic_bounds = Some(request.domain.bounds);
     if let Some(subtitle_left) = render_overrides.subtitle_left {
         render_request.subtitle_left = Some(subtitle_left.to_string());
     }
@@ -2825,6 +2862,8 @@ fn render_derived_heavy_recipe(
         output_path,
         content_identity,
         input_fetch_keys,
+        georeference: save_timing.georeference,
+        georeference_absent_reason: save_timing.georeference_absent_reason,
         timing: DerivedRecipeTiming {
             render_to_image_ms: save_timing.png_timing.render_to_image_ms,
             data_layer_draw_ms: derived_data_layer_draw_ms(&save_timing.png_timing.image_timing),
@@ -3433,6 +3472,23 @@ fn render_derived_output_recipe(
         crate::plot_design::static_domain_frame_for_bounds(request.domain.bounds);
     render_request.inverse_raster_projection =
         inverse_raster_projection_for_grid(projection, request.domain.bounds, grid_ref);
+    // gpuwm addition (VENDOR.md): publish this panel's transform from the
+    // SAME arguments every caller's `build_derived_projected_map_with_projection`
+    // took for `projected_ref` -- the model branch, `grid_ref`'s mesh,
+    // `request.domain.bounds`, and the one ratio expression every derived
+    // map build in this file uses.
+    render_request.resolved_projection = Some(
+        derived_panel_resolved_projection(
+            model,
+            &grid_ref.lat_deg,
+            &grid_ref.lon_deg,
+            projection,
+            request.domain.bounds,
+            map_frame_aspect_ratio(request.output_width, request.output_height, true, true),
+        )
+        .map_err(thread_render_error)?,
+    );
+    render_request.geographic_bounds = Some(request.domain.bounds);
     let title = derived_title_for_request(request, recipe.title());
     render_request.title = Some(title.clone());
     if let Some(subtitle_left) = render_overrides.subtitle_left {
@@ -3472,6 +3528,8 @@ fn render_derived_output_recipe(
         output_path,
         content_identity,
         input_fetch_keys: lane_fetch_keys,
+        georeference: save_timing.georeference,
+        georeference_absent_reason: save_timing.georeference_absent_reason,
         timing: DerivedRecipeTiming {
             render_to_image_ms: save_timing.png_timing.render_to_image_ms,
             data_layer_draw_ms: derived_data_layer_draw_ms(&save_timing.png_timing.image_timing),

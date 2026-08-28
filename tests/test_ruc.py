@@ -173,7 +173,7 @@ def test_cold_start_does_not_mutate_inputs_and_rejects_bad_contracts():
     for actual, expected in zip(fields, originals):
         np.testing.assert_array_equal(actual, expected)
 
-    with pytest.raises(ValueError, match=r"shape \(9"):
+    with pytest.raises(ValueError, match=r"shape \(6 or 9"):
         ruc_initialize_cold_start(fields[0][:-1], fields[1][:-1], *fields[2:])
     with pytest.raises(TypeError, match="integer WRF categories"):
         ruc_initialize_cold_start(
@@ -840,7 +840,7 @@ def test_sea_ice_step_forces_ice_state_and_rejects_contract_drift():
         ruc_sea_ice_step(bad, delt=60.0)
     bad = dict(values)
     bad["capice"] = bad["capice"][:-1]
-    with pytest.raises(ValueError, match=r"shape \(9"):
+    with pytest.raises(ValueError, match=r"shape \(6 or 9"):
         ruc_sea_ice_step(bad, delt=60.0)
     with pytest.raises(ValueError, match="positive"):
         ruc_sea_ice_step(values, delt=0.0)
@@ -1115,7 +1115,7 @@ def test_snow_preparation_rejects_bad_contracts():
         ruc_snow_preparation(bad, **keywords)
     bad = dict(values)
     bad["ts1d"] = bad["ts1d"][:-1]
-    with pytest.raises(ValueError, match=r"shape \(9"):
+    with pytest.raises(ValueError, match=r"shape \(6 or 9"):
         ruc_snow_preparation(bad, **keywords)
 
     # The block leaves its inputs alone; the caller's arrays are not touched.
@@ -1480,7 +1480,7 @@ def test_snow_sea_ice_step_covers_every_snow_regime_and_rejects_drift():
         ruc_snow_sea_ice_step(bad, delt=60.0)
     bad = dict(values)
     bad["capice"] = bad["capice"][:-1]
-    with pytest.raises(ValueError, match=r"shape \(9"):
+    with pytest.raises(ValueError, match=r"shape \(6 or 9"):
         ruc_snow_sea_ice_step(bad, delt=60.0)
     bad = dict(values)
     bad["rhosn"] = np.zeros_like(bad["rhosn"])
@@ -1949,7 +1949,7 @@ def test_snow_temperature_step_preserves_inputs_and_rejects_contract_drift():
         ruc_snow_temperature_step(bad, delt=60.0)
     bad = dict(values)
     bad["cap"] = bad["cap"][:-1]
-    with pytest.raises(ValueError, match=r"shape \(9"):
+    with pytest.raises(ValueError, match=r"shape \(6 or 9"):
         ruc_snow_temperature_step(bad, delt=60.0)
     with pytest.raises(ValueError, match="delt must be finite and positive"):
         ruc_snow_temperature_step(values, delt=0.0)

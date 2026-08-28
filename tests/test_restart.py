@@ -2711,10 +2711,111 @@ def _member_names(path) -> list[str]:
 #: the ``placement`` header field and the ``acoustic/ww_pp`` carrier,
 #: both absent-tolerant on restore -- a checkpoint written before the
 #: move still restores; these pins state the format going FORWARD.
+#:
+#: Re-pinned at the mp=28 WIF-climatology config addition: ``RunConfig``
+#: gained ``wif_climatology_path`` at its inert "" default and
+#: ``mp28_aerosol_source`` at "auto", so the header's CONFIG ECHO grew by
+#: two keys and the two hashes derived from it --
+#: ``physics_setup.configuration_sha256`` and
+#: ``physics_setup_fingerprint`` -- moved with it.  Those are the WHOLE
+#: diff, and that is MEASURED rather than asserted: the reconstruction
+#: below drops the two keys from a live checkpoint's echo, recomputes the
+#: two hashes exactly as the writer computes them, and recovers BOTH
+#: pre-lane digests byte for byte.  A second change riding in under this
+#: re-pin fails there instead of being absorbed here.
+#:
+#: What this re-pin does NOT claim: that a pre-lane checkpoint still
+#: resumes.  It does not.  ``configuration_sha256`` hashes the whole
+#: RunConfig, so ANY field addition invalidates every checkpoint written
+#: before it; that is this tree's existing behaviour for every
+#: config-surface addition and it is not what these pins measure.
 _LIFECYCLE_FREE_ROOT_DIGEST = \
-    "194bd6a0613231ab32c41bdb3fb19dd99c5357f08b2b6e052d7ab5adc1704a98"
+    "7d150fce6815011a346a964073f5b411285a5e0ef21aec4d456449a3fcd90b0c"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
+    "1d0fb6fe7550a8969247a54da8fcebaea106f0d4d80fc5250a4217e793305585"
+
+#: The values these pins carried immediately before the two mp=28 aerosol
+#: config keys landed, kept so the reconstruction has something to
+#: reconstruct.
+_PRE_WIF_ROOT_DIGEST = \
+    "194bd6a0613231ab32c41bdb3fb19dd99c5357f08b2b6e052d7ab5adc1704a98"
+_PRE_WIF_CHILD_DIGEST = \
     "6c8b3f3a6f73961d2b8dcddd6f4c93ec0873dd05039c37716d27fef3dcc2c8f4"
+
+#: The two RunConfig fields the mp=28 aerosol lanes appended.
+_WIF_CONFIG_KEYS = ("mp28_aerosol_source", "wif_climatology_path")
+
+
+def _digest_without_the_wif_config_keys(path) -> str:
+    """The canonical member digest as it would read WITHOUT the two keys.
+
+    Same construction as :func:`_canonical_member_digest`, with exactly
+    three substitutions: the two new keys are dropped from the config
+    echo, and the two hashes the writer derives from that echo are
+    recomputed from the trimmed one using the writer's own helpers.
+    Every array member is hashed unchanged.
+    """
+    import copy
+
+    with np.load(path, allow_pickle=False) as data:
+        header = json.loads(bytes(bytearray(
+            data[restart._HEADER_KEY])).decode("utf-8"))
+        for name in _VOLATILE_CHECKPOINT_HEADER:
+            header.pop(name, None)
+        for key in _WIF_CONFIG_KEYS:
+            header["config"].pop(key, None)
+        values = {key: value for key, value in header["config"].items()
+                  if key not in restart.CONFIG_RUN_LENGTH_FIELDS
+                  and key not in restart.CONFIG_DIAGNOSTIC_FIELDS}
+        setup = copy.deepcopy(header["physics_setup"])
+        setup["configuration_sha256"] = restart._json_sha256(
+            restart._json_value(values, "RunConfig"))
+        header["physics_setup"] = setup
+        header["physics_setup_fingerprint"] = restart._json_sha256(setup)
+        digest = hashlib.sha256()
+        digest.update(json.dumps(header, sort_keys=True).encode("utf-8"))
+        for name in sorted(data.files):
+            if name == restart._HEADER_KEY:
+                continue
+            host = data[name]
+            digest.update(name.encode("utf-8"))
+            digest.update(str(host.dtype).encode("utf-8"))
+            digest.update(str(host.shape).encode("utf-8"))
+            digest.update(host.tobytes(order="C"))
+        return digest.hexdigest()
+
+
+def test_the_checkpoint_pins_moved_for_the_two_wif_keys_and_nothing_else(
+        monkeypatch, tmp_path):
+    """The attribution for the re-pin above, as a gate rather than a claim.
+
+    THE CONCRETE BREAKAGE THIS PREVENTS: a checkpoint-FORMAT change -- a
+    moved header key, a renamed array member, a dtype that widened --
+    riding into the tree inside a config-addition re-pin.  Both digests
+    above would move, both would be updated, and the format change would
+    be invisible, because "we added a config field" explains a moved
+    digest.  Here it does not: the two keys are removed and the two
+    derived hashes recomputed, so anything ELSE that moved leaves the
+    reconstruction short of the pre-lane value and this fails.
+    """
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
+
+    assert (_digest_without_the_wif_config_keys(root_path)
+            == _PRE_WIF_ROOT_DIGEST)
+    assert (_digest_without_the_wif_config_keys(child_path)
+            == _PRE_WIF_CHILD_DIGEST)
+
+    # And the two keys really are in the echo, so the reconstruction is
+    # removing something rather than succeeding vacuously.
+    with np.load(root_path, allow_pickle=False) as data:
+        echo = json.loads(bytes(bytearray(
+            data[restart._HEADER_KEY])).decode("utf-8"))["config"]
+    for key in _WIF_CONFIG_KEYS:
+        assert key in echo, key
 
 
 def test_a_lifecycle_free_tree_checkpoint_is_byte_identical(

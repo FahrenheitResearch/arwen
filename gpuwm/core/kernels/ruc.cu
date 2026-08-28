@@ -26,6 +26,40 @@
 // pinned fixture reaches.  Replace all three with the glibc transcription when
 // it lands.
 
+// >>> RUC_NZS TIER LADDER >>>
+// The soil column's level count.  9 is the geometry this source keeps when
+// nothing overrides it, and every nine-level configuration compiles the
+// UNSPECIALIZED module -- no define is injected, so the string handed to
+// NVRTC is byte-identical to what module_source("ruc") assembles, and the
+// manifest key stays 'gpuwm.core.kernels:ruc'.  Exactly acoustic.cu's
+// WPHI_MAX_LEV ladder (:625-627), and selected the same way, through
+// gpuwm.core.kernels.get_kernel_int_defines.  gpuwm/core/ruc_gpu.py owns the
+// dispatch; tests/test_ruc_nzs_tier.py pins both halves of the claim.
+//
+// The M1/M2/M3/DTDZS_LEN macros are DERIVED HERE, as bare literals, and never
+// as arithmetic on RUC_NZS.  That is deliberate: `RUC_NZS_M2` expands to the
+// token `7` at the shipped geometry, where `RUC_NZS - 2` would expand to
+// `9 - 2`.  Bare literals make the nine-level preprocessed translation unit
+// token-for-token what it was before this ladder existed, which is how the
+// re-pinned mp=8 freeze digest is justified without a device measurement.
+#ifndef RUC_NZS
+#define RUC_NZS 9
+#endif
+#if RUC_NZS == 9
+#define RUC_NZS_M1 8
+#define RUC_NZS_M2 7
+#define RUC_NZS_M3 6
+#define RUC_DTDZS_LEN 14
+#elif RUC_NZS == 6
+#define RUC_NZS_M1 5
+#define RUC_NZS_M2 4
+#define RUC_NZS_M3 3
+#define RUC_DTDZS_LEN 8
+#else
+#error "RUC_NZS must be 6 or 9: share/module_soil_pre.F:init_soil_depth_3 tabulates zs for those lengths only"
+#endif
+// <<< RUC_NZS TIER LADDER <<<
+
 // RUC nine-level soil-layer midpoints, transcribed from WRF v4.6.1
 // share/module_soil_pre.F:1175 (SUBROUTINE init_soil_depth_3, the
 // num_soil_layers .EQ. 9 branch):
@@ -51,10 +85,30 @@
 // 12.8.93: a plain local literal array, asm()/asm volatile() movs, a
 // volatile local array, and __device__ static const -- the last of these
 // reproduces all 16 tests/test_ruc_gpu.py failures exactly.
-__constant__ real ruc_soil_layer_depth[9] = {
+// >>> RUC_NZS DEPTH TABLE >>>
+#if RUC_NZS == 9
+__constant__ real ruc_soil_layer_depth[RUC_NZS] = {
     0.00f, 0.01f, 0.04f, 0.10f, 0.30f,
     0.60f, 1.00f, 1.60f, 3.00f
 };
+#elif RUC_NZS == 6
+// share/module_soil_pre.F:1153-1194 (init_soil_depth_3), the
+// num_soil_layers .EQ. 6 branch:
+//     zs = (/ 0.00 , 0.05 , 0.20 , 0.40 , 1.60, 3.00 /)
+// The exact line of that branch is not cited because the WRF tree is not
+// vendored here and an unverified line number is worse than none; the
+// routine range is the one gpuwm/core/ruc_contract.py already carries.
+// These are the same float32 nearest values
+// gpuwm.ingest.ruc_soil.RUC_LEVEL_DEPTHS_M[6] carries and
+// gpuwm.core.ruc.ruc_soil_geometry(6) returns -- that table is the one
+// oracle-matched against WRF 4.7.1 real.exe (ZS 0 0.05 0.2 0.4 1.6 3), and
+// tests/test_ruc_nzs_tier.py pins the literals below against it bit for
+// bit, so the two transcriptions cannot drift.
+__constant__ real ruc_soil_layer_depth[RUC_NZS] = {
+    0.00f, 0.05f, 0.20f, 0.40f, 1.60f, 3.00f
+};
+#endif
+// <<< RUC_NZS DEPTH TABLE <<<
 
 // The 0.05 m and 0.01 m snow-layer thicknesses of
 // phys/module_sf_ruclsm.F:3387-3388, deltsn's first and snth's second.
@@ -239,7 +293,7 @@ void ruc_soil_phase_partition(
     real maximum = __fadd_rn(dqm, qmin);
     real exponent = __fdiv_rn(-one, bclh);
 
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         int index = level * ncolumn + column;
         soiliqw[index] = zero;
         soilice[index] = zero;
@@ -283,7 +337,7 @@ void ruc_soil_phase_partition(
         }
     }
 
-    for (int level = 0; level < 8; ++level) {
+    for (int level = 0; level < RUC_NZS_M1; ++level) {
         int index = level * ncolumn + column;
         int below = (level + 1) * ncolumn + column;
         real middle_temperature = __fmul_rn(
@@ -330,7 +384,7 @@ void ruc_soil_phase_partition(
     }
 
     if (update_smfrkeep) {
-        for (int level = 0; level < 9; ++level) {
+        for (int level = 0; level < RUC_NZS; ++level) {
             int index = level * ncolumn + column;
             smfrkeep[index] = soilice[index] > zero
                 ? soilice[index]
@@ -466,7 +520,7 @@ void ruc_soil_properties(
         ruc_powf_rn(conductivity_quartz, qwrtz),
         ruc_powf_rn(mineral, __fsub_rn(1.0f, qwrtz)));
 
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         int index = level * ncolumn + column;
         thdif[index] = 0.0f;
         diffu[index] = 0.0f;
@@ -474,7 +528,7 @@ void ruc_soil_properties(
         cap[index] = 0.0f;
     }
 
-    for (int level = 0; level < 8; ++level) {
+    for (int level = 0; level < RUC_NZS_M1; ++level) {
         int index = level * ncolumn + column;
         real middle_temperature = tav[index];
         real tn = __fsub_rn(middle_temperature, 273.15f);
@@ -554,7 +608,7 @@ void ruc_soil_properties(
         thdif[index] = __fdiv_rn(kjpl, capacity);
     }
 
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         int index = level * ncolumn + column;
         real level_ice = soilice[index];
         real ice = __fmul_rn(riw, level_ice);
@@ -606,7 +660,7 @@ void ruc_transpiration(
     (void)dqm;
     int nroot = nroot_a[column];
 
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         tranf[level * ncolumn + column] = 0.0f;
     }
     real minimum_moisture = qmin[column];
@@ -703,13 +757,13 @@ void ruc_soil_prepare_moisture(
 
     const real zero = 0.0f;
     const real* zsmain = ruc_soil_layer_depth;
-    real zshalf[9];
+    real zshalf[RUC_NZS];
     zshalf[0] = zero;
-    for (int level = 1; level < 9; ++level) {
+    for (int level = 1; level < RUC_NZS; ++level) {
         zshalf[level] = __fmul_rn(
             __fadd_rn(zsmain[level - 1], zsmain[level]), 0.5f);
     }
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         transp_out[level * ncolumn + column] = zero;
     }
 
@@ -786,17 +840,17 @@ void ruc_soil_moisture_step(
     const real one = 1.0f;
     const real minimum = 1.0e-8f;
     const real* zsmain = ruc_soil_layer_depth;
-    real zshalf[9];
-    real dtdzs[14];
-    real dtdzs2[9];
+    real zshalf[RUC_NZS];
+    real dtdzs[RUC_DTDZS_LEN];
+    real dtdzs2[RUC_NZS];
     zshalf[0] = 0.0f;
-    for (int level = 1; level < 9; ++level) {
+    for (int level = 1; level < RUC_NZS; ++level) {
         zshalf[level] = __fmul_rn(
             __fadd_rn(zsmain[level - 1], zsmain[level]), 0.5f);
     }
-    for (int index = 0; index < 14; ++index) dtdzs[index] = 0.0f;
-    for (int index = 0; index < 9; ++index) dtdzs2[index] = 0.0f;
-    for (int fortran_level = 2; fortran_level < 9; ++fortran_level) {
+    for (int index = 0; index < RUC_DTDZS_LEN; ++index) dtdzs[index] = 0.0f;
+    for (int index = 0; index < RUC_NZS; ++index) dtdzs2[index] = 0.0f;
+    for (int fortran_level = 2; fortran_level < RUC_NZS; ++fortran_level) {
         int first = 2 * fortran_level - 3;
         int second = first + 1;
         int level = fortran_level - 1;
@@ -810,17 +864,17 @@ void ruc_soil_moisture_step(
             x, __fsub_rn(zsmain[level + 1], zsmain[level]));
     }
 
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         int index = level * ncolumn + column;
         soilmois_out[index] = soilmois_in[index];
         soiliqw_out[index] = soiliqw_in[index];
     }
-    real cosmc[9] = {0.0f};
-    real rhsmc[9] = {0.0f};
+    real cosmc[RUC_NZS] = {0.0f};
+    real rhsmc[RUC_NZS] = {0.0f};
     cosmc[0] = 0.0f;
-    rhsmc[0] = soilmois_in[8 * ncolumn + column];
-    for (int step = 1; step < 8; ++step) {
-        int kn = 9 - step;
+    rhsmc[0] = soilmois_in[RUC_NZS_M1 * ncolumn + column];
+    for (int step = 1; step < RUC_NZS_M1; ++step) {
+        int kn = RUC_NZS - step;
         int first = 2 * kn - 3;
         real x4 = __fmul_rn(
             __fmul_rn(2.0f, dtdzs[first - 1]),
@@ -856,8 +910,8 @@ void ruc_soil_moisture_step(
     real runoff = 0.0f;
     real runoff2 = 0.0f;
     real dzs = zsmain[1];
-    real r1 = cosmc[7];
-    real r2 = rhsmc[7];
+    real r1 = cosmc[RUC_NZS_M2];
+    real r2 = rhsmc[RUC_NZS_M2];
     real r3 = __fdiv_rn(diffu[column], dzs);
     real r4 = __fadd_rn(r3, __fmul_rn(hydro[column], 0.5f));
     real r5 = __fsub_rn(
@@ -883,7 +937,7 @@ void ruc_soil_moisture_step(
         __fsub_rn(
             one, __fdiv_rn(soilmois_in[column], dqm)));
     real frozen_depth = __fmul_rn(soilice[column], zshalf[1]);
-    for (int level = 1; level < 8; ++level) {
+    for (int level = 1; level < RUC_NZS_M1; ++level) {
         int index = level * ncolumn + column;
         real thickness = __fsub_rn(zshalf[level + 1], zshalf[level]);
         frozen_depth = __fadd_rn(
@@ -1001,10 +1055,10 @@ void ruc_soil_moisture_step(
         soilmois_out[column] = fminf(dqm, fmaxf(minimum, candidate));
     }
 
-    for (int level = 1; level < 9; ++level) {
+    for (int level = 1; level < RUC_NZS; ++level) {
         int index = level * ncolumn + column;
         int previous = (level - 1) * ncolumn + column;
-        int coefficient = 8 - level;
+        int coefficient = RUC_NZS_M1 - level;
         candidate = __fadd_rn(
             __fmul_rn(cosmc[coefficient], soilmois_out[previous]),
             rhsmc[coefficient]);
@@ -1012,7 +1066,7 @@ void ruc_soil_moisture_step(
             soilmois_out[index] = minimum;
         } else if (candidate > dqm) {
             soilmois_out[index] = dqm;
-            real thickness = level == 8
+            real thickness = level == RUC_NZS_M1
                 ? __fsub_rn(zsmain[level], zshalf[level])
                 : __fsub_rn(zshalf[level + 1], zshalf[level]);
             runoff2 = __fadd_rn(
@@ -1146,15 +1200,15 @@ void ruc_soil_temperature_step(
     const real stbolt = 5.67051e-8f;
     const real freeze = 273.15f;
     const real* zsmain = ruc_soil_layer_depth;
-    real zshalf[9];
-    real dtdzs[14];
+    real zshalf[RUC_NZS];
+    real dtdzs[RUC_DTDZS_LEN];
     zshalf[0] = 0.0f;
-    for (int level = 1; level < 9; ++level) {
+    for (int level = 1; level < RUC_NZS; ++level) {
         zshalf[level] = __fmul_rn(
             __fadd_rn(zsmain[level - 1], zsmain[level]), half);
     }
-    for (int index = 0; index < 14; ++index) dtdzs[index] = 0.0f;
-    for (int fortran_level = 2; fortran_level < 9; ++fortran_level) {
+    for (int index = 0; index < RUC_DTDZS_LEN; ++index) dtdzs[index] = 0.0f;
+    for (int fortran_level = 2; fortran_level < RUC_NZS; ++fortran_level) {
         int first = 2 * fortran_level - 3;
         int second = first + 1;
         int level = fortran_level - 1;
@@ -1167,11 +1221,11 @@ void ruc_soil_temperature_step(
             x, __fsub_rn(zsmain[level + 1], zsmain[level]));
     }
 
-    real cotso[9] = {0.0f};
-    real rhtso[9] = {0.0f};
-    rhtso[0] = tso_in[8 * ncolumn + column];
-    for (int step = 0; step < 7; ++step) {
-        int kn = 8 - step;
+    real cotso[RUC_NZS] = {0.0f};
+    real rhtso[RUC_NZS] = {0.0f};
+    rhtso[0] = tso_in[RUC_NZS_M1 * ncolumn + column];
+    for (int step = 0; step < RUC_NZS_M2; ++step) {
+        int kn = RUC_NZS_M1 - step;
         int first = 2 * kn - 3;
         real x1 = __fmul_rn(
             dtdzs[first - 1], thdif[(kn - 2) * ncolumn + column]);
@@ -1208,8 +1262,8 @@ void ruc_soil_temperature_step(
     real can = __fadd_rn(wetcan_a[column], trans);
     real umveg = __fmul_rn(
         __fsub_rn(one, vegfrac_a[column]), soilres_a[column]);
-    real d1 = cotso[7];
-    real d2 = rhtso[7];
+    real d1 = cotso[RUC_NZS_M2];
+    real d2 = rhtso[RUC_NZS_M2];
     real tn = soilt_in[column];
     real qgold = qvg_in[column];
     real dzstop = __fdiv_rn(
@@ -1289,7 +1343,7 @@ void ruc_soil_temperature_step(
     }
     if (!valid) {
         real invalid = nanf("");
-        for (int level = 0; level < 9; ++level) {
+        for (int level = 0; level < RUC_NZS; ++level) {
             tso_out[level * ncolumn + column] = invalid;
         }
         soilt_out[column] = invalid;
@@ -1301,8 +1355,8 @@ void ruc_soil_temperature_step(
     }
 
     tso_out[column] = ts1;
-    for (int level = 1; level < 9; ++level) {
-        int coefficient = 8 - level;
+    for (int level = 1; level < RUC_NZS; ++level) {
+        int coefficient = RUC_NZS_M1 - level;
         tso_out[level * ncolumn + column] = __fadd_rn(
             rhtso[coefficient],
             __fmul_rn(
@@ -1388,9 +1442,30 @@ void ruc_soil_finalize(
     const real xlv = 2.5e6f;
     const real cp_air = 1004.5f;
     const real rovcp = __fdiv_rn(287.0f, cp_air);
-    const real dzstop = __fdiv_rn(one, __fsub_rn(0.01f, 0.0f));
+// >>> RUC_NZS DZSTOP >>>
+    // The ONE soil literal in this file that is a DEPTH rather than an
+    // extent, and the one the RUC_NZS sweep therefore walked past: it was
+    // `__fsub_rn(0.01f, 0.0f)`, WRF's nine-level zsmain(2) - zsmain(1)
+    // written out.  Correct while nine was the only geometry; at six levels
+    // zsmain(2) - zsmain(1) is 0.05, so this kernel divided by 0.01 and
+    // returned a ground heat flux five times too large -- MEASURED, before
+    // the fix, as grdflx = -337.1 W m-2 against the host lane's -67.4 on
+    // the same column, exactly a factor of 5.  Every other site in this
+    // file already reads the table (:1667, :2702, :3495); this one now
+    // does too, which is all the fix is.
+    //
+    // At nine levels ruc_soil_layer_depth[1] IS 0.01f and [0] IS 0.00f, so
+    // the subtraction, the divide and every number downstream of them are
+    // unchanged -- tests/test_ruc_nzs_device.py measures that on the
+    // hardware.  The PTX is not unchanged (a __constant__ load where an
+    // immediate was), which is why the sentinel exists: it keeps
+    // tests/test_ruc_nzs_tier.py's inversion to the pre-lift file exact,
+    // and keeps the ladder's own no-op claim separate from this fix's.
+    const real* zsmain = ruc_soil_layer_depth;
+    const real dzstop = __fdiv_rn(one, __fsub_rn(zsmain[1], zsmain[0]));
+// <<< RUC_NZS DZSTOP <<<
 
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         int index = level * ncolumn + column;
         if (soilice[index] > zero) {
             keepfr[index] = tso[index] > told[index]
@@ -1586,15 +1661,15 @@ void ruc_sea_ice_step(
     // share/module_soil_pre.F:1153-1194 nine-level RUC depths, and the
     // lsmruc-side zshalf/dtdzs construction sice consumes.
     const real* zsmain = ruc_soil_layer_depth;
-    real zshalf[9];
-    real dtdzs[14];
+    real zshalf[RUC_NZS];
+    real dtdzs[RUC_DTDZS_LEN];
     zshalf[0] = zero;
-    for (int level = 1; level < 9; ++level) {
+    for (int level = 1; level < RUC_NZS; ++level) {
         zshalf[level] = __fmul_rn(
             __fadd_rn(zsmain[level - 1], zsmain[level]), half);
     }
-    for (int index = 0; index < 14; ++index) dtdzs[index] = zero;
-    for (int fortran_level = 2; fortran_level < 9; ++fortran_level) {
+    for (int index = 0; index < RUC_DTDZS_LEN; ++index) dtdzs[index] = zero;
+    for (int fortran_level = 2; fortran_level < RUC_NZS; ++fortran_level) {
         int first = 2 * fortran_level - 3;
         int second = first + 1;
         int level = fortran_level - 1;
@@ -1613,11 +1688,11 @@ void ruc_sea_ice_step(
     real dzstop = __fdiv_rn(one, __fsub_rn(zsmain[1], zsmain[0]));
 
     // module_sf_ruclsm.F:2973-2989 upward tridiagonal sweep.
-    real cotso[9] = {0.0f};
-    real rhtso[9] = {0.0f};
-    rhtso[0] = tso_in[8 * ncolumn + column];
-    for (int step = 0; step < 7; ++step) {
-        int kn = 8 - step;
+    real cotso[RUC_NZS] = {0.0f};
+    real rhtso[RUC_NZS] = {0.0f};
+    rhtso[0] = tso_in[RUC_NZS_M1 * ncolumn + column];
+    for (int step = 0; step < RUC_NZS_M2; ++step) {
+        int kn = RUC_NZS_M1 - step;
         int first = 2 * kn - 3;
         real x1 = __fmul_rn(
             dtdzs[first - 1], thdifice[(kn - 2) * ncolumn + column]);
@@ -1648,8 +1723,8 @@ void ruc_sea_ice_step(
 
     // module_sf_ruclsm.F:2991-3016 heat balance (Smirnova et al. 1996).
     real rhcs = capice[column];
-    real d1 = cotso[7];
-    real d2 = rhtso[7];
+    real d1 = cotso[RUC_NZS_M2];
+    real d2 = rhtso[RUC_NZS_M2];
     real tn = soilt_in[column];
     real d9 = __fmul_rn(
         __fmul_rn(thdifice[column], rhcs), dzstop);
@@ -1702,7 +1777,7 @@ void ruc_sea_ice_step(
     real qs1, ts1;
     if (!ruc_vilka(tn, aa1, bb, pp, tbq, &qs1, &ts1)) {
         real invalid = nanf("");
-        for (int level = 0; level < 9; ++level) {
+        for (int level = 0; level < RUC_NZS; ++level) {
             tso_out[level * ncolumn + column] = invalid;
         }
         dew_out[column] = invalid;
@@ -1727,8 +1802,8 @@ void ruc_sea_ice_step(
 
     // module_sf_ruclsm.F:3037-3041 downward substitution, capped level by
     // level exactly as WRF caps it.
-    for (int level = 1; level < 9; ++level) {
-        int coefficient = 8 - level;
+    for (int level = 1; level < RUC_NZS; ++level) {
+        int coefficient = RUC_NZS_M1 - level;
         tso_out[level * ncolumn + column] = fminf(
             ice_cap,
             __fadd_rn(
@@ -2105,7 +2180,7 @@ void ruc_snow_preparation(
     real intersn = zero;
     real infwater = zero;
     // :1452-1458 - the ice column starts at zero on every point.
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         int index = level * ncolumn + column;
         tice_out[index] = zero;
         rhosice_out[index] = zero;
@@ -2122,7 +2197,7 @@ void ruc_snow_preparation(
 
     // :1471-1485 sea-ice column properties (Zubov) and the ice albedo.
     if (seaice >= 0.5f) {
-        for (int level = 0; level < 9; ++level) {
+        for (int level = 0; level < RUC_NZS; ++level) {
             int index = level * ncolumn + column;
             real tice = __fsub_rn(ts1d[index], freeze);
             real rhosice = __fdiv_rn(
@@ -2574,15 +2649,15 @@ void ruc_snow_sea_ice_step(
     // share/module_soil_pre.F:1153-1194 nine-level RUC depths, and the
     // lsmruc-side zshalf/dtdzs construction snowseaice consumes.
     const real* zsmain = ruc_soil_layer_depth;
-    real zshalf[9];
-    real dtdzs[14];
+    real zshalf[RUC_NZS];
+    real dtdzs[RUC_DTDZS_LEN];
     zshalf[0] = zero;
-    for (int level = 1; level < 9; ++level) {
+    for (int level = 1; level < RUC_NZS; ++level) {
         zshalf[level] = __fmul_rn(
             __fadd_rn(zsmain[level - 1], zsmain[level]), half);
     }
-    for (int index = 0; index < 14; ++index) dtdzs[index] = zero;
-    for (int fortran_level = 2; fortran_level < 9; ++fortran_level) {
+    for (int index = 0; index < RUC_DTDZS_LEN; ++index) dtdzs[index] = zero;
+    for (int fortran_level = 2; fortran_level < RUC_NZS; ++fortran_level) {
         int first = 2 * fortran_level - 3;
         int second = first + 1;
         int level = fortran_level - 1;
@@ -2661,11 +2736,11 @@ void ruc_snow_sea_ice_step(
     }
 
     // module_sf_ruclsm.F:4020-4032 upward tridiagonal sweep in the ice.
-    real cotso[9] = {0.0f};
-    real rhtso[9] = {0.0f};
-    rhtso[0] = tso_in[8 * ncolumn + column];
-    for (int step = 0; step < 7; ++step) {
-        int kn = 8 - step;
+    real cotso[RUC_NZS] = {0.0f};
+    real rhtso[RUC_NZS] = {0.0f};
+    rhtso[0] = tso_in[RUC_NZS_M1 * ncolumn + column];
+    for (int step = 0; step < RUC_NZS_M2; ++step) {
+        int kn = RUC_NZS_M1 - step;
         int first = 2 * kn - 3;
         real x1 = __fmul_rn(
             dtdzs[first - 1], thdifice[(kn - 2) * ncolumn + column]);
@@ -2726,12 +2801,12 @@ void ruc_snow_sea_ice_step(
             ft = __fsub_rn(ft, __fmul_rn(x2, __fsub_rn(tso1_in, tso2_in)));
             real denominator = __fadd_rn(one, x1sn);
             denominator = __fadd_rn(denominator, x2);
-            denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[7]));
-            cotso[8] = __fdiv_rn(x1sn, denominator);
-            rhtso[8] = __fdiv_rn(
-                __fadd_rn(ft, __fmul_rn(x2, rhtso[7])), denominator);
-            cotsn = cotso[8];
-            rhtsn = rhtso[8];
+            denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[RUC_NZS_M2]));
+            cotso[RUC_NZS_M1] = __fdiv_rn(x1sn, denominator);
+            rhtso[RUC_NZS_M1] = __fdiv_rn(
+                __fadd_rn(ft, __fmul_rn(x2, rhtso[RUC_NZS_M2])), denominator);
+            cotsn = cotso[RUC_NZS_M1];
+            rhtsn = rhtso[RUC_NZS_M1];
             tsnav = __fsub_rn(
                 __fmul_rn(half, __fadd_rn(soilt, tso1_in)), freeze);
         } else {
@@ -2756,20 +2831,20 @@ void ruc_snow_sea_ice_step(
             ft = __fsub_rn(ft, __fmul_rn(x2, __fsub_rn(tso1_in, tso2_in)));
             real denominator = __fadd_rn(one, x1sn1);
             denominator = __fadd_rn(denominator, x2);
-            denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[7]));
-            cotso[8] = __fdiv_rn(x1sn1, denominator);
-            rhtso[8] = __fdiv_rn(
-                __fadd_rn(ft, __fmul_rn(x2, rhtso[7])), denominator);
+            denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[RUC_NZS_M2]));
+            cotso[RUC_NZS_M1] = __fdiv_rn(x1sn1, denominator);
+            rhtso[RUC_NZS_M1] = __fdiv_rn(
+                __fadd_rn(ft, __fmul_rn(x2, rhtso[RUC_NZS_M2])), denominator);
             real ftsnow = __fadd_rn(
                 soilt1, __fmul_rn(x1sn, __fsub_rn(soilt, soilt1)));
             ftsnow = __fsub_rn(
                 ftsnow, __fmul_rn(x1sn1, __fsub_rn(soilt1, tso1_in)));
             real denomsn = __fadd_rn(one, x1sn);
             denomsn = __fadd_rn(denomsn, x1sn1);
-            denomsn = __fsub_rn(denomsn, __fmul_rn(x1sn1, cotso[8]));
+            denomsn = __fsub_rn(denomsn, __fmul_rn(x1sn1, cotso[RUC_NZS_M1]));
             cotsn = __fdiv_rn(x1sn, denomsn);
             rhtsn = __fdiv_rn(
-                __fadd_rn(ftsnow, __fmul_rn(x1sn1, rhtso[8])), denomsn);
+                __fadd_rn(ftsnow, __fmul_rn(x1sn1, rhtso[RUC_NZS_M1])), denomsn);
             tsnav = __fsub_rn(
                 __fmul_rn(
                     __fdiv_rn(half, snhei),
@@ -2805,23 +2880,23 @@ void ruc_snow_sea_ice_step(
         ft = __fsub_rn(ft, __fmul_rn(x2, __fsub_rn(tso2_in, tso3_in)));
         real denominator = __fadd_rn(one, x1sn);
         denominator = __fadd_rn(denominator, x2);
-        denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[6]));
-        cotso[7] = __fdiv_rn(x1sn, denominator);
-        rhtso[7] = __fdiv_rn(
-            __fadd_rn(ft, __fmul_rn(x2, rhtso[6])), denominator);
+        denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[RUC_NZS_M3]));
+        cotso[RUC_NZS_M2] = __fdiv_rn(x1sn, denominator);
+        rhtso[RUC_NZS_M2] = __fdiv_rn(
+            __fadd_rn(ft, __fmul_rn(x2, rhtso[RUC_NZS_M3])), denominator);
         tsnav = __fsub_rn(
             __fmul_rn(half, __fadd_rn(soilt, tso1_in)), freeze);
-        cotso[8] = cotso[7];
-        rhtso[8] = rhtso[7];
-        cotsn = cotso[8];
-        rhtsn = rhtso[8];
+        cotso[RUC_NZS_M1] = cotso[RUC_NZS_M2];
+        rhtso[RUC_NZS_M1] = rhtso[RUC_NZS_M2];
+        cotsn = cotso[RUC_NZS_M1];
+        rhtsn = rhtso[RUC_NZS_M1];
     }
 
     // module_sf_ruclsm.F:4114-4131 heat balance coefficients.
     epot = -__fmul_rn(qkms, __fsub_rn(qvatm, qsg));
     real rhcs = capice[column];
-    real d1 = cotso[7];
-    real d2 = rhtso[7];
+    real d1 = cotso[RUC_NZS_M2];
+    real d2 = rhtso[RUC_NZS_M2];
     real tn = soilt;
     real d9 = __fmul_rn(__fmul_rn(thdifice_top, rhcs), dzstop);
     real d10 = __fmul_rn(__fmul_rn(tkms, cp_air), rho);
@@ -2839,8 +2914,8 @@ void ruc_snow_sea_ice_step(
     // module_sf_ruclsm.F:4133-4163 snow-side coefficients.
     if (snhei >= snth) {
         if (snhei <= __fadd_rn(deltsn, snth)) {
-            d1sn = cotso[8];
-            d2sn = rhtso[8];
+            d1sn = cotso[RUC_NZS_M1];
+            d2sn = rhtso[RUC_NZS_M1];
         } else {
             d1sn = cotsn;
             d2sn = rhtsn;
@@ -2915,7 +2990,7 @@ void ruc_snow_sea_ice_step(
     real qs1, ts1;
     if (!ruc_vilka(tn, aa1, bb, pp, tbq, &qs1, &ts1)) {
         real invalid = nanf("");
-        for (int level = 0; level < 9; ++level) {
+        for (int level = 0; level < RUC_NZS; ++level) {
             tso_out[level * ncolumn + column] = invalid;
         }
         ilnb_out[column] = ilnb;
@@ -2958,17 +3033,17 @@ void ruc_snow_sea_ice_step(
         if (snhei > __fadd_rn(deltsn, snth)) {
             soilt1 = fminf(freeze, __fadd_rn(rhtsn, __fmul_rn(cotsn, soilt)));
             tso_out[column] = fminf(
-                ice_cap, __fadd_rn(rhtso[8], __fmul_rn(cotso[8], soilt1)));
+                ice_cap, __fadd_rn(rhtso[RUC_NZS_M1], __fmul_rn(cotso[RUC_NZS_M1], soilt1)));
             tsob = soilt1;
         } else {
             tso_out[column] = fminf(
-                ice_cap, __fadd_rn(rhtso[8], __fmul_rn(cotso[8], soilt)));
+                ice_cap, __fadd_rn(rhtso[RUC_NZS_M1], __fmul_rn(cotso[RUC_NZS_M1], soilt)));
             soilt1 = tso_out[column];
             tsob = tso_out[column];
         }
     } else if (thin) {
         tso_out[ncolumn + column] = fminf(
-            ice_cap, __fadd_rn(rhtso[7], __fmul_rn(cotso[7], soilt)));
+            ice_cap, __fadd_rn(rhtso[RUC_NZS_M2], __fmul_rn(cotso[RUC_NZS_M2], soilt)));
         tso_out[column] = fminf(
             ice_cap,
             __fadd_rn(
@@ -2984,8 +3059,8 @@ void ruc_snow_sea_ice_step(
     }
 
     // module_sf_ruclsm.F:4232-4243 downward substitution through the ice.
-    for (int level = thin ? 2 : 1; level < 9; ++level) {
-        int coefficient = 8 - level;
+    for (int level = thin ? 2 : 1; level < RUC_NZS; ++level) {
+        int coefficient = RUC_NZS_M1 - level;
         tso_out[level * ncolumn + column] = fminf(
             ice_cap,
             __fadd_rn(
@@ -3418,15 +3493,15 @@ void ruc_snow_temperature_step(
     // share/module_soil_pre.F:1153-1194 nine-level RUC depths, and the
     // lsmruc-side zshalf/dtdzs construction snowtemp consumes.
     const real* zsmain = ruc_soil_layer_depth;
-    real zshalf[9];
-    real dtdzs[14];
+    real zshalf[RUC_NZS];
+    real dtdzs[RUC_DTDZS_LEN];
     zshalf[0] = zero;
-    for (int level = 1; level < 9; ++level) {
+    for (int level = 1; level < RUC_NZS; ++level) {
         zshalf[level] = __fmul_rn(
             __fadd_rn(zsmain[level - 1], zsmain[level]), half);
     }
-    for (int index = 0; index < 14; ++index) dtdzs[index] = zero;
-    for (int fortran_level = 2; fortran_level < 9; ++fortran_level) {
+    for (int index = 0; index < RUC_DTDZS_LEN; ++index) dtdzs[index] = zero;
+    for (int fortran_level = 2; fortran_level < RUC_NZS; ++fortran_level) {
         int first = 2 * fortran_level - 3;
         int second = first + 1;
         int level = fortran_level - 1;
@@ -3442,8 +3517,8 @@ void ruc_snow_temperature_step(
 
     int root_count = nroot_a[column];
     int snow_layers = ilnb_in[column];
-    real tso[9];
-    for (int level = 0; level < 9; ++level) {
+    real tso[RUC_NZS];
+    for (int level = 0; level < RUC_NZS; ++level) {
         tso[level] = tso_in[level * ncolumn + column];
     }
     real snwe = snwe_in[column];
@@ -3497,15 +3572,15 @@ void ruc_snow_temperature_step(
     real tsnav = zero;
 
     // :5103-5115 upward tridiagonal sweep through the soil.
-    real cotso[9];
-    real rhtso[9];
-    for (int level = 0; level < 9; ++level) {
+    real cotso[RUC_NZS];
+    real rhtso[RUC_NZS];
+    for (int level = 0; level < RUC_NZS; ++level) {
         cotso[level] = zero;
         rhtso[level] = zero;
     }
-    rhtso[0] = tso[8];
-    for (int step = 0; step < 7; ++step) {
-        int kn = 8 - step;
+    rhtso[0] = tso[RUC_NZS_M1];
+    for (int step = 0; step < RUC_NZS_M2; ++step) {
+        int kn = RUC_NZS_M1 - step;
         int first = 2 * kn - 3;
         real x1 = __fmul_rn(dtdzs[first - 1], thdif[(kn - 2) * ncolumn + column]);
         real x2 = __fmul_rn(dtdzs[first], thdif[(kn - 1) * ncolumn + column]);
@@ -3539,12 +3614,12 @@ void ruc_snow_temperature_step(
             ft = __fsub_rn(ft, __fmul_rn(x2, __fsub_rn(tso[0], tso[1])));
             real denominator = __fadd_rn(one, x1sn);
             denominator = __fadd_rn(denominator, x2);
-            denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[7]));
-            cotso[8] = __fdiv_rn(x1sn, denominator);
-            rhtso[8] = __fdiv_rn(
-                __fadd_rn(ft, __fmul_rn(x2, rhtso[7])), denominator);
-            cotsn = cotso[8];
-            rhtsn = rhtso[8];
+            denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[RUC_NZS_M2]));
+            cotso[RUC_NZS_M1] = __fdiv_rn(x1sn, denominator);
+            rhtso[RUC_NZS_M1] = __fdiv_rn(
+                __fadd_rn(ft, __fmul_rn(x2, rhtso[RUC_NZS_M2])), denominator);
+            cotsn = cotso[RUC_NZS_M1];
+            rhtsn = rhtso[RUC_NZS_M1];
             tsnav = __fsub_rn(
                 __fmul_rn(half, __fadd_rn(soilt, tso[0])), freeze);
         } else {
@@ -3568,20 +3643,20 @@ void ruc_snow_temperature_step(
             ft = __fsub_rn(ft, __fmul_rn(x2, __fsub_rn(tso[0], tso[1])));
             real denominator = __fadd_rn(one, x1sn1);
             denominator = __fadd_rn(denominator, x2);
-            denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[7]));
-            cotso[8] = __fdiv_rn(x1sn1, denominator);
-            rhtso[8] = __fdiv_rn(
-                __fadd_rn(ft, __fmul_rn(x2, rhtso[7])), denominator);
+            denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[RUC_NZS_M2]));
+            cotso[RUC_NZS_M1] = __fdiv_rn(x1sn1, denominator);
+            rhtso[RUC_NZS_M1] = __fdiv_rn(
+                __fadd_rn(ft, __fmul_rn(x2, rhtso[RUC_NZS_M2])), denominator);
             real ftsnow = __fadd_rn(
                 soilt1, __fmul_rn(x1sn, __fsub_rn(soilt, soilt1)));
             ftsnow = __fsub_rn(
                 ftsnow, __fmul_rn(x1sn1, __fsub_rn(soilt1, tso[0])));
             real denomsn = __fadd_rn(one, x1sn);
             denomsn = __fadd_rn(denomsn, x1sn1);
-            denomsn = __fsub_rn(denomsn, __fmul_rn(x1sn1, cotso[8]));
+            denomsn = __fsub_rn(denomsn, __fmul_rn(x1sn1, cotso[RUC_NZS_M1]));
             cotsn = __fdiv_rn(x1sn, denomsn);
             rhtsn = __fdiv_rn(
-                __fadd_rn(ftsnow, __fmul_rn(x1sn1, rhtso[8])), denomsn);
+                __fadd_rn(ftsnow, __fmul_rn(x1sn1, rhtso[RUC_NZS_M1])), denomsn);
             tsnav = __fmul_rn(__fadd_rn(soilt, soilt1), deltsn);
             tsnav = __fadd_rn(
                 tsnav,
@@ -3615,16 +3690,16 @@ void ruc_snow_temperature_step(
         ft = __fsub_rn(ft, __fmul_rn(x2, __fsub_rn(tso[1], tso[2])));
         real denominator = __fadd_rn(one, x1sn);
         denominator = __fadd_rn(denominator, x2);
-        denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[6]));
-        cotso[7] = __fdiv_rn(x1sn, denominator);
-        rhtso[7] = __fdiv_rn(
-            __fadd_rn(ft, __fmul_rn(x2, rhtso[6])), denominator);
+        denominator = __fsub_rn(denominator, __fmul_rn(x2, cotso[RUC_NZS_M3]));
+        cotso[RUC_NZS_M2] = __fdiv_rn(x1sn, denominator);
+        rhtso[RUC_NZS_M2] = __fdiv_rn(
+            __fadd_rn(ft, __fmul_rn(x2, rhtso[RUC_NZS_M3])), denominator);
         tsnav = __fsub_rn(
             __fmul_rn(half, __fadd_rn(soilt, tso[0])), freeze);
-        cotso[8] = cotso[7];
-        rhtso[8] = rhtso[7];
-        cotsn = cotso[8];
-        rhtsn = rhtso[8];
+        cotso[RUC_NZS_M1] = cotso[RUC_NZS_M2];
+        rhtso[RUC_NZS_M1] = rhtso[RUC_NZS_M2];
+        cotsn = cotso[RUC_NZS_M1];
+        rhtsn = rhtso[RUC_NZS_M1];
     }
 
     // :5203-5224 heat balance (Smirnova et al. 1996, eq. 21, 26).
@@ -3638,8 +3713,8 @@ void ruc_snow_temperature_step(
         __fmul_rn(transum, drycan), zshalf[root_count]);
     real can = __fadd_rn(wetcan, trans);
     real umveg = __fsub_rn(one, vegfrac);
-    real d1 = cotso[7];
-    real d2 = rhtso[7];
+    real d1 = cotso[RUC_NZS_M2];
+    real d2 = rhtso[RUC_NZS_M2];
     real tn = soilt;
     real d9 = __fmul_rn(__fmul_rn(thdif0, rhcs), dzstop);
     real d10 = __fmul_rn(__fmul_rn(tkms, cp_air), rho);
@@ -3661,8 +3736,8 @@ void ruc_snow_temperature_step(
     real r22sn = zero;
     if (snhei >= snth) {
         if (snhei <= __fadd_rn(deltsn, snth)) {
-            d1sn = cotso[8];
-            d2sn = rhtso[8];
+            d1sn = cotso[RUC_NZS_M1];
+            d2sn = rhtso[RUC_NZS_M1];
         } else {
             d1sn = cotsn;
             d2sn = rhtsn;
@@ -3781,15 +3856,15 @@ void ruc_snow_temperature_step(
             if (snhei > __fadd_rn(deltsn, snth)) {
                 soilt1 = fminf(
                     freeze, __fadd_rn(rhtsn, __fmul_rn(cotsn, soilt)));
-                tso[0] = __fadd_rn(rhtso[8], __fmul_rn(cotso[8], soilt1));
+                tso[0] = __fadd_rn(rhtso[RUC_NZS_M1], __fmul_rn(cotso[RUC_NZS_M1], soilt1));
                 tsob = soilt1;
             } else {
-                tso[0] = __fadd_rn(rhtso[8], __fmul_rn(cotso[8], soilt));
+                tso[0] = __fadd_rn(rhtso[RUC_NZS_M1], __fmul_rn(cotso[RUC_NZS_M1], soilt));
                 soilt1 = tso[0];
                 tsob = tso[0];
             }
         } else if (snhei > zero && snhei < snth) {
-            tso[1] = __fadd_rn(rhtso[7], __fmul_rn(cotso[7], soilt));
+            tso[1] = __fadd_rn(rhtso[RUC_NZS_M2], __fmul_rn(cotso[RUC_NZS_M2], soilt));
             tso[0] = __fadd_rn(
                 tso[1], __fmul_rn(__fsub_rn(soilt, tso[1]), fso));
             soilt1 = tso[0];
@@ -3807,8 +3882,8 @@ void ruc_snow_temperature_step(
 
         // :5382-5394 downward substitution.
         int start = (snhei > zero && snhei < snth) ? 2 : 1;
-        for (int level = start; level < 9; ++level) {
-            int coefficient = 8 - level;
+        for (int level = start; level < RUC_NZS; ++level) {
+            int coefficient = RUC_NZS_M1 - level;
             tso[level] = __fadd_rn(
                 rhtso[coefficient],
                 __fmul_rn(cotso[coefficient], tso[level - 1]));
@@ -3976,7 +4051,7 @@ void ruc_snow_temperature_step(
 
     if (failed) {
         real invalid = nanf("");
-        for (int level = 0; level < 9; ++level) {
+        for (int level = 0; level < RUC_NZS; ++level) {
             tso_out[level * ncolumn + column] = invalid;
         }
         soilt_out[column] = invalid;
@@ -4107,7 +4182,7 @@ void ruc_snow_temperature_step(
         tsnav = __fsub_rn(soilt, freeze);
     }
 
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         tso_out[level * ncolumn + column] = tso[level];
     }
     soilt_out[column] = soilt;
@@ -4265,10 +4340,10 @@ void ruc_snow_soil_prepare_moisture(
     if (column >= ncolumn) return;
 
     const real zero = 0.0f;
-    real zshalf[9];
+    real zshalf[RUC_NZS];
     const real* zsmain = ruc_soil_layer_depth;
     zshalf[0] = zero;
-    for (int level = 1; level < 9; ++level) {
+    for (int level = 1; level < RUC_NZS; ++level) {
         zshalf[level] = __fmul_rn(
             __fadd_rn(zsmain[level - 1], zsmain[level]), 0.5f);
     }
@@ -4278,7 +4353,7 @@ void ruc_snow_soil_prepare_moisture(
     real deficit = __fsub_rn(qvatm_a[column], qsg_a[column]);
     real epot = -__fmul_rn(qkms_a[column], deficit);
     int nroot = nroot_a[column];
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         transp[level * ncolumn + column] = zero;
     }
     if (epot > zero) {
@@ -4372,7 +4447,7 @@ void ruc_snow_soil_finalize(
         __fmul_rn(__fmul_rn(smelt_a[column], delt), 1.0e3f));
 
     // :3688-3696 latch keepfr where rain fell on frozen soil.
-    for (int level = 0; level < 9; ++level) {
+    for (int level = 0; level < RUC_NZS; ++level) {
         int index = level * ncolumn + column;
         if (soilice[index] > zero) {
             keepfr[index] =

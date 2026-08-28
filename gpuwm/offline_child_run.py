@@ -21,6 +21,7 @@ import time
 import netCDF4
 import numpy as np
 
+from gpuwm.aerosol_source_receipt import aerosol_source_report_entry
 from gpuwm.config import (
     load_config,
     load_history_selection,
@@ -767,6 +768,27 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "final_restart_receipt": _file_receipt(restart),
         "wall_seconds": time.perf_counter() - started,
     }
+    # THE AEROSOL SOURCE, on the one route that cannot name a dataset.
+    # This child is not a real-data initialization: every transported
+    # aerosol scalar (QNWFA/QNIFA) and both surface emission fields
+    # (QNWFA2D/QNIFA2D) are interpolated out of the archived PARENT
+    # history frame, so this run never resolves a climatology and has no
+    # ``RealInitResult.aerosol_initialization`` to publish.  Saying
+    # nothing would leave an mp=28 child's report looking exactly like a
+    # wsm6 child's; saying "no dataset" would be a claim this process
+    # cannot make.  So it reports the third state -- applicable, not
+    # recorded here -- and names the report that does hold the answer.
+    report.update(aerosol_source_report_entry(
+        {}, mp_physics=cfg.mp_physics,
+        when_unrecorded=(
+            "this child's aerosol state is INHERITED, not initialized: "
+            "QNWFA/QNIFA and the QNWFA2D/QNIFA2D surface emission fields "
+            "are interpolated from the archived parent history frames "
+            "listed under parent_frames, and this process runs no aerosol "
+            "dataset resolution of its own. Which source filled the "
+            "parent's fields -- WRF's monthly WIF climatology or "
+            "thompson_init's synthetic profile -- is recorded in the "
+            "PARENT run's report, and is the answer for this child too")))
     temporary = outdir / "report.json.tmp"
     temporary.write_text(
         json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")

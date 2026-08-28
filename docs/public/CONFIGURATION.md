@@ -414,6 +414,84 @@ value):
   policy sweeps the initial field out of the domain in `L/U`. Both are
   quantified in [PHYSICS.md](PHYSICS.md).
 
+### The one way to supply your own mp=28 aerosol: the WIF climatology
+
+The paragraph above describes the **default**. There is now exactly one
+implemented alternative, and it is the same one WRF has: the GLOBAL
+monthly water/ice-friendly aerosol climatology
+(`QNWFA_QNIFA_SIGMA_MONTHLY.dat`) that WPS routes through metgrid's
+`constants_name`. Two keys in `[run]` select it, and nothing else in a
+config changes:
+
+```toml
+[run]
+aer_init_opt  = 1     # WRF's use_aero_icbc = .true. (real.exe derives it)
+wif_input_opt = 1     # the use_wif_input package
+```
+
+With both set, `initialize_real` reads the dataset, interpolates it to
+your grid and your case's valid date exactly as `real.exe` does —
+metgrid `four_pt` horizontally, `monthly_interp_to_date` temporally
+(integer julian-day weighting between month middles), `vert_interp`
+linear in `log(p)` onto the dry eta pressure — and writes `QNWFA`,
+`QNIFA`, `QNWFA2D` and `QNIFA2D`. The nonzero fields are themselves the
+signal WRF's `MAXVAL` presence tests
+(`phys/module_mp_thompson.F:493/:531`) read to **skip** the synthetic
+profile, so nothing downstream needs a new flag.
+
+Nothing else has to be supplied. The grid latitudes/longitudes and the
+valid date are derived from the runner's own geometry and the snapshot's
+`valid_time`; every real front door (`gpuwm run`, the prepared
+single-domain and two-domain runners, the direct HRRR/GFS/ERA5/mapped
+routes, nests) passes them for you. There is no per-source branch: the
+climatology does not come from the driving model, so the derivation is
+identical for every input source.
+
+**Staging the dataset.** It is a fixed 225,443,520-byte external file
+that never changes. ArWen does **not** redistribute it — that is over
+PyPI's 100 MB per-file cap and GitHub's 100 MiB blob limit, the same
+reason `freezeH2O.dat` is externalized — so it joins the same command:
+
+```
+gpuwm fetch-tables --wif --wif-only --from /path/to/WRF/run
+```
+
+stages it into `~/.gpuwm/wif` after verifying exact size and SHA-256
+`2f828eabd96a45f3872390f901240ea2259a1e9a629247010f42ce7a31cc46be`;
+`gpuwm fetch-tables --wif` alone downloads it from the release asset
+base under the same verification. Any WRF tree that has ever run
+`mp_physics = 28` from climatology already has the file. Precedence,
+highest first: `wif_climatology_path` in the config,
+`GPUWM_WIF_CLIMATOLOGY` (full path), `GPUWM_WIF_DATA_ROOT` (directory),
+then `~/.gpuwm/wif`. Leave `wif_climatology_path` unset and the staged
+copy is found. A path you *name* and that does not exist is an error,
+never a silent fall-through to the staged copy.
+
+**If the dataset is absent the run refuses at config load**, by name,
+with the acquisition route in the message. It never falls back to the
+synthetic profile: that is a different, valid configuration
+(`aer_init_opt = 0`) and a silent demotion would leave a run whose
+receipt says "monthly climatology" and whose aerosol came from an
+analytic curve. `wif_input_opt = 2` stays refused by name — it
+additionally allocates the black-carbon scalar `qnbca`
+(`Registry/registry.new3d_wif:82`), which has no consumer here.
+
+**Importing a WRF namelist that uses it.** The key triple
+`&physics use_aero_icbc = .true.` with `&domains wif_input_opt = 1` and
+`num_wif_levels = 30` imports; `gpuwm import-namelist` emits the two
+`[run]` keys
+above and prints which dataset the run will read. Half the triple is
+refused, naming which half.
+
+**Demo.** `configs/demos/mp28_wif_climatology.toml` is the two-line
+delta against an ordinary 3 km real-data configuration, with the staging
+command and the receipt in its header.
+
+**The receipt.** `RealInitResult.aerosol_initialization` carries a
+`wif_climatology` entry — dataset path, the two month indices and their
+weights, the operators used — and sets `awaiting_profile_fill` to
+`false`.
+
 ## Fixed by ArWen (WRF has a knob; ArWen has one implemented value)
 
 Each of these keys has exactly one implemented value, and it is already

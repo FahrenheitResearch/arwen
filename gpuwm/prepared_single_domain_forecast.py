@@ -60,6 +60,10 @@ from gpuwm.core.thompson_contract import (  # noqa: E402
     WRF_REFERENCE_VERSION as THOMPSON_WRF_REFERENCE_VERSION,
     validate_table_assets as validate_thompson_table_assets,
 )
+from gpuwm.aerosol_source_receipt import (  # noqa: E402
+    AEROSOL_SOURCE_KEY,
+    aerosol_source_report_entry,
+)
 from gpuwm.experiment import build_experiment, load_experiment  # noqa: E402
 from gpuwm.explain import (  # noqa: E402
     add_explain_flag, explain_enabled, layered, render as render_explanation,
@@ -7277,6 +7281,32 @@ def run_prepared_forecast(
         receipt = first_products.wait()
         if receipt is not None:
             report["first_products"] = receipt
+    # WHICH AEROSOL INITIAL CONDITION THIS FORECAST STARTED FROM.  For
+    # mp_physics=28 that is a choice between WRF's monthly WIF climatology
+    # and thompson_init's synthetic CCN/IN profile -- two different
+    # forecasts -- and until now the only place it was ever said was the
+    # PREPARING process's stderr, which this process does not have and no
+    # reader keeps.  The preparation writes it into the cache metadata
+    # (gpuwm/ingest/prepared_cache.py) and this reads it back.
+    #
+    # ``report.update`` of a possibly-empty mapping, not an assignment:
+    # gpuwm.aerosol_source_receipt returns NOTHING for a scheme with no
+    # aerosol number fields, so a wsm6/Morrison/Kessler forecast writes
+    # the report it wrote before this existed, key for key.  The two
+    # absences are the whole point and that module states the rule; do not
+    # collapse this into an unconditional key.
+    report.update(aerosol_source_report_entry(
+        inputs.cache_reader.metadata.get(AEROSOL_SOURCE_KEY, {}),
+        mp_physics=cfg.mp_physics,
+        when_unrecorded=(
+            "this forecast reads a prepared cache and does not itself run "
+            "the real-data aerosol ingest; the cache at "
+            f"{inputs.prepared_root} carries no aerosol-initialization "
+            "receipt, so it was written by a preparation that predates the "
+            "receipt being stored. Re-prepare to record which source filled "
+            "nwfa/nifa -- the fields themselves are in the cache and the "
+            "forecast is unaffected, but which dataset produced them is not "
+            "recoverable from this bundle")))
     _atomic_json(outdir / "report.json", report)
     emit_run_capsule(
         outdir, emission_site="prepared_single_domain_forecast",

@@ -76,6 +76,8 @@ from gpuwm.core.mynn_pbl import (
     MYNN_TENDENCIES_INPUTS,
     MYNN_TENDENCIES_INTERFACE_INPUTS,
     MYNN_TENDENCIES_LAYER_INPUTS,
+    MYNN_TENDENCIES_QN_INTERFACE_INPUTS,
+    MYNN_TENDENCIES_QN_LAYER_INPUTS,
     MYNN_TENDENCIES_SCALAR_INPUTS,
     MYNN_TURBULENCE_INPUTS,
     MYNN_DRIVER_INPUTS,
@@ -776,6 +778,7 @@ def _tendency_flag_identity_cuda(
     flag_qnifa: bool,
     flag_qnbca: bool,
     flag_ozone: bool,
+    bl_mynn_mixscalars: int = 0,
 ) -> None:
     """Device-side twin of :func:`gpuwm.core.mynn_pbl._tendency_flag_identity`."""
 
@@ -783,13 +786,29 @@ def _tendency_flag_identity_cuda(
         raise ValueError("MYNN tendency lane requires FLAG_QC and FLAG_QI")
     if type(flag_qs) is not bool:
         raise TypeError("MYNN tendency lane requires FLAG_QS boolean")
-    for name, flag in (
+    # W4 mixscalars GPU admission (this wave; CPU twin admitted the same
+    # combo): with bl_mynn_mixscalars=1 the five qn-family flags are
+    # REQUIRED true — the anchored fixture family pins exactly that combo,
+    # and a partial-flag run would be an unmeasured combination.
+    qn_flags = (
         ("FLAG_QNC", flag_qnc), ("FLAG_QNI", flag_qni),
         ("FLAG_QNWFA", flag_qnwfa), ("FLAG_QNIFA", flag_qnifa),
-        ("FLAG_QNBCA", flag_qnbca), ("FLAG_OZONE", flag_ozone),
-    ):
-        if flag is not False:
-            raise ValueError(f"MYNN tendency lane requires {name} false")
+        ("FLAG_QNBCA", flag_qnbca),
+    )
+    if bl_mynn_mixscalars == 1:
+        for name, flag in qn_flags:
+            if flag is not True:
+                raise ValueError(
+                    f"MYNN mixscalars lane requires {name} true (the "
+                    "anchored stock fixture combo; partial qn flag sets "
+                    "are unmeasured)"
+                )
+    else:
+        for name, flag in qn_flags:
+            if flag is not False:
+                raise ValueError(f"MYNN tendency lane requires {name} false")
+    if flag_ozone is not False:
+        raise ValueError("MYNN tendency lane requires FLAG_OZONE false")
 
 
 _TENDENCIES_SOLVED = (
@@ -923,6 +942,10 @@ def mynn_tendencies_nomf_cuda(
         raise ValueError("MYNN tendency lane requires bl_mynn_edmf=0")
     if bl_mynn_edmf_mom != 0 or type(bl_mynn_edmf_mom) is not int:
         raise ValueError("MYNN tendency lane requires bl_mynn_edmf_mom=0")
+    # W4 mixscalars GPU wave: this refusal deliberately STANDS — the CPU
+    # twin mynn_tendencies_nomf keeps bl_mynn_mixscalars=0 too (the
+    # fixture family pins mixscalars=1 only with the mass flux live;
+    # mixscalars under a zeroed mass flux is an unmeasured combination).
     if bl_mynn_mixscalars != 0 or type(bl_mynn_mixscalars) is not int:
         raise ValueError("MYNN tendency lane requires bl_mynn_mixscalars=0")
     _tendency_flag_identity_cuda(
@@ -986,18 +1009,70 @@ def mynn_tendencies_default_cuda(
         raise ValueError(
             "MYNN tendency lane requires bl_mynn_edmf_mom in {0,1}"
         )
-    if bl_mynn_mixscalars != 0 or type(bl_mynn_mixscalars) is not int:
-        raise ValueError("MYNN tendency lane requires bl_mynn_mixscalars=0")
+    # W4 mixscalars GPU admission (this wave; anchored fixtures
+    # w4-oracle-fixtures, GPU TU gated bit-exact vs the CPU
+    # reference by tools/mynn_pbl_wrf461_oracle/probe_mynn_scalar_mix_gpu):
+    # bl_mynn_mixscalars=1 routes the five stock qn solves through the
+    # kernels/mynn_scalar_mix.cu unit after the main launch.  Any other
+    # nonzero value stays refused — unmeasured combination.
+    if bl_mynn_mixscalars not in (0, 1) or \
+            type(bl_mynn_mixscalars) is not int:
+        raise ValueError(
+            "MYNN tendency lane requires bl_mynn_mixscalars in {0,1}"
+        )
     _tendency_flag_identity_cuda(
         flag_qc, flag_qi, flag_qs, flag_qnc, flag_qni,
         flag_qnwfa, flag_qnifa, flag_qnbca, flag_ozone,
+        bl_mynn_mixscalars,
     )
     work = _scratch_for(scratch, _tendency_ncol(values))
     columns, interfaces, scalars, ncol, nz = _tendency_device_arrays(
         values, work)
+    qn_columns: dict[str, cp.ndarray] = {}
+    qn_interfaces: dict[str, cp.ndarray] = {}
+    if bl_mynn_mixscalars == 1:
+        missing = [
+            name for name in (*MYNN_TENDENCIES_QN_LAYER_INPUTS,
+                              *MYNN_TENDENCIES_QN_INTERFACE_INPUTS)
+            if name not in values
+        ]
+        if missing:
+            raise TypeError(
+                "missing MYNN mixscalars inputs: " + ", ".join(missing)
+            )
+        for name in MYNN_TENDENCIES_QN_LAYER_INPUTS:
+            qn_columns[name] = _pair_array(values[name], (ncol, nz), name)
+        for name in MYNN_TENDENCIES_QN_INTERFACE_INPUTS:
+            qn_interfaces[name] = _pair_array(
+                values[name], (ncol, nz + 1), name)
     onoff = 0.0 if bl_mynn_edmf_mom == 0 else 1.0
-    return _tendency_launch(columns, interfaces, scalars, ncol, nz, onoff,
-                            work)
+    result = _tendency_launch(columns, interfaces, scalars, ncol, nz, onoff,
+                              work)
+    if bl_mynn_mixscalars == 1:
+        # The five stock qn solves (module_bl_mynn.F:4654-4860) in WRF's
+        # solve order, launched from the NEW translation unit — the frozen
+        # mynn_pbl.cu is untouched and its launch above is byte-identical
+        # to the mixscalars=0 lane.  The solved dqn* replace the aliased
+        # structural zeros in fresh buffers; the zero slot itself is never
+        # written.  Local import so the mixscalars=0 lane never loads the
+        # new module.
+        import dataclasses
+
+        from gpuwm.core.mynn_scalar_mix import QN_SOLVE_ORDER
+        from gpuwm.core.mynn_scalar_mix_gpu import (
+            mynn_mix_scalar_columns_cuda,
+        )
+
+        solved_dqn = {}
+        for species in QN_SOLVE_ORDER:
+            _, dqn = mynn_mix_scalar_columns_cuda(
+                qn_columns[species], columns["dz"], columns["rho"],
+                columns["dfh"], interfaces["s_aw"],
+                qn_interfaces[f"s_aw{species}"], scalars["delt"],
+            )
+            solved_dqn[f"d{species}"] = dqn
+        result = dataclasses.replace(result, **solved_dqn)
+    return result
 
 
 # The kernel packs its per-column work vectors into one buffer: qkw, qtke,
@@ -1097,6 +1172,7 @@ def mynn_dmp_mf_cuda(
     mix_chem: bool = False,
     spp_pbl: int = 0,
     scratch=None,
+    export_sink: dict | None = None,
 ) -> MynnDmpMfResult:
     """Evaluate WRF ``DMP_mf`` on complete device columns.
 
@@ -1117,8 +1193,24 @@ def mynn_dmp_mf_cuda(
         raise ValueError("MYNN mass-flux lane requires bl_mynn_edmf_mom=1")
     if bl_mynn_edmf_tke != 0 or type(bl_mynn_edmf_tke) is not int:
         raise ValueError("MYNN mass-flux lane requires bl_mynn_edmf_tke=0")
-    if bl_mynn_mixscalars != 0 or type(bl_mynn_mixscalars) is not int:
-        raise ValueError("MYNN mass-flux lane requires bl_mynn_mixscalars=0")
+    # W4 full admission (mf-close lane): the sibling DMP unit
+    # kernels/mynn_dmp_sibling.cu (D1 pattern, third application) now
+    # exports the four register-local terms the old refusal here named —
+    # PRE-limiter up_a, psig_w, the NUP2>0 gate, and the limiter
+    # adjustment — as tagged line-additions to a byte-copy of the frozen
+    # unit (normalized-diff proof: tests/test_mynn_dmp_sibling.py; the
+    # frozen mynn_pbl.cu byte pin b53ab90e... is untouched).  With
+    # bl_mynn_mixscalars=1 the SIBLING kernel is dispatched and the
+    # landed flux kernel (kernels/mynn_scalar_mix.cu) accumulates the
+    # five s_awqn* from the device exports; with 0 the frozen kernel is
+    # launched exactly as before — bit-identity by construction.  The
+    # CPU twin mynn_dmp_mf(bl_mynn_mixscalars=1) stays the reference.
+    if bl_mynn_mixscalars not in (0, 1) or \
+            type(bl_mynn_mixscalars) is not int:
+        raise ValueError(
+            "MYNN mass-flux device lane requires bl_mynn_mixscalars in "
+            "{0,1}"
+        )
     if mix_chem is not False:
         raise ValueError("MYNN mass-flux lane requires mix_chem false")
     if spp_pbl != 0 or type(spp_pbl) is not int:
@@ -1141,6 +1233,21 @@ def mynn_dmp_mf_cuda(
         name: _pair_array(values[name], (ncol,), name)
         for name in MYNN_DMP_MF_SCALAR_INPUTS
     }
+    qn_columns: dict[str, cp.ndarray] = {}
+    if bl_mynn_mixscalars == 1:
+        # Local import so the mixscalars=0 lane never loads the name.
+        from gpuwm.core.mynn_pbl import MYNN_DMP_MF_QN_COLUMN_INPUTS
+        missing_qn = [
+            name for name in MYNN_DMP_MF_QN_COLUMN_INPUTS
+            if name not in values
+        ]
+        if missing_qn:
+            raise TypeError(
+                "missing MYNN mixscalars mass-flux inputs: "
+                + ", ".join(missing_qn)
+            )
+        for name in MYNN_DMP_MF_QN_COLUMN_INPUTS:
+            qn_columns[name] = _pair_array(values[name], (ncol, nz), name)
     work = _scratch_for(scratch, ncol, nz)
     flags = work.flags()
     if _tripped(_nonfinite(),
@@ -1183,7 +1290,39 @@ def mynn_dmp_mf_cuda(
         SLOT_PLUME_SCRATCH,
         (ncol, _DMP_WORK_VECTORS * nz + _DMP_NUP * nz))
     blocks = (ncol + _TPB - 1) // _TPB
-    kernel = get_kernel("mynn_pbl", "mynn_dmp_mf_columns")
+    if bl_mynn_mixscalars == 0:
+        kernel = get_kernel("mynn_pbl", "mynn_dmp_mf_columns")
+        kernel(
+            (blocks,), (_TPB,),
+            (
+                *(columns[name] for name in MYNN_DMP_MF_COLUMN_INPUTS),
+                interface,
+                *(scalars[name] for name in MYNN_DMP_MF_SCALAR_INPUTS),
+                *(layers[name] for name in MYNN_DMP_MF_LAYER_OUTPUTS),
+                *(interfaces[name]
+                  for name in MYNN_DMP_MF_INTERFACE_OUTPUTS),
+                result.maxwidth, result.ktop, result.ztop, result.maxmf,
+                plume_scratch, work_scratch, np.int32(nz), np.int32(ncol),
+            ),
+        )
+        return result
+
+    # bl_mynn_mixscalars == 1: the SIBLING unit (kernels/
+    # mynn_dmp_sibling.cu) — a normalized-diff-proven byte copy of the
+    # frozen kernel whose only additions export the four plume-edge terms
+    # the flux kernel needs.  Local imports so the mixscalars=0 lane
+    # never loads either module.
+    import dataclasses
+
+    from gpuwm.core.mynn_pbl import MYNN_DMP_MF_QN_COLUMN_INPUTS
+    from gpuwm.core.mynn_scalar_mix_gpu import mynn_dmp_qn_flux_columns_cuda
+
+    nup = _DMP_NUP
+    up_a_pre = cp.empty((ncol, nz + 1, nup), dtype=DTYPE)
+    psig_w = cp.empty((ncol,), dtype=DTYPE)
+    plume_active = cp.empty((ncol,), dtype=np.int32)
+    limiter_adjustment = cp.empty((ncol,), dtype=DTYPE)
+    kernel = get_kernel("mynn_dmp_sibling", "mynn_dmp_mf_columns")
     kernel(
         (blocks,), (_TPB,),
         (
@@ -1193,10 +1332,39 @@ def mynn_dmp_mf_cuda(
             *(layers[name] for name in MYNN_DMP_MF_LAYER_OUTPUTS),
             *(interfaces[name] for name in MYNN_DMP_MF_INTERFACE_OUTPUTS),
             result.maxwidth, result.ktop, result.ztop, result.maxmf,
-            plume_scratch, work_scratch, np.int32(nz), np.int32(ncol),
+            plume_scratch, up_a_pre, psig_w, plume_active,
+            limiter_adjustment, work_scratch, np.int32(nz), np.int32(ncol),
         ),
     )
-    return result
+    # Plume-edge terms already sitting in the launch scratch, viewed in
+    # the (ncol, nz+1|nz, nup) layout the flux kernel reads (bitwise data
+    # movement only; the launcher makes its own contiguous copies).
+    up_w = plume_scratch.reshape(
+        ncol, _DMP_PLUME_VECTORS, nup, nz + 1)[:, 0].transpose(0, 2, 1)
+    per_col = _DMP_WORK_VECTORS * nz + nup * nz
+    rhoz = work_scratch.reshape(ncol, per_col)[:, :nz]
+    ent = work_scratch.reshape(ncol, per_col)[
+        :, _DMP_WORK_VECTORS * nz:].reshape(
+        ncol, nup, nz).transpose(0, 2, 1)
+    solved = {}
+    for name in MYNN_DMP_MF_QN_COLUMN_INPUTS:
+        solved[f"s_aw{name}"] = mynn_dmp_qn_flux_columns_cuda(
+            qn_columns[name], columns["dz"], interface, up_w, up_a_pre,
+            ent, rhoz, psig_w, plume_active, limiter_adjustment,
+        )
+    if export_sink is not None:
+        # Probe-facing: the sibling's exports and the scratch views the
+        # flux chain consumed, so the gate can compare them against the
+        # CPU reference directly (tools/mynn_pbl_wrf461_oracle/
+        # probe_mynn_dmp_sibling_gpu.py).  Copies, not views: the launch
+        # scratch slots are reused by later kernels.
+        export_sink.update(
+            up_a_pre=cp.array(up_a_pre), psig_w=cp.array(psig_w),
+            plume_active=cp.array(plume_active),
+            limiter_adjustment=cp.array(limiter_adjustment),
+            up_w=cp.array(up_w), ent=cp.array(ent), rhoz=cp.array(rhoz),
+        )
+    return dataclasses.replace(result, **solved)
 
 
 def _driver_prep_cuda(layers, ust, ncol: int, nz: int, work):
@@ -1344,9 +1512,18 @@ def mynn_bl_driver_cuda(
         raise ValueError("MYNN driver lane requires spp_pbl=0")
     if mix_chem is not False:
         raise ValueError("MYNN driver lane requires mix_chem false")
+    # W4 full admission (mf-close2, Stage B): same widening as the CPU
+    # twin -- the driver feeds the mixscalars arms its leaf routines
+    # already implement.  Any value outside {0,1} stays refused.
+    if bl_mynn_mixscalars not in (0, 1) or \
+            type(bl_mynn_mixscalars) is not int:
+        raise ValueError(
+            "MYNN driver lane requires bl_mynn_mixscalars in {0,1}"
+        )
     _tendency_flag_identity(
         flag_qc, flag_qi, flag_qs, flag_qnc, flag_qni,
         flag_qnwfa, flag_qnifa, flag_qnbca, flag_ozone,
+        bl_mynn_mixscalars,
     )
     missing = [name for name in MYNN_DRIVER_INPUTS if name not in values]
     if missing:
@@ -1366,6 +1543,21 @@ def mynn_bl_driver_cuda(
         name: _pair_array(values[name], (ncol,), name)
         for name in (*MYNN_DRIVER_SCALAR_INPUTS, "pblh", "rmol")
     }
+    # Stage B: the qn columns ride into the driver only under the key --
+    # the mixscalars=0 assembly reads none of these names, so the admitted
+    # trajectory cannot move.  No unit conversion: the WRF wrapper passes
+    # number concentrations straight through.  Local import so the
+    # mixscalars=0 lane never loads the tuple's home module attribute.
+    qn_layers: dict[str, cp.ndarray] = {}
+    if bl_mynn_mixscalars == 1:
+        from gpuwm.core.mynn_pbl import MYNN_TENDENCIES_QN_LAYER_INPUTS
+        missing_qn = [name for name in MYNN_TENDENCIES_QN_LAYER_INPUTS
+                      if name not in values]
+        if missing_qn:
+            raise TypeError("missing MYNN driver mixscalars inputs: "
+                            + ", ".join(missing_qn))
+        for name in MYNN_TENDENCIES_QN_LAYER_INPUTS:
+            qn_layers[name] = _pair_array(values[name], (ncol, nz), name)
     work = _scratch_for(scratch, ncol, nz)
     kpbl = work.index("mynn_pbl_kpbl", (ncol,))
     kpbl[...] = cp.asarray(values["kpbl"], dtype=cp.int32).reshape(ncol)
@@ -1498,6 +1690,9 @@ def mynn_bl_driver_cuda(
             "pblh": scalars["pblh"], "dx": scalars["dx"],
             "landsea": scalars["xland"], "ts": th_sfc,
             "psig_shcu": psig_shcu,
+            # Stage B: qn columns feed the sibling unit's flux chain; an
+            # empty dict under mixscalars=0 adds no key at all.
+            **qn_layers,
         },
         bl_mynn_edmf_mom=bl_mynn_edmf_mom,
         bl_mynn_edmf_tke=bl_mynn_edmf_tke,
@@ -1585,6 +1780,14 @@ def mynn_bl_driver_cuda(
             "wspd": scalars["wspd"], "uoce": scalars["uoce"],
             "voce": scalars["voce"], "flt": flt, "flqv": flqv,
             "flqc": flqc,
+            # Stage B: the five qn columns + the s_awqn* interfaces the
+            # sibling DMP chain just accumulated, exactly the pairing WRF
+            # binds at the mynn_tendencies call.  Empty under
+            # mixscalars=0.
+            **qn_layers,
+            **({f"s_aw{name}": getattr(plumes, f"s_aw{name}")
+                for name in qn_layers}
+               if bl_mynn_mixscalars == 1 else {}),
         },
         bl_mynn_cloudmix=bl_mynn_cloudmix,
         bl_mynn_mixqt=bl_mynn_mixqt,
@@ -1592,6 +1795,8 @@ def mynn_bl_driver_cuda(
         bl_mynn_edmf_mom=bl_mynn_edmf_mom,
         bl_mynn_mixscalars=bl_mynn_mixscalars,
         flag_qs=flag_qs,
+        flag_qnc=flag_qnc, flag_qni=flag_qni, flag_qnwfa=flag_qnwfa,
+        flag_qnifa=flag_qnifa, flag_qnbca=flag_qnbca,
         scratch=work,
     )
 
@@ -1612,6 +1817,14 @@ def mynn_bl_driver_cuda(
         "rthblten": tendencies.dth, "rqvblten": tendencies.dqv,
         "rqcblten": tendencies.dqc, "rqiblten": tendencies.dqi,
         "rqsblten": tendencies.dqs, "dozone": tendencies.dozone,
+        # Stage B: the five qn tendencies under WRF's RQN*BLTEN names.
+        # Under mixscalars=0 these are the aliased structural zeros, and
+        # no admitted consumer reads them -- additive keys, not new math.
+        "rqncblten": tendencies.dqnc,
+        "rqniblten": tendencies.dqni,
+        "rqnwfablten": tendencies.dqnwfa,
+        "rqnifablten": tendencies.dqnifa,
+        "rqnbcablten": tendencies.dqnbca,
         "exch_h": exch_h, "exch_m": exch_m,
         "qke": predicted.qke, "tsq": predicted.tsq,
         "qsq": predicted.qsq, "cov": predicted.cov,

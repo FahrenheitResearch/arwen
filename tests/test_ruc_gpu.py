@@ -942,7 +942,7 @@ def test_ruc_sea_ice_step_cuda_forces_ice_state_and_rejects_contract_drift():
         ruc_sea_ice_step_cuda(bad, delt=60.0)
     bad = dict(values)
     bad["capice"] = bad["capice"][:-1]
-    with pytest.raises(ValueError, match=r"shape \(9"):
+    with pytest.raises(ValueError, match=r"shape \(6 or 9"):
         ruc_sea_ice_step_cuda(bad, delt=60.0)
     with pytest.raises(ValueError, match="positive"):
         ruc_sea_ice_step_cuda(values, delt=0.0)
@@ -1260,7 +1260,7 @@ def test_snow_preparation_cuda_rejects_bad_contracts():
         )
     bad = dict(values)
     bad["ts1d"] = bad["ts1d"][:-1]
-    with pytest.raises(ValueError, match=r"shape \(9"):
+    with pytest.raises(ValueError, match=r"shape \(6 or 9"):
         ruc_snow_preparation_cuda(bad, **keywords)
 
 
@@ -1538,7 +1538,7 @@ def test_ruc_snow_sea_ice_cuda_preserves_inputs_and_fails_closed():
         ruc_snow_sea_ice_step_cuda(bad, delt=60.0)
     bad = dict(values)
     bad["capice"] = bad["capice"][:-1]
-    with pytest.raises(ValueError, match=r"shape \(9"):
+    with pytest.raises(ValueError, match=r"shape \(6 or 9"):
         ruc_snow_sea_ice_step_cuda(bad, delt=60.0)
     bad = dict(values)
     bad["rhosn"] = cp.zeros_like(bad["rhosn"])
@@ -1798,7 +1798,7 @@ def test_ruc_snow_temperature_cuda_preserves_inputs_and_fails_closed():
         ruc_snow_temperature_step_cuda(bad, delt=60.0)
     bad = dict(values)
     bad["cap"] = bad["cap"][:-1]
-    with pytest.raises(ValueError, match=r"shape \(9"):
+    with pytest.raises(ValueError, match=r"shape \(6 or 9"):
         ruc_snow_temperature_step_cuda(bad, delt=60.0)
     with pytest.raises(ValueError, match="delt must be finite and positive"):
         ruc_snow_temperature_step_cuda(values, delt=0.0)

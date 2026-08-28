@@ -73,7 +73,9 @@ the boundary dimension and an explicit boundary interpolator --
 exactly as for qv.  So WRF really does force aerosol at the boundary from the
 WIF metgrid stream.  The v1 decision is to
 register the divergence rather than extend the LBC ingest, because ArWen has
-no WIF ingest at all (WP-11 fails ``wif_input_opt != 0`` closed) and inventing
+no WIF ingest at all (the WIF climatology landed later, in
+``gpuwm/ingest/wif_climatology.py``, and is the mp=28 default since
+lane/wif-default) and inventing
 one boundary species' inflow while the other eight stay flow-dependent would
 be a worse, less legible inconsistency.  Consequences, stated so a reader does
 not have to rediscover them: the depletion is bounded below by WRF's own

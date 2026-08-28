@@ -213,22 +213,50 @@ def test_a_pair_missing_the_advection_tables_is_not_called_runnable():
 
 
 #: A static whose FP32-stored edge lengths the consumer accepts.
-#: MEASURED on the published x1.40962.static.nc, whose shortest dual edge is
-#: 45,016.7 m: its own vertices reproduce dvEdge to 1.19e-05, inside the
-#: port's 2.0e-05.
+#: MEASURED 2026-08-25 on a generated 654,432-cell uniform 30 km pair,
+#: FP32 at earth radius: 12,732 edges past the RETIRED 2e-5 relative
+#: bound, every one inside the port's live 1.73 m storage atol, and the
+#: live ``Mesh.from_netcdf(validate=True)`` ACCEPTED the pair.  Healthy
+#: under the live contract while the retired one would have refused it,
+#: which is what makes it the fixture (stale-guard audit 2026-08-25,
+#: finding 3).
 HEALTHY_FP32 = {
+    "max_dv_edge_relative": 4.64e-5,
+    "max_dv_edge_absolute_m": 0.634,
+    "min_dv_edge_m": 9_588.6,
+    "edges_past_port_storage_tolerance": 0,
+    "port_arc_atol_m": 1.7320508,
+    "port_arc_rtol": 9.5367431640625e-07,
+    "min_dv_over_dc": 0.36752,
+    "edges_below_admission_floor": 0,
+    "port_min_dv_over_dc": 0.02,
+}
+
+#: MEASURED 2026-08-25 on a generated pair (120 km background, 30 km
+#: cap): a pentagon-heptagon dislocation left two dual vertices 11.2 m
+#: apart on a 163,655 m dcEdge.  Storage is FINE (the disagreement sits
+#: under the 1.73 m atol); what the live port refuses is the RATIO,
+#: dvEdge/dcEdge = 6.83e-5 against the DualEdgePolicy floor of 0.02.
+DEGENERATE_FP32 = {
+    "max_dv_edge_relative": 4.7e-5,
+    "max_dv_edge_absolute_m": 0.63,
+    "min_dv_edge_m": 11.2,
+    "edges_past_port_storage_tolerance": 0,
+    "port_arc_atol_m": 1.7320508,
+    "port_arc_rtol": 9.5367431640625e-07,
+    "min_dv_over_dc": 6.83e-5,
+    "edges_below_admission_floor": 1,
+    "port_min_dv_over_dc": 0.02,
+}
+
+#: The reading an engine from before 2026-08-23 wrote: judged against the
+#: port's RETIRED rtol 2e-5 / atol 0.0 comparison, which the port no
+#: longer performs.  Such a receipt answers a question nobody is asking.
+RETIRED_CONTRACT_FP32 = {
     "max_dv_edge_relative": 1.19e-5,
     "consumer_metric_rtol": 2.0e-5,
     "min_dv_edge_m": 45_016.7,
     "edges_past_consumer_tolerance": 0,
-}
-
-#: MEASURED on a generated 127,051-cell mesh at a 120 km background.
-DEGENERATE_FP32 = {
-    "max_dv_edge_relative": 8.52e-3,
-    "consumer_metric_rtol": 2.0e-5,
-    "min_dv_edge_m": 3.45,
-    "edges_past_consumer_tolerance": 147,
 }
 
 
@@ -323,30 +351,65 @@ def test_a_pair_carrying_deriv_two_is_reported_runnable():
     assert "deriv_two" in text
 
 
-def test_a_mesh_whose_dual_edges_cannot_be_stored_is_not_called_runnable():
-    """A complete pair the consumer still refuses, for a second reason.
+def test_a_pair_below_the_dual_edge_floor_is_not_called_runnable():
+    """A complete pair the consumer still refuses, for the LIVE reason.
 
-    MEASURED: generated meshes at a 120 km background carry a shortest dual
-    edge of 7,337.6 m at 2,000 cells but 3.4 m at 127,051, while the
-    PUBLISHED x1.40962 has nothing under 45 km at 40,962.  An edge that
-    short cannot survive FP32 storage at earth radius, where one ULP is
-    half a metre, so the port recomputes dvEdge from the stored vertices
-    and refuses the whole pair with `dvEdge disagrees with spherical
-    vertex arc length`.  The door must not call such a pair runnable just
-    because every field is present.
+    The port stopped performing the rtol 2e-5 / atol 0.0 storage
+    comparison on 2026-08-23; short dual edges are gated by the
+    DualEdgePolicy ratio floor instead (dvEdge/dcEdge >= 0.02), because
+    the TRiSK tangential terms divide by dvEdge and a ratio of 6.83e-5
+    amplifies a tangential gradient ~15,000x.  MEASURED 2026-08-25: the
+    live `admit_dual_edges` refuses exactly such an edge with
+    `DualEdgeAdmissionError` before any CUDA allocation.  The door must
+    say THAT, not quote a comparison nobody performs (stale-guard audit
+    2026-08-25, finding 3).
     """
 
     text = mpas_mesh.runnability_verdict(["defc_a"], DEGENERATE_FP32)
     assert "NOT RUNNABLE" in text
-    assert "dvEdge disagrees with spherical vertex arc length" in text
-    assert "3.4 m" in text or "3.5 m" in text
-    # The remedy has to be one that was tried.  This refusal first said
-    # "more relaxation sweeps", which MEASURED false: --sweeps 200, 600
-    # and 2000 on the same request all deliver the same 75.04 m shortest
-    # edge.  A refusal naming a remedy nobody checked is a dead end that
-    # looks like help.
-    assert "fewer cells" in text
-    assert "what does NOT work, measured" in text
+    assert "dvEdge/dcEdge" in text
+    assert "0.02" in text
+    assert "DualEdgeAdmissionError" in text
+    # The dead premise must be gone: the port no longer refuses over
+    # FP32 storage of these lengths, and saying it does sends the user
+    # chasing a fix for the wrong defect.
+    assert "dvEdge disagrees with spherical vertex arc length" not in text
+    # The remedy has to be one that was tried.  MEASURED: re-rolling the
+    # same refinement request re-rolls the dislocation (three layouts,
+    # three dislocations); a different layout or a uniform request does
+    # not produce one.
+    assert "refinement layout" in text
+
+
+def test_edges_past_the_retired_relative_bound_are_runnable():
+    """The settling measurement, pinned as the door's contract.
+
+    MEASURED 2026-08-25: a generated 654,432-cell pair carries 12,732
+    edges past the retired 2e-5 relative bound (worst 4.64e-5), every
+    one inside the live 1.73 m storage atol, and the live
+    `Mesh.from_netcdf(validate=True)` ACCEPTS the pair.  A door still
+    holding the retired bound calls this runnable pair NOT RUNNABLE,
+    which is the finding-3 defect.
+    """
+
+    text = mpas_mesh.runnability_verdict(["defc_a"], HEALTHY_FP32)
+    assert "NOT RUNNABLE" not in text
+    assert "this pair is what a run needs" in text
+
+
+def test_a_reading_against_the_retired_contract_is_not_quoted():
+    """An old receipt answers a question the port stopped asking.
+
+    A receipt from an engine older than the 2026-08-23 contract change
+    judged storage against rtol 2e-5 / atol 0.0.  Quoting it either way
+    would revive the dead premise, so the door reports the reading as
+    not taken and names the rebuild.
+    """
+
+    text = mpas_mesh.runnability_verdict(["defc_a"], RETIRED_CONTRACT_FP32)
+    assert text.startswith("NOT MEASURED")
+    assert "retired" in text
+    assert "--receipt" in text
 
 
 def test_a_missing_fp32_reading_is_not_reported_as_runnable():

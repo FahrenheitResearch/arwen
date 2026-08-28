@@ -328,6 +328,18 @@ impl LambertConformal {
     pub fn reference_latitude_deg(self) -> f64 {
         self.ref_lat_deg
     }
+
+    pub(crate) fn spec_standard_parallel_1_deg(self) -> f64 {
+        self.truelat1_deg
+    }
+
+    pub(crate) fn spec_standard_parallel_2_deg(self) -> f64 {
+        self.truelat2_deg
+    }
+
+    pub(crate) fn spec_central_meridian_deg(self) -> f64 {
+        self.stand_lon_deg
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -336,6 +348,16 @@ pub(crate) struct GeographicProjection {
 }
 
 impl GeographicProjection {
+    pub(crate) fn new(central_meridian_deg: f64) -> Self {
+        Self {
+            central_meridian_deg,
+        }
+    }
+
+    pub(crate) fn central_meridian_deg(self) -> f64 {
+        self.central_meridian_deg
+    }
+
     fn project(self, lat: f64, lon: f64) -> (f64, f64) {
         (
             normalize_longitude_deg(lon - self.central_meridian_deg),
@@ -360,10 +382,14 @@ pub(crate) struct RobinsonProjection {
 }
 
 impl RobinsonProjection {
-    fn new(central_meridian_deg: f64) -> Self {
+    pub(crate) fn new(central_meridian_deg: f64) -> Self {
         Self {
             central_meridian_deg,
         }
+    }
+
+    pub(crate) fn central_meridian_deg(self) -> f64 {
+        self.central_meridian_deg
     }
 
     fn project(self, lat: f64, lon: f64) -> (f64, f64) {
@@ -422,10 +448,19 @@ pub(crate) struct AlbersEqualAreaProjection {
     c: f64,
     rho0: f64,
     central_meridian_deg: f64,
+    // gpuwm addition (VENDOR.md): the DEGREE parameters this projector was
+    // built from, retained unused by the math so a finished panel can
+    // publish a projection that rebuilds bit-identical state.  `n`, `c`
+    // and `rho0` are derived and do not invert back to standard
+    // parallels, so without these a published Albers panel could not be
+    // reproduced -- see `crate::georeference`.
+    standard_parallel_1_deg: f64,
+    standard_parallel_2_deg: f64,
+    latitude_of_origin_deg: f64,
 }
 
 impl AlbersEqualAreaProjection {
-    fn new(
+    pub(crate) fn new(
         standard_parallel_1_deg: f64,
         standard_parallel_2_deg: f64,
         central_meridian_deg: f64,
@@ -448,7 +483,26 @@ impl AlbersEqualAreaProjection {
             c,
             rho0,
             central_meridian_deg,
+            standard_parallel_1_deg,
+            standard_parallel_2_deg,
+            latitude_of_origin_deg,
         }
+    }
+
+    pub(crate) fn central_meridian_deg(self) -> f64 {
+        self.central_meridian_deg
+    }
+
+    pub(crate) fn standard_parallel_1_deg(self) -> f64 {
+        self.standard_parallel_1_deg
+    }
+
+    pub(crate) fn standard_parallel_2_deg(self) -> f64 {
+        self.standard_parallel_2_deg
+    }
+
+    pub(crate) fn latitude_of_origin_deg(self) -> f64 {
+        self.latitude_of_origin_deg
     }
 
     fn project(self, lat: f64, lon: f64) -> (f64, f64) {
@@ -487,10 +541,14 @@ pub(crate) struct PolarStereographic {
     central_meridian_deg: f64,
     south_pole_on_projection_plane: bool,
     k: f64,
+    // gpuwm addition (VENDOR.md): see the note on
+    // `AlbersEqualAreaProjection`.  `k` folds the true latitude through a
+    // sine and does not invert cleanly at the pole.
+    true_latitude_deg: f64,
 }
 
 impl PolarStereographic {
-    fn new(
+    pub(crate) fn new(
         true_latitude_deg: f64,
         central_meridian_deg: f64,
         south_pole_on_projection_plane: bool,
@@ -500,7 +558,20 @@ impl PolarStereographic {
             central_meridian_deg,
             south_pole_on_projection_plane,
             k: (1.0 + lat_ts.sin()) / 2.0,
+            true_latitude_deg,
         }
+    }
+
+    pub(crate) fn central_meridian_deg(self) -> f64 {
+        self.central_meridian_deg
+    }
+
+    pub(crate) fn true_latitude_deg(self) -> f64 {
+        self.true_latitude_deg
+    }
+
+    pub(crate) fn south_pole_on_projection_plane(self) -> bool {
+        self.south_pole_on_projection_plane
     }
 
     fn project(self, lat: f64, lon: f64) -> (f64, f64) {
@@ -520,16 +591,29 @@ impl PolarStereographic {
 pub(crate) struct MercatorProjection {
     central_meridian_deg: f64,
     scale: f64,
+    // gpuwm addition (VENDOR.md): see the note on
+    // `AlbersEqualAreaProjection`.  `scale` is a clamped cosine and two
+    // different true-scale latitudes can share one.
+    latitude_of_true_scale_deg: f64,
 }
 
 impl MercatorProjection {
-    fn new(latitude_of_true_scale_deg: f64, central_meridian_deg: f64) -> Self {
+    pub(crate) fn new(latitude_of_true_scale_deg: f64, central_meridian_deg: f64) -> Self {
         Self {
             central_meridian_deg,
             scale: (stabilize_reference_latitude(latitude_of_true_scale_deg) * DEG2RAD)
                 .cos()
                 .max(1.0e-6),
+            latitude_of_true_scale_deg,
         }
+    }
+
+    pub(crate) fn central_meridian_deg(self) -> f64 {
+        self.central_meridian_deg
+    }
+
+    pub(crate) fn latitude_of_true_scale_deg(self) -> f64 {
+        self.latitude_of_true_scale_deg
     }
 
     fn project(self, lat: f64, lon: f64) -> (f64, f64) {

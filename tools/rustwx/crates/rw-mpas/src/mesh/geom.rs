@@ -83,9 +83,19 @@ pub fn arc(a: V3, b: V3) -> f64 {
 
 /// Latitude and longitude of a unit vector, in radians. Longitude is wrapped
 /// into `[0, 2*pi)`, which is where the published files carry `lonCell`.
+///
+/// Latitude is `atan2(z, hypot(x, y))`, NOT `asin(z)`, and the difference is
+/// a fixed defect, not taste: near a pole, `z` alone carries the latitude at
+/// half precision (`sin` flattens there) while `hypot(x, y)` carries it in
+/// full, so an `asin(z)` latitude written beside its own Cartesian point
+/// fails to reproduce that point. MEASURED: a graded 224k-cell mesh rolled
+/// an edge midpoint 7.1e-8 rad from the south pole, its emitted asin
+/// latitude reconstructed the stored xyz only to 1.27e-9 on the unit
+/// sphere, and the port's binary64 load gate (5e-10) refused the pair.
+/// The atan2 form reconstructs to machine precision at every latitude.
 #[inline]
 pub fn lat_lon(v: V3) -> (f64, f64) {
-    let lat = v[2].clamp(-1.0, 1.0).asin();
+    let lat = v[2].atan2(v[0].hypot(v[1]));
     let mut lon = v[1].atan2(v[0]);
     if lon < 0.0 {
         lon += std::f64::consts::TAU;
@@ -260,6 +270,65 @@ pub fn orient3d(a: V3, b: V3, c: V3, d: V3) -> f64 {
     s.0 + s.1
 }
 
+/// The floating-point filter's error bound coefficient, `7 * eps`.
+///
+/// Shewchuk's `o3derrboundA` for the 3x3 determinant of differences: with the
+/// `permanent` below (the sum of the absolute values of the six products the
+/// determinant is built from), `|det| > o3derrboundA * permanent` proves the
+/// rounded `det` carries the sign of the EXACT determinant of those same
+/// differences -- which is precisely what [`orient3d`] returns, to about 1e-30.
+/// `eps` here is the unit roundoff `2^-53`, which is HALF of Rust's
+/// `f64::EPSILON` (`2^-52`, the gap above 1.0) -- getting that factor wrong in
+/// the optimistic direction is how a filter starts returning wrong signs.
+const ORIENT3D_FILTER_BOUND: f64 = {
+    let eps = f64::EPSILON / 2.0;
+    (7.0 + 56.0 * eps) * eps
+};
+
+/// The SIGN of [`orient3d`], by a filter that falls back to it.
+///
+/// Callers that only compare the determinant against zero -- the hull's
+/// visibility test is the one that runs 10^8 times -- get the same answer from
+/// a plain f64 determinant whenever that determinant is provably larger than
+/// its own rounding error, and pay for the double-double evaluation only on
+/// the near-degenerate quadruples that need it.
+///
+/// THE BREAKAGE THIS AVOIDS: the returned VALUE is not [`orient3d`]'s and must
+/// never be used as one. `initial_tetrahedron` ranks candidates by
+/// `orient3d(..).abs()`, and a filtered magnitude there would pick a different
+/// seed tetrahedron, which reorders the facets, which rotates every emitted
+/// neighbour ring -- a different grid file from the same generators. Sign only.
+#[inline]
+pub fn orient3d_sign(a: V3, b: V3, c: V3, d: V3) -> f64 {
+    let bx = b[0] - a[0];
+    let by = b[1] - a[1];
+    let bz = b[2] - a[2];
+    let cx = c[0] - a[0];
+    let cy = c[1] - a[1];
+    let cz = c[2] - a[2];
+    let dx = d[0] - a[0];
+    let dy = d[1] - a[1];
+    let dz = d[2] - a[2];
+
+    let m0 = cy * dz - cz * dy;
+    let m1 = cx * dz - cz * dx;
+    let m2 = cx * dy - cy * dx;
+    let det = bx * m0 - by * m1 + bz * m2;
+
+    // The permanent: the same six products with every sign made positive, each
+    // weighted by the row it multiplies -- formed exactly the way the
+    // determinant is, which is what makes it a bound on that determinant's
+    // rounding error rather than on some other quantity.
+    let permanent = bx.abs() * ((cy * dz).abs() + (cz * dy).abs())
+        + by.abs() * ((cx * dz).abs() + (cz * dx).abs())
+        + bz.abs() * ((cx * dy).abs() + (cy * dx).abs());
+    let bound = ORIENT3D_FILTER_BOUND * permanent;
+    if det > bound || -det > bound {
+        return det;
+    }
+    orient3d(a, b, c, d)
+}
+
 /// `orient3d` with a deterministic tie-break for the exactly-degenerate case.
 ///
 /// Four exactly-cospherical-and-coplanar generators do occur: a Fibonacci or
@@ -425,6 +494,95 @@ mod tests {
         );
     }
 
+    /// THE BREAKAGE THIS PREVENTS: `hull::visible` takes the FILTERED sign, and
+    /// a filter that answers wrongly on a near-degenerate quadruple builds a
+    /// different triangulation -- which is a different neighbour ring, a
+    /// different `cellsOnCell`, and a different grid file from the same
+    /// generators. The two predicates are held to the same sign over the
+    /// configurations the generator actually produces: a golden-ratio sphere
+    /// (the seed lattice), quadruples squeezed onto their own plane down to
+    /// 1e-18 of a radius, and exactly-coplanar ties where both must read 0.
+    #[test]
+    fn the_filtered_sign_never_disagrees_with_the_exact_predicate() {
+        let ga = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+        let pts: Vec<V3> = (0..400)
+            .map(|k| {
+                let z = 1.0 - (2 * k + 1) as f64 / 400.0;
+                let r = (1.0 - z * z).max(0.0).sqrt();
+                let t = ga * k as f64;
+                unit([r * t.cos(), r * t.sin(), z]).unwrap()
+            })
+            .collect();
+        let mut filtered_took_the_fast_path = 0usize;
+        let mut checked = 0usize;
+        for i in 0..pts.len() {
+            for j in (i + 1)..(i + 9).min(pts.len()) {
+                for k in (j + 1)..(j + 5).min(pts.len()) {
+                    for d in 0..pts.len() {
+                        if d == i || d == j || d == k {
+                            continue;
+                        }
+                        let exact = orient3d(pts[i], pts[j], pts[k], pts[d]);
+                        let fast = orient3d_sign(pts[i], pts[j], pts[k], pts[d]);
+                        assert_eq!(
+                            exact.partial_cmp(&0.0),
+                            fast.partial_cmp(&0.0),
+                            "the filter read {fast} where the exact predicate reads {exact}"
+                        );
+                        if fast != exact {
+                            filtered_took_the_fast_path += 1;
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "only {checked} quadruples were checked");
+        // A filter that never fired would make the assertion above vacuous, so
+        // the fast path has to be REACHED here. The bar is a third and the
+        // measured share on this deliberately degenerate sample -- slivers
+        // from three near-neighbours on the seed spiral against every other
+        // point -- is about half; a real hull's facets are far rounder and
+        // fall back far less.
+        assert!(
+            filtered_took_the_fast_path * 3 > checked,
+            "the filter fell back to the exact predicate on {} of {checked} quadruples, so the fast path is barely exercised",
+            checked - filtered_took_the_fast_path
+        );
+
+        // Squeezed onto the plane: the range where a naive determinant starts
+        // being wrong and the filter has to hand back to the exact one.
+        let s = 3000.0 / EARTH_RADIUS_M;
+        let a = [1.0, 0.0, 0.0];
+        let b = unit([1.0, s, 0.0]).unwrap();
+        let c = unit([1.0, 0.0, s]).unwrap();
+        let on = scale(add(add(a, b), c), 1.0 / 3.0);
+        let plane = unit(cross(sub(b, a), sub(c, a))).unwrap();
+        for mag in [1e-12, 1e-14, 1e-16, 1e-18, 1e-20, 0.0] {
+            for sign in [1.0f64, -1.0] {
+                let d = add(on, scale(plane, sign * mag));
+                let exact = orient3d(a, b, c, d);
+                let fast = orient3d_sign(a, b, c, d);
+                assert_eq!(
+                    exact.partial_cmp(&0.0),
+                    fast.partial_cmp(&0.0),
+                    "at {mag:.0e} off the plane the filter read {fast} against the exact {exact}"
+                );
+            }
+        }
+
+        // An exactly coplanar quadruple: both must read 0 so the SoS tie-break
+        // is the thing that decides, on both paths.
+        let (q0, q1, q2, q3) = (
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+        );
+        assert_eq!(orient3d(q0, q1, q2, q3), 0.0);
+        assert_eq!(orient3d_sign(q0, q1, q2, q3), 0.0);
+    }
+
     #[test]
     fn sos_breaks_an_exactly_coplanar_tie_consistently() {
         // Four points on a common great circle: exactly coplanar with the
@@ -454,27 +612,31 @@ mod tests {
     }
 
     #[test]
-    fn a_latitude_round_trip_near_the_pole_has_a_measured_resolution_limit() {
-        // RESOLUTION LIMIT, recorded rather than papered over. Recovering
-        // latitude through asin(z) loses half its digits as z approaches 1: a
-        // point a nanoradian from the pole comes back a nanoradian off, and the
-        // point rebuilt from that latitude is a nanoradian (6 mm on Earth) away
-        // from where it started. Nothing in this crate round-trips a position
-        // through lat/lon for exactly this reason -- lat/lon is an emitted
-        // field, and every comparison is made in Cartesian chord.
-        let lat = std::f64::consts::FRAC_PI_2 - 1e-9;
-        let v = from_lat_lon(lat, 3.0);
-        let (la, lo) = lat_lon(v);
-        let angle_gap = (la - lat).abs();
-        let point_gap = chord(from_lat_lon(la, lo), v);
-        assert!(
-            angle_gap > 1e-13 && point_gap > 1e-13,
-            "the pole round trip has stopped losing digits (angle {angle_gap:.3e}, chord {point_gap:.3e}); the limit this test records is gone and the reason for the chord convention with it"
-        );
-        assert!(angle_gap < 1e-8, "worse than expected: angle {angle_gap:.3e}");
-        assert!(point_gap < 1e-8, "worse than expected: chord {point_gap:.3e}");
-        // Away from the pole the same round trip is exact, which is what makes
-        // the loss above a pole effect rather than a formula defect.
+    fn the_latitude_round_trip_is_pole_stable() {
+        // This test used to RECORD a resolution limit: the asin(z) latitude
+        // lost half its digits near a pole, and its own failure message said
+        // that if the loss ever stopped, the limit was gone. It stopped, on
+        // a measurement: a graded 224k-cell mesh rolled an edge midpoint
+        // 7.1e-8 rad from the south pole, the emitted asin latitude
+        // reconstructed the stored Cartesian point only to 1.27e-9, and the
+        // port's binary64 load gate (5e-10) refused the whole pair. The
+        // atan2(z, hypot(x, y)) form retires the limit; this test now
+        // GUARDS the retirement at the measured failure's own distance and
+        // closer. (Chord remains the crate's comparison convention: lat/lon
+        // is still an emitted field, merely no longer a lossy one.)
+        for &off in &[1e-7, 1e-9, 1e-12, 0.0] {
+            let lat = std::f64::consts::FRAC_PI_2 - off;
+            for sign in [1.0f64, -1.0] {
+                let v = from_lat_lon(sign * lat, 3.0);
+                let (la, lo) = lat_lon(v);
+                let point_gap = chord(from_lat_lon(la, lo), v);
+                assert!(
+                    point_gap < 5e-16,
+                    "the pole round trip lost digits again at {off:.0e} off the pole (chord {point_gap:.3e}); the port's 5e-10 load gate would refuse an emitted mesh with an edge there"
+                );
+            }
+        }
+        // Mid-latitude stays exact too.
         let mid = from_lat_lon(0.7, 3.0);
         let (mla, mlo) = lat_lon(mid);
         assert!(chord(from_lat_lon(mla, mlo), mid) < 1e-16, "the mid-latitude round trip is not exact");

@@ -1186,7 +1186,8 @@ class _ReferencePreprocessBackend:
 
 def _analyzed_hrrr_real_init(
         mp_physics, *, state_backend="cpu", terrain_m=0.0,
-        drop=(), reshape=None, **config_overrides):
+        drop=(), reshape=None, wif_grid_latlon=None, wif_valid_date=None,
+        **config_overrides):
     """One decoded-native-HRRR real initialization, never a fabricated state.
 
     ``drop`` removes analyzed species from the decoded snapshot and
@@ -1247,7 +1248,8 @@ def _analyzed_hrrr_real_init(
         make_vertical_coord(nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
         terrain, source_orography=terrain, p_top=10000.0, use_sh_qv=True,
         preprocess_backend=_ReferencePreprocessBackend(),
-        state_backend=state_backend)
+        state_backend=state_backend,
+        wif_grid_latlon=wif_grid_latlon, wif_valid_date=wif_valid_date)
     return result, cfg
 
 
@@ -1394,18 +1396,24 @@ def test_mp28_real_ingest_refuses_an_aerosol_source_it_cannot_read():
     metgrid WIF stream this module cannot read and then hand the microphysics
     an all-zero aerosol field as if it were the requested climatology.
     """
-    from gpuwm.config import MP28_AEROSOL_SOURCE_DEVIATION
-
-    for overrides, name in (
-            ({"wif_input_opt": 1}, "wif_input_opt"),
+    # RE-BASELINED (lane/wif-default).  Two of the four rows moved and two
+    # did not, and the split is the whole point: the CLIMATOLOGY selectors
+    # are now implemented, so refusing them would be refusing the default;
+    # the FIRST-GUESS and qnbca selectors are still unimplemented
+    # capabilities, so they still refuse by name.
+    for overrides, expect in (
             ({"wif_input_opt": 2}, "wif_input_opt"),
-            ({"aer_init_opt": 1}, "aer_init_opt"),
             ({"aer_init_opt": 2}, "aer_init_opt")):
         with pytest.raises(NotImplementedError) as caught:
             _analyzed_hrrr_real_init(28, **overrides)
         message = str(caught.value)
-        assert name in message
-        assert MP28_AEROSOL_SOURCE_DEVIATION in message
+        assert expect in message
+    # Half a climatology selection is refused as a mixed selection, not as
+    # an unimplemented one -- ArWen will not guess which half was meant.
+    for overrides in ({"wif_input_opt": 1}, {"aer_init_opt": 1}):
+        with pytest.raises(NotImplementedError) as caught:
+            _analyzed_hrrr_real_init(28, **overrides)
+        assert "MIXED aerosol-source selection" in str(caught.value)
 
     # Not a blanket refusal: the same selectors are inert under mp=8 and the
     # ingest must not start policing another scheme's namelist.
@@ -1557,37 +1565,127 @@ def test_mp28_real_ingest_through_initialize_physics_fills_exactly_once():
         assert np.isfinite(live).all()
 
 
-def test_mp28_real_ingest_receipt_agrees_with_the_published_deviation():
-    """The ingest receipt and the user-facing deviation cannot drift apart.
+@pytest.fixture
+def wif_dataset():
+    """WRF's monthly WIF aerosol dataset, or skip.
 
-    ``gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION`` is the sentence a user
-    sees in the namelist importer's printed receipt.  It asserts three
-    things this lane is now the production evidence for: the aerosol initial
-    state comes from thompson_init's synthetic profile, ArWen has no
-    QNWFA/QNIFA ingest lane, and WRF's real.exe FATALs this configuration at
-    dyn_em/module_initialize_real.F:2735-2736.  If the ingest ever grew an
-    aerosol source, that sentence would become false somewhere no test looks
-    -- so it is bound here, to the receipt the ingest actually emits.
+    ArWen does not redistribute the 225 MB file, so the default-path test
+    can only run where a copy exists.  It is located the same way the
+    PRODUCT locates it -- through the resolver's own search order -- so the
+    fixture cannot pass on a path the shipping code would not have found.
     """
-    from gpuwm.config import (
-        MP28_AEROSOL_SOURCE_DEVIATION, MP28_AEROSOL_SOURCE_OPTIONS)
+    from gpuwm.ingest.wif_climatology import resolve_wif_climatology
+    try:
+        resolution = resolve_wif_climatology()
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    if not resolution.resolved:
+        pytest.skip(str(resolution.fallback_reason))
+    return resolution.path
+
+
+def test_mp28_real_ingest_receipt_announces_the_synthetic_fallback(
+        monkeypatch, tmp_path):
+    """A run on the synthetic profile SAYS SO, by name, in its receipt.
+
+    RE-BASELINED (lane/wif-default).  This test used to assert that the
+    ingest receipt agreed with the published DEVIATION -- that ArWen had no
+    QNWFA/QNIFA ingest lane and that real.exe FATALs the configuration.
+    Both clauses are now false of the default, so pinning them would pin the
+    defect.  What must not drift apart is the pair that is still real: a run
+    that reached the synthetic profile, and the sentence that tells its
+    reader what that means.  Reconstructing the old assertion: every clause
+    of the retired deviation is asserted below, on the branch it is still
+    true of, plus the two facts the old pin could not express -- that this
+    branch is now a FALLBACK, and that it is reached rather than chosen.
+    """
+    from gpuwm.config import MP28_AEROSOL_SYNTHETIC_FALLBACK
     from gpuwm.ingest.real import WRF_REAL_MP28_AEROSOL_SOURCE_POLICY
+    from gpuwm.ingest import wif_climatology
+
+    # Guarantee the fallback: no override, and a working directory that
+    # holds no dataset.  (Do not merely unset the env -- the resolver's last
+    # candidate is the cwd, which is exactly the point of the search order.)
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, raising=False)
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_ROOT_ENV, raising=False)
+    # THE STAGED ROOT is a rung too (merge: static-dataset-door +
+    # wif-default).  `gpuwm fetch-tables --wif` installs the dataset into
+    # $GPUWM_WIF_DATA_ROOT, defaulting to ~/.gpuwm/wif, and
+    # resolve_wif_climatology searches it ahead of the cwd.  Unsetting the
+    # two file/root overrides is therefore no longer enough to guarantee
+    # "nothing resolves": on a machine that has actually staged the dataset
+    # -- the reference host has -- this test would otherwise resolve the
+    # real 225 MB copy and pass, or fail, for a reason it is not about.
+    # Point the staged root at an empty directory instead.
+    monkeypatch.setenv("GPUWM_WIF_DATA_ROOT", str(tmp_path / "no-staged-wif"))
+    monkeypatch.chdir(tmp_path)
 
     result, _ = _analyzed_hrrr_real_init(28)
     receipt = result.aerosol_initialization
 
-    assert receipt["wrf_real_refuses_this_configuration"] in (
-        MP28_AEROSOL_SOURCE_DEVIATION)
+    assert receipt["aerosol_source"] == "thompson_init-synthetic-profile"
+    assert receipt["synthetic_fallback_in_use"] is True
+    assert receipt["synthetic_fallback_requested"] is False
+    assert receipt["aerosol_source_statement"] == (
+        MP28_AEROSOL_SYNTHETIC_FALLBACK)
+    # The retired deviation's surviving clauses, on the branch they describe.
+    assert "thompson_init" in receipt["aerosol_source_statement"]
+    assert "not be reported as one" in receipt["aerosol_source_statement"]
+    # It says WHY there was no data, concretely -- a fallback whose reason is
+    # "unavailable" is a fallback nobody can fix.
+    assert receipt["dataset"]["resolved"] is False
+    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in (
+        receipt["dataset"]["fallback_reason"])
+    assert receipt["dataset"]["candidates"]
+    # Unchanged: the fields are still left at exact zero for thompson_init.
     assert "module_mp_thompson.F" in receipt["microphysics_citation"]
     assert receipt["awaiting_profile_fill"] is True
     assert receipt["not_initialized_here"] == (
         WRF_REAL_MP28_AEROSOL_SOURCE_POLICY["not_initialized_here"])
-    # The receipt reports the selectors it actually ran under, and the only
-    # values it can ever report are the ones the port implements.
-    for name, (only, _citation, _why) in MP28_AEROSOL_SOURCE_OPTIONS.items():
-        assert receipt[name] == only
-    assert set(MP28_AEROSOL_SOURCE_OPTIONS) == {
-        "aer_init_opt", "wif_input_opt"}
+
+
+def test_mp28_real_ingest_defaults_to_the_wif_climatology(
+        monkeypatch, wif_dataset):
+    """THE DEFAULT.  No flag, no selector: the data is simply used.
+
+    The gate this lane exists for.  ``mp28_aerosol_source`` is left at its
+    default and the two namelist selectors at WRF's Registry defaults; the
+    only thing that differs from the fallback test above is that the dataset
+    is reachable.  If this ever needs an opt-in to pass, the remedy has
+    become a workaround.
+    """
+    monkeypatch.setenv(
+        "GPUWM_WIF_CLIMATOLOGY", str(wif_dataset))
+
+    # The grid geometry a GLOBAL dataset needs.  Passed the way the mapped
+    # front door passes it (gpuwm/mapped_direct.py) -- from the model grid
+    # and the frame's valid time -- rather than through any test-only hook,
+    # so what this asserts is what a user's run does.
+    lat2d = np.array([[39.4, 39.4, 39.4], [39.6, 39.6, 39.6]])
+    lon2d = np.array([[-98.7, -98.5, -98.3], [-98.7, -98.5, -98.3]])
+    result, _ = _analyzed_hrrr_real_init(
+        28, wif_grid_latlon=(lat2d, lon2d),
+        wif_valid_date="2026-08-25T18:00:00")
+    receipt = result.aerosol_initialization
+
+    assert receipt["aerosol_source"] == "wif-climatology"
+    assert receipt.get("synthetic_fallback_in_use") is None
+    assert receipt["awaiting_profile_fill"] is False
+    assert receipt["dataset"]["resolved"] is True
+    assert receipt["dataset"]["sha256"]
+    # STALE PIN, CORRECTED IN THE MERGE.  lane/wif-default wrote "...-v1"
+    # here, but gpuwm/ingest/wif_climatology.py has stamped "...-v2" since
+    # 474e0e9a0 ("the WIF climatology data path moves onto Drew's Rust"),
+    # an ANCESTOR of that commit -- so this assertion was already false of
+    # the code when it was written.  Nothing caught it because the
+    # ``wif_dataset`` fixture SKIPPED: it resolves the dataset the way the
+    # product does, and before the staged root became a rung of that search
+    # its only rungs were two unset env vars and a cwd that never holds a
+    # 225 MB file.  tests/test_wif_climatology_equivalence.py:156 has
+    # pinned v2 the whole time; this line is brought into agreement with
+    # the code and with it.
+    assert receipt["wif_climatology"]["schema"] == (
+        "wrf-v4.7.1-wif-climatology-ingest-v2")
 
 
 def _pressure_level_real_init(mp_physics, **config_overrides):

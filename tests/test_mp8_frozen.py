@@ -452,8 +452,52 @@ FROZEN_MODULE_DIGESTS = {
         'c3a2554827e7c39db269d0fa1d5ad594d1623d6974be859a1ae3a044d438951f',
         '36f7a4dccc8c66be225e16fdd6088f0fafa7a357ac1aba9b4a99f98af297c370'),
     'ruc': (
-        'd446b7462e4952416d3e21482b051823766a6f675163236686c7d9fab7fbbdb7',
-        'f3fa5f309adf4de861d35594a884ad9ed5abcc2b252a61a171354459cc8b8028'),
+        # Re-pinned for the RUC_NZS tier ladder (lane/ruc-column-nzs, step 3
+        # of 3, final): the ladder, the 161-token macro substitution that
+        # uses it, and the `#elif RUC_NZS == 6` arm of the depth table.  The
+        # forecast column now compiles at both geometries WRF defines.
+        #
+        # The nine-level translation unit is unchanged through all three
+        # steps.  Every macro expands to a bare decimal literal, so
+        # `real zshalf[RUC_NZS]` is the token stream `real zshalf[9]` was,
+        # and the `#elif` arm is deleted by the preprocessor at nine.
+        #
+        # The pin moves; the compiled binary does not.  Proved three ways in
+        # tests/test_ruc_nzs_tier.py, all device-free: the shipped source is
+        # run BACKWARDS to the pre-lift file and hashes to
+        # d446b7462e4952416d3e21482b051823766a6f675163236686c7d9fab7fbbdb7
+        # (the digest this row carried before), the token streams out of a
+        # real host preprocessor are equal, and `nvcc -ptx` emits identical
+        # PTX.  Each comparison has a negative control that must differ.
+        #
+        # MOVED A SECOND TIME, and this time the binary DOES change: the
+        # `RUC_NZS DZSTOP` block.  ruc_soil_finalize computed
+        # `dzstop = 1 / (0.01f - 0.0f)` -- WRF's NINE-level
+        # zsmain(2) - zsmain(1), written as a literal rather than read from
+        # ruc_soil_layer_depth, and therefore invisible to the macro sweep
+        # above, which was looking for extents.  Harmless while nine was the
+        # only geometry; at six it divides by 0.01 where the grid says 0.05,
+        # and the kernel returned a ground heat flux five times too large --
+        # MEASURED as grdflx -337.1 W m-2 against the host lane's -67.4 on
+        # the same column, before the fix.
+        #
+        # WHY THIS ROW MAY MOVE FOR IT.  At nine levels
+        # ruc_soil_layer_depth[1] IS 0.01f and [0] IS 0.00f, so the
+        # subtraction, the divide and every number downstream are unchanged,
+        # and that is measured on the hardware rather than argued: the full
+        # 43-field host/device driver comparison in
+        # tests/test_ruc_nzs_device.py is max_ulp 0 at nine, over snow-free,
+        # water+ice and snow columns, and the eleven-file RUC suite is
+        # unchanged against its lane baseline.  The generated code is NOT
+        # unchanged -- a __constant__ load where an immediate was -- and
+        # test_the_named_fix_is_a_real_change_to_the_generated_code asserts
+        # that difference, so the fix cannot be waved through as inert.
+        # The reconstruction above still reaches
+        # d446b7462e4952416d3e21482b051823766a6f675163236686c7d9fab7fbbdb7,
+        # through one extra named inversion step for this block, which is
+        # what keeps "the lift changed nothing else" checkable.
+        '2b176b92364530762032a815de270373143725c553437d19207152c84213ac1f',
+        '55894935fdfde9f3ac683e2bbf151e0c20f677744b37a9a438aa61bb91635935'),
     'saxpy': (
         '8637cb5cb0a6878d59a32454a6ae662a8b18c0be4d94c067fbde1e4bf5bad079',
         '7b7083065716a2b3b58d47c3ac456ea8d0c1a38ec771219897917bb0b1b79cb2'),

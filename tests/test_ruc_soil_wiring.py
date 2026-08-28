@@ -446,22 +446,126 @@ def test_an_unrecognised_land_surface_selector_is_refused() -> None:
                 fields, sf_surface_physics=scheme, soil_type=soil_type)
 
 
-def test_the_mapped_contract_path_refuses_ruc_rather_than_inventing_a_target():
-    """The one source mode that is NOT wired, refused by name.
+def test_the_mapped_contract_path_admits_only_the_ruc_identity_source():
+    """The mapped arm's RUC target is DECLARED, and it is a table.
 
-    ``validate_soil_layer_contract`` compares ``target_layers`` against
-    ``NOAH_LAYER_BOUNDS_M`` and refuses any other, deliberately.  Running RUC
-    through it would mean remapping to Noah's bounds and relabelling the
-    result nine levels, which is fabricating a soil column.  Refused, and
-    recorded as the remaining item rather than closed.
+    The RUC target is declared (``soil_contract.RUC_TARGET_LEVEL_DEPTHS_M``
+    + ``ruc_soil_remap_policy``) rather than fabricated by widening the
+    Noah ``target_layers`` comparison.  What it declares is a TABLE of two
+    remap policies, one per source geometry, each dispatching into the
+    matching arm of WRF's own ``init_soil_3_real``:
+
+    * a node contract runs ``flag_soil_levels``.  For the RUC-family
+      ladders that is the identity, and the admitted arrays are
+      byte-identical to what the native SOILT/SOILW arm returns.
+    * a LAYER contract runs ``flag_soil_layers``, and its admitted arrays
+      are byte-identical to what the native ERA5 ST0000xx arm returns.
+      This half REPLACES a refusal.  That refusal ("a layer source has no
+      oracled layers-to-levels policy") was true of the mapped route and
+      false of the module: the layer arm was already ported and already
+      measured against ``era5_layers_noadj_nosst`` at 0 ULP.  It is
+      retired here by the measurement below, not by assumption.
+
+    Mapped arrays with no contract at all keep their refusal by name.
     """
-    from gpuwm.ingest.soil_contract import MAPPED_SOIL_TEMPERATURE
+    from gpuwm.ingest.ruc_soil import _source_soil_profiles
+    from gpuwm.ingest.soil_contract import (MAPPED_SOIL_MOISTURE,
+                                            MAPPED_SOIL_TEMPERATURE,
+                                            RUC_TARGET_LEVEL_DEPTHS_M)
 
+    # Mapped arrays with no contract: still refused by name.
     fields = _era5_fields()
     fields[MAPPED_SOIL_TEMPERATURE] = np.zeros((4, 3, 4))
-    with pytest.raises(ValueError, match="no RUC target"):
+    with pytest.raises(ValueError, match="explicit soil_layer_contract"):
         preprocess_ruc_soil(
             fields, soil_type=_soil_type(fields["LANDSEA"].shape))
+
+    # The identity admission: a contract whose declared nodes ARE RUC's
+    # nine level depths hands the source's own samples through unchanged,
+    # equal to the native arm on the same arrays.
+    rng = np.random.default_rng(11)
+    temperature = rng.uniform(275.0, 305.0, (9, 3, 4)).astype(np.float32)
+    moisture = rng.uniform(0.05, 0.4, (9, 3, 4)).astype(np.float32)
+    node_contract = {
+        "temperature_field": "soil_temperature",
+        "moisture_field": "volumetric_soil_moisture",
+        "depth_units": "m",
+        "source_nodes": [
+            {"depth": depth, "selectors": {
+                "soil_temperature": {
+                    "format": "grib2", "discipline": 2, "category": 0,
+                    "parameter": 2, "level_type": 106, "level_value": depth,
+                    "second_level_type": 106, "second_level_value": depth},
+                "volumetric_soil_moisture": {
+                    "format": "grib2", "discipline": 2, "category": 0,
+                    "parameter": 192, "center": 7, "subcenter": 0,
+                    "master_table_version": 2, "local_table_version": 1,
+                    "level_type": 106,
+                    "level_value": depth, "second_level_type": 106,
+                    "second_level_value": depth}}}
+            for depth in RUC_TARGET_LEVEL_DEPTHS_M],
+        "target_layers": [
+            {"top": 0.0, "bottom": 0.1}, {"top": 0.1, "bottom": 0.4},
+            {"top": 0.4, "bottom": 1.0}, {"top": 1.0, "bottom": 2.0}],
+        "remap": {"kind": "linear_node_samples",
+                  "source_value_location": "level_node",
+                  "target_value_location": "layer_midpoint"},
+        "missing": {"land": "reject",
+                    "ocean": {"stage": "after_horizontal_interpolation",
+                              "temperature": "skin_temperature",
+                              "moisture": 1.0}},
+    }
+    mapped = _source_soil_profiles(
+        {MAPPED_SOIL_TEMPERATURE: temperature,
+         MAPPED_SOIL_MOISTURE: moisture}, node_contract)
+    native = _source_soil_profiles(
+        {"SOILT": temperature, "SOILW": moisture}, None)
+    assert mapped[3] == native[3] == "levels"
+    assert np.array_equal(mapped[2], native[2])
+    assert np.array_equal(mapped[0], native[0])
+    assert np.array_equal(mapped[1], native[1])
+
+    # A layer-source contract (ERA5/GFS shape): RUNS, through the same
+    # flag_soil_layers arm the native ERA5 field names select, with WRF's
+    # own char2int2 integer-centimetre midpoints 3/17/64/194 cm -- the
+    # exact level set of the oracle's era5_layers_noadj_nosst rows.
+    layer_contract = {
+        "temperature_field": "soil_temperature",
+        "moisture_field": "volumetric_soil_moisture",
+        "depth_units": "m",
+        "source_layers": [
+            {"top": top, "bottom": bottom, "selectors": {
+                "soil_temperature": {"format": "netcdf", "name": f"stl{i}"},
+                "volumetric_soil_moisture": {
+                    "format": "netcdf", "name": f"swvl{i}"}}}
+            for i, (top, bottom) in enumerate(
+                ((0.0, 0.07), (0.07, 0.28), (0.28, 1.0), (1.0, 2.89)), 1)],
+        "target_layers": [
+            {"top": 0.0, "bottom": 0.1}, {"top": 0.1, "bottom": 0.4},
+            {"top": 0.4, "bottom": 1.0}, {"top": 1.0, "bottom": 2.0}],
+        "remap": {
+            "kind": "linear_point_samples",
+            "source_value_location": "wrf_integer_cm_layer_midpoint",
+            "target_value_location": "layer_midpoint",
+            "top_anchor": {"depth": 0.0, "temperature": "skin_temperature",
+                           "moisture": "repeat_shallowest"},
+            "bottom_anchor": {"depth": 3.0,
+                              "temperature": "deep_soil_temperature",
+                              "moisture": "repeat_deepest"}},
+        "missing": {"land": "reject",
+                    "ocean": {"stage": "after_horizontal_interpolation",
+                              "temperature": "skin_temperature",
+                              "moisture": 1.0}},
+    }
+    mapped_layers = _source_soil_profiles(
+        {MAPPED_SOIL_TEMPERATURE: temperature[:4],
+         MAPPED_SOIL_MOISTURE: moisture[:4]}, layer_contract)
+    native_layers = _source_soil_profiles(_era5_fields(), None)
+    assert mapped_layers[3] == native_layers[3] == "layers"
+    assert list(mapped_layers[2]) == list(native_layers[2]) == [3, 17, 64, 194]
+    assert mapped_layers[4] == native_layers[4] == 100
+    assert np.array_equal(mapped_layers[0], temperature[:4])
+    assert np.array_equal(mapped_layers[1], moisture[:4])
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +726,7 @@ def test_ruc_seam_refusals_survive_the_port() -> None:
 
     mapped = _era5_fields()
     mapped[MAPPED_SOIL_TEMPERATURE] = np.zeros((4, *shape))
-    with pytest.raises(ValueError, match="no RUC target"):
+    with pytest.raises(ValueError, match="explicit soil_layer_contract"):
         preprocess_land_surface_soil(
             mapped, sf_surface_physics=_RUC, soil_type=soil_type,
             landmask=landmask, terrain=terrain,

@@ -1000,7 +1000,8 @@ def finalize_prepared_child(
                 initial_perturbation, grid, grid_id=int(child_dc.grid_id),
                 require_containment=False)
     real = initialize_real(
-        horizontal, cfg, coord, static_fields["HGT_M"], **init_kwargs)
+        horizontal, cfg, coord, static_fields["HGT_M"], grid=grid,
+        **init_kwargs)
     state = real.state
     _set_map_fields(state, grid)
     # initialize_real deliberately leaves EOS diagnostics to its caller.

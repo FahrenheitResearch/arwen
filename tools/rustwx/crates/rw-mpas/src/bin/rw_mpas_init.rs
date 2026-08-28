@@ -14,7 +14,7 @@ use rw_mpas::init::dynamics::VirtualFactor;
 use rw_mpas::init::hinterp::Underflow;
 use rw_mpas::init::soil::DeepMoisture;
 use rw_mpas::init::vinterp::Extrap;
-use rw_mpas::init::{build_init, InitConfig};
+use rw_mpas::init::{build_init, InitConfig, Lineage};
 
 /// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
 /// binary was built from, embedded so the gpuwm release cut can prove a
@@ -82,6 +82,14 @@ impl Args {
             .ok_or_else(|| format!("--{key} was not given, and it has no default\n\n{}", usage()))
     }
 
+    /// An optional switch, keyed WITHOUT the leading dashes like `need`.
+    fn get_optional(&self, key: &str) -> Option<String> {
+        self.map
+            .get(key.trim_start_matches("--"))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
     fn path(&self, key: &str) -> Result<PathBuf, String> {
         Ok(PathBuf::from(self.need(key)?))
     }
@@ -143,6 +151,24 @@ fn run() -> Result<String, String> {
         frac_seaice: yes_no("frac-seaice", args.need("frac-seaice")?)?,
         tsk_seaice_threshold: args.number("tsk-seaice-threshold")?,
         oned_underflow: Underflow::parse(args.need("oned-underflow")?)?,
+        lineage: Lineage {
+            // Optional, and defaulted to this engine's own identity, so a
+            // caller that says nothing still writes an init rw_mpas_lbc will
+            // accept as a --grid.  A caller that knows which model will
+            // integrate the file says so and the file carries that name.
+            model_name: args
+                .get_optional("--model-name")
+                .unwrap_or_else(|| Lineage::default().model_name),
+            core_name: args
+                .get_optional("--core-name")
+                .unwrap_or_else(|| Lineage::default().core_name),
+            version: args
+                .get_optional("--model-version")
+                .unwrap_or_else(|| Lineage::default().version),
+            git_version: args
+                .get_optional("--git-version")
+                .unwrap_or_else(|| Lineage::default().git_version),
+        },
         provenance: format!(
             "rw_mpas_init from {}",
             std::env::current_exe()

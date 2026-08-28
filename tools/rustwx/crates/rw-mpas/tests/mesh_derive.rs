@@ -548,40 +548,41 @@ fn angle_edge_matches_the_published_file_to_its_measured_limit() {
 #[test]
 fn the_published_meshes_pass_the_emit_gate() {
     for c in cases() {
-        // The FP32 survival floor is the ONE check the published variable
-        // mesh does not clear, and that is a statement about the mesh, not
-        // about the gate: x4.163842 carries a 1,170.0 m dual edge (its
-        // dv/dc floor of 0.0336 at a 34,770 m dcEdge), and a 1.17 km edge
-        // recovered from f32 vertices at earth-radius magnitude misses the
-        // port's rtol=2e-5/atol=0.0 load check by an order of magnitude --
-        // the same check that makes fine meshes coin-flips at load. The
-        // geometric checks are graded on BOTH meshes under limits that name
-        // that floor away; the default gate's verdict on each is asserted
-        // separately below.
+        // BOTH published meshes clear the DEFAULT gate, floors included.
+        // x4.163842 carries a 1,170.0 m dual edge at a dv/dc floor of 0.0336
+        // -- above the port's 0.02 DualEdgePolicy admission floor, inside
+        // its live 1.73 m FP32 storage atol (measured 2026-08-25 through the
+        // port's own loader), and above the 200 m length floor the
+        // 2026-08-25 ruling re-anchored from 7,500 m. This branch used to
+        // assert the OPPOSITE for x4: the old 7,500 m anchor guarded the
+        // port's RETIRED rtol=2e-5/atol=0.0 load check and refused the
+        // dycore's own correctness anchor, which is the defect this
+        // assertion now guards against (evidence gpuwm-hex
+        // tree/evidence/graded-goldberg-20260825/; stale-guard audit
+        // 2026-08-25, finding 3).
+        //
+        // The geometric checks are additionally graded under limits that
+        // name the admission floor away, so a ratio regression cannot mask
+        // a geometry regression.
         let geometric_limits = Limits {
-            min_dv_edge_m: 0.0,
             min_dv_over_dc: 0.0,
             ..Limits::default()
         };
         let report = validate(&c.mesh, geometric_limits).unwrap_or_else(|e| {
             panic!("{}: the emit gate refused a published NCAR mesh: {e}", c.tag)
         });
-        match c.tag {
-            "x1.40962" => {
-                validate(&c.mesh, Limits::default()).unwrap_or_else(|e| {
-                    panic!("x1.40962 must clear the DEFAULT gate, FP32 floor included: {e}")
-                });
-            }
-            "x4.163842" => {
-                let err = validate(&c.mesh, Limits::default()).expect_err(
-                    "x4.163842 carries a 1,170.0 m dual edge; a default gate that \
-                     passes it would emit meshes the port refuses at load",
-                );
-                let text = err.to_string();
-                assert!(text.contains("FP32 survival floor"), "{text}");
-                assert!(text.contains("1170.0 m") || text.contains("1170 m"), "{text}");
-            }
-            other => panic!("unknown golden {other}"),
+        validate(&c.mesh, Limits::default()).unwrap_or_else(|e| {
+            panic!(
+                "{}: a published NCAR mesh must clear the DEFAULT gate,                  admission and length floors included -- the port itself                  admits it: {e}",
+                c.tag
+            )
+        });
+        if c.tag == "x4.163842" {
+            assert!(
+                report.min_dv_edge_m > 1_100.0 && report.min_dv_edge_m < 1_250.0,
+                "x4's measured 1,170.0 m shortest dual edge moved: {:.1} m",
+                report.min_dv_edge_m
+            );
         }
         eprintln!(
             "{}: euler {} defect {} coord {:?}\n    sum(areaCell)/4pi {:.16} sum(areaTriangle)/4pi {:.16}\n    max nonorthogonality {:.3e}  min edge orientation {:.6}\n    max weight antisymmetry {:.3e} over {} pairs\n    dcEdge {:.3} .. {:.3} km   dv/dc {:.4} .. {:.4} (median {:.4})\n    spacing {:.3} .. {:.3} km  ratio {:.4}  worst adjacent {:.4}",

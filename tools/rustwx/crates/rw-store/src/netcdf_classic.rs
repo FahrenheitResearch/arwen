@@ -440,6 +440,30 @@ impl NcClassicWriter {
         vars: Vec<NcVarDef>,
         num_records: u64,
     ) -> RwResult<Self> {
+        Self::create_with_min_header(path, format, dims, gattrs, vars, num_records, 0)
+    }
+
+    /// [`create`](NcClassicWriter::create), with the data section starting no
+    /// earlier than `min_header_bytes`.
+    ///
+    /// A header shorter than the floor is zero-padded up to it, which is the
+    /// classic format's own reserved-header-space convention (`h_minfree`);
+    /// readers never parse the pad because every variable's `begin` points
+    /// past it.  This exists so a file can be laid out with the same data
+    /// offsets as one written by a producer that reserves header space —
+    /// PIO/SMIOL pads MPAS headers this way — making the data sections of the
+    /// two files comparable byte-for-byte at equal offsets.  A floor of 0 is
+    /// exactly [`create`](NcClassicWriter::create).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_min_header(
+        path: &Path,
+        format: NcFormat,
+        dims: Vec<NcDim>,
+        gattrs: Vec<NcAttr>,
+        vars: Vec<NcVarDef>,
+        num_records: u64,
+        min_header_bytes: u64,
+    ) -> RwResult<Self> {
         let record_dimid = validate_defs(&dims, &gattrs, &vars, num_records)?;
 
         // Slab geometry, before offsets are known.
@@ -506,7 +530,7 @@ impl NcClassicWriter {
         let placeholder: Vec<u64> = vec![0; layouts.len()];
         let header_pass1 =
             serialize_header(format, &dims, &gattrs, &vars, &layouts, &placeholder, 0);
-        let header_len = header_pass1.len() as u64;
+        let header_len = (header_pass1.len() as u64).max(min_header_bytes);
 
         // Fixed variables first, in definition order, then the record section.
         let mut cursor = header_len;
@@ -551,9 +575,13 @@ impl NcClassicWriter {
             num_records,
         );
         debug_assert_eq!(
-            header_pass2.len() as u64,
-            header_len,
+            header_pass2.len(),
+            header_pass1.len(),
             "netcdf_classic: header length changed between passes"
+        );
+        debug_assert!(
+            header_pass2.len() as u64 <= header_len,
+            "netcdf_classic: serialized header overran its padded floor"
         );
 
         let mut file = OpenOptions::new()

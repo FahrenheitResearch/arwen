@@ -7,6 +7,7 @@ mod contour_fill;
 mod draw;
 mod error;
 mod features;
+pub mod georeference;
 mod overlay;
 mod panel;
 mod presentation;
@@ -41,10 +42,14 @@ pub use presentation::{
     LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation, StaticPlotStyle,
 };
 pub use projected_map::{
+    resolved_projection_for_options,
     GeographicBounds, ProjectedBasemap, ProjectedBasemapBuildOptions, ProjectedDomainBuildOptions,
     ProjectedFrameSource, ProjectedMap, ProjectedMapBuildOptions, build_projected_domain,
     build_projected_map, build_projected_map_with_options,
     project_geographic_points_with_options,
+};
+pub use georeference::{
+    PANEL_GEOREFERENCE_SCHEMA, PanelGeoReference, PlotRect, ResolvedProjection,
 };
 pub use projection::{LambertConformal, ProjectionSpec};
 pub use render::{
@@ -131,6 +136,109 @@ pub struct RenderSaveTiming {
     pub png_timing: RenderPngTiming,
     pub file_write_ms: u128,
     pub total_ms: u128,
+    /// What the PNG that was just written maps to on the Earth.
+    ///
+    /// gpuwm addition (VENDOR.md).  `Some` only when every ingredient is
+    /// present AND still true of the written bytes: the caller published a
+    /// resolved projection and its geographic bounds on the request, the
+    /// request carried a projected domain (its extent is the projected
+    /// box), and no post-render pass moved the map inside the canvas.
+    /// Anything less and this is `None` with the reason below, because a
+    /// georeference that is tens of pixels wrong is the defect this exists
+    /// to fix, not a lesser version of the fix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub georeference: Option<georeference::PanelGeoReference>,
+    /// Why `georeference` is `None`, naming the missing ingredient.  A
+    /// manifest that lists a panel without a transform must say what was
+    /// missing -- a silent omission is exactly the defect being fixed.
+    /// `None` whenever `georeference` is `Some`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub georeference_absent_reason: Option<String>,
+}
+
+/// The publish decision for one finished panel: the georeference when the
+/// request supplied every ingredient and the written PNG still matches the
+/// layout, otherwise the reason it is withheld (gpuwm addition, VENDOR.md).
+fn panel_georeference_for_save(
+    request: &MapRenderRequest,
+    image_timing: &RenderImageTiming,
+) -> (
+    Option<georeference::PanelGeoReference>,
+    Option<String>,
+) {
+    let Some(resolved_projection) = request.resolved_projection else {
+        return (
+            None,
+            Some(
+                "the render request carried no resolved projection; the caller did not \
+                 publish which projection the projected domain was built in"
+                    .to_string(),
+            ),
+        );
+    };
+    let Some(projected_domain) = request.projected_domain.as_ref() else {
+        return (
+            None,
+            Some(
+                "the render request carried no projected domain, so no projected extent \
+                 exists to map pixels through"
+                    .to_string(),
+            ),
+        );
+    };
+    let Some(geographic_bounds) = request.geographic_bounds else {
+        return (
+            None,
+            Some(
+                "the render request carried no geographic bounds; publishing a transform \
+                 with fabricated bounds would be worse than publishing none"
+                    .to_string(),
+            ),
+        );
+    };
+    if !image_timing.plot_rect_describes_the_png {
+        return (
+            None,
+            Some(
+                "a post-render pass (map-viewport crop, horizontal recentre, or vertical \
+                 trim) moved the map in a way its reported offset cannot describe -- the \
+                 adjusted plot rectangle would fall outside the written PNG"
+                    .to_string(),
+            ),
+        );
+    }
+    if image_timing.map_w == 0 || image_timing.map_h == 0 {
+        return (
+            None,
+            Some("the layout reported a zero-size map rectangle".to_string()),
+        );
+    }
+    // The written PNG's own size: the post-render passes can shrink the
+    // canvas below the requested size, and a georeference must describe
+    // the FILE, not the request.  The request dims are only a fallback
+    // for a timing that predates the recorded size.
+    let (image_width_px, image_height_px) =
+        if image_timing.image_w > 0 && image_timing.image_h > 0 {
+            (image_timing.image_w, image_timing.image_h)
+        } else {
+            (request.width, request.height)
+        };
+    (
+        Some(georeference::PanelGeoReference::new(
+            image_width_px,
+            image_height_px,
+            georeference::PlotRect {
+                x: image_timing.map_x,
+                y: image_timing.map_y,
+                width: image_timing.map_w,
+                height: image_timing.map_h,
+            },
+            resolved_projection,
+            projected_domain.extent.clone(),
+            geographic_bounds,
+        )),
+        None,
+    )
 }
 
 #[derive(Default)]
@@ -304,21 +412,66 @@ impl RustRenderer {
             with_render_state_profile_with_style(request, plot_style, |data, ny, nx, opts| {
                 let (image, mut image_timing) = render_to_image_profile(data, ny, nx, opts);
                 let trim_start = Instant::now();
+                // gpuwm addition (VENDOR.md): each of these three passes
+                // can move the map inside the canvas.  They used to
+                // report nothing, so the plot rectangle died with the
+                // first pass -- and since every REGIONAL panel's domain
+                // frame takes one, only global panels ever published a
+                // georeference, which is not "fixed" by default.  Each
+                // pass now reports the offset it applied; the rectangle
+                // FOLLOWS the map, and it is retired only when the
+                // adjusted rectangle would fall outside the written image
+                // (a pass cut into the map itself), because publishing
+                // that rectangle would be quietly wrong.
+                let mut moved_x: i64 = 0;
+                let mut moved_y: i64 = 0;
                 let image = match opts.domain_frame {
                     Some(frame) if matches!(frame.source, DomainFrameSource::MapViewport) => {
-                        crop_canvas_whitespace(&image, opts.presentation.canvas_background, 8)
+                        let (cropped, (crop_left, crop_top)) = crop_canvas_whitespace(
+                            &image,
+                            opts.presentation.canvas_background,
+                            8,
+                        );
+                        moved_x -= i64::from(crop_left);
+                        moved_y -= i64::from(crop_top);
+                        cropped
                     }
-                    Some(_) => center_horizontal_canvas_content(
-                        &image,
-                        opts.presentation.canvas_background,
-                    ),
+                    Some(_) => {
+                        let (centered, shift_x) = center_horizontal_canvas_content(
+                            &image,
+                            opts.presentation.canvas_background,
+                        );
+                        moved_x += shift_x;
+                        centered
+                    }
                     None => image,
                 };
                 let trimmed = if trim_vertical_canvas_whitespace_enabled() {
-                    trim_vertical_canvas_whitespace(&image, opts.presentation.canvas_background)
+                    let (trimmed, crop_top) = trim_vertical_canvas_whitespace(
+                        &image,
+                        opts.presentation.canvas_background,
+                    );
+                    moved_y -= i64::from(crop_top);
+                    trimmed
                 } else {
                     image
                 };
+                image_timing.postprocess_offset_x = moved_x;
+                image_timing.postprocess_offset_y = moved_y;
+                image_timing.image_w = trimmed.width();
+                image_timing.image_h = trimmed.height();
+                let adjusted_x = i64::from(image_timing.map_x) + moved_x;
+                let adjusted_y = i64::from(image_timing.map_y) + moved_y;
+                let rect_fits = adjusted_x >= 0
+                    && adjusted_y >= 0
+                    && adjusted_x + i64::from(image_timing.map_w) <= i64::from(trimmed.width())
+                    && adjusted_y + i64::from(image_timing.map_h) <= i64::from(trimmed.height());
+                if rect_fits {
+                    image_timing.map_x = adjusted_x as u32;
+                    image_timing.map_y = adjusted_y as u32;
+                } else {
+                    image_timing.plot_rect_describes_the_png = false;
+                }
                 let trim_ms = trim_start.elapsed().as_millis();
                 image_timing.postprocess_ms = image_timing.postprocess_ms.saturating_add(trim_ms);
                 image_timing.total_ms = image_timing.total_ms.saturating_add(trim_ms);
@@ -345,11 +498,15 @@ impl RustRenderer {
         let file_write_ms = write_start.elapsed().as_millis();
         let mut png_timing = png_timing;
         png_timing.png_write_ms = file_write_ms;
+        let (georeference, georeference_absent_reason) =
+            panel_georeference_for_save(request, &png_timing.image_timing);
         Ok(RenderSaveTiming {
             state_timing,
             png_timing,
             file_write_ms,
             total_ms: total_start.elapsed().as_millis(),
+            georeference,
+            georeference_absent_reason,
         })
     }
 }
@@ -430,6 +587,12 @@ pub fn save_rgba_png_profile_with_options<P: AsRef<Path>>(
         },
         file_write_ms,
         total_ms: total_start.elapsed().as_millis(),
+        georeference: None,
+        georeference_absent_reason: Some(
+            "the PNG was saved from an already-composed RGBA canvas, not a single map \
+             render; no one plot rectangle describes it"
+                .to_string(),
+        ),
     })
 }
 

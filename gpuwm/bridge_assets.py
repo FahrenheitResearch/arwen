@@ -15,7 +15,7 @@ surface, GOES and European-composite front doors, the NetCDF decoder,
 the mapped decode engine and the observation remap onto a wheel install
 was to clone the repository and run ``cargo build`` three times -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-twenty-five files.
+twenty-six files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -24,7 +24,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the twenty-five artifacts of
+One bundle per platform, holding the twenty-six artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges``) -- the last rung of the
 resolution ladder every consumer already searches, so nothing else in
@@ -82,7 +82,7 @@ new bytes passing all three checks first.
 Offline and mirrors
 -------------------
 ``--from DIR`` stages from a local directory under identical
-verification: either the bundle archive itself, or the twenty-five
+verification: either the bundle archive itself, or the twenty-six
 artifacts loose in that directory (what an air-gapped operator has
 after building them on a machine that does have a toolchain).
 ``GPUWM_BRIDGE_ASSET_URL_BASE`` overrides the download base URL; the
@@ -224,7 +224,7 @@ class BundledArtifact:
     vendored: bool = False
 
 
-#: The twenty-five artifacts a bundle carries, in build order: the five
+#: The twenty-six artifacts a bundle carries, in build order: the five
 #: GRIB decoders and the CPU preprocessing library from the decoder
 #: workspace, then the fetch backbone, the batch renderer, the two radar
 #: front doors, the five observation front doors, the NetCDF decoder,
@@ -440,7 +440,9 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "obs_regrid", "library", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_OBSREGRID_BRIDGE",
         "observation remap plans (the default battery remap engine)"),
-    # The four MPAS binaries, and `rw_mpas_convert` is the artifact this
+    # The four MPAS binaries of the first wave (the fifth, the
+    # lateral-boundary producer, is the last entry in this tuple and
+    # carries its own note), and `rw_mpas_convert` is the artifact this
     # whole tuple's comment block keeps naming as the precedent: it was
     # written, committed, resolved by name and carried by no bundle, so
     # the refusals that named `gpuwm fetch-bridges` sent readers to a
@@ -482,6 +484,28 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_mpas_convert", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_MPAS_CONVERT",
         "MPAS history onto the renderer's tape"),
+    # The lateral-boundary producer, and the plainest repeat of the
+    # failure every paragraph above describes.  Its SOURCE has been in
+    # this tree since the limited-area lane landed
+    # (`tools/rustwx/crates/rw-mpas/src/bin/rw_mpas_lbc.rs`); the
+    # release workspace has BUILT it at every cut since, because `cargo
+    # build --release --locked` at `tools/rustwx` builds every workspace
+    # member and this is a declared `[[bin]]`; and no published bundle
+    # has ever carried it, because this tuple is the roster `pack`
+    # walks and it was not in it.  Source presence is not shipping: the
+    # binary was produced by the cut, probed by nothing, and thrown
+    # away at the end of the job, four times over.
+    #
+    # What its absence costs is not an optional extra.  A limited-area
+    # mesh is two halves: `rw_mpas_mesh --cull-parent` cuts the mesh,
+    # and this produces the boundary series that mesh is driven by.
+    # Shipping the cull without the producer ships a mesh nothing can
+    # run -- the same shape as shipping the generator without
+    # `rw_mpas_static`, which is why that one is in this tuple too.
+    BundledArtifact(
+        "rw_mpas_lbc", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_MPAS_LBC",
+        "MPAS lateral boundaries for a limited-area mesh"),
 )
 
 
@@ -1173,7 +1197,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
     """Install the pinned artifacts sitting loose in ``source_dir``.
 
     What an air-gapped operator has after building on a machine that
-    does have a toolchain: twenty-five files, no archive.  Same three
+    does have a toolchain: twenty-six files, no archive.  Same three
     checks, same atomic install.
     """
 
@@ -1186,7 +1210,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
             f"{source_dir} carries neither {bundle.filename} nor the loose "
             f"artifacts; missing {', '.join(absent)}")
     if absent:
-        # The twenty-five artifacts are independent; an air-gapped operator
+        # The twenty-six artifacts are independent; an air-gapped operator
         # with the decoders but not the renderer gets the decoders,
         # verified, and doctor names what is still missing.
         warn(f"{source_dir} is missing {len(absent)} of "

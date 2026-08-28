@@ -15,11 +15,17 @@ use rw_store::netcdf_classic::{
     NcAttr, NcClassicWriter, NcData, NcDim, NcFormat, NcType, NcVarDef,
 };
 
+use crate::composite::{COMPOSITE_SCHEMA, CompositePlan, SeamStat};
 use crate::error::{MpasError, MpasResult};
 use crate::fieldmap::{field_set_allows, field_set_is_known, FieldSource, Rank, FIELD_MAP};
 use crate::history::{expected_levels, MpasFrame, Timestamp};
 use crate::weights::NearestCellWeights;
 use crate::window::ProjAttr;
+
+/// The two extra fields a composed frame carries.  Named so they sort
+/// beside the WRF furniture and render through the generic `var:` path.
+pub const COMPOSITE_SOURCE_VAR: &str = "COMPOSITE_SOURCE";
+pub const COMPOSITE_SPACING_VAR: &str = "COMPOSITE_DX_KM";
 
 pub const BRIDGE_SCHEMA: &str = "mpas-port.history-to-wrfout-render-frame/v1";
 
@@ -45,6 +51,9 @@ pub struct EmittedFrame {
     pub valid_time: Timestamp,
     pub simulation_start: Timestamp,
     pub lead_seconds: i64,
+    /// How far the two runs disagree across the seam, per surface field.
+    /// Empty for a single-source conversion, which has no seam.
+    pub seam: Vec<SeamStat>,
 }
 
 /// Knobs the caller sets; everything else is fixed by the schema.
@@ -125,9 +134,110 @@ fn field_attrs(rank_is_3d: bool, description: &str, units: &str, stagger: &str) 
 }
 
 /// Write one wrfout-shaped frame. Returns the emission record.
+/// One fine run's frame and the weights that put it on the composite
+/// window.  Index 0 of the layer list is the base.
+pub struct CompositeLayer<'a> {
+    pub label: &'a str,
+    pub frame: &'a MpasFrame,
+    pub weights: &'a NearestCellWeights,
+}
+
+/// Everything the composite gather needs: who owns each point, and the
+/// frames to read from.
+pub struct CompositeGather<'a> {
+    pub plan: &'a CompositePlan,
+    pub layers: &'a [CompositeLayer<'a>],
+}
+
+impl CompositeGather<'_> {
+    /// One field, assembled point by point from whichever source the plan
+    /// gave that point.
+    ///
+    /// A source that does not carry the field cannot answer for its
+    /// points, and those points fall back to the base rather than to a
+    /// fill value: a hole in one variable of an otherwise composed frame
+    /// is a worse artifact than a coarser value, and the fallback is
+    /// reported rather than silent.
+    fn gather(
+        &self,
+        wrf_name: &str,
+        levels: usize,
+        points: usize,
+    ) -> MpasResult<(Vec<f32>, Vec<String>)> {
+        let mut out = vec![0.0f32; levels * points];
+        let mut fell_back: Vec<String> = Vec::new();
+        fn field_of<'f>(
+            layer: &CompositeLayer<'f>,
+            wrf_name: &str,
+        ) -> Option<&'f (Vec<f32>, usize)> {
+            layer.frame.fields.get(wrf_name)
+        }
+        let base = self.layers.first().ok_or_else(|| {
+            MpasError::Refusal("a composite gather needs at least the base layer".to_string())
+        })?;
+        let (base_values, base_levels) = field_of(base, wrf_name).ok_or_else(|| {
+            MpasError::Refusal(format!(
+                "the composite base does not carry {wrf_name}, though it was planned"
+            ))
+        })?;
+        if *base_levels != levels {
+            return Err(MpasError::Refusal(format!(
+                "{wrf_name} carries {base_levels} level(s) on the base; the frame declares                  {levels}"
+            )));
+        }
+        for slot in 0..points {
+            let mut which = self.plan.source_index[slot] as usize;
+            if which >= self.layers.len() {
+                return Err(MpasError::Refusal(format!(
+                    "the composite plan names source {which} at grid point {slot}, but only                      {} layer(s) were handed over",
+                    self.layers.len()
+                )));
+            }
+            if which > 0 {
+                match field_of(&self.layers[which], wrf_name) {
+                    Some((_, layer_levels)) if *layer_levels == levels => {}
+                    _ => {
+                        let label = self.layers[which].label.to_string();
+                        if !fell_back.contains(&label) {
+                            fell_back.push(label);
+                        }
+                        which = 0;
+                    }
+                }
+            }
+            let layer = &self.layers[which];
+            let values = if which == 0 {
+                base_values
+            } else {
+                &field_of(layer, wrf_name).expect("checked above").0
+            };
+            let cell = layer.weights.cell_index[slot] as usize;
+            for level in 0..levels {
+                out[level * points + slot] = values[cell * levels + level];
+            }
+        }
+        Ok((out, fell_back))
+    }
+}
+
 pub fn convert_frame(
     frame: &MpasFrame,
     weights: &NearestCellWeights,
+    destination: &Path,
+    options: &ConvertOptions,
+) -> MpasResult<EmittedFrame> {
+    convert_frame_composite(frame, weights, None, destination, options)
+}
+
+/// The same conversion, with the base frame's values replaced by a finer
+/// source's wherever the plan says a finer source covers that point.
+///
+/// `composite: None` is byte-for-byte the single-source conversion; the
+/// composite branch is additive and touches nothing on that path.
+pub fn convert_frame_composite(
+    frame: &MpasFrame,
+    weights: &NearestCellWeights,
+    composite: Option<&CompositeGather<'_>>,
     destination: &Path,
     options: &ConvertOptions,
 ) -> MpasResult<EmittedFrame> {
@@ -252,6 +362,17 @@ pub fn convert_frame(
             concat!("rw-mpas ", env!("CARGO_PKG_VERSION"), " (rust)"),
         ),
     ]);
+    if let Some(gather) = composite {
+        gattrs.push(NcAttr::text("MPAS_COMPOSITE_SCHEMA", COMPOSITE_SCHEMA));
+        gattrs.push(NcAttr::text(
+            "MPAS_COMPOSITE_SPEC",
+            gather.plan.spec_json(),
+        ));
+        gattrs.push(NcAttr::text(
+            "MPAS_COMPOSITE_NONCLAIM",
+            "values at a point come from exactly one model run; the change of source is a              hard switch and nothing is blended across it",
+        ));
+    }
 
     // --- variable schedule --------------------------------------------------
     // Resolved once so the writer gets the whole schema up front, then walked
@@ -366,6 +487,40 @@ pub fn convert_frame(
             ),
         );
     }
+    // gpuwm addition (VENDOR.md): a composed frame carries the decision it
+    // was made by, as data, on the same grid as the fields.  Two reasons
+    // it is a variable rather than only an attribute: the seam can be
+    // drawn from it, and it renders through the generic `var:` product
+    // path, so "which run drew this pixel" is a picture anyone can look at
+    // instead of a claim in a receipt.
+    if composite.is_some() {
+        vars.push(
+            NcVarDef::new(
+                COMPOSITE_SOURCE_VAR,
+                NcType::Float,
+                vec![dimid("Time"), dimid("south_north"), dimid("west_east")],
+            )
+            .with_attrs(field_attrs(
+                false,
+                "COMPOSITE SOURCE INDEX (0 = BASE)",
+                "index",
+                "",
+            )),
+        );
+        vars.push(
+            NcVarDef::new(
+                COMPOSITE_SPACING_VAR,
+                NcType::Float,
+                vec![dimid("Time"), dimid("south_north"), dimid("west_east")],
+            )
+            .with_attrs(field_attrs(
+                false,
+                "COMPOSITE SHOWN CELL SPACING",
+                "km",
+                "",
+            )),
+        );
+    }
     let since = format!(
         "minutes since {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
         origin.year, origin.month, origin.day, origin.hour, origin.minute, origin.second
@@ -401,6 +556,11 @@ pub fn convert_frame(
         std::fs::remove_file(&temporary)?;
     }
     let mut written: Vec<String> = Vec::new();
+    let mut composite_fallbacks: Vec<String> = Vec::new();
+    let mut seam: Vec<SeamStat> = Vec::new();
+    let boundary = composite
+        .map(|gather| gather.plan.boundary_slots())
+        .unwrap_or_default();
     let result = (|| -> MpasResult<()> {
         let mut writer =
             NcClassicWriter::create(&temporary, options.format, dims.clone(), gattrs, vars, 1)?;
@@ -440,7 +600,20 @@ pub fn convert_frame(
                             mapping.wrf_name
                         )));
                     }
-                    weights.gather(source, levels)?
+                    match composite {
+                        Some(gather) => {
+                            let (values, fell_back) =
+                                gather.gather(mapping.wrf_name, levels, ny * nx)?;
+                            for label in fell_back {
+                                let note = format!("{}:{}", mapping.wrf_name, label);
+                                if !composite_fallbacks.contains(&note) {
+                                    composite_fallbacks.push(note);
+                                }
+                            }
+                            values
+                        }
+                        None => weights.gather(source, levels)?,
+                    }
                 }
             };
             match mapping.wrf_name {
@@ -453,10 +626,66 @@ pub fn convert_frame(
                 Rank::V3d => restagger_y(&values, levels, ny, nx),
                 _ => values,
             };
+            // The seam is measured on the values that were WRITTEN, against
+            // the base's values for the same points -- not on a proxy and
+            // not on the source arrays, so the number describes the picture
+            // a reader will actually see.
+            if let Some(gather) = composite {
+                if matches!(mapping.rank, Rank::Surface) && !boundary.is_empty() {
+                    if let Some(base_layer) = gather.layers.first() {
+                        if let Some((values, 1)) = base_layer
+                            .frame
+                            .fields
+                            .get(mapping.wrf_name)
+                            .map(|(v, l)| (v, *l))
+                        {
+                            let mut base_plane = vec![0.0f32; ny * nx];
+                            for (slot, out) in base_plane.iter_mut().enumerate() {
+                                *out = values[base_layer.weights.cell_index[slot] as usize];
+                            }
+                            match mapping.wrf_name {
+                                "T" => base_plane
+                                    .iter_mut()
+                                    .for_each(|v| *v -= WRF_THETA_REFERENCE_K),
+                                "PHB" => base_plane.iter_mut().for_each(|v| *v *= WRF_GRAVITY),
+                                _ => {}
+                            }
+                            if let Some(stat) = SeamStat::measure(
+                                mapping.wrf_name,
+                                &boundary,
+                                &gather.plan.source_index,
+                                &staggered,
+                                &base_plane,
+                                ny * nx,
+                            ) {
+                                seam.push(stat);
+                            }
+                        }
+                    }
+                }
+            }
             writer.put_record(mapping.wrf_name, 0, NcData::Floats(&staggered))?;
             written.push(mapping.wrf_name.to_string());
         }
 
+        if let Some(gather) = composite {
+            let source_index: Vec<f32> = gather
+                .plan
+                .source_index
+                .iter()
+                .map(|&v| f32::from(v))
+                .collect();
+            let spacing_km: Vec<f32> = gather
+                .plan
+                .shown_spacing_metres
+                .iter()
+                .map(|&v| v / 1000.0)
+                .collect();
+            writer.put_record(COMPOSITE_SOURCE_VAR, 0, NcData::Floats(&source_index))?;
+            writer.put_record(COMPOSITE_SPACING_VAR, 0, NcData::Floats(&spacing_km))?;
+            written.push(COMPOSITE_SOURCE_VAR.to_string());
+            written.push(COMPOSITE_SPACING_VAR.to_string());
+        }
         writer.put_record(
             "XTIME",
             0,
@@ -489,6 +718,7 @@ pub fn convert_frame(
         valid_time: frame.valid_time,
         simulation_start: origin,
         lead_seconds,
+        seam,
     })
 }
 

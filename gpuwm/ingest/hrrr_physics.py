@@ -288,6 +288,14 @@ def resolve_prepared_noah_surface(met, cfg, static, *, surface=None):
             "written.")
     soil = preprocess_land_surface_soil(
         fields, sf_surface_physics=int(cfg.sf_surface_physics),
+        # The RESOLVED count, the same number :func:`_soil_shape` above
+        # allocates from.  Left off, RUC's soil ingest took its own
+        # nine-level default, so a six-level config prepared a nine-level
+        # surface and met a six-level allocation -- a shape error four
+        # frames down instead of a forecast, which is the difference
+        # between "six levels is unverified" and "six levels is
+        # unreachable on this route".
+        num_soil_layers=soil_layer_count(cfg),
         soil_type=static["SCT_DOM"],
         deep_soil_temperature=static["SOILTEMP"])
     return SimpleNamespace(fields=MappingProxyType(

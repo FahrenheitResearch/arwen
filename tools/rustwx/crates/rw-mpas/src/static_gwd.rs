@@ -62,6 +62,10 @@ pub struct GwdFields {
     pub hlanduse: Vec<u8>,
     /// Cells whose variance was replaced by the mean of their neighbours.
     pub smoothed_cells: usize,
+    /// Regional meshes only: outermost-ring cells left out of the isolated-
+    /// point smooth because part of their neighbour ring was culled. 0 on a
+    /// global mesh.
+    pub smooth_skipped_boundary_cells: usize,
     /// Which land-use code counted as water, and where that number came from.
     pub water_category: i64,
     pub water_category_source: String,
@@ -679,7 +683,8 @@ pub fn compute(
     // carry a variance its surroundings contradict straight into the drag.
     let before = var2d.clone();
     let mut smoothed = 0usize;
-    for c in 0..n {
+    let mut smooth_skipped_boundary_cells = 0usize;
+    'cells: for c in 0..n {
         let k = n_edges_on_cell[c];
         if k == 0 {
             continue;
@@ -689,7 +694,15 @@ pub fn compute(
         for e in 0..k {
             let nb = cells_on_cell[c * max_edges + e];
             if nb >= n {
-                continue;
+                // The regional branch: an out-of-range slot is the culler's
+                // absent-neighbour sentinel on an outermost-ring cell. Native
+                // v8.4.1 reads its garbage halo slot here, which is not a
+                // rule; the DEFINED behaviour is that a cell missing part of
+                // its ring cannot be judged "isolated", so the smooth leaves
+                // it alone. Divergence from a whole-sphere answer is confined
+                // to mask-7 cells and is recorded in the receipt.
+                smooth_skipped_boundary_cells += 1;
+                continue 'cells;
             }
             sum_landuse += hlanduse[nb] as u32;
             sum_var += before[nb];
@@ -709,6 +722,7 @@ pub fn compute(
         ol,
         hlanduse,
         smoothed_cells: smoothed,
+        smooth_skipped_boundary_cells,
         water_category: water as i64,
         water_category_source: water_source,
         band_rows,

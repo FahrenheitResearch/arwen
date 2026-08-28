@@ -30,7 +30,7 @@ use rustwx_products::derived::{
 };
 use rustwx_products::direct::{
     DirectBatchRequest, DirectRenderedRecipe, build_projected_map_with_projection,
-    direct_map_frame_aspect_ratio, direct_render_chunk_size,
+    direct_map_frame_aspect_ratio, direct_render_chunk_size, panel_resolved_projection,
     render_direct_recipes_chunked_from_loader,
 };
 use rustwx_products::plot_design::StaticPlotDesign;
@@ -368,6 +368,11 @@ pub struct GenericRenderedVariable {
     pub display_units: String,
     pub output_path: PathBuf,
     pub total_ms: u128,
+    /// What the finished PNG maps to on the Earth, when the save path
+    /// could publish it (gpuwm addition, VENDOR.md).
+    pub georeference: Option<rustwx_render::PanelGeoReference>,
+    /// Why `georeference` is `None`, from the save path itself.
+    pub georeference_absent_reason: Option<String>,
 }
 
 /// Render an arbitrary `surface2d` variable through the same native map,
@@ -439,17 +444,22 @@ pub fn render_generic_store_variable(
     // overlay pass needs the same mesh the projection was built from.
     let stored_lat = stored.grid.lat_deg.clone();
     let stored_lon = stored.grid.lon_deg.clone();
+    // One ratio local feeds the map build, the published projection, and
+    // the overlay pass below.  Rebuilding the expression at each use is
+    // how a published transform ends up resolved through a different
+    // frame than the one that was drawn.
+    let target_ratio = direct_map_frame_aspect_ratio(
+        ProductVisualMode::FilledMeteorology,
+        config.output_width,
+        config.output_height,
+        source.projection(),
+    );
     let projected = build_projected_map_with_projection(
         &stored.grid.lat_deg,
         &stored.grid.lon_deg,
         source.projection(),
         config.domain.bounds,
-        direct_map_frame_aspect_ratio(
-            ProductVisualMode::FilledMeteorology,
-            config.output_width,
-            config.output_height,
-            source.projection(),
-        ),
+        target_ratio,
     )?;
     let field = Field2D::new(
         ProductKey::named(generic_variable_output_slug(variable)),
@@ -478,6 +488,18 @@ pub fn render_generic_store_variable(
     request.projected_lines = projected.lines;
     request.projected_polygons = projected.polygons;
     request.inverse_raster_projection = projected.inverse_raster_projection;
+    // gpuwm addition (VENDOR.md): publish the panel's own transform with
+    // EXACTLY the arguments the `build_projected_map_with_projection`
+    // call above took, so the georeference the save path emits can never
+    // describe a different map than the one drawn.
+    request.resolved_projection = Some(panel_resolved_projection(
+        &stored_lat,
+        &stored_lon,
+        source.projection(),
+        config.domain.bounds,
+        target_ratio,
+    )?);
+    request.geographic_bounds = Some(config.domain.bounds);
 
     // gpuwm addition (VENDOR.md): the same `--overlays`/`--annotate`
     // payload the direct lane applies, projected with the SAME bounds and
@@ -493,12 +515,7 @@ pub fn render_generic_store_variable(
             &stored_lon,
             source.projection(),
             config.domain.bounds,
-            direct_map_frame_aspect_ratio(
-                ProductVisualMode::FilledMeteorology,
-                config.output_width,
-                config.output_height,
-                source.projection(),
-            ),
+            target_ratio,
         )?;
     }
     if let Some(annotations) = config.panel_annotations.as_ref() {
@@ -524,7 +541,7 @@ pub fn render_generic_store_variable(
         generic_variable_output_slug(variable),
         suffix,
     ));
-    save_png_profile_with_options(
+    let save_timing = save_png_profile_with_options(
         &request,
         &output_path,
         &PngWriteOptions {
@@ -537,6 +554,8 @@ pub fn render_generic_store_variable(
         display_units: style.display_units,
         output_path,
         total_ms: started.elapsed().as_millis(),
+        georeference: save_timing.georeference,
+        georeference_absent_reason: save_timing.georeference_absent_reason,
     })
 }
 

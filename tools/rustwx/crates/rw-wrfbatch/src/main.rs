@@ -639,6 +639,9 @@ fn run(args: Args) -> Result<(), String> {
     limits.max_output_width = args.width.max(limits.max_output_width);
     limits.max_output_height = args.height.max(limits.max_output_height);
     limits.max_output_pixels = u64::from(args.width) * u64::from(args.height);
+    // The manifest destination survives `args.out_dir` moving into the
+    // request below.
+    let georef_out_dir = args.out_dir.clone();
     let request = BatchRenderRequest {
         store_root: args.store_root,
         model_slug: import.model,
@@ -661,6 +664,12 @@ fn run(args: Args) -> Result<(), String> {
         limits,
     };
     let cancel = AtomicBool::new(false);
+    // Every RENDERED panel's georeference (or the lane's reason it has
+    // none), collected off the event stream so the run can publish its
+    // geographic transforms beside the PNGs.  The pinned stdout grammar
+    // is untouched: the collection rides the same event the RENDERED
+    // line already prints.
+    let mut panel_georefs: Vec<RenderedPanelGeoref> = Vec::new();
     let summary = run_batch_render(request, &cancel, |event| match event {
         BatchRenderEvent::Started {
             planned_items,
@@ -671,8 +680,15 @@ fn run(args: Args) -> Result<(), String> {
             output_dir.display()
         ),
         BatchRenderEvent::ItemRendered {
-            slug, output_path, ..
-        } => println!("RENDERED {slug} {}", output_path.display()),
+            slug,
+            output_path,
+            georeference,
+            georeference_absent_reason,
+            ..
+        } => {
+            println!("RENDERED {slug} {}", output_path.display());
+            panel_georefs.push((output_path, georeference, georeference_absent_reason));
+        }
         BatchRenderEvent::ItemSkipped { slug, reason, .. } => {
             println!("SKIPPED {slug} {reason}")
         }
@@ -685,12 +701,128 @@ fn run(args: Args) -> Result<(), String> {
         ),
         _ => {}
     })?;
+    // Default-on, no flag: a bare run must stop showing the defect (a
+    // consumer holding a PNG with no way to put a lat/lon on a pixel).
+    // Written before the failure check below so a partially-failed run
+    // still georeferences every panel it DID produce.
+    write_georef_manifest(&georef_out_dir, &panel_georefs)?;
     if summary.rendered == 0 || summary.failed > 0 {
         return Err(format!(
             "batch render incomplete: rendered={} skipped={} failed={}",
             summary.rendered, summary.skipped, summary.failed
         ));
     }
+    Ok(())
+}
+
+/// The schema string every `render-georef.json` declares.
+const GEOREF_MANIFEST_SCHEMA: &str = "rustwx.render-georef/v1";
+
+/// One rendered panel's georeference report off the event stream: the
+/// output path, the transform when the lane published one, and the lane's
+/// reason when it did not.
+type RenderedPanelGeoref = (
+    PathBuf,
+    Option<rustwx_render::PanelGeoReference>,
+    Option<String>,
+);
+
+/// `<out_dir>/render-georef.json`: what each PNG of one render run maps to
+/// on the Earth.
+///
+/// This file is the fix for a measured defect: `rw_wrfbatch` published no
+/// geographic transform anywhere, so a consumer holding a rendered PNG
+/// recovered one by registration -- and got 4.175 px/deg longitude against
+/// 4.38 px/deg latitude on a global panel, an aspect no flat map has,
+/// because the panel was Robinson and no linear fit describes Robinson.
+/// Different products in ONE batch also draw in different projections, so
+/// the transforms are per-panel, keyed by the PNG's path relative to the
+/// output directory (forward slashes).  Every panel that got no transform
+/// is listed in `without_georeference` with the reason -- a silent
+/// omission is exactly the defect being fixed.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct GeorefManifest {
+    schema: String,
+    generated_utc: String,
+    panels: std::collections::BTreeMap<String, rustwx_render::PanelGeoReference>,
+    without_georeference: Vec<GeorefAbsence>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct GeorefAbsence {
+    path: String,
+    reason: String,
+}
+
+/// The manifest key for one output: relative to the run's output
+/// directory, forward slashes, so the file stays meaningful when the run
+/// directory moves between machines.
+fn georef_manifest_key(out_dir: &std::path::Path, output_path: &std::path::Path) -> String {
+    output_path
+        .strip_prefix(out_dir)
+        .unwrap_or(output_path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn build_georef_manifest(
+    out_dir: &std::path::Path,
+    generated_utc: String,
+    panels: &[RenderedPanelGeoref],
+) -> GeorefManifest {
+    let mut published = std::collections::BTreeMap::new();
+    let mut without_georeference = Vec::new();
+    for (output_path, georeference, absent_reason) in panels {
+        let key = georef_manifest_key(out_dir, output_path);
+        match georeference {
+            Some(georeference) => {
+                published.insert(key, georeference.clone());
+            }
+            None => without_georeference.push(GeorefAbsence {
+                path: key,
+                // The lane's own reason travels with the event; a lane
+                // that supplied neither still gets a non-empty entry
+                // naming the gap, never a silent omission.
+                reason: absent_reason.clone().unwrap_or_else(|| {
+                    "the render lane threaded neither a georeference nor an absence \
+                     reason through its rendered-product record"
+                        .to_string()
+                }),
+            }),
+        }
+    }
+    GeorefManifest {
+        schema: GEOREF_MANIFEST_SCHEMA.to_string(),
+        generated_utc,
+        panels: published,
+        without_georeference,
+    }
+}
+
+/// Write `<out_dir>/render-georef.json` and print the `GEOREF` line.
+/// Default-on: an opt-in flag would leave a bare run showing the defect.
+fn write_georef_manifest(
+    out_dir: &std::path::Path,
+    panels: &[RenderedPanelGeoref],
+) -> Result<(), String> {
+    let generated_utc = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let manifest = build_georef_manifest(out_dir, generated_utc, panels);
+    let manifest_path = out_dir.join("render-georef.json");
+    let json = serde_json::to_string_pretty(&manifest)
+        .map_err(|err| format!("serialize {}: {err}", manifest_path.display()))?;
+    std::fs::write(&manifest_path, json)
+        .map_err(|err| format!("write {}: {err}", manifest_path.display()))?;
+    // A NEW stdout line type after FINISHED.  Safe against the pinned
+    // grammar: gpuwm.rustwx matches known prefixes and ignores the rest,
+    // and no existing line changed.
+    println!(
+        "GEOREF {} panels={} without={}",
+        manifest_path.display(),
+        manifest.panels.len(),
+        manifest.without_georeference.len()
+    );
     Ok(())
 }
 
@@ -1052,6 +1184,108 @@ mod tests {
 
         let _ = std::fs::remove_file(&good);
         let _ = std::fs::remove_file(&bad);
+    }
+
+    /// A Lambert georeference serialized into the manifest and read back
+    /// must place a point on the SAME pixel.  This is the wire-format half
+    /// of the fix: a transform that survives rendering but not JSON would
+    /// still leave the consumer registering coastlines.
+    #[test]
+    fn georef_manifest_round_trips_a_projected_point_unchanged() {
+        let projection = rustwx_render::ResolvedProjection::LambertConformal {
+            standard_parallel_1_deg: 33.0,
+            standard_parallel_2_deg: 45.0,
+            central_meridian_deg: -96.0,
+            reference_latitude_deg: 39.0,
+        };
+        let (x, y) = projection.project(35.0, -97.5);
+        let georeference = rustwx_render::PanelGeoReference::new(
+            1_600,
+            900,
+            rustwx_render::PlotRect {
+                x: 22,
+                y: 51,
+                width: 1_430,
+                height: 810,
+            },
+            projection,
+            rustwx_render::ProjectedExtent {
+                x_min: x - 500_000.0,
+                x_max: x + 500_000.0,
+                y_min: y - 300_000.0,
+                y_max: y + 300_000.0,
+            },
+            (-103.0, -92.0, 31.0, 39.0),
+        );
+        let before = georeference
+            .lonlat_to_pixel(35.0, -97.5)
+            .expect("the point is inside the frame");
+
+        let out_dir = PathBuf::from("C:\\proof\\out");
+        let manifest = build_georef_manifest(
+            &out_dir,
+            "2026-08-26T00:00:00Z".to_string(),
+            &[(
+                out_dir.join("d02-3km").join("refl").join("frame.png"),
+                Some(georeference),
+                None,
+            )],
+        );
+        let json = serde_json::to_string_pretty(&manifest).expect("manifest serializes");
+        let parsed: GeorefManifest = serde_json::from_str(&json).expect("manifest parses back");
+
+        assert_eq!(parsed.schema, "rustwx.render-georef/v1");
+        assert!(parsed.without_georeference.is_empty());
+        // Path relative to out_dir, forward slashes: the key contract.
+        let restored = parsed
+            .panels
+            .get("d02-3km/refl/frame.png")
+            .expect("the panel is keyed by its out_dir-relative forward-slash path");
+        let after = restored
+            .lonlat_to_pixel(35.0, -97.5)
+            .expect("the restored transform still places the point");
+        assert!(
+            (before.0 - after.0).abs() < 1.0e-9 && (before.1 - after.1).abs() < 1.0e-9,
+            "JSON round trip moved the point: {before:?} -> {after:?}"
+        );
+    }
+
+    /// A panel with no transform lands in `without_georeference` with a
+    /// non-empty reason -- the lane's own when it gave one, a fallback
+    /// naming the gap when it did not.  A silent omission is exactly the
+    /// defect the manifest exists to fix.
+    #[test]
+    fn a_panel_without_a_georeference_is_listed_with_its_reason() {
+        let out_dir = PathBuf::from("C:\\proof\\out");
+        let manifest = build_georef_manifest(
+            &out_dir,
+            "2026-08-26T00:00:00Z".to_string(),
+            &[
+                (
+                    out_dir.join("cloud_levels.png"),
+                    None,
+                    Some("composite panel: one PNG composes multiple member maps".to_string()),
+                ),
+                (out_dir.join("unthreaded.png"), None, None),
+            ],
+        );
+        assert!(manifest.panels.is_empty());
+        assert_eq!(manifest.without_georeference.len(), 2);
+        let by_path: std::collections::HashMap<&str, &str> = manifest
+            .without_georeference
+            .iter()
+            .map(|absence| (absence.path.as_str(), absence.reason.as_str()))
+            .collect();
+        assert_eq!(
+            by_path["cloud_levels.png"],
+            "composite panel: one PNG composes multiple member maps",
+            "the lane's own reason must survive verbatim"
+        );
+        let fallback = by_path["unthreaded.png"];
+        assert!(
+            !fallback.is_empty() && fallback.contains("threaded neither"),
+            "a lane that said nothing still gets a reason naming the gap: {fallback}"
+        );
     }
 
     #[test]

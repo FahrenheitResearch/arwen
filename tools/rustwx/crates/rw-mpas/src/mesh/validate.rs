@@ -25,25 +25,65 @@ pub struct Limits {
     pub sphere_closure: f64,
     /// `|kite row sum / areaTriangle - 1|`. Published: 0.0 on both, exactly.
     pub kite_partition: f64,
-    /// `|polygon fan area / kite sum area - 1|`, the two independent
-    /// triangulations of the same Voronoi cell.
-    pub area_decomposition: f64,
+    /// `|polygon fan area - kite sum area|` for one Voronoi cell, an ABSOLUTE
+    /// area on the unit sphere, in units of `f64::EPSILON`.
+    ///
+    /// ABSOLUTE, and in epsilons, because that is what the quantity turns out
+    /// to be. It was a RELATIVE tolerance until 2026-08-26 and had been
+    /// re-anchored once already (1e-10 -> 1e-9) when a graded mesh sat on it;
+    /// the five-level swath ladder then read 1.023e-9 and sat on it again.
+    /// What the measurement found is that neither move was about mesh quality:
+    ///
+    /// * The two decompositions agree ANALYTICALLY. Every ring vertex is a
+    ///   circumcentre of three generators and so is equidistant from the two
+    ///   that own each edge; every edge point is the midpoint of those same
+    ///   two. Vertex, edge point and next vertex therefore lie on ONE great
+    ///   circle -- the bisector -- so inserting the edge point into the
+    ///   boundary cannot change the area. In exact arithmetic the gap is zero
+    ///   for any consistently wound ring.
+    /// * The generators are stored as `f64` unit vectors and are unit only to
+    ///   about one ulp. `circumcenter` takes the plane through three of them,
+    ///   and a radial error `eps` on a generator tilts that plane by `eps/h`
+    ///   over a lever arm `h`: the Voronoi vertex is displaced TANGENTIALLY by
+    ///   about `eps/h`. The sliver that opens between the ring and the edge
+    ///   point is then `dvEdge/2 * eps/h`, and with `dvEdge` proportional to
+    ///   `h` the two cancel: the ABSOLUTE area gap is about `eps/2` per edge
+    ///   regardless of how big the cell is.
+    /// * MEASURED, on the real generator, over 123,423 cells of one graded
+    ///   mesh spanning 4.5 km to 79.5 km: the median absolute gap is
+    ///   0.459 to 0.495 eps in every one of twelve spacing bins, and the worst
+    ///   is 2.50 eps, while the relative reading falls 208x across the same
+    ///   cells, as `h^-1.94`. Recomputed at 60 decimal digits on the same
+    ///   stored points, both sums are within 2e-20 of their exact values and
+    ///   the exact gap is the f64 gap to four figures; rebuild the ring from
+    ///   the cell centres at 60 digits and the gap is 1e-55. The disagreement
+    ///   is in the POINTS, not in the area arithmetic.
+    ///
+    /// So the old relative form measured `eps / area(smallest cell)`. It was a
+    /// reading of how fine the mesh was and of nothing else, which is why it
+    /// had to be re-anchored every time the generator reached finer -- and why
+    /// a cap and a polygon at the same depth read 1.007e-9 and 1.023e-9, 1.6%
+    /// apart. Comparing the gap to the noise it is made of removes the free
+    /// parameter: see `Limits::default` for the anchor and the margin.
+    pub area_decomposition_ulps: f64,
     /// `max |cos(primal, dual)|`, the SCVT orthogonality defect.
     /// Published: 5.07e-13 (x1), 5.34e-13 (x4).
     pub orthogonality: f64,
     /// `max |R[e,e'] + R[e',e]|` for the TRiSK weights, absolute, against a
     /// weight scale bounded by 1/2. Published median: 1.67e-16.
     pub weight_antisymmetry: f64,
-    /// Shortest dual edge, in METRES at earth radius. Below this the mesh
-    /// cannot survive the FP32 static that has to accompany it: an FP32
-    /// vertex at earth-radius magnitude is quantised at ~0.5 m ULP, the port
-    /// recomputes `dvEdge` from those stored vertices and compares at
-    /// `rtol = 2e-5` with `atol = 0.0`, and the measured survival boundary is
-    /// ~7.5 km -- so the pair is refused whole at load, after the static was
-    /// built. Published x1.40962: 45,016.7 m. Fibonacci-seeded generated
-    /// meshes measured 7,337.6 m at 2,000 cells, 75.0 m at 12,000, 7.2 m at
-    /// 40,962, all of which this floor turns from a silent PASS into a
-    /// refusal with the numbers.
+    /// Shortest dual edge, in METRES at earth radius. GUARDS: the FP32
+    /// storage atol -- the port's load check (post-#311
+    /// `spherical_arc_tolerance`) tolerates an absolute ~1.732 m between the
+    /// stored `dvEdge` and the arc of the stored f32 vertices, so below a
+    /// couple hundred metres a stored dual length is materially quantisation
+    /// noise and the TRiSK weights would divide by it. RE-ANCHORED from
+    /// 7,500 m by ruling (2026-08-25) after the old anchor's breakage -- the
+    /// retired rtol 2e-5 / atol 0.0 load check -- was measured gone: real
+    /// pairs edited to 50/200/1,000/5,000 m dvEdge ALL pass today's loader
+    /// (gaps 0.06-0.13 m), while the 7,500 m floor refused the published
+    /// x4.163842 itself at its measured 1,170.0 m. Evidence:
+    /// gpuwm-hex `tree/evidence/graded-goldberg-20260825/`.
     pub min_dv_edge_m: f64,
     /// Smallest `dvEdge / dcEdge`. A near-zero ratio is the signature of a
     /// near-cocircular pentagon-heptagon dislocation quad: two Voronoi
@@ -52,6 +92,19 @@ pub struct Limits {
     /// across such an edge is amplified by `dc/dv`. Published: 0.3945 on
     /// x1.40962, 0.0336 on x4.163842; the measured defect class on
     /// Fibonacci-seeded uniform meshes sits at 0.0147 and below.
+    ///
+    /// This is also the PORT'S OWN admission gate: `DualEdgePolicy` refuses
+    /// `dvEdge/dcEdge < 0.02` with `DualEdgeAdmissionError` before any CUDA
+    /// allocation, so the two floors must not drift apart.  It is not the
+    /// only dual-edge gate: `min_dv_edge_m` sits beside it as a bound on the
+    /// STORED length.  What that bound no longer rests on is the port's
+    /// retired `rtol 2e-5 / atol 0.0` FP32 storage comparison -- the live
+    /// storage gate is a 1.73 m atol that generated pairs clear by
+    /// construction, and the old 7,500 m anchor wrongly refused the
+    /// published x4.163842 (dv/dc 0.0336, dual edge 1,170.0 m) which the
+    /// live port ADMITS.  RE-ANCHORED to 200 m rather than retired, by
+    /// ruling 2026-08-25: stale-guard audit finding 3 measured the retired
+    /// bound's irrelevance, not the noise fraction's.
     pub min_dv_over_dc: f64,
 }
 
@@ -63,22 +116,67 @@ impl Default for Limits {
             // (which moves the sum by ~1e-5) is a hard failure.
             sphere_closure: 1e-12,
             kite_partition: 1e-13,
-            // Two independent triangulations of the same cell, both through the
-            // half-tangent form. Measured on the published meshes at 6.6e-12
-            // worst; a decade of headroom above that.
-            area_decomposition: 1e-10,
+            // The noise floor of the pair, not a tolerance on the mesh. The
+            // two decompositions are analytically identical (see the field
+            // doc); what separates them in f64 is that a generator is unit
+            // only to an ulp, which tilts each circumcentre's plane by
+            // eps/h and opens a dvEdge/2 * eps/h sliver at every edge -- an
+            // ABSOLUTE area gap of about eps/2 per edge, the same for a
+            // 4 km cell and a 79 km one.
+            //
+            // MEASURED, real generator, ladder depths 1 to 5 and finest
+            // spacings 32.0 km down to 4.5 km, 123k-138k cells each. The
+            // spacings come in PAIRS that straddle a ladder-level boundary,
+            // so depth moves across a pair while the mesh barely does:
+            //
+            //   depth  finest      median      worst   retired relative
+            //     1   32.017 km   0.461 eps   2.349    1.778e-11   \ pair
+            //     2   28.153 km   0.468 eps   2.193    1.955e-11   /
+            //     2   17.778 km   0.467 eps   2.383    6.735e-11   \ pair
+            //     3   17.286 km   0.464 eps   2.469    6.980e-11   /
+            //     3    9.011 km   0.464 eps   2.518    2.540e-10   \ pair
+            //     4    8.912 km   0.462 eps   2.289    2.803e-10   /
+            //     4    4.534 km   0.462 eps   2.383    9.771e-10   \ pair
+            //     5    4.513 km   0.463 eps   2.488    9.761e-10   /
+            //     5    4.517 km   0.462 eps   2.502    1.023e-9    (swath s01)
+            //
+            // A whole extra ladder level moves the reading 0.1%-10%; going from
+            // 32 km to 4.5 km moves it 55x. The absolute gap is flat to 1.5% on
+            // the median and 15% on the worst across all nine. The published
+            // x1.40962 and x4.163842 sit in the same band (1.22 and 1.41 eps).
+            //
+            // 32 eps is 12.7x the worst measured and 6.4x the mechanism's own
+            // ceiling (half of maxEdges, at dvEdge = dcEdge, is 5 eps). The
+            // breakage it catches -- a vertex ring that is not the boundary
+            // of the region the kites tile -- is measured in
+            // `area_decomposition_tests`, six decades above this floor.
+            area_decomposition_ulps: 32.0,
             // Three decades above the published readings, so a mesh emitted
             // here has to be as orthogonal as a converged NCAR SCVT.
             orthogonality: 1e-10,
             weight_antisymmetry: 1e-9,
-            // The FP32 survival boundary, measured through the port's own
-            // load check (rtol 2e-5, atol 0.0 against ~0.5 m ULP vertices).
-            min_dv_edge_m: 7_500.0,
+            // 115x the port's measured 1.732 m absolute load tolerance and
+            // ~2,000x the measured f32 quantisation gaps (0.06-0.13 m), so a
+            // stored dual length is always meaningful to under 1%. Admits
+            // every mesh the port loads and runs (x4.163842 at 1,170 m, the
+            // canonical graded mesh at 925.7 m); ruled 2026-08-25.
+            min_dv_edge_m: 200.0,
             // Between the published family's floor (0.0336 on x4.163842) and
             // the measured dislocation class (0.0147 and below), anchored to
-            // both readings rather than chosen by taste.
+            // both readings rather than chosen by taste -- and equal to the
+            // port's own DualEdgePolicy admission floor, so what this gate
+            // emits is what the port admits.
             min_dv_over_dc: 0.02,
         }
+    }
+}
+
+impl Limits {
+    /// The largest area, on the unit sphere, that the two decompositions of one
+    /// cell may enclose differently. An ABSOLUTE area, because the disagreement
+    /// is an absolute constant; see [`Limits::area_decomposition_ulps`].
+    pub fn area_decomposition_floor(&self) -> f64 {
+        self.area_decomposition_ulps * f64::EPSILON
     }
 }
 
@@ -96,7 +194,18 @@ pub struct MeshReport {
     pub sum_area_triangle_over_4pi: f64,
     pub sum_kite_areas_over_4pi: f64,
     pub max_kite_partition_rel: f64,
+    /// The worst RELATIVE disagreement between the two decompositions. Kept
+    /// because every archived receipt carries it, but it is not what the gate
+    /// reads any more: it is the absolute gap below divided by a cell area, so
+    /// it tracks the finest cell in the mesh and not the mesh's quality.
     pub max_area_decomposition_rel: f64,
+    /// The worst ABSOLUTE disagreement between the two decompositions, as an
+    /// area on the unit sphere. This is what the gate reads.
+    pub max_area_decomposition_abs: f64,
+    /// The same reading in machine epsilons -- the units it is naturally in.
+    /// Healthy meshes measure 2.3 to 2.6 across every depth and spacing tried;
+    /// the floor is `Limits::area_decomposition_ulps`.
+    pub max_area_decomposition_ulps: f64,
     pub max_nonorthogonality: f64,
     pub min_edge_orientation: f64,
     pub max_weight_antisymmetry: f64,
@@ -358,20 +467,35 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
 
     // The independent second opinion on every cell's area: the spherical
     // polygon bounded by its vertex ring, against the kites that tile it.
+    //
+    // Compared ABSOLUTELY, against the arithmetic's own noise. The two are
+    // analytically the same number -- vertex, edge point and next vertex share
+    // the bisector great circle by construction -- so the whole of a healthy
+    // reading is floating point, and floating point puts a CONSTANT area there
+    // (eps/2 per edge), not a constant fraction of the cell. Dividing that
+    // constant by the cell area, as this check did until 2026-08-26, produces a
+    // number that measures the finest cell in the mesh; it had to be moved
+    // every time the generator reached finer, and it had been moved once
+    // already. See `Limits::area_decomposition_ulps`.
     let polygon = mesh.polygon_areas();
+    let noise_floor = limits.area_decomposition_ulps * f64::EPSILON;
+    let mut max_gap = 0.0f64;
+    let mut worst_gap_cell = 0usize;
     let mut max_decomp = 0.0f64;
-    let mut worst_decomp_cell = 0usize;
     for c in 0..nc {
-        let r = (polygon[c] / mesh.area_cell[c] - 1.0).abs();
-        if r > max_decomp {
-            max_decomp = r;
-            worst_decomp_cell = c;
+        let gap = (polygon[c] - mesh.area_cell[c]).abs();
+        if gap > max_gap {
+            max_gap = gap;
+            worst_gap_cell = c;
         }
+        max_decomp = max_decomp.max(gap / mesh.area_cell[c]);
     }
-    if max_decomp > limits.area_decomposition {
+    if max_gap > noise_floor {
         return Err(MpasError::Refusal(format!(
-            "cell {worst_decomp_cell}: the spherical polygon bounded by its vertex ring and the kites that tile it disagree by {max_decomp:.3e} (limit {:.3e}). Those are two triangulations of the same region, so a disagreement means the vertex ring is not the boundary of the cell -- the mesh is not the Voronoi tessellation of its own generators, and areaCell is not the area any flux is divided by",
-            limits.area_decomposition
+            "cell {worst_gap_cell}: the spherical polygon bounded by its vertex ring and the kites that tile it enclose areas {max_gap:.3e} apart on the unit sphere ({:.1} machine epsilon; the floor is {:.1}, {noise_floor:.3e}), which is {:.3e} of that cell's own area. Those are two triangulations of the SAME region and they agree exactly in exact arithmetic, so a gap above the arithmetic's own noise means the vertex ring is not the boundary of the region the kites tile: verticesOnCell, edgesOnCell and the kite quads no longer describe one polygon, and areaCell is not the area any flux is divided by",
+            max_gap / f64::EPSILON,
+            limits.area_decomposition_ulps,
+            max_gap / mesh.area_cell[worst_gap_cell]
         )));
     }
 
@@ -434,17 +558,83 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     for &d in &mesh.n_edges_on_cell {
         *hist.entry(d).or_default() += 1;
     }
+
+    // ------------------------------------------------ the coordination floor
+    //
+    // THE BREAKAGE THIS PREVENTS, MEASURED (2026-08-26; gpuwm-hex
+    // tree/evidence/graded-blowup-20260826/, node-2 RTX 5090). Registered
+    // mesh `v16.66.195630` was emitted through this very function carrying one
+    // 4-coordinated cell -- 195615, at 33.74N 117.65W, put there by
+    // `surgery`'s S2 insertion -- and every check above passed it, because the
+    // same operation makes two heptagons and `sum(6 - nEdgesOnCell)` still
+    // reads 12 exactly. That mesh bound, allocated, integrated 22 steps and
+    // died at step 23 of 36: the model's theta maximum and its |w| maximum sat
+    // on that one cell at the top model level in every arm, ~197 K above its
+    // initial value at 1,800 s, and the anomaly was TIMESTEP CONVERGED across
+    // a 5x range (197.4 K at dt 100 s, 197.7 K at 75 s, 181.3 K at 20 s) --
+    // so a finer timestep bought 2 h 45 m of model time instead of 38 minutes
+    // and never bought a forecast. A 224,210-cell sibling from the same
+    // generator carries the same defect at cell 224206.
+    //
+    // The floor is ONE-SIDED by measurement, and deliberately so: the
+    // 8-coordinated cell in that same mesh (168727) is nowhere near the top
+    // forty by growth in any arm, and `v20.80.151649` completes six forecast
+    // hours with 1,017 heptagons. Refusing high coordination would be a gate
+    // with no breakage behind it.
+    //
+    // The producer-side fix is `surgery::MIN_COORDINATION` and the
+    // coordination clause in `surgery::drain`, which is what stops such a
+    // mesh being MADE. This is the backstop that stops one being WRITTEN, so
+    // a regression in the operators cannot ship silently the way this one did.
+    if let Some(bad) = mesh
+        .n_edges_on_cell
+        .iter()
+        .position(|&d| (d as usize) < crate::mesh::surgery::MIN_COORDINATION)
+    {
+        let below = mesh
+            .n_edges_on_cell
+            .iter()
+            .filter(|&&d| (d as usize) < crate::mesh::surgery::MIN_COORDINATION)
+            .count();
+        let (lat, lon) = crate::mesh::geom::lat_lon(mesh.cell_xyz[bad]);
+        return Err(MpasError::Refusal(format!(
+            "cell {bad} has {} edges, under the {}-edge floor, and {below} cell(s) in this mesh do. A Goldberg polyhedron carries pentagons, hexagons and heptagons; a quadrilateral is not a cell of this family, and nothing above this line catches one -- the operation that makes a quadrilateral makes two heptagons with it, so the Euler characteristic, the degree sum and the total coordination defect of 12 all still hold exactly. MEASURED COST OF EMITTING ONE (2026-08-26): the single 4-coordinated cell in v16.66.195630 was that mesh's worst-shaped cell (perimeter/sqrt(area) 4.028 against a hexagonal median of 3.725) and its stiffest by the discrete-Laplacian row sum (1.17x a regular hexagon, rank 0 of 195,630); it grew a ~197 K standing potential-temperature error at the model top that a five-fold smaller timestep did not remove, and the forecast ended in a vertical-velocity runaway at that same cell. The offender here is at lat/lon ({:.3}, {:.3}) deg. Coordination histogram: {:?}. This is a generator defect, not a spec defect: regenerate with an engine whose surgery carries the coordination clause",
+            mesh.n_edges_on_cell[bad],
+            crate::mesh::surgery::MIN_COORDINATION,
+            lat.to_degrees(),
+            lon.to_degrees(),
+            hist
+        )));
+    }
+
     let r = crate::mesh::geom::EARTH_RADIUS_M;
     let dc_m: Vec<f64> = mesh.dc_edge.iter().map(|&d| d * r).collect();
 
-    // ------------------------------------------- the FP32 survival floor
+    // ------------------------- the two dual-edge gates: length, then ratio
     //
-    // Near-coincident cell corners are an EQUILIBRIUM feature of a
-    // polycrystalline (Fibonacci-seeded) SCVT -- measured at 7,337.6 m
-    // shortest dual edge at 2,000 cells, 75.0 m at 12,000, 7.2 m at 40,962,
-    // and identical under --sweeps 200/600/2000, so more relaxation is not a
-    // remedy. Until this gate they PASSED here and failed two stages later,
-    // after the static build, at port load.
+    // GUARD CITATION (ruling 2026-08-25, evidence gpuwm-hex
+    // tree/evidence/graded-goldberg-20260825/): the port's load check
+    // tolerates an ABSOLUTE ~1.732 m between a stored dvEdge and the arc of
+    // its stored f32 vertices, so a dual length under a couple hundred
+    // metres is materially quantisation noise by the time the pair loads.
+    // The old 7,500 m anchor guarded the RETIRED rtol 2e-5 / atol 0.0 check
+    // and was measured refusing meshes the port loads and runs -- the
+    // published x4.163842 at its own 1,170.0 m included -- so the LENGTH
+    // floor is re-anchored to the noise fraction, not deleted with the
+    // premise that first sized it (ruling 2026-08-25; stale-guard audit
+    // 2026-08-25 finding 3 measured the retired bound's irrelevance, and a
+    // 654,432-cell pair with 12,732 edges past it, worst absolute 0.634 m,
+    // that the live port accepts whole).
+    //
+    // The RATIO gate beside it is the port's live admission contract:
+    // DualEdgePolicy refuses dvEdge/dcEdge < 0.02 with
+    // DualEdgeAdmissionError before any CUDA allocation. Near-coincident
+    // cell corners are an EQUILIBRIUM feature of a polycrystalline
+    // (Fibonacci-seeded) SCVT, and more relaxation re-rolls the dislocation
+    // rather than draining it (measured under --sweeps 200/600/2000, and
+    // re-measured 2026-08-25: three refinement layouts, three
+    // dislocations). Until this gate they PASSED here and failed two stages
+    // later, at port load.
     let (mut min_dv_m, mut worst_dv_edge) = (f64::INFINITY, 0usize);
     let (mut min_ratio, mut worst_ratio_edge) = (f64::INFINITY, 0usize);
     for e in 0..ne {
@@ -461,7 +651,7 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     }
     if min_dv_m < limits.min_dv_edge_m {
         return Err(MpasError::Refusal(format!(
-            "edge {worst_dv_edge}: the two dual vertices sit {min_dv_m:.1} m apart (dcEdge {:.0} m, dv/dc {:.2e}), under the {:.0} m FP32 survival floor. This mesh can never be run: the static file that has to accompany it stores vertices as f32 at earth-radius magnitude (~0.5 m ULP), the port recomputes dvEdge from those stored vertices and compares at rtol 2e-5 with atol 0.0, and below ~7.5 km the quantisation alone exceeds the tolerance -- the port refuses the whole grid/static pair at load with 'dvEdge disagrees with spherical vertex arc length', two stages after this gate ran. The published x1.40962 measures 45,016.7 m at its shortest. On a uniform request this does not occur (the icosahedral seed has no dislocations); on a variable-resolution mesh it is a pentagon-heptagon dislocation, and more relaxation re-rolls it rather than draining it (--sweeps 200, 600 and 2000 all measured the same 75.04 m shortest edge). What works, measured: fewer cells, or a different refinement layout",
+            "edge {worst_dv_edge}: the two dual vertices sit {min_dv_m:.1} m apart (dcEdge {:.0} m, dv/dc {:.2e}), under the {:.0} m FP32 storage-length floor. The static that has to accompany this grid stores vertices as f32 at earth-radius magnitude (~0.5 m ULP), and the port's load check tolerates an absolute ~1.732 m disagreement between the stored dvEdge and the arc of those stored vertices -- so below this floor the stored length is materially quantisation noise, and the TRiSK tangential weights divide by it. The floor is 115x that tolerance, anchored to measurement (real pairs edited to 50-5,000 m dvEdge all LOAD; the boundary is the noise fraction, not the loader): published x1.40962 measures 45,016.7 m at its shortest, x4.163842 runs at 1,170.0 m, the canonical graded mesh at 925.7 m. A dual edge this short alongside a healthy dv/dc means cells a few hundred metres apart; check the spec's finest spacing before checking the generator",
             dc_m[worst_dv_edge],
             mesh.dv_edge[worst_dv_edge] / mesh.dc_edge[worst_dv_edge],
             limits.min_dv_edge_m
@@ -469,7 +659,7 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     }
     if min_ratio < limits.min_dv_over_dc {
         return Err(MpasError::Refusal(format!(
-            "edge {worst_ratio_edge}: dvEdge/dcEdge = {min_ratio:.3e} ({:.1} m over {:.0} m), under the {:.0e} floor. Two Voronoi vertices nearly coincide while their cells stay a full spacing apart -- the signature of a near-cocircular pentagon-heptagon dislocation quad. The TRiSK tangential weights divide by dvEdge, so the wind term reconstructed across this edge is amplified by dc/dv = {:.0}; the published family never carries this (x1.40962 reads 0.3945 at its floor, x4.163842 reads 0.0336), and the measured defect class on Fibonacci-seeded uniform meshes sits at 0.0147 and below",
+            "edge {worst_ratio_edge}: dvEdge/dcEdge = {min_ratio:.3e} ({:.1} m over {:.0} m), under the {:.0e} floor. Two Voronoi vertices nearly coincide while their cells stay a full spacing apart -- the signature of a near-cocircular pentagon-heptagon dislocation quad. The TRiSK tangential weights divide by dvEdge, so the wind term reconstructed across this edge is amplified by dc/dv = {:.0}, and the MPAS port refuses the pair itself (DualEdgeAdmissionError, the same 0.02 floor) before any CUDA allocation; the published family never carries this (x1.40962 reads 0.3945 at its floor, x4.163842 reads 0.0336), and the measured defect class on Fibonacci-seeded uniform meshes sits at 0.0147 and below. What works, measured: a different refinement layout, or fewer cells in the refined region -- more relaxation re-rolls the dislocation rather than draining it",
             mesh.dv_edge[worst_ratio_edge] * r,
             dc_m[worst_ratio_edge],
             limits.min_dv_over_dc,
@@ -506,6 +696,8 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
         sum_kite_areas_over_4pi: s_kite / four_pi,
         max_kite_partition_rel: max_kite_rel,
         max_area_decomposition_rel: max_decomp,
+        max_area_decomposition_abs: max_gap,
+        max_area_decomposition_ulps: max_gap / f64::EPSILON,
         max_nonorthogonality: max_nonorth,
         min_edge_orientation: min_orient,
         max_weight_antisymmetry: max_anti,
@@ -531,63 +723,92 @@ pub fn displacement(a: V3, b: V3) -> V3 {
     sub(a, b)
 }
 
-#[cfg(test)]
-mod fp32_floor_tests {
+#[cfg(test)]mod fp32_floor_tests {
     use super::*;
     use crate::mesh::density::MeshSpec;
     use crate::mesh::derive::MpasMesh;
     use crate::mesh::emit::nominal_min_dc_from_m;
     use crate::mesh::geom::EARTH_RADIUS_M;
-    use crate::mesh::hull::delaunay_rings;
     use crate::mesh::lloyd::{LloydOptions, relax, seed_points};
 
     fn derive_relaxed(points: Vec<crate::mesh::geom::V3>, spec: &MeshSpec) -> MpasMesh {
         let mut pts = points;
-        let out = relax(&mut pts, spec, &LloydOptions::default())
+        // The monitor's collapse refusal is DISARMED here on purpose: these
+        // tests deliberately construct the symptomatic Fibonacci mesh the
+        // production relaxation now refuses mid-flight, because the gate
+        // under test is `validate`, two stages later. The floor is options
+        // data the same way `Limits` is; no production door zeroes it.
+        let opts = LloydOptions {
+            monitor_floor: 0.0,
+            ..LloydOptions::default()
+        };
+        let out = relax(&mut pts, spec, &opts)
             .unwrap_or_else(|e| panic!("relaxation refused: {e}"));
         let density: Vec<f64> = pts.iter().map(|&p| spec.density(p)).collect();
         let nominal = nominal_min_dc_from_m(spec.finest_km() * 1000.0);
         MpasMesh::derive(pts, density, &out.rings, nominal).expect("derive")
     }
 
-    /// The refusing direction, on the real pipeline: the 2,000-cell
-    /// Fibonacci-seeded uniform request whose converged mesh measured a
-    /// 7,337.6 m shortest dual edge -- a PASS before this gate existed, a
-    /// refusal that names the port-load breakage after it.
+    /// The refusing direction, on the real pipeline, AFTER the 2026-08-25
+    /// floor ruling: the 2,000-cell Fibonacci mesh (measured 7,337.6 m dual
+    /// edge over a 721,237 m dcEdge -- ratio 1.017e-2, a 98x TRiSK
+    /// amplification) is still refused, and the refusal now names the LIVE
+    /// breakage -- the dislocation ratio, which the port itself refuses with
+    /// DualEdgeAdmissionError -- rather than the retired FP32 storage
+    /// comparison. (Guard citation: the floor ruling, evidence gpuwm-hex
+    /// tree/evidence/graded-goldberg-20260825/; stale-guard audit
+    /// 2026-08-25, finding 3.)
     #[test]
-    fn a_fibonacci_seeded_symptomatic_mesh_is_refused_with_the_numbers() {
+    fn a_fibonacci_dislocation_is_refused_by_the_ratio_floor_with_the_numbers() {
         let spec = MeshSpec::uniform(120.0);
         let points = seed_points(&spec, 2_000).expect("seed");
         let mesh = derive_relaxed(points, &spec);
-
-        let min_dv_m = mesh
-            .dv_edge
-            .iter()
-            .map(|&d| d * EARTH_RADIUS_M)
-            .fold(f64::INFINITY, f64::min);
-        let min_ratio = (0..mesh.n_edges)
-            .map(|e| mesh.dv_edge[e] / mesh.dc_edge[e])
-            .fold(f64::INFINITY, f64::min);
-        eprintln!(
-            "fibonacci 2,000: min dvEdge {min_dv_m:.1} m, min dv/dc {min_ratio:.4e}"
-        );
-
         let err = validate(&mesh, Limits::default())
-            .expect_err(
-                "the converged Fibonacci mesh carries a near-degenerate corner \
-                 and validate PASSED it; the port would refuse the grid/static \
-                 pair two stages later",
-            )
+            .expect_err("the dislocation class must refuse under the ruled floors")
             .to_string();
         assert!(
-            err.contains("FP32 survival floor") || err.contains("dislocation"),
-            "the refusal does not name the breakage: {err}"
+            err.contains("dvEdge/dcEdge") && err.contains("dislocation"),
+            "the refusal does not name the surviving breakage: {err}"
         );
         assert!(
-            err.contains("dvEdge disagrees with spherical vertex arc length")
-                || err.contains("dc/dv"),
-            "the refusal does not carry the consumer's own words or the amplification: {err}"
+            err.contains("dc/dv") && err.contains("DualEdgeAdmissionError"),
+            "the refusal does not carry the amplification and the port's own gate: {err}"
         );
+        assert!(
+            !err.contains("storage-length floor"),
+            "the refusal cites the length floor instead of the ratio floor: {err}"
+        );
+        assert!(
+            !err.contains("FP32 survival floor") && !err.contains("rtol 2e-5"),
+            "the refusal quotes the retired storage premise: {err}"
+        );
+    }
+
+    /// The ruled length floor contributes no refusal to the symptomatic
+    /// mesh: its 7,337.6 m shortest dual edge clears 200 m with decades to
+    /// spare, so the whole verdict is the ratio's -- while the published
+    /// x4.163842 (1,170 m, gated in the goldens suite) and the canonical
+    /// graded mesh (925.7 m) are the integration-scale length-floor admits.
+    /// (Guard citation: the 2026-08-25 ruling, evidence gpuwm-hex
+    /// tree/evidence/graded-goldberg-20260825/.)
+    #[test]
+    fn the_ruled_length_floor_leaves_the_verdict_to_the_ratio() {
+        let spec = MeshSpec::uniform(120.0);
+        let points = seed_points(&spec, 2_000).expect("seed");
+        let mesh = derive_relaxed(points, &spec);
+        let length_only = Limits {
+            min_dv_over_dc: 0.0,
+            ..Limits::default()
+        };
+        let report = validate(&mesh, length_only).expect(
+            "with only the ratio floor named away, the 7.3 km edge clears the 200 m length floor",
+        );
+        eprintln!(
+            "fibonacci 2,000 under the ruled length floor: min dvEdge {:.1} m, min dv/dc {:.4e}",
+            report.min_dv_edge_m, report.min_dv_over_dc
+        );
+        assert!(report.min_dv_edge_m > 200.0 && report.min_dv_edge_m < 7_500.0);
+        assert!(report.min_dv_over_dc < 0.02);
     }
 
     /// The admitting direction: the SAME request routed through the
@@ -612,7 +833,7 @@ mod fp32_floor_tests {
             report.coordination_histogram
         );
         // The published mesh's class: order 0.3+ at the floor, twelve
-        // pentagons, no heptagons, nothing anywhere near the FP32 boundary.
+        // pentagons, no heptagons, nothing anywhere near the admission floor.
         assert!(
             report.min_dv_over_dc > 0.3,
             "min dv/dc {:.4} is not in the published mesh's class",
@@ -633,26 +854,470 @@ mod fp32_floor_tests {
         );
     }
 
-    /// A mesh that is exactly at the boundary refuses below and admits above:
-    /// the floor itself is data (`Limits`), so a consumer with an FP64 static
-    /// CAN name a lower one -- but the default is the FP32 truth.
+    /// The WRITER'S BACKSTOP, refusing direction, on a mesh built exactly the
+    /// way the generator built `v16.66.195630`: a generator dropped on a
+    /// quad's common circumcentre, which is what `surgery`'s S2 insertion
+    /// does, and which lands a four-neighbour cell.
     #[test]
-    fn the_floor_is_the_default_and_a_caller_can_name_a_different_consumer() {
+    fn a_four_coordinated_cell_is_refused_by_the_writer_with_its_measured_cost() {
+        let (mesh, quad_cell) = mesh_with_a_quadrilateral_cell();
+        assert_eq!(mesh.n_edges_on_cell[quad_cell], 4);
+        // Every closure identity above the floor still holds -- that is why
+        // this shipped once. Named away, the rest of `validate` passes it.
+        let defect: i64 = mesh.n_edges_on_cell.iter().map(|&d| 6 - d as i64).sum();
+        assert_eq!(defect, 12);
+
+        let err = validate(&mesh, Limits::default())
+            .expect_err("a quadrilateral cell must not be emitted")
+            .to_string();
+        assert!(
+            err.contains(&format!("cell {quad_cell} has 4 edges")),
+            "the refusal does not name the offending cell: {err}"
+        );
+        assert!(
+            err.contains("Goldberg") && err.contains("quadrilateral is not a cell of this family"),
+            "the refusal does not name the family invariant: {err}"
+        );
+        assert!(
+            err.contains("197 K") && err.contains("2026-08-26"),
+            "the refusal does not carry the measured breakage and its date: {err}"
+        );
+        assert!(
+            err.contains("v16.66.195630"),
+            "the refusal does not name the mesh that measured the cost: {err}"
+        );
+    }
+
+    /// The admitting direction, and the one-sidedness: the floor is a FLOOR.
+    /// High coordination is admitted, because the 8-coordinated cell in
+    /// `v16.66.195630` was measured harmless and `v20.80.151649` completes six
+    /// forecast hours with 1,017 heptagons.
+    #[test]
+    fn the_coordination_floor_is_one_sided_and_admits_high_coordination() {
+        let spec = MeshSpec::uniform(120.0);
+        let choice = crate::mesh::icosa::snap_cells(2_000, false).expect("snap");
+        let points = crate::mesh::icosa::seed(choice.m, choice.n).expect("seed");
+        let mesh = derive_relaxed(points, &spec);
+        let report = validate(&mesh, Limits::default()).expect("the healthy control admits");
+        assert!(
+            report
+                .coordination_histogram
+                .iter()
+                .all(|&(d, _)| d >= crate::mesh::surgery::MIN_COORDINATION as i32),
+            "{:?}",
+            report.coordination_histogram
+        );
+        // And a mesh carrying HIGH coordination is admitted on its own
+        // merits: the graded ladder's own two-level fixture reads heptagons
+        // and passes.
+        let graded = crate::mesh::density::MeshSpec {
+            background_km: 480.0,
+            regions: vec![crate::mesh::density::Region {
+                shape: crate::mesh::density::Shape::Cap {
+                    center_deg: [39.0, -98.0],
+                    radius_km: 4000.0,
+                },
+                spacing_km: 240.0,
+                transition: crate::mesh::density::TransitionField::Km(3000.0),
+            }],
+            name: None,
+        };
+        let (points, rings, _, _, _) = crate::mesh::hierarchy::generate_graded(
+            &graded,
+            50_000,
+            &LloydOptions::default(),
+            &crate::mesh::surgery::SurgeryOptions::default(),
+            crate::mesh::hierarchy::DEFAULT_BETA,
+            |_| {},
+        )
+        .expect("the graded ladder builds its own fixture");
+        let density: Vec<f64> = points.iter().map(|&p| graded.density(p)).collect();
+        let nominal = nominal_min_dc_from_m(graded.finest_km() * 1000.0);
+        let gmesh = MpasMesh::derive(points, density, &rings, nominal).expect("derive");
+        let greport = validate(&gmesh, Limits::default())
+            .unwrap_or_else(|e| panic!("the graded fixture is refused: {e}"));
+        assert!(
+            greport
+                .coordination_histogram
+                .iter()
+                .any(|&(d, c)| d == 7 && c > 0),
+            "the graded fixture carries no heptagons, so it proves nothing about the floor's one-sidedness: {:?}",
+            greport.coordination_histogram
+        );
+    }
+
+    /// A relaxed uniform mesh with one generator dropped on a quad's common
+    /// circumcentre: the placement `surgery`'s S2 makes. Returns the derived
+    /// mesh and the index of the four-neighbour cell.
+    fn mesh_with_a_quadrilateral_cell() -> (MpasMesh, usize) {
+        use crate::mesh::geom::circumcenter;
+        let spec = MeshSpec::uniform(120.0);
+        let choice = crate::mesh::icosa::snap_cells(2_000, false).expect("snap");
+        let mut pts = crate::mesh::icosa::seed(choice.m, choice.n).expect("seed");
+        relax(&mut pts, &spec, &LloydOptions::default()).expect("relax");
+        let rings = crate::mesh::hull::delaunay_rings(&pts).expect("delaunay");
+        let mut quads: Vec<crate::mesh::surgery::QuadReading> = Vec::new();
+        crate::mesh::surgery::for_each_quad(&pts, &rings, |r| quads.push(r));
+        quads.sort_by(|x, y| (x.i, x.j).cmp(&(y.i, y.j)));
+        for q in quads.iter().take(64) {
+            let Some(u) = circumcenter(pts[q.i as usize], pts[q.a as usize], pts[q.j as usize])
+            else {
+                continue;
+            };
+            let mut trial = pts.clone();
+            trial.push(u);
+            let k = trial.len() - 1;
+            let r2 = crate::mesh::hull::delaunay_rings(&trial).expect("delaunay");
+            if r2.ring(k).len() == 4 {
+                let density: Vec<f64> = trial.iter().map(|&p| spec.density(p)).collect();
+                let nominal = nominal_min_dc_from_m(spec.finest_km() * 1000.0);
+                let mesh = MpasMesh::derive(trial, density, &r2, nominal).expect("derive");
+                return (mesh, k);
+            }
+        }
+        panic!("no circumcentre placement in the first 64 canonical quads landed a quadrilateral");
+    }
+
+    /// The floors are data (`Limits`), so a consumer without the port's
+    /// DualEdgePolicy gate and with an FP64 static CAN name lower ones: the
+    /// same mesh the default refuses passes every geometric check under
+    /// named-away floors. The default stays the port's admission truth.
+    #[test]
+    fn the_floors_are_the_default_and_a_caller_can_name_a_different_consumer() {
         let spec = MeshSpec::uniform(120.0);
         let points = seed_points(&spec, 2_000).expect("seed");
         let mesh = derive_relaxed(points, &spec);
-        assert!(validate(&mesh, Limits::default()).is_err());
+        assert!(
+            validate(&mesh, Limits::default()).is_err(),
+            "the dislocation class must refuse under the default floors"
+        );
         let relaxed_limits = Limits {
-            min_dv_edge_m: 0.0,
             min_dv_over_dc: 0.0,
             ..Limits::default()
         };
         let report = validate(&mesh, relaxed_limits)
-            .expect("with the floors named away the geometric checks still pass");
+            .expect("with the floor named away the geometric checks still pass");
         eprintln!(
-            "fibonacci 2,000 under named-away floors: min dvEdge {:.1} m, min dv/dc {:.4e}",
+            "fibonacci 2,000 under a named-away floor: min dvEdge {:.1} m, min dv/dc {:.4e}",
             report.min_dv_edge_m, report.min_dv_over_dc
         );
-        assert!(report.min_dv_edge_m < 7_500.0);
+        assert!(report.min_dv_over_dc < 0.02);
+    }
+}
+
+/// What the area-decomposition gate reads, and what it does not.
+///
+/// The gate was a RELATIVE tolerance that had been re-anchored once (1e-10 ->
+/// 1e-9) and was about to need it a second time: the swath layer's five-level
+/// ladder built to completion and read 1.023e-9. These tests hold the
+/// measurement that replaced the constant with a derived one, in both
+/// directions -- the healthy band and the breakage the gate exists for.
+///
+/// (Guard citation: the 2026-08-26 re-derivation; evidence
+/// `evidence/area-tolerance-20260826/` in this repo.)
+#[cfg(test)]
+mod area_decomposition_tests {
+    use super::*;
+    use crate::mesh::density::{MeshSpec, Region, Shape, TransitionField};
+    use crate::mesh::derive::MpasMesh;
+    use crate::mesh::emit::nominal_min_dc_from_m;
+    use crate::mesh::lloyd::LloydOptions;
+
+    /// The swath spec `s01`, built by the real `rw_mpas_mesh` binary at
+    /// 74f5725b8 with this gate lifted: 123,423 cells, five-level ladder,
+    /// 75 km background, 4 km finest, 4.517 km delivered.
+    ///
+    /// The worst cell is 110971. Its two decompositions enclose areas
+    /// 4.673e-16 sr apart -- and that cell is a plain degree-6 hexagon whose
+    /// tightest dvEdge/dcEdge is 0.5392, not a sliver.
+    const S01_WORST_GAP_SR: f64 = 4.673e-16;
+    const S01_WORST_AREA_SR: f64 = 4.5678e-7;
+    /// What that same 4.673e-16 reads on the coarsest cell of the SAME mesh
+    /// (78.378 km across, 1.219e-4 sr): the retired form's verdict was a
+    /// reading of the cell, not of the mesh.
+    const S01_COARSE_AREA_SR: f64 = 1.219e-4;
+    /// The scalar the retired relative form carried.
+    const RETIRED_RELATIVE_LIMIT: f64 = 1e-9;
+
+    /// RED FIRST, on the real artifact's numbers: the ladder the generator now
+    /// runs to completion was refused by the retired relative form, and the
+    /// derived floor admits it.
+    #[test]
+    fn the_five_level_swath_ladder_is_inside_the_arithmetics_own_noise() {
+        let retired_reading = S01_WORST_GAP_SR / S01_WORST_AREA_SR;
+        assert!(
+            retired_reading > RETIRED_RELATIVE_LIMIT,
+            "the recorded refusal does not follow from the recorded numbers: \
+             {retired_reading:.4e} against {RETIRED_RELATIVE_LIMIT:.1e}"
+        );
+        assert!(
+            (retired_reading - 1.0231e-9).abs() < 5e-13,
+            "the reproduced reading {retired_reading:.5e} is not the 1.0231e-9 the binary printed"
+        );
+        let floor = Limits::default().area_decomposition_floor();
+        assert!(
+            S01_WORST_GAP_SR <= floor,
+            "the swath ladder's worst cell ({:.2} eps) is outside the derived floor ({:.2} eps)",
+            S01_WORST_GAP_SR / f64::EPSILON,
+            Limits::default().area_decomposition_ulps
+        );
+        // The same absolute gap on the coarsest cell of the same mesh reads
+        // 267x smaller. One mesh, one arithmetic, two verdicts.
+        let on_a_coarse_cell = S01_WORST_GAP_SR / S01_COARSE_AREA_SR;
+        assert!(
+            on_a_coarse_cell < RETIRED_RELATIVE_LIMIT / 100.0,
+            "the scale dependence that made the retired form need re-anchoring is not \
+             reproduced: {on_a_coarse_cell:.3e}"
+        );
+    }
+
+    /// The floor is a MARGIN over a measurement, and the margin is stated. If
+    /// either number moves, this fails and the comment above `Limits::default`
+    /// has to be re-measured rather than quietly re-rolled.
+    #[test]
+    fn the_floor_is_the_measured_worst_with_the_margin_it_claims() {
+        // The worst absolute gap measured over five real graded meshes,
+        // ladder depths 1 to 5, 123k-138k cells each (2.349, 2.383, 2.518,
+        // 2.383 and 2.502 machine epsilon).
+        const MEASURED_WORST_ULPS: f64 = 2.518;
+        // The mechanism's own ceiling: maxEdges edges, each opening a
+        // dvEdge/2 * eps/h sliver, at dvEdge = dcEdge.
+        const MECHANISM_CEILING_ULPS: f64 = 5.0;
+        let floor = Limits::default().area_decomposition_ulps;
+        assert!(
+            floor >= 8.0 * MEASURED_WORST_ULPS,
+            "the floor {floor} is under 8x the measured worst {MEASURED_WORST_ULPS}"
+        );
+        assert!(
+            floor >= 4.0 * MECHANISM_CEILING_ULPS,
+            "the floor {floor} is under 4x the mechanism's ceiling {MECHANISM_CEILING_ULPS}"
+        );
+        assert!(
+            floor < 1e6,
+            "the floor {floor} has stopped being a noise floor"
+        );
+    }
+
+    /// A graded fixture whose cells span a factor of several in spacing, so
+    /// one mesh carries both ends of the argument.
+    fn graded_fixture() -> MpasMesh {
+        let spec = MeshSpec {
+            background_km: 480.0,
+            regions: vec![Region {
+                shape: Shape::Cap {
+                    center_deg: [39.0, -98.0],
+                    radius_km: 4000.0,
+                },
+                spacing_km: 120.0,
+                transition: TransitionField::Km(3000.0),
+            }],
+            name: None,
+        };
+        let (points, rings, _, _, _) = crate::mesh::hierarchy::generate_graded(
+            &spec,
+            50_000,
+            &LloydOptions::default(),
+            &crate::mesh::surgery::SurgeryOptions::default(),
+            crate::mesh::hierarchy::DEFAULT_BETA,
+            |_| {},
+        )
+        .expect("the graded ladder builds its own fixture");
+        let density: Vec<f64> = points.iter().map(|&p| spec.density(p)).collect();
+        let nominal = nominal_min_dc_from_m(spec.finest_km() * 1000.0);
+        MpasMesh::derive(points, density, &rings, nominal).expect("derive")
+    }
+
+    /// The finding, on a mesh this test builds itself: the ABSOLUTE gap is the
+    /// same size on the smallest cells and the biggest, while the RELATIVE
+    /// reading -- what the gate used to compare -- swings with the cell area.
+    /// A scalar relative tolerance therefore cannot be anchored; it is a
+    /// reading of the finest cell in the mesh.
+    #[test]
+    fn the_gap_is_a_constant_area_and_the_relative_reading_is_not() {
+        let mesh = graded_fixture();
+        let polygon = mesh.polygon_areas();
+        let mut fine_gap = 0.0f64;
+        let mut coarse_gap = 0.0f64;
+        let mut fine_rel = 0.0f64;
+        let mut coarse_rel = 0.0f64;
+        let (mut a_min, mut a_max) = (f64::INFINITY, 0.0f64);
+        for c in 0..mesh.n_cells {
+            a_min = a_min.min(mesh.area_cell[c]);
+            a_max = a_max.max(mesh.area_cell[c]);
+        }
+        // Split at the geometric mean so both halves are populated whatever
+        // the spec is.
+        let split = (a_min * a_max).sqrt();
+        for c in 0..mesh.n_cells {
+            let gap = (polygon[c] - mesh.area_cell[c]).abs();
+            let rel = gap / mesh.area_cell[c];
+            if mesh.area_cell[c] < split {
+                fine_gap = fine_gap.max(gap);
+                fine_rel = fine_rel.max(rel);
+            } else {
+                coarse_gap = coarse_gap.max(gap);
+                coarse_rel = coarse_rel.max(rel);
+            }
+        }
+        eprintln!(
+            "graded {} cells, area span {:.2}x: fine gap {:.3} eps rel {:.3e} | coarse gap {:.3} eps rel {:.3e}",
+            mesh.n_cells,
+            a_max / a_min,
+            fine_gap / f64::EPSILON,
+            fine_rel,
+            coarse_gap / f64::EPSILON,
+            coarse_rel
+        );
+        assert!(
+            a_max / a_min > 8.0,
+            "the fixture does not span enough cell sizes to say anything: {:.2}x",
+            a_max / a_min
+        );
+        // The absolute gap is the same animal at both ends -- within a factor
+        // of three, on a max over two samples of a noise distribution.
+        let gap_ratio = (fine_gap / coarse_gap).max(coarse_gap / fine_gap);
+        assert!(
+            gap_ratio < 3.0,
+            "the absolute gap is not scale free: {gap_ratio:.2}x between the fine and coarse halves"
+        );
+        // The relative reading is not: it tracks the area ratio.
+        assert!(
+            fine_rel / coarse_rel > 4.0,
+            "the relative reading did not swing with cell size ({:.2}x), so this fixture \
+             cannot show why a scalar relative tolerance has to be re-anchored",
+            fine_rel / coarse_rel
+        );
+        validate(&mesh, Limits::default()).expect("the graded fixture is refused");
+    }
+
+    /// The breakage the gate exists to prevent, measured rather than quoted: a
+    /// cell whose vertex ring is no longer the boundary of the region its kites
+    /// tile. Two ring entries are transposed, which is what a `verticesOnCell`
+    /// ordering defect produces -- the polygon fan then runs over a
+    /// figure-of-eight while the kites still tile the cell.
+    ///
+    /// This is the number that justifies the floor: the separation between the
+    /// worst healthy reading and the mildest broken one.
+    #[test]
+    fn a_ring_that_is_not_the_cells_boundary_is_refused_with_decades_to_spare() {
+        let mut mesh = graded_fixture();
+        let healthy = validate(&mesh, Limits::default())
+            .expect("the fixture must be healthy before it is broken");
+
+        // EVERY adjacent transposition on EVERY cell, so the number quoted is
+        // the MILDEST breakage the fixture can produce and not a lucky one.
+        // The signature of this corruption is a fraction of the cell it
+        // happens on, so it is measured as a fraction and the separation is
+        // taken against the mesh's own smallest cell -- the worst case for an
+        // absolute floor.
+        let clean_polygon = mesh.polygon_areas();
+        let mut mildest = f64::INFINITY;
+        let mut mildest_at = (0usize, 0usize);
+        let mut worst_fraction = 0.0f64;
+        let mut ring: Vec<crate::mesh::geom::V3> = Vec::with_capacity(mesh.max_edges);
+        for c in 0..mesh.n_cells {
+            let deg = mesh.n_edges_on_cell[c] as usize;
+            let base = c * mesh.max_edges;
+            for j in 0..deg {
+                ring.clear();
+                for k in 0..deg {
+                    ring.push(mesh.vertex_xyz[mesh.vertices_on_cell[base + k] as usize]);
+                }
+                ring.swap(j, (j + 1) % deg);
+                let broken = crate::mesh::geom::polygon_area(&ring);
+                let fraction = ((broken - clean_polygon[c]) / mesh.area_cell[c]).abs();
+                if fraction < mildest {
+                    mildest = fraction;
+                    mildest_at = (c, j);
+                }
+                worst_fraction = worst_fraction.max(fraction);
+            }
+        }
+        let a_min = mesh
+            .area_cell
+            .iter()
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
+        let floor = Limits::default().area_decomposition_floor();
+        let mildest_abs = mildest * a_min;
+        eprintln!(
+            "healthy worst {:.3e} sr ({:.2} eps); ring transpositions over {} cells read \
+             {:.3e} to {:.3e} of the cell's own area (mildest at cell {} slot {}); on this \
+             mesh's smallest cell ({:.3e} sr) the mildest is {:.3e} sr against a floor of \
+             {:.3e} sr -- {:.1} decades",
+            healthy.max_area_decomposition_abs,
+            healthy.max_area_decomposition_ulps,
+            mesh.n_cells,
+            mildest,
+            worst_fraction,
+            mildest_at.0,
+            mildest_at.1,
+            a_min,
+            mildest_abs,
+            floor,
+            (mildest_abs / floor).log10()
+        );
+        assert!(
+            mildest_abs / floor > 1e4,
+            "the MILDEST ring transposition is only {:.3e}x the noise floor on this mesh's \
+             smallest cell; the floor is not separating anything",
+            mildest_abs / floor
+        );
+
+        // And the gate refuses one, naming what it found.
+        let (victim, slot) = mildest_at;
+        let base = victim * mesh.max_edges;
+        let deg = mesh.n_edges_on_cell[victim] as usize;
+        mesh.vertices_on_cell
+            .swap(base + slot, base + (slot + 1) % deg);
+        let err = validate(&mesh, Limits::default())
+            .expect_err("a ring that is not the cell's boundary must be refused")
+            .to_string();
+        assert!(
+            err.contains("vertex ring is not the boundary") && err.contains("machine epsilon"),
+            "the refusal does not name the breakage and the units it measured it in: {err}"
+        );
+    }
+
+    /// What this gate CANNOT see, stated so nobody reads more into it than it
+    /// checks. Every ring vertex is a circumcentre of three generators and is
+    /// therefore equidistant from the two that own each of its edges; the edge
+    /// point is the midpoint of those same two. All three sit on one great
+    /// circle whichever diagonal a near-cocircular quad was triangulated on,
+    /// so the two decompositions agree for a NON-Delaunay triangulation just as
+    /// they do for a Delaunay one.
+    ///
+    /// The retired refusal text claimed this check proved "the mesh is the
+    /// Voronoi tessellation of its own generators". It does not, and the text
+    /// no longer says so.
+    #[test]
+    fn inserting_the_edge_point_never_moves_the_area_whichever_diagonal_was_taken() {
+        use crate::mesh::geom::{V3, circumcenter, from_lat_lon, polygon_area, tri_area, unit};
+        // Four generators on one small circle -- both diagonals are Delaunay --
+        // plus an owner outside the quad.
+        let quad: Vec<V3> = (0..4)
+            .map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / 4.0;
+                let r: f64 = 0.02;
+                from_lat_lon(r * t.sin(), r * t.cos())
+            })
+            .collect();
+        let owner = from_lat_lon(0.0, 0.05);
+        for diagonal in [(0usize, 2usize), (1usize, 3usize)] {
+            let (p, q) = (quad[diagonal.0], quad[diagonal.1]);
+            let v0 = circumcenter(p, q, owner).expect("circumcentre");
+            let v1 = circumcenter(q, p, owner).expect("circumcentre");
+            let m = unit([p[0] + q[0], p[1] + q[1], p[2] + q[2]]).expect("midpoint");
+            let without = polygon_area(&[v0, v1, owner]);
+            let with = tri_area(v0, m, owner) + tri_area(m, v1, owner);
+            let gap = (without - with).abs();
+            eprintln!("diagonal {diagonal:?}: inserting the edge point moves the area by {gap:.3e}");
+            assert!(
+                gap < 64.0 * f64::EPSILON,
+                "inserting the edge point moved the area by {gap:.3e}, so the premise this gate \
+                 rests on -- vertex, edge point and vertex on one great circle -- does not hold \
+                 and the refusal text is wrong"
+            );
+        }
     }
 }

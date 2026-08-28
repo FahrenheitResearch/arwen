@@ -59,7 +59,7 @@ use vinterp::{sorted_column, vertical_interp, Extrap, SURFACE_LEVEL_TAG, SURFACE
 /// of cells sampling the wrong stencil.  It is derived rather than typed here
 /// so the port stands where the reference stands.  See
 /// `deg_per_rad_is_the_fortran_parameter_not_the_accurate_one`.
-const DEG_PER_RAD: f32 = 180.0f32 / std::f32::consts::PI;
+pub(crate) const DEG_PER_RAD: f32 = 180.0f32 / std::f32::consts::PI;
 const MSGVAL: f32 = -1.0e30;
 
 /// Which first-guess array a met field feeds, and how it is sampled.
@@ -236,6 +236,47 @@ pub struct InitConfig {
     /// look perfectly well formed.
     pub oned_underflow: Underflow,
     pub provenance: String,
+    /// Who this file says it is: `model_name`, `core_name`, `version` and
+    /// `git_version`, the four lineage attributes `rw_mpas_lbc` refuses a
+    /// `--grid` for lacking.  See [`Lineage`].
+    pub lineage: Lineage,
+}
+
+/// The four global attributes that say which model a file belongs to.
+///
+/// THE BREAKAGE THIS EXISTS TO PREVENT, MEASURED (2026-08-26): this writer
+/// re-emitted the capsule's global attributes and added `file_id`,
+/// `parent_id` and `gpuwm_provenance`, and nothing else.  A capsule carries
+/// the MESH's lineage -- `on_a_sphere`, `sphere_radius`, `mesh_spec` and so
+/// on -- but not the MODEL's, so no init this program produced carried
+/// `model_name`, `core_name`, `version` or `git_version`.  `rw_mpas_lbc`
+/// reads all four off its `--grid` and refuses rather than invent one, so
+/// NO init this program minted could drive a boundary stream, regional or
+/// global, and the limited-area chain ran through a hand-written patcher
+/// instead.
+///
+/// The producer cannot know which model will integrate the file, so the
+/// caller says.  The default is this engine's own name, which is at least
+/// true; it is never `mpas`, because a file carrying this port's numerics
+/// claiming MPAS's identity is exactly what the consumer's refusal is for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lineage {
+    pub model_name: String,
+    pub core_name: String,
+    pub version: String,
+    pub git_version: String,
+}
+
+impl Default for Lineage {
+    fn default() -> Self {
+        let version = env!("CARGO_PKG_VERSION").to_string();
+        Lineage {
+            model_name: "rw-mpas".to_string(),
+            core_name: "atmosphere".to_string(),
+            git_version: format!("rw-mpas-{version}"),
+            version,
+        }
+    }
 }
 
 /// The receipt: counts, not adjectives.
@@ -1079,6 +1120,7 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
         &file_id,
         &[parent],
         &cfg.provenance,
+        &cfg.lineage,
     )?;
 
     receipt.seconds = started.elapsed().as_secs_f64();

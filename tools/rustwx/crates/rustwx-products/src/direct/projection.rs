@@ -108,6 +108,57 @@ pub fn project_points_with_projection(
     rustwx_render::project_geographic_points_with_options(lat_deg, lon_deg, &options, points)
 }
 
+/// The projection a panel is actually drawn in, with every parameter the
+/// builder derives from the data resolved.
+///
+/// gpuwm addition (VENDOR.md).  A finished PNG published its projection
+/// nowhere, so anything wanting to draw on top of one had to recover the
+/// mapping by registration -- which cannot work, because a global panel is
+/// Robinson and no linear fit describes Robinson.  This returns the
+/// renderer's own answer instead.
+///
+/// It selects options through the SAME two-branch choice
+/// [`build_projected_map_with_projection`] makes, for the same reason
+/// [`project_points_with_projection`] does: the full-domain branch and the
+/// presentation branch resolve different reference parameters, and a
+/// published transform that took the other branch describes a different
+/// map than the one that was drawn.
+pub fn panel_resolved_projection(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<rustwx_render::ResolvedProjection, Box<dyn std::error::Error>> {
+    let options = if full_domain_projected_frame_enabled(projection, bounds) {
+        full_domain_projected_map_options(lat_deg, lon_deg, projection, bounds, target_ratio)
+    } else {
+        presentation_projected_map_options(projection, bounds, target_ratio).0
+    };
+    rustwx_render::resolved_projection_for_options(lat_deg, lon_deg, &options.domain)
+}
+
+/// The resolved projection of a panel built through
+/// [`build_requested_projected_map_with_projection`] -- the requested-frame
+/// variant the RRFS-A derived lane draws in.
+///
+/// gpuwm addition (VENDOR.md).  That builder never takes the two-branch
+/// full-domain choice, so [`panel_resolved_projection`] would resolve the
+/// wrong options for it on any domain where the branches differ.  This
+/// reuses [`presentation_projected_map_options`], which is the extracted
+/// body of that builder's option construction, for the same
+/// cannot-disagree reason the other resolvers reuse theirs.
+pub fn requested_panel_resolved_projection(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+    target_ratio: f64,
+) -> Result<rustwx_render::ResolvedProjection, Box<dyn std::error::Error>> {
+    let (options, _) = presentation_projected_map_options(projection, bounds, target_ratio);
+    rustwx_render::resolved_projection_for_options(lat_deg, lon_deg, &options.domain)
+}
+
 pub fn build_requested_projected_map_with_projection(
     lat_deg: &[f32],
     lon_deg: &[f32],
@@ -115,29 +166,14 @@ pub fn build_requested_projected_map_with_projection(
     bounds: (f64, f64, f64, f64),
     target_ratio: f64,
 ) -> Result<ProjectedMap, Box<dyn std::error::Error>> {
-    let variant = projection_presentation_variant();
-    let presentation_projection = presentation_projection_for_bounds(projection, bounds, variant);
-    let frame_bounds = presentation_frame_bounds_for_projection(
-        bounds,
-        presentation_projection.as_ref(),
-        target_ratio,
-    );
-    let mut options = ProjectedMapBuildOptions::from_bounds(frame_bounds, target_ratio);
-    if straight_western_projection_enabled(bounds) {
-        options = options
-            .with_geographic_grid_intersection_frame(frame_bounds)
-            .with_natural_frame_aspect();
-    }
-    if let Some(presentation_projection) = presentation_projection {
-        let reference_latitude =
-            reference_latitude_for_projection_variant(variant, projection, frame_bounds);
-        options = options.with_projection(presentation_projection);
-        if let Some(reference_latitude) = reference_latitude {
-            options.domain.reference_latitude_deg = Some(reference_latitude);
-        }
-    }
-    options = options.with_basemap_detail(basemap_detail_for_bounds(frame_bounds));
-    options.domain.pad_fraction = presentation_pad_fraction_for_bounds(frame_bounds);
+    // The option build is [`presentation_projected_map_options`] -- this
+    // body was a byte-identical inline copy of it, collapsed (VENDOR.md)
+    // when [`requested_panel_resolved_projection`] started resolving the
+    // published transform through the shared extraction: two copies of
+    // one option build is how a published transform drifts from the map
+    // that was drawn.
+    let (options, frame_bounds) =
+        presentation_projected_map_options(projection, bounds, target_ratio);
     let mut projected =
         rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
     projected.inverse_raster_projection =

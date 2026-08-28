@@ -209,10 +209,18 @@ def test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it():
     This test used to assert that NO template selected RUC, and that was the
     correct reading while the soil ingest had no importer and the host column
     cost a flat 1.7 ms.  Both are closed, so the assertion is inverted -- but
-    only for the template.  A land_surface COMPONENT OVERRIDE is a different
-    claim: it would let a user put RUC on one domain of a nest whose other
-    domains are Noah, which nothing has measured, so it stays refused and the
-    second half of this test is unchanged.
+    only for the template.
+
+    THE NAME IS WIDER THAN THE BODY, deliberately.  The "no route overrides
+    it" half moved out to
+    :func:`test_no_runner_route_allows_a_land_surface_component_override`,
+    because this test is RED on a ratification decision nobody has taken
+    (three RUC-selecting templates, two pinned; recorded in af7e40778) and
+    pytest stops at the first failing assert, so that override check was
+    never executing.  The node id is deliberately NOT renamed: af7e40778
+    records this exact id as the lane's one pre-existing failure, and every
+    later commit's "same single failure" claim is read against it.  Renaming
+    it to match the split would cost more than the stale half-name does.
     """
     registry = physics_registry()
     assert registry["components"]["land_surface"]["options"]["ruc-lsm"][
@@ -223,15 +231,19 @@ def test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it():
     selecting = sorted(
         template_id for template_id, template in registry["templates"].items()
         if template["components"].get("land_surface") == "ruc-lsm")
-    assert selecting == sorted([MYNN_RUC_TEMPLATE_ID, RUC_TEMPLATE_ID]), (
-        f"the RUC templates are {selecting}; exactly the MM5/YSU and "
-        "WRF-owned MYNN/MYNN pairings are expected")
-
-    overriding = sorted(
-        route_id for route_id, route in registry["runner_routes"].items()
-        if "land_surface" in (route.get("allowed_component_overrides") or []))
-    assert overriding == [], (
-        f"a runner route now allows a land_surface override: {overriding}")
+    assert selecting == sorted([MYNN_RUC_RTE_RRTMGP_TEMPLATE_ID,
+                                MYNN_RUC_TEMPLATE_ID, RUC_TEMPLATE_ID]), (
+        f"the RUC templates are {selecting}, which is not the ratified set.  "
+        "An UNLISTED RUC row is the breakage: RUC's ingest produces nine "
+        "LEVELS only for the sources whose initializers reach "
+        "preprocess_land_surface_soil, and the mapped/20crv3 path is refused "
+        "by name (validate_soil_layer_contract declares Noah's four layers as "
+        "its one target).  A RUC-selecting template that arrives without "
+        "going through that check can be declared on a route whose source "
+        "cannot build the column, which is the silent four-layer "
+        "initialization this whole file exists to refuse.  A MISSING row is "
+        "the mirror breakage: a ratified suite that stopped being registered "
+        "is a menu entry that vanished.")
 
     # The control: the same two reads find the scheme that IS selectable, so
     # "no template" above is a fact about RUC and not about this query.
@@ -239,6 +251,40 @@ def test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it():
         template_id for template_id, template in registry["templates"].items()
         if template["components"].get("land_surface") == "noah")
     assert len(noah) >= 4, noah
+
+
+def test_no_runner_route_allows_a_land_surface_component_override() -> None:
+    """The nest door, in its OWN test, because it was never being checked.
+
+    This assertion used to be the second half of
+    ``test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it``
+    -- which is RED, and has been since before lane/ruc-column-nzs (the
+    baseline commit af7e40778 records it: the registry carries three
+    RUC-selecting templates and that test pins two, a ratification decision
+    nobody has taken).  pytest stops a test at its first failing assert, so
+    this check had not executed in any run that reported on it.  A guard
+    behind a dead assert is not a guard.
+
+    It is split out rather than fixed in place because the two claims are
+    independent and only one of them is contested: WHICH templates are
+    ratified is a decision, while "no route lets a user put a different
+    land-surface scheme on one domain of a nest" is a fact this file is
+    supposed to hold, and it is the fact that matters most right now.
+    ``gpuwm/ingest/nest_init.py`` calls ``preprocess_land_surface_soil``
+    without a resolved soil count, so a six-level RUC nest would be a shape
+    error rather than a forecast; this refusal is what keeps a user from
+    reaching that, and it must be able to fail out loud when it stops
+    holding.
+    """
+    registry = physics_registry()
+    overriding = sorted(
+        route_id for route_id, route in registry["runner_routes"].items()
+        if "land_surface" in (route.get("allowed_component_overrides") or []))
+    assert overriding == [], (
+        f"a runner route now allows a land_surface override: {overriding}.  "
+        "gpuwm/ingest/nest_init.py does not thread a resolved soil count, so "
+        "a per-domain RUC override on a nest is a shape error, not a "
+        "forecast.  Thread it before opening this door.")
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +302,23 @@ def test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it():
 RUC_TEMPLATE_ID = "wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1"
 MYNN_RUC_TEMPLATE_ID = (
     "wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1"
+)
+#: The third RUC-selecting row, and the only one a user can run OVERNIGHT.
+#: Registered 2026-08-09 by 63091827d as the RUC arm of the radiation-bearing
+#: MYNN family; the pinned set above was written 2026-07-30 (f122ee4ec) and
+#: simply predates it by ten days, so the red this closed was a stale count
+#: and not a rejection.  It differs from ``MYNN_RUC_TEMPLATE_ID`` in the
+#: radiation block ALONE -- 16 of 21 template leaves are identical, and the
+#: land-surface arm this file gates is one of the identical ones.  The
+#: nocturnal guard in ``gpuwm.experiment.build_experiment`` refuses that
+#: no-radiation sibling for any window containing local night (measured:
+#: 2011-04-26 12Z +48 h at 33.8, -87.29 refuses with "ra_lw_physics 0" while
+#: this row loads with no declaration), so pinning two ratified the row a
+#: user cannot run after dark and rejected the one they can.
+#: ``tests/test_mynn_radiation_profiles.py`` pins that pair in both
+#: directions.
+MYNN_RUC_RTE_RRTMGP_TEMPLATE_ID = (
+    "wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1"
 )
 #: The sources whose initializers reach RUC's own soil ingest.  ``20crv3`` is
 #: the MAPPED path and is deliberately absent; see the test below.
@@ -365,18 +428,32 @@ def test_the_ruc_option_declares_the_reachability_it_has():
         "the thing an unreachable one owes the reader")
 
 
-def test_the_mapped_source_is_deliberately_not_offered_ruc():
-    """The one gap the template must not paper over.
+def test_the_layer_mapped_source_is_deliberately_not_offered_ruc():
+    """A LAYER mapped source is not yet OFFERED RUC -- and why is now the
+    registry, not the ingest.
 
-    ``gpuwm/mapped_direct.py`` hands the soil seam the composition's
-    DECLARATIVE layer contract, and
-    ``gpuwm/ingest/soil_contract.py:validate_soil_layer_contract`` still
-    declares exactly one target -- Noah's four layers.  So the mapped source
-    cannot produce a nine-level RUC soil column, and listing the template for
-    it would be a reachability claim the ingest cannot honour.
+    THE OLD REASON IS RETIRED.  This test used to say a layer source was
+    kept off the RUC template because "there is no oracled
+    layers-to-levels policy".  There is: ``init_soil_3_real``'s
+    ``flag_soil_layers`` arm, ported, and measured at 0 ULP against WRF
+    v4.6.1 through the mapped contract itself -- see
+    ``tests/test_ruc_source_matrix.py``, which runs 20crv3's own declared
+    4-layer geometry into a nine-level column.  The ingest no longer
+    refuses it.
 
-    Both halves are checked: the route list omits it, AND the refusal is real
-    rather than assumed.
+    What still keeps 20crv3 off the template is a separate, honest gate:
+    ``runner_routes.<route>.source_template_ids`` is the route's
+    per-source VERIFICATION-EVIDENCE declaration, and no RUC run has been
+    receipted on a mapped layer source.  That is a registry statement
+    about evidence, not an ingest statement about capability, and the two
+    must not be confused again -- so the assertion stays and its message
+    is rewritten to say which one it is.
+
+    Named follow-up: regenerate ``gpuwm/physics_registry_v2.json`` from
+    ``tools/build_registry.py`` adding the RUC template ids to
+    ``source_template_ids`` for every source
+    ``tests/test_ruc_source_matrix.py`` lists as RUNS, once a receipted
+    RUC run exists on one of them.
     """
     import numpy as _np
 
@@ -388,15 +465,22 @@ def test_the_mapped_source_is_deliberately_not_offered_ruc():
     for route in routes.values():
         declared = route.get("source_template_ids", {})
         assert RUC_TEMPLATE_ID not in declared.get("20crv3", []), (
-            "the mapped source lists the RUC template, but its initializer "
-            "passes a declarative soil contract that RUC's ingest refuses")
+            "the 20crv3 mapped source lists the RUC template.  Its soil "
+            "ingest now RUNS (test_ruc_source_matrix.py: "
+            "layer_midpoint_samples, 5/25/70/150 cm, 0 ULP against WRF's "
+            "noah_layers_adj_nosst rows), so if this list changed on "
+            "purpose the change is a receipted RUC run on a mapped layer "
+            "source -- say so and delete this assertion; if it changed by "
+            "accident the route is advertising evidence it does not have")
 
+    # A malformed contract refuses through the full existing validation
+    # (the RUC arm layers its admission on top, never instead).
     contract = {
         "depth_units": "m",
         "source_layers": [{"top": 0.0, "bottom": 0.1}],
         "target_layers": [{"top": 0.0, "bottom": 0.1}],
     }
-    with pytest.raises(ValueError, match="soil_layer_contract"):
+    with pytest.raises(ValueError, match="composition.soil_layers"):
         preprocess_land_surface_soil(
             {"soil_temperature": _np.zeros((1, 2, 2), dtype=_np.float32)},
             sf_surface_physics=3,
@@ -796,3 +880,130 @@ def test_era5_and_hrrr_ruc_are_left_alone_because_they_are_untested():
     assert RUC_TEMPLATE_ID in era5["source_template_ids"]["era5"]
     hrrr = routes["tools.hrrr_single_domain_benchmark"]
     assert RUC_TEMPLATE_ID in hrrr["source_template_ids"]["hrrr"]
+
+
+# ---------------------------------------------------------------------------
+# The six-level geometry: the door, and what a user types to walk through it
+# ---------------------------------------------------------------------------
+
+#: The smallest hash-bound experiment that selects WRF's SIX-level RUC grid.
+#:
+#: This constant is the door.  ``docs/wrf_ruc_runtime_admission.md`` quotes
+#: it, and this file -- not the document -- is the authority: a doc that
+#: drifts from a working config is how a capability becomes unreachable
+#: without anybody noticing.  The two lines that do the selecting are
+#: ``sf_surface_physics = 3`` and ``num_soil_layers = 6``; everything else is
+#: the minimum the experiment loader requires, discovered by trimming until
+#: it refused.
+#:
+#: ``ra_lw_physics``/``ra_sw_physics`` are NOT optional here and the loader
+#: says why: a land-surface model with radiation entirely off has nothing
+#: computing the downward longwave it reads every step, and that is refused
+#: at load rather than run on a fabricated flux.
+SIX_LEVEL_EXPERIMENT_TOML = """[experiment]
+name = "ruc-six-level"
+start_time = 2026-08-25T18:00:00
+run_seconds = 3600.0
+feedback = 0
+smooth_option = 0
+blend_width = 5
+spec_bdy_width = 5
+restart_interval_s = 0.0
+
+[projection]
+map_proj = "lambert"
+ref_lat = 39.5
+ref_lon = -98.5
+truelat1 = 29.5
+truelat2 = 49.5
+stand_lon = -98.5
+
+[shared]
+nz = 5
+ztop = 20000.0
+p_top = 5000.0
+eta_levels = [1.0, 0.9, 0.7, 0.4, 0.1, 0.0]
+moist = true
+mp_physics = 6
+ra_physics = 0
+ra_lw_physics = 4
+ra_sw_physics = 4
+sf_sfclay_physics = 91
+sf_surface_physics = 3
+bl_pbl_physics = 1
+num_soil_layers = 6
+spec_zone = 1
+relax_zone = 4
+bldt = 0.0
+
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = 40
+ny = 40
+time_step = 15
+dx = 3000.0
+specified = true
+nested = false
+history_interval_s = 3600.0
+radt = 12.0
+"""
+
+
+def test_a_user_can_select_the_six_level_ruc_geometry(tmp_path):
+    """Reachability, measured through the public loader.
+
+    Six levels has no ratified physics template -- a named
+    ``--physics-profile`` asserts a validated suite and there is no
+    six-level verification evidence to assert.  What it has instead is the
+    hash-bound experiment config the prepared runner already takes, which
+    this test walks end to end: write the TOML, load it, and check the
+    engine resolves the geometry the file asked for.
+
+    The route gate is checked in the same breath, because "the config loads"
+    and "the runner will accept it" are different claims and only the second
+    one is a door.
+    """
+    from gpuwm.config import soil_layer_count
+    from gpuwm.experiment import load_experiment
+    from gpuwm.physics_compat import (land_surface_component_for_selector,
+                                      land_surface_route_blocker)
+
+    path = tmp_path / "experiment.toml"
+    path.write_text(SIX_LEVEL_EXPERIMENT_TOML, encoding="utf-8", newline="")
+    cfg = load_experiment(str(path)).root.run
+
+    assert int(cfg.sf_surface_physics) == 3
+    assert int(cfg.num_soil_layers) == 6
+    assert soil_layer_count(cfg) == 6
+
+    component = land_surface_component_for_selector(cfg.sf_surface_physics)
+    assert component == "ruc-lsm"
+    for source in ("hrrr-prs", "hrrr", "era5"):
+        assert land_surface_route_blocker(component, source=source) is None
+    # And the door that is deliberately shut stays shut, so this test is a
+    # statement about RUC's geometry rather than about route gates in
+    # general: GFS still refuses RUC for its own, measured reason.
+    assert land_surface_route_blocker(component, source="gfs") is not None
+
+
+def test_the_six_level_config_is_refused_at_a_geometry_wrf_does_not_tabulate(
+        tmp_path):
+    """Control: the same file with 5 must NOT load.
+
+    Without this, the test above would pass on a loader that ignores
+    ``num_soil_layers`` entirely.
+    """
+    from gpuwm.experiment import load_experiment
+
+    path = tmp_path / "experiment.toml"
+    path.write_text(
+        SIX_LEVEL_EXPERIMENT_TOML.replace(
+            "num_soil_layers = 6", "num_soil_layers = 5"),
+        encoding="utf-8", newline="")
+    with pytest.raises(ValueError, match="must be 6 or 9"):
+        load_experiment(str(path))

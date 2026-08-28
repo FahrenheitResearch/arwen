@@ -51,6 +51,10 @@ re-derives that from ``pyproject.toml`` rather than hard-coding it, and
 :func:`test_the_shipped_surface_matches_the_packaging_declaration` fails if
 the include list changes shape underneath it.
 
+Two of the include entries are DATA anchors that carry no import surface --
+``configs*`` and ``docs`` -- and both are asserted to keep carrying none, so
+neither can grow Python without somebody deciding it should.
+
 ``tests/`` is scanned too, but only to justify the ``[dev]`` extra: the test
 suite is the only consumer ``pytest`` and ``psutil`` have.
 """
@@ -775,13 +779,31 @@ def test_the_shipped_surface_matches_the_packaging_declaration(pyproject):
     """If the include list changes shape, the scanner above must be revisited."""
 
     include = pyproject["tool"]["setuptools"]["packages"]["find"]["include"]
+    # `docs` joined the include list in commit 9223560b4, and this
+    # DECLARATION was the stale side: the anchor is deliberate and the
+    # scanner already understands its shape. It ships exactly one file,
+    # docs/mpas-seam.md, named by its own package-data key -- an external
+    # consumer hashes sixteen engine files by REPOSITORY path against both
+    # a checkout and site-packages, and this was the one key no
+    # distribution placed anywhere. It is anchored (`docs`, never `docs*`)
+    # precisely so the receipt trees under docs/superpowers, which do carry
+    # .py, stay out of the wheel; a bare name means `docs/*.py` only, and
+    # the assertion below holds that at none.
     assert include == ["gpuwm", "gpuwm.*", "tools", "tilestream*",
-                       "configs*"], (
+                       "configs*", "docs"], (
         f"packages.find include is {include}; _shipped_sources understands "
         "a trailing '.*' as 'this package's subpackages', a trailing '*' as "
         "'this package tree' and a bare name as 'this package's top level "
         "only'. Teach it the new shape before changing this assertion.")
     shipped = _shipped_sources(pyproject)
+    # `docs` is the second DATA entry, on the same terms as `configs*`
+    # below: the scanner walks it for `.py` and must keep finding none. A
+    # Python file dropped at docs/ top level would join the shipped import
+    # surface, and -- because the anchor exists to keep docs/superpowers
+    # out -- would do it while looking like documentation.
+    assert not any("/docs/" in p.as_posix() for p in shipped), (
+        "docs/ now carries top-level Python, so it is part of the shipped "
+        "import surface; it was anchored to ship one markdown file")
     # `configs*` was added for the repository configs two headline documents
     # name, and it is a DATA entry: the scanner above walks it for `.py` the
     # same way it walks the rest, and must keep finding none. A Python file

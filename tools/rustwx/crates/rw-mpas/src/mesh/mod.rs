@@ -10,14 +10,18 @@
 //! `nSoilLevels = 4` and an FP32-bit-exact `nominalMinDc`. That boundary is
 //! named here so nobody reads a valid grid file as a runnable mesh.
 
+pub mod cull;
 pub mod density;
 pub mod derive;
 pub mod footprint;
 pub mod emit;
 pub mod geom;
+pub mod gridread;
+pub mod hierarchy;
 pub mod hull;
 pub mod icosa;
 pub mod lloyd;
+pub mod surgery;
 pub mod validate;
 
 use serde::Serialize;
@@ -49,7 +53,7 @@ pub enum Sizing {
 /// only deliver `10*(m^2+mn+n^2)+2` cells, so a uniform request is moved to
 /// the nearest achievable count and the move is stated here rather than the
 /// delivered count quietly disagreeing with the request.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case", tag = "method")]
 pub enum Seeding {
     /// Uniform requests: the vertices of a Goldberg subdivision GP(m, n) of
@@ -65,9 +69,31 @@ pub enum Seeding {
         /// `seeded/requested - 1`.
         snap_relative: f64,
     },
-    /// Variable-resolution requests: the density-biased golden-ratio lattice.
-    /// Its dislocations are topologically unavoidable under a refinement
-    /// gradient; the emit gate holds the result to the same floors.
+    /// Graded requests: the hierarchical Goldberg ladder. Level 0 is the
+    /// uniform arm at the background spacing; each level halves the spacing
+    /// by density-driven midpoint insertion (interior refinement is exact
+    /// GP-doubling, so the crystal stays dislocation-free), anneals under
+    /// the level-clamped field, and drains its transition-annulus
+    /// near-cocircular tail by count-changing surgery. The delivered count
+    /// is a SNAP the same way the uniform arm's is: requested and delivered
+    /// are both recorded, never silently reconciled.
+    HierarchicalGoldberg {
+        base_m: u32,
+        base_n: u32,
+        levels: usize,
+        inserted_per_level: Vec<usize>,
+        /// The calibrated splitting threshold that was actually used.
+        beta: f64,
+        surgery_per_level: Vec<crate::mesh::surgery::SurgerySummary>,
+        requested_cells: usize,
+        delivered_cells: usize,
+    },
+    /// The RETIRED variable-resolution arm: the density-biased golden-ratio
+    /// lattice. Its dislocation quads relax to near-cocircular at
+    /// equilibrium (the recorded v15.150.38857 failure class: 61 edges under
+    /// the 0.02 admission floor, worst 1.685e-4); `generate` no longer
+    /// routes graded specs here. The variant is kept so old receipts still
+    /// deserialize and the probe's control arm can name itself.
     FibonacciAcceptance { requested_cells: usize },
 }
 
@@ -157,6 +183,14 @@ pub struct Receipt {
     pub relaxation_mean_delta_over_h: f64,
     pub relaxation_max_delta_over_h: f64,
     pub relaxation_seconds: f64,
+    /// The final relaxation leg's min dvEdge/dcEdge -- the admission gate's
+    /// own metric -- and its per-sweep trajectory, sampled every sweep by
+    /// the default-on monitor. On the graded arm the last sample is the
+    /// post-surgery reading of the emitted point set.
+    pub relaxation_min_dv_over_dc: f64,
+    pub relaxation_min_dv_over_dc_trajectory: Vec<f64>,
+    /// Per-level ladder reports on the graded arm; empty on the uniform arm.
+    pub graded_levels: Vec<hierarchy::LevelReport>,
     pub mesh: MeshReport,
     pub deliverable_boundary: String,
 }
@@ -314,11 +348,20 @@ pub fn generate(
     // the same topology, and the count snaps to the nearest achievable
     // `10*(m^2+mn+n^2)+2` with the snap recorded in the receipt. A budget-
     // sized count snaps DOWNWARD only: a budget is a ceiling, not a target.
+    //
+    // A GRADED request takes the hierarchical Goldberg ladder: level 0 is
+    // the same uniform arm at the background spacing, and each level halves
+    // the spacing by midpoint insertion, anneals, and drains its transition
+    // annuli by count-changing surgery. The Fibonacci arm no longer serves
+    // graded requests: its dislocation quads relax to near-cocircular at
+    // equilibrium (the recorded v15.150.38857 refusal, 61 edges under the
+    // 0.02 admission floor), and the ladder is the mechanism that drains
+    // what relaxation re-rolls.
     let uniform = spec.regions.is_empty();
-    let (mut points, seeding) = if uniform {
+    let (points, outcome, seeding, graded_levels) = if uniform {
         let ceiling = matches!(sizing, Sizing::DeviceBudget);
         let choice = icosa::snap_cells(target, ceiling)?;
-        let pts = icosa::seed(choice.m, choice.n)?;
+        let mut pts = icosa::seed(choice.m, choice.n)?;
         let seeding = Seeding::IcosahedralGoldberg {
             m: choice.m,
             n: choice.n,
@@ -326,28 +369,53 @@ pub fn generate(
             seeded_cells: pts.len(),
             snap_relative: pts.len() as f64 / target as f64 - 1.0,
         };
-        (pts, seeding)
+        progress(&format!(
+            "SEEDED\t{}\tGP({},{})\tfrom {target}",
+            pts.len(),
+            choice.m,
+            choice.n
+        ));
+        let outcome = lloyd::relax(&mut pts, &spec, &request.lloyd)?;
+        progress(&format!(
+            "RELAXED\t{}\t{:.4e}\t{:.4e}\t{:.2}",
+            outcome.sweeps,
+            outcome.mean_delta_over_h,
+            outcome.max_delta_over_h,
+            outcome.wall_seconds
+        ));
+        (pts, outcome, seeding, Vec::new())
     } else {
-        let pts = lloyd::seed_points(&spec, target)?;
-        let seeding = Seeding::FibonacciAcceptance {
+        let (pts, _rings, outcome, choice, reports) = hierarchy::generate_graded(
+            &spec,
+            request.sizing_samples,
+            &request.lloyd,
+            &surgery::SurgeryOptions::default(),
+            hierarchy::DEFAULT_BETA,
+            &mut progress,
+        )?;
+        progress(&format!(
+            "RELAXED\t{}\t{:.4e}\t{:.4e}\t{:.2}",
+            outcome.sweeps,
+            outcome.mean_delta_over_h,
+            outcome.max_delta_over_h,
+            outcome.wall_seconds
+        ));
+        let seeding = Seeding::HierarchicalGoldberg {
+            base_m: choice.m,
+            base_n: choice.n,
+            levels: reports.len(),
+            inserted_per_level: reports.iter().map(|r| r.inserted).collect(),
+            beta: hierarchy::DEFAULT_BETA,
+            surgery_per_level: reports.iter().map(|r| r.surgery.clone()).collect(),
             requested_cells: target,
+            delivered_cells: pts.len(),
         };
-        (pts, seeding)
+        (pts, outcome, seeding, reports)
     };
-    match seeding {
-        Seeding::IcosahedralGoldberg { m, n, .. } => {
-            progress(&format!("SEEDED\t{}\tGP({m},{n})\tfrom {target}", points.len()))
-        }
-        Seeding::FibonacciAcceptance { .. } => progress(&format!("SEEDED\t{}", points.len())),
-    }
-    let outcome = lloyd::relax(&mut points, &spec, &request.lloyd)?;
-    progress(&format!(
-        "RELAXED\t{}\t{:.4e}\t{:.4e}\t{:.2}",
-        outcome.sweeps, outcome.mean_delta_over_h, outcome.max_delta_over_h, outcome.wall_seconds
-    ));
 
     // --- every field, then the gate -----------------------------------------
-    let mesh_density: Vec<f64> = points.iter().map(|&p| spec.density(p)).collect();
+    let prepared = spec.prepared();
+    let mesh_density: Vec<f64> = points.iter().map(|&p| prepared.density(p)).collect();
     let nominal = emit::nominal_min_dc_from_m(spec.finest_km() * 1000.0);
     let mesh = MpasMesh::derive(points, mesh_density, &outcome.rings, nominal)?;
     progress(&format!(
@@ -363,7 +431,7 @@ pub fn generate(
     // Delivered against requested, cell by cell.
     let delivered = mesh.spacing_m();
     let mut ratios: Vec<f64> = (0..mesh.n_cells)
-        .map(|i| delivered[i] / spec.spacing_m(mesh.cell_xyz[i]))
+        .map(|i| delivered[i] / prepared.spacing_m(mesh.cell_xyz[i]))
         .collect();
     ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let at = |q: f64| ratios[((ratios.len() - 1) as f64 * q).round() as usize];
@@ -400,6 +468,9 @@ pub fn generate(
         relaxation_mean_delta_over_h: outcome.mean_delta_over_h,
         relaxation_max_delta_over_h: outcome.max_delta_over_h,
         relaxation_seconds: outcome.wall_seconds,
+        relaxation_min_dv_over_dc: outcome.min_dv_over_dc,
+        relaxation_min_dv_over_dc_trajectory: outcome.min_dv_over_dc_trajectory.clone(),
+        graded_levels,
         mesh: report,
         deliverable_boundary:
             "grid file only; running this mesh also needs a matching static file (terrain, land use, soil, nVertLevels=55, nSoilLevels=4, FP32-bit-exact nominalMinDc)"

@@ -1,0 +1,80 @@
+# DEMO: mp_physics=28 initialized from the WIF monthly aerosol climatology.
+#
+# THIS IS THE FRONT DOOR.  Two keys select the capability -- everything
+# else here is an ordinary 3 km real-data configuration, unchanged from
+# the 3 km real-data pair configuration it was derived from, so the diff
+# against a run that uses thompson_init's synthetic profile is exactly
+# the two lines under [run] and nothing else.
+#
+#   aer_init_opt  = 1     # WRF's use_aero_icbc=.true. (real.exe derives it)
+#   wif_input_opt = 1      # the use_wif_input package
+#
+# WHAT IT DOES.  Instead of leaving nwfa/nifa at exact zero for
+# thompson_init to fill from an analytic exponential profile
+# (module_mp_thompson.F:493-546), initialize_real reads WRF's GLOBAL
+# monthly water/ice-friendly aerosol climatology
+# (QNWFA_QNIFA_SIGMA_MONTHLY.dat), interpolates it to this grid and this
+# valid date exactly as real.exe does -- metgrid four_pt horizontally,
+# monthly_interp_to_date temporally, vert_interp in log(p) onto the dry
+# eta pressure -- and writes the four carriers.  The nonzero fields are
+# themselves the signal WRF's own MAXVAL presence tests read to SKIP the
+# synthetic fill, so nothing downstream needs teaching.
+#
+# BEFORE YOU RUN IT: stage the dataset.  It is a fixed 225,443,520-byte
+# external file that never changes; ArWen does not redistribute it (over
+# PyPI's 100 MB per-file cap and GitHub's 100 MiB blob limit, the same
+# reason freezeH2O.dat is externalized).
+#
+#     gpuwm fetch-tables --wif --wif-only --from /path/to/WRF/run
+#
+# stages it into ~/.gpuwm/wif after checking exact size and SHA-256
+# 2f828eabd96a45f3872390f901240ea2259a1e9a629247010f42ce7a31cc46be.
+# Any WRF tree that has ever run mp_physics=28 from climatology has the
+# file.  `gpuwm fetch-tables --wif` alone downloads it from the release
+# asset base under the same verification.  GPUWM_WIF_CLIMATOLOGY (full
+# path) and GPUWM_WIF_DATA_ROOT (directory) both override, and
+# wif_climatology_path below overrides everything -- leave it unset and
+# the staged copy is found.
+#
+# IF IT IS NOT THERE the run refuses at config load, by name, with the
+# acquisition route in the message.  It never falls back to the
+# synthetic profile: that is a different, valid configuration
+# (aer_init_opt = 0) and a silent demotion would leave a run whose
+# receipt says "monthly climatology" and whose aerosol came from an
+# analytic curve.
+#
+# THE RECEIPT.  RealInitResult.aerosol_initialization carries
+# "wif_climatology" -- the dataset path, the two month indices and their
+# weights, and the operators used -- and sets awaiting_profile_fill to
+# false.  A run that says it used the climatology can prove which bytes
+# and which month.
+#
+# Model output showing an aerosol effect is a model result, not evidence
+# about the atmosphere.
+
+[grid]
+nx = 100
+ny = 100
+nz = 50
+dx = 3000.0
+dy = 3000.0
+ztop = 20000.0
+
+[dynamics]
+moist = true
+mp_physics = 28
+moist_adv_opt = 1
+specified = true
+spec_bdy_width = 5
+spec_zone = 1
+relax_zone = 4
+
+[run]
+dt = 15.0
+run_seconds = 14400.0
+output_interval_s = 3600.0
+
+# ---- the capability, in two lines -----------------------------------
+aer_init_opt = 1
+wif_input_opt = 1
+# wif_climatology_path = "/explicit/path/QNWFA_QNIFA_SIGMA_MONTHLY.dat"

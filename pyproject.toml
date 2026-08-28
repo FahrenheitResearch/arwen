@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.5.7"
+version = "2.5.8"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -137,7 +137,7 @@ requires-python = ">=3.11"
 # tests/test_companion_distribution.py fails if the two ever disagree.
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
                 "jsonschema>=4.0",
-                "scipy>=1.11", "pyshp>=2.3", "gpuwm-data==2.5.7"]
+                "scipy>=1.11", "pyshp>=2.3", "gpuwm-data==2.5.8"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 # No `License ::` classifier: PEP 639 deprecates them outright and
 # setuptools >=77 refuses to combine one with the SPDX expression above.
@@ -443,8 +443,36 @@ gpuwm-member-prep = "gpuwm.member_prep:main"
 # holds even if someone re-globs this line.
 # tests/test_package_data_coverage.py measures both the package list and
 # the top-level names it produces, against setuptools' own finder.
+# `docs` is here for exactly one file, and it is anchored (`docs`, never
+# `docs*`) so it stays that way: the repository's `docs/` holds .py under
+# `docs/superpowers/receipts/`, and `docs*` would sweep those subtrees in
+# as packages.  Anchored, the finder returns the top-level `docs`
+# namespace package alone, and the `package-data` entry below names the
+# single file it carries.
+#
+# WHY the wheel carries a repository document at all, and why at this
+# exact path.  gpuwm-hex verifies the physics seam it builds against by
+# hashing sixteen engine files by SHA-256, keyed on their repository
+# paths, and it runs that manifest against two roots with one key set:
+# a source checkout, and `site-packages` (the directory
+# `importlib.util.find_spec("gpuwm").origin`'s grandparent names, which
+# is where `gpuwm/core/mpas_column_batch.py` and the other fifteen
+# already land).  Fifteen keys resolved under both roots.
+# `docs/mpas-seam.md` -- the document that STATES the seam contract the
+# other fifteen implement -- resolved under the checkout only, because
+# no distribution placed it anywhere, so every installed-engine check
+# reported it `absent` and the remedy told the reader to clone the
+# repository beside the wheel they had just installed.
+#
+# `<site-packages>/docs/mpas-seam.md` is the one path that closes that
+# with no second key: any other location (`gpuwm/docs/...`, a
+# `.dist-info` extra) would make the installed root need a different key
+# from the checkout root for the same document.  The shape is the one
+# `configs` already ships under and for the same kind of reason -- a
+# claim a reader cannot follow without a git checkout is a claim nobody
+# can reach.
 [tool.setuptools.packages.find]
-include = ["gpuwm", "gpuwm.*", "tools", "tilestream*", "configs*"]
+include = ["gpuwm", "gpuwm.*", "tools", "tilestream*", "configs*", "docs"]
 # rescued-tools is development record that FORKED live modules; shipping the
 # forks put a diverging driver.py/rings.py inside the wheel.  See the note
 # above `include`; the files stay in the repository, only the wheel loses
@@ -522,6 +550,15 @@ tilestream = ["output-scaling.json"]
 # by this key.  2.74 MB of TOML, JSON, WPS namelists and the five NetCDF
 # terrain overrides the real74 comparison reads.
 configs = ["**/*"]
+# ONE file, enumerated, and the enumeration is the point.  `docs/` is 200+
+# markdown pages plus receipt trees carrying their own .py; none of that
+# is a wheel's business and a glob here would ship all of it.  What ships
+# is the seam contract document, because gpuwm-hex's engine pin hashes it
+# by the repository path this lands under -- see the `find` block above
+# for the whole reasoning and why no other installed location works.
+# tests/test_package_data_coverage.py measures that this key ships
+# exactly this file, and no sibling.
+docs = ["mpas-seam.md"]
 
 # NOTHING is excluded from this wheel any more, and the empty table is the
 # statement.  Both exclusion classes named files under `gpuwm/data/rrtmgp`

@@ -329,6 +329,8 @@ fn summary_flattens_outputs_across_all_runners() {
             output_path: PathBuf::from("C:\\proof\\direct.png"),
             content_identity: crate::publication::artifact_identity_from_bytes(b"direct"),
             input_fetch_keys: vec!["direct:nat->sfc".into()],
+            georeference: None,
+            georeference_absent_reason: None,
             timing: HrrrDirectRecipeTiming {
                 project_ms: 1,
                 field_prepare_ms: 0,
@@ -403,6 +405,8 @@ fn summary_flattens_outputs_across_all_runners() {
             output_path: PathBuf::from("C:\\proof\\derived.png"),
             content_identity: crate::publication::artifact_identity_from_bytes(b"derived"),
             input_fetch_keys: vec!["derived:sfc".into(), "derived:prs".into()],
+            georeference: None,
+            georeference_absent_reason: None,
             timing: HrrrDerivedRecipeTiming {
                 render_to_image_ms: 0,
                 data_layer_draw_ms: 0,
@@ -480,6 +484,8 @@ fn summary_flattens_outputs_across_all_runners() {
         },
         products: vec![HrrrWindowedRenderedProduct {
             product: HrrrWindowedProduct::Qpf6h,
+            georeference: None,
+            georeference_absent_reason: None,
             output_path: PathBuf::from("C:\\proof\\windowed.png"),
             timing: HrrrWindowedProductTiming {
                 compute_ms: 7,
@@ -557,6 +563,8 @@ fn run_manifest_tracks_planned_complete_and_blocked_artifacts() {
             ),
             content_identity: crate::publication::artifact_identity_from_bytes(b"direct-run"),
             input_fetch_keys: vec!["direct:prs".into()],
+            georeference: None,
+            georeference_absent_reason: None,
             timing: HrrrDirectRecipeTiming {
                 project_ms: 1,
                 field_prepare_ms: 0,
@@ -633,6 +641,8 @@ fn run_manifest_tracks_planned_complete_and_blocked_artifacts() {
             ),
             content_identity: crate::publication::artifact_identity_from_bytes(b"derived-run"),
             input_fetch_keys: vec!["derived:sfc".into(), "derived:prs".into()],
+            georeference: None,
+            georeference_absent_reason: None,
             timing: HrrrDerivedRecipeTiming {
                 render_to_image_ms: 0,
                 data_layer_draw_ms: 0,
@@ -710,6 +720,8 @@ fn run_manifest_tracks_planned_complete_and_blocked_artifacts() {
         },
         products: vec![HrrrWindowedRenderedProduct {
             product: HrrrWindowedProduct::Qpf6h,
+            georeference: None,
+            georeference_absent_reason: None,
             output_path: PathBuf::from(
                 "C:\\proof\\run\\rustwx_hrrr_20260415_12z_f006_conus_qpf_6h.png",
             ),
@@ -777,6 +789,8 @@ fn run_manifest_tracks_planned_complete_and_blocked_artifacts() {
 fn windowed_input_fetch_keys_follow_contributing_hours_without_cache() {
     let product = HrrrWindowedRenderedProduct {
         product: HrrrWindowedProduct::Qpf1h,
+        georeference: None,
+        georeference_absent_reason: None,
         output_path: PathBuf::from("C:\\proof\\qpf_1h.png"),
         timing: HrrrWindowedProductTiming {
             compute_ms: 1,

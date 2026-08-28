@@ -17,6 +17,7 @@ import uuid
 
 import numpy as np
 
+from gpuwm.config import soil_layer_count
 from gpuwm.core.grid import make_vertical_coord
 from gpuwm.experiment import load_experiment, validate_boundary_timing
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
@@ -856,10 +857,37 @@ def prepare_mapped_wrf(
             target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
             water_temperature_statics=water_statics)
         initialized = initialize_real(
-            met, cfg, coord, static["HGT_M"],
+            met, cfg, coord, static["HGT_M"], grid=grid,
             p_top=exp.vertical.p_top, sfcp_to_sfcp=True,
             preprocess_backend=preprocess,
             state_backend="preprocess",
+            # THE FRONT DOOR for the mp=28 aerosol default is the "grid="
+            # above (lane/static-dataset-door), and it is the SAME door the
+            # other ten real routes now use.
+            #
+            # lane/wif-default wired this one route by EVALUATING both
+            # runtime inputs here -- wif_grid_latlon=grid.latlon_mass() and
+            # wif_valid_date=source.valid_time.isoformat() -- and doing it
+            # unconditionally, on the argument that both were already to
+            # hand.  Two things were wrong with that, and the merge removes
+            # it rather than carrying both mechanisms:
+            #
+            #  * It is EAGER.  grid.latlon_mass() was called on every mapped
+            #    preparation regardless of mp_physics, so any grid object
+            #    without that method -- the mapped hierarchy tests' own
+            #    _Grid among them -- died with an AttributeError on a line
+            #    no configuration in that test had selected.  Nine tests in
+            #    tests/test_mapped_direct.py were red on it.
+            #  * It is PER-ROUTE.  Repeating it at eleven call sites is
+            #    eleven chances to spell the derivation differently.
+            #
+            # initialize_real now derives both itself, lazily, inside the
+            # mp=28 climatology branch and only there: the valid date from
+            # snapshot.valid_time (the same value source.valid_time
+            # produced) and the lat/lon from the "grid=" carrier.  Nothing
+            # is lost -- this route still reaches the climatology by
+            # default -- and the explicit keywords remain available as
+            # overrides for a caller with a reason to disagree.
         )
         initialized.state.set_map_coriolis(
             mapfac_m, mapfac_u, mapfac_v, coriolis_f, coriolis_e,
@@ -885,6 +913,8 @@ def prepare_mapped_wrf(
     soil = preprocess_land_surface_soil(
         initial_met.fields,
         sf_surface_physics=int(cfg.sf_surface_physics),
+        # Resolved, not defaulted: see gpuwm/ingest/hrrr_physics.py.
+        num_soil_layers=soil_layer_count(cfg),
         soil_type=static["SCT_DOM"],
         deep_soil_temperature=static["TMN"],
         soil_layer_contract=bundle.soil_layer_contract,

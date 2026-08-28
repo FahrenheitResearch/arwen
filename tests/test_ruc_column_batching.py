@@ -51,12 +51,20 @@ _LOAM = 6
 _PRODUCTION_D04_COLUMNS = 600 * 600
 
 
-def _columns(n: int, *, snow: bool, water: int = 0, ice: int = 0, seed: int = 0):
+def _columns(n: int, *, snow: bool, water: int = 0, ice: int = 0, seed: int = 0,
+             nzs: int = _NSOIL):
     """``n`` land columns, each perturbed, so no two share an answer.
 
     Identical columns would make partition invariance and order independence
     pass for a batch that silently broadcast one column's answer over the
     field, which is the exact defect those two gates exist to catch.
+
+    ``nzs`` defaults to :data:`_NSOIL` and is drawn FIRST, before any scalar,
+    so at nine levels every caller here gets the identical draw sequence --
+    and therefore the identical columns -- it got before the argument
+    existed.  ``tests/test_ruc_nzs_device.py`` imports this to build the
+    six-level host/device comparison out of the same generator the
+    nine-level one uses, rather than a second fixture that could differ.
     """
     rng = np.random.default_rng(seed)
 
@@ -66,13 +74,13 @@ def _columns(n: int, *, snow: bool, water: int = 0, ice: int = 0, seed: int = 0)
     base = 266.0 if snow else 297.0
     values = {
         "soilmois": np.clip(
-            np.stack([jitter(0.28, 0.03) for _ in range(_NSOIL)]), 0.06, 0.44),
+            np.stack([jitter(0.28, 0.03) for _ in range(nzs)]), 0.06, 0.44),
         "sh2o": np.clip(
-            np.stack([jitter(0.26, 0.03) for _ in range(_NSOIL)]), 0.06, 0.44),
+            np.stack([jitter(0.26, 0.03) for _ in range(nzs)]), 0.06, 0.44),
         "tso": np.stack(
-            [jitter(base - k, 0.6) for k in range(_NSOIL)]),
-        "smfr3d": np.zeros((_NSOIL, n), np.float32),
-        "keepfr3dflag": np.zeros((_NSOIL, n), np.float32),
+            [jitter(base - k, 0.6) for k in range(nzs)]),
+        "smfr3d": np.zeros((nzs, n), np.float32),
+        "keepfr3dflag": np.zeros((nzs, n), np.float32),
     }
     scalars = {
         "snow": 15.0 if snow else 0.0, "snowh": 0.08 if snow else 0.0,

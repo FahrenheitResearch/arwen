@@ -80,7 +80,8 @@ pub use projection::{
     build_natural_projected_map_with_projection_and_basemap_padding, build_projected_map,
     build_projected_map_with_projection, build_requested_projected_map_with_projection,
     direct_map_frame_aspect_ratio, model_data_domain_frame_for_projection,
-    project_points_with_projection,
+    panel_resolved_projection, project_points_with_projection,
+    requested_panel_resolved_projection,
 };
 pub(crate) use query::{load_direct_sampled_fields_from_latest, required_direct_fetch_products};
 #[cfg(test)]
@@ -823,6 +824,8 @@ fn render_direct_recipe(
         file_write_ms,
         state_timing,
         image_timing,
+        georeference,
+        georeference_absent_reason,
     ) = if let Some(spec) = composite_panel_spec(item.recipe.slug) {
         render_direct_composite_panel(
             item.recipe,
@@ -919,6 +922,23 @@ fn render_direct_recipe(
             request.native_fill_level_multiplier,
         )?;
         let request_build_ms = request_build_start.elapsed().as_millis();
+        // gpuwm addition (VENDOR.md): publish this panel's transform,
+        // resolved from EXACTLY the arguments the
+        // `build_projected_map_with_projection` call above took
+        // (`request.domain.bounds` + `target_ratio` + the filled mesh) --
+        // the same pairing rule the overlay pass below already relies on.
+        // Set at THIS call site, not inside `build_render_request`,
+        // because that function receives `render_bounds` (a possibly
+        // reshaped frame) and never sees the ratio; resolving from either
+        // would publish a transform for a map that was not drawn.
+        render_request.resolved_projection = Some(panel_resolved_projection(
+            &filled.grid.lat_deg,
+            &filled.grid.lon_deg,
+            filled.projection.as_ref(),
+            request.domain.bounds,
+            target_ratio,
+        )?);
+        render_request.geographic_bounds = Some(request.domain.bounds);
         apply_source_raster_policy(latest.source, &mut render_request);
         render_request.title = Some(direct_title_for_planned_product(
             request,
@@ -985,6 +1005,8 @@ fn render_direct_recipe(
             save_timing.file_write_ms,
             save_timing.state_timing,
             save_timing.png_timing.image_timing,
+            save_timing.georeference,
+            save_timing.georeference_absent_reason,
         )
     };
     let content_identity = artifact_identity_from_path(&output_path)?;
@@ -1011,6 +1033,8 @@ fn render_direct_recipe(
         output_path,
         content_identity,
         input_fetch_keys: vec![runtime_fetch.fetch_key.clone()],
+        georeference,
+        georeference_absent_reason,
         timing: DirectRecipeTiming {
             render_to_image_ms: image_timing.total_ms,
             data_layer_draw_ms: direct_data_layer_draw_ms(&image_timing),
@@ -1058,6 +1082,8 @@ fn render_direct_composite_panel(
         u128,
         RenderStateTiming,
         RenderImageTiming,
+        Option<rustwx_render::PanelGeoReference>,
+        Option<String>,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -1223,6 +1249,15 @@ fn render_direct_composite_panel(
             total_ms: render_ms,
             ..RenderImageTiming::default()
         },
+        // A composite panel composes SEVERAL member maps into one PNG; no
+        // single plot rectangle or projection describes the file, so no
+        // georeference exists to publish (gpuwm addition, VENDOR.md).
+        None,
+        Some(
+            "composite panel: one PNG composes multiple member maps; no single plot \
+             rectangle or projection describes the file"
+                .to_string(),
+        ),
     ))
 }
 

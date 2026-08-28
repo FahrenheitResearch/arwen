@@ -47,6 +47,28 @@ if NOAH_TARGET_SOIL_LAYERS != _NOAH_NUM_SOIL_LAYERS:
         f"gpuwm.core.noah.NUM_SOIL_LAYERS is {_NOAH_NUM_SOIL_LAYERS}; the "
         "mapped soil target and the scheme's own geometry have drifted")
 
+#: The RUC LSM soil target, added EXPLICITLY as the Noah comparison below
+#: demands: RUC's nine LEVEL depths in metres -- value-at-a-node, not mean
+#: over a slab.  Its remap policies are a TABLE, :data:`RUC_REMAP_POLICIES`,
+#: one row per source geometry the contract language can declare; the
+#: RUC-family producers (HRRR, RAP, RRFS) publish at exactly these depths
+#: and take the identity row, and every other geometry takes the row that
+#: matches it.  See :func:`ruc_soil_remap_policy`.  The authority for these
+#: numbers is the scheme's own oracle-validated table,
+#: ``gpuwm/ingest/ruc_soil.py:RUC_LEVEL_DEPTHS_M[9]``; the import-time
+#: drift check mirrors the Noah one above.
+RUC_TARGET_LEVEL_DEPTHS_M: tuple[float, ...] = (
+    0.0, 0.01, 0.04, 0.10, 0.30, 0.60, 1.00, 1.60, 3.00)
+
+from gpuwm.ingest.ruc_soil import RUC_LEVEL_DEPTHS_M as _RUC_LEVEL_DEPTHS_M
+
+if RUC_TARGET_LEVEL_DEPTHS_M != _RUC_LEVEL_DEPTHS_M[9]:
+    raise AssertionError(
+        f"RUC_TARGET_LEVEL_DEPTHS_M {RUC_TARGET_LEVEL_DEPTHS_M!r} differs "
+        f"from gpuwm.ingest.ruc_soil.RUC_LEVEL_DEPTHS_M[9] "
+        f"{_RUC_LEVEL_DEPTHS_M[9]!r}; the mapped RUC target and the "
+        "scheme's own level table have drifted")
+
 _LINEAR_REMAP = "linear_point_samples"
 _CONSERVATIVE_REMAP = "conservative_layer_means"
 _NODE_REMAP = "linear_node_samples"
@@ -1233,6 +1255,199 @@ def soil_node_depths(contract: Mapping[str, object]) -> tuple[float, ...]:
     )
 
 
+#: The RUC admission table.  One row per SOURCE GEOMETRY the contract
+#: language can declare, and the row is the whole policy: which arm of
+#: ``init_soil_3_real`` runs, how the source's own sample depths are formed
+#: from the declaration, and the integer scale those depths are carried in.
+#: Adding a future model is choosing a row, not writing an arm -- which is
+#: the point: ``rw-wps-icon-eu-regular-grib2`` and
+#: ``rw-wps-ecmwf-open-data-oper-grib2`` reach RUC through this table with
+#: no ICON code and no ECMWF code anywhere.
+#:
+#: ``depth_scale_per_m`` is the integer unit the sample depths are carried
+#: in, and it is part of the policy rather than a module constant because
+#: WRF's own encoding cannot express every producer's ladder.  WRF carries
+#: soil level depths as INTEGER CENTIMETRES -- ``char2int2``
+#: (``share/module_optional_input.F:1949-1954``) forms them by integer
+#: division and ``init_soil_3_real:1994`` divides the INTEGER by 100 -- so
+#: 100 is the scale every metgrid-shaped source uses and the scale the
+#: oracle rows are measured in.  ICON's shallowest interior node is
+#: 0.005 m; at scale 100 it rounds onto the 0.0 m surface node and two
+#: distinct samples collide at one depth.  That is a limit of metgrid's
+#: FILE FORMAT, not of the soil column, so the policy declares the finer
+#: scale instead of refusing the source.  The arithmetic is the same
+#: ``REAL(level)/scale`` in the same float32 expression order either way;
+#: what changes is only which producers can say what they publish.
+RUC_REMAP_POLICIES: dict[str, dict[str, object]] = {
+    "node_point_samples": {
+        "arm": "flag_soil_levels",
+        "geometry": "levels",
+        "declaration": "source_nodes",
+        "authority": "share/module_soil_pre.F:init_soil_3_real:1950-2000",
+    },
+    "layer_midpoint_samples": {
+        "arm": "flag_soil_layers",
+        "geometry": "layers",
+        "declaration": "source_layers",
+        "authority": (
+            "share/module_soil_pre.F:init_soil_3_real:1899-1948, sampled at "
+            "share/module_optional_input.F:1949-1954 char2int2 midpoints"),
+    },
+}
+
+#: The scales a policy may declare, coarsest first.  A source is carried at
+#: the FIRST scale that represents every one of its declared depths exactly
+#: and distinctly, so every source WRF itself can express keeps WRF's own
+#: centimetres and stays bit-identical to the oracle rows.
+_RUC_DEPTH_SCALES = (100, 1000)
+
+
+def _scaled_depths(depths: tuple[float, ...]) -> tuple[tuple[int, ...], int]:
+    """Return the source depths as distinct integers, and their scale.
+
+    ``100`` -- WRF's own integer centimetres -- is tried first and is what
+    every metgrid-shaped source gets, so this function changes no existing
+    number.  A finer scale is used only when the coarser one would MERGE
+    two declared depths or MOVE one, both of which would be inventing a
+    sample depth the producer never published.
+    """
+
+    for scale in _RUC_DEPTH_SCALES:
+        scaled = tuple(int(round(depth * scale)) for depth in depths)
+        exact = all(
+            abs(value / scale - depth) <= 1e-12
+            for value, depth in zip(scaled, depths))
+        distinct = all(
+            later > earlier for earlier, later in zip(scaled, scaled[1:]))
+        if exact and distinct:
+            return scaled, scale
+    raise ValueError(
+        f"soil sample depths {depths!r} are not representable as distinct "
+        f"integers at any declared scale {_RUC_DEPTH_SCALES!r}; a sample "
+        "depth may not be rounded onto another one, because that would hand "
+        "init_soil_3_real two source values at one depth and a zero "
+        "interpolation denominator")
+
+
+def ruc_soil_remap_policy(value: object) -> dict[str, object]:
+    """Return the DECLARED RUC remap policy for one mapped soil contract.
+
+    This is the RUC target the Noah comparison in
+    :func:`validate_soil_layer_contract` requires be ADDED rather than
+    faked by widening that check.  It is a TABLE lookup on the geometry the
+    contract already declares -- :data:`RUC_REMAP_POLICIES` -- and it
+    dispatches into the two arms of WRF's own ``init_soil_3_real``, the arms
+    :func:`gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels` already
+    reproduces and ``gpuwm/data/ruc/oracle/soil_ingest.csv`` already
+    measures:
+
+    ``source_nodes``  -> ``flag_soil_levels``
+        The producer's own point samples are the interpolation samples,
+        with no synthetic anchors.  :func:`_node_depths` already requires a
+        0.0 m node and a node at 3.0 m or deeper, so every one of RUC's
+        nine target depths is bracketed by construction and WRF's
+        ``:1958-1968`` search cannot leave a level unset.  This admits the
+        RUC-family ladders (HRRR/RAP/RRFS publish TSOIL/SOILW at exactly
+        RUC's nine depths, where the remap is the identity) AND any other
+        published ladder, because WRF's arm INTERPOLATES -- the identity is
+        a property of those three sources, not a requirement of the code.
+
+    ``source_layers`` -> ``flag_soil_layers``
+        Each declared layer is sampled at the INTEGER midpoint of its
+        bounds, exactly as ``char2int2`` forms the level a metgrid
+        ``ST<top><bottom>`` name encodes: a 0-7 cm layer is sampled at
+        3 cm, not 3.5 and not 7.  The profile is then anchored at 0 m and
+        3 m by WRF's own ``:1899-1948`` anchors.  This is the arm the
+        ERA5/GFS NATIVE routes have always run; the only thing missing was
+        letting a MAPPED contract declare it.
+
+    ``moisture_provenance`` -- a moisture the composition derives from a
+    published layer-mass field rather than reading volumetrically -- is NOT
+    a refusal here.  It is a property of how the mapped route builds
+    ``RW_SOIL_MOISTURE``, resolved before this function is reached and
+    resolved identically for Noah, which has always accepted it.  Refusing
+    RUC for it would be refusing a source because it publishes soil water a
+    different way, which is not a physical impossibility.
+
+    Two things ARE refused, each naming the concrete breakage:
+
+    * a layer source with fewer than two published layers -- WRF's 0 m
+      moisture anchor (``:1938-1943``) is a linear extrapolation off the
+      TOP TWO layers, so with one layer WRF reads ``sm_input(3)``
+      uninitialised.  There is no WRF number to reproduce, and one 0-10 cm
+      slab does not contain the 3 m of column ``LSMRUC`` integrates.
+    * a ladder two of whose depths collapse onto one integer at every
+      declared scale -- see :func:`_scaled_depths`.
+
+    Returns the policy row extended with ``contract`` (the fully validated
+    contract) and ``sample_depths``/``depth_scale_per_m`` (the integer
+    sample depths the remap runs on).
+    """
+
+    contract = validate_soil_layer_contract(value)
+    if contract.get("source_nodes") is not None:
+        scaled, scale = _scaled_depths(soil_node_depths(contract))
+        return dict(
+            RUC_REMAP_POLICIES["node_point_samples"],
+            policy="node_point_samples",
+            contract=contract,
+            sample_depths=scaled,
+            depth_scale_per_m=scale,
+        )
+
+    bounds = soil_layer_bounds(contract, "source_layers")
+    if len(bounds) < 2:
+        raise ValueError(
+            f"mapped soil declares {len(bounds)} source layer(s) {bounds!r}; "
+            "the RUC layer arm needs at least two.  "
+            "init_soil_3_real:1938-1943 builds the 0 m moisture anchor by "
+            "extrapolating off the top TWO layers and with one layer reads "
+            "sm_input(3) uninitialised, so there is no WRF behaviour to "
+            "reproduce -- and a single shallow slab does not carry the 3 m "
+            "of soil column LSMRUC integrates")
+    # ``_layer_bounds`` has already proved the layers are contiguous and
+    # ordered, so the edge ladder is top[0] followed by every bottom, and
+    # layer ``i`` spans ``ladder[i] .. ladder[i + 1]``.
+    ladder = (bounds[0][0],) + tuple(bottom for _, bottom in bounds)
+    scaled_edges, scale = _scaled_depths(ladder)
+    # char2int2 / :1339-1352 -- the midpoint is formed by INTEGER division
+    # of the two integer edges, so it is the file format's own midpoint and
+    # never a half unit.
+    midpoints = tuple(
+        (scaled_edges[index] + scaled_edges[index + 1]) // 2
+        for index in range(len(bounds)))
+    if any(later <= earlier for earlier, later in zip(midpoints, midpoints[1:])):
+        raise ValueError(
+            f"mapped soil source_layers {bounds!r} have integer midpoints "
+            f"{midpoints!r} that are not strictly increasing; "
+            "init_soil_3_real interpolates between successive source levels "
+            "and two layers sampled at one depth give it a zero denominator")
+    return dict(
+        RUC_REMAP_POLICIES["layer_midpoint_samples"],
+        policy="layer_midpoint_samples",
+        contract=contract,
+        sample_depths=midpoints,
+        depth_scale_per_m=scale,
+    )
+
+
+def validate_ruc_soil_node_source(value: object) -> dict[str, object]:
+    """The node arm of :func:`ruc_soil_remap_policy`, kept by name.
+
+    Callers that specifically want the node geometry -- and the tests that
+    pin what the identity policy meant -- keep this entry point.  It is now
+    a thin restriction of the table, not the whole RUC admission.
+    """
+
+    policy = ruc_soil_remap_policy(value)
+    if policy["policy"] != "node_point_samples":
+        raise ValueError(
+            "mapped soil source is a LAYER geometry; use "
+            "ruc_soil_remap_policy, whose layer_midpoint_samples row runs "
+            "init_soil_3_real's flag_soil_layers arm")
+    return policy["contract"]
+
+
 def soil_source_sample_count(contract: Mapping[str, object]) -> int:
     """How many soil samples (layers or nodes) the source declares."""
 
@@ -1269,7 +1484,9 @@ def conservative_overlap_weights(
 __all__ = [
     "MAPPED_SOIL_MOISTURE", "MAPPED_SOIL_TEMPERATURE",
     "NOAH_LAYER_BOUNDS_M", "NOAH_TARGET_SOIL_LAYERS",
+    "RUC_TARGET_LEVEL_DEPTHS_M",
     "conservative_overlap_weights",
     "soil_layer_bounds", "soil_node_depths", "soil_source_sample_count",
-    "validate_soil_layer_contract",
+    "RUC_REMAP_POLICIES", "ruc_soil_remap_policy",
+    "validate_ruc_soil_node_source", "validate_soil_layer_contract",
 ]

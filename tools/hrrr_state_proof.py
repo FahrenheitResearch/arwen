@@ -27,6 +27,7 @@ import numpy as np
 
 from gpuwm import __version__
 from gpuwm import runtime_manifest
+from gpuwm.aerosol_source_receipt import aerosol_source_report_entry
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -326,7 +327,20 @@ def run(args) -> dict[str, object]:
             cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac,
             eta_levels=eta)
         result = initialize_real(
-            met, cfg, coord, static["HGT_M"], p_top=10000.0,
+            # ``grid=`` is the mp=28 aerosol front door, the same argument
+            # the eleven production real routes pass, and the ONLY way this
+            # proof reaches the shared resolver
+            # (gpuwm.ingest.wif_climatology.resolve_wif_climatology).
+            # Without it an aerosol-aware run here could not derive the
+            # mass-point latitudes/longitudes a GLOBAL monthly dataset needs
+            # and would take thompson_init's synthetic profile -- named, but
+            # taken -- while the eleven routes beside it read the
+            # climatology.  A proof whose initial condition differs from the
+            # product's is not a proof of the product.  It is consulted
+            # lazily, on one line inside the mp=28 block, so this proof's
+            # frozen mp_physics=6 configuration executes not one extra
+            # instruction.
+            met, cfg, coord, static["HGT_M"], grid=grid, p_top=10000.0,
             sfcp_to_sfcp=True)
         result.state.set_map_coriolis(
             static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
@@ -477,6 +491,24 @@ def run(args) -> dict[str, object]:
         },
         "physics": _physics_receipt(driver, cp),
     }
+    # THE AEROSOL SOURCE, said in the proof rather than only on stderr.
+    # Empty today and correctly so: this proof's frozen configuration is
+    # mp_physics=6 and WSM6 has no water-friendly/ice-friendly aerosol
+    # number fields, so there is no source to name and the document is
+    # byte-for-byte what it was.  Wired anyway, beside the ``grid=`` above,
+    # because the pair is what makes an aerosol-aware configuration here
+    # BOTH read the dataset and say that it did; a route that resolves
+    # without reporting is how a run reads one initial condition and
+    # publishes a receipt that never mentions it.
+    report.update(aerosol_source_report_entry(
+        results[0].aerosol_initialization,
+        mp_physics=cfg.mp_physics,
+        when_unrecorded=(
+            "this proof initializes through gpuwm.ingest.real."
+            "initialize_real, which always emits the receipt for an "
+            "aerosol-aware scheme; an empty one here means the state was "
+            "built by some other path and the proof should be re-read "
+            "before its aerosol claim is trusted")))
     return _strict_json(report)
 
 

@@ -171,6 +171,81 @@ tilestream/test_exchange_pack.py
 # a plan spent on run_tiled reproducing a monolithic run bit-exactly.
 tilestream/test_autoplan.py
 
+# SHARD 1f: the device half of the 2.5.8 engine work.
+#
+# The rule applied is this file's own property -- asked of conftest's
+# detector rather than of the filename, since neither file below is named
+# *_gpu -- and then MEASURED under GPUWM_NO_LOCAL_GPU=1, one file at a
+# time:
+#
+#   test_mynn_mixscalars_runtime_residue    2/2   skipped on CPU
+#   test_ruc_runtime                       24/24  skipped on CPU
+#
+# 26 device rows, 100% skipped on CPU: a CPU leg reporting green on them
+# is reporting green on nothing, which is what this shard exists to end.
+#
+# test_mynn_mixscalars_runtime_residue is the substantive one.  It holds
+# the device qn-mixing solve bitwise against the CPU reference across a
+# restart boundary -- the residue that is zero only when every compute()
+# replaces the plain-attribute tendencies before any read.  test_ruc_runtime
+# is the RUC forecast column's device seam, which the soil-geometry lift
+# touched and which nothing on any list was running.
+tests/test_mynn_mixscalars_runtime_residue.py
+tests/test_ruc_runtime.py
+
+# SHARD 1g: the rest of the RUC forecast column's device leg, which was on
+# no list at all.  Found the same way SHARD 1f was -- by asking which new or
+# touched file is on no list -- while un-pinning the column's soil-level
+# count from nine to {6, 9}.  test_ruc_runtime.py is NOT repeated here: it is
+# already carried by SHARD 1f above.
+#
+# GPU-bound by conftest._cupy_scope rather than by filename, and MEASURED
+# under GPUWM_NO_LOCAL_GPU=1 one file at a time on this branch:
+#
+#   test_ruc_device_column   31/31  skipped on CPU
+#   test_ruc_gpu             42/42  skipped on CPU
+#   test_ruc_nzs_device      17/17  skipped on CPU
+#
+# 90 device rows, 100% skipped on CPU: the shard-1f ratio exactly, so they
+# go here and not on stage1_files.txt, where they would report green on
+# nothing.
+#
+# These are the files that judge whether the RUC soil column computes the
+# right NUMBERS on a card rather than merely being wired.
+# test_ruc_device_column.py is the 43-field host/device comparison at
+# max_ulp 0 through the nine-level loader; test_ruc_nzs_device.py is the
+# same comparison run at BOTH admitted geometries through the RUC_NZS tier,
+# which is the entire evidence that six levels computes what the host says
+# it does.  While they ran nowhere, the CPU estate could only ever check
+# that RUC was WIRED.
+tests/test_ruc_device_column.py
+tests/test_ruc_gpu.py
+tests/test_ruc_nzs_device.py
+
+# SHARD 1h: the device MYNN entry points whose admission surface this
+# branch CHANGED.  Same rule as 1f and 1g -- which touched file is on no
+# list -- and the one entry here is the case that proves the rule was
+# worth applying, because the defect it would have caught had already
+# landed.
+#
+# WHAT HAPPENED.  The mixscalars lift made bl_mynn_mixscalars=1 an
+# admitted value on mynn_dmp_mf_cuda.  Two tests asserted the old
+# refusal; the tendencies one moved 1 -> 2 with the lift, and its DMP-MF
+# twin here did not.  It went red and STAYED red across two integrations
+# with every list green, because this file is on none of them.  That is
+# the shard's own thesis in miniature: a CPU leg cannot ask a device
+# question, and a device file on no list is asked by nobody.
+#
+# GPU-bound by measurement, not by the _gpu in the name, under
+# GPUWM_NO_LOCAL_GPU=1 on this branch:
+#
+#   test_mynn_pbl_gpu   30/30  skipped on CPU   (30 passed with a card)
+#
+# 100% device rows -- the shard-1f and 1g ratio exactly -- so it belongs
+# here and not on stage1_files.txt.  Its CPU twin tests/test_mynn_pbl.py
+# runs 60 rows on a CPU and went to stage1_files.txt instead.
+tests/test_mynn_pbl_gpu.py
+
 # ---------------------------------------------------------------------------
 # SHARD 2 (WEEKLY, not per-cut): the GF cumulus family.
 #

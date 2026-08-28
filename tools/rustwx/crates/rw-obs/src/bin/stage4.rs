@@ -77,11 +77,22 @@ const GRID_TEMPLATE: u16 = 20;
 /// Data representation template 5.3 — complex packing, spatial differencing.
 const EXPECTED_DRT: u16 = 3;
 
-/// Packing noise around zero. A complex-packed accumulation reconstructs to
-/// values a hair below zero in cells that held exactly zero; anything inside
-/// this is clamped to zero rather than masked, because a dry cell is an
-/// observation and masking it would delete the correct negatives a
-/// fractions-skill score is built on.
+/// Packing-noise bound around zero, and the boundary between "dry
+/// observation" and "deleted observation": a value inside it is clamped to
+/// zero, a value below it falls to the seam-bounds branch and is counted
+/// MISSING. Complex packing (DRT 5.3) reconstructs `ref + diff*2^E/10^D`,
+/// so whether an exactly-dry cell lands on 0.0 is a property of each
+/// file's encoder-chosen reference value, not of this decoder.
+///
+/// MEASURED 2026-08-25 (stale-guard audit, settling measurement): four
+/// archive objects through this exact path -- 01h summer, 01h winter,
+/// 01h spring, 24h; 1,964,589 dry cells total -- reconstruct every dry
+/// cell to exactly 0.0, `clamped_negative_cells` 0 in all four receipts.
+/// The clamp is therefore unexercised on the measured archive, and it
+/// STAYS: removing it would turn any future sub-zero dry cell into a
+/// masked cell, deleting the correct dry observation a fractions-skill
+/// score is built on, and the decode receipt's `clamped_negative_cells`
+/// makes any file that does exercise it visible rather than silent.
 const ZERO_TOLERANCE_MM: f64 = 0.01;
 /// What a masked cell is filled with. Never read under a false mask, but the
 /// seam requires it to be finite.

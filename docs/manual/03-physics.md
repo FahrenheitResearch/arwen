@@ -72,9 +72,11 @@ the measurement is one idealized dry convective boundary layer, six seeds, one c
 one day; agreement with a published similarity curve, not skill against
 observations, and it moved no maturity rung [docs/public/PHYSICS.md:883-891].
 
-MYNN's option identity is pinned: twelve knobs (`bl_mynn_closure` 2.6, cloudpdf 2,
-mixlength 1, edmf 1, edmf_mom 1, edmf_tke 0, mixscalars 0, cloudmix 1, mixqt 0,
-output 0, tkeadvect false, `icloud_bl` 1) have exactly one implemented value each,
+MYNN's option identity is pinned: eleven knobs (`bl_mynn_closure` 2.6, cloudpdf 2,
+mixlength 1, edmf 1, edmf_mom 1, edmf_tke 0, cloudmix 1, mixqt 0,
+output 0, tkeadvect false, `icloud_bl` 1; mixscalars is separately admitted
+at 0/1 with 1 pinned to bl_pbl_physics=5 + mp_physics=28 + bldt=0)
+have exactly one implemented value each,
 refused before the run starts rather than three hours into a forecast
 [docs/public/PHYSICS.md:920-933; gpuwm/config.py MYNN_PBL_OPTION_IDENTITY]. One
 genuine WRF-inherited pairing rule: the MYNN surface layer requires the PBL slot to

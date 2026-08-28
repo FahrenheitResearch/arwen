@@ -909,7 +909,7 @@ fn trim_vertical_canvas_whitespace_crops_outer_blank_rows() {
         }
     }
 
-    let trimmed = trim_vertical_canvas_whitespace(
+    let (trimmed, crop_top) = trim_vertical_canvas_whitespace(
         &img,
         RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology).canvas_background,
     );
@@ -917,6 +917,9 @@ fn trim_vertical_canvas_whitespace_crops_outer_blank_rows() {
     assert_eq!(trimmed.width(), 6);
     assert!(trimmed.height() < 10);
     assert!(trimmed.height() >= 4);
+    // Content starts at row 3 and the pass keeps a 2-row pad, so exactly
+    // one row came off the top -- the offset the plot rect follows.
+    assert_eq!(crop_top, 1);
 }
 
 #[test]
@@ -927,7 +930,7 @@ fn center_horizontal_canvas_content_balances_outer_margins() {
         img.put_pixel(x, 1, Rgba::BLACK.to_image_rgba());
     }
 
-    let centered = center_horizontal_canvas_content(&img, bg);
+    let (centered, shift) = center_horizontal_canvas_content(&img, bg);
     let mut min_x = centered.width();
     let mut max_x = 0;
     for y in 0..centered.height() {
@@ -942,6 +945,9 @@ fn center_horizontal_canvas_content_balances_outer_margins() {
     let right_margin = centered.width().saturating_sub(max_x).saturating_sub(1);
 
     assert!(left_margin.abs_diff(right_margin) <= 1);
+    // Content spans x 1..=6 in a 12-wide canvas: margins 1 and 5, so the
+    // pass moves everything 2 px right and must SAY so.
+    assert_eq!(shift, 2);
 }
 
 #[test]
@@ -954,10 +960,13 @@ fn crop_canvas_whitespace_removes_blank_border() {
         }
     }
 
-    let cropped = crop_canvas_whitespace(&img, bg, 1);
+    let (cropped, (crop_left, crop_top)) = crop_canvas_whitespace(&img, bg, 1);
 
     assert_eq!(cropped.width(), 7);
     assert_eq!(cropped.height(), 6);
+    // Content starts at (4, 3) and the pass keeps a 1-px pad: 3 columns
+    // and 2 rows came off -- the offsets the plot rect follows.
+    assert_eq!((crop_left, crop_top), (3, 2));
 }
 
 #[test]

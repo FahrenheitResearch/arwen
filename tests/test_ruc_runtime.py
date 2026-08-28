@@ -124,8 +124,13 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
            frozen: bool = False, dt: float = 12.0, radiation=None,
            ra_physics: int = 0, radt_minutes: float = 12.0,
            mp_physics: int = 6, sf_sfclay_physics: int = 1,
-           bl_pbl_physics: int = 1):
+           bl_pbl_physics: int = 1, nzs: int = _NSOIL):
     """One RUC forecast configuration.
+
+    ``nzs`` defaults to :data:`_NSOIL`, which is what keeps every caller in
+    this file the nine-level forecast it was: the argument is threaded to
+    ``num_soil_layers`` and to the two soil profiles built from it, and
+    nothing else in the builder reads a level count.
 
     ``frozen=True`` swaps the whole column for a subfreezing one -- a 268 K
     boundary layer over a 265 K surface over a 258..265 K soil profile.  It is
@@ -143,7 +148,7 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
                     dt=dt, run_seconds=0.0, time_step_sound=4, moist=True,
                     mp_physics=mp_physics,
                     sf_sfclay_physics=sf_sfclay_physics,
-                    sf_surface_physics=3, num_soil_layers=_NSOIL,
+                    sf_surface_physics=3, num_soil_layers=nzs,
                     bl_pbl_physics=bl_pbl_physics, bldt=0.0,
                     ra_physics=ra_physics, radt_minutes=radt_minutes)
 
@@ -188,8 +193,8 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
         tsk[:ice_rows, :cfg.nx - water_columns] = 265.0
     spread = 7.0 if frozen else 8.0
     soil_t = np.stack([tsk - level
-                       for level in np.linspace(0.0, spread, _NSOIL)])
-    soil_m = np.full((_NSOIL, cfg.ny, cfg.nx), soil_moisture)
+                       for level in np.linspace(0.0, spread, nzs)])
+    soil_m = np.full((nzs, cfg.ny, cfg.nx), soil_moisture)
     soil_m[:, ~land] = 1.0
 
     vegetation = np.where(land, vegtyp, _WATER)
@@ -437,12 +442,13 @@ def test_out_of_identity_configurations_are_refused_before_the_run():
     for name, admitted in RUC_OPTION_IDENTITY.items():
         with pytest.raises(ValueError, match="RUC option identity"):
             validate_run_config(RunConfig(**base, **{name: admitted + 1}))
-    # The six-layer geometry WRF also defines is refused as a PORT blocker,
-    # not as a schema error: it is a coherent WRF request gpuwm has no
-    # fixture for.
-    with pytest.raises(ValueError, match="RUC is admitted at "
-                                         "num_soil_layers=9 only"):
-        validate_run_config(RunConfig(**{**base, "num_soil_layers": 6}))
+    # The six-layer geometry WRF also defines is ADMITTED now.  It used to be
+    # refused as a port blocker -- the forecast column was pinned to nine --
+    # and the RUC_NZS lift retired that pin, so what a six-level request gets
+    # is a warning naming the missing WRF forecast oracle, not a refusal.
+    # The RUC_OPTION_IDENTITY loop above is a DIFFERENT guard and stays.
+    six = RunConfig(**{**base, "num_soil_layers": 6})
+    assert validate_run_config(six) is six
     # MYNN's first diagnosis is intentionally overwritten by
     # SFCDIAGS_RUCLSM under WRF's ownership sequence, so the coupled 5/5
     # suite is now an admitted RUC identity.
@@ -581,6 +587,138 @@ def test_ruc_forecasts_and_stays_finite():
     t2 = _land(cp.asnumpy(driver.fields["t2"]), cfg)
     assert np.all(t2 >= np.minimum(soilt, t1) - 1e-4)
     assert np.all(t2 <= np.maximum(soilt, t1) + 1e-4)
+
+
+@requires_gpu
+@pytest.mark.parametrize("nzs", [6, 9])
+def test_a_forecast_at_every_admitted_geometry_stays_physical(nzs):
+    """RUC RUNS at both of WRF's soil geometries, and the answers are ordered.
+
+    Not "compiles at six".  This integrates twenty RK3 steps of a mixed
+    land/water grid with ``num_soil_layers`` resolved from the config, and
+    then asks the state whether it is a soil column at all.
+
+    Nine is parametrized alongside six on purpose, and the assertions are
+    written once for both: every ordering claimed for six is claimed for the
+    geometry that has a WRF oracle, at the same numbers, so a bar that six
+    could only meet by being wrong in an interesting way would fail at nine
+    first.
+
+    WHAT THIS IS NOT.  It is not a correctness statement about six levels
+    against WRF.  There is no six-level forecast oracle in this tree and
+    none of these bounds is one: they are the properties a RUC soil column
+    has to have to be a soil column, and passing them says the column ran
+    and stayed physical, not that it is WRF's answer.
+    """
+    from gpuwm.core.dycore import step, stability_report
+
+    state, cfg, driver = _build(nzs=nzs)
+    assert driver.ruc_params.num_soil_layers == nzs
+    assert driver.fields["tslb"].shape == (nzs, cfg.ny, cfg.nx)
+    before = {name: cp.asnumpy(driver.fields[name]).copy()
+              for name in _CARRIED}
+
+    for _ in range(20):
+        step(state, cfg)
+        assert not stability_report(state, cfg)["nan"]
+
+    for name in _CARRIED:
+        array = cp.asnumpy(driver.fields[name])
+        assert np.isfinite(array).all(), name
+
+    # Coupled, not merely called: a runner that returned its inputs would
+    # satisfy every bound below.
+    for name in ("tslb", "smois", "sh2o", "tsk", "hfx", "qfx", "lh",
+                 "grdflx", "mavail", "qvg", "qsg", "soilt1", "t2", "q2"):
+        moved = _land(cp.asnumpy(driver.fields[name]), cfg) != _land(
+            before[name], cfg)
+        assert moved.any(), f"{name} did not move on any land column"
+
+    tslb = _land(cp.asnumpy(driver.fields["tslb"]), cfg)
+    tmn = _land(cp.asnumpy(driver.fields["tmn"]), cfg)
+    # LSMRUC:1057 pins the bottom level to TBOT on land, every call.
+    np.testing.assert_array_equal(tslb[-1], tmn)
+    # Below the top level the profile is monotone toward TBOT.  The TOP
+    # level is excluded and that is not a convenience: it is the one level
+    # the surface energy balance drives directly, so it may sit either side
+    # of level 1 -- measured at 301.218 K under 301.398 K at six levels and
+    # 300.480 under 301.403 at nine, on this fixture.
+    assert np.all(np.diff(tslb[1:], axis=0) <= 0.0), (
+        "the soil profile below the top level is not ordered toward TBOT")
+    assert float(tslb.min()) >= float(tmn.min()) - 1e-4
+    assert 250.0 < float(tslb.min()) and float(tslb.max()) < 340.0
+
+    # Moisture inside the soil type's own porosity, read from the packaged
+    # STAS-RUC row rather than hardcoded: DRYSMC <= SMOIS <= MAXSMC, and the
+    # liquid fraction never exceeds the total.
+    from gpuwm.core.ruc import load_ruc_parameters
+
+    row = load_ruc_parameters().soil.rows[_LOAM - 1].values
+    drysmc, maxsmc = float(row[1]), float(row[3])
+    smois = _land(cp.asnumpy(driver.fields["smois"]), cfg)
+    sh2o = _land(cp.asnumpy(driver.fields["sh2o"]), cfg)
+    assert float(smois.min()) >= drysmc, (smois.min(), drysmc)
+    assert float(smois.max()) <= maxsmc, (smois.max(), maxsmc)
+    assert np.all(sh2o <= smois + 1e-6)
+
+    # The receipt must say which of the two claims this run can support.
+    identity = driver.ruc_params.restart_identity()
+    assert identity["num_soil_layers"] == nzs
+    assert identity["soil_geometry_evidence"] == (
+        "wrf-oracle" if nzs == 9 else "internal-consistency-only")
+    assert len(identity["soil_level_depths_m"]) == nzs
+
+
+@requires_gpu
+def test_two_soil_geometries_run_in_one_process_without_touching_each_other():
+    """Two domains, two soil counts, one process, one card, interleaved.
+
+    The tier is a COMPILE-TIME macro, so the question this answers is not
+    rhetorical: if the module cache were keyed on the module name alone, the
+    second domain would silently get the first domain's translation unit and
+    read past every soil scratch array in the frame.  ``ruc_module_defines``
+    returning ``()`` at nine and ``(("RUC_NZS", 6),)`` at six is what keys
+    them apart, and this is the test that says so on the hardware.
+
+    Three claims, and the third is the one that matters:
+
+    1. both domains step, and neither goes non-finite;
+    2. each keeps its own geometry -- its own zs, its own array shapes;
+    3. the nine-level domain is BIT-IDENTICAL to the same domain run with no
+       six-level domain in the process at all.  Without (3) this would show
+       that two geometries coexist, not that the older one is unaffected,
+       and unaffected is the whole bar this lane lives on.
+    """
+    from gpuwm.core.dycore import step, stability_report
+
+    state6, cfg6, driver6 = _build(nzs=6)
+    state9, cfg9, driver9 = _build(nzs=9)
+    for _ in range(12):
+        step(state6, cfg6)
+        step(state9, cfg9)
+        assert not stability_report(state6, cfg6)["nan"]
+        assert not stability_report(state9, cfg9)["nan"]
+
+    assert driver6.fields["tslb"].shape == (6, cfg6.ny, cfg6.nx)
+    assert driver9.fields["tslb"].shape == (9, cfg9.ny, cfg9.nx)
+    np.testing.assert_array_equal(
+        np.asarray(driver6.ruc_params.zs, np.float32),
+        np.array([0.0, 0.05, 0.20, 0.40, 1.60, 3.00], np.float32))
+    assert len(driver9.ruc_params.zs) == 9
+    for driver in (driver6, driver9):
+        for name in _CARRIED:
+            assert np.isfinite(cp.asnumpy(driver.fields[name])).all(), name
+
+    # The isolation control.
+    state_alone, cfg_alone, driver_alone = _build(nzs=9)
+    for _ in range(12):
+        step(state_alone, cfg_alone)
+    differing = [name for name in _CARRIED
+                 if not np.array_equal(cp.asnumpy(driver_alone.fields[name]),
+                                       cp.asnumpy(driver9.fields[name]))]
+    assert differing == [], (
+        "the nine-level domain's answer changed because a six-level domain "
+        f"existed in the same process: {differing}")
 
 
 @requires_gpu

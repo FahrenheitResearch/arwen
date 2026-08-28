@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import ast
 import math
+import re
 from pathlib import Path
 
 import netCDF4
@@ -234,16 +235,54 @@ def test_noahs_mapped_ingest_target_cannot_drift_from_noahs_own_count():
     assert len(NOAH_LAYER_BOUNDS_M) == noah_scheme.NUM_SOIL_LAYERS
 
 
-def test_rucs_kernel_depth_table_has_the_contracts_length():
-    """The nine in ``ruc.cu`` and the nine in ``ruc_contract`` are one number.
+def test_rucs_kernel_depth_tables_match_the_ingest_table():
+    """Every geometry ``ruc.cu`` compiles at carries WRF's own depths.
 
-    ``__constant__ real ruc_soil_layer_depth[9]`` is what the device indexes;
-    if the contract said anything else, the resolver would size host arrays
-    the kernel would read past.
+    This replaces a LENGTH check.  Until the RUC_NZS lift, the kernel held one
+    table, ``__constant__ real ruc_soil_layer_depth[9]``, and this test
+    asserted that its extent was ``ruc_contract.NUM_SOIL_LAYERS``.  That
+    premise died with the lift -- the extent is now ``[RUC_NZS]`` and the
+    literals are selected by an ``#if`` ladder -- so the guard is rewritten
+    rather than deleted, into a strictly STRONGER one: it pins the VALUES of
+    every arm, not just the count of one.  A length check was perfectly happy
+    with six wrong depths.
+
+    The authority is ``gpuwm.ingest.ruc_soil.ruc_soil_depths``, the single
+    transcription of WRF's ``init_soil_depth_3`` that is oracle-matched
+    against 4.7.1 ``real.exe``'s ZS/DZS at both geometries.  The device
+    cannot import it -- ``__constant__`` needs literals -- so the two
+    transcriptions are pinned to each other here.
     """
-    source = (REPO / "gpuwm" / "core" / "kernels" / "ruc.cu").read_text()
-    declared = f"ruc_soil_layer_depth[{ruc_contract.NUM_SOIL_LAYERS}]"
-    assert declared in source
+    from gpuwm.ingest.ruc_soil import ruc_soil_depths
+
+    source = (REPO / "gpuwm" / "core" / "kernels" / "ruc.cu").read_text(
+        encoding="utf-8")
+    assert "ruc_soil_layer_depth[RUC_NZS]" in source
+
+    # Scoped to the depth table's own sentinel block.  The RUC_NZS ladder
+    # higher up the file carries the same `#if RUC_NZS == 9` / `#elif == 6`
+    # arms for the derived macros, and an unscoped search finds those first.
+    table = re.search(
+        r"// >>> RUC_NZS DEPTH TABLE >>>\n(.*?)// <<< RUC_NZS DEPTH TABLE <<<",
+        source, re.S)
+    assert table is not None, "ruc.cu has no sentinel-delimited depth table"
+
+    for count in ruc_contract.WRF_SUPPORTED_NUM_SOIL_LAYERS:
+        arm = re.search(
+            rf"#(?:if|elif) RUC_NZS == {count}\n.*?"
+            r"ruc_soil_layer_depth\[RUC_NZS\] = \{(.*?)\}",
+            table.group(1), re.S)
+        assert arm is not None, f"ruc.cu has no depth table at {count} levels"
+        literals = np.asarray(
+            [float(token) for token in re.findall(r"(-?\d+\.\d+)f",
+                                                  arm.group(1))],
+            dtype=np.float32)
+        expected = np.asarray(ruc_soil_depths(count)[0], dtype=np.float32)
+        assert len(literals) == count
+        assert np.array_equal(literals.view(np.uint32),
+                              expected.view(np.uint32)), (
+            f"ruc.cu's {count}-level depths are not WRF's")
+
     assert len(ruc_contract.RUC_SOIL_LEVELS_M) == ruc_contract.NUM_SOIL_LAYERS
 
 
@@ -439,3 +478,70 @@ def test_every_wrfout_caller_with_a_config_resolves_the_soil_axis():
                 f"gpuwm/{module}:{node.lineno} constructs {name} without "
                 "soil_layers and would take the no-scheme axis for whatever "
                 "land-surface scheme the run selected")
+
+
+#: WRF 4.7.1 ``real.exe`` ``wrfinput_d01`` ZS/DZS, as ``ncdump -v ZS,DZS``
+#: prints them, for the summer reference case run at each RUC geometry that
+#: ``share/module_check_a_mundo.F:3574-3581`` admits.  The six-level row is the
+#: OPERATIONAL geometry -- every ``sf_surface_physics = 3`` namelist in the
+#: reference tree sets ``num_soil_layers = 6``, none sets 9.
+#:
+#: ``DZS(7) = 0.4999999`` at nine levels is not a typo.  It is FP32
+#: ``1.30 - 0.80`` in WRF's own expression order, and a derivation that
+#: computes in float64 and rounds once returns 0.5 instead.  That single word
+#: is the whole reason this table is measured against ``real.exe`` rather than
+#: asserted from arithmetic.
+WRF_471_REAL_EXE_RUC_GEOMETRY = {
+    6: (
+        (0.0, 0.05, 0.2, 0.4, 1.6, 3.0),
+        (0.025, 0.125, 0.175, 0.7, 1.3, 0.7),
+    ),
+    9: (
+        (0.0, 0.01, 0.04, 0.1, 0.3, 0.6, 1.0, 1.6, 3.0),
+        (0.005, 0.025, 0.045, 0.13, 0.25, 0.35, 0.4999999, 1.0, 0.7),
+    ),
+}
+
+
+def test_ruc_soil_geometry_matches_wrf_real_exe_at_every_admitted_geometry():
+    """The forecast-side geometry is a PARAMETER, oracle-matched at each row.
+
+    This is the property the lane exists to create.  Before it,
+    ``ruc_soil_geometry()`` took no argument and transcribed WRF's derivation
+    a second time over a nine-element constant, so the six-level geometry --
+    the one the operational namelists actually run -- was reachable from
+    ``gpuwm.ingest.ruc_soil`` and unreachable from the forecast module.
+    """
+    import numpy as np
+
+    from gpuwm.core.ruc import ruc_soil_geometry
+    from gpuwm.core.ruc_contract import WRF_SUPPORTED_NUM_SOIL_LAYERS
+
+    assert (tuple(sorted(WRF_471_REAL_EXE_RUC_GEOMETRY))
+            == tuple(sorted(WRF_SUPPORTED_NUM_SOIL_LAYERS)))
+
+    for count, (zs_ref, dzs_ref) in WRF_471_REAL_EXE_RUC_GEOMETRY.items():
+        zs, dzs = ruc_soil_geometry(count)
+        assert zs.dtype == np.float32 and dzs.dtype == np.float32
+        assert len(zs) == count and len(dzs) == count
+        # ncdump prints float32 at %.7g; compare at exactly that precision so
+        # the assertion is against the printed oracle, not a re-rounding.
+        assert [f"{float(v):.7g}" for v in zs] == [f"{v:.7g}" for v in zs_ref]
+        assert [f"{float(v):.7g}" for v in dzs] == [f"{v:.7g}" for v in dzs_ref]
+
+
+def test_ruc_dzs_is_not_a_partition_of_the_soil_column():
+    """WRF's DZS overcounts, by a different amount at each geometry.
+
+    ``init_soil_depth_3`` writes ``zs2(2)`` twice and differences the second
+    write against ``zs2(1) = 0``, so ``sum(dzs)`` exceeds the 3 m column by
+    the first half-interval.  Locked per geometry because code that assumed a
+    partition would be wrong by 5 mm at nine levels and 25 mm at six -- a
+    five-fold difference, i.e. exactly the kind of thing a single hardcoded
+    geometry hides.
+    """
+    from gpuwm.core.ruc import ruc_soil_geometry
+
+    for count, excess in ((6, 0.025), (9, 0.005)):
+        _, dzs = ruc_soil_geometry(count)
+        assert abs(float(sum(float(v) for v in dzs)) - (3.0 + excess)) < 1e-6

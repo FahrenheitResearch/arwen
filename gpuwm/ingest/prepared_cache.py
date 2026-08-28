@@ -962,6 +962,24 @@ def write_prepared_cache(path, *, identity, initial_result, met,
             "hydrometeor_initialization": _json_copy(
                 getattr(initial_result, "hydrometeor_initialization", {})),
         }
+        # WHICH AEROSOL SOURCE THE PREPARATION CHOSE, carried so the
+        # FORECAST can report it.  The choice is made here, at preparation
+        # time, by initialize_real -- WRF's monthly WIF climatology or
+        # thompson_init's synthetic profile -- and the run that publishes a
+        # report.json is a separate process reading this bundle back cold.
+        # Without this row the fact exists only in the preparing process's
+        # stderr, and a forecast receipt cannot say which of two different
+        # initial conditions its aerosol came from.
+        #
+        # ADDED ONLY WHEN NON-EMPTY, the same emptiness contract
+        # ``report["tiles"]`` keeps: the receipt is empty for every scheme
+        # but aerosol-aware Thompson, so a cache for any other run
+        # canonicalizes to the bytes it did before this row existed and
+        # every stored ``prepared_header_sha256`` stays valid.
+        aerosol_initialization = _json_copy(
+            getattr(initial_result, "aerosol_initialization", {}) or {})
+        if aerosol_initialization:
+            cache_metadata["aerosol_initialization"] = aerosol_initialization
         if sealed_forcing_extension:
             if boundaries is None:
                 raise ValueError(

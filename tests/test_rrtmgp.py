@@ -1010,6 +1010,71 @@ def test_rrtmgp_rejects_temperature_below_table_before_kernel(entrypoint):
                 cp.asarray([285.0], dtype=cp.float32), vmr)
 
 
+@pytest.mark.gpu
+@requires_gpu
+def test_planck_sources_refuses_a_column_taller_than_its_kernel_holds():
+    """The 128-layer ceiling's OWNER refuses loudly, not silently.
+
+    The RTE solvers compile ``RRTMGP_MAX_LAYERS`` to this run's nlay, so
+    the ceiling is NOT theirs; it belongs to the unspecialized
+    Planck-source kernel, whose per-thread ``pfrac[128]`` is fixed and
+    whose device-side guard is a bare ``return`` -- with no host raise,
+    a 129-layer call came back as uninitialized source arrays that read
+    as valid radiation (stale-guard audit 2026-08-25, RRTMGP nlay
+    adjudication).
+    """
+    import cupy as cp
+    from gpuwm.core.rrtmgp import load_gas_tables, planck_sources
+
+    tables = load_gas_tables("lw")
+    ncol, nlay = 1, 129
+    play = cp.full((ncol, nlay), 50000.0, dtype=cp.float32)
+    plev = cp.full((ncol, nlay + 1), 50000.0, dtype=cp.float32)
+    tlay = cp.full((ncol, nlay), 250.0, dtype=cp.float32)
+    tlev = cp.full((ncol, nlay + 1), 250.0, dtype=cp.float32)
+    tsfc = cp.asarray([285.0], dtype=cp.float32)
+    vmr = cp.zeros((ncol, nlay, tables.ngas + 1), dtype=cp.float32)
+    with pytest.raises(ValueError, match=r"128 layers.*pfrac"):
+        planck_sources(tables, play, plev, tlay, tlev, tsfc, vmr)
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_sw_rte_runs_a_column_taller_than_the_retired_ceiling():
+    """The SW solver has no 128-layer ceiling left to enforce.
+
+    The 128 ceiling belongs to the Planck-source kernel's fixed
+    ``pfrac[128]`` -- an LW-only stage.  The SW chain's kernels either
+    compile ``RRTMGP_MAX_LAYERS`` to this run's nlay (the two-stream
+    solver) or hold no per-layer thread storage at all (delta scaling,
+    gas optics, cloud optics, McICA), so refusing a 129+ layer SW column
+    prevented nothing (stale-guard audit 2026-08-25).  Proven on a
+    transparent 160-layer atmosphere, where the direct beam is the
+    analytic answer.
+    """
+    import cupy as cp
+    from gpuwm.core.rrtmgp import sw_rte
+
+    ncol, nlay, ngpt = 2, 160, 4
+    inc = 1000.0
+    tau = cp.full((ncol, nlay, ngpt), 1e-6, dtype=cp.float32)
+    ssa = cp.zeros((ncol, nlay, ngpt), dtype=cp.float32)
+    g = cp.zeros((ncol, nlay, ngpt), dtype=cp.float32)
+    mu0 = cp.ones((ncol,), dtype=cp.float32)
+    alb = cp.zeros((ncol, ngpt), dtype=cp.float32)
+    result = sw_rte(tau, ssa, g, mu0, alb, alb,
+                    cp.full((ncol, ngpt), inc, dtype=cp.float32),
+                    top_at_1=True)
+    down = cp.asnumpy(result.flux_dn)
+    up = cp.asnumpy(result.flux_up)
+    assert down.shape == (ncol, nlay + 1)
+    # A transparent atmosphere delivers the incident beam to the surface
+    # (ngpt g-points of `inc` each) and reflects nothing off a black one.
+    expected = ngpt * inc
+    assert abs(float(down[:, -1].min()) - expected) < 1e-3 * expected
+    assert float(abs(up).max()) < 1e-3 * expected
+
+
 def test_rrtmgp_production_validation_mode_keeps_public_entrypoints_stable():
     from inspect import signature
     from gpuwm.core.rrtmgp import (

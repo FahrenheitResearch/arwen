@@ -1,8 +1,17 @@
-"""Pinned WRF v4.6.1 contract for the nine-level RUC LSM lane.
+"""Pinned WRF v4.6.1 contract for the RUC LSM lane, at its ORACLE geometry.
 
 This module records source identity, table identity, geometry, persistent
 Registry state, and the first supported namelist-option identity.  It does
 not make ``sf_surface_physics=3`` executable by itself.
+
+"Nine-level" is still the right word for what is PINNED here and for
+:data:`CONTRACT_ID`: every asset in :data:`REFERENCE_ASSETS` was generated at
+``nzs = 9`` and each ``run_*.F90`` harness hardcodes it, so the oracle this
+contract binds has exactly one geometry.  It is no longer the right word for
+what the forecast column CAN run.  :data:`WRF_SUPPORTED_NUM_SOIL_LAYERS` is
+the pair WRF tabulates, :data:`NUM_SOIL_LAYERS` is the one gpuwm has an
+oracle for, and the difference between those two facts is the whole subject
+of ``docs/wrf_ruc_runtime_admission.md``.
 """
 
 from __future__ import annotations
@@ -16,19 +25,41 @@ from gpuwm.core.noahmp_mynn_contract import (
     WRF_REFERENCE_COMMIT,
     WRF_REFERENCE_VERSION,
 )
+from gpuwm.ingest.ruc_soil import RUC_LEVEL_DEPTHS_M as _RUC_LEVEL_DEPTHS_M
 
 
 CONTRACT_ID = "wrf-v4.6.1-ruc3-nine-level-defaults-v1"
 SF_SURFACE_PHYSICS = 3
 NUM_SOIL_LAYERS = 9
-WRF_SUPPORTED_NUM_SOIL_LAYERS = (6, 9)
+#: Every soil geometry WRF's RUC defines, read from the level-depth table
+#: rather than written again.  ``share/module_check_a_mundo.F:3574-3581``
+#: resolves ``num_soil_layers`` to 6 or to 9 for ``sf_surface_physics=3`` and
+#: coerces every other request to 6; ``init_soil_depth_3`` has a ``zs`` table
+#: for exactly those two lengths and leaves ``zs`` UNINITIALISED for any
+#: other, which is why the set is closed and not a range.
+WRF_SUPPORTED_NUM_SOIL_LAYERS = tuple(sorted(_RUC_LEVEL_DEPTHS_M))
 
 
-# share/module_soil_pre.F:1153-1194.  These are soil *level* depths, not
-# layer-centre depths.  RUC deliberately includes a zero-depth surface level.
-RUC_SOIL_LEVELS_M = (
-    0.00, 0.01, 0.04, 0.10, 0.30, 0.60, 1.00, 1.60, 3.00,
-)
+# share/module_soil_pre.F:1153-1194 (``init_soil_depth_3``).  These are soil
+# *level* (node) depths, not layer-centre depths.  RUC deliberately includes a
+# zero-depth surface level.
+#
+# NOT transcribed here.  ``init_soil_depth_3`` tabulates one ``zs`` array per
+# admitted geometry and gpuwm holds that table in exactly one place --
+# :data:`gpuwm.ingest.ruc_soil.RUC_LEVEL_DEPTHS_M`, the module that is
+# oracle-matched against the routine.  A second transcription in this file is
+# how the six-level geometry came to exist in the ingest path and not in the
+# forecast path, which is the defect this lane is retiring: a geometry must be
+# a row in one table, never a constant that some modules happen to carry.
+RUC_SOIL_LEVELS_BY_COUNT: Mapping[int, tuple[float, ...]] = MappingProxyType({
+    count: tuple(float(depth) for depth in depths)
+    for count, depths in sorted(_RUC_LEVEL_DEPTHS_M.items())
+})
+
+#: The level depths of :data:`NUM_SOIL_LAYERS`, the geometry this contract
+#: pins.  An alias for one row of the table above, kept because the contract
+#: receipt names a single geometry; it is not a second table.
+RUC_SOIL_LEVELS_M = RUC_SOIL_LEVELS_BY_COUNT[NUM_SOIL_LAYERS]
 
 
 RUC_SOURCE_ASSETS = (
@@ -95,6 +126,20 @@ RUC_NAMELIST_DEFAULTS: Mapping[str, int] = MappingProxyType({
     "mosaic_soil": 0,
     "flag_sm_adj": 0,
     "spp_lsm": 0,
+})
+
+#: Keys whose override is admitted against a SET rather than a single
+#: validated default.  ``num_soil_layers`` is the only one: WRF defines two
+#: RUC geometries and gpuwm's forecast column now compiles at both, so pinning
+#: it to one would be gpuwm's pin, not WRF's.  Every other key stays strict --
+#: ``mosaic_lu``, ``mosaic_soil``, ``flag_sm_adj`` and ``spp_lsm`` are
+#: unvalidated MODES, not geometries, and nothing here widens them.
+#:
+#: Admitted is not validated.  Six levels has no WRF forecast oracle; what it
+#: has is a compiled column, host/device agreement and the runtime warning
+#: gpuwm.physics_compat raises.  See docs/wrf_ruc_runtime_admission.md.
+RUC_NAMELIST_ADMITTED: Mapping[str, tuple[int, ...]] = MappingProxyType({
+    "num_soil_layers": WRF_SUPPORTED_NUM_SOIL_LAYERS,
 })
 
 
@@ -258,6 +303,13 @@ def resolve_default_ruc_options(
         if key not in supplied:
             continue
         actual = supplied[key]
+        admitted = RUC_NAMELIST_ADMITTED.get(key)
+        if admitted is not None:
+            # A SET, not a single value: WRF tabulates two RUC soil
+            # geometries and the forecast column compiles at both.
+            if type(actual) is not int or actual not in admitted:
+                changed.append(f"{key}={actual!r} (admitted {admitted!r})")
+            continue
         if type(actual) is not int or actual != expected:
             changed.append(
                 f"{key}={actual!r} (validated default {expected!r})"
@@ -312,6 +364,7 @@ __all__ = [
     "RUC_NAMELIST_DEFAULTS",
     "RUC_PACKAGE_STATE_FIELDS",
     "RUC_PACKAGE_STATE_SHA256",
+    "RUC_SOIL_LEVELS_BY_COUNT",
     "RUC_SOIL_LEVELS_M",
     "RUC_SOILPROP_ORACLE_ASSET",
     "RUC_SOILPROP_ORACLE_CASES",

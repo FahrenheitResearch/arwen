@@ -49,6 +49,9 @@ struct CapsuleSpec {
     with_double_scalar: bool,
     /// Declare an `xtime` char variable the caller does not compute.
     with_unsupplied_char: bool,
+    /// Carry a `model_name` of the capsule's own, which the writer must not
+    /// overwrite: a capsule that already names a model has an answer.
+    carried_model_name: Option<&'static str>,
 }
 
 fn write_capsule(path: &PathBuf, spec: &CapsuleSpec) {
@@ -58,10 +61,13 @@ fn write_capsule(path: &PathBuf, spec: &CapsuleSpec) {
         NcDim::fixed("nVertLevels", N_LEV),
         NcDim::fixed("StrLen", STRLEN),
     ];
-    let gattrs = vec![
+    let mut gattrs = vec![
         NcAttr::text("file_id", "donorabcde"),
         NcAttr::text("parent_id", ""),
     ];
+    if let Some(name) = spec.carried_model_name {
+        gattrs.push(NcAttr::text("model_name", name));
+    }
     let mut vars = vec![
         // Carried statics: a fixed float and a carried record float.
         NcVarDef::new("ter", NcType::Float, vec![1]),
@@ -137,6 +143,7 @@ fn a_capsule_that_predeclares_the_landing_sites_is_accepted() {
             with_theta_slot: true,
             with_double_scalar: false,
             with_unsupplied_char: false,
+            carried_model_name: None,
         },
     );
 
@@ -147,6 +154,7 @@ fn a_capsule_that_predeclares_the_landing_sites_is_accepted() {
         "mintedfile",
         &["donorabcde".to_string()],
         "abi pin test",
+        &rw_mpas::init::Lineage::default(),
     )
     .unwrap_or_else(|e| panic!("a pre-declared landing site must be accepted: {e}"));
 
@@ -192,6 +200,7 @@ fn a_computed_value_with_no_landing_site_refuses_and_names_it() {
             with_theta_slot: false,
             with_double_scalar: false,
             with_unsupplied_char: false,
+            carried_model_name: None,
         },
     );
 
@@ -202,6 +211,7 @@ fn a_computed_value_with_no_landing_site_refuses_and_names_it() {
         "mintedfile",
         &[],
         "abi pin test",
+        &rw_mpas::init::Lineage::default(),
     )
     .err()
     .expect("a computed value with no variable must refuse");
@@ -226,6 +236,7 @@ fn a_double_typed_capsule_variable_refuses_by_type_name() {
             with_theta_slot: true,
             with_double_scalar: true,
             with_unsupplied_char: false,
+            carried_model_name: None,
         },
     );
 
@@ -236,6 +247,7 @@ fn a_double_typed_capsule_variable_refuses_by_type_name() {
         "mintedfile",
         &[],
         "abi pin test",
+        &rw_mpas::init::Lineage::default(),
     )
     .err()
     .expect("a Double carried variable must refuse");
@@ -256,6 +268,7 @@ fn an_unsupplied_char_variable_refuses_as_an_identity_label() {
             with_theta_slot: true,
             with_double_scalar: false,
             with_unsupplied_char: true,
+            carried_model_name: None,
         },
     );
 
@@ -266,6 +279,7 @@ fn an_unsupplied_char_variable_refuses_as_an_identity_label() {
         "mintedfile",
         &[],
         "abi pin test",
+        &rw_mpas::init::Lineage::default(),
     )
     .err()
     .expect("an unsupplied char variable must refuse, never copy");
@@ -274,4 +288,120 @@ fn an_unsupplied_char_variable_refuses_as_an_identity_label() {
         message.contains("xtime") && message.contains("identity"),
         "char variables are identity labels; got: {message}"
     );
+}
+
+/// The four lineage attributes `rw_mpas_lbc` reads off its `--grid`.
+///
+/// THE BREAKAGE THIS PREVENTS, MEASURED (2026-08-26): `write_init` re-emitted
+/// the capsule's global attributes and added `file_id`, `parent_id` and
+/// `gpuwm_provenance`.  A capsule carries the MESH's lineage, not the
+/// MODEL's, so no init this program produced carried `model_name`,
+/// `core_name`, `version` or `git_version` -- and `rw_mpas_lbc` refuses a
+/// `--grid` that lacks any of them rather than invent one, with "inventing a
+/// value here would stamp the stream with an identity its mesh never had".
+/// Every init this program minted was therefore unusable as a boundary
+/// source, regional or global, and the limited-area chain went through a
+/// hand-written attribute patcher instead.
+#[test]
+fn an_init_carries_the_lineage_a_boundary_producer_reads() {
+    let capsule = scratch("lineage_capsule.nc");
+    write_capsule(
+        &capsule,
+        &CapsuleSpec {
+            with_theta_slot: true,
+            with_double_scalar: false,
+            with_unsupplied_char: false,
+            carried_model_name: None,
+        },
+    );
+    let out = scratch("lineage_init.nc");
+    let _ = std::fs::remove_file(&out);
+
+    let lineage = rw_mpas::init::Lineage {
+        model_name: "gpuwm-hex".to_string(),
+        core_name: "atmosphere".to_string(),
+        version: "9.9.9".to_string(),
+        git_version: "gpuwm-hex-9.9.9".to_string(),
+    };
+    write_init(
+        &out,
+        &capsule,
+        computed_with_theta(),
+        "mintedfile",
+        &["donorabcde".to_string()],
+        "lineage test",
+        &lineage,
+    )
+    .expect("an init with a lineage must be written");
+
+    let file = netcrust::File::open(&out).expect("read the init back");
+    let read = |name: &str| {
+        file.attribute(name)
+            .and_then(|a| a.as_string().map(str::to_string))
+            .unwrap_or_else(|| panic!("{name} is absent from the written init"))
+    };
+    assert_eq!(read("model_name"), "gpuwm-hex");
+    assert_eq!(read("core_name"), "atmosphere");
+    assert_eq!(read("version"), "9.9.9");
+    assert_eq!(read("git_version"), "gpuwm-hex-9.9.9");
+    // It is never `mpas`: a file carrying this port's numerics claiming
+    // MPAS's identity is the thing the consumer's refusal exists to stop.
+    assert_ne!(read("model_name"), "mpas");
+    // The engine's default is at least true about who wrote it, so a caller
+    // that says nothing still produces a usable boundary source.
+    let fallback = rw_mpas::init::Lineage::default();
+    assert_eq!(fallback.core_name, "atmosphere");
+    assert!(!fallback.model_name.is_empty());
+    assert!(!fallback.version.is_empty());
+    assert!(!fallback.git_version.is_empty());
+    assert_ne!(fallback.model_name, "mpas");
+}
+
+/// A capsule that already names a model keeps its own answer.
+#[test]
+fn a_capsule_that_carries_a_lineage_is_not_overwritten() {
+    let capsule = scratch("lineage_carried_capsule.nc");
+    write_capsule(
+        &capsule,
+        &CapsuleSpec {
+            with_theta_slot: true,
+            with_double_scalar: false,
+            with_unsupplied_char: false,
+            carried_model_name: Some("the-capsules-own-model"),
+        },
+    );
+    let out = scratch("lineage_carried_init.nc");
+    let _ = std::fs::remove_file(&out);
+    write_init(
+        &out,
+        &capsule,
+        computed_with_theta(),
+        "mintedfile",
+        &[],
+        "lineage test",
+        &rw_mpas::init::Lineage {
+            model_name: "the-callers-model".to_string(),
+            core_name: "atmosphere".to_string(),
+            version: "2.0".to_string(),
+            git_version: "caller-2.0".to_string(),
+        },
+    )
+    .expect("a capsule with a carried lineage must still be written");
+
+    let file = netcrust::File::open(&out).expect("read the init back");
+    let read = |name: &str| {
+        file.attribute(name)
+            .and_then(|a| a.as_string().map(str::to_string))
+            .unwrap_or_else(|| panic!("{name} is absent"))
+    };
+    assert_eq!(
+        read("model_name"),
+        "the-capsules-own-model",
+        "a capsule that already names a model keeps its own answer"
+    );
+    // The three the capsule does NOT carry still come from the caller, so a
+    // partially-labelled capsule still produces a usable boundary source.
+    assert_eq!(read("core_name"), "atmosphere");
+    assert_eq!(read("version"), "2.0");
+    assert_eq!(read("git_version"), "caller-2.0");
 }

@@ -498,6 +498,31 @@ pub fn project_geographic_points_with_options(
         .collect())
 }
 
+/// The projection a panel built with these options is actually drawn in,
+/// with every parameter the builder derives from the data resolved.
+///
+/// gpuwm addition (VENDOR.md).  A caller that wants to publish the
+/// transform of a finished panel cannot reconstruct it from
+/// [`ProjectedDomainBuildOptions::projection`]: that field is often
+/// `None` (the spec is inferred from the mesh), and even when it is set,
+/// `Geographic` has no central meridian in it and `LambertConformal` has
+/// no reference latitude.  Both are filled in here, from the data, by
+/// exactly the code the render uses.  This function reuses
+/// `resolved_projector` for that reason -- a second, hand-copied
+/// resolution is how a published transform ends up describing a different
+/// map than the one that was drawn.
+pub fn resolved_projection_for_options(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    options: &ProjectedDomainBuildOptions,
+) -> Result<crate::georeference::ResolvedProjection, Box<dyn Error>> {
+    validate_lat_lon_mesh(lat_deg, lon_deg)?;
+    let projector = resolved_projector(lat_deg, lon_deg, options)?;
+    Ok(crate::georeference::ResolvedProjection::from_projector(
+        projector,
+    ))
+}
+
 fn resolved_projector(
     lat_deg: &[f32],
     lon_deg: &[f32],

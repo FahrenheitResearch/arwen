@@ -323,7 +323,7 @@ def ingest_hour(snapshot, grid, cfg, coord, static, *, report=None,
         snapshot, grid, target_landmask=static["LANDMASK"],
         surface_fallback_radius=int(surface_fallback_radius),
         soil_mapping_report=({} if report is None else report))
-    result = initialize_real(met, cfg, coord, static["HGT_M"],
+    result = initialize_real(met, cfg, coord, static["HGT_M"], grid=grid,
                              p_top=10000.0, sfcp_to_sfcp=True)
     f, e = grid.coriolis_m()
     sina, cosa = grid.rotation_m()

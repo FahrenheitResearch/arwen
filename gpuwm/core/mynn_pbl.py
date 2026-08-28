@@ -195,6 +195,13 @@ MYNN_TENDENCIES_INTERFACE_INPUTS = (
 MYNN_TENDENCIES_SCALAR_INPUTS = (
     "delt", "psfc", "ust", "wspd", "uoce", "voce", "flt", "flqv", "flqc",
 )
+# W4 mixscalars admission: the qn-family inputs, required only when
+# bl_mynn_mixscalars=1 (module_bl_mynn.F:4654-4860 solves; the s_awqn*
+# fluxes come from DMP_mf's scalar_opt>0 accumulation at :6447-6456).
+MYNN_TENDENCIES_QN_LAYER_INPUTS = ("qnc", "qni", "qnwfa", "qnifa", "qnbca")
+MYNN_TENDENCIES_QN_INTERFACE_INPUTS = (
+    "s_awqnc", "s_awqni", "s_awqnwfa", "s_awqnifa", "s_awqnbca",
+)
 MYNN_TENDENCIES_INPUTS = (
     *MYNN_TENDENCIES_LAYER_INPUTS,
     *MYNN_TENDENCIES_INTERFACE_INPUTS,
@@ -2022,6 +2029,7 @@ def _tendency_flag_identity(
     flag_qnifa: bool,
     flag_qnbca: bool,
     flag_ozone: bool,
+    bl_mynn_mixscalars: int = 0,
 ) -> None:
     """Admit WRF's snow flag and reject every still-unported species flag.
 
@@ -2037,13 +2045,30 @@ def _tendency_flag_identity(
         raise ValueError("MYNN tendency lane requires FLAG_QC and FLAG_QI")
     if type(flag_qs) is not bool:
         raise TypeError("MYNN tendency lane requires FLAG_QS boolean")
-    for name, flag in (
+    # W4 mixscalars admission (this wave): with bl_mynn_mixscalars=1 the
+    # five qn-family flags are REQUIRED true — the anchored fixture family
+    # (w4-oracle-fixtures) pins exactly that combo, and a
+    # partial-flag run would be an unmeasured combination.  With
+    # mixscalars=0 the pre-admission refusal stands unchanged.
+    qn_flags = (
         ("FLAG_QNC", flag_qnc), ("FLAG_QNI", flag_qni),
         ("FLAG_QNWFA", flag_qnwfa), ("FLAG_QNIFA", flag_qnifa),
-        ("FLAG_QNBCA", flag_qnbca), ("FLAG_OZONE", flag_ozone),
-    ):
-        if flag is not False:
-            raise ValueError(f"MYNN tendency lane requires {name} false")
+        ("FLAG_QNBCA", flag_qnbca),
+    )
+    if bl_mynn_mixscalars == 1:
+        for name, flag in qn_flags:
+            if flag is not True:
+                raise ValueError(
+                    f"MYNN mixscalars lane requires {name} true (the "
+                    "anchored stock fixture combo; partial qn flag sets "
+                    "are unmeasured)"
+                )
+    else:
+        for name, flag in qn_flags:
+            if flag is not False:
+                raise ValueError(f"MYNN tendency lane requires {name} false")
+    if flag_ozone is not False:
+        raise ValueError("MYNN tendency lane requires FLAG_OZONE false")
 
 
 def _tendency_arrays(
@@ -2108,6 +2133,7 @@ def _tendency_solve(
     ncol: int,
     nz: int,
     onoff: np.float32,
+    mixscalars: bool = False,
 ) -> dict[str, np.ndarray]:
     """The per-column body of ``mynn_tendencies``.
 
@@ -2380,6 +2406,22 @@ def _tendency_solve(
         # Snow mixing is hard-disabled at module_bl_mynn.F:4618.
         sqs2 = sqs.copy()
 
+        # ---- W4 mixscalars: the five stock qn solves --------------------
+        # (module_bl_mynn.F:4654/:4695/:4736/:4778/:4820; tendencies
+        # :4957-4966/:4998-5007/:5060-5077/:5082-5091.)  Additive arm in
+        # gpuwm.core.mynn_scalar_mix, consuming THIS solve's dtz/rhoinv/
+        # floored khdz/hdz/dzinv and s_aw — nothing recomputed.  Import is
+        # local so the admitted mixscalars=0 lane never touches the module.
+        if mixscalars:
+            from gpuwm.core.mynn_scalar_mix import mix_scalar_column
+            for species in ("qni", "qnc", "qnwfa", "qnifa", "qnbca"):
+                _, dqn = mix_scalar_column(
+                    columns[species][column],
+                    dtz, rhoinv, khdz, hdz, dzinv,
+                    s_aw, interfaces[f"s_aw{species}"][column], delt,
+                )
+                outputs[f"d{species}"][column] = dqn
+
         dqv = np.asarray(
             [F(F(sqv2[k] - sqv[k]) / delt) for k in range(nz)],
             dtype=np.float32,
@@ -2557,15 +2599,44 @@ def mynn_tendencies_default(
         raise ValueError(
             "MYNN tendency lane requires bl_mynn_edmf_mom in {0,1}"
         )
-    if bl_mynn_mixscalars != 0 or type(bl_mynn_mixscalars) is not int:
-        raise ValueError("MYNN tendency lane requires bl_mynn_mixscalars=0")
+    # W4 mixscalars admission (this wave; anchored fixtures
+    # w4-oracle-fixtures): bl_mynn_mixscalars=1 routes the
+    # five stock qn solves through gpuwm.core.mynn_scalar_mix.  Any other
+    # nonzero value stays refused — unmeasured combination.
+    if bl_mynn_mixscalars not in (0, 1) or \
+            type(bl_mynn_mixscalars) is not int:
+        raise ValueError(
+            "MYNN tendency lane requires bl_mynn_mixscalars in {0,1}"
+        )
     _tendency_flag_identity(
         flag_qc, flag_qi, flag_qs, flag_qnc, flag_qni,
         flag_qnwfa, flag_qnifa, flag_qnbca, flag_ozone,
+        bl_mynn_mixscalars,
     )
     columns, interfaces, scalars, ncol, nz = _tendency_arrays(values)
     onoff = F(0.0) if bl_mynn_edmf_mom == 0 else F(1.0)
-    return _tendency_solve(columns, interfaces, scalars, ncol, nz, onoff)
+    if bl_mynn_mixscalars == 1:
+        missing = [
+            name for name in (*MYNN_TENDENCIES_QN_LAYER_INPUTS,
+                              *MYNN_TENDENCIES_QN_INTERFACE_INPUTS)
+            if name not in values
+        ]
+        if missing:
+            raise TypeError(
+                "missing MYNN mixscalars inputs: " + ", ".join(missing)
+            )
+        for name in MYNN_TENDENCIES_QN_LAYER_INPUTS:
+            array = np.asarray(values[name], dtype=np.float32)
+            if array.shape != (ncol, nz):
+                raise ValueError(f"{name} must have shape (ncol,nz)")
+            columns[name] = array
+        for name in MYNN_TENDENCIES_QN_INTERFACE_INPUTS:
+            array = np.asarray(values[name], dtype=np.float32)
+            if array.shape != (ncol, nz + 1):
+                raise ValueError(f"{name} must have shape (ncol,nz+1)")
+            interfaces[name] = array
+    return _tendency_solve(columns, interfaces, scalars, ncol, nz, onoff,
+                           mixscalars=(bl_mynn_mixscalars == 1))
 
 
 __all__ = [
@@ -2643,6 +2714,11 @@ MYNN_DMP_MF_ZERO_OUTPUTS = (
 MYNN_DMP_MF_ZERO_INTERFACE_OUTPUTS = (
     "s_awqke", "s_awqnc", "s_awqni", "s_awqnwfa", "s_awqnifa", "s_awqnbca",
 )
+# W4 mixscalars admission (this wave): with bl_mynn_mixscalars=1 the five
+# s_awqn* names above stop being structural zeros — mynn_dmp_mf overwrites
+# them with the live :6447-6456 accumulation.  s_awqke keeps its tke_opt=0
+# structural zero either way.
+MYNN_DMP_MF_QN_COLUMN_INPUTS = ("qnc", "qni", "qnwfa", "qnifa", "qnbca")
 MYNN_DMP_MF_SCALAR_OUTPUTS = ("maxwidth", "ktop", "ztop", "maxmf")
 # module_bl_mynn.F:5758 nup, :5781-5783 Wa/Wb/Wc (only used by the
 # commented-out StEM forms), :5792-5798 Atot/lmax/lmin/dcut, :5824
@@ -2724,6 +2800,10 @@ def _dmp_mf_column(
     up_u = np.zeros((nz + 1, nup), dtype=np.float32)
     up_v = np.zeros((nz + 1, nup), dtype=np.float32)
     ent = np.full((nz, nup), F(0.001), dtype=np.float32)
+    # W4 mixscalars exports: defaults for the no-plume path, where the
+    # :6462-6496 limiter block never runs.
+    up_a_prelimiter = up_a
+    limiter_adjustment = F(1.0)
     edmf_a = np.zeros(nz, dtype=np.float32)
     edmf_w = np.zeros(nz, dtype=np.float32)
     edmf_qt = np.zeros(nz, dtype=np.float32)
@@ -3002,6 +3082,11 @@ def _dmp_mf_column(
                           s_awu, s_awv):
                 for k in range(nz + 1):
                     array[k] = F(array[k] * adjustment)
+            # W4 mixscalars export: the :6485-6489 s_awqn* scalings happen
+            # in the additive arm, which therefore needs the PRE-limiter
+            # UPA (:6497 scales UPA only after every s_aw* line).
+            up_a_prelimiter = up_a.copy()
+            limiter_adjustment = adjustment
             for k in range(nz + 1):
                 for i in range(nup):
                     up_a[k, i] = F(up_a[k, i] * adjustment)
@@ -3106,6 +3191,13 @@ def _dmp_mf_column(
         "s_awqv": s_awqv, "s_awqc": s_awqc, "s_awu": s_awu,
         "s_awv": s_awv, "maxwidth": maxwidth, "ktop": ktop,
         "ztop": ztop, "maxmf": maxmf,
+        # W4 mixscalars exports: the plume-edge terms the scalar_opt>0
+        # accumulation (module_bl_mynn.F:6447-6456) consumes.  Additive
+        # keys; gpuwm.core.mynn_scalar_mix replays the qn plume lines
+        # against these instead of recomputing plume dynamics.
+        "up_w": up_w, "up_a": up_a_prelimiter, "ent": ent, "rhoz": rhoz,
+        "psig_w": psig_w, "plume_active": bool(nup2 > F(0.0)),
+        "limiter_adjustment": limiter_adjustment,
     }
 
 
@@ -3151,8 +3243,16 @@ def mynn_dmp_mf(
         raise ValueError("MYNN mass-flux lane requires bl_mynn_edmf_mom=1")
     if bl_mynn_edmf_tke != 0 or type(bl_mynn_edmf_tke) is not int:
         raise ValueError("MYNN mass-flux lane requires bl_mynn_edmf_tke=0")
-    if bl_mynn_mixscalars != 0 or type(bl_mynn_mixscalars) is not int:
-        raise ValueError("MYNN mass-flux lane requires bl_mynn_mixscalars=0")
+    # W4 mixscalars admission (this wave; anchored fixtures
+    # w4-oracle-fixtures): scalar_opt=1 makes the s_awqn*
+    # accumulation at module_bl_mynn.F:6447-6456 live, computed by the
+    # additive gpuwm.core.mynn_scalar_mix arm from this transcription's
+    # own plume-edge terms.  Other nonzero values stay refused.
+    if bl_mynn_mixscalars not in (0, 1) or \
+            type(bl_mynn_mixscalars) is not int:
+        raise ValueError(
+            "MYNN mass-flux lane requires bl_mynn_mixscalars in {0,1}"
+        )
     if mix_chem is not False:
         raise ValueError("MYNN mass-flux lane requires mix_chem false")
     if spp_pbl != 0 or type(spp_pbl) is not int:
@@ -3207,6 +3307,22 @@ def mynn_dmp_mf(
     outputs["ztop"] = np.zeros(ncol, dtype=np.float32)
     outputs["maxmf"] = np.zeros(ncol, dtype=np.float32)
     outputs["ktop"] = np.zeros(ncol, dtype=np.int32)
+    qn_columns: dict[str, np.ndarray] = {}
+    if bl_mynn_mixscalars == 1:
+        missing_qn = [
+            name for name in MYNN_DMP_MF_QN_COLUMN_INPUTS
+            if name not in values
+        ]
+        if missing_qn:
+            raise TypeError(
+                "missing MYNN mixscalars mass-flux inputs: "
+                + ", ".join(missing_qn)
+            )
+        for name in MYNN_DMP_MF_QN_COLUMN_INPUTS:
+            array = np.asarray(values[name], dtype=np.float32)
+            if array.shape != (ncol, nz):
+                raise ValueError(f"{name} must have shape (ncol,nz)")
+            qn_columns[name] = array
     for column in range(ncol):
         result = _dmp_mf_column(
             *(columns[name][column] for name in MYNN_DMP_MF_COLUMN_INPUTS),
@@ -3218,6 +3334,19 @@ def mynn_dmp_mf(
             outputs[name][column] = result[name]
         for name in MYNN_DMP_MF_SCALAR_OUTPUTS:
             outputs[name][column] = result[name]
+        if bl_mynn_mixscalars == 1:
+            # W4 mixscalars: the scalar_opt>0 accumulation (:6447-6456),
+            # replayed by the additive arm from this column's own
+            # plume-edge exports.  s_awqke stays a structural zero
+            # (tke_opt=0 pin unchanged).
+            from gpuwm.core.mynn_scalar_mix import dmp_qn_flux_column
+            for name in MYNN_DMP_MF_QN_COLUMN_INPUTS:
+                outputs[f"s_aw{name}"][column] = dmp_qn_flux_column(
+                    qn_columns[name][column], columns["dz"][column],
+                    interface[column], result["up_w"], result["up_a"],
+                    result["ent"], result["rhoz"], result["psig_w"],
+                    result["plume_active"], result["limiter_adjustment"],
+                )
     return outputs
 
 
@@ -3459,9 +3588,21 @@ def mynn_bl_driver(
         raise ValueError("MYNN driver lane requires spp_pbl=0")
     if mix_chem is not False:
         raise ValueError("MYNN driver lane requires mix_chem false")
+    # W4 full admission (mf-close2, Stage B): the driver now FEEDS the
+    # mixscalars arms its leaf routines already implement -- qn columns
+    # into DMP_mf's scalar_opt>0 accumulation and the five s_awqn*
+    # interfaces into the tendency solve (module_bl_mynn.F binds them at
+    # the same call sites as the admitted s_aw* set).  Any value outside
+    # {0,1} stays refused: unmeasured combination.
+    if bl_mynn_mixscalars not in (0, 1) or \
+            type(bl_mynn_mixscalars) is not int:
+        raise ValueError(
+            "MYNN driver lane requires bl_mynn_mixscalars in {0,1}"
+        )
     _tendency_flag_identity(
         flag_qc, flag_qi, flag_qs, flag_qnc, flag_qni,
         flag_qnwfa, flag_qnifa, flag_qnbca, flag_ozone,
+        bl_mynn_mixscalars,
     )
     missing = [name for name in MYNN_DRIVER_INPUTS if name not in values]
     if missing:
@@ -3477,6 +3618,24 @@ def mynn_bl_driver(
     ncol, nz = next(iter(shapes))
     if nz < 4:
         raise ValueError("MYNN driver requires nz >= 4")
+    # Stage B: the qn columns ride into the driver only under the key --
+    # the mixscalars=0 assembly reads none of these names, so the admitted
+    # trajectory cannot move.  No unit conversion: the WRF wrapper passes
+    # number concentrations straight through (module_bl_mynn_wrapper.F
+    # converts moisture species only).
+    qn_layers: dict[str, np.ndarray] = {}
+    if bl_mynn_mixscalars == 1:
+        missing_qn = [name for name in MYNN_TENDENCIES_QN_LAYER_INPUTS
+                      if name not in values]
+        if missing_qn:
+            raise TypeError("missing MYNN driver mixscalars inputs: "
+                            + ", ".join(missing_qn))
+        for name in MYNN_TENDENCIES_QN_LAYER_INPUTS:
+            qn = np.array(values[name], dtype=np.float32, copy=True)
+            if qn.shape != (ncol, nz):
+                raise ValueError(
+                    f"{name} must have shape ({ncol},{nz}), got {qn.shape}")
+            qn_layers[name] = qn
     scalars = {
         name: np.broadcast_to(
             np.asarray(values[name], dtype=np.float32), (ncol,)
@@ -3647,6 +3806,9 @@ def mynn_bl_driver(
             "pblh": scalars["pblh"], "dx": scalars["dx"],
             "landsea": scalars["xland"], "ts": th_sfc,
             "psig_shcu": psig_shcu,
+            # Stage B: qn columns feed the scalar_opt>0 accumulation; an
+            # empty dict under mixscalars=0 adds no key at all.
+            **qn_layers,
         },
         bl_mynn_edmf_mom=bl_mynn_edmf_mom,
         bl_mynn_edmf_tke=bl_mynn_edmf_tke,
@@ -3739,6 +3901,13 @@ def mynn_bl_driver(
             "wspd": scalars["wspd"], "uoce": scalars["uoce"],
             "voce": scalars["voce"], "flt": flt, "flqv": flqv,
             "flqc": flqc,
+            # Stage B: the five qn columns + the s_awqn* interfaces DMP_mf
+            # just accumulated, exactly the pairing WRF binds at the
+            # mynn_tendencies call.  Empty under mixscalars=0.
+            **qn_layers,
+            **({f"s_aw{name}": plumes[f"s_aw{name}"]
+                for name in MYNN_TENDENCIES_QN_LAYER_INPUTS}
+               if bl_mynn_mixscalars == 1 else {}),
         },
         bl_mynn_cloudmix=bl_mynn_cloudmix,
         bl_mynn_mixqt=bl_mynn_mixqt,
@@ -3746,6 +3915,8 @@ def mynn_bl_driver(
         bl_mynn_edmf_mom=bl_mynn_edmf_mom,
         bl_mynn_mixscalars=bl_mynn_mixscalars,
         flag_qs=flag_qs,
+        flag_qnc=flag_qnc, flag_qni=flag_qni, flag_qnwfa=flag_qnwfa,
+        flag_qnifa=flag_qnifa, flag_qnbca=flag_qnbca,
     )
     exchange = mynn_retrieve_exchange_coeffs({
         "dz": layers["dz"], "dfm": turbulence["dfm"],
@@ -3758,6 +3929,14 @@ def mynn_bl_driver(
         "rthblten": tendencies["dth"], "rqvblten": tendencies["dqv"],
         "rqcblten": tendencies["dqc"], "rqiblten": tendencies["dqi"],
         "rqsblten": tendencies["dqs"], "dozone": tendencies["dozone"],
+        # Stage B: the five qn tendencies under WRF's RQN*BLTEN names.
+        # Under mixscalars=0 these are the solver's structural zeros, and
+        # no admitted consumer reads them -- additive keys, not new math.
+        "rqncblten": tendencies["dqnc"],
+        "rqniblten": tendencies["dqni"],
+        "rqnwfablten": tendencies["dqnwfa"],
+        "rqnifablten": tendencies["dqnifa"],
+        "rqnbcablten": tendencies["dqnbca"],
         "exch_h": exchange["k_h"], "exch_m": exchange["k_m"],
         "qke": predicted["qke"], "tsq": predicted["tsq"],
         "qsq": predicted["qsq"], "cov": predicted["cov"],

@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use crate::error::{MpasError, MpasResult};
 use crate::mesh::derive::Rings;
-use crate::mesh::geom::{V3, add, orient3d, orient3d_sos, scale, unit};
+use crate::mesh::geom::{V3, add, orient3d, orient3d_sign, orient3d_sos, scale, unit};
 
 /// One hull facet. `v` winds counter-clockwise seen from OUTSIDE the sphere;
 /// `adj[i]` is the facet across the directed edge `(v[i], v[(i+1)%3])`.
@@ -146,9 +146,15 @@ pub fn delaunay_rings(points: &[V3]) -> MpasResult<Rings> {
         // --- the horizon: edges of visible facets whose other side is not visible
         horizon.clear();
         for &fi in &visible_faces {
-            let f = faces[fi as usize].clone();
+            // The two `[u32; 3]` arrays, copied out to release the borrow --
+            // cloning the whole `Face` here also cloned its conflict list,
+            // which early in the construction is tens of thousands of indices.
+            let (fv, fadj) = {
+                let f = &faces[fi as usize];
+                (f.v, f.adj)
+            };
             for s in 0..3 {
-                let a = f.adj[s];
+                let a = fadj[s];
                 if a == NONE || stamp[a as usize] != generation {
                     let back = (0..3)
                         .find(|&t| faces[a as usize].adj[t] == fi)
@@ -157,7 +163,7 @@ pub fn delaunay_rings(points: &[V3]) -> MpasResult<Rings> {
                                 "the hull's facet adjacency is not mutual; the triangulation is not a closed surface".to_string(),
                             )
                         })?;
-                    horizon.push((f.v[s], f.v[(s + 1) % 3], a, back));
+                    horizon.push((fv[s], fv[(s + 1) % 3], a, back));
                 }
             }
         }
@@ -280,7 +286,13 @@ fn visible(points: &[V3], f: &Face, p: u32) -> bool {
     let b = points[f.v[1] as usize];
     let c = points[f.v[2] as usize];
     let d = points[p as usize];
-    let det = orient3d(a, b, c, d);
+    // SIGN, not value: `orient3d_sign` answers from a plain f64 determinant
+    // whenever that determinant is provably past its own rounding error, and
+    // falls back to the double-double `orient3d` otherwise. Every branch below
+    // is a comparison against zero, so the two agree here by construction --
+    // `geom::the_filtered_sign_never_disagrees_with_the_exact_predicate` is
+    // the gate. Nothing else in this file may take the filtered value.
+    let det = orient3d_sign(a, b, c, d);
     if det != 0.0 {
         det > 0.0
     } else {

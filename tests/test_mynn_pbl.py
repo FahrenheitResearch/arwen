@@ -1127,7 +1127,10 @@ def test_mass_flux_tendencies_reject_nondefault_knobs():
     for knob, bad in (
         ("bl_mynn_cloudmix", 0), ("bl_mynn_mixqt", 1),
         ("bl_mynn_edmf", 2), ("bl_mynn_edmf_mom", 2),
-        ("bl_mynn_mixscalars", 1),
+        # W4 mixscalars admission: 1 is now admitted (anchored fixtures,
+        # w4-oracle-fixtures); every other nonzero value
+        # stays refused as an unmeasured combination.
+        ("bl_mynn_mixscalars", 2),
     ):
         with pytest.raises(ValueError, match=knob):
             mynn_tendencies_default(inputs, **{knob: bad})
@@ -1135,6 +1138,21 @@ def test_mass_flux_tendencies_reject_nondefault_knobs():
         mynn_tendencies_default(inputs, flag_qi=False)
     with pytest.raises(ValueError, match="FLAG_QNC"):
         mynn_tendencies_default(inputs, flag_qnc=True)
+    # The mixscalars lane admits ONLY the fixture combo: all five qn flags
+    # true and all ten qn inputs present.  Partial flags and missing inputs
+    # stay refused.
+    with pytest.raises(ValueError, match="FLAG_QNC"):
+        mynn_tendencies_default(inputs, bl_mynn_mixscalars=1)
+    with pytest.raises(ValueError, match="FLAG_QNBCA"):
+        mynn_tendencies_default(
+            inputs, bl_mynn_mixscalars=1, flag_qnc=True, flag_qni=True,
+            flag_qnwfa=True, flag_qnifa=True,
+        )
+    with pytest.raises(TypeError, match="mixscalars"):
+        mynn_tendencies_default(
+            inputs, bl_mynn_mixscalars=1, flag_qnc=True, flag_qni=True,
+            flag_qnwfa=True, flag_qnifa=True, flag_qnbca=True,
+        )
     missing = dict(inputs)
     del missing["s_awthl"]
     with pytest.raises(TypeError, match="s_awthl"):
@@ -1780,10 +1798,17 @@ def test_mass_flux_rejects_nondefault_knobs_and_shape_drift():
     values = _dmp_mf_inputs(_dmp_mf_case(rows, "land_cumulus"))
     for knob, bad in (
         ("bl_mynn_edmf_mom", 0), ("bl_mynn_edmf_tke", 1),
-        ("bl_mynn_mixscalars", 1), ("spp_pbl", 1),
+        # W4 mixscalars admission: 1 is now admitted (anchored fixtures,
+        # w4-oracle-fixtures); every other nonzero value
+        # stays refused as an unmeasured combination.
+        ("bl_mynn_mixscalars", 2), ("spp_pbl", 1),
     ):
         with pytest.raises(ValueError, match=knob):
             mynn_dmp_mf(values, **{knob: bad})
+    # scalar_opt=1 without the qn columns is refused: an s_awqn* built
+    # from absent inputs would be a mixscalars run that mixed nothing.
+    with pytest.raises(TypeError, match="mixscalars"):
+        mynn_dmp_mf(values, bl_mynn_mixscalars=1)
     with pytest.raises(ValueError, match="mix_chem"):
         mynn_dmp_mf(values, mix_chem=True)
     missing = dict(values)

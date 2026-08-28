@@ -167,7 +167,7 @@
     },
     {
       "file": "gpuwm/core/moist.py",
-      "line": 490,
+      "line": 492,
       "column": 11,
       "surface": "package",
       "constructor": "cp.ElementwiseKernel",
@@ -183,7 +183,7 @@
     },
     {
       "file": "gpuwm/core/mynn_pbl_gpu.py",
-      "line": 283,
+      "line": 285,
       "column": 11,
       "surface": "package",
       "constructor": "cp.ReductionKernel",
@@ -199,7 +199,7 @@
     },
     {
       "file": "gpuwm/core/mynn_pbl_gpu.py",
-      "line": 290,
+      "line": 292,
       "column": 11,
       "surface": "package",
       "constructor": "cp.ReductionKernel",
@@ -215,7 +215,7 @@
     },
     {
       "file": "gpuwm/core/mynn_pbl_gpu.py",
-      "line": 297,
+      "line": 299,
       "column": 11,
       "surface": "package",
       "constructor": "cp.ReductionKernel",
@@ -495,7 +495,7 @@
     },
     {
       "file": "tests/test_mynn_pbl_gpu.py",
-      "line": 920,
+      "line": 932,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawModule",

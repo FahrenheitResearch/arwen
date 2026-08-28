@@ -35,6 +35,10 @@ name = "rw_mpas_init"
 path = "src/bin/rw_mpas_init.rs"
 
 [[bin]]
+name = "rw_mpas_lbc"
+path = "src/bin/rw_mpas_lbc.rs"
+
+[[bin]]
 name = "rw_mpas_mesh"
 path = "src/bin/rw_mpas_mesh.rs"
 

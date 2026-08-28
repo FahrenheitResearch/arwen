@@ -152,6 +152,44 @@ fn snapshot(points: &[V3], spec: &MeshSpec, sweep: usize, mean_res: f64, top: us
     }
 }
 
+/// Census of the dual-edge quality of a point set: the numbers every gate in
+/// the campaign reads, printed once per call so before/after/control all
+/// come from the same instrument.
+fn census(points: &[V3], label: &str) -> (Vec<(usize, f64, f64, V3)>, f64) {
+    let rings = delaunay_rings(&points.to_vec()).expect("delaunay");
+    let density = vec![1.0f64; points.len()];
+    let nominal = 1.0;
+    let mesh = MpasMesh::derive(points.to_vec(), density, &rings, nominal).expect("derive");
+    let r = EARTH_RADIUS_M;
+    let mut ratios: Vec<(usize, f64)> = (0..mesh.n_edges)
+        .map(|e| (e, mesh.dv_edge[e] / mesh.dc_edge[e]))
+        .collect();
+    ratios.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let under = |t: f64| ratios.iter().filter(|(_, q)| *q < t).count();
+    let mut hist = std::collections::BTreeMap::<i32, usize>::new();
+    for &d in &mesh.n_edges_on_cell {
+        *hist.entry(d).or_default() += 1;
+    }
+    println!(
+        "census[{label}]: {} cells, {} edges; min dv/dc {:.4e} at edge {} (dvEdge {:.3} m); under 0.02: {}, under 0.03: {}, under 0.04: {}; coordination {:?}",
+        mesh.n_cells,
+        mesh.n_edges,
+        ratios[0].1,
+        ratios[0].0,
+        mesh.dv_edge[ratios[0].0] * r,
+        under(0.02),
+        under(0.03),
+        under(0.04),
+        hist
+    );
+    let offenders: Vec<(usize, f64, f64, V3)> = ratios
+        .iter()
+        .filter(|(_, q)| *q < 0.02)
+        .map(|&(e, q)| (e, q, mesh.dv_edge[e] * r, mesh.edge_xyz[e]))
+        .collect();
+    (offenders, ratios[0].1)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let get = |key: &str, dflt: &str| -> String {
@@ -161,6 +199,230 @@ fn main() {
             .cloned()
             .unwrap_or_else(|| dflt.to_string())
     };
+
+    // ---- the standalone measurement arms -----------------------------------
+    //
+    // --from-grid reads centres out of an existing grid file (the registered
+    // v15.150.38857 failure, a published mesh, anything) and measures it
+    // through the SAME derive+census the seeded arms use. With --surgery
+    // insert-delete it then applies the count-changing drain under the field
+    // named by --spec, and --emit-grid writes the result for the hex-side
+    // admission leg. This is an instrument: emission here bypasses no
+    // production gate because it feeds gates (dual_edge_admission, the
+    // --from-centres rebuild), never the registry.
+    let spec_path = get("--spec", "");
+    let from_grid = get("--from-grid", "");
+    if !from_grid.is_empty() {
+        let src = rw_mpas::mesh::gridread::read_grid_generators(std::path::Path::new(&from_grid))
+            .unwrap_or_else(|e| panic!("{e}"));
+        println!(
+            "from-grid: {} cells from {from_grid} (sphere_radius {}, max radius departure {:.3e})",
+            src.points.len(),
+            src.sphere_radius,
+            src.max_radius_departure
+        );
+        let mut points = src.points;
+        let (offenders, _min_q) = census(&points, "before");
+        for &(e, q, dv_m, _) in &offenders {
+            println!("  offender edge {e}: dv/dc {q:.4e}  dvEdge {dv_m:.3} m");
+        }
+
+        if get("--surgery", "") == "insert-delete" {
+            let spec = if spec_path.is_empty() {
+                panic!("--surgery needs --spec: the drain relaxes locally under the requested field, and inventing a uniform one would polish the annulus toward the wrong spacing");
+            } else {
+                let text = std::fs::read_to_string(&spec_path).expect("read spec");
+                MeshSpec::from_json(&text).unwrap_or_else(|e| panic!("{e}"))
+            };
+            let n_before = points.len();
+            let before_positions: Vec<(usize, f64, V3)> =
+                offenders.iter().map(|&(e, q, _, p)| (e, q, p)).collect();
+            let t0 = std::time::Instant::now();
+            let result = rw_mpas::mesh::surgery::drain(
+                &mut points,
+                &spec,
+                &rw_mpas::mesh::surgery::SurgeryOptions::default(),
+                (n_before / 100).max(1),
+            );
+            match result {
+                Ok((rings, ledger)) => {
+                    println!(
+                        "surgery: {} rounds, {} ops ({} deleted, {} inserted, {} cavity), drift {} of {} allowed, {:.2} s",
+                        ledger.rounds,
+                        ledger.ops.len(),
+                        ledger.deleted,
+                        ledger.inserted,
+                        ledger.cavity_resamples,
+                        ledger.inserted.abs_diff(ledger.deleted),
+                        (n_before / 100).max(1),
+                        t0.elapsed().as_secs_f64()
+                    );
+                    let mut kinds = std::collections::BTreeMap::<String, usize>::new();
+                    for op in &ledger.ops {
+                        *kinds.entry(format!("{:?}", op.kind)).or_default() += 1;
+                    }
+                    println!("  ops histogram: {kinds:?}");
+                    let _ = census(&points, "after");
+                    // Per-offender AFTER reading: the worst quad within two
+                    // local spacings of where each collapsed edge sat.
+                    for (e, q_before, pos) in &before_positions {
+                        let h_local = spec.spacing_m(*pos) / EARTH_RADIUS_M;
+                        let mut worst_near = f64::INFINITY;
+                        rw_mpas::mesh::surgery::for_each_quad(&points, &rings, |r2| {
+                            let mid = rw_mpas::mesh::geom::unit(add(
+                                points[r2.i as usize],
+                                points[r2.j as usize],
+                            ))
+                            .unwrap_or(points[r2.i as usize]);
+                            if arc(mid, *pos) < 2.0 * h_local {
+                                worst_near = worst_near.min(r2.q);
+                            }
+                        });
+                        println!(
+                            "  edge {e}: before {q_before:.4e} -> after (worst within 2h) {worst_near:.4e}"
+                        );
+                    }
+                }
+                Err(e) => println!("surgery: REFUSED: {e}"),
+            }
+        }
+
+        let emit_path = get("--emit-grid", "");
+        if !emit_path.is_empty() {
+            let rings = delaunay_rings(&points).expect("delaunay");
+            let density: Vec<f64> = if spec_path.is_empty() {
+                vec![1.0; points.len()]
+            } else {
+                let text = std::fs::read_to_string(&spec_path).expect("read spec");
+                let spec = MeshSpec::from_json(&text).unwrap_or_else(|e| panic!("{e}"));
+                points.iter().map(|&p| spec.density(p)).collect()
+            };
+            let mesh = MpasMesh::derive(points.clone(), density, &rings, src.nominal_min_dc)
+                .expect("derive");
+            let written = rw_mpas::mesh::emit::write_grid(
+                &mesh,
+                std::path::Path::new(&emit_path),
+                &rw_mpas::mesh::emit::Provenance {
+                    spec_json: format!(
+                        "{{\"instrument\":\"mesh304_probe\",\"source_grid\":\"{}\"}}",
+                        from_grid.replace('\\', "/")
+                    ),
+                    request: "measurement fixture, not a production emission".to_string(),
+                    receipt_json: "{}".to_string(),
+                },
+                true,
+            )
+            .unwrap_or_else(|e| panic!("emit: {e}"));
+            println!(
+                "emitted {} ({} B, sha256 {})",
+                written.path.display(),
+                written.bytes,
+                written.sha256
+            );
+        }
+
+        // Final validate verdict with the DEFAULT limits, same as generate().
+        let rings = delaunay_rings(&points).expect("delaunay");
+        let density: Vec<f64> = vec![1.0; points.len()];
+        let mesh =
+            MpasMesh::derive(points.clone(), density, &rings, src.nominal_min_dc).expect("derive");
+        match validate(&mesh, Limits::default()) {
+            Ok(rep) => println!(
+                "validate: PASS  min_dv_edge_m {:.1}  min_dv_over_dc {:.3e}",
+                rep.min_dv_edge_m, rep.min_dv_over_dc
+            ),
+            Err(e) => println!("validate: REFUSED: {e}"),
+        }
+        return;
+    }
+
+    // --seed hierarchy: the graded ladder, measured through the same census.
+    if get("--seed", "fibonacci") == "hierarchy" {
+        let text = std::fs::read_to_string(&spec_path)
+            .unwrap_or_else(|e| panic!("--seed hierarchy needs --spec: {e}"));
+        let spec = MeshSpec::from_json(&text).unwrap_or_else(|e| panic!("{e}"));
+        let t0 = std::time::Instant::now();
+        let result = rw_mpas::mesh::hierarchy::generate_graded(
+            &spec,
+            200_000,
+            &rw_mpas::mesh::lloyd::LloydOptions::default(),
+            &rw_mpas::mesh::surgery::SurgeryOptions::default(),
+            rw_mpas::mesh::hierarchy::DEFAULT_BETA,
+            |line| println!("  {line}"),
+        );
+        match result {
+            Ok((points, _rings, outcome, choice, reports)) => {
+                println!(
+                    "hierarchy: GP({},{}) base, {} cells, {:.1} s wall",
+                    choice.m,
+                    choice.n,
+                    points.len(),
+                    t0.elapsed().as_secs_f64()
+                );
+                for r in &reports {
+                    println!(
+                        "  level {}: h {:.1} km, +{} points in {} batches, anneal {} sweeps (min q {:.4}), surgery {} rounds {} ops -> min q {:.4}, delivery p05/p50/p95 {:.4}/{:.4}/{:.4}",
+                        r.level,
+                        r.level_spacing_km,
+                        r.inserted,
+                        r.insert_batches,
+                        r.relaxation_sweeps,
+                        r.min_dv_over_dc_after_anneal,
+                        r.surgery.rounds,
+                        r.surgery.inserted + r.surgery.deleted + r.surgery.cavity_resamples,
+                        r.surgery.min_q_after,
+                        r.delivered_p05,
+                        r.delivered_median,
+                        r.delivered_p95
+                    );
+                }
+                let traj = &outcome.min_dv_over_dc_trajectory;
+                let tmin = traj.iter().cloned().fold(f64::INFINITY, f64::min);
+                println!(
+                    "  final-leg trajectory: {} samples, min {:.4e}, last {:.4e}",
+                    traj.len(),
+                    tmin,
+                    traj.last().copied().unwrap_or(f64::NAN)
+                );
+                let _ = census(&points, "hierarchy");
+                let emit_path = get("--emit-grid", "");
+                if !emit_path.is_empty() {
+                    let rings = delaunay_rings(&points).expect("delaunay");
+                    let density: Vec<f64> = points.iter().map(|&p| spec.density(p)).collect();
+                    let nominal = nominal_min_dc_from_m(spec.finest_km() * 1000.0);
+                    let mesh =
+                        MpasMesh::derive(points.clone(), density, &rings, nominal).expect("derive");
+                    let written = rw_mpas::mesh::emit::write_grid(
+                        &mesh,
+                        std::path::Path::new(&emit_path),
+                        &rw_mpas::mesh::emit::Provenance {
+                            spec_json: text.clone(),
+                            request: "hierarchy probe arm".to_string(),
+                            receipt_json: "{}".to_string(),
+                        },
+                        true,
+                    )
+                    .unwrap_or_else(|e| panic!("emit: {e}"));
+                    println!(
+                        "emitted {} ({} B, sha256 {})",
+                        written.path.display(),
+                        written.bytes,
+                        written.sha256
+                    );
+                    let report = validate(&mesh, Limits::default());
+                    match report {
+                        Ok(rep) => println!(
+                            "validate: PASS  min_dv_edge_m {:.1}  min_dv_over_dc {:.3e}  coordination {:?}",
+                            rep.min_dv_edge_m, rep.min_dv_over_dc, rep.coordination_histogram
+                        ),
+                        Err(e) => println!("validate: REFUSED: {e}"),
+                    }
+                }
+            }
+            Err(e) => println!("hierarchy: REFUSED: {e}"),
+        }
+        return;
+    }
     let n: usize = get("--cells", "2000").parse().unwrap();
     let bg: f64 = get("--bg-km", "120").parse().unwrap();
     let omega: f64 = get("--omega", "1.4").parse().unwrap();

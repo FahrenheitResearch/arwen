@@ -164,7 +164,7 @@ def _initialize_state(snapshot, dc, grid, static, eta, mapping_report):
         dc.run.nz, hybrid_opt=dc.run.hybrid_opt, etac=dc.run.etac,
         eta_levels=eta)
     result = initialize_real(
-        met, dc.run, coord, static["HGT_M"], p_top=10000.0,
+        met, dc.run, coord, static["HGT_M"], grid=grid, p_top=10000.0,
         sfcp_to_sfcp=True)
     result.state.set_map_coriolis(
         static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],

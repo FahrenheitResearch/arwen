@@ -406,6 +406,11 @@ pub struct RenderedProduct {
     pub slug: String,
     pub total_ms: u128,
     pub output_path: PathBuf,
+    /// What the finished PNG maps to on the Earth, when the render lane
+    /// could publish it (gpuwm addition, VENDOR.md).
+    pub georeference: Option<rustwx_render::PanelGeoReference>,
+    /// Why `georeference` is `None`, from the lane that rendered it.
+    pub georeference_absent_reason: Option<String>,
 }
 
 /// Outcome of one hour's direct + derived/heavy render pass.
@@ -472,6 +477,8 @@ pub fn render_hour_products(
             slug: recipe.recipe_slug,
             total_ms: recipe.timing.total_ms,
             output_path: recipe.output_path,
+            georeference: recipe.georeference,
+            georeference_absent_reason: recipe.georeference_absent_reason,
         }));
         skipped.extend(outcome.skipped);
     }
@@ -519,6 +526,8 @@ pub fn render_hour_products(
             slug: recipe.recipe_slug,
             total_ms: recipe.timing.total_ms,
             output_path: recipe.output_path,
+            georeference: recipe.georeference,
+            georeference_absent_reason: recipe.georeference_absent_reason,
         }));
         skipped.extend(outcome.skipped);
     }
@@ -534,6 +543,8 @@ pub fn render_hour_products(
                 slug: format!("var:{}", product.variable),
                 total_ms: product.total_ms,
                 output_path: product.output_path,
+                georeference: product.georeference,
+                georeference_absent_reason: product.georeference_absent_reason,
             }),
             Err(error) => skipped.push(StoreRenderSkip {
                 slug: format!("var:{variable}"),
@@ -629,6 +640,8 @@ pub fn render_windowed_products(
                 slug: product.product.slug().to_string(),
                 total_ms: product.timing.total_ms,
                 output_path: product.output_path,
+                georeference: product.georeference,
+                georeference_absent_reason: product.georeference_absent_reason,
             })
             .collect(),
         blocked: outcome

@@ -130,6 +130,20 @@ _TENDENCY_OUT = (
 )
 
 
+#: Stage B (W4 full admission): solver qn name -> (state scalar attribute,
+#: returned tendency name).  ``qnbca`` is deliberately absent: WRF's mp=28
+#: Registry package declares no qnbca (F_QNBCA false there), so the runtime
+#: feeds the driver a zero qnbca column -- the solve on an exactly-zero
+#: column with an exactly-zero flux is exactly zero, which is bitwise the
+#: same answer WRF's skipped solve leaves -- and returns no qnbca tendency.
+MYNN_MIXSCALARS_QN = (
+    ("qnc", "nc", "dnc"),
+    ("qni", "ni", "dni"),
+    ("qnwfa", "nwfa", "dnwfa"),
+    ("qnifa", "nifa", "dnifa"),
+)
+
+
 def mynn_pbl_step(
     atmosphere: Mapping[str, cp.ndarray],
     fields: Mapping[str, cp.ndarray],
@@ -141,6 +155,7 @@ def mynn_pbl_step(
     mp_physics: int,
     state=None,
     column_chunk: int | None = None,
+    qn_scalars: Mapping[str, cp.ndarray] | None = None,
     **options,
 ) -> dict[str, cp.ndarray]:
     """Run one MYNN PBL call and write its state back into ``fields``.
@@ -195,6 +210,32 @@ def mynn_pbl_step(
                 mynn_pbl_tendency_field_shapes(nz, ny, nx).items())
         }
 
+    # Stage B (W4 full admission): the qn columns for the five stock
+    # mixscalars solves.  Key-off runs never enter this block, stage no
+    # extra arrays, and pass no extra driver keys -- bit-identity of the
+    # mixscalars=0 path is by construction.  The per-chunk transposed
+    # copies below are plain pool allocations, accepted behind the key
+    # (the priced-scratch discipline covers the always-on path only).
+    mixscalars_on = int(options.get("bl_mynn_mixscalars", 0)) == 1
+    qn_source: dict[str, cp.ndarray] = {}
+    qn_out: dict[str, cp.ndarray] = {}
+    if mixscalars_on:
+        if qn_scalars is None:
+            raise TypeError(
+                "bl_mynn_mixscalars=1 requires qn_scalars (the mp=28 "
+                "nc/ni/nwfa/nifa fields); the caller owns the presence "
+                "check so the refusal names the missing state, not a "
+                "KeyError inside a chunk loop")
+        for solver_name, state_name, _ in MYNN_MIXSCALARS_QN:
+            qn_source[solver_name] = (
+                qn_scalars[state_name].reshape(nz, ncol))
+        qn_out = {out_name: cp.zeros((nz, ny, nx), dtype=DTYPE)
+                  for _, _, out_name in MYNN_MIXSCALARS_QN}
+        # The driver's fixture-pinned combo requires all five qn flags.
+        for flag in ("flag_qnc", "flag_qni", "flag_qnwfa", "flag_qnifa",
+                     "flag_qnbca"):
+            options.setdefault(flag, True)
+
     # Flat (nz, ncol) / (ncol,) views.  Reshape on a C-contiguous field is a
     # view, so nothing here is a copy.
     source = {name: atmosphere[key].reshape(nz, ncol)
@@ -246,6 +287,13 @@ def mynn_pbl_step(
         for name in flat_columns:
             values[name] = flat_columns[name][lo:hi]
         values["kpbl"] = flat_kpbl[lo:hi]
+        if mixscalars_on:
+            for solver_name, _, _ in MYNN_MIXSCALARS_QN:
+                values[solver_name] = cp.ascontiguousarray(
+                    qn_source[solver_name][:, lo:hi].T)
+            # F_QNBCA is false in mp=28's Registry package; the zero
+            # column solves to exactly zero (see MYNN_MIXSCALARS_QN).
+            values["qnbca"] = cp.zeros((n, nz), dtype=DTYPE)
 
         out = mynn_bl_driver_cuda(
             values, initflag=initflag, delt=DTYPE(delt), scratch=work,
@@ -267,8 +315,14 @@ def mynn_pbl_step(
             fields[name].reshape(ncol)[lo:hi] = out[name]
         for solver_name, tendency_name in _TENDENCY_OUT:
             flat_tendencies[tendency_name][:, lo:hi] = out[solver_name].T
+        if mixscalars_on:
+            for solver_name, _, out_name in MYNN_MIXSCALARS_QN:
+                qn_out[out_name].reshape(nz, ncol)[:, lo:hi] = (
+                    out[f"r{solver_name}blten"].T)
 
-    return dict(tendencies)
+    result = dict(tendencies)
+    result.update(qn_out)
+    return result
 
 
 #: Validity words for :func:`validate_mynn_tendencies`, which has no

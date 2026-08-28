@@ -198,6 +198,16 @@ BRIDGE_ABI_MARKERS = {
     # a stale build would get wrong.
     "rw_mpas_init": (
         b"rw_mpas_init --met MET --static STATIC.nc --capsule CAPSULE.nc"),
+    # The lateral-boundary producer, the fifth binary out of the same
+    # crate.  Truncated at the head for the reason the initial-condition
+    # builder's is: the crate's literal is four usage lines with embedded
+    # newlines between them, and a marker that has to reproduce one
+    # exactly breaks on a reflow that changed nothing.  The head names
+    # the four arguments whose meaning a stale build would get wrong.
+    # Spelled to match gpuwm.mpas_mesh.LBC_ABI_MARKER; a test binds them.
+    "rw_mpas_lbc": (
+        b"rw_mpas_lbc --grid INIT.nc --out-dir DIR "
+        b"--start-time YYYY-MM-DD_HH:MM:SS --stop-time YYYY-MM-DD_HH:MM:SS"),
     # The history converter.  Its marker is the OUTPUT SCHEMA name and
     # the progress tokens, like the mapped engine's, because that is the
     # literal which changes exactly when the tape contract changes.

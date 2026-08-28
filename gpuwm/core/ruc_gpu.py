@@ -30,8 +30,16 @@ from gpuwm.core.ruc import (
     load_ruc_parameters,
     ruc_soil_geometry,
     ruc_saturation_table,
+    ruc_zshalf,
+    _resolved_soil_levels,
 )
 from gpuwm.core.ruc_contract import NUM_SOIL_LAYERS
+# The tier lives in its own CuPy-free module so the identity of the
+# nine-level translation unit stays provable on a box with no card; see
+# gpuwm/core/ruc_tier.py.  ``_ruc_kernel`` is the ONE place a RUC launcher
+# chooses between the unspecialized loader and a specialized one.
+from gpuwm.core.ruc_tier import (ruc_kernel as _ruc_kernel,
+                                 ruc_kernel_source, ruc_module_defines)
 from gpuwm.core.state import DTYPE
 
 
@@ -258,7 +266,8 @@ def _float_profile(value, shape: tuple[int, ...], name: str) -> cp.ndarray:
     return cp.ascontiguousarray(raw)
 
 
-def _root_count_field(value, shape: tuple[int, ...]) -> cp.ndarray:
+def _root_count_field(value, shape: tuple[int, ...], *,
+                      nzs: int = NUM_SOIL_LAYERS) -> cp.ndarray:
     raw = cp.asarray(value)
     if raw.dtype.kind not in "iu":
         raise TypeError("nroot must contain integer root-zone level counts")
@@ -270,10 +279,16 @@ def _root_count_field(value, shape: tuple[int, ...]) -> cp.ndarray:
                 f"nroot shape {raw.shape} is not broadcastable to {shape}"
             ) from exc
     roots = cp.ascontiguousarray(raw, dtype=cp.int32)
-    invalid = (roots < 1) | (roots >= NUM_SOIL_LAYERS)
+    invalid = (roots < 1) | (roots >= nzs)
     if bool(cp.any(invalid)):
         bad = int(roots[invalid][0])
-        raise ValueError(f"RUC nroot {bad} is outside 1..8")
+        # The BOUND was un-pinned with the geometry; this MESSAGE was not,
+        # and at six levels it said "RUC nroot 6 is outside 1..8" -- naming
+        # the rejected value as inside the range that rejected it, and
+        # disagreeing with the host lane's own wording for the identical
+        # refusal (gpuwm/core/ruc.py:_root_count_field).  A refusal a user
+        # cannot act on is worse than no refusal, so it reads from nzs.
+        raise ValueError(f"RUC nroot {bad} is outside 1..{nzs - 1}")
     return roots
 
 
@@ -289,6 +304,7 @@ def _soil_phase_partition_cuda(
     """Launch the freezing partition shared by the assembled RUC step."""
 
     shape = soilmois.shape
+    nzs = _resolved_soil_levels(soilmois, "RUC phase-partition profiles")
     horizontal_shape = shape[1:]
     outputs = {
         name: cp.empty(shape, dtype=DTYPE)
@@ -300,7 +316,7 @@ def _soil_phase_partition_cuda(
     ncolumn = int(np.prod(horizontal_shape))
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
-    kernel = get_kernel("ruc", "ruc_soil_phase_partition")
+    kernel = _ruc_kernel("ruc_soil_phase_partition", nzs)
     kernel(
         (blocks,),
         (threads,),
@@ -472,11 +488,7 @@ def ruc_soil_properties_cuda(
     if missing:
         raise TypeError(f"missing RUC soil-property inputs: {', '.join(missing)}")
     first = cp.asarray(values[RUC_SOIL_PROPERTY_PROFILE_INPUTS[0]])
-    if first.ndim < 2 or first.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC CUDA soil-property profiles must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {first.shape}"
-        )
+    nzs = _resolved_soil_levels(first, "RUC CUDA soil-property profiles")
     shape = first.shape
     profiles = {
         name: _float_profile(values[name], shape, name)
@@ -501,7 +513,7 @@ def ruc_soil_properties_cuda(
     ncolumn = int(np.prod(horizontal_shape))
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
-    kernel = get_kernel("ruc", "ruc_soil_properties")
+    kernel = _ruc_kernel("ruc_soil_properties", nzs)
     kernel(
         (blocks,),
         (threads,),
@@ -532,18 +544,19 @@ def ruc_transpiration_cuda(
     mminlu: str = "MODIFIED_IGBP_MODIS_NOAH",
     parameters: RucParameterBundle | None = None,
 ) -> RucTranspirationCuda:
-    """Evaluate WRF ``transf`` on per-column 1..8-level GPU root zones."""
+    """Evaluate WRF ``transf`` on per-column ``1..nzs-1``-level GPU root zones.
+
+    The root-zone ceiling follows the resolved soil geometry -- 1..8 at nine
+    levels, 1..5 at six -- rather than the nine-level literal this docstring
+    carried while nine was the only geometry.
+    """
     liquid = cp.asarray(soiliqw, dtype=DTYPE)
-    if liquid.ndim < 2 or liquid.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC CUDA soiliqw must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {liquid.shape}"
-        )
+    nzs = _resolved_soil_levels(liquid, "RUC CUDA soiliqw")
     if not bool(cp.all(cp.isfinite(liquid))):
         raise ValueError("soiliqw must be finite")
     liquid = cp.ascontiguousarray(liquid)
     horizontal_shape = liquid.shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
     columns = {
         name: _float_field(value, horizontal_shape, name)
         for name, value in (
@@ -571,19 +584,14 @@ def ruc_transpiration_cuda(
     if bool(cp.any(columns["ref"] <= columns["wilt"])):
         raise ValueError("RUC ref must exceed wilt")
 
-    zs, _ = ruc_soil_geometry()
-    zshalf_host = np.zeros(NUM_SOIL_LAYERS, dtype=np.float32)
-    for level in range(1, NUM_SOIL_LAYERS):
-        zshalf_host[level] = np.float32(
-            np.float32(zs[level - 1] + zs[level]) * np.float32(0.5)
-        )
-    zshalf = cp.asarray(zshalf_host)
+    zs, _ = ruc_soil_geometry(nzs)
+    zshalf = cp.asarray(ruc_zshalf(zs))
     weights = cp.empty_like(liquid)
     totals = cp.empty(horizontal_shape, dtype=DTYPE)
     ncolumn = int(np.prod(horizontal_shape))
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
-    kernel = get_kernel("ruc", "ruc_transpiration")
+    kernel = _ruc_kernel("ruc_transpiration", nzs)
     kernel(
         (blocks,),
         (threads,),
@@ -621,11 +629,7 @@ def ruc_soil_moisture_step_cuda(
     if missing:
         raise TypeError(f"missing RUC soilmoist inputs: {', '.join(missing)}")
     first = cp.asarray(values[RUC_SOIL_MOISTURE_PROFILE_INPUTS[0]])
-    if first.ndim < 2 or first.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC CUDA soilmoist profiles must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {first.shape}"
-        )
+    nzs = _resolved_soil_levels(first, "RUC CUDA soilmoist profiles")
     shape = first.shape
     profiles = {
         name: _float_profile(values[name], shape, name)
@@ -653,7 +657,7 @@ def ruc_soil_moisture_step_cuda(
     ncolumn = int(np.prod(horizontal_shape))
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
-    kernel = get_kernel("ruc", "ruc_soil_moisture_step")
+    kernel = _ruc_kernel("ruc_soil_moisture_step", nzs)
     kernel(
         (blocks,),
         (threads,),
@@ -697,18 +701,14 @@ def ruc_soil_temperature_step_cuda(
     if missing:
         raise TypeError(f"missing RUC soiltemp inputs: {', '.join(missing)}")
     first = cp.asarray(values[RUC_SOIL_TEMPERATURE_PROFILE_INPUTS[0]])
-    if first.ndim < 2 or first.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC CUDA soiltemp profiles must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {first.shape}"
-        )
+    nzs = _resolved_soil_levels(first, "RUC CUDA soiltemp profiles")
     shape = first.shape
     profiles = {
         name: _float_profile(values[name], shape, name)
         for name in RUC_SOIL_TEMPERATURE_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
     columns = {
         name: _float_field(values[name], horizontal_shape, name)
         for name in RUC_SOIL_TEMPERATURE_COLUMN_INPUTS
@@ -739,7 +739,7 @@ def ruc_soil_temperature_step_cuda(
         raw_flux_depth, ncolumn, "soiltemp")
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
-    kernel = get_kernel("ruc", "ruc_soil_temperature_step")
+    kernel = _ruc_kernel("ruc_soil_temperature_step", nzs)
     kernel(
         (blocks,),
         (threads,),
@@ -792,18 +792,14 @@ def ruc_soil_step_cuda(
         raise TypeError(f"missing RUC CUDA soil inputs: {', '.join(missing)}")
 
     first = cp.asarray(values[RUC_SOIL_STEP_PROFILE_INPUTS[0]])
-    if first.ndim < 2 or first.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC CUDA soil profiles must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {first.shape}"
-        )
+    nzs = _resolved_soil_levels(first, "RUC CUDA soil profiles")
     shape = first.shape
     profiles = {
         name: _float_profile(values[name], shape, name)
         for name in RUC_SOIL_STEP_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
     land_type = _integer_field(iland, horizontal_shape, "iland")
     columns = {
         name: _float_field(values[name], horizontal_shape, name)
@@ -919,7 +915,7 @@ def ruc_soil_step_cuda(
         name: cp.empty(horizontal_shape, dtype=DTYPE)
         for name in ("ett1", "dew", "prcp", "ras")
     }
-    prepare_kernel = get_kernel("ruc", "ruc_soil_prepare_moisture")
+    prepare_kernel = _ruc_kernel("ruc_soil_prepare_moisture", nzs)
     prepare_kernel(
         (blocks,),
         (threads,),
@@ -972,7 +968,7 @@ def ruc_soil_step_cuda(
     final = {
         name: cp.empty(horizontal_shape, dtype=DTYPE) for name in final_names
     }
-    finalize_kernel = get_kernel("ruc", "ruc_soil_finalize")
+    finalize_kernel = _ruc_kernel("ruc_soil_finalize", nzs)
     finalize_kernel(
         (blocks,),
         (threads,),
@@ -1105,11 +1101,7 @@ def ruc_sea_ice_step_cuda(
         raise TypeError(f"missing RUC CUDA sice inputs: {', '.join(missing)}")
 
     first = cp.asarray(values[RUC_SEA_ICE_PROFILE_INPUTS[0]])
-    if first.ndim < 2 or first.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC CUDA sice profiles must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {first.shape}"
-        )
+    nzs = _resolved_soil_levels(first, "RUC CUDA sice profiles")
     shape = first.shape
     profiles = {
         name: _float_profile(values[name], shape, name)
@@ -1144,7 +1136,7 @@ def ruc_sea_ice_step_cuda(
         raw_flux_depth, ncolumn, "sice")
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
-    kernel = get_kernel("ruc", "ruc_sea_ice_step")
+    kernel = _ruc_kernel("ruc_sea_ice_step", nzs)
     kernel(
         (blocks,),
         (threads,),
@@ -1367,11 +1359,7 @@ def ruc_snow_preparation_cuda(
         )
 
     profile = cp.asarray(values["ts1d"], dtype=DTYPE)
-    if profile.ndim < 2 or profile.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC CUDA snow preparation ts1d must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {profile.shape}"
-        )
+    nzs = _resolved_soil_levels(profile, "RUC CUDA snow preparation ts1d")
     shape = profile.shape
     horizontal_shape = shape[1:]
     ts1d = _float_profile(values["ts1d"], shape, "ts1d")
@@ -1413,7 +1401,7 @@ def ruc_snow_preparation_cuda(
     ncolumn = int(np.prod(horizontal_shape))
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
-    kernel = get_kernel("ruc", "ruc_snow_preparation")
+    kernel = _ruc_kernel("ruc_snow_preparation", nzs)
     kernel(
         (blocks,),
         (threads,),
@@ -1547,11 +1535,7 @@ def ruc_snow_sea_ice_step_cuda(
         )
 
     first = cp.asarray(values[RUC_SNOW_SEA_ICE_PROFILE_INPUTS[0]])
-    if first.ndim < 2 or first.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC CUDA snowseaice profiles must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {first.shape}"
-        )
+    nzs = _resolved_soil_levels(first, "RUC CUDA snowseaice profiles")
     shape = first.shape
     profiles = {
         name: _float_profile(values[name], shape, name)
@@ -1595,7 +1579,7 @@ def ruc_snow_sea_ice_step_cuda(
         raw_flux_depth, ncolumn, "snowseaice")
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
-    kernel = get_kernel("ruc", "ruc_snow_sea_ice_step")
+    kernel = _ruc_kernel("ruc_snow_sea_ice_step", nzs)
     kernel(
         (blocks,),
         (threads,),
@@ -1724,11 +1708,7 @@ def ruc_snow_temperature_step_cuda(
         )
 
     first = cp.asarray(values[RUC_SNOW_TEMPERATURE_PROFILE_INPUTS[0]])
-    if first.ndim < 2 or first.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC CUDA snowtemp profiles must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {first.shape}"
-        )
+    nzs = _resolved_soil_levels(first, "RUC CUDA snowtemp profiles")
     shape = first.shape
     profiles = {
         name: _float_profile(values[name], shape, name)
@@ -1739,7 +1719,7 @@ def ruc_snow_temperature_step_cuda(
         name: _float_field(values[name], horizontal_shape, name)
         for name in RUC_SNOW_TEMPERATURE_COLUMN_INPUTS
     }
-    roots = _root_count_field(nroot, horizontal_shape)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
     raw_layers = cp.asarray(ilnb)
     if raw_layers.dtype.kind not in "iu":
         raise TypeError("RUC CUDA snowtemp ilnb must contain integer counts")
@@ -1772,7 +1752,11 @@ def ruc_snow_temperature_step_cuda(
         raw_flux_depth, ncolumn, "snowtemp")
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
-    kernel = get_kernel("ruc", "ruc_snow_temperature_step")
+    # ONE OF TWO launch sites for this symbol; the other is in
+    # ruc_snow_soil_step_cuda.  Both are tiered or neither may be: an
+    # untiered load at nzs=6 returns the nine-level module, whose kernel
+    # reads past every scratch array in the frame.
+    kernel = _ruc_kernel("ruc_snow_temperature_step", nzs)
     kernel(
         (blocks,),
         (threads,),
@@ -1905,18 +1889,14 @@ def ruc_snow_soil_step_cuda(
         raise TypeError(f"missing RUC CUDA snowsoil inputs: {', '.join(missing)}")
 
     first = cp.asarray(values[RUC_SNOW_SOIL_PROFILE_INPUTS[0]])
-    if first.ndim < 2 or first.shape[0] != NUM_SOIL_LAYERS:
-        raise ValueError(
-            "RUC CUDA snowsoil profiles must have shape "
-            f"({NUM_SOIL_LAYERS}, ...horizontal...), got {first.shape}"
-        )
+    nzs = _resolved_soil_levels(first, "RUC CUDA snowsoil profiles")
     shape = first.shape
     profiles = {
         name: _float_profile(values[name], shape, name)
         for name in RUC_SNOW_SOIL_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
     land_type = _integer_field(iland, horizontal_shape, "iland")
     snow_layers = cp.asarray(ilnb)
     if snow_layers.dtype.kind not in "iu":
@@ -2071,7 +2051,9 @@ def ruc_snow_soil_step_cuda(
     }
     updated_tso = cp.empty(shape, dtype=DTYPE)
     updated_layers = cp.empty(horizontal_shape, dtype=cp.int32)
-    get_kernel("ruc", "ruc_snow_temperature_step")(
+    # ONE OF TWO launch sites for this symbol; the other is in
+    # ruc_snow_temperature_step_cuda.  See the note there.
+    _ruc_kernel("ruc_snow_temperature_step", nzs)(
         (blocks,),
         (threads,),
         (
@@ -2098,7 +2080,7 @@ def ruc_snow_soil_step_cuda(
         name: cp.empty(horizontal_shape, dtype=DTYPE) for name in prepared_names
     }
     transp = cp.empty(shape, dtype=DTYPE)
-    get_kernel("ruc", "ruc_snow_soil_prepare_moisture")(
+    _ruc_kernel("ruc_snow_soil_prepare_moisture", nzs)(
         (blocks,),
         (threads,),
         (
@@ -2153,7 +2135,7 @@ def ruc_snow_soil_step_cuda(
     final = {
         name: cp.empty(horizontal_shape, dtype=DTYPE) for name in final_names
     }
-    get_kernel("ruc", "ruc_snow_soil_finalize")(
+    _ruc_kernel("ruc_snow_soil_finalize", nzs)(
         (blocks,),
         (threads,),
         (

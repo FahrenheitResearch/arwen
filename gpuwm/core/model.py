@@ -382,10 +382,19 @@ RESTART_TOLERATED_RUN_FIELDS = (
 #: (``tests/test_water_overlay.py``), which is the exact regression this
 #: table exists to prevent; the anchor is back at its lane-base value with
 #: the row in place.  Every scheme-scoped knob goes here.
+#: The mp=28 row was added at the 2.5.8 integration.  Its two aerosol-source
+#: selectors (lane/wif-default) landed unscoped, exactly as the NSSL five
+#: had, and moved BOTH frozen anchors in ``tests/test_water_overlay.py`` --
+#: measured by payload diff against the pristine base f27fc897a: exactly
+#: four added keys, these two per domain, no other change.  Unscoped they
+#: would have made every 2.5.7 checkpoint refuse to resume under 2.5.8 for
+#: fields only the aerosol-aware Thompson path reads (every reader in
+#: gpuwm/ingest/real.py sits behind ``cfg.mp_physics == 28``).
 SCHEME_SCOPED_RUN_FIELDS: dict[int, tuple[str, ...]] = {
     16: ("wdm6_hail_opt", "wdm6_ccn_conc"),
     18: ("nssl_2moment_on", "nssl_hail_on", "nssl_ccn_on",
          "nssl_density_on", "nssl_3moment"),
+    28: ("wif_climatology_path", "mp28_aerosol_source"),
 }
 
 

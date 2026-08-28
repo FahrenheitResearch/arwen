@@ -123,6 +123,7 @@ pub fn write_init(
     file_id: &str,
     parent_chain: &[String],
     provenance: &str,
+    lineage: &crate::init::Lineage,
 ) -> MpasResult<EmitLedger> {
     let capsule = netcrust::File::open(capsule_path)?;
 
@@ -153,6 +154,32 @@ pub fn write_init(
 
     let mut gattrs: Vec<NcAttr> = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    // The model's own lineage leads the header, which is where native writes
+    // it: model_name, core_name, version, source, Conventions, git_version,
+    // then the mesh block.  `source` and `Conventions` describe the FILE and
+    // come from the capsule, so only the four that describe the MODEL are
+    // written here -- and only when the capsule does not already carry them,
+    // so a capsule with a lineage of its own keeps it.
+    let capsule_names: BTreeSet<String> = capsule
+        .attributes()?
+        .iter()
+        .map(|a| a.name().to_string())
+        .collect();
+    for (name, value) in [
+        ("model_name", lineage.model_name.as_str()),
+        ("core_name", lineage.core_name.as_str()),
+        ("version", lineage.version.as_str()),
+    ] {
+        if !capsule_names.contains(name) {
+            if value.is_empty() {
+                return Err(MpasError::Refusal(format!(
+                    "the {name} lineage attribute is empty; an init that names                      no model cannot be handed to rw_mpas_lbc, which reads all                      four off its --grid and refuses rather than invent one"
+                )));
+            }
+            gattrs.push(NcAttr::text(name, value));
+            seen.insert(name.to_string());
+        }
+    }
     for a in capsule.attributes()? {
         let name = a.name().to_string();
         if name == "file_id" {
@@ -168,6 +195,18 @@ pub fn write_init(
             )));
         }
         seen.insert(name);
+    }
+    // git_version sits after `Conventions` in native's order, which is after
+    // everything the capsule carries, so it is appended rather than led.
+    if !capsule_names.contains("git_version") {
+        if lineage.git_version.is_empty() {
+            return Err(MpasError::Refusal(
+                "the git_version lineage attribute is empty; an init that                  names no build cannot be handed to rw_mpas_lbc"
+                    .to_string(),
+            ));
+        }
+        gattrs.push(NcAttr::text("git_version", lineage.git_version.as_str()));
+        seen.insert("git_version".to_string());
     }
     if !seen.contains("file_id") {
         gattrs.push(NcAttr::text("file_id", file_id));

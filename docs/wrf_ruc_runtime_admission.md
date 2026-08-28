@@ -363,11 +363,132 @@ except its 26 pinned upstream-residue cells, but no gpuwm/WRF *forecast*
 comparison exists, which is what `validation-candidate` would require. Hence
 `implemented-unverified`.
 
-**The six-layer geometry is refused.** `init_soil_depth_3` also tabulates a
-six-level RUC grid, but every RUC oracle fixture in the tree is nine-level and
-the CUDA leaves index a `__constant__ real ruc_soil_layer_depth[9]`. Refused
-as a port blocker, not as a schema error: it is a coherent WRF request gpuwm
-has no fixture for.
+**The six-layer geometry runs, unverified.** `init_soil_depth_3` also
+tabulates a six-level RUC grid. It used to be refused as a port blocker
+because the CUDA leaves indexed a `__constant__ real
+ruc_soil_layer_depth[9]` and sized every soil scratch as a literal `[9]`.
+That pin is gone: `ruc.cu` sizes scratch from `RUC_NZS`, selects the level
+table with the same macro, and `gpuwm.core.ruc` / `.ruc_gpu` resolve the
+count from the profile they are handed.
+
+What six levels does **not** have is a WRF forecast oracle, and that is a
+different thing from a missing code path. Here is exactly what has and has
+not been measured.
+
+| Claim | Instrument | Strength |
+|---|---|---|
+| Level geometry matches WRF | `test_soil_layer_geometry.py` against WRF 4.7.1 `real.exe` `wrfinput_d01` ZS/DZS at both counts (ZS 0 0.05 0.2 0.4 1.6 3; DZS 0.025 0.125 0.175 0.7 1.3 0.7) | **Oracle-grade.** Exact. |
+| The kernel's own depth literals are that table | `test_ruc_nzs_tier.py`, `test_soil_layer_geometry.py` — float32 bit patterns of each `#if` arm against `ruc_soil_depths(n)` | **Oracle-grade**, and stronger than the length check it replaced. |
+| The nine-level column did not move | `test_ruc_nzs_tier.py` — the shipped `ruc.cu` inverted to the pre-lift file and hashed against the mp=8 freeze digest, plus equal `cl.exe -EP` token streams and equal `nvcc -ptx` PTX, each with a negative control; and the 43-field host/device comparison at nine on the hardware | **Decisive** for n=9. The inversion now runs in two named steps — the ladder, then the `RUC_NZS DZSTOP` fix — so the identical-PTX claim is about the ladder and is not quietly covering a change that does move the generated code. That the fix moves it is asserted separately; that it moves no number at nine is measured on the card and by the unchanged eleven-file RUC suite. |
+| The tier machinery is arithmetically inert | `test_ruc_nzs_device.py` — the full 43-field driver comparison with every launcher forced through the *specialized* loader at nine levels, over snow-free, water+ice and snow columns | **Strong.** max_ulp 0. Validates the mechanism at the geometry that has an oracle. |
+| The six-level module builds and is distinct | `nvcc -ptx -DRUC_NZS=6`, and a CuPy/NVRTC compile through `get_kernel_int_defines` | **Good.** It is a real translation unit, not a hope. |
+| Host and device agree at six levels | `test_ruc_nzs_device.py::test_the_host_and_device_columns_agree_at_every_admitted_geometry` — the same 43-field driver comparison as the row above, run at **6** as well as 9, over snow-free, water+ice and snow columns | **Strong for consistency, silent on correctness.** max_ulp 0 at both counts. `ruc.py` and `ruc.cu` are line-for-line transcriptions of the same Fortran, so agreement means no transcription error entered the lift — it cannot detect an error present in both. It did catch one present in only one; see the next row. |
+| A nine-level constant left behind in the kernel | the row above, on its first run | **Found a real defect.** `ruc_soil_finalize` computed `dzstop = 1/(0.01f - 0.0f)` — WRF's nine-level `zsmain(2)-zsmain(1)` written as a literal instead of read from the table, and invisible to the RUC_NZS sweep because it is a depth, not an extent. At six levels the grid says 0.05, so the published `GRDFLX` came out exactly 5x too large: -337.1 W m-2 against the host's -67.4 on the same column, and on a real 1-hour HRRR case a domain-mean -472.5 W m-2 against -94.5. Fixed. Blast radius measured: 1 of the 93 wrfout variables moved, `GRDFLX`; `TSLB`, `TSK`, `HFX`, `T2` and the other 88 are bit-identical across the fix, so it corrupted a published diagnostic and not the trajectory. |
+| A six-level column completes a real forecast | `gpuwm prep` + `gpuwm.prepared_single_domain_forecast` on the HRRR pressure-level route, 40x40x49 at 3 km, 240 steps of a 1-hour forecast from the 2026-08-25 18Z cycle | **Good.** `SUCCESS COMPLETE SIMULATION`, `soil_layers_stag = 6` in the wrfout, every soil and surface field finite, `TSLB[-1] == TMN` on all 1,589 land columns, `SMOIS` inside `[DRYSMC, MAXSMC]`, `SH2O <= SMOIS`. Says the column runs and stays physical; says nothing about whether it is WRF's answer. |
+| **Bit-exactness against WRF at six levels** | — | **NOT PROVED, and not provable here.** |
+
+**What cannot be proved, stated plainly.** Every geometry-dependent CSV in
+`gpuwm/data/ruc/oracle` is nine-level; each `tools/ruc_wrf461_oracle/run_*.F90`
+hardcodes `nzs = 9`, `nddzs = 14` and a nine-element `zsmain`; `build.sh`
+demands the pinned WRF tree with byte-clean sources and gfortran 13.3.0; and
+`ruc_contract.py` pins the byte size and SHA-256 of eight of the resulting
+CSVs. There is no `--geometry` switch and no documented procedure. So whether
+gpuwm's six-level column *is* WRF's six-level column is unanswered: the
+tridiagonal runs four interior steps instead of seven over a different layer
+thickness set, and only WRF adjudicates that. Internal consistency is not an
+answer to it and must never be reported as one.
+
+**How it ships, therefore.** No front-door template — a named
+`--physics-profile` asserts a validated suite and there is no six-level
+verification evidence to assert. What six levels gets instead is the
+hash-bound experiment config the prepared runner already takes, which is a
+door and not a workaround: it is loaded through the public
+`gpuwm.experiment.load_experiment`, the route gate admits `ruc-lsm` on
+`hrrr-prs`, `hrrr` and `era5`, and the whole path is gated by
+`tests/test_ruc_admission.py::test_a_user_can_select_the_six_level_ruc_geometry`.
+The run receipt carries
+`"soil_geometry_evidence": "internal-consistency-only"`, and
+`gpuwm.physics_compat` warns at configuration time naming exactly what is and
+is not measured.
+
+### The exact thing a user types
+
+Two lines of the experiment config do the selecting:
+
+```toml
+[shared]
+sf_surface_physics = 3
+num_soil_layers    = 6
+```
+
+The complete minimal file is
+`tests/test_ruc_admission.py::SIX_LEVEL_EXPERIMENT_TOML` — that constant, not
+this document, is the authority, and the test above loads it and checks the
+engine resolves six levels. Radiation is not optional beside it: a
+land-surface model with `ra_lw_physics`/`ra_sw_physics` both off has nothing
+computing the downward longwave RUC reads every step, and the loader refuses
+that pairing rather than running on a fabricated flux.
+
+The two commands, as run on 2026-08-27 against a local HRRR case
+directory already staged on the box (18Z wrfprs, f00..f04):
+
+```
+python -m gpuwm.cli prep --source hrrr-prs \
+    --input-list  <case>/inputs.txt \
+    --supplement  hrrr_prs_in_band_surface=<case>/hrrr.t18z.wrfprsf00.grib2 \
+    ...one --supplement per lead... \
+    --author-input-manifest <work>/inputs.json \
+    --wps-namelist      <work>/namelist.wps \
+    --experiment-config <work>/experiment.toml \
+    --geog-root <WPS_GEOG> \
+    --output-root <work>/prepared
+
+python -m gpuwm.prepared_single_domain_forecast --source hrrr-prs \
+    --prepared-root <work>/prepared \
+    --proof-sha256            <printed by prep> \
+    --source-manifest-sha256  <printed by prep> \
+    --prepared-content-sha256 <printed by prep> \
+    --experiment-config <work>/experiment.toml \
+    --wps-namelist      <work>/namelist.wps \
+    --io-mode history --outdir <work>/forecast
+```
+
+`prep` completed in 96.6 s and wrote a prepared cache whose `surface/TSLB`,
+`surface/SMOIS` and `surface/SH2O` are `(6, 40, 40)` — a genuine six-level
+RUC surface remapped from HRRR's own nine-node soil, not a nine-level one
+reshaped. The forecast completed 240 steps in 20.3 wall seconds with
+`status: PASS`.
+
+**What the wiring needed, and what it was before.** Four edges defaulted to
+nine and had to be told the resolved count, or a six-level config met a shape
+error four frames down instead of a forecast: `gpuwm/core/physics.py` built
+`RucRuntimeParameters()` without `num_soil_layers`, so `ruc_cold_start`
+refused the slab the same function had just allocated at six; and
+`gpuwm/ingest/hrrr_physics.py`, `gpuwm/era5_direct.py` and
+`gpuwm/mapped_direct.py` called `preprocess_land_surface_soil` without it.
+`gpuwm/gfs_direct.py` already passed it.
+
+Two call sites are deliberately left alone, and both for reasons that are
+about them rather than about soil geometry:
+
+* `gpuwm/hrrr_hierarchy_direct.py` — its certified raw runtime contract pins
+  `&physics/num_soil_layers = 4` outright, so no land-surface scheme with any
+  other geometry reaches it at all. Threading a count there would be a
+  parameter that cannot vary.
+* `gpuwm/ingest/nest_init.py` — one of the few CRLF files in the tree, so
+  editing it would put CR bytes into a commit this lane keeps at zero; and a
+  RUC land-surface *component override* on a nest is separately refused
+  (`tests/test_ruc_admission.py`) because nothing has measured it. Six-level
+  RUC on a nested domain is therefore still a shape error — named here rather
+  than left to be discovered.
+
+**The retirement path, when a six-level oracle exists.** Regenerate the ~20
+harnesses at `nzs=6 / nddzs=8` with six-element `zsmain`; add the eight asset
+pins to `ruc_contract.py`; add six-level rows to `test_ruc.py` and
+`test_ruc_gpu.py`; flip the receipt field to `wrf-oracle`; downgrade the
+`physics_compat` warning; and only then add a registry template. Until the
+first of those exists, six levels is not a validation candidate and this
+document must not imply it is.
 
 ## Can a user select RUC yet?  No — and now for two reasons, not one
 

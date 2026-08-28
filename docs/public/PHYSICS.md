@@ -918,14 +918,18 @@ chosen with radiation from a menu:
 `wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1`.
 
 **What is pinned, and it is a real scope limit.** MYNN's *namelist
-option identity* is a single validated combination. Twelve knobs --
+option identity* is a single validated combination. 11 knobs --
 `bl_mynn_closure` 2.6, `bl_mynn_cloudpdf` 2, `bl_mynn_mixlength` 1,
 `bl_mynn_edmf` 1, `bl_mynn_edmf_mom` 1, `bl_mynn_edmf_tke` 0,
-`bl_mynn_mixscalars` 0, `bl_mynn_cloudmix` 1, `bl_mynn_mixqt` 0,
+`bl_mynn_cloudmix` 1, `bl_mynn_mixqt` 0,
 `bl_mynn_output` 0, `bl_mynn_tkeadvect` false, `icloud_bl` 1
 (`gpuwm/config.py`, `MYNN_PBL_OPTION_IDENTITY`) -- have exactly one
 implemented value each, and any other value is refused before the run
-starts rather than three hours into a forecast. This is what you will
+starts rather than three hours into a forecast. `bl_mynn_mixscalars`
+left the single-value table at the W4 full admission: it is admitted at
+0 (default, off) and 1 (the fixture-anchored stock qn mixing), with 1
+pinned by its own validator block to `bl_pbl_physics=5`,
+`mp_physics=28` and `bldt=0`. This is what you will
 see, verbatim:
 
 ```

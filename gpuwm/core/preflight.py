@@ -382,6 +382,34 @@ OBSERVED_PEAK_OVER_FOOTPRINT = PEAK_ENVELOPE_FACTORS["windows"]
 #: RADIATION LANE instead.  Receipts:
 #: docs/public/receipts/linux/linux-vram-calibration-20260820.json,
 #: docs/public/receipts/wddm/rtx3080-wddm-calibration-20260819.json.
+#:
+#: RE-MEASURED 2026-08-26 on the same RTX 3080, post-#310 build, after
+#: the stale-guard audit of 2026-08-25 asked whether this was calibrated
+#: against pre-#310 RRTMG pool behaviour.  Legacy lane, measured as
+#: (pool_total_peak - alloc_estimate) / alloc_estimate, which is
+#: in-process CuPy-pool accounting and therefore free of the desktop
+#: compositor sharing this card:
+#:
+#:   ==========  ===============  ================
+#:   grid        pre-#310 (6 h)   post-#310 (2 h)
+#:   ==========  ===============  ================
+#:   60x48       0.269            0.213
+#:   110x88      0.468            0.150
+#:   290x232     --               0.019
+#:   ==========  ===============  ================
+#:
+#: So the retention did fall, and post-#310 it also SHRINKS with grid
+#: size (0.32, 0.26, 0.07 GiB absolute) instead of growing -- meaning
+#: 0.20 is no longer a worst-case bound: it is marginally exceeded at
+#: 60x48 and hugely conservative at 290x232, where memory actually
+#: binds.  The term is KEPT and NOT re-fitted here, because the
+#: comparison is not like-for-like: the pre-#310 rows are 6 h runs and
+#: these are 2 h, and pool retention can build with run length.  A
+#: re-fit needs the full six-forecast 6 h protocol -- recorded as a
+#: named follow-up in
+#: evidence/2026-08-25-stale-guards-engine/named-follow-ups.md.  The
+#: rte-rrtmgp lane measured 0.099-0.102 on 6 h runs, uncharged by
+#: design and covered by ENVELOPE_UNMODELLED_BYTES at these sizes.
 POOL_SLACK_FRACTION = 0.20
 
 #: The name this term shipped under while it was believed to be a WDDM

@@ -18,6 +18,10 @@ import tomllib
 from types import SimpleNamespace
 
 from gpuwm import runtime_manifest
+from gpuwm.aerosol_source_receipt import (
+    AEROSOL_SOURCE_KEY,
+    aerosol_source_report_entry,
+)
 from gpuwm.config import radiation_scheme_ids
 from gpuwm.experiment import build_experiment
 from gpuwm.hrrr_forecast import hrrr_forcing_end_hour
@@ -1210,6 +1214,26 @@ def prepare_hrrr_hierarchy(
             # the receipt is byte-for-byte what it always was.
             **({"statics_corridor": dict(corridor_receipt)}
                if corridor_receipt is not None else {}),
+            # WHICH AEROSOL SOURCE THE ROOT PREPARATION USED.  This stage
+            # publishes a hierarchy built ON that root state, so the fact
+            # is this bundle's as much as the root's, and every forecast
+            # launched from these artifacts inherits it.  Read from the
+            # root prepared cache's own metadata rather than re-resolved:
+            # re-resolving here would be a second resolution path over the
+            # same config field, which is how a run reads one dataset and
+            # reports another.  Empty -- and the receipt byte-for-byte
+            # unchanged -- for every scheme with no aerosol fields.
+            **aerosol_source_report_entry(
+                cache_header.get("metadata", {}).get(
+                    AEROSOL_SOURCE_KEY, {}),
+                mp_physics=native_exp.root.run.mp_physics,
+                when_unrecorded=(
+                    "the root prepared cache at "
+                    f"{paths['prepared_cache']} carries no "
+                    "aerosol-initialization receipt, so it was written by "
+                    "a preparation predating the receipt being stored; "
+                    "re-prepare the root to record which source filled "
+                    "its nwfa/nifa")),
         }
         receipt = staging / "receipt.json"
         temporary = receipt.with_suffix(".json.tmp")

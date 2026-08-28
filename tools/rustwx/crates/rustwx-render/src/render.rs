@@ -97,10 +97,58 @@ pub struct RenderImageTiming {
     pub downsample_ms: u128,
     pub postprocess_ms: u128,
     pub total_ms: u128,
+    /// The map frame's pixel box inside the image: origin then size.
+    ///
+    /// gpuwm addition (VENDOR.md): `map_w`/`map_h` were already published
+    /// here, but a size without an origin cannot place a point -- the
+    /// title row and the colourbar push the map down and right by tens of
+    /// pixels, which at global scale is degrees.  Anything georeferencing
+    /// a finished panel needs all four.
+    #[serde(default)]
+    pub map_x: u32,
+    #[serde(default)]
+    pub map_y: u32,
     #[serde(default)]
     pub map_w: u32,
     #[serde(default)]
     pub map_h: u32,
+    /// True when the map rectangle above still describes the PNG that was
+    /// written.
+    ///
+    /// gpuwm addition (VENDOR.md).  Three post-render passes can move the
+    /// map inside the canvas after the layout is fixed -- the map-viewport
+    /// crop, the horizontal recentre, and the optional vertical trim.
+    /// Each of them reports the offset it applied and the save path folds
+    /// that offset back into `map_x`/`map_y`, so the rectangle FOLLOWS the
+    /// map and this stays true on every normal path.  It goes false only
+    /// when the adjusted rectangle would fall outside the written image --
+    /// a pass cut into the map itself -- because publishing that rectangle
+    /// would put an annotation tens of pixels out; the flag lets a
+    /// consumer refuse instead of guessing.
+    #[serde(default)]
+    pub plot_rect_describes_the_png: bool,
+    /// The written image's own size.
+    ///
+    /// gpuwm addition (VENDOR.md): the map-viewport crop and the vertical
+    /// trim SHRINK the canvas below the requested width/height, so
+    /// anything describing the finished file (the published georeference)
+    /// must read the file's size here, not the request's.
+    #[serde(default)]
+    pub image_w: u32,
+    #[serde(default)]
+    pub image_h: u32,
+    /// Net movement the post-render passes applied to the map inside the
+    /// canvas: positive x is rightward, positive y is downward, and both
+    /// are already folded into `map_x`/`map_y` above.
+    ///
+    /// gpuwm addition (VENDOR.md).  Published separately so a consumer
+    /// (or a test) can reconstruct the PRE-pass layout exactly -- which is
+    /// how the pixel gate proves an unadjusted rectangle is measurably
+    /// wrong rather than trusting the adjustment by construction.
+    #[serde(default)]
+    pub postprocess_offset_x: i64,
+    #[serde(default)]
+    pub postprocess_offset_y: i64,
     #[serde(default)]
     pub has_projected_grid: bool,
     #[serde(default)]
@@ -4949,8 +4997,20 @@ fn render_to_image_profile_inner(
         downsample_ms: 0,
         postprocess_ms: 0,
         total_ms: total_start.elapsed().as_millis(),
+        map_x: layout.map_x,
+        map_y: layout.map_y,
         map_w: layout.map_w,
         map_h: layout.map_h,
+        // Set true here because nothing in this function moves the map
+        // after the layout; `save_png_profile_with_options_and_style`
+        // folds each post-render pass's reported offset into the
+        // rectangle and clears this only when the adjusted rectangle
+        // would fall outside the written image.
+        plot_rect_describes_the_png: true,
+        image_w: img.width(),
+        image_h: img.height(),
+        postprocess_offset_x: 0,
+        postprocess_offset_y: 0,
         has_projected_grid: opts.projected_grid.is_some(),
         has_inverse_raster: opts.inverse_projected_grid.is_some(),
         projection_clip_mask_present: variable_timing.projection_clip_mask_present,
@@ -4996,8 +5056,12 @@ pub fn render_to_image_profile(
     timing.downsample_ms = downsample_start.elapsed().as_millis();
     timing.postprocess_ms = timing.downsample_ms;
     timing.total_ms = total_start.elapsed().as_millis();
-    timing.map_w = timing.map_w / factor;
-    timing.map_h = timing.map_h / factor;
+    timing.map_x /= factor;
+    timing.map_y /= factor;
+    timing.map_w /= factor;
+    timing.map_h /= factor;
+    timing.image_w = image.width();
+    timing.image_h = image.height();
     if let Some(rect) = timing.domain_clip_rect.as_mut() {
         for value in rect {
             *value /= factor;
@@ -5029,16 +5093,23 @@ fn row_is_canvas_background(img: &RgbaImage, y: u32, background: Rgba) -> bool {
     })
 }
 
-pub(crate) fn trim_vertical_canvas_whitespace(img: &RgbaImage, background: Rgba) -> RgbaImage {
+/// Also returns the rows removed off the TOP -- everything in the image
+/// moved up by that many pixels.  gpuwm addition (VENDOR.md): until the
+/// pass reported it, the plot rectangle could not follow the map and
+/// every trimmed panel shipped without a georeference.
+pub(crate) fn trim_vertical_canvas_whitespace(
+    img: &RgbaImage,
+    background: Rgba,
+) -> (RgbaImage, u32) {
     if img.height() <= 2 {
-        return img.clone();
+        return (img.clone(), 0);
     }
 
     let first_non_bg = (0..img.height()).find(|&y| !row_is_canvas_background(img, y, background));
     let last_non_bg = (0..img.height()).rfind(|&y| !row_is_canvas_background(img, y, background));
 
     let (Some(first), Some(last)) = (first_non_bg, last_non_bg) else {
-        return img.clone();
+        return (img.clone(), 0);
     };
 
     let top_pad = 2u32;
@@ -5047,15 +5118,28 @@ pub(crate) fn trim_vertical_canvas_whitespace(img: &RgbaImage, background: Rgba)
     let crop_bottom = (last.saturating_add(bottom_pad)).min(img.height().saturating_sub(1));
     let crop_h = crop_bottom.saturating_sub(crop_top).saturating_add(1);
     if crop_top == 0 && crop_h == img.height() {
-        return img.clone();
+        return (img.clone(), 0);
     }
 
-    crop_imm(img, 0, crop_top, img.width(), crop_h).to_image()
+    (
+        crop_imm(img, 0, crop_top, img.width(), crop_h).to_image(),
+        crop_top,
+    )
 }
 
-pub(crate) fn crop_canvas_whitespace(img: &RgbaImage, background: Rgba, pad: u32) -> RgbaImage {
+/// Also returns `(left, top)` -- the columns and rows removed off the
+/// left and top edges, i.e. how far everything in the image moved left
+/// and up.  gpuwm addition (VENDOR.md): the map-viewport crop is the
+/// biggest mover of the three post-render passes (tens of pixels), and
+/// until it reported its offset the plot rectangle could not follow the
+/// map through it.
+pub(crate) fn crop_canvas_whitespace(
+    img: &RgbaImage,
+    background: Rgba,
+    pad: u32,
+) -> (RgbaImage, (u32, u32)) {
     if img.width() <= 2 || img.height() <= 2 {
-        return img.clone();
+        return (img.clone(), (0, 0));
     }
 
     let mut min_x = img.width();
@@ -5074,7 +5158,7 @@ pub(crate) fn crop_canvas_whitespace(img: &RgbaImage, background: Rgba, pad: u32
     }
 
     if min_x > max_x || min_y > max_y {
-        return img.clone();
+        return (img.clone(), (0, 0));
     }
 
     let crop_x = min_x.saturating_sub(pad);
@@ -5086,10 +5170,13 @@ pub(crate) fn crop_canvas_whitespace(img: &RgbaImage, background: Rgba, pad: u32
     let crop_w = crop_right.saturating_sub(crop_x).saturating_add(1);
     let crop_h = crop_bottom.saturating_sub(crop_y).saturating_add(1);
     if crop_x == 0 && crop_y == 0 && crop_w == img.width() && crop_h == img.height() {
-        return img.clone();
+        return (img.clone(), (0, 0));
     }
 
-    crop_imm(img, crop_x, crop_y, crop_w, crop_h).to_image()
+    (
+        crop_imm(img, crop_x, crop_y, crop_w, crop_h).to_image(),
+        (crop_x, crop_y),
+    )
 }
 
 fn pixel_matches_background(px: image::Rgba<u8>, background: Rgba) -> bool {
@@ -5105,9 +5192,16 @@ fn pixel_matches_background(px: image::Rgba<u8>, background: Rgba) -> bool {
     diff <= 6
 }
 
-pub(crate) fn center_horizontal_canvas_content(img: &RgbaImage, background: Rgba) -> RgbaImage {
+/// Also returns the signed horizontal shift it applied to the content
+/// (positive = rightward).  gpuwm addition (VENDOR.md): this is the pass
+/// every regional domain-framed panel takes, so until it reported its
+/// shift no regional panel could publish a georeference at all.
+pub(crate) fn center_horizontal_canvas_content(
+    img: &RgbaImage,
+    background: Rgba,
+) -> (RgbaImage, i64) {
     if img.width() <= 2 {
-        return img.clone();
+        return (img.clone(), 0);
     }
 
     let mut min_x = img.width();
@@ -5122,14 +5216,14 @@ pub(crate) fn center_horizontal_canvas_content(img: &RgbaImage, background: Rgba
     }
 
     if min_x > max_x {
-        return img.clone();
+        return (img.clone(), 0);
     }
 
     let left_margin = min_x;
     let right_margin = img.width().saturating_sub(max_x).saturating_sub(1);
     let shift = (right_margin as i64 - left_margin as i64) / 2;
     if shift == 0 {
-        return img.clone();
+        return (img.clone(), 0);
     }
 
     let mut centered = RgbaImage::from_pixel(img.width(), img.height(), background.to_image_rgba());
@@ -5147,7 +5241,7 @@ pub(crate) fn center_horizontal_canvas_content(img: &RgbaImage, background: Rgba
         }
     }
 
-    centered
+    (centered, shift)
 }
 
 pub fn encode_rgba_png_profile_with_options(

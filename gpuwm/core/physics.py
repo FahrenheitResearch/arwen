@@ -1319,8 +1319,21 @@ class PhysicsTendencies:
             state.rw_t += rw
 
     def scalar_for(self, name: str) -> cp.ndarray | None:
-        return {"qv": self.rqv, "qc": self.rqc, "qr": self.rqr,
+        base = {"qv": self.rqv, "qc": self.rqc, "qr": self.rqr,
                 "qi": self.rqi, "qs": self.rqs}.get(name)
+        if base is not None:
+            return base
+        # ``extra_scalars`` is deliberately a PLAIN attribute, never a
+        # dataclass field, on exactly the ``rw`` terms above: the restart
+        # component manifest (TENDENCY_COMPONENTS) stays byte-identical,
+        # and the held value is restart-REBUILT under the enforced
+        # bl_mynn_mixscalars=1 => bldt=0 invariant (every compute()
+        # replaces it before any read).  Producers: the MYNN mixscalars
+        # lane (Stage B, stock nc/ni/nwfa/nifa), and a later wave can add
+        # further species.  Empty/absent on every other path, so every
+        # existing trajectory reads exactly what it read before.
+        extra = getattr(self, "extra_scalars", None)
+        return None if extra is None else extra.get(name)
 
 
 def couple_ysu_tendencies(state: DomainState, cfg: RunConfig,
@@ -3261,10 +3274,19 @@ class PhysicsDriver:
         # their consuming read; a default buried in the solver would make
         # that citation false, and the run's own receipt would not record
         # which identity it used.
+        # Stage B (W4 full admission): under the mixscalars key the runtime
+        # stages the mp=28 qn family into the driver.  The validator has
+        # already pinned the combo (bl_pbl_physics=5, mp_physics=28,
+        # bldt=0), so the attribute reads cannot miss.
+        qn_scalars = None
+        if cfg.bl_mynn_mixscalars == 1:
+            qn_scalars = {name: getattr(self.state, name)
+                          for name in ("nc", "ni", "nwfa", "nifa")}
         out = mynn_pbl_step(
             atmosphere, f, w=self.state.w, dx=cfg.dx,
             delt=self.bldt_seconds, itimestep=itimestep,
             mp_physics=cfg.mp_physics,
+            qn_scalars=qn_scalars,
             # The domain state is what makes MYNN's working set a set of
             # priced scratch slots instead of ~46 kB of pool churn per
             # column per step; see gpuwm/core/mynn_pbl_scratch.py.
@@ -3283,6 +3305,23 @@ class PhysicsDriver:
             icloud_bl=cfg.icloud_bl)
         validate_mynn_tendencies(out)
         self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
+        if cfg.bl_mynn_mixscalars == 1:
+            # WRF couples RQN*BLTEN through the same calculate_phy_tend
+            # multiply and add_a2a bounds as every other A-grid scalar
+            # rate (module_physics_addtendc.F).  Held as plain-attribute
+            # extras -- see PhysicsTendencies.scalar_for.
+            chm = (self.state.c1h[:, None, None]
+                   * self.state.total_mu()[None]
+                   + self.state.c2h[:, None, None])
+            extra: dict[str, cp.ndarray] = {}
+            for state_name, out_name in (
+                    ("nc", "dnc"), ("ni", "dni"),
+                    ("nwfa", "dnwfa"), ("nifa", "dnifa")):
+                coupled = chm * out[out_name]
+                if cfg.specified or cfg.nested:
+                    _specified_mass_mask(coupled)
+                extra[state_name] = coupled
+            self.pbl_tendencies.extra_scalars = extra
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -5011,8 +5050,18 @@ def initialize_physics(
     # different bundle object over the same bytes, not Noah's bundle reused.
     ruc_params = None
     if int(cfg.sf_surface_physics) == 3:
+        # ``n_soil`` and not the module default.  RUC_STATE_3D above is
+        # allocated at ``n_soil = soil_layer_count(cfg)``, so leaving the
+        # parameters at their nine-level default made a six-level request
+        # allocate a six-level slab and hand the driver a NINE-level zs --
+        # the geometry mismatch ``ruc_cold_start`` refuses a few lines
+        # below.  That refusal was the only thing standing between a
+        # six-level config and a run on the wrong soil depths, and it made
+        # the geometry unreachable rather than safe: this is the line that
+        # makes the two the same run.
         ruc_params = RucRuntimeParameters(
-            seaice_albedo_default=cfg.seaice_albedo_default)
+            seaice_albedo_default=cfg.seaice_albedo_default,
+            num_soil_layers=n_soil)
 
     if xice_threshold is not None and int(cfg.sf_surface_physics) != 4:
         raise ValueError(

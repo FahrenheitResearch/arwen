@@ -12,6 +12,7 @@ from gpuwm.core.ruc_contract import (
     NUM_SOIL_LAYERS,
     RUC_INIT_ORACLE_ASSET,
     RUC_INIT_ORACLE_CASES,
+    RUC_NAMELIST_ADMITTED,
     RUC_NAMELIST_DEFAULTS,
     RUC_PACKAGE_STATE_FIELDS,
     RUC_PACKAGE_STATE_SHA256,
@@ -196,8 +197,11 @@ def test_ruc_default_knobs_resolve_omissions_and_reject_unvalidated_modes():
     assert dict(resolved) == dict(RUC_NAMELIST_DEFAULTS)
     with pytest.raises(TypeError):
         resolved["flag_sm_adj"] = 1
+    # The five that STAY REJECTED.  mosaic_lu, mosaic_soil, flag_sm_adj and
+    # spp_lsm are unvalidated MODES, not geometries: nothing about the RUC_NZS
+    # lift touches them and nothing here widens them.  `spp_lsm: False` is the
+    # type check -- a bool is not an int for this purpose.
     for override in (
-        {"num_soil_layers": 6},
         {"mosaic_lu": 1},
         {"mosaic_soil": 1},
         {"flag_sm_adj": 1},
@@ -208,6 +212,40 @@ def test_ruc_default_knobs_resolve_omissions_and_reject_unvalidated_modes():
             resolve_default_ruc_options(override)
     with pytest.raises(ValueError, match="unknown RUC options"):
         resolve_default_ruc_options({"invented": 0})
+
+
+def test_num_soil_layers_is_admitted_against_wrfs_set_not_one_default():
+    """Six levels stopped being an unsupported override.
+
+    ``num_soil_layers`` is the ONLY key resolved against a set.  WRF's
+    ``init_soil_depth_3`` tabulates ``zs`` for 6 and 9, and since the RUC_NZS
+    lift gpuwm's forecast column compiles at both, so pinning it to one would
+    be gpuwm's pin rather than WRF's.
+
+    ADMITTED IS NOT VALIDATED.  Six levels carries no WRF forecast oracle;
+    ``gpuwm.physics_compat`` warns at runtime and the run receipt records
+    ``soil_geometry_evidence: internal-consistency-only``.  This test asserts
+    reachability, and deliberately asserts nothing about accuracy.
+    """
+    for count in WRF_SUPPORTED_NUM_SOIL_LAYERS:
+        resolved = resolve_default_ruc_options({"num_soil_layers": count})
+        assert resolved["num_soil_layers"] == count
+        # every other key still resolves to its validated default
+        for key, default in RUC_NAMELIST_DEFAULTS.items():
+            if key != "num_soil_layers":
+                assert resolved[key] == default
+
+    assert set(RUC_NAMELIST_ADMITTED) == {"num_soil_layers"}
+    assert RUC_NAMELIST_ADMITTED["num_soil_layers"] == (
+        WRF_SUPPORTED_NUM_SOIL_LAYERS)
+
+    # A geometry WRF does not tabulate is still refused, and the refusal names
+    # the set rather than a single number.
+    for count in (0, 4, 5, 7, 8, 12):
+        with pytest.raises(ValueError, match="admitted"):
+            resolve_default_ruc_options({"num_soil_layers": count})
+    with pytest.raises(ValueError, match="admitted"):
+        resolve_default_ruc_options({"num_soil_layers": True})
 
 
 def test_reference_validator_fails_closed_on_size_and_byte_drift(tmp_path):

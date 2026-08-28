@@ -671,7 +671,7 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
     # battery's default plan build (a build predating the plan builder
     # loads cleanly and silently sends every score back to scipy, whose
     # exact-tie answers are cKDTree traversal order).
-    # The four MPAS binaries are here for the mapped engine's reason,
+    # The five MPAS binaries are here for the mapped engine's reason,
     # exactly: they build in `tools/rustwx`, and BRIDGE_ENV's consumers
     # resolve through `crate_dir()`, which is the grib1_bridge crate.  An
     # entry there would make `find_bridge` skip a checkout build of the
@@ -683,7 +683,7 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
     assert extra == {"region_global_dealias", "netcdf_writer",
                      "gpuwm_mapped_engine", "static_fields", "obs_regrid",
                      "rw_mpas_mesh", "rw_mpas_static", "rw_mpas_init",
-                     "rw_mpas_convert"}
+                     "rw_mpas_convert", "rw_mpas_lbc"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(

@@ -194,6 +194,33 @@ WRF_REAL_MP28_AEROSOL_SOURCE_POLICY = {
 }
 
 
+def _warn_synthetic_aerosol_fallback(source_choice, resolution) -> None:
+    """Announce the synthetic aerosol fallback on the way past it.
+
+    The receipt is the durable record, but a receipt is read afterwards and
+    this is a fact about what the run IS.  A user who expected a data-
+    initialized forecast and got an analytic profile should learn it while
+    the run is starting, not while reconciling numbers a week later, so the
+    same named sentence also goes to the logger at WARNING.
+
+    A DELIBERATE ``mp28_aerosol_source='synthetic'`` is not warned about at
+    that level: nothing went wrong, the user asked for it.  It is still
+    recorded in the receipt, because the receipt has to say what the run
+    was regardless of who chose it.
+    """
+    from gpuwm.config import MP28_AEROSOL_SYNTHETIC_FALLBACK
+
+    if source_choice == "synthetic":
+        print("mp_physics=28 aerosol: synthetic profile selected by name "
+              "(mp28_aerosol_source='synthetic'); no aerosol dataset was "
+              "searched for.", file=sys.stderr)
+        return
+    detail = ""
+    if resolution is not None and resolution.fallback_reason:
+        detail = " " + str(resolution.fallback_reason)
+    print(MP28_AEROSOL_SYNTHETIC_FALLBACK + detail, file=sys.stderr)
+
+
 def _mp28_aerosol_source_policy(cfg: RunConfig, state) -> dict[str, object]:
     """Receipt for the mp=28 half of the source-absent initialization.
 
@@ -2322,6 +2349,45 @@ class RealInitResult:
     initial_perturbation: dict[str, object] = field(default_factory=dict)
 
 
+def _wif_grid_latlon_from(grid, state):
+    """``(lat2d, lon2d)`` for the WIF ingest from whatever the caller holds.
+
+    FOUR CARRIERS, one meaning.  The tree does not have a single geodesy
+    object every real front door passes around: ``gpuwm run`` and the
+    tilestream cases hold a projection ``Grid``; the direct GFS/ERA5/
+    mapped runners hold a geogrid ``static`` mapping; the prepared road
+    restores a state that already carries the mass-point mirror
+    ``initialize_prepared_physics`` stamps on it.  Accepting all of them
+    is what makes this derivation reach every door instead of the one
+    that happened to be wired first, and every one of them is the SAME
+    mass-point lat/lon -- there is no per-source variant here, only a
+    per-caller container.
+
+    ``None`` when the caller holds none of them, which the caller above
+    turns into a named refusal rather than a guess.
+    """
+
+    for candidate in (grid, state):
+        if candidate is None:
+            continue
+        latlon_mass = getattr(candidate, "latlon_mass", None)
+        if callable(latlon_mass):
+            lat, lon = latlon_mass()
+            return (lat, lon)
+        latitude = getattr(candidate, "latitude_deg", None)
+        longitude = getattr(candidate, "longitude_deg", None)
+        if latitude is not None and longitude is not None:
+            return (latitude, longitude)
+        try:
+            names = ("XLAT_M", "XLONG_M") if "XLAT_M" in candidate                 else ("XLAT", "XLONG")
+            return (candidate[names[0]], candidate[names[1]])
+        except (TypeError, KeyError, IndexError):
+            pass
+        if isinstance(candidate, (tuple, list)) and len(candidate) == 2:
+            return (candidate[0], candidate[1])
+    return None
+
+
 def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     coord: VerticalCoord, terrain, *, source_orography=None,
                     p_top=5000.0, sfcp_to_sfcp=True,
@@ -2335,7 +2401,10 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     timing_report=None,
                     scratch_arena=None,
                     dycore_state_workspace=None,
-                    initial_perturbation=None) -> RealInitResult:
+                    initial_perturbation=None,
+                    grid=None,
+                    wif_grid_latlon=None,
+                    wif_valid_date=None) -> RealInitResult:
     """Construct a moist, discretely hydrostatic :class:`DomainState`.
 
     The pressure-level/RH lane requires TT, RH, GHT, UU, VV, PSFC, T2,
@@ -2409,7 +2478,10 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # stream nothing in this module can read and then hand the
         # microphysics an all-zero aerosol field as if that were the
         # requested climatology.  Refusing by name is the same posture the
-        # namelist importer already prints (MP28_AEROSOL_SOURCE_DEVIATION).
+        # namelist importer already prints, which since lane/wif-default
+        # prints a RESOLUTION (MP28_AEROSOL_SOURCE_DEFAULT) or a named
+        # fallback (MP28_AEROSOL_SYNTHETIC_FALLBACK) rather than a
+        # deviation notice.
         validate_aerosol_source_options(cfg)
     if not isinstance(use_sh_qv, (bool, np.bool_)):
         raise TypeError("use_sh_qv must be boolean")
@@ -2955,19 +3027,203 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # module_initialize_real.F, the domain construction the fill belongs
         # to has not happened yet here, and filling would make the
         # "awaiting_profile_fill" receipt this function publishes false.
-        for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
-            value = getattr(state, name)
-            if bool((value != 0).any()):
-                raise ValueError(
-                    f"mp_physics=28 real initialization left state.{name} "
-                    "nonzero; exact zero is WRF's aer_init_opt=0 value "
-                    "(dyn_em/module_initialize_real.F:2332-2345) AND the "
-                    "signal thompson_init's MAXVAL test reads "
-                    "(phys/module_mp_thompson.F:493/:531) to install the "
-                    "synthetic profile. A real aerosol ingest must also "
-                    "teach gpuwm.core.microphysics.microphysics_init that "
-                    "the field is already populated.")
+        # THE DEFAULT (lane/wif-default).  This used to read
+        # ``(aer_init_opt, wif_input_opt) == (1, 1)`` -- an opt-in.  An
+        # opt-in flag on a correctness remedy is a workaround, so it is
+        # gone: a real-data mp=28 run now RESOLVES WRF's monthly WIF
+        # climatology and uses it, and reaches thompson_init's synthetic
+        # profile only when there is genuinely no dataset to read.  The two
+        # namelist selectors keep WRF's Registry defaults (the
+        # prepared-forecast runner compares those rows for exact equality);
+        # the decision lives in cfg.mp28_aerosol_source, whose default is
+        # "auto".
+        #
+        # ``climatology`` refuses instead of falling back, because a
+        # request that silently degrades is worse than one that fails.
+        # ``synthetic`` skips the resolver entirely -- it does not "fail to
+        # find" anything, so it is not a fallback and must not be reported
+        # as one.
+        from gpuwm.ingest.wif_climatology import (
+            describe_wif_source, resolve_wif_climatology)
+        _source_choice = str(
+            getattr(cfg, "mp28_aerosol_source", "auto") or "auto")
+        _namelist_demand = (
+            (int(cfg.aer_init_opt), int(cfg.wif_input_opt)) == (1, 1))
+        if _namelist_demand and _source_choice == "auto":
+            # aer_init_opt=1/wif_input_opt=1 is real.exe's own spelling of
+            # "use the climatology"; honour it as the strict form.
+            _source_choice = "climatology"
+        if _source_choice == "synthetic":
+            wif_resolution = None
+        else:
+            wif_resolution = resolve_wif_climatology(
+                cfg.wif_climatology_path or None,
+                explicit_required=(_source_choice == "climatology"))
+        wif_climatology_selected = (
+            wif_resolution is not None and wif_resolution.resolved)
+        wif_receipt = None
+        if wif_climatology_selected:
+            # (b') THE PORTED CLIMATOLOGY -- real.exe's aer_init_opt=1
+            # path (dyn_em/module_initialize_real.F:2357-2536 3-D,
+            # :4530-4547 2-D), fed from the SAME global monthly dataset
+            # WRF routes through metgrid's constants_name.  This is the
+            # one aerosol source that fills the fields HERE rather than
+            # leaving thompson_init's synthetic profile to do it: the
+            # nonzero nwfa/nifa this writes is exactly the signal WRF's
+            # own MAXVAL presence tests (module_mp_thompson.F:493/:531)
+            # read to SKIP the synthetic fill, so microphysics_init needs
+            # no new teaching -- WRF's mechanism already carries it.  The
+            # vertical target is ``dry_pressure``: the ``grid%pb`` the
+            # WIF vert_interp call receives is, at that point in
+            # init_domain_rk, the p_dry(mu0, znw, p_top) scratch
+            # (:1625-1629, :1701), not the final base state.
+            from gpuwm.ingest.wif_climatology import (
+                load_wif_climatology, wif_fields_for_grid)
+            # BOTH INPUTS ARE DERIVED, and neither is guessed.  Making a
+            # caller hand these in was the whole reason the capability had
+            # no front door: every runner already holds both, so asking
+            # for them again meant a configuration that selects the
+            # ingest still could not run it.
+            #
+            # The valid date is ``snapshot.valid_time`` -- the case's own
+            # valid time, the same one every runner would have passed and
+            # the one metgrid stamps on this forcing frame.  There is no
+            # second candidate; a date that disagreed with the snapshot
+            # would be interpolating the climatology to a month this
+            # state is not.
+            #
+            # The grid latitudes/longitudes are the model's mass-point
+            # geodesy, taken from whatever the caller already carries: a
+            # projection Grid (``latlon_mass()``), the state's own
+            # ``latitude_deg``/``longitude_deg`` mirror, a geogrid mapping
+            # (``XLAT_M``/``XLONG_M``), or a plain ``(lat2d, lon2d)``
+            # pair.  This is METADATA, not source data -- which is the
+            # arbitrary-acceptance argument the module docstring already
+            # makes: the derivation is identical for HRRR, GFS, ERA5,
+            # 20CRv3, RUC and any mapped source, because none of them is
+            # consulted.
+            if wif_valid_date is None:
+                wif_valid_date = getattr(snapshot, "valid_time", None)
+            if wif_grid_latlon is None:
+                wif_grid_latlon = _wif_grid_latlon_from(grid, state)
+            if wif_grid_latlon is None or wif_valid_date is None:
+                # The dataset resolved but this CALLER still cannot use
+                # it.  The derivation above (lane/static-dataset-door)
+                # takes the valid date from snapshot.valid_time and the
+                # mass-point lat/lon from whichever carrier the caller
+                # holds, so reaching here means the caller supplied NONE
+                # of them -- not that a front door forgot to pass grid=.
+                #
+                # WHICH BEHAVIOUR is decided by who asked, not by what is
+                # missing (lane/wif-default).  An EXPLICIT climatology
+                # request refuses: honouring it is impossible, and
+                # silently substituting a different initial condition for
+                # a named one is the failure that lane exists to remove.
+                # The DEFAULT falls back, because a call site that carries
+                # no geodesy at all is a property of the call site, not a
+                # configuration error the user made, and a default that
+                # hard-fails there is a default nobody can ship.  Either
+                # way it is NAMED, and it names WHICH input could not be
+                # derived rather than only that one could not.
+                missing = []
+                if wif_grid_latlon is None:
+                    missing.append(
+                        "the model mass-point latitudes/longitudes (pass "
+                        "grid=<projection Grid>, grid={'XLAT_M':..., "
+                        "'XLONG_M':...} or wif_grid_latlon=(lat2d, lon2d))")
+                if wif_valid_date is None:
+                    missing.append(
+                        "the case valid time (the snapshot carries it as "
+                        ".valid_time; pass wif_valid_date='YYYY-MM-DD...' "
+                        "when it does not)")
+                unusable = (
+                    "the WIF aerosol climatology resolved at "
+                    f"{wif_resolution.path} but this initialization could "
+                    "not derive " + " and ".join(missing)
+                    + ", which a GLOBAL monthly dataset needs and which "
+                    "cannot be guessed: a wrong grid or a wrong month is a "
+                    "silently different aerosol field, not an error")
+                if _source_choice == "climatology":
+                    raise ValueError(
+                        "mp28_aerosol_source='climatology' cannot be "
+                        "honoured: " + unusable)
+                from gpuwm.ingest.wif_climatology import WifSourceResolution
+                wif_resolution = WifSourceResolution(
+                    None, "resolved-but-caller-supplied-no-grid",
+                    wif_resolution.candidates, unusable)
+                wif_climatology_selected = False
+        if wif_climatology_selected:
+            wif_lat2d, wif_lon2d = wif_grid_latlon
+            # ONE RESOLVER, not two.  lane/static-dataset-door reached the
+            # dataset a second time here through
+            # wif_dataset.resolve_wif_climatology_path.  It cannot stay:
+            # resolve_wif_climatology (lane/wif-default) has ALREADY chosen
+            # the file above -- that choice is what made
+            # wif_climatology_selected true -- and a second resolver over
+            # the same config field with a different precedence is how a
+            # run reads one dataset and reports another.  The staged root
+            # that call existed to reach (`gpuwm fetch-tables --wif` ->
+            # ~/.gpuwm/wif) is now a rung INSIDE resolve_wif_climatology,
+            # so nothing was lost by deleting it.
+            wif_fields, wif_receipt = wif_fields_for_grid(
+                load_wif_climatology(wif_resolution.path),
+                _host(wif_lat2d), _host(wif_lon2d), str(wif_valid_date),
+                _host_float32(dry_pressure), _host_float32(base.phb))
+            for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
+                target_field = getattr(state, name)
+                target_field[...] = state_xp.asarray(
+                    wif_fields[name], dtype=state_xp.float32)
+        else:
+            for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
+                value = getattr(state, name)
+                if bool((value != 0).any()):
+                    raise ValueError(
+                        f"mp_physics=28 real initialization left "
+                        f"state.{name} "
+                        "nonzero; exact zero is WRF's aer_init_opt=0 value "
+                        "(dyn_em/module_initialize_real.F:2332-2345) AND "
+                        "the signal thompson_init's MAXVAL test reads "
+                        "(phys/module_mp_thompson.F:493/:531) to install "
+                        "the synthetic profile. The one ingest that MAY "
+                        "populate them is the wif-climatology branch "
+                        "above, which this run did not select.")
         aerosol_initialization = _mp28_aerosol_source_policy(cfg, state)
+        aerosol_initialization["mp28_aerosol_source"] = _source_choice
+        if wif_receipt is not None:
+            # The fields are ALREADY populated: thompson_init's MAXVAL
+            # tests will find them nonzero and skip the synthetic fill,
+            # so nothing is awaited.  The stage receipt binds which
+            # dataset, which weights and which operators produced them.
+            from gpuwm.config import MP28_AEROSOL_SOURCE_DEFAULT
+            aerosol_initialization["awaiting_profile_fill"] = False
+            aerosol_initialization["wif_climatology"] = wif_receipt
+            aerosol_initialization["aerosol_source"] = "wif-climatology"
+            aerosol_initialization["aerosol_source_statement"] = (
+                MP28_AEROSOL_SOURCE_DEFAULT)
+            aerosol_initialization["dataset"] = describe_wif_source(
+                wif_resolution)
+            aerosol_initialization["policy"] = (
+                "wif-climatology-monthly-interp-then-vert-interp")
+        else:
+            # THE FALLBACK, SAID OUT LOUD.  This is the branch that changes
+            # what the forecast IS, so it is the branch that must be
+            # impossible to miss in a receipt: a named source, the WRF
+            # sentence explaining what a synthetic aerosol profile is, and
+            # -- when the fallback was reached rather than requested -- the
+            # concrete search that came up empty.
+            from gpuwm.config import MP28_AEROSOL_SYNTHETIC_FALLBACK
+            aerosol_initialization["aerosol_source"] = (
+                "thompson_init-synthetic-profile")
+            aerosol_initialization["aerosol_source_statement"] = (
+                MP28_AEROSOL_SYNTHETIC_FALLBACK)
+            aerosol_initialization["synthetic_fallback_in_use"] = True
+            aerosol_initialization["synthetic_fallback_requested"] = (
+                _source_choice == "synthetic")
+            if wif_resolution is not None:
+                aerosol_initialization["dataset"] = describe_wif_source(
+                    wif_resolution)
+            _warn_synthetic_aerosol_fallback(
+                _source_choice, wif_resolution)
     state.u[...] = state_xp.asarray(u, dtype=state_xp.float32)
     state.v[...] = state_xp.asarray(v, dtype=state_xp.float32)
     state.w[...] = 0.0

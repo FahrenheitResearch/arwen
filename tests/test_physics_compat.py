@@ -28,7 +28,27 @@ def _cfg(**overrides) -> RunConfig:
     return RunConfig(**values)
 
 
-def test_full_target_mynn_ruc_pair_has_no_remaining_blocker():
+
+@pytest.fixture
+def captured_warnings():
+    """Every :func:`gpuwm.explain.warn` record raised inside the block.
+
+    ``gpuwm.explain.warn`` prints to stderr and feeds registered observers;
+    it does NOT go through Python's ``warnings`` module, so ``pytest.warns``
+    cannot see it.  The observer hook is the tree's own machine-facing
+    surface for exactly this, and it gives the two halves as fields rather
+    than a line to pattern-match.
+    """
+    from gpuwm.explain import add_warning_observer, remove_warning_observer
+
+    records: list[dict] = []
+    add_warning_observer(records.append)
+    try:
+        yield records
+    finally:
+        remove_warning_observer(records.append)
+
+def test_full_target_mynn_ruc_pair_has_no_remaining_blocker(captured_warnings):
     """The target suite's receipt after the ownership port.
 
     MYNN no longer appears because 5/5 runs, "RUC land-surface model" no
@@ -44,13 +64,29 @@ def test_full_target_mynn_ruc_pair_has_no_remaining_blocker():
         sf_surface_physics=3, num_soil_layers=9)
     assert blockers == ()
 
-    # RUC's own refusals, each reported with the selector pair that caused it.
+    # SIX LEVELS IS NO LONGER BLOCKED.  The 'RUC forecast column soil
+    # geometry' blocker was retired when the column stopped being pinned to
+    # nine: ruc.cu sizes every soil scratch from RUC_NZS, and the host and
+    # device lanes resolve the count from the profile.  What replaced it is a
+    # WARNING, because what six levels lacks is a WRF forecast oracle, not a
+    # code path -- the warn-not-block ruling this file already applies to
+    # Noah-MP's column width.
     six = pending_wrf_physics_components(
         mp_physics=6, sf_sfclay_physics=91, bl_pbl_physics=1,
         sf_surface_physics=3, num_soil_layers=6)
-    assert [item.component for item in six] == ["RUC soil geometry"]
-    assert six[0].selectors == (
-        ("sf_surface_physics", 3), ("num_soil_layers", 6))
+    assert six == ()
+    assert any("no WRF forecast oracle" in record["action"]
+               for record in captured_warnings), captured_warnings
+
+    # WRF's OWN refusal survives untouched: a count init_soil_depth_3 does
+    # not tabulate has no zs at all, and that is a blocker at 4 and at 5.
+    for count in (4, 5):
+        refused = pending_wrf_physics_components(
+            mp_physics=6, sf_sfclay_physics=91, bl_pbl_physics=1,
+            sf_surface_physics=3, num_soil_layers=count)
+        assert [item.component for item in refused] == ["RUC soil geometry"]
+        assert refused[0].selectors == (
+            ("sf_surface_physics", 3), ("num_soil_layers", count))
 
     # And the admitted combination reports nothing at all, which is what makes
     # every refusal above a statement rather than a blanket.
@@ -214,7 +250,7 @@ def test_mixed_mynn_pairings_follow_wrf_v461_instead_of_a_half_suite_gate():
         assert "phys/module_physics_init.F:" in blockers[0].missing[1]
 
 
-def test_target_runconfig_is_admitted_without_substitution():
+def test_target_runconfig_is_admitted_without_substitution(captured_warnings):
     """The target MYNN/RUC suite validates directly.
 
     RUC at nine layers is admitted, mp8 is first-class (packaged tables;
@@ -227,13 +263,27 @@ def test_target_runconfig_is_admitted_without_substitution():
                num_soil_layers=9)
     assert validate_run_config(cfg) is cfg
 
-    # The nine-layer geometry is admitted; SIX is what is still refused, and
-    # that receipt must name the count so a user is not left guessing.
+    # SIX IS ADMITTED NOW, and admitted is not the same as validated: it
+    # passes validation and warns, naming exactly what has not been measured.
     six = _cfg(moist=True, mp_physics=6, sf_sfclay_physics=91,
                bl_pbl_physics=1, sf_surface_physics=3, num_soil_layers=6)
-    with pytest.raises(UnsupportedPhysicsSuiteError) as caught_six:
-        validate_run_config(six)
-    assert "num_soil_layers=9 only" in str(caught_six.value)
+    assert validate_run_config(six) is six
+    assert any("no WRF forecast oracle" in record["action"]
+               for record in captured_warnings), captured_warnings
+
+    # A geometry WRF itself does not tabulate is still refused outright.  On
+    # THIS path the refusal comes from gpuwm.config's soil-layer resolver,
+    # which runs before the physics-suite check ever sees the config, so it
+    # is a ValueError rather than an UnsupportedPhysicsSuiteError.  The
+    # physics-suite half of the same refusal is asserted directly against
+    # pending_wrf_physics_components in
+    # test_full_target_mynn_ruc_pair_has_no_remaining_blocker.
+    for count in (4, 5):
+        bad = _cfg(moist=True, mp_physics=6, sf_sfclay_physics=91,
+                   bl_pbl_physics=1, sf_surface_physics=3,
+                   num_soil_layers=count)
+        with pytest.raises(ValueError, match="must be 6 or 9"):
+            validate_run_config(bad)
 
     # And the admitted combination validates, which is what makes the two
     # refusals above meaningful rather than a blanket "RUC is unsupported".

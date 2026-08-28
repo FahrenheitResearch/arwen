@@ -448,7 +448,20 @@ def build_forcing(run_seconds=1800.0):
             cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac,
             eta_levels=ETA_LEVELS)
         result = initialize_real(
-            horizontal, cfg, coord, terrain,
+            # ``grid=`` is the mp=28 aerosol front door, the same one the
+            # eleven production real routes take, and it is here for
+            # uniformity rather than for an effect today: this dynamics-only
+            # forcing builder runs under a frozen config whose mp_physics is
+            # 0, so ``initialize_real`` never reaches the branch that reads
+            # it.  It costs nothing to a run that does not -- the argument is
+            # consulted lazily on exactly one line, inside the aerosol-aware
+            # Thompson block -- and without it a config change here would
+            # take the synthetic profile silently, which is the one outcome
+            # the shared resolver exists to make impossible.  The case's
+            # PRODUCTION path (``prepare_phase3_case`` ->
+            # ``gpuwm.runtime.prepare_real_case``) has always been wired;
+            # this second, older builder was the gap.
+            horizontal, cfg, coord, terrain, grid=grid,
             source_orography=source_orography, p_top=10000.0,
             sfcp_to_sfcp=True)
         result.state.set_map_coriolis(

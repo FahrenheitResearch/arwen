@@ -2187,7 +2187,12 @@ def _thompson_aerosol_setup_identity() -> dict:
 
     The ``aerosol_source`` token records that this build's aerosol initial
     condition is ``thompson_init``'s synthetic CCN/IN profile
-    (module_mp_thompson.F:493-551) at ``aer_init_opt = wif_input_opt = 0``.
+    (module_mp_thompson.F:493-551) when no aerosol dataset resolved.
+    Since lane/wif-default the DEFAULT real-data mp=28 aerosol state is
+    WRF's monthly WIF climatology, so a restart's aerosol fields are
+    normally interpolated data and only fall back to the synthetic
+    profile when the dataset was unavailable -- which the run receipt
+    names (gpuwm.config.MP28_AEROSOL_SYNTHETIC_FALLBACK).
     A future WIF metgrid ingest is a different initial condition and must
     move this token rather than resume onto a checkpoint written without it.
     """

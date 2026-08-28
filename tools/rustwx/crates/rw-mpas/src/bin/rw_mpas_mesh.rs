@@ -14,7 +14,7 @@
 //! `nVertLevels = 55`, `nSoilLevels = 4`, an FP32-bit-exact `nominalMinDc`),
 //! which is built against a terrain archive and is not produced here.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use rw_mpas::mesh::density::MeshSpec;
@@ -86,6 +86,17 @@ fn usage() -> String {
         \x20                 meeting it is a refusal, not a quiet emit.\n\
          --sweeps         relaxation budget (default 300)\n\
          --omega          over-relaxation factor (default 1.4; 1.0 is plain Lloyd)\n\n\
+         THE REGIONAL CULL\n\
+         --cull-parent    cut a limited-area mesh out of an existing global grid or static\n\
+        \x20                 file instead of generating one. Byte-matches the native\n\
+        \x20                 MPAS-Limited-Area v2.2 cull for the same region: bdyMask rings\n\
+        \x20                 0..7, parent-subset ordering, contiguous reindex, 0 sentinels\n\
+        \x20                 on outermost-ring connectivity, and the METIS graph file.\n\
+         --region         the piece to keep, as a Shape row -- the SAME rows a spec's\n\
+        \x20                 refinement regions use, so a new region is data, never code:\n\
+        \x20                 {{\"kind\": \"polygon\", \"vertices_deg\": [[50,-129],[50,-65],...]}}\n\
+        \x20                 {{\"kind\": \"cap\", \"center_deg\": [39,-98], \"radius_km\": 1200}}\n\
+         --graph          also write the METIS graph.info for the regional mesh\n\n\
          OUTPUT\n\
          --out            grid file to write\n\
          --receipt        write the measured receipt as JSON here as well as to stdout\n\
@@ -236,6 +247,23 @@ fn run() -> Result<String, String> {
             }
         }
         return rebuild_from_centres(&args, source);
+    }
+
+    // --- culling a region out of a global parent ----------------------------
+    //
+    // The regional production path: a Shape row (the same cap / lat_lon_box /
+    // polygon rows a resolution spec's regions use) cuts a limited-area mesh
+    // out of an existing global grid or static file. Match target and
+    // conventions live in `rw_mpas::mesh::cull`.
+    if let Some(parent) = args.get("cull-parent") {
+        return cull_region(&args, parent);
+    }
+    if args.get("region").is_some() {
+        return Err(
+            "--region names the piece to cut but no --cull-parent names the global \
+             file to cut it from; a region without a parent has no cells"
+                .to_string(),
+        );
     }
 
     // --- the request --------------------------------------------------------
@@ -441,138 +469,114 @@ fn run() -> Result<String, String> {
     Ok(json)
 }
 
-/// Generators read off a grid file, with the numbers that let a caller check
-/// the read rather than trust it.
-struct Generators {
-    points: Vec<rw_mpas::mesh::V3>,
-    mesh_density: Vec<f64>,
-    nominal_min_dc: f64,
-    sphere_radius: f64,
-    /// The largest `|r / sphere_radius - 1|` over every centre.
-    max_radius_departure: f64,
-}
+use rw_mpas::mesh::gridread::read_grid_generators;
 
-/// How far the stored radii may scatter before the points are not one sphere.
+/// The `--cull-parent` route: cut a limited-area mesh from a global parent.
 ///
-/// The published meshes measure 6.7e-16, three double ULP. 1e-9 of a unit sphere
-/// is 6.4 mm on Earth, and nothing that writes a grid file misses by that much
-/// unless its points are on different spheres.
-const RADIUS_SCATTER_LIMIT: f64 = 1e-9;
-
-/// Read the cell centres, `meshDensity` and `nominalMinDc` out of a grid file.
-///
-/// Every name here is the MPAS spelling, so a mesh this crate has never seen is
-/// a file rather than a code path.
-fn read_grid_generators(path: &std::path::Path) -> Result<Generators, String> {
-    let file = netcrust::File::open(path)
-        .map_err(|e| format!("{} is not a netCDF file this reader can open: {e}", path.display()))?;
-
-    // UNITS. An MPAS grid file carries sphere_radius, and on both published
-    // meshes that radius is 1.0: xCell/yCell/zCell are unit vectors and
-    // areaCell, dcEdge, dvEdge and nominalMinDc are unit-sphere quantities
-    // despite their m and m^2 units attributes. A reader that took those for
-    // metres prints spacings of 0.0 km.
-    let sphere_radius = match file.attribute("sphere_radius").and_then(|a| a.as_f64()) {
-        Some(r) if r > 0.0 && r.is_finite() => r,
-        Some(r) => {
+/// `--region` is a Shape row -- `{"kind": "polygon", "vertices_deg": [...]}`,
+/// `cap` or `lat_lon_box` -- the same rows a resolution spec's regions carry.
+/// A new region is a JSON row, never a code path.
+fn cull_region(args: &Args, parent: &str) -> Result<String, String> {
+    for named in [
+        "spec",
+        "background-km",
+        "from-centres",
+        "cells",
+        "card",
+        "vram-gib",
+        "fit-spacing",
+        "sweeps",
+        "tolerance",
+        "omega",
+    ] {
+        if args.get(named).is_some() {
             return Err(format!(
-                "{} declares sphere_radius = {r}; every length in the file is divided by that radius to reach the unit sphere this crate derives on, and a non-positive radius would put every generator at infinity or reflect the mesh through the origin",
-                path.display()
+                "--{named} sizes or relaxes a mesh this route never generates: \
+                 --cull-parent subsets an existing global file. Accepting the flag \
+                 and ignoring it would report a request the cull never honoured"
             ));
         }
-        None => {
-            return Err(format!(
-                "{} carries no sphere_radius global attribute, so nothing tells a reader whether xCell is a unit vector or a length in metres. Guessing wrong scales every derived dcEdge and areaCell by 6.4e6 or its inverse, and the mesh would validate clean at the wrong size",
-                path.display()
-            ));
-        }
-    };
-
-    let read = |name: &str| -> Result<Vec<f64>, String> {
-        file.read_f64(name).map_err(|e| {
-            format!(
-                "{} has no readable {name}: {e}",
-                path.display()
-            )
-        })
-    };
-    let x = read("xCell")?;
-    let y = read("yCell")?;
-    let z = read("zCell")?;
-    if x.len() != y.len() || y.len() != z.len() {
-        return Err(format!(
-            "{} carries {} xCell, {} yCell and {} zCell values; three components of one point list have to be the same length or the centres pair up component by component into positions no cell ever had",
-            path.display(),
-            x.len(),
-            y.len(),
-            z.len()
-        ));
     }
-    let n_cells = x.len();
-
-    let mut points = Vec::with_capacity(n_cells);
-    let mut max_radius_departure = 0.0f64;
-    for i in 0..n_cells {
-        let p = [x[i] / sphere_radius, y[i] / sphere_radius, z[i] / sphere_radius];
-        let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
-        if !(r > 0.0) || !r.is_finite() {
+    let region = args.get("region").ok_or_else(|| {
+        format!(
+            "--cull-parent needs --region SHAPE.json naming the piece to keep: a \
+             cap, lat_lon_box or polygon row, e.g. \
+             {{\"kind\": \"polygon\", \"vertices_deg\": [[50,-129],[50,-65],[20,-65],[20,-129]]}}\n\n{}",
+            usage()
+        )
+    })?;
+    let out: PathBuf = args
+        .get("out")
+        .ok_or_else(|| format!("--out was not given, and it has no default\n\n{}", usage()))?
+        .into();
+    let text = std::fs::read_to_string(region)
+        .map_err(|e| format!("cannot read the region row {region}: {e}"))?;
+    let shape: rw_mpas::mesh::Shape = serde_json::from_str(&text).map_err(|e| {
+        format!(
+            "the region row {region} is not a Shape: {e}. A row is \
+             {{\"kind\": \"cap\"|\"lat_lon_box\"|\"polygon\", ...}}"
+        )
+    })?;
+    if out.exists() {
+        if args.flag("clobber") {
+            std::fs::remove_file(&out).map_err(|e| format!("cannot replace {}: {e}", out.display()))?;
+        } else {
             return Err(format!(
-                "{}: cell centre {i} is {:?}, which has no direction; a point at the origin has no place on the sphere and the hull's orientation predicate is meaningless for every facet touching it",
-                path.display(),
-                [x[i], y[i], z[i]]
+                "{} already exists; pass --clobber to replace it",
+                out.display()
             ));
         }
-        max_radius_departure = max_radius_departure.max((r - 1.0).abs());
-        points.push([p[0] / r, p[1] / r, p[2] / r]);
     }
-    if max_radius_departure > RADIUS_SCATTER_LIMIT {
-        return Err(format!(
-            "{}: cell centres depart from sphere_radius = {sphere_radius} by up to {max_radius_departure:.3e} relative, past the {RADIUS_SCATTER_LIMIT:.0e} this reader allows. A mesh built from a mixture of radii is not a spherical Voronoi tessellation of its own generators: the circumcentres sit off the surface and every kite area is taken on a different sphere from the cell it belongs to",
-            path.display()
-        ));
+    let graph: Option<PathBuf> = args.get("graph").map(PathBuf::from);
+    if let Some(g) = &graph {
+        if g.exists() {
+            if args.flag("clobber") {
+                std::fs::remove_file(g).map_err(|e| format!("cannot replace {}: {e}", g.display()))?;
+            } else {
+                return Err(format!(
+                    "{} already exists; pass --clobber to replace it",
+                    g.display()
+                ));
+            }
+        }
     }
 
-    let mesh_density = match read("meshDensity") {
-        Ok(v) if v.len() == n_cells => v,
-        Ok(v) => {
-            return Err(format!(
-                "{} carries {} meshDensity values for {n_cells} cells; MPAS scales its horizontal mixing length by meshDensity, so a mismatched table applies one cell's diffusion to another",
-                path.display(),
-                v.len()
-            ));
-        }
-        Err(_) => {
-            return Err(format!(
-                "{} has no meshDensity variable. It records what resolution function produced these centres and MPAS scales horizontal mixing by it; inventing 1.0 everywhere would silently claim a uniform mesh and give a refined region the background diffusion length",
-                path.display()
-            ));
-        }
-    };
+    let receipt = rw_mpas::mesh::cull::cull_file(
+        Path::new(parent),
+        &shape,
+        &out,
+        graph.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
 
-    let nominal_min_dc = match read("nominalMinDc") {
-        Ok(v) if v.len() == 1 => v[0] / sphere_radius,
-        Ok(v) => {
-            return Err(format!(
-                "{} carries {} nominalMinDc values; it is a single scalar stamp and a reader cannot tell which of several the matching static file was built against",
-                path.display(),
-                v.len()
-            ));
-        }
-        Err(_) => {
-            return Err(format!(
-                "{} has no nominalMinDc variable. The mesh registry matches a grid file to its static file on an FP32-bit-exact nominalMinDc, so a made-up stamp produces a grid file no static file can ever be paired with",
-                path.display()
-            ));
-        }
-    };
+    println!(
+        "CULLED\t{}\t{}\t{}",
+        receipt.region_cells, receipt.region_edges, receipt.region_vertices
+    );
+    println!(
+        "RINGS\t{}",
+        receipt
+            .mark
+            .ring_cell_counts
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    println!(
+        "WROTE\t{}\t{}\t{}",
+        receipt.output_file, receipt.output_bytes, receipt.output_sha256
+    );
+    if let (Some(f), Some(s)) = (&receipt.graph_file, &receipt.graph_sha256) {
+        println!("GRAPH\t{f}\t{s}");
+    }
 
-    Ok(Generators {
-        points,
-        mesh_density,
-        nominal_min_dc,
-        sphere_radius,
-        max_radius_departure,
-    })
+    let json = serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?;
+    if let Some(path) = args.get("receipt") {
+        std::fs::write(path, &json).map_err(|e| format!("cannot write {path}: {e}"))?;
+    }
+    println!("FINISHED");
+    Ok(json)
 }
 
 /// `--from-centres`: the centres are the request.

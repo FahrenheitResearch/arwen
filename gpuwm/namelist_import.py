@@ -438,11 +438,6 @@ _MP_MAP = {
 #: given a different model than the one they wrote down.
 _MP28_AEROSOL_NAMELIST_KEYS: dict[str, dict[str, str]] = {
     "physics": {
-        "use_aero_icbc":
-            "ArWen has no aerosol IC/BC ingest: use_aero_icbc=.true. makes "
-            "real.exe derive aer_init_opt=1 and read QNWFA/QNIFA from "
-            "metgrid (dyn_em/module_initialize_real.F:2325-2732), and there "
-            "is no such stream here",
         "use_rap_aero_icbc":
             "the same missing aerosol IC/BC ingest as use_aero_icbc, "
             "RAP-sourced variant (share/module_check_a_mundo.F:2477-2495 "
@@ -480,18 +475,38 @@ _MP28_AEROSOL_NAMELIST_KEYS: dict[str, dict[str, str]] = {
             "nifa2d is identically zero, exactly as "
             "module_mp_thompson.F leaves it",
     },
-    "domains": {
-        "wif_input_opt":
-            "no WIF metgrid ingest.  WRF FATALs mp_physics=28 with "
-            "wif_input_opt=0 "
-            "(dyn_em/module_initialize_real.F:2735-2736) and ArWen runs "
-            "thompson_init's synthetic profile instead, so no value of this "
-            "key describes a configuration both models can produce",
-        "num_wif_levels":
-            "the WIF vertical axis has no consumer without the ingest "
-            "(Registry/registry.new3d_wif:14-16)",
-    },
+    "domains": {},
 }
+
+#: The WIF KEY TRIPLE a real WRF namelist writes to select the monthly
+#: aerosol climatology, and the only combination ArWen admits:
+#:
+#:   &physics  use_aero_icbc = .true.     (-> aer_init_opt = 1)
+#:   &domains  wif_input_opt = 1          (the use_wif_input package)
+#:   &domains  num_wif_levels = 30        (the dataset's own vertical axis)
+#:
+#: Admitted rather than refused because the ingest EXISTS: it is
+#: ``gpuwm/ingest/wif_climatology.py``, oracle-measured against WRF-4.7.1
+#: real.exe.  A namelist that writes this triple described a run ArWen
+#: can now produce, and dead-ending it was the refusal outliving the
+#: defect it named.
+#:
+#: ``wif_input_opt = 2`` STAYS REFUSED, by name: it additionally allocates
+#: the black-carbon scalar ``qnbca`` (Registry/registry.new3d_wif:82),
+#: which has no consumer here -- no transport, no microphysical sink, and
+#: nothing that would write it into history.  Admitting it would allocate
+#: a field the model never touches and report a configuration ArWen does
+#: not run.
+WIF_INPUT_OPT_CLIMATOLOGY = 1
+WIF_INPUT_OPT_WITH_BLACK_CARBON = 2
+
+#: The dataset's own vertical axis: 30 sigma levels, read from the file's
+#: records, not assumed (``gpuwm/ingest/wif_climatology.py``).  WRF's
+#: Registry default is the same 30.  A namelist naming any other count
+#: describes a dataset ArWen has never seen, so it is refused with the
+#: number it expected rather than silently reinterpreted.
+WIF_DATASET_LEVELS = 30
+
 _BL_MAP = {
     0: (0, "none", "none"),
     1: (1, "YSU", "YSU"),
@@ -1334,6 +1349,60 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             continue
         raise _err("domains", _aero_key, _values, _why + ".")
 
+    # ---- the WIF key triple, &domains half -------------------------------
+    # ADMITTED, because the ingest exists.  The two keys are consumed here
+    # and the decision is carried to the physics block below, which is
+    # where use_aero_icbc -- the third leg -- is read: WRF splits the
+    # triple across two namelist groups and dm.finish() runs long before
+    # &physics is touched, so the halves cannot be validated in one place.
+    wif_input_opt_imported = 0
+    _wif_values = dm.take("wif_input_opt")
+    _levels_values = dm.take("num_wif_levels")
+    if _wif_values is not None:
+        if not _selects_28:
+            drop("domains", "wif_input_opt", _wif_values,
+                 "inert: WRF consumes this only inside the thompsonaero "
+                 "package (Registry/Registry.EM_COMMON:3036, "
+                 "mp_physics = 28)")
+        else:
+            _wif_opt = int(_uniform("domains", "wif_input_opt",
+                                    list(_wif_values)))
+            if _wif_opt == WIF_INPUT_OPT_WITH_BLACK_CARBON:
+                raise _err(
+                    "domains", "wif_input_opt", _wif_values,
+                    "wif_input_opt=2 additionally allocates the "
+                    "black-carbon aerosol scalar qnbca "
+                    "(Registry/registry.new3d_wif:82), which has no "
+                    "consumer in ArWen -- no transport, no microphysical "
+                    "sink, and nothing that writes it to history.  "
+                    "wif_input_opt=1, the monthly QNWFA/QNIFA climatology, "
+                    "IS supported and is what this namelist should say if "
+                    "the black carbon was not the point")
+            if _wif_opt not in (0, WIF_INPUT_OPT_CLIMATOLOGY):
+                raise _err(
+                    "domains", "wif_input_opt", _wif_values,
+                    "WRF declares 0, 1 and 2 only "
+                    "(Registry/registry.new3d_wif:17)")
+            wif_input_opt_imported = _wif_opt
+    if _levels_values is not None:
+        if wif_input_opt_imported != WIF_INPUT_OPT_CLIMATOLOGY:
+            drop("domains", "num_wif_levels", _levels_values,
+                 "inert: the WIF vertical axis has no consumer unless "
+                 "wif_input_opt=1 selects the climatology ingest "
+                 "(Registry/registry.new3d_wif:14-16)")
+        else:
+            _levels = int(_uniform("domains", "num_wif_levels",
+                                   list(_levels_values)))
+            if _levels != WIF_DATASET_LEVELS:
+                raise _err(
+                    "domains", "num_wif_levels", _levels_values,
+                    "the ported ingest reads the dataset's own vertical "
+                    f"axis, which is {WIF_DATASET_LEVELS} sigma levels "
+                    "(QNWFA_QNIFA_SIGMA_MONTHLY.dat, and WRF's Registry "
+                    "default is the same 30); a different count describes "
+                    "a dataset ArWen has never decoded, and reinterpreting "
+                    "it silently would interpolate the wrong column")
+
     dm.finish()
 
     # ---- &geogrid projection ---------------------------------------------
@@ -1816,17 +1885,108 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                  "(Registry/Registry.EM_COMMON:3036, mp_physics = 28)")
             continue
         raise _err("physics", _aero_key, _values, _why + ".")
-    if mp_physics == 28:
+    # ---- the WIF key triple, &physics half -------------------------------
+    # use_aero_icbc is what real.exe reads to DERIVE aer_init_opt=1
+    # (dyn_em/module_initialize_real.F:2325-2732).  The two halves are
+    # cross-checked because either alone is a namelist that does not do
+    # what its author thinks: WRF fatals mp=28 with wif_input_opt=0
+    # (:2735-2736), and wif_input_opt=1 without use_aero_icbc allocates
+    # the WIF arrays with nothing to fill them.
+    _aero_icbc_values = ph.take("use_aero_icbc")
+    _aero_icbc = False
+    if _aero_icbc_values is not None:
+        if mp_physics != 28:
+            drop("physics", "use_aero_icbc", _aero_icbc_values,
+                 "inert: WRF consumes this only inside the thompsonaero "
+                 "package (Registry/Registry.EM_COMMON:3036, "
+                 "mp_physics = 28)")
+        else:
+            _aero_icbc = bool(_uniform("physics", "use_aero_icbc",
+                                       list(_aero_icbc_values)))
+    _wif_selected = (wif_input_opt_imported == WIF_INPUT_OPT_CLIMATOLOGY)
+    wif_climatology_imported = False
+    if _wif_selected and mp_physics != 28:
+        # The &domains sweep PEEKED at the whole mp_physics column and any
+        # domain asking for 28 let the key through; the mapped, uniform
+        # answer is the one that governs.  `mp_physics = 6, 28` reaches
+        # here with the key consumed and mp_physics 6, and dropping it as
+        # inert at that point would accept a WIF selection under a scheme
+        # that has no WIF package at all.
+        raise _err(
+            "domains", "wif_input_opt", (wif_input_opt_imported,),
+            "wif_input_opt=1 selects the use_wif_input package, which WRF "
+            "declares only inside thompsonaero "
+            "(Registry/Registry.EM_COMMON:3036, mp_physics = 28); this "
+            f"namelist resolves to mp_physics={mp_physics}.  WRF fatals "
+            "mp_physics=28 with wif_input_opt=0 "
+            "(dyn_em/module_initialize_real.F:2735-2736) and has no "
+            "consumer for the reverse, so the pair has to move together")
+    if mp_physics == 28 and (_aero_icbc or _wif_selected):
+        if not (_aero_icbc and _wif_selected):
+            raise _err(
+                "physics", "use_aero_icbc",
+                _aero_icbc_values if _aero_icbc_values is not None
+                else (False,),
+                "the WIF climatology is a KEY TRIPLE and this namelist "
+                "wrote half of it: &physics use_aero_icbc = .true. WITH "
+                "&domains wif_input_opt = 1 (and num_wif_levels = 30).  "
+                f"Here use_aero_icbc={_aero_icbc!r} and "
+                f"wif_input_opt={wif_input_opt_imported!r}.  WRF fatals "
+                "mp_physics=28 with wif_input_opt=0 "
+                "(dyn_em/module_initialize_real.F:2735-2736), and "
+                "wif_input_opt=1 without use_aero_icbc allocates the WIF "
+                "arrays with nothing to fill them; neither half alone "
+                "names a run either model performs")
+        wif_climatology_imported = True
+        defaults_applied.append(AppliedDefault(
+            key="mp28 aerosol initial state",
+            value="WIF monthly climatology (aer_init_opt=1, "
+                  "wif_input_opt=1)",
+            reason=(
+                "use_aero_icbc=.true. with wif_input_opt=1 selects the "
+                "ported QNWFA_QNIFA_SIGMA_MONTHLY.dat ingest "
+                "(gpuwm/ingest/wif_climatology.py), the same metgrid "
+                "constants_name route real.exe reads.  The 215 MiB "
+                "dataset is not redistributed: stage it with `gpuwm "
+                "fetch-tables --wif`, or point wif_climatology_path / "
+                "GPUWM_WIF_CLIMATOLOGY at a copy.  A missing dataset is a "
+                "named refusal at initialization, never a silent fall "
+                "back to the synthetic profile")))
+    elif mp_physics == 28:
         # The never-silent last mile.  A user who imports an mp=28 namelist
         # gets a printed line saying exactly which aerosol initial state
         # their run will use and which WRF line refuses the same
         # configuration -- rather than discovering months later that their
         # ArWen and WRF runs were never comparable.
-        from gpuwm.config import MP28_AEROSOL_SOURCE_DEVIATION
-        defaults_applied.append(AppliedDefault(
-            key="mp28 aerosol initial state",
-            value="thompson_init synthetic CCN/IN profile",
-            reason=MP28_AEROSOL_SOURCE_DEVIATION))
+        from gpuwm.config import (
+            MP28_AEROSOL_SOURCE_DEFAULT, MP28_AEROSOL_SYNTHETIC_FALLBACK)
+        from gpuwm.ingest.wif_climatology import resolve_wif_climatology
+        # The printed line now reports a RESOLUTION, not a deviation.  It is
+        # still printed unconditionally, for the same reason it always was:
+        # which aerosol initial state a run used is the single fact that
+        # decides whether an ArWen mp=28 forecast and a WRF mp=28 forecast
+        # are the same experiment.  What changed is which answer is normal.
+        # The resolver is run HERE, at import time, so the answer is the
+        # real one for this machine and this working directory rather than
+        # a description of what will probably happen.
+        try:
+            _wif = resolve_wif_climatology()
+        except Exception:      # an explicit override that does not exist
+            _wif = None        # -- initialize_real raises on it by name
+        if _wif is not None and _wif.resolved:
+            defaults_applied.append(AppliedDefault(
+                key="mp28 aerosol initial state",
+                value="WRF monthly WIF aerosol climatology "
+                      f"({_wif.path})",
+                reason=MP28_AEROSOL_SOURCE_DEFAULT))
+        else:
+            reason = MP28_AEROSOL_SYNTHETIC_FALLBACK
+            if _wif is not None and _wif.fallback_reason:
+                reason = reason + " " + str(_wif.fallback_reason)
+            defaults_applied.append(AppliedDefault(
+                key="mp28 aerosol initial state",
+                value="SYNTHETIC FALLBACK -- thompson_init CCN/IN profile",
+                reason=reason))
 
     bl_wrf, bl_mapped = _mapped("bl_pbl_physics", _BL_MAP, per_domain=True)
     bl_pbl_col = [entry[0] for entry in bl_mapped]
@@ -2606,6 +2766,17 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         f"khdif = {_fmt(khdif)}",
         f"kvdif = {_fmt(kvdif)}",
     ]
+    if wif_climatology_imported:
+        # Emitted only when the triple was written, so every namelist that
+        # imported before this lane still emits byte-identical TOML.
+        lines += [
+            "# &physics use_aero_icbc = .true. + &domains wif_input_opt = 1:",
+            "# the ported QNWFA_QNIFA_SIGMA_MONTHLY.dat climatology ingest.",
+            "# Leave wif_climatology_path unset to read the staged copy",
+            "# (`gpuwm fetch-tables --wif`, ~/.gpuwm/wif).",
+            "aer_init_opt = 1",
+            f"wif_input_opt = {WIF_INPUT_OPT_CLIMATOLOGY}",
+        ]
     # Supplied-only knobs (knob-parity lane): each maps 1:1 onto a
     # consumed RunConfig field whose default equals the WRF Registry
     # default, so absence emits nothing and the established imports stay

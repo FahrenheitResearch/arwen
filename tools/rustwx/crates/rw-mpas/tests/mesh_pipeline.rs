@@ -75,6 +75,9 @@ fn the_generator_produces_a_mesh_that_passes_its_own_emit_gate() {
         rw_mpas::mesh::Seeding::FibonacciAcceptance { .. } => {
             panic!("a uniform request took the Fibonacci seed, whose dislocations are the defect class the icosahedral seed exists to remove")
         }
+        rw_mpas::mesh::Seeding::HierarchicalGoldberg { .. } => {
+            panic!("a uniform request took the graded ladder; the ladder's level 0 IS the uniform arm, so routing a uniform request through it does nothing but hide the arm the receipt should name")
+        }
     }
     // Dislocation-free: exactly the twelve pentagons topology requires.
     assert_eq!(
@@ -284,18 +287,25 @@ fn a_variable_resolution_request_delivers_the_refinement_it_asked_for() {
     // The user experience the whole binary exists for: fine over a named box,
     // coarse everywhere else. Graded on COUNTS and on the delivered spacing
     // inside and outside the box, not on a fit.
+    // This request MOVED when graded generation moved to the hierarchical
+    // ladder. The old 125-in-500 box with a 300 km ramp asked for a 59% per
+    // cell gradient; the Fibonacci arm "served" it by rolling metre-class
+    // dual edges (this very test used to name the FP32 floors away to look
+    // past them), and the ladder refuses it up front because a band that
+    // narrow cannot contain its own repairs. The request below is the same
+    // user experience -- 4x refinement over a named box -- at a ramp the
+    // annuli can carry, and it passes the DEFAULT gate.
     let spec = MeshSpec {
-        background_km: 500.0,
+        background_km: 600.0,
         regions: vec![Region {
             shape: Shape::LatLonBox {
-                lat_deg: [30.0, 45.0],
-                lon_deg: [-105.0, -90.0],
+                lat_deg: [25.0, 50.0],
+                lon_deg: [-115.0, -80.0],
             },
-            spacing_km: 125.0,
-            // The ramp is centred ON the box boundary, so a region has to be
-            // several ramp widths across before its middle reaches its own
-            // requested spacing. 300 km here against a box about 1,500 km wide.
-            transition: TransitionField::Km(300.0),
+            spacing_km: 150.0,
+            // Centred ON the box boundary; the box is about two ramp widths
+            // across, so its middle attains ~180 km against the 150 asked.
+            transition: TransitionField::Km(2200.0),
         }],
         name: Some("box refinement".into()),
     };
@@ -308,19 +318,14 @@ fn a_variable_resolution_request_delivers_the_refinement_it_asked_for() {
             ..Default::default()
         },
         sizing_samples: 50_000,
-        // The FP32 floors are named away HERE ONLY: a variable-resolution
-        // mesh keeps the Fibonacci seed, whose pentagon-heptagon dislocations
-        // are topologically unavoidable, and this particular layout rolls one
-        // at 1,761.4 m -- which the DEFAULT gate refuses, correctly, because
-        // that mesh cannot pair with an FP32 static (the port's load check
-        // reads quantisation alone as a dvEdge disagreement there). This test
-        // measures refinement DELIVERY, so it grades the spacing field under
-        // a consumer that accepts the mesh.
-        limits: Limits {
-            min_dv_edge_m: 0.0,
-            min_dv_over_dc: 0.0,
-            ..Limits::default()
-        },
+        // The DEFAULT limits, deliberately. This test used to name the FP32
+        // floors away because the Fibonacci arm's dislocations rolled a
+        // 1,761.4 m dual edge on this very layout; the hierarchical ladder
+        // that now serves graded requests is the mechanism that removed that
+        // class, so the same request has to clear the same gate every other
+        // mesh clears -- passing only under loosened floors would be the old
+        // defect wearing a new seed.
+        limits: Limits::default(),
         ..Default::default()
     };
     let out = generate(&request, |line| eprintln!("  {line}")).unwrap_or_else(|e| panic!("{e}"));
@@ -328,8 +333,8 @@ fn a_variable_resolution_request_delivers_the_refinement_it_asked_for() {
     let spacing = mesh.spacing_m();
 
     let inside = Shape::LatLonBox {
-        lat_deg: [31.0, 44.0],
-        lon_deg: [-104.0, -91.0],
+        lat_deg: [28.0, 47.0],
+        lon_deg: [-111.0, -84.0],
     };
     let mut fine: Vec<f64> = Vec::new();
     let mut coarse: Vec<f64> = Vec::new();
@@ -343,7 +348,7 @@ fn a_variable_resolution_request_delivers_the_refinement_it_asked_for() {
     }
     let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
     eprintln!(
-        "box refinement: {} cells total, {} inside the box at a mean of {:.1} km, {} far outside at {:.1} km; requested 125 and 500; steepest requested gradient {:.2}% per cell against the published 1.53%",
+        "box refinement: {} cells total, {} inside the box at a mean of {:.1} km, {} far outside at {:.1} km; requested 150 and 600; steepest requested gradient {:.2}% per cell against the published 1.53%",
         mesh.n_cells,
         fine.len(),
         mean(&fine) / 1000.0,
@@ -353,14 +358,17 @@ fn a_variable_resolution_request_delivers_the_refinement_it_asked_for() {
     );
     assert!(fine.len() > 30, "only {} cells landed inside the box", fine.len());
     assert!(coarse.len() > 30, "only {} cells landed far outside", coarse.len());
+    // The box middle ATTAINS ~180 km against its 150 request (the ramp is
+    // centred on the boundary; region_attainment in the receipt says so), so
+    // the delivered mean is graded against the attainable field, within 20%.
     assert!(
-        (mean(&fine) / 125_000.0 - 1.0).abs() < 0.20,
-        "inside the box the mesh delivers {:.1} km against a requested 125 km",
+        (mean(&fine) / 180_000.0 - 1.0).abs() < 0.20,
+        "inside the box the mesh delivers {:.1} km against an attainable ~180 km",
         mean(&fine) / 1000.0
     );
     assert!(
-        (mean(&coarse) / 500_000.0 - 1.0).abs() < 0.20,
-        "far outside the mesh delivers {:.1} km against a requested 500 km",
+        (mean(&coarse) / 600_000.0 - 1.0).abs() < 0.20,
+        "far outside the mesh delivers {:.1} km against a requested 600 km",
         mean(&coarse) / 1000.0
     );
     assert!(
@@ -387,6 +395,57 @@ fn a_variable_resolution_request_delivers_the_refinement_it_asked_for() {
         "the delivered spread p05 {:.3} .. p95 {:.3} is wider than an SCVT's own lattice distortion",
         r.delivered_over_requested_p05,
         r.delivered_over_requested_p95
+    );
+}
+
+#[test]
+fn a_graded_request_regenerates_byte_identically() {
+    // The mesh registry pins grid files by byte count and SHA-256, so a
+    // graded mesh that cannot reproduce its own bytes on regeneration makes
+    // every registered graded mesh permanently red. The ladder carries no
+    // RNG and every ordering is canonical; this measures that end to end
+    // through the real writer.
+    let spec = MeshSpec {
+        background_km: 600.0,
+        regions: vec![Region {
+            shape: Shape::Cap {
+                center_deg: [39.0, -98.0],
+                radius_km: 4000.0,
+            },
+            spacing_km: 300.0,
+            transition: TransitionField::Km(3600.0),
+        }],
+        name: Some("regeneration identity".into()),
+    };
+    let request = GenerateRequest {
+        spec,
+        sizing_samples: 50_000,
+        ..Default::default()
+    };
+    let digest = |tag: &str| -> String {
+        let out = generate(&request, |_| {}).unwrap_or_else(|e| panic!("{e}"));
+        let path = scratch(&format!("graded-regen-{tag}.grid.nc"));
+        let _ = std::fs::remove_file(&path);
+        let written = write_grid(
+            &out.mesh,
+            &path,
+            &Provenance {
+                spec_json: serde_json::to_string(&out.spec).unwrap(),
+                request: "regeneration identity".into(),
+                receipt_json: rw_mpas::mesh::provenance_json(&out.receipt).unwrap(),
+            },
+            false,
+        )
+        .expect("write");
+        let _ = std::fs::remove_file(&path);
+        written.sha256
+    };
+    let first = digest("a");
+    let second = digest("b");
+    eprintln!("graded regeneration digests: {first} / {second}");
+    assert_eq!(
+        first, second,
+        "two generations of the same graded spec wrote different bytes; the registry could never pin this mesh"
     );
 }
 

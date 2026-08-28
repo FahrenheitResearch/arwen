@@ -100,10 +100,37 @@ The gate covers: the closed-sphere Euler characteristic; the total coordination
 defect of 12; `nVertices = 2n-4` and `nEdges = 3n-6`; mutual neighbours and
 edge/vertex reciprocity; a connected cell graph; the three area sums closing on
 `4*pi`; the kite partition; the polygon and kite decompositions of every cell
-agreeing; primal/dual orthogonality; the edge orientation lock; every ring
+agreeing to within the arithmetic's own noise (an ABSOLUTE area in machine
+epsilons, because the two are analytically identical and what separates them in
+`f64` is a constant, not a fraction of the cell); primal/dual orthogonality;
+the edge orientation lock; every ring
 winding counter-clockwise seen from outside; positive finite metrics; the
 Thuburn antisymmetry of the TRiSK weights over every ordered stencil pair; and
 zero nonzero weight padding.
+
+### The regional cull
+
+`--cull-parent` cuts a limited-area mesh out of an existing global grid or
+static file instead of generating one:
+
+    rw_mpas_mesh --cull-parent x4.163842.grid.nc --region window.json \
+                 --out region.grid.nc --graph region.graph.info --receipt cull.json
+
+`--region` is a single Shape row — the same `cap` / `lat_lon_box` / `polygon`
+rows a resolution spec's regions use — so a new region is a JSON row, never a
+code path. The output byte-matches the native MPAS-Limited-Area v2.2 cull of
+the same region on the same parent: the three `bdyMask` variables (0 interior,
+rings 1..7 outward), parent-subset element ordering, contiguous `indexTo*ID`,
+true-0 sentinels on outermost-ring connectivity, `on_a_sphere`/`sphere_radius`
+only, the parent's classic format, and the METIS `graph.info`. Graded
+byte-identical against the pinned native culls of both published parents
+(grid and static), Windows and Linux builds producing the same bytes.
+
+One documented divergence: the native tool reindexes stored 0 through a numpy
+`map[field-1]` wrap that reads the LAST global element's map entry; this
+culler maps stored 0 to 0 always, and the receipt's `native_wrap_divergence`
+records whether a parent would ever expose the difference (neither published
+parent does).
 
 ### The unit-sphere gotcha
 

@@ -2828,7 +2828,9 @@ def pending_wrf_physics_components(
     #     (dyn_em/module_initialize_real.F:2735-2736) while ArWen runs
     #     thompson_init's synthetic CCN/IN profile.  Same physics, an
     #     initialization WRF's initializer refuses to produce.  That is
-    #     published as gpuwm.config.MP28_AEROSOL_SOURCE_DEVIATION and is
+    #     published as gpuwm.config.MP28_AEROSOL_SOURCE_DEFAULT (the
+    #     WIF climatology, default since lane/wif-default) with
+    #     MP28_AEROSOL_SYNTHETIC_FALLBACK as its named fallback, and is
     #     carried in the namelist importer's printed receipt;
     #   * the registry decides REACHABILITY.  mp=28 registers no template
     #     and appears in no runner_routes source_template_ids (verified
@@ -2880,23 +2882,69 @@ def pending_wrf_physics_components(
                     "WRF v4.6.1 refuses this pairing",
                     f"{pair_citation.anchor}: {pair_citation.law}",
                 )))
-    if sf_surface_physics == 3 and num_soil_layers != 9:
-        # RUC itself is no longer refused: it has a dispatch row, a seam, a
-        # cold start, restart identity and output.  What is still refused is
-        # the six-layer geometry WRF also defines.  This is a narrower
-        # blocker than the old one, not a widened gate -- the old row refused
-        # every RUC request.
+    if sf_surface_physics == 3:
+        # Deferred exactly as gpuwm.config defers it: ruc_contract is
+        # forecast-side and the RW-WPS preprocessing wheel does not stage it,
+        # so reading RUC's geometry at import time would make this module
+        # unimportable there.  Reading it only when scheme 3 is the question
+        # keeps both properties, and keeps the counts out of this file.
+        from gpuwm.core.ruc_contract import (
+            NUM_SOIL_LAYERS as RUC_NUM_SOIL_LAYERS,
+            WRF_SUPPORTED_NUM_SOIL_LAYERS as RUC_WRF_SUPPORTED_NUM_SOIL_LAYERS,
+        )
+    if (sf_surface_physics == 3
+            and num_soil_layers not in RUC_WRF_SUPPORTED_NUM_SOIL_LAYERS):
+        # WRF'S OWN refusal, quoted.  share/module_check_a_mundo.F:3574-3581
+        # resolves num_soil_layers for sf_surface_physics=3 to 6 or to 9 and
+        # silently coerces every other request to 6; share/module_soil_pre.F
+        # init_soil_depth_3 (:1161-1167) has a zs table for exactly those two
+        # lengths and leaves zs UNINITIALISED for any other, then calls
+        # wrf_error_fatal at 4 and 5 (:1189-1192).  So the set is closed
+        # because WRF has no level table outside it, not because gpuwm has
+        # not got round to a number.
         blockers.append(PhysicsPortBlocker(
             component="RUC soil geometry",
             selectors=(("sf_surface_physics", 3),
                        ("num_soil_layers", num_soil_layers)),
             missing=(
-                "RUC is admitted at num_soil_layers=9 only",
-                "share/module_soil_pre.F:init_soil_depth_3 also tabulates a "
-                "six-level RUC grid, but every RUC oracle fixture in the "
-                "tree is nine-level and the CUDA leaves index a "
-                "__constant__ real ruc_soil_layer_depth[9]",
+                "WRF's RUC defines "
+                + " and ".join(
+                    str(count)
+                    for count in RUC_WRF_SUPPORTED_NUM_SOIL_LAYERS)
+                + " soil levels and no other geometry",
+                "share/module_soil_pre.F:init_soil_depth_3:1161-1167 "
+                "tabulates zs for those lengths only and leaves zs "
+                "uninitialised otherwise; :1189-1192 is fatal at 4 and 5, "
+                "and share/module_check_a_mundo.F:3574-3581 coerces every "
+                "other request to 6",
             )))
+    elif sf_surface_physics == 3 and num_soil_layers != RUC_NUM_SOIL_LAYERS:
+        # EVIDENCE, not a missing branch.  The forecast column compiles and
+        # runs at six levels: gpuwm/core/kernels/ruc.cu sizes every soil
+        # scratch from RUC_NZS and selects the level table with it, and
+        # gpuwm.core.ruc/.ruc_gpu resolve the count from the profile.  What
+        # six levels does NOT have is a WRF forecast oracle -- every fixture
+        # in gpuwm/data/ruc is nine-level and regenerating them needs the
+        # pinned WRF tree.  So this is a statement about what has been
+        # MEASURED, and the warn-not-block ruling applies: slower evidence,
+        # not a wrong answer.
+        warn(
+            f"RUC at {num_soil_layers} soil levels carries no WRF forecast "
+            "oracle; the column is host/device bit-identical at this "
+            "geometry and completes a real forecast, but has never been "
+            "compared to WRF's Fortran at it -- unverified, not wrong; "
+            "continuing",
+            why="gpuwm.ingest.ruc_soil.ruc_soil_depths(6) and "
+                "gpuwm.core.ruc.ruc_soil_geometry(6) reproduce WRF 4.7.1 "
+                "real.exe wrfinput_d01 ZS/DZS exactly (ZS 0 0.05 0.2 0.4 1.6 "
+                "3; DZS 0.025 0.125 0.175 0.7 1.3 0.7), so the GEOMETRY is "
+                "oracle-matched.  The forecast COLUMN at six levels is not: "
+                "every lsmruc/sfctmp/soilmoist/snowtemp fixture is "
+                "nine-level.  What IS measured at six: the 43-field "
+                "host/device driver comparison at max_ulp 0 "
+                "(tests/test_ruc_nzs_device.py) and a completed HRRR-"
+                "initialised forecast.  See "
+                "docs/wrf_ruc_runtime_admission.md.")
     if sf_surface_physics == 4 and columns is not None:
         # GRID WIDTH, not a missing branch.  Noah-MP is fully ported and
         # bitwise, and since the slab orchestration it also FINISHES at

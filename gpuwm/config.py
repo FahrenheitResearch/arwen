@@ -442,14 +442,19 @@ class RunConfig:
     # request for 1 or 2 is refused by name instead of being unrepresentable
     # and therefore silently ignored.  0 is the only implemented value:
     # 1 and 2 both read WIF fields real.exe interpolated from metgrid, and
-    # ArWen has no such ingest (see MP28_AEROSOL_SOURCE_DEVIATION).
+    # ArWen ports the CLIMATOLOGY branch (1) and takes it BY DEFAULT on
+    # real data through mp28_aerosol_source='auto'; this field stays at
+    # WRF's Registry default because the prepared-forecast runner
+    # compares the switch rows for exact equality.  2 (first guess) has
+    # no ArWen source and refuses by name.
     aer_init_opt: int = 0
     # wif_input_opt -- Registry/registry.new3d_wif:17, default 0.
     # 0 = do not process the Water/Ice Friendly aerosol input from metgrid;
     # 1 = use_wif_input; 2 = use_wif_input_bc, which additionally allocates
     # the black-carbon scalar qnbca.  ArWen implements neither: there is no
-    # WIF metgrid stream and no nbca species anywhere in the port, so any
-    # nonzero value fails closed.
+    # 1 is ported as the climatology pair with aer_init_opt=1 and is the
+    # default real-data route via mp28_aerosol_source='auto'; 2 wants the
+    # nbca species, which does not exist in the port, and fails closed.
     wif_input_opt: int = 0
     # --- SASE closure knobs (bl_pbl_physics = SASE_PBL_SCHEME only).
     # Appended last, per the config-freeze discipline in
@@ -652,6 +657,28 @@ class RunConfig:
     # WRF has no carrier provenance to declare.
     surface_radiation_policy: str = "required"
 
+    # mp=28 WIF aerosol-climatology dataset (change record: appended with
+    # the lane/wif-climatology commit onto this line).  Filesystem path to
+    # WRF's global monthly QNWFA/QNIFA dataset in WPS intermediate format
+    # (QNWFA_QNIFA_SIGMA_MONTHLY.dat as distributed).  Consumed ONLY when
+    # aer_init_opt=1 AND wif_input_opt=1 select the ported climatology
+    # ingest (gpuwm/ingest/wif_climatology.py); the empty default runs not
+    # one new instruction, and validate_aerosol_source_options refuses a
+    # set path whose selectors do not consume it, so it can never ride
+    # along silently.  A PATH, not a table row, because the dataset is a
+    # user-provided 225 MB artifact, not something this repository ships.
+    wif_climatology_path: str = ""
+    # Which mp=28 aerosol initial state this run wants (change record:
+    # appended with the lane/wif-default commit onto this line).  "auto",
+    # the default, resolves WRF's monthly WIF climatology and uses it, and
+    # falls back to thompson_init's synthetic profile ONLY when no dataset
+    # can be found -- announcing that by name in the run receipt
+    # (MP28_AEROSOL_SYNTHETIC_FALLBACK).  "climatology" refuses instead of
+    # falling back.  "synthetic" selects the fallback deliberately, which is
+    # what an idealized case or a reproduction of a pre-lane/wif-default run
+    # wants.  Inert under every other mp_physics.
+    mp28_aerosol_source: str = "auto"
+
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
 #: value, with what pins it.  ``validate_run_config`` refuses anything else
@@ -733,7 +760,10 @@ MYNN_PBL_OPTION_IDENTITY: dict[str, object] = {
     "bl_mynn_edmf": 1,
     "bl_mynn_edmf_mom": 1,
     "bl_mynn_edmf_tke": 0,
-    "bl_mynn_mixscalars": 0,
+    # bl_mynn_mixscalars left this pin at the W4 full admission (mf-close2
+    # Stage B): it is validated by its own block in validate_run_config --
+    # {0,1}, with 1 admitted only under the anchored fixture combo
+    # (bl_pbl_physics=5, mp_physics=28, bldt=0).
     "bl_mynn_cloudmix": 1,
     "bl_mynn_mixqt": 0,
     "bl_mynn_output": 0,
@@ -904,8 +934,12 @@ KM_OPT_ZERO_ACK = "no-horizontal-mixing-operator-v1"
 #: difference recorded there.
 #:
 #: No count is written here.  Each value is READ from the module that owns the
-#: scheme, so RUC's nine is stated once, next to the nine level depths and the
-#: ``__constant__ real ruc_soil_layer_depth[9]`` the kernel indexes:
+#: scheme, so RUC's shipped nine is stated once, next to the level-depth
+#: tables the kernel selects between -- ``__constant__ real
+#: ruc_soil_layer_depth[RUC_NZS]``, whose ``#if RUC_NZS == 9`` /
+#: ``#elif == 6`` arms are the two ``init_soil_depth_3`` tabulates.  (It read
+#: ``[9]``, singular, while the forecast column was pinned to nine; that pin
+#: is gone -- see docs/wrf_ruc_runtime_admission.md.)
 #:
 #: * Noah (2) and Noah-MP (4) share ``init_soil_depth_2``
 #:   (``share/module_soil_pre.F:795`` and ``:807``, which is itself fatal at
@@ -1164,49 +1198,91 @@ def unported_p3_variant_refusal(value: int) -> str:
 
 
 # --------------------------------------------------------------------------
-# mp_physics = 28 aerosol source: the one deliberate deviation, published.
+# mp_physics = 28 aerosol source.  This WAS "the one deliberate deviation,
+# published"; it is now a resolved input with a named fallback.
+#
+# RETIREMENT RECORD (lane/wif-default, 2026-08-27).  The constant
+# ``MP28_AEROSOL_SOURCE_DEVIATION`` used to live here.  It said ArWen took
+# its mp=28 aerosol initial state from thompson_init's synthetic CCN/IN
+# profile because "ArWen has no QNWFA/QNIFA ingest lane", and warned that a
+# whole-forecast comparison against a WIF-initialized WRF run was NOT
+# equivalent.  Both halves of that sentence were true when it was written
+# and neither is true now: ``gpuwm/ingest/wif_climatology.py`` ports the
+# ingest and is oracle-measured against real.exe, and it is what a real-data
+# mp=28 run uses BY DEFAULT.  Fixing a defect retires its guards, so the
+# constant is gone rather than softened -- a deviation notice that survives
+# the deviation is how a tree accumulates warnings nobody can act on.
+#
+# What replaces it is two constants, because there are now two states and
+# they are not the same claim:
+#   * MP28_AEROSOL_SOURCE_DEFAULT   -- what a run that found the data did.
+#   * MP28_AEROSOL_SYNTHETIC_FALLBACK -- what a run that did not found
+#     instead, printed loudly and by name, because a forecast initialized
+#     from a synthetic profile is a scientifically different forecast.
 # --------------------------------------------------------------------------
 
-#: What ArWen's ONLY implemented mp=28 aerosol source is, and the exact WRF
-#: line that refuses the same configuration.
+#: What a real-data ``mp_physics = 28`` run uses for its aerosol initial
+#: state, published as a named constant rather than a comment for the reason
+#: the retired deviation was: a receipt can print a constant, and cannot
+#: print a source comment.
 #:
-#: This is not a footnote.  ``mp_physics = 28`` with ``wif_input_opt = 0``
-#: is a combination WRF's own initializer FATALs
-#: (``dyn_em/module_initialize_real.F:2735-2736``:
-#: ``ELSE IF (config_flags%mp_physics .EQ. THOMPSONAERO .and.
-#: config_flags%wif_input_opt .EQ. 0 ) THEN
-#: CALL wrf_error_fatal ('wif_input_opt=0 but mp_physics=28')``), because
-#: real.exe expects the water/ice-friendly aerosol fields to have been
-#: interpolated from a metgrid WIF stream.  ArWen has no such stream, so it
-#: runs the synthetic CCN/IN profile ``thompson_init`` itself fills
-#: (``phys/module_mp_thompson.F:482-559``; the CCN branch at :493-515 and
-#: the IN branch at :531-551, each taken when ``MAXVAL(nwfa)``/
-#: ``MAXVAL(nifa)`` is below ``eps``) -- the same code path WRF uses when the
-#: aerosol fields arrive unset.
-#:
-#: The PHYSICS is therefore WRF's, unmodified.  What differs is the
-#: INITIALIZATION: a WRF user cannot reach this state through real.exe, and
-#: an ArWen mp=28 run is consequently not directly comparable to a WRF mp=28
-#: run initialized from a WIF-bearing met_em.  Anyone comparing the two must
-#: know that, which is why this string is carried in the namelist importer's
-#: printed receipt (:class:`gpuwm.namelist_import.AppliedDefault`) rather
-#: than only in a comment.
-MP28_AEROSOL_SOURCE_DEVIATION = (
-    "mp_physics=28 takes its aerosol initial state from ArWen's port of "
-    "thompson_init, which installs WRF's synthetic CCN/IN profile "
-    "(phys/module_mp_thompson.F:482-559) once per domain from "
-    "gpuwm/core/physics.py::initialize_physics. It does NOT come from a "
-    "metgrid WIF stream: ArWen has no QNWFA/QNIFA ingest lane, and no "
-    "aerosol crosses a specified lateral boundary either. WRF's own "
-    "real.exe FATALs exactly this configuration "
-    "(dyn_em/module_initialize_real.F:2735-2736, 'wif_input_opt=0 but "
-    "mp_physics=28'), so the microphysics is WRF's unmodified aerosol-aware "
-    "Thompson while the aerosol INITIALIZATION is one WRF's initializer "
-    "refuses to produce. Column physics is oracle-measured against "
-    "unmodified WRF Fortran; a whole-forecast comparison against a "
-    "WIF-initialized WRF run is NOT equivalent and must not be reported as "
-    "one."
+#: This is the DEFAULT and it is not a flag.  ``real.exe`` reaches the same
+#: state through ``use_aero_icbc = .true.`` -> ``aer_init_opt = 1`` with
+#: ``wif_input_opt = 1``, reading the global monthly dataset metgrid routes
+#: through ``constants_name``; WRF in fact FATALs the other configuration
+#: (``dyn_em/module_initialize_real.F:2735-2736``, ``'wif_input_opt=0 but
+#: mp_physics=28'``).  ArWen now agrees with WRF by construction instead of
+#: documenting why it did not.
+MP28_AEROSOL_SOURCE_DEFAULT = (
+    "mp_physics=28 takes its aerosol initial state from WRF's global "
+    "monthly water/ice-friendly aerosol climatology "
+    "(QNWFA_QNIFA_SIGMA_MONTHLY.dat), ported as "
+    "gpuwm/ingest/wif_climatology.py: metgrid's four_pt bilinear horizontal "
+    "interpolation (METGRID.TBL:885-1150), real.exe's monthly_interp_to_date "
+    "temporal weighting (module_initialize_real.F:8029-8095), and real.exe's "
+    "vert_interp onto the dry eta pressure (:2452/:2519), with the surface "
+    "emission qnwfa2d=w_wif(:,1,:)*0.000196*(50/z1) (:4530-4547). This is "
+    "the same dataset, the same operators and the same stage order real.exe "
+    "runs under use_aero_icbc=.true. (aer_init_opt=1, wif_input_opt=1), "
+    "matched to it to 1e-5. The dataset is located by "
+    "gpuwm.ingest.wif_climatology.resolve_wif_climatology and the run "
+    "receipt carries its path and SHA-256."
 )
+
+#: What a run got INSTEAD when the dataset could not be found, and why that
+#: matters enough to be shouted rather than logged.
+#:
+#: The fallback is not a degraded version of the default.  It is WRF's own
+#: synthetic boundary-layer-following CCN/IN profile
+#: (``phys/module_mp_thompson.F:493-551``), a real initial condition that
+#: WRF installs whenever the aerosol fields arrive empty -- but a forecast
+#: started from it is a different forecast, measurably (see the lane/
+#: wif-default before/after), and anyone comparing it to a WIF-initialized
+#: WRF run is comparing two different experiments.  So it is REPORTED, in
+#: the run receipt, by name, with the reason the dataset was not found.
+MP28_AEROSOL_SYNTHETIC_FALLBACK = (
+    "FALLBACK IN USE -- this mp_physics=28 run was NOT initialized from "
+    "aerosol data. WRF's global monthly QNWFA/QNIFA climatology could not "
+    "be located, so the aerosol initial state is thompson_init's SYNTHETIC "
+    "CCN/IN profile (phys/module_mp_thompson.F:493-551), the profile WRF "
+    "installs when the fields arrive empty. That is a scientifically "
+    "different initial condition from the default: it is not measured "
+    "aerosol, it is a two-parameter analytic profile keyed on the height of "
+    "model level 1, and a whole-forecast comparison against a "
+    "WIF-initialized WRF run is NOT equivalent and must not be reported as "
+    "one. Set wif_climatology_path, $GPUWM_WIF_CLIMATOLOGY, or "
+    "$GPUWM_WIF_CLIMATOLOGY_ROOT to WRF's QNWFA_QNIFA_SIGMA_MONTHLY.dat, or "
+    "run from a directory holding it, to take the default path."
+)
+
+#: The three values of :attr:`RunConfig.mp28_aerosol_source`.
+#:
+#: ``auto`` is the default and does the correct thing without being asked.
+#: The other two exist because a default that cannot be pinned is a default
+#: nobody can reproduce: ``climatology`` refuses rather than degrades, and
+#: ``synthetic`` is how an idealized or deliberately data-free run NAMES the
+#: fallback instead of arriving at it by accident.
+MP28_AEROSOL_SOURCES = ("auto", "climatology", "synthetic")
 
 #: The only implemented value of each mp=28 aerosol-source selector, and the
 #: named capability a user would need for anything else.  Read by
@@ -1217,21 +1293,24 @@ MP28_AEROSOL_SOURCE_OPTIONS: dict[str, tuple[int, str, str]] = {
     "aer_init_opt": (
         0,
         "Registry/Registry.EM_COMMON:2656",
-        "aer_init_opt=1 (climo) and 2 (first guess) both consume the "
-        "water/ice-friendly aerosol arrays real.exe interpolates from a "
-        "metgrid WIF stream (dyn_em/module_initialize_real.F:2327-2732 3-D, "
-        ":4499-4653 2-D); "
-        "ArWen has NO WIF metgrid ingest, so there is nothing for either "
-        "branch to read and no oracle fixture covers them",
+        "aer_init_opt=2 is real.exe's FIRST-GUESS branch: it consumes "
+        "water/ice-friendly aerosol arrays interpolated from a metgrid WIF "
+        "stream carried by the driving model itself "
+        "(dyn_em/module_initialize_real.F:2327-2732 3-D, :4499-4653 2-D), "
+        "which no ArWen input source provides; the CLIMATOLOGY branch "
+        "(aer_init_opt=1 with wif_input_opt=1) IS ported "
+        "(gpuwm/ingest/wif_climatology.py) and is what a real-data mp=28 "
+        "run does by default",
     ),
     "wif_input_opt": (
         0,
         "Registry/registry.new3d_wif:17",
-        "wif_input_opt=1 activates the use_wif_input package (13 monthly "
-        "WIF levels per species, Registry/registry.new3d_wif:80) and "
         "wif_input_opt=2 additionally allocates the black-carbon scalar "
-        "qnbca (:82); ArWen implements NEITHER -- there is no WIF metgrid "
-        "ingest and no nbca species anywhere in the mp=28 port",
+        "qnbca (Registry/registry.new3d_wif:82) and there is no nbca "
+        "species anywhere in the mp=28 port; wif_input_opt=1 activates the "
+        "use_wif_input package (monthly WIF levels per species, :80) and IS "
+        "ported as the climatology pair with aer_init_opt=1, the default "
+        "route for real-data mp=28",
     ),
 }
 
@@ -1239,23 +1318,71 @@ MP28_AEROSOL_SOURCE_OPTIONS: dict[str, tuple[int, str, str]] = {
 def validate_aerosol_source_options(cfg: RunConfig) -> None:
     """Fail closed on any mp=28 aerosol-source selector ArWen cannot honour.
 
-    Both selectors default to WRF's Registry default 0, which is also the
-    only implemented value, so this refuses rather than reinterprets.  The
-    check is unconditional on ``mp_physics``: under any other scheme the two
-    keys are inert in WRF as well, and accepting a nonzero inert value here
-    would let a configuration that MEANS something under mp=28 be carried
-    silently into an mp=28 restart or nest.
+    THE DEFAULT MOVED (lane/wif-default).  ``(aer_init_opt, wif_input_opt)``
+    at WRF's Registry defaults ``(0, 0)`` no longer MEANS "synthetic
+    profile"; it means "ArWen chooses", and what ArWen chooses is the
+    climatology whenever the dataset resolves.  The two namelist fields keep
+    WRF's Registry defaults on purpose -- ``physics_compat``'s
+    ``_SINGLE_DOMAIN_RUNTIME_SWITCHES`` rows are compared for EXACT equality
+    by the prepared-forecast runner, and a nonzero default here would move
+    every shipped profile for a reason that has nothing to do with profiles.
+    The ArWen-side selection therefore lives in its own field,
+    :attr:`RunConfig.mp28_aerosol_source`, and ``(1, 1)`` remains the
+    namelist-level way to demand the same thing.
+
+    What is still refused, and why each: ``aer_init_opt=2`` (real.exe's
+    first-guess WIF stream -- no ArWen source carries one), and
+    ``wif_input_opt=2`` (allocates qnbca, a species the port does not have).
+    Those are unimplemented capabilities, not defaults, so they refuse by
+    name rather than being reinterpreted.  The check stays unconditional on
+    ``mp_physics``: under any other scheme both keys are inert in WRF too,
+    and accepting an inert nonzero here would let a configuration that MEANS
+    something under mp=28 ride silently into an mp=28 restart or nest.
     """
-    for name, (only, citation, why) in MP28_AEROSOL_SOURCE_OPTIONS.items():
-        value = getattr(cfg, name)
-        if value == only:
-            continue
+    source = str(getattr(cfg, "mp28_aerosol_source", "auto") or "auto")
+    if source not in MP28_AEROSOL_SOURCES:
+        raise ValueError(
+            f"mp28_aerosol_source={source!r} is not one of "
+            f"{MP28_AEROSOL_SOURCES}; 'auto' (the default) uses WRF's "
+            "monthly WIF aerosol climatology when it resolves and announces "
+            "the synthetic fallback by name when it does not, 'climatology' "
+            "refuses rather than falling back, and 'synthetic' selects the "
+            "fallback deliberately")
+    selected = (int(cfg.aer_init_opt), int(cfg.wif_input_opt))
+    path = str(getattr(cfg, "wif_climatology_path", "") or "")
+    if selected == (1, 1):
+        # The namelist spelling of mp28_aerosol_source='climatology' --
+        # real.exe's use_aero_icbc=.true. state.  It no longer requires an
+        # explicit path, because the resolver has a search order; it does
+        # still require that the search SUCCEED, which the resolver enforces
+        # with explicit_required=True.  Nothing to check here.
+        return
+    if selected != (0, 0):
+        for name, (only, citation, why) in MP28_AEROSOL_SOURCE_OPTIONS.items():
+            value = getattr(cfg, name)
+            if value in (only, 1):
+                continue
+            raise NotImplementedError(
+                f"{name}={value!r} is not implemented; ArWen honours "
+                f"{name}={only!r} (WRF Registry default, {citation}) and "
+                f"{name}=1 as the ported climatology pair. {why}.")
         raise NotImplementedError(
-            f"{name}={value!r} is not implemented; ArWen honours "
-            f"{name}={only!r} only (WRF Registry default, {citation}). "
-            f"{why}. "
-            + MP28_AEROSOL_SOURCE_DEVIATION
-        )
+            f"aer_init_opt={cfg.aer_init_opt!r}/wif_input_opt="
+            f"{cfg.wif_input_opt!r} is a MIXED aerosol-source selection. "
+            "real.exe's climatology route derives both together "
+            "(use_aero_icbc=.true. -> aer_init_opt=1, and the use_wif_input "
+            "package -> wif_input_opt=1); one without the other names half "
+            "an input path, and ArWen refuses rather than guessing which "
+            "half was meant. Use aer_init_opt=1 with wif_input_opt=1, or "
+            "leave both at 0 and let mp28_aerosol_source decide.")
+    if path and source == "synthetic":
+        raise ValueError(
+            "wif_climatology_path names WRF's monthly WIF aerosol dataset "
+            "but mp28_aerosol_source='synthetic' selects thompson_init's "
+            "synthetic profile instead, so nothing would read it; refusing "
+            "to carry a dataset path no code would open rather than "
+            "silently ignoring it")
+
 
 #: Every switch WRF's Milbrandt-Yau path hard-codes, with the line that
 #: does it.  ``mp_milbrandt2mom_driver`` fixes the first seven
@@ -2604,6 +2731,50 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                 f"identity; gpuwm implements {name}={admitted!r} only, and "
                 "no nearby branch is substituted for an unported one."
             )
+    # W4 full admission (mf-close2 Stage B): bl_mynn_mixscalars leaves the
+    # single-value identity table and is admitted at {0,1}.  The 1 arm is
+    # pinned to the combo the anchored oracle fixture family
+    # (w4-oracle-fixtures) was generated at and the runtime
+    # was wired for: MYNN itself (bl_pbl_physics=5), the one scheme whose
+    # state carries the qn family (mp_physics=28: nc/ni/nwfa/nifa), and
+    # every-step PBL cadence (bldt=0) -- the qn tendencies are held as
+    # plain-attribute extras outside the restart TENDENCY_COMPONENTS
+    # manifest, which is restart-exact only when every compute() replaces
+    # them before any read (gpuwm/core/physics.py scalar_for).
+    if cfg.bl_mynn_mixscalars not in (0, 1) or \
+            type(cfg.bl_mynn_mixscalars) is not int:
+        raise ValueError(
+            f"bl_mynn_mixscalars={cfg.bl_mynn_mixscalars!r} is outside the "
+            "admitted MYNN option identity; gpuwm implements 0 (off) and 1 "
+            "(the fixture-anchored stock qn mixing) only."
+        )
+    if cfg.bl_mynn_mixscalars == 1:
+        if cfg.bl_pbl_physics != 5:
+            raise NotImplementedError(
+                "bl_mynn_mixscalars=1 requires bl_pbl_physics=5 (MYNN), "
+                f"got bl_pbl_physics={cfg.bl_pbl_physics}. The mixscalars "
+                "arms are MYNN's own qn solves (module_bl_mynn.F:4654-4860) "
+                "and no other PBL scheme reads the key -- accepting it "
+                "would record a mixing option no code performs."
+            )
+        if cfg.mp_physics != 28:
+            raise NotImplementedError(
+                "bl_mynn_mixscalars=1 requires mp_physics=28, got "
+                f"mp_physics={cfg.mp_physics}. The five mixed species are "
+                "the aerosol-aware Thompson qn family (nc/ni/nwfa/nifa; "
+                "qnbca has no mp=28 field and rides as an exact zero); no "
+                "other ported scheme carries them, so the solve would mix "
+                "columns that do not exist."
+            )
+        if cfg.bldt != 0.0:
+            raise NotImplementedError(
+                f"bl_mynn_mixscalars=1 requires bldt=0, got {cfg.bldt!r}. "
+                "The qn tendencies are held outside the restart "
+                "TENDENCY_COMPONENTS manifest and are restart-exact only "
+                "when recomputed every step (physics.py scalar_for, the rw "
+                "precedent); a positive cadence would make a mid-interval "
+                "restart silently drop them."
+            )
     for name, (admitted, evidence) in \
             NOAHMP_OPTION_IDENTITY_EVIDENCE.items():
         value = getattr(cfg, name)
@@ -2859,6 +3030,25 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                     "WRF reads hail_opt/ccn_conc only inside the schemes "
                     "that declare them, and gpuwm refuses a stray value "
                     "instead of silently dropping it."
+                )
+    if cfg.mp_physics != 28:
+        # The mp=28 aerosol-source pair is scheme-scoped
+        # (gpuwm.core.model.SCHEME_SCOPED_RUN_FIELDS), and this refusal is
+        # what makes that scoping provably lossless: under any other scheme
+        # the two can hold ONLY their defaults, so dropping them from the
+        # restart identity discards no information.  The concrete breakage:
+        # they landed unscoped at the 2.5.8 integration and moved every
+        # experiment fingerprint, which would have made every existing
+        # checkpoint refuse to resume for fields only mp=28 reads.
+        for _mp28_key, _mp28_default in (("mp28_aerosol_source", "auto"),
+                                         ("wif_climatology_path", "")):
+            if getattr(cfg, _mp28_key) != _mp28_default:
+                raise ValueError(
+                    f"{_mp28_key} selects the mp=28 aerosol initial state "
+                    f"and requires mp_physics=28 (got mp_physics="
+                    f"{cfg.mp_physics}); no other scheme reads it, and "
+                    "gpuwm refuses a stray value instead of silently "
+                    "dropping it."
                 )
     if cfg.no_mp_heating not in (0, 1):
         raise ValueError(

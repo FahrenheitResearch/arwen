@@ -30,6 +30,10 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from gpuwm import runtime_manifest  # noqa: E402
+from gpuwm.aerosol_source_receipt import (  # noqa: E402
+    AEROSOL_SOURCE_KEY,
+    aerosol_source_report_entry,
+)
 from tools.hrrr_build_native_static import (  # noqa: E402
     array_sha256,
     benchmark_grid,
@@ -2546,6 +2550,50 @@ def _initialize_boundary_sides(
             coord = make_vertical_coord(
                 strip_cfg.nz, hybrid_opt=strip_cfg.hybrid_opt,
                 etac=strip_cfg.etac, eta_levels=eta)
+            # NO ``grid=`` HERE, AND THAT IS THE DECISION, not an
+            # omission.  Every full-domain real route passes the mp=28
+            # aerosol front door; this one must not, for three reasons
+            # that all point the same way.
+            #
+            #  * NOTHING READS WHAT IT WOULD FILL.  These four states are
+            #    built to be thrown away: the only thing taken out of them
+            #    is ``extract_lateral_side(_coupled_device_fields(...))``,
+            #    and that dict is a RATIFIED five-plus-qv set -- u, v,
+            #    theta, phi, mu, qv.  nc/nwfa/nifa are deliberately absent
+            #    from it (gpuwm/ingest/lateral_bc.py:639-646, the
+            #    registered mp=28 boundary deviation whose full argument
+            #    is in gpuwm/core/moist.py).  Wiring here would resolve,
+            #    read and interpolate a 225 MB global dataset to populate
+            #    fields that this function's one consumer is documented
+            #    never to look at.
+            #  * THE COST IS PER STRIP, PER HOUR, PER PROCESS.  This runs
+            #    four times per forcing hour inside SPAWNED preparation
+            #    workers (_prepare_boundary_hour), so the load and the
+            #    monthly + vertical interpolation would be paid 4 x hours
+            #    x workers over for a result nobody reads.
+            #  * IT HAS NO GEODESY TO PASS.  ``_crop_boundary_static``
+            #    ships eight named fields and no XLAT/XLONG, on purpose --
+            #    the crop exists to keep the per-worker payload small.
+            #    Wiring would mean widening that payload too.
+            #
+            # WHAT MAKES THIS SAFE rather than a silent gap.  The f00 /
+            # reference state that actually becomes the forecast IS wired
+            # (``_initialize_state`` below passes ``grid=grid``) and the
+            # report this runner writes names THAT state's aerosol source,
+            # so the run's answer is recorded and no second answer exists
+            # to disagree with it.  And this runner cannot reach the mp=28
+            # block at all today: its physics selection is the closed
+            # ``_NATIVE_HRRR_RUNTIME_SWITCHES`` registry, whose profiles
+            # resolve mp_physics 1, 6, 8, 10 and 18 and nothing else.
+            #
+            # IF AN AEROSOL-AWARE PROFILE IS EVER ADDED TO THAT REGISTRY,
+            # this is the line to revisit -- not by pasting ``grid=`` in,
+            # but by deciding what a boundary strip's aerosol scope IS.
+            # As written it would emit the synthetic-fallback warning four
+            # times per forcing hour per worker, and under
+            # ``mp28_aerosol_source='climatology'`` it would RAISE, because
+            # a strip carries no mass-point geodesy for the resolver to
+            # honour the request with.
             result = initialize_real(
                 strip_met, strip_cfg, coord, strip_static["HGT_M"],
                 p_top=p_top, sfcp_to_sfcp=True,
@@ -2645,7 +2693,7 @@ def _initialize_state(
         eta_levels=eta)
     state_timing = {}
     result = initialize_real(
-        met, dc.run, coord, static["HGT_M"], p_top=p_top,
+        met, dc.run, coord, static["HGT_M"], grid=grid, p_top=p_top,
         sfcp_to_sfcp=True, column_workers=column_workers,
         preprocess_backend=preprocess_backend,
         state_backend=state_backend,
@@ -2946,6 +2994,15 @@ def run(args):
                 "resolved public selector")
 
     root_result = root_met = initial_snapshot = None
+    # WHICH AEROSOL SOURCE THE f00 STATE CAME FROM, held across both
+    # roads so the report can name it once.  The FRESH road gets it from
+    # the ingest that made the decision; the RESTORE road gets it from
+    # the prepared cache the deciding process wrote it into.  Never
+    # re-resolved here: a second resolution over the same config field is
+    # how a run reads one dataset and reports another.  ``{}`` for every
+    # scheme with no aerosol number fields, which is what keeps the
+    # report of such a run byte-identical.
+    root_aerosol_initialization: dict = {}
     # The SOLVED Noah surface, when the state came from a prepared cache.
     # A cache stores it and therefore drops the native SOILT/SOILW pair
     # from the met contract beside it, so a restore that let physics setup
@@ -2977,6 +3034,8 @@ def run(args):
             time.perf_counter() - total_started)
         prepared_cache_receipt = dict(restored.receipt)
         root_result = restored.initial_result
+        root_aerosol_initialization = dict(
+            restored.metadata.get(AEROSOL_SOURCE_KEY, {}))
         root_met = restored.met
         root_surface = restored.surface
         boundaries = restored.boundaries
@@ -3103,6 +3162,8 @@ def run(args):
             from gpuwm.ingest.prepared_cache import select_prepared_met_fields
 
             root_result = result
+            root_aerosol_initialization = dict(
+                getattr(result, "aerosol_initialization", {}) or {})
             # Physics setup/cache writing need only this detached host subset.
             # Keeping the complete mapped f00 snapshot here otherwise pins
             # multiple full-domain 3-D device arrays through all later hours.
@@ -3913,6 +3974,22 @@ def run(args):
             key: int(io_after.get(key, 0) - io_before.get(key, 0))
             for key in sorted(set(io_before) | set(io_after))},
     }
+    # WHICH AEROSOL INITIAL CONDITION THIS RUN STARTED FROM.  This report
+    # is also the PREPARATION report the HRRR chain reads back
+    # (tools/prepare_hrrr_wrf.py --prepare-only writes it to
+    # native/preparation-report/report.json), so it is the record for the
+    # whole downstream tree, not only for this process.  Merged rather
+    # than assigned: nothing is added for a scheme with no aerosol number
+    # fields, and every profile in this runner's registry except an
+    # aerosol-aware one writes the report it wrote before.
+    report.update(aerosol_source_report_entry(
+        root_aerosol_initialization,
+        mp_physics=dc.run.mp_physics,
+        when_unrecorded=(
+            "this run restored a prepared cache that carries no "
+            "aerosol-initialization receipt, so the cache was written by a "
+            "preparation predating the receipt being stored; re-prepare to "
+            "record which source filled nwfa/nifa")))
     _atomic_json(progress_path, {
         "status": "PASS", "model_elapsed_seconds": float(args.run_seconds),
         "report": str((args.outdir / "report.json").resolve()),

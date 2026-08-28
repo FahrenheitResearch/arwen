@@ -34,6 +34,18 @@ const RAD: f64 = std::f64::consts::PI / 180.0;
 /// 6 m on the ground, so no genuinely out-of-range mesh slips through.
 const POLE_TOLERANCE_RAD: f64 = std::f64::consts::FRAC_PI_2 + 1.0e-6;
 
+/// What a window point that is off the mesh carries.
+///
+/// NaN, because that is what the renderer already treats as "draw nothing"
+/// (`rustwx-render::colormap::LeveledColormap::map` returns a transparent
+/// pixel for it).  A sentinel number would be drawn: it would land somewhere
+/// on the colour scale and a reader would read it as weather.
+pub const OFF_MESH_FILL: f32 = f32::NAN;
+
+/// How far outside a cell's own spacing a window point may sit and still be
+/// counted as on the mesh.  See [`NearestCellWeights::mark_footprint`].
+pub const ON_MESH_SPACING_FACTOR: f64 = 1.0;
+
 /// How a mesh's angular units were established.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AngleUnits {
@@ -196,6 +208,233 @@ pub fn read_mesh_coordinates(path: &Path, expect_sha256: Option<&str>) -> MpasRe
     })
 }
 
+// ---------------------------------------------------------------------------
+// Per-cell spacing: what a mesh-derived render window is sized from.
+// ---------------------------------------------------------------------------
+
+/// Which variable a mesh's per-cell spacing was measured from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpacingSource {
+    /// `areaCell`, as hexagon across-flats `sqrt(2A/sqrt(3))`. This is the
+    /// metric every published resolution figure in this program is quoted in
+    /// (`mesh::derive::Mesh::spacing_m`), so a window derived from it is
+    /// sized in the same units the mesh registry describes the mesh in.
+    AreaCell,
+    /// The mean `dcEdge` over each cell's own edges, for a file that carries
+    /// the connectivity but no `areaCell`.
+    MeanEdgeLength,
+}
+
+impl SpacingSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            SpacingSource::AreaCell => "areaCell hexagon across-flats",
+            SpacingSource::MeanEdgeLength => "mean dcEdge",
+        }
+    }
+}
+
+/// One mesh's per-cell horizontal spacing, in metres.
+#[derive(Debug, Clone)]
+pub struct MeshSpacing {
+    pub spacing_metres: Vec<f64>,
+    pub source: SpacingSource,
+    /// The radius the file's lengths are stored on: 1.0 for a unit-sphere
+    /// grid file, 6371229.0 for an earth-scaled static.
+    pub sphere_radius: f64,
+}
+
+/// Whether a connectivity array counts from 1 or from 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexBase {
+    Zero,
+    One,
+}
+
+/// Decide whether `edgesOnCell` counts from 1 or from 0, from the data.
+///
+/// Not assumed, because assuming is how this goes wrong quietly: an
+/// off-by-one read still lands inside `dcEdge` for every cell but the last,
+/// so every spacing belongs to a neighbouring edge and the mesh looks fine.
+///
+/// The test is decisive rather than heuristic. Every edge lies on exactly two
+/// cells, so every edge index appears in some cell's ring: a one-based map
+/// spans exactly `[1, nEdges]` and a zero-based map spans exactly
+/// `[0, nEdges - 1]`. `min` and `max` are taken over VALID slots only -- the
+/// padding past `nEdgesOnCell` is 0 or -1 and says nothing. Anything that
+/// matches neither span is refused rather than guessed at.
+pub fn detect_index_base(min: i64, max: i64, count: usize, name: &str) -> MpasResult<IndexBase> {
+    let n = count as i64;
+    if min == 1 && max == n {
+        return Ok(IndexBase::One);
+    }
+    if min == 0 && max == n - 1 {
+        return Ok(IndexBase::Zero);
+    }
+    Err(MpasError::Refusal(format!(
+        "{name} spans [{min}, {max}] over its valid slots against {count} target(s). Every \
+         target is named by some cell, so a one-based map spans exactly [1, {n}] and a \
+         zero-based map spans exactly [0, {}]; this matches neither, so nothing in the file \
+         says which it is. Reading it the wrong way shifts every lookup by one and still \
+         lands in range, so the mesh would measure clean at the wrong spacing",
+        n - 1
+    )))
+}
+
+/// Read one horizontal spacing per cell off a mesh file, in metres.
+///
+/// The file's own `sphere_radius` decides the units: a grid file written on
+/// the unit sphere stores `areaCell` and `dcEdge` as unit-sphere quantities
+/// despite their `m` and `m^2` attributes, and a static file stores them
+/// earth-scaled. Both are handled by dividing out the stored radius and
+/// multiplying by the physical one, so the returned metres mean the same
+/// thing either way.
+///
+/// No digest is taken here. The caller has already bound the file by SHA-256
+/// through [`read_mesh_coordinates`]; digesting a multi-gigabyte grid twice
+/// buys nothing.
+pub fn read_mesh_cell_spacing(path: &Path) -> MpasResult<MeshSpacing> {
+    let file = netcrust::File::open(path)?;
+    let sphere_radius = match file.attribute("sphere_radius").and_then(|a| a.as_f64()) {
+        Some(r) if r.is_finite() && r > 0.0 => r,
+        Some(r) => {
+            return Err(MpasError::Refusal(format!(
+                "mesh {} declares sphere_radius = {r}; every stored length is divided by that \
+                 radius to reach the unit sphere, and a non-positive radius puts every cell \
+                 at infinity or reflects the mesh through the origin",
+                path.display()
+            )))
+        }
+        None => {
+            return Err(MpasError::Refusal(format!(
+                "mesh {} carries no sphere_radius global attribute, so nothing in it says \
+                 whether areaCell is a unit-sphere area or square metres. Guessing wrong \
+                 scales every derived spacing by 6.4e6 or its inverse, and a render window \
+                 sized from it would be the whole planet or a single cell",
+                path.display()
+            )))
+        }
+    };
+
+    // areaCell first: it needs no connectivity, so no index base can be got
+    // wrong, and it is the metric this program's published resolution figures
+    // are quoted in.
+    if file.variable("areaCell").is_some() {
+        let area = file.read_f64("areaCell")?;
+        if area.is_empty() {
+            return Err(MpasError::Refusal(format!(
+                "mesh {} carries an empty areaCell",
+                path.display()
+            )));
+        }
+        let scale = 1.0 / (sphere_radius * sphere_radius);
+        let mut spacing = Vec::with_capacity(area.len());
+        for (i, &a) in area.iter().enumerate() {
+            let unit_area = a * scale;
+            if !unit_area.is_finite() || unit_area <= 0.0 {
+                return Err(MpasError::Refusal(format!(
+                    "mesh {} has areaCell[{i}] = {a} on sphere_radius {sphere_radius}; a cell \
+                     with no positive area has no spacing, and the window would be sized from \
+                     a zero or a NaN",
+                    path.display()
+                )));
+            }
+            spacing.push((2.0 * unit_area / 3f64.sqrt()).sqrt() * MPAS_EARTH_RADIUS_M);
+        }
+        return Ok(MeshSpacing {
+            spacing_metres: spacing,
+            source: SpacingSource::AreaCell,
+            sphere_radius,
+        });
+    }
+
+    // Otherwise the edge lengths, with the index base established from the
+    // data rather than assumed.
+    for name in ["dcEdge", "nEdgesOnCell", "edgesOnCell"] {
+        if file.variable(name).is_none() {
+            return Err(MpasError::Refusal(format!(
+                "mesh {} carries neither areaCell nor the {name} a mean edge length needs, so \
+                 nothing in it states the resolution each cell holds. A render window derived \
+                 from this file would have to invent its own spacing",
+                path.display()
+            )));
+        }
+    }
+    let dc_edge = file.read_f64("dcEdge")?;
+    let n_edges_on_cell: Vec<i64> = file
+        .read_f64("nEdgesOnCell")?
+        .into_iter()
+        .map(|v| v.round() as i64)
+        .collect();
+    let edges_on_cell: Vec<i64> = file
+        .read_f64("edgesOnCell")?
+        .into_iter()
+        .map(|v| v.round() as i64)
+        .collect();
+    let n_cells = n_edges_on_cell.len();
+    if n_cells == 0 || dc_edge.is_empty() {
+        return Err(MpasError::Refusal(format!(
+            "mesh {} carries {n_cells} cell(s) and {} edge(s); a spacing needs both",
+            path.display(),
+            dc_edge.len()
+        )));
+    }
+    if edges_on_cell.len() % n_cells != 0 {
+        return Err(MpasError::Refusal(format!(
+            "mesh {} carries {} edgesOnCell values over {n_cells} cells, which is not a whole \
+             number of slots per cell; walking it would read one cell's ring out of another's",
+            path.display(),
+            edges_on_cell.len()
+        )));
+    }
+    let max_edges = edges_on_cell.len() / n_cells;
+    let mut min_index = i64::MAX;
+    let mut max_index = i64::MIN;
+    for c in 0..n_cells {
+        let used = n_edges_on_cell[c];
+        if used < 1 || used as usize > max_edges {
+            return Err(MpasError::Refusal(format!(
+                "mesh {} has nEdgesOnCell[{c}] = {used}, outside 1..={max_edges}",
+                path.display()
+            )));
+        }
+        for s in 0..used as usize {
+            let v = edges_on_cell[c * max_edges + s];
+            min_index = min_index.min(v);
+            max_index = max_index.max(v);
+        }
+    }
+    let base = detect_index_base(min_index, max_index, dc_edge.len(), "edgesOnCell")?;
+    let shift = match base {
+        IndexBase::One => 1i64,
+        IndexBase::Zero => 0,
+    };
+    let scale = MPAS_EARTH_RADIUS_M / sphere_radius;
+    let mut spacing = vec![0.0f64; n_cells];
+    for c in 0..n_cells {
+        let used = n_edges_on_cell[c] as usize;
+        let mut sum = 0.0;
+        for s in 0..used {
+            let e = edges_on_cell[c * max_edges + s] - shift;
+            let length = dc_edge[e as usize];
+            if !length.is_finite() || length <= 0.0 {
+                return Err(MpasError::Refusal(format!(
+                    "mesh {} has dcEdge[{e}] = {length}; a zero or non-finite edge length \
+                     makes the cell's mean spacing meaningless",
+                    path.display()
+                )));
+            }
+            sum += length;
+        }
+        spacing[c] = sum / used as f64 * scale;
+    }
+    Ok(MeshSpacing {
+        spacing_metres: spacing,
+        source: SpacingSource::MeanEdgeLength,
+        sphere_radius,
+    })
+}
+
 fn unit_vector(lat_deg: f64, lon_deg: f64) -> [f64; 3] {
     let lat = lat_deg * RAD;
     let lon = lon_deg * RAD;
@@ -210,7 +449,8 @@ fn unit_vector(lat_deg: f64, lon_deg: f64) -> [f64; 3] {
 /// Balanced k-d tree built by repeated median selection. Nodes are stored
 /// implicitly: `order[lo..hi]` is a subtree and its median is its root, so
 /// there is one permutation vector and no per-node allocation.
-struct KdTree {
+#[derive(Debug)]
+pub(crate) struct KdTree {
     points: Vec<[f64; 3]>,
     order: Vec<u32>,
     /// Split axis chosen for each subtree root, indexed by the median slot.
@@ -267,7 +507,61 @@ fn build_range(
 }
 
 impl KdTree {
-    fn build(points: Vec<[f64; 3]>) -> KdTree {
+    /// The `k` nearest stored points, nearest first, with their squared chord
+    /// distances.
+    ///
+    /// The single-nearest search below is the same walk with a one-slot
+    /// frontier; this keeps a short sorted list instead, and prunes against
+    /// the worst member of it rather than against the best. A boundary
+    /// producer needs the *few* nearest, not the one nearest, because the one
+    /// nearest does not tell it which triangle a point is in.
+    pub(crate) fn nearest_k(&self, target: [f64; 3], k: usize) -> Vec<(u32, f64)> {
+        let mut frontier: Vec<(f64, u32)> = Vec::with_capacity(k + 1);
+        if k > 0 {
+            self.search_k(0, self.order.len(), target, k, &mut frontier);
+        }
+        frontier.into_iter().map(|(d, i)| (i, d)).collect()
+    }
+
+    fn search_k(
+        &self,
+        lo: usize,
+        hi: usize,
+        target: [f64; 3],
+        k: usize,
+        frontier: &mut Vec<(f64, u32)>,
+    ) {
+        if hi <= lo {
+            return;
+        }
+        let mid = lo + (hi - lo) / 2;
+        let idx = self.order[mid];
+        let p = self.points[idx as usize];
+        let d = (p[0] - target[0]).powi(2) + (p[1] - target[1]).powi(2) + (p[2] - target[2]).powi(2);
+        let slot = frontier.partition_point(|(dd, _)| *dd <= d);
+        if slot < k {
+            frontier.insert(slot, (d, idx));
+            frontier.truncate(k);
+        }
+        let axis = self.axis[mid] as usize;
+        let delta = target[axis] - p[axis];
+        let (near_lo, near_hi, far_lo, far_hi) = if delta < 0.0 {
+            (lo, mid, mid + 1, hi)
+        } else {
+            (mid + 1, hi, lo, mid)
+        };
+        self.search_k(near_lo, near_hi, target, k, frontier);
+        let worst = if frontier.len() >= k {
+            frontier[frontier.len() - 1].0
+        } else {
+            f64::INFINITY
+        };
+        if delta * delta < worst {
+            self.search_k(far_lo, far_hi, target, k, frontier);
+        }
+    }
+
+    pub(crate) fn build(points: Vec<[f64; 3]>) -> KdTree {
         let n = points.len();
         let mut order: Vec<u32> = (0..n as u32).collect();
         let mut axis = vec![0u8; n];
@@ -320,6 +614,24 @@ pub struct NearestCellWeights {
     pub target_latitude: Vec<f64>,
     pub target_longitude: Vec<f64>,
     pub cell_index: Vec<i32>,
+    /// Window points that are NOT on the mesh: their nearest cell centre is
+    /// further away than that cell's own spacing, so the value there would
+    /// be a boundary cell's smeared outward rather than a model answer.
+    ///
+    /// Empty on a mesh nobody asked about (a global mesh covers the sphere,
+    /// so every window point is on it), populated by
+    /// [`NearestCellWeights::mark_footprint`].
+    ///
+    /// THE BREAKAGE THIS PREVENTS, MEASURED (2026-08-26, r4.75.11020): a
+    /// limited-area mesh is a BOUNDED DISK and `--window mesh` frames it in a
+    /// RECTANGLE, so the corners fall outside the domain entirely.  The
+    /// nearest-cell resample has no opinion about that -- it returns the
+    /// nearest cell however far it is -- so the first rendered composite
+    /// reflectivity from a limited-area forecast carried radial streaks of
+    /// the outermost ring's value across three corners, with a maximum
+    /// nearest-cell distance of 195.8 km on a 4.6 km mesh.  A reader cannot
+    /// tell a streak from weather.
+    pub off_mesh: Vec<bool>,
     pub distance_km: Vec<f32>,
     pub mesh_sha256: String,
     pub mesh_path: String,
@@ -334,6 +646,59 @@ pub struct NearestCellWeights {
 impl NearestCellWeights {
     pub fn shape(&self) -> (usize, usize) {
         (self.ny, self.nx)
+    }
+
+    /// Mark the window points that are off this mesh.
+    ///
+    /// A hexagonal cell of spacing `d` puts every point of its own interior
+    /// within `d / sqrt(3)` (about 0.577 d) of the centre, so a point further
+    /// than `factor * d` from the nearest centre, with `factor >= 1`, is
+    /// outside the mesh rather than merely off-centre inside it.  The margin
+    /// is deliberate: this is a mask that HIDES data, and it must never hide
+    /// a point the model actually solved.
+    pub fn mark_footprint(&mut self, spacing_metres: &[f64], factor: f64) -> MpasResult<usize> {
+        if spacing_metres.len() != self.n_cells {
+            return Err(MpasError::Refusal(format!(
+                "the footprint needs one spacing per cell; got {} for {} cells",
+                spacing_metres.len(),
+                self.n_cells
+            )));
+        }
+        if !(factor.is_finite() && factor >= 1.0) {
+            return Err(MpasError::Refusal(format!(
+                "a footprint factor of {factor} would mask points inside the                  mesh: every point of a cell of spacing d lies within                  d/sqrt(3) of its centre, so the factor cannot go below 1"
+            )));
+        }
+        let mut marked = 0usize;
+        self.off_mesh = self
+            .cell_index
+            .iter()
+            .zip(self.distance_km.iter())
+            .map(|(&cell, &km)| {
+                let limit = factor * spacing_metres[cell as usize] / 1000.0;
+                let outside = f64::from(km) > limit;
+                if outside {
+                    marked += 1;
+                }
+                outside
+            })
+            .collect();
+        Ok(marked)
+    }
+
+    /// How far the FURTHEST point that is still on the mesh had to reach.
+    /// With a footprint marked this is the honest resample quality figure;
+    /// [`Self::max_distance_km`] then describes points nobody will see.
+    pub fn max_on_mesh_distance_km(&self) -> f32 {
+        if self.off_mesh.is_empty() {
+            return self.max_distance_km();
+        }
+        self.distance_km
+            .iter()
+            .zip(self.off_mesh.iter())
+            .filter(|(_, outside)| !**outside)
+            .map(|(&km, _)| km)
+            .fold(f32::MIN, f32::max)
     }
 
     pub fn max_distance_km(&self) -> f32 {
@@ -364,6 +729,13 @@ impl NearestCellWeights {
             let target = &mut out[level * points..(level + 1) * points];
             for (slot, &cell) in self.cell_index.iter().enumerate() {
                 target[slot] = values[cell as usize * levels + level];
+            }
+            if !self.off_mesh.is_empty() {
+                for (slot, &outside) in self.off_mesh.iter().enumerate() {
+                    if outside {
+                        target[slot] = OFF_MESH_FILL;
+                    }
+                }
             }
         }
         Ok(out)
@@ -454,6 +826,7 @@ pub fn build_weights(
         target_latitude,
         target_longitude,
         cell_index: cell_index.clone(),
+        off_mesh: Vec::new(),
         distance_km,
         mesh_sha256: mesh.source_sha256.clone(),
         mesh_path: mesh.source_path.display().to_string(),
@@ -520,6 +893,7 @@ mod tests {
             target_longitude: vec![0.0; 4],
             cell_index: vec![2, 0, 1, 2],
             distance_km: vec![0.0; 4],
+            off_mesh: Vec::new(),
             mesh_sha256: String::new(),
             mesh_path: String::new(),
             mesh_angle_units: AngleUnits::Declared,
@@ -622,6 +996,179 @@ mod tests {
         assert!(resolve_angle_units("", std::f64::consts::FRAC_PI_2 - 1.0e-3, 1.0).is_ok());
     }
 
+    // -----------------------------------------------------------------
+    // Per-cell spacing, and the index base a connectivity read depends on.
+    // -----------------------------------------------------------------
+
+    /// A grid file carrying only what a spacing needs. `area` and the edge
+    /// trio are independently optional so each branch of the reader can be
+    /// reached with a real file rather than a stub.
+    fn write_spacing_grid(
+        label: &str,
+        sphere_radius: Option<f64>,
+        area_cell: Option<&[f64]>,
+        edges: Option<(&[f64], &[i32], &[i32], usize)>,
+    ) -> PathBuf {
+        use rw_store::netcdf_classic::{
+            NcAttr, NcClassicWriter, NcData, NcDim, NcFormat, NcType, NcVarDef,
+        };
+        let path = std::env::temp_dir().join(format!(
+            "rw-mpas-spacing-{}-{label}.nc",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let n_cells = area_cell
+            .map(|a| a.len())
+            .or_else(|| edges.map(|(_, neoc, _, _)| neoc.len()))
+            .unwrap_or(1);
+        let n_edges = edges.map(|(dc, _, _, _)| dc.len()).unwrap_or(1);
+        let max_edges = edges.map(|(_, _, _, me)| me).unwrap_or(1);
+        let dims = vec![
+            NcDim::fixed("nCells", n_cells),
+            NcDim::fixed("nEdges", n_edges),
+            NcDim::fixed("maxEdges", max_edges),
+        ];
+        let (c, e, me) = (0usize, 1, 2);
+        let mut vars = vec![NcVarDef::new("latCell", NcType::Double, vec![c])];
+        if area_cell.is_some() {
+            vars.push(NcVarDef::new("areaCell", NcType::Double, vec![c]));
+        }
+        if edges.is_some() {
+            vars.push(NcVarDef::new("dcEdge", NcType::Double, vec![e]));
+            vars.push(NcVarDef::new("nEdgesOnCell", NcType::Int, vec![c]));
+            vars.push(NcVarDef::new("edgesOnCell", NcType::Int, vec![c, me]));
+        }
+        let gattrs = match sphere_radius {
+            Some(r) => vec![NcAttr::doubles("sphere_radius", vec![r])],
+            None => Vec::new(),
+        };
+        let mut w =
+            NcClassicWriter::create(&path, NcFormat::Offset64, dims, gattrs, vars, 0).unwrap();
+        w.put("latCell", NcData::Doubles(&vec![0.0f64; n_cells])).unwrap();
+        if let Some(a) = area_cell {
+            w.put("areaCell", NcData::Doubles(a)).unwrap();
+        }
+        if let Some((dc, neoc, eoc, _)) = edges {
+            w.put("dcEdge", NcData::Doubles(dc)).unwrap();
+            w.put("nEdgesOnCell", NcData::Ints(neoc)).unwrap();
+            w.put("edgesOnCell", NcData::Ints(eoc)).unwrap();
+        }
+        w.finish().unwrap();
+        path
+    }
+
+    /// The trap this reader exists to not fall into. An `edgesOnCell` read
+    /// one off still lands inside `dcEdge` for every cell but the last, so
+    /// every spacing would belong to a neighbouring edge and the mesh would
+    /// measure clean at the wrong resolution. Both bases are decisive
+    /// because every edge lies on two cells and therefore appears in some
+    /// cell's ring; anything else is refused rather than guessed.
+    #[test]
+    fn the_edge_index_base_is_read_from_the_data() {
+        // A one-based map reaches nEdges itself -- the signature that says
+        // one-based, because a zero-based index never can.
+        assert_eq!(
+            detect_index_base(1, 12, 12, "edgesOnCell").unwrap(),
+            IndexBase::One
+        );
+        assert_eq!(
+            detect_index_base(0, 11, 12, "edgesOnCell").unwrap(),
+            IndexBase::Zero
+        );
+        // Neither span: refused, with the numbers that made it refuse.
+        let error = detect_index_base(1, 11, 12, "edgesOnCell")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("spans [1, 11] over its valid slots"), "{error}");
+        assert!(error.contains("[1, 12]") && error.contains("[0, 11]"), "{error}");
+        assert!(error.contains("still lands in range"), "{error}");
+        assert!(detect_index_base(0, 12, 12, "edgesOnCell").is_err());
+        assert!(detect_index_base(2, 12, 12, "edgesOnCell").is_err());
+    }
+
+    /// A grid file on the UNIT sphere and a static file on the earth carry
+    /// the same mesh at different scales. Both have to come back in the same
+    /// metres, or a window derived from one is 6.4e6 times the other.
+    #[test]
+    fn the_stored_sphere_radius_sets_the_scale() {
+        let target_m = 4_530.0f64;
+        let unit_area = (target_m / MPAS_EARTH_RADIUS_M).powi(2) * 3f64.sqrt() / 2.0;
+
+        let unit = write_spacing_grid("unit", Some(1.0), Some(&[unit_area; 3]), None);
+        let read = read_mesh_cell_spacing(&unit).unwrap();
+        assert_eq!(read.source, SpacingSource::AreaCell);
+        assert_eq!(read.sphere_radius, 1.0);
+        for v in &read.spacing_metres {
+            assert!((v - target_m).abs() < 1.0e-6, "{v} is not {target_m}");
+        }
+
+        let scaled_area = unit_area * MPAS_EARTH_RADIUS_M * MPAS_EARTH_RADIUS_M;
+        let scaled = write_spacing_grid(
+            "scaled",
+            Some(MPAS_EARTH_RADIUS_M),
+            Some(&[scaled_area; 3]),
+            None,
+        );
+        let read_scaled = read_mesh_cell_spacing(&scaled).unwrap();
+        for v in &read_scaled.spacing_metres {
+            assert!((v - target_m).abs() < 1.0e-6, "{v} is not {target_m}");
+        }
+        let _ = std::fs::remove_file(&unit);
+        let _ = std::fs::remove_file(&scaled);
+    }
+
+    /// A file with the connectivity but no `areaCell` still yields a spacing,
+    /// through the mean edge length, with the index base taken off the data.
+    #[test]
+    fn a_file_without_area_cell_measures_its_edges() {
+        // Four cells, three edges each, one-based as MPAS writes it. Every
+        // edge index 1..=6 appears, which is what makes the base decisive.
+        let dc = vec![0.1f64, 0.2, 0.3, 0.4, 0.5, 0.6];
+        let neoc = vec![3i32; 4];
+        let eoc = vec![1i32, 2, 3, 2, 3, 4, 3, 4, 5, 4, 5, 6];
+        let path = write_spacing_grid("edges", Some(1.0), None, Some((&dc, &neoc, &eoc, 3)));
+        let read = read_mesh_cell_spacing(&path).unwrap();
+        assert_eq!(read.source, SpacingSource::MeanEdgeLength);
+        assert_eq!(read.spacing_metres.len(), 4);
+        // Cell 0 averages edges 1, 2 and 3, which are 0.1, 0.2 and 0.3 on the
+        // unit sphere: 0.2 radians of arc.
+        let want = 0.2 * MPAS_EARTH_RADIUS_M;
+        assert!(
+            (read.spacing_metres[0] - want).abs() < 1.0e-6,
+            "{} is not {want}",
+            read.spacing_metres[0]
+        );
+        assert!(read.spacing_metres[3] > read.spacing_metres[0], "the ring must vary");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A file that says nothing about its radius, and a file that says
+    /// nothing about its resolution, are both refused by name.
+    #[test]
+    fn a_file_that_cannot_state_its_scale_is_refused() {
+        let no_radius = write_spacing_grid("noradius", None, Some(&[1.0e-7; 3]), None);
+        let error = read_mesh_cell_spacing(&no_radius).unwrap_err().to_string();
+        assert!(error.contains("no sphere_radius"), "{error}");
+        assert!(error.contains("6.4e6"), "{error}");
+        let _ = std::fs::remove_file(&no_radius);
+
+        let bad_radius = write_spacing_grid("badradius", Some(0.0), Some(&[1.0e-7; 3]), None);
+        let error = read_mesh_cell_spacing(&bad_radius).unwrap_err().to_string();
+        assert!(error.contains("sphere_radius = 0"), "{error}");
+        let _ = std::fs::remove_file(&bad_radius);
+
+        let bare = write_spacing_grid("bare", Some(1.0), None, None);
+        let error = read_mesh_cell_spacing(&bare).unwrap_err().to_string();
+        assert!(error.contains("neither areaCell nor the dcEdge"), "{error}");
+        assert!(error.contains("invent its own spacing"), "{error}");
+        let _ = std::fs::remove_file(&bare);
+
+        let zero_area = write_spacing_grid("zeroarea", Some(1.0), Some(&[1.0e-7, 0.0]), None);
+        let error = read_mesh_cell_spacing(&zero_area).unwrap_err().to_string();
+        assert!(error.contains("areaCell[1] = 0"), "{error}");
+        let _ = std::fs::remove_file(&zero_area);
+    }
+
     #[test]
     fn a_field_of_the_wrong_length_is_refused() {
         let weights = NearestCellWeights {
@@ -631,6 +1178,7 @@ mod tests {
             target_longitude: vec![0.0; 1],
             cell_index: vec![0],
             distance_km: vec![0.0],
+            off_mesh: Vec::new(),
             mesh_sha256: String::new(),
             mesh_path: String::new(),
             mesh_angle_units: AngleUnits::Declared,

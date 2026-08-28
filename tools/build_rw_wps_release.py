@@ -399,6 +399,18 @@ _OPTIONAL_STAGED_IMPORTS = {
         "certification kernel-manifest recording, reached only after the "
         "CuPy import inside the loader; RW-WPS stages no forecast executor "
         "and compiles no CUDA module",
+    ("gpuwm/physics_compat.py", "gpuwm.core.ruc_contract"):
+        "RUC'S SOIL GEOMETRY COUNTS, and only those.  The import is "
+        "function-local inside pending_wrf_physics_components' "
+        "sf_surface_physics == 3 arm (physics_compat.py, the deferred "
+        "block), so importing this module in a preprocessing wheel does "
+        "not touch it.  It is reached only when a caller asks whether a "
+        "RUC forecast column is admissible -- a forecast-side question a "
+        "preparation-only install has no arm to answer, and one that "
+        "gpuwm.config defers for exactly the same reason.  Staging "
+        "gpuwm/core/ruc_contract.py instead would pull "
+        "gpuwm.core.noahmp_mynn_contract and gpuwm.ingest.ruc_soil in "
+        "behind it for two integer tuples.",
     ("gpuwm/core/state.py", "gpuwm.core.preflight"):
         "CUDA forecast scratch-preflight path; RW-WPS constructs host state",
     ("gpuwm/core/uh_diag.py", "gpuwm.core.streaming"):

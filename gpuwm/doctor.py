@@ -2511,6 +2511,7 @@ _CHECKED_ARTIFACTS = {
     "rw_mpas_mesh": "the `MPAS binary` lines",
     "rw_mpas_init": "the `MPAS binary` lines",
     "rw_mpas_convert": "the `MPAS binary` lines",
+    "rw_mpas_lbc": "the `MPAS binary` lines",
 }
 
 
@@ -3004,16 +3005,17 @@ _MPAS_DOORS = {
     "rw_mpas_static": "gpuwm mesh (the matching MPAS static)",
     "rw_mpas_init": "MPAS initial conditions from a grid and a static file",
     "rw_mpas_convert": "MPAS history onto the renderer's tape",
+    "rw_mpas_lbc": "MPAS lateral boundaries for a limited-area mesh",
 }
 
-#: One action for all four: they share a clone, a cargo build and a
+#: One action for all five: they share a clone, a cargo build and a
 #: reason, so the terse report folds them into a single line.
 _MPAS_ACTION = ("build the MPAS binaries from a clone "
                 f"({bridges.RUSTWX_CRATE_RELATIVE})")
 
 
 def _mpas_bridge_checks() -> list[Check]:
-    """The four MPAS binaries, reported by name.
+    """The five MPAS binaries, reported by name.
 
     ``rw_mpas_convert`` is the artifact this module's other comments
     keep naming as the precedent: written, committed, resolved by name,
@@ -3037,7 +3039,7 @@ def _mpas_bridge_checks() -> list[Check]:
         from gpuwm import mpas_mesh
     except ImportError as error:                 # pragma: no cover - partial
         return [Check(
-            "MPAS binaries (mesh, static, init, convert)", "missing",
+            "MPAS binaries (mesh, static, init, convert, lbc)", "missing",
             f"gpuwm.mpas_mesh is not importable ({error}) -- closes "
             "`gpuwm mesh` and means this install is incomplete",
             "# reinstall so the mesh door imports:\n" + REINSTALL_HINT,
@@ -5009,7 +5011,7 @@ def collect_checks(sources: tuple[str, ...] | None = None,
     # through 2.3.3, which is how a box with every radar-adjacent
     # observation route dead could print a fully green estate.
     checks.extend(_obs_front_door_checks())
-    # The four MPAS binaries no bundle carried and no check reported.
+    # The five MPAS binaries no bundle carried and no check reported.
     checks.extend(_mpas_bridge_checks())
     checks.append(_netcdf_decoder_check())
     checks.append(_mapped_engine_check())

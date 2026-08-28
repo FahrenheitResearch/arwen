@@ -1,5 +1,282 @@
 # Changelog
 
+## 2.5.8 (2026-08-27)
+
+New:
+- Graded (variable-resolution) MPAS meshes generate on a hierarchical
+  Goldberg ladder, and a mesh from this generator has now completed a
+  6 h full-physics forecast (151,649 cells, 20 km core in an 80 km
+  background, 180/180 steps finite, byte-identical across two runs) --
+  the first variable-resolution mesh this project generated that ran.
+  The mechanism: level 0 is the proven uniform Goldberg arm, each level
+  halves the spacing by count-targeted midpoint insertion under a
+  level-clamped field, and the transition annuli are drained by
+  count-changing defect surgery with hysteresis, per-site op caps and
+  halting by counting. The canonical 15-to-60 km spec delivers 224,210
+  cells against 224,208 predicted with min dvEdge/dcEdge 0.0407 and zero
+  edges under 0.04; the Fibonacci arm is retired to a control instrument.
+- Every mesh relaxation samples min dvEdge/dcEdge each sweep, stamps the
+  trajectory into the receipt, and refuses a collapsing tail with the
+  TRiSK amplification named.
+- mesh304_probe grows --from-grid, --surgery insert-delete, --emit-grid
+  and --seed hierarchy arms, so recorded failures, their repairs and the
+  graded generator all measure through one census.
+- `rw_mpas_lbc`: the MPAS v8.4.1 lateral-boundary-condition stream in Rust.
+  Per boundary time it consumes one source-agnostic WPS intermediate plus the
+  regional initial-conditions file, runs the `init_atm_case_lbc` pipeline and
+  writes `lbc.<time>.nc` full-mesh CDF-5 files with native-identical layout,
+  header offsets and attribute block. No source model is named anywhere in
+  the producer; cadence arrives as `--interval` rows and header metadata as
+  `--config-attrs` table data.
+- `rw_mpas_lbc compare`: grades a produced lbc file against a native one from
+  its own CDF-5 byte walk, per-variable raw-slab comparison with measured
+  max-ULP/abs/rel and location, plus a header field-by-field diff. Against
+  the three native case-9 files of the 2026-08-25 regional oracle: xtime,
+  Time, lbc_qc, lbc_qr byte-exact; lbc_theta within 11 ULP; lbc_qv 7.8e-8
+  abs; lbc_u 1.5e-5 m/s; lbc_w 4.3e-6 m/s; lbc_rho 2.3e-4 rel, against the
+  native case-7/case-9 pair's own 1.5e-4 on that field. Headers agree on 68
+  of 70 attributes; `file_id`, `history` and the added `gpuwm_provenance`
+  are the declared identity set.
+- One documented divergence, deliberate: native case 9 runs every boundary
+  time in one process, so after the first time its isobaric/model-level
+  branch test reads stale `p_fg` content. The producer is stateless per time
+  and takes the branch each file's own content selects; it matches the native
+  files on the oracle series, and a source whose level table changed
+  mid-series would diverge from the native quirk.
+- `rw_store::netcdf_classic::create_with_min_header`: the classic writer can
+  reserve header space (the `h_minfree` convention) so data sections land at
+  the offsets SMIOL reserves; `create` is unchanged.
+- `rw_mpas_lbc` produces a lateral boundary from another run's own output, so
+  one run can drive the next. The parent's decoupled prognostic state is
+  sampled onto the child's own cells and edges and remapped onto the child's
+  own levels; nothing is rebuilt, because the lbc stream's contents already
+  are the model's state. Density is remapped in the log, a one-cell edge
+  takes its height column from the cell that exists, and both divergences are
+  named in the receipt. Measured against the 2026-08-25 regional oracle: a
+  child that is its parent gets theta, u and w back bit for bit over 831k
+  values, rho within 2 ulp and qv differing only at the six points the parent
+  held below zero; two runs are byte-identical; and a 120 km regional
+  forecast drives a 24 km child across five hourly frames in 2.1 s on CPU.
+- A driving source is now a row of `registry/driving-sources.json`, not a
+  code path: the row names the reader, the grid family, the state kind, and
+  the map from canonical roles to whatever that source calls them.
+  `--source ROW` selects it and `rw_mpas_lbc list-sources` prints the
+  registry; `--source-registry FILE` merges rows by name. Three rows ship. A
+  frame with sixteen variables renamed, driven through a row that exists only
+  in a JSON file, produced a boundary file bit-identical on all seven fields
+  to the built-in spelling; so did a frame in this program's own history
+  spelling and container, read through `--parent-grid`.
+- `rw_mpas_lbc --coincidence-snap no` measures the transfer operator's own
+  accuracy at a coincident point instead of taking the snap's word for it.
+- The RUC land-surface column is parametric over WRF's admitted soil-level
+  counts {6, 9}, on the host and on the device. The geometry, the ingest
+  remap and the CUDA column all size themselves from the profile instead of
+  a literal nine. Both geometries are oracle-matched to WRF 4.7.1 real.exe
+  ZS/DZS, including the float32 artifact DZS(7) = 0.4999999 at nine levels.
+  Six levels carries NO bit-exactness claim: there is no six-level Fortran
+  oracle, and the previous nine-level blocker becomes a warn saying so. The
+  surviving refusal, a count outside {6, 9}, is byte-identical before and
+  after (sha256 805e6e5433...c97a1828).
+- A real `mp_physics = 28` run initializes its aerosol state from WRF's
+  global monthly water/ice-friendly climatology
+  (QNWFA_QNIFA_SIGMA_MONTHLY.dat) instead of thompson_init's synthetic
+  CCN/IN profile, because a forecast started from one is a different
+  forecast. The synthetic profile survives as a named fallback, announced in
+  the receipt. The dataset is opt-in to stage: `gpuwm fetch-tables --wif`
+  (with `--wif-only` and `--wif-root DIR`) puts it under `~/.gpuwm/wif` on
+  the coefficient tables' SHA-256 contract.
+  `wif_climatology_path` and `mp28_aerosol_source` are the config fields,
+  configs/demos/mp28_wif_climatology.toml is the demo, and the cyclic
+  bilinear regrid and the IFV=5 intermediate reader are Rust.
+- A run's report.json says which aerosol dataset the run used, in three
+  states rather than one: a scheme with no particle-number fields carries NO
+  KEY AT ALL, so its report is byte for byte what it was; a searched-and-empty
+  mp=28 run says so with the search that came up empty; and a writer holding
+  no ingest receipt records "not recorded" rather than "no dataset". No schema
+  version moves, so every stored receipt and hash stays valid.
+- `bl_mynn_mixscalars` leaves MYNN's single-value option identity and is
+  admitted at {0, 1}. At 1, MYNN's own five qn-family tridiagonal solves
+  and the DMP_mf updraft-flux accumulation run on the aerosol-aware
+  Thompson species nc/ni/nwfa/nifa, on CPU and on device. The frozen DMP unit
+  stays frozen: the sibling kernel is the pinned one plus complete tagged
+  lines, and a test strips them and compares bytes.
+- A pre-commit hook asks the index the question the line-ending gate asks
+  HEAD, so a patch script that rewrites a whole file's line endings for a
+  two-line edit is caught at commit time rather than at release time.
+- `rw_mpas_mesh --cull-parent` cuts a limited-area mesh out of an existing
+  global grid or static file instead of generating one, byte-matching the
+  native MPAS-Limited-Area v2.2 cull for the same region, down to the mask
+  rings, the parent-subset ordering and the METIS graph file. `--region` is the crate's existing Shape row (cap, lat_lon_box,
+  polygon) as pure JSON, so a new region is a row and never a code path.
+  Byte-identical against three pinned native culls from both the test harness
+  and the exe. One documented divergence: stored-0 connectivity maps to 0
+  rather than the native wrap to the last index, and the receipt records when
+  a parent would expose it (neither pinned parent does).
+- rw_mpas_static admits a culled mesh. The blanket outermost-ring refusal is
+  lifted for the reason it named: the native mpas_in_cell containment is
+  ported and gates every source pixel whose nearest cell is on the outermost
+  ring, so a pixel whose true owner was culled reaches nobody instead of the
+  rim. The culler's sentinel geometry is admitted with every violation
+  named.
+- `rw_mpas_convert --window mesh` derives the render window from the mesh, so
+  a refined core anywhere on earth renders at its own resolution. `--window
+  focus` was a hardcoded CONUS box: measured through the binary on a
+  126,103-cell grid with a 4.53 km core in the tropical Atlantic, focus and
+  global both gathered at about 26.6 km mean nearest-cell distance and
+  neither saw the core. The refined region is every cell within twice the
+  mesh minimum spacing, centred on those cells' unit-vector mean so a core on
+  the antimeridian stays there.
+- `rw_mpas_convert --compose SOURCES.json` puts a coarse run and each fine
+  run on one grid, rendered once, and says which run drew each point,
+  composed as data rather than as pictures so no seam comes from the drawing.
+- `rw_wrfbatch` writes `<out-dir>/render-georef.json` on a bare run, with no
+  flag: per PNG, the image size, the map's pixel rectangle inside it and the
+  projection. A panel used to publish its transform nowhere.
+- rw_mpas_init writes model lineage. model_name, core_name, version and
+  git_version are optional switches defaulting to this engine's own identity,
+  so a caller that says nothing still writes a usable boundary source. Never
+  "mpas".
+
+Fixed:
+- The boundary producer's default source is the incumbent intermediate row,
+  so an invocation written before the registry existed produces the same
+  bytes; verified byte-identical against the row spelling.
+- `gpuwm fetch-bridges` stages `rw_mpas_lbc`. Its source has been in the tree
+  since the limited-area lane landed and every release cut built it, but no
+  published bundle carried it, so the only way to obtain the binary was a Rust
+  toolchain and a source checkout. It is the other half of the limited-area
+  route -- `rw_mpas_mesh --cull-parent` cuts the mesh, this produces the
+  boundary series that mesh is driven by -- so the cull shipped output nothing
+  could run. Bundle roster, contract marker, resolver row and doctor line all
+  added; the binary answers `--abi` and `--version` like its four siblings.
+- The gpuwm wheel ships `docs/mpas-seam.md` as package data, at
+  `<site-packages>/docs/mpas-seam.md`. An external consumer verifies the
+  physics seam by hashing sixteen engine files keyed on repository paths and
+  runs that one key set against both a checkout and an install; fifteen keys
+  resolved under both and this one resolved under the checkout only, because
+  no distribution placed the document anywhere. The install path is the
+  repository path so the same key answers for both roots.
+
+- The generator's absolute dvEdge floor re-anchors from 7,500 m to 200 m
+  (ruling 2026-08-25). The old anchor guarded the port's retired rtol 2e-5
+  load check and refused meshes the port loads and runs, the published
+  x4.163842 at its measured 1,170 m included; the new floor is 115x the live
+  check's measured 1.732 m absolute tolerance, and it survives as a
+  noise-fraction bound because a stored dual length is quantisation noise
+  long before the loader objects. The refusal names the surviving breakages,
+  the dvEdge/dcEdge >= 0.02 gate is now stated as the port's own
+  DualEdgePolicy admission floor, and a dislocation mesh is refused naming
+  DualEdgeAdmissionError and the measured TRiSK amplification. The static
+  receipt's FP32 agreement reading mirrors the live check (rtol 9.54e-7 plus
+  the absolute floor) and reports tolerance use instead of a dead boundary.
+  Measured: a generated 654,432-cell pair with 12,732 edges past the retired
+  bound, worst absolute 0.634 m, is accepted whole by the live port loader,
+  and x4.163842 (dv/dc 0.0336) clears the default emit gate. Evidence:
+  evidence/2026-08-25-stale-guards-engine/.
+- The mesh-door frame-staleness watchdog now compares the frame cut against
+  the MPAS port's live ARWEN_BUILD_COMMIT (read from the port checkout)
+  instead of the sizing table's own frozen measured-against record, which by
+  construction predates the cut and kept the watchdog green through two pin
+  moves (stale-guard audit 2026-08-25, finding 2). The corrected watchdog is
+  deliberately red on this tree until the frame and every residue are
+  re-measured in one session at the live pin (finding 1, needs the RTX 5090).
+- The mesh door's short-edge verdict now states the MPAS port's live
+  contract: the 1.73 m FP32 storage atol and the 0.02 dvEdge/dcEdge
+  admission floor, instead of the rtol 2e-5 / atol 0.0 comparison the port
+  retired on 2026-08-23 (stale-guard audit 2026-08-25, finding 3). The static
+  engine's fp32_metric_agreement receipt now reports the live readings, and
+  receipts measured against the retired contract report NOT MEASURED instead
+  of being quoted.
+- gpuwm downscale sizes the standalone child with the live affine
+  envelope -- the same estimate_experiment arithmetic the domain wizard
+  and gpuwm check price with -- instead of the retired flat reserve and
+  1.75x multiplicative floor (stale-guard audit 2026-08-25, finding 4).
+  Measured on the RTX 3080 10 GiB through the real doors: on a real
+  386x308 12 km rte-rrtmgp parent the retired pair admitted 282x282
+  while the card ran the affine fit's 342x342 whole (47% more child
+  area). On a legacy-RRTMG parent the disagreement reverses (retired
+  324x324 against the live envelope's 258x258) and both children ran,
+  so the retired pair's error has no consistent sign -- which is why it
+  is replaced by the affine model rather than re-tuned. Evidence:
+  evidence/2026-08-25-stale-guards-engine/finding4-README.md.
+- RUC ground heat flux was about five times too large at six soil levels:
+  ruc_soil_finalize computed dzstop from the literal nine-level spacing.
+  The frozen digest pin moves for it.
+- The frozen-window digest gate was red on Linux and green on Windows from
+  pristine source, and the cause is the C library, not this tree. Measured
+  with the compiler excluded: every value handed to `powf` is bit-identical
+  across the two boxes (0 of 36,000 differ), and the differing library
+  answers move 1,684 of 36,000 latitudes by at most 4 ULP, 1.42e-14 degrees.
+  The focus window now carries a per-platform digest row keyed by the (OS, C
+  environment) pair; adding a row is additive, no existing row is ever
+  edited, and an unmeasured platform REFUSES and prints the digest it took
+  rather than passing silently. The portable half is a geometry gate holding
+  the grid corners to 1e-9 degrees everywhere. The global window needs no
+  table and says why: its coordinates call no transcendental at all.
+- The published pages catch up: CONFIGURATION.md gains the one way to supply
+  your own mp=28 aerosol, PHYSICS.md and the manual drop MYNN from twelve
+  pinned knobs to eleven, and the generated CLI reference is re-rendered for
+  the three table-staging flags. One page told a reader to run `gpuwm
+  import`, which is not a command; the door is `gpuwm import-namelist`.
+- One authored source file had carried CRLF unbooked since it landed, which
+  held the line-ending gate red. Normalized to LF: 4,563 CR bytes removed and
+  nothing else.
+- One cell with no valid source pixel no longer costs a whole static. MODIS
+  albedo is land-only, so at the Antarctic sea-ice margin the land-use
+  archive calls a cell ice while every albedo pixel in it is fill, and one
+  cell refused a 128,019-cell mesh that took 435 s to generate. A cell with
+  no sample now takes the mean of the neighbours that have one, spreading
+  over the mesh's own connectivity, and mask-excluded cells conduct a value
+  without keeping it, so an ice margin across open water is still reached.
+  The refusal is not removed, it moves to the case it was written for, a
+  field with no valid pixel anywhere to carry from, and it names the
+  stranded cells. Nothing that builds today changes: a 112,676-cell static
+  rebuilt with the patched binary is byte-identical, 215,446,200 B, sha256
+  4cfa3008...c902f10.
+
+Changed:
+- The tropical root clock (30 s inside the tropics) is re-justified on the
+  instrument that replaced the one it was found wrong on: re-run at the
+  motivating case under the corrected v1.1 co-located |w|/dz monitor, the
+  un-halved 60 s clock peaks at vertical CFL 1.997 against the halved
+  clock's 0.976 -- twice the vertical Courant limit, sustained through
+  6 h. The guard stays, and its cost is corrected to the +73% forecast
+  wall measured here rather than the +22% previously quoted.
+- POOL_SLACK_FRACTION keeps its 0.20 with a post-#310 re-measurement
+  recorded beside it: legacy-lane retention has fallen and now shrinks
+  with grid size (0.213 / 0.150 / 0.019 at 60x48 / 110x88 / 290x232),
+  so the value is no longer a worst-case bound. Not re-fitted, because
+  the new rows are 2 h and the calibration rows are 6 h; the like-for-like
+  protocol is a named follow-up.
+- The RRTMGP 128-layer ceiling now names its owner: the LW Planck-source
+  kernel's fixed per-thread pfrac[128]. planck_sources refuses a taller
+  column loudly before any launch (it used to come back as uninitialized
+  source arrays that read as valid radiation), the LW door keeps its
+  refusal with the owner named, and the SW door's copy of the ceiling is
+  retired: the SW solvers compile RRTMGP_MAX_LAYERS to the run's own nlay
+  and hold no fixed per-layer storage, proven by a 160-layer transparent-
+  atmosphere run reproducing the analytic direct beam (stale-guard audit
+  2026-08-25, RRTMGP nlay adjudication).
+- Stage-IV ZERO_TOLERANCE_MM re-justified in place: four archive objects
+  (01h summer/winter/spring, 24h; 1,964,589 dry cells) decode every dry
+  cell to exactly 0.0 through the current Rust path with
+  clamped_negative_cells 0, so the clamp is unexercised on the measured
+  archive; it stays as the boundary between a dry observation and a
+  deleted one, with the receipt counter keeping any file that exercises
+  it visible (stale-guard audit 2026-08-25).
+- The mesh generator stops rebuilding one polygon on every evaluation. The
+  resolution field has one definition with the per-shape constants solved
+  once, and three pure hoists come off a measured profile in which 56.6% of
+  all cycles sat inside libm. Measured on 24 cores, CPU only, on a
+  112,676-cell parent spec: 322.4 s to 166.9 s.
+  EQUIVALENCE IS THE POINT -- the emitted grid is byte-identical to the
+  baseline (sha256 36406384...39a7d7b7, 154,154,208 B), held there without a
+  run by two gates: the prepared field against a verbatim copy of the
+  retired arithmetic by f64 bit pattern, and the new filtered orientation
+  sign against the exact predicate. A mesh registry pins grid files by
+  SHA-256, so one moved bit makes every registered digest downstream
+  unreproducible.
+
 ## 2.5.7 (2026-08-25)
 
 Fixed:

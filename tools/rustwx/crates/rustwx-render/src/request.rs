@@ -836,6 +836,28 @@ pub struct MapRenderRequest {
     pub projected_data_polygons: Vec<ProjectedPolygonFill>,
     #[serde(default)]
     pub inverse_raster_projection: Option<InverseRasterProjection>,
+    /// The projection `projected_domain` was built in, with every
+    /// data-derived parameter resolved.
+    ///
+    /// gpuwm addition (VENDOR.md).  Purely descriptive: the renderer never
+    /// reads it to draw a pixel.  When set (together with
+    /// `geographic_bounds` and a `projected_domain`), the save path
+    /// publishes a [`crate::georeference::PanelGeoReference`] on its
+    /// [`crate::RenderSaveTiming`], which is the only way a consumer
+    /// holding the finished PNG can put a lat/lon on a pixel -- recovering
+    /// the mapping by registration measurably cannot work (a global panel
+    /// is Robinson; no linear fit describes Robinson).  `None` -- every
+    /// existing caller -- publishes nothing and changes nothing.
+    #[serde(default)]
+    pub resolved_projection: Option<crate::georeference::ResolvedProjection>,
+    /// `(west, east, south, north)` degrees of the DATA the caller framed,
+    /// carried into the published georeference for sanity checks and
+    /// captions.  Descriptive only, like `resolved_projection`; a
+    /// georeference is withheld rather than published with made-up bounds
+    /// when this is `None`, because a silently-zero bounds field is worse
+    /// than no georeference at all (gpuwm addition, VENDOR.md).
+    #[serde(default)]
+    pub geographic_bounds: Option<(f64, f64, f64, f64)>,
     #[serde(default)]
     pub projected_place_labels: Vec<ProjectedPlaceLabel>,
     #[serde(default)]
@@ -884,6 +906,8 @@ impl MapRenderRequest {
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
             inverse_raster_projection: None,
+            resolved_projection: None,
+            geographic_bounds: None,
             projected_place_labels: Vec::new(),
             projected_points: Vec::new(),
             projected_lines: Vec::new(),

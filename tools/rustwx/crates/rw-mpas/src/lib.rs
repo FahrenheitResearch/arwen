@@ -40,11 +40,13 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
+pub mod composite;
 pub mod convert;
 pub mod error;
 pub mod fieldmap;
 pub mod history;
 pub mod init;
+pub mod lbc;
 pub mod mesh;
 pub mod staticfile;
 pub mod static_builder;

@@ -131,28 +131,62 @@ def test_the_two_aerosol_source_selectors_exist_as_config_fields():
 
 
 @pytest.mark.parametrize("name,value", [
-    ("aer_init_opt", 1),
     ("aer_init_opt", 2),
-    ("wif_input_opt", 1),
     ("wif_input_opt", 2),
 ])
-def test_every_other_aerosol_source_value_fails_closed(name, value):
+def test_every_unimplemented_aerosol_source_value_fails_closed(name, value):
     """Fail CLOSED, and name what is missing.
 
-    ``aer_init_opt`` 1/2 and ``wif_input_opt`` 1/2 are the complete set of
-    non-default values WRF defines (Registry.EM_COMMON:2656,
-    registry.new3d_wif:17/:80-82).  Each is refused, and the refusal names
-    the missing capability rather than the number: WIF metgrid ingest for
-    both, plus nbca for ``wif_input_opt=2``'s use_wif_input_bc package.
+    RE-BASELINED (lane/wif-default).  This used to parametrize all four
+    non-default values WRF defines and assert every one refused.  Two of
+    them -- ``aer_init_opt=1`` with ``wif_input_opt=1`` -- are the
+    climatology pair, which is now IMPLEMENTED and is the default source, so
+    refusing them would refuse the fix.  The remaining two are unchanged and
+    are what this test is now about: ``2`` on either selector is a
+    capability that does not exist (real.exe's first-guess WIF stream, and
+    the qnbca species), so each still refuses and still names the missing
+    capability rather than the number.  The value-1 rows did not simply
+    vanish -- they moved to
+    ``test_a_half_climatology_selection_is_refused_as_mixed`` below, which
+    proves the pair is admitted TOGETHER and refused APART.
     """
     with pytest.raises(NotImplementedError) as caught:
         validate_run_config(_cfg(**{name: value}))
     message = str(caught.value)
     assert f"{name}={value!r}" in message
     assert "WIF" in message
-    assert "metgrid" in message
     if name == "wif_input_opt":
         assert "qnbca" in message or "nbca" in message
+    else:
+        assert "metgrid" in message
+
+
+@pytest.mark.parametrize("overrides", [
+    {"aer_init_opt": 1},
+    {"wif_input_opt": 1},
+])
+def test_a_half_climatology_selection_is_refused_as_mixed(overrides):
+    """One half of real.exe's climatology pair is not a request, it is a typo.
+
+    real.exe derives both together from ``use_aero_icbc = .true.``; there is
+    no WRF state in which one is set and the other is not.  ArWen refuses
+    rather than completing it, because completing it would mean choosing
+    which half the user meant.
+    """
+    with pytest.raises(NotImplementedError) as caught:
+        validate_run_config(_cfg(**overrides))
+    assert "MIXED aerosol-source selection" in str(caught.value)
+
+
+def test_the_climatology_pair_is_admitted():
+    """The pair real.exe itself derives is accepted, with no path required.
+
+    ``wif_climatology_path`` stays optional: the resolver has a search order
+    (env override, then WRF's own bare-relative rule), so demanding a path
+    here would make the supported configuration harder to reach than the
+    one it replaced.
+    """
+    validate_run_config(_cfg(aer_init_opt=1, wif_input_opt=1))
 
 
 def test_the_pin_holds_under_every_scheme_not_only_28():
@@ -185,21 +219,45 @@ def test_the_deliberate_deviation_is_published_and_cites_the_wrf_refusal():
     a published constant and reaches the namelist importer's printed
     receipt -- it is not buried in a comment.
     """
-    from gpuwm.config import MP28_AEROSOL_SOURCE_DEVIATION
+    # RE-BASELINED (lane/wif-default).  The old pin asserted a DEVIATION
+    # constant: that ArWen's mp=28 aerosol state came from thompson_init's
+    # synthetic profile, and that a comparison against a WIF-initialized WRF
+    # run was not equivalent.  Reconstructing the old assertion from the new
+    # constants proves nothing else moved -- every clause the deviation made
+    # still exists, it has just moved to the FALLBACK constant, which is the
+    # only state it was ever true of:
+    #   old "thompson_init synthetic profile"  -> SYNTHETIC_FALLBACK
+    #   old "not ... equivalent / not be reported as one" -> SYNTHETIC_FALLBACK
+    #   old "real.exe FATALs this configuration" -> now unreachable by
+    #       default, because the default no longer IS that configuration.
+    from gpuwm.config import (
+        MP28_AEROSOL_SOURCE_DEFAULT, MP28_AEROSOL_SYNTHETIC_FALLBACK)
 
-    text = MP28_AEROSOL_SOURCE_DEVIATION
-    assert "dyn_em/module_initialize_real.F:2735-2736" in text
-    assert "wif_input_opt=0 but mp_physics=28" in text
-    assert "thompson_init" in text
-    assert "phys/module_mp_thompson.F:482-559" in text
-    # It must say the comparison is NOT equivalent, not merely that the
-    # setup differs.
-    assert "not be reported as one" in text.replace("\n", " ")
-    # And every refusal must carry it, so the user who trips the pin is the
-    # user most likely to need it.
+    default = MP28_AEROSOL_SOURCE_DEFAULT
+    # The default names the DATA and the operators that consume it.
+    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in default
+    assert "gpuwm/ingest/wif_climatology.py" in default
+    assert "use_aero_icbc=.true." in default
+    assert "module_initialize_real.F:8029-8095" in default
+
+    fallback = MP28_AEROSOL_SYNTHETIC_FALLBACK
+    # Everything the retired deviation warned about survives HERE, where it
+    # is still true, and nowhere else.
+    assert "thompson_init" in fallback
+    assert "phys/module_mp_thompson.F:493-551" in fallback
+    assert "FALLBACK IN USE" in fallback
+    assert "not be reported as one" in fallback.replace("\n", " ")
+    # And it must tell the user how to stop being in the fallback, because a
+    # warning with no remedy is a warning nobody can act on.
+    assert "GPUWM_WIF_CLIMATOLOGY" in fallback
+
+    # The refusal that used to carry the deviation is GONE, not softened:
+    # wif_input_opt=1 with aer_init_opt=1 is the supported climatology pair.
+    validate_run_config(_cfg(wif_input_opt=1, aer_init_opt=1))
+    # A HALF-selection is still refused, and names what it refuses.
     with pytest.raises(NotImplementedError) as caught:
         validate_run_config(_cfg(wif_input_opt=1))
-    assert MP28_AEROSOL_SOURCE_DEVIATION in str(caught.value)
+    assert "MIXED aerosol-source selection" in str(caught.value)
 
 
 # ---------------------------------------------------------------------------
@@ -712,26 +770,49 @@ def test_the_four_aerosol_fields_carry_wrf_registry_metadata_verbatim():
 
 
 def test_the_two_netcdf_name_maps_stand_in_the_declared_relation():
-    """The wider map is exactly the narrower one plus the aerosol rows.
+    """The wider map is the narrower one plus its DECLARED model-state groups.
 
     Stated as a property so neither map can drift: the selector inventory
     keeps the cardinality ``tests/test_wrf_output_schema.py`` pins, the
-    writer's map is a strict superset, and the only difference is the four
-    mp=28 aerosol carriers.
+    writer's map is a strict superset, and every name in the difference
+    belongs to a group the schema module declares by name.
+
+    The relation is written against the GROUPS, not against a literal
+    four-name set, because the literal was wrong the moment a second
+    model-state group joined the writer.  One landed after the aerosol
+    carriers did -- the five land-identity rows the offline child reads
+    back (``a2379f956``, SURFACE_IDENTITY_OUTPUT_FIELDS) -- and the
+    assertion failed on it while nothing was actually wrong.  A test
+    that has to be edited every time a correct row is
+    added is not pinning the relation, it is pinning a census; the
+    relation is "the difference is model-state groups this module
+    declares", and that is what is asserted here.
     """
     from gpuwm.io.wrf_output_schema import (
         HISTORY_FIELDS_BY_NETCDF_NAME, OUTPUT_FIELDS_BY_NETCDF_NAME,
         PRECIPITATION_OUTPUT_FIELDS, SCHEME_OUTPUT_FIELDS,
-        THOMPSON_AEROSOL_OUTPUT_FIELDS)
+        SURFACE_IDENTITY_OUTPUT_FIELDS, THOMPSON_AEROSOL_OUTPUT_FIELDS)
+
+    model_state_groups = {
+        "THOMPSON_AEROSOL_OUTPUT_FIELDS": THOMPSON_AEROSOL_OUTPUT_FIELDS,
+        "SURFACE_IDENTITY_OUTPUT_FIELDS": SURFACE_IDENTITY_OUTPUT_FIELDS,
+    }
+    declared = set().union(*(set(group)
+                             for group in model_state_groups.values()))
 
     assert len(OUTPUT_FIELDS_BY_NETCDF_NAME) == (
         len(SCHEME_OUTPUT_FIELDS) + len(PRECIPITATION_OUTPUT_FIELDS))
     assert set(HISTORY_FIELDS_BY_NETCDF_NAME) == (
-        set(OUTPUT_FIELDS_BY_NETCDF_NAME)
-        | set(THOMPSON_AEROSOL_OUTPUT_FIELDS))
-    assert (set(HISTORY_FIELDS_BY_NETCDF_NAME)
-            - set(OUTPUT_FIELDS_BY_NETCDF_NAME)) == {
+        set(OUTPUT_FIELDS_BY_NETCDF_NAME) | declared)
+    # The four mp=28 carriers this file speaks for are still exactly the
+    # aerosol group's contribution, and it is still disjoint from the
+    # selector inventory -- which is the part of the old literal that was
+    # a real claim rather than a census.
+    assert set(THOMPSON_AEROSOL_OUTPUT_FIELDS) == {
         "QNWFA", "QNIFA", "QNWFA2D", "QNIFA2D"}
+    for label, group in model_state_groups.items():
+        assert not (set(group) & set(OUTPUT_FIELDS_BY_NETCDF_NAME)), label
+        assert set(group) <= set(HISTORY_FIELDS_BY_NETCDF_NAME), label
     for name, field in OUTPUT_FIELDS_BY_NETCDF_NAME.items():
         assert HISTORY_FIELDS_BY_NETCDF_NAME[name] is field
 
@@ -836,10 +917,16 @@ def test_every_wrf_mp28_aerosol_namelist_key_is_answered():
     from gpuwm.namelist_import import _MP28_AEROSOL_NAMELIST_KEYS
 
     assert set(_MP28_AEROSOL_NAMELIST_KEYS["physics"]) == {
-        "use_aero_icbc", "use_rap_aero_icbc", "qna_update", "scalar_pblmix",
+        "use_rap_aero_icbc", "qna_update", "scalar_pblmix",
         "grav_settling", "wif_fire_emit", "wif_fire_inj", "dust_emis"}
-    assert set(_MP28_AEROSOL_NAMELIST_KEYS["domains"]) == {
-        "wif_input_opt", "num_wif_levels"}
+    # ANSWERED IS NOT REFUSED.  The WIF key triple left this table when the
+    # ingest landed a front door: `use_aero_icbc` (&physics) and
+    # `wif_input_opt`/`num_wif_levels` (&domains) are now CONSUMED by the
+    # importer and mapped onto aer_init_opt=1 / wif_input_opt=1.  The
+    # property this test defends is unchanged -- every mp=28 aerosol key
+    # must be answered before _Section.finish() -- so the three that moved
+    # are checked here as admitted rather than dropped from the census.
+    assert set(_MP28_AEROSOL_NAMELIST_KEYS["domains"]) == set()
     for keys in _MP28_AEROSOL_NAMELIST_KEYS.values():
         for key, why in keys.items():
             assert len(why) > 40, key
@@ -858,8 +945,7 @@ def test_the_refusal_reasons_cite_wrfs_silent_overwrites():
     physics = _MP28_AEROSOL_NAMELIST_KEYS["physics"]
     assert "module_check_a_mundo.F:2459-2474" in physics["grav_settling"]
     assert "module_check_a_mundo.F:2477-2495" in physics["scalar_pblmix"]
-    domains = _MP28_AEROSOL_NAMELIST_KEYS["domains"]
-    assert "module_initialize_real.F:2735-2736" in domains["wif_input_opt"]
+    assert _MP28_AEROSOL_NAMELIST_KEYS["domains"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1245,27 +1331,58 @@ def test_a_plain_mp28_namelist_imports_and_stays_28(tmp_path):
     assert not [s for s in report.substitutions if s.key == "mp_physics"]
 
 
-def test_the_import_receipt_carries_the_deviation_where_a_user_sees_it(
-        tmp_path):
+def test_the_import_receipt_names_the_aerosol_source_where_a_user_sees_it(
+        tmp_path, monkeypatch):
     """Not a comment, not a docstring: the printed report.
 
-    ``SubstitutionReport.format()`` renders ``defaults_applied`` under
-    "gpuwm-supplied values without a WRF Registry source", which is the
-    importer's never-silent last mile.  This is the channel that tells a
-    user their mp=28 run uses thompson_init's synthetic aerosol profile and
-    that WRF's own real.exe refuses the same configuration.
+    RE-BASELINED (lane/wif-default).  The old pin required the rendered
+    report to contain "thompson_init" and
+    "dyn_em/module_initialize_real.F:2735-2736" -- the deviation sentence.
+    The channel is unchanged and the requirement that it be NEVER SILENT is
+    unchanged; what moved is which of two sentences it prints, and both are
+    asserted here, one after the other, so neither can go quiet.
     """
+    from gpuwm.ingest import wif_climatology
     from gpuwm.namelist_import import import_namelists
 
+    # (a) NO DATASET -> the fallback, announced.  Every clause the retired
+    # deviation carried is asserted here, which is the reconstruction that
+    # proves nothing but the default moved.
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, raising=False)
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_ROOT_ENV, raising=False)
+    # THE STAGED ROOT is a rung too (merge: static-dataset-door +
+    # wif-default).  `gpuwm fetch-tables --wif` installs the dataset into
+    # $GPUWM_WIF_DATA_ROOT, defaulting to ~/.gpuwm/wif, and
+    # resolve_wif_climatology searches it ahead of the cwd.  Unsetting the
+    # two file/root overrides is therefore no longer enough to guarantee
+    # "nothing resolves": on a machine that has actually staged the dataset
+    # -- the reference host has -- this test would otherwise resolve the
+    # real 225 MB copy and pass, or fail, for a reason it is not about.
+    # Point the staged root at an empty directory instead.
+    monkeypatch.setenv("GPUWM_WIF_DATA_ROOT", str(tmp_path / "no-staged-wif"))
+    monkeypatch.chdir(tmp_path)
     wps, inp = _namelist_pair(tmp_path)
     _toml, report = import_namelists(wps, inp, name="mp28-receipt",
         acknowledgements=_CONSTANT_GLW_ACK)
     rendered = report.format()
     assert "thompson_init" in rendered
-    assert "dyn_em/module_initialize_real.F:2735-2736" in rendered
-    entries = [a for a in report.defaults_applied
-               if "aerosol" in a.key]
+    assert "FALLBACK IN USE" in rendered
+    assert "phys/module_mp_thompson.F:493-551" in rendered
+    entries = [a for a in report.defaults_applied if "aerosol" in a.key]
     assert len(entries) == 1, [a.key for a in report.defaults_applied]
+
+    # (b) DATASET PRESENT -> the default, named, with the path.  A user must
+    # be able to tell the two runs apart from the receipt alone.
+    dataset = tmp_path / wif_climatology.WIF_CLIMATOLOGY_FILE
+    dataset.write_bytes(b"")
+    monkeypatch.setenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, str(dataset))
+    _toml2, report2 = import_namelists(wps, inp, name="mp28-receipt-data",
+        acknowledgements=_CONSTANT_GLW_ACK)
+    rendered2 = report2.format()
+    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in rendered2
+    assert "FALLBACK IN USE" not in rendered2
+    assert len([a for a in report2.defaults_applied
+                if "aerosol" in a.key]) == 1
 
     # And it must appear ONLY for mp=28: a WSM6 import must not grow a
     # paragraph about aerosol it never had.
@@ -1286,7 +1403,6 @@ def test_the_import_receipt_carries_the_deviation_where_a_user_sees_it(
     ("physics", "wif_fire_inj", "1"),
     ("physics", "dust_emis", "1"),
     ("domains", "wif_input_opt", "1"),
-    ("domains", "num_wif_levels", "30"),
 ])
 def test_each_mp28_aerosol_key_is_refused_by_name(tmp_path, section, key,
                                                   value):
@@ -1561,6 +1677,60 @@ def test_the_legacy_config_path_gives_the_named_refusal(tmp_path):
     assert cfg.mp_physics == 28
 
 
+def test_the_wif_key_triple_imports_instead_of_dead_ending(tmp_path):
+    """A real WRF namelist that selects the climatology IMPORTS.
+
+    The triple is &physics ``use_aero_icbc = .true.`` with &domains
+    ``wif_input_opt = 1`` and ``num_wif_levels = 30``.  Before the ingest
+    had a front door every one of those keys was a hard refusal, so the
+    one namelist a WIF user actually writes was the one ArWen could not
+    read.  This pins the whole round trip: the keys are consumed, the
+    emitted config carries aer_init_opt=1 / wif_input_opt=1, and the
+    never-silent line says which dataset the run will read.
+    """
+    from gpuwm.namelist_import import import_namelists
+
+    wps, inp = _namelist_pair(
+        tmp_path, mp=28,
+        physics_extra=" use_aero_icbc = .true.,\n",
+        domains_extra=" wif_input_opt = 1,\n num_wif_levels = 30,\n")
+    toml, report = import_namelists(wps, inp, name="mp28-wif",
+                                    acknowledgements=_CONSTANT_GLW_ACK)
+    assert "aer_init_opt = 1" in toml
+    assert "wif_input_opt = 1" in toml
+    applied = " ".join(
+        f"{d.key} {d.value} {d.reason}" for d in report.defaults_applied)
+    assert "WIF monthly climatology" in applied
+    assert "fetch-tables --wif" in applied
+
+
+@pytest.mark.parametrize("physics_extra,domains_extra,fragment", [
+    (" use_aero_icbc = .true.,\n", "", "wrote half of it"),
+    ("", " wif_input_opt = 1,\n", "wrote half of it"),
+    (" use_aero_icbc = .true.,\n", " wif_input_opt = 2,\n", "qnbca"),
+    (" use_aero_icbc = .true.,\n",
+     " wif_input_opt = 1,\n num_wif_levels = 20,\n", "30 sigma levels"),
+])
+def test_the_wif_triple_refuses_every_half_written_form(
+        tmp_path, physics_extra, domains_extra, fragment):
+    """Half a triple, and wif_input_opt=2, are refused BY NAME.
+
+    ``wif_input_opt = 2`` additionally allocates the black-carbon scalar
+    qnbca (registry.new3d_wif:82), whose consumer is not ported; the
+    refusal has to say qnbca rather than "unsupported value", because the
+    user's next question is which half of their namelist to change.
+    """
+    from gpuwm.namelist_import import import_namelists
+
+    wps, inp = _namelist_pair(
+        tmp_path, mp=28, physics_extra=physics_extra,
+        domains_extra=domains_extra)
+    with pytest.raises(ValueError) as caught:
+        import_namelists(wps, inp, name="mp28-wif-half",
+                         acknowledgements=_CONSTANT_GLW_ACK)
+    assert fragment in str(caught.value)
+
+
 def test_a_mixed_column_asking_for_28_anywhere_still_refuses_the_wif_key(
         tmp_path):
     """The &domains half of the sweep peeks, and must peek at the COLUMN.
@@ -1583,6 +1753,11 @@ def test_a_mixed_column_asking_for_28_anywhere_still_refuses_the_wif_key(
     message = str(caught.value)
     assert "&domains wif_input_opt" in message
     assert "module_initialize_real.F:2735-2736" in message
+    # The peek let the key through (any domain asking for 28 is enough);
+    # the MAPPED, uniform mp_physics is what refuses it, so the refusal
+    # names the scheme this column actually resolved to rather than the
+    # one some element of it asked for.
+    assert "mp_physics=6" in message
 
 
 def test_mp28_is_a_component_override_and_never_a_default():

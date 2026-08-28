@@ -211,24 +211,47 @@ TIGHTEN: dict[str, dict] = {
     # reads the knob, and that the nine-layer identity was unported.  RUC is
     # admitted at nine layers and runs a forecast, so the text now describes
     # the resolver that actually decides.
+    #
+    # AND, since lane/ruc-column-nzs admitted six: this warning is the text a
+    # user reads to decide what they may set, so a stale sentence here is a
+    # capability the product denies having.  Two clauses were left behind by
+    # that lane's rewrite and contradicted the sentence after them --
+    # 'RUC resolves 9' (gpuwm/config.py soil_layer_count returns the
+    # requested 6 when RUC is asked for 6; measured) and 'Both 4 and 9 are
+    # selectable ... and no other value is' (six is selectable, and the very
+    # next sentence says how).  Both are corrected.  The ENUM stays [4, 9]:
+    # it declares what an oracle has judged, and that is a separate claim
+    # from what a user may select.
     "num_soil_layers": {
         "type": "integer", "enum": [4, 9], "default": 4,
         "warnings": [
             "The resolved layer count comes from the SCHEME, not from this "
             "knob: gpuwm/config.py soil_layer_count consults "
             "LAND_SURFACE_SOIL_LAYERS for the selected sf_surface_physics, so "
-            "Noah and Noah-MP resolve 4 and RUC resolves 9, and every soil "
-            "allocation, VRAM count, output dimension and restart shape reads "
-            "that resolver. DIVERGENCE from WRF, deliberate: "
-            "set_physics_rconfigs OVERWRITES a namelist request that "
-            "disagrees with the scheme and only logs it at debug level, so a "
-            "namelist asking Noah for nine layers runs on four with no error; "
-            "gpuwm refuses instead. Both 4 and 9 are selectable -- 4 with "
-            "Noah or Noah-MP, 9 with RUC -- and no other value is. WRF's "
-            "six-level RUC grid (share/module_soil_pre.F:init_soil_depth_3) "
-            "is not declared here because every RUC oracle fixture in the "
-            "tree is nine-level and the CUDA leaves index a __constant__ real "
-            "ruc_soil_layer_depth[9]."]},
+            "Noah and Noah-MP resolve 4 and RUC resolves the 6 or 9 it was "
+            "asked for, and every soil allocation, VRAM count, output dimension "
+            "and restart shape reads that resolver. DIVERGENCE from WRF, "
+            "deliberate: set_physics_rconfigs OVERWRITES a namelist request "
+            "that disagrees with the scheme and only logs it at debug level, so "
+            "a namelist asking Noah for nine layers runs on four with no error; "
+            "gpuwm refuses instead. This ENUM declares 4 and 9 -- 4 with Noah "
+            "or Noah-MP, 9 with RUC -- because those are the geometries an "
+            "oracle has judged; the enum is a statement about EVIDENCE, not the "
+            "whole set of selectable values. WRF's six-level RUC grid "
+            "(share/module_soil_pre.F:init_soil_depth_3) is ALSO SELECTABLE, "
+            "and it COMPILES and RUNS: gpuwm/core/kernels/ruc.cu sizes every "
+            "soil scratch from RUC_NZS and selects its level table with it, "
+            "gpuwm.core.ruc/.ruc_gpu resolve the count from the profile, and a "
+            "1-hour HRRR-initialised forecast completes at six levels with "
+            "soil_layers_stag=6 in its wrfout. It is not declared in this enum "
+            "because what it lacks is a WRF FORECAST ORACLE -- every "
+            "lsmruc/sfctmp/soilmoist/snowtemp fixture in the tree is nine-level "
+            "-- so it is selected through the hash-bound experiment config "
+            "(sf_surface_physics = 3 with num_soil_layers = 6) rather than a "
+            "named --physics-profile, warns at runtime, and carries "
+            "soil_geometry_evidence=internal-consistency-only in its run "
+            "receipt. A schema enum entry would advertise a validated geometry; "
+            "see docs/wrf_ruc_runtime_admission.md."]},
     "terrain_opt": {"type": "integer", "enum": [0, 1], "default": 0},
     "epssm": {"type": "number", "minimum": 0.0, "maximum": 1.0,
               "default": 0.1},

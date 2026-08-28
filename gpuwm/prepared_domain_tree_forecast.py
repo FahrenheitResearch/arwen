@@ -47,6 +47,10 @@ from gpuwm.core.microphysics_transition import (  # noqa: E402
     MP8_TO_MP18_POLICY,
     resolve_microphysics_transition,
 )
+from gpuwm.aerosol_source_receipt import (  # noqa: E402
+    AEROSOL_SOURCE_KEY,
+    aerosol_source_report_entries,
+)
 from gpuwm.experiment import load_experiment  # noqa: E402
 from gpuwm.kernel_compile_notice import (  # noqa: E402
     COMPILING_STATUS, current_compute_capability, kernel_cache_state,
@@ -2433,6 +2437,29 @@ def run_prepared_tree(
     # prepared_single_domain_forecast.
     if streaming_report:
         report["tiles"] = streaming_report
+    # WHICH AEROSOL INITIAL CONDITION EACH DOMAIN STARTED FROM.  PER
+    # DOMAIN, because each domain has its own initialization and its own
+    # prepared cache: a root fed from WRF's monthly WIF climatology and a
+    # child whose cache predates the receipt are two different facts about
+    # one run, and one tree-wide verdict would lose both.  Read from the
+    # caches the deciding processes wrote it into; never re-resolved here,
+    # which would be a second resolution path over the same config field.
+    # Absent entirely -- receipt byte-for-byte unchanged -- for a tree
+    # whose domains all run schemes with no aerosol number fields.
+    aerosol_by_grid_id = {
+        int(bundle.grid_id): bundle.cache_reader.metadata.get(
+            AEROSOL_SOURCE_KEY, {})
+        for bundle in inputs.domains
+    }
+    report.update(aerosol_source_report_entries(
+        ((f"d{int(domain.grid_id):02d}", domain.run.mp_physics,
+          aerosol_by_grid_id.get(int(domain.grid_id), {}))
+         for domain in exp.domains),
+        when_unrecorded=(
+            "this domain's prepared cache carries no "
+            "aerosol-initialization receipt, so it was written by a "
+            "preparation predating the receipt being stored; re-prepare "
+            "the hierarchy to record which source filled its nwfa/nifa")))
     _atomic_json(evidence / "run-receipt.json", report)
     emit_run_capsule(
         outdir, emission_site="prepared_domain_tree_forecast",
